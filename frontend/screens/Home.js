@@ -14,12 +14,12 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook }) => {
             </View>
             <View style={styles.body}>
                 <ReaderProvider>
-                    <HandleBooks 
-                        books={books} 
-                        setBooks={setBooks} 
-                        currentBook={currentBook} 
-                        setCurrentBook={setCurrentBook}/>
-                </ReaderProvider> 
+                    <HandleBooks
+                        books={books}
+                        setBooks={setBooks}
+                        currentBook={currentBook}
+                        setCurrentBook={setCurrentBook} />
+                </ReaderProvider>
             </View>
         </View>
     )
@@ -87,7 +87,7 @@ const HandleBooks = ({ books, setBooks, currentBook, setCurrentBook }) => {
         }
     };
 
-    return(
+    return (
         <View>
             <TouchableOpacity
                 style={styles.addButton}
@@ -121,7 +121,7 @@ const HandleBooks = ({ books, setBooks, currentBook, setCurrentBook }) => {
                         <Image style={styles.bookImage} source={item.cover ? { uri: item.cover } : require('../assets/icon.png')} />
 
                         <View style={styles.bookInfo}>
-                            <View style={{flexWrap: 'wrap', flexDirection: 'row'}}><Text style={styles.bookTitle}>{item.title}</Text></View>
+                            <View style={{ flexWrap: 'wrap', flexDirection: 'row' }}><Text style={styles.bookTitle}>{item.title}</Text></View>
                             <Text style={styles.bookAuthor}>{item.author}</Text>
                         </View>
                     </TouchableOpacity>
@@ -134,12 +134,14 @@ const HandleBooks = ({ books, setBooks, currentBook, setCurrentBook }) => {
                 </View>
             )}
 
-            <Reader
-                height="0"
-                src={currentBook}
-                fileSystem={useFileSystem}
-                onReady={() => setBookRendered(true)} 
-            />
+            {loading && currentBook && (
+                <Reader
+                    height="0"
+                    src={currentBook}
+                    fileSystem={useFileSystem}
+                    onReady={() => setBookRendered(true)}
+                />
+            )}
 
         </View>
     );
@@ -151,7 +153,7 @@ const styles = StyleSheet.create({
         backgroundColor: '#6e7b8b',
         borderBottomRightRadius: 10,
         borderBottomLeftRadius: 10
-    }, 
+    },
     title: {
         position: 'absolute',
         top: 45,
@@ -159,10 +161,10 @@ const styles = StyleSheet.create({
         fontSize: 25,
         fontFamily: 'Roboto',
         color: '#ebf4f6'
-    }, 
+    },
     body: {
         height: "88%",
-    },  
+    },
     addButton: {
         position: 'absolute',
         top: 640,
@@ -170,7 +172,7 @@ const styles = StyleSheet.create({
         width: 50,
         height: 50,
         borderRadius: 25,
-        backgroundColor: '#f4a261',     
+        backgroundColor: '#f4a261',
         justifyContent: 'center',
         alignItems: 'center',
         zIndex: 5
@@ -182,7 +184,7 @@ const styles = StyleSheet.create({
         width: 50,
         height: 50,
         borderRadius: 25,
-        backgroundColor: '#f4a261',     
+        backgroundColor: '#f4a261',
         justifyContent: 'center',
         alignItems: 'center',
         zIndex: 6
