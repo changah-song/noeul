@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { View, SafeAreaView, StyleSheet, Text } from 'react-native';
+import { View, SafeAreaView, StyleSheet, Text, StatusBar } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Reader, ReaderProvider, useReader } from '@epubjs-react-native/core';
 import { useFileSystem } from '@epubjs-react-native/expo-file-system';
@@ -10,6 +11,7 @@ import { AppProvider } from '../contexts/AppContext';
 
 const Read = ({ books, setBooks, currentBook }) => {
     const [highlightedWord, setHighlightedWord] = useState('');
+    const insets = useSafeAreaInsets();
 
     useFocusEffect(
         React.useCallback(() => {
@@ -19,8 +21,8 @@ const Read = ({ books, setBooks, currentBook }) => {
     );
 
     return (
-        <SafeAreaView style={{ flex: 1 }}>
-            <View style={styles.entireTop}>
+        <View style={{ flex: 1 }}>
+            <View style={[styles.entireTop, { paddingTop: insets.top }]}>
                 <View style={styles.topSection}>
                     <AppProvider>
                         <TopSection highlightedWord={highlightedWord} />
@@ -38,7 +40,7 @@ const Read = ({ books, setBooks, currentBook }) => {
                 </ReaderProvider>
             </View>
 
-        </SafeAreaView>
+        </View>
     );
 }
 
@@ -83,7 +85,6 @@ const BottomSection = ({books, setBooks, currentBook, setHighlightedWord}) => {
 
 const styles = StyleSheet.create({
     entireTop: {
-        top: 40, 
         flex: 0.18,
         backgroundColor: '#85929E',
         borderBottomRightRadius: 5,
