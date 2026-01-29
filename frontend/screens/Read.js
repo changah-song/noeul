@@ -32,11 +32,11 @@ const Read = ({ books, setBooks, currentBook }) => {
 
             <View style={styles.reader}>
                 <ReaderProvider>
-                    <BottomSection 
-                        books={books} 
-                        setBooks={setBooks} 
-                        currentBook={currentBook} 
-                        setHighlightedWord={setHighlightedWord}/>
+                    <BottomSection
+                        books={books}
+                        setBooks={setBooks}
+                        currentBook={currentBook}
+                        setHighlightedWord={setHighlightedWord} />
                 </ReaderProvider>
             </View>
 
@@ -44,7 +44,7 @@ const Read = ({ books, setBooks, currentBook }) => {
     );
 }
 
-const BottomSection = ({books, setBooks, currentBook, setHighlightedWord}) => {
+const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord }) => {
     const { getCurrentLocation, goToLocation } = useReader();
 
     const saveCurrentLocation = () => {
@@ -54,7 +54,7 @@ const BottomSection = ({books, setBooks, currentBook, setHighlightedWord}) => {
             return;
         }
         const startCfi = currentLocation.start.cfi;
-        setBooks(prevBooks => prevBooks.map(book => 
+        setBooks(prevBooks => prevBooks.map(book =>
             book.uri === currentBook ? { ...book, location: startCfi } : book
         ));
         console.log('current location', startCfi);
@@ -70,13 +70,13 @@ const BottomSection = ({books, setBooks, currentBook, setHighlightedWord}) => {
         );
     }
 
-    return  (
+    return (
         <Reader
             src={currentBook}
             fileSystem={useFileSystem}
             enableSelection={true}
+            allowScriptedContent={true}
             onSelected={(text) => { setHighlightedWord(text) }}
-            menuItems={[]}
             onLocationChange={() => { saveCurrentLocation() }}
             initialLocation={initialLocation || ""}
         />
