@@ -3,10 +3,10 @@ import { StyleSheet, Text, View } from 'react-native';
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import 'react-xml-parser';
-import {KOREAN_DICTIONARY_CLIENT_ID} from '@env'
+import { KOREAN_DICTIONARY_CLIENT_ID } from '@env'
 
-const koreanDictionary = ( {query} ) => {
-    const [dictionaryData, setDictionaryData] = useState(null);
+const koreanDictionary = ({ query }) => {
+    const [dictionaryData, setDictionaryData] = useState([]);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState(null);
 
@@ -36,13 +36,13 @@ const koreanDictionary = ( {query} ) => {
                     }
                     var XMLParser = require('react-xml-parser');
                     var xml = new XMLParser().parseFromString(response.data);
-                    
+
                     const items = xml.getElementsByTagName('item');
                     const extractedData = items.map(item => {
                         const word = item.getElementsByTagName('word')[0].value;
                         const origin = item.getElementsByTagName('origin')[0]?.value || 'N/A'; // Use 'N/A' if origin is not available
                         const transWord = item.getElementsByTagName('trans_word')[0]?.value.slice(0, -2) || 'N/A'; // Use 'N/A' if translation word is not available
-                        
+
                         return { word, origin, transWord };
                     });
 
@@ -51,6 +51,7 @@ const koreanDictionary = ( {query} ) => {
                     // console.log('DEFF: ', xml.getElementsByTagName('trans_word'));
                     const translations = xml.getElementsByTagName('trans_word').slice(0, 3).map(dict => dict.value.slice(0, -2));
                     // console.log("result", translations)
+                    console.log("extracted data from koreanDictionary", extractedData)
                     return extractedData;
                 })
             );
@@ -64,9 +65,11 @@ const koreanDictionary = ( {query} ) => {
     };
 
     useEffect(() => {
-        fetchData();
-    }, [query]);
-    
+        if (query && query.length > 0) {
+            fetchData();
+        }
+    }, [JSON.stringify(query)]);
+
     return { dictionaryData };
 }
 
