@@ -8,7 +8,7 @@ import * as DocumentPicker from 'expo-document-picker';
 
 const Home = ({ books, setBooks, currentBook, setCurrentBook }) => {
     return (
-        <View>
+        <View style={styles.container}>
             <View style={styles.header}>
                 <Text style={styles.title}>Books</Text>
             </View>
@@ -88,7 +88,7 @@ const HandleBooks = ({ books, setBooks, currentBook, setCurrentBook }) => {
     };
 
     return (
-        <View>
+        <View style={styles.handleBooksContainer}>
             <TouchableOpacity
                 style={styles.addButton}
                 onPress={() => {
@@ -148,6 +148,9 @@ const HandleBooks = ({ books, setBooks, currentBook, setCurrentBook }) => {
 }
 
 const styles = StyleSheet.create({
+    container: {
+        flex: 1,
+    },
     header: {
         height: "12%",
         backgroundColor: '#6e7b8b',
@@ -189,11 +192,15 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         zIndex: 6
     },
+    handleBooksContainer: {
+        flex: 1,
+        backgroundColor: 'transparent',
+    },
     bookContainer: {
-        height: 720,
+        flex: 1,
         paddingTop: 10,
         width: "100%",
-        backgroundColor: 'white',
+        backgroundColor: 'transparent',
     },
     book: {
         padding: 5,
