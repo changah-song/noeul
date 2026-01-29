@@ -23,103 +23,101 @@ export default function App() {
 
 	useEffect(() => {
 		createTable()
-		.then(() => deleteAllDataFromTable())
-		.then(() => createTable())
-		.then(() => getTableSchema())
-		.then(() => insertData())
-		.then(() => viewData())
-		.then(() => {
-			console.log('All functions completed.');
-		})
-		.catch((error) => {
-			console.log('Error:', error)
-		});
+			.then(() => deleteAllDataFromTable())
+			.then(() => createTable())
+			.then(() => getTableSchema())
+			.then(() => insertData())
+			.then(() => viewData())
+			.then(() => {
+				console.log('All functions completed.');
+			})
+			.catch((error) => {
+				console.log('Error:', error)
+			});
 	}, []);
 
 	return (
 		<TranslatorProvider>
-		<NavigationContainer>
-			<Tab.Navigator
-			screenOptions={({ route }) => ({
-				tabBarIcon: ({ focused, color, size }) => {
-				let iconName;
-				let IconComponent;
+			<NavigationContainer>
+				<Tab.Navigator
+					screenOptions={({ route }) => ({
+						tabBarIcon: ({ focused, color, size }) => {
+							let iconName;
+							let IconComponent;
 
-				if (route.name === 'Read') {
-					iconName = "book-open";
-					IconComponent = FontAwesome6;
-				} else if (route.name === 'Learn') {
-					iconName = "pencil";
-					IconComponent = Foundation;
-				} else if (route.name === 'Home') {
-					iconName = "home";
-					IconComponent = Entypo;
-				}
-				// Custom icon styles
-				const iconStyles = focused ? styles.iconFocused : styles.iconDefault;
-				const iconColor = focused ? '#f4a261' : color;
-				return (
-					<View style={[styles.iconContainer, iconStyles]}>
-						<IconComponent name={iconName} color={iconColor} size={26} />
-					</View>
-				);
-				},
-				tabBarLabel: ({ focused }) => {
-				const labelStyle = focused ? styles.labelFocused : styles.labelDefault;
-				return (
-					<Text style={[labelStyle, {color: 'white', fontFamily: 'Roboto', fontSize: 12}]}>
-						{route.name}
-					</Text>
-				)
-				},
-				headerShown: false,
-				tabBarActiveTintColor: 'white',
-				tabBarInactiveTintColor: '#f1e8e2',
-				tabBarStyle: { backgroundColor: '#6e7b8b' },
+							if (route.name === 'Read') {
+								iconName = "book-open";
+								IconComponent = FontAwesome6;
+							} else if (route.name === 'Learn') {
+								iconName = "pencil";
+								IconComponent = Foundation;
+							} else if (route.name === 'Home') {
+								iconName = "home";
+								IconComponent = Entypo;
+							}
+							// Custom icon styles
+							const iconStyles = focused ? styles.iconFocused : styles.iconDefault;
+							const iconColor = focused ? '#f4a261' : color;
+							return (
+								<View style={[styles.iconContainer, iconStyles]}>
+									<IconComponent name={iconName} color={iconColor} size={26} />
+								</View>
+							);
+						},
+						tabBarLabel: ({ focused }) => {
+							const labelStyle = focused ? styles.labelFocused : styles.labelDefault;
+							return (
+								<Text style={[labelStyle, { color: 'white', fontFamily: 'Roboto', fontSize: 12 }]}>
+									{route.name}
+								</Text>
+							)
+						},
+						headerShown: false,
+						tabBarActiveTintColor: 'white',
+						tabBarInactiveTintColor: '#f1e8e2',
+						tabBarStyle: { backgroundColor: '#6e7b8b' },
 
-			})}>
-			<Tab.Screen name="Home" >
-				{props => <Home {...props} books={books} setBooks={setBooks} currentBook={currentBook} setCurrentBook={setCurrentBook}/>}
-			</Tab.Screen>
-			<Tab.Screen name="Read" >
-				{props => <Read {...props} books={books} setBooks={setBooks} currentBook={currentBook} />}
-			</Tab.Screen>
-			<Tab.Screen name="Learn" component={Learn} />
-			</Tab.Navigator>
-		</NavigationContainer>
+					})}>
+					<Tab.Screen name="Home" >
+						{props => <Home {...props} books={books} setBooks={setBooks} currentBook={currentBook} setCurrentBook={setCurrentBook} />}
+					</Tab.Screen>
+					<Tab.Screen name="Read" >
+						{props => <Read {...props} books={books} setBooks={setBooks} currentBook={currentBook} />}
+					</Tab.Screen>
+					<Tab.Screen name="Learn" component={Learn} />
+				</Tab.Navigator>
+			</NavigationContainer>
 		</TranslatorProvider>
 	);
 }
 
 const styles = StyleSheet.create({
-  // styling for icons
-  iconContainer: {
-    justifyContent: 'center',
-    alignItems: 'center',
-    top: 5
-  },
-  iconDefault: {
-    widht: 50,
-    height: 50,
-    borderRadius: 10,
-    padding: 5,
-  },
-  iconFocused: {
-    top: -15,
-    widht: 50,
-    height: 50,
-    padding: 10,
-    borderRadius: 25,
-    backgroundColor: 'white',
-  },
-  // styling for text
-  labelDefault: {
-    textAlign: 'center',
-    marginTop: 5,
-  },
-  labelFocused: {
-    fontWeight: 'bold',
-    textAlign: 'center',
-    marginTop: 5, 
-  },
+	// styling for icons
+	iconContainer: {
+		justifyContent: 'center',
+		alignItems: 'center',
+		top: 5
+	},
+	iconDefault: {
+		width: 50,
+		height: 50,
+		borderRadius: 10,
+	},
+	iconFocused: {
+		top: -15,
+		width: 50,
+		height: 50,
+		borderRadius: 25,
+		backgroundColor: 'white',
+	},
+	// styling for text
+	labelDefault: {
+		textAlign: 'center',
+		marginTop: 5,
+	},
+	labelFocused: {
+		fontWeight: 'bold',
+		textAlign: 'center',
+		marginTop: 5,
+	},
 });
