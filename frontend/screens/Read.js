@@ -76,6 +76,7 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord }) => 
             fileSystem={useFileSystem}
             enableSelection={true}
             allowScriptedContent={true}
+            menuItems={[]}
             onSelected={(text) => { setHighlightedWord(text) }}
             onLocationChange={() => { saveCurrentLocation() }}
             initialLocation={initialLocation || ""}
