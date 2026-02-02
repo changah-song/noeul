@@ -80,6 +80,60 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord }) => 
             onSelected={(text) => { setHighlightedWord(text) }}
             onLocationChange={() => { saveCurrentLocation() }}
             initialLocation={initialLocation || ""}
+
+
+            injectedJavascript={`
+                console.log('JavaScript injection started');
+                console.log('book:', typeof book);
+                console.log('rendition:', typeof rendition);
+                
+                // Test: Listen to rendition events
+                rendition.on('click', function(e) {
+                    console.log('RENDITION CLICK EVENT!');
+                    window.ReactNativeWebView.postMessage(JSON.stringify({ 
+                        type: 'rendition-click', 
+                        message: 'Rendition click detected'
+                    }));
+                });
+                
+                rendition.on('selected', function(cfiRange, contents) {
+                    console.log('RENDITION SELECTED EVENT!');
+                    var text = rendition.getRange(cfiRange).toString();
+                    console.log('Selected text:', text);
+                    window.ReactNativeWebView.postMessage(JSON.stringify({ 
+                        type: 'rendition-selected', 
+                        text: text
+                    }));
+                });
+                
+                rendition.on('touchstart', function(e) {
+                    console.log('RENDITION TOUCHSTART EVENT!');
+                    window.ReactNativeWebView.postMessage(JSON.stringify({ 
+                        type: 'rendition-touch', 
+                        message: 'Touch detected'
+                    }));
+                });
+                
+                console.log('Event listeners attached to rendition');
+            `}
+            onWebViewMessage={(event) => {
+                const raw = event?.nativeEvent?.data ?? event;
+                console.log('📱 Received from WebView:', raw);
+                if (typeof raw === 'string') {
+                    try {
+                        const parsed = JSON.parse(raw);
+                        console.log('📱 Parsed:', parsed);
+                        
+                        if (parsed.type === 'rendition-selected') {
+                            setHighlightedWord(parsed.text);
+                            console.log('Set highlighted word to:', parsed.text);
+                        }
+                    } catch (err) {
+                        console.log('Not JSON:', raw);
+                    }
+                }
+            }}  
+
         />
     )
 }
