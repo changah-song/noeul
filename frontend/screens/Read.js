@@ -87,34 +87,43 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord }) => 
                 console.log('book:', typeof book);
                 console.log('rendition:', typeof rendition);
                 
-                // Test: Listen to rendition events
+                // Listen to click events and select word
                 rendition.on('click', function(e) {
-                    console.log('RENDITION CLICK EVENT!');
-                    window.ReactNativeWebView.postMessage(JSON.stringify({ 
-                        type: 'rendition-click', 
-                        message: 'Rendition click detected'
-                    }));
+                    console.log('Click detected, attempting to select word');
+                    
+                    var contents = rendition.getContents();
+                    if (contents && contents.length > 0) {
+                        var content = contents[0];
+                        if (content && content.window) {
+                            var selection = content.window.getSelection();
+                            var doc = content.document;
+                            
+                            // Get the click position
+                            var range = doc.caretRangeFromPoint(e.clientX, e.clientY);
+                            
+                            if (range) {
+                                selection.removeAllRanges();
+                                selection.addRange(range);
+                                
+                                // Expand selection to whole word
+                                selection.modify('move', 'backward', 'word');
+                                selection.modify('extend', 'forward', 'word');
+                                
+                                var selectedText = selection.toString().trim();
+                                console.log('Selected word:', selectedText);
+                                
+                                if (selectedText) {
+                                    window.ReactNativeWebView.postMessage(JSON.stringify({ 
+                                        type: 'word-selected', 
+                                        text: selectedText
+                                    }));
+                                }
+                            }
+                        }
+                    }
                 });
                 
-                rendition.on('selected', function(cfiRange, contents) {
-                    console.log('RENDITION SELECTED EVENT!');
-                    var text = rendition.getRange(cfiRange).toString();
-                    console.log('Selected text:', text);
-                    window.ReactNativeWebView.postMessage(JSON.stringify({ 
-                        type: 'rendition-selected', 
-                        text: text
-                    }));
-                });
-                
-                rendition.on('touchstart', function(e) {
-                    console.log('RENDITION TOUCHSTART EVENT!');
-                    window.ReactNativeWebView.postMessage(JSON.stringify({ 
-                        type: 'rendition-touch', 
-                        message: 'Touch detected'
-                    }));
-                });
-                
-                console.log('Event listeners attached to rendition');
+                console.log('Click listener attached');
             `}
             onWebViewMessage={(event) => {
                 const raw = event?.nativeEvent?.data ?? event;
@@ -124,15 +133,15 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord }) => 
                         const parsed = JSON.parse(raw);
                         console.log('📱 Parsed:', parsed);
                         
-                        if (parsed.type === 'rendition-selected') {
+                        if (parsed.type === 'word-selected') {
                             setHighlightedWord(parsed.text);
-                            console.log('Set highlighted word to:', parsed.text);
+                            console.log('✅ Set highlighted word to:', parsed.text);
                         }
                     } catch (err) {
                         console.log('Not JSON:', raw);
                     }
                 }
-            }}  
+            }}
 
         />
     )
