@@ -16,8 +16,6 @@ const Read = ({ books, setBooks, currentBook }) => {
     const [settings, setSettings] = useState({
         fontSize: 18,
         isDarkMode: false,
-        flow: 'paginated',
-        fontFamily: 'Georgia',
         lineSpacing: 1.5
     });
     const insets = useSafeAreaInsets();

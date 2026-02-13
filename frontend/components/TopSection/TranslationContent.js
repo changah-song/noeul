@@ -4,12 +4,12 @@ import { useAppContext } from '../../contexts/AppContext';
 import Translator from 'react-native-translator';
 
 // Translator Component
-const TranslationContent = ({ highlightedWord }) => {
+const TranslationContent = ({ highlightedWord, onContentLoaded }) => {
     // global variable
     const { dictMode } = useAppContext();
-  
+
       // store current translated word and translator service
-    const [gootranslated, setGooTranslated] = useState(''); 
+    const [gootranslated, setGooTranslated] = useState('');
     const [papTranslated, setPapTranslated] = useState('');
 
     const [service, setService] = useState('papago');
@@ -20,6 +20,15 @@ const TranslationContent = ({ highlightedWord }) => {
         setGooTranslated('');
         setPapTranslated('');
     }, [dictMode, service]);
+
+    // Notify parent when translation is loaded
+    useEffect(() => {
+        if ((service === 'papago' && papTranslated) || (service === 'google' && gootranslated)) {
+            if (onContentLoaded) {
+                onContentLoaded();
+            }
+        }
+    }, [gootranslated, papTranslated, service, onContentLoaded]);
 
     // once switch is pressed, change service to the other one
     const handleTypeChange = () => {

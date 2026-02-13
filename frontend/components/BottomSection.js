@@ -1,10 +1,13 @@
-import { useMemo } from 'react';
+import { useMemo, useRef, useEffect } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { Reader, useReader } from '@epubjs-react-native/core';
 import { useFileSystem } from '@epubjs-react-native/expo-file-system';
 
 const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, settings }) => {
-    const { getCurrentLocation } = useReader();
+    const { getCurrentLocation, goToLocation } = useReader();
+    const currentLocationRef = useRef(null);
+    const isFirstRenderRef = useRef(true);
+    const previousSettingsRef = useRef(settings);
 
     const saveCurrentLocation = () => {
         const currentLocation = getCurrentLocation();
@@ -13,6 +16,7 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
             return;
         }
         const startCfi = currentLocation.start.cfi;
+        currentLocationRef.current = startCfi;
         setBooks(prevBooks => prevBooks.map(book =>
             book.uri === currentBook ? { ...book, location: startCfi } : book
         ));
@@ -21,27 +25,55 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
 
     const initialLocation = books.find(book => book.uri === currentBook)?.location;
 
+    // Save and restore location when settings change (but not on first render)
+    useEffect(() => {
+        if (isFirstRenderRef.current) {
+            isFirstRenderRef.current = false;
+            previousSettingsRef.current = settings;
+            return;
+        }
+
+        // Check if settings actually changed
+        if (JSON.stringify(previousSettingsRef.current) !== JSON.stringify(settings)) {
+            // Save current location immediately to books state
+            const currentLocation = getCurrentLocation();
+            if (currentLocation?.start?.cfi) {
+                const locationToRestore = currentLocation.start.cfi;
+                currentLocationRef.current = locationToRestore;
+
+                // Update books state immediately so initialLocation is current
+                setBooks(prevBooks => prevBooks.map(book =>
+                    book.uri === currentBook ? { ...book, location: locationToRestore } : book
+                ));
+
+                // Also restore via goToLocation after Reader re-renders
+                setTimeout(() => {
+                    if (goToLocation) {
+                        goToLocation(locationToRestore);
+                    }
+                }, 200);
+            }
+            previousSettingsRef.current = settings;
+        }
+    }, [settings, getCurrentLocation, goToLocation, setBooks, currentBook]);
+
     const theme = useMemo(() => ({
         body: {
             background: settings.isDarkMode ? '#1f2937' : '#ffffff',
             color: settings.isDarkMode ? '#f3f4f6' : '#1f2937',
             'font-size': `${settings.fontSize}px !important`,
-            'font-family': `${settings.fontFamily} !important`,
         },
         p: {
             'line-height': `${settings.lineSpacing} !important`,
             'font-size': `${settings.fontSize}px !important`,
-            'font-family': `${settings.fontFamily} !important`,
         },
         div: {
             'font-size': `${settings.fontSize}px !important`,
-            'font-family': `${settings.fontFamily} !important`,
         },
         span: {
             'font-size': `${settings.fontSize}px !important`,
-            'font-family': `${settings.fontFamily} !important`,
         }
-    }), [settings.isDarkMode, settings.fontSize, settings.fontFamily, settings.lineSpacing]);
+    }), [settings.isDarkMode, settings.fontSize, settings.lineSpacing]);
 
     if (!currentBook) {
         return (
@@ -62,7 +94,6 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
             onLocationChange={() => { saveCurrentLocation() }}
             initialLocation={initialLocation || ""}
             defaultTheme={theme}
-            flow={settings.flow}
 
             injectedJavascript={`
                 console.log("Javascript injection started");
