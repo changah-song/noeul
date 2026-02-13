@@ -1,22 +1,22 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 
-const stemWord = ( {query} ) => {
+const stemWord = ({ query }) => {
   const [stemWord, setStemWord] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
 
   // apparently 10.0.2.2 is the address for android emulator :(( took so much time
-  const api_url = `http:/10.0.2.2:8000/okt_morphs`;
+  const api_url = `http://10.0.2.2:8000/okt_morphs/`;
 
   // const api_url = `http://192.168.200.121:8000/okt_morphs`;
 
   const options = {
-      method: 'get',
-      url: api_url,
-      params: {
-          text: query
-      }
+    method: 'get',
+    url: api_url,
+    params: {
+      text: query
+    }
   };
 
   const fetchMorphs = async () => {
@@ -24,7 +24,7 @@ const stemWord = ( {query} ) => {
     try {
       const response = await axios.request(options);
       if (!response.data) {
-          throw new Error("Empty response data");
+        throw new Error("Empty response data");
       }
 
       const filteredWords = response.data.result.filter(([word, pos]) => {
@@ -46,7 +46,7 @@ const stemWord = ( {query} ) => {
   }
 
   useEffect(() => {
-      fetchMorphs();
+    fetchMorphs();
   }, [query]);
 
   return stemWord;
