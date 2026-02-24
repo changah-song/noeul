@@ -26,7 +26,7 @@ import ProgressBar from '../components/Learn/ProgressBar';
 import Flashcard from '../components/Learn/Flashcard';
 import Overview from '../components/Learn/Overview';
 
-import { viewData } from '../components/Database';
+import { viewData } from '../services/Database';
 
 const Learn = () => {
   const [todaySwiped, setTodaySwiped] = useState(0);

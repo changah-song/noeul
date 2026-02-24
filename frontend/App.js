@@ -7,7 +7,7 @@ import Home from './screens/Home';
 import Learn from './screens/Learn';
 import Read from './screens/Read';
 
-import { createTable, deleteAllDataFromTable, getTableSchema, insertData, viewData } from './components/Database';
+import { createTable, deleteAllDataFromTable, getTableSchema, insertData, viewData } from './services/Database';
 import React, { useState, useEffect } from 'react';
 import { Text, View, StyleSheet } from 'react-native';
 
