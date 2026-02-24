@@ -12,21 +12,29 @@ import HanjaDetails from './HanjaDetails';
 
 // Dictionary Component
 const DictionaryContent = ({ highlightedWord, onContentLoaded }) => {
-    console.log('DictionaryContent mounted for word:', highlightedWord);
+    // console.log('DictionaryContent mounted for word:', highlightedWord);
 
     // handles 'more' and 'less' to control how much info is displayed from dictionary def
     const [expandedWords, setExpandedWords] = useState([]);
     const [savedWords, setSavedWords] = useState({});
+    const [stemWordList, setStemWordList] = useState([]);
+
+    useEffect(() => {
+        const fetchStemWords = async () => {
+            const result = await stemWord({ query: highlightedWord });
+            setStemWordList(result);
+        };
+        fetchStemWords();
+    }, [highlightedWord]);
 
     // call the APIs for stemming and definition lookup
-    const stemWordList  = stemWord({ query: highlightedWord });
+    console.log("!!!!!", stemWordList, 'is the stem word list');
     const { dictionaryData } = koreanDictionary({ query: stemWordList });
 
     console.log('dictionaryData:', dictionaryData, 'stemWordList:', stemWordList);
 
     // Notify parent when content is loaded (even if empty)
     useEffect(() => {
-        console.log('DictionaryContent useEffect running, dictionaryData:', dictionaryData);
         if (dictionaryData !== undefined && onContentLoaded) {
             console.log('Dictionary data loaded, calling onContentLoaded');
             onContentLoaded();

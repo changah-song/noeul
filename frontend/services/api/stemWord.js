@@ -1,55 +1,22 @@
-import { useState, useEffect } from 'react';
 import axios from 'axios';
 
-const stemWord = ({ query }) => {
-  const [stemWord, setStemWord] = useState([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState(null);
+// Use 10.0.2.2 if you are using the Android Emulator
+// Use localhost or your specific IP if using an iOS simulator or physical device
+const BASE_URL = 'http://10.0.2.2:8000'; 
 
-  // apparently 10.0.2.2 is the address for android emulator :(( took so much time
-  const api_url = `http://10.0.2.2:8000/okt_morphs/`;
-
-  // const api_url = `http://192.168.200.121:8000/okt_morphs`;
-
-  const options = {
-    method: 'get',
-    url: api_url,
-    params: {
-      text: query
-    }
-  };
-
-  const fetchMorphs = async () => {
-    setIsLoading(true);
-    try {
-      const response = await axios.request(options);
-      if (!response.data) {
-        throw new Error("Empty response data");
-      }
-
-      const filteredWords = response.data.result.filter(([word, pos]) => {
-        // Filter out only nouns, verbs, adverbs, adjectives, and modifiers
-        return ['Noun', 'Verb', 'Adverb', 'Adjective', 'Modifier'].includes(pos);
+const stemWord = async ({ query }) => {
+  if (!query || query.trim() === "") return [];
+  try {
+      const response = await axios.get(`${BASE_URL}/okt_morphs/`, {
+          params: { text: query }
       });
-      const filteredWordList = filteredWords.map(([word, _]) => word);
-      //console.log('full response', response.data.result)
-      //console.log('filtered response', filteredWordList)
-
-      setStemWord(filteredWordList);
-      setIsLoading(false);
-
-    } catch (error) {
-      console.error('Error fetching morphs:', error);
-      setError(error.message);
-      setIsLoading(false);
-    }
+      console.log('Received response from Python API:', response.data.result);
+      return response.data.result; 
+      
+  } catch (error) {
+      console.error("Error fetching morphs from Python API:", error);
+      return [];
   }
+};
 
-  useEffect(() => {
-    fetchMorphs();
-  }, [query]);
-
-  return stemWord;
-}
-
-export default stemWord
+export default stemWord;
