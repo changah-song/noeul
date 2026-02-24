@@ -1,15 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { Text, View, ScrollView, StyleSheet, TouchableOpacity, Image } from 'react-native';
-import { useAppContext } from '../../contexts/AppContext';
+import { useAppContext } from '../../../contexts/AppContext';
 import Translator from 'react-native-translator';
 
 // Translator Component
-const TranslationContent = ({ highlightedWord }) => {
+const TranslationContent = ({ highlightedWord, onContentLoaded }) => {
     // global variable
     const { dictMode } = useAppContext();
-  
+
       // store current translated word and translator service
-    const [gootranslated, setGooTranslated] = useState(''); 
+    const [gootranslated, setGooTranslated] = useState('');
     const [papTranslated, setPapTranslated] = useState('');
 
     const [service, setService] = useState('papago');
@@ -21,6 +21,15 @@ const TranslationContent = ({ highlightedWord }) => {
         setPapTranslated('');
     }, [dictMode, service]);
 
+    // Notify parent when translation is loaded
+    useEffect(() => {
+        if ((service === 'papago' && papTranslated) || (service === 'google' && gootranslated)) {
+            if (onContentLoaded) {
+                onContentLoaded();
+            }
+        }
+    }, [gootranslated, papTranslated, service, onContentLoaded]);
+
     // once switch is pressed, change service to the other one
     const handleTypeChange = () => {
         setService(service === 'papago' ? 'google' : 'papago');
@@ -31,12 +40,12 @@ const TranslationContent = ({ highlightedWord }) => {
             <View style={{ flexDirection: 'row', position: 'absolute', right: 0, top: 100 }}>
                 <TouchableOpacity onPress={handleTypeChange} activeOpacity={0.8} style={{ zIndex:10, opacity: service==='papago' ? 1 : 0.3 }}>
                     <View style={[styles.imageContainer, { borderTopLeftRadius: 10, borderBottomLeftRadius: 10 }]}>
-                        <Image source={require('../../assets/papagoicon.png')} style={styles.image} />
+                        <Image source={require('../../../assets/papagoicon.png')} style={styles.image} />
                     </View>
                 </TouchableOpacity>
                 <TouchableOpacity onPress={handleTypeChange} activeOpacity={0.8} style={{ zIndex: 10, opacity: service==='google' ? 1 : 0.3 }}>
                     <View style={[styles.imageContainer, { borderTopRightRadius: 10, borderBottomRightRadius: 10 }]}>
-                        <Image source={require('../../assets/googletranslateicon.png')} style={styles.image} />
+                        <Image source={require('../../../assets/googletranslateicon.png')} style={styles.image} />
                     </View>
                 </TouchableOpacity>
             </View>

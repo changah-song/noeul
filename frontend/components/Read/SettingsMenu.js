@@ -16,7 +16,6 @@ const SettingsMenu = ({
     onSettingChange
 }) => {
     const fontSizes = [12, 14, 16, 18, 20, 24, 28, 32];
-    const fontFamilies = ['Georgia', 'Arial', 'Times New Roman', 'Courier', 'Helvetica'];
     const lineSpacings = [1.0, 1.2, 1.5, 1.8, 2.0, 2.5];
 
     return (
@@ -73,68 +72,6 @@ const SettingsMenu = ({
                                     trackColor={{ false: '#d1d5db', true: '#4b5563' }}
                                     thumbColor={settings.isDarkMode ? '#1f2937' : '#f3f4f6'}
                                 />
-                            </View>
-                        </View>
-
-                        {/* Scrolling Direction */}
-                        <View style={styles.settingSection}>
-                            <Text style={styles.settingLabel}>Reading Mode</Text>
-                            <View style={styles.buttonGroup}>
-                                <TouchableOpacity
-                                    style={[
-                                        styles.toggleButton,
-                                        styles.toggleButtonLeft,
-                                        settings.flow === 'paginated' && styles.selectedToggle
-                                    ]}
-                                    onPress={() => onSettingChange('flow', 'paginated')}
-                                >
-                                    <Text style={[
-                                        styles.toggleText,
-                                        settings.flow === 'paginated' && styles.selectedToggleText
-                                    ]}>
-                                        Paginated
-                                    </Text>
-                                </TouchableOpacity>
-                                <TouchableOpacity
-                                    style={[
-                                        styles.toggleButton,
-                                        styles.toggleButtonRight,
-                                        settings.flow === 'scrolled-doc' && styles.selectedToggle
-                                    ]}
-                                    onPress={() => onSettingChange('flow', 'scrolled-doc')}
-                                >
-                                    <Text style={[
-                                        styles.toggleText,
-                                        settings.flow === 'scrolled-doc' && styles.selectedToggleText
-                                    ]}>
-                                        Scrolled
-                                    </Text>
-                                </TouchableOpacity>
-                            </View>
-                        </View>
-
-                        {/* Font Family */}
-                        <View style={styles.settingSection}>
-                            <Text style={styles.settingLabel}>Font Type</Text>
-                            <View style={styles.fontFamilyContainer}>
-                                {fontFamilies.map((font) => (
-                                    <TouchableOpacity
-                                        key={font}
-                                        style={[
-                                            styles.fontFamilyButton,
-                                            settings.fontFamily === font && styles.selectedFontFamily
-                                        ]}
-                                        onPress={() => onSettingChange('fontFamily', font)}
-                                    >
-                                        <Text style={[
-                                            styles.fontFamilyText,
-                                            { fontFamily: font },
-                                            settings.fontFamily === font && styles.selectedFontFamilyText
-                                        ]}>
-                                            {font}
-                                        </Text>
-                                    </TouchableOpacity>
-                                ))}
                             </View>
                         </View>
 
@@ -251,39 +188,6 @@ const styles = StyleSheet.create({
     switchLabel: {
         fontSize: 16,
         color: '#374151',
-    },
-    buttonGroup: {
-        flexDirection: 'row',
-        borderRadius: 8,
-        overflow: 'hidden',
-        borderWidth: 1,
-        borderColor: '#d1d5db',
-    },
-    toggleButton: {
-        flex: 1,
-        paddingVertical: 12,
-        paddingHorizontal: 16,
-        backgroundColor: '#fff',
-        alignItems: 'center',
-    },
-    toggleButtonLeft: {
-        borderRightWidth: 0.5,
-        borderRightColor: '#d1d5db',
-    },
-    toggleButtonRight: {
-        borderLeftWidth: 0.5,
-        borderLeftColor: '#d1d5db',
-    },
-    selectedToggle: {
-        backgroundColor: '#3b82f6',
-    },
-    toggleText: {
-        fontSize: 14,
-        color: '#374151',
-    },
-    selectedToggleText: {
-        color: '#fff',
-        fontWeight: '600',
     },
     fontFamilyContainer: {
         gap: 10,

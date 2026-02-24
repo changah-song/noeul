@@ -1,12 +1,16 @@
-import { Reader, ReaderProvider, useReader } from '@epubjs-react-native/core';
-import { useState, useEffect } from 'react';
-import { Text, View, Image, FlatList, Alert, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native'
-import Icon from 'react-native-vector-icons/FontAwesome';
-import { useFileSystem } from '@epubjs-react-native/expo-file-system';
-import { useNavigation } from '@react-navigation/native';
-import * as DocumentPicker from 'expo-document-picker';
+import { ReaderProvider } from '@epubjs-react-native/core';
+import { Text, View, StyleSheet } from 'react-native';
+import BookList from '../components/Home/BookList';
+import useBooks from '../hooks/useBooks';
 
 const Home = ({ books, setBooks, currentBook, setCurrentBook }) => {
+    const { loading, bookRendered, setBookRendered, addBook, handlePress } = useBooks({
+        books,
+        setBooks,
+        currentBook,
+        setCurrentBook,
+    });
+
     return (
         <View style={styles.container}>
             <View style={styles.header}>
@@ -14,137 +18,15 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook }) => {
             </View>
             <View style={styles.body}>
                 <ReaderProvider>
-                    <HandleBooks
+                    <BookList 
                         books={books}
                         setBooks={setBooks}
                         currentBook={currentBook}
-                        setCurrentBook={setCurrentBook} />
+                        setCurrentBook={setCurrentBook}/>
                 </ReaderProvider>
             </View>
         </View>
     )
-}
-
-const HandleBooks = ({ books, setBooks, currentBook, setCurrentBook }) => {
-    const [loading, setLoading] = useState(false);
-    const [bookRendered, setBookRendered] = useState(false);
-
-    const navigation = useNavigation();
-    const { getMeta } = useReader();
-
-    const addBook = async () => {
-        try {
-            const { assets } = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
-            if (!assets) return;
-            const { uri } = assets[0];
-            setCurrentBook(uri);
-            setBookRendered(false);
-            setLoading(true);
-        } catch (error) {
-            console.log("Error in addBook:", error);
-        }
-    };
-
-    useEffect(() => {
-        console.log("BOOK RENDERED!")
-        if (bookRendered && currentBook) {
-            // Fetch metadata once the book is rendered
-            const fetchMeta = async () => {
-                try {
-                    const { title, author, cover } = getMeta();
-                    console.log("after getting meta info", { title });
-
-                    // Check if the book already exists in the books array
-                    const bookExists = books.some(book => book.title === title && book.author === author && book.cover === cover);
-                    if (bookExists) {
-                        Alert.alert('Duplicate Book', 'This book is already loaded.');
-                        return;
-                    }
-                    // Add the book to the books array if it doesn't already exist
-                    setBooks(prevBooks => [...prevBooks, { id: Math.random().toString(), uri: currentBook, title, author, cover, location: null }]);
-                } catch (error) {
-                    console.log("Error fetching meta:", error);
-                } finally {
-                    setLoading(false);  // Stop loading indicator
-                }
-            };
-
-            fetchMeta();
-        }
-    }, [bookRendered]);
-
-
-    const handlePress = async (uri) => {
-        try {
-            setLoading(true);
-            await setCurrentBook(uri);
-            setBookRendered(false);  // Reset book rendered state
-            navigation.navigate('Read');
-        } catch (error) {
-            console.error("Error handling book press:", error);
-        } finally {
-            setLoading(false);  // Set loading to false after the async operation
-        }
-    };
-
-    return (
-        <View style={styles.handleBooksContainer}>
-            <TouchableOpacity
-                style={styles.addButton}
-                onPress={() => {
-                    Alert.alert(
-                        'Instructions',
-                        'Choose an EPUB file to load',
-                        [
-                            {
-                                text: 'Ok',
-                                onPress: addBook
-                            },
-                            {
-                                text: 'Cancel',
-                                style: 'cancel'
-                            }
-                        ]
-                    );
-                }}
-            >
-                <Icon name="plus" size={20} color="#ebf4f6" />
-            </TouchableOpacity>
-
-            <FlatList
-                showsVerticalScrollIndicator={true}
-                style={styles.bookContainer}
-                data={books}
-                keyExtractor={(item) => item.id}
-                renderItem={({ item }) => (
-                    <TouchableOpacity style={styles.book} onPress={() => handlePress(item.uri)}>
-                        <Image style={styles.bookImage} source={item.cover ? { uri: item.cover } : require('../assets/icon.png')} />
-
-                        <View style={styles.bookInfo}>
-                            <View style={{ flexWrap: 'wrap', flexDirection: 'row' }}><Text style={styles.bookTitle}>{item.title}</Text></View>
-                            <Text style={styles.bookAuthor}>{item.author}</Text>
-                        </View>
-                    </TouchableOpacity>
-                )}
-            />
-
-            {loading && (
-                <View style={styles.loadingContainer}>
-                    <ActivityIndicator size="large" color="#ebf4f6" />
-                </View>
-            )}
-
-            {loading && currentBook && (
-                <Reader
-                    height="0"
-                    src={currentBook}
-                    fileSystem={useFileSystem}
-                    onReady={() => setBookRendered(true)}
-                />
-            )}
-
-        </View>
-    );
 }
 
 const styles = StyleSheet.create({

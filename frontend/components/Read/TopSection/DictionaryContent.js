@@ -1,17 +1,19 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Text, View, StyleSheet, ScrollView, TouchableOpacity, Modal } from 'react-native';
 // API and libraries
-import koreanDictionary from '../api/koreanDictionary';
-import stemWord from '../api/stemWord';
+import koreanDictionary from '../../../services/api/koreanDictionary';
+import stemWord from '../../../services/api/stemWord';
 // icons for UI
 import { AntDesign } from '@expo/vector-icons';
 // database and context
-import { insertData, removeData } from '../Database'; // import database
+import { insertData, removeData } from '../../../services/Database'; // import database
 // modal component
 import HanjaDetails from './HanjaDetails';
 
 // Dictionary Component
-const DictionaryContent = ({ highlightedWord }) => {
+const DictionaryContent = ({ highlightedWord, onContentLoaded }) => {
+    console.log('DictionaryContent mounted for word:', highlightedWord);
+
     // handles 'more' and 'less' to control how much info is displayed from dictionary def
     const [expandedWords, setExpandedWords] = useState([]);
     const [savedWords, setSavedWords] = useState({});
@@ -19,6 +21,17 @@ const DictionaryContent = ({ highlightedWord }) => {
     // call the APIs for stemming and definition lookup
     const stemWordList  = stemWord({ query: highlightedWord });
     const { dictionaryData } = koreanDictionary({ query: stemWordList });
+
+    console.log('dictionaryData:', dictionaryData, 'stemWordList:', stemWordList);
+
+    // Notify parent when content is loaded (even if empty)
+    useEffect(() => {
+        console.log('DictionaryContent useEffect running, dictionaryData:', dictionaryData);
+        if (dictionaryData !== undefined && onContentLoaded) {
+            console.log('Dictionary data loaded, calling onContentLoaded');
+            onContentLoaded();
+        }
+    }, [dictionaryData, onContentLoaded]);
 
     // user input: logic to show more definitions if user wants
     const toggleExpanded = (word) => {

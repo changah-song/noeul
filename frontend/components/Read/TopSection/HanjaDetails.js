@@ -1,5 +1,5 @@
 import { Text, View, StyleSheet, TouchableOpacity, Modal, ScrollView } from 'react-native';
-import hanjaRelated from '../api/hanjaRelated';
+import hanjaRelated from '../../../services/api/hanjaRelated';
 
 
 // this is the modal popup when a hanja is clicked
