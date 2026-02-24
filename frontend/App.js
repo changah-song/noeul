@@ -1,123 +1,30 @@
-import { Entypo } from '@expo/vector-icons';
-import { FontAwesome6 } from '@expo/vector-icons';
-import { Foundation } from '@expo/vector-icons';
-import * as SplashScreen from 'expo-splash-screen';
-
+import { NavigationContainer } from '@react-navigation/native';
+import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { TranslatorProvider } from 'react-native-translator';
+import { tabScreenOptions } from './components/shared/TabBar';
+import useAppSetup from './hooks/useAppSetup';
 import Home from './screens/Home';
 import Learn from './screens/Learn';
 import Read from './screens/Read';
 
-import { createTable, deleteAllDataFromTable, getTableSchema, insertData, viewData } from './services/Database';
-import React, { useState, useEffect } from 'react';
-import { Text, View, StyleSheet } from 'react-native';
-
-import { NavigationContainer } from '@react-navigation/native';
-import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { TranslatorProvider } from 'react-native-translator';
-
 const Tab = createBottomTabNavigator();
 
 export default function App() {
-	const [books, setBooks] = useState([]);
-	const [currentBook, setCurrentBook] = useState(null);
+    const { books, setBooks, currentBook, setCurrentBook } = useAppSetup();
 
-	useEffect(() => {
-		createTable()
-			.then(() => deleteAllDataFromTable())
-			.then(() => createTable())
-			.then(() => getTableSchema())
-			.then(() => insertData())
-			.then(() => viewData())
-			.then(() => {
-				console.log('All functions completed.');
-			})
-			.catch((error) => {
-				console.log('Error:', error)
-			});
-	}, []);
-
-	return (
-		<TranslatorProvider>
-			<NavigationContainer>
-				<Tab.Navigator
-					screenOptions={({ route }) => ({
-						tabBarIcon: ({ focused, color, size }) => {
-							let iconName;
-							let IconComponent;
-
-							if (route.name === 'Read') {
-								iconName = "book-open";
-								IconComponent = FontAwesome6;
-							} else if (route.name === 'Learn') {
-								iconName = "pencil";
-								IconComponent = Foundation;
-							} else if (route.name === 'Home') {
-								iconName = "home";
-								IconComponent = Entypo;
-							}
-							// Custom icon styles
-							const iconStyles = focused ? styles.iconFocused : styles.iconDefault;
-							const iconColor = focused ? '#f4a261' : color;
-							return (
-								<View style={[styles.iconContainer, iconStyles]}>
-									<IconComponent name={iconName} color={iconColor} size={26} />
-								</View>
-							);
-						},
-						tabBarLabel: ({ focused }) => {
-							const labelStyle = focused ? styles.labelFocused : styles.labelDefault;
-							return (
-								<Text style={[labelStyle, { color: 'white', fontFamily: 'Roboto', fontSize: 12 }]}>
-									{route.name}
-								</Text>
-							)
-						},
-						headerShown: false,
-						tabBarActiveTintColor: 'white',
-						tabBarInactiveTintColor: '#f1e8e2',
-						tabBarStyle: { backgroundColor: '#6e7b8b' },
-
-					})}>
-					<Tab.Screen name="Home" >
-						{props => <Home {...props} books={books} setBooks={setBooks} currentBook={currentBook} setCurrentBook={setCurrentBook} />}
-					</Tab.Screen>
-					<Tab.Screen name="Read" >
-						{props => <Read {...props} books={books} setBooks={setBooks} currentBook={currentBook} />}
-					</Tab.Screen>
-					<Tab.Screen name="Learn" component={Learn} />
-				</Tab.Navigator>
-			</NavigationContainer>
-		</TranslatorProvider>
-	);
+    return (
+        <TranslatorProvider>
+            <NavigationContainer>
+                <Tab.Navigator screenOptions={tabScreenOptions}>
+                    <Tab.Screen name="Home">
+                        {props => <Home {...props} books={books} setBooks={setBooks} currentBook={currentBook} setCurrentBook={setCurrentBook} />}
+                    </Tab.Screen>
+                    <Tab.Screen name="Read">
+                        {props => <Read {...props} books={books} setBooks={setBooks} currentBook={currentBook} />}
+                    </Tab.Screen>
+                    <Tab.Screen name="Learn" component={Learn} />
+                </Tab.Navigator>
+            </NavigationContainer>
+        </TranslatorProvider>
+    );
 }
-
-const styles = StyleSheet.create({
-	// styling for icons
-	iconContainer: {
-		justifyContent: 'center',
-		alignItems: 'center',
-		top: 5
-	},
-	iconDefault: {
-		width: 50,
-		height: 50,
-		borderRadius: 10,
-	},
-	iconFocused: {
-		top: -15,
-		width: 50,
-		height: 50,
-		borderRadius: 25,
-		backgroundColor: 'white',
-	},
-	// styling for text
-	labelDefault: {
-		textAlign: 'center',
-		marginTop: 5,
-	},
-	labelFocused: {
-		fontWeight: 'bold',
-		textAlign: 'center',
-		marginTop: 5,
-	},
-});
