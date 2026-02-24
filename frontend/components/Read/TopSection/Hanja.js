@@ -1,5 +1,5 @@
 import { View, Text, ScrollView, StyleSheet } from "react-native";
-import hanjaRelated from "../api/hanjaRelated"
+import hanjaRelated from "../../../services/api/hanjaRelated"
 
 const Hanja = ({ hanja }) => {
     const { firstTableData: title, similarWordsTableData: result } = hanjaRelated({ query: hanja })
