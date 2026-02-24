@@ -5,9 +5,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { ReaderProvider } from '@epubjs-react-native/core';
 
-import TopSection from '../components/TopSection';
-import BottomSection from '../components/BottomSection';
-import SettingsMenu from '../components/SettingsMenu';
+import TopSection from '../components/Read/TopSection/TopSection';
+import BottomSection from '../components/Read/BottomSection';
+import SettingsMenu from '../components/Read/SettingsMenu';
 import { AppProvider } from '../contexts/AppContext';
 
 const Read = ({ books, setBooks, currentBook }) => {

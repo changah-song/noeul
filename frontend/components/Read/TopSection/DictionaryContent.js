@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { Text, View, StyleSheet, ScrollView, TouchableOpacity, Modal } from 'react-native';
 // API and libraries
-import koreanDictionary from '../api/koreanDictionary';
-import stemWord from '../api/stemWord';
+import koreanDictionary from '../../../services/api/koreanDictionary';
+import stemWord from '../../../services/api/stemWord';
 // icons for UI
 import { AntDesign } from '@expo/vector-icons';
 // database and context
-import { insertData, removeData } from '../Database'; // import database
+import { insertData, removeData } from '../../../services/Database'; // import database
 // modal component
 import HanjaDetails from './HanjaDetails';
 

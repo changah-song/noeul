@@ -1,7 +1,7 @@
 import React, { useState, useRef, useMemo } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Animated, PanResponder, Dimensions } from 'react-native';
-import { updateLevel } from '../Database';
-import Hanja from '../TopSection/Hanja';
+import { updateLevel } from '../../services/Database';
+import Hanja from '../Read/TopSection/Hanja';
 
 const Flashcard = ({ vocab, setTodaySwiped }) => {
   // load font

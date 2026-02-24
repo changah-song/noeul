@@ -4,10 +4,10 @@ import { Text, View, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator
 import { Feather } from '@expo/vector-icons';
 import { MaterialIcons } from '@expo/vector-icons';
 // context for dictMode
-import { useAppContext } from '../contexts/AppContext'; // import context
+import { useAppContext } from '../../../contexts/AppContext'; // import context
 // logic components for tranlsation and dictionary
-import TranslationContent from './TopSection/TranslationContent';
-import DictionaryContent from './TopSection/DictionaryContent';
+import TranslationContent from './TranslationContent';
+import DictionaryContent from './DictionaryContent';
 
 const TopSection = ({ highlightedWord }) => {
     // global variable loading and function to edit
