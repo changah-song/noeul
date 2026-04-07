@@ -98,86 +98,7 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
             injectedJavascript={`
                 console.log("Javascript injection started");
 
-                // Function to highlight words containing specific characters
-                function highlightWords() {
-                    console.log('Starting word highlighting');
-
-                    var contents = rendition.getContents();
-                    if (contents && contents.length > 0) {
-                        contents.forEach(function(content) {
-                            if (content && content.document) {
-                                var doc = content.document;
-                                var bodyElement = doc.body;
-
-                                // Function to check if text contains Korean character 가
-                                function containsTargetChar(text) {
-                                    return text.includes('가');
-                                }
-
-                                // Function to wrap matching words in spans
-                                function processTextNode(node) {
-                                    var text = node.textContent;
-                                    var words = text.split(/(\s+)/); // Split by whitespace but keep the spaces
-
-                                    var hasMatch = false;
-                                    var fragment = doc.createDocumentFragment();
-
-                                    words.forEach(function(word) {
-                                        if (word.trim() && containsTargetChar(word)) {
-                                            hasMatch = true;
-                                            var span = doc.createElement('span');
-                                            span.style.backgroundColor = 'red';
-                                            span.style.color = 'white';
-                                            span.textContent = word;
-                                            fragment.appendChild(span);
-                                        } else {
-                                            fragment.appendChild(doc.createTextNode(word));
-                                        }
-                                    });
-
-                                    if (hasMatch) {
-                                        node.parentNode.replaceChild(fragment, node);
-                                    }
-                                }
-
-                                // Walk through all text nodes
-                                var walker = doc.createTreeWalker(
-                                    bodyElement,
-                                    NodeFilter.SHOW_TEXT,
-                                    null,
-                                    false
-                                );
-
-                                var textNodes = [];
-                                var node;
-                                while (node = walker.nextNode()) {
-                                    textNodes.push(node);
-                                }
-
-                                textNodes.forEach(processTextNode);
-                                console.log('Highlighting complete');
-                            }
-                        });
-                    }
-                }
-
-                // Run highlighting after content is rendered
-                rendition.on('rendered', function() {
-                    console.log('Content rendered, applying highlights');
-                    highlightWords();
-                });
-
-                // Also run on location change
-                rendition.on('relocated', function() {
-                    console.log('Location changed, applying highlights');
-                    highlightWords();
-                });
-
-
-                // Listen to click events and select word
                 rendition.on('click', function(e) {
-                    console.log('Click detected, attempting to select word');
-
                     var contents = rendition.getContents();
                     if (contents && contents.length > 0) {
                         var content = contents[0];
@@ -185,20 +106,22 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
                             var selection = content.window.getSelection();
                             var doc = content.document;
 
-                            // Get the click position
-                            var range = doc.caretRangeFromPoint(e.clientX, e.clientY);
+                            var range;
+                            if (doc.caretRangeFromPoint) {
+                                range = doc.caretRangeFromPoint(e.clientX, e.clientY);
+                            } else if (doc.caretPositionFromPoint) {
+                                var pos = doc.caretPositionFromPoint(e.clientX, e.clientY);
+                                range = doc.createRange();
+                                range.setStart(pos.offsetNode, pos.offset);
+                            }
 
                             if (range) {
                                 selection.removeAllRanges();
                                 selection.addRange(range);
-
-                                // Expand selection to whole word
                                 selection.modify('move', 'backward', 'word');
                                 selection.modify('extend', 'forward', 'word');
 
                                 var selectedText = selection.toString().trim();
-                                console.log('Selected word:', selectedText);
-
                                 if (selectedText) {
                                     window.ReactNativeWebView.postMessage(JSON.stringify({
                                         type: 'word-selected',
@@ -210,12 +133,19 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
                     }
                 });
 
-                console.log('Click listener attached');
+                console.log('Listeners attached');
             `}
+            
             onWebViewMessage={(event) => {
                 const raw = event?.nativeEvent?.data ?? event;
-                console.log('📱 Received from WebView:', raw);
-                console.log("typeof raw:", typeof raw)
+                try {
+                    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+                    if (parsed?.type === 'word-selected') {
+                        setHighlightedWord(parsed.text);
+                    }
+                } catch (err) {
+                    console.error('Failed to parse WebView message:', err);
+                }
             }}
         />
     );
