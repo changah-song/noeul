@@ -164,3 +164,22 @@ export const viewData = () => {
     });
   });
 };
+
+export const getSavedWords = () => {
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        'SELECT DISTINCT word FROM vocab',
+        [],
+        (_, result) => {
+          const words = result.rows._array.map(row => row.word);
+          resolve(words);
+        },
+        (_, error) => {
+          console.error('Error fetching saved words:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
