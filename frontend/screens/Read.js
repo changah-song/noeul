@@ -9,9 +9,31 @@ import TopSection from '../components/Read/TopSection/TopSection';
 import BottomSection from '../components/Read/BottomSection';
 import SettingsMenu from '../components/Read/SettingsMenu';
 import { AppProvider } from '../contexts/AppContext';
+import { getSavedWords } from '../services/Database';
 
 const Read = ({ books, setBooks, currentBook }) => {
     const [highlightedWord, setHighlightedWord] = useState('');
+    const [savedWords, setSavedWords] = useState(null); // null = not yet loaded
+
+    useEffect(() => {
+        getSavedWords()
+            .then(words => {
+                console.log(`[Read] Loaded ${words.length} saved word(s) for highlighting`);
+                setSavedWords(words);
+            })
+            .catch(err => {
+                console.error('[Read] Failed to load saved words:', err);
+                setSavedWords([]);
+            });
+    }, []);
+
+    const handleWordSave = (word) => {
+        setSavedWords(prev => prev.includes(word) ? prev : [...prev, word]);
+    };
+
+    const handleWordUnsave = (word) => {
+        setSavedWords(prev => prev.filter(w => w !== word));
+    };
     const [showSettings, setShowSettings] = useState(false);
     const [settings, setSettings] = useState({
         fontSize: 18,
@@ -63,7 +85,11 @@ const Read = ({ books, setBooks, currentBook }) => {
             <View style={[styles.entireTop, { paddingTop: insets.top }]}>
                 <View style={styles.topSection}>
                     <AppProvider>
-                        <TopSection highlightedWord={highlightedWord} />
+                        <TopSection
+                            highlightedWord={highlightedWord}
+                            onWordSave={handleWordSave}
+                            onWordUnsave={handleWordUnsave}
+                        />
                     </AppProvider>
                 </View>
             </View>
@@ -76,6 +102,7 @@ const Read = ({ books, setBooks, currentBook }) => {
                         currentBook={currentBook}
                         setHighlightedWord={setHighlightedWord}
                         settings={settings}
+                        savedWords={savedWords}
                     />
                 </ReaderProvider>
             </View>

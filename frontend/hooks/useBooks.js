@@ -20,7 +20,7 @@ const useBooks = ({ books, setBooks, currentBook, setCurrentBook }) => {
             setBookRendered(false);
             setLoading(true);
         } catch (error) {
-            console.log("Error in addBook:", error);
+            console.log("[useBooks] Error in addBook:", error);
         }
     };
 
@@ -36,12 +36,12 @@ const useBooks = ({ books, setBooks, currentBook, setCurrentBook }) => {
     };
 
     useEffect(() => {
-        console.log("BOOK RENDERED!")
+        console.log("[useBooks] Book rendered, bookRendered:", bookRendered)
         if (bookRendered && currentBook) {
             const fetchMeta = async () => {
                 try {
                     const { title, author, cover } = getMeta();
-                    console.log("after getting meta info", { title });
+                    console.log(`[useBooks] Book meta fetched → title: "${title}", author: "${author}"`);
 
                     const bookExists = books.some(
                         book => book.title === title && book.author === author && book.cover === cover
@@ -55,7 +55,7 @@ const useBooks = ({ books, setBooks, currentBook, setCurrentBook }) => {
                         { id: Math.random().toString(), uri: currentBook, title, author, cover, location: null }
                     ]);
                 } catch (error) {
-                    console.log("Error fetching meta:", error);
+                    console.log("[useBooks] Error fetching meta:", error);
                 } finally {
                     setLoading(false);
                 }
@@ -72,7 +72,7 @@ const useBooks = ({ books, setBooks, currentBook, setCurrentBook }) => {
             setBookRendered(false);
             navigation.navigate('Read');
         } catch (error) {
-            console.error("Error handling book press:", error);
+            console.error("[useBooks] Error handling book press:", error);
         } finally {
             setLoading(false);
         }

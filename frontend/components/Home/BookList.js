@@ -24,7 +24,7 @@ const BookList = ({ books, setBooks, currentBook, setCurrentBook }) => {
                 data={books}
                 keyExtractor={(item) => item.id}
                 renderItem={({ item }) => (
-                    <TouchableOpacity style={styles.book} onPress={() => handlePress(item.uri)}>
+                    <TouchableOpacity style={styles.book} onPress={() => { console.log(`[BookList] Book clicked: "${item.title}"`); handlePress(item.uri); }}>
                         <Image
                             style={styles.bookImage}
                             source={item.cover ? { uri: item.cover } : require('../../assets/icon.png')}
