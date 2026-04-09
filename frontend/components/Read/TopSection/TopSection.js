@@ -9,7 +9,7 @@ import { useAppContext } from '../../../contexts/AppContext'; // import context
 import TranslationContent from './TranslationContent';
 import DictionaryContent from './DictionaryContent';
 
-const TopSection = ({ highlightedWord }) => {
+const TopSection = ({ highlightedWord, onWordSave, onWordUnsave }) => {
     // global variable loading and function to edit
     const { dictMode, setDictMode } = useAppContext();
     const [isLoading, setIsLoading] = useState(false);
@@ -73,7 +73,7 @@ const TopSection = ({ highlightedWord }) => {
             {/* show either dictionary or translator content depending on dictMode status */}
             <View style={{ opacity: isLoading ? 0 : 1 }}>
                 {dictMode ?
-                <DictionaryContent highlightedWord={highlightedWord} onContentLoaded={handleContentLoaded} /> :
+                <DictionaryContent highlightedWord={highlightedWord} onContentLoaded={handleContentLoaded} onWordSave={onWordSave} onWordUnsave={onWordUnsave} /> :
                 <TranslationContent highlightedWord={highlightedWord} onContentLoaded={handleContentLoaded} />}
             </View>
         </View>

@@ -11,7 +11,7 @@ import { insertData, removeData } from '../../../services/Database'; // import d
 import HanjaDetails from './HanjaDetails';
 
 // Dictionary Component
-const DictionaryContent = ({ highlightedWord, onContentLoaded }) => {
+const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWordUnsave }) => {
     // console.log('DictionaryContent mounted for word:', highlightedWord);
 
     // handles 'more' and 'less' to control how much info is displayed from dictionary def
@@ -28,15 +28,15 @@ const DictionaryContent = ({ highlightedWord, onContentLoaded }) => {
     }, [highlightedWord]);
 
     // call the APIs for stemming and definition lookup
-    console.log("!!!!!", stemWordList, 'is the stem word list');
+    console.log("[DictionaryContent] Stem word list:", stemWordList);
     const { dictionaryData } = koreanDictionary({ query: stemWordList });
 
-    console.log('dictionaryData:', dictionaryData, 'stemWordList:', stemWordList);
+    console.log('[DictionaryContent] dictionaryData:', dictionaryData);
 
     // Notify parent when content is loaded (even if empty)
     useEffect(() => {
         if (dictionaryData !== undefined && onContentLoaded) {
-            console.log('Dictionary data loaded, calling onContentLoaded');
+            console.log('[DictionaryContent] Dictionary data loaded, notifying parent');
             onContentLoaded();
         }
     }, [dictionaryData, onContentLoaded]);
@@ -50,17 +50,21 @@ const DictionaryContent = ({ highlightedWord, onContentLoaded }) => {
 
     // add word to database and toggle save
     const toggleSave = async (word, origin, definition) => {
+        console.log(`[DictionaryContent] Saving word: "${word}" (hanja: "${origin}", def: "${definition}")`);
         const updatedSavedWords = { ...savedWords, [(word, origin, definition)]: true };
         setSavedWords(updatedSavedWords);
         insertData(word, origin, definition, "unorganized");
+        onWordSave?.(word);
     };
 
     // remove word from database and toggle unsave
     const toggleUnSave = async (word, origin, definition) => {
+        console.log(`[DictionaryContent] Unsaving word: "${word}" (hanja: "${origin}", def: "${definition}")`);
         const updatedSavedWords = { ...savedWords };
         delete updatedSavedWords[(word, origin, definition)];
         setSavedWords(updatedSavedWords);
         removeData(word, origin, definition);
+        onWordUnsave?.(word);
     }
 
     // check if a word is already saved in the database

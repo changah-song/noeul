@@ -19,23 +19,25 @@ const hanjaRelated = ({ query }) => {
     const fetchData = async () => {
         try {
             if (!query) {
-                // Return blank if query is null
+                console.log('[hanjaRelated] No query provided, clearing data');
                 setFirstTableData([]);
                 setSimilarWordsTableData([]);
                 return;
             }
+            console.log(`[hanjaRelated] Fetching hanja data for: "${query}"`);
             let result = [];
             const response = await axios.put(`https://koreanhanja.app/${encodeURIComponent(query)}`);
             const htmlContent = response.data;
             var ReactXmlParser = require('react-xml-parser');
             const htmlDocument = new ReactXmlParser().parseFromString(htmlContent);
-            
+
             // Extract data from the first table (header of Hanja)
             const firstTableRows = htmlDocument.getElementsByTagName('table')[0].getElementsByTagName('tr');
             const firstTableData = firstTableRows.map(row => ({
                 hanja: row.getElementsByTagName('td')[0].getElementsByTagName('a')[0].value,
                 meaning: row.getElementsByTagName('td')[1].value.trim().replace(/\s*\(\d+\)$/, ''),
             }));
+            console.log(`[hanjaRelated] "${query}" header table (${firstTableData.length} row(s)):`, firstTableData);
             setFirstTableData(firstTableData);
 
             // Extract data from the similar words table (related words of Hanja)
@@ -45,10 +47,11 @@ const hanjaRelated = ({ query }) => {
                 korean: row.getElementsByTagName('td')[1].value.trim(),
                 meaning: cleanMeaning(row.getElementsByTagName('td')[2].value.trim()),
             }));
+            console.log(`[hanjaRelated] "${query}" similar words (${similarWordsTableData.length} row(s)):`, similarWordsTableData);
 
             setSimilarWordsTableData(similarWordsTableData);
         } catch(error) {
-            console.error("Error fetching data:", error)
+            console.error(`[hanjaRelated] Error fetching data for "${query}":`, error);
         }
     }
 
