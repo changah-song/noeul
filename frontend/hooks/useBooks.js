@@ -3,6 +3,7 @@ import { Alert } from 'react-native';
 import { useReader } from '@epubjs-react-native/core';
 import { useNavigation } from '@react-navigation/native';
 import * as DocumentPicker from 'expo-document-picker';
+import { isBookPreprocessed } from '../services/Database';
 
 const useBooks = ({ books, setBooks, currentBook, setCurrentBook }) => {
     const [loading, setLoading] = useState(false);
@@ -50,9 +51,10 @@ const useBooks = ({ books, setBooks, currentBook, setCurrentBook }) => {
                         Alert.alert('Duplicate Book', 'This book is already loaded.');
                         return;
                     }
+                    const preprocessed = await isBookPreprocessed(currentBook);
                     setBooks(prevBooks => [
                         ...prevBooks,
-                        { id: Math.random().toString(), uri: currentBook, title, author, cover, location: null }
+                        { id: Math.random().toString(), uri: currentBook, title, author, cover, location: null, preprocessed }
                     ]);
                 } catch (error) {
                     console.log("[useBooks] Error fetching meta:", error);

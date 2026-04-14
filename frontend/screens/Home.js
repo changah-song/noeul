@@ -3,13 +3,21 @@ import { Text, View, StyleSheet } from 'react-native';
 import BookList from '../components/Home/BookList';
 import useBooks from '../hooks/useBooks';
 
-const Home = ({ books, setBooks, currentBook, setCurrentBook }) => {
+const Home = ({ navigation, books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpen }) => {
     const { loading, bookRendered, setBookRendered, addBook, handlePress } = useBooks({
         books,
         setBooks,
         currentBook,
         setCurrentBook,
     });
+
+    // Called when the user taps the download button on a book.
+    // Sets the preprocessing flag before navigating so Read.js knows to run the pipeline.
+    const onRequestPreprocess = (uri) => {
+        setCurrentBook(uri);
+        setPreprocessOnOpen(true);
+        navigation.navigate('Read');
+    };
 
     return (
         <View style={styles.container}>
@@ -18,11 +26,13 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook }) => {
             </View>
             <View style={styles.body}>
                 <ReaderProvider>
-                    <BookList 
+                    <BookList
                         books={books}
                         setBooks={setBooks}
                         currentBook={currentBook}
-                        setCurrentBook={setCurrentBook}/>
+                        setCurrentBook={setCurrentBook}
+                        onRequestPreprocess={onRequestPreprocess}
+                    />
                 </ReaderProvider>
             </View>
         </View>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Text, View, ScrollView, StyleSheet, TouchableOpacity, Image } from 'react-native';
 import { useAppContext } from '../../../contexts/AppContext';
 import Translator from 'react-native-translator';
@@ -13,20 +13,35 @@ const TranslationContent = ({ highlightedWord, onContentLoaded }) => {
     const [papTranslated, setPapTranslated] = useState('');
 
     const [service, setService] = useState('papago');
-    // initialize translator object
+    const [showOffline, setShowOffline] = useState(false);
+    const translationArrivedRef = useRef(false);
 
-    // reset translated word if mode changes
+    // Reset translated text when mode or service changes
     useEffect(() => {
         setGooTranslated('');
         setPapTranslated('');
+        setShowOffline(false);
     }, [dictMode, service]);
 
-    // Notify parent when translation is loaded
+    // Start an offline-detection timeout whenever the word or service changes.
+    // If no translation arrives within 8 seconds, show the offline message.
+    useEffect(() => {
+        setShowOffline(false);
+        translationArrivedRef.current = false;
+        if (!highlightedWord) return;
+
+        const timer = setTimeout(() => {
+            if (!translationArrivedRef.current) setShowOffline(true);
+        }, 8000);
+        return () => clearTimeout(timer);
+    }, [highlightedWord, service]);
+
+    // Notify parent and clear offline flag when translation arrives
     useEffect(() => {
         if ((service === 'papago' && papTranslated) || (service === 'google' && gootranslated)) {
-            if (onContentLoaded) {
-                onContentLoaded();
-            }
+            translationArrivedRef.current = true;
+            setShowOffline(false);
+            onContentLoaded?.();
         }
     }, [gootranslated, papTranslated, service, onContentLoaded]);
 
@@ -65,7 +80,12 @@ const TranslationContent = ({ highlightedWord, onContentLoaded }) => {
                     type={'papago'}
                     onTranslated={(t) => setPapTranslated(t)}
                 />
-                {service === 'papago' ? <Text>{papTranslated}</Text> : <Text>{gootranslated}</Text>}
+                {showOffline
+                    ? <Text style={styles.offlineText}>Internet connection required</Text>
+                    : service === 'papago'
+                        ? <Text>{papTranslated}</Text>
+                        : <Text>{gootranslated}</Text>
+                }
             </ScrollView>   
         </View>
     )
@@ -87,7 +107,12 @@ const styles = StyleSheet.create({
     translationSection: {
         left: 5,
         position: 'absolute',
-        width: '85%',         
+        width: '85%',
+    },
+    offlineText: {
+        color: '#aaa',
+        fontStyle: 'italic',
+        fontSize: 13,
     }
 });
 

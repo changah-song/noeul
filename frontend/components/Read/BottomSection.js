@@ -3,7 +3,7 @@ import { View, Text, StyleSheet } from 'react-native';
 import { Reader, useReader } from '@epubjs-react-native/core';
 import { useFileSystem } from '@epubjs-react-native/expo-file-system';
 
-const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, settings, savedWords }) => {
+const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, settings, savedWords, onBookTextExtracted }) => {
     const { getCurrentLocation, goToLocation, injectJavascript } = useReader();
     const currentLocationRef = useRef(null);
     const isFirstRenderRef = useRef(true);
@@ -243,6 +243,60 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
                     highlightWords();
                 });
 
+                // ── Book Text Extraction ──────────────────────────────────────
+                // Called once after the book is ready to extract all text from
+                // every spine item (chapter) for backend preprocessing.
+                // Each section is loaded, text is grabbed, then unloaded to free memory.
+                async function extractAllBookText() {
+                    var allText = [];
+                    var spineItems = rendition.book.spine.items;
+                    var diagnostics = [];
+
+                    var parser = new DOMParser();
+                    for (var i = 0; i < spineItems.length; i++) {
+                        var item = spineItems[i];
+                        var href = item.href || item.url || null;
+                        if (!href) {
+                            diagnostics.push({ i: i, error: 'no href on spine item' });
+                            continue;
+                        }
+                        try {
+                            var raw = await rendition.book.load(href);
+                            // raw may be a string (XML/HTML) or already a Document
+                            var doc = (typeof raw === 'string')
+                                ? parser.parseFromString(raw, 'application/xhtml+xml')
+                                : (raw.document || raw);
+                            var bodyEl = doc.body || doc.querySelector('body') || doc.documentElement;
+                            var text = bodyEl ? (bodyEl.textContent || '') : '';
+                            diagnostics.push({ i: i, href: href, chars: text.length });
+                            if (text.length > 0) allText.push(text);
+                        } catch (err) {
+                            diagnostics.push({ i: i, href: href, error: String(err) });
+                        }
+                    }
+
+                    var combined = allText.join(' ');
+
+                    // Send diagnostics first so they appear even if text is empty
+                    window.ReactNativeWebView.postMessage(JSON.stringify({
+                        type: 'extraction-diagnostics',
+                        spineCount: spineItems.length,
+                        items: diagnostics,
+                        totalChars: combined.length,
+                    }));
+
+                    window.ReactNativeWebView.postMessage(JSON.stringify({
+                        type: 'book-text-extracted',
+                        text: combined,
+                    }));
+                }
+
+                // Trigger extraction once the book's spine is fully loaded
+                rendition.book.ready.then(function() {
+                    console.log('[BottomSection] Book ready, triggering text extraction');
+                    extractAllBookText();
+                });
+
                 rendition.on('relocated', function() {
                     console.log('[BottomSection] Location changed, applying highlights');
                     highlightWords();
@@ -289,9 +343,22 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
                 const raw = event?.nativeEvent?.data ?? event;
                 try {
                     const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-                    if (parsed?.type === 'word-selected') {
+                    if (parsed?.type === 'extraction-diagnostics') {
+                        console.log(`[BottomSection] Extraction diagnostics — spineCount: ${parsed.spineCount}, totalChars: ${parsed.totalChars}`);
+                        (parsed.items || []).forEach(item => {
+                            if (item.error) {
+                                console.log(`  [spine ${item.i}] ERROR: ${item.error}`);
+                            } else {
+                                console.log(`  [spine ${item.i}] href=${item.href} | hasBody=${item.hasBody} | docElTag=${item.docElTag} | chars=${item.chars}`);
+                            }
+                        });
+                    } else if (parsed?.type === 'word-selected') {
                         console.log(`[BottomSection] Word tapped: "${parsed.text}"`);
                         setHighlightedWord(parsed.text);
+                    } else if (parsed?.type === 'book-text-extracted') {
+                        // Full book text arrived — hand it off to Read.js to trigger preprocessing
+                        console.log(`[BottomSection] Received extracted text (${parsed.text?.length?.toLocaleString()} chars), forwarding to parent`);
+                        onBookTextExtracted?.(parsed.text);
                     } else if (parsed?.type === 'highlights-updated') {
                         console.log(`[BottomSection] Highlights updated successfully (${parsed.count} words)`);
                     } else if (parsed?.type === 'debug') {
