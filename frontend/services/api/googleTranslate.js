@@ -6,7 +6,7 @@ import { GOOGLE_TRANSLATE_RAPIDAPI_KEY } from '@env';
 const googleTranslate = ( {query} ) => {
   const [translatedData, setData] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
-  
+
   const options = {
     method: 'POST',
     url: 'https://google-translator9.p.rapidapi.com/v2',
@@ -21,16 +21,18 @@ const googleTranslate = ( {query} ) => {
         target: 'en-US',
         format: 'text'
     }
-  };  
+  };
 
-  const fetchData = async () => {    
+  const fetchData = async () => {
     setIsLoading(true);
+    console.log(`[googleTranslate] Translating: "${query}"`);
     try {
       const response = await axios.request(options);
-      console.log(response.data.data.translations[0].translatedText);
-      setData(response.data.data.translations[0].translatedText);
+      const translated = response.data.data.translations[0].translatedText;
+      console.log(`[googleTranslate] Result: "${translated}"`);
+      setData(translated);
     } catch(error) {
-      console.error(error);
+      console.error('[googleTranslate] Error translating:', error);
     } finally {
       setIsLoading(false);
     }
@@ -39,7 +41,7 @@ const googleTranslate = ( {query} ) => {
   useEffect(() => {
     fetchData();
   }, [query]);
-  
+
   return { translatedData };
 }
 

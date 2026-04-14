@@ -9,7 +9,7 @@ import { useAppContext } from '../../../contexts/AppContext'; // import context
 import TranslationContent from './TranslationContent';
 import DictionaryContent from './DictionaryContent';
 
-const TopSection = ({ highlightedWord }) => {
+const TopSection = ({ highlightedWord, onWordSave, onWordUnsave }) => {
     // global variable loading and function to edit
     const { dictMode, setDictMode } = useAppContext();
     const [isLoading, setIsLoading] = useState(false);
@@ -19,12 +19,19 @@ const TopSection = ({ highlightedWord }) => {
         setDictMode(!dictMode);
     };
 
-    // Set loading when highlightedWord changes to a different word
+    // Set loading when highlightedWord changes to a different word.
+    // Skip loading entirely for non-Korean input (numbers, Latin, punctuation) —
+    // DictionaryContent resolves those instantly with "no lookup available".
+    const hasKorean = (word) => /[\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]/.test(word);
+
     useEffect(() => {
         if (highlightedWord && highlightedWord !== prevWordRef.current) {
+            prevWordRef.current = highlightedWord;
+
+            if (!hasKorean(highlightedWord)) return;
+
             console.log('Setting loading true for word:', highlightedWord);
             setIsLoading(true);
-            prevWordRef.current = highlightedWord;
 
             // Safety timeout to prevent infinite loading (5 seconds max)
             const timeout = setTimeout(() => {
@@ -73,7 +80,7 @@ const TopSection = ({ highlightedWord }) => {
             {/* show either dictionary or translator content depending on dictMode status */}
             <View style={{ opacity: isLoading ? 0 : 1 }}>
                 {dictMode ?
-                <DictionaryContent highlightedWord={highlightedWord} onContentLoaded={handleContentLoaded} /> :
+                <DictionaryContent highlightedWord={highlightedWord} onContentLoaded={handleContentLoaded} onWordSave={onWordSave} onWordUnsave={onWordUnsave} /> :
                 <TranslationContent highlightedWord={highlightedWord} onContentLoaded={handleContentLoaded} />}
             </View>
         </View>

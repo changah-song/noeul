@@ -16,9 +16,11 @@ const koreanDictionary = ({ query }) => {
     //currenly only acccepts array of strings so it has to pass through the stemwordlist
     const fetchData = async () => {
         setIsLoading(true);
+        console.log(`[koreanDictionary] Fetching definitions for ${query.length} word(s):`, query);
         try {
             const results = await Promise.all(
                 query.map(async (q) => {
+                    console.log(`[koreanDictionary] Querying word: "${q}"`);
                     const options = {
                         method: 'GET',
                         url: api_url,
@@ -40,24 +42,19 @@ const koreanDictionary = ({ query }) => {
                     const items = xml.getElementsByTagName('item');
                     const extractedData = items.map(item => {
                         const word = item.getElementsByTagName('word')[0].value;
-                        const origin = item.getElementsByTagName('origin')[0]?.value || 'N/A'; // Use 'N/A' if origin is not available
-                        const transWord = item.getElementsByTagName('trans_word')[0]?.value.slice(0, -2) || 'N/A'; // Use 'N/A' if translation word is not available
+                        const origin = item.getElementsByTagName('origin')[0]?.value || 'N/A';
+                        const transWord = item.getElementsByTagName('trans_word')[0]?.value.slice(0, -2) || 'N/A';
 
                         return { word, origin, transWord };
                     });
 
-                    // maybe i can use the raw xml data to get both hanja and def...
-                    // console.log('ORIGIN:', xml.getElementsByTagName('origin'));
-                    // console.log('DEFF: ', xml.getElementsByTagName('trans_word'));
-                    const translations = xml.getElementsByTagName('trans_word').slice(0, 3).map(dict => dict.value.slice(0, -2));
-                    // console.log("result", translations)
-                    console.log("extracted data from koreanDictionary", extractedData)
+                    console.log(`[koreanDictionary] "${q}" → ${extractedData.length} result(s):`, extractedData);
                     return extractedData;
                 })
             );
             setDictionaryData(results);
         } catch (error) {
-            console.log('Error finding definitions:', error.message);
+            console.log('[koreanDictionary] Error finding definitions:', error.message);
             setError(error.message);
         } finally {
             setIsLoading(false);

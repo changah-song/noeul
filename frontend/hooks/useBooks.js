@@ -3,6 +3,7 @@ import { Alert } from 'react-native';
 import { useReader } from '@epubjs-react-native/core';
 import { useNavigation } from '@react-navigation/native';
 import * as DocumentPicker from 'expo-document-picker';
+import { isBookPreprocessed } from '../services/Database';
 
 const useBooks = ({ books, setBooks, currentBook, setCurrentBook }) => {
     const [loading, setLoading] = useState(false);
@@ -20,7 +21,7 @@ const useBooks = ({ books, setBooks, currentBook, setCurrentBook }) => {
             setBookRendered(false);
             setLoading(true);
         } catch (error) {
-            console.log("Error in addBook:", error);
+            console.log("[useBooks] Error in addBook:", error);
         }
     };
 
@@ -36,12 +37,12 @@ const useBooks = ({ books, setBooks, currentBook, setCurrentBook }) => {
     };
 
     useEffect(() => {
-        console.log("BOOK RENDERED!")
+        console.log("[useBooks] Book rendered, bookRendered:", bookRendered)
         if (bookRendered && currentBook) {
             const fetchMeta = async () => {
                 try {
                     const { title, author, cover } = getMeta();
-                    console.log("after getting meta info", { title });
+                    console.log(`[useBooks] Book meta fetched → title: "${title}", author: "${author}"`);
 
                     const bookExists = books.some(
                         book => book.title === title && book.author === author && book.cover === cover
@@ -50,12 +51,13 @@ const useBooks = ({ books, setBooks, currentBook, setCurrentBook }) => {
                         Alert.alert('Duplicate Book', 'This book is already loaded.');
                         return;
                     }
+                    const preprocessed = await isBookPreprocessed(currentBook);
                     setBooks(prevBooks => [
                         ...prevBooks,
-                        { id: Math.random().toString(), uri: currentBook, title, author, cover, location: null }
+                        { id: Math.random().toString(), uri: currentBook, title, author, cover, location: null, preprocessed }
                     ]);
                 } catch (error) {
-                    console.log("Error fetching meta:", error);
+                    console.log("[useBooks] Error fetching meta:", error);
                 } finally {
                     setLoading(false);
                 }
@@ -72,7 +74,7 @@ const useBooks = ({ books, setBooks, currentBook, setCurrentBook }) => {
             setBookRendered(false);
             navigation.navigate('Read');
         } catch (error) {
-            console.error("Error handling book press:", error);
+            console.error("[useBooks] Error handling book press:", error);
         } finally {
             setLoading(false);
         }

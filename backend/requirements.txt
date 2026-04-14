@@ -1,3 +1,4 @@
 fastapi
 konlpy
 uvicorn
+httpx
