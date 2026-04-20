@@ -1,61 +1,27 @@
-// API documentation: https://krdict.korean.go.kr/openApi/openApiInfo
-import { StyleSheet, Text, View } from 'react-native';
 import { useState, useEffect } from 'react';
 import axios from 'axios';
-import 'react-xml-parser';
-import { KOREAN_DICTIONARY_CLIENT_ID } from '@env'
+import { BASE_URL } from '../../config';
 
 const koreanDictionary = ({ query }) => {
     const [dictionaryData, setDictionaryData] = useState([]);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState(null);
 
-    const client_id = KOREAN_DICTIONARY_CLIENT_ID;
-    const api_url = `https://krdict.korean.go.kr/api/search`;
-
-    //currenly only acccepts array of strings so it has to pass through the stemwordlist
     const fetchData = async () => {
         setIsLoading(true);
         console.log(`[koreanDictionary] Fetching definitions for ${query.length} word(s):`, query);
+
         try {
-            const results = await Promise.all(
-                query.map(async (q) => {
-                    console.log(`[koreanDictionary] Querying word: "${q}"`);
-                    const options = {
-                        method: 'GET',
-                        url: api_url,
-                        params: {
-                            key: client_id,
-                            q: q,
-                            sort: 'popular',
-                            translated: 'y',
-                            trans_lang: '1',
-                        }
-                    };
-                    const response = await axios.request(options);
-                    if (!response.data) {
-                        throw new Error("Empty response data");
-                    }
-                    var XMLParser = require('react-xml-parser');
-                    var xml = new XMLParser().parseFromString(response.data);
-
-                    const items = xml.getElementsByTagName('item');
-                    const extractedData = items.map(item => {
-                        const word = item.getElementsByTagName('word')[0].value;
-                        const origin = item.getElementsByTagName('origin')[0]?.value || 'N/A';
-                        const transWord = item.getElementsByTagName('trans_word')[0]?.value.slice(0, -2) || 'N/A';
-
-                        return { word, origin, transWord };
-                    });
-
-                    console.log(`[koreanDictionary] "${q}" → ${extractedData.length} result(s):`, extractedData);
-                    return extractedData;
-                })
-            );
+            const response = await axios.post(`${BASE_URL}/krdict_search/`, {
+                queries: query,
+            });
+            const results = response.data?.results ?? [];
+            console.log(`[koreanDictionary] Received ${results.length} query result set(s)`);
             setDictionaryData(results);
-        } catch (error) {
-            console.log('[koreanDictionary] Error finding definitions:', error.message);
-            setError(error.message);
+        } catch (fetchError) {
+            console.log('[koreanDictionary] Error finding definitions:', fetchError.message);
+            setError(fetchError.message);
+            setDictionaryData([]);
         } finally {
             setIsLoading(false);
         }
@@ -64,12 +30,12 @@ const koreanDictionary = ({ query }) => {
     useEffect(() => {
         if (query && query.length > 0) {
             fetchData();
+        } else {
+            setDictionaryData([]);
         }
     }, [JSON.stringify(query)]);
 
-    return { dictionaryData };
-}
+    return { dictionaryData, isLoading, error };
+};
 
-export default koreanDictionary
-
-const styles = StyleSheet.create({})
+export default koreanDictionary;
