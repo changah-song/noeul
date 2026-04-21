@@ -1,9 +1,9 @@
 import { ReaderProvider } from '@epubjs-react-native/core';
-import { Text, View, StyleSheet } from 'react-native';
+import { Alert, Text, View, StyleSheet, TouchableOpacity } from 'react-native';
 import BookList from '../components/Home/BookList';
 import useBooks from '../hooks/useBooks';
 
-const Home = ({ navigation, books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpen }) => {
+const Home = ({ navigation, books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpen, signOut }) => {
     const { loading, bookRendered, setBookRendered, addBook, handlePress } = useBooks({
         books,
         setBooks,
@@ -19,10 +19,34 @@ const Home = ({ navigation, books, setBooks, currentBook, setCurrentBook, setPre
         navigation.navigate('Read');
     };
 
+    const handleSignOut = () => {
+        Alert.alert(
+            'Sign out',
+            'Sign out of FluentFable?',
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Sign out',
+                    style: 'destructive',
+                    onPress: async () => {
+                        try {
+                            await signOut?.();
+                        } catch (error) {
+                            Alert.alert('Sign out failed', error.message);
+                        }
+                    },
+                },
+            ]
+        );
+    };
+
     return (
         <View style={styles.container}>
             <View style={styles.header}>
                 <Text style={styles.title}>Books</Text>
+                <TouchableOpacity style={styles.signOutButton} onPress={handleSignOut}>
+                    <Text style={styles.signOutText}>Sign out</Text>
+                </TouchableOpacity>
             </View>
             <View style={styles.body}>
                 <ReaderProvider>
@@ -56,6 +80,20 @@ const styles = StyleSheet.create({
         fontSize: 25,
         fontFamily: 'Roboto',
         color: '#ebf4f6'
+    },
+    signOutButton: {
+        position: 'absolute',
+        top: 50,
+        right: 14,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 10,
+        backgroundColor: 'rgba(255,255,255,0.15)',
+    },
+    signOutText: {
+        color: '#ebf4f6',
+        fontSize: 13,
+        fontWeight: '700',
     },
     body: {
         height: "88%",

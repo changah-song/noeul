@@ -283,6 +283,36 @@ export const insertData = (word, hanja, definition, level) => {
   });
 };
 
+export const vocabEntryExists = (word, hanja, definition) => {
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        'SELECT COUNT(*) AS count FROM vocab WHERE word = ? AND hanja IS ? AND def IS ?',
+        [word, hanja ?? null, definition ?? null],
+        (_, result) => {
+          const { count } = result.rows.item(0);
+          resolve(count > 0);
+        },
+        (_, error) => {
+          console.error(`[Database] Error checking vocab entry for "${word}":`, error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+export const insertDataIfMissing = async (word, hanja, definition, level) => {
+  const exists = await vocabEntryExists(word, hanja, definition);
+  if (exists) {
+    console.log(`[Database] Skipping existing vocab entry "${word}"`);
+    return false;
+  }
+
+  await insertData(word, hanja, definition, level);
+  return true;
+};
+
 export const updateLevel = (word, hanja, definition, newLevel) => {
   return new Promise((resolve, reject) => {
     db.transaction(tx => {

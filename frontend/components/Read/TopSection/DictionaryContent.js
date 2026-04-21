@@ -7,10 +7,12 @@ import { AntDesign } from '@expo/vector-icons';
 import {
     insertData,
     removeData,
+    vocabEntryExists,
     lookupBookIndexBySurface,
     lookupCacheByStems,
     insertCacheEntries,
 } from '../../../services/Database';
+import { deleteUserVocabEntry, supabase, upsertUserVocabEntry } from '../../../services/supabase';
 import HanjaDetails from './HanjaDetails';
 import { BASE_URL } from '../../../config';
 
@@ -229,13 +231,53 @@ const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWor
 
     // ── User interaction handlers ─────────────────────────────────────────────
     const toggleSave = async (word, origin, definition) => {
-        insertData(word, origin, definition, "unorganized");
+        const alreadySaved = await vocabEntryExists(word, origin, definition);
+        if (!alreadySaved) {
+            await insertData(word, origin, definition, "unorganized");
+        }
         onWordSave?.(word);
+
+        const {
+            data: { user },
+        } = await supabase.auth.getUser();
+
+        if (!user) {
+            return;
+        }
+
+        try {
+            await upsertUserVocabEntry(user.id, {
+                word,
+                hanja: origin,
+                definition,
+                level: 'unorganized',
+            });
+        } catch (error) {
+            console.log('[DictionaryContent] cloud save failed:', error.message);
+        }
     };
 
     const toggleUnSave = async (word, origin, definition) => {
-        removeData(word, origin, definition);
+        await removeData(word, origin, definition);
         onWordUnsave?.(word);
+
+        const {
+            data: { user },
+        } = await supabase.auth.getUser();
+
+        if (!user) {
+            return;
+        }
+
+        try {
+            await deleteUserVocabEntry(user.id, {
+                word,
+                hanja: origin,
+                definition,
+            });
+        } catch (error) {
+            console.log('[DictionaryContent] cloud remove failed:', error.message);
+        }
     };
 
     const isWordSaved = (word) => savedWords.includes(word);
