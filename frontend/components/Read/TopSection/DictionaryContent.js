@@ -1,12 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { Text, View, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
 import axios from 'axios';
-import { KOREAN_DICTIONARY_CLIENT_ID } from '@env';
 import koreanDictionary from '../../../services/api/koreanDictionary';
 import stemWord from '../../../services/api/stemWord';
 import { AntDesign } from '@expo/vector-icons';
-import { insertData, removeData, lookupCacheByStems, insertCacheEntries } from '../../../services/Database';
+import {
+    insertData,
+    removeData,
+    vocabEntryExists,
+    lookupBookIndexBySurface,
+    lookupCacheByStems,
+    insertCacheEntries,
+} from '../../../services/Database';
+import { deleteUserVocabEntry, supabase, upsertUserVocabEntry } from '../../../services/supabase';
 import HanjaDetails from './HanjaDetails';
+import { BASE_URL } from '../../../config';
 
 // Stems that are too generic / grammatically functional to be worth looking up.
 // Uncomment entries once confirmed with the user.
@@ -34,10 +42,12 @@ const STOP_STEMS = new Set([
  * additional definitions beyond the single entry stored in the local cache.
  * Results are shown inline but not persisted locally (too much data).
  */
-const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWordUnsave }) => {
+const normalizeSurfaceWord = (word) =>
+    (word ?? '').replace(/[^\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]/g, '');
+
+const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWordUnsave, currentBook, savedWords = [] }) => {
 
     const [expandedWords, setExpandedWords] = useState([]);
-    const [savedWords, setSavedWords] = useState({});
     const [stemWordList, setStemWordList] = useState([]);
 
     // ── Cache-first state ────────────────────────────────────────────────────
@@ -71,31 +81,72 @@ const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWor
         if (!highlightedWord) return;
 
         // Skip API call for non-Korean input (numbers, Latin, punctuation)
-        const hasKorean = /[\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]/.test(highlightedWord);
-        if (!hasKorean) {
+        const normalizedSurface = normalizeSurfaceWord(highlightedWord);
+        if (!normalizedSurface) {
             setCachedResults([]);
             onContentLoaded?.();
             return;
         }
 
-        const fetchStems = async () => {
+        let isCancelled = false;
+
+        const resolveLookup = async () => {
+            if (currentBook) {
+                const indexRows = await lookupBookIndexBySurface(currentBook, normalizedSurface);
+                if (isCancelled) {
+                    return;
+                }
+
+                const seen = new Set();
+                const indexHits = indexRows.filter(row => {
+                    if (seen.has(row.stem)) return false;
+                    seen.add(row.stem);
+                    return true;
+                });
+
+                if (indexHits.length > 0) {
+                    console.log(`[DictionaryContent] book_index hit (${indexHits.length}) for "${normalizedSurface}"`);
+                    setCachedResults(indexHits);
+                    setNeedsLiveFetch(false);
+                    onContentLoaded?.();
+                    return;
+                }
+
+                console.log(`[DictionaryContent] book_index miss for "${normalizedSurface}" — falling back to stemming`);
+            }
+
             const result = await stemWord({ query: highlightedWord });
-            const filtered = result.filter(stem => !STOP_STEMS.has(stem));
+            if (isCancelled) {
+                return;
+            }
+            const filtered = [...new Set(result.filter(stem => !STOP_STEMS.has(stem)))];
             setStemWordList(filtered);
             if (filtered.length === 0) {
                 setCachedResults([]);
                 onContentLoaded?.();
             }
         };
-        fetchStems();
-    }, [highlightedWord]);
+
+        resolveLookup();
+
+        return () => {
+            isCancelled = true;
+        };
+    }, [currentBook, highlightedWord, onContentLoaded]);
 
     // ── Step 2: Cache lookup ──────────────────────────────────────────────────
     useEffect(() => {
         if (stemWordList.length === 0) return;
 
         const checkCache = async () => {
-            const hits = await lookupCacheByStems(stemWordList);
+            const raw = await lookupCacheByStems(stemWordList);
+            // Deduplicate by stem in case the DB has stale duplicate rows
+            const seen = new Set();
+            const hits = raw.filter(row => {
+                if (seen.has(row.stem)) return false;
+                seen.add(row.stem);
+                return true;
+            });
 
             if (hits.length >= stemWordList.length) {
                 console.log(`[DictionaryContent] Full cache hit (${hits.length}/${stemWordList.length})`);
@@ -150,24 +201,12 @@ const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWor
     const prefetchExtra = async (stem) => {
         setExtraDefs(prev => ({ ...prev, [stem]: 'prefetching' }));
         try {
-            const response = await axios.get('https://krdict.korean.go.kr/api/search', {
-                params: {
-                    key: KOREAN_DICTIONARY_CLIENT_ID,
-                    q: stem,
-                    sort: 'popular',
-                    translated: 'y',
-                    trans_lang: '1',
-                },
+            const response = await axios.post(`${BASE_URL}/krdict_search/`, {
+                queries: [stem],
+            }, {
                 timeout: 10000,
             });
-            const XMLParser = require('react-xml-parser');
-            const xml = new XMLParser().parseFromString(response.data);
-            const items = xml.getElementsByTagName('item');
-            const entries = items.map(item => ({
-                word: item.getElementsByTagName('word')[0].value,
-                origin: item.getElementsByTagName('origin')[0]?.value || 'N/A',
-                transWord: (item.getElementsByTagName('trans_word')[0]?.value || 'N/A').replace(/[\^>]+$/, '').trim(),
-            }));
+            const entries = response.data?.results?.[0] ?? [];
             setExtraDefs(prev => ({ ...prev, [stem]: entries.slice(1) }));
         } catch {
             // Silent failure — hide "more" if we can't reach KRDICT
@@ -192,21 +231,56 @@ const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWor
 
     // ── User interaction handlers ─────────────────────────────────────────────
     const toggleSave = async (word, origin, definition) => {
-        const key = `${word}|${origin}|${definition}`;
-        setSavedWords(prev => ({ ...prev, [key]: true }));
-        insertData(word, origin, definition, "unorganized");
+        const alreadySaved = await vocabEntryExists(word, origin, definition);
+        if (!alreadySaved) {
+            await insertData(word, origin, definition, "unorganized");
+        }
         onWordSave?.(word);
+
+        const {
+            data: { user },
+        } = await supabase.auth.getUser();
+
+        if (!user) {
+            return;
+        }
+
+        try {
+            await upsertUserVocabEntry(user.id, {
+                word,
+                hanja: origin,
+                definition,
+                level: 'unorganized',
+            });
+        } catch (error) {
+            console.log('[DictionaryContent] cloud save failed:', error.message);
+        }
     };
 
     const toggleUnSave = async (word, origin, definition) => {
-        const key = `${word}|${origin}|${definition}`;
-        setSavedWords(prev => { const u = { ...prev }; delete u[key]; return u; });
-        removeData(word, origin, definition);
+        await removeData(word, origin, definition);
         onWordUnsave?.(word);
+
+        const {
+            data: { user },
+        } = await supabase.auth.getUser();
+
+        if (!user) {
+            return;
+        }
+
+        try {
+            await deleteUserVocabEntry(user.id, {
+                word,
+                hanja: origin,
+                definition,
+            });
+        } catch (error) {
+            console.log('[DictionaryContent] cloud remove failed:', error.message);
+        }
     };
 
-    const isWordSaved = (word, origin, definition) =>
-        savedWords[`${word}|${origin}|${definition}`] === true;
+    const isWordSaved = (word) => savedWords.includes(word);
 
     // ── Loading shimmer ───────────────────────────────────────────────────────
     if (cachedResults === null) {

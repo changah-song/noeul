@@ -154,7 +154,7 @@ const Flashcard = ({ vocab, setTodaySwiped }) => {
   };
 
   const renderedHanja = useMemo(() => (
-    vocab.hanja.split('').map((word, index) => (
+    (vocab.hanja ?? '').split('').map((word, index) => (
       /[\u4e00-\u9fff]+/.test(word) 
         ? <View key={index} style={styles.individualHanja}>
             <Hanja hanja={word} />

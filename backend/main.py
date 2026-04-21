@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from konlpy.tag import Okt
 from fastapi.middleware.cors import CORSMiddleware
 import sqlite3
@@ -7,6 +7,11 @@ import asyncio
 import xml.etree.ElementTree as ET
 from typing import Optional
 import os
+from functools import partial
+from uuid import uuid4
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 # ─── Rate Limit Config ────────────────────────────────────────────────────────
 # Set ENABLE_RATE_LIMIT_DELAY = True in production to be polite to the KRDICT API.
@@ -18,6 +23,9 @@ RATE_LIMIT_DELAY_SECONDS = 0.1  # 100ms between KRDICT calls when enabled
 # None = no cap (process every stem in the book). This can be overridden per-request
 # by passing max_stems in the request body.
 MAX_STEMS_DEFAULT = None
+KRDICT_CONCURRENCY_LIMIT = 10
+JOB_PROGRESS_LOG_INTERVAL = 25
+KRDICT_API_URL = "https://krdict.korean.go.kr/api/search"
 
 # ─── Server-Side Cache DB ─────────────────────────────────────────────────────
 # This SQLite database lives on the backend server and persists across app restarts.
@@ -72,6 +80,113 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+KRDICT_CLIENT_ID = os.getenv("KOREAN_DICTIONARY_CLIENT_ID", "").strip()
+
+preprocess_jobs: dict[str, dict] = {}
+preprocess_jobs_lock = asyncio.Lock()
+
+
+async def update_preprocess_job(job_id: str, **updates):
+    async with preprocess_jobs_lock:
+        existing = preprocess_jobs.get(job_id)
+        if not existing:
+            return
+        existing.update(updates)
+
+
+async def create_preprocess_job():
+    job_id = str(uuid4())
+    async with preprocess_jobs_lock:
+        preprocess_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "queued",
+            "stage": "queued",
+            "message": "Job queued",
+            "stats": {},
+            "results": None,
+            "surface_index": None,
+            "error": None,
+        }
+    return job_id
+
+
+async def get_preprocess_job(job_id: str):
+    async with preprocess_jobs_lock:
+        job = preprocess_jobs.get(job_id)
+        return dict(job) if job else None
+
+
+def merge_noun_hada(morphs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    merged_morphs: list[tuple[str, str]] = []
+    index = 0
+
+    while index < len(morphs):
+        word, pos = morphs[index]
+        if (
+            pos == 'Noun'
+            and index + 1 < len(morphs)
+            and morphs[index + 1] == ('하다', 'Verb')
+        ):
+            merged_morphs.append((word + '하다', 'Verb'))
+            index += 2
+            continue
+
+        merged_morphs.append((word, pos))
+        index += 1
+
+    return merged_morphs
+
+
+def build_surface_index(
+    raw_surface_morphs: list[tuple[str, str]],
+    raw_stem_morphs: list[tuple[str, str]],
+    allowed_pos: set[str],
+) -> list[dict]:
+    merged_pairs: list[tuple[str, str, str]] = []
+    pair_count = min(len(raw_surface_morphs), len(raw_stem_morphs))
+    index = 0
+
+    while index < pair_count:
+        surface_word, _surface_pos = raw_surface_morphs[index]
+        stem_word, stem_pos = raw_stem_morphs[index]
+
+        if (
+            stem_pos == 'Noun'
+            and index + 1 < pair_count
+            and raw_stem_morphs[index + 1] == ('하다', 'Verb')
+        ):
+            next_surface_word, _next_surface_pos = raw_surface_morphs[index + 1]
+            merged_pairs.append((surface_word + next_surface_word, stem_word + '하다', 'Verb'))
+            index += 2
+            continue
+
+        merged_pairs.append((surface_word, stem_word, stem_pos))
+        index += 1
+
+    seen_pairs: set[tuple[str, str]] = set()
+    surface_index: list[dict] = []
+
+    for surface, stem, pos in merged_pairs:
+        if pos not in allowed_pos:
+            continue
+
+        normalized_surface = surface.strip()
+        normalized_stem = stem.strip()
+        if not normalized_surface or not normalized_stem:
+            continue
+
+        pair = (normalized_surface, normalized_stem)
+        if pair in seen_pairs:
+            continue
+
+        seen_pairs.add(pair)
+        surface_index.append({
+            "surface": normalized_surface,
+            "stem": normalized_stem,
+        })
+
+    return surface_index
+
 
 # ─── Existing Endpoint: Single-text Stemming ─────────────────────────────────
 @app.get("/okt_morphs/")
@@ -81,27 +196,11 @@ async def get_okt_morphs(text: str):
     isn't in the book's preprocessed cache yet).
     """
     print(f"[main] /okt_morphs/ | text: {text!r}")
-    raw_morphs = okt.pos(text, stem=True)
+    raw_morphs = merge_noun_hada(okt.pos(text, stem=True))
     print(f"[main] Raw morphs ({len(raw_morphs)} total): {raw_morphs}")
 
-    # Merge noun + 하다 pairs into compound verbs (e.g. 정 + 하다 → 정하다).
-    # Okt splits "정했다" into [('정', 'Noun'), ('하다', 'Verb')] but the real
-    # dictionary entry is 정하다. Merging gives KRDICT a much better lookup target.
-    merged_morphs = []
-    i = 0
-    while i < len(raw_morphs):
-        word, pos = raw_morphs[i]
-        if (pos == 'Noun'
-                and i + 1 < len(raw_morphs)
-                and raw_morphs[i + 1] == ('하다', 'Verb')):
-            merged_morphs.append((word + '하다', 'Verb'))
-            i += 2
-        else:
-            merged_morphs.append((word, pos))
-            i += 1
-
     allowed_pos = ['Noun', 'Verb', 'Adverb', 'Adjective']
-    filtered_stems = [word for word, pos in merged_morphs if pos in allowed_pos]
+    filtered_stems = [word for word, pos in raw_morphs if pos in allowed_pos]
     print(f"[main] Filtered stems (first 20): {filtered_stems[:20]}")
     return {"result": filtered_stems}
 
@@ -119,7 +218,7 @@ async def lookup_stem_in_krdict(
     """
     try:
         response = await client.get(
-            "https://krdict.korean.go.kr/api/search",
+            KRDICT_API_URL,
             params={
                 "key": krdict_key,
                 "q": stem,
@@ -168,6 +267,219 @@ async def lookup_stem_in_krdict(
         return None
 
 
+async def search_krdict_entries(
+    client: httpx.AsyncClient,
+    query: str,
+    krdict_key: str,
+) -> list[dict]:
+    try:
+        response = await client.get(
+            KRDICT_API_URL,
+            params={
+                "key": krdict_key,
+                "q": query,
+                "sort": "popular",
+                "translated": "y",
+                "trans_lang": "1",
+            },
+            timeout=10.0,
+        )
+
+        if response.status_code != 200:
+            print(f"[main] KRDICT search returned HTTP {response.status_code} for '{query}'")
+            return []
+
+        root = ET.fromstring(response.text)
+        items = root.findall(".//item")
+        results = []
+        for item in items:
+            word_el = item.find("word")
+            origin_el = item.find("origin")
+            trans_el = item.find(".//trans_word")
+            results.append({
+                "word": word_el.text if word_el is not None and word_el.text else query,
+                "origin": origin_el.text if origin_el is not None and origin_el.text else "N/A",
+                "transWord": (
+                    trans_el.text.strip().rstrip("^").strip()
+                    if trans_el is not None and trans_el.text
+                    else "N/A"
+                ),
+            })
+        return results
+    except Exception as error:
+        print(f"[main] Error searching KRDICT for '{query}': {error}")
+        return []
+
+
+async def run_preprocess_pipeline(job_id: str, text: str, krdict_key: str, max_stems):
+    print(f"[main] preprocess job {job_id} started")
+    await update_preprocess_job(
+        job_id,
+        status="running",
+        stage="stemming",
+        message="Analyzing book text",
+    )
+
+    allowed_pos = {"Noun", "Verb", "Adverb", "Adjective"}
+    loop = asyncio.get_event_loop()
+    raw_surface_morphs, raw_stem_morphs = await asyncio.gather(
+        loop.run_in_executor(None, partial(okt.pos, text, stem=False)),
+        loop.run_in_executor(None, partial(okt.pos, text, stem=True)),
+    )
+    print(
+        f"[main] Okt returned {len(raw_surface_morphs)} unstemmed morphs and "
+        f"{len(raw_stem_morphs)} stemmed morphs"
+    )
+
+    merged_stem_morphs = merge_noun_hada(raw_stem_morphs)
+    surface_index = build_surface_index(raw_surface_morphs, raw_stem_morphs, allowed_pos)
+
+    stem_pos_map: dict[str, str] = {}
+    for word, pos in merged_stem_morphs:
+        if pos in allowed_pos and word not in stem_pos_map:
+            stem_pos_map[word] = pos
+
+    unique_stems = list(stem_pos_map.keys()) if not max_stems else list(stem_pos_map.keys())[:max_stems]
+    processed_stems = set(unique_stems)
+    surface_index = [entry for entry in surface_index if entry["stem"] in processed_stems]
+    print(f"[main] {len(stem_pos_map)} unique stems found, processing {len(unique_stems)}")
+    print(f"[main] surface_index contains {len(surface_index)} unique surface→stem pairs")
+
+    if not unique_stems:
+        stats = {"total_stems": 0, "cache_hits": 0, "new_fetched": 0}
+        await update_preprocess_job(
+            job_id,
+            status="completed",
+            stage="completed",
+            message="No stems found",
+            stats=stats,
+            results=[],
+            surface_index=surface_index,
+        )
+        return
+
+    await update_preprocess_job(
+        job_id,
+        stage="checking_cache",
+        message="Checking cached dictionary entries",
+        stats={"total_stems": len(unique_stems)},
+    )
+
+    conn = get_db_connection()
+    placeholders = ",".join(["?"] * len(unique_stems))
+    cached_rows = conn.execute(
+        f"SELECT stem, definition, hanja, pos, domain FROM dictionary_cache WHERE stem IN ({placeholders})",
+        unique_stems
+    ).fetchall()
+    conn.close()
+
+    cached_stems = {row["stem"] for row in cached_rows}
+    cached_results = [dict(row) for row in cached_rows]
+    missing_stems = [s for s in unique_stems if s not in cached_stems]
+
+    print(f"[main] Cache hits: {len(cached_stems)} | Stems to fetch from KRDICT: {len(missing_stems)}")
+    await update_preprocess_job(
+        job_id,
+        stage="fetching_krdict" if missing_stems else "finalizing",
+        message=(
+            "Fetching missing dictionary entries"
+            if missing_stems
+            else "Finalizing cached preprocessing results"
+        ),
+        stats={
+            "total_stems": len(unique_stems),
+            "cache_hits": len(cached_stems),
+            "new_fetched": 0,
+            "missing_stems": len(missing_stems),
+            "fetched_stems": 0,
+        },
+    )
+
+    new_results: list[dict] = []
+    no_entry_results: list[dict] = []
+
+    if missing_stems:
+        print(f"[main] Fetching {len(missing_stems)} stems from KRDICT "
+              f"({'with' if ENABLE_RATE_LIMIT_DELAY else 'without'} rate-limit delay)...")
+
+        semaphore = asyncio.Semaphore(KRDICT_CONCURRENCY_LIMIT)
+        completed_fetches = 0
+
+        async def fetch_missing_stem(client: httpx.AsyncClient, stem: str, index: int):
+            nonlocal completed_fetches
+            async with semaphore:
+                if ENABLE_RATE_LIMIT_DELAY:
+                    await asyncio.sleep(RATE_LIMIT_DELAY_SECONDS)
+
+                result = await lookup_stem_in_krdict(client, stem, krdict_key)
+
+                if ENABLE_RATE_LIMIT_DELAY:
+                    await asyncio.sleep(RATE_LIMIT_DELAY_SECONDS)
+
+                completed_fetches += 1
+                if (
+                    completed_fetches % JOB_PROGRESS_LOG_INTERVAL == 0
+                    or completed_fetches == len(missing_stems)
+                ):
+                    print(f"[main] KRDICT progress: {completed_fetches}/{len(missing_stems)} stems")
+                    await update_preprocess_job(
+                        job_id,
+                        stage="fetching_krdict",
+                        message=f"Fetching dictionary entries ({completed_fetches}/{len(missing_stems)})",
+                        stats={
+                            "total_stems": len(unique_stems),
+                            "cache_hits": len(cached_stems),
+                            "new_fetched": 0,
+                            "missing_stems": len(missing_stems),
+                            "fetched_stems": completed_fetches,
+                        },
+                    )
+
+                return result
+
+        async with httpx.AsyncClient() as client:
+            ordered_results = await asyncio.gather(
+                *(fetch_missing_stem(client, stem, index) for index, stem in enumerate(missing_stems))
+            )
+
+        new_results = [result for result in ordered_results if result]
+
+        fetched_stems = {r["stem"] for r in new_results}
+        no_entry_results = [
+            {"stem": s, "definition": None, "hanja": None, "pos": None, "domain": None}
+            for s in missing_stems if s not in fetched_stems
+        ]
+
+        rows_to_insert = new_results + no_entry_results
+        if rows_to_insert:
+            conn = get_db_connection()
+            conn.executemany(
+                """INSERT OR IGNORE INTO dictionary_cache (stem, definition, hanja, pos, domain)
+                   VALUES (:stem, :definition, :hanja, :pos, :domain)""",
+                rows_to_insert
+            )
+            conn.commit()
+            conn.close()
+            print(f"[main] Cached {len(new_results)} found + {len(no_entry_results)} no-entry stems")
+
+    all_results = cached_results + new_results + no_entry_results
+    stats = {
+        "total_stems": len(unique_stems),
+        "cache_hits": len(cached_stems),
+        "new_fetched": len(new_results),
+    }
+    print(f"[main] /preprocess_book/ complete | {stats}")
+    await update_preprocess_job(
+        job_id,
+        status="completed",
+        stage="completed",
+        message="Preprocessing complete",
+        stats=stats,
+        results=all_results,
+        surface_index=surface_index,
+    )
+
+
 # ─── New Endpoint: Full Book Preprocessing ────────────────────────────────────
 @app.post("/preprocess_book/")
 async def preprocess_book(payload: dict):
@@ -185,122 +497,72 @@ async def preprocess_book(payload: dict):
 
     Request body (JSON):
         text       (str): Raw extracted text from the EPUB
-        krdict_key (str): KRDICT API key — passed from the client env so the
-                          backend doesn't need its own key config
         max_stems  (int, optional): Cap on unique stems to process (default 2000)
                    Prevents runaway processing for extremely long books.
 
     Response:
-        results (list): [{stem, hanja, definition, pos}, ...]
-        stats   (dict): {total_stems, cache_hits, new_fetched}
+        job_id (str): Background preprocessing job identifier
+        status (str): Initial job status
     """
     text       = payload.get("text", "")
-    krdict_key = payload.get("krdict_key", "")
     max_stems  = payload.get("max_stems", MAX_STEMS_DEFAULT)
 
     if not text:
         print("[main] /preprocess_book/ called with empty text")
-        return {"error": "No text provided", "results": [], "stats": {}}
-    if not krdict_key:
-        print("[main] /preprocess_book/ called without KRDICT key")
-        return {"error": "No KRDICT key provided", "results": [], "stats": {}}
+        return {"error": "No text provided", "job_id": None, "status": "failed"}
+    if not KRDICT_CLIENT_ID:
+        print("[main] /preprocess_book/ called without backend KRDICT key")
+        return {"error": "No KRDICT key configured on server", "job_id": None, "status": "failed"}
 
     print(f"[main] /preprocess_book/ | text length: {len(text):,} chars | max_stems: {max_stems}")
+    job_id = await create_preprocess_job()
+    asyncio.create_task(run_preprocess_job(job_id, text, KRDICT_CLIENT_ID, max_stems))
+    return {"job_id": job_id, "status": "queued"}
 
-    # ── Step 1: Stem the full book text ───────────────────────────────────────
-    print("[main] Running Okt stemming on book text...")
-    allowed_pos = {"Noun", "Verb", "Adverb", "Adjective"}
-    raw_morphs = okt.pos(text, stem=True)
-    print(f"[main] Okt returned {len(raw_morphs)} total morphs")
 
-    # Merge noun + 하다 pairs into compound verbs (same logic as /okt_morphs/)
-    merged_morphs: list[tuple[str, str]] = []
-    i = 0
-    while i < len(raw_morphs):
-        word, pos = raw_morphs[i]
-        if (pos == 'Noun'
-                and i + 1 < len(raw_morphs)
-                and raw_morphs[i + 1] == ('하다', 'Verb')):
-            merged_morphs.append((word + '하다', 'Verb'))
-            i += 2
-        else:
-            merged_morphs.append((word, pos))
-            i += 1
+async def run_preprocess_job(job_id: str, text: str, krdict_key: str, max_stems):
+    try:
+        await run_preprocess_pipeline(job_id, text, krdict_key, max_stems)
+    except Exception as error:
+        print(f"[main] preprocess job {job_id} failed: {error}")
+        await update_preprocess_job(
+            job_id,
+            status="failed",
+            stage="failed",
+            message="Preprocessing failed",
+            error=str(error),
+            results=[],
+            surface_index=[],
+        )
 
-    # Build stem → first-seen POS mapping; deduplicate naturally via dict insertion order
-    stem_pos_map: dict[str, str] = {}
-    for word, pos in merged_morphs:
-        if pos in allowed_pos and word not in stem_pos_map:
-            stem_pos_map[word] = pos
 
-    unique_stems = list(stem_pos_map.keys()) if not max_stems else list(stem_pos_map.keys())[:max_stems]
-    print(f"[main] {len(stem_pos_map)} unique stems found, processing {len(unique_stems)}")
+@app.get("/preprocess_status/{job_id}")
+async def preprocess_status(job_id: str):
+    job = await get_preprocess_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Unknown preprocessing job")
 
-    # ── Step 2: Check server-side cache for known stems ───────────────────────
-    conn = get_db_connection()
-    placeholders = ",".join(["?"] * len(unique_stems))
-    cached_rows = conn.execute(
-        f"SELECT stem, definition, hanja, pos FROM dictionary_cache WHERE stem IN ({placeholders})",
-        unique_stems
-    ).fetchall()
-    conn.close()
+    return job
 
-    cached_stems   = {row["stem"] for row in cached_rows}
-    cached_results = [dict(row) for row in cached_rows]
-    missing_stems  = [s for s in unique_stems if s not in cached_stems]
 
-    print(f"[main] Cache hits: {len(cached_stems)} | Stems to fetch from KRDICT: {len(missing_stems)}")
+@app.post("/krdict_search/")
+async def krdict_search(payload: dict):
+    queries = payload.get("queries", [])
+    if not KRDICT_CLIENT_ID:
+        raise HTTPException(status_code=500, detail="No KRDICT key configured on server")
 
-    # ── Step 3: Call KRDICT for missing stems ─────────────────────────────────
-    new_results: list[dict] = []
-    no_entry_results: list[dict] = []
-    if missing_stems:
-        print(f"[main] Fetching {len(missing_stems)} stems from KRDICT "
-              f"({'with' if ENABLE_RATE_LIMIT_DELAY else 'without'} rate-limit delay)...")
+    normalized_queries = [
+        query.strip()
+        for query in queries
+        if isinstance(query, str) and query.strip()
+    ]
 
-        async with httpx.AsyncClient() as client:
-            for i, stem in enumerate(missing_stems):
-                result = await lookup_stem_in_krdict(client, stem, krdict_key)
-                if result:
-                    new_results.append(result)
+    if not normalized_queries:
+        return {"results": []}
 
-                # Optional rate limiting — set ENABLE_RATE_LIMIT_DELAY = True for production
-                if ENABLE_RATE_LIMIT_DELAY:
-                    await asyncio.sleep(RATE_LIMIT_DELAY_SECONDS)
+    async with httpx.AsyncClient() as client:
+        results = await asyncio.gather(
+            *(search_krdict_entries(client, query, KRDICT_CLIENT_ID) for query in normalized_queries)
+        )
 
-                # Progress logging every 50 stems
-                if (i + 1) % 50 == 0:
-                    print(f"[main] KRDICT progress: {i + 1}/{len(missing_stems)} stems")
-
-        # ── Step 4: Insert new results into server-side cache ─────────────────
-        # Also store "no entry" stems with null definition so we never call
-        # KRDICT for them again (and the client can cache them too).
-        fetched_stems = {r["stem"] for r in new_results}
-        no_entry_results = [
-            {"stem": s, "definition": None, "hanja": None, "pos": None}
-            for s in missing_stems if s not in fetched_stems
-        ]
-
-        rows_to_insert = new_results + no_entry_results
-        if rows_to_insert:
-            conn = get_db_connection()
-            conn.executemany(
-                """INSERT OR IGNORE INTO dictionary_cache (stem, definition, hanja, pos)
-                   VALUES (:stem, :definition, :hanja, :pos)""",
-                rows_to_insert
-            )
-            conn.commit()
-            conn.close()
-            print(f"[main] Cached {len(new_results)} found + {len(no_entry_results)} no-entry stems")
-
-    # ── Step 5: Return combined cached + newly fetched + no-entry results ────
-    # Including no-entry stems lets the client store them in its local SQLite
-    # cache so future taps skip the API call and immediately show "no entry".
-    all_results = cached_results + new_results + no_entry_results
-    stats = {
-        "total_stems": len(unique_stems),
-        "cache_hits":  len(cached_stems),
-        "new_fetched": len(new_results),
-    }
-    print(f"[main] /preprocess_book/ complete | {stats}")
-    return {"results": all_results, "stats": stats}
+    return {"results": results}

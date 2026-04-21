@@ -31,10 +31,13 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
     // 'done'         — book is fully preprocessed and cached locally
     // 'error'        — failed after all retries (non-fatal, live API still works)
     const [preprocessStatus, setPreprocessStatus] = useState('idle');
+    const [preprocessMessage, setPreprocessMessage] = useState('');
+    const [preprocessDetail, setPreprocessDetail] = useState('');
 
     // Stores the last extracted text so we can (re-)trigger preprocessing
     // if the user presses Download while the book is already open
     const extractedTextRef = useRef(null);
+    const preprocessingInFlightRef = useRef(false);
 
     // Load saved words for highlighting on mount
     useEffect(() => {
@@ -52,7 +55,10 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
     // Reset status and clear stored text whenever the open book changes
     useEffect(() => {
         setPreprocessStatus('idle');
+        setPreprocessMessage('');
+        setPreprocessDetail('');
         extractedTextRef.current = null;
+        preprocessingInFlightRef.current = false;
     }, [currentBook]);
 
     const handleWordSave = (word) => {
@@ -68,31 +74,66 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
     // when text first arrives AND when the user presses Download on an already-open book.
     const runPreprocessing = useCallback(async (text) => {
         if (!currentBook || !text) return;
-        if (preprocessStatus === 'preprocessing') {
+        if (preprocessingInFlightRef.current) {
             console.log('[Read] Preprocessing already in progress — ignoring duplicate trigger');
             return;
         }
 
+        preprocessingInFlightRef.current = true;
+
         console.log(`[Read] Starting preprocessing (${text.length.toLocaleString()} chars)...`);
         setPreprocessStatus('checking');
+        setPreprocessMessage('Checking local cache...');
+        setPreprocessDetail('');
 
         try {
             const alreadyDone = await isBookPreprocessed(currentBook);
             if (alreadyDone) {
                 console.log('[Read] Book already preprocessed — skipping backend call');
                 setPreprocessStatus('done');
+                setPreprocessMessage('Vocabulary already cached');
+                setPreprocessDetail('');
                 logDatabaseSnapshot(currentBook);
                 onPreprocessComplete?.(currentBook);
                 return;
             }
 
             setPreprocessStatus('preprocessing');
-            const { results, stats, networkError } = await preprocessBook({ text });
+            setPreprocessMessage('Starting preprocessing job...');
+            setPreprocessDetail('');
+            const { results, stats, surface_index = [], networkError, errorMessage } = await preprocessBook({
+                text,
+                onStatus: (job) => {
+                    if (job.status === 'queued') {
+                        setPreprocessStatus('queued');
+                        setPreprocessMessage(job.message || 'Job queued');
+                        setPreprocessDetail('');
+                        return;
+                    }
+
+                    if (job.status === 'running') {
+                        setPreprocessStatus('preprocessing');
+                        setPreprocessMessage(job.message || 'Preprocessing book...');
+
+                        if (job.stage === 'fetching_krdict' && job.stats?.missing_stems) {
+                            setPreprocessDetail(
+                                `${job.stats.fetched_stems ?? 0}/${job.stats.missing_stems} dictionary entries fetched`
+                            );
+                        } else if (job.stats?.total_stems) {
+                            setPreprocessDetail(`${job.stats.total_stems} stems discovered`);
+                        } else {
+                            setPreprocessDetail('');
+                        }
+                    }
+                },
+            });
 
             if (networkError) {
                 // preprocessBook retried internally — all attempts exhausted
                 console.warn('[Read] Preprocessing failed after retries — network unreachable');
                 setPreprocessStatus('error');
+                setPreprocessMessage('Preprocessing lost connection');
+                setPreprocessDetail(errorMessage ?? 'Try again when the network is stable.');
                 logDatabaseSnapshot(currentBook);
                 return;
             }
@@ -100,6 +141,8 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
             if (!results || results.length === 0) {
                 console.warn('[Read] Preprocessing returned no results — backend error');
                 setPreprocessStatus('error');
+                setPreprocessMessage('Preprocessing failed');
+                setPreprocessDetail(errorMessage ?? 'The backend did not return results.');
                 logDatabaseSnapshot(currentBook);
                 return;
             }
@@ -113,22 +156,28 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
             const stemToId = {};
             cachedRows.forEach(row => { stemToId[row.stem] = row.id; });
 
-            const bookIndexEntries = results
-                .filter(r => stemToId[r.stem] != null)
-                .map(r => ({ surface: r.stem, stem_id: stemToId[r.stem] }));
+            const bookIndexEntries = surface_index
+                .filter(entry => stemToId[entry.stem] != null)
+                .map(entry => ({ surface: entry.surface, stem_id: stemToId[entry.stem] }));
 
             await insertBookIndexEntries(currentBook, bookIndexEntries);
             console.log(`[Read] Book index saved: ${bookIndexEntries.length} entries`);
 
             setPreprocessStatus('done');
+            setPreprocessMessage('Vocabulary cached');
+            setPreprocessDetail(`${bookIndexEntries.length} book index entries ready`);
             logDatabaseSnapshot(currentBook);
             onPreprocessComplete?.(currentBook);
 
         } catch (err) {
             console.error('[Read] Preprocessing pipeline failed:', err);
             setPreprocessStatus('error');
+            setPreprocessMessage('Preprocessing failed');
+            setPreprocessDetail(err.message ?? 'Unknown error');
+        } finally {
+            preprocessingInFlightRef.current = false;
         }
-    }, [currentBook, preprocessStatus, onPreprocessComplete]);
+    }, [currentBook, onPreprocessComplete]);
 
     // ── Book text extraction callback ────────────────────────────────────────
     // Always stores the text so it's available if the user requests preprocessing later.
@@ -150,7 +199,21 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         if (preprocessOnOpen && extractedTextRef.current) {
             runPreprocessing(extractedTextRef.current);
         }
-    }, [preprocessOnOpen]);
+    }, [preprocessOnOpen, runPreprocessing]);
+
+    useEffect(() => {
+        if (preprocessStatus !== 'done') {
+            return undefined;
+        }
+
+        const timeout = setTimeout(() => {
+            setPreprocessStatus('idle');
+            setPreprocessMessage('');
+            setPreprocessDetail('');
+        }, 4000);
+
+        return () => clearTimeout(timeout);
+    }, [preprocessStatus]);
 
     // ── Settings ─────────────────────────────────────────────────────────────
     const [showSettings, setShowSettings] = useState(false);
@@ -200,6 +263,8 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                             highlightedWord={highlightedWord}
                             onWordSave={handleWordSave}
                             onWordUnsave={handleWordUnsave}
+                            currentBook={currentBook}
+                            savedWords={savedWords ?? []}
                         />
                     </AppProvider>
                 </View>
@@ -220,17 +285,37 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
             </View>
 
             {/* Preprocessing status indicator */}
-            {(preprocessStatus === 'checking' || preprocessStatus === 'preprocessing') && (
+            {(['checking', 'queued', 'preprocessing'].includes(preprocessStatus)) && (
                 <View style={styles.preprocessBanner}>
                     <ActivityIndicator size="small" color="#ffffff" style={{ marginRight: 8 }} />
-                    <Text style={styles.preprocessBannerText}>
-                        {preprocessStatus === 'checking' ? 'Checking cache...' : 'Caching vocabulary...'}
-                    </Text>
+                    <View style={styles.preprocessCopy}>
+                        <Text style={styles.preprocessBannerText}>
+                            {preprocessMessage || (preprocessStatus === 'checking' ? 'Checking cache...' : 'Caching vocabulary...')}
+                        </Text>
+                        {preprocessDetail ? (
+                            <Text style={styles.preprocessBannerSubtext}>{preprocessDetail}</Text>
+                        ) : null}
+                    </View>
                 </View>
             )}
             {preprocessStatus === 'error' && (
                 <View style={[styles.preprocessBanner, { backgroundColor: 'rgba(180,40,40,0.75)' }]}>
-                    <Text style={styles.preprocessBannerText}>Caching failed — words will look up live</Text>
+                    <View style={styles.preprocessCopy}>
+                        <Text style={styles.preprocessBannerText}>{preprocessMessage || 'Caching failed — words will look up live'}</Text>
+                        {preprocessDetail ? (
+                            <Text style={styles.preprocessBannerSubtext}>{preprocessDetail}</Text>
+                        ) : null}
+                    </View>
+                </View>
+            )}
+            {preprocessStatus === 'done' && (
+                <View style={[styles.preprocessBanner, { backgroundColor: 'rgba(46,125,50,0.82)' }]}>
+                    <View style={styles.preprocessCopy}>
+                        <Text style={styles.preprocessBannerText}>{preprocessMessage || 'Vocabulary cached'}</Text>
+                        {preprocessDetail ? (
+                            <Text style={styles.preprocessBannerSubtext}>{preprocessDetail}</Text>
+                        ) : null}
+                    </View>
                 </View>
             )}
 
@@ -281,6 +366,14 @@ const styles = StyleSheet.create({
     preprocessBannerText: {
         color: '#ffffff',
         fontSize: 13,
+    },
+    preprocessCopy: {
+        flexShrink: 1,
+    },
+    preprocessBannerSubtext: {
+        color: 'rgba(255,255,255,0.9)',
+        fontSize: 11,
+        marginTop: 2,
     },
     settingsButton: {
         position: 'absolute',
