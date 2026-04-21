@@ -1,8 +1,5 @@
 import axios from 'axios';
-
-// Use 10.0.2.2 if you are using the Android Emulator
-// Use localhost or your specific IP if using an iOS simulator or physical device
-const BASE_URL = 'http://10.0.2.2:8000';
+import { BASE_URL } from '../../config';
 
 const stemWord = async ({ query }) => {
   if (!query || query.trim() === "") return [];

@@ -1,9 +1,12 @@
 import * as SQLite from 'expo-sqlite';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // ─── Database Setup ───────────────────────────────────────────────────────────
 // NOTE: Change the db filename here if you ever need to reset all tables by
 // wiping the old database (e.g., rename to 'app_v2.db' to start fresh).
 const db = SQLite.openDatabase('temp.db');
+const BOOK_INDEX_MIGRATION_KEY = 'book_index_migration_v1';
+const DICTIONARY_CACHE_MIGRATION_KEY = 'dictionary_cache_migration_v1';
 
 
 // ─── Table Creation ───────────────────────────────────────────────────────────
@@ -81,6 +84,75 @@ export const createDictionaryCacheTable = () => {
   });
 };
 
+export const migrateDictionaryCache = async () => {
+  const migrationState = await AsyncStorage.getItem(DICTIONARY_CACHE_MIGRATION_KEY);
+  if (migrationState === 'done') {
+    console.log('[Database] dictionary_cache migration already complete');
+    return;
+  }
+
+  await new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql('DROP TABLE IF EXISTS dictionary_cache_new');
+      tx.executeSql(
+        `CREATE TABLE dictionary_cache_new (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          stem         TEXT UNIQUE NOT NULL,
+          definition   TEXT,
+          hanja        TEXT,
+          pos          TEXT,
+          domain       TEXT,
+          last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )`,
+        [],
+        () => {},
+        (_, error) => {
+          console.error('[Database] Error creating dictionary_cache_new:', error);
+          reject(error);
+          return false;
+        }
+      );
+
+      tx.executeSql(
+        `INSERT OR IGNORE INTO dictionary_cache_new (stem, definition, hanja, pos, domain, last_updated)
+         SELECT stem, definition, hanja, pos, domain, last_updated
+         FROM dictionary_cache
+         WHERE stem IS NOT NULL AND TRIM(stem) != ''
+         ORDER BY id ASC`,
+        [],
+        () => {},
+        (_, error) => {
+          const isMissingTable = typeof error?.message === 'string' && error.message.includes('no such table');
+          if (isMissingTable) {
+            return true;
+          }
+          console.error('[Database] Error copying dictionary_cache rows:', error);
+          reject(error);
+          return false;
+        }
+      );
+
+      tx.executeSql('DROP TABLE IF EXISTS dictionary_cache');
+      tx.executeSql('ALTER TABLE dictionary_cache_new RENAME TO dictionary_cache');
+      tx.executeSql(
+        'CREATE INDEX IF NOT EXISTS idx_dictionary_cache_stem ON dictionary_cache(stem)',
+        [],
+        () => {
+          console.log('[Database] dictionary_cache migration complete');
+          resolve();
+        },
+        (_, error) => {
+          console.error('[Database] Error finalizing dictionary_cache migration:', error);
+          reject(error);
+          return false;
+        }
+      );
+    });
+  });
+
+  await AsyncStorage.setItem(DICTIONARY_CACHE_MIGRATION_KEY, 'done');
+};
+
 /**
  * createBookIndexTable
  * Creates the `book_index` table if it doesn't exist.
@@ -103,7 +175,7 @@ export const createBookIndexTable = () => {
           book_uri TEXT NOT NULL,
           surface  TEXT NOT NULL,
           stem_id  INTEGER NOT NULL,
-          UNIQUE(book_uri, surface)
+          UNIQUE(book_uri, surface, stem_id)
         )`,
         [],
         () => {
@@ -119,16 +191,73 @@ export const createBookIndexTable = () => {
   });
 };
 
+export const migrateBookIndex = async () => {
+  const migrationState = await AsyncStorage.getItem(BOOK_INDEX_MIGRATION_KEY);
+  if (migrationState === 'done') {
+    console.log('[Database] book_index migration already complete');
+    return;
+  }
+
+  await new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        'DROP TABLE IF EXISTS book_index',
+        [],
+        () => {
+          console.log('[Database] Dropped legacy book_index table');
+          resolve();
+        },
+        (_, error) => {
+          console.error('[Database] Error dropping legacy book_index table:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+
+  await createBookIndexTable();
+  await AsyncStorage.setItem(BOOK_INDEX_MIGRATION_KEY, 'done');
+  console.log('[Database] book_index migration complete');
+};
+
 /**
  * initAllTables
  * Convenience function: creates all tables in the correct order.
  * Call this once at app startup (in App.js or useAppSetup.js).
  */
+const deduplicateCacheTable = () => {
+  return new Promise((resolve) => {
+    db.transaction(tx => {
+      // Keep only the lowest-id row per stem, deleting any extras
+      tx.executeSql(
+        `DELETE FROM dictionary_cache
+         WHERE id NOT IN (
+           SELECT MIN(id) FROM dictionary_cache GROUP BY stem
+         )`,
+        [],
+        (_, result) => {
+          if (result.rowsAffected > 0) {
+            console.log(`[Database] Removed ${result.rowsAffected} duplicate cache row(s)`);
+          }
+          resolve();
+        },
+        (_, error) => {
+          console.warn('[Database] deduplicateCacheTable failed (non-fatal):', error);
+          resolve(); // non-fatal
+        }
+      );
+    });
+  });
+};
+
 export const initAllTables = async () => {
   console.log("[Database] Initializing all tables...");
   await createTable();
   await createDictionaryCacheTable();
+  await migrateDictionaryCache();
+  await migrateBookIndex();
   await createBookIndexTable();
+  await deduplicateCacheTable();
   console.log("[Database] All tables ready");
 };
 
@@ -152,6 +281,36 @@ export const insertData = (word, hanja, definition, level) => {
       );
     });
   });
+};
+
+export const vocabEntryExists = (word, hanja, definition) => {
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        'SELECT COUNT(*) AS count FROM vocab WHERE word = ? AND hanja IS ? AND def IS ?',
+        [word, hanja ?? null, definition ?? null],
+        (_, result) => {
+          const { count } = result.rows.item(0);
+          resolve(count > 0);
+        },
+        (_, error) => {
+          console.error(`[Database] Error checking vocab entry for "${word}":`, error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+export const insertDataIfMissing = async (word, hanja, definition, level) => {
+  const exists = await vocabEntryExists(word, hanja, definition);
+  if (exists) {
+    console.log(`[Database] Skipping existing vocab entry "${word}"`);
+    return false;
+  }
+
+  await insertData(word, hanja, definition, level);
+  return true;
 };
 
 export const updateLevel = (word, hanja, definition, newLevel) => {
@@ -376,6 +535,35 @@ export const lookupCacheByStem = (stem) => {
     const result = rows[0] ?? null;
     console.log(`[Database] lookupCacheByStem("${stem}"):`, result ? "found" : "miss");
     return result;
+  });
+};
+
+export const lookupBookIndexBySurface = (bookUri, surface) => {
+  return new Promise((resolve, reject) => {
+    if (!bookUri || !surface) {
+      return resolve([]);
+    }
+
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT dc.id, dc.stem, dc.definition, dc.hanja, dc.pos, dc.domain
+         FROM book_index bi
+         JOIN dictionary_cache dc ON dc.id = bi.stem_id
+         WHERE bi.book_uri = ? AND bi.surface = ?`,
+        [bookUri, surface],
+        (_, result) => {
+          const rows = result.rows._array;
+          console.log(
+            `[Database] lookupBookIndexBySurface("${bookUri}", "${surface}"): ${rows.length} hit(s)`
+          );
+          resolve(rows);
+        },
+        (_, error) => {
+          console.error('[Database] Error querying book_index by surface:', error);
+          reject(error);
+        }
+      );
+    });
   });
 };
 

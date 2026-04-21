@@ -7,7 +7,6 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
     const { getCurrentLocation, goToLocation, injectJavascript } = useReader();
     const currentLocationRef = useRef(null);
     const isFirstRenderRef = useRef(true);
-    const isFirstSavedWordsRef = useRef(true);
     const previousSettingsRef = useRef(settings);
 
     const saveCurrentLocation = () => {
@@ -30,10 +29,6 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
     // already-running WebView without restarting the Reader
     useEffect(() => {
         if (savedWords === null) return;
-        if (isFirstSavedWordsRef.current) {
-            isFirstSavedWordsRef.current = false;
-            return;
-        }
 
         const filtered = savedWords.filter(Boolean);
         console.log(`[BottomSection] savedWords changed (${filtered.length} word(s)), injecting update:`, filtered);
@@ -55,7 +50,7 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
         } else {
             console.log('[BottomSection] injectJavascript not available');
         }
-    }, [savedWords]);
+    }, [savedWords, injectJavascript]);
 
     // Save and restore location when settings change (but not on first render)
     useEffect(() => {
@@ -136,7 +131,10 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
                 // Receives the new array directly — no page reload needed.
                 window.__updateHighlights = function(words) {
                     savedWordsSet = new Set(words.filter(Boolean));
-                    highlightWords();
+                    try { highlightWords(); } catch(e) {}
+                    setTimeout(function() {
+                        try { highlightWords(); } catch(e) {}
+                    }, 400);
                     window.ReactNativeWebView.postMessage(JSON.stringify({
                         type: 'highlights-updated',
                         count: savedWordsSet.size
@@ -157,6 +155,7 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
                 //   1. Exact match after stripping punctuation
                 //   2. Saved word is a prefix of token (e.g. "대표" matches "대표가")
                 //   3. Verb stem match: strip trailing 다 (e.g. "실리다" → "실리" matches "실렸다")
+                //   4. 하다 verb conjugation: 하 → 해 (e.g. "수상하다" matches "수상했다", "수상해서")
                 function tokenMatchesSaved(rawToken) {
                     // Strip leading/trailing non-Korean/non-alphanumeric characters (punctuation)
                     var clean = rawToken.replace(/^[^\uAC00-\uD7A3a-zA-Z0-9]+|[^\uAC00-\uD7A3a-zA-Z0-9]+$/g, '');
@@ -165,7 +164,7 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
                     // 1. Exact match
                     if (savedWordsSet.has(clean)) return true;
 
-                    // 2 & 3. Prefix match (only for saved words with 2+ chars to avoid false positives)
+                    // 2, 3 & 4. Prefix / stem match (only for saved words with 2+ chars)
                     var iter = savedWordsSet.values();
                     var entry = iter.next();
                     while (!entry.done) {
@@ -178,6 +177,13 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
                             if (saved.length >= 3 && saved[saved.length - 1] === '\ub2e4') {
                                 var stem = saved.slice(0, -1);
                                 if (clean.startsWith(stem)) return true;
+                                // 하다 verbs: 하 + 아/어 contracts to 해
+                                // e.g. "수상하다" → stem "수상하", also try "수상해"
+                                // covers: 수상했다, 수상해서, 수상해도, etc.
+                                if (stem[stem.length - 1] === '\ud558') {
+                                    var haeStem = stem.slice(0, -1) + '\ud574';
+                                    if (clean.startsWith(haeStem)) return true;
+                                }
                             }
                         }
                         entry = iter.next();
@@ -228,7 +234,10 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
 
                 function highlightWords() {
                     var contents = rendition.getContents();
-                    if (!contents || contents.length === 0) return;
+                    if (!contents || contents.length === 0) {
+                        console.log('[BottomSection] highlightWords skipped — no rendered contents yet');
+                        return false;
+                    }
                     contents.forEach(function(content) {
                         if (content && content.document) {
                             resetHighlights(content.document);
@@ -236,12 +245,20 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
                         }
                     });
                     console.log('[BottomSection] Highlighting complete, ' + savedWordsSet.size + ' saved words');
+                    return true;
                 }
 
                 rendition.on('rendered', function() {
                     console.log('[BottomSection] Content rendered, applying highlights');
                     highlightWords();
                 });
+
+                // Also attempt immediately and after a short delay in case the
+                // 'rendered' event already fired before this handler was registered.
+                try { highlightWords(); } catch(e) {}
+                setTimeout(function() {
+                    try { highlightWords(); } catch(e) {}
+                }, 600);
 
                 // ── Book Text Extraction ──────────────────────────────────────
                 // Called once after the book is ready to extract all text from
