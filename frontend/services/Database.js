@@ -5,7 +5,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // NOTE: Change the db filename here if you ever need to reset all tables by
 // wiping the old database (e.g., rename to 'app_v2.db' to start fresh).
 const db = SQLite.openDatabase('temp.db');
-const BOOK_INDEX_MIGRATION_KEY = 'book_index_migration_v1';
+const BOOK_INDEX_MIGRATION_KEY = 'book_index_migration_v2';
 const DICTIONARY_CACHE_MIGRATION_KEY = 'dictionary_cache_migration_v1';
 
 
@@ -38,6 +38,88 @@ export const createTable = () => {
         }
       );
     });
+  });
+};
+
+const getTableColumns = (tableName) => {
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `PRAGMA table_info(${tableName})`,
+        [],
+        (_, result) => resolve(result.rows._array.map((row) => row.name)),
+        (_, error) => {
+          console.error(`[Database] Error reading schema for ${tableName}:`, error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+export const migrateVocabTable = async () => {
+  const columns = await getTableColumns('vocab');
+  const alterations = [];
+
+  if (!columns.includes('source_book_uri')) {
+    alterations.push('ALTER TABLE vocab ADD COLUMN source_book_uri TEXT');
+  }
+
+  if (!columns.includes('source_book_title')) {
+    alterations.push('ALTER TABLE vocab ADD COLUMN source_book_title TEXT');
+  }
+
+  if (!columns.includes('is_favorite')) {
+    alterations.push('ALTER TABLE vocab ADD COLUMN is_favorite INTEGER DEFAULT 0');
+  }
+
+  if (!columns.includes('priority')) {
+    alterations.push(`ALTER TABLE vocab ADD COLUMN priority TEXT DEFAULT 'normal'`);
+  }
+
+  if (!columns.includes('created_at')) {
+    alterations.push('ALTER TABLE vocab ADD COLUMN created_at TEXT');
+  }
+
+  if (!columns.includes('last_reviewed_at')) {
+    alterations.push('ALTER TABLE vocab ADD COLUMN last_reviewed_at TEXT');
+  }
+
+  if (!columns.includes('next_review_at')) {
+    alterations.push('ALTER TABLE vocab ADD COLUMN next_review_at TEXT');
+  }
+
+  if (!columns.includes('correct_count')) {
+    alterations.push('ALTER TABLE vocab ADD COLUMN correct_count INTEGER DEFAULT 0');
+  }
+
+  if (!columns.includes('wrong_count')) {
+    alterations.push('ALTER TABLE vocab ADD COLUMN wrong_count INTEGER DEFAULT 0');
+  }
+
+  if (alterations.length === 0) {
+    console.log('[Database] vocab migration already complete');
+    return;
+  }
+
+  await new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        alterations.forEach((statement) => tx.executeSql(statement));
+        tx.executeSql(`UPDATE vocab SET priority = 'normal' WHERE priority IS NULL`);
+        tx.executeSql(`UPDATE vocab SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL`);
+        tx.executeSql(`UPDATE vocab SET correct_count = 0 WHERE correct_count IS NULL`);
+        tx.executeSql(`UPDATE vocab SET wrong_count = 0 WHERE wrong_count IS NULL`);
+      },
+      (error) => {
+        console.error('[Database] Error migrating vocab table:', error);
+        reject(error);
+      },
+      () => {
+        console.log(`[Database] vocab migration complete (${alterations.length} column(s) added)`);
+        resolve();
+      }
+    );
   });
 };
 
@@ -253,6 +335,7 @@ const deduplicateCacheTable = () => {
 export const initAllTables = async () => {
   console.log("[Database] Initializing all tables...");
   await createTable();
+  await migrateVocabTable();
   await createDictionaryCacheTable();
   await migrateDictionaryCache();
   await migrateBookIndex();
@@ -264,12 +347,47 @@ export const initAllTables = async () => {
 
 // ─── Vocab Table Operations ───────────────────────────────────────────────────
 
-export const insertData = (word, hanja, definition, level) => {
+export const insertData = (word, hanja, definition, levelOrOptions) => {
+  const options = typeof levelOrOptions === 'object' && levelOrOptions !== null
+    ? levelOrOptions
+    : { level: levelOrOptions };
+
+  const {
+    level = 'unorganized',
+    sourceBookUri = null,
+    sourceBookTitle = null,
+    isFavorite = 0,
+    priority = 'normal',
+    createdAt = new Date().toISOString(),
+    lastReviewedAt = null,
+    nextReviewAt = null,
+    correctCount = 0,
+    wrongCount = 0,
+  } = options;
+
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
       tx.executeSql(
-        'INSERT INTO vocab (word, hanja, def, level) VALUES (?, ?, ?, ?)',
-        [word, hanja, definition, level],
+        `INSERT INTO vocab (
+          word, hanja, def, level, source_book_uri, source_book_title, is_favorite,
+          priority, created_at, last_reviewed_at, next_review_at, correct_count, wrong_count
+        )
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          word,
+          hanja,
+          definition,
+          level,
+          sourceBookUri,
+          sourceBookTitle,
+          isFavorite ? 1 : 0,
+          priority,
+          createdAt,
+          lastReviewedAt,
+          nextReviewAt,
+          correctCount,
+          wrongCount,
+        ],
         () => {
           console.log(`[Database] Inserted vocab word: "${word}" | hanja: "${hanja}" | level: "${level}"`);
           resolve();
@@ -317,7 +435,7 @@ export const updateLevel = (word, hanja, definition, newLevel) => {
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
       tx.executeSql(
-        'UPDATE vocab SET level = ? WHERE word = ? AND hanja = ? AND def = ?',
+        'UPDATE vocab SET level = ? WHERE word = ? AND hanja IS ? AND def IS ?',
         [newLevel, word, hanja, definition],
         () => {
           console.log(`[Database] Updated level for "${word}" → "${newLevel}"`);
@@ -332,11 +450,115 @@ export const updateLevel = (word, hanja, definition, newLevel) => {
   });
 };
 
+export const updateFavorite = (word, hanja, definition, isFavorite) => {
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        'UPDATE vocab SET is_favorite = ? WHERE word = ? AND hanja IS ? AND def IS ?',
+        [isFavorite ? 1 : 0, word, hanja, definition],
+        () => {
+          console.log(`[Database] Updated favorite for "${word}" → ${isFavorite ? 1 : 0}`);
+          resolve();
+        },
+        (_, error) => {
+          console.error(`[Database] Error updating favorite for "${word}":`, error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+export const updatePriority = (word, hanja, definition, priority) => {
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        'UPDATE vocab SET priority = ? WHERE word = ? AND hanja IS ? AND def IS ?',
+        [priority, word, hanja, definition],
+        () => {
+          console.log(`[Database] Updated priority for "${word}" → ${priority}`);
+          resolve();
+        },
+        (_, error) => {
+          console.error(`[Database] Error updating priority for "${word}":`, error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+const addDays = (days) => {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  return date.toISOString();
+};
+
+export const recordReviewOutcome = (word, hanja, definition, currentLevel, outcome) => {
+  const reviewMap = {
+    bad: {
+      level: 'bad',
+      nextReviewAt: addDays(1),
+      correctInc: 0,
+      wrongInc: 1,
+    },
+    mid: {
+      level: 'mid',
+      nextReviewAt: addDays(3),
+      correctInc: 1,
+      wrongInc: 0,
+    },
+    good: {
+      level: 'good',
+      nextReviewAt: currentLevel === 'good' ? addDays(21) : currentLevel === 'mid' ? addDays(7) : addDays(5),
+      correctInc: 1,
+      wrongInc: 0,
+    },
+  };
+
+  const config = reviewMap[outcome];
+  if (!config) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `UPDATE vocab
+         SET level = ?,
+             last_reviewed_at = ?,
+             next_review_at = ?,
+             correct_count = COALESCE(correct_count, 0) + ?,
+             wrong_count = COALESCE(wrong_count, 0) + ?
+         WHERE word = ? AND hanja IS ? AND def IS ?`,
+        [
+          config.level,
+          new Date().toISOString(),
+          config.nextReviewAt,
+          config.correctInc,
+          config.wrongInc,
+          word,
+          hanja,
+          definition,
+        ],
+        () => {
+          console.log(`[Database] Recorded review outcome for "${word}" → ${outcome}`);
+          resolve();
+        },
+        (_, error) => {
+          console.error(`[Database] Error recording review outcome for "${word}":`, error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
 export const removeData = (word, hanja, definition) => {
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
       tx.executeSql(
-        'DELETE FROM vocab WHERE word = ? AND hanja = ? AND def = ?',
+        'DELETE FROM vocab WHERE word = ? AND hanja IS ? AND def IS ?',
         [word, hanja, definition],
         (_, result) => {
           console.log(`[Database] Removed vocab word "${word}" (hanja: "${hanja}")`);
@@ -404,6 +626,24 @@ export const viewData = () => {
         },
         (_, error) => {
           console.error('[Database] Error fetching vocab data:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+export const getDictionaryCacheCount = () => {
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        'SELECT COUNT(*) AS count FROM dictionary_cache',
+        [],
+        (_, result) => {
+          resolve(result.rows.item(0).count);
+        },
+        (_, error) => {
+          console.error('[Database] Error fetching dictionary_cache count:', error);
           reject(error);
         }
       );
@@ -567,6 +807,42 @@ export const lookupBookIndexBySurface = (bookUri, surface) => {
   });
 };
 
+export const lookupBookHighlightSurfaces = (bookUri, savedStems) => {
+  return new Promise((resolve, reject) => {
+    if (!bookUri || !savedStems || savedStems.length === 0) {
+      return resolve([]);
+    }
+
+    const uniqueStems = [...new Set(savedStems.filter(Boolean))];
+    if (uniqueStems.length === 0) {
+      return resolve([]);
+    }
+
+    const placeholders = uniqueStems.map(() => '?').join(',');
+
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT DISTINCT bi.surface, dc.stem
+         FROM book_index bi
+         JOIN dictionary_cache dc ON dc.id = bi.stem_id
+         WHERE bi.book_uri = ? AND dc.stem IN (${placeholders})`,
+        [bookUri, ...uniqueStems],
+        (_, result) => {
+          const rows = result.rows._array;
+          console.log(
+            `[Database] lookupBookHighlightSurfaces("${bookUri}"): ${rows.length} surface hit(s) for ${uniqueStems.length} saved stem(s)`
+          );
+          resolve(rows);
+        },
+        (_, error) => {
+          console.error('[Database] Error querying highlight surfaces from book_index:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
 /**
  * isBookPreprocessed
  * Returns true if at least one book_index row exists for this book URI.
@@ -682,5 +958,29 @@ export const insertBookIndexEntries = (bookUri, entries) => {
         resolve();
       }
     );
+  });
+};
+
+export const deleteBookIndexEntries = (bookUri) => {
+  return new Promise((resolve, reject) => {
+    if (!bookUri) {
+      resolve();
+      return;
+    }
+
+    db.transaction(tx => {
+      tx.executeSql(
+        'DELETE FROM book_index WHERE book_uri = ?',
+        [bookUri],
+        (_, result) => {
+          console.log(`[Database] Deleted ${result.rowsAffected} book_index row(s) for "${bookUri}"`);
+          resolve(result.rowsAffected);
+        },
+        (_, error) => {
+          console.error(`[Database] Error deleting book_index rows for "${bookUri}":`, error);
+          reject(error);
+        }
+      );
+    });
   });
 };
