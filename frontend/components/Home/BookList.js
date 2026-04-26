@@ -1,197 +1,97 @@
-import { useState } from 'react';
-import { View, Text, Image, FlatList, TouchableOpacity, ActivityIndicator, StyleSheet, Alert } from 'react-native';
-import { Reader } from '@epubjs-react-native/core';
-import { useFileSystem } from '@epubjs-react-native/expo-file-system';
-import Icon from 'react-native-vector-icons/FontAwesome';
-import useBooks from '../../hooks/useBooks';
+import { Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { colors, radii, spacing, textStyles } from '../../theme';
 
-const BookList = ({ books, setBooks, currentBook, setCurrentBook, onRequestPreprocess }) => {
-    const { loading, bookRendered, setBookRendered, confirmAddBook, handlePress } = useBooks({
-        books,
-        setBooks,
-        currentBook,
-        setCurrentBook,
-    });
+const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+const clampDotPosition = (value) => clamp(value, 0.035, 0.965);
 
-    // ID of the book whose tooltip is currently showing (from long-press)
-    const [tooltipBookId, setTooltipBookId] = useState(null);
-
-    const showTooltip = (id) => {
-        setTooltipBookId(id);
-        setTimeout(() => setTooltipBookId(null), 2500);
-    };
-
-    const handleDownloadPress = (item) => {
-        if (item.preprocessed) {
-            Alert.alert('Already downloaded', 'Vocabulary for this book is already cached locally.');
-            return;
-        }
-        Alert.alert(
-            'Download vocabulary?',
-            'Pre-caches all word definitions for this book so lookups are instant while reading. May take a few minutes.',
-            [
-                { text: 'Download', onPress: () => onRequestPreprocess(item.uri) },
-                { text: 'Cancel', style: 'cancel' },
-            ]
-        );
-    };
-
+const BookList = ({ books, onOpenBook }) => {
     return (
-        <View style={styles.container}>
-            <TouchableOpacity style={styles.addButton} onPress={confirmAddBook}>
-                <Icon name="plus" size={20} color="#ebf4f6" />
-            </TouchableOpacity>
-
-            <FlatList
-                showsVerticalScrollIndicator={true}
-                style={styles.bookContainer}
-                data={books}
-                keyExtractor={(item) => item.id}
-                renderItem={({ item }) => (
-                    <TouchableOpacity
-                        style={styles.book}
-                        onPress={() => {
-                            console.log(`[BookList] Book clicked: "${item.title}"`);
-                            handlePress(item.uri);
-                        }}
-                    >
+        <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.row}
+        >
+            {books.map((item) => (
+                <TouchableOpacity
+                    key={item.id}
+                    activeOpacity={0.9}
+                    style={styles.item}
+                    onPress={() => onOpenBook(item.uri)}
+                >
+                    <View style={styles.coverWrap}>
                         <Image
-                            style={styles.bookImage}
+                            style={styles.cover}
                             source={item.cover ? { uri: item.cover } : require('../../assets/icon.png')}
                         />
-                        <View style={styles.bookInfo}>
-                            <View style={{ flexWrap: 'wrap', flexDirection: 'row' }}>
-                                <Text style={styles.bookTitle}>{item.title}</Text>
-                            </View>
-                            <Text style={styles.bookAuthor}>{item.author}</Text>
-
-                            {/* Download / cached indicator */}
-                            <View style={styles.downloadRow}>
-                                <TouchableOpacity
-                                    style={styles.downloadButton}
-                                    onPress={() => handleDownloadPress(item)}
-                                    onLongPress={() => showTooltip(item.id)}
-                                >
-                                    <Icon
-                                        name={item.preprocessed ? 'check-circle' : 'cloud-download'}
-                                        size={22}
-                                        color={item.preprocessed ? '#4caf50' : '#3b82f6'}
-                                    />
-                                </TouchableOpacity>
-                                {tooltipBookId === item.id && (
-                                    <View style={styles.tooltip}>
-                                        <Text style={styles.tooltipText}>
-                                            {item.preprocessed
-                                                ? 'Vocabulary already downloaded'
-                                                : 'Download vocabulary for instant word lookup'}
-                                        </Text>
-                                    </View>
-                                )}
-                            </View>
-                        </View>
-                    </TouchableOpacity>
-                )}
-            />
-
-            {loading && (
-                <View style={styles.loadingContainer}>
-                    <ActivityIndicator size="large" color="#ebf4f6" />
-                </View>
-            )}
-
-            {loading && currentBook && (
-                <Reader
-                    height="0"
-                    src={currentBook}
-                    fileSystem={useFileSystem}
-                    onReady={() => setBookRendered(true)}
-                />
-            )}
-        </View>
+                    </View>
+                    <Text style={styles.title} numberOfLines={2}>
+                        {item.title || 'Untitled'}
+                    </Text>
+                    <View style={styles.progressRail}>
+                        <View style={styles.progressTrack} />
+                        <View
+                            style={[
+                                styles.progressDot,
+                                { left: `${clampDotPosition(typeof item.progress === 'number' ? item.progress : 0) * 100}%` },
+                            ]}
+                        />
+                    </View>
+                </TouchableOpacity>
+            ))}
+        </ScrollView>
     );
 };
 
 const styles = StyleSheet.create({
-    container: {
-        flex: 1,
-        backgroundColor: 'transparent',
+    row: {
+        gap: spacing.md,
+        paddingRight: spacing.md,
     },
-    addButton: {
-        position: 'absolute',
-        top: 640,
-        right: 30,
-        width: 50,
-        height: 50,
-        borderRadius: 25,
-        backgroundColor: '#f4a261',
-        justifyContent: 'center',
-        alignItems: 'center',
-        zIndex: 5,
+    item: {
+        width: 104,
     },
-    loadingContainer: {
-        position: 'absolute',
-        top: 640,
-        right: 30,
-        width: 50,
-        height: 50,
-        borderRadius: 25,
-        backgroundColor: '#f4a261',
-        justifyContent: 'center',
-        alignItems: 'center',
-        zIndex: 6,
-    },
-    bookContainer: {
-        flex: 1,
-        paddingTop: 10,
-        width: '100%',
-        backgroundColor: 'transparent',
-    },
-    book: {
-        padding: 5,
-        margin: 5,
+    coverWrap: {
+        width: 104,
         height: 150,
-        flexDirection: 'row',
-        backgroundColor: 'white',
-        borderRadius: 5,
-        borderWidth: 0.5,
-        borderColor: '#6e7b8b',
-        elevation: 5,
+        borderRadius: 12,
+        backgroundColor: colors.surfaceElevated,
+        overflow: 'hidden',
+        marginBottom: spacing.xs,
     },
-    bookImage: {
-        width: '25%',
+    cover: {
+        width: '100%',
         height: '100%',
-        borderRadius: 10,
+        resizeMode: 'cover',
+        backgroundColor: colors.surfaceMuted,
     },
-    bookInfo: {
-        marginLeft: 8,
-        width: '73%',
-        flexWrap: 'wrap',
-        flexDirection: 'column',
+    title: {
+        ...textStyles.sectionTitle,
+        fontSize: 11,
+        lineHeight: 15,
     },
-    bookTitle: {
-        fontSize: 18,
-        fontWeight: 'bold',
+    progressRail: {
+        marginTop: spacing.xs,
+        justifyContent: 'center',
+        height: 8,
+        position: 'relative',
     },
-    bookAuthor: {},
-    downloadRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        marginTop: 8,
+    progressTrack: {
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        height: 2,
+        borderRadius: 999,
+        backgroundColor: colors.border,
     },
-    downloadButton: {
-        padding: 4,
-    },
-    tooltip: {
-        marginLeft: 8,
-        backgroundColor: 'rgba(0,0,0,0.72)',
-        borderRadius: 6,
-        paddingHorizontal: 10,
-        paddingVertical: 5,
-        maxWidth: 200,
-    },
-    tooltipText: {
-        color: '#fff',
-        fontSize: 12,
+    progressDot: {
+        position: 'absolute',
+        top: '50%',
+        width: 8,
+        height: 8,
+        marginTop: -4,
+        marginLeft: -4,
+        borderRadius: 999,
+        backgroundColor: '#6e6255',
     },
 });
 

@@ -147,7 +147,7 @@ def build_surface_index(
     index = 0
 
     while index < pair_count:
-        surface_word, _surface_pos = raw_surface_morphs[index]
+        surface_word, surface_pos = raw_surface_morphs[index]
         stem_word, stem_pos = raw_stem_morphs[index]
 
         if (
@@ -161,6 +161,32 @@ def build_surface_index(
             continue
 
         merged_pairs.append((surface_word, stem_word, stem_pos))
+
+        # Preserve noun + particle surface forms exactly as they appear in the
+        # book so book_index can later resolve taps/highlights like:
+        #   제목을 -> 제목
+        #   우리에 -> 우리
+        #   꾀와 -> 꾀
+        #
+        # We keep the noun stem as the canonical lookup target, but add one or
+        # more cumulative surface forms when the noun is immediately followed by
+        # Josa tokens. This keeps storage bounded to forms actually seen in the
+        # text rather than generating theoretical grammar variants.
+        if stem_pos == 'Noun':
+            combined_surface = surface_word
+            lookahead = index + 1
+
+            while lookahead < pair_count:
+                next_surface_word, next_surface_pos = raw_surface_morphs[lookahead]
+                _next_stem_word, next_stem_pos = raw_stem_morphs[lookahead]
+
+                if next_surface_pos != 'Josa' and next_stem_pos != 'Josa':
+                    break
+
+                combined_surface += next_surface_word
+                merged_pairs.append((combined_surface, stem_word, 'Noun'))
+                lookahead += 1
+
         index += 1
 
     seen_pairs: set[tuple[str, str]] = set()
