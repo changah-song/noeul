@@ -123,11 +123,39 @@ const useAuth = () => {
     }
   }, []);
 
+  const updateProfile = useCallback(async (patch) => {
+    const { data, error } = await supabase.auth.updateUser({
+      data: patch,
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    if (data?.user) {
+      setUser(data.user);
+      setSession((prev) => (prev ? { ...prev, user: data.user } : prev));
+    }
+
+    return data?.user ?? null;
+  }, []);
+
+  const updateUsername = useCallback(async (username) => {
+    const trimmed = username.trim();
+
+    return updateProfile({
+      username: trimmed,
+      display_name: trimmed,
+    });
+  }, [updateProfile]);
+
   return {
     user,
     session,
     loading,
     signOut,
+    updateProfile,
+    updateUsername,
   };
 };
 

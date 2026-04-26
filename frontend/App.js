@@ -2,23 +2,45 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { TranslatorProvider } from 'react-native-translator';
 import { ActivityIndicator, View } from 'react-native';
+import { useFonts } from 'expo-font';
+import {
+    DMSans_400Regular,
+    DMSans_500Medium,
+    DMSans_700Bold,
+} from '@expo-google-fonts/dm-sans';
+import {
+    NotoSerifKR_400Regular,
+    NotoSerifKR_500Medium,
+    NotoSerifKR_700Bold,
+} from '@expo-google-fonts/noto-serif-kr';
 import { tabScreenOptions } from './components/shared/TabBar';
 import useAppSetup from './hooks/useAppSetup';
 import useAuth from './hooks/useAuth';
 import Auth from './screens/Auth';
 import Home from './screens/Home';
 import Learn from './screens/Learn';
+import Profile from './screens/Profile';
 import Read from './screens/Read';
+import Write from './screens/Write';
+import { colors } from './theme';
 
 const Tab = createBottomTabNavigator();
 
 export default function App() {
     const { books, setBooks, currentBook, setCurrentBook, preprocessOnOpen, setPreprocessOnOpen, updateBookPreprocessed } = useAppSetup();
-    const { user, loading, signOut } = useAuth();
+    const { user, loading, signOut, updateUsername, updateProfile } = useAuth();
+    const [fontsLoaded] = useFonts({
+        'FFSans-Regular': DMSans_400Regular,
+        'FFSans-Medium': DMSans_500Medium,
+        'FFSans-Bold': DMSans_700Bold,
+        'FFSerif-Regular': NotoSerifKR_400Regular,
+        'FFSerif-Medium': NotoSerifKR_500Medium,
+        'FFSerif-Bold': NotoSerifKR_700Bold,
+    });
 
-    if (loading) {
+    if (loading || !fontsLoaded) {
         return (
-            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#d9e2ec' }}>
+            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.backgroundWarm }}>
                 <ActivityIndicator size="large" color="#0f609b" />
             </View>
         );
@@ -40,7 +62,7 @@ export default function App() {
                                 currentBook={currentBook}
                                 setCurrentBook={setCurrentBook}
                                 setPreprocessOnOpen={setPreprocessOnOpen}
-                                signOut={signOut}
+                                user={user}
                             />
                         )}
                     </Tab.Screen>
@@ -59,7 +81,26 @@ export default function App() {
                             />
                         )}
                     </Tab.Screen>
-                    <Tab.Screen name="Learn" component={Learn} />
+                    <Tab.Screen name="Learn">
+                        {props => (
+                            <Learn
+                                {...props}
+                                books={books}
+                            />
+                        )}
+                    </Tab.Screen>
+                    <Tab.Screen name="Write" component={Write} />
+                    <Tab.Screen name="Profile">
+                        {props => (
+                            <Profile
+                                {...props}
+                                user={user}
+                                signOut={signOut}
+                                updateUsername={updateUsername}
+                                updateProfile={updateProfile}
+                            />
+                        )}
+                    </Tab.Screen>
                 </Tab.Navigator>
                 )}
             </NavigationContainer>

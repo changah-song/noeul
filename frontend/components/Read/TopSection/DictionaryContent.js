@@ -45,7 +45,16 @@ const STOP_STEMS = new Set([
 const normalizeSurfaceWord = (word) =>
     (word ?? '').replace(/[^\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]/g, '');
 
-const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWordUnsave, currentBook, savedWords = [] }) => {
+const hasSavableDefinition = (definition) => {
+    if (typeof definition !== 'string') {
+        return false;
+    }
+
+    const normalized = definition.trim();
+    return normalized.length > 0 && normalized !== 'N/A';
+};
+
+const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWordUnsave, currentBook, sourceBook, savedWords = [] }) => {
 
     const [expandedWords, setExpandedWords] = useState([]);
     const [stemWordList, setStemWordList] = useState([]);
@@ -92,6 +101,9 @@ const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWor
 
         const resolveLookup = async () => {
             if (currentBook) {
+                console.log(
+                    `[DictionaryContent] checking book_index for book="${currentBook}" surface="${normalizedSurface}"`
+                );
                 const indexRows = await lookupBookIndexBySurface(currentBook, normalizedSurface);
                 if (isCancelled) {
                     return;
@@ -112,7 +124,26 @@ const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWor
                     return;
                 }
 
-                console.log(`[DictionaryContent] book_index miss for "${normalizedSurface}" — falling back to stemming`);
+                console.log(`[DictionaryContent] book_index miss for "${normalizedSurface}" — falling back to local cache/stemming`);
+            }
+
+            const directCacheRows = await lookupCacheByStems([normalizedSurface]);
+            if (isCancelled) {
+                return;
+            }
+
+            const uniqueDirectCacheRows = directCacheRows.filter((row, rowIndex, rows) =>
+                rows.findIndex((candidate) => candidate.stem === row.stem) === rowIndex
+            );
+
+            if (uniqueDirectCacheRows.length > 0) {
+                console.log(
+                    `[DictionaryContent] direct dictionary_cache hit (${uniqueDirectCacheRows.length}) for "${normalizedSurface}" after book_index miss`
+                );
+                setCachedResults(uniqueDirectCacheRows);
+                setNeedsLiveFetch(false);
+                onContentLoaded?.();
+                return;
             }
 
             const result = await stemWord({ query: highlightedWord });
@@ -233,7 +264,11 @@ const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWor
     const toggleSave = async (word, origin, definition) => {
         const alreadySaved = await vocabEntryExists(word, origin, definition);
         if (!alreadySaved) {
-            await insertData(word, origin, definition, "unorganized");
+            await insertData(word, origin, definition, {
+                level: 'unorganized',
+                sourceBookUri: sourceBook?.uri ?? currentBook ?? null,
+                sourceBookTitle: sourceBook?.title ?? null,
+            });
         }
         onWordSave?.(word);
 
@@ -312,22 +347,24 @@ const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWor
                     const showMore = Array.isArray(extra) && extra.length > 0 && !isExpanded;
                     const showLess = isExpanded && Array.isArray(extra) && extra.length > 0;
 
-                    return (
+                return (
                         <View key={index}>
-                            <TouchableOpacity
-                                onPress={() =>
-                                    isWordSaved(entry.stem, entry.hanja, entry.definition)
-                                        ? toggleUnSave(entry.stem, entry.hanja, entry.definition)
-                                        : toggleSave(entry.stem, entry.hanja, entry.definition)
-                                }
-                                style={styles.save}
-                            >
-                                <AntDesign
-                                    name={isWordSaved(entry.stem, entry.hanja, entry.definition)
-                                        ? "checksquare" : "checksquareo"}
-                                    size={15} color="black"
-                                />
-                            </TouchableOpacity>
+                            {hasSavableDefinition(entry.definition) ? (
+                                <TouchableOpacity
+                                    onPress={() =>
+                                        isWordSaved(entry.stem, entry.hanja, entry.definition)
+                                            ? toggleUnSave(entry.stem, entry.hanja, entry.definition)
+                                            : toggleSave(entry.stem, entry.hanja, entry.definition)
+                                    }
+                                    style={styles.save}
+                                >
+                                    <AntDesign
+                                        name={isWordSaved(entry.stem, entry.hanja, entry.definition)
+                                            ? "checksquare" : "checksquareo"}
+                                        size={15} color="black"
+                                    />
+                                </TouchableOpacity>
+                            ) : null}
 
                             {/* Primary definition row — more/less/loading inline at the end */}
                             <View style={styles.content}>
@@ -367,19 +404,21 @@ const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWor
                             {/* Expanded extra definitions — each on its own row */}
                             {isExpanded && Array.isArray(extra) && extra.map((e, i) => (
                                 <View key={i} style={styles.extraRow}>
-                                    <TouchableOpacity
-                                        onPress={() =>
-                                            isWordSaved(e.word, e.origin, e.transWord)
-                                                ? toggleUnSave(e.word, e.origin, e.transWord)
-                                                : toggleSave(e.word, e.origin, e.transWord)
-                                        }
-                                        style={styles.saveExtra}
-                                    >
-                                        <AntDesign
-                                            name={isWordSaved(e.word, e.origin, e.transWord) ? "checksquare" : "checksquareo"}
-                                            size={13} color="black" style={{ opacity: 0.5 }}
-                                        />
-                                    </TouchableOpacity>
+                                    {hasSavableDefinition(e.transWord) ? (
+                                        <TouchableOpacity
+                                            onPress={() =>
+                                                isWordSaved(e.word, e.origin, e.transWord)
+                                                    ? toggleUnSave(e.word, e.origin, e.transWord)
+                                                    : toggleSave(e.word, e.origin, e.transWord)
+                                            }
+                                            style={styles.saveExtra}
+                                        >
+                                            <AntDesign
+                                                name={isWordSaved(e.word, e.origin, e.transWord) ? "checksquare" : "checksquareo"}
+                                                size={13} color="black" style={{ opacity: 0.5 }}
+                                            />
+                                        </TouchableOpacity>
+                                    ) : null}
                                     <View style={styles.extraContent}>
                                         <Text style={{ color: '#333' }}>{e.word}</Text>
                                         <Text style={{ marginHorizontal: 4 }}>(</Text>
@@ -409,20 +448,22 @@ const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWor
                 <View key={index}>
                     {dictionaryData[index] && dictionaryData[index].length > 0 ? (
                         <>
-                            <TouchableOpacity
-                                onPress={() =>
-                                    isWordSaved(word, dictionaryData[index][0].origin, dictionaryData[index][0].transWord)
-                                        ? toggleUnSave(word, dictionaryData[index][0].origin, dictionaryData[index][0].transWord)
-                                        : toggleSave(word, dictionaryData[index][0].origin, dictionaryData[index][0].transWord)
-                                }
-                                style={styles.save}
-                            >
-                                <AntDesign
-                                    name={isWordSaved(word, dictionaryData[index][0].origin, dictionaryData[index][0].transWord)
-                                        ? "checksquare" : "checksquareo"}
-                                    size={15} color="black"
-                                />
-                            </TouchableOpacity>
+                            {hasSavableDefinition(dictionaryData[index][0].transWord) ? (
+                                <TouchableOpacity
+                                    onPress={() =>
+                                        isWordSaved(word, dictionaryData[index][0].origin, dictionaryData[index][0].transWord)
+                                            ? toggleUnSave(word, dictionaryData[index][0].origin, dictionaryData[index][0].transWord)
+                                            : toggleSave(word, dictionaryData[index][0].origin, dictionaryData[index][0].transWord)
+                                    }
+                                    style={styles.save}
+                                >
+                                    <AntDesign
+                                        name={isWordSaved(word, dictionaryData[index][0].origin, dictionaryData[index][0].transWord)
+                                            ? "checksquare" : "checksquareo"}
+                                        size={15} color="black"
+                                    />
+                                </TouchableOpacity>
+                            ) : null}
 
                             <View style={styles.content}>
                                 <Text style={{ fontWeight: 'bold' }}>{word}</Text>
@@ -452,20 +493,22 @@ const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWor
                             {expandedWords.includes(word) &&
                                 dictionaryData[index].slice(1).map((entry, i) => (
                                     <View key={i} style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
-                                        <TouchableOpacity
-                                            onPress={() =>
-                                                isWordSaved(entry.word, entry.origin, entry.transWord)
-                                                    ? toggleUnSave(entry.word, entry.origin, entry.transWord)
-                                                    : toggleSave(entry.word, entry.origin, entry.transWord)
-                                            }
-                                            style={styles.saveExtra}
-                                        >
-                                            <AntDesign
-                                                name={isWordSaved(entry.word, entry.origin, entry.transWord)
-                                                    ? "checksquare" : "checksquareo"}
-                                                size={13} color="black" style={{ opacity: 0.5 }}
-                                            />
-                                        </TouchableOpacity>
+                                        {hasSavableDefinition(entry.transWord) ? (
+                                            <TouchableOpacity
+                                                onPress={() =>
+                                                    isWordSaved(entry.word, entry.origin, entry.transWord)
+                                                        ? toggleUnSave(entry.word, entry.origin, entry.transWord)
+                                                        : toggleSave(entry.word, entry.origin, entry.transWord)
+                                                }
+                                                style={styles.saveExtra}
+                                            >
+                                                <AntDesign
+                                                    name={isWordSaved(entry.word, entry.origin, entry.transWord)
+                                                        ? "checksquare" : "checksquareo"}
+                                                    size={13} color="black" style={{ opacity: 0.5 }}
+                                                />
+                                            </TouchableOpacity>
+                                        ) : null}
                                         <View style={styles.extraContent}>
                                             <Text>{entry.word}</Text>
                                             <Text style={{ marginHorizontal: 4 }}>(</Text>

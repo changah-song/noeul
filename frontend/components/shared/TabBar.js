@@ -1,62 +1,70 @@
-import { Entypo, FontAwesome6, Foundation } from '@expo/vector-icons';
-import { Text, View, StyleSheet } from 'react-native';
+import {
+    Entypo,
+    Feather,
+    FontAwesome6,
+    Ionicons,
+    MaterialCommunityIcons,
+} from '@expo/vector-icons';
+import { StyleSheet, View } from 'react-native';
+import { colors, radii, spacing } from '../../theme';
 
 const tabIcons = {
     Home: { Component: Entypo, name: 'home' },
     Read: { Component: FontAwesome6, name: 'book-open' },
-    Learn: { Component: Foundation, name: 'pencil' },
+    Learn: { Component: Ionicons, name: 'sparkles-outline' },
+    Write: { Component: Feather, name: 'edit-3' },
+    Profile: { Component: MaterialCommunityIcons, name: 'account-circle-outline' },
 };
 
 export const tabScreenOptions = ({ route }) => ({
     headerShown: false,
-    tabBarActiveTintColor: 'white',
-    tabBarInactiveTintColor: '#f1e8e2',
-    tabBarStyle: { backgroundColor: '#6e7b8b' },
+    tabBarHideOnKeyboard: true,
+    tabBarActiveTintColor: colors.accent,
+    tabBarInactiveTintColor: colors.textSubtle,
+    tabBarStyle: styles.tabBar,
+    tabBarItemStyle: styles.tabBarItem,
+    tabBarIconStyle: styles.iconSlot,
     tabBarIcon: ({ focused, color }) => {
         const { Component, name } = tabIcons[route.name];
-        const iconStyles = focused ? styles.iconFocused : styles.iconDefault;
-        const iconColor = focused ? '#f4a261' : color;
         return (
-            <View style={[styles.iconContainer, iconStyles]}>
-                <Component name={name} color={iconColor} size={26} />
+            <View style={[styles.iconContainer, focused && styles.iconContainerActive]}>
+                <Component
+                    name={name}
+                    color={focused ? colors.accentStrong : color}
+                    size={route.name === 'Profile' ? 23 : 21}
+                />
             </View>
         );
     },
-    tabBarLabel: ({ focused }) => {
-        const labelStyle = focused ? styles.labelFocused : styles.labelDefault;
-        return (
-            <Text style={[labelStyle, { color: 'white', fontFamily: 'Roboto', fontSize: 12 }]}>
-                {route.name}
-            </Text>
-        );
-    },
+    tabBarShowLabel: false,
 });
 
 const styles = StyleSheet.create({
+    tabBar: {
+        height: 52,
+        paddingTop: 2,
+        paddingBottom: 4,
+        paddingHorizontal: spacing.sm,
+        backgroundColor: colors.surfaceElevated,
+        borderTopWidth: 1,
+        borderTopColor: colors.border,
+        elevation: 0,
+        shadowOpacity: 0,
+    },
+    tabBarItem: {
+        paddingVertical: 0,
+    },
+    iconSlot: {
+        marginTop: 0,
+    },
     iconContainer: {
-        justifyContent: 'center',
+        width: 40,
+        height: 28,
         alignItems: 'center',
-        top: 5,
+        justifyContent: 'center',
+        borderRadius: radii.pill,
     },
-    iconDefault: {
-        width: 50,
-        height: 50,
-        borderRadius: 10,
-    },
-    iconFocused: {
-        top: -15,
-        width: 50,
-        height: 50,
-        borderRadius: 25,
-        backgroundColor: 'white',
-    },
-    labelDefault: {
-        textAlign: 'center',
-        marginTop: 5,
-    },
-    labelFocused: {
-        fontWeight: 'bold',
-        textAlign: 'center',
-        marginTop: 5,
+    iconContainerActive: {
+        backgroundColor: colors.accentSoft,
     },
 });
