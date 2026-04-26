@@ -21,7 +21,7 @@ export const tabScreenOptions = ({ route }) => ({
     tabBarHideOnKeyboard: true,
     tabBarActiveTintColor: colors.accent,
     tabBarInactiveTintColor: colors.textSubtle,
-    tabBarStyle: styles.tabBar,
+    tabBarStyle: tabBarBaseStyle,
     tabBarItemStyle: styles.tabBarItem,
     tabBarIconStyle: styles.iconSlot,
     tabBarIcon: ({ focused, color }) => {
@@ -38,6 +38,8 @@ export const tabScreenOptions = ({ route }) => ({
     },
     tabBarShowLabel: false,
 });
+
+export const tabBarBaseStyle = styles.tabBar;
 
 const styles = StyleSheet.create({
     tabBar: {

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useEffect } from 'react';
+import { useCallback, useMemo, useRef, useEffect } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { Reader, useReader } from '@epubjs-react-native/core';
 import { useFileSystem } from '@epubjs-react-native/expo-file-system';
@@ -17,6 +17,8 @@ const BottomSection = ({
     onBookLoadStarted,
     onBookReady,
     onBookLoadError,
+    onNativeTextSelected,
+    onLookupPlacementChange,
 }) => {
     const { getCurrentLocation, goToLocation, injectJavascript } = useReader();
     const currentLocationRef = useRef(null);
@@ -24,6 +26,8 @@ const BottomSection = ({
     const previousSettingsRef = useRef(settings);
     const latestHighlightWordsRef = useRef([]);
     const latestHighlightModeRef = useRef(!!useHeuristicHighlighting);
+    const latestDarkModeRef = useRef(!!settings.isDarkMode);
+    const pendingNativeSelectionTextRef = useRef('');
 
     const replayHighlights = () => {
         if (!injectJavascript) {
@@ -32,10 +36,14 @@ const BottomSection = ({
 
         const filtered = latestHighlightWordsRef.current.filter(Boolean);
         const mode = !!latestHighlightModeRef.current;
+        const darkMode = !!latestDarkModeRef.current;
         const script = `
             (function() {
                 if (typeof window.__setHighlightMode === 'function') {
                     window.__setHighlightMode(${JSON.stringify(mode)});
+                }
+                if (typeof window.__setHighlightDarkMode === 'function') {
+                    window.__setHighlightDarkMode(${JSON.stringify(darkMode)});
                 }
                 if (typeof window.__updateHighlights === 'function') {
                     window.__updateHighlights(${JSON.stringify(filtered)});
@@ -45,6 +53,30 @@ const BottomSection = ({
         `;
         injectJavascript(script);
     };
+
+    const clearNativeSelection = useCallback(() => {
+        if (!injectJavascript) {
+            return;
+        }
+
+        injectJavascript(`
+            (function() {
+                try {
+                    var contents = rendition.getContents() || [];
+                    contents.forEach(function(c) {
+                        if (!c || !c.document) return;
+                        var sel = typeof c.document.getSelection === 'function'
+                            ? c.document.getSelection()
+                            : (c.document.defaultView && c.document.defaultView.getSelection
+                                ? c.document.defaultView.getSelection()
+                                : null);
+                        if (sel) sel.removeAllRanges();
+                    });
+                } catch (e) {}
+            })();
+            true;
+        `);
+    }, [injectJavascript]);
 
     const saveCurrentLocation = () => {
         const currentLocation = getCurrentLocation();
@@ -73,6 +105,7 @@ const BottomSection = ({
         ));
         console.log(`[BottomSection] Chapter/location changed → CFI: ${startCfi}`);
         onLocationInfoChange?.(info);
+        clearNativeSelection();
         onDismissSelection?.();
 
         // The visible section is most reliable once relocation has settled.
@@ -96,8 +129,9 @@ const BottomSection = ({
 
         latestHighlightWordsRef.current = savedWords.filter(Boolean);
         latestHighlightModeRef.current = !!useHeuristicHighlighting;
+        latestDarkModeRef.current = !!settings.isDarkMode;
         replayHighlights();
-    }, [savedWords, injectJavascript, useHeuristicHighlighting]);
+    }, [savedWords, injectJavascript, settings.isDarkMode, useHeuristicHighlighting]);
 
     // Save and restore location when settings change (but not on first render)
     useEffect(() => {
@@ -159,7 +193,7 @@ const BottomSection = ({
         <Reader
             src={currentBook}
             fileSystem={useFileSystem}
-            enableSelection={false}
+            enableSelection={true}
             allowScriptedContent={true}
             menuItems={[]}
             onStarted={() => {
@@ -194,6 +228,64 @@ const BottomSection = ({
                 console.error('[BottomSection] Reader failed to display book:', reason);
                 onBookLoadError?.(reason);
             }}
+            onSelected={(text) => {
+                const selectedText = String(text || '').trim();
+                if (selectedText.length > 1) {
+                    console.log(`[BottomSection] Native text selected: "${selectedText}"`);
+                    pendingNativeSelectionTextRef.current = selectedText;
+                    onLookupPlacementChange?.('bottom');
+                    onNativeTextSelected?.(selectedText);
+
+                    if (injectJavascript) {
+                        injectJavascript(`
+                            (function() {
+                                try {
+                                    var placement = 'bottom';
+                                    var contents = rendition.getContents() || [];
+
+                                    for (var i = 0; i < contents.length; i++) {
+                                        var c = contents[i];
+                                        if (!c || !c.document) continue;
+
+                                        var doc = c.document;
+                                        var sel = typeof doc.getSelection === 'function'
+                                            ? doc.getSelection()
+                                            : (doc.defaultView && doc.defaultView.getSelection
+                                                ? doc.defaultView.getSelection()
+                                                : null);
+
+                                        if (!sel || sel.rangeCount === 0) continue;
+
+                                        var text = sel.toString ? sel.toString().trim() : '';
+                                        if (text.length <= 1) continue;
+
+                                        var range = sel.getRangeAt(0);
+                                        var rect = range.getBoundingClientRect ? range.getBoundingClientRect() : null;
+                                        var viewportHeight = (doc.defaultView && doc.defaultView.innerHeight) || window.innerHeight || 0;
+
+                                        if (rect && viewportHeight) {
+                                            var selectionMidY = rect.top + (rect.height / 2);
+                                            placement = selectionMidY > (viewportHeight / 2) ? 'top' : 'bottom';
+                                        }
+                                        break;
+                                    }
+
+                                    window.ReactNativeWebView.postMessage(JSON.stringify({
+                                        type: 'native-selection',
+                                        placement: placement
+                                    }));
+                                } catch (e) {
+                                    window.ReactNativeWebView.postMessage(JSON.stringify({
+                                        type: 'native-selection',
+                                        placement: 'bottom'
+                                    }));
+                                }
+                            })();
+                            true;
+                        `);
+                    }
+                }
+            }}
             onLocationChange={() => { saveCurrentLocation() }}
             initialLocation={initialLocation || ""}
             defaultTheme={theme}
@@ -201,6 +293,7 @@ const BottomSection = ({
             injectedJavascript={`
                 console.log('[BottomSection] Javascript injection started');
                 var useHeuristicHighlighting = ${JSON.stringify(!!useHeuristicHighlighting)};
+                var useDarkHighlightTheme = ${JSON.stringify(!!settings.isDarkMode)};
                 var highlightRetryTimeouts = [];
 
                 // Mutable set — updated in-place via window.__updateHighlights
@@ -227,6 +320,11 @@ const BottomSection = ({
                 window.__setHighlightMode = function(useHeuristic) {
                     useHeuristicHighlighting = !!useHeuristic;
                     scheduleHighlightPasses('mode-change');
+                };
+
+                window.__setHighlightDarkMode = function(isDarkMode) {
+                    useDarkHighlightTheme = !!isDarkMode;
+                    scheduleHighlightPasses('theme-change');
                 };
 
                 // Remove all existing highlight spans, restoring plain text nodes
@@ -306,10 +404,14 @@ const BottomSection = ({
                             if (part.trim() && tokenMatchesSaved(part)) {
                                 var span = doc.createElement('span');
                                 span.dataset.savedHighlight = 'true';
-                                span.style.backgroundColor = 'rgba(214, 190, 148, 0.42)';
-                                span.style.color = '#4f4031';
+                                span.style.backgroundColor = useDarkHighlightTheme
+                                    ? 'rgba(198, 160, 100, 0.34)'
+                                    : 'rgba(214, 190, 148, 0.42)';
+                                span.style.color = useDarkHighlightTheme ? '#f6ead7' : '#4f4031';
                                 span.style.borderRadius = '3px';
-                                span.style.boxShadow = 'inset 0 -1px 0 rgba(110, 98, 85, 0.28)';
+                                span.style.boxShadow = useDarkHighlightTheme
+                                    ? 'inset 0 -1px 0 rgba(242, 219, 176, 0.24)'
+                                    : 'inset 0 -1px 0 rgba(110, 98, 85, 0.28)';
                                 span.textContent = part;
                                 fragment.appendChild(span);
                             } else {
@@ -458,6 +560,12 @@ const BottomSection = ({
                     }
                 }
 
+                function getPlacementForClientY(clientY, doc) {
+                    var view = (doc && doc.defaultView) ? doc.defaultView : window;
+                    var innerHeight = view && view.innerHeight ? view.innerHeight : window.innerHeight;
+                    return clientY > (innerHeight / 2) ? 'top' : 'bottom';
+                }
+
                 rendition.on('click', function(e) {
                     console.log('[BottomSection] Click detected, attempting to select word');
 
@@ -465,8 +573,19 @@ const BottomSection = ({
                     var doc = target && target.ownerDocument ? target.ownerDocument : null;
                     var content = doc ? getMatchingContent(doc) : null;
                     if (!content || !content.window || !doc) {
-                        onDismissSelection?.();
+                        window.ReactNativeWebView.postMessage(JSON.stringify({
+                            type: 'dismiss-selection'
+                        }));
                         return;
+                    }
+
+                    var existingSelection = typeof doc.getSelection === 'function'
+                        ? doc.getSelection()
+                        : (doc.defaultView && doc.defaultView.getSelection
+                            ? doc.defaultView.getSelection()
+                            : null);
+                    if (existingSelection) {
+                        existingSelection.removeAllRanges();
                     }
 
                     if (target && target.dataset && target.dataset.savedHighlight) {
@@ -474,7 +593,8 @@ const BottomSection = ({
                         if (highlightedText) {
                             window.ReactNativeWebView.postMessage(JSON.stringify({
                                 type: 'word-selected',
-                                text: highlightedText
+                                text: highlightedText,
+                                placement: getPlacementForClientY(e.clientY, doc)
                             }));
                             return;
                         }
@@ -504,7 +624,8 @@ const BottomSection = ({
                     if (selectedText) {
                         window.ReactNativeWebView.postMessage(JSON.stringify({
                             type: 'word-selected',
-                            text: selectedText
+                            text: selectedText,
+                            placement: getPlacementForClientY(e.clientY, doc)
                         }));
                     } else {
                         window.ReactNativeWebView.postMessage(JSON.stringify({
@@ -531,10 +652,18 @@ const BottomSection = ({
                         });
                     } else if (parsed?.type === 'word-selected') {
                         console.log(`[BottomSection] Word tapped: "${parsed.text}"`);
+                        if (parsed?.placement === 'top' || parsed?.placement === 'bottom') {
+                            onLookupPlacementChange?.(parsed.placement);
+                        }
                         setHighlightedWord(parsed.text);
                     } else if (parsed?.type === 'dismiss-selection') {
                         console.log('[BottomSection] Dismissing selection');
+                        clearNativeSelection();
                         onDismissSelection?.();
+                    } else if (parsed?.type === 'native-selection') {
+                        if (parsed?.placement === 'top' || parsed?.placement === 'bottom') {
+                            onLookupPlacementChange?.(parsed.placement);
+                        }
                     } else if (parsed?.type === 'book-text-extracted') {
                         // Full book text arrived — hand it off to Read.js to trigger preprocessing
                         console.log(`[BottomSection] Received extracted text (${parsed.text?.length?.toLocaleString()} chars), forwarding to parent`);

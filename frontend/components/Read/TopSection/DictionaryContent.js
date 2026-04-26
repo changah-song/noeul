@@ -54,7 +54,7 @@ const hasSavableDefinition = (definition) => {
     return normalized.length > 0 && normalized !== 'N/A';
 };
 
-const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWordUnsave, currentBook, sourceBook, savedWords = [] }) => {
+const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWordUnsave, onExpandedStateChange, currentBook, sourceBook, savedWords = [] }) => {
 
     const [expandedWords, setExpandedWords] = useState([]);
     const [stemWordList, setStemWordList] = useState([]);
@@ -78,6 +78,12 @@ const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWor
     // Hanja modal
     const [currentHanja, setCurrentHanja] = useState(null);
     const handleHanjaPress = (hanja) => setCurrentHanja(hanja);
+
+    useEffect(() => {
+        const hasExpandedCached = Object.values(expandedCached).some(Boolean);
+        const hasExpandedLive = expandedWords.length > 0;
+        onExpandedStateChange?.(hasExpandedCached || hasExpandedLive);
+    }, [expandedCached, expandedWords, onExpandedStateChange]);
 
     // ── Step 1: Stem the tapped word ─────────────────────────────────────────
     useEffect(() => {
