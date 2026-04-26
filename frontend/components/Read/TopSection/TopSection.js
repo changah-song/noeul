@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Animated, Easing, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Feather, MaterialIcons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppContext } from '../../../contexts/AppContext';
 import { colors, radii, spacing, textStyles } from '../../../theme';
 import TranslationContent from './TranslationContent';
 import DictionaryContent from './DictionaryContent';
 
-const TopSection = ({ highlightedWord, onWordSave, onWordUnsave, currentBook, sourceBook, savedWords }) => {
+const TopSection = ({ highlightedWord, isNativeSelection, onWordSave, onWordUnsave, currentBook, sourceBook, savedWords }) => {
     const { dictMode, setDictMode } = useAppContext();
+    const insets = useSafeAreaInsets();
+    const effectiveDictMode = isNativeSelection ? false : dictMode;
     const [isLoading, setIsLoading] = useState(false);
+    const [isDictionaryExpanded, setIsDictionaryExpanded] = useState(false);
     const [visibleWord, setVisibleWord] = useState('');
     const prevWordRef = useRef('');
     const translateY = useRef(new Animated.Value(24)).current;
@@ -22,6 +26,7 @@ const TopSection = ({ highlightedWord, onWordSave, onWordUnsave, currentBook, so
     useEffect(() => {
         if (highlightedWord && highlightedWord !== prevWordRef.current) {
             prevWordRef.current = highlightedWord;
+            setIsDictionaryExpanded(false);
 
             if (!hasLookupCandidate) {
                 setIsLoading(false);
@@ -82,7 +87,7 @@ const TopSection = ({ highlightedWord, onWordSave, onWordUnsave, currentBook, so
         if (highlightedWord && hasLookupCandidate) {
             setIsLoading(true);
         }
-    }, [dictMode, hasLookupCandidate, highlightedWord]);
+    }, [effectiveDictMode, hasLookupCandidate, highlightedWord]);
 
     const handleContentLoaded = useCallback(() => {
         console.log('[TopSection] content loaded');
@@ -90,64 +95,73 @@ const TopSection = ({ highlightedWord, onWordSave, onWordUnsave, currentBook, so
     }, []);
 
     if (!visibleWord) {
-        return (
-            <View style={styles.hintCard}>
-                <Feather name="corner-down-left" size={16} color={colors.textSubtle} />
-                <Text style={styles.hintText}>Tap a word to open the lookup panel.</Text>
-            </View>
-        );
+        return null;
     }
 
     return (
         <Animated.View
             style={[
                 styles.sheet,
+                isNativeSelection
+                    ? styles.sheetTranslation
+                    : (isDictionaryExpanded ? styles.sheetExpanded : styles.sheetCompact),
+                { marginBottom: Math.max(6, insets.bottom + 10) },
                 {
                     opacity,
                     transform: [{ translateY }],
                 },
             ]}
         >
-            <View style={styles.grabber} />
-
             <View style={styles.header}>
                 <View style={styles.wordBlock}>
-                    <Text numberOfLines={1} style={styles.wordLabel}>Selected Word</Text>
-                    <Text numberOfLines={1} style={styles.wordValue}>{visibleWord}</Text>
+                    <Text numberOfLines={1} style={styles.wordLabel}>
+                        {isNativeSelection ? 'Translation' : 'Selected Word'}
+                    </Text>
+                    {!isNativeSelection ? (
+                        <Text numberOfLines={1} style={styles.wordValue}>{visibleWord}</Text>
+                    ) : null}
                 </View>
 
-                <TouchableOpacity onPress={() => setDictMode(!dictMode)} style={styles.toggleButton}>
-                    {dictMode ? (
-                        <MaterialIcons name="translate" size={19} color={colors.text} />
-                    ) : (
-                        <Feather name="book-open" size={18} color={colors.text} />
-                    )}
-                </TouchableOpacity>
+                {!isNativeSelection && (
+                    <TouchableOpacity onPress={() => setDictMode(!dictMode)} style={styles.toggleButton}>
+                        {dictMode ? (
+                            <MaterialIcons name="translate" size={19} color={colors.text} />
+                        ) : (
+                            <Feather name="book-open" size={18} color={colors.text} />
+                        )}
+                    </TouchableOpacity>
+                )}
             </View>
 
             {isLoading && hasLookupCandidate ? (
                 <View style={styles.loadingState}>
                     <ActivityIndicator size="small" color={colors.accentStrong} />
-                    <Text style={styles.loadingText}>Looking up word…</Text>
+                    <Text style={styles.loadingText}>
+                        {isNativeSelection ? 'Translating…' : 'Looking up word…'}
+                    </Text>
                 </View>
             ) : null}
 
             <View style={[styles.content, isLoading && hasLookupCandidate && styles.contentDimmed]}>
-                {dictMode ? (
+                {effectiveDictMode ? (
                     <DictionaryContent
                         highlightedWord={visibleWord}
                         onContentLoaded={handleContentLoaded}
                         onWordSave={onWordSave}
                         onWordUnsave={onWordUnsave}
+                        onExpandedStateChange={setIsDictionaryExpanded}
                         currentBook={currentBook}
                         sourceBook={sourceBook}
                         savedWords={savedWords}
                     />
                 ) : (
-                    <TranslationContent
-                        highlightedWord={visibleWord}
-                        onContentLoaded={handleContentLoaded}
-                    />
+                    <View style={styles.contentFill}>
+                        <TranslationContent
+                            key={visibleWord}
+                            highlightedWord={visibleWord}
+                            onContentLoaded={handleContentLoaded}
+                        />
+                    </View>
                 )}
             </View>
         </Animated.View>
@@ -155,26 +169,8 @@ const TopSection = ({ highlightedWord, onWordSave, onWordUnsave, currentBook, so
 };
 
 const styles = StyleSheet.create({
-    hintCard: {
-        marginHorizontal: spacing.md,
-        marginBottom: spacing.md,
-        borderRadius: radii.pill,
-        backgroundColor: colors.surfaceElevated,
-        borderWidth: 1,
-        borderColor: colors.border,
-        paddingHorizontal: spacing.md,
-        paddingVertical: spacing.sm,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: spacing.xs,
-    },
-    hintText: {
-        ...textStyles.caption,
-        color: colors.textSubtle,
-    },
     sheet: {
         marginHorizontal: spacing.md,
-        marginBottom: spacing.md,
         paddingHorizontal: spacing.md,
         paddingTop: spacing.sm,
         paddingBottom: spacing.md,
@@ -187,15 +183,16 @@ const styles = StyleSheet.create({
         shadowOpacity: 1,
         shadowRadius: 20,
         elevation: 8,
-        maxHeight: 220,
+        overflow: 'hidden',
     },
-    grabber: {
-        width: 42,
-        height: 4,
-        borderRadius: radii.pill,
-        backgroundColor: colors.surfaceStrong,
-        alignSelf: 'center',
-        marginBottom: spacing.sm,
+    sheetCompact: {
+        height: 130,
+    },
+    sheetExpanded: {
+        height: 230,
+    },
+    sheetTranslation: {
+        height: 180,
     },
     header: {
         flexDirection: 'row',
@@ -236,10 +233,15 @@ const styles = StyleSheet.create({
     },
     content: {
         marginTop: spacing.sm,
-        flexShrink: 1,
+        flex: 1,
+        minHeight: 0,
+    },
+    contentFill: {
+        flex: 1,
+        minHeight: 0,
     },
     contentDimmed: {
-        opacity: 0.05,
+        opacity: 0.35,
     },
 });
 
