@@ -170,4 +170,24 @@ export const deleteUserVocabEntry = async (userId, entry) => {
   }
 };
 
+export const updateUserVocabStatus = async (userId, entry, status) => {
+  let query = supabase
+    .from('user_vocab')
+    .update({ status })
+    .eq('user_id', userId)
+    .eq('word', entry.word)
+    .eq('definition', entry.definition ?? entry.def ?? null);
+
+  query = entry.hanja == null
+    ? query.is('hanja', null)
+    : query.eq('hanja', entry.hanja);
+
+  const { error } = await query;
+
+  if (error) {
+    console.warn(`${FILE_TAG} updateUserVocabStatus failed`, error);
+    throw error;
+  }
+};
+
 export default supabase;

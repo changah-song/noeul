@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { View, StyleSheet, Text, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, Pressable } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Feather } from '@expo/vector-icons';
 
 import { ReaderProvider } from '@epubjs-react-native/core';
 
@@ -14,14 +15,23 @@ import {
     isBookPreprocessed,
     insertCacheEntries,
     insertBookIndexEntries,
+    lookupBookHighlightSurfaces,
     lookupCacheByStems,
     logDatabaseSnapshot,
 } from '../services/Database';
 import preprocessBook from '../services/api/preprocessBook';
+import { addReadingMillis } from '../services/dailyProgress';
+import { colors, radii, spacing, textStyles } from '../theme';
 
 const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComplete }) => {
     const [highlightedWord, setHighlightedWord] = useState('');
     const [savedWords, setSavedWords] = useState(null); // null = not yet loaded
+    const [highlightTerms, setHighlightTerms] = useState(null);
+    const [highlightTermsReady, setHighlightTermsReady] = useState(false);
+    const [readerLocationInfo, setReaderLocationInfo] = useState(null);
+    const [bookLoadState, setBookLoadState] = useState('idle');
+    const [bookLoadError, setBookLoadError] = useState('');
+    const [readerRetryKey, setReaderRetryKey] = useState(0);
 
     // ── Preprocessing state ──────────────────────────────────────────────────
     // 'idle'         — no preprocessing requested
@@ -38,6 +48,9 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
     // if the user presses Download while the book is already open
     const extractedTextRef = useRef(null);
     const preprocessingInFlightRef = useRef(false);
+    const readingSessionStartedAtRef = useRef(Date.now());
+    const activeBook = books.find(book => book.uri === currentBook) ?? null;
+    const shouldUseHeuristicHighlights = !activeBook?.preprocessed;
 
     // Load saved words for highlighting on mount
     useEffect(() => {
@@ -52,21 +65,88 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
             });
     }, []);
 
+    useEffect(() => {
+        if (savedWords === null) {
+            setHighlightTermsReady(false);
+            return;
+        }
+
+        if (!currentBook || shouldUseHeuristicHighlights) {
+            setHighlightTerms(savedWords);
+            setHighlightTermsReady(true);
+            return;
+        }
+
+        let isActive = true;
+
+        const loadHighlightTerms = async () => {
+            try {
+                const surfaceRows = await lookupBookHighlightSurfaces(currentBook, savedWords);
+                if (!isActive) {
+                    return;
+                }
+
+                const mergedTerms = [...new Set([
+                    ...savedWords,
+                    ...surfaceRows.map((row) => row.surface).filter(Boolean),
+                ])];
+
+                console.log(
+                    `[Read] Loaded ${mergedTerms.length} highlight term(s) (${surfaceRows.length} book-specific surfaces)`
+                );
+                setHighlightTerms(mergedTerms);
+                setHighlightTermsReady(true);
+            } catch (error) {
+                console.error('[Read] Failed to load book highlight surfaces:', error);
+                if (isActive) {
+                    setHighlightTerms(savedWords);
+                    setHighlightTermsReady(true);
+                }
+            }
+        };
+
+        loadHighlightTerms();
+
+        return () => {
+            isActive = false;
+        };
+    }, [currentBook, preprocessStatus, savedWords, shouldUseHeuristicHighlights]);
+
     // Reset status and clear stored text whenever the open book changes
     useEffect(() => {
+        const elapsed = Date.now() - readingSessionStartedAtRef.current;
+        if (elapsed >= 5000) {
+            addReadingMillis(elapsed);
+        }
+
         setPreprocessStatus('idle');
         setPreprocessMessage('');
         setPreprocessDetail('');
         extractedTextRef.current = null;
         preprocessingInFlightRef.current = false;
+        readingSessionStartedAtRef.current = Date.now();
+        setHighlightTerms(null);
+        setHighlightTermsReady(savedWords !== null && !currentBook);
+        setBookLoadState(currentBook ? 'loading' : 'idle');
+        setBookLoadError('');
+        setReaderRetryKey(0);
     }, [currentBook]);
 
+    useEffect(() => {
+        return () => {
+            const elapsed = Date.now() - readingSessionStartedAtRef.current;
+            if (elapsed >= 5000) {
+                addReadingMillis(elapsed);
+            }
+        };
+    }, []);
+
     const handleWordSave = (word) => {
-        setSavedWords(prev => prev.includes(word) ? prev : [...prev, word]);
+        setSavedWords(prev => (prev ?? []).includes(word) ? prev : [...(prev ?? []), word]);
     };
 
     const handleWordUnsave = (word) => {
-        setSavedWords(prev => prev.filter(w => w !== word));
+        setSavedWords(prev => (prev ?? []).filter(w => w !== word));
     };
 
     // ── Core preprocessing pipeline ──────────────────────────────────────────
@@ -80,6 +160,9 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         }
 
         preprocessingInFlightRef.current = true;
+        setBooks((prevBooks) => prevBooks.map((book) => (
+            book.uri === currentBook ? { ...book, preprocessing: true } : book
+        )));
 
         console.log(`[Read] Starting preprocessing (${text.length.toLocaleString()} chars)...`);
         setPreprocessStatus('checking');
@@ -90,6 +173,9 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
             const alreadyDone = await isBookPreprocessed(currentBook);
             if (alreadyDone) {
                 console.log('[Read] Book already preprocessed — skipping backend call');
+                setBooks((prevBooks) => prevBooks.map((book) => (
+                    book.uri === currentBook ? { ...book, preprocessed: true, preprocessing: false } : book
+                )));
                 setPreprocessStatus('done');
                 setPreprocessMessage('Vocabulary already cached');
                 setPreprocessDetail('');
@@ -134,6 +220,9 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                 setPreprocessStatus('error');
                 setPreprocessMessage('Preprocessing lost connection');
                 setPreprocessDetail(errorMessage ?? 'Try again when the network is stable.');
+                setBooks((prevBooks) => prevBooks.map((book) => (
+                    book.uri === currentBook ? { ...book, preprocessing: false } : book
+                )));
                 logDatabaseSnapshot(currentBook);
                 return;
             }
@@ -143,6 +232,9 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                 setPreprocessStatus('error');
                 setPreprocessMessage('Preprocessing failed');
                 setPreprocessDetail(errorMessage ?? 'The backend did not return results.');
+                setBooks((prevBooks) => prevBooks.map((book) => (
+                    book.uri === currentBook ? { ...book, preprocessing: false } : book
+                )));
                 logDatabaseSnapshot(currentBook);
                 return;
             }
@@ -166,6 +258,9 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
             setPreprocessStatus('done');
             setPreprocessMessage('Vocabulary cached');
             setPreprocessDetail(`${bookIndexEntries.length} book index entries ready`);
+            setBooks((prevBooks) => prevBooks.map((book) => (
+                book.uri === currentBook ? { ...book, preprocessed: true, preprocessing: false } : book
+            )));
             logDatabaseSnapshot(currentBook);
             onPreprocessComplete?.(currentBook);
 
@@ -174,10 +269,13 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
             setPreprocessStatus('error');
             setPreprocessMessage('Preprocessing failed');
             setPreprocessDetail(err.message ?? 'Unknown error');
+            setBooks((prevBooks) => prevBooks.map((book) => (
+                book.uri === currentBook ? { ...book, preprocessing: false } : book
+            )));
         } finally {
             preprocessingInFlightRef.current = false;
         }
-    }, [currentBook, onPreprocessComplete]);
+    }, [currentBook, onPreprocessComplete, setBooks]);
 
     // ── Book text extraction callback ────────────────────────────────────────
     // Always stores the text so it's available if the user requests preprocessing later.
@@ -189,10 +287,10 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         }
         console.log(`[Read] Book text received (${text.length.toLocaleString()} chars)`);
         extractedTextRef.current = text;
-        if (preprocessOnOpen) {
+        if (preprocessOnOpen || (currentBook && !activeBook?.preprocessed && !activeBook?.preprocessing)) {
             runPreprocessing(text);
         }
-    }, [preprocessOnOpen, runPreprocessing]);
+    }, [activeBook?.preprocessed, activeBook?.preprocessing, currentBook, preprocessOnOpen, runPreprocessing]);
 
     // ── Trigger preprocessing if Download was pressed while book was already open ─
     useEffect(() => {
@@ -254,43 +352,160 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         saveSettings(newSettings);
     };
 
+    const activeBookSizeMb = typeof activeBook?.size === 'number'
+        ? activeBook.size / (1024 * 1024)
+        : null;
+    const readerHighlightTerms = shouldUseHeuristicHighlights
+        ? (savedWords ?? [])
+        : (highlightTerms ?? savedWords ?? []);
+    const isReaderWaitingForHighlights = !!currentBook && !shouldUseHeuristicHighlights && !highlightTermsReady;
+    const progressLabel = (() => {
+        if (readerLocationInfo?.page && readerLocationInfo?.total) {
+            return `${readerLocationInfo.page}/${readerLocationInfo.total}`;
+        }
+        if (typeof readerLocationInfo?.percentage === 'number') {
+            return `${Math.round(readerLocationInfo.percentage * 100)}%`;
+        }
+        return 'Start';
+    })();
+
+    useEffect(() => {
+        if (!currentBook || !activeBook || activeBook.preprocessed || activeBook.preprocessing) {
+            return;
+        }
+
+        if (extractedTextRef.current) {
+            runPreprocessing(extractedTextRef.current);
+        }
+    }, [activeBook, currentBook, runPreprocessing]);
+
+    const handleBookLoadError = useCallback((reason) => {
+        const lowerReason = String(reason || '').toLowerCase();
+        const likelyTooLarge = lowerReason.includes('readasdataurl')
+            || lowerReason.includes('outofmemory')
+            || (typeof activeBookSizeMb === 'number' && activeBookSizeMb >= 25);
+
+        setBookLoadState('error');
+        setBookLoadError(
+            likelyTooLarge
+                ? 'This EPUB appears too large for the current reader on this device. Please try a smaller file and try again.'
+                : 'This book could not be opened. Please try again.'
+        );
+    }, [activeBookSizeMb]);
+
+    const retryBookLoad = useCallback(() => {
+        setBookLoadError('');
+        setBookLoadState('loading');
+        setReaderRetryKey((prev) => prev + 1);
+    }, []);
+
     return (
-        <View style={{ flex: 1 }}>
-            <View style={[styles.entireTop, { paddingTop: insets.top }]}>
-                <View style={styles.topSection}>
-                    <AppProvider>
-                        <TopSection
-                            highlightedWord={highlightedWord}
-                            onWordSave={handleWordSave}
-                            onWordUnsave={handleWordUnsave}
-                            currentBook={currentBook}
-                            savedWords={savedWords ?? []}
-                        />
-                    </AppProvider>
+        <View style={styles.container}>
+            <View style={[styles.headerBar, { paddingTop: insets.top + spacing.xs }]}>
+                <View style={styles.headerLeft}>
+                    <Text numberOfLines={1} style={styles.headerBookTitle}>
+                        {activeBook?.title || 'Reading'}
+                    </Text>
+                    <Text numberOfLines={1} style={styles.headerBookMeta}>
+                        {activeBook?.author || 'Tap any word for lookup'}
+                    </Text>
+                </View>
+
+                <View style={styles.headerControls}>
+                    <View style={styles.controlPill}>
+                        <Text style={styles.controlLabel}>Aa {settings.fontSize}</Text>
+                    </View>
+                    <View style={styles.controlPill}>
+                        <Text style={styles.controlLabel}>{progressLabel}</Text>
+                    </View>
+                    <TouchableOpacity
+                        style={styles.settingsButton}
+                        onPress={() => setShowSettings(true)}
+                    >
+                        <Feather name="sliders" size={18} color={colors.text} />
+                    </TouchableOpacity>
                 </View>
             </View>
 
             <View style={styles.reader}>
                 <ReaderProvider>
-                    <BottomSection
-                        books={books}
-                        setBooks={setBooks}
-                        currentBook={currentBook}
-                        setHighlightedWord={setHighlightedWord}
-                        settings={settings}
-                        savedWords={savedWords}
-                        onBookTextExtracted={handleBookTextExtracted}
-                    />
+                    {bookLoadState === 'error' ? (
+                        <View style={styles.readerErrorState}>
+                            <Text style={styles.readerErrorTitle}>Couldn’t open this book</Text>
+                            <Text style={styles.readerErrorBody}>{bookLoadError}</Text>
+                            {typeof activeBookSizeMb === 'number' ? (
+                                <Text style={styles.readerErrorMeta}>
+                                    File size: {activeBookSizeMb.toFixed(1)} MB
+                                </Text>
+                            ) : null}
+                            <TouchableOpacity style={styles.retryButton} onPress={retryBookLoad}>
+                                <Text style={styles.retryButtonText}>Try again</Text>
+                            </TouchableOpacity>
+                        </View>
+                    ) : (
+                        isReaderWaitingForHighlights ? (
+                            <View style={styles.readerLoadingState}>
+                                <ActivityIndicator size="small" color={colors.accentStrong} />
+                                <Text style={styles.readerLoadingTitle}>Preparing smart highlights</Text>
+                                <Text style={styles.readerLoadingBody}>
+                                    Loading this book&apos;s saved-word surfaces before the first page render.
+                                </Text>
+                            </View>
+                        ) : (
+                            <BottomSection
+                                key={`${currentBook}-${readerRetryKey}`}
+                                books={books}
+                                setBooks={setBooks}
+                                currentBook={currentBook}
+                                setHighlightedWord={setHighlightedWord}
+                                settings={settings}
+                                savedWords={readerHighlightTerms}
+                                useHeuristicHighlighting={shouldUseHeuristicHighlights}
+                                onBookTextExtracted={handleBookTextExtracted}
+                                onLocationInfoChange={setReaderLocationInfo}
+                                onDismissSelection={() => setHighlightedWord('')}
+                                onBookLoadStarted={() => {
+                                    setBookLoadState('loading');
+                                    setBookLoadError('');
+                                }}
+                                onBookReady={() => {
+                                    setBookLoadState('ready');
+                                    setBookLoadError('');
+                                }}
+                                onBookLoadError={handleBookLoadError}
+                            />
+                        )
+                    )}
                 </ReaderProvider>
+            </View>
+
+            <View style={styles.lookupLayer} pointerEvents="box-none">
+                {highlightedWord ? (
+                    <Pressable
+                        style={styles.lookupDismissZone}
+                        onPress={() => setHighlightedWord('')}
+                    />
+                ) : null}
+
+                <AppProvider>
+                    <TopSection
+                        highlightedWord={highlightedWord}
+                        onWordSave={handleWordSave}
+                        onWordUnsave={handleWordUnsave}
+                        currentBook={currentBook}
+                        sourceBook={activeBook}
+                        savedWords={savedWords ?? []}
+                    />
+                </AppProvider>
             </View>
 
             {/* Preprocessing status indicator */}
             {(['checking', 'queued', 'preprocessing'].includes(preprocessStatus)) && (
-                <View style={styles.preprocessBanner}>
+                <View style={[styles.preprocessBanner, { bottom: insets.bottom + 68 }]}>
                     <ActivityIndicator size="small" color="#ffffff" style={{ marginRight: 8 }} />
                     <View style={styles.preprocessCopy}>
                         <Text style={styles.preprocessBannerText}>
-                            {preprocessMessage || (preprocessStatus === 'checking' ? 'Checking cache...' : 'Caching vocabulary...')}
+                            {preprocessMessage || (preprocessStatus === 'checking' ? 'Checking cache...' : 'Preparing smart highlights...')}
                         </Text>
                         {preprocessDetail ? (
                             <Text style={styles.preprocessBannerSubtext}>{preprocessDetail}</Text>
@@ -299,7 +514,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                 </View>
             )}
             {preprocessStatus === 'error' && (
-                <View style={[styles.preprocessBanner, { backgroundColor: 'rgba(180,40,40,0.75)' }]}>
+                <View style={[styles.preprocessBanner, { bottom: insets.bottom + 68, backgroundColor: 'rgba(180,40,40,0.75)' }]}>
                     <View style={styles.preprocessCopy}>
                         <Text style={styles.preprocessBannerText}>{preprocessMessage || 'Caching failed — words will look up live'}</Text>
                         {preprocessDetail ? (
@@ -309,7 +524,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                 </View>
             )}
             {preprocessStatus === 'done' && (
-                <View style={[styles.preprocessBanner, { backgroundColor: 'rgba(46,125,50,0.82)' }]}>
+                <View style={[styles.preprocessBanner, { bottom: insets.bottom + 68, backgroundColor: 'rgba(46,125,50,0.82)' }]}>
                     <View style={styles.preprocessCopy}>
                         <Text style={styles.preprocessBannerText}>{preprocessMessage || 'Vocabulary cached'}</Text>
                         {preprocessDetail ? (
@@ -318,14 +533,6 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                     </View>
                 </View>
             )}
-
-            {/* Settings Button */}
-            <TouchableOpacity
-                style={styles.settingsButton}
-                onPress={() => setShowSettings(true)}
-            >
-                <Text style={styles.settingsButtonText}>⚙️</Text>
-            </TouchableOpacity>
 
             {/* Settings Menu */}
             <SettingsMenu
@@ -339,23 +546,120 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
 };
 
 const styles = StyleSheet.create({
-    entireTop: {
-        flex: 0.18,
-        backgroundColor: '#85929E',
-        borderBottomRightRadius: 5,
-        borderBottomLeftRadius: 5
+    container: {
+        flex: 1,
+        backgroundColor: colors.backgroundWarm,
     },
-    topSection: {
-        height: '50%',
+    headerBar: {
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        justifyContent: 'space-between',
+        gap: spacing.md,
+        paddingHorizontal: spacing.lg,
+        paddingBottom: spacing.md,
+        backgroundColor: colors.surface,
+        borderBottomWidth: 1,
+        borderBottomColor: colors.border,
+    },
+    headerLeft: {
+        flex: 1,
+        minWidth: 0,
+    },
+    headerBookTitle: {
+        ...textStyles.sectionTitle,
+        fontSize: 18,
+    },
+    headerBookMeta: {
+        ...textStyles.caption,
+        marginTop: 2,
+    },
+    headerControls: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: spacing.xs,
+    },
+    controlPill: {
+        paddingHorizontal: spacing.sm,
+        paddingVertical: 8,
+        borderRadius: radii.pill,
+        backgroundColor: colors.surfaceMuted,
+    },
+    controlLabel: {
+        ...textStyles.caption,
+        color: colors.text,
     },
     reader: {
-        flex: 0.82,
+        flex: 1,
     },
-    // Small banner shown in the bottom-left while preprocessing runs in background
+    readerErrorState: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        paddingHorizontal: spacing.xl,
+        gap: spacing.md,
+    },
+    readerErrorTitle: {
+        ...textStyles.title,
+        textAlign: 'center',
+    },
+    readerErrorBody: {
+        ...textStyles.bodyMuted,
+        textAlign: 'center',
+    },
+    readerErrorMeta: {
+        ...textStyles.caption,
+        color: colors.textSubtle,
+        textAlign: 'center',
+    },
+    readerLoadingState: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        paddingHorizontal: spacing.xl,
+        gap: spacing.sm,
+    },
+    readerLoadingTitle: {
+        ...textStyles.label,
+        textAlign: 'center',
+        color: colors.text,
+    },
+    readerLoadingBody: {
+        ...textStyles.caption,
+        textAlign: 'center',
+        color: colors.textMuted,
+        maxWidth: 280,
+    },
+    retryButton: {
+        minWidth: 132,
+        minHeight: 44,
+        borderRadius: radii.pill,
+        backgroundColor: colors.accentSoft,
+        paddingHorizontal: spacing.lg,
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderWidth: 1,
+        borderColor: colors.border,
+        marginTop: spacing.sm,
+    },
+    retryButtonText: {
+        ...textStyles.body,
+        color: colors.accentStrong,
+    },
+    lookupLayer: {
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        top: 0,
+        bottom: 0,
+        justifyContent: 'flex-end',
+    },
+    lookupDismissZone: {
+        ...StyleSheet.absoluteFillObject,
+    },
     preprocessBanner: {
         position: 'absolute',
-        bottom: 100,
         left: 16,
+        right: 16,
         flexDirection: 'row',
         alignItems: 'center',
         backgroundColor: 'rgba(0,0,0,0.65)',
@@ -376,23 +680,12 @@ const styles = StyleSheet.create({
         marginTop: 2,
     },
     settingsButton: {
-        position: 'absolute',
-        bottom: 30,
-        right: 20,
-        width: 56,
-        height: 56,
-        borderRadius: 28,
-        backgroundColor: '#3b82f6',
+        width: 38,
+        height: 38,
+        borderRadius: 19,
+        backgroundColor: colors.surfaceMuted,
         justifyContent: 'center',
         alignItems: 'center',
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.25,
-        shadowRadius: 3.84,
-        elevation: 5,
-    },
-    settingsButtonText: {
-        fontSize: 24,
     }
 });
 

@@ -3,11 +3,48 @@ import { View, Text, StyleSheet } from 'react-native';
 import { Reader, useReader } from '@epubjs-react-native/core';
 import { useFileSystem } from '@epubjs-react-native/expo-file-system';
 
-const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, settings, savedWords, onBookTextExtracted }) => {
+const BottomSection = ({
+    books,
+    setBooks,
+    currentBook,
+    setHighlightedWord,
+    settings,
+    savedWords,
+    useHeuristicHighlighting,
+    onBookTextExtracted,
+    onLocationInfoChange,
+    onDismissSelection,
+    onBookLoadStarted,
+    onBookReady,
+    onBookLoadError,
+}) => {
     const { getCurrentLocation, goToLocation, injectJavascript } = useReader();
     const currentLocationRef = useRef(null);
     const isFirstRenderRef = useRef(true);
     const previousSettingsRef = useRef(settings);
+    const latestHighlightWordsRef = useRef([]);
+    const latestHighlightModeRef = useRef(!!useHeuristicHighlighting);
+
+    const replayHighlights = () => {
+        if (!injectJavascript) {
+            return;
+        }
+
+        const filtered = latestHighlightWordsRef.current.filter(Boolean);
+        const mode = !!latestHighlightModeRef.current;
+        const script = `
+            (function() {
+                if (typeof window.__setHighlightMode === 'function') {
+                    window.__setHighlightMode(${JSON.stringify(mode)});
+                }
+                if (typeof window.__updateHighlights === 'function') {
+                    window.__updateHighlights(${JSON.stringify(filtered)});
+                }
+            })();
+            true;
+        `;
+        injectJavascript(script);
+    };
 
     const saveCurrentLocation = () => {
         const currentLocation = getCurrentLocation();
@@ -16,11 +53,38 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
             return;
         }
         const startCfi = currentLocation.start.cfi;
+        const displayed = currentLocation?.start?.displayed || currentLocation?.end?.displayed;
+        const percentage = currentLocation?.start?.percentage ?? currentLocation?.percentage ?? null;
+        const info = {
+            cfi: startCfi,
+            page: displayed?.page ?? null,
+            total: displayed?.total ?? null,
+            percentage: typeof percentage === 'number' ? percentage : null,
+        };
         currentLocationRef.current = startCfi;
         setBooks(prevBooks => prevBooks.map(book =>
-            book.uri === currentBook ? { ...book, location: startCfi } : book
+            book.uri === currentBook
+                ? {
+                    ...book,
+                    location: startCfi,
+                    progress: typeof info.percentage === 'number' ? info.percentage : (book.progress ?? 0),
+                }
+                : book
         ));
         console.log(`[BottomSection] Chapter/location changed → CFI: ${startCfi}`);
+        onLocationInfoChange?.(info);
+        onDismissSelection?.();
+
+        // The visible section is most reliable once relocation has settled.
+        // Replaying here catches cases where early startup passes happen
+        // before the initial paginated DOM is fully ready for wrapping.
+        replayHighlights();
+        setTimeout(() => {
+            replayHighlights();
+        }, 200);
+        setTimeout(() => {
+            replayHighlights();
+        }, 700);
     };
 
     const initialLocation = books.find(book => book.uri === currentBook)?.location;
@@ -30,27 +94,10 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
     useEffect(() => {
         if (savedWords === null) return;
 
-        const filtered = savedWords.filter(Boolean);
-        console.log(`[BottomSection] savedWords changed (${filtered.length} word(s)), injecting update:`, filtered);
-
-        if (injectJavascript) {
-            const script = `
-                (function() {
-                    if (typeof window.__updateHighlights === 'function') {
-                        window.__updateHighlights(${JSON.stringify(filtered)});
-                    } else {
-                        window.ReactNativeWebView && window.ReactNativeWebView.postMessage(
-                            JSON.stringify({ type: 'debug', msg: '__updateHighlights not defined yet' })
-                        );
-                    }
-                })();
-                true;
-            `;
-            injectJavascript(script);
-        } else {
-            console.log('[BottomSection] injectJavascript not available');
-        }
-    }, [savedWords, injectJavascript]);
+        latestHighlightWordsRef.current = savedWords.filter(Boolean);
+        latestHighlightModeRef.current = !!useHeuristicHighlighting;
+        replayHighlights();
+    }, [savedWords, injectJavascript, useHeuristicHighlighting]);
 
     // Save and restore location when settings change (but not on first render)
     useEffect(() => {
@@ -112,33 +159,74 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
         <Reader
             src={currentBook}
             fileSystem={useFileSystem}
-            enableSelection={true}
+            enableSelection={false}
             allowScriptedContent={true}
             menuItems={[]}
-            onSelected={(text) => { setHighlightedWord(text) }}
+            onStarted={() => {
+                console.log('[BottomSection] Reader started loading book');
+                onBookLoadStarted?.();
+            }}
+            onReady={() => {
+                console.log('[BottomSection] Reader displayed book successfully');
+                replayHighlights();
+                setTimeout(() => {
+                    replayHighlights();
+                }, 300);
+                setTimeout(() => {
+                    replayHighlights();
+                }, 900);
+                setTimeout(() => {
+                    replayHighlights();
+                }, 1800);
+                onBookReady?.();
+            }}
+            onRendered={() => {
+                console.log('[BottomSection] Reader rendered a section, replaying highlights');
+                replayHighlights();
+                setTimeout(() => {
+                    replayHighlights();
+                }, 250);
+                setTimeout(() => {
+                    replayHighlights();
+                }, 800);
+            }}
+            onDisplayError={(reason) => {
+                console.error('[BottomSection] Reader failed to display book:', reason);
+                onBookLoadError?.(reason);
+            }}
             onLocationChange={() => { saveCurrentLocation() }}
             initialLocation={initialLocation || ""}
             defaultTheme={theme}
 
             injectedJavascript={`
                 console.log('[BottomSection] Javascript injection started');
+                var useHeuristicHighlighting = ${JSON.stringify(!!useHeuristicHighlighting)};
+                var highlightRetryTimeouts = [];
 
                 // Mutable set — updated in-place via window.__updateHighlights
                 var savedWordsSet = new Set(${JSON.stringify(filteredSavedWords)});
                 console.log('[BottomSection] Initial saved words (' + savedWordsSet.size + '):', ${JSON.stringify(filteredSavedWords)});
 
+                function clearHighlightRetries() {
+                    while (highlightRetryTimeouts.length) {
+                        clearTimeout(highlightRetryTimeouts.pop());
+                    }
+                }
+
                 // Called from React Native via injectJavascript() when savedWords changes.
                 // Receives the new array directly — no page reload needed.
                 window.__updateHighlights = function(words) {
                     savedWordsSet = new Set(words.filter(Boolean));
-                    try { highlightWords(); } catch(e) {}
-                    setTimeout(function() {
-                        try { highlightWords(); } catch(e) {}
-                    }, 400);
+                    scheduleHighlightPasses('update');
                     window.ReactNativeWebView.postMessage(JSON.stringify({
                         type: 'highlights-updated',
                         count: savedWordsSet.size
                     }));
+                };
+
+                window.__setHighlightMode = function(useHeuristic) {
+                    useHeuristicHighlighting = !!useHeuristic;
+                    scheduleHighlightPasses('mode-change');
                 };
 
                 // Remove all existing highlight spans, restoring plain text nodes
@@ -151,43 +239,41 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
                     });
                 }
 
-                // Returns true if rawToken matches a saved word:
-                //   1. Exact match after stripping punctuation
-                //   2. Saved word is a prefix of token (e.g. "대표" matches "대표가")
-                //   3. Verb stem match: strip trailing 다 (e.g. "실리다" → "실리" matches "실렸다")
-                //   4. 하다 verb conjugation: 하 → 해 (e.g. "수상하다" matches "수상했다", "수상해서")
+                // During background preprocessing we temporarily fall back to the
+                // older fuzzy matcher so saved words still highlight reasonably
+                // well before book_index is ready. Once preprocessing finishes,
+                // React Native passes exact surface terms and turns this off.
                 function tokenMatchesSaved(rawToken) {
-                    // Strip leading/trailing non-Korean/non-alphanumeric characters (punctuation)
                     var clean = rawToken.replace(/^[^\uAC00-\uD7A3a-zA-Z0-9]+|[^\uAC00-\uD7A3a-zA-Z0-9]+$/g, '');
                     if (!clean) return false;
 
-                    // 1. Exact match
+                    if (!useHeuristicHighlighting) {
+                        return savedWordsSet.has(clean);
+                    }
+
                     if (savedWordsSet.has(clean)) return true;
 
-                    // 2, 3 & 4. Prefix / stem match (only for saved words with 2+ chars)
                     var iter = savedWordsSet.values();
                     var entry = iter.next();
                     while (!entry.done) {
                         var saved = entry.value;
                         if (saved.length >= 2) {
-                            // Noun + particle: "대표" matches "대표가"
                             if (clean.startsWith(saved)) return true;
-                            // Verb dictionary form ends in 다: stem match
-                            // e.g. "실리다" → stem "실리" matches "실렸다", "실리는"
+
                             if (saved.length >= 3 && saved[saved.length - 1] === '\ub2e4') {
                                 var stem = saved.slice(0, -1);
                                 if (clean.startsWith(stem)) return true;
-                                // 하다 verbs: 하 + 아/어 contracts to 해
-                                // e.g. "수상하다" → stem "수상하", also try "수상해"
-                                // covers: 수상했다, 수상해서, 수상해도, etc.
+
                                 if (stem[stem.length - 1] === '\ud558') {
                                     var haeStem = stem.slice(0, -1) + '\ud574';
                                     if (clean.startsWith(haeStem)) return true;
                                 }
                             }
                         }
+
                         entry = iter.next();
                     }
+
                     return false;
                 }
 
@@ -220,8 +306,10 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
                             if (part.trim() && tokenMatchesSaved(part)) {
                                 var span = doc.createElement('span');
                                 span.dataset.savedHighlight = 'true';
-                                span.style.backgroundColor = 'red';
-                                span.style.color = 'white';
+                                span.style.backgroundColor = 'rgba(214, 190, 148, 0.42)';
+                                span.style.color = '#4f4031';
+                                span.style.borderRadius = '3px';
+                                span.style.boxShadow = 'inset 0 -1px 0 rgba(110, 98, 85, 0.28)';
                                 span.textContent = part;
                                 fragment.appendChild(span);
                             } else {
@@ -248,17 +336,38 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
                     return true;
                 }
 
+                function scheduleHighlightPasses(reason) {
+                    clearHighlightRetries();
+
+                    var delays = [0, 120, 320, 700, 1300, 2200];
+                    delays.forEach(function(delay) {
+                        var timeoutId = setTimeout(function() {
+                            try {
+                                var applied = highlightWords();
+                                if (applied) {
+                                    console.log('[BottomSection] Highlight pass succeeded (' + reason + ') after ' + delay + 'ms');
+                                }
+                            } catch (e) {
+                                console.log('[BottomSection] Highlight pass failed (' + reason + '):', String(e));
+                            }
+                        }, delay);
+                        highlightRetryTimeouts.push(timeoutId);
+                    });
+                }
+
                 rendition.on('rendered', function() {
                     console.log('[BottomSection] Content rendered, applying highlights');
-                    highlightWords();
+                    scheduleHighlightPasses('rendered');
                 });
 
-                // Also attempt immediately and after a short delay in case the
-                // 'rendered' event already fired before this handler was registered.
-                try { highlightWords(); } catch(e) {}
-                setTimeout(function() {
-                    try { highlightWords(); } catch(e) {}
-                }, 600);
+                // The 'rendered' event may already have fired before this script
+                // was injected. Apply highlights immediately for the already-
+                // displayed chapter as soon as the bridge is set up.
+                scheduleHighlightPasses('initial-setup');
+
+                window.ReactNativeWebView.postMessage(JSON.stringify({
+                    type: 'highlight-bridge-ready'
+                }));
 
                 // ── Book Text Extraction ──────────────────────────────────────
                 // Called once after the book is ready to extract all text from
@@ -316,40 +425,91 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
 
                 rendition.on('relocated', function() {
                     console.log('[BottomSection] Location changed, applying highlights');
-                    highlightWords();
+                    scheduleHighlightPasses('relocated');
+                    window.ReactNativeWebView.postMessage(JSON.stringify({
+                        type: 'dismiss-selection'
+                    }));
                 });
 
                 // Listen to click events and select word
+                function getMatchingContent(doc) {
+                    var contents = rendition.getContents() || [];
+                    for (var i = 0; i < contents.length; i++) {
+                        if (contents[i] && contents[i].document === doc) {
+                            return contents[i];
+                        }
+                    }
+                    return contents[0] || null;
+                }
+
+                function extractWordFromRange(doc, range) {
+                    if (!range) return '';
+                    try {
+                        var selection = doc.defaultView.getSelection();
+                        selection.removeAllRanges();
+                        selection.addRange(range);
+                        selection.modify('move', 'backward', 'word');
+                        selection.modify('extend', 'forward', 'word');
+                        var text = selection.toString().trim();
+                        selection.removeAllRanges();
+                        return text;
+                    } catch (err) {
+                        return '';
+                    }
+                }
+
                 rendition.on('click', function(e) {
                     console.log('[BottomSection] Click detected, attempting to select word');
 
-                    var contents = rendition.getContents();
-                    if (contents && contents.length > 0) {
-                        var content = contents[0];
-                        if (content && content.window) {
-                            var selection = content.window.getSelection();
-                            var doc = content.document;
+                    var target = e.target || null;
+                    var doc = target && target.ownerDocument ? target.ownerDocument : null;
+                    var content = doc ? getMatchingContent(doc) : null;
+                    if (!content || !content.window || !doc) {
+                        onDismissSelection?.();
+                        return;
+                    }
 
-                            var range = doc.caretRangeFromPoint(e.clientX, e.clientY);
-
-                            if (range) {
-                                selection.removeAllRanges();
-                                selection.addRange(range);
-
-                                selection.modify('move', 'backward', 'word');
-                                selection.modify('extend', 'forward', 'word');
-
-                                var selectedText = selection.toString().trim();
-                                console.log('[BottomSection] Selected word:', selectedText);
-
-                                if (selectedText) {
-                                    window.ReactNativeWebView.postMessage(JSON.stringify({
-                                        type: 'word-selected',
-                                        text: selectedText
-                                    }));
-                                }
-                            }
+                    if (target && target.dataset && target.dataset.savedHighlight) {
+                        var highlightedText = (target.textContent || '').trim();
+                        if (highlightedText) {
+                            window.ReactNativeWebView.postMessage(JSON.stringify({
+                                type: 'word-selected',
+                                text: highlightedText
+                            }));
+                            return;
                         }
+                    }
+
+                    var selectedText = '';
+                    var range = null;
+
+                    if (typeof doc.caretRangeFromPoint === 'function') {
+                        range = doc.caretRangeFromPoint(e.clientX, e.clientY);
+                        selectedText = extractWordFromRange(doc, range);
+                    }
+
+                    if (!selectedText && typeof doc.caretPositionFromPoint === 'function') {
+                        var position = doc.caretPositionFromPoint(e.clientX, e.clientY);
+                        if (position && position.offsetNode) {
+                            range = doc.createRange();
+                            range.setStart(position.offsetNode, position.offset);
+                            range.setEnd(position.offsetNode, position.offset);
+                            selectedText = extractWordFromRange(doc, range);
+                        }
+                    }
+
+                    selectedText = selectedText.trim();
+                    console.log('[BottomSection] Selected word:', selectedText);
+
+                    if (selectedText) {
+                        window.ReactNativeWebView.postMessage(JSON.stringify({
+                            type: 'word-selected',
+                            text: selectedText
+                        }));
+                    } else {
+                        window.ReactNativeWebView.postMessage(JSON.stringify({
+                            type: 'dismiss-selection'
+                        }));
                     }
                 });
 
@@ -372,12 +532,18 @@ const BottomSection = ({ books, setBooks, currentBook, setHighlightedWord, setti
                     } else if (parsed?.type === 'word-selected') {
                         console.log(`[BottomSection] Word tapped: "${parsed.text}"`);
                         setHighlightedWord(parsed.text);
+                    } else if (parsed?.type === 'dismiss-selection') {
+                        console.log('[BottomSection] Dismissing selection');
+                        onDismissSelection?.();
                     } else if (parsed?.type === 'book-text-extracted') {
                         // Full book text arrived — hand it off to Read.js to trigger preprocessing
                         console.log(`[BottomSection] Received extracted text (${parsed.text?.length?.toLocaleString()} chars), forwarding to parent`);
                         onBookTextExtracted?.(parsed.text);
                     } else if (parsed?.type === 'highlights-updated') {
                         console.log(`[BottomSection] Highlights updated successfully (${parsed.count} words)`);
+                    } else if (parsed?.type === 'highlight-bridge-ready') {
+                        console.log('[BottomSection] Highlight bridge ready, replaying latest highlight payload');
+                        replayHighlights();
                     } else if (parsed?.type === 'debug') {
                         console.log(`[BottomSection] WebView debug: ${parsed.msg}`);
                     }
