@@ -16,18 +16,18 @@ const tabIcons = {
     Profile: { Component: MaterialCommunityIcons, name: 'account-circle-outline' },
 };
 
-export const tabScreenOptions = ({ route }) => ({
+export const tabScreenOptions = ({ route }, { hideTabChrome = false } = {}) => ({
     headerShown: false,
     tabBarHideOnKeyboard: true,
     tabBarActiveTintColor: colors.accent,
     tabBarInactiveTintColor: colors.textSubtle,
-    tabBarStyle: styles.tabBar,
+    tabBarStyle: tabBarBaseStyle,
     tabBarItemStyle: styles.tabBarItem,
     tabBarIconStyle: styles.iconSlot,
     tabBarIcon: ({ focused, color }) => {
         const { Component, name } = tabIcons[route.name];
         return (
-            <View style={[styles.iconContainer, focused && styles.iconContainerActive]}>
+            <View style={[styles.iconContainer, focused && styles.iconContainerActive, hideTabChrome && styles.iconContainerHidden]}>
                 <Component
                     name={name}
                     color={focused ? colors.accentStrong : color}
@@ -67,4 +67,9 @@ const styles = StyleSheet.create({
     iconContainerActive: {
         backgroundColor: colors.accentSoft,
     },
+    iconContainerHidden: {
+        opacity: 0,
+    },
 });
+
+export const tabBarBaseStyle = styles.tabBar;

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useEffect } from 'react';
+import { useCallback, useMemo, useRef, useEffect } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { Reader, useReader } from '@epubjs-react-native/core';
 import { useFileSystem } from '@epubjs-react-native/expo-file-system';
@@ -8,6 +8,8 @@ const BottomSection = ({
     setBooks,
     currentBook,
     setHighlightedWord,
+    activeLookupText,
+    focusMode,
     settings,
     savedWords,
     useHeuristicHighlighting,
@@ -17,13 +19,20 @@ const BottomSection = ({
     onBookLoadStarted,
     onBookReady,
     onBookLoadError,
+    onNativeTextSelected,
+    onLookupPlacementChange,
 }) => {
     const { getCurrentLocation, goToLocation, injectJavascript } = useReader();
     const currentLocationRef = useRef(null);
+    const pendingLocationRestoreRef = useRef('');
     const isFirstRenderRef = useRef(true);
     const previousSettingsRef = useRef(settings);
     const latestHighlightWordsRef = useRef([]);
     const latestHighlightModeRef = useRef(!!useHeuristicHighlighting);
+    const latestDarkModeRef = useRef(!!settings.isDarkMode);
+    const pendingNativeSelectionTextRef = useRef('');
+    const nativeSelectionActiveRef = useRef(false);
+    const nativeSelectionTimeoutRef = useRef(null);
 
     const replayHighlights = () => {
         if (!injectJavascript) {
@@ -32,10 +41,14 @@ const BottomSection = ({
 
         const filtered = latestHighlightWordsRef.current.filter(Boolean);
         const mode = !!latestHighlightModeRef.current;
+        const darkMode = !!latestDarkModeRef.current;
         const script = `
             (function() {
                 if (typeof window.__setHighlightMode === 'function') {
                     window.__setHighlightMode(${JSON.stringify(mode)});
+                }
+                if (typeof window.__setHighlightDarkMode === 'function') {
+                    window.__setHighlightDarkMode(${JSON.stringify(darkMode)});
                 }
                 if (typeof window.__updateHighlights === 'function') {
                     window.__updateHighlights(${JSON.stringify(filtered)});
@@ -45,6 +58,55 @@ const BottomSection = ({
         `;
         injectJavascript(script);
     };
+
+    const clearNativeSelection = useCallback(() => {
+        if (!injectJavascript) {
+            return;
+        }
+
+        injectJavascript(`
+            (function() {
+                try {
+                    var contents = rendition.getContents() || [];
+                    contents.forEach(function(c) {
+                        if (!c || !c.document) return;
+                        var sel = typeof c.document.getSelection === 'function'
+                            ? c.document.getSelection()
+                            : (c.document.defaultView && c.document.defaultView.getSelection
+                                ? c.document.defaultView.getSelection()
+                                : null);
+                        if (sel) sel.removeAllRanges();
+                    });
+                } catch (e) {}
+            })();
+            true;
+        `);
+    }, [injectJavascript]);
+
+    const clearActiveTapHighlight = useCallback(() => {
+        if (!injectJavascript) {
+            return;
+        }
+
+        injectJavascript(`
+            (function() {
+                try {
+                    if (typeof window.__clearActiveTapHighlight === 'function') {
+                        window.__clearActiveTapHighlight();
+                    }
+                } catch (e) {}
+            })();
+            true;
+        `);
+    }, [injectJavascript]);
+
+    useEffect(() => {
+        return () => {
+            if (nativeSelectionTimeoutRef.current) {
+                clearTimeout(nativeSelectionTimeoutRef.current);
+            }
+        };
+    }, []);
 
     const saveCurrentLocation = () => {
         const currentLocation = getCurrentLocation();
@@ -73,6 +135,8 @@ const BottomSection = ({
         ));
         console.log(`[BottomSection] Chapter/location changed → CFI: ${startCfi}`);
         onLocationInfoChange?.(info);
+        clearNativeSelection();
+        clearActiveTapHighlight();
         onDismissSelection?.();
 
         // The visible section is most reliable once relocation has settled.
@@ -87,6 +151,25 @@ const BottomSection = ({
         }, 700);
     };
 
+    const restoreReaderLocation = useCallback((cfi, delay = 200) => {
+        if (!cfi) {
+            return;
+        }
+
+        currentLocationRef.current = cfi;
+        pendingLocationRestoreRef.current = cfi;
+
+        setBooks(prevBooks => prevBooks.map(book =>
+            book.uri === currentBook ? { ...book, location: cfi } : book
+        ));
+
+        setTimeout(() => {
+            if (goToLocation) {
+                goToLocation(cfi);
+            }
+        }, delay);
+    }, [currentBook, goToLocation, setBooks]);
+
     const initialLocation = books.find(book => book.uri === currentBook)?.location;
 
     // When savedWords changes after initial mount, inject updated word list into the
@@ -96,8 +179,23 @@ const BottomSection = ({
 
         latestHighlightWordsRef.current = savedWords.filter(Boolean);
         latestHighlightModeRef.current = !!useHeuristicHighlighting;
+        latestDarkModeRef.current = !!settings.isDarkMode;
         replayHighlights();
-    }, [savedWords, injectJavascript, useHeuristicHighlighting]);
+    }, [savedWords, injectJavascript, settings.isDarkMode, useHeuristicHighlighting]);
+
+    useEffect(() => {
+        if (!activeLookupText) {
+            clearActiveTapHighlight();
+        }
+    }, [activeLookupText, clearActiveTapHighlight]);
+
+    useEffect(() => {
+        const timeoutId = setTimeout(() => {
+            replayHighlights();
+        }, 120);
+
+        return () => clearTimeout(timeoutId);
+    }, [focusMode]);
 
     // Save and restore location when settings change (but not on first render)
     useEffect(() => {
@@ -107,25 +205,37 @@ const BottomSection = ({
             return;
         }
 
+        let settleTimeout;
+
         if (JSON.stringify(previousSettingsRef.current) !== JSON.stringify(settings)) {
             const currentLocation = getCurrentLocation();
-            if (currentLocation?.start?.cfi) {
-                const locationToRestore = currentLocation.start.cfi;
-                currentLocationRef.current = locationToRestore;
+            const locationToRestore =
+                currentLocation?.start?.cfi ||
+                currentLocationRef.current ||
+                initialLocation ||
+                '';
 
-                setBooks(prevBooks => prevBooks.map(book =>
-                    book.uri === currentBook ? { ...book, location: locationToRestore } : book
-                ));
-
-                setTimeout(() => {
-                    if (goToLocation) {
-                        goToLocation(locationToRestore);
-                    }
-                }, 200);
+            if (locationToRestore) {
+                restoreReaderLocation(locationToRestore);
             }
+
+            // Page turns can still be settling when a theme toggle happens.
+            // Re-read shortly after and prefer the newer CFI if it has advanced.
+            settleTimeout = setTimeout(() => {
+                const settledLocation = getCurrentLocation()?.start?.cfi;
+                if (settledLocation && settledLocation !== pendingLocationRestoreRef.current) {
+                    restoreReaderLocation(settledLocation, 60);
+                }
+            }, 220);
+
             previousSettingsRef.current = settings;
         }
-    }, [settings, getCurrentLocation, goToLocation, setBooks, currentBook]);
+        return () => {
+            if (settleTimeout) {
+                clearTimeout(settleTimeout);
+            }
+        };
+    }, [settings, getCurrentLocation, initialLocation, restoreReaderLocation]);
 
     const theme = useMemo(() => ({
         body: {
@@ -159,7 +269,7 @@ const BottomSection = ({
         <Reader
             src={currentBook}
             fileSystem={useFileSystem}
-            enableSelection={false}
+            enableSelection={true}
             allowScriptedContent={true}
             menuItems={[]}
             onStarted={() => {
@@ -168,6 +278,17 @@ const BottomSection = ({
             }}
             onReady={() => {
                 console.log('[BottomSection] Reader displayed book successfully');
+                if (pendingLocationRestoreRef.current) {
+                    restoreReaderLocation(pendingLocationRestoreRef.current, 60);
+                    setTimeout(() => {
+                        if (pendingLocationRestoreRef.current) {
+                            restoreReaderLocation(pendingLocationRestoreRef.current, 220);
+                        }
+                    }, 140);
+                    setTimeout(() => {
+                        pendingLocationRestoreRef.current = '';
+                    }, 420);
+                }
                 replayHighlights();
                 setTimeout(() => {
                     replayHighlights();
@@ -194,6 +315,80 @@ const BottomSection = ({
                 console.error('[BottomSection] Reader failed to display book:', reason);
                 onBookLoadError?.(reason);
             }}
+            onSelected={(text) => {
+                const selectedText = String(text || '').trim();
+                if (selectedText.length > 1) {
+                    console.log(`[BottomSection] Native text selected: "${selectedText}"`);
+                    nativeSelectionActiveRef.current = true;
+                    if (nativeSelectionTimeoutRef.current) {
+                        clearTimeout(nativeSelectionTimeoutRef.current);
+                    }
+                    nativeSelectionTimeoutRef.current = setTimeout(() => {
+                        nativeSelectionActiveRef.current = false;
+                        nativeSelectionTimeoutRef.current = null;
+                    }, 1000);
+
+                    if (injectJavascript) {
+                        injectJavascript(
+                            'window.__nativeSelectionActive = true;' +
+                            'setTimeout(function(){ window.__nativeSelectionActive = false; }, 600);' +
+                            'true;'
+                        );
+                    }
+                    pendingNativeSelectionTextRef.current = selectedText;
+                    onLookupPlacementChange?.('bottom');
+                    onNativeTextSelected?.(selectedText);
+
+                    if (injectJavascript) {
+                        injectJavascript(`
+                            (function() {
+                                try {
+                                    var placement = 'bottom';
+                                    var contents = rendition.getContents() || [];
+
+                                    for (var i = 0; i < contents.length; i++) {
+                                        var c = contents[i];
+                                        if (!c || !c.document) continue;
+
+                                        var doc = c.document;
+                                        var sel = typeof doc.getSelection === 'function'
+                                            ? doc.getSelection()
+                                            : (doc.defaultView && doc.defaultView.getSelection
+                                                ? doc.defaultView.getSelection()
+                                                : null);
+
+                                        if (!sel || sel.rangeCount === 0) continue;
+
+                                        var text = sel.toString ? sel.toString().trim() : '';
+                                        if (text.length <= 1) continue;
+
+                                        var range = sel.getRangeAt(0);
+                                        var rect = range.getBoundingClientRect ? range.getBoundingClientRect() : null;
+                                        var viewportHeight = (doc.defaultView && doc.defaultView.innerHeight) || window.innerHeight || 0;
+
+                                        if (rect && viewportHeight) {
+                                            var selectionMidY = rect.top + (rect.height / 2);
+                                            placement = selectionMidY > (viewportHeight / 2) ? 'top' : 'bottom';
+                                        }
+                                        break;
+                                    }
+
+                                    window.ReactNativeWebView.postMessage(JSON.stringify({
+                                        type: 'native-selection',
+                                        placement: placement
+                                    }));
+                                } catch (e) {
+                                    window.ReactNativeWebView.postMessage(JSON.stringify({
+                                        type: 'native-selection',
+                                        placement: 'bottom'
+                                    }));
+                                }
+                            })();
+                            true;
+                        `);
+                    }
+                }
+            }}
             onLocationChange={() => { saveCurrentLocation() }}
             initialLocation={initialLocation || ""}
             defaultTheme={theme}
@@ -201,7 +396,9 @@ const BottomSection = ({
             injectedJavascript={`
                 console.log('[BottomSection] Javascript injection started');
                 var useHeuristicHighlighting = ${JSON.stringify(!!useHeuristicHighlighting)};
+                var useDarkHighlightTheme = ${JSON.stringify(!!settings.isDarkMode)};
                 var highlightRetryTimeouts = [];
+                window.__nativeSelectionActive = false;
 
                 // Mutable set — updated in-place via window.__updateHighlights
                 var savedWordsSet = new Set(${JSON.stringify(filteredSavedWords)});
@@ -228,6 +425,54 @@ const BottomSection = ({
                     useHeuristicHighlighting = !!useHeuristic;
                     scheduleHighlightPasses('mode-change');
                 };
+
+                window.__setHighlightDarkMode = function(isDarkMode) {
+                    useDarkHighlightTheme = !!isDarkMode;
+                    scheduleHighlightPasses('theme-change');
+                };
+
+                function clearActiveTapHighlight() {
+                    var contents = rendition.getContents() || [];
+                    contents.forEach(function(content) {
+                        if (!content || !content.document) return;
+                        var doc = content.document;
+                        var spans = doc.querySelectorAll('span[data-active-tap-highlight]');
+                        spans.forEach(function(span) {
+                            var parent = span.parentNode;
+                            if (!parent) return;
+                            while (span.firstChild) {
+                                parent.insertBefore(span.firstChild, span);
+                            }
+                            parent.removeChild(span);
+                            parent.normalize();
+                        });
+                    });
+                }
+
+                function applyActiveTapHighlight(doc, range) {
+                    clearActiveTapHighlight();
+                    if (!doc || !range) return false;
+                    try {
+                        var text = range.toString ? range.toString().trim() : '';
+                        if (!text) return false;
+
+                        var span = doc.createElement('span');
+                        span.dataset.activeTapHighlight = 'true';
+                        span.style.backgroundColor = useDarkHighlightTheme
+                            ? 'rgba(117, 138, 170, 0.24)'
+                            : 'rgba(188, 204, 194, 0.32)';
+                        span.style.borderRadius = '3px';
+                        span.style.boxShadow = useDarkHighlightTheme
+                            ? 'inset 0 -1px 0 rgba(166, 188, 214, 0.18)'
+                            : 'inset 0 -1px 0 rgba(134, 154, 142, 0.18)';
+                        range.surroundContents(span);
+                        return true;
+                    } catch (e) {
+                        return false;
+                    }
+                }
+
+                window.__clearActiveTapHighlight = clearActiveTapHighlight;
 
                 // Remove all existing highlight spans, restoring plain text nodes
                 function resetHighlights(doc) {
@@ -306,10 +551,14 @@ const BottomSection = ({
                             if (part.trim() && tokenMatchesSaved(part)) {
                                 var span = doc.createElement('span');
                                 span.dataset.savedHighlight = 'true';
-                                span.style.backgroundColor = 'rgba(214, 190, 148, 0.42)';
-                                span.style.color = '#4f4031';
+                                span.style.backgroundColor = useDarkHighlightTheme
+                                    ? 'rgba(198, 160, 100, 0.34)'
+                                    : 'rgba(214, 190, 148, 0.42)';
+                                span.style.color = useDarkHighlightTheme ? '#f6ead7' : '#4f4031';
                                 span.style.borderRadius = '3px';
-                                span.style.boxShadow = 'inset 0 -1px 0 rgba(110, 98, 85, 0.28)';
+                                span.style.boxShadow = useDarkHighlightTheme
+                                    ? 'inset 0 -1px 0 rgba(242, 219, 176, 0.24)'
+                                    : 'inset 0 -1px 0 rgba(110, 98, 85, 0.28)';
                                 span.textContent = part;
                                 fragment.appendChild(span);
                             } else {
@@ -426,6 +675,7 @@ const BottomSection = ({
                 rendition.on('relocated', function() {
                     console.log('[BottomSection] Location changed, applying highlights');
                     scheduleHighlightPasses('relocated');
+                    clearActiveTapHighlight();
                     window.ReactNativeWebView.postMessage(JSON.stringify({
                         type: 'dismiss-selection'
                     }));
@@ -451,41 +701,74 @@ const BottomSection = ({
                         selection.modify('move', 'backward', 'word');
                         selection.modify('extend', 'forward', 'word');
                         var text = selection.toString().trim();
+                        var selectedRange = selection.rangeCount > 0 ? selection.getRangeAt(0).cloneRange() : null;
                         selection.removeAllRanges();
-                        return text;
+                        return {
+                            text: text,
+                            range: selectedRange
+                        };
                     } catch (err) {
-                        return '';
+                        return {
+                            text: '',
+                            range: null
+                        };
                     }
                 }
 
+                function getPlacementForClientY(clientY, doc) {
+                    var view = (doc && doc.defaultView) ? doc.defaultView : window;
+                    var innerHeight = view && view.innerHeight ? view.innerHeight : window.innerHeight;
+                    return clientY > (innerHeight / 2) ? 'top' : 'bottom';
+                }
+
                 rendition.on('click', function(e) {
+                    if (window.__nativeSelectionActive) {
+                        console.log('[BottomSection] Click suppressed — native selection active');
+                        return;
+                    }
                     console.log('[BottomSection] Click detected, attempting to select word');
 
                     var target = e.target || null;
                     var doc = target && target.ownerDocument ? target.ownerDocument : null;
                     var content = doc ? getMatchingContent(doc) : null;
                     if (!content || !content.window || !doc) {
-                        onDismissSelection?.();
+                        window.ReactNativeWebView.postMessage(JSON.stringify({
+                            type: 'dismiss-selection'
+                        }));
                         return;
                     }
+
+                    var existingSelection = typeof doc.getSelection === 'function'
+                        ? doc.getSelection()
+                        : (doc.defaultView && doc.defaultView.getSelection
+                            ? doc.defaultView.getSelection()
+                            : null);
+                    if (existingSelection && !window.__nativeSelectionActive) {
+                        existingSelection.removeAllRanges();
+                    }
+                    clearActiveTapHighlight();
 
                     if (target && target.dataset && target.dataset.savedHighlight) {
                         var highlightedText = (target.textContent || '').trim();
                         if (highlightedText) {
                             window.ReactNativeWebView.postMessage(JSON.stringify({
                                 type: 'word-selected',
-                                text: highlightedText
+                                text: highlightedText,
+                                placement: getPlacementForClientY(e.clientY, doc)
                             }));
                             return;
                         }
                     }
 
                     var selectedText = '';
+                    var selectedWordRange = null;
                     var range = null;
 
                     if (typeof doc.caretRangeFromPoint === 'function') {
                         range = doc.caretRangeFromPoint(e.clientX, e.clientY);
-                        selectedText = extractWordFromRange(doc, range);
+                        var extracted = extractWordFromRange(doc, range);
+                        selectedText = extracted.text;
+                        selectedWordRange = extracted.range;
                     }
 
                     if (!selectedText && typeof doc.caretPositionFromPoint === 'function') {
@@ -494,7 +777,9 @@ const BottomSection = ({
                             range = doc.createRange();
                             range.setStart(position.offsetNode, position.offset);
                             range.setEnd(position.offsetNode, position.offset);
-                            selectedText = extractWordFromRange(doc, range);
+                            var fallbackExtracted = extractWordFromRange(doc, range);
+                            selectedText = fallbackExtracted.text;
+                            selectedWordRange = fallbackExtracted.range;
                         }
                     }
 
@@ -502,11 +787,16 @@ const BottomSection = ({
                     console.log('[BottomSection] Selected word:', selectedText);
 
                     if (selectedText) {
+                        if (!savedWordsSet.has(selectedText) && selectedWordRange) {
+                            applyActiveTapHighlight(doc, selectedWordRange);
+                        }
                         window.ReactNativeWebView.postMessage(JSON.stringify({
                             type: 'word-selected',
-                            text: selectedText
+                            text: selectedText,
+                            placement: getPlacementForClientY(e.clientY, doc)
                         }));
                     } else {
+                        clearActiveTapHighlight();
                         window.ReactNativeWebView.postMessage(JSON.stringify({
                             type: 'dismiss-selection'
                         }));
@@ -530,11 +820,29 @@ const BottomSection = ({
                             }
                         });
                     } else if (parsed?.type === 'word-selected') {
+                        if (nativeSelectionActiveRef.current) {
+                            console.log('[BottomSection] word-selected suppressed — native selection active');
+                            return;
+                        }
                         console.log(`[BottomSection] Word tapped: "${parsed.text}"`);
+                        if (parsed?.placement === 'top' || parsed?.placement === 'bottom') {
+                            onLookupPlacementChange?.(parsed.placement);
+                        }
                         setHighlightedWord(parsed.text);
                     } else if (parsed?.type === 'dismiss-selection') {
+                        if (nativeSelectionActiveRef.current) {
+                            console.log('[BottomSection] dismiss-selection suppressed — native selection active');
+                            return;
+                        }
                         console.log('[BottomSection] Dismissing selection');
+                        pendingNativeSelectionTextRef.current = '';
+                        clearNativeSelection();
+                        clearActiveTapHighlight();
                         onDismissSelection?.();
+                    } else if (parsed?.type === 'native-selection') {
+                        if (parsed?.placement === 'top' || parsed?.placement === 'bottom') {
+                            onLookupPlacementChange?.(parsed.placement);
+                        }
                     } else if (parsed?.type === 'book-text-extracted') {
                         // Full book text arrived — hand it off to Read.js to trigger preprocessing
                         console.log(`[BottomSection] Received extracted text (${parsed.text?.length?.toLocaleString()} chars), forwarding to parent`);

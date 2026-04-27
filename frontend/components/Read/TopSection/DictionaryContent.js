@@ -54,7 +54,25 @@ const hasSavableDefinition = (definition) => {
     return normalized.length > 0 && normalized !== 'N/A';
 };
 
-const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWordUnsave, currentBook, sourceBook, savedWords = [] }) => {
+const DictionaryContent = ({ highlightedWord, isDarkMode, onContentLoaded, onWordSave, onWordUnsave, onExpandedStateChange, currentBook, sourceBook, savedWords = [] }) => {
+
+    const palette = isDarkMode
+        ? {
+            text: '#f3ede3',
+            mutedText: '#b6aa99',
+            secondaryText: '#d9cfbf',
+            emptyText: '#9c8f81',
+            action: '#9cc3ff',
+            icon: '#d8ccb9',
+        }
+        : {
+            text: '#000000',
+            mutedText: '#888',
+            secondaryText: '#333',
+            emptyText: '#494949',
+            action: '#3D62A2',
+            icon: '#000000',
+        };
 
     const [expandedWords, setExpandedWords] = useState([]);
     const [stemWordList, setStemWordList] = useState([]);
@@ -78,6 +96,12 @@ const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWor
     // Hanja modal
     const [currentHanja, setCurrentHanja] = useState(null);
     const handleHanjaPress = (hanja) => setCurrentHanja(hanja);
+
+    useEffect(() => {
+        const hasExpandedCached = Object.values(expandedCached).some(Boolean);
+        const hasExpandedLive = expandedWords.length > 0;
+        onExpandedStateChange?.(hasExpandedCached || hasExpandedLive);
+    }, [expandedCached, expandedWords, onExpandedStateChange]);
 
     // ── Step 1: Stem the tapped word ─────────────────────────────────────────
     useEffect(() => {
@@ -321,8 +345,8 @@ const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWor
     if (cachedResults === null) {
         return (
             <View style={styles.shimmerContainer}>
-                <ActivityIndicator size="small" color="#888" />
-                <Text style={styles.shimmerText}>Looking up...</Text>
+                <ActivityIndicator size="small" color={palette.mutedText} />
+                <Text style={[styles.shimmerText, { color: palette.mutedText }]}>Looking up...</Text>
             </View>
         );
     }
@@ -331,7 +355,7 @@ const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWor
     if (cachedResults.length === 0 && !needsLiveFetch) {
         return (
             <View style={styles.noLookupContainer}>
-                <Text style={styles.noLookupText}>no lookup available</Text>
+                <Text style={[styles.noLookupText, { color: palette.emptyText }]}>no lookup available</Text>
             </View>
         );
     }
@@ -361,7 +385,7 @@ const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWor
                                     <AntDesign
                                         name={isWordSaved(entry.stem, entry.hanja, entry.definition)
                                             ? "checksquare" : "checksquareo"}
-                                        size={15} color="black"
+                                        size={15} color={palette.icon}
                                     />
                                 </TouchableOpacity>
                             ) : null}
@@ -370,33 +394,33 @@ const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWor
                             <View style={styles.content}>
                                 {entry.definition ? (
                                     <>
-                                        <Text style={{ fontWeight: 'bold' }}>{entry.stem}</Text>
+                                        <Text style={{ fontWeight: 'bold', color: palette.text }}>{entry.stem}</Text>
                                         <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center' }}>
-                                            <Text style={{ marginHorizontal: 5 }}>(</Text>
+                                            <Text style={{ marginHorizontal: 5, color: palette.text }}>(</Text>
                                             {(entry.hanja && entry.hanja !== 'N/A'
                                                 ? entry.hanja.split('')
                                                 : []
                                             ).map((hanja, i) => (
                                                 <TouchableOpacity key={i} onPress={() => handleHanjaPress(hanja)}>
-                                                    <Text>{hanja}</Text>
+                                                    <Text style={{ color: palette.text }}>{hanja}</Text>
                                                 </TouchableOpacity>
                                             ))}
-                                            <Text style={{ marginHorizontal: 5 }}>)</Text>
-                                            <Text>{entry.definition}</Text>
+                                            <Text style={{ marginHorizontal: 5, color: palette.text }}>)</Text>
+                                            <Text style={{ color: palette.text }}>{entry.definition}</Text>
                                             {showLess ? (
                                                 <TouchableOpacity onPress={() => setExpandedCached(prev => ({ ...prev, [entry.stem]: false }))}>
-                                                    <Text style={styles.moreLink}>less</Text>
+                                                    <Text style={[styles.moreLink, { color: palette.action }]}>less</Text>
                                                 </TouchableOpacity>
                                             ) : showMore ? (
                                                 <TouchableOpacity onPress={() => handleMorePress(entry.stem)}>
-                                                    <Text style={styles.moreLink}>more</Text>
+                                                    <Text style={[styles.moreLink, { color: palette.action }]}>more</Text>
                                                 </TouchableOpacity>
                                             ) : null}
                                         </View>
                                     </>
                                 ) : (
-                                    <Text style={{ color: '#494949' }}>
-                                        <Text style={{ fontWeight: 'bold', color: 'black' }}>{entry.stem}</Text> [ no dictionary entry ]
+                                    <Text style={{ color: palette.emptyText }}>
+                                        <Text style={{ fontWeight: 'bold', color: palette.text }}>{entry.stem}</Text> [ no dictionary entry ]
                                     </Text>
                                 )}
                             </View>
@@ -412,23 +436,23 @@ const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWor
                                                     : toggleSave(e.word, e.origin, e.transWord)
                                             }
                                             style={styles.saveExtra}
-                                        >
-                                            <AntDesign
-                                                name={isWordSaved(e.word, e.origin, e.transWord) ? "checksquare" : "checksquareo"}
-                                                size={13} color="black" style={{ opacity: 0.5 }}
-                                            />
-                                        </TouchableOpacity>
-                                    ) : null}
-                                    <View style={styles.extraContent}>
-                                        <Text style={{ color: '#333' }}>{e.word}</Text>
-                                        <Text style={{ marginHorizontal: 4 }}>(</Text>
+                                            >
+                                                <AntDesign
+                                                    name={isWordSaved(e.word, e.origin, e.transWord) ? "checksquare" : "checksquareo"}
+                                                    size={13} color={palette.icon} style={{ opacity: 0.7 }}
+                                                />
+                                            </TouchableOpacity>
+                                        ) : null}
+                                        <View style={styles.extraContent}>
+                                        <Text style={{ color: palette.secondaryText }}>{e.word}</Text>
+                                        <Text style={{ marginHorizontal: 4, color: palette.secondaryText }}>(</Text>
                                         {(e.origin && e.origin !== 'N/A' ? e.origin.split('') : []).map((h, j) => (
                                             <TouchableOpacity key={j} onPress={() => handleHanjaPress(h)}>
-                                                <Text>{h}</Text>
+                                                <Text style={{ color: palette.secondaryText }}>{h}</Text>
                                             </TouchableOpacity>
                                         ))}
-                                        <Text style={{ marginHorizontal: 4 }}>)</Text>
-                                        <Text style={{ color: '#333' }}>{e.transWord}</Text>
+                                        <Text style={{ marginHorizontal: 4, color: palette.secondaryText }}>)</Text>
+                                        <Text style={{ color: palette.secondaryText }}>{e.transWord}</Text>
                                     </View>
                                 </View>
                             ))}
@@ -460,22 +484,22 @@ const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWor
                                     <AntDesign
                                         name={isWordSaved(word, dictionaryData[index][0].origin, dictionaryData[index][0].transWord)
                                             ? "checksquare" : "checksquareo"}
-                                        size={15} color="black"
+                                        size={15} color={palette.icon}
                                     />
                                 </TouchableOpacity>
                             ) : null}
 
                             <View style={styles.content}>
-                                <Text style={{ fontWeight: 'bold' }}>{word}</Text>
+                                <Text style={{ fontWeight: 'bold', color: palette.text }}>{word}</Text>
                                 <View style={{ flexDirection: 'row' }}>
-                                    <Text style={{ marginHorizontal: 5 }}>(</Text>
+                                    <Text style={{ marginHorizontal: 5, color: palette.text }}>(</Text>
                                     {dictionaryData[index][0].origin.split('').map((hanja, i) => (
                                         <TouchableOpacity key={i} onPress={() => handleHanjaPress(hanja)}>
-                                            <Text>{hanja}</Text>
+                                            <Text style={{ color: palette.text }}>{hanja}</Text>
                                         </TouchableOpacity>
                                     ))}
-                                    <Text style={{ marginHorizontal: 5 }}>)</Text>
-                                    <Text>{dictionaryData[index][0].transWord}</Text>
+                                    <Text style={{ marginHorizontal: 5, color: palette.text }}>)</Text>
+                                    <Text style={{ color: palette.text }}>{dictionaryData[index][0].transWord}</Text>
                                 </View>
                                 {dictionaryData[index].length > 1 ? (
                                     <TouchableOpacity onPress={() =>
@@ -483,7 +507,7 @@ const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWor
                                             prev.includes(word) ? prev.filter(w => w !== word) : [...prev, word]
                                         )
                                     }>
-                                        <Text style={styles.moreLink}>
+                                        <Text style={[styles.moreLink, { color: palette.action }]}>
                                             {expandedWords.includes(word) ? 'less' : 'more'}
                                         </Text>
                                     </TouchableOpacity>
@@ -505,28 +529,28 @@ const DictionaryContent = ({ highlightedWord, onContentLoaded, onWordSave, onWor
                                                 <AntDesign
                                                     name={isWordSaved(entry.word, entry.origin, entry.transWord)
                                                         ? "checksquare" : "checksquareo"}
-                                                    size={13} color="black" style={{ opacity: 0.5 }}
+                                                    size={13} color={palette.icon} style={{ opacity: 0.7 }}
                                                 />
                                             </TouchableOpacity>
                                         ) : null}
                                         <View style={styles.extraContent}>
-                                            <Text>{entry.word}</Text>
-                                            <Text style={{ marginHorizontal: 4 }}>(</Text>
+                                            <Text style={{ color: palette.secondaryText }}>{entry.word}</Text>
+                                            <Text style={{ marginHorizontal: 4, color: palette.secondaryText }}>(</Text>
                                             {entry.origin.split('').map((hanja, i) => (
                                                 <TouchableOpacity key={i} onPress={() => handleHanjaPress(hanja)}>
-                                                    <Text>{hanja}</Text>
+                                                    <Text style={{ color: palette.secondaryText }}>{hanja}</Text>
                                                 </TouchableOpacity>
                                             ))}
-                                            <Text style={{ marginHorizontal: 4 }}>)</Text>
-                                            <Text>{entry.transWord}</Text>
+                                            <Text style={{ marginHorizontal: 4, color: palette.secondaryText }}>)</Text>
+                                            <Text style={{ color: palette.secondaryText }}>{entry.transWord}</Text>
                                         </View>
                                     </View>
                                 ))
                             }
                         </>
                     ) : (
-                        <Text style={{ color: '#494949' }}>
-                            <Text style={{ fontWeight: 'bold', color: 'black' }}>{word}</Text> [ no dictionary entry ]
+                        <Text style={{ color: palette.emptyText }}>
+                            <Text style={{ fontWeight: 'bold', color: palette.text }}>{word}</Text> [ no dictionary entry ]
                         </Text>
                     )}
                 </View>

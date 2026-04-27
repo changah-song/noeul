@@ -1,14 +1,14 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, Pressable } from 'react-native';
+import { View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, Pressable, Switch } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather } from '@expo/vector-icons';
+import { Slider } from 'react-native-elements';
 
 import { ReaderProvider } from '@epubjs-react-native/core';
 
 import TopSection from '../components/Read/TopSection/TopSection';
 import BottomSection from '../components/Read/BottomSection';
-import SettingsMenu from '../components/Read/SettingsMenu';
 import { AppProvider } from '../contexts/AppContext';
 import {
     getSavedWords,
@@ -23,8 +23,15 @@ import preprocessBook from '../services/api/preprocessBook';
 import { addReadingMillis } from '../services/dailyProgress';
 import { colors, radii, spacing, textStyles } from '../theme';
 
-const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComplete }) => {
+const LOOKUP_HINT_DISMISSED_KEY = 'lookupHintDismissed';
+
+const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComplete, setIsReaderFocusMode }) => {
     const [highlightedWord, setHighlightedWord] = useState('');
+    const [isNativeSelection, setIsNativeSelection] = useState(false);
+    const [lookupPlacement, setLookupPlacement] = useState('bottom');
+    const [showLookupHint, setShowLookupHint] = useState(true);
+    const [showSettings, setShowSettings] = useState(false);
+    const [isFullscreen, setIsFullscreen] = useState(false);
     const [savedWords, setSavedWords] = useState(null); // null = not yet loaded
     const [highlightTerms, setHighlightTerms] = useState(null);
     const [highlightTermsReady, setHighlightTermsReady] = useState(false);
@@ -125,10 +132,13 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         extractedTextRef.current = null;
         preprocessingInFlightRef.current = false;
         readingSessionStartedAtRef.current = Date.now();
+        setLookupPlacement('bottom');
         setHighlightTerms(null);
         setHighlightTermsReady(savedWords !== null && !currentBook);
         setBookLoadState(currentBook ? 'loading' : 'idle');
         setBookLoadError('');
+        setShowSettings(false);
+        setIsFullscreen(false);
         setReaderRetryKey(0);
     }, [currentBook]);
 
@@ -148,6 +158,11 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
     const handleWordUnsave = (word) => {
         setSavedWords(prev => (prev ?? []).filter(w => w !== word));
     };
+
+    const handleNativeTextSelected = useCallback((text) => {
+        setIsNativeSelection(true);
+        setHighlightedWord(text);
+    }, []);
 
     // ── Core preprocessing pipeline ──────────────────────────────────────────
     // Separated from the text-extraction callback so it can be triggered both
@@ -314,7 +329,6 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
     }, [preprocessStatus]);
 
     // ── Settings ─────────────────────────────────────────────────────────────
-    const [showSettings, setShowSettings] = useState(false);
     const [settings, setSettings] = useState({
         fontSize: 18,
         isDarkMode: false,
@@ -324,6 +338,19 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
 
     useEffect(() => {
         loadSettings();
+    }, []);
+
+    useEffect(() => {
+        const loadLookupHintDismissed = async () => {
+            try {
+                const dismissed = await AsyncStorage.getItem(LOOKUP_HINT_DISMISSED_KEY);
+                setShowLookupHint(dismissed !== 'true');
+            } catch (error) {
+                console.error('[Read] Error loading lookup hint state:', error);
+            }
+        };
+
+        loadLookupHintDismissed();
     }, []);
 
     const loadSettings = async () => {
@@ -352,6 +379,15 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         saveSettings(newSettings);
     };
 
+    const dismissLookupHint = useCallback(async () => {
+        setShowLookupHint(false);
+        try {
+            await AsyncStorage.setItem(LOOKUP_HINT_DISMISSED_KEY, 'true');
+        } catch (error) {
+            console.error('[Read] Error saving lookup hint state:', error);
+        }
+    }, []);
+
     const activeBookSizeMb = typeof activeBook?.size === 'number'
         ? activeBook.size / (1024 * 1024)
         : null;
@@ -368,6 +404,12 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         }
         return 'Start';
     })();
+    useEffect(() => {
+        setIsReaderFocusMode?.(isFullscreen);
+        return () => {
+            setIsReaderFocusMode?.(false);
+        };
+    }, [isFullscreen, setIsReaderFocusMode]);
 
     useEffect(() => {
         if (!currentBook || !activeBook || activeBook.preprocessed || activeBook.preprocessing) {
@@ -402,7 +444,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
     return (
         <View style={styles.container}>
             <View style={[styles.headerBar, { paddingTop: insets.top + spacing.xs }]}>
-                <View style={styles.headerLeft}>
+                <View style={[styles.headerLeft, isFullscreen && styles.focusHidden]}>
                     <Text numberOfLines={1} style={styles.headerBookTitle}>
                         {activeBook?.title || 'Reading'}
                     </Text>
@@ -412,17 +454,28 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                 </View>
 
                 <View style={styles.headerControls}>
-                    <View style={styles.controlPill}>
+                    <View style={[styles.controlPill, isFullscreen && styles.focusHidden]}>
                         <Text style={styles.controlLabel}>Aa {settings.fontSize}</Text>
                     </View>
-                    <View style={styles.controlPill}>
+                    <View style={[styles.controlPill, isFullscreen && styles.focusHidden]}>
                         <Text style={styles.controlLabel}>{progressLabel}</Text>
                     </View>
                     <TouchableOpacity
                         style={styles.settingsButton}
-                        onPress={() => setShowSettings(true)}
+                        onPress={() => setIsFullscreen((prev) => !prev)}
                     >
-                        <Feather name="sliders" size={18} color={colors.text} />
+                        <Feather
+                            name={isFullscreen ? 'minimize-2' : 'maximize-2'}
+                            size={isFullscreen ? 16 : 17}
+                            color={isFullscreen ? colors.textSubtle : colors.text}
+                        />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        style={[styles.settingsButton, isFullscreen && styles.focusHidden]}
+                        onPress={() => setShowSettings((prev) => !prev)}
+                        disabled={isFullscreen}
+                    >
+                        <Feather name="more-vertical" size={18} color={colors.text} />
                     </TouchableOpacity>
                 </View>
             </View>
@@ -457,13 +510,22 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                                 books={books}
                                 setBooks={setBooks}
                                 currentBook={currentBook}
-                                setHighlightedWord={setHighlightedWord}
+                                setHighlightedWord={(text) => {
+                                    setIsNativeSelection(false);
+                                    setHighlightedWord(text);
+                                }}
+                                activeLookupText={highlightedWord}
+                                focusMode={isFullscreen}
                                 settings={settings}
                                 savedWords={readerHighlightTerms}
                                 useHeuristicHighlighting={shouldUseHeuristicHighlights}
+                                onLookupPlacementChange={setLookupPlacement}
                                 onBookTextExtracted={handleBookTextExtracted}
                                 onLocationInfoChange={setReaderLocationInfo}
-                                onDismissSelection={() => setHighlightedWord('')}
+                                onDismissSelection={() => {
+                                    setHighlightedWord('');
+                                    setIsNativeSelection(false);
+                                }}
                                 onBookLoadStarted={() => {
                                     setBookLoadState('loading');
                                     setBookLoadError('');
@@ -473,23 +535,38 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                                     setBookLoadError('');
                                 }}
                                 onBookLoadError={handleBookLoadError}
+                                onNativeTextSelected={handleNativeTextSelected}
                             />
                         )
                     )}
                 </ReaderProvider>
             </View>
 
-            <View style={styles.lookupLayer} pointerEvents="box-none">
+            <View
+                style={[
+                    styles.lookupLayer,
+                    lookupPlacement === 'top' ? styles.lookupLayerTop : styles.lookupLayerBottom,
+                    lookupPlacement === 'top'
+                        ? { paddingTop: insets.top + 80 }
+                        : { paddingBottom: insets.bottom + 6 },
+                ]}
+                pointerEvents="box-none"
+            >
                 {highlightedWord ? (
                     <Pressable
                         style={styles.lookupDismissZone}
-                        onPress={() => setHighlightedWord('')}
+                        onPress={() => {
+                            setHighlightedWord('');
+                            setIsNativeSelection(false);
+                        }}
                     />
                 ) : null}
 
                 <AppProvider>
                     <TopSection
                         highlightedWord={highlightedWord}
+                        isNativeSelection={isNativeSelection}
+                        isDarkMode={settings.isDarkMode}
                         onWordSave={handleWordSave}
                         onWordUnsave={handleWordUnsave}
                         currentBook={currentBook}
@@ -498,6 +575,25 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                     />
                 </AppProvider>
             </View>
+
+            {!highlightedWord && showLookupHint ? (
+                <View
+                    pointerEvents="box-none"
+                    style={[styles.hintLayer, { paddingBottom: insets.bottom + 8 }]}
+                >
+                    <View style={styles.hintCard}>
+                        <View style={styles.hintCopy}>
+                            <Feather name="corner-down-left" size={16} color={colors.textSubtle} />
+                            <Text style={styles.hintText}>
+                                Tap a word to look it up, or long-press to translate a selection.
+                            </Text>
+                        </View>
+                        <TouchableOpacity onPress={dismissLookupHint} style={styles.hintCloseButton}>
+                            <Feather name="x" size={14} color={colors.textSubtle} />
+                        </TouchableOpacity>
+                    </View>
+                </View>
+            ) : null}
 
             {/* Preprocessing status indicator */}
             {(['checking', 'queued', 'preprocessing'].includes(preprocessStatus)) && (
@@ -534,13 +630,68 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                 </View>
             )}
 
-            {/* Settings Menu */}
-            <SettingsMenu
-                visible={showSettings}
-                onClose={() => setShowSettings(false)}
-                settings={settings}
-                onSettingChange={handleSettingChange}
-            />
+            {showSettings && !isFullscreen ? (
+                <View pointerEvents="box-none" style={styles.settingsOverlay}>
+                    <Pressable style={styles.settingsBackdrop} onPress={() => setShowSettings(false)} />
+                    <View style={[styles.settingsDropdown, { top: insets.top + 56, right: spacing.lg }]}>
+                        <Text style={styles.settingsHeading}>Reader settings</Text>
+
+                        <View style={styles.settingsSection}>
+                            <View style={styles.settingsRow}>
+                                <Text style={styles.settingsLabel}>Font size</Text>
+                                <Text style={styles.settingsValue}>{settings.fontSize}</Text>
+                            </View>
+                            <Slider
+                                value={settings.fontSize}
+                                onValueChange={(value) => handleSettingChange('fontSize', Math.round(value))}
+                                minimumValue={12}
+                                maximumValue={30}
+                                step={1}
+                                allowTouchTrack
+                                thumbTintColor={colors.accentStrong}
+                                minimumTrackTintColor={colors.accentStrong}
+                                maximumTrackTintColor={colors.border}
+                                trackStyle={styles.dropdownSliderTrack}
+                                thumbStyle={styles.dropdownSliderThumb}
+                            />
+                        </View>
+
+                        <View style={styles.settingsSection}>
+                            <View style={styles.settingsRow}>
+                                <Text style={styles.settingsLabel}>Line spacing</Text>
+                                <Text style={styles.settingsValue}>{settings.lineSpacing.toFixed(1)}</Text>
+                            </View>
+                            <View style={styles.stepperRow}>
+                                <TouchableOpacity
+                                    style={styles.stepperButton}
+                                    onPress={() => handleSettingChange('lineSpacing', Math.max(1, Number((settings.lineSpacing - 0.1).toFixed(1))))}
+                                >
+                                    <Feather name="minus" size={16} color={colors.text} />
+                                </TouchableOpacity>
+                                <Text style={styles.stepperValue}>{settings.lineSpacing.toFixed(1)}</Text>
+                                <TouchableOpacity
+                                    style={styles.stepperButton}
+                                    onPress={() => handleSettingChange('lineSpacing', Math.min(2.6, Number((settings.lineSpacing + 0.1).toFixed(1))))}
+                                >
+                                    <Feather name="plus" size={16} color={colors.text} />
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+
+                        <View style={[styles.settingsSection, styles.settingsSectionLast]}>
+                            <View style={styles.settingsRow}>
+                                <Text style={styles.settingsLabel}>Dark mode</Text>
+                                <Switch
+                                    value={settings.isDarkMode}
+                                    onValueChange={(value) => handleSettingChange('isDarkMode', value)}
+                                    trackColor={{ false: colors.border, true: colors.accentMuted }}
+                                    thumbColor={settings.isDarkMode ? '#4f4031' : '#fffdf8'}
+                                />
+                            </View>
+                        </View>
+                    </View>
+                </View>
+            ) : null}
         </View>
     );
 };
@@ -577,6 +728,18 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         gap: spacing.xs,
+    },
+    focusHidden: {
+        opacity: 0,
+    },
+    focusHeaderContent: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+    },
+    focusHeaderSpacer: {
+        flex: 1,
     },
     controlPill: {
         paddingHorizontal: spacing.sm,
@@ -651,10 +814,54 @@ const styles = StyleSheet.create({
         right: 0,
         top: 0,
         bottom: 0,
+    },
+    lookupLayerTop: {
+        justifyContent: 'flex-start',
+    },
+    lookupLayerBottom: {
         justifyContent: 'flex-end',
     },
     lookupDismissZone: {
         ...StyleSheet.absoluteFillObject,
+    },
+    hintLayer: {
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        bottom: 0,
+        paddingHorizontal: spacing.md,
+    },
+    hintCard: {
+        borderRadius: radii.pill,
+        backgroundColor: colors.surfaceElevated,
+        borderWidth: 1,
+        borderColor: colors.border,
+        paddingLeft: spacing.md,
+        paddingRight: spacing.sm,
+        paddingVertical: spacing.sm,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: spacing.sm,
+    },
+    hintCopy: {
+        flex: 1,
+        minWidth: 0,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: spacing.xs,
+    },
+    hintText: {
+        ...textStyles.caption,
+        color: colors.textSubtle,
+        flexShrink: 1,
+    },
+    hintCloseButton: {
+        width: 24,
+        height: 24,
+        borderRadius: 12,
+        alignItems: 'center',
+        justifyContent: 'center',
     },
     preprocessBanner: {
         position: 'absolute',
@@ -686,7 +893,88 @@ const styles = StyleSheet.create({
         backgroundColor: colors.surfaceMuted,
         justifyContent: 'center',
         alignItems: 'center',
-    }
+    },
+    settingsOverlay: {
+        ...StyleSheet.absoluteFillObject,
+        zIndex: 25,
+    },
+    settingsBackdrop: {
+        ...StyleSheet.absoluteFillObject,
+    },
+    settingsDropdown: {
+        position: 'absolute',
+        width: 260,
+        borderRadius: radii.lg,
+        backgroundColor: 'rgba(255, 252, 246, 0.98)',
+        borderWidth: 1,
+        borderColor: colors.border,
+        padding: spacing.md,
+        gap: spacing.md,
+        shadowColor: '#000',
+        shadowOpacity: 0.08,
+        shadowRadius: 12,
+        shadowOffset: { width: 0, height: 6 },
+        elevation: 8,
+    },
+    settingsHeading: {
+        ...textStyles.label,
+        fontSize: 12,
+        textTransform: 'uppercase',
+        letterSpacing: 1.2,
+        color: colors.textSubtle,
+    },
+    settingsSection: {
+        gap: spacing.sm,
+    },
+    settingsSectionLast: {
+        marginBottom: 0,
+    },
+    settingsRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: spacing.sm,
+    },
+    settingsLabel: {
+        ...textStyles.body,
+        color: colors.text,
+    },
+    settingsValue: {
+        ...textStyles.caption,
+        color: colors.textSubtle,
+    },
+    dropdownSliderTrack: {
+        height: 4,
+        borderRadius: 999,
+    },
+    dropdownSliderThumb: {
+        width: 18,
+        height: 18,
+        borderRadius: 9,
+        backgroundColor: colors.accentStrong,
+    },
+    stepperRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: spacing.sm,
+    },
+    stepperButton: {
+        width: 38,
+        height: 38,
+        borderRadius: 19,
+        borderWidth: 1,
+        borderColor: colors.border,
+        backgroundColor: colors.surface,
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    stepperValue: {
+        ...textStyles.body,
+        color: colors.text,
+        minWidth: 36,
+        textAlign: 'center',
+    },
 });
 
 export default Read;
