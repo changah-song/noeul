@@ -833,7 +833,7 @@ const styles = StyleSheet.create({
     },
     hintCard: {
         borderRadius: radii.pill,
-        backgroundColor: 'rgba(255, 252, 246, 0.16)',
+        backgroundColor: colors.surfaceElevated,
         borderWidth: 1,
         borderColor: colors.border,
         paddingLeft: spacing.md,

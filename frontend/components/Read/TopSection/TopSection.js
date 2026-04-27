@@ -63,6 +63,7 @@ const TopSection = ({ highlightedWord, isNativeSelection, isDarkMode, onWordSave
             return;
         }
 
+        prevWordRef.current = '';
         Animated.parallel([
             Animated.timing(translateY, {
                 toValue: 24,
@@ -180,7 +181,7 @@ const TopSection = ({ highlightedWord, isNativeSelection, isDarkMode, onWordSave
                 ) : (
                     <View style={styles.contentFill}>
                         <TranslationContent
-                            key={visibleWord}
+                            key={`${visibleWord}-${isNativeSelection ? 'native' : 'tap'}`}
                             highlightedWord={visibleWord}
                             isDarkMode={isDarkMode}
                             onContentLoaded={handleContentLoaded}
