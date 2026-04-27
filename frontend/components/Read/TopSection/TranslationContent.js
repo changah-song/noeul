@@ -3,10 +3,20 @@ import { Text, View, ScrollView, StyleSheet } from 'react-native';
 import Translator from 'react-native-translator';
 import { colors, spacing, textStyles } from '../../../theme';
 
-const TranslationContent = ({ highlightedWord, onContentLoaded }) => {
+const TranslationContent = ({ highlightedWord, isDarkMode, onContentLoaded }) => {
     const [googleTranslated, setGoogleTranslated] = useState('');
     const [showOffline, setShowOffline] = useState(false);
     const translationArrivedRef = useRef(false);
+
+    const palette = isDarkMode
+        ? {
+            text: '#f3ede3',
+            muted: '#b6aa99',
+        }
+        : {
+            text: colors.text,
+            muted: colors.textMuted,
+        };
 
     useEffect(() => {
         setGoogleTranslated('');
@@ -50,9 +60,9 @@ const TranslationContent = ({ highlightedWord, onContentLoaded }) => {
                 showsVerticalScrollIndicator={true}
             >
                 {showOffline
-                    ? <Text style={styles.offlineText}>Internet connection required</Text>
+                    ? <Text style={[styles.offlineText, { color: palette.muted }]}>Internet connection required</Text>
                     : googleTranslated
-                        ? <Text style={styles.translationText}>{googleTranslated}</Text>
+                        ? <Text style={[styles.translationText, { color: palette.text }]}>{googleTranslated}</Text>
                         : null
                 }
             </ScrollView>   

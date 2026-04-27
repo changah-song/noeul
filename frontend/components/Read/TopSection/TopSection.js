@@ -7,7 +7,7 @@ import { colors, radii, spacing, textStyles } from '../../../theme';
 import TranslationContent from './TranslationContent';
 import DictionaryContent from './DictionaryContent';
 
-const TopSection = ({ highlightedWord, isNativeSelection, onWordSave, onWordUnsave, currentBook, sourceBook, savedWords }) => {
+const TopSection = ({ highlightedWord, isNativeSelection, isDarkMode, onWordSave, onWordUnsave, currentBook, sourceBook, savedWords }) => {
     const { dictMode, setDictMode } = useAppContext();
     const insets = useSafeAreaInsets();
     const effectiveDictMode = isNativeSelection ? false : dictMode;
@@ -98,6 +98,24 @@ const TopSection = ({ highlightedWord, isNativeSelection, onWordSave, onWordUnsa
         return null;
     }
 
+    const panelColors = isDarkMode
+        ? {
+            background: '#171513',
+            border: 'rgba(239, 230, 214, 0.18)',
+            text: '#f3ede3',
+            mutedText: '#b6aa99',
+            pill: '#24201c',
+            spinner: '#d2b793',
+        }
+        : {
+            background: colors.surfaceElevated,
+            border: colors.border,
+            text: colors.text,
+            mutedText: colors.textMuted,
+            pill: colors.surfaceMuted,
+            spinner: colors.accentStrong,
+        };
+
     return (
         <Animated.View
             style={[
@@ -106,6 +124,7 @@ const TopSection = ({ highlightedWord, isNativeSelection, onWordSave, onWordUnsa
                     ? styles.sheetTranslation
                     : (isDictionaryExpanded ? styles.sheetExpanded : styles.sheetCompact),
                 { marginBottom: Math.max(6, insets.bottom + 10) },
+                { backgroundColor: panelColors.background, borderColor: panelColors.border },
                 {
                     opacity,
                     transform: [{ translateY }],
@@ -114,20 +133,23 @@ const TopSection = ({ highlightedWord, isNativeSelection, onWordSave, onWordUnsa
         >
             <View style={styles.header}>
                 <View style={styles.wordBlock}>
-                    <Text numberOfLines={1} style={styles.wordLabel}>
+                    <Text numberOfLines={1} style={[styles.wordLabel, { color: panelColors.mutedText }]}>
                         {isNativeSelection ? 'Translation' : 'Selected Word'}
                     </Text>
                     {!isNativeSelection ? (
-                        <Text numberOfLines={1} style={styles.wordValue}>{visibleWord}</Text>
+                        <Text numberOfLines={1} style={[styles.wordValue, { color: panelColors.text }]}>{visibleWord}</Text>
                     ) : null}
                 </View>
 
                 {!isNativeSelection && (
-                    <TouchableOpacity onPress={() => setDictMode(!dictMode)} style={styles.toggleButton}>
+                    <TouchableOpacity
+                        onPress={() => setDictMode(!dictMode)}
+                        style={[styles.toggleButton, { backgroundColor: panelColors.pill }]}
+                    >
                         {dictMode ? (
-                            <MaterialIcons name="translate" size={19} color={colors.text} />
+                            <MaterialIcons name="translate" size={19} color={panelColors.text} />
                         ) : (
-                            <Feather name="book-open" size={18} color={colors.text} />
+                            <Feather name="book-open" size={18} color={panelColors.text} />
                         )}
                     </TouchableOpacity>
                 )}
@@ -135,8 +157,8 @@ const TopSection = ({ highlightedWord, isNativeSelection, onWordSave, onWordUnsa
 
             {isLoading && hasLookupCandidate ? (
                 <View style={styles.loadingState}>
-                    <ActivityIndicator size="small" color={colors.accentStrong} />
-                    <Text style={styles.loadingText}>
+                    <ActivityIndicator size="small" color={panelColors.spinner} />
+                    <Text style={[styles.loadingText, { color: panelColors.mutedText }]}>
                         {isNativeSelection ? 'Translating…' : 'Looking up word…'}
                     </Text>
                 </View>
@@ -146,6 +168,7 @@ const TopSection = ({ highlightedWord, isNativeSelection, onWordSave, onWordUnsa
                 {effectiveDictMode ? (
                     <DictionaryContent
                         highlightedWord={visibleWord}
+                        isDarkMode={isDarkMode}
                         onContentLoaded={handleContentLoaded}
                         onWordSave={onWordSave}
                         onWordUnsave={onWordUnsave}
@@ -159,6 +182,7 @@ const TopSection = ({ highlightedWord, isNativeSelection, onWordSave, onWordUnsa
                         <TranslationContent
                             key={visibleWord}
                             highlightedWord={visibleWord}
+                            isDarkMode={isDarkMode}
                             onContentLoaded={handleContentLoaded}
                         />
                     </View>

@@ -8,6 +8,8 @@ const BottomSection = ({
     setBooks,
     currentBook,
     setHighlightedWord,
+    activeLookupText,
+    focusMode,
     settings,
     savedWords,
     useHeuristicHighlighting,
@@ -22,6 +24,7 @@ const BottomSection = ({
 }) => {
     const { getCurrentLocation, goToLocation, injectJavascript } = useReader();
     const currentLocationRef = useRef(null);
+    const pendingLocationRestoreRef = useRef('');
     const isFirstRenderRef = useRef(true);
     const previousSettingsRef = useRef(settings);
     const latestHighlightWordsRef = useRef([]);
@@ -78,6 +81,23 @@ const BottomSection = ({
         `);
     }, [injectJavascript]);
 
+    const clearActiveTapHighlight = useCallback(() => {
+        if (!injectJavascript) {
+            return;
+        }
+
+        injectJavascript(`
+            (function() {
+                try {
+                    if (typeof window.__clearActiveTapHighlight === 'function') {
+                        window.__clearActiveTapHighlight();
+                    }
+                } catch (e) {}
+            })();
+            true;
+        `);
+    }, [injectJavascript]);
+
     const saveCurrentLocation = () => {
         const currentLocation = getCurrentLocation();
         if (!currentLocation || !currentLocation.start) {
@@ -106,6 +126,7 @@ const BottomSection = ({
         console.log(`[BottomSection] Chapter/location changed → CFI: ${startCfi}`);
         onLocationInfoChange?.(info);
         clearNativeSelection();
+        clearActiveTapHighlight();
         onDismissSelection?.();
 
         // The visible section is most reliable once relocation has settled.
@@ -120,6 +141,25 @@ const BottomSection = ({
         }, 700);
     };
 
+    const restoreReaderLocation = useCallback((cfi, delay = 200) => {
+        if (!cfi) {
+            return;
+        }
+
+        currentLocationRef.current = cfi;
+        pendingLocationRestoreRef.current = cfi;
+
+        setBooks(prevBooks => prevBooks.map(book =>
+            book.uri === currentBook ? { ...book, location: cfi } : book
+        ));
+
+        setTimeout(() => {
+            if (goToLocation) {
+                goToLocation(cfi);
+            }
+        }, delay);
+    }, [currentBook, goToLocation, setBooks]);
+
     const initialLocation = books.find(book => book.uri === currentBook)?.location;
 
     // When savedWords changes after initial mount, inject updated word list into the
@@ -133,6 +173,20 @@ const BottomSection = ({
         replayHighlights();
     }, [savedWords, injectJavascript, settings.isDarkMode, useHeuristicHighlighting]);
 
+    useEffect(() => {
+        if (!activeLookupText) {
+            clearActiveTapHighlight();
+        }
+    }, [activeLookupText, clearActiveTapHighlight]);
+
+    useEffect(() => {
+        const timeoutId = setTimeout(() => {
+            replayHighlights();
+        }, 120);
+
+        return () => clearTimeout(timeoutId);
+    }, [focusMode]);
+
     // Save and restore location when settings change (but not on first render)
     useEffect(() => {
         if (isFirstRenderRef.current) {
@@ -141,25 +195,37 @@ const BottomSection = ({
             return;
         }
 
+        let settleTimeout;
+
         if (JSON.stringify(previousSettingsRef.current) !== JSON.stringify(settings)) {
             const currentLocation = getCurrentLocation();
-            if (currentLocation?.start?.cfi) {
-                const locationToRestore = currentLocation.start.cfi;
-                currentLocationRef.current = locationToRestore;
+            const locationToRestore =
+                currentLocation?.start?.cfi ||
+                currentLocationRef.current ||
+                initialLocation ||
+                '';
 
-                setBooks(prevBooks => prevBooks.map(book =>
-                    book.uri === currentBook ? { ...book, location: locationToRestore } : book
-                ));
-
-                setTimeout(() => {
-                    if (goToLocation) {
-                        goToLocation(locationToRestore);
-                    }
-                }, 200);
+            if (locationToRestore) {
+                restoreReaderLocation(locationToRestore);
             }
+
+            // Page turns can still be settling when a theme toggle happens.
+            // Re-read shortly after and prefer the newer CFI if it has advanced.
+            settleTimeout = setTimeout(() => {
+                const settledLocation = getCurrentLocation()?.start?.cfi;
+                if (settledLocation && settledLocation !== pendingLocationRestoreRef.current) {
+                    restoreReaderLocation(settledLocation, 60);
+                }
+            }, 220);
+
             previousSettingsRef.current = settings;
         }
-    }, [settings, getCurrentLocation, goToLocation, setBooks, currentBook]);
+        return () => {
+            if (settleTimeout) {
+                clearTimeout(settleTimeout);
+            }
+        };
+    }, [settings, getCurrentLocation, initialLocation, restoreReaderLocation]);
 
     const theme = useMemo(() => ({
         body: {
@@ -202,6 +268,17 @@ const BottomSection = ({
             }}
             onReady={() => {
                 console.log('[BottomSection] Reader displayed book successfully');
+                if (pendingLocationRestoreRef.current) {
+                    restoreReaderLocation(pendingLocationRestoreRef.current, 60);
+                    setTimeout(() => {
+                        if (pendingLocationRestoreRef.current) {
+                            restoreReaderLocation(pendingLocationRestoreRef.current, 220);
+                        }
+                    }, 140);
+                    setTimeout(() => {
+                        pendingLocationRestoreRef.current = '';
+                    }, 420);
+                }
                 replayHighlights();
                 setTimeout(() => {
                     replayHighlights();
@@ -326,6 +403,49 @@ const BottomSection = ({
                     useDarkHighlightTheme = !!isDarkMode;
                     scheduleHighlightPasses('theme-change');
                 };
+
+                function clearActiveTapHighlight() {
+                    var contents = rendition.getContents() || [];
+                    contents.forEach(function(content) {
+                        if (!content || !content.document) return;
+                        var doc = content.document;
+                        var spans = doc.querySelectorAll('span[data-active-tap-highlight]');
+                        spans.forEach(function(span) {
+                            var parent = span.parentNode;
+                            if (!parent) return;
+                            while (span.firstChild) {
+                                parent.insertBefore(span.firstChild, span);
+                            }
+                            parent.removeChild(span);
+                            parent.normalize();
+                        });
+                    });
+                }
+
+                function applyActiveTapHighlight(doc, range) {
+                    clearActiveTapHighlight();
+                    if (!doc || !range) return false;
+                    try {
+                        var text = range.toString ? range.toString().trim() : '';
+                        if (!text) return false;
+
+                        var span = doc.createElement('span');
+                        span.dataset.activeTapHighlight = 'true';
+                        span.style.backgroundColor = useDarkHighlightTheme
+                            ? 'rgba(117, 138, 170, 0.24)'
+                            : 'rgba(188, 204, 194, 0.32)';
+                        span.style.borderRadius = '3px';
+                        span.style.boxShadow = useDarkHighlightTheme
+                            ? 'inset 0 -1px 0 rgba(166, 188, 214, 0.18)'
+                            : 'inset 0 -1px 0 rgba(134, 154, 142, 0.18)';
+                        range.surroundContents(span);
+                        return true;
+                    } catch (e) {
+                        return false;
+                    }
+                }
+
+                window.__clearActiveTapHighlight = clearActiveTapHighlight;
 
                 // Remove all existing highlight spans, restoring plain text nodes
                 function resetHighlights(doc) {
@@ -528,6 +648,7 @@ const BottomSection = ({
                 rendition.on('relocated', function() {
                     console.log('[BottomSection] Location changed, applying highlights');
                     scheduleHighlightPasses('relocated');
+                    clearActiveTapHighlight();
                     window.ReactNativeWebView.postMessage(JSON.stringify({
                         type: 'dismiss-selection'
                     }));
@@ -553,10 +674,17 @@ const BottomSection = ({
                         selection.modify('move', 'backward', 'word');
                         selection.modify('extend', 'forward', 'word');
                         var text = selection.toString().trim();
+                        var selectedRange = selection.rangeCount > 0 ? selection.getRangeAt(0).cloneRange() : null;
                         selection.removeAllRanges();
-                        return text;
+                        return {
+                            text: text,
+                            range: selectedRange
+                        };
                     } catch (err) {
-                        return '';
+                        return {
+                            text: '',
+                            range: null
+                        };
                     }
                 }
 
@@ -587,6 +715,7 @@ const BottomSection = ({
                     if (existingSelection) {
                         existingSelection.removeAllRanges();
                     }
+                    clearActiveTapHighlight();
 
                     if (target && target.dataset && target.dataset.savedHighlight) {
                         var highlightedText = (target.textContent || '').trim();
@@ -601,11 +730,14 @@ const BottomSection = ({
                     }
 
                     var selectedText = '';
+                    var selectedWordRange = null;
                     var range = null;
 
                     if (typeof doc.caretRangeFromPoint === 'function') {
                         range = doc.caretRangeFromPoint(e.clientX, e.clientY);
-                        selectedText = extractWordFromRange(doc, range);
+                        var extracted = extractWordFromRange(doc, range);
+                        selectedText = extracted.text;
+                        selectedWordRange = extracted.range;
                     }
 
                     if (!selectedText && typeof doc.caretPositionFromPoint === 'function') {
@@ -614,7 +746,9 @@ const BottomSection = ({
                             range = doc.createRange();
                             range.setStart(position.offsetNode, position.offset);
                             range.setEnd(position.offsetNode, position.offset);
-                            selectedText = extractWordFromRange(doc, range);
+                            var fallbackExtracted = extractWordFromRange(doc, range);
+                            selectedText = fallbackExtracted.text;
+                            selectedWordRange = fallbackExtracted.range;
                         }
                     }
 
@@ -622,12 +756,16 @@ const BottomSection = ({
                     console.log('[BottomSection] Selected word:', selectedText);
 
                     if (selectedText) {
+                        if (!savedWordsSet.has(selectedText) && selectedWordRange) {
+                            applyActiveTapHighlight(doc, selectedWordRange);
+                        }
                         window.ReactNativeWebView.postMessage(JSON.stringify({
                             type: 'word-selected',
                             text: selectedText,
                             placement: getPlacementForClientY(e.clientY, doc)
                         }));
                     } else {
+                        clearActiveTapHighlight();
                         window.ReactNativeWebView.postMessage(JSON.stringify({
                             type: 'dismiss-selection'
                         }));
@@ -659,6 +797,7 @@ const BottomSection = ({
                     } else if (parsed?.type === 'dismiss-selection') {
                         console.log('[BottomSection] Dismissing selection');
                         clearNativeSelection();
+                        clearActiveTapHighlight();
                         onDismissSelection?.();
                     } else if (parsed?.type === 'native-selection') {
                         if (parsed?.placement === 'top' || parsed?.placement === 'bottom') {

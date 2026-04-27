@@ -9,7 +9,6 @@ import { ReaderProvider } from '@epubjs-react-native/core';
 
 import TopSection from '../components/Read/TopSection/TopSection';
 import BottomSection from '../components/Read/BottomSection';
-import { tabBarBaseStyle } from '../components/shared/TabBar';
 import { AppProvider } from '../contexts/AppContext';
 import {
     getSavedWords,
@@ -26,7 +25,7 @@ import { colors, radii, spacing, textStyles } from '../theme';
 
 const LOOKUP_HINT_DISMISSED_KEY = 'lookupHintDismissed';
 
-const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComplete, navigation }) => {
+const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComplete, setIsReaderFocusMode }) => {
     const [highlightedWord, setHighlightedWord] = useState('');
     const [isNativeSelection, setIsNativeSelection] = useState(false);
     const [lookupPlacement, setLookupPlacement] = useState('bottom');
@@ -139,6 +138,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         setBookLoadState(currentBook ? 'loading' : 'idle');
         setBookLoadError('');
         setShowSettings(false);
+        setIsFullscreen(false);
         setReaderRetryKey(0);
     }, [currentBook]);
 
@@ -405,18 +405,11 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         return 'Start';
     })();
     useEffect(() => {
-        if (!navigation?.setOptions) {
-            return undefined;
-        }
-
-        navigation.setOptions({
-            tabBarStyle: isFullscreen ? { display: 'none' } : tabBarBaseStyle,
-        });
-
+        setIsReaderFocusMode?.(isFullscreen);
         return () => {
-            navigation.setOptions({ tabBarStyle: tabBarBaseStyle });
+            setIsReaderFocusMode?.(false);
         };
-    }, [isFullscreen, navigation]);
+    }, [isFullscreen, setIsReaderFocusMode]);
 
     useEffect(() => {
         if (!currentBook || !activeBook || activeBook.preprocessed || activeBook.preprocessing) {
@@ -450,42 +443,42 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
 
     return (
         <View style={styles.container}>
-            {!isFullscreen ? (
-                <>
-                    <View style={[styles.headerBar, { paddingTop: insets.top + spacing.xs }]}>
-                        <View style={styles.headerLeft}>
-                            <Text numberOfLines={1} style={styles.headerBookTitle}>
-                                {activeBook?.title || 'Reading'}
-                            </Text>
-                            <Text numberOfLines={1} style={styles.headerBookMeta}>
-                                {activeBook?.author || 'Tap any word for lookup'}
-                            </Text>
-                        </View>
+            <View style={[styles.headerBar, { paddingTop: insets.top + spacing.xs }]}>
+                <View style={[styles.headerLeft, isFullscreen && styles.focusHidden]}>
+                    <Text numberOfLines={1} style={styles.headerBookTitle}>
+                        {activeBook?.title || 'Reading'}
+                    </Text>
+                    <Text numberOfLines={1} style={styles.headerBookMeta}>
+                        {activeBook?.author || 'Tap any word for lookup'}
+                    </Text>
+                </View>
 
-                        <View style={styles.headerControls}>
-                            <View style={styles.controlPill}>
-                                <Text style={styles.controlLabel}>Aa {settings.fontSize}</Text>
-                            </View>
-                            <View style={styles.controlPill}>
-                                <Text style={styles.controlLabel}>{progressLabel}</Text>
-                            </View>
-                            <TouchableOpacity
-                                style={styles.settingsButton}
-                                onPress={() => setIsFullscreen(true)}
-                            >
-                                <Feather name="maximize-2" size={17} color={colors.text} />
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                                style={styles.settingsButton}
-                                onPress={() => setShowSettings((prev) => !prev)}
-                            >
-                                <Feather name="more-vertical" size={18} color={colors.text} />
-                            </TouchableOpacity>
-                        </View>
+                <View style={styles.headerControls}>
+                    <View style={[styles.controlPill, isFullscreen && styles.focusHidden]}>
+                        <Text style={styles.controlLabel}>Aa {settings.fontSize}</Text>
                     </View>
-
-                </>
-            ) : null}
+                    <View style={[styles.controlPill, isFullscreen && styles.focusHidden]}>
+                        <Text style={styles.controlLabel}>{progressLabel}</Text>
+                    </View>
+                    <TouchableOpacity
+                        style={styles.settingsButton}
+                        onPress={() => setIsFullscreen((prev) => !prev)}
+                    >
+                        <Feather
+                            name={isFullscreen ? 'minimize-2' : 'maximize-2'}
+                            size={isFullscreen ? 16 : 17}
+                            color={isFullscreen ? colors.textSubtle : colors.text}
+                        />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        style={[styles.settingsButton, isFullscreen && styles.focusHidden]}
+                        onPress={() => setShowSettings((prev) => !prev)}
+                        disabled={isFullscreen}
+                    >
+                        <Feather name="more-vertical" size={18} color={colors.text} />
+                    </TouchableOpacity>
+                </View>
+            </View>
 
             <View style={styles.reader}>
                 <ReaderProvider>
@@ -521,6 +514,8 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                                     setIsNativeSelection(false);
                                     setHighlightedWord(text);
                                 }}
+                                activeLookupText={highlightedWord}
+                                focusMode={isFullscreen}
                                 settings={settings}
                                 savedWords={readerHighlightTerms}
                                 useHeuristicHighlighting={shouldUseHeuristicHighlights}
@@ -547,24 +542,13 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                 </ReaderProvider>
             </View>
 
-            {isFullscreen ? (
-                <View pointerEvents="box-none" style={styles.fullscreenControlLayer}>
-                    <TouchableOpacity
-                        style={[styles.fullscreenExitButton, { top: insets.top + 12 }]}
-                        onPress={() => setIsFullscreen(false)}
-                    >
-                        <Feather name="minimize-2" size={16} color="rgba(31, 41, 55, 0.54)" />
-                    </TouchableOpacity>
-                </View>
-            ) : null}
-
             <View
                 style={[
                     styles.lookupLayer,
                     lookupPlacement === 'top' ? styles.lookupLayerTop : styles.lookupLayerBottom,
                     lookupPlacement === 'top'
-                        ? { paddingTop: isFullscreen ? insets.top + 52 : insets.top + 80 }
-                        : { paddingBottom: isFullscreen ? insets.bottom + 6 : insets.bottom + 6 },
+                        ? { paddingTop: insets.top + 80 }
+                        : { paddingBottom: insets.bottom + 6 },
                 ]}
                 pointerEvents="box-none"
             >
@@ -582,6 +566,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                     <TopSection
                         highlightedWord={highlightedWord}
                         isNativeSelection={isNativeSelection}
+                        isDarkMode={settings.isDarkMode}
                         onWordSave={handleWordSave}
                         onWordUnsave={handleWordUnsave}
                         currentBook={currentBook}
@@ -594,7 +579,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
             {!highlightedWord && showLookupHint ? (
                 <View
                     pointerEvents="box-none"
-                    style={[styles.hintLayer, { paddingBottom: insets.bottom + (isFullscreen ? 8 : 8) }]}
+                    style={[styles.hintLayer, { paddingBottom: insets.bottom + 8 }]}
                 >
                     <View style={styles.hintCard}>
                         <View style={styles.hintCopy}>
@@ -612,7 +597,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
 
             {/* Preprocessing status indicator */}
             {(['checking', 'queued', 'preprocessing'].includes(preprocessStatus)) && (
-                <View style={[styles.preprocessBanner, { bottom: insets.bottom + (isFullscreen ? 16 : 68) }]}>
+                <View style={[styles.preprocessBanner, { bottom: insets.bottom + 68 }]}>
                     <ActivityIndicator size="small" color="#ffffff" style={{ marginRight: 8 }} />
                     <View style={styles.preprocessCopy}>
                         <Text style={styles.preprocessBannerText}>
@@ -625,7 +610,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                 </View>
             )}
             {preprocessStatus === 'error' && (
-                <View style={[styles.preprocessBanner, { bottom: insets.bottom + (isFullscreen ? 16 : 68), backgroundColor: 'rgba(180,40,40,0.75)' }]}>
+                <View style={[styles.preprocessBanner, { bottom: insets.bottom + 68, backgroundColor: 'rgba(180,40,40,0.75)' }]}>
                     <View style={styles.preprocessCopy}>
                         <Text style={styles.preprocessBannerText}>{preprocessMessage || 'Caching failed — words will look up live'}</Text>
                         {preprocessDetail ? (
@@ -635,7 +620,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                 </View>
             )}
             {preprocessStatus === 'done' && (
-                <View style={[styles.preprocessBanner, { bottom: insets.bottom + (isFullscreen ? 16 : 68), backgroundColor: 'rgba(46,125,50,0.82)' }]}>
+                <View style={[styles.preprocessBanner, { bottom: insets.bottom + 68, backgroundColor: 'rgba(46,125,50,0.82)' }]}>
                     <View style={styles.preprocessCopy}>
                         <Text style={styles.preprocessBannerText}>{preprocessMessage || 'Vocabulary cached'}</Text>
                         {preprocessDetail ? (
@@ -743,6 +728,18 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         gap: spacing.xs,
+    },
+    focusHidden: {
+        opacity: 0,
+    },
+    focusHeaderContent: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+    },
+    focusHeaderSpacer: {
+        flex: 1,
     },
     controlPill: {
         paddingHorizontal: spacing.sm,
@@ -888,20 +885,6 @@ const styles = StyleSheet.create({
         color: 'rgba(255,255,255,0.9)',
         fontSize: 11,
         marginTop: 2,
-    },
-    fullscreenControlLayer: {
-        ...StyleSheet.absoluteFillObject,
-        zIndex: 20,
-    },
-    fullscreenExitButton: {
-        position: 'absolute',
-        right: spacing.md,
-        width: 40,
-        height: 40,
-        borderRadius: 12,
-        backgroundColor: 'transparent',
-        justifyContent: 'center',
-        alignItems: 'center',
     },
     settingsButton: {
         width: 38,
