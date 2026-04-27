@@ -3,6 +3,7 @@ import { Alert, Image, Linking, Modal, Pressable, StyleSheet, Text, TextInput, T
 import { Feather } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
+import Auth from './Auth';
 import { Card, IconButton, Screen, SectionHeader } from '../components/ui';
 import { colors, radii, spacing, textStyles } from '../theme';
 
@@ -155,6 +156,26 @@ const Profile = ({ user, signOut, updateUsername, updateProfile }) => {
         );
     };
 
+    if (!user) {
+        return (
+            <Screen scroll>
+                <SectionHeader
+                    eyebrow="Profile"
+                    title="Guest mode is active"
+                    subtitle="Keep reading as a guest, or sign in to sync saved words, track progress, and unlock strength, weakness, and level analysis."
+                />
+
+                <View style={styles.guestAuthWrap}>
+                    <Auth
+                        embedded
+                        title="Sign in later if you want"
+                        subtitle="Guest mode keeps your reading and saved words on this device. Signing in lets us sync them to your account."
+                    />
+                </View>
+            </Screen>
+        );
+    }
+
     return (
         <Screen scroll>
             <SectionHeader
@@ -303,6 +324,9 @@ const Profile = ({ user, signOut, updateUsername, updateProfile }) => {
 };
 
 const styles = StyleSheet.create({
+    guestAuthWrap: {
+        marginTop: spacing.xl,
+    },
     profileCard: {
         marginTop: spacing.xl,
     },

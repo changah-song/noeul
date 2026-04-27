@@ -31,6 +31,8 @@ const BottomSection = ({
     const latestHighlightModeRef = useRef(!!useHeuristicHighlighting);
     const latestDarkModeRef = useRef(!!settings.isDarkMode);
     const pendingNativeSelectionTextRef = useRef('');
+    const nativeSelectionActiveRef = useRef(false);
+    const nativeSelectionTimeoutRef = useRef(null);
 
     const replayHighlights = () => {
         if (!injectJavascript) {
@@ -97,6 +99,14 @@ const BottomSection = ({
             true;
         `);
     }, [injectJavascript]);
+
+    useEffect(() => {
+        return () => {
+            if (nativeSelectionTimeoutRef.current) {
+                clearTimeout(nativeSelectionTimeoutRef.current);
+            }
+        };
+    }, []);
 
     const saveCurrentLocation = () => {
         const currentLocation = getCurrentLocation();
@@ -309,6 +319,22 @@ const BottomSection = ({
                 const selectedText = String(text || '').trim();
                 if (selectedText.length > 1) {
                     console.log(`[BottomSection] Native text selected: "${selectedText}"`);
+                    nativeSelectionActiveRef.current = true;
+                    if (nativeSelectionTimeoutRef.current) {
+                        clearTimeout(nativeSelectionTimeoutRef.current);
+                    }
+                    nativeSelectionTimeoutRef.current = setTimeout(() => {
+                        nativeSelectionActiveRef.current = false;
+                        nativeSelectionTimeoutRef.current = null;
+                    }, 1000);
+
+                    if (injectJavascript) {
+                        injectJavascript(
+                            'window.__nativeSelectionActive = true;' +
+                            'setTimeout(function(){ window.__nativeSelectionActive = false; }, 600);' +
+                            'true;'
+                        );
+                    }
                     pendingNativeSelectionTextRef.current = selectedText;
                     onLookupPlacementChange?.('bottom');
                     onNativeTextSelected?.(selectedText);
@@ -372,6 +398,7 @@ const BottomSection = ({
                 var useHeuristicHighlighting = ${JSON.stringify(!!useHeuristicHighlighting)};
                 var useDarkHighlightTheme = ${JSON.stringify(!!settings.isDarkMode)};
                 var highlightRetryTimeouts = [];
+                window.__nativeSelectionActive = false;
 
                 // Mutable set — updated in-place via window.__updateHighlights
                 var savedWordsSet = new Set(${JSON.stringify(filteredSavedWords)});
@@ -695,6 +722,10 @@ const BottomSection = ({
                 }
 
                 rendition.on('click', function(e) {
+                    if (window.__nativeSelectionActive) {
+                        console.log('[BottomSection] Click suppressed — native selection active');
+                        return;
+                    }
                     console.log('[BottomSection] Click detected, attempting to select word');
 
                     var target = e.target || null;
@@ -712,7 +743,7 @@ const BottomSection = ({
                         : (doc.defaultView && doc.defaultView.getSelection
                             ? doc.defaultView.getSelection()
                             : null);
-                    if (existingSelection) {
+                    if (existingSelection && !window.__nativeSelectionActive) {
                         existingSelection.removeAllRanges();
                     }
                     clearActiveTapHighlight();
@@ -789,13 +820,22 @@ const BottomSection = ({
                             }
                         });
                     } else if (parsed?.type === 'word-selected') {
+                        if (nativeSelectionActiveRef.current) {
+                            console.log('[BottomSection] word-selected suppressed — native selection active');
+                            return;
+                        }
                         console.log(`[BottomSection] Word tapped: "${parsed.text}"`);
                         if (parsed?.placement === 'top' || parsed?.placement === 'bottom') {
                             onLookupPlacementChange?.(parsed.placement);
                         }
                         setHighlightedWord(parsed.text);
                     } else if (parsed?.type === 'dismiss-selection') {
+                        if (nativeSelectionActiveRef.current) {
+                            console.log('[BottomSection] dismiss-selection suppressed — native selection active');
+                            return;
+                        }
                         console.log('[BottomSection] Dismissing selection');
+                        pendingNativeSelectionTextRef.current = '';
                         clearNativeSelection();
                         clearActiveTapHighlight();
                         onDismissSelection?.();
