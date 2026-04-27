@@ -2,6 +2,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { TranslatorProvider } from 'react-native-translator';
 import { ActivityIndicator, View } from 'react-native';
+import { useState } from 'react';
 import { useFonts } from 'expo-font';
 import {
     DMSans_400Regular,
@@ -29,6 +30,7 @@ const Tab = createBottomTabNavigator();
 export default function App() {
     const { books, setBooks, currentBook, setCurrentBook, preprocessOnOpen, setPreprocessOnOpen, updateBookPreprocessed } = useAppSetup();
     const { user, loading, signOut, updateUsername, updateProfile } = useAuth();
+    const [isReaderFocusMode, setIsReaderFocusMode] = useState(false);
     const [fontsLoaded] = useFonts({
         'FFSans-Regular': DMSans_400Regular,
         'FFSans-Medium': DMSans_500Medium,
@@ -52,7 +54,7 @@ export default function App() {
                 {!user ? (
                     <Auth />
                 ) : (
-                <Tab.Navigator screenOptions={tabScreenOptions}>
+                <Tab.Navigator screenOptions={(props) => tabScreenOptions(props, { hideTabChrome: isReaderFocusMode })}>
                     <Tab.Screen name="Home">
                         {props => (
                             <Home
@@ -74,6 +76,7 @@ export default function App() {
                                 setBooks={setBooks}
                                 currentBook={currentBook}
                                 preprocessOnOpen={preprocessOnOpen}
+                                setIsReaderFocusMode={setIsReaderFocusMode}
                                 onPreprocessComplete={(uri) => {
                                     setPreprocessOnOpen(false);
                                     updateBookPreprocessed(uri);

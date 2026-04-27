@@ -107,6 +107,14 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
     const hasBooks = books.length > 0;
     const userName = useMemo(() => {
+        const metadataName = user?.user_metadata?.username
+            || user?.user_metadata?.display_name
+            || user?.user_metadata?.name;
+
+        if (metadataName && String(metadataName).trim()) {
+            return String(metadataName).trim();
+        }
+
         const email = user?.email ?? '';
         const base = email.split('@')[0] || 'Reader';
         return base
@@ -114,7 +122,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             .filter(Boolean)
             .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
             .join(' ');
-    }, [user?.email]);
+    }, [user?.email, user?.user_metadata]);
     const greeting = useMemo(() => {
         const hour = new Date().getHours();
         return hour < 17 ? 'Good morning' : 'Good evening';

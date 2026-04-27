@@ -39,7 +39,11 @@ const Profile = ({ user, signOut, updateUsername, updateProfile }) => {
 
     const avatarUri = useMemo(() => {
         const avatar = user?.user_metadata?.avatar_uri;
-        return avatar && String(avatar).trim() ? String(avatar).trim() : null;
+        const updatedAt = user?.user_metadata?.avatar_updated_at;
+        if (!avatar || !String(avatar).trim()) {
+            return null;
+        }
+        return updatedAt ? `${String(avatar).trim()}?t=${encodeURIComponent(String(updatedAt))}` : String(avatar).trim();
     }, [user?.user_metadata]);
 
     const handleStartEditName = () => {
@@ -49,19 +53,30 @@ const Profile = ({ user, signOut, updateUsername, updateProfile }) => {
 
     const handleSaveName = async () => {
         const trimmed = draftName.trim();
+        console.log('[Profile] handleSaveName pressed', {
+            draftName,
+            trimmed,
+            currentDisplayName: displayName,
+            ts: Date.now(),
+        });
 
         if (!trimmed) {
+            console.log('[Profile] handleSaveName aborted: empty trimmed username');
             Alert.alert('Name required', 'Please enter a username.');
             return;
         }
 
         try {
             setIsSavingName(true);
+            console.log('[Profile] handleSaveName calling updateUsername', { trimmed, ts: Date.now() });
             await updateUsername?.(trimmed);
+            console.log('[Profile] handleSaveName updateUsername resolved', { trimmed, ts: Date.now() });
             setShowNameEditor(false);
         } catch (error) {
+            console.log('[Profile] handleSaveName failed', error?.message ?? String(error));
             Alert.alert('Update failed', error.message || 'Could not update username.');
         } finally {
+            console.log('[Profile] handleSaveName finally -> clearing saving state', { ts: Date.now() });
             setIsSavingName(false);
         }
     };
@@ -81,7 +96,8 @@ const Profile = ({ user, signOut, updateUsername, updateProfile }) => {
             const picked = assets[0];
             const extension = (picked.name?.split('.').pop() || picked.uri.split('.').pop() || 'jpg').replace(/[^a-zA-Z0-9]/g, '');
             const avatarDir = `${FileSystem.documentDirectory}profile/`;
-            const destination = `${avatarDir}avatar-${user?.id || 'local'}.${extension || 'jpg'}`;
+            const timestamp = Date.now();
+            const destination = `${avatarDir}avatar-${user?.id || 'local'}-${timestamp}.${extension || 'jpg'}`;
 
             await FileSystem.makeDirectoryAsync(avatarDir, { intermediates: true });
             await FileSystem.copyAsync({
@@ -89,7 +105,10 @@ const Profile = ({ user, signOut, updateUsername, updateProfile }) => {
                 to: destination,
             });
 
-            await updateProfile?.({ avatar_uri: destination });
+            await updateProfile?.({
+                avatar_uri: destination,
+                avatar_updated_at: timestamp,
+            });
         } catch (error) {
             Alert.alert('Upload failed', error.message || 'Could not update your profile image.');
         } finally {
