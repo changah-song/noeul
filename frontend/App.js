@@ -1,8 +1,9 @@
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { TranslatorProvider } from 'react-native-translator';
-import { ActivityIndicator, View } from 'react-native';
+import { useEffect, useState } from 'react';
 import { useFonts } from 'expo-font';
+import * as SplashScreen from 'expo-splash-screen';
 import {
     DMSans_400Regular,
     DMSans_500Medium,
@@ -16,19 +17,20 @@ import {
 import { tabScreenOptions } from './components/shared/TabBar';
 import useAppSetup from './hooks/useAppSetup';
 import useAuth from './hooks/useAuth';
-import Auth from './screens/Auth';
 import Home from './screens/Home';
 import Learn from './screens/Learn';
 import Profile from './screens/Profile';
 import Read from './screens/Read';
 import Write from './screens/Write';
-import { colors } from './theme';
 
 const Tab = createBottomTabNavigator();
 
+SplashScreen.preventAutoHideAsync().catch(() => {});
+
 export default function App() {
-    const { books, setBooks, currentBook, setCurrentBook, preprocessOnOpen, setPreprocessOnOpen, updateBookPreprocessed } = useAppSetup();
+    const { books, setBooks, currentBook, setCurrentBook, preprocessOnOpen, setPreprocessOnOpen, updateBookPreprocessed, loading: appSetupLoading } = useAppSetup();
     const { user, loading, signOut, updateUsername, updateProfile } = useAuth();
+    const [isReaderFocusMode, setIsReaderFocusMode] = useState(false);
     const [fontsLoaded] = useFonts({
         'FFSans-Regular': DMSans_400Regular,
         'FFSans-Medium': DMSans_500Medium,
@@ -38,21 +40,22 @@ export default function App() {
         'FFSerif-Bold': NotoSerifKR_700Bold,
     });
 
-    if (loading || !fontsLoaded) {
-        return (
-            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.backgroundWarm }}>
-                <ActivityIndicator size="large" color="#0f609b" />
-            </View>
-        );
+    const appReady = !loading && !appSetupLoading && fontsLoaded;
+
+    useEffect(() => {
+        if (appReady) {
+            SplashScreen.hideAsync().catch(() => {});
+        }
+    }, [appReady]);
+
+    if (!appReady) {
+        return null;
     }
 
     return (
         <TranslatorProvider>
             <NavigationContainer>
-                {!user ? (
-                    <Auth />
-                ) : (
-                <Tab.Navigator screenOptions={tabScreenOptions}>
+                <Tab.Navigator screenOptions={(props) => tabScreenOptions(props, { hideTabChrome: isReaderFocusMode })}>
                     <Tab.Screen name="Home">
                         {props => (
                             <Home
@@ -74,6 +77,7 @@ export default function App() {
                                 setBooks={setBooks}
                                 currentBook={currentBook}
                                 preprocessOnOpen={preprocessOnOpen}
+                                setIsReaderFocusMode={setIsReaderFocusMode}
                                 onPreprocessComplete={(uri) => {
                                     setPreprocessOnOpen(false);
                                     updateBookPreprocessed(uri);
@@ -102,7 +106,6 @@ export default function App() {
                         )}
                     </Tab.Screen>
                 </Tab.Navigator>
-                )}
             </NavigationContainer>
         </TranslatorProvider>
     );

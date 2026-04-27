@@ -1,30 +1,28 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Text, View, ScrollView, StyleSheet, TouchableOpacity, Image } from 'react-native';
-import { useAppContext } from '../../../contexts/AppContext';
+import { Text, View, ScrollView, StyleSheet } from 'react-native';
 import Translator from 'react-native-translator';
+import { colors, spacing, textStyles } from '../../../theme';
 
-// Translator Component
-const TranslationContent = ({ highlightedWord, onContentLoaded }) => {
-    // global variable
-    const { dictMode } = useAppContext();
-
-      // store current translated word and translator service
-    const [gootranslated, setGooTranslated] = useState('');
-    const [papTranslated, setPapTranslated] = useState('');
-
-    const [service, setService] = useState('papago');
+const TranslationContent = ({ highlightedWord, isDarkMode, onContentLoaded }) => {
+    const [googleTranslated, setGoogleTranslated] = useState('');
     const [showOffline, setShowOffline] = useState(false);
     const translationArrivedRef = useRef(false);
 
-    // Reset translated text when mode or service changes
-    useEffect(() => {
-        setGooTranslated('');
-        setPapTranslated('');
-        setShowOffline(false);
-    }, [dictMode, service]);
+    const palette = isDarkMode
+        ? {
+            text: '#f3ede3',
+            muted: '#b6aa99',
+        }
+        : {
+            text: colors.text,
+            muted: colors.textMuted,
+        };
 
-    // Start an offline-detection timeout whenever the word or service changes.
-    // If no translation arrives within 8 seconds, show the offline message.
+    useEffect(() => {
+        setGoogleTranslated('');
+        setShowOffline(false);
+    }, [highlightedWord]);
+
     useEffect(() => {
         setShowOffline(false);
         translationArrivedRef.current = false;
@@ -34,86 +32,75 @@ const TranslationContent = ({ highlightedWord, onContentLoaded }) => {
             if (!translationArrivedRef.current) setShowOffline(true);
         }, 8000);
         return () => clearTimeout(timer);
-    }, [highlightedWord, service]);
+    }, [highlightedWord]);
 
-    // Notify parent and clear offline flag when translation arrives
     useEffect(() => {
-        if ((service === 'papago' && papTranslated) || (service === 'google' && gootranslated)) {
+        if (googleTranslated) {
             translationArrivedRef.current = true;
             setShowOffline(false);
             onContentLoaded?.();
         }
-    }, [gootranslated, papTranslated, service, onContentLoaded]);
-
-    // once switch is pressed, change service to the other one
-    const handleTypeChange = () => {
-        setService(service === 'papago' ? 'google' : 'papago');
-    };    
+    }, [googleTranslated, onContentLoaded]);
 
     return (
-        <View style={{ flex: 1 }}>
-            <View style={{ flexDirection: 'row', position: 'absolute', right: 0, top: 100 }}>
-                <TouchableOpacity onPress={handleTypeChange} activeOpacity={0.8} style={{ zIndex:10, opacity: service==='papago' ? 1 : 0.3 }}>
-                    <View style={[styles.imageContainer, { borderTopLeftRadius: 10, borderBottomLeftRadius: 10 }]}>
-                        <Image source={require('../../../assets/papagoicon.png')} style={styles.image} />
-                    </View>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={handleTypeChange} activeOpacity={0.8} style={{ zIndex: 10, opacity: service==='google' ? 1 : 0.3 }}>
-                    <View style={[styles.imageContainer, { borderTopRightRadius: 10, borderBottomRightRadius: 10 }]}>
-                        <Image source={require('../../../assets/googletranslateicon.png')} style={styles.image} />
-                    </View>
-                </TouchableOpacity>
+        <View style={styles.container}>
+            <View style={styles.hiddenTranslatorHost}>
+                <Translator
+                    from="ko"
+                    to="en"
+                    value={highlightedWord}
+                    type="google"
+                    onTranslated={(t) => setGoogleTranslated(t)}
+                />
             </View>
 
-            <ScrollView style={styles.translationSection}>
-                <Translator
-                    from="ko"
-                    to="en"
-                    value={highlightedWord}
-                    type={'google'}
-                    onTranslated={(t) => setGooTranslated(t)}
-                />                
-                <Translator
-                    from="ko"
-                    to="en"
-                    value={highlightedWord}
-                    type={'papago'}
-                    onTranslated={(t) => setPapTranslated(t)}
-                />
+            <ScrollView
+                style={styles.translationSection}
+                contentContainerStyle={styles.translationContent}
+                showsVerticalScrollIndicator={true}
+            >
                 {showOffline
-                    ? <Text style={styles.offlineText}>Internet connection required</Text>
-                    : service === 'papago'
-                        ? <Text>{papTranslated}</Text>
-                        : <Text>{gootranslated}</Text>
+                    ? <Text style={[styles.offlineText, { color: palette.muted }]}>Internet connection required</Text>
+                    : googleTranslated
+                        ? <Text style={[styles.translationText, { color: palette.text }]}>{googleTranslated}</Text>
+                        : null
                 }
             </ScrollView>   
         </View>
-    )
+    );
 };
 
 const styles = StyleSheet.create({
-    imageContainer: {
-        borderWidth: 1, 
-        borderColor: 'black', 
-        padding: 2,
-        backgroundColor: 'lightgray',
-        right: '30%',
-        top: -60
+    container: {
+        flex: 1,
+        minHeight: 0,
     },
-    image: {
-        width: 20,
-        height: 20,
+    hiddenTranslatorHost: {
+        width: 0,
+        height: 0,
+        opacity: 0,
+        overflow: 'hidden',
     },
     translationSection: {
-        left: 5,
-        position: 'absolute',
-        width: '85%',
+        flex: 1,
+        minHeight: 0,
+    },
+    translationContent: {
+        flexGrow: 1,
+        paddingRight: spacing.xs,
+        paddingBottom: spacing.md,
     },
     offlineText: {
-        color: '#aaa',
+        ...textStyles.caption,
+        color: colors.textMuted,
         fontStyle: 'italic',
-        fontSize: 13,
-    }
+    },
+    translationText: {
+        ...textStyles.body,
+        flexShrink: 1,
+        color: colors.text,
+        lineHeight: 24,
+    },
 });
 
-export default TranslationContent
+export default TranslationContent;

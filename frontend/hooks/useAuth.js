@@ -95,18 +95,18 @@ const useAuth = () => {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (event, nextSession) => {
+    } = supabase.auth.onAuthStateChange((event, nextSession) => {
       console.log(`${FILE_TAG} auth state changed -> ${event}`);
       setSession(nextSession);
       setUser(nextSession?.user ?? null);
       setLoading(false);
 
       if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && nextSession?.user) {
-        try {
-          await syncVocabFromCloud(nextSession.user);
-        } catch (error) {
-          console.log(`${FILE_TAG} vocab sync failed:`, error.message);
-        }
+        setTimeout(() => {
+          syncVocabFromCloud(nextSession.user).catch((error) => {
+            console.log(`${FILE_TAG} vocab sync failed:`, error.message);
+          });
+        }, 0);
       }
     });
 
@@ -124,29 +124,82 @@ const useAuth = () => {
   }, []);
 
   const updateProfile = useCallback(async (patch) => {
+    console.log(`${FILE_TAG} updateProfile start`, {
+      patchKeys: Object.keys(patch || {}),
+      hasUser: !!user?.id,
+      userId: user?.id ?? null,
+      ts: Date.now(),
+    });
+
     const { data, error } = await supabase.auth.updateUser({
       data: patch,
     });
 
+    console.log(`${FILE_TAG} updateProfile resolved`, {
+      hasError: !!error,
+      errorMessage: error?.message ?? null,
+      hasUser: !!data?.user,
+      metadataKeys: data?.user?.user_metadata ? Object.keys(data.user.user_metadata) : [],
+      ts: Date.now(),
+    });
+
     if (error) {
+      console.log(`${FILE_TAG} updateProfile throwing error`, error.message);
       throw error;
     }
 
-    if (data?.user) {
-      setUser(data.user);
-      setSession((prev) => (prev ? { ...prev, user: data.user } : prev));
+    const nextUser = data?.user
+      ? {
+          ...data.user,
+          user_metadata: {
+            ...(user?.user_metadata ?? {}),
+            ...(data.user.user_metadata ?? {}),
+            ...patch,
+          },
+        }
+      : (user
+          ? {
+              ...user,
+              user_metadata: {
+                ...(user.user_metadata ?? {}),
+                ...patch,
+              },
+            }
+          : null);
+
+    if (nextUser) {
+      console.log(`${FILE_TAG} updateProfile applying local user state`, {
+        username: nextUser?.user_metadata?.username ?? null,
+        displayName: nextUser?.user_metadata?.display_name ?? null,
+        ts: Date.now(),
+      });
+      setUser(nextUser);
+      setSession((prev) => (prev ? { ...prev, user: nextUser } : prev));
     }
 
-    return data?.user ?? null;
-  }, []);
+    console.log(`${FILE_TAG} updateProfile complete`, { ts: Date.now() });
+    return nextUser;
+  }, [user]);
 
   const updateUsername = useCallback(async (username) => {
     const trimmed = username.trim();
 
-    return updateProfile({
+    console.log(`${FILE_TAG} updateUsername start`, {
+      original: username,
+      trimmed,
+      ts: Date.now(),
+    });
+
+    const result = await updateProfile({
       username: trimmed,
       display_name: trimmed,
     });
+    console.log(`${FILE_TAG} updateUsername complete`, {
+      username: result?.user_metadata?.username ?? null,
+      displayName: result?.user_metadata?.display_name ?? null,
+      ts: Date.now(),
+    });
+    return result;
   }, [updateProfile]);
 
   return {

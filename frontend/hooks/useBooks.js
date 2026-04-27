@@ -11,12 +11,33 @@ const useBooks = ({ books, setBooks, currentBook, setCurrentBook, onBookImported
 
     const navigation = useNavigation();
 
+    const isEpubAsset = (asset) => {
+        const name = String(asset?.name || '').toLowerCase();
+        const mimeType = String(asset?.mimeType || '').toLowerCase();
+        const uri = String(asset?.uri || '').toLowerCase();
+
+        return (
+            name.endsWith('.epub') ||
+            uri.endsWith('.epub') ||
+            mimeType === 'application/epub+zip'
+        );
+    };
+
     const addBook = async () => {
         try {
-            const { assets } = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
-            if (!assets) return;
+            const { assets, canceled } = await DocumentPicker.getDocumentAsync({
+                copyToCacheDirectory: true,
+            });
+            if (canceled || !assets?.[0]) return;
 
             const pickedAsset = assets[0];
+            if (!isEpubAsset(pickedAsset)) {
+                Alert.alert(
+                    'Unsupported file',
+                    'Only EPUB files are supported currently.'
+                );
+                return;
+            }
             const { uri } = pickedAsset;
             setIsImporting(true);
 

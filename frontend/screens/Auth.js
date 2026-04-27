@@ -12,12 +12,17 @@ import {
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import { supabase } from '../services/supabase';
+import { colors, radii, spacing, textStyles } from '../theme';
 
 const FILE_TAG = '[Auth]';
 const GOOGLE_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;
 const GOOGLE_WEB_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
 
-const Auth = () => {
+const Auth = ({
+  embedded = false,
+  title = 'FluentFable',
+  subtitle = 'Sign in to sync your books and saved words.',
+}) => {
   const [mode, setMode] = useState('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -131,14 +136,10 @@ const Auth = () => {
     }
   };
 
-  return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      style={styles.container}
-    >
-      <View style={styles.card}>
-        <Text style={styles.title}>FluentFable</Text>
-        <Text style={styles.subtitle}>Sign in to sync your books and saved words.</Text>
+  const content = (
+      <View style={[styles.card, embedded && styles.embeddedCard]}>
+        <Text style={styles.title}>{title}</Text>
+        <Text style={styles.subtitle}>{subtitle}</Text>
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Email</Text>
@@ -196,6 +197,18 @@ const Auth = () => {
           </View>
         ) : null}
       </View>
+  );
+
+  if (embedded) {
+    return content;
+  }
+
+  return (
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      style={[styles.container, embedded && styles.embeddedContainer]}
+    >
+      {content}
     </KeyboardAvoidingView>
   );
 };
@@ -208,88 +221,96 @@ GoogleSignin.configure({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#d9e2ec',
+    backgroundColor: colors.backgroundWarm,
     justifyContent: 'center',
-    paddingHorizontal: 20,
+    paddingHorizontal: spacing.lg,
+  },
+  embeddedContainer: {
+    flex: 0,
+    justifyContent: 'flex-start',
+    backgroundColor: 'transparent',
+    paddingHorizontal: 0,
   },
   card: {
-    backgroundColor: '#f8fbff',
-    borderRadius: 20,
-    padding: 22,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.12,
-    shadowRadius: 10,
-    elevation: 5,
+    backgroundColor: colors.surfaceElevated,
+    borderRadius: radii.lg,
+    padding: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    shadowColor: colors.shadow,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 1,
+    shadowRadius: 24,
+    elevation: 6,
+  },
+  embeddedCard: {
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
   },
   title: {
+    ...textStyles.title,
     fontSize: 28,
-    fontWeight: '700',
-    color: '#1f2933',
   },
   subtitle: {
-    marginTop: 6,
-    fontSize: 14,
-    lineHeight: 20,
-    color: '#52606d',
+    ...textStyles.bodyMuted,
+    marginTop: spacing.xxs,
   },
   section: {
-    marginTop: 22,
+    marginTop: spacing.lg,
   },
   sectionTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#334e68',
-    marginBottom: 10,
-    textTransform: 'uppercase',
+    ...textStyles.eyebrow,
+    marginBottom: spacing.sm,
   },
   input: {
     borderWidth: 1,
-    borderColor: '#cbd2d9',
-    borderRadius: 12,
-    backgroundColor: '#ffffff',
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 15,
-    color: '#102a43',
-    marginBottom: 10,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    backgroundColor: colors.surface,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    color: colors.text,
+    marginBottom: spacing.sm,
+    ...textStyles.body,
   },
   modeRow: {
     flexDirection: 'row',
-    gap: 18,
-    marginBottom: 12,
+    gap: spacing.md,
+    marginBottom: spacing.sm,
   },
   modeText: {
-    color: '#52606d',
-    fontSize: 14,
-    fontWeight: '600',
+    ...textStyles.label,
+    color: colors.textMuted,
   },
   modeActive: {
-    color: '#0f609b',
+    color: colors.accentStrong,
   },
   primaryButton: {
-    backgroundColor: '#0f609b',
-    borderRadius: 12,
+    backgroundColor: colors.accentSoft,
+    borderRadius: radii.md,
     paddingVertical: 13,
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(166, 103, 0, 0.12)',
   },
   primaryButtonText: {
-    color: '#ffffff',
+    ...textStyles.label,
+    color: colors.accentStrong,
     fontSize: 15,
-    fontWeight: '700',
   },
   secondaryButton: {
-    borderRadius: 12,
+    borderRadius: radii.md,
     borderWidth: 1,
-    borderColor: '#bcccdc',
-    backgroundColor: '#ffffff',
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
     paddingVertical: 13,
     alignItems: 'center',
   },
   secondaryButtonText: {
-    color: '#102a43',
+    ...textStyles.label,
+    color: colors.text,
     fontSize: 15,
-    fontWeight: '700',
   },
   appleButton: {
     width: '100%',
