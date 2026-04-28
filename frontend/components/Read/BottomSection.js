@@ -21,6 +21,8 @@ const BottomSection = ({
     onBookLoadError,
     onNativeTextSelected,
     onLookupPlacementChange,
+    onTocChange,
+    navigationRef,
 }) => {
     const { getCurrentLocation, goToLocation, injectJavascript } = useReader();
     const currentLocationRef = useRef(null);
@@ -122,6 +124,7 @@ const BottomSection = ({
             page: displayed?.page ?? null,
             total: displayed?.total ?? null,
             percentage: typeof percentage === 'number' ? percentage : null,
+            href: currentLocation?.start?.href ?? currentLocation?.end?.href ?? null,
         };
         currentLocationRef.current = startCfi;
         setBooks(prevBooks => prevBooks.map(book =>
@@ -171,6 +174,26 @@ const BottomSection = ({
     }, [currentBook, goToLocation, setBooks]);
 
     const initialLocation = books.find(book => book.uri === currentBook)?.location;
+
+    useEffect(() => {
+        if (!navigationRef) {
+            return;
+        }
+
+        navigationRef.current = {
+            goToHref: (href) => {
+                if (href && goToLocation) {
+                    goToLocation(href);
+                }
+            },
+        };
+
+        return () => {
+            if (navigationRef.current?.goToHref) {
+                navigationRef.current = null;
+            }
+        };
+    }, [goToLocation, navigationRef]);
 
     // When savedWords changes after initial mount, inject updated word list into the
     // already-running WebView without restarting the Reader
@@ -300,6 +323,9 @@ const BottomSection = ({
                     replayHighlights();
                 }, 1800);
                 onBookReady?.();
+            }}
+            onNavigationLoaded={({ toc }) => {
+                onTocChange?.(Array.isArray(toc) ? toc : []);
             }}
             onRendered={() => {
                 console.log('[BottomSection] Reader rendered a section, replaying highlights');
