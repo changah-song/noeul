@@ -9,6 +9,7 @@ import { ReaderProvider } from '@epubjs-react-native/core';
 
 import TopSection from '../components/Read/TopSection/TopSection';
 import BottomSection from '../components/Read/BottomSection';
+import TocDrawer from '../components/Read/TocDrawer';
 import { AppProvider } from '../contexts/AppContext';
 import {
     getSavedWords,
@@ -36,6 +37,8 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
     const [highlightTerms, setHighlightTerms] = useState(null);
     const [highlightTermsReady, setHighlightTermsReady] = useState(false);
     const [readerLocationInfo, setReaderLocationInfo] = useState(null);
+    const [toc, setToc] = useState([]);
+    const [showToc, setShowToc] = useState(false);
     const [bookLoadState, setBookLoadState] = useState('idle');
     const [bookLoadError, setBookLoadError] = useState('');
     const [readerRetryKey, setReaderRetryKey] = useState(0);
@@ -56,6 +59,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
     const extractedTextRef = useRef(null);
     const preprocessingInFlightRef = useRef(false);
     const readingSessionStartedAtRef = useRef(Date.now());
+    const navigationRef = useRef(null);
     const activeBook = books.find(book => book.uri === currentBook) ?? null;
     const shouldUseHeuristicHighlights = !activeBook?.preprocessed;
 
@@ -140,6 +144,8 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         setShowSettings(false);
         setIsFullscreen(false);
         setReaderRetryKey(0);
+        setToc([]);
+        setShowToc(false);
     }, [currentBook]);
 
     useEffect(() => {
@@ -455,11 +461,16 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
 
                 <View style={styles.headerControls}>
                     <View style={[styles.controlPill, isFullscreen && styles.focusHidden]}>
-                        <Text style={styles.controlLabel}>Aa {settings.fontSize}</Text>
-                    </View>
-                    <View style={[styles.controlPill, isFullscreen && styles.focusHidden]}>
                         <Text style={styles.controlLabel}>{progressLabel}</Text>
                     </View>
+                    {!isFullscreen && toc.length > 0 ? (
+                        <TouchableOpacity
+                            style={styles.settingsButton}
+                            onPress={() => setShowToc(true)}
+                        >
+                            <Feather name="list" size={18} color={colors.text} />
+                        </TouchableOpacity>
+                    ) : null}
                     <TouchableOpacity
                         style={styles.settingsButton}
                         onPress={() => setIsFullscreen((prev) => !prev)}
@@ -536,11 +547,25 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                                 }}
                                 onBookLoadError={handleBookLoadError}
                                 onNativeTextSelected={handleNativeTextSelected}
+                                onTocChange={setToc}
+                                navigationRef={navigationRef}
                             />
                         )
                     )}
                 </ReaderProvider>
             </View>
+
+            <TocDrawer
+                visible={showToc}
+                toc={toc}
+                currentSectionHref={readerLocationInfo?.href ?? ''}
+                isDarkMode={settings.isDarkMode}
+                onClose={() => setShowToc(false)}
+                onSelect={(href) => {
+                    setShowToc(false);
+                    navigationRef.current?.goToHref?.(href);
+                }}
+            />
 
             <View
                 style={[
