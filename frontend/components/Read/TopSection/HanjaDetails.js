@@ -257,7 +257,7 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
     },
     hanjaCharacter: {
-        fontFamily: fontFamilies.serifBold,
+        fontFamily: fontFamilies.krSerifBold,
         fontSize: 43,
         lineHeight: 52,
     },
@@ -267,7 +267,7 @@ const styles = StyleSheet.create({
         gap: 2,
     },
     readingText: {
-        fontFamily: fontFamilies.serifBold,
+        fontFamily: fontFamilies.krSerifBold,
         fontSize: 17,
         lineHeight: 22,
     },
@@ -325,12 +325,12 @@ const styles = StyleSheet.create({
         columnGap: spacing.xs,
     },
     relatedKorean: {
-        fontFamily: fontFamilies.serifBold,
+        fontFamily: fontFamilies.krSerifBold,
         fontSize: 17,
         lineHeight: 22,
     },
     relatedHanja: {
-        fontFamily: fontFamilies.serifMedium,
+        fontFamily: fontFamilies.krSerifMedium,
         fontSize: 12,
         lineHeight: 17,
     },

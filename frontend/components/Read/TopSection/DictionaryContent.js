@@ -893,7 +893,7 @@ const styles = StyleSheet.create({
         paddingTop: 2,
     },
     entryWord: {
-        fontFamily: fontFamilies.serifBold,
+        fontFamily: fontFamilies.krSerifBold,
         fontSize: 24,
         lineHeight: 40,
         letterSpacing: 0,
@@ -901,7 +901,7 @@ const styles = StyleSheet.create({
         includeFontPadding: true,
     },
     entryHanja: {
-        fontFamily: fontFamilies.serifMedium,
+        fontFamily: fontFamilies.krSerifMedium,
         fontSize: 15,
         lineHeight: 24,
     },
@@ -992,7 +992,7 @@ const styles = StyleSheet.create({
         lineHeight: 19,
     },
     extraHanja: {
-        fontFamily: fontFamilies.serifMedium,
+        fontFamily: fontFamilies.krSerifMedium,
         fontSize: 12,
         lineHeight: 18,
     },
