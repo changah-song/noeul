@@ -64,7 +64,23 @@ class NativeEpubReaderModule : Module() {
         view.setReaderTheme(theme)
       }
 
-      Events("onPageChange", "onChapterEnd", "onChapterStart", "onChapterCommit")
+      Prop("highlightTerms") { view: NativeEpubReaderView, terms: List<Any?> ->
+        view.setHighlightTerms(terms)
+      }
+
+      Prop("clearSelectionToken") { view: NativeEpubReaderView, token: Double ->
+        view.setClearSelectionToken(token.toInt())
+      }
+
+      Events(
+        "onPageChange",
+        "onChapterEnd",
+        "onChapterStart",
+        "onChapterCommit",
+        "onWordSelected",
+        "onTextSelected",
+        "onSelectionCleared"
+      )
     }
   }
 }
@@ -103,6 +119,9 @@ class NativeEpubReaderView(
   private val onChapterEnd by EventDispatcher()
   private val onChapterStart by EventDispatcher()
   private val onChapterCommit by EventDispatcher()
+  private val onWordSelected by EventDispatcher()
+  private val onTextSelected by EventDispatcher()
+  private val onSelectionCleared by EventDispatcher()
   private val viewPager = ViewPager2(context)
   private val mainHandler = Handler(Looper.getMainLooper())
   private val paginationExecutor = Executors.newSingleThreadExecutor { runnable ->
@@ -130,6 +149,14 @@ class NativeEpubReaderView(
   private var readerFontSizeSp = 18f
   private var readerLineHeightMultiplier = 1.5f
   private var readerTheme = "light"
+  private var highlightTerms: List<String> = emptyList()
+  private var savedHighlightRangesByPage: Map<Int, List<TextRange>> = emptyMap()
+  private var activeSelectionRanges: List<TextRange> = emptyList()
+  private var activeSelectionKind: ActiveSelectionKind? = null
+  private var lastClearSelectionToken: Int? = null
+  private var activeHighlightColor = Color.argb(0x55, 0xfc, 0xd5, 0xb4)
+  private var textSelectionHighlightColor = Color.rgb(0xe3, 0xe7, 0xee)
+  private var savedHighlightColor = Color.rgb(0xf7, 0xd4, 0x88)
   private var userDraggedPager = false
   private var previousPageIndex = 0
   private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
@@ -353,8 +380,28 @@ class NativeEpubReaderView(
 
     readerTheme = nextTheme
     setReaderBackgroundColors()
+    updateHighlightColorsForTheme()
     chapterTransitionDirection = "none"
     repaginate(resetToFirstPage = false)
+  }
+
+  fun setHighlightTerms(terms: List<Any?>) {
+    val nextTerms = normalizeHighlightTerms(terms)
+    if (highlightTerms == nextTerms) {
+      return
+    }
+
+    highlightTerms = nextTerms
+    rebuildSavedHighlightRanges()
+  }
+
+  fun setClearSelectionToken(token: Int) {
+    if (lastClearSelectionToken == token) {
+      return
+    }
+
+    lastClearSelectionToken = token
+    clearActiveSelection(dispatchEvent = false)
   }
 
   private fun repaginate(resetToFirstPage: Boolean) {
@@ -487,9 +534,10 @@ class NativeEpubReaderView(
   }
 
   private fun currentWindowItem(chapters: List<ChapterWindowItem>): ChapterWindowItem? {
-    val currentSpineIndex = bookManifest.intValue("currentSpineIndex")
-    return chapters.firstOrNull { chapter -> chapter.spineIndex == currentSpineIndex }
-      ?: chapters.firstOrNull { chapter -> chapter.role == "current" }
+    return chapters.firstOrNull { chapter -> chapter.role == "current" }
+      ?: bookManifest.intValue("currentSpineIndex")?.let { spineIndex ->
+        chapters.firstOrNull { chapter -> chapter.spineIndex == spineIndex }
+      }
   }
 
   private fun currentWindowItemSignature(chapters: List<ChapterWindowItem>): String {
@@ -573,6 +621,13 @@ class NativeEpubReaderView(
     previousPageIndex = nextPages.getOrNull(targetPage)?.chapterPageIndex ?: targetPage
     userDraggedPager = false
     pageRanges = paginationResult.ranges
+    val previousActiveSelectionRanges = activeSelectionRanges
+    activeSelectionRanges = remapSelectionRangesForPages(activeSelectionRanges, nextPages)
+    if (activeSelectionRanges.isEmpty()) {
+      activeSelectionKind = null
+    }
+    val didDropActiveSelection = previousActiveSelectionRanges.isNotEmpty() && activeSelectionRanges.isEmpty()
+    savedHighlightRangesByPage = buildSavedHighlightRanges(nextPages, highlightTerms)
 
     val adapter = pageAdapter
     if (adapter == null) {
@@ -583,7 +638,17 @@ class NativeEpubReaderView(
         pagePaddingH,
         pagePaddingV,
         readerLineHeightMultiplier,
-        backgroundColor
+        backgroundColor,
+        activeSelectionRanges,
+        activeSelectionKind,
+        savedHighlightRangesByPage,
+        activeHighlightColor,
+        textSelectionHighlightColor,
+        savedHighlightColor,
+        ::handlePageWordSelected,
+        ::handlePageTextSelected,
+        ::handlePageSelectionCleared,
+        ::handlePageSelectionDragStateChanged
       )
       viewPager.adapter = pageAdapter
     } else {
@@ -597,6 +662,9 @@ class NativeEpubReaderView(
 
       if (canAnimateChapterTransition) {
         pages = nextPages
+        adapter.updateActiveSelectionRanges(activeSelectionRanges, activeSelectionKind)
+        adapter.updateSavedHighlightRanges(savedHighlightRangesByPage)
+        adapter.updateHighlightColors(activeHighlightColor, textSelectionHighlightColor, savedHighlightColor)
         animateChapterTransition(
           adapter,
           previousPages,
@@ -604,17 +672,26 @@ class NativeEpubReaderView(
           transitionDirection,
           backgroundColor
         )
+        if (didDropActiveSelection) {
+          onSelectionCleared(mapOf<String, Any>())
+        }
         return
       }
 
       pages = nextPages
       pagePositionOffset = 0
+      adapter.updateActiveSelectionRanges(activeSelectionRanges, activeSelectionKind)
+      adapter.updateSavedHighlightRanges(savedHighlightRangesByPage)
+      adapter.updateHighlightColors(activeHighlightColor, textSelectionHighlightColor, savedHighlightColor)
       adapter.updateRenderConfig(readerLineHeightMultiplier, backgroundColor)
       adapter.updatePages(pages)
     }
 
     viewPager.setCurrentItem(targetPage, false)
     dispatchPageChange(targetPage, pages.size)
+    if (didDropActiveSelection) {
+      onSelectionCleared(mapOf<String, Any>())
+    }
     forcePagerRefresh()
   }
 
@@ -695,6 +772,255 @@ class NativeEpubReaderView(
       val recyclerView = viewPager.getChildAt(0) as? RecyclerView
       pageAdapter?.rebindVisiblePages(recyclerView, currentItem)
     }
+  }
+
+  private fun handlePageWordSelected(hit: WordHit) {
+    activeSelectionRanges = listOf(hit.range)
+    activeSelectionKind = ActiveSelectionKind.WORD
+    pageAdapter?.updateActiveSelectionRanges(activeSelectionRanges, activeSelectionKind)
+    invalidateVisiblePageHighlights()
+
+    val event = mutableMapOf<String, Any>(
+      "text" to hit.text,
+      "placement" to hit.placement,
+      "pageIndex" to hit.range.pageIndex,
+      "blockId" to hit.range.blockId,
+      "sourceStartOffset" to hit.range.sourceStartOffset,
+      "sourceEndOffset" to hit.range.sourceEndOffset,
+      "localStartOffset" to hit.localStartOffset,
+      "localEndOffset" to hit.localEndOffset
+    )
+    hit.range.spineIndex?.let { spineIndex ->
+      event["spineIndex"] = spineIndex
+    }
+
+    onWordSelected(event)
+  }
+
+  private fun handlePageTextSelected(selection: TextSelectionHit) {
+    activeSelectionRanges = selection.ranges
+    activeSelectionKind = ActiveSelectionKind.TEXT
+    pageAdapter?.updateActiveSelectionRanges(activeSelectionRanges, activeSelectionKind)
+    invalidateVisiblePageHighlights()
+
+    val event = mutableMapOf<String, Any>(
+      "text" to selection.text,
+      "placement" to selection.placement,
+      "ranges" to selection.ranges.map { range -> rangeEventMap(range) }
+    )
+    selection.ranges.firstOrNull()?.let { firstRange ->
+      event["pageIndex"] = firstRange.pageIndex
+      event["blockId"] = firstRange.blockId
+      event["sourceStartOffset"] = firstRange.sourceStartOffset
+      event["sourceEndOffset"] = firstRange.sourceEndOffset
+      firstRange.spineIndex?.let { spineIndex ->
+        event["spineIndex"] = spineIndex
+      }
+    }
+
+    onTextSelected(event)
+  }
+
+  private fun handlePageSelectionCleared() {
+    clearActiveSelection(dispatchEvent = true, forceEvent = true)
+  }
+
+  private fun handlePageSelectionDragStateChanged(isDraggingSelection: Boolean) {
+    viewPager.isUserInputEnabled = !isDraggingSelection
+  }
+
+  private fun clearActiveSelection(dispatchEvent: Boolean, forceEvent: Boolean = false) {
+    val hadSelection = activeSelectionRanges.isNotEmpty()
+    activeSelectionRanges = emptyList()
+    activeSelectionKind = null
+    pageAdapter?.updateActiveSelectionRanges(activeSelectionRanges, activeSelectionKind)
+    invalidateVisiblePageHighlights()
+    viewPager.isUserInputEnabled = true
+
+    if (dispatchEvent && (hadSelection || forceEvent)) {
+      onSelectionCleared(mapOf<String, Any>())
+    }
+  }
+
+  private fun rangeEventMap(range: TextRange): Map<String, Any> {
+    val event = mutableMapOf<String, Any>(
+      "pageIndex" to range.pageIndex,
+      "blockId" to range.blockId,
+      "sourceStartOffset" to range.sourceStartOffset,
+      "sourceEndOffset" to range.sourceEndOffset
+    )
+    range.spineIndex?.let { spineIndex ->
+      event["spineIndex"] = spineIndex
+    }
+    return event
+  }
+
+  private fun invalidateVisiblePageHighlights() {
+    pageAdapter?.invalidateVisiblePages(recyclerView(), viewPager.currentItem)
+  }
+
+  private fun recyclerView(): RecyclerView? {
+    return viewPager.getChildAt(0) as? RecyclerView
+  }
+
+  private fun rebuildSavedHighlightRanges() {
+    savedHighlightRangesByPage = buildSavedHighlightRanges(pages, highlightTerms)
+    pageAdapter?.updateSavedHighlightRanges(savedHighlightRangesByPage)
+    invalidateVisiblePageHighlights()
+  }
+
+  private fun buildSavedHighlightRanges(
+    sourcePages: List<ReaderPage>,
+    terms: List<String>
+  ): Map<Int, List<TextRange>> {
+    if (sourcePages.isEmpty() || terms.isEmpty()) {
+      Log.d(
+        TAG,
+        "saved highlight ranges built: terms=${terms.size} pages=${sourcePages.size} matches=0"
+      )
+      return emptyMap()
+    }
+
+    val rangesByPage = mutableMapOf<Int, MutableList<TextRange>>()
+
+    sourcePages.forEach { page ->
+      val pageRanges = mutableListOf<TextRange>()
+
+      page.blocks.forEach blockLoop@{ block ->
+        if (block.type != "text") {
+          return@blockLoop
+        }
+
+        val text = block.plainText.ifEmpty { block.styledText?.toString() ?: "" }
+        if (text.isEmpty()) {
+          return@blockLoop
+        }
+
+        val occupiedLocalRanges = mutableListOf<Pair<Int, Int>>()
+
+        terms.forEach { term ->
+          var searchStart = 0
+          while (searchStart <= text.length - term.length) {
+            val matchStart = text.indexOf(term, startIndex = searchStart)
+            if (matchStart < 0) {
+              break
+            }
+
+            val matchEnd = matchStart + term.length
+            if (
+              hasTokenBoundary(text, term, matchStart, matchEnd) &&
+              !overlapsAny(occupiedLocalRanges, matchStart, matchEnd)
+            ) {
+              occupiedLocalRanges.add(matchStart to matchEnd)
+              pageRanges.add(
+                TextRange(
+                  pageIndex = page.pageIndex,
+                  spineIndex = page.spineIndex,
+                  blockId = block.blockId,
+                  sourceStartOffset = block.sourceStartOffset + matchStart,
+                  sourceEndOffset = block.sourceStartOffset + matchEnd
+                )
+              )
+            }
+
+            searchStart = matchStart + 1
+          }
+        }
+      }
+
+      if (pageRanges.isNotEmpty()) {
+        rangesByPage[page.pageIndex] = pageRanges
+          .sortedWith(compareBy<TextRange> { it.blockId }
+            .thenBy { it.sourceStartOffset }
+            .thenBy { it.sourceEndOffset })
+          .toMutableList()
+      }
+    }
+
+    val matchCount = rangesByPage.values.sumOf { ranges -> ranges.size }
+    Log.d(
+      TAG,
+      "saved highlight ranges built: terms=${terms.size} pages=${sourcePages.size} matches=$matchCount"
+    )
+
+    return rangesByPage
+  }
+
+  private fun normalizeHighlightTerms(terms: List<Any?>): List<String> {
+    return terms
+      .mapNotNull { term -> (term as? String)?.trim()?.takeIf { it.isNotEmpty() } }
+      .distinct()
+      .sortedWith(compareByDescending<String> { it.length }.thenBy { it })
+  }
+
+  private fun hasTokenBoundary(
+    text: String,
+    term: String,
+    start: Int,
+    end: Int
+  ): Boolean {
+    val startsWithToken = term.firstOrNull()?.let { isReaderTokenChar(it) } == true
+    val endsWithToken = term.lastOrNull()?.let { isReaderTokenChar(it) } == true
+
+    if (startsWithToken && start > 0 && isReaderTokenChar(text[start - 1])) {
+      return false
+    }
+
+    if (endsWithToken && end < text.length && isReaderTokenChar(text[end])) {
+      return false
+    }
+
+    return true
+  }
+
+  private fun overlapsAny(ranges: List<Pair<Int, Int>>, start: Int, end: Int): Boolean {
+    return ranges.any { (rangeStart, rangeEnd) ->
+      start < rangeEnd && end > rangeStart
+    }
+  }
+
+  private fun remapSelectionRangesForPages(
+    selectionRanges: List<TextRange>,
+    candidatePages: List<ReaderPage>
+  ): List<TextRange> {
+    if (selectionRanges.isEmpty()) {
+      return emptyList()
+    }
+
+    return selectionRanges.mapNotNull { selection ->
+      candidatePages.forEach pageLoop@{ page ->
+        if (page.spineIndex != selection.spineIndex) {
+          return@pageLoop
+        }
+
+        page.blocks.forEach blockLoop@{ block ->
+          if (block.type != "text" || block.blockId != selection.blockId) {
+            return@blockLoop
+          }
+
+          val blockTextLength = block.plainText.ifEmpty { block.styledText?.toString() ?: "" }.length
+          val blockStart = block.sourceStartOffset
+          val blockEnd = blockStart + blockTextLength
+          val intersects = selection.sourceStartOffset < blockEnd &&
+            selection.sourceEndOffset > blockStart
+
+          if (intersects) {
+            return@mapNotNull selection.copy(pageIndex = page.pageIndex)
+          }
+        }
+      }
+
+      null
+    }
+  }
+
+  private fun updateHighlightColorsForTheme() {
+    activeHighlightColor = Color.argb(0x55, 0xfc, 0xd5, 0xb4)
+    textSelectionHighlightColor = Color.rgb(0xe3, 0xe7, 0xee)
+    savedHighlightColor = Color.rgb(0xf7, 0xd4, 0x88)
+
+    pageAdapter?.updateHighlightColors(activeHighlightColor, textSelectionHighlightColor, savedHighlightColor)
+    invalidateVisiblePageHighlights()
   }
 
   private fun trackEdgeSwipe(event: MotionEvent) {

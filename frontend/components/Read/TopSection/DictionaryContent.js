@@ -286,6 +286,7 @@ const DictionaryContent = ({ highlightedWord, isDarkMode, onContentLoaded, onWor
 
     // ── User interaction handlers ─────────────────────────────────────────────
     const toggleSave = async (word, origin, definition) => {
+        onWordSave?.(word);
         const alreadySaved = await vocabEntryExists(word, origin, definition);
         if (!alreadySaved) {
             await insertData(word, origin, definition, {
@@ -294,7 +295,6 @@ const DictionaryContent = ({ highlightedWord, isDarkMode, onContentLoaded, onWor
                 sourceBookTitle: sourceBook?.title ?? null,
             });
         }
-        onWordSave?.(word);
 
         const {
             data: { user },
@@ -317,8 +317,8 @@ const DictionaryContent = ({ highlightedWord, isDarkMode, onContentLoaded, onWor
     };
 
     const toggleUnSave = async (word, origin, definition) => {
-        await removeData(word, origin, definition);
         onWordUnsave?.(word);
+        await removeData(word, origin, definition);
 
         const {
             data: { user },

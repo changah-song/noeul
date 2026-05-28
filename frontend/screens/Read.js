@@ -30,6 +30,12 @@ const DEFAULT_READER_SETTINGS = {
     lineSpacing: 1.5,
 };
 
+const uniqTerms = (values) => [...new Set(
+    (values || [])
+        .map((value) => (typeof value === 'string' ? value.trim() : ''))
+        .filter(Boolean)
+)];
+
 const spineIndexForReaderPackage = (readerPackage) => {
     const spineIndex = readerPackage?.loadedSpineItem?.index
         ?? readerPackage?.bookManifest?.currentSpineIndex;
@@ -73,11 +79,13 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
     const [highlightedWord, setHighlightedWord] = useState('');
     const [isNativeSelection, setIsNativeSelection] = useState(false);
     const [lookupPlacement, setLookupPlacement] = useState('bottom');
+    const [clearSelectionToken, setClearSelectionToken] = useState(0);
     const [showLookupHint, setShowLookupHint] = useState(true);
     const [showSettings, setShowSettings] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [savedWords, setSavedWords] = useState(null); // null = not yet loaded
     const [highlightTerms, setHighlightTerms] = useState(null);
+    const [optimisticHighlightTerms, setOptimisticHighlightTerms] = useState([]);
     const [highlightTermsReady, setHighlightTermsReady] = useState(false);
     const [readerLocationInfo, setReaderLocationInfo] = useState(null);
     const [toc, setToc] = useState([]);
@@ -189,8 +197,12 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         extractedTextRef.current = null;
         preprocessingInFlightRef.current = false;
         readingSessionStartedAtRef.current = Date.now();
+        setHighlightedWord('');
+        setIsNativeSelection(false);
         setLookupPlacement('bottom');
+        setClearSelectionToken((value) => value + 1);
         setHighlightTerms(null);
+        setOptimisticHighlightTerms([]);
         setHighlightTermsReady(savedWords !== null && !currentBook);
         setBookLoadState(currentBook ? 'loading' : 'idle');
         setBookLoadError('');
@@ -222,16 +234,53 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
     }, []);
 
     const handleWordSave = (word) => {
-        setSavedWords(prev => (prev ?? []).includes(word) ? prev : [...(prev ?? []), word]);
+        const surface = highlightedWord?.trim();
+        setSavedWords(prev => uniqTerms([...(prev ?? []), word]));
+        setOptimisticHighlightTerms((prev) => {
+            const next = uniqTerms([
+                ...prev,
+                word,
+                ...(surface ? [surface] : []),
+            ]);
+            console.log(
+                `[Read] optimistic save highlight: word="${word}" surface="${surface || ''}" optimisticTerms=${next.length}`
+            );
+            return next;
+        });
+        setClearSelectionToken((value) => value + 1);
     };
 
     const handleWordUnsave = (word) => {
+        const surface = highlightedWord?.trim();
         setSavedWords(prev => (prev ?? []).filter(w => w !== word));
+        setOptimisticHighlightTerms(prev => prev.filter(term => term !== word && term !== surface));
     };
 
-    const handleNativeTextSelected = useCallback((text) => {
+    const handleNativeWordSelected = useCallback((event = {}) => {
+        const text = typeof event.text === 'string' ? event.text.trim() : '';
+        if (!text) {
+            return;
+        }
+
+        setIsNativeSelection(false);
+        setHighlightedWord(text);
+        setLookupPlacement(event.placement === 'top' ? 'top' : 'bottom');
+    }, []);
+
+    const handleNativeSelectionCleared = useCallback(() => {
+        setHighlightedWord('');
+        setIsNativeSelection(false);
+    }, []);
+
+    const handleNativeTextSelected = useCallback((event = {}) => {
+        const text = typeof event.text === 'string' ? event.text.trim() : '';
+        if (!text) {
+            return;
+        }
+
         setIsNativeSelection(true);
         setHighlightedWord(text);
+        setLookupPlacement(event.placement === 'top' ? 'top' : 'bottom');
     }, []);
 
     // ── Core preprocessing pipeline ──────────────────────────────────────────
@@ -441,6 +490,9 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
 
     const handleSettingChange = (key, value) => {
         const newSettings = { ...settings, [key]: value };
+        setHighlightedWord('');
+        setIsNativeSelection(false);
+        setClearSelectionToken((current) => current + 1);
         setSettings(newSettings);
         saveSettings(newSettings);
     };
@@ -457,13 +509,23 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
     const activeBookSizeMb = typeof activeBook?.size === 'number'
         ? activeBook.size / (1024 * 1024)
         : null;
-    const readerHighlightTerms = shouldUseHeuristicHighlights
+    const dbReaderHighlightTerms = shouldUseHeuristicHighlights
         ? (savedWords ?? [])
         : (highlightTerms ?? savedWords ?? []);
+    const readerHighlightTerms = uniqTerms([
+        ...dbReaderHighlightTerms,
+        ...optimisticHighlightTerms,
+    ]);
     const isReaderWaitingForHighlights = !!currentBook && !shouldUseHeuristicHighlights && !highlightTermsReady;
     const nativeChapterBlocks = chapterBlocksForReaderPackage(nativeReaderPackage);
     const nativeChapterResources = chapterResourcesForReaderPackage(nativeReaderPackage);
     const nativeChapterTotal = nativeReaderPackage?.spine?.length ?? 0;
+    useEffect(() => {
+        console.log(
+            `[Read] reader highlight terms: total=${readerHighlightTerms.length} optimistic=${optimisticHighlightTerms.length}`
+        );
+    }, [optimisticHighlightTerms.length, readerHighlightTerms.length]);
+
     const progressLabel = (() => {
         if (readerLocationInfo?.pageInChapter && readerLocationInfo?.pagesInChapter) {
             const chapterLabel = readerLocationInfo?.page && readerLocationInfo?.total
@@ -513,6 +575,9 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
     const retryBookLoad = useCallback(() => {
         setBookLoadError('');
         setBookLoadState('loading');
+        setHighlightedWord('');
+        setIsNativeSelection(false);
+        setClearSelectionToken((value) => value + 1);
         setReaderRetryKey((prev) => prev + 1);
     }, []);
 
@@ -682,6 +747,11 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         );
         const isChapterNavigation = Number.isInteger(requestedSpineIndex);
         const previousSpineIndex = currentSpineIndexRef.current;
+        if (isChapterNavigation && requestedSpineIndex !== previousSpineIndex) {
+            setHighlightedWord('');
+            setIsNativeSelection(false);
+            setClearSelectionToken((value) => value + 1);
+        }
         const nextTransitionDirection = (
             animateChapterTransition && isChapterNavigation && Number.isInteger(previousSpineIndex)
                 ? (
@@ -879,6 +949,10 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
             return;
         }
 
+        setHighlightedWord('');
+        setIsNativeSelection(false);
+        setClearSelectionToken((value) => value + 1);
+
         const committedPackage = parsedChapterCacheRef.current.get(committedSpineIndex);
         console.log(
             `[Read] Native chapter commit: direction=${direction || 'none'} ` +
@@ -966,49 +1040,65 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         loadNativeReaderPackage(loadedSpineIndex - 1, { animateChapterTransition: true });
     }, [loadNativeReaderPackage]);
 
+    const fullscreenReaderChromeColor = settings.isDarkMode ? '#1f2937' : '#f9f7f2';
+
     return (
         <View style={styles.container}>
-            <View style={[styles.headerBar, { paddingTop: insets.top + spacing.xs }]}>
-                <View style={[styles.headerLeft, isFullscreen && styles.focusHidden]}>
-                    <Text numberOfLines={1} style={styles.headerBookTitle}>
-                        {activeBook?.title || 'Reading'}
-                    </Text>
-                    <Text numberOfLines={1} style={styles.headerBookMeta}>
-                        {activeBook?.author || 'Tap any word for lookup'}
-                    </Text>
+            {isFullscreen ? (
+                <View
+                    style={[
+                        styles.fullscreenExitBar,
+                        {
+                            paddingTop: insets.top + 4,
+                            backgroundColor: fullscreenReaderChromeColor,
+                        },
+                    ]}
+                >
+                    <TouchableOpacity
+                        style={styles.fullscreenExitButton}
+                        onPress={() => setIsFullscreen(false)}
+                    >
+                        <Feather name="minimize-2" size={16} color={settings.isDarkMode ? '#d1d5db' : colors.text} />
+                    </TouchableOpacity>
                 </View>
-
-                <View style={styles.headerControls}>
-                    <View style={[styles.controlPill, isFullscreen && styles.focusHidden]}>
-                        <Text style={styles.controlLabel}>{progressLabel}</Text>
+            ) : (
+                <View style={[styles.headerBar, { paddingTop: insets.top + spacing.xs }]}>
+                    <View style={styles.headerLeft}>
+                        <Text numberOfLines={1} style={styles.headerBookTitle}>
+                            {activeBook?.title || 'Reading'}
+                        </Text>
+                        <Text numberOfLines={1} style={styles.headerBookMeta}>
+                            {activeBook?.author || 'Tap any word for lookup'}
+                        </Text>
                     </View>
-                    {!isFullscreen && toc.length > 0 ? (
+
+                    <View style={styles.headerControls}>
+                        <View style={styles.controlPill}>
+                            <Text style={styles.controlLabel}>{progressLabel}</Text>
+                        </View>
+                        {toc.length > 0 ? (
+                            <TouchableOpacity
+                                style={styles.settingsButton}
+                                onPress={() => setShowToc(true)}
+                            >
+                                <Feather name="list" size={18} color={colors.text} />
+                            </TouchableOpacity>
+                        ) : null}
                         <TouchableOpacity
                             style={styles.settingsButton}
-                            onPress={() => setShowToc(true)}
+                            onPress={() => setIsFullscreen(true)}
                         >
-                            <Feather name="list" size={18} color={colors.text} />
+                            <Feather name="maximize-2" size={17} color={colors.text} />
                         </TouchableOpacity>
-                    ) : null}
-                    <TouchableOpacity
-                        style={styles.settingsButton}
-                        onPress={() => setIsFullscreen((prev) => !prev)}
-                    >
-                        <Feather
-                            name={isFullscreen ? 'minimize-2' : 'maximize-2'}
-                            size={isFullscreen ? 16 : 17}
-                            color={isFullscreen ? colors.textSubtle : colors.text}
-                        />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        style={[styles.settingsButton, isFullscreen && styles.focusHidden]}
-                        onPress={() => setShowSettings((prev) => !prev)}
-                        disabled={isFullscreen}
-                    >
-                        <Feather name="more-vertical" size={18} color={colors.text} />
-                    </TouchableOpacity>
+                        <TouchableOpacity
+                            style={styles.settingsButton}
+                            onPress={() => setShowSettings((prev) => !prev)}
+                        >
+                            <Feather name="more-vertical" size={18} color={colors.text} />
+                        </TouchableOpacity>
+                    </View>
                 </View>
-            </View>
+            )}
 
             <View style={styles.reader}>
                 {bookLoadState === 'error' ? (
@@ -1060,10 +1150,15 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                         fontSize={settings.fontSize}
                         lineHeight={settings.lineSpacing}
                         theme={settings.isDarkMode ? 'dark' : 'light'}
+                        highlightTerms={readerHighlightTerms}
+                        clearSelectionToken={clearSelectionToken}
                         onPageChange={handleNativePageChange}
                         onChapterEnd={handleNativeChapterEnd}
                         onChapterStart={handleNativeChapterStart}
                         onChapterCommit={handleNativeChapterCommit}
+                        onWordSelected={handleNativeWordSelected}
+                        onTextSelected={handleNativeTextSelected}
+                        onSelectionCleared={handleNativeSelectionCleared}
                     />
                 )}
             </View>
@@ -1081,8 +1176,21 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                     }
 
                     setShowToc(false);
+                    const firstPagePosition = {
+                        spineIndex: item.spineIndex,
+                        pageIndex: 0,
+                        pagesInChapter: null,
+                        href: item.path || item.href || '',
+                        firstBlockId: null,
+                    };
+
                     if (item.spineIndex !== currentSpineIndex) {
-                        loadNativeReaderPackage(item.spineIndex);
+                        loadNativeReaderPackage(item.spineIndex, {
+                            restorePosition: firstPagePosition,
+                            animateChapterTransition: false,
+                        });
+                    } else {
+                        setNativeRestorePosition(firstPagePosition);
                     }
                 }}
             />
@@ -1103,6 +1211,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                         onPress={() => {
                             setHighlightedWord('');
                             setIsNativeSelection(false);
+                            setClearSelectionToken((value) => value + 1);
                         }}
                     />
                 ) : null}
@@ -1130,7 +1239,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                         <View style={styles.hintCopy}>
                             <Feather name="corner-down-left" size={16} color={colors.textSubtle} />
                             <Text style={styles.hintText}>
-                                Tap a word to look it up, or long-press to translate a selection.
+                                Tap a word to look it up.
                             </Text>
                         </View>
                         <TouchableOpacity onPress={dismissLookupHint} style={styles.hintCloseButton}>
@@ -1274,17 +1383,19 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         gap: spacing.xs,
     },
-    focusHidden: {
-        opacity: 0,
+    fullscreenExitBar: {
+        minHeight: 42,
+        paddingHorizontal: spacing.sm,
+        paddingBottom: 4,
+        alignItems: 'flex-end',
+        justifyContent: 'flex-end',
     },
-    focusHeaderContent: {
-        flex: 1,
-        flexDirection: 'row',
+    fullscreenExitButton: {
+        width: 36,
+        height: 32,
         alignItems: 'center',
-        justifyContent: 'space-between',
-    },
-    focusHeaderSpacer: {
-        flex: 1,
+        justifyContent: 'center',
+        borderRadius: radii.pill,
     },
     controlPill: {
         paddingHorizontal: spacing.sm,
