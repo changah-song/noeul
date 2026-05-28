@@ -26,5 +26,10 @@ data class PageBlock(
 
 data class ReaderPage(
   val pageIndex: Int,
-  val blocks: List<PageBlock>
+  val blocks: List<PageBlock>,
+  val spineIndex: Int? = null,
+  val href: String = "",
+  val path: String = "",
+  val chapterPageIndex: Int = pageIndex,
+  val chapterPageCount: Int = 0
 )

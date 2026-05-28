@@ -30,6 +30,45 @@ const DEFAULT_READER_SETTINGS = {
     lineSpacing: 1.5,
 };
 
+const spineIndexForReaderPackage = (readerPackage) => {
+    const spineIndex = readerPackage?.loadedSpineItem?.index
+        ?? readerPackage?.bookManifest?.currentSpineIndex;
+
+    return Number.isInteger(spineIndex) ? spineIndex : null;
+};
+
+const chapterBlocksForReaderPackage = (readerPackage) => (
+    readerPackage?.loadedChapterBlocks
+    || readerPackage?.firstChapterBlocks
+    || []
+);
+
+const chapterResourcesForReaderPackage = (readerPackage) => (
+    readerPackage?.loadedChapterResources
+    || readerPackage?.firstChapterResources
+    || []
+);
+
+const chapterWindowEntryForPackage = (readerPackage, role) => {
+    const spineIndex = spineIndexForReaderPackage(readerPackage);
+    const blocks = chapterBlocksForReaderPackage(readerPackage);
+
+    if (!Number.isInteger(spineIndex) || !Array.isArray(blocks) || blocks.length === 0) {
+        return null;
+    }
+
+    const loadedSpineItem = readerPackage?.loadedSpineItem || {};
+
+    return {
+        role,
+        spineIndex,
+        href: loadedSpineItem.href || readerPackage?.bookManifest?.currentSpineHref || '',
+        path: loadedSpineItem.path || readerPackage?.bookManifest?.currentSpinePath || '',
+        blocks,
+        resources: chapterResourcesForReaderPackage(readerPackage),
+    };
+};
+
 const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComplete, setIsReaderFocusMode }) => {
     const [highlightedWord, setHighlightedWord] = useState('');
     const [isNativeSelection, setIsNativeSelection] = useState(false);
@@ -47,6 +86,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
     const [bookLoadError, setBookLoadError] = useState('');
     const [readerRetryKey, setReaderRetryKey] = useState(0);
     const [nativeReaderPackage, setNativeReaderPackage] = useState(null);
+    const [nativeChapterWindow, setNativeChapterWindow] = useState([]);
     const [nativeRestorePosition, setNativeRestorePosition] = useState(null);
     const [currentSpineIndex, setCurrentSpineIndex] = useState(null);
     const [chapterTransitionDirection, setChapterTransitionDirection] = useState('none:0');
@@ -70,6 +110,9 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
     const chapterLoadTokenRef = useRef(0);
     const nativeReaderPackageRef = useRef(null);
     const currentSpineIndexRef = useRef(null);
+    const parsedChapterCacheRef = useRef(new Map());
+    const parsedChapterInflightRef = useRef(new Map());
+    const chapterPrefetchTokenRef = useRef(0);
     const activeBook = books.find(book => book.uri === currentBook) ?? null;
     const shouldUseHeuristicHighlights = !activeBook?.preprocessed;
 
@@ -155,12 +198,16 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         setIsFullscreen(false);
         setReaderRetryKey(0);
         setNativeReaderPackage(null);
+        setNativeChapterWindow([]);
         setNativeRestorePosition(null);
         nativeReaderPackageRef.current = null;
         setCurrentSpineIndex(null);
         currentSpineIndexRef.current = null;
         setChapterTransitionDirection('none:0');
         chapterLoadTokenRef.current += 1;
+        chapterPrefetchTokenRef.current += 1;
+        parsedChapterCacheRef.current = new Map();
+        parsedChapterInflightRef.current = new Map();
         setToc([]);
         setShowToc(false);
     }, [currentBook]);
@@ -414,12 +461,8 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         ? (savedWords ?? [])
         : (highlightTerms ?? savedWords ?? []);
     const isReaderWaitingForHighlights = !!currentBook && !shouldUseHeuristicHighlights && !highlightTermsReady;
-    const nativeChapterBlocks = nativeReaderPackage?.loadedChapterBlocks
-        || nativeReaderPackage?.firstChapterBlocks
-        || [];
-    const nativeChapterResources = nativeReaderPackage?.loadedChapterResources
-        || nativeReaderPackage?.firstChapterResources
-        || [];
+    const nativeChapterBlocks = chapterBlocksForReaderPackage(nativeReaderPackage);
+    const nativeChapterResources = chapterResourcesForReaderPackage(nativeReaderPackage);
     const nativeChapterTotal = nativeReaderPackage?.spine?.length ?? 0;
     const progressLabel = (() => {
         if (readerLocationInfo?.pageInChapter && readerLocationInfo?.pagesInChapter) {
@@ -473,12 +516,154 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         setReaderRetryKey((prev) => prev + 1);
     }, []);
 
+    const cacheParsedChapterPackage = useCallback((parsedPackage) => {
+        const spineIndex = spineIndexForReaderPackage(parsedPackage);
+        if (!Number.isInteger(spineIndex)) {
+            return null;
+        }
+
+        parsedChapterCacheRef.current.set(spineIndex, parsedPackage);
+        return spineIndex;
+    }, []);
+
+    const pruneParsedChapterCache = useCallback((centerSpineIndex) => {
+        if (!Number.isInteger(centerSpineIndex)) {
+            return;
+        }
+
+        const keepSpineIndexes = new Set([
+            centerSpineIndex - 1,
+            centerSpineIndex,
+            centerSpineIndex + 1,
+        ]);
+
+        parsedChapterCacheRef.current.forEach((_, spineIndex) => {
+            if (!keepSpineIndexes.has(spineIndex)) {
+                parsedChapterCacheRef.current.delete(spineIndex);
+            }
+        });
+    }, []);
+
+    const updateNativeChapterWindowForSpine = useCallback((centerSpineIndex, currentPackage = null) => {
+        if (!Number.isInteger(centerSpineIndex)) {
+            setNativeChapterWindow([]);
+            return [];
+        }
+
+        if (currentPackage) {
+            cacheParsedChapterPackage(currentPackage);
+        }
+
+        pruneParsedChapterCache(centerSpineIndex);
+
+        const totalSpineItems = (
+            currentPackage?.spine?.length
+            ?? nativeReaderPackageRef.current?.spine?.length
+            ?? 0
+        );
+        const chapterSpecs = [
+            { role: 'previous', spineIndex: centerSpineIndex - 1 },
+            { role: 'current', spineIndex: centerSpineIndex },
+            { role: 'next', spineIndex: centerSpineIndex + 1 },
+        ].filter(({ spineIndex }) => (
+            spineIndex >= 0 && (!totalSpineItems || spineIndex < totalSpineItems)
+        ));
+
+        const entries = chapterSpecs
+            .map(({ role, spineIndex }) => (
+                chapterWindowEntryForPackage(parsedChapterCacheRef.current.get(spineIndex), role)
+            ))
+            .filter(Boolean);
+
+        setNativeChapterWindow(entries);
+        console.log(
+            `[Read] Native chapter window updated: center=${centerSpineIndex} ` +
+            `chapters=${entries.map((entry) => `${entry.role}:${entry.spineIndex}`).join(',') || 'none'}`
+        );
+
+        return entries;
+    }, [cacheParsedChapterPackage, pruneParsedChapterCache]);
+
+    const loadParsedChapterPackage = useCallback(async (requestedSpineIndex = null, reason = 'load') => {
+        if (!currentBook) {
+            return null;
+        }
+
+        const cacheKey = Number.isInteger(requestedSpineIndex) ? requestedSpineIndex : 'auto';
+        if (Number.isInteger(requestedSpineIndex) && parsedChapterCacheRef.current.has(requestedSpineIndex)) {
+            console.log(`[Read] JS chapter load cache hit: reason=${reason} spine=${requestedSpineIndex}`);
+            return parsedChapterCacheRef.current.get(requestedSpineIndex);
+        }
+
+        if (parsedChapterInflightRef.current.has(cacheKey)) {
+            console.log(`[Read] JS chapter load join: reason=${reason} spine=${cacheKey}`);
+            return parsedChapterInflightRef.current.get(cacheKey);
+        }
+
+        const startedAt = Date.now();
+        console.log(`[Read] JS chapter load start: reason=${reason} spine=${cacheKey}`);
+
+        const loadPromise = readEpubPackageXml(
+            currentBook,
+            activeBook?.title || currentBook.split('/').pop() || 'Untitled',
+            Number.isInteger(requestedSpineIndex) ? { spineIndex: requestedSpineIndex } : {}
+        ).then((parsedPackage) => {
+            const loadedSpineIndex = cacheParsedChapterPackage(parsedPackage);
+            console.log(
+                `[Read] JS chapter load end: reason=${reason} requested=${cacheKey} ` +
+                `loaded=${loadedSpineIndex ?? 'unknown'} elapsedMs=${Date.now() - startedAt}`
+            );
+            return parsedPackage;
+        }).finally(() => {
+            parsedChapterInflightRef.current.delete(cacheKey);
+        });
+
+        parsedChapterInflightRef.current.set(cacheKey, loadPromise);
+        return loadPromise;
+    }, [activeBook?.title, cacheParsedChapterPackage, currentBook]);
+
+    const prefetchAdjacentChapters = useCallback((centerSpineIndex, totalSpineItems) => {
+        if (!currentBook || !Number.isInteger(centerSpineIndex) || totalSpineItems <= 0) {
+            return;
+        }
+
+        const prefetchToken = chapterPrefetchTokenRef.current + 1;
+        chapterPrefetchTokenRef.current = prefetchToken;
+
+        [
+            { role: 'previous', spineIndex: centerSpineIndex - 1 },
+            { role: 'next', spineIndex: centerSpineIndex + 1 },
+        ]
+            .filter(({ spineIndex }) => spineIndex >= 0 && spineIndex < totalSpineItems)
+            .forEach(({ role, spineIndex }) => {
+                if (parsedChapterCacheRef.current.has(spineIndex)) {
+                    updateNativeChapterWindowForSpine(centerSpineIndex);
+                    return;
+                }
+
+                loadParsedChapterPackage(spineIndex, `prefetch:${role}`)
+                    .then(() => {
+                        if (chapterPrefetchTokenRef.current !== prefetchToken) {
+                            return;
+                        }
+                        updateNativeChapterWindowForSpine(centerSpineIndex);
+                    })
+                    .catch((error) => {
+                        if (chapterPrefetchTokenRef.current !== prefetchToken) {
+                            return;
+                        }
+                        console.warn(`[Read] Adjacent chapter prefetch failed (${role} ${spineIndex}):`, error);
+                    });
+            });
+    }, [currentBook, loadParsedChapterPackage, updateNativeChapterWindowForSpine]);
+
     const loadNativeReaderPackage = useCallback(async (
         requestedSpineIndex = null,
         { animateChapterTransition = false, restorePosition = null } = {}
     ) => {
         if (!currentBook) {
             setNativeReaderPackage(null);
+            setNativeChapterWindow([]);
             setNativeRestorePosition(null);
             nativeReaderPackageRef.current = null;
             setBookLoadState('idle');
@@ -520,26 +705,27 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         if (!canKeepCurrentReader) {
             setBookLoadState('loading');
             setNativeReaderPackage(null);
+            setNativeChapterWindow([]);
             nativeReaderPackageRef.current = null;
             setToc([]);
             setChapterTransitionDirection('none:0');
         }
 
         try {
-            const options = Number.isInteger(requestedSpineIndex)
-                ? { spineIndex: requestedSpineIndex }
-                : {};
-            const parsedPackage = await readEpubPackageXml(
-                currentBook,
-                activeBook?.title || currentBook.split('/').pop() || 'Untitled',
-                options
+            const parsedPackage = await loadParsedChapterPackage(
+                requestedSpineIndex,
+                isChapterNavigation ? 'navigate' : 'initial'
             );
 
             if (chapterLoadTokenRef.current !== loadToken) {
                 return;
             }
 
-            const loadedSpineIndex = parsedPackage.loadedSpineItem?.index ?? 0;
+            if (!parsedPackage) {
+                return;
+            }
+
+            const loadedSpineIndex = spineIndexForReaderPackage(parsedPackage) ?? 0;
             const totalSpineItems = parsedPackage.spine?.length ?? 0;
             const nextRestorePosition = (
                 requestedRestorePosition?.spineIndex === loadedSpineIndex
@@ -558,6 +744,8 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                 return `${direction}:${previousToken + 1}`;
             });
             setNativeReaderPackage(parsedPackage);
+            updateNativeChapterWindowForSpine(loadedSpineIndex, parsedPackage);
+            prefetchAdjacentChapters(loadedSpineIndex, totalSpineItems);
             setReaderLocationInfo({
                 page: totalSpineItems > 0 ? loadedSpineIndex + 1 : null,
                 total: totalSpineItems || null,
@@ -585,7 +773,12 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
             setBookLoadError(error?.message || 'This book could not be opened by the native reader yet.');
             setChapterTransitionDirection('none:0');
         }
-    }, [activeBook?.title, currentBook]);
+    }, [
+        currentBook,
+        loadParsedChapterPackage,
+        prefetchAdjacentChapters,
+        updateNativeChapterWindowForSpine,
+    ]);
 
     useEffect(() => {
         const savedNativePosition = activeBook?.nativePosition || null;
@@ -597,6 +790,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
 
         return () => {
             chapterLoadTokenRef.current += 1;
+            chapterPrefetchTokenRef.current += 1;
         };
     }, [loadNativeReaderPackage, readerRetryKey]);
 
@@ -604,30 +798,36 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         const pageIndex = Number.isInteger(page) ? page : null;
         const eventSpineIndex = Number.isInteger(spineIndex) ? spineIndex : null;
         const currentLoadedSpineIndex = currentSpineIndexRef.current;
-
-        if (
-            Number.isInteger(eventSpineIndex)
-            && Number.isInteger(currentLoadedSpineIndex)
-            && eventSpineIndex !== currentLoadedSpineIndex
-        ) {
-            return;
-        }
-
-        setReaderLocationInfo((prev) => ({
-            ...(prev || {}),
-            pageInChapter: Number.isInteger(page) ? page + 1 : null,
-            pagesInChapter: Number.isInteger(total) ? total : null,
-        }));
-
         const resolvedSpineIndex = Number.isInteger(eventSpineIndex)
             ? eventSpineIndex
             : currentLoadedSpineIndex;
+        const totalSpineItems = nativeReaderPackageRef.current?.spine?.length ?? nativeChapterTotal;
+
+        setReaderLocationInfo((prev) => ({
+            ...(prev || {}),
+            page: (
+                Number.isInteger(resolvedSpineIndex) && totalSpineItems > 0
+                    ? resolvedSpineIndex + 1
+                    : (prev?.page ?? null)
+            ),
+            total: totalSpineItems || prev?.total || null,
+            percentage: (
+                Number.isInteger(resolvedSpineIndex) && totalSpineItems > 0
+                    ? resolvedSpineIndex / totalSpineItems
+                    : (prev?.percentage ?? null)
+            ),
+            href: typeof href === 'string' && href.length > 0 ? href : (prev?.href || ''),
+            pageInChapter: Number.isInteger(page) ? page + 1 : null,
+            pagesInChapter: Number.isInteger(total) ? total : null,
+        }));
 
         if (!currentBook || !Number.isInteger(pageIndex) || !Number.isInteger(resolvedSpineIndex)) {
             return;
         }
 
-        const loadedSpineItem = nativeReaderPackageRef.current?.loadedSpineItem;
+        const loadedSpineItem = nativeReaderPackageRef.current?.spine
+            ?.find((item) => item?.index === resolvedSpineIndex)
+            || nativeReaderPackageRef.current?.loadedSpineItem;
         const nextPosition = {
             spineIndex: resolvedSpineIndex,
             pageIndex,
@@ -663,26 +863,108 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                 ? book
                 : { ...book, nativePosition: nextPosition };
         }));
-    }, [currentBook, setBooks]);
+    }, [currentBook, nativeChapterTotal, setBooks]);
 
-    const handleNativeChapterEnd = useCallback(() => {
-        if (!Number.isInteger(currentSpineIndex) || nativeChapterTotal <= 0) {
+    const handleNativeChapterCommit = useCallback(({
+        spineIndex,
+        href,
+        path,
+        pageIndex,
+        pagesInChapter,
+        firstBlockId,
+        direction,
+    } = {}) => {
+        const committedSpineIndex = Number.isInteger(spineIndex) ? spineIndex : null;
+        if (!Number.isInteger(committedSpineIndex)) {
             return;
         }
 
-        const nextSpineIndex = currentSpineIndex + 1;
+        const committedPackage = parsedChapterCacheRef.current.get(committedSpineIndex);
+        console.log(
+            `[Read] Native chapter commit: direction=${direction || 'none'} ` +
+            `spine=${committedSpineIndex} cached=${!!committedPackage}`
+        );
+
+        if (!committedPackage) {
+            loadNativeReaderPackage(committedSpineIndex, {
+                restorePosition: {
+                    spineIndex: committedSpineIndex,
+                    pageIndex: Number.isInteger(pageIndex) ? pageIndex : 0,
+                    pagesInChapter: Number.isInteger(pagesInChapter) ? pagesInChapter : null,
+                    href: path || href || '',
+                    firstBlockId: firstBlockId || null,
+                },
+            });
+            return;
+        }
+
+        const totalSpineItems = committedPackage.spine?.length ?? 0;
+        const nextPosition = {
+            spineIndex: committedSpineIndex,
+            pageIndex: Number.isInteger(pageIndex) ? pageIndex : 0,
+            pagesInChapter: Number.isInteger(pagesInChapter) ? pagesInChapter : null,
+            href: path || href || committedPackage.loadedSpineItem?.path || committedPackage.loadedSpineItem?.href || '',
+            firstBlockId: firstBlockId || null,
+        };
+
+        chapterLoadTokenRef.current += 1;
+        setCurrentSpineIndex(committedSpineIndex);
+        currentSpineIndexRef.current = committedSpineIndex;
+        nativeReaderPackageRef.current = committedPackage;
+        setNativeReaderPackage(committedPackage);
+        setNativeRestorePosition(nextPosition);
+        if (currentBook) {
+            setBooks((prevBooks) => prevBooks.map((book) => (
+                book.uri === currentBook
+                    ? { ...book, nativePosition: nextPosition }
+                    : book
+            )));
+        }
+        setToc(Array.isArray(committedPackage.toc) ? committedPackage.toc : []);
+        setChapterTransitionDirection((prev) => {
+            const previousToken = Number(String(prev).split(':')[1]) || 0;
+            return `none:${previousToken + 1}`;
+        });
+        setReaderLocationInfo({
+            page: totalSpineItems > 0 ? committedSpineIndex + 1 : null,
+            total: totalSpineItems || null,
+            percentage: totalSpineItems > 0 ? committedSpineIndex / totalSpineItems : null,
+            href: nextPosition.href,
+            pageInChapter: Number.isInteger(pageIndex) ? pageIndex + 1 : null,
+            pagesInChapter: Number.isInteger(pagesInChapter) ? pagesInChapter : null,
+        });
+        setBookLoadState('ready');
+        setBookLoadError('');
+        updateNativeChapterWindowForSpine(committedSpineIndex, committedPackage);
+        prefetchAdjacentChapters(committedSpineIndex, totalSpineItems);
+    }, [
+        currentBook,
+        loadNativeReaderPackage,
+        prefetchAdjacentChapters,
+        setBooks,
+        updateNativeChapterWindowForSpine,
+    ]);
+
+    const handleNativeChapterEnd = useCallback(() => {
+        const loadedSpineIndex = currentSpineIndexRef.current;
+        if (!Number.isInteger(loadedSpineIndex) || nativeChapterTotal <= 0) {
+            return;
+        }
+
+        const nextSpineIndex = loadedSpineIndex + 1;
         if (nextSpineIndex < nativeChapterTotal) {
             loadNativeReaderPackage(nextSpineIndex, { animateChapterTransition: true });
         }
-    }, [currentSpineIndex, loadNativeReaderPackage, nativeChapterTotal]);
+    }, [loadNativeReaderPackage, nativeChapterTotal]);
 
     const handleNativeChapterStart = useCallback(() => {
-        if (!Number.isInteger(currentSpineIndex) || currentSpineIndex <= 0) {
+        const loadedSpineIndex = currentSpineIndexRef.current;
+        if (!Number.isInteger(loadedSpineIndex) || loadedSpineIndex <= 0) {
             return;
         }
 
-        loadNativeReaderPackage(currentSpineIndex - 1, { animateChapterTransition: true });
-    }, [currentSpineIndex, loadNativeReaderPackage]);
+        loadNativeReaderPackage(loadedSpineIndex - 1, { animateChapterTransition: true });
+    }, [loadNativeReaderPackage]);
 
     return (
         <View style={styles.container}>
@@ -772,6 +1054,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                         }}
                         chapterBlocks={nativeChapterBlocks}
                         chapterResources={nativeChapterResources}
+                        chapterWindow={nativeChapterWindow}
                         restorePosition={nativeRestorePosition}
                         chapterTransitionDirection={chapterTransitionDirection}
                         fontSize={settings.fontSize}
@@ -780,6 +1063,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                         onPageChange={handleNativePageChange}
                         onChapterEnd={handleNativeChapterEnd}
                         onChapterStart={handleNativeChapterStart}
+                        onChapterCommit={handleNativeChapterCommit}
                     />
                 )}
             </View>
