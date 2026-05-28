@@ -49,7 +49,8 @@ data class WordHit(
   val placement: String,
   val range: TextRange,
   val localStartOffset: Int,
-  val localEndOffset: Int
+  val localEndOffset: Int,
+  val sentence: String = ""
 )
 
 data class TextSelectionHit(
