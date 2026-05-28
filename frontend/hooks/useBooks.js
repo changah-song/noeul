@@ -5,7 +5,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import { isBookPreprocessed } from '../services/Database';
 import { readEpubMetadata } from '../services/epubMetadata';
 
-const useBooks = ({ books, setBooks, currentBook, setCurrentBook, onBookImported }) => {
+const useBooks = ({ books, setBooks, setCurrentBook, onBookImported }) => {
     const [isImporting, setIsImporting] = useState(false);
     const [openingBookUri, setOpeningBookUri] = useState(null);
 
@@ -23,21 +23,35 @@ const useBooks = ({ books, setBooks, currentBook, setCurrentBook, onBookImported
         );
     };
 
+    const pickEpubAsset = async () => {
+        const { assets, canceled } = await DocumentPicker.getDocumentAsync({
+            copyToCacheDirectory: true,
+        });
+
+        if (canceled || !assets?.[0]) {
+            return null;
+        }
+
+        const pickedAsset = assets[0];
+        if (!isEpubAsset(pickedAsset)) {
+            Alert.alert(
+                'Unsupported file',
+                'Only EPUB files are supported currently.'
+            );
+            return null;
+        }
+
+        return pickedAsset;
+    };
+
     const addBook = async () => {
         try {
-            const { assets, canceled } = await DocumentPicker.getDocumentAsync({
-                copyToCacheDirectory: true,
-            });
-            if (canceled || !assets?.[0]) return;
+            const pickedAsset = await pickEpubAsset();
 
-            const pickedAsset = assets[0];
-            if (!isEpubAsset(pickedAsset)) {
-                Alert.alert(
-                    'Unsupported file',
-                    'Only EPUB files are supported currently.'
-                );
+            if (!pickedAsset) {
                 return;
             }
+
             const { uri } = pickedAsset;
             setIsImporting(true);
 
@@ -46,15 +60,16 @@ const useBooks = ({ books, setBooks, currentBook, setCurrentBook, onBookImported
                 pickedAsset?.name || uri.split('/').pop() || 'Untitled'
             );
 
-            const bookExists = books.some(
+            const existingBook = books.find(
                 (book) => book.uri === uri || (
-                    book.title === title && book.author === author && book.cover === cover
+                    book.title === title && book.author === author
                 )
             );
 
-            if (bookExists) {
-                Alert.alert('Duplicate Book', 'This book is already loaded.');
+            if (existingBook) {
+                setCurrentBook(existingBook.uri);
                 setIsImporting(false);
+                navigation.navigate('Read');
                 return;
             }
 
@@ -67,6 +82,7 @@ const useBooks = ({ books, setBooks, currentBook, setCurrentBook, onBookImported
                 author,
                 cover,
                 location: null,
+                nativePosition: null,
                 progress: 0,
                 preprocessed,
                 preprocessing: false,
@@ -74,13 +90,10 @@ const useBooks = ({ books, setBooks, currentBook, setCurrentBook, onBookImported
 
             setBooks((prevBooks) => [...prevBooks, newBook]);
 
-            // Keep the current continue-reading book stable after the first import.
-            if (!currentBook && books.length === 0) {
-                setCurrentBook(uri);
-            }
-
+            setCurrentBook(uri);
             onBookImported?.(newBook);
             setIsImporting(false);
+            navigation.navigate('Read');
         } catch (error) {
             console.log("[useBooks] Error in addBook:", error);
             setIsImporting(false);
@@ -89,10 +102,10 @@ const useBooks = ({ books, setBooks, currentBook, setCurrentBook, onBookImported
 
     const confirmAddBook = () => {
         Alert.alert(
-            'Instructions',
-            'Choose an EPUB file to load',
+            'Import EPUB',
+            'Choose an EPUB file to import.',
             [
-                { text: 'Ok', onPress: addBook },
+                { text: 'Import EPUB', onPress: addBook },
                 { text: 'Cancel', style: 'cancel' }
             ]
         );
