@@ -788,7 +788,8 @@ class NativeEpubReaderView(
       "sourceStartOffset" to hit.range.sourceStartOffset,
       "sourceEndOffset" to hit.range.sourceEndOffset,
       "localStartOffset" to hit.localStartOffset,
-      "localEndOffset" to hit.localEndOffset
+      "localEndOffset" to hit.localEndOffset,
+      "sentence" to hit.sentence
     )
     hit.range.spineIndex?.let { spineIndex ->
       event["spineIndex"] = spineIndex

@@ -25,7 +25,9 @@ export const createTable = () => {
           word  TEXT,
           hanja TEXT,
           def   TEXT,
-          level TEXT
+          level TEXT,
+          context_sentence TEXT,
+          related_known_words TEXT DEFAULT '[]'
         )`,
         [],
         () => {
@@ -69,6 +71,14 @@ export const migrateVocabTable = async () => {
     alterations.push('ALTER TABLE vocab ADD COLUMN source_book_title TEXT');
   }
 
+  if (!columns.includes('context_sentence')) {
+    alterations.push('ALTER TABLE vocab ADD COLUMN context_sentence TEXT');
+  }
+
+  if (!columns.includes('related_known_words')) {
+    alterations.push(`ALTER TABLE vocab ADD COLUMN related_known_words TEXT DEFAULT '[]'`);
+  }
+
   if (!columns.includes('is_favorite')) {
     alterations.push('ALTER TABLE vocab ADD COLUMN is_favorite INTEGER DEFAULT 0');
   }
@@ -110,6 +120,7 @@ export const migrateVocabTable = async () => {
         tx.executeSql(`UPDATE vocab SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL`);
         tx.executeSql(`UPDATE vocab SET correct_count = 0 WHERE correct_count IS NULL`);
         tx.executeSql(`UPDATE vocab SET wrong_count = 0 WHERE wrong_count IS NULL`);
+        tx.executeSql(`UPDATE vocab SET related_known_words = '[]' WHERE related_known_words IS NULL`);
       },
       (error) => {
         console.error('[Database] Error migrating vocab table:', error);
@@ -356,6 +367,7 @@ export const insertData = (word, hanja, definition, levelOrOptions) => {
     level = 'unorganized',
     sourceBookUri = null,
     sourceBookTitle = null,
+    contextSentence = null,
     isFavorite = 0,
     priority = 'normal',
     createdAt = new Date().toISOString(),
@@ -363,16 +375,19 @@ export const insertData = (word, hanja, definition, levelOrOptions) => {
     nextReviewAt = null,
     correctCount = 0,
     wrongCount = 0,
+    relatedKnownWords = [],
   } = options;
+  const relatedKnownWordsJson = JSON.stringify(Array.isArray(relatedKnownWords) ? relatedKnownWords : []);
 
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
       tx.executeSql(
         `INSERT INTO vocab (
-          word, hanja, def, level, source_book_uri, source_book_title, is_favorite,
-          priority, created_at, last_reviewed_at, next_review_at, correct_count, wrong_count
+          word, hanja, def, level, source_book_uri, source_book_title, context_sentence, is_favorite,
+          priority, created_at, last_reviewed_at, next_review_at, correct_count, wrong_count,
+          related_known_words
         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           word,
           hanja,
@@ -380,6 +395,7 @@ export const insertData = (word, hanja, definition, levelOrOptions) => {
           level,
           sourceBookUri,
           sourceBookTitle,
+          contextSentence,
           isFavorite ? 1 : 0,
           priority,
           createdAt,
@@ -387,6 +403,7 @@ export const insertData = (word, hanja, definition, levelOrOptions) => {
           nextReviewAt,
           correctCount,
           wrongCount,
+          relatedKnownWordsJson,
         ],
         () => {
           console.log(`[Database] Inserted vocab word: "${word}" | hanja: "${hanja}" | level: "${level}"`);
@@ -429,6 +446,127 @@ export const insertDataIfMissing = async (word, hanja, definition, level) => {
 
   await insertData(word, hanja, definition, level);
   return true;
+};
+
+const parseRelatedKnownWords = (value) => {
+  if (!value) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const relatedKnownWordKey = (entry) => `${entry?.korean ?? ''}|${entry?.hanja ?? ''}`;
+
+export const getRelatedKnownWords = (word) => {
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        'SELECT related_known_words FROM vocab WHERE word = ? ORDER BY id ASC LIMIT 1',
+        [word],
+        (_, result) => {
+          const row = result.rows.length > 0 ? result.rows.item(0) : null;
+          resolve(parseRelatedKnownWords(row?.related_known_words));
+        },
+        (_, error) => {
+          console.error(`[Database] Error reading related known words for "${word}":`, error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+export const addRelatedKnownWord = (word, relatedWord) => {
+  const normalizedEntry = {
+    korean: relatedWord?.korean ?? '',
+    hanja: relatedWord?.hanja ?? '',
+    meaning: relatedWord?.meaning ?? '',
+    sourceHanja: relatedWord?.sourceHanja ?? '',
+    markedAt: new Date().toISOString(),
+  };
+
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        'SELECT id, related_known_words FROM vocab WHERE word = ?',
+        [word],
+        (_, result) => {
+          if (result.rows.length === 0) {
+            console.log(`[Database] No vocab row found for related known word target "${word}"`);
+            resolve([]);
+            return;
+          }
+
+          const firstKnownWords = parseRelatedKnownWords(result.rows.item(0).related_known_words);
+          const existingKeys = new Set(firstKnownWords.map(relatedKnownWordKey));
+          const nextKnownWords = existingKeys.has(relatedKnownWordKey(normalizedEntry))
+            ? firstKnownWords
+            : [...firstKnownWords, normalizedEntry];
+          const nextJson = JSON.stringify(nextKnownWords);
+
+          for (let index = 0; index < result.rows.length; index += 1) {
+            tx.executeSql(
+              'UPDATE vocab SET related_known_words = ? WHERE id = ?',
+              [nextJson, result.rows.item(index).id]
+            );
+          }
+
+          console.log(`[Database] Added related known word "${normalizedEntry.korean}" for "${word}"`);
+          resolve(nextKnownWords);
+        },
+        (_, error) => {
+          console.error(`[Database] Error adding related known word for "${word}":`, error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+export const removeRelatedKnownWord = (word, relatedWord) => {
+  const keyToRemove = relatedKnownWordKey(relatedWord);
+
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        'SELECT id, related_known_words FROM vocab WHERE word = ?',
+        [word],
+        (_, result) => {
+          if (result.rows.length === 0) {
+            console.log(`[Database] No vocab row found for related known word removal target "${word}"`);
+            resolve([]);
+            return;
+          }
+
+          const firstKnownWords = parseRelatedKnownWords(result.rows.item(0).related_known_words);
+          const nextKnownWords = firstKnownWords.filter(
+            (entry) => relatedKnownWordKey(entry) !== keyToRemove
+          );
+          const nextJson = JSON.stringify(nextKnownWords);
+
+          for (let index = 0; index < result.rows.length; index += 1) {
+            tx.executeSql(
+              'UPDATE vocab SET related_known_words = ? WHERE id = ?',
+              [nextJson, result.rows.item(index).id]
+            );
+          }
+
+          console.log(`[Database] Removed related known word "${relatedWord?.korean ?? ''}" for "${word}"`);
+          resolve(nextKnownWords);
+        },
+        (_, error) => {
+          console.error(`[Database] Error removing related known word for "${word}":`, error);
+          reject(error);
+        }
+      );
+    });
+  });
 };
 
 export const updateLevel = (word, hanja, definition, newLevel) => {

@@ -429,7 +429,8 @@ class EpubPageView(context: Context) : View(context) {
         placement = placement,
         range = range,
         localStartOffset = tokenRange.start,
-        localEndOffset = tokenRange.end
+        localEndOffset = tokenRange.end,
+        sentence = sentenceForToken(blockText, tokenRange)
       )
     }
 
@@ -745,6 +746,31 @@ class EpubPageView(context: Context) : View(context) {
     }
 
     return if (start < end) LocalTokenRange(start, end) else null
+  }
+
+  private fun sentenceForToken(text: String, tokenRange: LocalTokenRange): String {
+    if (text.isEmpty()) {
+      return ""
+    }
+
+    val sentenceBoundaries = setOf('.', '!', '?', '。', '！', '？', '\n')
+    var start = tokenRange.start.coerceIn(0, text.length)
+    while (start > 0 && !sentenceBoundaries.contains(text[start - 1])) {
+      start -= 1
+    }
+
+    var end = tokenRange.end.coerceIn(start, text.length)
+    while (end < text.length && !sentenceBoundaries.contains(text[end])) {
+      end += 1
+    }
+    if (end < text.length && sentenceBoundaries.contains(text[end]) && text[end] != '\n') {
+      end += 1
+    }
+
+    return text.substring(start, end)
+      .replace(Regex("\\s+"), " ")
+      .trim()
+      .trim('“', '”', '"', '\'', '‘', '’')
   }
 
   private fun describeNoHitArea(tapX: Float, tapY: Float): String {

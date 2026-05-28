@@ -8,7 +8,6 @@ import { Slider } from 'react-native-elements';
 import TopSection from '../components/Read/TopSection/TopSection';
 import TocDrawer from '../components/Read/TocDrawer';
 import NativeEpubReaderView from '../modules/native-epub-reader/src/NativeEpubReaderView';
-import { AppProvider } from '../contexts/AppContext';
 import {
     getSavedWords,
     isBookPreprocessed,
@@ -77,6 +76,7 @@ const chapterWindowEntryForPackage = (readerPackage, role) => {
 
 const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComplete, setIsReaderFocusMode }) => {
     const [highlightedWord, setHighlightedWord] = useState('');
+    const [highlightedWordContext, setHighlightedWordContext] = useState(null);
     const [isNativeSelection, setIsNativeSelection] = useState(false);
     const [lookupPlacement, setLookupPlacement] = useState('bottom');
     const [clearSelectionToken, setClearSelectionToken] = useState(0);
@@ -198,6 +198,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         preprocessingInFlightRef.current = false;
         readingSessionStartedAtRef.current = Date.now();
         setHighlightedWord('');
+        setHighlightedWordContext(null);
         setIsNativeSelection(false);
         setLookupPlacement('bottom');
         setClearSelectionToken((value) => value + 1);
@@ -233,8 +234,9 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         };
     }, []);
 
-    const handleWordSave = (word) => {
-        const surface = highlightedWord?.trim();
+    const handleWordSave = (word, options = {}) => {
+        const { includeSurface = true } = options;
+        const surface = includeSurface ? highlightedWord?.trim() : '';
         setSavedWords(prev => uniqTerms([...(prev ?? []), word]));
         setOptimisticHighlightTerms((prev) => {
             const next = uniqTerms([
@@ -250,8 +252,9 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         setClearSelectionToken((value) => value + 1);
     };
 
-    const handleWordUnsave = (word) => {
-        const surface = highlightedWord?.trim();
+    const handleWordUnsave = (word, options = {}) => {
+        const { includeSurface = true } = options;
+        const surface = includeSurface ? highlightedWord?.trim() : '';
         setSavedWords(prev => (prev ?? []).filter(w => w !== word));
         setOptimisticHighlightTerms(prev => prev.filter(term => term !== word && term !== surface));
     };
@@ -264,11 +267,15 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
 
         setIsNativeSelection(false);
         setHighlightedWord(text);
+        setHighlightedWordContext({
+            sentence: typeof event.sentence === 'string' ? event.sentence.trim() : '',
+        });
         setLookupPlacement(event.placement === 'top' ? 'top' : 'bottom');
     }, []);
 
     const handleNativeSelectionCleared = useCallback(() => {
         setHighlightedWord('');
+        setHighlightedWordContext(null);
         setIsNativeSelection(false);
     }, []);
 
@@ -280,6 +287,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
 
         setIsNativeSelection(true);
         setHighlightedWord(text);
+        setHighlightedWordContext(null);
         setLookupPlacement(event.placement === 'top' ? 'top' : 'bottom');
     }, []);
 
@@ -491,6 +499,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
     const handleSettingChange = (key, value) => {
         const newSettings = { ...settings, [key]: value };
         setHighlightedWord('');
+        setHighlightedWordContext(null);
         setIsNativeSelection(false);
         setClearSelectionToken((current) => current + 1);
         setSettings(newSettings);
@@ -576,6 +585,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         setBookLoadError('');
         setBookLoadState('loading');
         setHighlightedWord('');
+        setHighlightedWordContext(null);
         setIsNativeSelection(false);
         setClearSelectionToken((value) => value + 1);
         setReaderRetryKey((prev) => prev + 1);
@@ -749,6 +759,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         const previousSpineIndex = currentSpineIndexRef.current;
         if (isChapterNavigation && requestedSpineIndex !== previousSpineIndex) {
             setHighlightedWord('');
+            setHighlightedWordContext(null);
             setIsNativeSelection(false);
             setClearSelectionToken((value) => value + 1);
         }
@@ -950,6 +961,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         }
 
         setHighlightedWord('');
+        setHighlightedWordContext(null);
         setIsNativeSelection(false);
         setClearSelectionToken((value) => value + 1);
 
@@ -1198,9 +1210,9 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
             <View
                 style={[
                     styles.lookupLayer,
-                    lookupPlacement === 'top' ? styles.lookupLayerTop : styles.lookupLayerBottom,
-                    lookupPlacement === 'top'
-                        ? { paddingTop: insets.top + 80 }
+                    isFullscreen || lookupPlacement === 'top' ? styles.lookupLayerTop : styles.lookupLayerBottom,
+                    isFullscreen || lookupPlacement === 'top'
+                        ? { paddingTop: isFullscreen ? insets.top + 18 : insets.top + 80 }
                         : { paddingBottom: insets.bottom + 6 },
                 ]}
                 pointerEvents="box-none"
@@ -1210,24 +1222,30 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                         style={styles.lookupDismissZone}
                         onPress={() => {
                             setHighlightedWord('');
+                            setHighlightedWordContext(null);
                             setIsNativeSelection(false);
                             setClearSelectionToken((value) => value + 1);
                         }}
                     />
                 ) : null}
 
-                <AppProvider>
-                    <TopSection
-                        highlightedWord={highlightedWord}
-                        isNativeSelection={isNativeSelection}
-                        isDarkMode={settings.isDarkMode}
-                        onWordSave={handleWordSave}
-                        onWordUnsave={handleWordUnsave}
-                        currentBook={currentBook}
-                        sourceBook={activeBook}
-                        savedWords={savedWords ?? []}
-                    />
-                </AppProvider>
+                <TopSection
+                    highlightedWord={highlightedWord}
+                    sourceSentence={highlightedWordContext?.sentence ?? ''}
+                    isNativeSelection={isNativeSelection}
+                    isDarkMode={settings.isDarkMode}
+                    onClose={() => {
+                        setHighlightedWord('');
+                        setHighlightedWordContext(null);
+                        setIsNativeSelection(false);
+                        setClearSelectionToken((value) => value + 1);
+                    }}
+                    onWordSave={handleWordSave}
+                    onWordUnsave={handleWordUnsave}
+                    currentBook={currentBook}
+                    sourceBook={activeBook}
+                    savedWords={savedWords ?? []}
+                />
             </View>
 
             {!highlightedWord && showLookupHint ? (
