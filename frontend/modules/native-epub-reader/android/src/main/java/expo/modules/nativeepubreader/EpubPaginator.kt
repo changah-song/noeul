@@ -216,6 +216,8 @@ class EpubPaginator(
       type = "text",
       tag = tag,
       styledText = styledText,
+      plainText = styledText.toString(),
+      sourceStartOffset = 0,
       textPaint = textPaint,
       textAlign = alignmentForTextAlign(styleTokens["textAlign"]),
       contentWidth = (contentWidth - baseIndent).coerceAtLeast(1),
@@ -246,6 +248,7 @@ class EpubPaginator(
     pages: MutableList<ReaderPage>
   ): Int {
     var remainingText = block.styledText ?: return initialUsedHeight
+    var remainingSourceStartOffset = block.sourceStartOffset
     var usedHeight = initialUsedHeight
     var isFirstSlice = true
 
@@ -266,6 +269,8 @@ class EpubPaginator(
 
       val candidateBlock = withTextLayout(block.copy(
         styledText = remainingText,
+        plainText = remainingText.toString(),
+        sourceStartOffset = remainingSourceStartOffset,
         textLayout = null,
         marginTop = marginTop,
         marginBottom = block.marginBottom
@@ -295,6 +300,8 @@ class EpubPaginator(
       val firstSliceText = copySpannableRange(remainingText, 0, splitOffset)
       val firstSliceBlock = withTextLayout(block.copy(
         styledText = firstSliceText,
+        plainText = firstSliceText.toString(),
+        sourceStartOffset = remainingSourceStartOffset,
         textLayout = null,
         marginTop = marginTop,
         marginBottom = 0
@@ -305,6 +312,7 @@ class EpubPaginator(
       currentPageBlocks.clear()
 
       remainingText = copySpannableRange(remainingText, splitOffset, remainingText.length)
+      remainingSourceStartOffset += splitOffset
       resetLeadingMarginSpansForContinuation(remainingText)
       usedHeight = 0
       isFirstSlice = false

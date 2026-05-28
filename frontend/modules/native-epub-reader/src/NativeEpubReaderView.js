@@ -16,10 +16,15 @@ const NativeEpubReaderView = ({
     fontSize = 18,
     lineHeight = 1.5,
     theme = 'light',
+    highlightTerms = [],
+    clearSelectionToken = 0,
     onPageChange,
     onChapterEnd,
     onChapterStart,
     onChapterCommit,
+    onWordSelected,
+    onTextSelected,
+    onSelectionCleared,
     style,
 }) => {
     if (!NativeView) {
@@ -46,6 +51,18 @@ const NativeEpubReaderView = ({
         onChapterCommit?.(event?.nativeEvent || event || {});
     };
 
+    const handleWordSelected = (event) => {
+        onWordSelected?.(event?.nativeEvent || event || {});
+    };
+
+    const handleTextSelected = (event) => {
+        onTextSelected?.(event?.nativeEvent || event || {});
+    };
+
+    const handleSelectionCleared = (event) => {
+        onSelectionCleared?.(event?.nativeEvent || event || {});
+    };
+
     return (
         <NativeView
             style={style}
@@ -58,10 +75,15 @@ const NativeEpubReaderView = ({
             fontSize={fontSize}
             lineHeight={lineHeight}
             theme={theme}
+            highlightTerms={highlightTerms || []}
+            clearSelectionToken={clearSelectionToken}
             onPageChange={handlePageChange}
             onChapterEnd={handleChapterEnd}
             onChapterStart={handleChapterStart}
             onChapterCommit={handleChapterCommit}
+            onWordSelected={handleWordSelected}
+            onTextSelected={handleTextSelected}
+            onSelectionCleared={handleSelectionCleared}
         />
     );
 };
