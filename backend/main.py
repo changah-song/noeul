@@ -11,6 +11,11 @@ from functools import partial
 from uuid import uuid4
 from dotenv import load_dotenv
 
+try:
+    from koroman import romanize as koroman_romanize
+except ImportError:
+    koroman_romanize = None
+
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 # ─── Rate Limit Config ────────────────────────────────────────────────────────
@@ -84,6 +89,26 @@ KRDICT_CLIENT_ID = os.getenv("KOREAN_DICTIONARY_CLIENT_ID", "").strip()
 
 preprocess_jobs: dict[str, dict] = {}
 preprocess_jobs_lock = asyncio.Lock()
+
+
+def romanize_korean_text(text: str) -> str:
+    global koroman_romanize
+
+    if not text:
+        return ""
+
+    if koroman_romanize is None:
+        try:
+            from koroman import romanize as lazy_romanize
+            koroman_romanize = lazy_romanize
+        except ImportError:
+            return ""
+
+    try:
+        return koroman_romanize(text, casing_option="lowercase").strip()
+    except Exception as error:
+        print(f"[main] Error romanizing {text!r}: {error}")
+        return ""
 
 
 async def update_preprocess_job(job_id: str, **updates):
@@ -231,6 +256,18 @@ async def get_okt_morphs(text: str):
     return {"result": filtered_stems}
 
 
+@app.get("/romanize/")
+async def romanize_text(text: str):
+    normalized = text.strip() if isinstance(text, str) else ""
+    if not normalized:
+        return {"romanization": ""}
+
+    if koroman_romanize is None:
+        raise HTTPException(status_code=503, detail="koroman is not installed on the backend")
+
+    return {"romanization": romanize_korean_text(normalized)}
+
+
 # ─── KRDICT Helper ────────────────────────────────────────────────────────────
 async def lookup_stem_in_krdict(
     client: httpx.AsyncClient,
@@ -284,6 +321,7 @@ async def lookup_stem_in_krdict(
             "hanja":      origin_el.text if origin_el is not None and origin_el.text else "N/A",
             "definition": definition,
             "pos":        pos_el.text if pos_el is not None and pos_el.text else "Unknown",
+            "romanization": romanize_korean_text(stem),
         }
         print(f"[main] KRDICT '{stem}' → '{result['definition'][:60]}'")
         return result
@@ -321,10 +359,20 @@ async def search_krdict_entries(
         for item in items:
             word_el = item.find("word")
             origin_el = item.find("origin")
+            pos_el = item.find("pos")
+            pronunciation_el = item.find("pronunciation")
             trans_el = item.find(".//trans_word")
+            word_text = word_el.text if word_el is not None and word_el.text else query
             results.append({
-                "word": word_el.text if word_el is not None and word_el.text else query,
+                "word": word_text,
                 "origin": origin_el.text if origin_el is not None and origin_el.text else "N/A",
+                "pos": pos_el.text if pos_el is not None and pos_el.text else None,
+                "pronunciation": (
+                    pronunciation_el.text
+                    if pronunciation_el is not None and pronunciation_el.text
+                    else None
+                ),
+                "romanization": romanize_korean_text(word_text),
                 "transWord": (
                     trans_el.text.strip().rstrip("^").strip()
                     if trans_el is not None and trans_el.text

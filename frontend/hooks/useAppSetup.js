@@ -1,9 +1,35 @@
 import { useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { initAllTables } from '../services/Database';
+import { persistCoverDataUri, stripInlineCoverForStorage } from '../services/epubMetadata';
 
 const BOOKS_STORAGE_KEY = '@ff/books';
 const CURRENT_BOOK_STORAGE_KEY = '@ff/current-book';
+
+const isCursorWindowTooLargeError = (error) => {
+    const message = String(error?.message || error || '').toLowerCase();
+    return message.includes('cursorwindow') || message.includes('row too big');
+};
+
+const normalizeStoredBooks = async (storedBooks) => Promise.all(
+    storedBooks.map(async (book) => {
+        if (!book || typeof book !== 'object') {
+            return book;
+        }
+
+        const cover = typeof book.cover === 'string' ? book.cover.trim() : '';
+        if (!cover.startsWith('data:')) {
+            return book;
+        }
+
+        const persistedCover = await persistCoverDataUri(
+            cover,
+            `${book.uri || book.id || book.title || 'book'}:${book.title || ''}`
+        );
+
+        return { ...book, cover: persistedCover };
+    })
+);
 
 const useAppSetup = () => {
     const [books, setBooks] = useState([]);
@@ -23,17 +49,35 @@ const useAppSetup = () => {
                 await initAllTables();
                 console.log('[useAppSetup] Database ready');
 
-                const [storedBooksRaw, storedCurrentBook] = await Promise.all([
-                    AsyncStorage.getItem(BOOKS_STORAGE_KEY),
-                    AsyncStorage.getItem(CURRENT_BOOK_STORAGE_KEY),
-                ]);
+                let storedBooksRaw = null;
+                let storedCurrentBook = null;
+
+                try {
+                    [storedBooksRaw, storedCurrentBook] = await Promise.all([
+                        AsyncStorage.getItem(BOOKS_STORAGE_KEY),
+                        AsyncStorage.getItem(CURRENT_BOOK_STORAGE_KEY),
+                    ]);
+                } catch (error) {
+                    if (!isCursorWindowTooLargeError(error)) {
+                        throw error;
+                    }
+
+                    console.warn('[useAppSetup] Stored book metadata was too large for Android storage; clearing oversized book list.', error);
+                    await AsyncStorage.multiRemove([BOOKS_STORAGE_KEY, CURRENT_BOOK_STORAGE_KEY]);
+                }
 
                 if (!isMounted) {
                     return;
                 }
 
                 const storedBooks = storedBooksRaw ? JSON.parse(storedBooksRaw) : [];
-                const nextBooks = Array.isArray(storedBooks) ? storedBooks : [];
+                const nextBooks = Array.isArray(storedBooks)
+                    ? await normalizeStoredBooks(storedBooks)
+                    : [];
+                if (!isMounted) {
+                    return;
+                }
+
                 const hasStoredCurrentBook = nextBooks.some((book) => book?.uri === storedCurrentBook);
 
                 setBooks(nextBooks);
@@ -59,7 +103,14 @@ const useAppSetup = () => {
             return;
         }
 
-        AsyncStorage.setItem(BOOKS_STORAGE_KEY, JSON.stringify(books)).catch((error) => {
+        const storageBooks = books.map(stripInlineCoverForStorage);
+        const hadInlineCovers = storageBooks.some((book, index) => book !== books[index]);
+
+        if (hadInlineCovers) {
+            setBooks(storageBooks);
+        }
+
+        AsyncStorage.setItem(BOOKS_STORAGE_KEY, JSON.stringify(storageBooks)).catch((error) => {
             console.error('[useAppSetup] Failed to persist books:', error);
         });
     }, [books, loading]);

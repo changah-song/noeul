@@ -16,6 +16,17 @@ const hanjaRelated = ({ query }) => {
         return cleanString;
     }
 
+    const parseHeaderMeaning = (meaning) => {
+        const cleaned = meaning.trim().replace(/\s*\(\d+\)$/, '');
+        const [firstSegment, ...restSegments] = cleaned.split(',');
+        const hasReading = /[\uAC00-\uD7A3]/.test(firstSegment) && restSegments.length > 0;
+
+        return {
+            reading: hasReading ? firstSegment.trim() : '',
+            meaning: hasReading ? restSegments.join(',').trim() : cleaned,
+        };
+    }
+
     const fetchData = async () => {
         try {
             if (!query) {
@@ -33,10 +44,14 @@ const hanjaRelated = ({ query }) => {
 
             // Extract data from the first table (header of Hanja)
             const firstTableRows = htmlDocument.getElementsByTagName('table')[0].getElementsByTagName('tr');
-            const firstTableData = firstTableRows.map(row => ({
-                hanja: row.getElementsByTagName('td')[0].getElementsByTagName('a')[0].value,
-                meaning: row.getElementsByTagName('td')[1].value.trim().replace(/\s*\(\d+\)$/, ''),
-            }));
+            const firstTableData = firstTableRows.map(row => {
+                const parsedMeaning = parseHeaderMeaning(row.getElementsByTagName('td')[1].value);
+                return {
+                    hanja: row.getElementsByTagName('td')[0].getElementsByTagName('a')[0].value,
+                    reading: parsedMeaning.reading,
+                    meaning: parsedMeaning.meaning,
+                };
+            });
             console.log(`[hanjaRelated] "${query}" header table (${firstTableData.length} row(s)):`, firstTableData);
             setFirstTableData(firstTableData);
 

@@ -3,3 +3,4 @@ konlpy
 uvicorn
 httpx
 python-dotenv
+koroman
