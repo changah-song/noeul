@@ -10,6 +10,7 @@ const NativeEpubReaderView = ({
     bookManifest,
     chapterBlocks,
     chapterResources,
+    chapterWindow,
     restorePosition,
     chapterTransitionDirection = 'none',
     fontSize = 18,
@@ -18,6 +19,7 @@ const NativeEpubReaderView = ({
     onPageChange,
     onChapterEnd,
     onChapterStart,
+    onChapterCommit,
     style,
 }) => {
     if (!NativeView) {
@@ -40,12 +42,17 @@ const NativeEpubReaderView = ({
         onChapterStart?.();
     };
 
+    const handleChapterCommit = (event) => {
+        onChapterCommit?.(event?.nativeEvent || event || {});
+    };
+
     return (
         <NativeView
             style={style}
             bookManifest={bookManifest || {}}
             chapterBlocks={chapterBlocks || []}
             chapterResources={chapterResources || []}
+            chapterWindow={chapterWindow || []}
             restorePosition={restorePosition || {}}
             chapterTransitionDirection={chapterTransitionDirection}
             fontSize={fontSize}
@@ -54,6 +61,7 @@ const NativeEpubReaderView = ({
             onPageChange={handlePageChange}
             onChapterEnd={handleChapterEnd}
             onChapterStart={handleChapterStart}
+            onChapterCommit={handleChapterCommit}
         />
     );
 };

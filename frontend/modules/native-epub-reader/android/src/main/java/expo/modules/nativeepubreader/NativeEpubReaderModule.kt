@@ -4,6 +4,8 @@ import android.content.Context
 import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import android.util.Log
 import android.view.MotionEvent
 import android.view.View.MeasureSpec
 import android.view.ViewConfiguration
@@ -38,6 +40,10 @@ class NativeEpubReaderModule : Module() {
         view.setChapterResources(resources)
       }
 
+      Prop("chapterWindow") { view: NativeEpubReaderView, chapters: List<Any?> ->
+        view.setChapterWindow(chapters)
+      }
+
       Prop("restorePosition") { view: NativeEpubReaderView, position: Map<String, Any?> ->
         view.setRestorePosition(position)
       }
@@ -58,10 +64,36 @@ class NativeEpubReaderModule : Module() {
         view.setReaderTheme(theme)
       }
 
-      Events("onPageChange", "onChapterEnd", "onChapterStart")
+      Events("onPageChange", "onChapterEnd", "onChapterStart", "onChapterCommit")
     }
   }
 }
+
+private const val TAG = "NativeEpubReader"
+
+private data class ChapterWindowItem(
+  val role: String,
+  val spineIndex: Int,
+  val href: String,
+  val path: String,
+  val blocks: List<Any?>,
+  val resources: List<Any?>,
+  val signature: String
+)
+
+private data class ChapterPageRange(
+  val spineIndex: Int,
+  val href: String,
+  val path: String,
+  val startIndex: Int,
+  val pageCount: Int
+)
+
+private data class PaginationResult(
+  val pages: List<ReaderPage>,
+  val ranges: List<ChapterPageRange>,
+  val chapterCount: Int
+)
 
 class NativeEpubReaderView(
   context: Context,
@@ -70,6 +102,7 @@ class NativeEpubReaderView(
   private val onPageChange by EventDispatcher()
   private val onChapterEnd by EventDispatcher()
   private val onChapterStart by EventDispatcher()
+  private val onChapterCommit by EventDispatcher()
   private val viewPager = ViewPager2(context)
   private val mainHandler = Handler(Looper.getMainLooper())
   private val paginationExecutor = Executors.newSingleThreadExecutor { runnable ->
@@ -84,8 +117,12 @@ class NativeEpubReaderView(
   private var bookManifest: Map<String, Any?> = emptyMap()
   private var chapterBlocks: List<Any?> = emptyList()
   private var chapterResources: List<Any?> = emptyList()
+  private var chapterWindow: List<ChapterWindowItem> = emptyList()
   private var restorePosition: Map<String, Any?> = emptyMap()
   private var chapterBlocksSignature = ""
+  private var chapterWindowSignature = ""
+  private var pageRanges: List<ChapterPageRange> = emptyList()
+  private var committedSpineIndex: Int? = null
   private var layoutWidth = 0
   private var layoutHeight = 0
   private val pagePaddingH = dp(20f)
@@ -117,8 +154,18 @@ class NativeEpubReaderView(
           userDraggedPager = true
         }
 
+        if (state == ViewPager2.SCROLL_STATE_SETTLING && userDraggedPager) {
+          val page = pages.getOrNull(viewPager.currentItem)
+          Log.d(
+            TAG,
+            "page turn animation start: displayPage=${viewPager.currentItem} " +
+              "spine=${page?.spineIndex ?: "unknown"} chapterPage=${page?.chapterPageIndex ?: -1}"
+          )
+        }
+
         if (state == ViewPager2.SCROLL_STATE_IDLE) {
           flushPendingEdgeNavigation()
+          flushChapterCommitIfNeeded()
           finishChapterTransitionIfNeeded()
         }
       }
@@ -129,8 +176,9 @@ class NativeEpubReaderView(
         }
 
         val total = pages.size
-        val logicalPage = logicalPageForDisplayPosition(position)
-        dispatchPageChange(logicalPage, total)
+        val logicalPage = pages.getOrNull(position)?.chapterPageIndex
+          ?: logicalPageForDisplayPosition(position)
+        dispatchPageChange(position, total)
 
         previousPageIndex = logicalPage
         userDraggedPager = false
@@ -182,6 +230,9 @@ class NativeEpubReaderView(
       setChapterTransitionDirection(direction)
     }
     bookManifest = manifest
+    manifest.intValue("currentSpineIndex")?.let { spineIndex ->
+      committedSpineIndex = spineIndex
+    }
   }
 
   fun setChapterBlocks(blocks: List<Any?>) {
@@ -194,11 +245,64 @@ class NativeEpubReaderView(
 
     chapterBlocks = blocks
     chapterBlocksSignature = nextSignature
+    if (chapterWindow.isNotEmpty()) {
+      return
+    }
+    Log.d(TAG, "native blocks received: count=${blocks.size} signature=$nextSignature")
     repaginate(resetToFirstPage = true)
   }
 
   fun setChapterResources(resources: List<Any?>) {
     chapterResources = resources
+  }
+
+  fun setChapterWindow(chapters: List<Any?>) {
+    val nextWindow = chapters.mapNotNull { raw ->
+      val chapter = raw.asMap() ?: return@mapNotNull null
+      val spineIndex = chapter.intValue("spineIndex") ?: return@mapNotNull null
+      val blocks = chapter.listValue("blocks")
+      if (blocks.isEmpty()) {
+        return@mapNotNull null
+      }
+
+      ChapterWindowItem(
+        role = chapter.stringValue("role") ?: "adjacent",
+        spineIndex = spineIndex,
+        href = chapter.stringValue("href") ?: "",
+        path = chapter.stringValue("path") ?: "",
+        blocks = blocks,
+        resources = chapter.listValue("resources"),
+        signature = signatureForBlocks(blocks)
+      )
+    }.sortedBy { it.spineIndex }
+
+    val nextSignature = nextWindow.joinToString("|") { chapter ->
+      "${chapter.role}:${chapter.spineIndex}:${chapter.href}:${chapter.path}:${chapter.signature}"
+    }
+
+    if (chapterWindowSignature == nextSignature) {
+      chapterWindow = nextWindow
+      return
+    }
+
+    val previousCurrentSignature = currentWindowItemSignature(chapterWindow)
+    val nextCurrentSignature = currentWindowItemSignature(nextWindow)
+    chapterWindow = nextWindow
+    chapterWindowSignature = nextSignature
+
+    val currentChapter = currentWindowItem(nextWindow)
+    if (currentChapter != null) {
+      chapterBlocks = currentChapter.blocks
+      chapterResources = currentChapter.resources
+      chapterBlocksSignature = currentChapter.signature
+    }
+
+    Log.d(
+      TAG,
+      "native chapter window received: chapters=${nextWindow.size} " +
+        "current=${currentChapter?.spineIndex ?: "none"} signature=$nextSignature"
+    )
+    repaginate(resetToFirstPage = previousCurrentSignature != nextCurrentSignature)
   }
 
   fun setRestorePosition(position: Map<String, Any?>) {
@@ -254,7 +358,10 @@ class NativeEpubReaderView(
   }
 
   private fun repaginate(resetToFirstPage: Boolean) {
-    if (layoutWidth <= 0 || layoutHeight <= 0 || chapterBlocks.isEmpty()) {
+    val windowSnapshot = chapterWindow.takeIf { it.isNotEmpty() }
+      ?: currentChapterWindowFromBlocks()
+
+    if (layoutWidth <= 0 || layoutHeight <= 0 || windowSnapshot.isEmpty()) {
       return
     }
 
@@ -264,20 +371,21 @@ class NativeEpubReaderView(
 
     val layoutWidthSnapshot = layoutWidth
     val layoutHeightSnapshot = layoutHeight
-    val chapterBlocksSnapshot = chapterBlocks.toList()
     val fontSizeSnapshot = readerFontSizeSp
     val lineHeightSnapshot = readerLineHeightMultiplier
     val isDarkSnapshot = readerTheme == "dark"
     val appContext = context.applicationContext ?: context
     val previousPages = pages
+    val previousPage = pages.getOrNull(viewPager.currentItem)
     val previousLogicalPage = logicalPageForDisplayPosition(viewPager.currentItem)
     val transitionDirection = chapterTransitionDirection
     val backgroundColor = readerBackgroundColor()
     chapterTransitionDirection = "none"
 
     paginationTask = paginationExecutor.submit {
-      val nextPages = try {
-        EpubPaginator(
+      val startedAt = SystemClock.elapsedRealtime()
+      val paginationResult = try {
+        val paginator = EpubPaginator(
           pageWidth = layoutWidthSnapshot,
           pageHeight = layoutHeightSnapshot,
           paddingH = pagePaddingH,
@@ -286,10 +394,17 @@ class NativeEpubReaderView(
           lineHeightMult = lineHeightSnapshot,
           isDark = isDarkSnapshot,
           context = appContext
-        ).paginate(chapterBlocksSnapshot)
+        )
+        paginateChapterWindow(paginator, windowSnapshot)
       } catch (_: CancellationException) {
         return@submit
       }
+      val elapsed = SystemClock.elapsedRealtime() - startedAt
+      Log.d(
+        TAG,
+        "pagination done: generation=$generation chapters=${paginationResult.chapterCount} " +
+          "pages=${paginationResult.pages.size} elapsedMs=$elapsed"
+      )
 
       mainHandler.post {
         if (generation != paginationGeneration) {
@@ -297,8 +412,9 @@ class NativeEpubReaderView(
         }
 
         applyPaginatedPages(
-          nextPages = nextPages,
+          paginationResult = paginationResult,
           previousPages = previousPages,
+          previousPage = previousPage,
           previousLogicalPage = previousLogicalPage,
           resetToFirstPage = resetToFirstPage,
           transitionDirection = transitionDirection,
@@ -308,23 +424,155 @@ class NativeEpubReaderView(
     }
   }
 
+  private fun paginateChapterWindow(
+    paginator: EpubPaginator,
+    chapters: List<ChapterWindowItem>
+  ): PaginationResult {
+    val nextPages = mutableListOf<ReaderPage>()
+    val ranges = mutableListOf<ChapterPageRange>()
+
+    chapters.forEach { chapter ->
+      val chapterPages = paginator.paginate(chapter.blocks)
+      val pageCount = chapterPages.size
+      val startIndex = nextPages.size
+
+      chapterPages.forEachIndexed { localIndex, page ->
+        nextPages.add(
+          page.copy(
+            pageIndex = nextPages.size,
+            spineIndex = chapter.spineIndex,
+            href = chapter.href,
+            path = chapter.path,
+            chapterPageIndex = localIndex,
+            chapterPageCount = pageCount
+          )
+        )
+      }
+
+      ranges.add(
+        ChapterPageRange(
+          spineIndex = chapter.spineIndex,
+          href = chapter.href,
+          path = chapter.path,
+          startIndex = startIndex,
+          pageCount = pageCount
+        )
+      )
+    }
+
+    return PaginationResult(
+      pages = nextPages.ifEmpty { listOf(ReaderPage(0, emptyList())) },
+      ranges = ranges,
+      chapterCount = chapters.size
+    )
+  }
+
+  private fun currentChapterWindowFromBlocks(): List<ChapterWindowItem> {
+    if (chapterBlocks.isEmpty()) {
+      return emptyList()
+    }
+
+    val spineIndex = bookManifest.intValue("currentSpineIndex") ?: 0
+    return listOf(
+      ChapterWindowItem(
+        role = "current",
+        spineIndex = spineIndex,
+        href = bookManifest.stringValue("currentSpineHref") ?: "",
+        path = bookManifest.stringValue("currentSpinePath") ?: "",
+        blocks = chapterBlocks.toList(),
+        resources = chapterResources.toList(),
+        signature = chapterBlocksSignature.ifBlank { signatureForBlocks(chapterBlocks) }
+      )
+    )
+  }
+
+  private fun currentWindowItem(chapters: List<ChapterWindowItem>): ChapterWindowItem? {
+    val currentSpineIndex = bookManifest.intValue("currentSpineIndex")
+    return chapters.firstOrNull { chapter -> chapter.spineIndex == currentSpineIndex }
+      ?: chapters.firstOrNull { chapter -> chapter.role == "current" }
+  }
+
+  private fun currentWindowItemSignature(chapters: List<ChapterWindowItem>): String {
+    val current = currentWindowItem(chapters) ?: return ""
+    return "${current.spineIndex}:${current.href}:${current.path}:${current.signature}"
+  }
+
+  private fun firstDisplayIndexForCurrentChapter(candidatePages: List<ReaderPage>): Int? {
+    val currentSpineIndex = bookManifest.intValue("currentSpineIndex")
+    if (currentSpineIndex != null) {
+      candidatePages.indexOfFirst { page -> page.spineIndex == currentSpineIndex }
+        .takeIf { it >= 0 }
+        ?.let { return it }
+    }
+
+    return candidatePages.indices.firstOrNull()
+  }
+
+  private fun pageIndexForPreviousPage(
+    candidatePages: List<ReaderPage>,
+    previousPage: ReaderPage?,
+    previousLogicalPage: Int
+  ): Int {
+    if (candidatePages.isEmpty()) {
+      return 0
+    }
+
+    val previousSpineIndex = previousPage?.spineIndex
+    if (previousSpineIndex != null) {
+      val sameChapterPage = candidatePages.indexOfFirst { page ->
+        page.spineIndex == previousSpineIndex &&
+          page.chapterPageIndex == previousPage.chapterPageIndex
+      }
+      if (sameChapterPage >= 0) {
+        return sameChapterPage
+      }
+
+      val firstBlockId = previousPage.blocks.firstOrNull()?.blockId
+      if (!firstBlockId.isNullOrBlank()) {
+        val blockMatch = candidatePages.indexOfFirst { page ->
+          page.spineIndex == previousSpineIndex &&
+            page.blocks.any { block -> block.blockId == firstBlockId }
+        }
+        if (blockMatch >= 0) {
+          return blockMatch
+        }
+      }
+    }
+
+    val currentSpineIndex = bookManifest.intValue("currentSpineIndex")
+    if (currentSpineIndex != null) {
+      val sameLogicalPage = candidatePages.indexOfFirst { page ->
+        page.spineIndex == currentSpineIndex &&
+          page.chapterPageIndex == previousLogicalPage
+      }
+      if (sameLogicalPage >= 0) {
+        return sameLogicalPage
+      }
+    }
+
+    return previousLogicalPage.coerceIn(0, candidatePages.lastIndex)
+  }
+
   private fun applyPaginatedPages(
-    nextPages: List<ReaderPage>,
+    paginationResult: PaginationResult,
     previousPages: List<ReaderPage>,
+    previousPage: ReaderPage?,
     previousLogicalPage: Int,
     resetToFirstPage: Boolean,
     transitionDirection: String,
     backgroundColor: Int
   ) {
+    val nextPages = paginationResult.pages
     val restorePage = pageIndexForRestorePosition(nextPages)
     val targetPage = restorePage
       ?: if (resetToFirstPage) {
-        0
+        firstDisplayIndexForCurrentChapter(nextPages) ?: 0
       } else {
-        previousLogicalPage.coerceIn(0, nextPages.lastIndex)
+        pageIndexForPreviousPage(nextPages, previousPage, previousLogicalPage)
       }
-    previousPageIndex = targetPage
+    previousPageIndex = nextPages.getOrNull(targetPage)?.chapterPageIndex ?: targetPage
     userDraggedPager = false
+    pageRanges = paginationResult.ranges
 
     val adapter = pageAdapter
     if (adapter == null) {
@@ -341,6 +589,7 @@ class NativeEpubReaderView(
     } else {
       val canAnimateChapterTransition = (
         resetToFirstPage &&
+        chapterWindow.isEmpty() &&
         previousPages.isNotEmpty() &&
         nextPages.isNotEmpty() &&
         (transitionDirection == "next" || transitionDirection == "previous")
@@ -408,6 +657,11 @@ class NativeEpubReaderView(
       targetPosition = nextPages.lastIndex
     }
 
+    Log.d(
+      TAG,
+      "chapter transition animation start: direction=$direction " +
+        "previousPages=${previousPages.size} nextPages=${nextPages.size}"
+    )
     isChapterTransitionAnimating = true
     suppressPageEvents = true
     adapter.updateRenderConfig(readerLineHeightMultiplier, backgroundColor)
@@ -471,6 +725,13 @@ class NativeEpubReaderView(
             startPage == 0 && deltaX > touchSlop -> "start"
             else -> null
           }
+          pendingEdgeNavigation?.let { direction ->
+            Log.d(
+              TAG,
+              "edge swipe detected: direction=$direction page=$startPage total=$total " +
+                "deltaX=$deltaX"
+            )
+          }
         }
 
         dragStartPage = -1
@@ -490,6 +751,42 @@ class NativeEpubReaderView(
     }
     pendingEdgeNavigation = null
     userDraggedPager = false
+  }
+
+  private fun flushChapterCommitIfNeeded() {
+    val displayIndex = viewPager.currentItem
+    val page = pages.getOrNull(displayIndex) ?: return
+    val nextSpineIndex = page.spineIndex ?: return
+    val previousSpineIndex = committedSpineIndex
+
+    if (previousSpineIndex == nextSpineIndex) {
+      return
+    }
+
+    val direction = when {
+      previousSpineIndex == null -> "none"
+      nextSpineIndex > previousSpineIndex -> "next"
+      nextSpineIndex < previousSpineIndex -> "previous"
+      else -> "none"
+    }
+    committedSpineIndex = nextSpineIndex
+
+    Log.d(
+      TAG,
+      "chapter commit: direction=$direction spine=$nextSpineIndex " +
+        "page=${page.chapterPageIndex}/${page.chapterPageCount}"
+    )
+    onChapterCommit(
+      mapOf(
+        "spineIndex" to nextSpineIndex,
+        "href" to page.href,
+        "path" to page.path,
+        "pageIndex" to page.chapterPageIndex,
+        "pagesInChapter" to page.chapterPageCount,
+        "firstBlockId" to (page.blocks.firstOrNull()?.blockId ?: ""),
+        "direction" to direction
+      )
+    )
   }
 
   private fun finishChapterTransitionIfNeeded() {
@@ -516,13 +813,12 @@ class NativeEpubReaderView(
     }
 
     val targetPage = pageIndexForRestorePosition(pages) ?: return
-    val currentLogicalPage = logicalPageForDisplayPosition(viewPager.currentItem)
-    if (targetPage == currentLogicalPage) {
+    if (targetPage == viewPager.currentItem) {
       return
     }
 
     suppressPageEvents = true
-    previousPageIndex = targetPage
+    previousPageIndex = pages.getOrNull(targetPage)?.chapterPageIndex ?: targetPage
     viewPager.setCurrentItem(targetPage, false)
     suppressPageEvents = false
     dispatchPageChange(targetPage, pages.size)
@@ -544,50 +840,69 @@ class NativeEpubReaderView(
     val requestedFirstBlockId = restorePosition.stringValue("firstBlockId")
       ?.takeIf { it.isNotBlank() }
 
-    if (requestedPageIndex != null && requestedPageIndex in candidatePages.indices) {
-      val requestedPage = candidatePages[requestedPageIndex]
+    val matchingChapterPages = candidatePages
+      .mapIndexedNotNull { index, page ->
+        if (page.spineIndex == restoreSpineIndex) index to page else null
+      }
+
+    if (matchingChapterPages.isEmpty()) {
+      return null
+    }
+
+    if (requestedPageIndex != null && requestedPageIndex in matchingChapterPages.indices) {
+      val (displayIndex, requestedPage) = matchingChapterPages[requestedPageIndex]
       if (
         requestedFirstBlockId == null ||
         requestedPage.blocks.firstOrNull()?.blockId == requestedFirstBlockId ||
         requestedPage.blocks.any { block -> block.blockId == requestedFirstBlockId }
       ) {
-        return requestedPageIndex
+        return displayIndex
       }
     }
 
     if (requestedFirstBlockId != null) {
       val firstBlockMatch = candidatePages.indexOfFirst { page ->
-        page.blocks.firstOrNull()?.blockId == requestedFirstBlockId
+        page.spineIndex == restoreSpineIndex &&
+          page.blocks.firstOrNull()?.blockId == requestedFirstBlockId
       }
       if (firstBlockMatch >= 0) {
         return firstBlockMatch
       }
 
       val containingBlockMatch = candidatePages.indexOfFirst { page ->
-        page.blocks.any { block -> block.blockId == requestedFirstBlockId }
+        page.spineIndex == restoreSpineIndex &&
+          page.blocks.any { block -> block.blockId == requestedFirstBlockId }
       }
       if (containingBlockMatch >= 0) {
         return containingBlockMatch
       }
     }
 
-    return requestedPageIndex?.coerceIn(0, candidatePages.lastIndex)
+    return requestedPageIndex
+      ?.coerceIn(0, matchingChapterPages.lastIndex)
+      ?.let { matchingChapterPages[it].first }
   }
 
   private fun dispatchPageChange(pageIndex: Int, total: Int) {
     val page = pages.getOrNull(pageIndex)
-    val href = bookManifest.stringValue("currentSpineHref")
+    val href = page?.href?.takeIf { it.isNotBlank() }
+      ?: page?.path?.takeIf { it.isNotBlank() }
+      ?: bookManifest.stringValue("currentSpineHref")
       ?.takeIf { it.isNotBlank() }
       ?: bookManifest.stringValue("currentSpinePath")
       ?: ""
+    val chapterPageIndex = page?.chapterPageIndex ?: logicalPageForDisplayPosition(pageIndex)
+    val chapterPageCount = page?.chapterPageCount?.takeIf { it > 0 } ?: total
     val event = mutableMapOf<String, Any>(
-      "page" to pageIndex,
-      "total" to total,
+      "page" to chapterPageIndex,
+      "total" to chapterPageCount,
+      "globalPage" to pageIndex,
+      "globalTotal" to total,
       "href" to href,
       "firstBlockId" to (page?.blocks?.firstOrNull()?.blockId ?: "")
     )
 
-    bookManifest.intValue("currentSpineIndex")?.let { spineIndex ->
+    (page?.spineIndex ?: bookManifest.intValue("currentSpineIndex"))?.let { spineIndex ->
       event["spineIndex"] = spineIndex
     }
 
@@ -599,6 +914,7 @@ class NativeEpubReaderView(
       return 0
     }
 
+    pages.getOrNull(position)?.chapterPageIndex?.let { return it }
     return (position - pagePositionOffset).coerceIn(0, pages.lastIndex)
   }
 
@@ -636,6 +952,10 @@ class NativeEpubReaderView(
   private fun Any?.asMap(): Map<*, *>? = this as? Map<*, *>
 
   private fun Map<*, *>.stringValue(key: String): String? = this[key] as? String
+
+  private fun Map<*, *>.listValue(key: String): List<Any?> {
+    return this[key] as? List<Any?> ?: emptyList()
+  }
 
   private fun Map<*, *>.intValue(key: String): Int? {
     return when (val value = this[key]) {

@@ -5,8 +5,14 @@ import * as FileSystem from 'expo-file-system';
 const parser = new DOMParser();
 const NATIVE_EPUB_DIR = 'epub-native';
 const BOOK_COVER_DIR = 'book-covers';
+const CHAPTER_CACHE_DIR = 'epub-native-chapters';
+const PACKAGE_CACHE_DIR = 'epub-native-packages';
+const EXTRACTED_BOOK_META_FILE = '.ff-extraction.json';
+const EXTRACTED_EPUB_CACHE_VERSION = 'epub-extraction-v1';
 const EPUB_PACKAGE_CACHE_VERSION = 'native-renderer-css-v6';
+const CHAPTER_CACHE_VERSION = `${EPUB_PACKAGE_CACHE_VERSION}:chapter-blocks-v1`;
 const EPUB_PACKAGE_CACHE = new Map();
+const ZIP_REQUIRED_CACHE_MISS = 'ZIP_REQUIRED_CACHE_MISS';
 
 const textOf = (node) => (node?.textContent || '').trim();
 
@@ -150,6 +156,62 @@ const ensureDirectoryForFile = async (fileUri) => {
     }
 };
 
+const readJsonFile = async (uri) => {
+    try {
+        const info = await FileSystem.getInfoAsync(uri);
+        if (!info.exists) {
+            return null;
+        }
+
+        return JSON.parse(await FileSystem.readAsStringAsync(uri));
+    } catch {
+        return null;
+    }
+};
+
+const writeJsonFile = async (uri, value) => {
+    await ensureDirectoryForFile(uri);
+    await FileSystem.writeAsStringAsync(uri, JSON.stringify(value));
+};
+
+const sourceFileSignature = async (uri) => {
+    try {
+        const info = await FileSystem.getInfoAsync(uri);
+        return {
+            exists: !!info.exists,
+            size: Number.isFinite(info.size) ? info.size : null,
+            modificationTime: Number.isFinite(info.modificationTime) ? info.modificationTime : null,
+        };
+    } catch {
+        return {
+            exists: null,
+            size: null,
+            modificationTime: null,
+        };
+    }
+};
+
+const sourceSignatureKey = (signature = {}) => (
+    [
+        signature.exists === null ? 'unknown' : (signature.exists ? 'exists' : 'missing'),
+        Number.isFinite(signature.size) ? signature.size : 'size-unknown',
+        Number.isFinite(signature.modificationTime) ? signature.modificationTime : 'mtime-unknown',
+    ].join(':')
+);
+
+const canValidateSourceSignature = (signature = {}) => (
+    signature.exists === true
+    && (
+        Number.isFinite(signature.size)
+        || Number.isFinite(signature.modificationTime)
+    )
+);
+
+const sourceSignatureMatches = (cachedSignatureKey, currentSignature = {}) => (
+    !canValidateSourceSignature(currentSignature)
+    || cachedSignatureKey === sourceSignatureKey(currentSignature)
+);
+
 const coverExtensionFromMime = (mime = '', fallbackPath = '') => {
     const lowerMime = String(mime || '').toLowerCase();
     const lowerPath = String(fallbackPath || '').toLowerCase();
@@ -281,6 +343,18 @@ const findZipFile = (zip, path) => {
     const decodedPath = safeDecodePath(normalizedPath);
 
     return zip.file(normalizedPath) || (decodedPath !== normalizedPath ? zip.file(decodedPath) : null);
+};
+
+const manifestItemForResolvedPath = (manifestItems = [], path = '') => {
+    const normalizedPath = String(path || '').replace(/\\/g, '/');
+    const decodedPath = safeDecodePath(normalizedPath);
+
+    return manifestItems.find((item) => (
+        item.path === normalizedPath ||
+        item.path === decodedPath ||
+        safeDecodePath(item.path || '') === normalizedPath ||
+        safeDecodePath(item.path || '') === decodedPath
+    )) || null;
 };
 
 const stripUrlFragment = (url = '') => String(url).split('#')[0].split('?')[0];
@@ -675,19 +749,49 @@ const loadEpubZip = async (uri) => {
     return JSZip.loadAsync(epubBuffer);
 };
 
-const extractEpubZip = async (zip, sourceUri, fallbackName = '') => {
+const extractionRootUriForBook = (sourceUri, fallbackName = '') => {
     const documentDirectory = FileSystem.documentDirectory;
 
     if (!documentDirectory) {
         throw new Error('File system document directory is unavailable.');
     }
 
-    const rootUri = `${documentDirectory}${NATIVE_EPUB_DIR}/${hashString(`${sourceUri}:${fallbackName}`)}-${sanitizePathSegment(fallbackName)}/`;
+    return `${documentDirectory}${NATIVE_EPUB_DIR}/${hashString(`${sourceUri}:${fallbackName}`)}-${sanitizePathSegment(fallbackName)}/`;
+};
+
+const extractionMetadataMatches = (metadata, expected) => (
+    metadata?.version === expected.version
+    && metadata?.sourceUri === expected.sourceUri
+    && metadata?.fallbackName === expected.fallbackName
+    && metadata?.sourceSignatureKey === expected.sourceSignatureKey
+    && metadata?.entryCount === expected.entryCount
+);
+
+const extractEpubZip = async (zip, sourceUri, fallbackName = '', sourceSignature = null) => {
+    const rootUri = extractionRootUriForBook(sourceUri, fallbackName);
+    const metaUri = `${rootUri}${EXTRACTED_BOOK_META_FILE}`;
+    const entries = Object.values(zip.files || {});
+    const expectedMetadata = {
+        version: EXTRACTED_EPUB_CACHE_VERSION,
+        sourceUri,
+        fallbackName: fallbackName || '',
+        sourceSignatureKey: sourceSignatureKey(sourceSignature || {}),
+        entryCount: entries.length,
+    };
+    const existingMetadata = await readJsonFile(metaUri);
+
+    if (extractionMetadataMatches(existingMetadata, expectedMetadata)) {
+        console.log(`[epubMetadata] Reusing extracted EPUB files (${existingMetadata.fileCount || 0} files)`);
+        return {
+            rootUri,
+            fileCount: existingMetadata.fileCount || 0,
+            fromCache: true,
+        };
+    }
 
     await FileSystem.deleteAsync(rootUri, { idempotent: true });
     await ensureDirectory(rootUri);
 
-    const entries = Object.values(zip.files || {});
     let fileCount = 0;
 
     for (const entry of entries) {
@@ -713,71 +817,169 @@ const extractEpubZip = async (zip, sourceUri, fallbackName = '') => {
         fileCount += 1;
     }
 
+    await writeJsonFile(metaUri, {
+        ...expectedMetadata,
+        fileCount,
+        createdAt: Date.now(),
+    });
+
+    console.log(`[epubMetadata] Extracted EPUB files (${fileCount} files)`);
+
     return {
         rootUri,
         fileCount,
+        fromCache: false,
     };
 };
 
-const packageCacheKey = (uri = '', fallbackName = '') => (
-    `${EPUB_PACKAGE_CACHE_VERSION}\n${uri}\n${fallbackName || ''}`
+const packageCacheKey = (uri = '', fallbackName = '', sourceSignature = null) => (
+    `${EPUB_PACKAGE_CACHE_VERSION}\n${uri}\n${fallbackName || ''}\n${sourceSignatureKey(sourceSignature || {})}`
 );
 
-const loadCachedEpubPackage = async (uri, fallbackName = '') => {
-    const cacheKey = packageCacheKey(uri, fallbackName);
+const packageCacheFileUri = (uri = '', fallbackName = '', sourceSignature = null) => {
+    const documentDirectory = FileSystem.documentDirectory;
+    if (!documentDirectory) {
+        return null;
+    }
+
+    const key = hashString(`${EPUB_PACKAGE_CACHE_VERSION}\n${uri}\n${fallbackName || ''}`);
+    return `${documentDirectory}${PACKAGE_CACHE_DIR}/${key}.json`;
+};
+
+const readPersistentEpubPackage = async (uri, fallbackName = '', sourceSignature = null) => {
+    const cacheUri = packageCacheFileUri(uri, fallbackName, sourceSignature);
+    const payload = cacheUri ? await readJsonFile(cacheUri) : null;
+
+    if (
+        payload?.version !== EPUB_PACKAGE_CACHE_VERSION
+        || payload?.sourceUri !== uri
+        || payload?.fallbackName !== (fallbackName || '')
+        || !sourceSignatureMatches(payload?.sourceSignatureKey, sourceSignature || {})
+        || !payload?.extractedBook?.rootUri
+        || !payload?.packagePath
+        || !payload?.packageXml
+        || !Array.isArray(payload?.parsedPackage?.spine)
+    ) {
+        return null;
+    }
+
+    const extractionMetadata = await readJsonFile(`${payload.extractedBook.rootUri}${EXTRACTED_BOOK_META_FILE}`);
+    if (!extractionMetadataMatches(extractionMetadata, payload.extractionMetadata || {})) {
+        return null;
+    }
+
+    console.log('[epubMetadata] Reusing cached EPUB package metadata');
+
+    return {
+        zip: null,
+        extractedBook: payload.extractedBook,
+        containerXml: payload.containerXml || null,
+        packagePath: payload.packagePath,
+        packageXml: payload.packageXml,
+        parsedPackage: payload.parsedPackage,
+        bookResources: payload.bookResources || [],
+        sourceSignature,
+        fromPersistentCache: true,
+    };
+};
+
+const writePersistentEpubPackage = async (uri, fallbackName = '', sourceSignature = null, loadedPackage = null) => {
+    const cacheUri = packageCacheFileUri(uri, fallbackName, sourceSignature);
+    if (!cacheUri || !loadedPackage?.parsedPackage?.spine) {
+        return;
+    }
+
+    const extractionMetadata = await readJsonFile(`${loadedPackage.extractedBook.rootUri}${EXTRACTED_BOOK_META_FILE}`);
+
+    await writeJsonFile(cacheUri, {
+        version: EPUB_PACKAGE_CACHE_VERSION,
+        sourceUri: uri,
+        fallbackName: fallbackName || '',
+        sourceSignatureKey: sourceSignatureKey(sourceSignature || {}),
+        extractedBook: loadedPackage.extractedBook,
+        extractionMetadata,
+        containerXml: loadedPackage.containerXml,
+        packagePath: loadedPackage.packagePath,
+        packageXml: loadedPackage.packageXml,
+        parsedPackage: loadedPackage.parsedPackage,
+        bookResources: loadedPackage.bookResources,
+        createdAt: Date.now(),
+    });
+};
+
+const loadFreshEpubPackage = async (uri, fallbackName = '', sourceSignature = null) => {
+    const zip = await loadEpubZip(uri);
+    const extractedBook = await extractEpubZip(zip, uri, fallbackName, sourceSignature);
+    const containerFile = zip.file('META-INF/container.xml');
+    let containerXml = null;
+    let packagePath = null;
+
+    if (containerFile) {
+        containerXml = await containerFile.async('string');
+        packagePath = findPackagePath(containerXml);
+    }
+
+    if (!packagePath) {
+        packagePath = findFallbackPackagePath(zip);
+    }
+
+    if (!packagePath) {
+        throw new Error('No OPF package file was found inside this EPUB.');
+    }
+
+    const packageFile = findZipFile(zip, packagePath);
+
+    if (!packageFile) {
+        throw new Error(`The EPUB points to "${packagePath}", but that file is missing.`);
+    }
+
+    const packageXml = await packageFile.async('string');
+    const parsedPackageBase = parsePackageDocument(packageXml, packagePath, fallbackName, extractedBook.rootUri);
+    const parsedToc = await readPackageToc(zip, parsedPackageBase);
+    const parsedPackage = {
+        ...parsedPackageBase,
+        toc: buildTocNavigation(parsedToc.items, parsedPackageBase.spine, {
+            hasTocEntries: parsedToc.items.length > 0,
+        }),
+        tocSource: parsedToc.source,
+    };
+    const bookResources = buildBookResources(zip, parsedPackage);
+
+    return {
+        zip,
+        extractedBook,
+        containerXml,
+        packagePath,
+        packageXml,
+        parsedPackage,
+        bookResources,
+        sourceSignature,
+        fromPersistentCache: false,
+    };
+};
+
+const loadCachedEpubPackage = async (uri, fallbackName = '', options = {}) => {
+    const sourceSignature = await sourceFileSignature(uri);
+    const cacheKey = packageCacheKey(uri, fallbackName, sourceSignature);
     const cachedPackage = EPUB_PACKAGE_CACHE.get(cacheKey);
 
-    if (cachedPackage) {
+    if (cachedPackage && (!options.forceZip || cachedPackage.zip)) {
         return cachedPackage;
     }
 
     const packagePromise = (async () => {
-        const zip = await loadEpubZip(uri);
-        const extractedBook = await extractEpubZip(zip, uri, fallbackName);
-        const containerFile = zip.file('META-INF/container.xml');
-        let containerXml = null;
-        let packagePath = null;
-
-        if (containerFile) {
-            containerXml = await containerFile.async('string');
-            packagePath = findPackagePath(containerXml);
+        if (!options.forceZip) {
+            const persistentPackage = await readPersistentEpubPackage(uri, fallbackName, sourceSignature);
+            if (persistentPackage) {
+                return persistentPackage;
+            }
         }
 
-        if (!packagePath) {
-            packagePath = findFallbackPackagePath(zip);
-        }
-
-        if (!packagePath) {
-            throw new Error('No OPF package file was found inside this EPUB.');
-        }
-
-        const packageFile = findZipFile(zip, packagePath);
-
-        if (!packageFile) {
-            throw new Error(`The EPUB points to "${packagePath}", but that file is missing.`);
-        }
-
-        const packageXml = await packageFile.async('string');
-        const parsedPackageBase = parsePackageDocument(packageXml, packagePath, fallbackName, extractedBook.rootUri);
-        const parsedToc = await readPackageToc(zip, parsedPackageBase);
-        const parsedPackage = {
-            ...parsedPackageBase,
-            toc: buildTocNavigation(parsedToc.items, parsedPackageBase.spine, {
-                hasTocEntries: parsedToc.items.length > 0,
-            }),
-            tocSource: parsedToc.source,
-        };
-        const bookResources = buildBookResources(zip, parsedPackage);
-
-        return {
-            zip,
-            extractedBook,
-            containerXml,
-            packagePath,
-            packageXml,
-            parsedPackage,
-            bookResources,
-        };
+        const freshPackage = await loadFreshEpubPackage(uri, fallbackName, sourceSignature);
+        writePersistentEpubPackage(uri, fallbackName, sourceSignature, freshPackage).catch((error) => {
+            console.warn('[epubMetadata] Failed to cache EPUB package metadata:', error);
+        });
+        return freshPackage;
     })();
 
     EPUB_PACKAGE_CACHE.set(cacheKey, packagePromise);
@@ -2347,7 +2549,127 @@ const analyzeParsedChapter = (chapterText, parsedChapter) => {
     };
 };
 
-const readSpineChapter = async (zip, spineItem, extractedRootUri, manifestByPath = {}) => {
+const emptyParsedChapter = (chapterId = 'cached') => ({
+    renderTree: { id: chapterId, type: 'root', children: [] },
+    selectionBlocks: [],
+    chapterBlocks: [],
+    stylesheets: [],
+    stylesheetResources: [],
+    styleRules: [],
+    resources: [],
+});
+
+const chapterCacheFileUri = (cacheContext, spineItem) => {
+    const documentDirectory = FileSystem.documentDirectory;
+    if (!documentDirectory || !cacheContext || !spineItem) {
+        return null;
+    }
+
+    const key = hashString([
+        CHAPTER_CACHE_VERSION,
+        cacheContext.sourceUri || '',
+        cacheContext.fallbackName || '',
+        spineItem.index ?? '',
+        spineItem.path || '',
+    ].join('\n'));
+
+    return `${documentDirectory}${CHAPTER_CACHE_DIR}/${key}.json`;
+};
+
+const readCachedSpineChapter = async (cacheContext, spineItem) => {
+    const cacheUri = chapterCacheFileUri(cacheContext, spineItem);
+    if (!cacheUri) {
+        return null;
+    }
+
+    const payload = await readJsonFile(cacheUri);
+    const parsedChapter = payload?.parsedChapter || {};
+
+    if (
+        payload?.version !== CHAPTER_CACHE_VERSION
+        || payload?.sourceUri !== cacheContext.sourceUri
+        || payload?.fallbackName !== (cacheContext.fallbackName || '')
+        || !sourceSignatureMatches(payload?.sourceSignatureKey, cacheContext.sourceSignature || {})
+        || payload?.spineIndex !== spineItem.index
+        || payload?.spinePath !== spineItem.path
+        || !Array.isArray(parsedChapter.chapterBlocks)
+    ) {
+        return null;
+    }
+
+    console.log(`[epubMetadata] Reusing cached chapter blocks for spine ${spineItem.index}`);
+
+    return {
+        spineItem,
+        chapterXml: '',
+        chapterText: payload.chapterText || '',
+        parsedChapter: {
+            ...emptyParsedChapter(`cached_spine_${spineItem.index}`),
+            ...parsedChapter,
+            renderTree: { id: `cached_spine_${spineItem.index}`, type: 'root', children: [] },
+            selectionBlocks: Array.isArray(parsedChapter.selectionBlocks) ? parsedChapter.selectionBlocks : [],
+            chapterBlocks: parsedChapter.chapterBlocks,
+            stylesheets: Array.isArray(parsedChapter.stylesheets) ? parsedChapter.stylesheets : [],
+            stylesheetResources: Array.isArray(parsedChapter.stylesheetResources) ? parsedChapter.stylesheetResources : [],
+            styleRules: Array.isArray(parsedChapter.styleRules) ? parsedChapter.styleRules : [],
+            resources: Array.isArray(parsedChapter.resources) ? parsedChapter.resources : [],
+        },
+        diagnostic: {
+            ...spineDiagnosticBase(spineItem),
+            ...(payload.diagnostic || {}),
+            cacheHit: true,
+        },
+    };
+};
+
+const writeCachedSpineChapter = async (cacheContext, chapter) => {
+    const spineItem = chapter?.spineItem;
+    const cacheUri = chapterCacheFileUri(cacheContext, spineItem);
+    const parsedChapter = chapter?.parsedChapter;
+
+    if (!cacheUri || !spineItem || !parsedChapter) {
+        return;
+    }
+
+    await writeJsonFile(cacheUri, {
+        version: CHAPTER_CACHE_VERSION,
+        sourceUri: cacheContext.sourceUri || '',
+        fallbackName: cacheContext.fallbackName || '',
+        sourceSignatureKey: sourceSignatureKey(cacheContext.sourceSignature || {}),
+        spineIndex: spineItem.index,
+        spinePath: spineItem.path || '',
+        chapterText: chapter.chapterText || '',
+        parsedChapter: {
+            selectionBlocks: parsedChapter.selectionBlocks || [],
+            chapterBlocks: parsedChapter.chapterBlocks || [],
+            stylesheets: parsedChapter.stylesheets || [],
+            stylesheetResources: parsedChapter.stylesheetResources || [],
+            styleRules: parsedChapter.styleRules || [],
+            resources: parsedChapter.resources || [],
+        },
+        diagnostic: chapter.diagnostic || null,
+        createdAt: Date.now(),
+    });
+};
+
+const readSpineChapter = async (
+    zip,
+    spineItem,
+    extractedRootUri,
+    manifestByPath = {},
+    cacheContext = null
+) => {
+    const cachedChapter = await readCachedSpineChapter(cacheContext, spineItem);
+    if (cachedChapter) {
+        return cachedChapter;
+    }
+
+    if (!zip) {
+        const error = new Error('Chapter cache miss requires EPUB zip access.');
+        error.code = ZIP_REQUIRED_CACHE_MISS;
+        throw error;
+    }
+
     const chapterFile = findZipFile(zip, spineItem.path);
 
     if (!chapterFile) {
@@ -2389,7 +2711,7 @@ const readSpineChapter = async (zip, spineItem, extractedRootUri, manifestByPath
     const chapterText = extractBodyText(chapterXml);
     const analysis = analyzeParsedChapter(chapterText, parsedChapter);
 
-    return {
+    const chapter = {
         spineItem,
         chapterXml,
         chapterText,
@@ -2400,6 +2722,12 @@ const readSpineChapter = async (zip, spineItem, extractedRootUri, manifestByPath
             ...analysis,
         },
     };
+
+    writeCachedSpineChapter(cacheContext, chapter).catch((error) => {
+        console.warn(`[epubMetadata] Failed to cache chapter ${spineItem.index}:`, error);
+    });
+
+    return chapter;
 };
 
 const chooseSpineChapter = async (
@@ -2407,7 +2735,8 @@ const chooseSpineChapter = async (
     spine,
     extractedRootUri,
     options = {},
-    manifestByPath = {}
+    manifestByPath = {},
+    cacheContext = null
 ) => {
     const requestedSpineIndex = Number.isInteger(options.spineIndex)
         ? options.spineIndex
@@ -2430,7 +2759,8 @@ const chooseSpineChapter = async (
             zip,
             requestedItem,
             extractedRootUri,
-            manifestByPath
+            manifestByPath,
+            cacheContext
         );
 
         return {
@@ -2483,10 +2813,16 @@ const chooseSpineChapter = async (
             continue;
         }
 
-        const chapter = await readSpineChapter(zip, item, extractedRootUri, manifestByPath);
+        const chapter = await readSpineChapter(
+            zip,
+            item,
+            extractedRootUri,
+            manifestByPath,
+            cacheContext
+        );
         diagnostics.push(chapter.diagnostic);
 
-        if (!fallbackChapter && chapter.chapterXml) {
+        if (!fallbackChapter && (chapter.chapterXml || chapter.diagnostic.cacheHit)) {
             fallbackChapter = chapter;
         }
 
@@ -2544,8 +2880,9 @@ const parseOpfMetadata = async (zip, packagePath, fallbackName, sourceUri = '') 
 
     const opfXml = await opfFile.async('string');
     const parsedPackage = parsePackageDocument(opfXml, packagePath, fallbackName);
+    const opfDoc = parser.parseFromString(opfXml, 'application/xml');
     const metadataNode = firstDescendant(
-        parser.parseFromString(opfXml, 'application/xml'),
+        opfDoc,
         (node) => localNameOf(node) === 'metadata'
     );
     const title = parsedPackage.metadata.title;
@@ -2553,12 +2890,63 @@ const parseOpfMetadata = async (zip, packagePath, fallbackName, sourceUri = '') 
     const packageDir = parsedPackage.packageDir;
     const manifestItems = parsedPackage.manifest;
 
+    const isImageItem = (item) => (
+        String(item?.mediaType || '').toLowerCase().startsWith('image/') ||
+        /\.(png|jpe?g|gif|webp|svg)$/i.test(item?.path || item?.href || '')
+    );
+    const isDocumentItem = (item) => (
+        String(item?.mediaType || '').toLowerCase().includes('html') ||
+        /\.(xhtml|html)$/i.test(item?.path || item?.href || '')
+    );
+    const coverishItem = (item) => {
+        const id = String(item?.id || '').toLowerCase();
+        const href = String(item?.href || '').toLowerCase();
+        const path = String(item?.path || '').toLowerCase();
+        const properties = String(item?.properties || '').toLowerCase().split(/\s+/);
+
+        return (
+            properties.includes('cover-image') ||
+            id.includes('cover') ||
+            href.includes('cover') ||
+            path.includes('cover') ||
+            id.includes('front') ||
+            href.includes('front') ||
+            path.includes('front')
+        );
+    };
+    const imagePathFromCoverDocument = async (documentPath) => {
+        const docFile = findZipFile(zip, documentPath);
+        if (!docFile) {
+            return null;
+        }
+
+        const documentXml = await docFile.async('string');
+        const doc = parser.parseFromString(normalizeXhtmlEntities(documentXml), 'application/xml');
+        const imageNode = firstDescendant(doc, (node) => {
+            const name = localNameOf(node).toLowerCase();
+            return name === 'img' || name === 'image';
+        });
+        const imageHref = imageNode?.getAttribute('src')
+            || imageNode?.getAttribute('href')
+            || imageNode?.getAttribute('xlink:href')
+            || '';
+
+        if (!imageHref || isExternalResourceHref(imageHref) || isDataResourceHref(imageHref)) {
+            return null;
+        }
+
+        return resolveHrefPath(dirname(documentPath), stripUrlFragment(imageHref));
+    };
+
     let coverHref = null;
     let coverType = null;
 
     const coverMetaNode = descendants(metadataNode, (node) => localNameOf(node) === 'meta')
-        .find((node) => (node.getAttribute('name') || '').toLowerCase() === 'cover');
-    const coverId = coverMetaNode?.getAttribute('content');
+        .find((node) => (
+            (node.getAttribute('name') || '').toLowerCase() === 'cover' ||
+            (node.getAttribute('property') || '').toLowerCase() === 'cover'
+        ));
+    const coverId = coverMetaNode?.getAttribute('content') || textOf(coverMetaNode);
 
     if (coverId) {
         const coverItem = manifestItems.find((item) => item.id === coverId);
@@ -2569,10 +2957,9 @@ const parseOpfMetadata = async (zip, packagePath, fallbackName, sourceUri = '') 
     }
 
     if (!coverHref) {
-        const coverItem = manifestItems.find((item) => {
-            const properties = item.properties || '';
-            return properties.split(/\s+/).includes('cover-image');
-        });
+        const coverItem = manifestItems.find((item) => (
+            String(item.properties || '').split(/\s+/).includes('cover-image')
+        ));
 
         if (coverItem) {
             coverHref = coverItem.href;
@@ -2581,11 +2968,8 @@ const parseOpfMetadata = async (zip, packagePath, fallbackName, sourceUri = '') 
     }
 
     if (!coverHref) {
-        const coverItem = manifestItems.find((item) => {
-            const id = (item.id || '').toLowerCase();
-            const href = (item.href || '').toLowerCase();
-            return id === 'cover' || href.includes('cover');
-        });
+        const coverItem = manifestItems.find((item) => coverishItem(item))
+            || manifestItems.find((item) => isImageItem(item));
 
         if (coverItem) {
             coverHref = coverItem.href;
@@ -2596,7 +2980,31 @@ const parseOpfMetadata = async (zip, packagePath, fallbackName, sourceUri = '') 
     let cover = null;
 
     if (coverHref) {
-        const coverPath = resolveHrefPath(packageDir, coverHref);
+        let coverPath = resolveHrefPath(packageDir, coverHref);
+        let coverItem = manifestItemForResolvedPath(manifestItems, coverPath);
+
+        if (coverItem && isDocumentItem(coverItem)) {
+            const imagePath = await imagePathFromCoverDocument(coverPath);
+            if (imagePath) {
+                const imageItem = manifestItemForResolvedPath(manifestItems, imagePath);
+                coverPath = imagePath;
+                coverItem = imageItem || null;
+                coverType = imageItem?.mediaType || mimeFromPath(imagePath);
+            }
+        }
+
+        if (!isImageItem({ ...coverItem, path: coverPath, mediaType: coverType })) {
+            const fallbackImage = manifestItems.find((item) => isImageItem(item) && coverishItem(item))
+                || manifestItems.find((item) => isImageItem(item));
+
+            coverPath = fallbackImage?.path || coverPath;
+            coverType = fallbackImage?.mediaType || coverType;
+        }
+
+        if (!isImageItem({ path: coverPath, mediaType: coverType })) {
+            return { title, author, cover: null };
+        }
+
         const coverFile = findZipFile(zip, coverPath);
 
         if (coverFile) {
@@ -2655,22 +3063,42 @@ export const readEpubMetadata = async (uri, fallbackName = '') => {
 
 export const readEpubPackageXml = async (uri, fallbackName = '', options = {}) => {
     const readOptions = typeof options === 'number' ? { spineIndex: options } : (options || {});
+    let packageState = await loadCachedEpubPackage(uri, fallbackName);
+    let loadedChapter;
+
+    const chooseLoadedChapter = async () => chooseSpineChapter(
+        packageState.zip,
+        packageState.parsedPackage.spine,
+        packageState.extractedBook.rootUri,
+        readOptions,
+        packageState.parsedPackage.manifestByPath,
+        {
+            sourceUri: uri,
+            fallbackName,
+            sourceSignature: packageState.sourceSignature,
+        }
+    );
+
+    try {
+        loadedChapter = await chooseLoadedChapter();
+    } catch (error) {
+        if (error?.code !== ZIP_REQUIRED_CACHE_MISS) {
+            throw error;
+        }
+
+        console.log('[epubMetadata] Chapter cache miss; loading EPUB zip for parsing');
+        packageState = await loadCachedEpubPackage(uri, fallbackName, { forceZip: true });
+        loadedChapter = await chooseLoadedChapter();
+    }
+
     const {
-        zip,
         extractedBook,
         containerXml,
         packagePath,
         packageXml,
         parsedPackage,
         bookResources,
-    } = await loadCachedEpubPackage(uri, fallbackName);
-    const loadedChapter = await chooseSpineChapter(
-        zip,
-        parsedPackage.spine,
-        extractedBook.rootUri,
-        readOptions,
-        parsedPackage.manifestByPath
-    );
+    } = packageState;
     const loadedSpineItem = loadedChapter.spineItem;
     const bookManifest = buildBookManifest({
         sourceUri: uri,

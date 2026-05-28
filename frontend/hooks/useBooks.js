@@ -67,6 +67,13 @@ const useBooks = ({ books, setBooks, setCurrentBook, onBookImported }) => {
             );
 
             if (existingBook) {
+                if (!existingBook.cover && cover) {
+                    setBooks((prevBooks) => prevBooks.map((book) => (
+                        book.id === existingBook.id
+                            ? { ...book, cover }
+                            : book
+                    )));
+                }
                 setCurrentBook(existingBook.uri);
                 setIsImporting(false);
                 navigation.navigate('Read');
