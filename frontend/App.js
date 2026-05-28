@@ -7,11 +7,19 @@ import * as SplashScreen from 'expo-splash-screen';
 import {
     DMSans_400Regular,
     DMSans_500Medium,
+    DMSans_600SemiBold,
     DMSans_700Bold,
 } from '@expo-google-fonts/dm-sans';
 import {
+    Fraunces_400Regular,
+    Fraunces_500Medium,
+    Fraunces_600SemiBold,
+    Fraunces_700Bold,
+} from '@expo-google-fonts/fraunces';
+import {
     NotoSerifKR_400Regular,
     NotoSerifKR_500Medium,
+    NotoSerifKR_600SemiBold,
     NotoSerifKR_700Bold,
 } from '@expo-google-fonts/noto-serif-kr';
 import { tabScreenOptions } from './components/shared/TabBar';
@@ -34,9 +42,15 @@ export default function App() {
     const [fontsLoaded] = useFonts({
         'FFSans-Regular': DMSans_400Regular,
         'FFSans-Medium': DMSans_500Medium,
+        'FFSans-SemiBold': DMSans_600SemiBold,
         'FFSans-Bold': DMSans_700Bold,
+        'FFDisplay-Regular': Fraunces_400Regular,
+        'FFDisplay-Medium': Fraunces_500Medium,
+        'FFDisplay-SemiBold': Fraunces_600SemiBold,
+        'FFDisplay-Bold': Fraunces_700Bold,
         'FFSerif-Regular': NotoSerifKR_400Regular,
         'FFSerif-Medium': NotoSerifKR_500Medium,
+        'FFSerif-SemiBold': NotoSerifKR_600SemiBold,
         'FFSerif-Bold': NotoSerifKR_700Bold,
     });
 
