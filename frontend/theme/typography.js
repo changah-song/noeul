@@ -4,10 +4,19 @@ import { colors } from './tokens';
 export const fontFamilies = {
   sansRegular: 'FFSans-Regular',
   sansMedium: 'FFSans-Medium',
+  sansSemiBold: 'FFSans-SemiBold',
   sansBold: 'FFSans-Bold',
-  serifRegular: 'FFSerif-Regular',
-  serifMedium: 'FFSerif-Medium',
-  serifBold: 'FFSerif-Bold',
+  displayRegular: 'FFDisplay-Regular',
+  displayMedium: 'FFDisplay-Medium',
+  displaySemiBold: 'FFDisplay-SemiBold',
+  displayBold: 'FFDisplay-Bold',
+  serifRegular: 'FFDisplay-Regular',
+  serifMedium: 'FFDisplay-Medium',
+  serifBold: 'FFDisplay-Bold',
+  krSerifRegular: 'FFSerif-Regular',
+  krSerifMedium: 'FFSerif-Medium',
+  krSerifSemiBold: 'FFSerif-SemiBold',
+  krSerifBold: 'FFSerif-Bold',
 };
 
 export const typeScale = {

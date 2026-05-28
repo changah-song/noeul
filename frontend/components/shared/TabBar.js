@@ -21,13 +21,13 @@ export const tabScreenOptions = ({ route }, { hideTabChrome = false } = {}) => (
     tabBarHideOnKeyboard: true,
     tabBarActiveTintColor: colors.accent,
     tabBarInactiveTintColor: colors.textSubtle,
-    tabBarStyle: tabBarBaseStyle,
+    tabBarStyle: hideTabChrome ? styles.tabBarHidden : tabBarBaseStyle,
     tabBarItemStyle: styles.tabBarItem,
     tabBarIconStyle: styles.iconSlot,
     tabBarIcon: ({ focused, color }) => {
         const { Component, name } = tabIcons[route.name];
         return (
-            <View style={[styles.iconContainer, focused && styles.iconContainerActive, hideTabChrome && styles.iconContainerHidden]}>
+            <View style={[styles.iconContainer, focused && styles.iconContainerActive]}>
                 <Component
                     name={name}
                     color={focused ? colors.accentStrong : color}
@@ -67,8 +67,8 @@ const styles = StyleSheet.create({
     iconContainerActive: {
         backgroundColor: colors.accentSoft,
     },
-    iconContainerHidden: {
-        opacity: 0,
+    tabBarHidden: {
+        display: 'none',
     },
 });
 
