@@ -1,7 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
-import { ActivityIndicator, Alert, Image, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, TouchableWithoutFeedback, View } from 'react-native';
-import { ReaderProvider } from '@epubjs-react-native/core';
+import { ActivityIndicator, Alert, Image, Modal, Pressable, StyleSheet, Text, TextInput, TouchableOpacity, TouchableWithoutFeedback, View } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import { Feather } from '@expo/vector-icons';
 import BookList from '../components/Home/BookList';
@@ -24,7 +23,6 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     } = useBooks({
         books,
         setBooks,
-        currentBook,
         setCurrentBook,
         onBookImported: () => {},
     });
@@ -180,8 +178,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     );
 
     return (
-        <ReaderProvider>
-            <Screen scroll contentContainerStyle={styles.screenContent}>
+        <Screen scroll contentContainerStyle={styles.screenContent}>
                 <View style={styles.topBar}>
                     {!hasBooks ? (
                         <Text style={styles.topBarTitle}>Home</Text>
@@ -406,8 +403,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                         </View>
                     </TouchableWithoutFeedback>
                 </Modal>
-            </Screen>
-        </ReaderProvider>
+
+        </Screen>
     );
 };
 

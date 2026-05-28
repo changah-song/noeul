@@ -12,16 +12,24 @@ const flattenToc = (items, depth = 0) => {
         return [];
     }
 
-    return items.flatMap((item) => ([
-        { ...item, depth },
-        ...flattenToc(item?.subitems, depth + 1),
-    ]));
+    return items.flatMap((item) => {
+        const itemDepth = Number.isFinite(Number(item?.depth))
+            ? Math.max(0, Number(item.depth))
+            : depth;
+
+        return [
+            { ...item, depth: itemDepth },
+            ...flattenToc(item?.subitems, itemDepth + 1),
+        ];
+    });
 };
 
 const TocDrawer = ({
     visible,
     toc,
     currentSectionHref,
+    currentSpineIndex,
+    totalSpineItems,
     isDarkMode,
     onClose,
     onSelect,
@@ -33,6 +41,23 @@ const TocDrawer = ({
         }
         return Math.min(...flatItems.map((item) => item?.depth ?? 0));
     }, [flatItems]);
+    const activeIndex = useMemo(() => {
+        if (!Number.isInteger(currentSpineIndex)) {
+            return -1;
+        }
+
+        return flatItems.reduce((activeItemIndex, item, index) => {
+            if (
+                !item?.disabled
+                && Number.isInteger(item?.spineIndex)
+                && item.spineIndex <= currentSpineIndex
+            ) {
+                return index;
+            }
+
+            return activeItemIndex;
+        }, -1);
+    }, [currentSpineIndex, flatItems]);
     const activeHref = stripHref(currentSectionHref);
 
     const palette = isDarkMode
@@ -44,6 +69,7 @@ const TocDrawer = ({
             subText: '#a09382',
             activeBg: 'rgba(200, 125, 0, 0.16)',
             activeText: '#f0c98d',
+            disabledText: 'rgba(182, 170, 153, 0.48)',
             pressedBg: 'rgba(239, 230, 214, 0.08)',
             divider: 'rgba(239, 230, 214, 0.12)',
         }
@@ -55,6 +81,7 @@ const TocDrawer = ({
             subText: colors.textMuted,
             activeBg: colors.accentSoft,
             activeText: colors.accentStrong,
+            disabledText: 'rgba(111, 98, 82, 0.45)',
             pressedBg: 'rgba(33, 28, 23, 0.05)',
             divider: 'rgba(221, 213, 200, 0.7)',
         };
@@ -70,7 +97,7 @@ const TocDrawer = ({
                 <Pressable style={styles.backdrop} onPress={onClose} />
                 <View style={[styles.dropdown, { backgroundColor: palette.sheet, borderColor: palette.border }]}>
                     <View style={styles.header}>
-                        <Text style={[styles.headerTitle, { color: palette.text }]}>Chapters</Text>
+                        <Text style={[styles.headerTitle, { color: palette.text }]}>Contents</Text>
                     </View>
 
                     <ScrollView
@@ -78,20 +105,27 @@ const TocDrawer = ({
                         showsVerticalScrollIndicator={false}
                     >
                         {flatItems.map((item, index) => {
-                            const isActive = stripHref(item?.href) === activeHref;
-                            const normalizedDepth = Math.max(0, (item?.depth ?? 0) - minDepth);
+                            const isActive = activeIndex >= 0
+                                ? activeIndex === index
+                                : Boolean(activeHref && stripHref(item?.href) === activeHref);
+                            const normalizedDepth = Math.min(1, Math.max(0, (item?.depth ?? 0) - minDepth));
                             const isSubchapter = normalizedDepth > 0;
-                            const chapterProgress = flatItems.length <= 1
-                                ? 0
-                                : Math.round((index / (flatItems.length - 1)) * 100);
+                            const isDisabled = item?.disabled || !Number.isInteger(item?.spineIndex);
+                            const title = String(item?.title || item?.label || 'Untitled').trim() || 'Untitled';
+                            const positionLabel = item?.positionLabel || (
+                                Number.isInteger(item?.spineIndex) && totalSpineItems
+                                    ? `${item.spineIndex + 1}/${totalSpineItems}`
+                                    : ''
+                            );
                             const isLast = index === flatItems.length - 1;
 
                             return (
                                 <Pressable
                                     key={`${item?.id || item?.href || item?.label || 'toc'}-${index}`}
+                                    disabled={isDisabled}
                                     onPress={() => {
-                                        if (!item?.href) return;
-                                        onSelect?.(item.href);
+                                        if (isDisabled) return;
+                                        onSelect?.(item);
                                     }}
                                     style={({ pressed }) => ([
                                         styles.row,
@@ -99,7 +133,7 @@ const TocDrawer = ({
                                             paddingLeft: normalizedDepth * 12,
                                             backgroundColor: isActive
                                                 ? palette.activeBg
-                                                : (pressed ? palette.pressedBg : 'transparent'),
+                                                : (pressed && !isDisabled ? palette.pressedBg : 'transparent'),
                                             borderBottomWidth: isLast ? 0 : StyleSheet.hairlineWidth,
                                             borderBottomColor: palette.divider,
                                         },
@@ -113,22 +147,29 @@ const TocDrawer = ({
                                                 {
                                                     color: isActive
                                                         ? palette.activeText
-                                                        : (isSubchapter ? palette.subText : palette.text),
+                                                        : (isDisabled
+                                                            ? palette.disabledText
+                                                            : (isSubchapter ? palette.subText : palette.text)),
                                                 },
                                             ]}
+                                            numberOfLines={2}
                                         >
-                                            {(item?.label || item?.title || 'Untitled chapter').trim()}
+                                            {title}
                                         </Text>
-                                        <Text
-                                            style={[
-                                                styles.progressText,
-                                                {
-                                                    color: isActive ? palette.activeText : palette.mutedText,
-                                                },
-                                            ]}
-                                        >
-                                            {chapterProgress}%
-                                        </Text>
+                                        {positionLabel ? (
+                                            <Text
+                                                style={[
+                                                    styles.positionText,
+                                                    {
+                                                        color: isActive
+                                                            ? palette.activeText
+                                                            : (isDisabled ? palette.disabledText : palette.mutedText),
+                                                    },
+                                                ]}
+                                            >
+                                                {positionLabel}
+                                            </Text>
+                                        ) : null}
                                     </View>
                                 </Pressable>
                             );
@@ -209,9 +250,11 @@ const styles = StyleSheet.create({
         lineHeight: 16,
         includeFontPadding: false,
     },
-    progressText: {
+    positionText: {
         ...textStyles.caption,
         fontSize: 11,
+        minWidth: 48,
+        textAlign: 'right',
     },
 });
 
