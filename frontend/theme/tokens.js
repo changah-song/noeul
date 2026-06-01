@@ -6,11 +6,11 @@ export const colors = {
   surfaceElevated: '#ffffff',
   surfaceStrong: '#e7dfd1',
   border: '#ddd5c8',
-  text: '#211c17',
+  text: '#1a1a1a',
   textMuted: '#6f675d',
   textSubtle: '#978e81',
   accent: '#c87d00',
-  accentStrong: '#a66700',
+  accentStrong: '#c87d00',
   accentSoft: 'rgba(200, 125, 0, 0.14)',
   success: '#2f7d4c',
   warning: '#b57618',
@@ -18,7 +18,7 @@ export const colors = {
   shadow: 'rgba(41, 28, 14, 0.08)',
   overlay: 'rgba(28, 24, 19, 0.32)',
   white: '#ffffff',
-  black: '#000000',
+  black: '#1a1a1a',
 };
 
 export const radii = {

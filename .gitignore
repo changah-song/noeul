@@ -1,1 +1,6 @@
 .claude/
+.idea/
+__pycache__/
+*.pyc
+scripts/hanja_translated.json
+scripts/hanja_translation_cache.json

@@ -6,7 +6,7 @@ import { colors, radii, spacing, textStyles } from '../../../theme';
 import TranslationContent from './TranslationContent';
 import DictionaryContent from './DictionaryContent';
 
-const DICTIONARY_COMPACT_HEIGHT = 144;
+const DICTIONARY_COMPACT_HEIGHT = 122;
 const DICTIONARY_EXPANDED_MAX_HEIGHT = 308;
 const DICTIONARY_EXTRA_ROW_HEIGHT = 52;
 const TRANSLATION_SOURCE_LANGUAGE = 'KO';
@@ -108,7 +108,7 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
             border: 'rgba(239, 230, 214, 0.18)',
             text: '#f3ede3',
             mutedText: '#b6aa99',
-            accent: '#dca147',
+            accent: colors.accent,
             closeIcon: '#b6aa99',
             spinner: '#d2b793',
         }
@@ -206,19 +206,19 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
 
 const styles = StyleSheet.create({
     sheet: {
-        marginHorizontal: spacing.md,
+        marginHorizontal: spacing.lg,
         paddingHorizontal: spacing.md,
         paddingTop: spacing.sm,
         paddingBottom: spacing.md,
-        borderRadius: radii.xl,
+        borderRadius: 18,
         backgroundColor: colors.surfaceElevated,
         borderWidth: 1,
         borderColor: colors.border,
-        shadowColor: colors.shadow,
+        shadowColor: 'rgba(45, 37, 27, 0.20)',
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 1,
-        shadowRadius: 20,
-        elevation: 8,
+        shadowRadius: 16,
+        elevation: 10,
         overflow: 'hidden',
     },
     sheetDictionary: {
