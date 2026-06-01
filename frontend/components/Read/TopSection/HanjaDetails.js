@@ -1,60 +1,97 @@
 import { useEffect, useState } from 'react';
-import { Text, View, StyleSheet, TouchableOpacity, Modal, ScrollView } from 'react-native';
+import { ActivityIndicator, Text, View, StyleSheet, TouchableOpacity, Modal, ScrollView } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import hanjaRelated from '../../../services/api/hanjaRelated';
 import { addRelatedKnownWord, getRelatedKnownWords, removeRelatedKnownWord } from '../../../services/Database';
 import { colors, fontFamilies, radii, spacing, textStyles } from '../../../theme';
 
 const relatedWordKey = (entry) => `${entry?.korean ?? ''}|${entry?.hanja ?? ''}`;
+const HANJA_RE = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/;
+
+const cleanValue = (value) => (typeof value === 'string' ? value.trim() : '');
+
+const normalizeHanjaCharacters = (characters, fallback) => {
+    const normalized = Array.isArray(characters)
+        ? characters.map(cleanValue).filter((char) => HANJA_RE.test(char))
+        : [];
+
+    if (normalized.length > 0) {
+        return normalized;
+    }
+
+    const fallbackCharacters = cleanValue(fallback).split('').filter((char) => HANJA_RE.test(char));
+    return fallbackCharacters.length > 0 ? fallbackCharacters : [];
+};
 
 const HanjaDetails = ({
     hanja,
+    hanjaCharacters = [],
+    initialHanjaIndex = 0,
     sourceWord,
     handleHanjaPress,
     onKnownWordMarked,
     onKnownWordRemoved,
     isDarkMode,
 }) => {
-    const { firstTableData: title, similarWordsTableData: result } = hanjaRelated({ query: hanja });
+    const characters = normalizeHanjaCharacters(hanjaCharacters, hanja);
+    const charactersKey = characters.join('|');
+    const fallbackIndex = characters.indexOf(cleanValue(hanja));
+    const initialIndex = Math.max(
+        0,
+        Math.min(
+            Number.isInteger(initialHanjaIndex)
+                ? initialHanjaIndex
+                : fallbackIndex,
+            Math.max(characters.length - 1, 0)
+        )
+    );
+    const [activeHanjaIndex, setActiveHanjaIndex] = useState(initialIndex);
+    const activeHanja = characters[activeHanjaIndex] ?? characters[0] ?? null;
+    const { firstTableData: title, similarWordsTableData: result, isLoading } = hanjaRelated({ query: activeHanja });
     const [knownKeys, setKnownKeys] = useState(new Set());
 
     const palette = isDarkMode
         ? {
-            overlay: 'rgba(0, 0, 0, 0.52)',
+            overlay: 'rgba(0, 0, 0, 0.38)',
             card: '#1d1915',
             header: '#2b2419',
             row: '#1d1915',
             border: 'rgba(239, 225, 203, 0.18)',
             text: '#f7efe5',
             muted: '#c1b4a2',
-            accent: '#dca147',
-            accentSoft: 'rgba(220, 161, 71, 0.16)',
+            accent: colors.accent,
+            accentSoft: colors.accentSoft,
             knownBg: 'rgba(99, 173, 150, 0.18)',
             knownText: '#8ad0bd',
         }
         : {
-            overlay: 'rgba(28, 24, 19, 0.28)',
-            card: colors.surfaceElevated,
+            overlay: 'rgba(53, 46, 37, 0.22)',
+            card: '#ffffff',
             header: '#fff4dc',
-            row: colors.surfaceElevated,
-            border: '#e5d7c2',
+            row: '#ffffff',
+            border: '#eadcc5',
             text: colors.text,
             muted: colors.textMuted,
             accent: colors.accentStrong,
             accentSoft: colors.accentSoft,
-            knownBg: '#e6f3ef',
-            knownText: '#3d8172',
+            knownBg: colors.accentStrong,
+            knownText: '#ffffff',
         };
 
-    const headerEntry = title?.[0] ?? {};
-    const relatedWords = Array.isArray(result) ? result : [];
+    const headerEntry = isLoading ? {} : title?.[0] ?? {};
+    const relatedWords = !isLoading && Array.isArray(result) ? result : [];
+    const canNavigateHanja = characters.length > 1;
     const linkedWord = sourceWord || 'this word';
+
+    useEffect(() => {
+        setActiveHanjaIndex(initialIndex);
+    }, [charactersKey, initialIndex]);
 
     useEffect(() => {
         let isCancelled = false;
         setKnownKeys(new Set());
 
-        if (!hanja || !sourceWord) {
+        if (!activeHanja || !sourceWord) {
             return () => {
                 isCancelled = true;
             };
@@ -73,9 +110,29 @@ const HanjaDetails = ({
         return () => {
             isCancelled = true;
         };
-    }, [hanja, sourceWord]);
+    }, [activeHanja, sourceWord]);
 
     const close = () => handleHanjaPress(null);
+
+    const goToPreviousHanja = () => {
+        if (!canNavigateHanja) {
+            return;
+        }
+
+        setActiveHanjaIndex((currentIndex) => (
+            currentIndex <= 0 ? characters.length - 1 : currentIndex - 1
+        ));
+    };
+
+    const goToNextHanja = () => {
+        if (!canNavigateHanja) {
+            return;
+        }
+
+        setActiveHanjaIndex((currentIndex) => (
+            currentIndex >= characters.length - 1 ? 0 : currentIndex + 1
+        ));
+    };
 
     const handleKnownPress = async (entry) => {
         const key = relatedWordKey(entry);
@@ -84,7 +141,7 @@ const HanjaDetails = ({
             korean: entry.korean,
             hanja: entry.hanja,
             meaning: entry.meaning,
-            sourceHanja: hanja,
+            sourceHanja: activeHanja,
         };
 
         setKnownKeys((previous) => {
@@ -121,7 +178,7 @@ const HanjaDetails = ({
     };
 
     return (
-        <Modal visible={hanja !== null} animationType="fade" transparent onRequestClose={close}>
+        <Modal visible={activeHanja !== null} animationType="fade" transparent onRequestClose={close}>
             <View style={styles.modalRoot}>
                 <TouchableOpacity
                     accessibilityRole="button"
@@ -134,27 +191,55 @@ const HanjaDetails = ({
                 <View style={[styles.card, { backgroundColor: palette.card, borderColor: palette.border }]}>
                     <View style={[styles.header, { backgroundColor: palette.header, borderBottomColor: palette.border }]}>
                         <View style={[styles.hanjaTile, { backgroundColor: palette.card, borderColor: palette.border }]}>
-                            <Text selectable style={[styles.hanjaCharacter, { color: palette.text }]}>{hanja}</Text>
+                            <Text selectable style={[styles.hanjaCharacter, { color: palette.text }]}>{activeHanja}</Text>
                         </View>
 
                         <View style={styles.headerCopy}>
                             <Text selectable numberOfLines={1} style={[styles.readingText, { color: palette.text }]}>
-                                {headerEntry.reading || 'Hanja'}
+                                {headerEntry.reading || (isLoading ? 'Loading...' : 'Hanja')}
                             </Text>
                             <Text selectable numberOfLines={2} style={[styles.meaningText, { color: palette.muted }]}>
-                                {headerEntry.meaning || 'Meaning unavailable'}
+                                {headerEntry.meaning || (isLoading ? 'Fetching related hanja details' : 'Meaning unavailable')}
                             </Text>
                         </View>
 
-                        <TouchableOpacity
-                            accessibilityRole="button"
-                            accessibilityLabel="Close Hanja details"
-                            activeOpacity={0.75}
-                            style={styles.closeButton}
-                            onPress={close}
-                        >
-                            <MaterialIcons name="close" size={22} color={palette.muted} />
-                        </TouchableOpacity>
+                        <View style={styles.headerActions}>
+                            {canNavigateHanja ? (
+                                <View style={[styles.hanjaNavigator, { borderColor: palette.border, backgroundColor: palette.card }]}>
+                                    <TouchableOpacity
+                                        accessibilityRole="button"
+                                        accessibilityLabel="Previous Hanja"
+                                        activeOpacity={0.78}
+                                        onPress={goToPreviousHanja}
+                                        style={styles.hanjaNavButton}
+                                    >
+                                        <MaterialIcons name="chevron-left" size={20} color={palette.muted} />
+                                    </TouchableOpacity>
+                                    <Text style={[styles.hanjaNavCount, { color: palette.muted }]}>
+                                        {activeHanjaIndex + 1}/{characters.length}
+                                    </Text>
+                                    <TouchableOpacity
+                                        accessibilityRole="button"
+                                        accessibilityLabel="Next Hanja"
+                                        activeOpacity={0.78}
+                                        onPress={goToNextHanja}
+                                        style={styles.hanjaNavButton}
+                                    >
+                                        <MaterialIcons name="chevron-right" size={20} color={palette.muted} />
+                                    </TouchableOpacity>
+                                </View>
+                            ) : null}
+
+                            <TouchableOpacity
+                                accessibilityRole="button"
+                                accessibilityLabel="Close Hanja details"
+                                activeOpacity={0.75}
+                                style={styles.closeButton}
+                                onPress={close}
+                            >
+                                <MaterialIcons name="close" size={22} color={palette.muted} />
+                            </TouchableOpacity>
+                        </View>
                     </View>
 
                     <View style={[styles.noteRow, { backgroundColor: palette.card, borderBottomColor: palette.border }]}>
@@ -166,7 +251,12 @@ const HanjaDetails = ({
                     </View>
 
                     <ScrollView style={styles.relatedList} showsVerticalScrollIndicator={false}>
-                        {relatedWords.length > 0 ? relatedWords.map((word, index) => {
+                        {isLoading ? (
+                            <View style={styles.emptyState}>
+                                <ActivityIndicator size="small" color={palette.accent} />
+                                <Text style={[styles.emptyText, { color: palette.muted }]}>Loading related words...</Text>
+                            </View>
+                        ) : relatedWords.length > 0 ? relatedWords.map((word, index) => {
                             const known = knownKeys.has(relatedWordKey(word));
 
                             return (
@@ -193,7 +283,7 @@ const HanjaDetails = ({
 
                                     <TouchableOpacity
                                         accessibilityRole="button"
-                                        accessibilityLabel={`Mark ${word.korean} as already known`}
+                                        accessibilityLabel={known ? `${word.korean} marked as known` : `Mark ${word.korean} as already known`}
                                         activeOpacity={0.82}
                                         onPress={() => handleKnownPress(word)}
                                         style={[
@@ -204,10 +294,11 @@ const HanjaDetails = ({
                                             },
                                         ]}
                                     >
-                                        {known ? <MaterialIcons name="check" size={15} color={palette.knownText} /> : null}
-                                        <Text style={[styles.knownButtonText, { color: known ? palette.knownText : palette.muted }]}>
-                                            I know this
-                                        </Text>
+                                        <MaterialIcons
+                                            name={known ? 'check' : 'add'}
+                                            size={20}
+                                            color={known ? palette.knownText : palette.muted}
+                                        />
                                     </TouchableOpacity>
                                 </View>
                             );
@@ -227,39 +318,46 @@ const styles = StyleSheet.create({
     modalRoot: {
         flex: 1,
         alignItems: 'center',
-        justifyContent: 'center',
+        justifyContent: 'flex-end',
+        paddingHorizontal: spacing.lg,
     },
     backdrop: {
         ...StyleSheet.absoluteFillObject,
     },
     card: {
-        width: '94%',
-        maxHeight: '86%',
-        borderRadius: radii.lg,
+        width: '100%',
+        maxHeight: '62%',
+        marginBottom: 150,
+        borderRadius: 18,
         borderWidth: 1,
         overflow: 'hidden',
+        shadowColor: 'rgba(45, 37, 27, 0.24)',
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 1,
+        shadowRadius: 18,
+        elevation: 12,
     },
     header: {
         minHeight: 104,
         flexDirection: 'row',
         alignItems: 'center',
-        gap: spacing.sm,
-        paddingHorizontal: spacing.md,
-        paddingVertical: spacing.md,
+        gap: 16,
+        paddingHorizontal: 20,
+        paddingVertical: 18,
         borderBottomWidth: StyleSheet.hairlineWidth,
     },
     hanjaTile: {
-        width: 72,
-        height: 72,
-        borderRadius: radii.sm,
+        width: 64,
+        height: 64,
+        borderRadius: 14,
         borderWidth: 1,
         alignItems: 'center',
         justifyContent: 'center',
     },
     hanjaCharacter: {
         fontFamily: fontFamilies.krSerifBold,
-        fontSize: 43,
-        lineHeight: 52,
+        fontSize: 39,
+        lineHeight: 48,
     },
     headerCopy: {
         flex: 1,
@@ -268,13 +366,40 @@ const styles = StyleSheet.create({
     },
     readingText: {
         fontFamily: fontFamilies.krSerifBold,
-        fontSize: 17,
-        lineHeight: 22,
+        fontSize: 18,
+        lineHeight: 24,
     },
     meaningText: {
         ...textStyles.body,
-        fontSize: 16,
-        lineHeight: 22,
+        fontSize: 15,
+        lineHeight: 21,
+    },
+    headerActions: {
+        alignSelf: 'flex-start',
+        alignItems: 'flex-end',
+        gap: spacing.xs,
+    },
+    hanjaNavigator: {
+        height: 34,
+        flexDirection: 'row',
+        alignItems: 'center',
+        borderWidth: 1,
+        borderRadius: 17,
+        overflow: 'hidden',
+    },
+    hanjaNavButton: {
+        width: 27,
+        height: 32,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    hanjaNavCount: {
+        minWidth: 28,
+        textAlign: 'center',
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 11,
+        lineHeight: 14,
+        letterSpacing: 0,
     },
     closeButton: {
         width: 34,
@@ -288,7 +413,7 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'flex-start',
         gap: spacing.xs,
-        paddingHorizontal: spacing.md,
+        paddingHorizontal: 20,
         paddingVertical: spacing.sm,
         borderBottomWidth: StyleSheet.hairlineWidth,
     },
@@ -305,12 +430,12 @@ const styles = StyleSheet.create({
         flexGrow: 0,
     },
     relatedRow: {
-        minHeight: 66,
+        minHeight: 74,
         flexDirection: 'row',
         alignItems: 'center',
-        gap: spacing.sm,
-        paddingHorizontal: spacing.md,
-        paddingVertical: spacing.xs,
+        gap: spacing.md,
+        paddingHorizontal: 20,
+        paddingVertical: 10,
         borderBottomWidth: StyleSheet.hairlineWidth,
     },
     relatedCopy: {
@@ -326,33 +451,27 @@ const styles = StyleSheet.create({
     },
     relatedKorean: {
         fontFamily: fontFamilies.krSerifBold,
-        fontSize: 17,
-        lineHeight: 22,
+        fontSize: 19,
+        lineHeight: 24,
     },
     relatedHanja: {
         fontFamily: fontFamilies.krSerifMedium,
-        fontSize: 12,
-        lineHeight: 17,
+        fontSize: 14,
+        lineHeight: 19,
     },
     relatedMeaning: {
         ...textStyles.body,
-        fontSize: 13,
-        lineHeight: 17,
+        fontSize: 16,
+        lineHeight: 21,
     },
     knownButton: {
-        minHeight: 30,
-        borderRadius: 15,
+        width: 34,
+        height: 34,
+        borderRadius: 17,
         borderWidth: 1,
-        paddingHorizontal: 8,
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
-        gap: 3,
-    },
-    knownButtonText: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 12,
-        lineHeight: 16,
     },
     emptyState: {
         minHeight: 96,

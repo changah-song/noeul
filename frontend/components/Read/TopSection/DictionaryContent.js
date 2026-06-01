@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Text, View, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView } from 'react-native';
 import axios from 'axios';
 import koreanDictionary from '../../../services/api/koreanDictionary';
@@ -74,6 +74,7 @@ const hasSavableDefinition = (definition) => {
 };
 
 const hasHanja = (value) => HANJA_RE.test(cleanValue(value));
+const getHanjaCharacters = (value) => cleanValue(value).split('').filter((char) => HANJA_RE.test(char));
 
 const getEntryWord = (entry, fallback) => cleanValue(entry?.stem) || cleanValue(entry?.word) || fallback;
 const getEntryHanja = (entry) => cleanValue(entry?.hanja) || cleanValue(entry?.origin);
@@ -141,7 +142,7 @@ const DictionaryContent = ({
             emptyText: '#9e9183',
             surface: '#1d1915',
             border: 'rgba(239, 225, 203, 0.18)',
-            action: '#d48400',
+            action: colors.accent,
             actionText: '#fffaf2',
             secondaryButtonBg: 'rgba(255, 250, 242, 0.04)',
             secondaryButtonText: '#d9cbb8',
@@ -154,7 +155,7 @@ const DictionaryContent = ({
             emptyText: colors.textSubtle,
             surface: colors.surfaceElevated,
             border: '#e5d7c2',
-            action: '#d48400',
+            action: colors.accent,
             actionText: '#fffdf8',
             secondaryButtonBg: '#fffdf8',
             secondaryButtonText: '#716657',
@@ -173,8 +174,31 @@ const DictionaryContent = ({
     const [expandedCached, setExpandedCached] = useState({});
     const [relatedKnownByWord, setRelatedKnownByWord] = useState({});
     const [currentHanja, setCurrentHanja] = useState(null);
-    const handleHanjaPress = (hanja, sourceWord = null) => {
-        setCurrentHanja(hanja ? { character: hanja, sourceWord: cleanValue(sourceWord) || null } : null);
+    const [activeWordIndex, setActiveWordIndex] = useState(0);
+    const handleHanjaPress = (hanja, sourceWord = null, options = {}) => {
+        if (!hanja) {
+            setCurrentHanja(null);
+            return;
+        }
+
+        const optionCharacters = Array.isArray(options.characters)
+            ? options.characters.map(cleanValue).filter(hasHanja)
+            : [];
+        const characters = optionCharacters.length > 0 ? optionCharacters : getHanjaCharacters(hanja);
+        const fallbackCharacters = characters.length > 0 ? characters : [cleanValue(hanja)];
+        const requestedIndex = Number.isInteger(options.index)
+            ? options.index
+            : fallbackCharacters.indexOf(cleanValue(hanja));
+        const activeIndex = requestedIndex >= 0
+            ? Math.min(requestedIndex, fallbackCharacters.length - 1)
+            : 0;
+
+        setCurrentHanja({
+            character: fallbackCharacters[activeIndex],
+            characters: fallbackCharacters,
+            activeIndex,
+            sourceWord: cleanValue(sourceWord) || null,
+        });
     };
 
     useEffect(() => {
@@ -187,6 +211,7 @@ const DictionaryContent = ({
         setExpandedCached({});
         setExpandedWords([]);
         setRelatedKnownByWord({});
+        setActiveWordIndex(0);
 
         if (!highlightedWord) return;
 
@@ -410,13 +435,68 @@ const DictionaryContent = ({
         }
     };
 
+    const lookupItems = useMemo(() => {
+        const itemsByStem = new Map();
+
+        stemWordList.forEach((stem, index) => {
+            if (!cleanValue(stem)) {
+                return;
+            }
+
+            itemsByStem.set(stem, {
+                key: `live-${stem}-${index}`,
+                stem,
+                liveEntries: dictionaryData[index] || [],
+            });
+        });
+
+        (cachedResults || []).forEach((entry, index) => {
+            const stem = cleanValue(entry?.stem) || getEntryWord(entry, highlightedWord) || `cached-${index}`;
+            const existing = itemsByStem.get(stem) || {
+                key: `cached-${stem}-${index}`,
+                stem,
+                liveEntries: [],
+            };
+
+            itemsByStem.set(stem, {
+                ...existing,
+                cachedEntry: entry,
+            });
+        });
+
+        const hasLiveSettled = !needsLiveFetch || dictionaryData.length > 0 || liveError;
+
+        return [...itemsByStem.values()].filter((item) => (
+            item.cachedEntry
+            || item.liveEntries?.[0]
+            || (hasLiveSettled && cleanValue(item.stem))
+        ));
+    }, [cachedResults, dictionaryData, highlightedWord, liveError, needsLiveFetch, stemWordList]);
+
+    const lookupItemCount = lookupItems.length;
+    const currentLookupIndex = lookupItemCount > 0
+        ? Math.min(activeWordIndex, lookupItemCount - 1)
+        : 0;
+    const activeLookupItem = lookupItems[currentLookupIndex] || null;
+
     useEffect(() => {
-        if (!cachedResults || cachedResults.length === 0) return;
-        const entry = cachedResults[0];
-        if (entry?.definition && extraDefs[entry.stem] === undefined) {
-            prefetchExtra(entry.stem);
+        setActiveWordIndex((currentIndex) => {
+            if (lookupItemCount <= 0) {
+                return 0;
+            }
+
+            return Math.min(currentIndex, lookupItemCount - 1);
+        });
+    }, [lookupItemCount]);
+
+    useEffect(() => {
+        const entry = activeLookupItem?.cachedEntry;
+        if (!entry?.definition || extraDefs[entry.stem] !== undefined) {
+            return;
         }
-    }, [cachedResults]);
+
+        prefetchExtra(entry.stem);
+    }, [activeLookupItem, extraDefs]);
 
     const handleRelatedKnownWordMarked = (sourceWord, relatedWord) => {
         const normalizedSource = cleanValue(sourceWord);
@@ -515,6 +595,66 @@ const DictionaryContent = ({
 
     const isWordSaved = (word) => savedWords.includes(word);
 
+    const goToPreviousWord = () => {
+        if (lookupItemCount <= 1) {
+            return;
+        }
+
+        setExpandedCached({});
+        setExpandedWords([]);
+        onExpandedStateChange?.(0);
+        setActiveWordIndex((currentIndex) => (
+            currentIndex <= 0 ? lookupItemCount - 1 : currentIndex - 1
+        ));
+        handleHanjaPress(null);
+    };
+
+    const goToNextWord = () => {
+        if (lookupItemCount <= 1) {
+            return;
+        }
+
+        setExpandedCached({});
+        setExpandedWords([]);
+        onExpandedStateChange?.(0);
+        setActiveWordIndex((currentIndex) => (
+            currentIndex >= lookupItemCount - 1 ? 0 : currentIndex + 1
+        ));
+        handleHanjaPress(null);
+    };
+
+    const renderWordNavigator = () => {
+        if (lookupItemCount <= 1) {
+            return null;
+        }
+
+        return (
+            <View style={[styles.wordNavigator, { borderColor: palette.border, backgroundColor: palette.secondaryButtonBg }]}>
+                <TouchableOpacity
+                    accessibilityRole="button"
+                    accessibilityLabel="Previous detected word"
+                    activeOpacity={0.78}
+                    onPress={goToPreviousWord}
+                    style={styles.wordNavButton}
+                >
+                    <MaterialIcons name="chevron-left" size={20} color={palette.secondaryButtonText} />
+                </TouchableOpacity>
+                <Text style={[styles.wordNavCount, { color: palette.mutedText }]}>
+                    {currentLookupIndex + 1}/{lookupItemCount}
+                </Text>
+                <TouchableOpacity
+                    accessibilityRole="button"
+                    accessibilityLabel="Next detected word"
+                    activeOpacity={0.78}
+                    onPress={goToNextWord}
+                    style={styles.wordNavButton}
+                >
+                    <MaterialIcons name="chevron-right" size={20} color={palette.secondaryButtonText} />
+                </TouchableOpacity>
+            </View>
+        );
+    };
+
     const renderHanja = (hanja, variant = 'entry', sourceWord = null) => {
         if (!hasHanja(hanja)) {
             return null;
@@ -523,9 +663,11 @@ const DictionaryContent = ({
         const isEntry = variant === 'entry';
         const hanjaStyle = [
             isEntry ? styles.entryHanja : styles.extraHanja,
-            { color: isEntry ? palette.secondaryText : palette.mutedText },
+            { color: isEntry ? palette.action : palette.mutedText },
         ];
-        const dotColor = isEntry ? palette.secondaryText : palette.mutedText;
+        const dotColor = isEntry ? palette.action : palette.mutedText;
+        const hanjaCharacters = getHanjaCharacters(hanja);
+        let hanjaTokenIndex = -1;
 
         return (
             <View style={[styles.hanjaGroup, isEntry ? styles.entryHanjaGroup : styles.extraHanjaGroup]}>
@@ -535,12 +677,18 @@ const DictionaryContent = ({
                         return <Text key={`${char}-${index}`} style={hanjaStyle}>{char}</Text>;
                     }
 
+                    hanjaTokenIndex += 1;
+                    const selectedHanjaIndex = hanjaTokenIndex;
+
                     return (
                         <TouchableOpacity
                             key={`${char}-${index}`}
                             activeOpacity={0.7}
                             hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
-                            onPress={() => handleHanjaPress(char, sourceWord)}
+                            onPress={() => handleHanjaPress(char, sourceWord, {
+                                characters: hanjaCharacters,
+                                index: selectedHanjaIndex,
+                            })}
                             style={styles.hanjaToken}
                         >
                             <Text style={hanjaStyle}>{char}</Text>
@@ -577,15 +725,15 @@ const DictionaryContent = ({
                 style={[
                     styles.bookmarkButton,
                     {
-                        backgroundColor: saved ? palette.action : palette.secondaryButtonBg,
-                        borderColor: saved ? palette.action : palette.border,
+                        backgroundColor: 'transparent',
+                        borderColor: 'transparent',
                     },
                 ]}
             >
                 <MaterialIcons
                     name={saved ? 'bookmark' : 'bookmark-border'}
-                    size={20}
-                    color={saved ? palette.icon : palette.secondaryButtonText}
+                    size={25}
+                    color={saved ? palette.action : palette.mutedText}
                 />
             </TouchableOpacity>
         );
@@ -596,6 +744,7 @@ const DictionaryContent = ({
         const hanjaElement = renderHanja(hanja, 'entry', word);
         const romanizationText = cleanValue(romanization);
         const bookmarkButton = renderBookmarkButton(word, hanja, definition);
+        const wordNavigator = renderWordNavigator();
 
         return (
             <View style={styles.entryHeading}>
@@ -614,10 +763,11 @@ const DictionaryContent = ({
                         </Text>
                     ) : null}
                 </View>
-                {(bookmarkButton || posLabel) ? (
+                {(wordNavigator || bookmarkButton || posLabel) ? (
                     <View style={styles.headerActions}>
+                        {wordNavigator}
                         {posLabel ? (
-                            <View style={[styles.posBadge, { backgroundColor: isDarkMode ? 'rgba(255,250,242,0.1)' : '#efe9df' }]}>
+                            <View style={[styles.posBadge, { backgroundColor: isDarkMode ? 'rgba(255,250,242,0.1)' : '#eee8db' }]}>
                                 <Text style={[styles.posBadgeText, { color: palette.secondaryButtonText }]}>{posLabel}</Text>
                             </View>
                         ) : null}
@@ -761,7 +911,7 @@ const DictionaryContent = ({
         );
     }
 
-    if (cachedResults.length === 0 && !needsLiveFetch) {
+    if (cachedResults.length === 0 && !needsLiveFetch && lookupItemCount === 0) {
         return (
             <View style={[styles.panelContent, styles.emptyState, { backgroundColor: palette.surface }]}>
                 <Text style={[styles.emptyStateText, { color: palette.emptyText }]}>No lookup available</Text>
@@ -769,34 +919,56 @@ const DictionaryContent = ({
         );
     }
 
-    if (cachedResults.length > 0) {
-        const entry = cachedResults[0];
-        const stem = getEntryWord(entry, highlightedWord);
-        const liveMeta = liveEntryMeta[entry.stem] || {};
-        const extra = extraDefs[entry.stem];
-        const isExpanded = !!expandedCached[entry.stem];
+    if (needsLiveFetch && !liveError && (isLiveLoading || (dictionaryData.length === 0 && lookupItemCount === 0))) {
+        return (
+            <View style={[styles.panelContent, styles.stateRow, { backgroundColor: palette.surface }]}>
+                <ActivityIndicator size="small" color={palette.mutedText} />
+                <Text style={[styles.stateText, { color: palette.mutedText }]}>Fetching definitions...</Text>
+            </View>
+        );
+    }
+
+    if (!activeLookupItem) {
+        return (
+            <View style={[styles.panelContent, styles.emptyState, { backgroundColor: palette.surface }]}>
+                <Text style={[styles.emptyStateText, { color: palette.emptyText }]}>No lookup available</Text>
+            </View>
+        );
+    }
+
+    const cachedEntry = activeLookupItem.cachedEntry;
+    const liveEntries = activeLookupItem.liveEntries || [];
+    const firstLiveEntry = liveEntries[0];
+
+    if (cachedEntry) {
+        const stem = getEntryWord(cachedEntry, activeLookupItem.stem || highlightedWord);
+        const liveMeta = liveEntryMeta[cachedEntry.stem] || firstLiveEntry || {};
+        const extra = extraDefs[cachedEntry.stem];
+        const isExpanded = !!expandedCached[cachedEntry.stem];
         const showMore = Array.isArray(extra) && extra.length > 0 && !isExpanded;
         const showLess = isExpanded && Array.isArray(extra) && extra.length > 0;
 
         return (
             <View style={[styles.panelContent, { backgroundColor: palette.surface }]}>
                 {renderPrimaryEntry({
-                    key: `${stem}-${entry.hanja ?? ''}`,
+                    key: `${stem}-${cachedEntry.hanja ?? ''}`,
                     word: stem,
-                    hanja: getEntryHanja(entry),
-                    definition: getEntryDefinition(entry),
-                    pos: getEntryPos(entry) || getEntryPos(liveMeta),
+                    hanja: getEntryHanja(cachedEntry),
+                    definition: getEntryDefinition(cachedEntry),
+                    pos: getEntryPos(cachedEntry) || getEntryPos(liveMeta),
                     romanization: romanizations[stem] || getEntryRomanization(liveMeta),
                     showMore,
                     showLess,
-                    onMore: () => setExpandedCached(prev => ({ ...prev, [entry.stem]: true })),
-                    onLess: () => setExpandedCached(prev => ({ ...prev, [entry.stem]: false })),
+                    onMore: () => setExpandedCached(prev => ({ ...prev, [cachedEntry.stem]: true })),
+                    onLess: () => setExpandedCached(prev => ({ ...prev, [cachedEntry.stem]: false })),
                     extraEntries: extra,
                     separated: false,
                 })}
 
                 <HanjaDetails
                     hanja={currentHanja?.character ?? null}
+                    hanjaCharacters={currentHanja?.characters ?? []}
+                    initialHanjaIndex={currentHanja?.activeIndex ?? 0}
                     sourceWord={currentHanja?.sourceWord ?? stem}
                     handleHanjaPress={handleHanjaPress}
                     onKnownWordMarked={handleRelatedKnownWordMarked}
@@ -807,22 +979,10 @@ const DictionaryContent = ({
         );
     }
 
-    if (needsLiveFetch && !liveError && (isLiveLoading || dictionaryData.length === 0)) {
-        return (
-            <View style={[styles.panelContent, styles.stateRow, { backgroundColor: palette.surface }]}>
-                <ActivityIndicator size="small" color={palette.mutedText} />
-                <Text style={[styles.stateText, { color: palette.mutedText }]}>Fetching definitions...</Text>
-            </View>
-        );
-    }
-
-    const firstLiveIndex = dictionaryData.findIndex((entries) => entries?.[0]);
-    const entryIndex = firstLiveIndex >= 0 ? firstLiveIndex : 0;
-    const word = stemWordList[entryIndex] || stemWordList[0] || highlightedWord;
-    const entries = dictionaryData[entryIndex] || [];
-    const first = entries[0];
+    const word = activeLookupItem.stem || highlightedWord;
+    const first = firstLiveEntry;
     const isExpanded = expandedWords.includes(word);
-    const extraEntries = first ? uniqueEntriesByWord(entries.slice(1), first?.word || word) : [];
+    const extraEntries = first ? uniqueEntriesByWord(liveEntries.slice(1), first?.word || word) : [];
 
     return (
         <View style={[styles.panelContent, { backgroundColor: palette.surface }]}>
@@ -853,6 +1013,8 @@ const DictionaryContent = ({
 
             <HanjaDetails
                 hanja={currentHanja?.character ?? null}
+                hanjaCharacters={currentHanja?.characters ?? []}
+                initialHanjaIndex={currentHanja?.activeIndex ?? 0}
                 sourceWord={currentHanja?.sourceWord ?? word}
                 handleHanjaPress={handleHanjaPress}
                 onKnownWordMarked={handleRelatedKnownWordMarked}
@@ -866,13 +1028,13 @@ const DictionaryContent = ({
 const styles = StyleSheet.create({
     panelContent: {
         flex: 1,
-        paddingHorizontal: spacing.md,
-        paddingTop: 6,
-        paddingBottom: 0,
+        paddingHorizontal: 20,
+        paddingTop: 16,
+        paddingBottom: 12,
     },
     primaryEntry: {
         flex: 1,
-        gap: 4,
+        gap: 5,
         paddingBottom: 0,
     },
     entryHeading: {
@@ -887,28 +1049,28 @@ const styles = StyleSheet.create({
     },
     wordLine: {
         flexDirection: 'row',
-        alignItems: 'flex-start',
+        alignItems: 'center',
         flexWrap: 'wrap',
-        gap: spacing.xs,
-        paddingTop: 2,
+        gap: 6,
+        paddingTop: 0,
     },
     entryWord: {
         fontFamily: fontFamilies.krSerifBold,
-        fontSize: 24,
-        lineHeight: 40,
+        fontSize: 21,
+        lineHeight: 28,
         letterSpacing: 0,
-        paddingTop: 5,
+        paddingTop: 0,
         includeFontPadding: true,
     },
     entryHanja: {
         fontFamily: fontFamilies.krSerifMedium,
-        fontSize: 15,
-        lineHeight: 24,
+        fontSize: 17,
+        lineHeight: 23,
     },
     entryMeta: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 13,
-        lineHeight: 18,
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 14,
+        lineHeight: 19,
         marginTop: 0,
     },
     headerActions: {
@@ -918,22 +1080,44 @@ const styles = StyleSheet.create({
         flexShrink: 0,
         flexWrap: 'wrap',
         gap: 6,
-        paddingTop: 8,
+        paddingTop: 0,
     },
     posBadge: {
-        borderRadius: radii.xs,
-        paddingHorizontal: spacing.xs,
-        paddingVertical: 3,
+        borderRadius: 9,
+        paddingHorizontal: 8,
+        paddingVertical: 4,
     },
     posBadgeText: {
         ...textStyles.caption,
         fontFamily: fontFamilies.sansBold,
-        letterSpacing: 0.4,
+        letterSpacing: 0,
+    },
+    wordNavigator: {
+        height: 34,
+        flexDirection: 'row',
+        alignItems: 'center',
+        borderWidth: 1,
+        borderRadius: 17,
+        overflow: 'hidden',
+    },
+    wordNavButton: {
+        width: 27,
+        height: 32,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    wordNavCount: {
+        minWidth: 28,
+        textAlign: 'center',
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 11,
+        lineHeight: 14,
+        letterSpacing: 0,
     },
     definitionText: {
         ...textStyles.sectionTitle,
-        fontSize: 16,
-        lineHeight: 22,
+        fontSize: 20,
+        lineHeight: 25,
         letterSpacing: 0,
     },
     emptyDefinition: {
@@ -944,7 +1128,7 @@ const styles = StyleSheet.create({
         width: 34,
         height: 34,
         borderRadius: 17,
-        borderWidth: 1,
+        borderWidth: 0,
         alignItems: 'center',
         justifyContent: 'center',
     },
@@ -1015,7 +1199,7 @@ const styles = StyleSheet.create({
         flexWrap: 'wrap',
     },
     entryHanjaGroup: {
-        marginTop: 13,
+        marginTop: 2,
     },
     extraHanjaGroup: {
         marginTop: 1,
