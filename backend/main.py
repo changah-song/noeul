@@ -4,12 +4,14 @@ from fastapi.middleware.cors import CORSMiddleware
 import sqlite3
 import httpx
 import asyncio
+import json
 import xml.etree.ElementTree as ET
-from typing import Optional
+from typing import Any, Optional
 import os
 from functools import partial
 from uuid import uuid4
 from dotenv import load_dotenv
+from hanja_router import router as hanja_router
 
 try:
     from koroman import romanize as koroman_romanize
@@ -31,6 +33,10 @@ MAX_STEMS_DEFAULT = None
 KRDICT_CONCURRENCY_LIMIT = 10
 JOB_PROGRESS_LOG_INTERVAL = 25
 KRDICT_API_URL = "https://krdict.korean.go.kr/api/search"
+LRCLIB_BASE_URL = "https://lrclib.net/api"
+LRCLIB_HEADERS = {
+    "User-Agent": os.getenv("LRCLIB_USER_AGENT", "FluentFable/0.1")
+}
 
 # ─── Server-Side Cache DB ─────────────────────────────────────────────────────
 # This SQLite database lives on the backend server and persists across app restarts.
@@ -65,6 +71,22 @@ def init_cache_db():
     """)
     # Index on stem for O(1) lookups when checking cache hits
     conn.execute("CREATE INDEX IF NOT EXISTS idx_stem ON dictionary_cache(stem)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS song_cache (
+            provider TEXT NOT NULL,
+            provider_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            artist TEXT NOT NULL,
+            album TEXT,
+            duration REAL,
+            instrumental INTEGER DEFAULT 0,
+            plain_lyrics TEXT,
+            synced_lyrics TEXT,
+            source_payload TEXT,
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (provider, provider_id)
+        )
+    """)
     conn.commit()
     conn.close()
     print("[main] Server-side cache database initialized.")
@@ -85,10 +107,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(hanja_router)
+
 KRDICT_CLIENT_ID = os.getenv("KOREAN_DICTIONARY_CLIENT_ID", "").strip()
 
 preprocess_jobs: dict[str, dict] = {}
 preprocess_jobs_lock = asyncio.Lock()
+
+LOOKUP_ALLOWED_POS = {"Noun", "Verb", "Adverb", "Adjective"}
+TRAILING_ENDING_FRAGMENTS = {
+    "고요",
+    "군요",
+    "네요",
+    "나요",
+    "대요",
+    "데요",
+    "라고요",
+    "다고요",
+    "죠",
+    "지요",
+    "요",
+}
+COPULA_STEMS = {"이다"}
 
 
 def romanize_korean_text(text: str) -> str:
@@ -162,18 +202,114 @@ def merge_noun_hada(morphs: list[tuple[str, str]]) -> list[tuple[str, str]]:
     return merged_morphs
 
 
+def is_trailing_ending_fragment(word: str, pos: str) -> bool:
+    return word in TRAILING_ENDING_FRAGMENTS and pos in {"Noun", "Josa", "Eomi", "Suffix"}
+
+
+def should_skip_lookup_morph(
+    morphs: list[tuple[str, str]],
+    index: int,
+    *,
+    single_eojeol: bool,
+) -> bool:
+    word, pos = morphs[index]
+
+    if word in COPULA_STEMS:
+        return True
+
+    if index == 0:
+        return False
+
+    if not is_trailing_ending_fragment(word, pos):
+        return False
+
+    previous_word, previous_pos = morphs[index - 1]
+    return (
+        single_eojeol
+        or previous_pos in {"Josa", "Determiner"}
+        or previous_word in COPULA_STEMS
+    )
+
+
+def filter_lookup_morphs(morphs: list[tuple[str, str]], text: str) -> list[tuple[str, str]]:
+    single_eojeol = not any(char.isspace() for char in text.strip())
+    filtered_morphs: list[tuple[str, str]] = []
+
+    for index, (word, pos) in enumerate(morphs):
+        if pos not in LOOKUP_ALLOWED_POS:
+            continue
+
+        if should_skip_lookup_morph(morphs, index, single_eojeol=single_eojeol):
+            continue
+
+        filtered_morphs.append((word, pos))
+
+    return filtered_morphs
+
+
+def filter_lookup_stems(morphs: list[tuple[str, str]], text: str) -> list[str]:
+    return [word for word, _pos in filter_lookup_morphs(morphs, text)]
+
+
+def should_skip_surface_index_morph(
+    raw_stem_morphs: list[tuple[str, str]],
+    index: int,
+) -> bool:
+    word, pos = raw_stem_morphs[index]
+
+    if word in COPULA_STEMS:
+        return True
+
+    if index == 0 or not is_trailing_ending_fragment(word, pos):
+        return False
+
+    previous_word, previous_pos = raw_stem_morphs[index - 1]
+    return previous_pos in {"Josa", "Determiner"} or previous_word in COPULA_STEMS
+
+
+def is_noun_surface_connector(
+    surface_word: str,
+    surface_pos: str,
+    stem_word: str,
+    stem_pos: str,
+    next_stem: tuple[str, str] | None = None,
+) -> bool:
+    if surface_pos == "Josa" or stem_pos == "Josa":
+        return True
+
+    if stem_word in COPULA_STEMS:
+        return True
+
+    if surface_word == "이" and surface_pos == "Determiner":
+        if next_stem:
+            next_stem_word, next_stem_pos = next_stem
+            return is_trailing_ending_fragment(next_stem_word, next_stem_pos)
+        return True
+
+    return False
+
+
 def build_surface_index(
     raw_surface_morphs: list[tuple[str, str]],
     raw_stem_morphs: list[tuple[str, str]],
     allowed_pos: set[str],
 ) -> list[dict]:
     merged_pairs: list[tuple[str, str, str]] = []
+    skip_indices: set[int] = set()
     pair_count = min(len(raw_surface_morphs), len(raw_stem_morphs))
     index = 0
 
     while index < pair_count:
+        if index in skip_indices:
+            index += 1
+            continue
+
         surface_word, surface_pos = raw_surface_morphs[index]
         stem_word, stem_pos = raw_stem_morphs[index]
+
+        if should_skip_surface_index_morph(raw_stem_morphs, index):
+            index += 1
+            continue
 
         if (
             stem_pos == 'Noun'
@@ -192,25 +328,45 @@ def build_surface_index(
         #   제목을 -> 제목
         #   우리에 -> 우리
         #   꾀와 -> 꾀
+        #   일품이고요 -> 일품
         #
         # We keep the noun stem as the canonical lookup target, but add one or
         # more cumulative surface forms when the noun is immediately followed by
-        # Josa tokens. This keeps storage bounded to forms actually seen in the
-        # text rather than generating theoretical grammar variants.
+        # particles/copula endings. This keeps storage bounded to forms actually
+        # seen in the text rather than generating theoretical grammar variants.
         if stem_pos == 'Noun':
             combined_surface = surface_word
             lookahead = index + 1
+            saw_connector = False
 
             while lookahead < pair_count:
                 next_surface_word, next_surface_pos = raw_surface_morphs[lookahead]
-                _next_stem_word, next_stem_pos = raw_stem_morphs[lookahead]
+                next_stem_word, next_stem_pos = raw_stem_morphs[lookahead]
+                following_stem = raw_stem_morphs[lookahead + 1] if lookahead + 1 < pair_count else None
 
-                if next_surface_pos != 'Josa' and next_stem_pos != 'Josa':
-                    break
+                if is_noun_surface_connector(
+                    next_surface_word,
+                    next_surface_pos,
+                    next_stem_word,
+                    next_stem_pos,
+                    following_stem,
+                ):
+                    saw_connector = True
+                    combined_surface += next_surface_word
+                    merged_pairs.append((combined_surface, stem_word, 'Noun'))
+                    if next_stem_word in COPULA_STEMS:
+                        skip_indices.add(lookahead)
+                    lookahead += 1
+                    continue
 
-                combined_surface += next_surface_word
-                merged_pairs.append((combined_surface, stem_word, 'Noun'))
-                lookahead += 1
+                if saw_connector and is_trailing_ending_fragment(next_stem_word, next_stem_pos):
+                    combined_surface += next_surface_word
+                    merged_pairs.append((combined_surface, stem_word, 'Noun'))
+                    skip_indices.add(lookahead)
+                    lookahead += 1
+                    continue
+
+                break
 
         index += 1
 
@@ -250,8 +406,7 @@ async def get_okt_morphs(text: str):
     raw_morphs = merge_noun_hada(okt.pos(text, stem=True))
     print(f"[main] Raw morphs ({len(raw_morphs)} total): {raw_morphs}")
 
-    allowed_pos = ['Noun', 'Verb', 'Adverb', 'Adjective']
-    filtered_stems = [word for word, pos in raw_morphs if pos in allowed_pos]
+    filtered_stems = filter_lookup_stems(raw_morphs, text)
     print(f"[main] Filtered stems (first 20): {filtered_stems[:20]}")
     return {"result": filtered_stems}
 
@@ -266,6 +421,101 @@ async def romanize_text(text: str):
         raise HTTPException(status_code=503, detail="koroman is not installed on the backend")
 
     return {"romanization": romanize_korean_text(normalized)}
+
+
+@app.get("/songs/search")
+async def search_songs(q: str = "", limit: int = 10):
+    query = q.strip() if isinstance(q, str) else ""
+    if not query:
+        return {"results": []}
+
+    result_limit = max(1, min(limit, 25))
+
+    try:
+        async with httpx.AsyncClient(headers=LRCLIB_HEADERS) as client:
+            response = await client.get(
+                f"{LRCLIB_BASE_URL}/search",
+                params={"q": query},
+                timeout=10.0,
+            )
+    except httpx.RequestError as error:
+        print(f"[main] LRCLIB search failed for {query!r}: {error}")
+        raise HTTPException(status_code=502, detail="Lyrics provider request failed") from error
+
+    if response.status_code != 200:
+        print(f"[main] LRCLIB search HTTP {response.status_code} for {query!r}: {response.text[:200]}")
+        raise HTTPException(status_code=502, detail="Lyrics provider request failed")
+
+    try:
+        payload = response.json()
+    except ValueError as error:
+        print(f"[main] LRCLIB search returned invalid JSON for {query!r}: {error}")
+        raise HTTPException(status_code=502, detail="Lyrics provider returned invalid data") from error
+
+    raw_results = payload if isinstance(payload, list) else payload.get("data", [])
+    if not isinstance(raw_results, list):
+        raw_results = []
+
+    results: list[dict[str, Any]] = []
+    for raw_song in raw_results:
+        if not isinstance(raw_song, dict):
+            continue
+
+        normalized = normalize_lrclib_song(raw_song)
+        if not normalized["id"] or not song_has_lyrics(normalized):
+            continue
+
+        results.append(normalized)
+        cache_lrclib_song(normalized, raw_song)
+
+        if len(results) >= result_limit:
+            break
+
+    return {"results": results}
+
+
+@app.get("/songs/{song_id}")
+async def get_song(song_id: str):
+    normalized_song_id = song_id.strip() if isinstance(song_id, str) else ""
+    if not normalized_song_id:
+        raise HTTPException(status_code=404, detail="Song not found")
+
+    cached_song = get_cached_lrclib_song(normalized_song_id)
+    if cached_song and song_has_lyrics(cached_song):
+        return cached_song
+
+    try:
+        async with httpx.AsyncClient(headers=LRCLIB_HEADERS) as client:
+            response = await client.get(
+                f"{LRCLIB_BASE_URL}/get/{normalized_song_id}",
+                timeout=10.0,
+            )
+    except httpx.RequestError as error:
+        print(f"[main] LRCLIB get failed for {normalized_song_id!r}: {error}")
+        raise HTTPException(status_code=502, detail="Lyrics provider request failed") from error
+
+    if response.status_code == 404:
+        raise HTTPException(status_code=404, detail="Song lyrics not found")
+
+    if response.status_code != 200:
+        print(f"[main] LRCLIB get HTTP {response.status_code} for {normalized_song_id!r}: {response.text[:200]}")
+        raise HTTPException(status_code=502, detail="Lyrics provider request failed")
+
+    try:
+        payload = response.json()
+    except ValueError as error:
+        print(f"[main] LRCLIB get returned invalid JSON for {normalized_song_id!r}: {error}")
+        raise HTTPException(status_code=502, detail="Lyrics provider returned invalid data") from error
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=404, detail="Song lyrics not found")
+
+    normalized = normalize_lrclib_song(payload)
+    if not normalized["id"] or not song_has_lyrics(normalized):
+        raise HTTPException(status_code=404, detail="Song lyrics not found")
+
+    cache_lrclib_song(normalized, payload)
+    return normalized
 
 
 # ─── KRDICT Helper ────────────────────────────────────────────────────────────
@@ -385,6 +635,127 @@ async def search_krdict_entries(
         return []
 
 
+def get_lrclib_field(raw: dict, camel_key: str, snake_key: str, default=None):
+    if camel_key in raw:
+        return raw.get(camel_key)
+    return raw.get(snake_key, default)
+
+
+def strip_synced_lyric_timestamps(synced_lyrics: str) -> str:
+    lines = []
+    for raw_line in str(synced_lyrics or "").splitlines():
+        line = raw_line.strip()
+        while line.startswith("[") and "]" in line:
+            line = line[line.find("]") + 1:].strip()
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def count_nonempty_lyric_lines(plain_lyrics: str, synced_lyrics: str) -> int:
+    source = plain_lyrics or strip_synced_lyric_timestamps(synced_lyrics)
+    return len([line for line in str(source or "").splitlines() if line.strip()])
+
+
+def normalize_lrclib_song(raw: dict[str, Any]) -> dict[str, Any]:
+    plain_lyrics = get_lrclib_field(raw, "plainLyrics", "plain_lyrics") or ""
+    synced_lyrics = get_lrclib_field(raw, "syncedLyrics", "synced_lyrics") or ""
+    provider_id = get_lrclib_field(raw, "id", "id")
+
+    return {
+        "id": str(provider_id) if provider_id is not None else "",
+        "provider": "lrclib",
+        "title": get_lrclib_field(raw, "trackName", "track_name") or raw.get("title") or "",
+        "artist": get_lrclib_field(raw, "artistName", "artist_name") or raw.get("artist") or "",
+        "album": get_lrclib_field(raw, "albumName", "album_name") or raw.get("album") or "",
+        "duration": get_lrclib_field(raw, "duration", "duration"),
+        "instrumental": bool(get_lrclib_field(raw, "instrumental", "instrumental", False)),
+        "plainLyrics": plain_lyrics,
+        "syncedLyrics": synced_lyrics,
+        "hasSyncedLyrics": bool(synced_lyrics),
+        "linesCount": count_nonempty_lyric_lines(plain_lyrics, synced_lyrics),
+    }
+
+
+def normalize_cached_song(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": str(row["provider_id"]),
+        "provider": row["provider"],
+        "title": row["title"] or "",
+        "artist": row["artist"] or "",
+        "album": row["album"] or "",
+        "duration": row["duration"],
+        "instrumental": bool(row["instrumental"]),
+        "plainLyrics": row["plain_lyrics"] or "",
+        "syncedLyrics": row["synced_lyrics"] or "",
+        "hasSyncedLyrics": bool(row["synced_lyrics"]),
+        "linesCount": count_nonempty_lyric_lines(row["plain_lyrics"] or "", row["synced_lyrics"] or ""),
+    }
+
+
+def cache_lrclib_song(song: dict[str, Any], source_payload: dict[str, Any] | None = None):
+    if not song.get("id"):
+        return
+
+    conn = get_db_connection()
+    conn.execute(
+        """
+        INSERT INTO song_cache (
+            provider, provider_id, title, artist, album, duration, instrumental,
+            plain_lyrics, synced_lyrics, source_payload, last_updated
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(provider, provider_id) DO UPDATE SET
+            title = excluded.title,
+            artist = excluded.artist,
+            album = excluded.album,
+            duration = excluded.duration,
+            instrumental = excluded.instrumental,
+            plain_lyrics = excluded.plain_lyrics,
+            synced_lyrics = excluded.synced_lyrics,
+            source_payload = excluded.source_payload,
+            last_updated = CURRENT_TIMESTAMP
+        """,
+        [
+            "lrclib",
+            song["id"],
+            song.get("title", ""),
+            song.get("artist", ""),
+            song.get("album", ""),
+            song.get("duration"),
+            1 if song.get("instrumental") else 0,
+            song.get("plainLyrics", ""),
+            song.get("syncedLyrics", ""),
+            json.dumps(source_payload or song, ensure_ascii=False),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_cached_lrclib_song(song_id: str) -> Optional[dict[str, Any]]:
+    conn = get_db_connection()
+    row = conn.execute(
+        """
+        SELECT provider, provider_id, title, artist, album, duration, instrumental,
+               plain_lyrics, synced_lyrics
+        FROM song_cache
+        WHERE provider = ? AND provider_id = ?
+        """,
+        ["lrclib", song_id],
+    ).fetchone()
+    conn.close()
+
+    if not row:
+        return None
+
+    return normalize_cached_song(row)
+
+
+def song_has_lyrics(song: dict[str, Any]) -> bool:
+    return bool(song.get("plainLyrics") or song.get("syncedLyrics") or song.get("instrumental"))
+
+
 async def run_preprocess_pipeline(job_id: str, text: str, krdict_key: str, max_stems):
     print(f"[main] preprocess job {job_id} started")
     await update_preprocess_job(
@@ -408,9 +779,11 @@ async def run_preprocess_pipeline(job_id: str, text: str, krdict_key: str, max_s
     merged_stem_morphs = merge_noun_hada(raw_stem_morphs)
     surface_index = build_surface_index(raw_surface_morphs, raw_stem_morphs, allowed_pos)
 
+    filtered_stem_morphs = filter_lookup_morphs(merged_stem_morphs, text)
+
     stem_pos_map: dict[str, str] = {}
-    for word, pos in merged_stem_morphs:
-        if pos in allowed_pos and word not in stem_pos_map:
+    for word, pos in filtered_stem_morphs:
+        if word not in stem_pos_map:
             stem_pos_map[word] = pos
 
     unique_stems = list(stem_pos_map.keys()) if not max_stems else list(stem_pos_map.keys())[:max_stems]

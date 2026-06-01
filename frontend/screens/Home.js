@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
@@ -14,29 +14,20 @@ import {
     useWindowDimensions,
     View,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as DocumentPicker from 'expo-document-picker';
-import { Feather } from '@expo/vector-icons';
-import { IconButton, Screen } from '../components/ui';
-import { colors, fontFamilies, layout, spacing, textStyles } from '../theme';
+import { Feather, Ionicons } from '@expo/vector-icons';
+import { tabBarBaseStyle } from '../components/shared/TabBar';
+import SongReader from '../components/Songs/SongReader';
+import { IconButton, Screen, SectionHeader } from '../components/ui';
+import { colors, fontFamilies, insets, layout, radii, spacing, textStyles } from '../theme';
 import useBooks from '../hooks/useBooks';
 import { deleteBookIndexEntries } from '../services/Database';
+import { getSongLyrics, searchSongs } from '../services/api/songs';
 
 const BOOK_GRID_GAP = 18;
-
-const SONG_LIBRARY = [
-    { id: 'spring-day', title: '봄날', artist: 'BTS', lines: 32, colors: ['#c98745', '#dcc53a'] },
-    { id: 'eight', title: '에잇', artist: 'IU', lines: 28, colors: ['#cfe15a', '#49cf34'] },
-    { id: 'antifragile', title: 'Antifragile', artist: 'LE SSERAFIM', lines: 41, colors: ['#70d867', '#35d37c'] },
-    { id: 'love-lee', title: 'Love Lee', artist: 'AKMU', lines: 36, colors: ['#69d1bd', '#33b6d5'] },
-    { id: 'ditto', title: 'Ditto', artist: 'NewJeans', lines: 30, colors: ['#96d0f2', '#6793da'] },
-    { id: 'through-the-night', title: '밤편지', artist: 'IU', lines: 34, colors: ['#7074bd', '#464b9a'] },
-    { id: 'dynamite', title: 'Dynamite', artist: 'BTS', lines: 29, colors: ['#f4b55d', '#e17e44'] },
-    { id: 'hype-boy', title: 'Hype Boy', artist: 'NewJeans', lines: 33, colors: ['#f27fa1', '#c85fd0'] },
-    { id: 'palette', title: 'Palette', artist: 'IU', lines: 31, colors: ['#cda569', '#87a768'] },
-    { id: 'tomboy', title: 'Tomboy', artist: '(G)I-DLE', lines: 35, colors: ['#ec6d6d', '#b74444'] },
-    { id: 'left-right', title: 'Left Right', artist: 'XG', lines: 27, colors: ['#62a2df', '#4b68d4'] },
-    { id: 'super-shy', title: 'Super Shy', artist: 'NewJeans', lines: 26, colors: ['#7fdac8', '#4bb8f0'] },
-];
+const SONGS_STORAGE_KEY = 'manualSongs';
+const EMPTY_SONG_DRAFT = { title: '', artist: '', lyrics: '' };
 
 const BOOK_FILTERS = [
     { id: 'library', label: 'My library' },
@@ -103,6 +94,49 @@ const BOOK_COVER_PALETTES = [
 const KOREAN_TEXT_PATTERN = /[\u3131-\u318e\uac00-\ud7a3]/;
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+const countSongLines = (lyrics) => String(lyrics || '')
+    .split(/\r?\n/)
+    .filter((line) => line.trim().length > 0)
+    .length;
+const normalizeStoredSong = (song) => {
+    if (!song || typeof song !== 'object') {
+        return null;
+    }
+
+    const title = String(song.title || '').trim();
+    const lyrics = String(song.lyrics || '').trim();
+
+    if (!title || !lyrics) {
+        return null;
+    }
+
+    return {
+        id: song.id || `song-${Date.now()}`,
+        provider: String(song.provider || '').trim() || null,
+        providerId: String(song.providerId || '').trim() || null,
+        title,
+        artist: String(song.artist || '').trim() || 'Unknown artist',
+        album: String(song.album || '').trim(),
+        duration: typeof song.duration === 'number' ? song.duration : null,
+        instrumental: !!song.instrumental,
+        lyrics,
+        syncedLyrics: String(song.syncedLyrics || '').trim(),
+        lines: countSongLines(lyrics),
+        savedTerms: Array.isArray(song.savedTerms)
+            ? [...new Set(song.savedTerms.map((term) => String(term || '').trim()).filter(Boolean))]
+            : [],
+        createdAt: song.createdAt || new Date().toISOString(),
+    };
+};
+const stripSyncedLyricTimestamps = (syncedLyrics) => String(syncedLyrics || '')
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*(\[[^\]]+\]\s*)+/, '').trim())
+    .filter(Boolean)
+    .join('\n');
+const getLyricsFromApiSong = (song) => (
+    String(song?.plainLyrics || '').trim()
+    || stripSyncedLyricTimestamps(song?.syncedLyrics)
+);
 
 const getBookTitle = (book) => book?.title?.trim() || 'Untitled';
 const getBookAuthor = (book) => book?.author?.trim() || 'Unknown author';
@@ -213,8 +247,17 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const [activeBookFilter, setActiveBookFilter] = useState('library');
     const [browseCatalogId, setBrowseCatalogId] = useState(null);
     const [activeDifficulty, setActiveDifficulty] = useState('All levels');
+    const [songs, setSongs] = useState([]);
+    const [songsLoaded, setSongsLoaded] = useState(false);
     const [songQuery, setSongQuery] = useState('');
-    const [widgetEnabled, setWidgetEnabled] = useState(true);
+    const [songResults, setSongResults] = useState([]);
+    const [songSearchLoading, setSongSearchLoading] = useState(false);
+    const [songSearchError, setSongSearchError] = useState('');
+    const [openingSongId, setOpeningSongId] = useState(null);
+    const [selectedSongId, setSelectedSongId] = useState(null);
+    const [showAddSongModal, setShowAddSongModal] = useState(false);
+    const [songDraft, setSongDraft] = useState(EMPTY_SONG_DRAFT);
+    const songSearchRequestRef = useRef(0);
     const { width } = useWindowDimensions();
     const {
         isImporting,
@@ -234,8 +277,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const currentProgressPercent = Math.round(getBookProgress(currentReadingBook) * 100);
 
     const contentWidth = Math.min(
-        Math.max(width - (spacing.md * 2), 288),
-        layout.screenMaxWidth - (spacing.md * 2)
+        Math.max(width - (insets.screenHorizontal * 2), 288),
+        layout.screenMaxWidth - (insets.screenHorizontal * 2)
     );
     const bookTileWidth = Math.floor((contentWidth - (BOOK_GRID_GAP * 2)) / 3);
     const bookCoverHeight = Math.round(bookTileWidth * 1.34);
@@ -260,25 +303,128 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
         return browseCatalog.books.filter((book) => book.difficulty === activeDifficulty);
     }, [activeDifficulty, browseCatalog]);
-
+    const selectedSong = useMemo(() => (
+        songs.find((song) => song.id === selectedSongId) ?? null
+    ), [selectedSongId, songs]);
     const filteredSongs = useMemo(() => {
         const query = songQuery.trim().toLowerCase();
 
         if (!query) {
-            return SONG_LIBRARY.slice(0, 4);
+            return songs;
         }
 
-        return SONG_LIBRARY.filter((song) => (
+        return songs.filter((song) => (
             song.title.toLowerCase().includes(query)
             || song.artist.toLowerCase().includes(query)
+            || song.lyrics.toLowerCase().includes(query)
         ));
+    }, [songQuery, songs]);
+    const isSongSearchActive = songQuery.trim().length > 0;
+
+    useEffect(() => {
+        let isMounted = true;
+
+        AsyncStorage.getItem(SONGS_STORAGE_KEY)
+            .then((storedSongs) => {
+                if (!isMounted || !storedSongs) {
+                    return;
+                }
+
+                const parsedSongs = JSON.parse(storedSongs);
+                if (!Array.isArray(parsedSongs)) {
+                    return;
+                }
+
+                setSongs(parsedSongs.map(normalizeStoredSong).filter(Boolean));
+            })
+            .catch((error) => {
+                console.error('[Home] Failed to load songs:', error);
+            })
+            .finally(() => {
+                if (isMounted) {
+                    setSongsLoaded(true);
+                }
+            });
+
+        return () => {
+            isMounted = false;
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!songsLoaded) {
+            return;
+        }
+
+        AsyncStorage.setItem(SONGS_STORAGE_KEY, JSON.stringify(songs)).catch((error) => {
+            console.error('[Home] Failed to save songs:', error);
+        });
+    }, [songs, songsLoaded]);
+
+    useEffect(() => {
+        const query = songQuery.trim();
+        const requestId = songSearchRequestRef.current + 1;
+        songSearchRequestRef.current = requestId;
+
+        if (!query) {
+            setSongResults([]);
+            setSongSearchError('');
+            setSongSearchLoading(false);
+            return undefined;
+        }
+
+        setSongResults([]);
+        setSongSearchError('');
+        setSongSearchLoading(true);
+
+        const timeout = setTimeout(() => {
+            searchSongs(query)
+                .then((results) => {
+                    if (songSearchRequestRef.current !== requestId) {
+                        return;
+                    }
+
+                    setSongResults(results);
+                    setSongSearchError('');
+                })
+                .catch((error) => {
+                    if (songSearchRequestRef.current !== requestId) {
+                        return;
+                    }
+
+                    console.error('[Home] Song search failed:', error);
+                    setSongResults([]);
+                    setSongSearchError(error.message || 'Song search failed');
+                })
+                .finally(() => {
+                    if (songSearchRequestRef.current === requestId) {
+                        setSongSearchLoading(false);
+                    }
+                });
+        }, 300);
+
+        return () => clearTimeout(timeout);
     }, [songQuery]);
 
     useEffect(() => {
+        if (selectedSongId && !selectedSong) {
+            setSelectedSongId(null);
+        }
+    }, [selectedSong, selectedSongId]);
+
+    useEffect(() => {
+        const shouldHideTabBar = !!browseCatalog || !!selectedSong;
+
         navigation?.setOptions({
-            tabBarStyle: browseCatalog ? { display: 'none' } : undefined,
+            tabBarStyle: shouldHideTabBar ? { display: 'none' } : tabBarBaseStyle,
         });
-    }, [browseCatalog, navigation]);
+
+        return () => {
+            navigation?.setOptions({
+                tabBarStyle: tabBarBaseStyle,
+            });
+        };
+    }, [browseCatalog, navigation, selectedSong]);
 
     const updateBookRecord = useCallback((uri, patch) => {
         setBooks((prevBooks) => prevBooks.map((book) => (
@@ -370,8 +516,95 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     }, [editBook, editDraft.author, editDraft.cover, editDraft.title, updateBookRecord]);
 
     const handleAddSong = useCallback(() => {
-        Alert.alert('Add song', 'Song importing is not wired up yet.');
+        setSongDraft(EMPTY_SONG_DRAFT);
+        setShowAddSongModal(true);
     }, []);
+
+    const handleCancelSongAdd = useCallback(() => {
+        setShowAddSongModal(false);
+        setSongDraft(EMPTY_SONG_DRAFT);
+    }, []);
+
+    const handleSubmitSong = useCallback(() => {
+        const title = songDraft.title.trim();
+        const artist = songDraft.artist.trim() || 'Unknown artist';
+        const lyrics = songDraft.lyrics.trim();
+
+        if (!title || !lyrics) {
+            Alert.alert('Missing song details', 'Add a title and lyrics before submitting.');
+            return;
+        }
+
+        const nextSong = {
+            id: `song-${Date.now()}`,
+            title,
+            artist,
+            lyrics,
+            lines: countSongLines(lyrics),
+            savedTerms: [],
+            createdAt: new Date().toISOString(),
+        };
+
+        setSongs((previous) => [nextSong, ...previous]);
+        setShowAddSongModal(false);
+        setSongDraft(EMPTY_SONG_DRAFT);
+        setActiveLibraryTab('Songs');
+    }, [songDraft.artist, songDraft.lyrics, songDraft.title]);
+
+    const handleSongResultPress = useCallback(async (songResult) => {
+        if (!songResult?.id || openingSongId) {
+            return;
+        }
+
+        setOpeningSongId(songResult.id);
+        setSongSearchError('');
+
+        try {
+            const fullSong = await getSongLyrics(songResult.id);
+            const lyrics = getLyricsFromApiSong(fullSong)
+                || (fullSong.instrumental ? 'Instrumental' : '');
+
+            if (!lyrics) {
+                setSongSearchError('No lyrics were available for that result.');
+                return;
+            }
+
+            const provider = fullSong.provider || songResult.provider || 'lrclib';
+            const providerId = String(fullSong.id || songResult.id);
+            const localSong = {
+                id: `${provider}:${providerId}`,
+                provider,
+                providerId,
+                title: fullSong.title || songResult.title || 'Untitled song',
+                artist: fullSong.artist || songResult.artist || 'Unknown artist',
+                album: fullSong.album || songResult.album || '',
+                duration: typeof fullSong.duration === 'number' ? fullSong.duration : null,
+                instrumental: !!fullSong.instrumental,
+                lyrics,
+                syncedLyrics: fullSong.syncedLyrics || '',
+                lines: fullSong.linesCount || countSongLines(lyrics),
+                savedTerms: [],
+                createdAt: new Date().toISOString(),
+            };
+
+            setSongs((previous) => {
+                const alreadySaved = previous.some((song) => (
+                    song.id === localSong.id
+                    || (song.provider === provider && song.providerId === providerId)
+                ));
+
+                return alreadySaved ? previous : [localSong, ...previous];
+            });
+            setSongQuery('');
+            setSongResults([]);
+            setSongSearchError('');
+        } catch (error) {
+            console.error('[Home] Failed to add song result:', error);
+            setSongSearchError(error.message || 'Could not load lyrics for that song.');
+        } finally {
+            setOpeningSongId(null);
+        }
+    }, [openingSongId]);
 
     const openBrowseCatalog = useCallback((catalogId) => {
         setBrowseCatalogId(catalogId);
@@ -389,9 +622,25 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         );
     }, []);
 
+    if (selectedSong) {
+        return (
+            <SongReader
+                song={selectedSong}
+                onClose={() => setSelectedSongId(null)}
+                onSavedTermsChange={(savedTerms) => {
+                    setSongs((previous) => previous.map((song) => (
+                        song.id === selectedSong.id
+                            ? { ...song, savedTerms }
+                            : song
+                    )));
+                }}
+            />
+        );
+    }
+
     if (browseCatalog) {
         return (
-            <Screen scroll backgroundColor="#fbf7ef" contentContainerStyle={styles.browseScreenContent}>
+            <Screen scroll contentContainerStyle={styles.browseScreenContent}>
                 <View style={styles.browseTopBar}>
                     <TouchableOpacity
                         activeOpacity={0.78}
@@ -483,143 +732,137 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     }
 
     return (
-        <Screen scroll backgroundColor="#fbf7ef" contentContainerStyle={styles.screenContent}>
-            <View style={styles.headerRow}>
-                <Text
-                    style={styles.brandTitle}
-                    numberOfLines={1}
-                    adjustsFontSizeToFit
-                    minimumFontScale={0.82}
-                >
-                    Fluent<Text style={styles.brandTitleAccent}>Fable</Text>
-                </Text>
+        <Screen scroll contentContainerStyle={styles.screenContent}>
+            <View style={styles.stack}>
+                <SectionHeader
+                    eyebrow="Home"
+                    title="Read stories. Collect the words that matter."
+                    subtitle="Reading gives new words context, so every saved word connects back to a story you understand."
+                />
 
-                <Pressable
-                    accessibilityRole="switch"
-                    accessibilityState={{ checked: widgetEnabled }}
-                    onPress={() => setWidgetEnabled((enabled) => !enabled)}
-                    style={({ pressed }) => [
-                        styles.widgetPill,
-                        pressed && styles.pressed,
-                    ]}
-                >
-                    <Text style={styles.widgetText} numberOfLines={1}>
-                        Widget
-                    </Text>
-                    <View style={[styles.widgetSwitch, widgetEnabled && styles.widgetSwitchOn]}>
-                        <View style={[styles.widgetKnob, widgetEnabled && styles.widgetKnobOn]} />
-                    </View>
-                </Pressable>
-            </View>
+                {currentReadingBook ? (
+                    <Pressable
+                        onPress={() => handlePress(currentReadingBook.uri)}
+                        style={({ pressed }) => [pressed && styles.pressed]}
+                    >
+                        <View style={styles.continueCard}>
+                            <BookCover
+                                book={currentReadingBook}
+                                width={36}
+                                height={50}
+                                index={0}
+                                style={styles.continueCover}
+                                titleStyle={styles.continueCoverText}
+                            />
 
-            {currentReadingBook ? (
-                <Pressable
-                    onPress={() => handlePress(currentReadingBook.uri)}
-                    style={({ pressed }) => [pressed && styles.pressed]}
-                >
-                    <View style={styles.continueCard}>
-                        <BookCover
-                            book={currentReadingBook}
-                            width={42}
-                            height={60}
-                            index={0}
-                            style={styles.continueCover}
-                            titleStyle={styles.continueCoverText}
-                        />
+                            <View style={styles.continueCopy}>
+                                <Text style={styles.continueEyebrow}>CONTINUE · {currentProgressPercent}%</Text>
+                                <View style={styles.continueMetaRow}>
+                                    <Text
+                                        style={[
+                                            styles.continueTitle,
+                                            getSerifFontForText(getBookTitle(currentReadingBook)),
+                                        ]}
+                                        numberOfLines={1}
+                                    >
+                                        {getBookTitle(currentReadingBook)}
+                                    </Text>
+                                    <Text style={styles.continueDivider}>·</Text>
+                                    <Text
+                                        style={[
+                                            styles.continueAuthor,
+                                            hasKoreanText(getBookAuthor(currentReadingBook)) && styles.koreanInlineText,
+                                        ]}
+                                        numberOfLines={1}
+                                    >
+                                        {getBookAuthor(currentReadingBook)}
+                                    </Text>
+                                </View>
+                            </View>
 
-                        <View style={styles.continueCopy}>
-                            <Text style={styles.continueEyebrow}>CONTINUE · {currentProgressPercent}%</Text>
-                            <View style={styles.continueMetaRow}>
-                                <Text
-                                    style={[
-                                        styles.continueTitle,
-                                        getSerifFontForText(getBookTitle(currentReadingBook)),
-                                    ]}
-                                    numberOfLines={1}
-                                >
-                                    {getBookTitle(currentReadingBook)}
-                                </Text>
-                                <Text style={styles.continueDivider}>·</Text>
-                                <Text
-                                    style={[
-                                        styles.continueAuthor,
-                                        hasKoreanText(getBookAuthor(currentReadingBook)) && styles.koreanInlineText,
-                                    ]}
-                                    numberOfLines={1}
-                                >
-                                    {getBookAuthor(currentReadingBook)}
-                                </Text>
+                            <View style={styles.continuePlayButton}>
+                                <Ionicons name="play" size={18} color={colors.white} />
                             </View>
                         </View>
-
-                        <View style={styles.continuePlayButton}>
-                            <Feather name="play" size={17} color={colors.white} />
-                        </View>
-                    </View>
-                </Pressable>
-            ) : (
-                <TouchableOpacity
-                    activeOpacity={0.88}
-                    onPress={confirmAddBook}
-                    style={styles.emptyContinueCard}
-                >
-                    {isImporting ? (
-                        <ActivityIndicator size="small" color={colors.accentStrong} />
-                    ) : (
-                        <Feather name="plus" size={24} color={colors.accentStrong} />
-                    )}
-                    <Text style={styles.emptyContinueTitle}>
-                        Import your first book
-                    </Text>
-                </TouchableOpacity>
-            )}
-
-            <View style={styles.libraryHeader}>
-                <View style={styles.libraryTabs}>
-                    <TouchableOpacity
-                        activeOpacity={0.82}
-                        onPress={() => setActiveLibraryTab('Books')}
-                        style={styles.libraryTab}
-                    >
-                        <View style={styles.libraryTabLabelRow}>
-                            <Text style={[
-                                styles.libraryTabText,
-                                activeLibraryTab === 'Books' && styles.libraryTabTextActive,
-                            ]}>
-                                Books
-                            </Text>
-                        </View>
-                        {activeLibraryTab === 'Books' ? <View style={styles.libraryTabUnderline} /> : null}
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                        activeOpacity={0.82}
-                        onPress={() => setActiveLibraryTab('Songs')}
-                        style={styles.libraryTab}
-                    >
-                        <View style={styles.libraryTabLabelRow}>
-                            <Text style={[
-                                styles.libraryTabText,
-                                activeLibraryTab === 'Songs' && styles.libraryTabTextActive,
-                            ]}>
-                                Songs
-                            </Text>
-                        </View>
-                        {activeLibraryTab === 'Songs' ? <View style={styles.libraryTabUnderline} /> : null}
-                    </TouchableOpacity>
-                </View>
-
-                {activeLibraryTab === 'Songs' ? (
+                    </Pressable>
+                ) : (
                     <TouchableOpacity
                         activeOpacity={0.88}
-                        onPress={handleAddSong}
-                        style={styles.libraryAction}
+                        onPress={confirmAddBook}
+                        style={styles.emptyContinueCard}
                     >
-                        <Feather name="plus" size={16} color={colors.accentStrong} />
-                        <Text style={styles.libraryActionText}>Add song</Text>
+                        {isImporting ? (
+                            <ActivityIndicator size="small" color={colors.accentStrong} />
+                        ) : (
+                            <Feather name="plus" size={24} color={colors.accentStrong} />
+                        )}
+                        <Text style={styles.emptyContinueTitle}>
+                            Import your first book
+                        </Text>
                     </TouchableOpacity>
-                ) : null}
-            </View>
+                )}
+
+                <TouchableOpacity
+                    activeOpacity={0.86}
+                    onPress={() => navigation?.navigate('ScreenshotOcr')}
+                    style={styles.ocrToolButton}
+                >
+                    <View style={styles.ocrToolIcon}>
+                        <Ionicons name="scan-outline" size={19} color={colors.accentStrong} />
+                    </View>
+                    <View style={styles.ocrToolCopy}>
+                        <Text style={styles.ocrToolTitle}>Screenshot OCR</Text>
+                        <Text style={styles.ocrToolMeta}>Korean image lookup lab</Text>
+                    </View>
+                    <Feather name="chevron-right" size={20} color={colors.textSubtle} />
+                </TouchableOpacity>
+
+                <View style={styles.libraryHeader}>
+                    <View style={styles.libraryTabs}>
+                        <TouchableOpacity
+                            activeOpacity={0.82}
+                            onPress={() => setActiveLibraryTab('Books')}
+                            style={styles.libraryTab}
+                        >
+                            <View style={styles.libraryTabLabelRow}>
+                                <Text style={[
+                                    styles.libraryTabText,
+                                    activeLibraryTab === 'Books' && styles.libraryTabTextActive,
+                                ]}>
+                                    Books
+                                </Text>
+                            </View>
+                            {activeLibraryTab === 'Books' ? <View style={styles.libraryTabUnderline} /> : null}
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                            activeOpacity={0.82}
+                            onPress={() => setActiveLibraryTab('Songs')}
+                            style={styles.libraryTab}
+                        >
+                            <View style={styles.libraryTabLabelRow}>
+                                <Text style={[
+                                    styles.libraryTabText,
+                                    activeLibraryTab === 'Songs' && styles.libraryTabTextActive,
+                                ]}>
+                                    Songs
+                                </Text>
+                            </View>
+                            {activeLibraryTab === 'Songs' ? <View style={styles.libraryTabUnderline} /> : null}
+                        </TouchableOpacity>
+                    </View>
+
+                    {activeLibraryTab === 'Songs' ? (
+                        <TouchableOpacity
+                            activeOpacity={0.88}
+                            onPress={handleAddSong}
+                            style={styles.libraryAction}
+                        >
+                            <Feather name="plus" size={16} color={colors.accentStrong} />
+                            <Text style={styles.libraryActionText}>Add song manually</Text>
+                        </TouchableOpacity>
+                    ) : null}
+                </View>
 
             {activeLibraryTab === 'Books' ? (
                 <View style={styles.booksSection}>
@@ -797,69 +1040,153 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 </View>
             ) : (
                 <View style={styles.songsPanel}>
-                    <View style={styles.searchBox}>
-                        <Feather name="search" size={19} color={colors.textSubtle} />
-                        <TextInput
-                            value={songQuery}
-                            onChangeText={setSongQuery}
-                            style={styles.searchInput}
-                            placeholder="Search title, artist, or lyric..."
-                            placeholderTextColor={colors.textSubtle}
-                            returnKeyType="search"
-                        />
-                    </View>
-
-                    <View style={styles.songList}>
-                        {filteredSongs.length > 0 ? (
-                            filteredSongs.map((song, index) => (
-                                <Pressable
-                                    key={song.id}
-                                    onPress={() => Alert.alert(song.title, 'Song reading is not wired up yet.')}
-                                    style={({ pressed }) => [
-                                        styles.songRow,
-                                        index === filteredSongs.length - 1 && styles.songRowLast,
-                                        pressed && styles.songRowPressed,
-                                    ]}
+                    <View style={styles.songSearchGroup}>
+                        <View style={[
+                            styles.searchBox,
+                            isSongSearchActive && styles.searchBoxConnected,
+                        ]}>
+                            <Feather name="search" size={17} color={colors.textSubtle} />
+                            <TextInput
+                                value={songQuery}
+                                onChangeText={setSongQuery}
+                                style={styles.searchInput}
+                                placeholder="Search title or artist..."
+                                placeholderTextColor={colors.textSubtle}
+                                returnKeyType="search"
+                            />
+                            {songQuery ? (
+                                <TouchableOpacity
+                                    accessibilityRole="button"
+                                    accessibilityLabel="Clear song search"
+                                    activeOpacity={0.72}
+                                    onPress={() => setSongQuery('')}
+                                    style={styles.searchClearButton}
                                 >
-                                    <View style={[
-                                        styles.songIcon,
-                                        { backgroundColor: song.colors[0] },
-                                    ]}>
-                                        <View style={[styles.songIconAccent, { backgroundColor: song.colors[1] }]} />
-                                        <Feather name="music" size={22} color={colors.white} />
+                                    <Feather name="x" size={15} color={colors.textSubtle} />
+                                </TouchableOpacity>
+                            ) : null}
+                        </View>
+
+                        {isSongSearchActive ? (
+                            <View style={styles.songResultsPanel}>
+                                {songSearchLoading ? (
+                                    <View style={styles.songSearchState}>
+                                        <ActivityIndicator size="small" color={colors.accentStrong} />
+                                        <Text style={styles.songSearchStateText}>Searching songs...</Text>
                                     </View>
-                                    <View style={styles.songCopy}>
-                                        <Text
-                                            style={[
-                                                styles.songTitle,
-                                                getSerifFontForText(song.title),
+                                ) : null}
+
+                                {songSearchError ? (
+                                    <View style={styles.songSearchState}>
+                                        <Text style={styles.songSearchError}>{songSearchError}</Text>
+                                    </View>
+                                ) : null}
+
+                                {!songSearchLoading && !songSearchError && songResults.length === 0 ? (
+                                    <View style={styles.songSearchState}>
+                                        <Text style={styles.songSearchStateText}>No lyric results yet</Text>
+                                    </View>
+                                ) : null}
+
+                                {songResults.map((result, index) => {
+                                    const isOpening = openingSongId === result.id;
+
+                                    return (
+                                        <Pressable
+                                            key={`${result.provider}-${result.id}`}
+                                            disabled={!!openingSongId}
+                                            onPress={() => handleSongResultPress(result)}
+                                            style={({ pressed }) => [
+                                                styles.songResultRow,
+                                                index === songResults.length - 1 && styles.songRowLast,
+                                                pressed && styles.songRowPressed,
+                                                isOpening && styles.songResultRowDisabled,
                                             ]}
-                                            numberOfLines={1}
                                         >
-                                            {song.title}
-                                        </Text>
-                                        <Text style={styles.songMeta} numberOfLines={1}>
-                                            {song.artist} · {song.lines} lines
-                                        </Text>
-                                    </View>
-                                    <Feather name="chevron-right" size={23} color={colors.textSubtle} />
-                                </Pressable>
-                            ))
-                        ) : (
-                            <View style={styles.emptySongs}>
-                                <Text style={styles.emptySongsText}>No songs found</Text>
+                                            <View style={styles.songCopy}>
+                                                <Text
+                                                    style={[
+                                                        styles.songResultTitle,
+                                                        getSerifFontForText(result.title),
+                                                    ]}
+                                                    numberOfLines={1}
+                                                >
+                                                    {result.title || 'Untitled song'}
+                                                </Text>
+                                                <Text style={styles.songResultMeta} numberOfLines={1}>
+                                                    {[result.artist, result.album].filter(Boolean).join(' · ') || 'Unknown artist'}
+                                                </Text>
+                                            </View>
+                                            {isOpening ? (
+                                                <ActivityIndicator size="small" color={colors.accentStrong} />
+                                            ) : null}
+                                        </Pressable>
+                                    );
+                                })}
                             </View>
-                        )}
+                        ) : null}
                     </View>
+
+                    {!isSongSearchActive && songsLoaded && songs.length === 0 ? (
+                        <View style={styles.emptySongsPanel}>
+                            <Feather name="music" size={24} color={colors.accentStrong} />
+                            <Text style={styles.emptySongsTitle}>Add songs you like</Text>
+                            <Text style={styles.emptySongsCopy}>
+                                Save lyrics here so you can tap words, look them up, and keep the ones you want to remember.
+                            </Text>
+                        </View>
+                    ) : !isSongSearchActive ? (
+                        <View style={styles.songList}>
+                            {!songsLoaded ? (
+                                <View style={styles.emptySongs}>
+                                    <ActivityIndicator size="small" color={colors.accentStrong} />
+                                    <Text style={styles.emptySongsText}>Loading songs...</Text>
+                                </View>
+                            ) : (
+                                filteredSongs.length > 0 ? filteredSongs.map((song, index) => (
+                                    <Pressable
+                                        key={song.id}
+                                        onPress={() => setSelectedSongId(song.id)}
+                                        style={({ pressed }) => [
+                                            styles.songRow,
+                                            index === filteredSongs.length - 1 && styles.songRowLast,
+                                            pressed && styles.songRowPressed,
+                                        ]}
+                                    >
+                                        <View style={styles.songCopy}>
+                                            <Text
+                                                style={[
+                                                    styles.songTitle,
+                                                    getSerifFontForText(song.title),
+                                                ]}
+                                                numberOfLines={1}
+                                            >
+                                                {song.title}
+                                            </Text>
+                                            <Text style={styles.songMeta} numberOfLines={1}>
+                                                {song.artist}
+                                            </Text>
+                                        </View>
+                                        <Feather name="chevron-right" size={23} color={colors.textSubtle} />
+                                    </Pressable>
+                                )) : (
+                                    <View style={styles.emptySongs}>
+                                        <Text style={styles.emptySongsText}>No matching songs</Text>
+                                    </View>
+                                )
+                            )}
+                        </View>
+                    ) : null}
                 </View>
             )}
 
-            {!!openingBookUri && (
-                <View style={styles.loadingOverlay}>
-                    <ActivityIndicator size="small" color={colors.accentStrong} />
-                    <Text style={styles.loadingText}>Opening book...</Text>
-                </View>
-            )}
+                {!!openingBookUri && (
+                    <View style={styles.loadingOverlay}>
+                        <ActivityIndicator size="small" color={colors.accentStrong} />
+                        <Text style={styles.loadingText}>Opening book...</Text>
+                    </View>
+                )}
+            </View>
 
             <Modal visible={!!editBook} animationType="fade" transparent onRequestClose={() => setEditBook(null)}>
                 <TouchableWithoutFeedback onPress={() => setEditBook(null)}>
@@ -920,16 +1247,80 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     </View>
                 </TouchableWithoutFeedback>
             </Modal>
+
+            <Modal visible={showAddSongModal} animationType="fade" transparent onRequestClose={handleCancelSongAdd}>
+                <TouchableWithoutFeedback onPress={handleCancelSongAdd}>
+                    <View style={styles.modalBackdrop}>
+                        <TouchableWithoutFeedback>
+                            <View style={styles.songModal}>
+                                <Text style={styles.editTitle}>Add song manually</Text>
+
+                                <ScrollView
+                                    style={styles.songModalScroll}
+                                    contentContainerStyle={styles.songModalContent}
+                                    showsVerticalScrollIndicator={false}
+                                    keyboardShouldPersistTaps="handled"
+                                >
+                                    <Text style={styles.editLabel}>Title</Text>
+                                    <TextInput
+                                        value={songDraft.title}
+                                        onChangeText={(title) => setSongDraft((prev) => ({ ...prev, title }))}
+                                        style={styles.editInput}
+                                        placeholder="Song title"
+                                        placeholderTextColor={colors.textSubtle}
+                                    />
+
+                                    <Text style={styles.editLabel}>Artist</Text>
+                                    <TextInput
+                                        value={songDraft.artist}
+                                        onChangeText={(artist) => setSongDraft((prev) => ({ ...prev, artist }))}
+                                        style={styles.editInput}
+                                        placeholder="Artist"
+                                        placeholderTextColor={colors.textSubtle}
+                                    />
+
+                                    <Text style={styles.editLabel}>Lyrics</Text>
+                                    <TextInput
+                                        value={songDraft.lyrics}
+                                        onChangeText={(lyrics) => setSongDraft((prev) => ({ ...prev, lyrics }))}
+                                        style={[styles.editInput, styles.lyricsInput]}
+                                        placeholder="Paste lyrics here"
+                                        placeholderTextColor={colors.textSubtle}
+                                        multiline
+                                        textAlignVertical="top"
+                                    />
+                                </ScrollView>
+
+                                <View style={styles.songModalActions}>
+                                    <TouchableOpacity
+                                        activeOpacity={0.84}
+                                        onPress={handleCancelSongAdd}
+                                        style={[styles.songModalButton, styles.songModalButtonSecondary]}
+                                    >
+                                        <Text style={styles.songModalButtonSecondaryText}>Cancel</Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        activeOpacity={0.84}
+                                        onPress={handleSubmitSong}
+                                        style={[styles.songModalButton, styles.songModalButtonPrimary]}
+                                    >
+                                        <Text style={styles.songModalButtonPrimaryText}>Submit</Text>
+                                    </TouchableOpacity>
+                                </View>
+                            </View>
+                        </TouchableWithoutFeedback>
+                    </View>
+                </TouchableWithoutFeedback>
+            </Modal>
         </Screen>
     );
 };
 
 const styles = StyleSheet.create({
     screenContent: {
-        flexGrow: 1,
-        paddingHorizontal: spacing.md,
-        paddingTop: 0,
-        paddingBottom: spacing.xxxl,
+        paddingBottom: spacing.xl * 2,
+    },
+    stack: {
         gap: spacing.lg,
     },
     browseScreenContent: {
@@ -1082,78 +1473,15 @@ const styles = StyleSheet.create({
         lineHeight: 20,
         letterSpacing: 0,
     },
-    headerRow: {
-        minHeight: 48,
-        flexDirection: 'row',
-        alignItems: 'flex-end',
-        justifyContent: 'space-between',
-        gap: spacing.sm,
-    },
-    brandTitle: {
-        flex: 1,
-        fontFamily: fontFamilies.displayBold,
-        fontSize: 36,
-        lineHeight: 46,
-        color: colors.text,
-        includeFontPadding: true,
-        letterSpacing: 0,
-    },
-    brandTitleAccent: {
-        fontFamily: fontFamilies.displayBold,
-        color: '#9b5f00',
-    },
-    widgetPill: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 7,
-        width: 112,
-        height: 36,
-        paddingLeft: spacing.sm,
-        paddingRight: 6,
-        borderRadius: 999,
-        borderWidth: 1,
-        borderColor: '#e6d7bf',
-        backgroundColor: colors.surfaceElevated,
-    },
-    widgetText: {
-        ...textStyles.sectionTitle,
-        flex: 1,
-        fontSize: 12,
-        lineHeight: 15,
-        color: colors.textMuted,
-        letterSpacing: 0,
-    },
-    widgetSwitch: {
-        width: 42,
-        height: 24,
-        borderRadius: 999,
-        padding: 3,
-        alignItems: 'flex-start',
-        justifyContent: 'center',
-        backgroundColor: '#dfd5c5',
-    },
-    widgetSwitchOn: {
-        alignItems: 'flex-end',
-        backgroundColor: colors.accent,
-    },
-    widgetKnob: {
-        width: 18,
-        height: 18,
-        borderRadius: 9,
-        backgroundColor: colors.white,
-    },
-    widgetKnobOn: {
-        backgroundColor: colors.white,
-    },
     continueCard: {
-        minHeight: 80,
+        minHeight: 68,
         flexDirection: 'row',
         alignItems: 'center',
-        gap: spacing.sm,
-        paddingVertical: spacing.xs,
+        gap: 10,
+        paddingVertical: 6,
         paddingLeft: spacing.sm,
         paddingRight: spacing.xs,
-        borderRadius: 18,
+        borderRadius: 16,
         borderWidth: 1,
         borderColor: '#eadfcb',
         backgroundColor: '#fffaf2',
@@ -1163,8 +1491,8 @@ const styles = StyleSheet.create({
         borderRadius: 5,
     },
     continueCoverText: {
-        fontSize: 8,
-        lineHeight: 10,
+        fontSize: 7,
+        lineHeight: 9,
     },
     continueCopy: {
         flex: 1,
@@ -1173,10 +1501,10 @@ const styles = StyleSheet.create({
     },
     continueEyebrow: {
         ...textStyles.eyebrow,
-        fontSize: 11,
-        lineHeight: 15,
+        fontSize: 9,
+        lineHeight: 12,
         color: colors.accent,
-        letterSpacing: 2.4,
+        letterSpacing: 2,
     },
     continueMetaRow: {
         flexDirection: 'row',
@@ -1188,32 +1516,32 @@ const styles = StyleSheet.create({
         fontFamily: fontFamilies.serifBold,
         flexShrink: 1,
         maxWidth: '54%',
-        fontSize: 17,
-        lineHeight: 22,
+        fontSize: 15,
+        lineHeight: 19,
         color: colors.text,
         letterSpacing: 0,
     },
     continueDivider: {
         ...textStyles.body,
-        fontSize: 15,
-        lineHeight: 19,
+        fontSize: 13,
+        lineHeight: 17,
         color: colors.textSubtle,
     },
     continueAuthor: {
         ...textStyles.body,
         flex: 1,
         minWidth: 0,
-        fontSize: 16,
-        lineHeight: 21,
+        fontSize: 14,
+        lineHeight: 18,
         color: colors.textSubtle,
     },
     koreanInlineText: {
         fontFamily: fontFamilies.krSerifMedium,
     },
     continuePlayButton: {
-        width: 38,
-        height: 38,
-        borderRadius: 19,
+        width: 34,
+        height: 34,
+        borderRadius: 17,
         alignItems: 'center',
         justifyContent: 'center',
         backgroundColor: colors.accent,
@@ -1235,12 +1563,49 @@ const styles = StyleSheet.create({
         color: colors.accentStrong,
         letterSpacing: 0,
     },
+    ocrToolButton: {
+        minHeight: 62,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: spacing.sm,
+        paddingHorizontal: spacing.md,
+        paddingVertical: spacing.sm,
+        borderWidth: 1,
+        borderColor: colors.border,
+        borderRadius: radii.xs,
+        backgroundColor: colors.surfaceElevated,
+    },
+    ocrToolIcon: {
+        width: 38,
+        height: 38,
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: radii.xs,
+        backgroundColor: colors.accentSoft,
+    },
+    ocrToolCopy: {
+        flex: 1,
+        minWidth: 0,
+    },
+    ocrToolTitle: {
+        ...textStyles.sectionTitle,
+        fontSize: 16,
+        lineHeight: 21,
+        color: colors.text,
+        letterSpacing: 0,
+    },
+    ocrToolMeta: {
+        ...textStyles.caption,
+        color: colors.textMuted,
+        letterSpacing: 0,
+    },
     libraryHeader: {
         flexDirection: 'row',
         alignItems: 'flex-start',
         justifyContent: 'space-between',
         gap: spacing.md,
-        paddingTop: spacing.md,
+        marginTop: -spacing.md,
+        paddingTop: 0,
         overflow: 'visible',
     },
     libraryTabs: {
@@ -1251,15 +1616,15 @@ const styles = StyleSheet.create({
         overflow: 'visible',
     },
     libraryTab: {
-        minHeight: 62,
-        paddingTop: 8,
+        minHeight: 56,
+        paddingTop: 6,
         justifyContent: 'flex-start',
         overflow: 'visible',
     },
     libraryTabLabelRow: {
         flexDirection: 'row',
         alignItems: 'flex-end',
-        paddingTop: 8,
+        paddingTop: 7,
         paddingBottom: 2,
         overflow: 'visible',
     },
@@ -1519,24 +1884,83 @@ const styles = StyleSheet.create({
         gap: spacing.md,
         marginTop: -spacing.xs,
     },
+    songSearchGroup: {
+        overflow: 'hidden',
+        borderRadius: 15,
+    },
     searchBox: {
-        height: 50,
+        height: 46,
         flexDirection: 'row',
         alignItems: 'center',
-        gap: spacing.sm,
+        gap: spacing.xs,
         paddingHorizontal: spacing.md,
         borderRadius: 15,
         borderWidth: 1,
         borderColor: '#e6d7bf',
         backgroundColor: colors.surfaceElevated,
     },
+    searchBoxConnected: {
+        borderBottomLeftRadius: 0,
+        borderBottomRightRadius: 0,
+    },
     searchInput: {
         flex: 1,
         height: '100%',
         padding: 0,
         ...textStyles.body,
-        fontSize: 14,
+        fontSize: 13,
         color: colors.text,
+    },
+    searchClearButton: {
+        width: 26,
+        height: 26,
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: 13,
+        backgroundColor: '#f4ede2',
+    },
+    songResultsPanel: {
+        borderWidth: 1,
+        borderTopWidth: 0,
+        borderColor: '#e6d7bf',
+        borderTopLeftRadius: 0,
+        borderTopRightRadius: 0,
+        borderBottomLeftRadius: 15,
+        borderBottomRightRadius: 15,
+        backgroundColor: colors.surfaceElevated,
+        overflow: 'hidden',
+    },
+    songResultRow: {
+        minHeight: 56,
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: spacing.sm,
+        paddingVertical: 7,
+        borderBottomWidth: 1,
+        borderBottomColor: '#eadcc6',
+    },
+    songResultRowDisabled: {
+        opacity: 0.64,
+    },
+    songSearchState: {
+        minHeight: 52,
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: spacing.xs,
+        paddingHorizontal: spacing.sm,
+    },
+    songSearchStateText: {
+        ...textStyles.caption,
+        fontSize: 12,
+        lineHeight: 16,
+        color: colors.textSubtle,
+    },
+    songSearchError: {
+        ...textStyles.body,
+        textAlign: 'center',
+        fontSize: 12,
+        lineHeight: 17,
+        color: colors.danger,
     },
     songList: {
         borderWidth: 1,
@@ -1546,10 +1970,9 @@ const styles = StyleSheet.create({
         overflow: 'hidden',
     },
     songRow: {
-        minHeight: 83,
+        minHeight: 72,
         flexDirection: 'row',
         alignItems: 'center',
-        gap: spacing.md,
         paddingHorizontal: spacing.md,
         borderBottomWidth: 1,
         borderBottomColor: '#eadcc6',
@@ -1560,26 +1983,10 @@ const styles = StyleSheet.create({
     songRowPressed: {
         backgroundColor: '#fff8eb',
     },
-    songIcon: {
-        width: 52,
-        height: 52,
-        borderRadius: 8,
-        alignItems: 'center',
-        justifyContent: 'center',
-        overflow: 'hidden',
-    },
-    songIconAccent: {
-        position: 'absolute',
-        width: 54,
-        height: 54,
-        right: -24,
-        bottom: -18,
-        borderRadius: 999,
-        opacity: 0.9,
-    },
     songCopy: {
         flex: 1,
         minWidth: 0,
+        paddingRight: spacing.sm,
     },
     songTitle: {
         fontFamily: fontFamilies.serifBold,
@@ -1594,13 +2001,56 @@ const styles = StyleSheet.create({
         lineHeight: 17,
         color: colors.textSubtle,
     },
+    songResultTitle: {
+        fontFamily: fontFamilies.serifBold,
+        fontSize: 14,
+        lineHeight: 18,
+        color: colors.text,
+        letterSpacing: 0,
+    },
+    songResultMeta: {
+        ...textStyles.body,
+        fontSize: 11,
+        lineHeight: 15,
+        color: colors.textSubtle,
+    },
     emptySongs: {
         minHeight: 100,
         alignItems: 'center',
         justifyContent: 'center',
+        gap: spacing.sm,
     },
     emptySongsText: {
         ...textStyles.bodyMuted,
+    },
+    emptySongsPanel: {
+        minHeight: 188,
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: spacing.sm,
+        paddingHorizontal: spacing.xl,
+        paddingVertical: spacing.xl,
+        borderRadius: 18,
+        borderWidth: 1,
+        borderStyle: 'dashed',
+        borderColor: '#e6d7bf',
+        backgroundColor: '#fffaf2',
+    },
+    emptySongsTitle: {
+        fontFamily: fontFamilies.serifBold,
+        fontSize: 24,
+        lineHeight: 30,
+        textAlign: 'center',
+        color: colors.text,
+        letterSpacing: 0,
+    },
+    emptySongsCopy: {
+        ...textStyles.body,
+        maxWidth: 330,
+        textAlign: 'center',
+        fontSize: 15,
+        lineHeight: 22,
+        color: colors.textMuted,
     },
     loadingOverlay: {
         position: 'absolute',
@@ -1630,6 +2080,20 @@ const styles = StyleSheet.create({
         padding: spacing.xl,
         gap: spacing.md,
     },
+    songModal: {
+        maxHeight: '82%',
+        backgroundColor: colors.surfaceElevated,
+        borderRadius: 28,
+        padding: spacing.xl,
+        gap: spacing.md,
+    },
+    songModalScroll: {
+        maxHeight: 460,
+    },
+    songModalContent: {
+        gap: spacing.sm,
+        paddingBottom: spacing.xs,
+    },
     editTitle: {
         ...textStyles.title,
     },
@@ -1646,6 +2110,10 @@ const styles = StyleSheet.create({
         color: colors.text,
         backgroundColor: colors.surface,
         ...textStyles.body,
+    },
+    lyricsInput: {
+        minHeight: 190,
+        lineHeight: 22,
     },
     coverRow: {
         flexDirection: 'row',
@@ -1667,6 +2135,39 @@ const styles = StyleSheet.create({
         justifyContent: 'flex-end',
         gap: spacing.sm,
         marginTop: spacing.sm,
+    },
+    songModalActions: {
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+        gap: spacing.sm,
+    },
+    songModalButton: {
+        minWidth: 94,
+        height: 44,
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: 999,
+        paddingHorizontal: spacing.lg,
+    },
+    songModalButtonSecondary: {
+        borderWidth: 1,
+        borderColor: colors.border,
+        backgroundColor: colors.surface,
+    },
+    songModalButtonPrimary: {
+        backgroundColor: colors.text,
+    },
+    songModalButtonSecondaryText: {
+        ...textStyles.sectionTitle,
+        fontSize: 15,
+        color: colors.textMuted,
+        letterSpacing: 0,
+    },
+    songModalButtonPrimaryText: {
+        ...textStyles.sectionTitle,
+        fontSize: 15,
+        color: colors.white,
+        letterSpacing: 0,
     },
     pressed: {
         opacity: 0.78,
