@@ -1,5 +1,6 @@
 import * as SQLite from 'expo-sqlite';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { initializeHanjaDatabase } from './hanjaDatabase';
 
 // ─── Database Setup ───────────────────────────────────────────────────────────
 // NOTE: Change the db filename here if you ever need to reset all tables by
@@ -352,6 +353,7 @@ export const initAllTables = async () => {
   await migrateBookIndex();
   await createBookIndexTable();
   await deduplicateCacheTable();
+  await initializeHanjaDatabase();
   console.log("[Database] All tables ready");
 };
 

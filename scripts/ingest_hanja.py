@@ -46,7 +46,9 @@ from supabase import create_client
 from dotenv import load_dotenv
 import os
 
-load_dotenv(os.path.join(os.path.dirname(__file__), "../backend/.env"))
+SCRIPT_DIR = os.path.dirname(__file__)
+
+load_dotenv(os.path.join(SCRIPT_DIR, "../backend/.env"))
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 SUPABASE_URL                        = os.getenv("SUPABASE_URL")
@@ -60,6 +62,7 @@ WORDS_PER_PAGE      = 100
 MAX_PAGES           = 50
 TRANSLATE_CHUNK     = 150
 REQUEST_DELAY       = 0.3
+GENERATED_WORDS_PATH = os.path.join(SCRIPT_DIR, "hanja_words.generated.json")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 claude   = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
@@ -151,6 +154,7 @@ def parse_krdict_items(root) -> list[dict]:
         trans_el    = item.find(".//trans_word")
         sense_el    = item.find(".//definition")
         target_code = item.find("target_code")
+        word_grade_el = item.find("word_grade") 
 
         english_def = ""
         if trans_el is not None and trans_el.text:
@@ -167,6 +171,7 @@ def parse_krdict_items(root) -> list[dict]:
             "definition_korean":  sense_el.text.strip() if sense_el is not None and sense_el.text else "",
             "definition_english": english_def,
             "pos":                pos_el.text.strip() if pos_el is not None and pos_el.text else "",
+            "word_grade": word_grade_el.text.strip() if word_grade_el is not None and word_grade_el.text else "",
         })
     return results
 
@@ -186,7 +191,7 @@ def fetch_krdict_words(char_rows: list[dict]) -> list[dict]:
 
     for idx, eum in enumerate(unique_eums):
         params = {
-            "key":        KRDICT_KEY,
+            "key":        KOREAN_DICTIONARY_CLIENT_ID,
             "q":          eum,
             "translated": "y",
             "trans_lang": "1",
@@ -259,6 +264,7 @@ def seed_supabase(char_rows: list[dict], word_rows: list[dict]):
                 "definition_korean":  w["definition_korean"],
                 "definition_english": w["definition_english"],
                 "pos":                w["pos"],
+                "word_grade":         w.get("word_grade", ""),
             }
             for w in word_rows
             if w["id"] and w["hangul"]
@@ -296,6 +302,18 @@ if __name__ == "__main__":
 
         # Phase 3
         word_rows = fetch_krdict_words(char_rows)
+        generated_word_rows = sorted(
+            word_rows,
+            key=lambda w: (
+                str(w.get("hangul") or ""),
+                str(w.get("hanja") or ""),
+                str(w.get("id") or ""),
+            ),
+        )
+        with open(GENERATED_WORDS_PATH, "w", encoding="utf-8") as f:
+            json.dump(generated_word_rows, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        print(f"\n  Saved generated word rows → {GENERATED_WORDS_PATH}")
 
         # Phase 4 — pass empty list for chars to skip re-seeding them
         seed_supabase([], word_rows)
