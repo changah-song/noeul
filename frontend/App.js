@@ -1,7 +1,7 @@
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { TranslatorProvider } from 'react-native-translator';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen';
 import {
@@ -29,13 +29,17 @@ import Home from './screens/Home';
 import Learn from './screens/Learn';
 import Profile from './screens/Profile';
 import Read from './screens/Read';
+import ScreenshotOcr from './screens/ScreenshotOcr';
 import Write from './screens/Write';
+import { addOcrWordSelectedListener } from './modules/screen-ocr-overlay/src';
+import { initializeOverlayLookupBridge } from './services/overlayLookup';
 
 const Tab = createBottomTabNavigator();
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
 export default function App() {
+    const navigationRef = useRef(null);
     const { books, setBooks, currentBook, setCurrentBook, preprocessOnOpen, setPreprocessOnOpen, updateBookPreprocessed, loading: appSetupLoading } = useAppSetup();
     const { user, loading, signOut, updateUsername, updateProfile } = useAuth();
     const [isReaderFocusMode, setIsReaderFocusMode] = useState(false);
@@ -62,13 +66,44 @@ export default function App() {
         }
     }, [appReady]);
 
+    useEffect(() => {
+        if (!appReady) {
+            return undefined;
+        }
+
+        return initializeOverlayLookupBridge();
+    }, [appReady]);
+
+    useEffect(() => {
+        const subscription = addOcrWordSelectedListener((event = {}) => {
+            const selectedText = String(event.selectedText || '').trim();
+
+            if (!selectedText) {
+                return;
+            }
+
+            navigationRef.current?.navigate?.('ScreenshotOcr', {
+                floatingSelection: {
+                    selectionId: event.selectionId,
+                    selectedText,
+                    selectedLineText: String(event.selectedLineText || '').trim(),
+                    selectedKind: event.selectedKind,
+                    selectedBox: event.selectedBox,
+                    sourceBookTitle: event.sourceBookTitle || 'Floating OCR',
+                },
+            });
+        });
+
+        return () => subscription.remove();
+    }, []);
+
     if (!appReady) {
         return null;
     }
 
     return (
         <TranslatorProvider>
-            <NavigationContainer>
+            <NavigationContainer ref={navigationRef}>
                 <Tab.Navigator screenOptions={(props) => tabScreenOptions(props, { hideTabChrome: isReaderFocusMode })}>
                     <Tab.Screen name="Home">
                         {props => (
@@ -107,6 +142,14 @@ export default function App() {
                             />
                         )}
                     </Tab.Screen>
+                    <Tab.Screen
+                        name="ScreenshotOcr"
+                        component={ScreenshotOcr}
+                        options={{
+                            tabBarButton: () => null,
+                            tabBarStyle: { display: 'none' },
+                        }}
+                    />
                     <Tab.Screen name="Write" component={Write} />
                     <Tab.Screen name="Profile">
                         {props => (

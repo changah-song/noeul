@@ -12,6 +12,7 @@ const tabIcons = {
     Home: { Component: Entypo, name: 'home' },
     Read: { Component: FontAwesome6, name: 'book-open' },
     Learn: { Component: Ionicons, name: 'sparkles-outline' },
+    ScreenshotOcr: { Component: Ionicons, name: 'scan-outline' },
     Write: { Component: Feather, name: 'edit-3' },
     Profile: { Component: MaterialCommunityIcons, name: 'account-circle-outline' },
 };

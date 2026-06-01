@@ -292,7 +292,7 @@ const styles = StyleSheet.create({
     paddingVertical: 13,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(166, 103, 0, 0.12)',
+    borderColor: 'rgba(200, 125, 0, 0.12)',
   },
   primaryButtonText: {
     ...textStyles.label,

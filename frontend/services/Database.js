@@ -869,7 +869,7 @@ export const insertCacheEntries = (entries) => {
 /**
  * lookupCacheByStems
  * Query dictionary_cache for one or more stems in a single SQL call.
- * Returns matching rows — caller builds a stem→entry map from the result.
+ * Returns matching rows in the same order as the requested stems.
  *
  * This is the "instant lookup" path: called when a user taps a word,
  * before deciding whether a live API call is needed.
@@ -881,13 +881,17 @@ export const lookupCacheByStems = (stems) => {
   return new Promise((resolve, reject) => {
     if (!stems || stems.length === 0) return resolve([]);
     const placeholders = stems.map(() => '?').join(',');
+    const stemOrder = new Map(stems.map((stem, index) => [stem, index]));
     db.transaction(tx => {
       tx.executeSql(
         `SELECT id, stem, definition, hanja, pos, domain
          FROM dictionary_cache WHERE stem IN (${placeholders})`,
         stems,
         (_, result) => {
-          const rows = result.rows._array;
+          const rows = [...result.rows._array].sort((a, b) => (
+            (stemOrder.get(a.stem) ?? Number.MAX_SAFE_INTEGER)
+            - (stemOrder.get(b.stem) ?? Number.MAX_SAFE_INTEGER)
+          ));
           console.log(`[Database] lookupCacheByStems(${JSON.stringify(stems)}): ${rows.length} hit(s)`);
           resolve(rows);
         },
