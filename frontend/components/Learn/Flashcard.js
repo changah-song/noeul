@@ -25,6 +25,14 @@ const toneStyles = {
   },
 };
 
+const toTitleLabel = (value) => {
+  if (!value) {
+    return 'New';
+  }
+
+  return String(value).charAt(0).toUpperCase() + String(value).slice(1);
+};
+
 const Flashcard = ({ vocab, title, index, total, onClose, onMark }) => {
   const [isFlipped, setIsFlipped] = useState(false);
 
@@ -32,6 +40,12 @@ const Flashcard = ({ vocab, title, index, total, onClose, onMark }) => {
     () => (vocab?.hanja && vocab.hanja !== 'N/A' ? vocab.hanja : null),
     [vocab?.hanja]
   );
+  const learningMeta = useMemo(() => {
+    const encounterCount = Number(vocab?.encounter_count) || 0;
+    const maturityLabel = vocab?.maturityMeta?.label || toTitleLabel(vocab?.maturity);
+
+    return `Seen ${encounterCount}x · ${maturityLabel}`;
+  }, [vocab?.encounter_count, vocab?.maturity, vocab?.maturityMeta?.label]);
 
   if (!vocab) {
     return null;
@@ -41,7 +55,7 @@ const Flashcard = ({ vocab, title, index, total, onClose, onMark }) => {
     <Card style={styles.shell} contentStyle={styles.shellContent}>
       <View style={styles.header}>
         <View style={styles.headerCopy}>
-          <Text style={styles.kicker}>Practice</Text>
+          <Text style={styles.kicker}>Flashcards</Text>
           <Text style={styles.deckTitle}>{title}</Text>
           <Text style={styles.progress}>{index + 1} of {total}</Text>
         </View>
@@ -57,12 +71,14 @@ const Flashcard = ({ vocab, title, index, total, onClose, onMark }) => {
             <>
               <Text style={styles.word}>{vocab.word}</Text>
               {hanjaText ? <Text style={styles.hanja}>{hanjaText}</Text> : null}
+              <Text style={styles.learningMeta}>{learningMeta}</Text>
               <Text style={styles.flipHint}>Tap to reveal definition</Text>
             </>
           ) : (
             <>
               <Text style={styles.wordSmall}>{vocab.word}</Text>
               {hanjaText ? <Text style={styles.hanja}>{hanjaText}</Text> : null}
+              <Text style={styles.learningMeta}>{learningMeta}</Text>
               <Text style={styles.definition}>{vocab.def}</Text>
               <Text style={styles.flipHint}>Tap again to hide</Text>
             </>
@@ -155,6 +171,11 @@ const styles = StyleSheet.create({
   },
   hanja: {
     ...textStyles.body,
+    color: colors.textMuted,
+    textAlign: 'center',
+  },
+  learningMeta: {
+    ...textStyles.caption,
     color: colors.textMuted,
     textAlign: 'center',
   },
