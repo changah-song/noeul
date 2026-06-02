@@ -74,7 +74,8 @@ data class OverlayLookupResult(
   val romanization: String?,
   val saved: Boolean,
   val sourceSentence: String,
-  val alternatives: List<OverlayDefinitionEntry>
+  val alternatives: List<OverlayDefinitionEntry>,
+  val hanjaPreloads: List<OverlayHanjaPreload>
 )
 
 data class OverlayDefinitionEntry(
@@ -94,6 +95,14 @@ data class OverlaySaveResult(
 
 data class OverlayHanjaResult(
   val requestId: String,
+  val character: String,
+  val meaning: String?,
+  val sound: String?,
+  val relatedWords: List<OverlayHanjaRelatedWord>
+)
+
+data class OverlayHanjaPreload(
+  val sourceWord: String,
   val character: String,
   val meaning: String?,
   val sound: String?,

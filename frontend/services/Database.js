@@ -1,5 +1,15 @@
 import * as SQLite from 'expo-sqlite';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { initializeHanjaDatabase } from './hanjaDatabase';
+import {
+  getHighlightTone,
+  getMaturityForVocab,
+  getMaturityMeta,
+  isDueForReview,
+  isLongTailWord,
+  normalizeVocabLearningFields,
+  shouldRecordImplicitReview,
+} from './vocabLearning';
 
 // ─── Database Setup ───────────────────────────────────────────────────────────
 // NOTE: Change the db filename here if you ever need to reset all tables by
@@ -7,6 +17,13 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 const db = SQLite.openDatabase('temp.db');
 const BOOK_INDEX_MIGRATION_KEY = 'book_index_migration_v2';
 const DICTIONARY_CACHE_MIGRATION_KEY = 'dictionary_cache_migration_v1';
+
+const formatLocalDay = (date = new Date()) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
 
 
 // ─── Table Creation ───────────────────────────────────────────────────────────
@@ -107,9 +124,32 @@ export const migrateVocabTable = async () => {
     alterations.push('ALTER TABLE vocab ADD COLUMN wrong_count INTEGER DEFAULT 0');
   }
 
-  if (alterations.length === 0) {
-    console.log('[Database] vocab migration already complete');
-    return;
+  if (!columns.includes('encounter_count')) {
+    alterations.push('ALTER TABLE vocab ADD COLUMN encounter_count INTEGER DEFAULT 0');
+  }
+
+  if (!columns.includes('last_encountered_at')) {
+    alterations.push('ALTER TABLE vocab ADD COLUMN last_encountered_at TEXT');
+  }
+
+  if (!columns.includes('last_encounter_source_uri')) {
+    alterations.push('ALTER TABLE vocab ADD COLUMN last_encounter_source_uri TEXT');
+  }
+
+  if (!columns.includes('last_encounter_source_title')) {
+    alterations.push('ALTER TABLE vocab ADD COLUMN last_encounter_source_title TEXT');
+  }
+
+  if (!columns.includes('maturity')) {
+    alterations.push(`ALTER TABLE vocab ADD COLUMN maturity TEXT DEFAULT 'new'`);
+  }
+
+  if (!columns.includes('graduated_at')) {
+    alterations.push('ALTER TABLE vocab ADD COLUMN graduated_at TEXT');
+  }
+
+  if (!columns.includes('implicit_review_count')) {
+    alterations.push('ALTER TABLE vocab ADD COLUMN implicit_review_count INTEGER DEFAULT 0');
   }
 
   await new Promise((resolve, reject) => {
@@ -121,13 +161,80 @@ export const migrateVocabTable = async () => {
         tx.executeSql(`UPDATE vocab SET correct_count = 0 WHERE correct_count IS NULL`);
         tx.executeSql(`UPDATE vocab SET wrong_count = 0 WHERE wrong_count IS NULL`);
         tx.executeSql(`UPDATE vocab SET related_known_words = '[]' WHERE related_known_words IS NULL`);
+        tx.executeSql(`UPDATE vocab SET encounter_count = 0 WHERE encounter_count IS NULL`);
+        tx.executeSql(`UPDATE vocab SET maturity = 'new' WHERE maturity IS NULL`);
+        tx.executeSql(`UPDATE vocab SET implicit_review_count = 0 WHERE implicit_review_count IS NULL`);
       },
       (error) => {
         console.error('[Database] Error migrating vocab table:', error);
         reject(error);
       },
       () => {
-        console.log(`[Database] vocab migration complete (${alterations.length} column(s) added)`);
+        if (alterations.length === 0) {
+          console.log('[Database] vocab migration already complete');
+        } else {
+          console.log(`[Database] vocab migration complete (${alterations.length} column(s) added)`);
+        }
+        resolve();
+      }
+    );
+  });
+};
+
+export const createVocabEncountersTable = () => {
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `CREATE TABLE IF NOT EXISTS vocab_encounters (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          vocab_id INTEGER NOT NULL,
+          source_type TEXT NOT NULL DEFAULT 'unknown',
+          source_uri TEXT NOT NULL DEFAULT '',
+          source_title TEXT,
+          location_key TEXT NOT NULL DEFAULT '',
+          encounter_day TEXT NOT NULL,
+          encountered_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(vocab_id, source_uri, location_key, encounter_day)
+        )`,
+        [],
+        () => {
+          console.log('[Database] vocab_encounters table created/confirmed');
+          resolve();
+        },
+        (_, error) => {
+          console.error('[Database] Error creating vocab_encounters table:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+export const migrateVocabEncountersTable = async () => {
+  await createVocabEncountersTable();
+
+  await new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        tx.executeSql(
+          `CREATE INDEX IF NOT EXISTS idx_vocab_encounters_vocab_id
+           ON vocab_encounters(vocab_id)`
+        );
+        tx.executeSql(
+          `CREATE INDEX IF NOT EXISTS idx_vocab_encounters_day
+           ON vocab_encounters(encounter_day)`
+        );
+        tx.executeSql(
+          `CREATE INDEX IF NOT EXISTS idx_vocab_encounters_source
+           ON vocab_encounters(source_uri)`
+        );
+      },
+      (error) => {
+        console.error('[Database] Error migrating vocab_encounters table:', error);
+        reject(error);
+      },
+      () => {
+        console.log('[Database] vocab_encounters migration complete');
         resolve();
       }
     );
@@ -347,11 +454,14 @@ export const initAllTables = async () => {
   console.log("[Database] Initializing all tables...");
   await createTable();
   await migrateVocabTable();
+  await createVocabEncountersTable();
+  await migrateVocabEncountersTable();
   await createDictionaryCacheTable();
   await migrateDictionaryCache();
   await migrateBookIndex();
   await createBookIndexTable();
   await deduplicateCacheTable();
+  await initializeHanjaDatabase();
   console.log("[Database] All tables ready");
 };
 
@@ -376,6 +486,13 @@ export const insertData = (word, hanja, definition, levelOrOptions) => {
     correctCount = 0,
     wrongCount = 0,
     relatedKnownWords = [],
+    encounterCount = 0,
+    maturity = 'new',
+    implicitReviewCount = 0,
+    graduatedAt = null,
+    lastEncounteredAt = null,
+    lastEncounterSourceUri = null,
+    lastEncounterSourceTitle = null,
   } = options;
   const relatedKnownWordsJson = JSON.stringify(Array.isArray(relatedKnownWords) ? relatedKnownWords : []);
 
@@ -385,9 +502,10 @@ export const insertData = (word, hanja, definition, levelOrOptions) => {
         `INSERT INTO vocab (
           word, hanja, def, level, source_book_uri, source_book_title, context_sentence, is_favorite,
           priority, created_at, last_reviewed_at, next_review_at, correct_count, wrong_count,
-          related_known_words
+          related_known_words, encounter_count, last_encountered_at, last_encounter_source_uri,
+          last_encounter_source_title, maturity, graduated_at, implicit_review_count
         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           word,
           hanja,
@@ -404,6 +522,13 @@ export const insertData = (word, hanja, definition, levelOrOptions) => {
           correctCount,
           wrongCount,
           relatedKnownWordsJson,
+          encounterCount,
+          lastEncounteredAt,
+          lastEncounterSourceUri,
+          lastEncounterSourceTitle,
+          maturity,
+          graduatedAt,
+          implicitReviewCount,
         ],
         () => {
           console.log(`[Database] Inserted vocab word: "${word}" | hanja: "${hanja}" | level: "${level}"`);
@@ -437,15 +562,103 @@ export const vocabEntryExists = (word, hanja, definition) => {
   });
 };
 
-export const insertDataIfMissing = async (word, hanja, definition, level) => {
+export const insertDataIfMissing = async (word, hanja, definition, levelOrOptions) => {
   const exists = await vocabEntryExists(word, hanja, definition);
   if (exists) {
     console.log(`[Database] Skipping existing vocab entry "${word}"`);
     return false;
   }
 
-  await insertData(word, hanja, definition, level);
+  await insertData(word, hanja, definition, levelOrOptions);
   return true;
+};
+
+const VOCAB_LEARNING_UPDATE_COLUMNS = {
+  level: 'level',
+  source_book_uri: 'source_book_uri',
+  source_book_title: 'source_book_title',
+  context_sentence: 'context_sentence',
+  is_favorite: 'is_favorite',
+  priority: 'priority',
+  created_at: 'created_at',
+  last_reviewed_at: 'last_reviewed_at',
+  next_review_at: 'next_review_at',
+  correct_count: 'correct_count',
+  wrong_count: 'wrong_count',
+  encounter_count: 'encounter_count',
+  last_encountered_at: 'last_encountered_at',
+  last_encounter_source_uri: 'last_encounter_source_uri',
+  last_encounter_source_title: 'last_encounter_source_title',
+  maturity: 'maturity',
+  graduated_at: 'graduated_at',
+  implicit_review_count: 'implicit_review_count',
+};
+
+export const updateVocabLearningState = (word, hanja, definition, updates = {}) => {
+  const entries = Object.entries(updates).filter(([key, value]) => (
+    Object.prototype.hasOwnProperty.call(VOCAB_LEARNING_UPDATE_COLUMNS, key) &&
+    value !== undefined
+  ));
+
+  if (entries.length === 0) {
+    return Promise.resolve();
+  }
+
+  const assignments = entries.map(([key]) => `${VOCAB_LEARNING_UPDATE_COLUMNS[key]} = ?`).join(', ');
+  const values = entries.map(([, value]) => value);
+
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `UPDATE vocab SET ${assignments} WHERE word = ? AND hanja IS ? AND def IS ?`,
+        [...values, word, hanja ?? null, definition ?? null],
+        (_, result) => {
+          console.log(`[Database] Updated learning state for "${word}" (${result.rowsAffected} row(s))`);
+          resolve(result);
+        },
+        (_, error) => {
+          console.error(`[Database] Error updating learning state for "${word}":`, error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+export const clearVocabEncountersForEntry = (word, hanja, definition) => {
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        'SELECT id FROM vocab WHERE word = ? AND hanja IS ? AND def IS ?',
+        [word, hanja ?? null, definition ?? null],
+        (_, result) => {
+          const ids = result.rows._array.map((row) => row.id);
+
+          if (ids.length === 0) {
+            resolve({ rowsAffected: 0 });
+            return;
+          }
+
+          tx.executeSql(
+            `DELETE FROM vocab_encounters WHERE vocab_id IN (${ids.map(() => '?').join(', ')})`,
+            ids,
+            (_, deleteResult) => {
+              console.log(`[Database] Cleared ${deleteResult.rowsAffected} encounter row(s) for "${word}"`);
+              resolve(deleteResult);
+            },
+            (_, error) => {
+              console.error(`[Database] Error clearing encounters for "${word}":`, error);
+              reject(error);
+            }
+          );
+        },
+        (_, error) => {
+          console.error(`[Database] Error finding vocab ids for encounter reset "${word}":`, error);
+          reject(error);
+        }
+      );
+    });
+  });
 };
 
 const parseRelatedKnownWords = (value) => {
@@ -626,8 +839,8 @@ export const updatePriority = (word, hanja, definition, priority) => {
   });
 };
 
-const addDays = (days) => {
-  const date = new Date();
+const addDays = (days, fromDate = new Date()) => {
+  const date = new Date(fromDate);
   date.setDate(date.getDate() + days);
   return date.toISOString();
 };
@@ -731,6 +944,75 @@ export const wordExists = (word) => {
   });
 };
 
+const getVocabRowsByIds = (vocabIds) => {
+  const uniqueIds = [...new Set(
+    vocabIds
+      .map((id) => Number(id))
+      .filter((id) => Number.isInteger(id) && id > 0)
+  )];
+
+  if (uniqueIds.length === 0) {
+    return Promise.resolve([]);
+  }
+
+  const placeholders = uniqueIds.map(() => '?').join(',');
+
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT * FROM vocab WHERE id IN (${placeholders})`,
+        uniqueIds,
+        (_, result) => resolve(result.rows._array),
+        (_, error) => {
+          console.error('[Database] Error fetching vocab rows by id:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+const getVocabRowById = async (vocabId) => {
+  const rows = await getVocabRowsByIds([vocabId]);
+  return rows[0] ?? null;
+};
+
+const updateMaturityForVocabIds = async (vocabIds) => {
+  const rows = await getVocabRowsByIds(vocabIds);
+
+  if (rows.length === 0) {
+    return;
+  }
+
+  await new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        rows.forEach((row) => {
+          const maturity = getMaturityForVocab(row);
+
+          if (maturity === 'graduated' && !row.graduated_at) {
+            tx.executeSql(
+              'UPDATE vocab SET maturity = ?, graduated_at = ? WHERE id = ?',
+              [maturity, new Date().toISOString(), row.id]
+            );
+            return;
+          }
+
+          tx.executeSql(
+            'UPDATE vocab SET maturity = ? WHERE id = ?',
+            [maturity, row.id]
+          );
+        });
+      },
+      (error) => {
+        console.error('[Database] Error updating vocab maturity:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+};
+
 export const getSavedWords = () => {
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
@@ -744,6 +1026,255 @@ export const getSavedWords = () => {
         },
         (_, error) => {
           console.error('[Database] Error fetching saved words:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+export const getSavedVocabForHighlights = () => {
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT id, word, hanja, def, level, encounter_count, implicit_review_count,
+                correct_count, wrong_count, maturity, graduated_at, last_encountered_at,
+                next_review_at, last_reviewed_at, is_favorite
+         FROM vocab`,
+        [],
+        (_, result) => {
+          const rows = result.rows._array.map((row) => {
+            const normalized = normalizeVocabLearningFields(row);
+
+            return {
+              id: normalized.id,
+              word: normalized.word,
+              hanja: normalized.hanja,
+              def: normalized.def,
+              maturity: normalized.maturity,
+              encounter_count: normalized.encounter_count,
+              last_encountered_at: normalized.last_encountered_at,
+              graduated_at: normalized.graduated_at,
+              highlightTone: getHighlightTone(normalized),
+            };
+          });
+
+          console.log(`[Database] getSavedVocabForHighlights: ${rows.length} row(s)`);
+          resolve(rows);
+        },
+        (_, error) => {
+          console.error('[Database] Error fetching saved vocab for highlights:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+const normalizeEncounterInput = (encounter) => {
+  const vocabId = Number(encounter?.vocabId);
+
+  if (!Number.isInteger(vocabId) || vocabId <= 0) {
+    return null;
+  }
+
+  const fallbackDate = new Date();
+  const providedDate = encounter?.encounteredAt ? new Date(encounter.encounteredAt) : fallbackDate;
+  const encounteredDate = Number.isNaN(providedDate.getTime()) ? fallbackDate : providedDate;
+  const encounteredAt = encounteredDate.toISOString();
+
+  return {
+    vocabId,
+    sourceType: encounter?.sourceType || 'unknown',
+    sourceUri: encounter?.sourceUri ?? '',
+    sourceTitle: encounter?.sourceTitle ?? null,
+    locationKey: encounter?.locationKey ?? '',
+    encounteredAt,
+    encounterDay: formatLocalDay(encounteredDate),
+  };
+};
+
+export const recordVocabEncounterBatch = async (encounters) => {
+  const normalizedEncounters = Array.isArray(encounters)
+    ? encounters.map(normalizeEncounterInput).filter(Boolean)
+    : [];
+
+  if (normalizedEncounters.length === 0) {
+    return { insertedCount: 0, affectedVocabIds: [] };
+  }
+
+  const result = await new Promise((resolve, reject) => {
+    const affectedVocabIds = new Set();
+    let insertedCount = 0;
+
+    db.transaction(
+      tx => {
+        normalizedEncounters.forEach((encounter) => {
+          tx.executeSql(
+            `INSERT OR IGNORE INTO vocab_encounters (
+              vocab_id, source_type, source_uri, source_title, location_key, encounter_day, encountered_at
+            )
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [
+              encounter.vocabId,
+              encounter.sourceType,
+              encounter.sourceUri,
+              encounter.sourceTitle,
+              encounter.locationKey,
+              encounter.encounterDay,
+              encounter.encounteredAt,
+            ],
+            (_, insertResult) => {
+              if (insertResult.rowsAffected <= 0) {
+                return;
+              }
+
+              insertedCount += insertResult.rowsAffected;
+              affectedVocabIds.add(encounter.vocabId);
+              tx.executeSql(
+                `UPDATE vocab
+                 SET encounter_count = COALESCE(encounter_count, 0) + 1,
+                     last_encountered_at = ?,
+                     last_encounter_source_uri = ?,
+                     last_encounter_source_title = ?
+                 WHERE id = ?`,
+                [
+                  encounter.encounteredAt,
+                  encounter.sourceUri,
+                  encounter.sourceTitle,
+                  encounter.vocabId,
+                ]
+              );
+            }
+          );
+        });
+      },
+      (error) => {
+        console.error('[Database] Error recording vocab encounter batch:', error);
+        reject(error);
+      },
+      () => {
+        resolve({
+          insertedCount,
+          affectedVocabIds: [...affectedVocabIds],
+        });
+      }
+    );
+  });
+
+  if (result.affectedVocabIds.length > 0) {
+    await updateMaturityForVocabIds(result.affectedVocabIds);
+  }
+
+  console.log(
+    `[Database] recordVocabEncounterBatch: ${result.insertedCount} new encounter(s) across ${result.affectedVocabIds.length} vocab row(s)`
+  );
+
+  return result;
+};
+
+export const recordImplicitReadingReview = async (vocabId) => {
+  const numericVocabId = Number(vocabId);
+
+  if (!Number.isInteger(numericVocabId) || numericVocabId <= 0) {
+    return { reviewed: false };
+  }
+
+  const row = await getVocabRowById(numericVocabId);
+
+  if (!row) {
+    return { reviewed: false };
+  }
+
+  const now = new Date();
+  const normalized = normalizeVocabLearningFields(row);
+
+  if (!shouldRecordImplicitReview(normalized, now)) {
+    return { reviewed: false };
+  }
+
+  const level = normalized.level || 'unorganized';
+  const reviewMap = {
+    bad: { level: 'mid', days: 3 },
+    mid: { level: 'mid', days: 7 },
+    good: { level: 'good', days: 21 },
+    unorganized: { level: 'unorganized', days: 5 },
+  };
+  const config = reviewMap[level] || { level, days: 5 };
+  const nextReviewAt = addDays(config.days, now);
+  const reviewedAt = now.toISOString();
+  const maturity = getMaturityForVocab({
+    ...normalized,
+    level: config.level,
+  });
+
+  await new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        tx.executeSql(
+          `UPDATE vocab
+           SET level = ?,
+               last_reviewed_at = ?,
+               next_review_at = ?,
+               implicit_review_count = COALESCE(implicit_review_count, 0) + 1,
+               maturity = ?
+           WHERE id = ?`,
+          [config.level, reviewedAt, nextReviewAt, maturity, numericVocabId]
+        );
+      },
+      (error) => {
+        console.error('[Database] Error recording implicit reading review:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+
+  console.log(`[Database] Recorded implicit reading review for vocab id ${numericVocabId}`);
+  return { reviewed: true, nextReviewAt };
+};
+
+export const getVocabularyHomeData = () => {
+  return new Promise((resolve, reject) => {
+    const now = new Date();
+
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT
+           v.*,
+           COUNT(DISTINCT ve.encounter_day) AS encounter_day_count,
+           COUNT(DISTINCT ve.source_uri) AS encounter_source_count
+         FROM vocab v
+         LEFT JOIN vocab_encounters ve ON ve.vocab_id = v.id
+         GROUP BY v.id
+         ORDER BY
+           v.is_favorite DESC,
+           v.last_encountered_at DESC,
+           v.created_at DESC`,
+        [],
+        (_, result) => {
+          const rows = result.rows._array.map((row) => {
+            const normalized = normalizeVocabLearningFields(row);
+            const homeRow = {
+              ...normalized,
+              encounter_day_count: Number(row.encounter_day_count) || 0,
+              encounter_source_count: Number(row.encounter_source_count) || 0,
+            };
+
+            return {
+              ...homeRow,
+              maturityMeta: getMaturityMeta(homeRow.maturity),
+              highlightTone: getHighlightTone(homeRow),
+              isDue: isDueForReview(homeRow, now),
+              isLongTail: isLongTailWord(homeRow, now),
+            };
+          });
+
+          console.log(`[Database] getVocabularyHomeData: fetched ${rows.length} row(s)`);
+          resolve(rows);
+        },
+        (_, error) => {
+          console.error('[Database] Error fetching vocabulary home data:', error);
           reject(error);
         }
       );

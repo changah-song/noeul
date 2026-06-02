@@ -1,0 +1,18 @@
+{
+  "generated_at": "2026-06-01T15:23:02Z",
+  "inputs": {
+    "characters": "scripts/hanja_translated.json",
+    "words": "scripts/hanja_words.json"
+  },
+  "outputs": {
+    "database": "frontend/assets/data/hanja.db"
+  },
+  "counts": {
+    "characters": 6245,
+    "words": 22451,
+    "word_characters": 51843,
+    "words_with_hanja": 22451,
+    "skipped_words_missing_id_or_hangul": 0
+  },
+  "db_file_size_bytes": 7712768
+}

@@ -1,73 +1,78 @@
 import { useState, useEffect } from 'react';
-import axios from 'axios';
-import 'react-xml-parser';
 
-const cleanMeaning = (meaning = '') => {
-    const cleanString = String(meaning).replace(/\s*\(\s*<\s*a\s.*$/g, '');
-    return cleanString;
-};
+import { lookupHanjaCharacter } from '../hanjaDatabase';
 
-const parseHeaderMeaning = (meaning = '') => {
-    const cleaned = String(meaning).trim().replace(/\s*\(\d+\)$/, '');
-    const [firstSegment, ...restSegments] = cleaned.split(',');
-    const hasReading = /[\uAC00-\uD7A3]/.test(firstSegment) && restSegments.length > 0;
+const cleanValue = (value) => (typeof value === 'string' ? value.trim() : '');
+
+const emptyResult = () => ({
+    firstTableData: [],
+    similarWordsTableData: [],
+});
+
+const relatedWordKey = (word) => [
+    cleanValue(word?.hangul),
+    cleanValue(word?.hanja),
+].join('|');
+
+const mapMeaningRow = (meaning) => {
+    const hunKorean = cleanValue(meaning?.hun_korean);
+    const hunEnglish = cleanValue(meaning?.hun_english);
 
     return {
-        reading: hasReading ? firstSegment.trim() : '',
-        meaning: hasReading ? restSegments.join(',').trim() : cleaned,
+        hanja: cleanValue(meaning?.char || meaning?.character),
+        reading: cleanValue(meaning?.eum),
+        meaning: hunEnglish || hunKorean,
+        hun_korean: hunKorean,
+        hun_english: hunEnglish,
     };
 };
 
-const getTableRows = (htmlDocument, tableIndex) => {
-    const tables = htmlDocument?.getElementsByTagName('table') ?? [];
-    return tables[tableIndex]?.getElementsByTagName('tr') ?? [];
-};
+const mapRelatedWordRow = (word) => ({
+    hanja: cleanValue(word?.hanja),
+    korean: cleanValue(word?.hangul),
+    meaning: cleanValue(word?.definition_english || word?.definition_korean),
+    word_grade: cleanValue(word?.word_grade),
+});
 
-const getCell = (row, cellIndex) => row?.getElementsByTagName('td')?.[cellIndex];
+const getUniqueRelatedWords = (meanings) => {
+    const seen = new Set();
+    const relatedWords = [];
 
-const getCellValue = (row, cellIndex) => getCell(row, cellIndex)?.value ?? '';
+    meanings.forEach((meaning) => {
+        const words = Array.isArray(meaning?.related_words) ? meaning.related_words : [];
 
-const getCellLinkValue = (row, cellIndex) => {
-    const links = getCell(row, cellIndex)?.getElementsByTagName('a') ?? [];
-    return links[0]?.value ?? '';
+        words.forEach((word) => {
+            const key = relatedWordKey(word);
+            if (seen.has(key)) {
+                return;
+            }
+
+            seen.add(key);
+            relatedWords.push(mapRelatedWordRow(word));
+        });
+    });
+
+    return relatedWords
+        .filter(word => word.hanja || word.korean || word.meaning);
 };
 
 export const fetchHanjaRelated = async (query) => {
-    const cleanedQuery = typeof query === 'string' ? query.trim() : '';
+    const cleanedQuery = cleanValue(query);
 
     if (!cleanedQuery) {
-        return {
-            firstTableData: [],
-            similarWordsTableData: [],
-        };
+        return emptyResult();
     }
 
-    console.log(`[hanjaRelated] Fetching hanja data for: "${cleanedQuery}"`);
-    const response = await axios.put(`https://koreanhanja.app/${encodeURIComponent(cleanedQuery)}`);
-    const htmlContent = response.data;
-    var ReactXmlParser = require('react-xml-parser');
-    const htmlDocument = new ReactXmlParser().parseFromString(htmlContent);
+    const meanings = await lookupHanjaCharacter(cleanedQuery, { limit: 'all' });
 
-    const firstTableData = getTableRows(htmlDocument, 0)
-        .map(row => {
-            const parsedMeaning = parseHeaderMeaning(getCellValue(row, 1));
-            return {
-                hanja: getCellLinkValue(row, 0),
-                reading: parsedMeaning.reading,
-                meaning: parsedMeaning.meaning,
-            };
-        })
+    if (!Array.isArray(meanings) || meanings.length === 0) {
+        return emptyResult();
+    }
+
+    const firstTableData = meanings
+        .map(mapMeaningRow)
         .filter(row => row.hanja || row.reading || row.meaning);
-    console.log(`[hanjaRelated] "${cleanedQuery}" header table (${firstTableData.length} row(s)):`, firstTableData);
-
-    const similarWordsTableData = getTableRows(htmlDocument, 1)
-        .map(row => ({
-            hanja: getCellLinkValue(row, 0),
-            korean: getCellValue(row, 1).trim(),
-            meaning: cleanMeaning(getCellValue(row, 2).trim()),
-        }))
-        .filter(row => row.hanja || row.korean || row.meaning);
-    console.log(`[hanjaRelated] "${cleanedQuery}" similar words (${similarWordsTableData.length} row(s)):`, similarWordsTableData);
+    const similarWordsTableData = getUniqueRelatedWords(meanings);
 
     return {
         firstTableData,
@@ -76,7 +81,6 @@ export const fetchHanjaRelated = async (query) => {
 };
 
 const hanjaRelated = ({ query }) => {
-    // initialize hooks
     const [firstTableData, setFirstTableData] = useState([]);
     const [similarWordsTableData, setSimilarWordsTableData] = useState([]);
     const [isLoading, setIsLoading] = useState(false);
@@ -85,7 +89,6 @@ const hanjaRelated = ({ query }) => {
     const fetchData = async () => {
         try {
             if (!query) {
-                console.log('[hanjaRelated] No query provided, clearing data');
                 setFirstTableData([]);
                 setSimilarWordsTableData([]);
                 return;
@@ -96,19 +99,19 @@ const hanjaRelated = ({ query }) => {
             const result = await fetchHanjaRelated(query);
             setFirstTableData(result.firstTableData);
             setSimilarWordsTableData(result.similarWordsTableData);
-        } catch(error) {
+        } catch (error) {
             console.error(`[hanjaRelated] Error fetching data for "${query}":`, error);
             setError(error);
         } finally {
             setIsLoading(false);
         }
-    }
+    };
 
     useEffect(() => {
         fetchData();
     }, [query]);
 
     return { firstTableData, similarWordsTableData, isLoading, error };
-}
+};
 
-export default hanjaRelated
+export default hanjaRelated;
