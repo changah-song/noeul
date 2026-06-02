@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, Pressable, Switch } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -9,13 +9,15 @@ import TopSection from '../components/Read/TopSection/TopSection';
 import TocDrawer from '../components/Read/TocDrawer';
 import NativeEpubReaderView from '../modules/native-epub-reader/src/NativeEpubReaderView';
 import {
-    getSavedWords,
+    getSavedVocabForHighlights,
     isBookPreprocessed,
     insertCacheEntries,
     insertBookIndexEntries,
     lookupBookHighlightSurfaces,
     lookupCacheByStems,
     logDatabaseSnapshot,
+    recordImplicitReadingReview,
+    recordVocabEncounterBatch,
 } from '../services/Database';
 import preprocessBook from '../services/api/preprocessBook';
 import { addReadingMillis } from '../services/dailyProgress';
@@ -34,6 +36,49 @@ const uniqTerms = (values) => [...new Set(
         .map((value) => (typeof value === 'string' ? value.trim() : ''))
         .filter(Boolean)
 )];
+
+const highlightItemKey = (item) => {
+    if (typeof item === 'string') {
+        return `term:${item.trim()}`;
+    }
+
+    if (!item || typeof item !== 'object') {
+        return '';
+    }
+
+    const term = typeof item.term === 'string' ? item.term.trim() : '';
+    const vocabId = Number(item.vocabId);
+    return Number.isInteger(vocabId) && vocabId > 0
+        ? `id:${vocabId}:${term}`
+        : `term:${term}`;
+};
+
+const dedupeHighlightItems = (items) => {
+    const seen = new Set();
+    const nextItems = [];
+
+    (items || []).forEach((item) => {
+        const key = highlightItemKey(item);
+        if (!key || seen.has(key)) {
+            return;
+        }
+
+        seen.add(key);
+        nextItems.push(item);
+    });
+
+    return nextItems;
+};
+
+const vocabRowToHighlightItem = (row) => ({
+    vocabId: row.id,
+    term: row.word,
+    maturity: row.maturity,
+    highlightTone: row.highlightTone,
+    encounterCount: row.encounter_count,
+});
+
+const isVisibleHighlightRow = (row) => row?.word && row.highlightTone !== 'hidden';
 
 const spineIndexForReaderPackage = (readerPackage) => {
     const spineIndex = readerPackage?.loadedSpineItem?.index
@@ -84,6 +129,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
     const [showSettings, setShowSettings] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [savedWords, setSavedWords] = useState(null); // null = not yet loaded
+    const [savedVocabRows, setSavedVocabRows] = useState(null);
     const [highlightTerms, setHighlightTerms] = useState(null);
     const [optimisticHighlightTerms, setOptimisticHighlightTerms] = useState([]);
     const [highlightTermsReady, setHighlightTermsReady] = useState(false);
@@ -121,30 +167,41 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
     const parsedChapterCacheRef = useRef(new Map());
     const parsedChapterInflightRef = useRef(new Map());
     const chapterPrefetchTokenRef = useRef(0);
+    const encounterTimerRef = useRef(null);
+    const lastEncounterPageKeyRef = useRef('');
     const activeBook = books.find(book => book.uri === currentBook) ?? null;
     const shouldUseHeuristicHighlights = !activeBook?.preprocessed;
 
-    // Load saved words for highlighting on mount
-    useEffect(() => {
-        getSavedWords()
-            .then(words => {
-                console.log(`[Read] Loaded ${words.length} saved word(s) for highlighting`);
-                setSavedWords(words);
-            })
-            .catch(err => {
-                console.error('[Read] Failed to load saved words:', err);
-                setSavedWords([]);
-            });
+    const refreshSavedVocabRows = useCallback(async () => {
+        const rows = await getSavedVocabForHighlights();
+        console.log(`[Read] Loaded ${rows.length} saved vocab row(s) for highlighting`);
+        setSavedVocabRows(rows);
+        setSavedWords(rows.map((row) => row.word).filter(Boolean));
+        return rows;
     }, []);
 
+    // Load saved words for highlighting on mount
     useEffect(() => {
-        if (savedWords === null) {
+        refreshSavedVocabRows()
+            .catch(err => {
+                console.error('[Read] Failed to load saved vocab rows:', err);
+                setSavedVocabRows([]);
+                setSavedWords([]);
+            });
+    }, [refreshSavedVocabRows]);
+
+    useEffect(() => {
+        if (savedVocabRows === null) {
             setHighlightTermsReady(false);
             return;
         }
 
+        const nativeHighlightItems = savedVocabRows
+            .filter(isVisibleHighlightRow)
+            .map(vocabRowToHighlightItem);
+
         if (!currentBook || shouldUseHeuristicHighlights) {
-            setHighlightTerms(savedWords);
+            setHighlightTerms(nativeHighlightItems);
             setHighlightTermsReady(true);
             return;
         }
@@ -153,15 +210,37 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
 
         const loadHighlightTerms = async () => {
             try {
-                const surfaceRows = await lookupBookHighlightSurfaces(currentBook, savedWords);
+                const visibleSavedRows = savedVocabRows.filter(isVisibleHighlightRow);
+                const savedStemWords = visibleSavedRows.map((row) => row.word).filter(Boolean);
+                const savedRowByWord = new Map(visibleSavedRows.map((row) => [row.word, row]));
+                const surfaceRows = await lookupBookHighlightSurfaces(currentBook, savedStemWords);
                 if (!isActive) {
                     return;
                 }
 
-                const mergedTerms = [...new Set([
-                    ...savedWords,
-                    ...surfaceRows.map((row) => row.surface).filter(Boolean),
-                ])];
+                const bookSurfaceItems = surfaceRows
+                    .map((surfaceRow) => {
+                        const matchingSavedRow = savedRowByWord.get(surfaceRow.stem);
+                        if (!matchingSavedRow) {
+                            return surfaceRow.surface;
+                        }
+
+                        return {
+                            ...vocabRowToHighlightItem(matchingSavedRow),
+                            term: surfaceRow.surface,
+                            stem: surfaceRow.stem,
+                        };
+                    })
+                    .filter((item) => (
+                        typeof item === 'string'
+                            ? item.trim()
+                            : item?.term
+                    ));
+
+                const mergedTerms = dedupeHighlightItems([
+                    ...nativeHighlightItems,
+                    ...bookSurfaceItems,
+                ]);
 
                 console.log(
                     `[Read] Loaded ${mergedTerms.length} highlight term(s) (${surfaceRows.length} book-specific surfaces)`
@@ -171,7 +250,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
             } catch (error) {
                 console.error('[Read] Failed to load book highlight surfaces:', error);
                 if (isActive) {
-                    setHighlightTerms(savedWords);
+                    setHighlightTerms(nativeHighlightItems);
                     setHighlightTermsReady(true);
                 }
             }
@@ -182,10 +261,16 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         return () => {
             isActive = false;
         };
-    }, [currentBook, preprocessStatus, savedWords, shouldUseHeuristicHighlights]);
+    }, [currentBook, preprocessStatus, savedVocabRows, shouldUseHeuristicHighlights]);
 
     // Reset status and clear stored text whenever the open book changes
     useEffect(() => {
+        if (encounterTimerRef.current) {
+            clearTimeout(encounterTimerRef.current);
+            encounterTimerRef.current = null;
+        }
+        lastEncounterPageKeyRef.current = '';
+
         const elapsed = Date.now() - readingSessionStartedAtRef.current;
         if (elapsed >= 5000) {
             addReadingMillis(elapsed);
@@ -227,6 +312,12 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
 
     useEffect(() => {
         return () => {
+            if (encounterTimerRef.current) {
+                clearTimeout(encounterTimerRef.current);
+                encounterTimerRef.current = null;
+            }
+            lastEncounterPageKeyRef.current = '';
+
             const elapsed = Date.now() - readingSessionStartedAtRef.current;
             if (elapsed >= 5000) {
                 addReadingMillis(elapsed);
@@ -256,6 +347,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         const { includeSurface = true } = options;
         const surface = includeSurface ? highlightedWord?.trim() : '';
         setSavedWords(prev => (prev ?? []).filter(w => w !== word));
+        setSavedVocabRows(prev => (prev ?? []).filter(row => row.word !== word));
         setOptimisticHighlightTerms(prev => prev.filter(term => term !== word && term !== surface));
     };
 
@@ -518,13 +610,22 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
     const activeBookSizeMb = typeof activeBook?.size === 'number'
         ? activeBook.size / (1024 * 1024)
         : null;
-    const dbReaderHighlightTerms = shouldUseHeuristicHighlights
-        ? (savedWords ?? [])
-        : (highlightTerms ?? savedWords ?? []);
-    const readerHighlightTerms = uniqTerms([
-        ...dbReaderHighlightTerms,
-        ...optimisticHighlightTerms,
-    ]);
+    const fallbackHighlightTerms = useMemo(() => {
+        if (savedVocabRows !== null) {
+            return savedVocabRows
+                .filter(isVisibleHighlightRow)
+                .map(vocabRowToHighlightItem);
+        }
+
+        return savedWords ?? [];
+    }, [savedVocabRows, savedWords]);
+    const dbReaderHighlightTerms = highlightTerms ?? fallbackHighlightTerms;
+    const readerHighlightTerms = useMemo(() => (
+        dedupeHighlightItems([
+            ...dbReaderHighlightTerms,
+            ...optimisticHighlightTerms,
+        ])
+    ), [dbReaderHighlightTerms, optimisticHighlightTerms]);
     const isReaderWaitingForHighlights = !!currentBook && !shouldUseHeuristicHighlights && !highlightTermsReady;
     const nativeChapterBlocks = chapterBlocksForReaderPackage(nativeReaderPackage);
     const nativeChapterResources = chapterResourcesForReaderPackage(nativeReaderPackage);
@@ -875,7 +976,14 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         };
     }, [loadNativeReaderPackage, readerRetryKey]);
 
-    const handleNativePageChange = useCallback(({ page, total, spineIndex, href, firstBlockId } = {}) => {
+    const handleNativePageChange = useCallback(({
+        page,
+        total,
+        spineIndex,
+        href,
+        firstBlockId,
+        visibleSavedWords = [],
+    } = {}) => {
         const pageIndex = Number.isInteger(page) ? page : null;
         const eventSpineIndex = Number.isInteger(spineIndex) ? spineIndex : null;
         const currentLoadedSpineIndex = currentSpineIndexRef.current;
@@ -902,6 +1010,12 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
             pagesInChapter: Number.isInteger(total) ? total : null,
         }));
 
+        if (encounterTimerRef.current) {
+            clearTimeout(encounterTimerRef.current);
+            encounterTimerRef.current = null;
+        }
+        lastEncounterPageKeyRef.current = '';
+
         if (!currentBook || !Number.isInteger(pageIndex) || !Number.isInteger(resolvedSpineIndex)) {
             return;
         }
@@ -909,6 +1023,11 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         const loadedSpineItem = nativeReaderPackageRef.current?.spine
             ?.find((item) => item?.index === resolvedSpineIndex)
             || nativeReaderPackageRef.current?.loadedSpineItem;
+        const resolvedFirstBlockId = (
+            typeof firstBlockId === 'string' && firstBlockId.length > 0
+                ? firstBlockId
+                : null
+        );
         const nextPosition = {
             spineIndex: resolvedSpineIndex,
             pageIndex,
@@ -918,11 +1037,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                     ? href
                     : (loadedSpineItem?.path || loadedSpineItem?.href || '')
             ),
-            firstBlockId: (
-                typeof firstBlockId === 'string' && firstBlockId.length > 0
-                    ? firstBlockId
-                    : null
-            ),
+            firstBlockId: resolvedFirstBlockId,
         };
 
         setNativeRestorePosition(nextPosition);
@@ -944,7 +1059,61 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                 ? book
                 : { ...book, nativePosition: nextPosition };
         }));
-    }, [currentBook, nativeChapterTotal, setBooks]);
+
+        const visibleVocabItems = Array.isArray(visibleSavedWords)
+            ? visibleSavedWords.filter((item) => (
+                Number.isInteger(Number(item?.vocabId)) && Number(item?.vocabId) > 0
+            ))
+            : [];
+
+        if (visibleVocabItems.length === 0) {
+            return;
+        }
+
+        const locationKey = `${resolvedSpineIndex}:${pageIndex}:${resolvedFirstBlockId ?? ''}`;
+        lastEncounterPageKeyRef.current = locationKey;
+        encounterTimerRef.current = setTimeout(async () => {
+            if (lastEncounterPageKeyRef.current !== locationKey) {
+                return;
+            }
+            encounterTimerRef.current = null;
+
+            const uniqueVisibleItems = [];
+            const seenVocabIds = new Set();
+            visibleVocabItems.forEach((item) => {
+                const vocabId = Number(item.vocabId);
+                if (seenVocabIds.has(vocabId)) {
+                    return;
+                }
+
+                seenVocabIds.add(vocabId);
+                uniqueVisibleItems.push({ ...item, vocabId });
+            });
+
+            const payload = uniqueVisibleItems.map((item) => ({
+                vocabId: item.vocabId,
+                sourceType: 'book',
+                sourceUri: currentBook,
+                sourceTitle: activeBook?.title ?? null,
+                locationKey,
+            }));
+
+            try {
+                const result = await recordVocabEncounterBatch(payload);
+                const reviewIds = Array.isArray(result?.affectedVocabIds) && result.affectedVocabIds.length > 0
+                    ? result.affectedVocabIds
+                    : uniqueVisibleItems.map((item) => item.vocabId);
+
+                await Promise.all(reviewIds.map((vocabId) => recordImplicitReadingReview(vocabId)));
+
+                if (result?.insertedCount > 0) {
+                    await refreshSavedVocabRows();
+                }
+            } catch (error) {
+                console.error('[Read] Failed to record visible saved-word encounters:', error);
+            }
+        }, 2000);
+    }, [activeBook?.title, currentBook, nativeChapterTotal, refreshSavedVocabRows, setBooks]);
 
     const handleNativeChapterCommit = useCallback(({
         spineIndex,

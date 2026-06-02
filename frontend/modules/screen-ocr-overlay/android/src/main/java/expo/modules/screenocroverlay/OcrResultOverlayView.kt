@@ -8,12 +8,17 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.os.SystemClock
 import android.text.TextPaint
 import android.util.Log
 import android.view.MotionEvent
 import android.view.View
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+
+private const val HANJA_RELATED_PAGE_SIZE = 5
+private const val HANJA_LOAD_MORE_DELAY_MS = 650L
 
 class OcrResultOverlayView(
   context: Context,
@@ -254,11 +259,16 @@ class OcrResultOverlayView(
   private val wordNavNextRect = RectF()
   private val hanjaPopupRect = RectF()
   private val hanjaPopupCloseRect = RectF()
+  private val hanjaLoadMoreRect = RectF()
   private val hanjaTouchRects = mutableListOf<HanjaTouchRect>()
   private val alternativeSaveRects = mutableListOf<AlternativeSaveRect>()
   private val relatedKnownRects = mutableListOf<RelatedKnownRect>()
   private var lookupCard: LookupCard? = null
   private var hanjaPopup: HanjaPopup? = null
+  private var hanjaPopupTouchStartY = 0f
+  private var hanjaPopupTouchLastY = 0f
+  private var isDraggingHanjaPopup = false
+  private var hanjaLoadMoreRunnable: Runnable? = null
   private var lastGeometryLogKey = ""
 
   init {
@@ -266,6 +276,7 @@ class OcrResultOverlayView(
   }
 
   fun setResult(nextResult: SerializedOcrResult) {
+    clearHanjaLoadMore()
     ocrResult = nextResult
     lookupCard = null
     hanjaPopup = null
@@ -274,6 +285,7 @@ class OcrResultOverlayView(
   }
 
   fun clearResult() {
+    clearHanjaLoadMore()
     ocrResult = null
     lookupCard = null
     hanjaPopup = null
@@ -281,6 +293,7 @@ class OcrResultOverlayView(
   }
 
   fun showLookupLoading(requestId: String, selection: OcrTapSelection) {
+    clearHanjaLoadMore()
     val wordOptions = lookupWordOptionsFor(selection)
     val activeWordIndex = wordOptions.indexOf(selection.selectedText.trim()).takeIf { it >= 0 } ?: 0
     lookupCard = LookupCard(
@@ -297,6 +310,7 @@ class OcrResultOverlayView(
       romanization = null,
       saved = false,
       alternatives = emptyList(),
+      hanjaPreloads = emptyList(),
       expandedAlternatives = false,
       savingAlternativeIndex = null,
       message = "Looking up..."
@@ -306,6 +320,7 @@ class OcrResultOverlayView(
   }
 
   fun showLookupResult(result: OverlayLookupResult) {
+    clearHanjaLoadMore()
     val selection = lookupCard?.takeIf { it.requestId == result.requestId }?.selection ?: return
     val wordOptions = lookupWordOptionsFor(selection)
     val activeWordIndex = wordOptions.indexOf(selection.selectedText.trim()).takeIf { it >= 0 } ?: 0
@@ -323,6 +338,7 @@ class OcrResultOverlayView(
       romanization = result.romanization,
       saved = result.saved,
       alternatives = result.alternatives,
+      hanjaPreloads = result.hanjaPreloads,
       expandedAlternatives = false,
       savingAlternativeIndex = null,
       message = null
@@ -389,6 +405,7 @@ class OcrResultOverlayView(
   }
 
   fun showHanjaLoading(requestId: String, character: String, sourceWord: String) {
+    clearHanjaLoadMore()
     hanjaPopup = HanjaPopup(
       requestId = requestId,
       character = character,
@@ -397,19 +414,70 @@ class OcrResultOverlayView(
       meaning = null,
       sound = null,
       relatedWords = emptyList(),
+      visibleRelatedCount = 0,
+      relatedScrollOffset = 0f,
+      loadingMoreRelated = false,
       message = "Loading hanja..."
+    )
+    invalidate()
+  }
+
+  private fun showCachedHanjaResult(sourceWord: String, result: OverlayHanjaPreload) {
+    clearHanjaLoadMore()
+    hanjaPopup = HanjaPopup(
+      requestId = "${lookupCard?.requestId.orEmpty()}:${sourceWord}:${result.character}",
+      character = result.character,
+      sourceWord = sourceWord,
+      state = HanjaPopupState.LOADED,
+      meaning = result.meaning,
+      sound = result.sound,
+      relatedWords = result.relatedWords,
+      visibleRelatedCount = min(HANJA_RELATED_PAGE_SIZE, result.relatedWords.size),
+      relatedScrollOffset = 0f,
+      loadingMoreRelated = false,
+      message = null
     )
     invalidate()
   }
 
   fun showHanjaResult(result: OverlayHanjaResult) {
     val current = hanjaPopup?.takeIf { it.requestId == result.requestId } ?: return
+    clearHanjaLoadMore()
+    lookupCard = lookupCard?.let { card ->
+      val nextPreload = OverlayHanjaPreload(
+        sourceWord = current.sourceWord,
+        character = result.character,
+        meaning = result.meaning,
+        sound = result.sound,
+        relatedWords = result.relatedWords
+      )
+      val replacedPreloads = card.hanjaPreloads.map { preload ->
+        if (preload.sourceWord == nextPreload.sourceWord && preload.character == nextPreload.character) {
+          nextPreload
+        } else {
+          preload
+        }
+      }
+      val replacedExisting = replacedPreloads.any { preload ->
+        preload.sourceWord == nextPreload.sourceWord && preload.character == nextPreload.character
+      }
+      val nextPreloads = if (replacedExisting) {
+        replacedPreloads
+      } else {
+        replacedPreloads + nextPreload
+      }
+
+      card.copy(hanjaPreloads = nextPreloads)
+    }
     hanjaPopup = current.copy(
       character = result.character,
       state = HanjaPopupState.LOADED,
       meaning = result.meaning,
       sound = result.sound,
       relatedWords = result.relatedWords,
+      visibleRelatedCount = min(HANJA_RELATED_PAGE_SIZE, result.relatedWords.size),
+      relatedScrollOffset = 0f,
+      loadingMoreRelated = false,
       message = null
     )
     invalidate()
@@ -422,8 +490,123 @@ class OcrResultOverlayView(
       meaning = null,
       sound = null,
       relatedWords = emptyList(),
+      visibleRelatedCount = 0,
+      relatedScrollOffset = 0f,
+      loadingMoreRelated = false,
       message = message.ifBlank { "Hanja lookup failed." }
     )
+    invalidate()
+  }
+
+  override fun onDetachedFromWindow() {
+    clearHanjaLoadMore()
+    super.onDetachedFromWindow()
+  }
+
+  private fun clearHanjaLoadMore() {
+    hanjaLoadMoreRunnable?.let(::removeCallbacks)
+    hanjaLoadMoreRunnable = null
+    isDraggingHanjaPopup = false
+  }
+
+  private fun visibleHanjaRelatedCount(popup: HanjaPopup): Int =
+    min(popup.visibleRelatedCount, popup.relatedWords.size)
+
+  private fun hasMoreHanjaRelatedWords(popup: HanjaPopup): Boolean =
+    visibleHanjaRelatedCount(popup) < popup.relatedWords.size
+
+  private fun cachedHanjaPreload(card: LookupCard, target: HanjaTouchRect): OverlayHanjaPreload? =
+    card.hanjaPreloads.firstOrNull { preload ->
+      preload.sourceWord == target.sourceWord && preload.character == target.character
+    }
+
+  private fun hanjaRelatedLoadMoreHeight(popup: HanjaPopup): Float =
+    if (hasMoreHanjaRelatedWords(popup) || popup.loadingMoreRelated) dp(42f) else 0f
+
+  private fun hanjaRelatedContentHeight(popup: HanjaPopup): Float =
+    visibleHanjaRelatedCount(popup) * dp(50f) + hanjaRelatedLoadMoreHeight(popup)
+
+  private fun hanjaRelatedViewportHeight(): Float {
+    if (hanjaPopupRect.isEmpty) {
+      return 0f
+    }
+
+    return (hanjaPopupRect.height() - dp(73f) - dp(32f) - dp(8f)).coerceAtLeast(0f)
+  }
+
+  private fun maxHanjaPopupScroll(popup: HanjaPopup): Float =
+    (hanjaRelatedContentHeight(popup) - hanjaRelatedViewportHeight()).coerceAtLeast(0f)
+
+  private fun scrollHanjaPopupBy(delta: Float) {
+    val popup = hanjaPopup ?: return
+    if (popup.state != HanjaPopupState.LOADED || popup.relatedWords.isEmpty()) {
+      return
+    }
+
+    val maxScroll = maxHanjaPopupScroll(popup)
+    if (maxScroll <= 0f) {
+      if (delta > dp(8f)) {
+        startHanjaLoadMore()
+      }
+      return
+    }
+
+    val nextOffset = (popup.relatedScrollOffset + delta).coerceIn(0f, maxScroll)
+    if (abs(nextOffset - popup.relatedScrollOffset) > 0.5f) {
+      hanjaPopup = popup.copy(relatedScrollOffset = nextOffset)
+      invalidate()
+    }
+
+    if (delta > 0f && nextOffset >= maxScroll - dp(8f)) {
+      startHanjaLoadMore()
+    }
+  }
+
+  private fun maybeLoadMoreHanjaAtBottom() {
+    val popup = hanjaPopup ?: return
+    if (popup.relatedScrollOffset >= maxHanjaPopupScroll(popup) - dp(8f)) {
+      startHanjaLoadMore()
+    }
+  }
+
+  private fun startHanjaLoadMore() {
+    val popup = hanjaPopup ?: return
+    if (
+      popup.state != HanjaPopupState.LOADED ||
+      popup.loadingMoreRelated ||
+      !hasMoreHanjaRelatedWords(popup)
+    ) {
+      return
+    }
+
+    clearHanjaLoadMore()
+    val requestId = popup.requestId
+    hanjaPopup = popup.copy(loadingMoreRelated = true)
+
+    val runnable = Runnable {
+      val current = hanjaPopup
+      if (current == null || current.requestId != requestId) {
+        hanjaLoadMoreRunnable = null
+        return@Runnable
+      }
+
+      val nextVisibleCount = min(
+        current.visibleRelatedCount + HANJA_RELATED_PAGE_SIZE,
+        current.relatedWords.size
+      )
+      val nextPopup = current.copy(
+        visibleRelatedCount = nextVisibleCount,
+        loadingMoreRelated = false
+      )
+      hanjaPopup = nextPopup.copy(
+        relatedScrollOffset = min(nextPopup.relatedScrollOffset, maxHanjaPopupScroll(nextPopup))
+      )
+      hanjaLoadMoreRunnable = null
+      invalidate()
+    }
+
+    hanjaLoadMoreRunnable = runnable
+    postDelayed(runnable, HANJA_LOAD_MORE_DELAY_MS)
     invalidate()
   }
 
@@ -442,8 +625,32 @@ class OcrResultOverlayView(
   override fun onTouchEvent(event: MotionEvent): Boolean {
     val currentResult = ocrResult ?: return true
 
-    if (event.action != MotionEvent.ACTION_UP) {
-      return true
+    when (event.actionMasked) {
+      MotionEvent.ACTION_DOWN -> {
+        if (hanjaPopupRect.contains(event.x, event.y)) {
+          hanjaPopupTouchStartY = event.y
+          hanjaPopupTouchLastY = event.y
+          isDraggingHanjaPopup = false
+        }
+        return true
+      }
+      MotionEvent.ACTION_MOVE -> {
+        if (hanjaPopupRect.contains(event.x, event.y)) {
+          val dy = event.y - hanjaPopupTouchLastY
+          if (abs(event.y - hanjaPopupTouchStartY) > dp(4f)) {
+            isDraggingHanjaPopup = true
+          }
+          if (dy != 0f) {
+            scrollHanjaPopupBy(-dy)
+          }
+          hanjaPopupTouchLastY = event.y
+        }
+        return true
+      }
+      MotionEvent.ACTION_CANCEL -> {
+        isDraggingHanjaPopup = false
+        return true
+      }
     }
 
     hanjaPopup?.let { popup ->
@@ -456,14 +663,38 @@ class OcrResultOverlayView(
               if (index == target.index) nextRelated else entry
             }
           )
+          lookupCard = lookupCard?.let { card ->
+            card.copy(
+              hanjaPreloads = card.hanjaPreloads.map { preload ->
+                if (preload.sourceWord == popup.sourceWord && preload.character == popup.character) {
+                  preload.copy(
+                    relatedWords = preload.relatedWords.mapIndexed { index, entry ->
+                      if (index == target.index) nextRelated else entry
+                    }
+                  )
+                } else {
+                  preload
+                }
+              }
+            )
+          }
           onRelatedKnownToggleRequested(popup.sourceWord, popup.character, nextRelated)
           invalidate()
         }
         return true
       }
-      if (hanjaPopupRect.contains(event.x, event.y)) {
+      if (hanjaLoadMoreRect.contains(event.x, event.y)) {
+        startHanjaLoadMore()
         return true
       }
+      if (hanjaPopupRect.contains(event.x, event.y)) {
+        if (isDraggingHanjaPopup) {
+          maybeLoadMoreHanjaAtBottom()
+        }
+        isDraggingHanjaPopup = false
+        return true
+      }
+      clearHanjaLoadMore()
       hanjaPopup = null
       invalidate()
     }
@@ -478,7 +709,12 @@ class OcrResultOverlayView(
         return true
       }
       hanjaTouchRects.firstOrNull { it.rect.contains(event.x, event.y) }?.let { target ->
-        onHanjaRequested(target.character, target.sourceWord)
+        val cachedHanja = cachedHanjaPreload(card, target)
+        if (cachedHanja != null) {
+          showCachedHanjaResult(target.sourceWord, cachedHanja)
+        } else {
+          onHanjaRequested(target.character, target.sourceWord)
+        }
         return true
       }
       if (moreButtonRect.contains(event.x, event.y) && card.alternatives.isNotEmpty()) {
@@ -950,15 +1186,16 @@ class OcrResultOverlayView(
   private fun drawHanjaPopup(canvas: Canvas) {
     val popup = hanjaPopup ?: return
     relatedKnownRects.clear()
+    hanjaLoadMoreRect.setEmpty()
 
     val popupWidth = if (!cardRect.isEmpty) cardRect.width() else lookupCardWidth()
     val relatedCount = if (popup.state == HanjaPopupState.LOADED) {
-      min(5, popup.relatedWords.size)
+      visibleHanjaRelatedCount(popup)
     } else {
       0
     }
     val contentHeight = if (popup.state == HanjaPopupState.LOADED && popup.relatedWords.isNotEmpty()) {
-      dp(73f) + dp(32f) + relatedCount * dp(50f) + dp(8f)
+      dp(73f) + dp(32f) + hanjaRelatedContentHeight(popup) + dp(8f)
     } else {
       dp(138f)
     }
@@ -1014,11 +1251,40 @@ class OcrResultOverlayView(
     canvas.drawText("tap ✓ to mark known", contentRight, labelBaseline, relatedHintPaint)
 
     if (popup.state == HanjaPopupState.LOADED && popup.relatedWords.isNotEmpty()) {
-      var rowTop = headerBottom + dp(32f)
+      val listTop = headerBottom + dp(32f)
+      val listBottom = hanjaPopupRect.bottom - dp(8f)
+      val maxScroll = maxHanjaPopupScroll(popup)
+      val scrollOffset = popup.relatedScrollOffset.coerceIn(0f, maxScroll)
+      val hasMore = hasMoreHanjaRelatedWords(popup)
+
+      canvas.save()
+      canvas.clipRect(contentLeft, listTop, contentRight, listBottom)
+
       popup.relatedWords.take(relatedCount).forEachIndexed { index, related ->
-        drawHanjaRelatedRow(canvas, popup, related, index, contentLeft, contentRight, rowTop)
-        rowTop += dp(50f)
+        val rowTop = listTop + index * dp(50f) - scrollOffset
+        val rowBottom = rowTop + dp(50f)
+        if (rowBottom >= listTop && rowTop <= listBottom) {
+          drawHanjaRelatedRow(canvas, popup, related, index, contentLeft, contentRight, rowTop)
+        }
       }
+
+      if (hasMore || popup.loadingMoreRelated) {
+        val loadTop = listTop + relatedCount * dp(50f) - scrollOffset
+        val loadBottom = loadTop + dp(42f)
+
+        if (loadBottom >= listTop && loadTop <= listBottom) {
+          hanjaLoadMoreRect.set(contentLeft, loadTop, contentRight, loadBottom)
+          if (popup.loadingMoreRelated) {
+            drawLoadingSpinner(canvas, hanjaLoadMoreRect.centerX(), hanjaLoadMoreRect.centerY(), dp(8f))
+          } else {
+            val label = "MORE"
+            val labelX = hanjaLoadMoreRect.centerX() - relatedHeaderPaint.measureText(label) / 2f
+            canvas.drawText(label, labelX, hanjaLoadMoreRect.centerY() + dp(4f), relatedHeaderPaint)
+          }
+        }
+      }
+
+      canvas.restore()
     } else if (popup.state != HanjaPopupState.LOADING) {
       canvas.drawText(
         "No related words available",
@@ -1046,7 +1312,7 @@ class OcrResultOverlayView(
     rowTop: Float
   ) {
     val rowBottom = rowTop + dp(50f)
-    if (index < min(5, popup.relatedWords.size) - 1) {
+    if (index < visibleHanjaRelatedCount(popup) - 1) {
       canvas.drawLine(left, rowBottom, right, rowBottom, dividerPaint)
     }
 
@@ -1069,6 +1335,16 @@ class OcrResultOverlayView(
     if (meaning.isNotEmpty()) {
       canvas.drawText(ellipsize(meaning, popupMeaningPaint, copyRight - left), left, rowTop + dp(38f), popupMeaningPaint)
     }
+  }
+
+  private fun drawLoadingSpinner(canvas: Canvas, centerX: Float, centerY: Float, radius: Float) {
+    val spinnerRect = RectF(centerX - radius, centerY - radius, centerX + radius, centerY + radius)
+    val startAngle = ((SystemClock.uptimeMillis() % 900L).toFloat() / 900f) * 360f
+    iconPaint.color = Color.rgb(155, 142, 118)
+    iconPaint.strokeWidth = dp(2f)
+    iconPaint.style = Paint.Style.STROKE
+    canvas.drawArc(spinnerRect, startAngle, 275f, false, iconPaint)
+    postInvalidateOnAnimation()
   }
 
   private fun drawKnownToggle(canvas: Canvas, rect: RectF, known: Boolean) {
@@ -1141,6 +1417,7 @@ class OcrResultOverlayView(
       romanization = null,
       saved = false,
       alternatives = emptyList(),
+      hanjaPreloads = emptyList(),
       expandedAlternatives = false,
       savingAlternativeIndex = null,
       message = "Looking up..."
@@ -1323,6 +1600,7 @@ private data class LookupCard(
   val romanization: String?,
   val saved: Boolean,
   val alternatives: List<OverlayDefinitionEntry>,
+  val hanjaPreloads: List<OverlayHanjaPreload>,
   val expandedAlternatives: Boolean,
   val savingAlternativeIndex: Int?,
   val message: String?
@@ -1435,6 +1713,9 @@ private data class HanjaPopup(
   val meaning: String?,
   val sound: String?,
   val relatedWords: List<OverlayHanjaRelatedWord>,
+  val visibleRelatedCount: Int,
+  val relatedScrollOffset: Float,
+  val loadingMoreRelated: Boolean,
   val message: String?
 )
 

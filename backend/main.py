@@ -11,7 +11,6 @@ import os
 from functools import partial
 from uuid import uuid4
 from dotenv import load_dotenv
-from hanja_router import router as hanja_router
 
 try:
     from koroman import romanize as koroman_romanize
@@ -106,8 +105,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-app.include_router(hanja_router)
 
 KRDICT_CLIENT_ID = os.getenv("KOREAN_DICTIONARY_CLIENT_ID", "").strip()
 

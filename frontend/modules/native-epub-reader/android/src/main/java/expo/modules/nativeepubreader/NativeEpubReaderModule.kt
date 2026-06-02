@@ -149,8 +149,9 @@ class NativeEpubReaderView(
   private var readerFontSizeSp = 18f
   private var readerLineHeightMultiplier = 1.5f
   private var readerTheme = "light"
-  private var highlightTerms: List<String> = emptyList()
-  private var savedHighlightRangesByPage: Map<Int, List<TextRange>> = emptyMap()
+  private var highlightTerms: List<HighlightTerm> = emptyList()
+  private var savedHighlightHitsByPage: Map<Int, List<SavedHighlightHit>> = emptyMap()
+  private var savedHighlightRangesByPage: Map<Int, List<SavedHighlightRange>> = emptyMap()
   private var activeSelectionRanges: List<TextRange> = emptyList()
   private var activeSelectionKind: ActiveSelectionKind? = null
   private var lastClearSelectionToken: Int? = null
@@ -627,7 +628,10 @@ class NativeEpubReaderView(
       activeSelectionKind = null
     }
     val didDropActiveSelection = previousActiveSelectionRanges.isNotEmpty() && activeSelectionRanges.isEmpty()
-    savedHighlightRangesByPage = buildSavedHighlightRanges(nextPages, highlightTerms)
+    savedHighlightHitsByPage = buildSavedHighlightHits(nextPages, highlightTerms)
+    savedHighlightRangesByPage = savedHighlightHitsByPage.mapValues { entry ->
+      entry.value.map { hit -> hit.toSavedHighlightRange() }
+    }
 
     val adapter = pageAdapter
     if (adapter == null) {
@@ -864,28 +868,41 @@ class NativeEpubReaderView(
     return viewPager.getChildAt(0) as? RecyclerView
   }
 
+  private fun SavedHighlightHit.toSavedHighlightRange(): SavedHighlightRange {
+    return SavedHighlightRange(
+      range = range,
+      vocabId = vocabId,
+      term = term,
+      maturity = maturity,
+      highlightTone = highlightTone
+    )
+  }
+
   private fun rebuildSavedHighlightRanges() {
-    savedHighlightRangesByPage = buildSavedHighlightRanges(pages, highlightTerms)
+    savedHighlightHitsByPage = buildSavedHighlightHits(pages, highlightTerms)
+    savedHighlightRangesByPage = savedHighlightHitsByPage.mapValues { entry ->
+      entry.value.map { hit -> hit.toSavedHighlightRange() }
+    }
     pageAdapter?.updateSavedHighlightRanges(savedHighlightRangesByPage)
     invalidateVisiblePageHighlights()
   }
 
-  private fun buildSavedHighlightRanges(
+  private fun buildSavedHighlightHits(
     sourcePages: List<ReaderPage>,
-    terms: List<String>
-  ): Map<Int, List<TextRange>> {
+    terms: List<HighlightTerm>
+  ): Map<Int, List<SavedHighlightHit>> {
     if (sourcePages.isEmpty() || terms.isEmpty()) {
       Log.d(
         TAG,
-        "saved highlight ranges built: terms=${terms.size} pages=${sourcePages.size} matches=0"
+        "saved highlight hits built: terms=${terms.size} pages=${sourcePages.size} matches=0"
       )
       return emptyMap()
     }
 
-    val rangesByPage = mutableMapOf<Int, MutableList<TextRange>>()
+    val hitsByPage = mutableMapOf<Int, MutableList<SavedHighlightHit>>()
 
     sourcePages.forEach { page ->
-      val pageRanges = mutableListOf<TextRange>()
+      val pageHits = mutableListOf<SavedHighlightHit>()
 
       page.blocks.forEach blockLoop@{ block ->
         if (block.type != "text") {
@@ -899,7 +916,8 @@ class NativeEpubReaderView(
 
         val occupiedLocalRanges = mutableListOf<Pair<Int, Int>>()
 
-        terms.forEach { term ->
+        terms.forEach { highlightTerm ->
+          val term = highlightTerm.term
           var searchStart = 0
           while (searchStart <= text.length - term.length) {
             val matchStart = text.indexOf(term, startIndex = searchStart)
@@ -913,13 +931,19 @@ class NativeEpubReaderView(
               !overlapsAny(occupiedLocalRanges, matchStart, matchEnd)
             ) {
               occupiedLocalRanges.add(matchStart to matchEnd)
-              pageRanges.add(
-                TextRange(
-                  pageIndex = page.pageIndex,
-                  spineIndex = page.spineIndex,
-                  blockId = block.blockId,
-                  sourceStartOffset = block.sourceStartOffset + matchStart,
-                  sourceEndOffset = block.sourceStartOffset + matchEnd
+              pageHits.add(
+                SavedHighlightHit(
+                  vocabId = highlightTerm.vocabId,
+                  term = highlightTerm.term,
+                  maturity = highlightTerm.maturity,
+                  highlightTone = highlightTerm.highlightTone,
+                  range = TextRange(
+                    pageIndex = page.pageIndex,
+                    spineIndex = page.spineIndex,
+                    blockId = block.blockId,
+                    sourceStartOffset = block.sourceStartOffset + matchStart,
+                    sourceEndOffset = block.sourceStartOffset + matchEnd
+                  )
                 )
               )
             }
@@ -929,29 +953,65 @@ class NativeEpubReaderView(
         }
       }
 
-      if (pageRanges.isNotEmpty()) {
-        rangesByPage[page.pageIndex] = pageRanges
-          .sortedWith(compareBy<TextRange> { it.blockId }
-            .thenBy { it.sourceStartOffset }
-            .thenBy { it.sourceEndOffset })
+      if (pageHits.isNotEmpty()) {
+        hitsByPage[page.pageIndex] = pageHits
+          .sortedWith(compareBy<SavedHighlightHit> { it.range.blockId }
+            .thenBy { it.range.sourceStartOffset }
+            .thenBy { it.range.sourceEndOffset })
           .toMutableList()
       }
     }
 
-    val matchCount = rangesByPage.values.sumOf { ranges -> ranges.size }
+    val matchCount = hitsByPage.values.sumOf { hits -> hits.size }
     Log.d(
       TAG,
-      "saved highlight ranges built: terms=${terms.size} pages=${sourcePages.size} matches=$matchCount"
+      "saved highlight hits built: terms=${terms.size} pages=${sourcePages.size} matches=$matchCount"
     )
 
-    return rangesByPage
+    return hitsByPage
   }
 
-  private fun normalizeHighlightTerms(terms: List<Any?>): List<String> {
+  private fun normalizeHighlightTerms(terms: List<Any?>): List<HighlightTerm> {
+    val seenKeys = mutableSetOf<String>()
+
     return terms
-      .mapNotNull { term -> (term as? String)?.trim()?.takeIf { it.isNotEmpty() } }
-      .distinct()
-      .sortedWith(compareByDescending<String> { it.length }.thenBy { it })
+      .mapNotNull { rawTerm ->
+        val highlightTerm = when (rawTerm) {
+          is String -> HighlightTerm(
+            vocabId = null,
+            term = rawTerm.trim()
+          )
+          else -> {
+            val termMap = rawTerm.asMap() ?: return@mapNotNull null
+            HighlightTerm(
+              vocabId = termMap.intValue("vocabId"),
+              term = termMap.stringValue("term")?.trim() ?: "",
+              maturity = termMap.stringValue("maturity")?.trim()?.takeIf { it.isNotEmpty() } ?: "new",
+              highlightTone = termMap.stringValue("highlightTone")?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: "strong"
+            )
+          }
+        }
+
+        if (highlightTerm.term.isEmpty() || highlightTerm.highlightTone == "hidden") {
+          return@mapNotNull null
+        }
+
+        highlightTerm
+      }
+      .filter { highlightTerm ->
+        val normalizedTerm = highlightTerm.term.lowercase()
+        val key = highlightTerm.vocabId
+          ?.let { vocabId -> "id:$vocabId:$normalizedTerm" }
+          ?: "term:$normalizedTerm"
+
+        if (seenKeys.contains(key)) {
+          false
+        } else {
+          seenKeys.add(key)
+          true
+        }
+      }
+      .sortedWith(compareByDescending<HighlightTerm> { it.term.length }.thenBy { it.term })
   }
 
   private fun hasTokenBoundary(
@@ -1220,13 +1280,26 @@ class NativeEpubReaderView(
       ?: ""
     val chapterPageIndex = page?.chapterPageIndex ?: logicalPageForDisplayPosition(pageIndex)
     val chapterPageCount = page?.chapterPageCount?.takeIf { it > 0 } ?: total
+    val visibleSavedWords = savedHighlightHitsByPage[pageIndex]
+      .orEmpty()
+      .mapNotNull { hit ->
+        val vocabId = hit.vocabId ?: return@mapNotNull null
+        mapOf(
+          "vocabId" to vocabId,
+          "term" to hit.term,
+          "maturity" to hit.maturity,
+          "highlightTone" to hit.highlightTone
+        )
+      }
+      .distinctBy { hit -> hit["vocabId"] }
     val event = mutableMapOf<String, Any>(
       "page" to chapterPageIndex,
       "total" to chapterPageCount,
       "globalPage" to pageIndex,
       "globalTotal" to total,
       "href" to href,
-      "firstBlockId" to (page?.blocks?.firstOrNull()?.blockId ?: "")
+      "firstBlockId" to (page?.blocks?.firstOrNull()?.blockId ?: ""),
+      "visibleSavedWords" to visibleSavedWords
     )
 
     (page?.spineIndex ?: bookManifest.intValue("currentSpineIndex"))?.let { spineIndex ->

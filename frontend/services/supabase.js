@@ -98,18 +98,78 @@ export const supabase = createClient(supabaseUrl ?? '', supabaseAnonKey ?? '', {
 
 const FILE_TAG = '[supabase]';
 
-const toUserVocabRow = (userId, entry) => ({
-  user_id: userId,
-  word: entry.word,
-  hanja: entry.hanja ?? null,
-  definition: entry.definition ?? entry.def ?? null,
-  status: entry.status ?? entry.level ?? 'unorganized',
-});
+const USER_VOCAB_SELECT = [
+  'word',
+  'hanja',
+  'definition',
+  'status',
+  'encounter_count',
+  'last_encountered_at',
+  'last_encounter_source_uri',
+  'last_encounter_source_title',
+  'maturity',
+  'graduated_at',
+  'implicit_review_count',
+  'last_reviewed_at',
+  'next_review_at',
+  'correct_count',
+  'wrong_count',
+].join(', ');
+
+const firstDefined = (...values) => values.find((value) => value !== undefined);
+
+const countValue = (value) => {
+  if (value === undefined) return undefined;
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? Math.max(0, Math.trunc(numberValue)) : 0;
+};
+
+const addIfDefined = (row, key, value) => {
+  if (value !== undefined) {
+    row[key] = value;
+  }
+};
+
+const addLearningFields = (row, entry) => {
+  addIfDefined(row, 'encounter_count', countValue(firstDefined(entry.encounter_count, entry.encounterCount)));
+  addIfDefined(row, 'last_encountered_at', firstDefined(entry.last_encountered_at, entry.lastEncounteredAt));
+  addIfDefined(row, 'last_encounter_source_uri', firstDefined(entry.last_encounter_source_uri, entry.lastEncounterSourceUri));
+  addIfDefined(row, 'last_encounter_source_title', firstDefined(entry.last_encounter_source_title, entry.lastEncounterSourceTitle));
+  addIfDefined(row, 'maturity', firstDefined(entry.maturity));
+  addIfDefined(row, 'graduated_at', firstDefined(entry.graduated_at, entry.graduatedAt));
+  addIfDefined(row, 'implicit_review_count', countValue(firstDefined(entry.implicit_review_count, entry.implicitReviewCount)));
+  addIfDefined(row, 'last_reviewed_at', firstDefined(entry.last_reviewed_at, entry.lastReviewedAt));
+  addIfDefined(row, 'next_review_at', firstDefined(entry.next_review_at, entry.nextReviewAt));
+  addIfDefined(row, 'correct_count', countValue(firstDefined(entry.correct_count, entry.correctCount)));
+  addIfDefined(row, 'wrong_count', countValue(firstDefined(entry.wrong_count, entry.wrongCount)));
+};
+
+const toUserVocabRow = (userId, entry) => {
+  const row = {
+    user_id: userId,
+    word: entry.word,
+    hanja: entry.hanja ?? null,
+    definition: entry.definition ?? entry.def ?? null,
+    status: entry.status ?? entry.level ?? 'unorganized',
+  };
+
+  addLearningFields(row, entry);
+  return row;
+};
+
+const toUserVocabPatch = (entry, status) => {
+  const patch = {
+    status: status ?? entry.status ?? entry.level ?? 'unorganized',
+  };
+
+  addLearningFields(patch, entry);
+  return patch;
+};
 
 export const fetchUserVocab = async (userId) => {
   const { data, error } = await supabase
     .from('user_vocab')
-    .select('word, hanja, definition, status')
+    .select(USER_VOCAB_SELECT)
     .eq('user_id', userId);
 
   if (error) {
@@ -171,9 +231,10 @@ export const deleteUserVocabEntry = async (userId, entry) => {
 };
 
 export const updateUserVocabStatus = async (userId, entry, status) => {
+  const patch = toUserVocabPatch(entry, status);
   let query = supabase
     .from('user_vocab')
-    .update({ status })
+    .update(patch)
     .eq('user_id', userId)
     .eq('word', entry.word)
     .eq('definition', entry.definition ?? entry.def ?? null);

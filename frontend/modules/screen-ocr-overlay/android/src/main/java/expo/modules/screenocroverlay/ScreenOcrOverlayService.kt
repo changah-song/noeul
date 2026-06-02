@@ -375,7 +375,8 @@ class ScreenOcrOverlayService : Service() {
       romanization = nullableStringValue(result["romanization"]),
       saved = boolValue(result["saved"]) ?: false,
       sourceSentence = stringValue(result["sourceSentence"]).ifBlank { selectedTarget?.lineText.orEmpty() },
-      alternatives = parseDefinitionEntries(result["alternatives"])
+      alternatives = parseDefinitionEntries(result["alternatives"]),
+      hanjaPreloads = parseHanjaPreloads(result["hanjaPreloads"])
     )
   }
 
@@ -413,6 +414,25 @@ class ScreenOcrOverlayService : Service() {
       sound = nullableStringValue(result["sound"]),
       relatedWords = parseHanjaRelatedWords(result["relatedWords"])
     )
+  }
+
+  private fun parseHanjaPreloads(value: Any?): List<OverlayHanjaPreload> {
+    val rows = value as? List<*> ?: return emptyList()
+    return rows.mapNotNull { item ->
+      val map = item as? Map<*, *> ?: return@mapNotNull null
+      val character = stringValue(map["character"])
+      if (character.isBlank()) {
+        return@mapNotNull null
+      }
+
+      OverlayHanjaPreload(
+        sourceWord = stringValue(map["sourceWord"]),
+        character = character,
+        meaning = nullableStringValue(map["meaning"]),
+        sound = nullableStringValue(map["sound"]),
+        relatedWords = parseHanjaRelatedWords(map["relatedWords"])
+      )
+    }
   }
 
   private fun parseHanjaRelatedWords(value: Any?): List<OverlayHanjaRelatedWord> {

@@ -14,16 +14,18 @@ const BookWordSection = ({
   onCycleStatus,
   onCyclePriority,
   onRemoveWord,
+  onSelectWord,
 }) => {
-  const masteredCount = section.words.filter((word) => word.level === 'good').length;
   const favoriteCount = section.words.filter((word) => word.is_favorite).length;
+  const encounterTotal = section.words.reduce((total, word) => total + (Number(word.encounter_count) || 0), 0);
   const progress = typeof section.progress === 'number'
     ? section.progress
     : section.words.length > 0
-      ? masteredCount / section.words.length
+      ? section.words.reduce((total, word) => total + Math.min((Number(word.encounter_count) || 0) / 9, 1), 0) / section.words.length
       : 0;
-  const meta = section.meta ?? `${section.words.length} saved words · ${masteredCount} mastered${favoriteCount ? ` · ${favoriteCount} favorites` : ''}`;
+  const meta = section.meta ?? `${section.words.length} saved words · ${encounterTotal} encounters${favoriteCount ? ` · ${favoriteCount} favorites` : ''}`;
   const actionLabel = section.practiceLabel ?? 'Practice';
+  const progressWidth = section.words.length ? `${Math.max(progress * 100, 6)}%` : '0%';
 
   return (
     <Card style={styles.card} contentStyle={styles.cardContent}>
@@ -52,7 +54,7 @@ const BookWordSection = ({
       </View>
 
       <View style={styles.progressTrack}>
-        <View style={[styles.progressFill, { width: `${Math.max(progress * 100, 6)}%` }]} />
+        <View style={[styles.progressFill, { width: progressWidth }]} />
       </View>
 
       {expanded ? (
@@ -61,6 +63,7 @@ const BookWordSection = ({
             <WordRow
               key={`${word.word}-${word.hanja ?? ''}-${word.def ?? ''}`}
               vocab={word}
+              onPress={() => onSelectWord?.(word)}
               onToggleFavorite={() => onToggleFavorite(word)}
               onCycleStatus={() => onCycleStatus(word)}
               onCyclePriority={() => onCyclePriority(word)}
