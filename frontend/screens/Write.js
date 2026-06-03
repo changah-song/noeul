@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
+  Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -9,30 +11,81 @@ import {
   View,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Feather, MaterialIcons } from '@expo/vector-icons';
+import { Feather } from '@expo/vector-icons';
 
 import { Card, IconButton, Screen, SectionHeader } from '../components/ui';
+import {
+  ANNOTATION_COLORS,
+  ANNOTATION_LEGEND,
+  MOCK_WRITING_ENTRY_ID,
+  buildAnnotatedSpans,
+  createMockWritingEntry,
+} from '../services/writingAssessmentMock';
 import { colors, radii, spacing, textStyles } from '../theme';
 
 const STORAGE_KEY = 'writing_entries_v1';
-const DEFAULT_PROMPT = 'Write about something that happened today, and describe how it made you feel.';
 
-const defaultFormat = {
-  fontSize: 18,
-  lineHeight: 29,
-  serif: false,
-};
+const PROMPT_CATEGORIES = [
+  {
+    title: 'Comprehension & summary',
+    prompts: [
+      'Summarize what happened in this chapter/book in your own words',
+      'Who are the main characters and what do they want?',
+      'What was the most important moment and why?',
+    ],
+  },
+  {
+    title: 'Reaction & opinion',
+    prompts: [
+      'What surprised you most and why?',
+      'Which character do you relate to most?',
+      'What would you have done differently if you were the main character?',
+      "Did you enjoy it? What worked and what didn't?",
+    ],
+  },
+  {
+    title: 'Themes & meaning',
+    prompts: [
+      'What is the author trying to say about human nature?',
+      'What is the central conflict and how is it resolved?',
+      "What does the title mean to you now that you've read it?",
+    ],
+  },
+  {
+    title: 'Personal connection',
+    prompts: [
+      'Does anything in this story remind you of your own life?',
+      'Has this changed how you think about anything?',
+      'Would you recommend this to a friend and how would you describe it?',
+    ],
+  },
+  {
+    title: 'Prediction & continuation',
+    prompts: [
+      'What do you think happens next?',
+      'If there were a sequel, what would it be about?',
+      'How do you think this will end?',
+    ],
+  },
+  {
+    title: 'Language-focused',
+    prompts: [
+      'Write about a scene using at least 3 new words you learned while reading it',
+      'Retell a key moment from the perspective of a different character',
+      "Describe the setting as if explaining it to someone who hasn't read the book",
+    ],
+  },
+];
 
 const makeEmptyDraft = () => ({
   id: null,
   title: '',
-  content: '',
-  prompt: DEFAULT_PROMPT,
+  body: '',
+  prompt: '',
+  date: null,
   createdAt: null,
   updatedAt: null,
-  submittedAt: null,
-  review: null,
-  format: defaultFormat,
+  status: 'draft',
 });
 
 const formatEntryDate = (value) => {
@@ -49,52 +102,245 @@ const formatEntryDate = (value) => {
   }
 };
 
-const buildReview = (draft) => {
-  const content = draft.content.trim();
-  const koreanCharCount = (content.match(/[\uAC00-\uD7A3]/g) ?? []).length;
-  const englishWordCount = (content.match(/[A-Za-z]+/g) ?? []).length;
-  const sentenceCount = content
-    .split(/[.!?。！？\n]+/)
-    .map((part) => part.trim())
-    .filter(Boolean).length;
+const formatStatusLabel = (status) => {
+  if (!status) return 'Draft';
+  return status
+    .split(/[-_]/)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+};
 
-  const strengths = [];
-  const revisionNotes = [];
-
-  if (koreanCharCount > 80) {
-    strengths.push('You sustained Korean for a full paragraph instead of stopping after a few short phrases.');
-  } else {
-    strengths.push('You got the idea down clearly, which is the most important part of building a writing habit.');
-  }
-
-  if (sentenceCount >= 3) {
-    strengths.push('Your writing has a natural sense of progression from one sentence to the next.');
-  }
-
-  if (englishWordCount > 0) {
-    revisionNotes.push('You used a few English placeholders, which is fine for drafting. On the next pass, replace one or two of them with Korean alternatives.');
-  } else {
-    revisionNotes.push('Try one follow-up revision that makes the verbs a little more specific or vivid.');
-  }
-
-  if (content.length < 80) {
-    revisionNotes.push('Add one more sentence with a concrete detail so the piece feels more grounded.');
-  } else {
-    revisionNotes.push('Look for one sentence you can tighten so the rhythm feels cleaner.');
-  }
+const normalizeEntry = (entry = {}, index = 0) => {
+  const body = typeof entry.body === 'string' ? entry.body : entry.content ?? '';
+  const date = entry.date ?? entry.createdAt ?? entry.updatedAt ?? new Date().toISOString();
+  const title = typeof entry.title === 'string' && entry.title.trim()
+    ? entry.title.trim()
+    : '[Untitled]';
+  const assessment = entry.assessment ?? entry.review;
 
   return {
-    summary: 'Solid draft with a clear idea and room for one focused revision pass.',
-    strengths,
-    revisionNotes,
-    encouragedAt: new Date().toISOString(),
+    id: entry.id ?? `entry-${index}-${Date.now()}`,
+    title,
+    body,
+    prompt: entry.prompt ?? '',
+    date,
+    createdAt: entry.createdAt ?? date,
+    updatedAt: entry.updatedAt ?? date,
+    status: entry.status ?? (assessment ? 'reviewed' : 'draft'),
+    ...(assessment ? { assessment } : {}),
   };
+};
+
+const ensureMockEntry = (entries) => {
+  const mockEntry = createMockWritingEntry();
+  const hasMockEntry = entries.some((entry) => entry.id === MOCK_WRITING_ENTRY_ID);
+
+  if (!hasMockEntry) {
+    return [mockEntry, ...entries];
+  }
+
+  return entries.map((entry) => {
+    if (entry.id !== MOCK_WRITING_ENTRY_ID) {
+      return entry;
+    }
+
+    return normalizeEntry({
+      ...mockEntry,
+      ...entry,
+      assessment: entry.assessment ?? mockEntry.assessment,
+    });
+  });
+};
+
+const getExpandedStateForPrompt = (prompt) => {
+  const selectedCategory = PROMPT_CATEGORIES.find((category) =>
+    category.prompts.includes(prompt)
+  );
+
+  return {
+    [(selectedCategory ?? PROMPT_CATEGORIES[0]).title]: true,
+  };
+};
+
+const getAnnotationLabel = (type) =>
+  ANNOTATION_LEGEND.find((item) => item.type === type)?.label ?? type;
+
+const TypeBadge = ({ type }) => {
+  const color = ANNOTATION_COLORS[type] ?? colors.textMuted;
+
+  return (
+    <View style={[styles.typeBadge, { borderColor: color }]}>
+      <View style={[styles.typeBadgeDot, { backgroundColor: color }]} />
+      <Text style={[styles.typeBadgeText, { color }]}>{getAnnotationLabel(type)}</Text>
+    </View>
+  );
+};
+
+const AnnotationLegend = () => (
+  <View style={styles.legend}>
+    {ANNOTATION_LEGEND.map((item) => (
+      <View key={item.type} style={styles.legendItem}>
+        <View style={[styles.legendDot, { backgroundColor: item.color }]} />
+        <Text style={styles.legendLabel}>{item.label}</Text>
+      </View>
+    ))}
+  </View>
+);
+
+const AnnotatedEntry = ({ text, annotations, onAnnotationPress }) => {
+  const spans = buildAnnotatedSpans(text, annotations);
+
+  return (
+    <Text selectable style={styles.assessmentEntryText}>
+      {spans.map((span, index) => {
+        if (span.type === 'plain') {
+          return <Text key={`plain-${index}`}>{span.text}</Text>;
+        }
+
+        const color = ANNOTATION_COLORS[span.annotation.type] ?? colors.accentStrong;
+
+        return (
+          <Text
+            key={`${span.annotation.id}-${index}`}
+            onPress={() => onAnnotationPress(span.annotation)}
+            style={[
+              styles.annotatedText,
+              {
+                color,
+                textDecorationColor: color,
+              },
+            ]}
+          >
+            {span.text}
+          </Text>
+        );
+      })}
+    </Text>
+  );
+};
+
+const AnnotationSheet = ({ annotation, onClose }) => (
+  <Modal
+    visible={Boolean(annotation)}
+    animationType="slide"
+    transparent
+    onRequestClose={onClose}
+  >
+    <View style={styles.sheetRoot}>
+      <Pressable style={styles.sheetScrim} onPress={onClose} />
+      {annotation ? (
+        <View style={styles.sheetPanel}>
+          <View style={styles.sheetHandle} />
+          <View style={styles.sheetHeader}>
+            <View style={styles.sheetHeaderCopy}>
+              <TypeBadge type={annotation.type} />
+              <Text selectable style={styles.sheetOriginal}>
+                {annotation.original}
+              </Text>
+            </View>
+            <TouchableOpacity onPress={onClose} style={styles.sheetCloseButton}>
+              <Feather name="x" size={18} color={colors.text} />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={styles.sheetScrollContent}
+          >
+            <Text selectable style={styles.sheetExplanation}>
+              {annotation.explanation}
+            </Text>
+
+            <View style={styles.suggestionList}>
+              {(annotation.suggestions ?? []).map((suggestion, index) => (
+                <View key={`${annotation.id}-suggestion-${index}`} style={styles.suggestionRow}>
+                  <Text selectable style={styles.suggestionText}>
+                    {suggestion}
+                  </Text>
+                  {annotation.suggestion_notes?.[index] ? (
+                    <Text selectable style={styles.suggestionNote}>
+                      {annotation.suggestion_notes[index]}
+                    </Text>
+                  ) : null}
+                </View>
+              ))}
+            </View>
+          </ScrollView>
+        </View>
+      ) : null}
+    </View>
+  </Modal>
+);
+
+const SummaryList = ({ title, items }) => {
+  if (!items?.length) {
+    return null;
+  }
+
+  return (
+    <Card style={styles.summaryCard} contentStyle={styles.summaryCardContent} subtle>
+      <Text style={styles.summaryTitle}>{title}</Text>
+      <View style={styles.summaryItemList}>
+        {items.map((item, index) => (
+          <View key={`${title}-${index}`} style={styles.summaryItem}>
+            <View style={styles.summaryBullet} />
+            <Text selectable style={styles.summaryText}>
+              {item}
+            </Text>
+          </View>
+        ))}
+      </View>
+    </Card>
+  );
+};
+
+const AssessmentSummary = ({ summary }) => {
+  if (!summary) {
+    return null;
+  }
+
+  return (
+    <View style={styles.assessmentSummary}>
+      <SummaryList title="Patterns" items={summary.patterns} />
+      <SummaryList title="Strengths" items={summary.strengths} />
+
+      {summary.vocab_items?.length ? (
+        <View style={styles.vocabSection}>
+          <Text style={styles.summaryTitle}>Vocabulary</Text>
+          {summary.vocab_items.map((item) => (
+            <Card key={item.word} style={styles.vocabCard} contentStyle={styles.vocabCardContent} subtle>
+              <View style={styles.vocabHeader}>
+                <Text selectable style={styles.vocabWord}>
+                  {item.word}
+                </Text>
+                <IconButton
+                  label="Save"
+                  disabled
+                  icon={<Feather name="bookmark" size={14} color={colors.text} />}
+                  style={styles.vocabSaveButton}
+                />
+              </View>
+              <Text selectable style={styles.vocabMeaning}>
+                {item.meaning}
+              </Text>
+              <Text selectable style={styles.vocabExample}>
+                {item.example}
+              </Text>
+            </Card>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
 };
 
 const Write = () => {
   const [entries, setEntries] = useState([]);
   const [mode, setMode] = useState('list');
   const [draft, setDraft] = useState(makeEmptyDraft());
+  const [selectedEntryId, setSelectedEntryId] = useState(null);
+  const [selectedAnnotation, setSelectedAnnotation] = useState(null);
+  const [expandedCategories, setExpandedCategories] = useState(getExpandedStateForPrompt(''));
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -102,9 +348,18 @@ const Write = () => {
       try {
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
         const parsed = raw ? JSON.parse(raw) : [];
-        setEntries(Array.isArray(parsed) ? parsed : []);
+        const normalizedEntries = Array.isArray(parsed) ? parsed.map(normalizeEntry) : [];
+        const seededEntries = ensureMockEntry(normalizedEntries);
+        setEntries(seededEntries);
+
+        if (JSON.stringify(seededEntries) !== JSON.stringify(normalizedEntries)) {
+          await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(seededEntries));
+        }
       } catch (error) {
         console.error('[Write] Failed to load entries:', error);
+        const fallbackEntries = ensureMockEntry([]);
+        setEntries(fallbackEntries);
+        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(fallbackEntries));
       } finally {
         setLoading(false);
       }
@@ -121,24 +376,36 @@ const Write = () => {
   const sortedEntries = useMemo(
     () =>
       [...entries].sort(
-        (a, b) => new Date(b.updatedAt ?? b.createdAt ?? 0) - new Date(a.updatedAt ?? a.createdAt ?? 0)
+        (a, b) => new Date(b.updatedAt ?? b.date ?? 0) - new Date(a.updatedAt ?? a.date ?? 0)
       ),
     [entries]
   );
+  const selectedEntry = useMemo(
+    () => entries.find((entry) => entry.id === selectedEntryId),
+    [entries, selectedEntryId]
+  );
+
+  const canSave = draft.title.trim().length > 0 || draft.body.trim().length > 0;
 
   const openNewDraft = () => {
     setDraft(makeEmptyDraft());
+    setSelectedEntryId(null);
+    setSelectedAnnotation(null);
+    setExpandedCategories(getExpandedStateForPrompt(''));
     setMode('editor');
   };
 
+  const openEntryDetail = (entry) => {
+    setSelectedEntryId(entry.id);
+    setSelectedAnnotation(null);
+    setMode('detail');
+  };
+
   const openExistingDraft = (entry) => {
-    setDraft({
-      ...entry,
-      format: {
-        ...defaultFormat,
-        ...(entry.format ?? {}),
-      },
-    });
+    const normalizedEntry = normalizeEntry(entry);
+    setDraft(normalizedEntry);
+    setExpandedCategories(getExpandedStateForPrompt(normalizedEntry.prompt));
+    setSelectedAnnotation(null);
     setMode('editor');
   };
 
@@ -147,22 +414,31 @@ const Write = () => {
     setMode('list');
   };
 
-  const saveDraft = async ({ submit = false } = {}) => {
-    if (!draft.title.trim() && !draft.content.trim()) {
-      leaveEditor();
+  const leaveDetail = () => {
+    setSelectedEntryId(null);
+    setSelectedAnnotation(null);
+    setMode('list');
+  };
+
+  const saveEntry = async () => {
+    if (!canSave) {
       return;
     }
 
     const now = new Date().toISOString();
+    const existingEntry = entries.find((entry) => entry.id === draft.id);
+    const preservedAssessment =
+      draft.assessment && existingEntry?.body === draft.body ? draft.assessment : null;
     const nextEntry = {
-      ...draft,
       id: draft.id ?? `entry-${Date.now()}`,
-      title: draft.title.trim() || 'Untitled entry',
-      content: draft.content,
+      title: draft.title.trim() || '[Untitled]',
+      body: draft.body,
+      prompt: draft.prompt,
+      date: draft.date ?? now,
       createdAt: draft.createdAt ?? now,
       updatedAt: now,
-      submittedAt: submit ? now : draft.submittedAt,
-      review: submit ? buildReview(draft) : draft.review,
+      status: preservedAssessment ? draft.status ?? 'reviewed' : 'draft',
+      ...(preservedAssessment ? { assessment: preservedAssessment } : {}),
     };
 
     const existingIndex = entries.findIndex((entry) => entry.id === nextEntry.id);
@@ -171,16 +447,14 @@ const Write = () => {
       : [nextEntry, ...entries];
 
     await persistEntries(nextEntries);
-    setDraft(nextEntry);
-
-    if (submit) {
-      Alert.alert('Review added', 'Your writing now includes a saved review section you can revisit later.');
-    }
+    leaveEditor();
   };
 
   const deleteEntry = async (entryId) => {
     const nextEntries = entries.filter((entry) => entry.id !== entryId);
     await persistEntries(nextEntries);
+    setSelectedEntryId(null);
+    setSelectedAnnotation(null);
     leaveEditor();
   };
 
@@ -188,23 +462,18 @@ const Write = () => {
     setDraft((prev) => ({ ...prev, ...patch }));
   };
 
-  const updateFormat = (patch) => {
-    setDraft((prev) => ({
+  const togglePromptCategory = (categoryTitle) => {
+    setExpandedCategories((prev) => ({
       ...prev,
-      format: {
-        ...prev.format,
-        ...patch,
-      },
+      [categoryTitle]: !prev[categoryTitle],
     }));
   };
-
-  const currentFontFamily = draft.format.serif ? 'FFSerif-Regular' : 'FFSans-Regular';
 
   if (loading) {
     return (
       <Screen>
         <View style={styles.loadingWrap}>
-          <Text style={styles.loadingText}>Loading your writing desk…</Text>
+          <Text style={styles.loadingText}>Loading your writing...</Text>
         </View>
       </Screen>
     );
@@ -216,56 +485,56 @@ const Write = () => {
         <View style={styles.stack}>
           <SectionHeader
             eyebrow="Write"
-            title="Your writing desk"
-            subtitle="Short Korean entries, saved reviews, and a gentle place to keep practicing."
+            title="Recent writing"
+            subtitle="Review your latest entries or start a new one."
             action={
               <IconButton
                 tone="accent"
-                label="New"
+                label="New Entry"
                 onPress={openNewDraft}
                 icon={<Feather name="plus" size={16} color={colors.accentStrong} />}
               />
             }
           />
 
-          <Card tone="muted" style={styles.heroCard} contentStyle={styles.heroContent}>
-            <View style={styles.heroCopy}>
-              <Text style={styles.heroTitle}>Today&apos;s prompt</Text>
-              <Text style={styles.heroPrompt}>{DEFAULT_PROMPT}</Text>
-            </View>
-            <TouchableOpacity onPress={openNewDraft} style={styles.heroButton}>
-              <Text style={styles.heroButtonLabel}>Start writing</Text>
-            </TouchableOpacity>
-          </Card>
-
-          <SectionHeader
-            eyebrow="Entries"
-            title="Recent writing"
-            subtitle="Each draft keeps its review attached after you submit it."
-          />
-
           {sortedEntries.length === 0 ? (
-            <Card style={styles.emptyCard}>
-              <Text style={styles.emptyTitle}>No writing yet</Text>
-              <Text style={styles.emptyBody}>
-                Start with a short paragraph in Korean. You can use English for words you don&apos;t know yet.
-              </Text>
+            <Card style={styles.emptyCard} contentStyle={styles.emptyContent}>
+              <View style={styles.emptyCopy}>
+                <Text style={styles.emptyTitle}>No writing yet</Text>
+                <Text style={styles.emptyBody}>
+                  Start a short entry and it will appear here.
+                </Text>
+              </View>
+              <IconButton
+                tone="accent"
+                label="New Entry"
+                onPress={openNewDraft}
+                icon={<Feather name="plus" size={16} color={colors.accentStrong} />}
+              />
             </Card>
           ) : (
             <View style={styles.entryList}>
               {sortedEntries.map((entry) => (
-                <Pressable key={entry.id} onPress={() => openExistingDraft(entry)} style={styles.entryPressable}>
+                <Pressable key={entry.id} onPress={() => openEntryDetail(entry)} style={styles.entryPressable}>
                   <Card style={styles.entryCard} contentStyle={styles.entryCardContent} subtle>
-                    <Text style={styles.entryDate}>{formatEntryDate(entry.createdAt)}</Text>
-                    <Text style={styles.entryTitle}>{entry.title}</Text>
-                    <Text style={styles.entryPreview} numberOfLines={2}>
-                      {entry.content || 'Open this entry to keep writing.'}
-                    </Text>
-                    <View style={styles.entryFooter}>
-                      <Text style={styles.entryFooterText}>
-                        {entry.review ? 'Review attached' : 'Draft'}
-                      </Text>
+                    <View style={styles.entryMainRow}>
+                      <View style={styles.entryCopy}>
+                        <Text style={styles.entryDate}>{formatEntryDate(entry.date)}</Text>
+                        <Text style={styles.entryTitle} numberOfLines={1}>
+                          {entry.title}
+                        </Text>
+                        <Text style={styles.entryPreview} numberOfLines={2}>
+                          {entry.body || 'No body text yet.'}
+                        </Text>
+                      </View>
                       <Feather name="chevron-right" size={16} color={colors.textSubtle} />
+                    </View>
+
+                    <View style={styles.entryMetaRow}>
+                      <Text style={styles.entryPrompt} numberOfLines={1}>
+                        {entry.prompt || 'No prompt selected'}
+                      </Text>
+                      <Text style={styles.entryStatus}>{formatStatusLabel(entry.status)}</Text>
                     </View>
                   </Card>
                 </Pressable>
@@ -273,12 +542,87 @@ const Write = () => {
             </View>
           )}
         </View>
+      ) : mode === 'detail' && selectedEntry ? (
+        <View style={styles.stack}>
+          <SectionHeader
+            eyebrow="Entry"
+            title={selectedEntry.title}
+            subtitle={`${formatEntryDate(selectedEntry.date)} - ${formatStatusLabel(selectedEntry.status)}`}
+            action={
+              <TouchableOpacity onPress={leaveDetail} style={styles.backButton}>
+                <Feather name="arrow-left" size={16} color={colors.text} />
+                <Text style={styles.backButtonLabel}>Back</Text>
+              </TouchableOpacity>
+            }
+          />
+
+          {selectedEntry.prompt ? (
+            <Card tone="muted" style={styles.detailPromptCard} contentStyle={styles.detailPromptContent}>
+              <Text style={styles.selectedPromptLabel}>Prompt</Text>
+              <Text selectable style={styles.selectedPromptText}>
+                {selectedEntry.prompt}
+              </Text>
+            </Card>
+          ) : null}
+
+          {selectedEntry.assessment ? (
+            <>
+              <AnnotationLegend />
+              <Card style={styles.assessmentCard} contentStyle={styles.assessmentCardContent}>
+                <AnnotatedEntry
+                  text={selectedEntry.body}
+                  annotations={selectedEntry.assessment.annotations}
+                  onAnnotationPress={setSelectedAnnotation}
+                />
+              </Card>
+              <AssessmentSummary summary={selectedEntry.assessment.summary} />
+            </>
+          ) : (
+            <>
+              <Card style={styles.assessmentCard} contentStyle={styles.assessmentCardContent}>
+                <Text selectable style={styles.assessmentEntryText}>
+                  {selectedEntry.body || 'No body text yet.'}
+                </Text>
+              </Card>
+              <Card tone="muted" style={styles.detailPromptCard} contentStyle={styles.detailPromptContent}>
+                <Text style={styles.selectedPromptLabel}>Assessment</Text>
+                <Text style={styles.selectedPromptText}>
+                  Feedback has not been run for this entry yet.
+                </Text>
+              </Card>
+            </>
+          )}
+
+          <View style={styles.detailActions}>
+            <IconButton
+              label="Edit"
+              onPress={() => openExistingDraft(selectedEntry)}
+              icon={<Feather name="edit-3" size={15} color={colors.text} />}
+              style={styles.actionButton}
+            />
+            <IconButton
+              label="Delete"
+              onPress={() =>
+                Alert.alert(
+                  'Delete entry',
+                  'Remove this writing from your recent entries?',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Delete', style: 'destructive', onPress: () => deleteEntry(selectedEntry.id) },
+                  ]
+                )
+              }
+              icon={<Feather name="trash-2" size={15} color={colors.danger} />}
+              style={styles.actionButton}
+            />
+          </View>
+        </View>
       ) : (
         <View style={styles.stack}>
           <SectionHeader
             eyebrow="Write"
-            title={draft.id ? 'Edit writing' : 'New writing'}
-            subtitle="Write in Korean and use English only for the words you do not know yet."
+            title={draft.id ? 'Edit entry' : 'New entry'}
+            subtitle="Choose a prompt, add a title, and write your response."
             action={
               <TouchableOpacity onPress={leaveEditor} style={styles.backButton}>
                 <Feather name="arrow-left" size={16} color={colors.text} />
@@ -287,9 +631,57 @@ const Write = () => {
             }
           />
 
-          <Card tone="muted" style={styles.promptCard} contentStyle={styles.promptContent}>
-            <Text style={styles.promptLabel}>Prompt</Text>
-            <Text style={styles.promptText}>{draft.prompt}</Text>
+          <Card tone="muted" style={styles.promptSelectorCard} contentStyle={styles.promptSelectorContent}>
+            <Text style={styles.promptSelectorTitle}>Prompts</Text>
+            <View style={styles.categoryList}>
+              {PROMPT_CATEGORIES.map((category) => {
+                const expanded = Boolean(expandedCategories[category.title]);
+
+                return (
+                  <View key={category.title} style={styles.categoryGroup}>
+                    <Pressable
+                      onPress={() => togglePromptCategory(category.title)}
+                      style={styles.categoryHeader}
+                    >
+                      <Text style={styles.categoryTitle}>{category.title}</Text>
+                      <Feather
+                        name={expanded ? 'chevron-up' : 'chevron-down'}
+                        size={16}
+                        color={colors.textMuted}
+                      />
+                    </Pressable>
+
+                    {expanded ? (
+                      <View style={styles.promptOptionList}>
+                        {category.prompts.map((prompt) => {
+                          const selected = draft.prompt === prompt;
+
+                          return (
+                            <Pressable
+                              key={prompt}
+                              onPress={() => updateDraft({ prompt })}
+                              style={[
+                                styles.promptOption,
+                                selected && styles.promptOptionSelected,
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  styles.promptOptionText,
+                                  selected && styles.promptOptionTextSelected,
+                                ]}
+                              >
+                                {prompt}
+                              </Text>
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    ) : null}
+                  </View>
+                );
+              })}
+            </View>
           </Card>
 
           <Card style={styles.editorCard} contentStyle={styles.editorContent}>
@@ -301,105 +693,48 @@ const Write = () => {
               style={styles.titleInput}
             />
 
-            <View style={styles.toolRow}>
-              <Text style={styles.toolLabel}>Formatting</Text>
-              <View style={styles.toolButtons}>
-                <TouchableOpacity
-                  onPress={() => updateFormat({ fontSize: Math.max(15, draft.format.fontSize - 1), lineHeight: Math.max(24, draft.format.lineHeight - 2) })}
-                  style={styles.toolButton}
-                >
-                  <Text style={styles.toolButtonText}>A-</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => updateFormat({ fontSize: Math.min(24, draft.format.fontSize + 1), lineHeight: Math.min(38, draft.format.lineHeight + 2) })}
-                  style={styles.toolButton}
-                >
-                  <Text style={styles.toolButtonText}>A+</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => updateFormat({ serif: !draft.format.serif })}
-                  style={[styles.toolButton, draft.format.serif && styles.toolButtonActive]}
-                >
-                  <MaterialIcons
-                    name="text-fields"
-                    size={17}
-                    color={draft.format.serif ? colors.accentStrong : colors.textMuted}
-                  />
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => updateFormat({
-                    lineHeight: draft.format.lineHeight > 29 ? 27 : 33,
-                  })}
-                  style={styles.toolButton}
-                >
-                  <Feather name="align-left" size={16} color={colors.textMuted} />
-                </TouchableOpacity>
-              </View>
+            <View style={styles.selectedPromptBox}>
+              <Text style={styles.selectedPromptLabel}>Selected prompt</Text>
+              <Text style={[styles.selectedPromptText, !draft.prompt && styles.selectedPromptPlaceholder]}>
+                {draft.prompt || 'Choose a prompt above, or write without one.'}
+              </Text>
             </View>
 
-            <Text style={styles.helperText}>
-              Write in Korean and use English for words you don&apos;t know yet.
-            </Text>
-
             <TextInput
-              value={draft.content}
-              onChangeText={(content) => updateDraft({ content })}
-              placeholder="Start writing here…"
+              value={draft.body}
+              onChangeText={(body) => updateDraft({ body })}
+              placeholder="Start writing here..."
               placeholderTextColor={colors.textSubtle}
               multiline
               textAlignVertical="top"
-              style={[
-                styles.editorInput,
-                {
-                  fontSize: draft.format.fontSize,
-                  lineHeight: draft.format.lineHeight,
-                  fontFamily: currentFontFamily,
-                },
-              ]}
+              style={styles.editorInput}
             />
 
             <View style={styles.editorActions}>
               <IconButton
-                label="Save draft"
-                onPress={() => saveDraft()}
+                label="Save Draft"
+                onPress={saveEntry}
+                disabled={!canSave}
                 icon={<Feather name="save" size={15} color={colors.text} />}
+                style={styles.actionButton}
               />
               <IconButton
                 tone="accent"
                 label="Submit"
-                onPress={() => saveDraft({ submit: true })}
-                icon={<Feather name="sparkles" size={15} color={colors.accentStrong} />}
+                onPress={saveEntry}
+                disabled={!canSave}
+                icon={<Feather name="check" size={15} color={colors.accentStrong} />}
+                style={styles.actionButton}
               />
             </View>
           </Card>
-
-          {draft.review ? (
-            <Card style={styles.reviewCard} contentStyle={styles.reviewContent}>
-              <Text style={styles.reviewLabel}>AI Review</Text>
-              <Text style={styles.reviewSummary}>{draft.review.summary}</Text>
-
-              <View style={styles.reviewSection}>
-                <Text style={styles.reviewSectionTitle}>What is working</Text>
-                {draft.review.strengths.map((item, index) => (
-                  <Text key={index} style={styles.reviewBullet}>• {item}</Text>
-                ))}
-              </View>
-
-              <View style={styles.reviewSection}>
-                <Text style={styles.reviewSectionTitle}>Next revision pass</Text>
-                {draft.review.revisionNotes.map((item, index) => (
-                  <Text key={index} style={styles.reviewBullet}>• {item}</Text>
-                ))}
-              </View>
-            </Card>
-          ) : null}
 
           {draft.id ? (
             <TouchableOpacity
               onPress={() =>
                 Alert.alert(
-                  'Delete writing',
-                  'Remove this writing from your journal?',
+                  'Delete entry',
+                  'Remove this writing from your recent entries?',
                   [
                     { text: 'Cancel', style: 'cancel' },
                     { text: 'Delete', style: 'destructive', onPress: () => deleteEntry(draft.id) },
@@ -413,6 +748,10 @@ const Write = () => {
           ) : null}
         </View>
       )}
+      <AnnotationSheet
+        annotation={selectedAnnotation}
+        onClose={() => setSelectedAnnotation(null)}
+      />
     </Screen>
   );
 };
@@ -422,7 +761,7 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.xl * 2,
   },
   stack: {
-    gap: spacing.lg,
+    gap: spacing.md,
   },
   loadingWrap: {
     flex: 1,
@@ -432,67 +771,64 @@ const styles = StyleSheet.create({
   loadingText: {
     ...textStyles.bodyMuted,
   },
-  heroCard: {
-    borderRadius: radii.xl,
-  },
-  heroContent: {
-    gap: spacing.lg,
-  },
-  heroCopy: {
-    gap: spacing.xs,
-  },
-  heroTitle: {
-    ...textStyles.title,
-  },
-  heroPrompt: {
-    ...textStyles.body,
-  },
-  heroButton: {
-    alignSelf: 'flex-start',
-    backgroundColor: colors.accentSoft,
-    borderRadius: radii.pill,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-  },
-  heroButtonLabel: {
-    ...textStyles.label,
-    color: colors.accentStrong,
-  },
   entryList: {
-    gap: spacing.md,
+    gap: spacing.sm,
   },
   entryPressable: {
-    borderRadius: radii.xl,
+    borderRadius: radii.md,
   },
   entryCard: {
-    borderRadius: radii.xl,
+    borderRadius: radii.md,
   },
   entryCardContent: {
     gap: spacing.sm,
+    paddingVertical: spacing.md,
+  },
+  entryMainRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  entryCopy: {
+    flex: 1,
+    gap: spacing.xxs,
   },
   entryDate: {
     ...textStyles.eyebrow,
   },
   entryTitle: {
-    ...textStyles.sectionTitle,
+    ...textStyles.label,
+    color: colors.text,
   },
   entryPreview: {
     ...textStyles.bodyMuted,
   },
-  entryFooter: {
+  entryMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: spacing.sm,
   },
-  entryFooterText: {
+  entryPrompt: {
     ...textStyles.caption,
+    flex: 1,
+  },
+  entryStatus: {
+    ...textStyles.caption,
+    color: colors.textMuted,
+    textTransform: 'capitalize',
   },
   emptyCard: {
-    borderRadius: radii.xl,
+    borderRadius: radii.md,
+  },
+  emptyContent: {
+    gap: spacing.md,
+  },
+  emptyCopy: {
+    gap: spacing.xs,
   },
   emptyTitle: {
     ...textStyles.sectionTitle,
-    marginBottom: spacing.xs,
   },
   emptyBody: {
     ...textStyles.bodyMuted,
@@ -512,99 +848,330 @@ const styles = StyleSheet.create({
     ...textStyles.label,
     color: colors.text,
   },
-  promptCard: {
-    borderRadius: radii.xl,
+  promptSelectorCard: {
+    borderRadius: radii.md,
   },
-  promptContent: {
+  promptSelectorContent: {
+    gap: spacing.sm,
+    paddingVertical: spacing.md,
+  },
+  promptSelectorTitle: {
+    ...textStyles.label,
+    color: colors.text,
+  },
+  categoryList: {
     gap: spacing.xs,
   },
-  promptLabel: {
-    ...textStyles.eyebrow,
+  categoryGroup: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.sm,
+    backgroundColor: colors.surface,
+    overflow: 'hidden',
   },
-  promptText: {
-    ...textStyles.body,
+  categoryHeader: {
+    minHeight: 42,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  categoryTitle: {
+    ...textStyles.label,
+    color: colors.text,
+    flex: 1,
+  },
+  promptOptionList: {
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    padding: spacing.xs,
+    gap: spacing.xs,
+  },
+  promptOption: {
+    borderRadius: radii.xs,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+  },
+  promptOptionSelected: {
+    backgroundColor: colors.accentSoft,
+  },
+  promptOptionText: {
+    ...textStyles.bodyMuted,
+  },
+  promptOptionTextSelected: {
+    color: colors.accentStrong,
+    fontFamily: 'FFSans-Medium',
   },
   editorCard: {
-    borderRadius: radii.xl,
+    borderRadius: radii.md,
   },
   editorContent: {
     gap: spacing.md,
   },
   titleInput: {
-    ...textStyles.title,
+    ...textStyles.sectionTitle,
+    minHeight: 42,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
     padding: 0,
     color: colors.text,
   },
-  toolRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: spacing.md,
-    flexWrap: 'wrap',
-  },
-  toolLabel: {
-    ...textStyles.caption,
-  },
-  toolButtons: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  selectedPromptBox: {
+    borderRadius: radii.sm,
+    backgroundColor: colors.surfaceMuted,
+    padding: spacing.md,
     gap: spacing.xs,
   },
-  toolButton: {
-    minWidth: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: colors.surfaceMuted,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: spacing.xs,
+  selectedPromptLabel: {
+    ...textStyles.eyebrow,
   },
-  toolButtonActive: {
-    backgroundColor: colors.accentSoft,
+  selectedPromptText: {
+    ...textStyles.body,
   },
-  toolButtonText: {
-    ...textStyles.label,
-    color: colors.textMuted,
-  },
-  helperText: {
-    ...textStyles.caption,
+  selectedPromptPlaceholder: {
+    color: colors.textSubtle,
   },
   editorInput: {
-    minHeight: 280,
-    borderRadius: radii.lg,
+    minHeight: 260,
+    borderRadius: radii.sm,
     backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.md,
     color: colors.text,
+    fontFamily: 'FFSans-Regular',
+    fontSize: 16,
+    lineHeight: 24,
   },
   editorActions: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     gap: spacing.sm,
   },
-  reviewCard: {
-    borderRadius: radii.xl,
+  actionButton: {
+    flex: 1,
   },
-  reviewContent: {
-    gap: spacing.md,
+  detailPromptCard: {
+    borderRadius: radii.md,
   },
-  reviewLabel: {
-    ...textStyles.eyebrow,
+  detailPromptContent: {
+    gap: spacing.xs,
+    paddingVertical: spacing.md,
   },
-  reviewSummary: {
-    ...textStyles.body,
+  detailActions: {
+    flexDirection: 'row',
+    gap: spacing.sm,
   },
-  reviewSection: {
+  assessmentCard: {
+    borderRadius: radii.md,
+  },
+  assessmentCardContent: {
+    paddingVertical: spacing.lg,
+  },
+  assessmentEntryText: {
+    color: colors.text,
+    fontFamily: 'FFSerif-Regular',
+    fontSize: 17,
+    lineHeight: 31,
+  },
+  annotatedText: {
+    fontFamily: 'FFSerif-SemiBold',
+    textDecorationLine: 'underline',
+    textDecorationStyle: 'solid',
+  },
+  legend: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: spacing.xs,
   },
-  reviewSectionTitle: {
+  legendItem: {
+    minHeight: 28,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.pill,
+    backgroundColor: colors.surface,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xxs,
+  },
+  legendDot: {
+    width: 8,
+    height: 8,
+    borderRadius: radii.pill,
+  },
+  legendLabel: {
+    ...textStyles.caption,
+    color: colors.textMuted,
+  },
+  typeBadge: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    borderWidth: 1,
+    borderRadius: radii.pill,
+    backgroundColor: colors.surface,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xxs,
+  },
+  typeBadgeDot: {
+    width: 8,
+    height: 8,
+    borderRadius: radii.pill,
+  },
+  typeBadgeText: {
+    ...textStyles.caption,
+  },
+  sheetRoot: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  sheetScrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: colors.overlay,
+  },
+  sheetPanel: {
+    maxHeight: '82%',
+    borderTopLeftRadius: radii.lg,
+    borderTopRightRadius: radii.lg,
+    backgroundColor: colors.surfaceElevated,
+    paddingTop: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.xl,
+  },
+  sheetHandle: {
+    alignSelf: 'center',
+    width: 42,
+    height: 4,
+    borderRadius: radii.pill,
+    backgroundColor: colors.border,
+    marginBottom: spacing.md,
+  },
+  sheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: spacing.md,
+  },
+  sheetHeaderCopy: {
+    flex: 1,
+    gap: spacing.sm,
+  },
+  sheetOriginal: {
+    ...textStyles.sectionTitle,
+    color: colors.text,
+  },
+  sheetCloseButton: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radii.pill,
+    backgroundColor: colors.surfaceMuted,
+  },
+  sheetScrollContent: {
+    gap: spacing.md,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.xl,
+  },
+  sheetExplanation: {
+    ...textStyles.body,
+  },
+  suggestionList: {
+    gap: spacing.sm,
+  },
+  suggestionRow: {
+    gap: spacing.xs,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.sm,
+    backgroundColor: colors.surface,
+    padding: spacing.md,
+  },
+  suggestionText: {
+    ...textStyles.label,
+    color: colors.text,
+    fontSize: 15,
+    lineHeight: 22,
+  },
+  suggestionNote: {
+    ...textStyles.bodyMuted,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  assessmentSummary: {
+    gap: spacing.sm,
+  },
+  summaryCard: {
+    borderRadius: radii.md,
+  },
+  summaryCardContent: {
+    gap: spacing.sm,
+    paddingVertical: spacing.md,
+  },
+  summaryTitle: {
     ...textStyles.label,
     color: colors.text,
   },
-  reviewBullet: {
+  summaryItemList: {
+    gap: spacing.sm,
+  },
+  summaryItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+  },
+  summaryBullet: {
+    width: 6,
+    height: 6,
+    borderRadius: radii.pill,
+    backgroundColor: colors.accentStrong,
+    marginTop: 8,
+  },
+  summaryText: {
     ...textStyles.bodyMuted,
+    flex: 1,
+  },
+  vocabSection: {
+    gap: spacing.sm,
+  },
+  vocabCard: {
+    borderRadius: radii.md,
+  },
+  vocabCardContent: {
+    gap: spacing.sm,
+    paddingVertical: spacing.md,
+  },
+  vocabHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  vocabWord: {
+    ...textStyles.label,
+    color: colors.text,
+    flex: 1,
+    fontSize: 15,
+    lineHeight: 22,
+  },
+  vocabSaveButton: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  vocabMeaning: {
+    ...textStyles.bodyMuted,
+  },
+  vocabExample: {
+    color: colors.text,
+    fontFamily: 'FFSerif-Regular',
+    fontSize: 15,
+    lineHeight: 24,
   },
   deleteLink: {
     alignSelf: 'center',
