@@ -31,56 +31,8 @@ const EMPTY_SONG_DRAFT = { title: '', artist: '', lyrics: '' };
 
 const BOOK_FILTERS = [
     { id: 'library', label: 'My library' },
-    { id: 'classics', label: 'Classics' },
-    { id: 'public-domain', label: 'Public domain' },
+    { id: 'public-domain', label: 'Public domain', badge: 'Soon' },
 ];
-
-const DIFFICULTY_FILTERS = ['All levels', 'Beginner', 'Intermediate', 'Advanced'];
-
-const BROWSE_CATALOGS = {
-    classics: {
-        id: 'classics',
-        eyebrow: 'AI-SUMMARIZED',
-        title: 'Classics',
-        subtitle: 'Long books, rewritten short · 8 books',
-        shelfCopy: 'Long classics, rewritten short',
-        emptyTitle: 'Classics, made readable.',
-        emptyCopy: 'Long, dense classics rewritten in plain Korean at your level.',
-        emptyButton: 'Browse 8 classics',
-        emptyFootnote: 'Powered by AI · adapts to your level',
-        books: [
-            { id: 'demian', title: 'Demian', author: 'Hermann Hesse', authorShort: 'HERMANN HESSE', difficulty: 'Intermediate', length: '18 min', color: '#344934', titleColor: '#f6eddc' },
-            { id: 'crime-punishment', title: 'Crime and Punishment', author: 'Dostoevsky', authorShort: 'DOSTOYEVSKY', difficulty: 'Advanced', length: '45 min', color: '#633a2e', titleColor: '#f6eddc' },
-            { id: 'stranger', title: 'The Stranger', author: 'Albert Camus', authorShort: 'ALBERT CAMUS', difficulty: 'Beginner', length: '22 min', color: '#9a884b', titleColor: '#1f1a14' },
-            { id: 'norwegian-wood', title: 'Norwegian Wood', author: 'Haruki Murakami', authorShort: 'HARUKI MURAKAMI', difficulty: 'Intermediate', length: '31 min', color: '#2b5968', titleColor: '#f6eddc' },
-            { id: 'metamorphosis', title: 'The Metamorphosis', author: 'Franz Kafka', authorShort: 'FRANZ KAFKA', difficulty: 'Beginner', length: '16 min', color: '#343434', titleColor: '#f0d39a' },
-            { id: 'kitchen', title: 'Kitchen', author: 'Banana Yoshimoto', authorShort: 'BANANA YOSHIMOTO', difficulty: 'Beginner', length: '20 min', color: '#6a4052', titleColor: '#ead6dc' },
-            { id: 'siddhartha', title: 'Siddhartha', author: 'Hermann Hesse', authorShort: 'HERMANN HESSE', difficulty: 'Intermediate', length: '26 min', color: '#725337', titleColor: '#f6eddc' },
-            { id: 'dorian-gray', title: 'Dorian Gray', author: 'Oscar Wilde', authorShort: 'OSCAR WILDE', difficulty: 'Advanced', length: '36 min', color: '#283e48', titleColor: '#f2d674' },
-        ],
-    },
-    'public-domain': {
-        id: 'public-domain',
-        eyebrow: 'PUBLIC DOMAIN',
-        title: 'Public domain',
-        subtitle: 'Full Korean text · free forever · 8 books',
-        shelfCopy: 'Free books, full Korean text',
-        emptyTitle: 'Free books, full text.',
-        emptyCopy: 'Classic works in their complete Korean translation, free forever.',
-        emptyButton: 'Browse 8+ books',
-        emptyFootnote: 'Public domain · free forever',
-        books: [
-            { id: 'pride-prejudice', title: 'Pride and Prejudice', author: 'Jane Austen', authorShort: 'JANE AUSTEN', difficulty: 'Advanced', length: '61 ch.', color: '#794621', titleColor: '#f6eddc' },
-            { id: 'gatsby', title: 'The Great Gatsby', author: 'F. S. Fitzgerald', authorShort: 'F. S. FITZGERALD', difficulty: 'Intermediate', length: '9 ch.', color: '#1f3340', titleColor: '#f2d674' },
-            { id: 'walden', title: 'Walden', author: 'H. D. Thoreau', authorShort: 'H. D. THOREAU', difficulty: 'Advanced', length: '18 ch.', color: '#475f37', titleColor: '#f6eddc' },
-            { id: 'frankenstein', title: 'Frankenstein', author: 'Mary Shelley', authorShort: 'MARY SHELLEY', difficulty: 'Advanced', length: '24 ch.', color: '#2d2d2b', titleColor: '#e0b27a' },
-            { id: 'alice', title: "Alice's Adventures", author: 'Lewis Carroll', authorShort: 'LEWIS CARROLL', difficulty: 'Beginner', length: '12 ch.', color: '#255d5b', titleColor: '#f6eddc' },
-            { id: 'jane-eyre', title: 'Jane Eyre', author: 'Charlotte Bronte', authorShort: 'CHARLOTTE BRONTE', difficulty: 'Advanced', length: '38 ch.', color: '#5f4438', titleColor: '#f6eddc' },
-            { id: 'sherlock', title: 'Sherlock Holmes', author: 'Arthur Conan Doyle', authorShort: 'A. C. DOYLE', difficulty: 'Intermediate', length: '12 ch.', color: '#384a4d', titleColor: '#e9d4a0' },
-            { id: 'secret-garden', title: 'The Secret Garden', author: 'Frances Hodgson Burnett', authorShort: 'F. H. BURNETT', difficulty: 'Beginner', length: '27 ch.', color: '#58663f', titleColor: '#f6eddc' },
-        ],
-    },
-};
 
 const BOOK_COVER_PALETTES = [
     { background: '#17172c', foreground: '#ff2f86' },
@@ -207,46 +159,11 @@ const BookCover = ({ book, width, height, index, style, titleStyle }) => {
     );
 };
 
-const CatalogBookCover = ({ book, width, height, style, compact = false }) => (
-    <View style={[
-        styles.catalogCover,
-        {
-            width,
-            height,
-            backgroundColor: book.color,
-        },
-        style,
-    ]}>
-        <Text
-            style={[
-                styles.catalogCoverTitle,
-                compact && styles.catalogCoverTitleCompact,
-                { color: book.titleColor },
-            ]}
-            numberOfLines={3}
-        >
-            {book.title}
-        </Text>
-        <Text
-            style={[
-                styles.catalogCoverAuthor,
-                compact && styles.catalogCoverAuthorCompact,
-                { color: book.titleColor },
-            ]}
-            numberOfLines={2}
-        >
-            {book.authorShort || book.author}
-        </Text>
-    </View>
-);
-
 const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpen, navigation }) => {
     const [editBook, setEditBook] = useState(null);
     const [editDraft, setEditDraft] = useState({ title: '', author: '', cover: '' });
     const [activeLibraryTab, setActiveLibraryTab] = useState('Books');
     const [activeBookFilter, setActiveBookFilter] = useState('library');
-    const [browseCatalogId, setBrowseCatalogId] = useState(null);
-    const [activeDifficulty, setActiveDifficulty] = useState('All levels');
     const [songs, setSongs] = useState([]);
     const [songsLoaded, setSongsLoaded] = useState(false);
     const [songQuery, setSongQuery] = useState('');
@@ -282,27 +199,10 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     );
     const bookTileWidth = Math.floor((contentWidth - (BOOK_GRID_GAP * 2)) / 3);
     const bookCoverHeight = Math.round(bookTileWidth * 1.34);
-    const catalogTileWidth = Math.floor((contentWidth - BOOK_GRID_GAP) / 2);
-    const catalogCoverHeight = Math.round(catalogTileWidth * 1.44);
     const bookFilterCounts = useMemo(() => ({
         library: books.length,
-        classics: 0,
         'public-domain': 0,
     }), [books.length]);
-    const activeShelfCatalog = BROWSE_CATALOGS[activeBookFilter] ?? null;
-    const activeBookFilterCount = bookFilterCounts[activeBookFilter] ?? 0;
-    const browseCatalog = browseCatalogId ? BROWSE_CATALOGS[browseCatalogId] : null;
-    const filteredBrowseBooks = useMemo(() => {
-        if (!browseCatalog) {
-            return [];
-        }
-
-        if (activeDifficulty === 'All levels') {
-            return browseCatalog.books;
-        }
-
-        return browseCatalog.books.filter((book) => book.difficulty === activeDifficulty);
-    }, [activeDifficulty, browseCatalog]);
     const selectedSong = useMemo(() => (
         songs.find((song) => song.id === selectedSongId) ?? null
     ), [selectedSongId, songs]);
@@ -413,7 +313,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     }, [selectedSong, selectedSongId]);
 
     useEffect(() => {
-        const shouldHideTabBar = !!browseCatalog || !!selectedSong;
+        const shouldHideTabBar = !!selectedSong;
 
         navigation?.setOptions({
             tabBarStyle: shouldHideTabBar ? { display: 'none' } : tabBarBaseStyle,
@@ -424,7 +324,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 tabBarStyle: tabBarBaseStyle,
             });
         };
-    }, [browseCatalog, navigation, selectedSong]);
+    }, [navigation, selectedSong]);
 
     const updateBookRecord = useCallback((uri, patch) => {
         setBooks((prevBooks) => prevBooks.map((book) => (
@@ -606,22 +506,6 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         }
     }, [openingSongId]);
 
-    const openBrowseCatalog = useCallback((catalogId) => {
-        setBrowseCatalogId(catalogId);
-        setActiveDifficulty('All levels');
-    }, []);
-
-    const closeBrowseCatalog = useCallback(() => {
-        setBrowseCatalogId(null);
-    }, []);
-
-    const handlePlaceholderBookPress = useCallback((book) => {
-        Alert.alert(
-            book.title,
-            'This is placeholder catalog content for now.'
-        );
-    }, []);
-
     if (selectedSong) {
         return (
             <SongReader
@@ -635,99 +519,6 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     )));
                 }}
             />
-        );
-    }
-
-    if (browseCatalog) {
-        return (
-            <Screen scroll contentContainerStyle={styles.browseScreenContent}>
-                <View style={styles.browseTopBar}>
-                    <TouchableOpacity
-                        activeOpacity={0.78}
-                        onPress={closeBrowseCatalog}
-                        style={styles.browseIconButton}
-                    >
-                        <Feather name="chevron-left" size={30} color={colors.text} />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        activeOpacity={0.78}
-                        onPress={() => Alert.alert('Search', 'Search is placeholder-only for now.')}
-                        style={styles.browseIconButton}
-                    >
-                        <Feather name="search" size={25} color={colors.textMuted} />
-                    </TouchableOpacity>
-                </View>
-
-                <View style={styles.browseTitleBlock}>
-                    <Text style={styles.browseEyebrow}>{browseCatalog.eyebrow}</Text>
-                    <Text style={styles.browseTitle}>{browseCatalog.title}</Text>
-                    <Text style={styles.browseSubtitle}>{browseCatalog.subtitle}</Text>
-                </View>
-
-                <ScrollView
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    contentContainerStyle={styles.difficultyFilters}
-                >
-                    {DIFFICULTY_FILTERS.map((difficulty) => {
-                        const isActive = activeDifficulty === difficulty;
-
-                        return (
-                            <TouchableOpacity
-                                key={difficulty}
-                                activeOpacity={0.84}
-                                onPress={() => setActiveDifficulty(difficulty)}
-                                style={[
-                                    styles.difficultyChip,
-                                    isActive && styles.difficultyChipActive,
-                                ]}
-                            >
-                                <Text style={[
-                                    styles.difficultyChipText,
-                                    isActive && styles.difficultyChipTextActive,
-                                ]}>
-                                    {difficulty}
-                                </Text>
-                            </TouchableOpacity>
-                        );
-                    })}
-                </ScrollView>
-
-                <View style={styles.catalogGrid}>
-                    {filteredBrowseBooks.map((book) => (
-                        <View
-                            key={book.id}
-                            style={[
-                                styles.catalogTile,
-                                { width: catalogTileWidth },
-                            ]}
-                        >
-                            <CatalogBookCover
-                                book={book}
-                                width={catalogTileWidth}
-                                height={catalogCoverHeight}
-                            />
-                            <Text style={styles.catalogMeta} numberOfLines={1}>
-                                {book.difficulty.toUpperCase()} · {book.length}
-                            </Text>
-                            <Text style={styles.catalogBookTitle} numberOfLines={2}>
-                                {book.title}
-                            </Text>
-                            <Text style={styles.catalogBookAuthor} numberOfLines={1}>
-                                {book.author}
-                            </Text>
-                            <TouchableOpacity
-                                activeOpacity={0.84}
-                                onPress={() => handlePlaceholderBookPress(book)}
-                                style={styles.catalogAddButton}
-                            >
-                                <Feather name="plus" size={17} color={colors.text} />
-                                <Text style={styles.catalogAddButtonText}>Add to library</Text>
-                            </TouchableOpacity>
-                        </View>
-                    ))}
-                </View>
-            </Screen>
         );
     }
 
@@ -870,6 +661,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                         {BOOK_FILTERS.map((filter) => {
                             const isActive = activeBookFilter === filter.id;
                             const count = bookFilterCounts[filter.id] ?? 0;
+                            const badge = filter.badge ?? count;
 
                             return (
                                 <TouchableOpacity
@@ -891,7 +683,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                         styles.bookFilterChipCount,
                                         isActive && styles.bookFilterChipCountActive,
                                     ]}>
-                                        {count}
+                                        {badge}
                                     </Text>
                                 </TouchableOpacity>
                             );
@@ -970,71 +762,15 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                 </TouchableOpacity>
                             </View>
                         </>
-                    ) : activeShelfCatalog && activeBookFilterCount === 0 ? (
-                        <View style={styles.emptyCatalogPanel}>
-                            <View style={styles.emptyStack}>
-                                {activeShelfCatalog.books.slice(0, 3).map((book, index) => (
-                                    <CatalogBookCover
-                                        key={book.id}
-                                        book={book}
-                                        width={82}
-                                        height={116}
-                                        compact
-                                        style={[
-                                            styles.emptyStackCover,
-                                            {
-                                                marginLeft: index === 0 ? 0 : -24,
-                                                transform: [{ rotate: `${[-8, 2, 8][index]}deg` }],
-                                                zIndex: index === 1 ? 3 : 2,
-                                            },
-                                        ]}
-                                    />
-                                ))}
+                    ) : activeBookFilter === 'public-domain' ? (
+                        <View style={styles.publicDomainComingSoonPanel}>
+                            <View style={styles.publicDomainIcon}>
+                                <Feather name="book-open" size={24} color={colors.accentStrong} />
                             </View>
-                            <Text style={styles.emptyCatalogTitle}>
-                                {activeShelfCatalog.emptyTitle}
+                            <Text style={styles.publicDomainTitle}>Public domain coming soon</Text>
+                            <Text style={styles.publicDomainCopy}>
+                                Free public domain reading will land here in a later update.
                             </Text>
-                            <Text style={styles.emptyCatalogCopy}>
-                                {activeShelfCatalog.emptyCopy}
-                            </Text>
-                            <TouchableOpacity
-                                activeOpacity={0.86}
-                                onPress={() => openBrowseCatalog(activeBookFilter)}
-                                style={styles.emptyCatalogButton}
-                            >
-                                <Text style={styles.emptyCatalogButtonText}>
-                                    {activeShelfCatalog.emptyButton}
-                                </Text>
-                                <Feather name="arrow-right" size={18} color={colors.white} />
-                            </TouchableOpacity>
-                            <Text style={styles.emptyCatalogFootnote}>
-                                {activeShelfCatalog.emptyFootnote}
-                            </Text>
-                        </View>
-                    ) : activeShelfCatalog ? (
-                        <View style={styles.categoryPreviewSection}>
-                            <View style={styles.categoryPreviewHeader}>
-                                <Text style={styles.categoryPreviewCopy}>
-                                    {activeShelfCatalog.shelfCopy}
-                                </Text>
-                                <TouchableOpacity
-                                    activeOpacity={0.84}
-                                    onPress={() => openBrowseCatalog(activeBookFilter)}
-                                >
-                                    <Text style={styles.categoryBrowseLink}>Browse →</Text>
-                                </TouchableOpacity>
-                            </View>
-                            <View style={styles.bookGrid}>
-                                <TouchableOpacity
-                                    activeOpacity={0.88}
-                                    onPress={() => openBrowseCatalog(activeBookFilter)}
-                                    style={[styles.addBookTile, { width: bookTileWidth, height: bookCoverHeight }]}
-                                >
-                                    <Feather name="plus" size={30} color={colors.textSubtle} />
-                                    <Text style={styles.addBookText}>Browse</Text>
-                                    <Text style={styles.addBookSubtext}>8+</Text>
-                                </TouchableOpacity>
-                            </View>
                         </View>
                     ) : null}
                 </View>
@@ -1323,156 +1059,6 @@ const styles = StyleSheet.create({
     stack: {
         gap: spacing.lg,
     },
-    browseScreenContent: {
-        flexGrow: 1,
-        paddingHorizontal: spacing.md,
-        paddingTop: spacing.sm,
-        paddingBottom: spacing.xxxl,
-        gap: spacing.md,
-    },
-    browseTopBar: {
-        minHeight: 36,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-    },
-    browseIconButton: {
-        width: 38,
-        height: 38,
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderRadius: 19,
-    },
-    browseTitleBlock: {
-        gap: 2,
-    },
-    browseEyebrow: {
-        ...textStyles.eyebrow,
-        fontSize: 13,
-        lineHeight: 17,
-        color: colors.accent,
-        letterSpacing: 3,
-    },
-    browseTitle: {
-        fontFamily: fontFamilies.serifBold,
-        fontSize: 37,
-        lineHeight: 45,
-        color: colors.text,
-        includeFontPadding: true,
-        letterSpacing: 0,
-    },
-    browseSubtitle: {
-        ...textStyles.body,
-        fontSize: 16,
-        lineHeight: 22,
-        color: colors.textMuted,
-    },
-    difficultyFilters: {
-        gap: spacing.sm,
-        paddingRight: spacing.md,
-        paddingVertical: spacing.xs,
-    },
-    difficultyChip: {
-        height: 42,
-        alignItems: 'center',
-        justifyContent: 'center',
-        paddingHorizontal: spacing.lg,
-        borderRadius: 999,
-        borderWidth: 1,
-        borderColor: '#eadfcb',
-        backgroundColor: '#fffaf2',
-    },
-    difficultyChipActive: {
-        borderColor: colors.text,
-        backgroundColor: colors.text,
-    },
-    difficultyChipText: {
-        ...textStyles.sectionTitle,
-        fontSize: 15,
-        lineHeight: 20,
-        color: colors.textMuted,
-        letterSpacing: 0,
-    },
-    difficultyChipTextActive: {
-        color: colors.white,
-    },
-    catalogGrid: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        gap: BOOK_GRID_GAP,
-        paddingTop: spacing.xs,
-    },
-    catalogTile: {
-        gap: 4,
-        marginBottom: spacing.lg,
-    },
-    catalogCover: {
-        justifyContent: 'space-between',
-        padding: spacing.md,
-        borderRadius: 4,
-        overflow: 'hidden',
-        backgroundColor: colors.surfaceMuted,
-        boxShadow: '0 8px 14px rgba(41, 28, 14, 0.10)',
-    },
-    catalogCoverTitle: {
-        fontFamily: fontFamilies.serifBold,
-        fontSize: 19,
-        lineHeight: 23,
-        letterSpacing: 0,
-    },
-    catalogCoverTitleCompact: {
-        fontSize: 13,
-        lineHeight: 16,
-    },
-    catalogCoverAuthor: {
-        fontFamily: fontFamilies.serifBold,
-        fontSize: 12,
-        lineHeight: 16,
-        letterSpacing: 1.3,
-        opacity: 0.78,
-    },
-    catalogCoverAuthorCompact: {
-        fontSize: 8,
-        lineHeight: 11,
-        letterSpacing: 0.7,
-    },
-    catalogMeta: {
-        ...textStyles.eyebrow,
-        marginTop: spacing.xs,
-        color: colors.textSubtle,
-        letterSpacing: 1.1,
-    },
-    catalogBookTitle: {
-        fontFamily: fontFamilies.serifBold,
-        fontSize: 20,
-        lineHeight: 24,
-        color: colors.text,
-        letterSpacing: 0,
-    },
-    catalogBookAuthor: {
-        ...textStyles.body,
-        fontSize: 15,
-        lineHeight: 20,
-        color: colors.textMuted,
-    },
-    catalogAddButton: {
-        height: 42,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: spacing.xs,
-        marginTop: spacing.xs,
-        borderRadius: 999,
-        borderWidth: 1,
-        borderColor: '#eadfcb',
-        backgroundColor: '#fffaf2',
-    },
-    catalogAddButtonText: {
-        ...textStyles.sectionTitle,
-        fontSize: 15,
-        lineHeight: 20,
-        letterSpacing: 0,
-    },
     continueCard: {
         minHeight: 68,
         flexDirection: 'row',
@@ -1731,84 +1317,42 @@ const styles = StyleSheet.create({
         color: colors.accentStrong,
         letterSpacing: 0,
     },
-    emptyCatalogPanel: {
-        alignItems: 'center',
-        paddingTop: spacing.xl,
-        gap: spacing.md,
-    },
-    emptyStack: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        minHeight: 136,
-        marginBottom: spacing.md,
-    },
-    emptyStackCover: {
-        borderRadius: 4,
-    },
-    emptyCatalogTitle: {
-        fontFamily: fontFamilies.serifBold,
-        maxWidth: 340,
-        textAlign: 'center',
-        fontSize: 28,
-        lineHeight: 34,
-        color: colors.text,
-        letterSpacing: 0,
-    },
-    emptyCatalogCopy: {
-        ...textStyles.body,
-        maxWidth: 360,
-        textAlign: 'center',
-        fontSize: 16,
-        lineHeight: 24,
-        color: colors.textMuted,
-    },
-    emptyCatalogButton: {
-        height: 54,
-        flexDirection: 'row',
+    publicDomainComingSoonPanel: {
+        minHeight: 178,
         alignItems: 'center',
         justifyContent: 'center',
         gap: spacing.sm,
-        marginTop: spacing.xs,
         paddingHorizontal: spacing.xl,
-        borderRadius: 999,
-        backgroundColor: colors.text,
+        paddingVertical: spacing.xl,
+        borderRadius: 18,
+        borderWidth: 1,
+        borderStyle: 'dashed',
+        borderColor: '#e6d7bf',
+        backgroundColor: '#fffaf2',
     },
-    emptyCatalogButtonText: {
-        ...textStyles.sectionTitle,
-        fontSize: 16,
-        lineHeight: 20,
-        color: colors.white,
-        letterSpacing: 0,
-    },
-    emptyCatalogFootnote: {
-        ...textStyles.body,
-        fontSize: 13,
-        lineHeight: 18,
-        color: colors.textSubtle,
-    },
-    categoryPreviewSection: {
-        gap: spacing.md,
-    },
-    categoryPreviewHeader: {
-        flexDirection: 'row',
+    publicDomainIcon: {
+        width: 48,
+        height: 48,
         alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: spacing.md,
+        justifyContent: 'center',
+        borderRadius: 24,
+        backgroundColor: colors.accentSoft,
     },
-    categoryPreviewCopy: {
-        ...textStyles.body,
-        flex: 1,
-        fontSize: 15,
-        lineHeight: 20,
-        color: colors.textSubtle,
-    },
-    categoryBrowseLink: {
-        ...textStyles.sectionTitle,
-        fontSize: 15,
-        lineHeight: 20,
-        color: colors.accentStrong,
+    publicDomainTitle: {
+        fontFamily: fontFamilies.serifBold,
+        fontSize: 24,
+        lineHeight: 30,
+        textAlign: 'center',
+        color: colors.text,
         letterSpacing: 0,
+    },
+    publicDomainCopy: {
+        ...textStyles.body,
+        maxWidth: 330,
+        textAlign: 'center',
+        fontSize: 15,
+        lineHeight: 22,
+        color: colors.textSubtle,
     },
     bookGrid: {
         flexDirection: 'row',
