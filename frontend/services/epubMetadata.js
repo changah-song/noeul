@@ -781,7 +781,6 @@ const extractEpubZip = async (zip, sourceUri, fallbackName = '', sourceSignature
     const existingMetadata = await readJsonFile(metaUri);
 
     if (extractionMetadataMatches(existingMetadata, expectedMetadata)) {
-        console.log(`[epubMetadata] Reusing extracted EPUB files (${existingMetadata.fileCount || 0} files)`);
         return {
             rootUri,
             fileCount: existingMetadata.fileCount || 0,
@@ -822,8 +821,6 @@ const extractEpubZip = async (zip, sourceUri, fallbackName = '', sourceSignature
         fileCount,
         createdAt: Date.now(),
     });
-
-    console.log(`[epubMetadata] Extracted EPUB files (${fileCount} files)`);
 
     return {
         rootUri,
@@ -867,8 +864,6 @@ const readPersistentEpubPackage = async (uri, fallbackName = '', sourceSignature
     if (!extractionMetadataMatches(extractionMetadata, payload.extractionMetadata || {})) {
         return null;
     }
-
-    console.log('[epubMetadata] Reusing cached EPUB package metadata');
 
     return {
         zip: null,
@@ -2597,8 +2592,6 @@ const readCachedSpineChapter = async (cacheContext, spineItem) => {
         return null;
     }
 
-    console.log(`[epubMetadata] Reusing cached chapter blocks for spine ${spineItem.index}`);
-
     return {
         spineItem,
         chapterXml: '',
@@ -2875,6 +2868,7 @@ const parseOpfMetadata = async (zip, packagePath, fallbackName, sourceUri = '') 
             title: cleanFallbackTitle(fallbackName),
             author: 'Unknown author',
             cover: null,
+            language: null,
         };
     }
 
@@ -3002,7 +2996,7 @@ const parseOpfMetadata = async (zip, packagePath, fallbackName, sourceUri = '') 
         }
 
         if (!isImageItem({ path: coverPath, mediaType: coverType })) {
-            return { title, author, cover: null };
+            return { title, author, cover: null, language: parsedPackage.metadata.language };
         }
 
         const coverFile = findZipFile(zip, coverPath);
@@ -3023,7 +3017,7 @@ const parseOpfMetadata = async (zip, packagePath, fallbackName, sourceUri = '') 
         }
     }
 
-    return { title, author, cover };
+    return { title, author, cover, language: parsedPackage.metadata.language };
 };
 
 export const readEpubMetadata = async (uri, fallbackName = '') => {
@@ -3036,6 +3030,7 @@ export const readEpubMetadata = async (uri, fallbackName = '') => {
                 title: cleanFallbackTitle(fallbackName),
                 author: 'Unknown author',
                 cover: null,
+                language: null,
             };
         }
 
@@ -3047,6 +3042,7 @@ export const readEpubMetadata = async (uri, fallbackName = '') => {
                 title: cleanFallbackTitle(fallbackName),
                 author: 'Unknown author',
                 cover: null,
+                language: null,
             };
         }
 
@@ -3057,6 +3053,7 @@ export const readEpubMetadata = async (uri, fallbackName = '') => {
             title: cleanFallbackTitle(fallbackName),
             author: 'Unknown author',
             cover: null,
+            language: null,
         };
     }
 };
@@ -3086,7 +3083,6 @@ export const readEpubPackageXml = async (uri, fallbackName = '', options = {}) =
             throw error;
         }
 
-        console.log('[epubMetadata] Chapter cache miss; loading EPUB zip for parsing');
         packageState = await loadCachedEpubPackage(uri, fallbackName, { forceZip: true });
         loadedChapter = await chooseLoadedChapter();
     }

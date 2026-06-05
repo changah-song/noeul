@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stacks Cover — Reference</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Serif+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<style>
+  *,*::before,*::after { box-sizing: border-box; margin:0; padding:0; }
+  body { font-family:'DM Sans', system-ui, sans-serif; background:#efece5; color:#2f2820; padding:40px; }
+  h1 { font-size:22px; font-weight:700; margin-bottom:4px; }
+  .sub { font-size:14px; color:#766a59; margin-bottom:28px; max-width:640px; line-height:1.5; }
+  .grid { display:flex; flex-wrap:wrap; gap:28px; }
+  .cell { display:flex; flex-direction:column; align-items:center; gap:8px; }
+  .cap { font-size:11px; color:#9a8e79; }
+</style>
+</head>
+<body>
+<h1>"Stacks" — default book cover</h1>
+<div class="sub">Generative minimalist cover from title + author only. The same eight public-domain titles below show the motif and how palette varies per book (deterministic — a given book always renders the same cover). See README.md for the full spec.</div>
+<div id="root"></div>
+
+<script type="text/babel" src="covers-stacks.jsx"></script>
+<script type="text/babel">
+const BOOKS = [
+  { title:'날개',            author:'이상' },
+  { title:'소나기',          author:'황순원' },
+  { title:'운수 좋은 날',     author:'현진건' },
+  { title:'메밀꽃 필 무렵',   author:'이효석' },
+  { title:'동백꽃',          author:'김유정' },
+  { title:'진달래꽃',        author:'김소월' },
+  { title:'무정',            author:'이광수' },
+  { title:'벙어리 삼룡이',    author:'나도향' },
+];
+function App() {
+  return (
+    <div className="grid">
+      {BOOKS.map(b => (
+        <div className="cell" key={b.title}>
+          <CoverStacks book={b}/>
+          <div className="cap">{b.title} · {b.author}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>

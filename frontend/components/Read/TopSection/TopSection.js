@@ -7,8 +7,9 @@ import TranslationContent from './TranslationContent';
 import DictionaryContent from './DictionaryContent';
 
 const DICTIONARY_COMPACT_HEIGHT = 122;
-const DICTIONARY_EXPANDED_MAX_HEIGHT = 308;
-const DICTIONARY_EXTRA_ROW_HEIGHT = 52;
+const DICTIONARY_EXPANDED_MIN_HEIGHT = 260;
+const DICTIONARY_EXPANDED_MAX_HEIGHT = 360;
+const DICTIONARY_EXTRA_ROW_HEIGHT = 58;
 const TRANSLATION_SOURCE_LANGUAGE = 'KO';
 const TRANSLATION_TARGET_LANGUAGE = 'EN';
 
@@ -38,7 +39,6 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
 
             setIsLoading(true);
             const timeout = setTimeout(() => {
-                console.log('[TopSection] safety timeout -> forcing loading false');
                 setIsLoading(false);
             }, 5000);
 
@@ -94,7 +94,6 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
     }, [hasLookupCandidate, highlightedWord, isNativeSelection]);
 
     const handleContentLoaded = useCallback(() => {
-        console.log('[TopSection] content loaded');
         setIsLoading(false);
     }, []);
 
@@ -125,7 +124,10 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
     const dictionaryHeight = dictionaryExpandedRows > 0
         ? Math.min(
             DICTIONARY_EXPANDED_MAX_HEIGHT,
-            DICTIONARY_COMPACT_HEIGHT + (dictionaryExpandedRows * DICTIONARY_EXTRA_ROW_HEIGHT)
+            Math.max(
+                DICTIONARY_EXPANDED_MIN_HEIGHT,
+                DICTIONARY_COMPACT_HEIGHT + (dictionaryExpandedRows * DICTIONARY_EXTRA_ROW_HEIGHT)
+            )
         )
         : DICTIONARY_COMPACT_HEIGHT;
     const sheetSizeStyle = isNativeSelection

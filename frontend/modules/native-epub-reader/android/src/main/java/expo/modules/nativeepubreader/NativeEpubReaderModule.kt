@@ -947,6 +947,95 @@ class NativeEpubReaderView(
     return rangesByPage
   }
 
+  private fun sentenceForOffsets(text: String, startOffset: Int, endOffset: Int): String {
+    if (text.isBlank()) {
+      return ""
+    }
+
+    val safeStart = startOffset.coerceIn(0, text.length)
+    val safeEnd = endOffset.coerceIn(safeStart, text.length)
+    val sentenceBoundaries = setOf('.', '!', '?', '。', '！', '？', '\n')
+    var start = safeStart
+    var end = safeEnd
+
+    while (start > 0 && !sentenceBoundaries.contains(text[start - 1])) {
+      start -= 1
+    }
+
+    while (end < text.length && !sentenceBoundaries.contains(text[end])) {
+      end += 1
+    }
+
+    if (end < text.length && sentenceBoundaries.contains(text[end]) && text[end] != '\n') {
+      end += 1
+    }
+
+    return text.substring(start, end).trim().ifBlank { text.trim() }
+  }
+
+  private fun savedHighlightContextsForPage(
+    page: ReaderPage?,
+    terms: List<String>
+  ): List<Map<String, Any>> {
+    if (page == null || terms.isEmpty()) {
+      return emptyList()
+    }
+
+    val contexts = mutableListOf<Map<String, Any>>()
+    val seenKeys = mutableSetOf<String>()
+
+    page.blocks.forEach blockLoop@{ block ->
+      if (block.type != "text") {
+        return@blockLoop
+      }
+
+      val text = block.plainText.ifEmpty { block.styledText?.toString() ?: "" }
+      if (text.isEmpty()) {
+        return@blockLoop
+      }
+
+      val occupiedLocalRanges = mutableListOf<Pair<Int, Int>>()
+
+      terms.forEach { term ->
+        if (term.isBlank()) {
+          return@forEach
+        }
+
+        var searchStart = 0
+        while (searchStart <= text.length - term.length) {
+          val matchStart = text.indexOf(term, startIndex = searchStart)
+          if (matchStart < 0) {
+            break
+          }
+
+          val matchEnd = matchStart + term.length
+          if (
+            hasTokenBoundary(text, term, matchStart, matchEnd) &&
+            !overlapsAny(occupiedLocalRanges, matchStart, matchEnd)
+          ) {
+            val sentence = sentenceForOffsets(text, matchStart, matchEnd)
+            val key = "${term}|${sentence}|${block.blockId}"
+            if (!seenKeys.contains(key)) {
+              seenKeys.add(key)
+              occupiedLocalRanges.add(matchStart to matchEnd)
+              contexts.add(
+                mapOf(
+                  "text" to term,
+                  "sentence" to sentence,
+                  "blockId" to block.blockId
+                )
+              )
+            }
+          }
+
+          searchStart = matchStart + 1
+        }
+      }
+    }
+
+    return contexts
+  }
+
   private fun normalizeHighlightTerms(terms: List<Any?>): List<String> {
     return terms
       .mapNotNull { term -> (term as? String)?.trim()?.takeIf { it.isNotEmpty() } }
@@ -1226,7 +1315,8 @@ class NativeEpubReaderView(
       "globalPage" to pageIndex,
       "globalTotal" to total,
       "href" to href,
-      "firstBlockId" to (page?.blocks?.firstOrNull()?.blockId ?: "")
+      "firstBlockId" to (page?.blocks?.firstOrNull()?.blockId ?: ""),
+      "savedHighlights" to savedHighlightContextsForPage(page, highlightTerms)
     )
 
     (page?.spineIndex ?: bookManifest.intValue("currentSpineIndex"))?.let { spineIndex ->

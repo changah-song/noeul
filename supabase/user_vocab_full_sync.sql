@@ -1,0 +1,69 @@
+alter table public.user_vocab
+add column if not exists source_book_uri text,
+add column if not exists source_book_title text,
+add column if not exists context_sentence text,
+add column if not exists is_favorite boolean default false,
+add column if not exists priority text default 'normal',
+add column if not exists created_at timestamptz default now(),
+add column if not exists last_reviewed_at timestamptz,
+add column if not exists next_review_at timestamptz,
+add column if not exists correct_count integer default 0,
+add column if not exists wrong_count integer default 0,
+add column if not exists updated_at timestamptz default now(),
+add column if not exists deleted_at timestamptz,
+add column if not exists language text default 'ko';
+
+update public.user_vocab
+set language = 'ko'
+where language is null or btrim(language) = '';
+
+update public.user_vocab
+set priority = 'normal'
+where priority is null or btrim(priority) = '';
+
+update public.user_vocab
+set created_at = now()
+where created_at is null;
+
+update public.user_vocab
+set updated_at = coalesce(created_at, now())
+where updated_at is null;
+
+update public.user_vocab
+set correct_count = 0
+where correct_count is null;
+
+update public.user_vocab
+set wrong_count = 0
+where wrong_count is null;
+
+alter table public.user_vocab
+drop constraint if exists user_vocab_user_word_definition_idx;
+
+drop index if exists public.user_vocab_user_word_definition_idx;
+
+create unique index if not exists user_vocab_unique_entry
+on public.user_vocab (
+  user_id,
+  language,
+  word,
+  coalesce(hanja, ''),
+  coalesce(definition, '')
+)
+where deleted_at is null;
+
+create or replace function public.set_user_vocab_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+drop trigger if exists user_vocab_set_updated_at on public.user_vocab;
+create trigger user_vocab_set_updated_at
+before update on public.user_vocab
+for each row
+execute function public.set_user_vocab_updated_at();

@@ -15,6 +15,13 @@ import { Feather } from '@expo/vector-icons';
 
 import { Card, IconButton, Screen, SectionHeader } from '../components/ui';
 import {
+  cloudWritingRowToEntry,
+  fetchUserWritingEntries,
+  softDeleteUserWritingEntry,
+  upsertUserWritingEntry,
+  upsertUserWritingEntries,
+} from '../services/writingCloudSync';
+import {
   ANNOTATION_COLORS,
   ANNOTATION_LEGEND,
   MOCK_WRITING_ENTRY_ID,
@@ -131,6 +138,87 @@ const normalizeEntry = (entry = {}, index = 0) => {
   };
 };
 
+const isMockWritingEntry = (entryOrId) => (
+  (typeof entryOrId === 'string' ? entryOrId : entryOrId?.id) === MOCK_WRITING_ENTRY_ID
+);
+
+const getEntryTimestamp = (entry, keys = ['updatedAt', 'updated_at', 'date', 'createdAt', 'created_at']) => {
+  for (const key of keys) {
+    const value = entry?.[key];
+    if (!value) {
+      continue;
+    }
+
+    const timestamp = new Date(value).getTime();
+    if (!Number.isNaN(timestamp)) {
+      return timestamp;
+    }
+  }
+
+  return 0;
+};
+
+const mergeWritingEntries = (localEntries, cloudRows) => {
+  const localById = new Map();
+  const cloudByClientId = new Map();
+  const uploadCandidates = [];
+
+  localEntries
+    .map(normalizeEntry)
+    .filter((entry) => !isMockWritingEntry(entry))
+    .forEach((entry) => {
+      localById.set(entry.id, entry);
+    });
+
+  (cloudRows || [])
+    .filter((row) => row?.client_id && !isMockWritingEntry(row.client_id))
+    .forEach((row) => {
+      cloudByClientId.set(row.client_id, row);
+    });
+
+  const mergedEntries = [];
+  const allIds = new Set([...localById.keys(), ...cloudByClientId.keys()]);
+
+  allIds.forEach((entryId) => {
+    const localEntry = localById.get(entryId);
+    const cloudRow = cloudByClientId.get(entryId);
+
+    if (!cloudRow) {
+      if (localEntry) {
+        mergedEntries.push(localEntry);
+        uploadCandidates.push(localEntry);
+      }
+      return;
+    }
+
+    const deletedAt = getEntryTimestamp(cloudRow, ['deleted_at']);
+    const localUpdatedAt = getEntryTimestamp(localEntry);
+    const cloudUpdatedAt = getEntryTimestamp(cloudRow);
+
+    if (deletedAt && deletedAt >= localUpdatedAt) {
+      return;
+    }
+
+    if (!localEntry) {
+      mergedEntries.push(normalizeEntry(cloudWritingRowToEntry(cloudRow)));
+      return;
+    }
+
+    if (cloudUpdatedAt > localUpdatedAt) {
+      mergedEntries.push(normalizeEntry(cloudWritingRowToEntry(cloudRow)));
+      return;
+    }
+
+    mergedEntries.push(localEntry);
+    uploadCandidates.push(localEntry);
+  });
+
+  return {
+    entries: ensureMockEntry(mergedEntries.map(normalizeEntry)),
+    uploadCandidates,
+  };
+};
+
 const ensureMockEntry = (entries) => {
   const mockEntry = createMockWritingEntry();
   const hasMockEntry = entries.some((entry) => entry.id === MOCK_WRITING_ENTRY_ID);
@@ -144,11 +232,7 @@ const ensureMockEntry = (entries) => {
       return entry;
     }
 
-    return normalizeEntry({
-      ...mockEntry,
-      ...entry,
-      assessment: entry.assessment ?? mockEntry.assessment,
-    });
+    return mockEntry;
   });
 };
 
@@ -334,7 +418,7 @@ const AssessmentSummary = ({ summary }) => {
   );
 };
 
-const Write = () => {
+const Write = ({ user }) => {
   const [entries, setEntries] = useState([]);
   const [mode, setMode] = useState('list');
   const [draft, setDraft] = useState(makeEmptyDraft());
@@ -344,33 +428,87 @@ const Write = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let isMounted = true;
+
     const loadEntries = async () => {
       try {
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
         const parsed = raw ? JSON.parse(raw) : [];
         const normalizedEntries = Array.isArray(parsed) ? parsed.map(normalizeEntry) : [];
-        const seededEntries = ensureMockEntry(normalizedEntries);
-        setEntries(seededEntries);
+        let nextEntries = ensureMockEntry(normalizedEntries);
+        let uploadCandidates = [];
 
-        if (JSON.stringify(seededEntries) !== JSON.stringify(normalizedEntries)) {
-          await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(seededEntries));
+        if (user?.id) {
+          try {
+            const cloudRows = await fetchUserWritingEntries(user.id, { includeDeleted: true });
+            const merged = mergeWritingEntries(normalizedEntries, cloudRows);
+            nextEntries = merged.entries;
+            uploadCandidates = merged.uploadCandidates;
+          } catch (syncError) {
+            console.warn('[Write] Cloud writing sync failed; keeping local entries:', syncError);
+          }
+        }
+
+        if (!isMounted) {
+          return;
+        }
+
+        setEntries(nextEntries);
+
+        if (JSON.stringify(nextEntries) !== JSON.stringify(normalizedEntries)) {
+          await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(nextEntries));
+        }
+
+        if (user?.id && uploadCandidates.length > 0) {
+          upsertUserWritingEntries(user.id, uploadCandidates).catch((error) => {
+            console.warn('[Write] Background writing upload failed:', error);
+          });
         }
       } catch (error) {
         console.error('[Write] Failed to load entries:', error);
         const fallbackEntries = ensureMockEntry([]);
-        setEntries(fallbackEntries);
+        if (isMounted) {
+          setEntries(fallbackEntries);
+        }
         await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(fallbackEntries));
       } finally {
-        setLoading(false);
+        if (isMounted) {
+          setLoading(false);
+        }
       }
     };
 
+    setLoading(true);
     loadEntries();
-  }, []);
+
+    return () => {
+      isMounted = false;
+    };
+  }, [user?.id]);
 
   const persistEntries = async (nextEntries) => {
     setEntries(nextEntries);
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(nextEntries));
+  };
+
+  const syncEntryToCloud = (entry) => {
+    if (!user?.id || isMockWritingEntry(entry)) {
+      return;
+    }
+
+    upsertUserWritingEntry(user.id, entry).catch((error) => {
+      console.warn('[Write] Background writing entry sync failed:', error);
+    });
+  };
+
+  const syncEntryDeleteToCloud = (entryId) => {
+    if (!user?.id || isMockWritingEntry(entryId)) {
+      return;
+    }
+
+    softDeleteUserWritingEntry(user.id, entryId).catch((error) => {
+      console.warn('[Write] Background writing delete sync failed:', error);
+    });
   };
 
   const sortedEntries = useMemo(
@@ -447,12 +585,14 @@ const Write = () => {
       : [nextEntry, ...entries];
 
     await persistEntries(nextEntries);
+    syncEntryToCloud(nextEntry);
     leaveEditor();
   };
 
   const deleteEntry = async (entryId) => {
     const nextEntries = entries.filter((entry) => entry.id !== entryId);
     await persistEntries(nextEntries);
+    syncEntryDeleteToCloud(entryId);
     setSelectedEntryId(null);
     setSelectedAnnotation(null);
     leaveEditor();
