@@ -113,7 +113,6 @@ const BottomSection = ({
     const saveCurrentLocation = () => {
         const currentLocation = getCurrentLocation();
         if (!currentLocation || !currentLocation.start) {
-            console.log("[BottomSection] Failed to get current location or start CFI");
             return;
         }
         const startCfi = currentLocation.start.cfi;
@@ -136,7 +135,6 @@ const BottomSection = ({
                 }
                 : book
         ));
-        console.log(`[BottomSection] Chapter/location changed → CFI: ${startCfi}`);
         onLocationInfoChange?.(info);
         clearNativeSelection();
         clearActiveTapHighlight();
@@ -296,11 +294,9 @@ const BottomSection = ({
             allowScriptedContent={true}
             menuItems={[]}
             onStarted={() => {
-                console.log('[BottomSection] Reader started loading book');
                 onBookLoadStarted?.();
             }}
             onReady={() => {
-                console.log('[BottomSection] Reader displayed book successfully');
                 if (pendingLocationRestoreRef.current) {
                     restoreReaderLocation(pendingLocationRestoreRef.current, 60);
                     setTimeout(() => {
@@ -328,7 +324,6 @@ const BottomSection = ({
                 onTocChange?.(Array.isArray(toc) ? toc : []);
             }}
             onRendered={() => {
-                console.log('[BottomSection] Reader rendered a section, replaying highlights');
                 replayHighlights();
                 setTimeout(() => {
                     replayHighlights();
@@ -344,7 +339,6 @@ const BottomSection = ({
             onSelected={(text) => {
                 const selectedText = String(text || '').trim();
                 if (selectedText.length > 1) {
-                    console.log(`[BottomSection] Native text selected: "${selectedText}"`);
                     nativeSelectionActiveRef.current = true;
                     if (nativeSelectionTimeoutRef.current) {
                         clearTimeout(nativeSelectionTimeoutRef.current);
@@ -420,7 +414,6 @@ const BottomSection = ({
             defaultTheme={theme}
 
             injectedJavascript={`
-                console.log('[BottomSection] Javascript injection started');
                 var useHeuristicHighlighting = ${JSON.stringify(!!useHeuristicHighlighting)};
                 var useDarkHighlightTheme = ${JSON.stringify(!!settings.isDarkMode)};
                 var highlightRetryTimeouts = [];
@@ -428,7 +421,6 @@ const BottomSection = ({
 
                 // Mutable set — updated in-place via window.__updateHighlights
                 var savedWordsSet = new Set(${JSON.stringify(filteredSavedWords)});
-                console.log('[BottomSection] Initial saved words (' + savedWordsSet.size + '):', ${JSON.stringify(filteredSavedWords)});
 
                 function clearHighlightRetries() {
                     while (highlightRetryTimeouts.length) {
@@ -598,7 +590,6 @@ const BottomSection = ({
                 function highlightWords() {
                     var contents = rendition.getContents();
                     if (!contents || contents.length === 0) {
-                        console.log('[BottomSection] highlightWords skipped — no rendered contents yet');
                         return false;
                     }
                     contents.forEach(function(content) {
@@ -607,7 +598,6 @@ const BottomSection = ({
                             applyHighlights(content.document);
                         }
                     });
-                    console.log('[BottomSection] Highlighting complete, ' + savedWordsSet.size + ' saved words');
                     return true;
                 }
 
@@ -618,12 +608,8 @@ const BottomSection = ({
                     delays.forEach(function(delay) {
                         var timeoutId = setTimeout(function() {
                             try {
-                                var applied = highlightWords();
-                                if (applied) {
-                                    console.log('[BottomSection] Highlight pass succeeded (' + reason + ') after ' + delay + 'ms');
-                                }
+                                highlightWords();
                             } catch (e) {
-                                console.log('[BottomSection] Highlight pass failed (' + reason + '):', String(e));
                             }
                         }, delay);
                         highlightRetryTimeouts.push(timeoutId);
@@ -631,7 +617,6 @@ const BottomSection = ({
                 }
 
                 rendition.on('rendered', function() {
-                    console.log('[BottomSection] Content rendered, applying highlights');
                     scheduleHighlightPasses('rendered');
                 });
 
@@ -694,12 +679,10 @@ const BottomSection = ({
 
                 // Trigger extraction once the book's spine is fully loaded
                 rendition.book.ready.then(function() {
-                    console.log('[BottomSection] Book ready, triggering text extraction');
                     extractAllBookText();
                 });
 
                 rendition.on('relocated', function() {
-                    console.log('[BottomSection] Location changed, applying highlights');
                     scheduleHighlightPasses('relocated');
                     clearActiveTapHighlight();
                     window.ReactNativeWebView.postMessage(JSON.stringify({
@@ -749,10 +732,8 @@ const BottomSection = ({
 
                 rendition.on('click', function(e) {
                     if (window.__nativeSelectionActive) {
-                        console.log('[BottomSection] Click suppressed — native selection active');
                         return;
                     }
-                    console.log('[BottomSection] Click detected, attempting to select word');
 
                     var target = e.target || null;
                     var doc = target && target.ownerDocument ? target.ownerDocument : null;
@@ -810,7 +791,6 @@ const BottomSection = ({
                     }
 
                     selectedText = selectedText.trim();
-                    console.log('[BottomSection] Selected word:', selectedText);
 
                     if (selectedText) {
                         if (!savedWordsSet.has(selectedText) && selectedWordRange) {
@@ -828,39 +808,26 @@ const BottomSection = ({
                         }));
                     }
                 });
-
-                console.log('[BottomSection] Setup complete, __updateHighlights is ready');
             `}
 
             onWebViewMessage={(event) => {
-                const raw = event?.nativeEvent?.data ?? event;
+                    const raw = event?.nativeEvent?.data ?? event;
                 try {
                     const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
                     if (parsed?.type === 'extraction-diagnostics') {
-                        console.log(`[BottomSection] Extraction diagnostics — spineCount: ${parsed.spineCount}, totalChars: ${parsed.totalChars}`);
-                        (parsed.items || []).forEach(item => {
-                            if (item.error) {
-                                console.log(`  [spine ${item.i}] ERROR: ${item.error}`);
-                            } else {
-                                console.log(`  [spine ${item.i}] href=${item.href} | hasBody=${item.hasBody} | docElTag=${item.docElTag} | chars=${item.chars}`);
-                            }
-                        });
+                        return;
                     } else if (parsed?.type === 'word-selected') {
                         if (nativeSelectionActiveRef.current) {
-                            console.log('[BottomSection] word-selected suppressed — native selection active');
                             return;
                         }
-                        console.log(`[BottomSection] Word tapped: "${parsed.text}"`);
                         if (parsed?.placement === 'top' || parsed?.placement === 'bottom') {
                             onLookupPlacementChange?.(parsed.placement);
                         }
                         setHighlightedWord(parsed.text);
                     } else if (parsed?.type === 'dismiss-selection') {
                         if (nativeSelectionActiveRef.current) {
-                            console.log('[BottomSection] dismiss-selection suppressed — native selection active');
                             return;
                         }
-                        console.log('[BottomSection] Dismissing selection');
                         pendingNativeSelectionTextRef.current = '';
                         clearNativeSelection();
                         clearActiveTapHighlight();
@@ -871,15 +838,13 @@ const BottomSection = ({
                         }
                     } else if (parsed?.type === 'book-text-extracted') {
                         // Full book text arrived — hand it off to Read.js to trigger preprocessing
-                        console.log(`[BottomSection] Received extracted text (${parsed.text?.length?.toLocaleString()} chars), forwarding to parent`);
                         onBookTextExtracted?.(parsed.text);
                     } else if (parsed?.type === 'highlights-updated') {
-                        console.log(`[BottomSection] Highlights updated successfully (${parsed.count} words)`);
+                        return;
                     } else if (parsed?.type === 'highlight-bridge-ready') {
-                        console.log('[BottomSection] Highlight bridge ready, replaying latest highlight payload');
                         replayHighlights();
                     } else if (parsed?.type === 'debug') {
-                        console.log(`[BottomSection] WebView debug: ${parsed.msg}`);
+                        return;
                     }
                 } catch (err) {
                     console.error('[BottomSection] Failed to parse WebView message:', err);

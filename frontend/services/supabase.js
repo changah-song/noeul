@@ -97,80 +97,181 @@ export const supabase = createClient(supabaseUrl ?? '', supabaseAnonKey ?? '', {
 });
 
 const FILE_TAG = '[supabase]';
+export const USER_BOOKS_BUCKET = 'user-books';
+export const USER_PREFERENCES_TABLE = 'user_preferences';
+export const USER_WRITING_ENTRIES_TABLE = 'user_writing_entries';
+export const USER_SONGS_TABLE = 'user_songs';
+export const USER_VOCAB_TABLE = 'user_vocab';
+export const USER_VOCAB_CONTEXTS_TABLE = 'user_vocab_contexts';
+export const USER_VOCAB_RELATED_KNOWN_TABLE = 'user_vocab_related_known_words';
 
-const USER_VOCAB_SELECT = [
-  'word',
-  'hanja',
-  'definition',
-  'status',
-  'encounter_count',
-  'last_encountered_at',
-  'last_encounter_source_uri',
-  'last_encounter_source_title',
-  'maturity',
-  'graduated_at',
-  'implicit_review_count',
-  'last_reviewed_at',
-  'next_review_at',
-  'correct_count',
-  'wrong_count',
-].join(', ');
+const USER_VOCAB_SELECT = `
+  word,
+  hanja,
+  definition,
+  status,
+  source_book_uri,
+  source_book_title,
+  context_sentence,
+  is_favorite,
+  priority,
+  created_at,
+  last_reviewed_at,
+  next_review_at,
+  correct_count,
+  wrong_count,
+  updated_at,
+  deleted_at,
+  language
+`;
 
-const firstDefined = (...values) => values.find((value) => value !== undefined);
+const USER_VOCAB_CONTEXT_SELECT = `
+  language,
+  word,
+  hanja,
+  definition,
+  source_book_uri,
+  source_book_title,
+  sentence,
+  seen_at,
+  updated_at,
+  deleted_at
+`;
 
-const countValue = (value) => {
-  if (value === undefined) return undefined;
-  const numberValue = Number(value);
-  return Number.isFinite(numberValue) ? Math.max(0, Math.trunc(numberValue)) : 0;
+const USER_VOCAB_RELATED_KNOWN_SELECT = `
+  language,
+  main_word,
+  main_hanja,
+  main_definition,
+  related_word,
+  related_hanja,
+  related_definition,
+  source_hanja,
+  marked_at,
+  updated_at,
+  deleted_at
+`;
+
+const normalizeVocabIdentityValue = (value) => (value == null ? '' : String(value).trim());
+
+export const makeUserVocabKey = (entry) => [
+  entry.language ?? 'ko',
+  normalizeVocabIdentityValue(entry.word),
+  normalizeVocabIdentityValue(entry.hanja),
+  normalizeVocabIdentityValue(entry.definition ?? entry.def),
+].join('::');
+
+export const makeUserVocabContextKey = (context) => [
+  context.language ?? 'ko',
+  normalizeVocabIdentityValue(context.word),
+  normalizeVocabIdentityValue(context.hanja),
+  normalizeVocabIdentityValue(context.definition ?? context.def),
+  normalizeVocabIdentityValue(context.source_book_uri ?? context.sourceBookUri),
+  normalizeVocabIdentityValue(context.sentence),
+].join('::');
+
+export const makeUserRelatedKnownWordKey = (relation) => [
+  relation.language ?? 'ko',
+  normalizeVocabIdentityValue(relation.main_word ?? relation.mainWord),
+  normalizeVocabIdentityValue(relation.main_hanja ?? relation.mainHanja),
+  normalizeVocabIdentityValue(relation.main_definition ?? relation.mainDefinition),
+  normalizeVocabIdentityValue(relation.related_word ?? relation.relatedWord ?? relation.korean),
+  normalizeVocabIdentityValue(relation.related_hanja ?? relation.relatedHanja ?? relation.hanja),
+].join('::');
+
+const normalizeBoolean = (value) => value === true || value === 1;
+const normalizeInteger = (value, fallback = 0) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
 };
 
-const addIfDefined = (row, key, value) => {
-  if (value !== undefined) {
-    row[key] = value;
+const normalizeTimestamp = (value, fallback = null) => {
+  if (!value) {
+    return fallback;
   }
-};
 
-const addLearningFields = (row, entry) => {
-  addIfDefined(row, 'encounter_count', countValue(firstDefined(entry.encounter_count, entry.encounterCount)));
-  addIfDefined(row, 'last_encountered_at', firstDefined(entry.last_encountered_at, entry.lastEncounteredAt));
-  addIfDefined(row, 'last_encounter_source_uri', firstDefined(entry.last_encounter_source_uri, entry.lastEncounterSourceUri));
-  addIfDefined(row, 'last_encounter_source_title', firstDefined(entry.last_encounter_source_title, entry.lastEncounterSourceTitle));
-  addIfDefined(row, 'maturity', firstDefined(entry.maturity));
-  addIfDefined(row, 'graduated_at', firstDefined(entry.graduated_at, entry.graduatedAt));
-  addIfDefined(row, 'implicit_review_count', countValue(firstDefined(entry.implicit_review_count, entry.implicitReviewCount)));
-  addIfDefined(row, 'last_reviewed_at', firstDefined(entry.last_reviewed_at, entry.lastReviewedAt));
-  addIfDefined(row, 'next_review_at', firstDefined(entry.next_review_at, entry.nextReviewAt));
-  addIfDefined(row, 'correct_count', countValue(firstDefined(entry.correct_count, entry.correctCount)));
-  addIfDefined(row, 'wrong_count', countValue(firstDefined(entry.wrong_count, entry.wrongCount)));
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? fallback : date.toISOString();
 };
+const isDuplicateKeyError = (error) => error?.code === '23505';
 
 const toUserVocabRow = (userId, entry) => {
-  const row = {
+  const now = new Date().toISOString();
+  const createdAt = normalizeTimestamp(entry.created_at ?? entry.createdAt, now);
+  const updatedAt = normalizeTimestamp(entry.updated_at ?? entry.updatedAt, createdAt);
+  const definition = normalizeVocabIdentityValue(entry.definition ?? entry.def) || null;
+  const hanja = normalizeVocabIdentityValue(entry.hanja) || null;
+  const word = normalizeVocabIdentityValue(entry.word);
+
+  return {
     user_id: userId,
-    word: entry.word,
-    hanja: entry.hanja ?? null,
-    definition: entry.definition ?? entry.def ?? null,
+    word,
+    hanja,
+    definition,
     status: entry.status ?? entry.level ?? 'unorganized',
+    source_book_uri: entry.source_book_uri ?? entry.sourceBookUri ?? null,
+    source_book_title: entry.source_book_title ?? entry.sourceBookTitle ?? null,
+    context_sentence: entry.context_sentence ?? entry.contextSentence ?? null,
+    is_favorite: normalizeBoolean(entry.is_favorite ?? entry.isFavorite),
+    priority: entry.priority ?? 'normal',
+    created_at: createdAt,
+    last_reviewed_at: normalizeTimestamp(entry.last_reviewed_at ?? entry.lastReviewedAt),
+    next_review_at: normalizeTimestamp(entry.next_review_at ?? entry.nextReviewAt),
+    correct_count: normalizeInteger(entry.correct_count ?? entry.correctCount),
+    wrong_count: normalizeInteger(entry.wrong_count ?? entry.wrongCount),
+    updated_at: updatedAt,
+    deleted_at: normalizeTimestamp(entry.deleted_at ?? entry.deletedAt),
+    language: entry.language ?? 'ko',
   };
-
-  addLearningFields(row, entry);
-  return row;
 };
 
-const toUserVocabPatch = (entry, status) => {
-  const patch = {
-    status: status ?? entry.status ?? entry.level ?? 'unorganized',
-  };
+const applyVocabIdentityFilters = (query, entry) => {
+  const definition = normalizeVocabIdentityValue(entry.definition ?? entry.def) || null;
+  const hanja = normalizeVocabIdentityValue(entry.hanja) || null;
+  const language = entry.language ?? 'ko';
 
-  addLearningFields(patch, entry);
-  return patch;
+  let nextQuery = query
+    .eq('language', language)
+    .eq('word', normalizeVocabIdentityValue(entry.word));
+
+  nextQuery = hanja == null
+    ? nextQuery.is('hanja', null)
+    : nextQuery.eq('hanja', hanja);
+
+  nextQuery = definition == null
+    ? nextQuery.is('definition', null)
+    : nextQuery.eq('definition', definition);
+
+  return nextQuery;
 };
 
-export const fetchUserVocab = async (userId) => {
-  const { data, error } = await supabase
-    .from('user_vocab')
+const fetchExistingUserVocabEntry = async (userId, entry) => {
+  const { data, error } = await applyVocabIdentityFilters(
+    supabase
+      .from(USER_VOCAB_TABLE)
+      .select(USER_VOCAB_SELECT)
+      .eq('user_id', userId),
+    entry
+  ).limit(1);
+
+  if (error) {
+    throw error;
+  }
+
+  return Array.isArray(data) ? data[0] ?? null : data ?? null;
+};
+
+export const fetchUserVocab = async (userId, { includeDeleted = true } = {}) => {
+  let query = supabase
+    .from(USER_VOCAB_TABLE)
     .select(USER_VOCAB_SELECT)
     .eq('user_id', userId);
+
+  if (!includeDeleted) {
+    query = query.is('deleted_at', null);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     console.warn(`${FILE_TAG} fetchUserVocab failed`, error);
@@ -181,11 +282,17 @@ export const fetchUserVocab = async (userId) => {
 };
 
 export const upsertUserVocabEntry = async (userId, entry) => {
-  const { error } = await supabase
-    .from('user_vocab')
-    .upsert(toUserVocabRow(userId, entry), {
-      onConflict: 'user_id,word,definition',
-    });
+  const row = toUserVocabRow(userId, entry);
+  const existing = await fetchExistingUserVocabEntry(userId, row);
+  const query = supabase.from(USER_VOCAB_TABLE);
+  const { error } = existing
+    ? await applyVocabIdentityFilters(
+        query
+          .update(row)
+          .eq('user_id', userId),
+        row
+      )
+    : await query.insert(row);
 
   if (error) {
     console.warn(`${FILE_TAG} upsertUserVocabEntry failed`, error);
@@ -198,55 +305,402 @@ export const upsertUserVocabEntries = async (userId, entries) => {
     return;
   }
 
-  const { error } = await supabase
-    .from('user_vocab')
-    .upsert(entries.map((entry) => toUserVocabRow(userId, entry)), {
-      onConflict: 'user_id,word,definition',
-    });
+  for (const entry of entries) {
+    await upsertUserVocabEntry(userId, entry);
+  }
+};
+
+export const softDeleteUserVocabEntry = async (userId, entry) => {
+  const deletedAt = new Date().toISOString();
+  const { error } = await applyVocabIdentityFilters(
+    supabase
+      .from(USER_VOCAB_TABLE)
+      .update({
+        deleted_at: deletedAt,
+        updated_at: deletedAt,
+      })
+      .eq('user_id', userId),
+    entry
+  );
 
   if (error) {
-    console.warn(`${FILE_TAG} upsertUserVocabEntries failed`, error);
+    console.warn(`${FILE_TAG} softDeleteUserVocabEntry failed`, error);
     throw error;
   }
 };
 
-export const deleteUserVocabEntry = async (userId, entry) => {
-  let query = supabase
-    .from('user_vocab')
-    .delete()
-    .eq('user_id', userId)
-    .eq('word', entry.word)
-    .eq('definition', entry.definition ?? entry.def ?? null);
+export const deleteUserVocabEntry = softDeleteUserVocabEntry;
 
-  query = entry.hanja == null
-    ? query.is('hanja', null)
-    : query.eq('hanja', entry.hanja);
+export const updateUserVocabFields = async (userId, entry, patch) => {
+  const updatedAt = patch.updated_at ?? patch.updatedAt ?? new Date().toISOString();
+  const rowPatch = {
+    ...patch,
+    updated_at: updatedAt,
+  };
+  delete rowPatch.updatedAt;
 
-  const { error } = await query;
+  const { error } = await applyVocabIdentityFilters(
+    supabase
+      .from(USER_VOCAB_TABLE)
+      .update(rowPatch)
+      .eq('user_id', userId),
+    entry
+  );
 
   if (error) {
-    console.warn(`${FILE_TAG} deleteUserVocabEntry failed`, error);
+    console.warn(`${FILE_TAG} updateUserVocabFields failed`, error);
     throw error;
   }
 };
 
 export const updateUserVocabStatus = async (userId, entry, status) => {
-  const patch = toUserVocabPatch(entry, status);
-  let query = supabase
-    .from('user_vocab')
-    .update(patch)
-    .eq('user_id', userId)
-    .eq('word', entry.word)
-    .eq('definition', entry.definition ?? entry.def ?? null);
+  await updateUserVocabFields(userId, entry, { status });
+};
 
-  query = entry.hanja == null
-    ? query.is('hanja', null)
-    : query.eq('hanja', entry.hanja);
+const toUserVocabContextRow = (userId, context) => {
+  const now = new Date().toISOString();
+  const seenAt = normalizeTimestamp(context.seen_at ?? context.seenAt, now);
+  const updatedAt = normalizeTimestamp(context.updated_at ?? context.updatedAt, seenAt);
 
-  const { error } = await query;
+  return {
+    user_id: userId,
+    language: context.language ?? 'ko',
+    word: normalizeVocabIdentityValue(context.word),
+    hanja: normalizeVocabIdentityValue(context.hanja) || null,
+    definition: normalizeVocabIdentityValue(context.def ?? context.definition) || null,
+    source_book_uri: normalizeVocabIdentityValue(context.source_book_uri ?? context.sourceBookUri) || null,
+    source_book_title: context.source_book_title ?? context.sourceBookTitle ?? null,
+    sentence: normalizeVocabIdentityValue(context.sentence),
+    seen_at: seenAt,
+    updated_at: updatedAt,
+    deleted_at: normalizeTimestamp(context.deleted_at ?? context.deletedAt),
+  };
+};
+
+const applyVocabContextIdentityFilters = (query, context) => {
+  const row = toUserVocabContextRow('__identity__', context);
+
+  let nextQuery = query
+    .eq('language', row.language)
+    .eq('word', row.word)
+    .eq('sentence', row.sentence);
+
+  nextQuery = row.hanja == null
+    ? nextQuery.is('hanja', null)
+    : nextQuery.eq('hanja', row.hanja);
+
+  nextQuery = row.definition == null
+    ? nextQuery.is('definition', null)
+    : nextQuery.eq('definition', row.definition);
+
+  nextQuery = row.source_book_uri == null
+    ? nextQuery.is('source_book_uri', null)
+    : nextQuery.eq('source_book_uri', row.source_book_uri);
+
+  return nextQuery;
+};
+
+const fetchExistingUserVocabContext = async (userId, context) => {
+  const { data, error } = await applyVocabContextIdentityFilters(
+    supabase
+      .from(USER_VOCAB_CONTEXTS_TABLE)
+      .select(USER_VOCAB_CONTEXT_SELECT)
+      .eq('user_id', userId)
+      .is('deleted_at', null),
+    context
+  ).limit(1);
 
   if (error) {
-    console.warn(`${FILE_TAG} updateUserVocabStatus failed`, error);
+    throw error;
+  }
+
+  return Array.isArray(data) ? data[0] ?? null : data ?? null;
+};
+
+export const fetchUserVocabContexts = async (userId, { includeDeleted = true } = {}) => {
+  let query = supabase
+    .from(USER_VOCAB_CONTEXTS_TABLE)
+    .select(USER_VOCAB_CONTEXT_SELECT)
+    .eq('user_id', userId);
+
+  if (!includeDeleted) {
+    query = query.is('deleted_at', null);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.warn(`${FILE_TAG} fetchUserVocabContexts failed`, error);
+    throw error;
+  }
+
+  return data ?? [];
+};
+
+export const upsertUserVocabContext = async (userId, context) => {
+  const row = toUserVocabContextRow(userId, context);
+  if (!row.word || !row.sentence) {
+    return;
+  }
+
+  const updateExistingContext = async () => {
+    const { error } = await applyVocabContextIdentityFilters(
+      supabase
+        .from(USER_VOCAB_CONTEXTS_TABLE)
+        .update(row)
+        .eq('user_id', userId)
+        .is('deleted_at', null),
+      row
+    );
+
+    if (error) {
+      throw error;
+    }
+  };
+
+  const existing = await fetchExistingUserVocabContext(userId, row);
+  if (existing) {
+    try {
+      await updateExistingContext();
+    } catch (error) {
+      console.warn(`${FILE_TAG} upsertUserVocabContext failed`, error);
+      throw error;
+    }
+    return;
+  }
+
+  const { error } = await supabase
+    .from(USER_VOCAB_CONTEXTS_TABLE)
+    .insert(row);
+
+  if (!error) {
+    return;
+  }
+
+  if (isDuplicateKeyError(error)) {
+    try {
+      await updateExistingContext();
+      return;
+    } catch (updateError) {
+      console.warn(`${FILE_TAG} upsertUserVocabContext duplicate repair failed`, updateError);
+      throw updateError;
+    }
+  }
+
+  console.warn(`${FILE_TAG} upsertUserVocabContext failed`, error);
+  throw error;
+};
+
+export const upsertUserVocabContexts = async (userId, contexts) => {
+  if (!contexts || contexts.length === 0) {
+    return;
+  }
+
+  for (const context of contexts) {
+    await upsertUserVocabContext(userId, context);
+  }
+};
+
+export const softDeleteUserVocabContextsForWord = async (userId, entry) => {
+  const deletedAt = new Date().toISOString();
+  const { error } = await applyVocabIdentityFilters(
+    supabase
+      .from(USER_VOCAB_CONTEXTS_TABLE)
+      .update({
+        deleted_at: deletedAt,
+        updated_at: deletedAt,
+      })
+      .eq('user_id', userId)
+      .is('deleted_at', null),
+    entry
+  );
+
+  if (error) {
+    console.warn(`${FILE_TAG} softDeleteUserVocabContextsForWord failed`, error);
+    throw error;
+  }
+};
+
+const toUserRelatedKnownWordRow = (userId, relation) => {
+  const now = new Date().toISOString();
+  const markedAt = normalizeTimestamp(relation.marked_at ?? relation.markedAt, now);
+
+  return {
+    user_id: userId,
+    language: relation.language ?? 'ko',
+    main_word: normalizeVocabIdentityValue(relation.main_word ?? relation.mainWord),
+    main_hanja: normalizeVocabIdentityValue(relation.main_hanja ?? relation.mainHanja) || null,
+    main_definition: normalizeVocabIdentityValue(relation.main_definition ?? relation.mainDefinition) || null,
+    related_word: normalizeVocabIdentityValue(
+      relation.related_word ?? relation.relatedWord ?? relation.korean
+    ),
+    related_hanja: normalizeVocabIdentityValue(
+      relation.related_hanja ?? relation.relatedHanja ?? relation.hanja
+    ) || null,
+    related_definition: relation.related_definition
+      ?? relation.relatedDefinition
+      ?? relation.meaning
+      ?? null,
+    source_hanja: relation.source_hanja ?? relation.sourceHanja ?? null,
+    marked_at: markedAt,
+    updated_at: normalizeTimestamp(relation.updated_at ?? relation.updatedAt, markedAt),
+    deleted_at: normalizeTimestamp(relation.deleted_at ?? relation.deletedAt),
+  };
+};
+
+const applyRelatedKnownIdentityFilters = (query, relation) => {
+  const row = toUserRelatedKnownWordRow('__identity__', relation);
+
+  let nextQuery = query
+    .eq('language', row.language)
+    .eq('main_word', row.main_word)
+    .eq('related_word', row.related_word);
+
+  nextQuery = row.main_hanja == null
+    ? nextQuery.is('main_hanja', null)
+    : nextQuery.eq('main_hanja', row.main_hanja);
+
+  nextQuery = row.main_definition == null
+    ? nextQuery.is('main_definition', null)
+    : nextQuery.eq('main_definition', row.main_definition);
+
+  nextQuery = row.related_hanja == null
+    ? nextQuery.is('related_hanja', null)
+    : nextQuery.eq('related_hanja', row.related_hanja);
+
+  return nextQuery;
+};
+
+const applyRelatedKnownMainWordFilters = (query, entry) => {
+  const language = entry.language ?? 'ko';
+  const word = normalizeVocabIdentityValue(entry.word ?? entry.main_word ?? entry.mainWord);
+  const hanja = normalizeVocabIdentityValue(entry.hanja ?? entry.main_hanja ?? entry.mainHanja) || null;
+  const definition = normalizeVocabIdentityValue(
+    entry.definition ?? entry.def ?? entry.main_definition ?? entry.mainDefinition
+  ) || null;
+
+  let nextQuery = query
+    .eq('language', language)
+    .eq('main_word', word);
+
+  nextQuery = hanja == null
+    ? nextQuery.is('main_hanja', null)
+    : nextQuery.eq('main_hanja', hanja);
+
+  nextQuery = definition == null
+    ? nextQuery.is('main_definition', null)
+    : nextQuery.eq('main_definition', definition);
+
+  return nextQuery;
+};
+
+const fetchExistingUserRelatedKnownWord = async (userId, relation) => {
+  const { data, error } = await applyRelatedKnownIdentityFilters(
+    supabase
+      .from(USER_VOCAB_RELATED_KNOWN_TABLE)
+      .select(USER_VOCAB_RELATED_KNOWN_SELECT)
+      .eq('user_id', userId)
+      .is('deleted_at', null),
+    relation
+  ).limit(1);
+
+  if (error) {
+    throw error;
+  }
+
+  return Array.isArray(data) ? data[0] ?? null : data ?? null;
+};
+
+export const fetchUserRelatedKnownWords = async (userId, { includeDeleted = true } = {}) => {
+  let query = supabase
+    .from(USER_VOCAB_RELATED_KNOWN_TABLE)
+    .select(USER_VOCAB_RELATED_KNOWN_SELECT)
+    .eq('user_id', userId);
+
+  if (!includeDeleted) {
+    query = query.is('deleted_at', null);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.warn(`${FILE_TAG} fetchUserRelatedKnownWords failed`, error);
+    throw error;
+  }
+
+  return data ?? [];
+};
+
+export const upsertUserRelatedKnownWord = async (userId, relation) => {
+  const row = toUserRelatedKnownWordRow(userId, relation);
+  if (!row.main_word || !row.related_word) {
+    return;
+  }
+
+  const existing = await fetchExistingUserRelatedKnownWord(userId, row);
+  const query = supabase.from(USER_VOCAB_RELATED_KNOWN_TABLE);
+  const { error } = existing
+    ? await applyRelatedKnownIdentityFilters(
+        query
+          .update(row)
+          .eq('user_id', userId)
+          .is('deleted_at', null),
+        row
+      )
+    : await query.insert(row);
+
+  if (error) {
+    console.warn(`${FILE_TAG} upsertUserRelatedKnownWord failed`, error);
+    throw error;
+  }
+};
+
+export const upsertUserRelatedKnownWords = async (userId, relations) => {
+  if (!relations || relations.length === 0) {
+    return;
+  }
+
+  for (const relation of relations) {
+    await upsertUserRelatedKnownWord(userId, relation);
+  }
+};
+
+export const softDeleteUserRelatedKnownWord = async (userId, relation) => {
+  const deletedAt = new Date().toISOString();
+  const { error } = await applyRelatedKnownIdentityFilters(
+    supabase
+      .from(USER_VOCAB_RELATED_KNOWN_TABLE)
+      .update({
+        deleted_at: deletedAt,
+        updated_at: deletedAt,
+      })
+      .eq('user_id', userId)
+      .is('deleted_at', null),
+    relation
+  );
+
+  if (error) {
+    console.warn(`${FILE_TAG} softDeleteUserRelatedKnownWord failed`, error);
+    throw error;
+  }
+};
+
+export const softDeleteRelatedKnownWordsForMainWord = async (userId, entry) => {
+  const deletedAt = new Date().toISOString();
+  const { error } = await applyRelatedKnownMainWordFilters(
+    supabase
+      .from(USER_VOCAB_RELATED_KNOWN_TABLE)
+      .update({
+        deleted_at: deletedAt,
+        updated_at: deletedAt,
+      })
+      .eq('user_id', userId)
+      .is('deleted_at', null),
+    entry
+  );
+
+  if (error) {
+    console.warn(`${FILE_TAG} softDeleteRelatedKnownWordsForMainWord failed`, error);
     throw error;
   }
 };

@@ -4,6 +4,7 @@ import {
     Alert,
     Image,
     Modal,
+    Platform,
     Pressable,
     ScrollView,
     StyleSheet,
@@ -23,73 +24,64 @@ import { IconButton, Screen, SectionHeader } from '../components/ui';
 import { colors, fontFamilies, insets, layout, radii, spacing, textStyles } from '../theme';
 import useBooks from '../hooks/useBooks';
 import { deleteBookIndexEntries } from '../services/Database';
-import { getSongLyrics, searchSongs } from '../services/api/songs';
+import { downloadUserBook, softDeleteUserBook } from '../services/bookCloudSync';
+import {
+    fetchUserPreferences,
+    getTimestampMs,
+    updateUserPreferenceFields,
+} from '../services/preferencesCloudSync';
+import { readEpubMetadata } from '../services/epubMetadata';
+import { getPublicDomainBooks } from '../services/publicDomainBooks';
+import {
+    cloudSongToLocalSong,
+    fetchUserSongs,
+    softDeleteUserSong,
+    upsertUserSong,
+} from '../services/songCloudSync';
+import {
+    addOverlayErrorListener,
+    addOverlayStatusListener,
+    isOverlayPermissionGranted,
+    isScreenCaptureActive,
+    requestOverlayPermission,
+    requestScreenCapture,
+    startFloatingWidget,
+    stopFloatingWidget,
+} from '../modules/screen-ocr-overlay/src';
+import { getLanguageLabel } from '../constants/languages';
 
 const BOOK_GRID_GAP = 18;
 const SONGS_STORAGE_KEY = 'manualSongs';
+const OCR_SETTINGS_KEY = '@ff/ocr-settings';
 const EMPTY_SONG_DRAFT = { title: '', artist: '', lyrics: '' };
+const DEFAULT_SONG_FONT_SIZE = 28;
+const EMPTY_OCR_STATUS = {
+    overlayPermissionGranted: false,
+    screenCaptureActive: false,
+    floatingVisible: false,
+    resultOverlayVisible: false,
+};
 
 const BOOK_FILTERS = [
-    { id: 'library', label: 'My library' },
-    { id: 'classics', label: 'Classics' },
+    { id: 'favorites', label: 'Favorite books', iconOnly: true },
+    { id: 'all', label: 'All books' },
     { id: 'public-domain', label: 'Public domain' },
 ];
 
-const DIFFICULTY_FILTERS = ['All levels', 'Beginner', 'Intermediate', 'Advanced'];
-
-const BROWSE_CATALOGS = {
-    classics: {
-        id: 'classics',
-        eyebrow: 'AI-SUMMARIZED',
-        title: 'Classics',
-        subtitle: 'Long books, rewritten short · 8 books',
-        shelfCopy: 'Long classics, rewritten short',
-        emptyTitle: 'Classics, made readable.',
-        emptyCopy: 'Long, dense classics rewritten in plain Korean at your level.',
-        emptyButton: 'Browse 8 classics',
-        emptyFootnote: 'Powered by AI · adapts to your level',
-        books: [
-            { id: 'demian', title: 'Demian', author: 'Hermann Hesse', authorShort: 'HERMANN HESSE', difficulty: 'Intermediate', length: '18 min', color: '#344934', titleColor: '#f6eddc' },
-            { id: 'crime-punishment', title: 'Crime and Punishment', author: 'Dostoevsky', authorShort: 'DOSTOYEVSKY', difficulty: 'Advanced', length: '45 min', color: '#633a2e', titleColor: '#f6eddc' },
-            { id: 'stranger', title: 'The Stranger', author: 'Albert Camus', authorShort: 'ALBERT CAMUS', difficulty: 'Beginner', length: '22 min', color: '#9a884b', titleColor: '#1f1a14' },
-            { id: 'norwegian-wood', title: 'Norwegian Wood', author: 'Haruki Murakami', authorShort: 'HARUKI MURAKAMI', difficulty: 'Intermediate', length: '31 min', color: '#2b5968', titleColor: '#f6eddc' },
-            { id: 'metamorphosis', title: 'The Metamorphosis', author: 'Franz Kafka', authorShort: 'FRANZ KAFKA', difficulty: 'Beginner', length: '16 min', color: '#343434', titleColor: '#f0d39a' },
-            { id: 'kitchen', title: 'Kitchen', author: 'Banana Yoshimoto', authorShort: 'BANANA YOSHIMOTO', difficulty: 'Beginner', length: '20 min', color: '#6a4052', titleColor: '#ead6dc' },
-            { id: 'siddhartha', title: 'Siddhartha', author: 'Hermann Hesse', authorShort: 'HERMANN HESSE', difficulty: 'Intermediate', length: '26 min', color: '#725337', titleColor: '#f6eddc' },
-            { id: 'dorian-gray', title: 'Dorian Gray', author: 'Oscar Wilde', authorShort: 'OSCAR WILDE', difficulty: 'Advanced', length: '36 min', color: '#283e48', titleColor: '#f2d674' },
-        ],
-    },
-    'public-domain': {
-        id: 'public-domain',
-        eyebrow: 'PUBLIC DOMAIN',
-        title: 'Public domain',
-        subtitle: 'Full Korean text · free forever · 8 books',
-        shelfCopy: 'Free books, full Korean text',
-        emptyTitle: 'Free books, full text.',
-        emptyCopy: 'Classic works in their complete Korean translation, free forever.',
-        emptyButton: 'Browse 8+ books',
-        emptyFootnote: 'Public domain · free forever',
-        books: [
-            { id: 'pride-prejudice', title: 'Pride and Prejudice', author: 'Jane Austen', authorShort: 'JANE AUSTEN', difficulty: 'Advanced', length: '61 ch.', color: '#794621', titleColor: '#f6eddc' },
-            { id: 'gatsby', title: 'The Great Gatsby', author: 'F. S. Fitzgerald', authorShort: 'F. S. FITZGERALD', difficulty: 'Intermediate', length: '9 ch.', color: '#1f3340', titleColor: '#f2d674' },
-            { id: 'walden', title: 'Walden', author: 'H. D. Thoreau', authorShort: 'H. D. THOREAU', difficulty: 'Advanced', length: '18 ch.', color: '#475f37', titleColor: '#f6eddc' },
-            { id: 'frankenstein', title: 'Frankenstein', author: 'Mary Shelley', authorShort: 'MARY SHELLEY', difficulty: 'Advanced', length: '24 ch.', color: '#2d2d2b', titleColor: '#e0b27a' },
-            { id: 'alice', title: "Alice's Adventures", author: 'Lewis Carroll', authorShort: 'LEWIS CARROLL', difficulty: 'Beginner', length: '12 ch.', color: '#255d5b', titleColor: '#f6eddc' },
-            { id: 'jane-eyre', title: 'Jane Eyre', author: 'Charlotte Bronte', authorShort: 'CHARLOTTE BRONTE', difficulty: 'Advanced', length: '38 ch.', color: '#5f4438', titleColor: '#f6eddc' },
-            { id: 'sherlock', title: 'Sherlock Holmes', author: 'Arthur Conan Doyle', authorShort: 'A. C. DOYLE', difficulty: 'Intermediate', length: '12 ch.', color: '#384a4d', titleColor: '#e9d4a0' },
-            { id: 'secret-garden', title: 'The Secret Garden', author: 'Frances Hodgson Burnett', authorShort: 'F. H. BURNETT', difficulty: 'Beginner', length: '27 ch.', color: '#58663f', titleColor: '#f6eddc' },
-        ],
-    },
-};
-
-const BOOK_COVER_PALETTES = [
-    { background: '#17172c', foreground: '#ff2f86' },
-    { background: '#2c2c3f', foreground: '#36b7e8' },
-    { background: '#5c915c', foreground: '#f7f5e8' },
-    { background: '#523a32', foreground: '#ffd24f' },
-    { background: '#1f433d', foreground: '#c8f7dc' },
-    { background: '#ece2ca', foreground: '#252018' },
+const STACKS_COVER_PALETTES = [
+    { bg: '#e7ddc8', accent: '#bf5b3e', ink: '#2f2820' },
+    { bg: '#dde4d6', accent: '#5f7a4a', ink: '#27331f' },
+    { bg: '#d7dfe7', accent: '#3f6184', ink: '#1f2a35' },
+    { bg: '#ece1c8', accent: '#c0902f', ink: '#3a2f17' },
+    { bg: '#e9d9d6', accent: '#9c4a52', ink: '#3a1f22' },
+    { bg: '#dcd6e2', accent: '#6a5495', ink: '#2a2235' },
+    { bg: '#d9e1dd', accent: '#2f7d6b', ink: '#16332c' },
+    { bg: '#e7ded2', accent: '#8a6741', ink: '#322517' },
 ];
+
+const STACKS_COVER_BAR_WIDTHS = [40, 64, 52, 80, 30];
+const STACKS_COVER_REF_WIDTH = 200;
+const STACKS_COVER_REF_HEIGHT = 298;
 
 const KOREAN_TEXT_PATTERN = /[\u3131-\u318e\uac00-\ud7a3]/;
 
@@ -112,8 +104,12 @@ const normalizeStoredSong = (song) => {
 
     return {
         id: song.id || `song-${Date.now()}`,
+        cloudId: song.cloudId ?? song.cloud_id ?? null,
+        cloudOwnerId: song.cloudOwnerId ?? song.user_id ?? null,
         provider: String(song.provider || '').trim() || null,
         providerId: String(song.providerId || '').trim() || null,
+        source: String(song.source || song.provider || '').trim() || null,
+        externalId: String(song.externalId || song.external_id || song.providerId || '').trim() || null,
         title,
         artist: String(song.artist || '').trim() || 'Unknown artist',
         album: String(song.album || '').trim(),
@@ -122,25 +118,110 @@ const normalizeStoredSong = (song) => {
         lyrics,
         syncedLyrics: String(song.syncedLyrics || '').trim(),
         lines: countSongLines(lyrics),
+        fontSize: typeof song.fontSize === 'number'
+            ? clamp(song.fontSize, 20, 40)
+            : DEFAULT_SONG_FONT_SIZE,
         savedTerms: Array.isArray(song.savedTerms)
             ? [...new Set(song.savedTerms.map((term) => String(term || '').trim()).filter(Boolean))]
             : [],
         createdAt: song.createdAt || new Date().toISOString(),
+        updatedAt: song.updatedAt || song.createdAt || new Date().toISOString(),
+        deletedAt: song.deletedAt ?? null,
     };
 };
-const stripSyncedLyricTimestamps = (syncedLyrics) => String(syncedLyrics || '')
-    .split(/\r?\n/)
-    .map((line) => line.replace(/^\s*(\[[^\]]+\]\s*)+/, '').trim())
-    .filter(Boolean)
-    .join('\n');
-const getLyricsFromApiSong = (song) => (
-    String(song?.plainLyrics || '').trim()
-    || stripSyncedLyricTimestamps(song?.syncedLyrics)
-);
-
 const getBookTitle = (book) => book?.title?.trim() || 'Untitled';
 const getBookAuthor = (book) => book?.author?.trim() || 'Unknown author';
 const hasKoreanText = (value) => KOREAN_TEXT_PATTERN.test(String(value || ''));
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const parseStoredJson = (value, fallback = {}) => {
+    if (!value) {
+        return fallback;
+    }
+
+    try {
+        return JSON.parse(value);
+    } catch {
+        return fallback;
+    }
+};
+
+const getSongTimestamp = (song, keys = ['updatedAt', 'updated_at', 'createdAt', 'created_at']) => {
+    for (const key of keys) {
+        const value = song?.[key];
+        if (!value) {
+            continue;
+        }
+
+        const timestamp = new Date(value).getTime();
+        if (Number.isFinite(timestamp)) {
+            return timestamp;
+        }
+    }
+
+    return 0;
+};
+
+const mergeLocalAndCloudSongs = (localSongs, cloudRows) => {
+    const localById = new Map((localSongs || []).map((song) => [song.id, song]));
+    const cloudById = new Map((cloudRows || []).map((row) => [row.client_id, row]));
+    const ids = new Set([...localById.keys(), ...cloudById.keys()].filter(Boolean));
+    const merged = [];
+    const localOnly = [];
+    const keptLocalIds = new Set();
+
+    ids.forEach((id) => {
+        const localSong = localById.get(id);
+        const cloudRow = cloudById.get(id);
+
+        if (!cloudRow && localSong) {
+            if (!localSong.deletedAt) {
+                merged.push(localSong);
+                localOnly.push(localSong);
+                keptLocalIds.add(id);
+            }
+            return;
+        }
+
+        if (cloudRow && !localSong) {
+            if (!cloudRow.deleted_at) {
+                merged.push(normalizeStoredSong(cloudSongToLocalSong(cloudRow)));
+            }
+            return;
+        }
+
+        if (!cloudRow || !localSong) {
+            return;
+        }
+
+        const cloudDeletedAt = getSongTimestamp(cloudRow, ['deleted_at']);
+        const localUpdatedAt = getSongTimestamp(localSong);
+
+        if (cloudDeletedAt && cloudDeletedAt >= localUpdatedAt) {
+            return;
+        }
+
+        const cloudUpdatedAt = getSongTimestamp(cloudRow, ['updated_at', 'created_at']);
+        if (cloudUpdatedAt > localUpdatedAt) {
+            merged.push(normalizeStoredSong({
+                ...cloudSongToLocalSong(cloudRow),
+                savedTerms: localSong.savedTerms ?? [],
+            }));
+            return;
+        }
+
+        merged.push(localSong);
+        localOnly.push(localSong);
+        keptLocalIds.add(id);
+    });
+
+    return {
+        songs: merged
+            .filter(Boolean)
+            .sort((a, b) => getSongTimestamp(b) - getSongTimestamp(a)),
+        localOnly: localOnly.filter((song) => keptLocalIds.has(song.id)),
+    };
+};
 
 const getSerifFontForText = (value, weight = 'bold') => {
     if (hasKoreanText(value)) {
@@ -163,101 +244,564 @@ const getBookProgress = (book) => clamp(
     0,
     1
 );
+const isBookDownloaded = (book) => book?.downloaded !== false && !!book?.uri;
+const getBookKey = (book, fallback = '') => book?.cloudId || book?.uri || book?.id || fallback;
+const isBookFavorite = (book) => book?.isFavorite === true || book?.favorite === true;
+const isBookCompleted = (book) => (
+    book?.completed === false
+        ? false
+        : book?.completed === true || getBookProgress(book) >= 1
+);
+const getBookRecentTimestamp = (book) => {
+    const timestampFields = [
+        book?.lastOpenedAt,
+        book?.updatedAt,
+        book?.cloudSyncedAt,
+        book?.createdAt,
+    ];
 
-const getPaletteForBook = (book, index = 0) => {
-    const source = `${book?.uri || ''}${book?.title || ''}${index}`;
-    const hash = source.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0);
-    return BOOK_COVER_PALETTES[hash % BOOK_COVER_PALETTES.length];
+    for (const value of timestampFields) {
+        const timestamp = new Date(value).getTime();
+        if (Number.isFinite(timestamp)) {
+            return timestamp;
+        }
+    }
+
+    return 0;
 };
 
-const BookCover = ({ book, width, height, index, style, titleStyle }) => {
-    if (book?.cover) {
+const formatFileSize = (bytes) => {
+    const value = Number(bytes);
+    if (!Number.isFinite(value) || value <= 0) {
+        return 'Unknown';
+    }
+
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let size = value;
+    let unitIndex = 0;
+
+    while (size >= 1024 && unitIndex < units.length - 1) {
+        size /= 1024;
+        unitIndex += 1;
+    }
+
+    const precision = unitIndex === 0 || size >= 10 ? 0 : 1;
+    return `${size.toFixed(precision)} ${units[unitIndex]}`;
+};
+
+const formatPreviewDateTime = (value) => {
+    if (!value) {
+        return 'Not opened yet';
+    }
+
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) {
+        return 'Not opened yet';
+    }
+
+    return date.toLocaleString(undefined, {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+    });
+};
+
+const formatBookLanguage = (language) => {
+    const raw = String(language || '').trim();
+    if (!raw) {
+        return 'Unknown';
+    }
+
+    const shortCode = raw.toLowerCase().split(/[-_]/)[0];
+    if (shortCode === 'ko' || shortCode === 'en') {
+        return getLanguageLabel(shortCode);
+    }
+
+    return raw.toUpperCase();
+};
+
+const hashStacksCover = (value) => {
+    let hash = 0;
+    const source = String(value || '');
+    for (let index = 0; index < source.length; index += 1) {
+        hash = ((hash * 31) + source.charCodeAt(index)) >>> 0;
+    }
+    return hash;
+};
+
+const getStacksCoverPalette = (book) => {
+    const source = `${getBookTitle(book)}${getBookAuthor(book)}`;
+    return STACKS_COVER_PALETTES[hashStacksCover(source) % STACKS_COVER_PALETTES.length];
+};
+
+const getStacksCoverTitleSize = (title, baseSize) => {
+    const glyphCount = String(title || '').replace(/\s/g, '').length;
+    if (glyphCount <= 3) {
+        return baseSize;
+    }
+    if (glyphCount <= 5) {
+        return Math.round(baseSize * 0.8);
+    }
+    if (glyphCount <= 7) {
+        return Math.round(baseSize * 0.66);
+    }
+    return Math.round(baseSize * 0.54);
+};
+
+const BookCover = ({ book, width, height, index, style, titleStyle, showBars = true }) => {
+    const [coverFailed, setCoverFailed] = useState(false);
+    const coverUri = typeof book?.cover === 'string' ? book.cover.trim() : '';
+
+    useEffect(() => {
+        setCoverFailed(false);
+    }, [coverUri]);
+
+    if (coverUri && !coverFailed) {
         return (
             <Image
-                source={{ uri: book.cover }}
+                source={{ uri: coverUri }}
                 style={[styles.coverImage, { width, height }, style]}
+                onError={() => setCoverFailed(true)}
             />
         );
     }
 
-    const palette = getPaletteForBook(book, index);
+    const palette = getStacksCoverPalette(book);
+    const scaleX = width / STACKS_COVER_REF_WIDTH;
+    const scaleY = height / STACKS_COVER_REF_HEIGHT;
+    const scale = Math.min(scaleX, scaleY);
+    const title = getBookTitle(book);
+    const author = getBookAuthor(book);
+    const titleFontSize = getStacksCoverTitleSize(title, 26 * scale);
 
     return (
         <View style={[
-            styles.coverFallback,
+            styles.stacksCover,
             {
                 width,
                 height,
-                backgroundColor: palette.background,
+                backgroundColor: palette.bg,
             },
             style,
         ]}>
-            <Text
-                numberOfLines={2}
-                style={[
-                    styles.coverFallbackText,
-                    { color: palette.foreground },
-                    getSerifFontForText(getBookTitle(book)),
-                    titleStyle,
-                ]}
-            >
-                {getBookTitle(book)}
-            </Text>
+            <View style={[
+                styles.stacksCoverSpine,
+                { width: Math.max(3, 7 * scaleX) },
+            ]} />
+            <View style={[
+                styles.stacksCoverCopy,
+                {
+                    top: 24 * scaleY,
+                    left: 20 * scaleX,
+                    right: 20 * scaleX,
+                },
+            ]}>
+                <Text
+                    numberOfLines={3}
+                    style={[
+                        styles.stacksCoverTitle,
+                        getSerifFontForText(title),
+                        titleStyle,
+                        {
+                            color: palette.ink,
+                            fontSize: titleFontSize,
+                            lineHeight: Math.round(titleFontSize * 1.28),
+                        },
+                    ]}
+                >
+                    {title}
+                </Text>
+                <Text
+                    numberOfLines={2}
+                    style={[
+                        styles.stacksCoverAuthor,
+                        {
+                            color: palette.ink,
+                            fontSize: Math.max(8, Math.round(12 * scale)),
+                            lineHeight: Math.max(11, Math.round(16 * scale)),
+                            marginTop: Math.max(3, Math.round(7 * scaleY)),
+                        },
+                    ]}
+                >
+                    {author}
+                </Text>
+            </View>
+            {showBars ? (
+                <View style={[
+                    styles.stacksCoverBars,
+                    {
+                        left: 20 * scaleX,
+                        bottom: 26 * scaleY,
+                        gap: Math.max(3, Math.round(7 * scaleY)),
+                    },
+                ]}>
+                    {STACKS_COVER_BAR_WIDTHS.map((barWidth, barIndex) => (
+                        <View
+                            key={`${book?.uri || book?.id || 'book'}-bar-${barIndex}`}
+                            style={{
+                                width: Math.max(14, barWidth * scaleX),
+                                height: Math.max(3, 7 * scaleY),
+                                borderRadius: Math.max(2, 4 * scale),
+                                backgroundColor: palette.accent,
+                                opacity: 0.55 + (barIndex * 0.1),
+                            }}
+                        />
+                    ))}
+                </View>
+            ) : null}
         </View>
     );
 };
 
-const CatalogBookCover = ({ book, width, height, style, compact = false }) => (
-    <View style={[
-        styles.catalogCover,
-        {
-            width,
-            height,
-            backgroundColor: book.color,
-        },
-        style,
-    ]}>
-        <Text
-            style={[
-                styles.catalogCoverTitle,
-                compact && styles.catalogCoverTitleCompact,
-                { color: book.titleColor },
-            ]}
-            numberOfLines={3}
-        >
-            {book.title}
-        </Text>
-        <Text
-            style={[
-                styles.catalogCoverAuthor,
-                compact && styles.catalogCoverAuthorCompact,
-                { color: book.titleColor },
-            ]}
-            numberOfLines={2}
-        >
-            {book.authorShort || book.author}
-        </Text>
-    </View>
+const EditCoverPreview = ({ book, cover }) => {
+    if (cover) {
+        return (
+            <Image
+                source={{ uri: cover }}
+                style={styles.coverPreview}
+            />
+        );
+    }
+
+    return (
+        <BookCover
+            book={book}
+            width={72}
+            height={108}
+            index={0}
+            style={styles.coverPreview}
+        />
+    );
+};
+
+const buildPublicDomainLocalBook = (book, patch = {}) => ({
+    ...book,
+    ...patch,
+    id: book?.id || `public-domain-${book?.publicDomainId}`,
+    publicDomain: true,
+    format: 'txt',
+    downloaded: true,
+    originalTitle: book?.originalTitle || book?.title,
+    originalAuthor: book?.originalAuthor || book?.author,
+    originalCover: book?.originalCover ?? book?.cover ?? null,
+    progress: patch.progress ?? book?.progress ?? 0,
+    location: patch.location ?? book?.location ?? null,
+    nativePosition: patch.nativePosition ?? book?.nativePosition ?? null,
+    preprocessed: patch.preprocessed ?? book?.preprocessed ?? false,
+    preprocessing: false,
+});
+
+const getBookStatusLabel = (book) => {
+    if (book?.publicDomain) {
+        return 'Ready to read';
+    }
+
+    return 'Progress';
+};
+
+const getBookFormatLabel = (book) => {
+    if (book?.publicDomain) {
+        return 'Public domain text';
+    }
+
+    return String(book?.format || 'epub').toUpperCase();
+};
+
+const PreviewActionButton = ({
+    icon,
+    active = false,
+    danger = false,
+    label,
+    description,
+    onPress,
+}) => (
+    <TouchableOpacity
+        accessibilityRole="button"
+        accessibilityLabel={label}
+        activeOpacity={0.82}
+        onPress={onPress}
+        onLongPress={() => {
+            Alert.alert(label, description || label);
+        }}
+        style={[
+            styles.previewActionButton,
+            active && styles.previewActionButtonActive,
+            danger && styles.previewActionButtonDanger,
+        ]}
+    >
+        {icon}
+    </TouchableOpacity>
 );
 
-const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpen, navigation }) => {
+const BookPreview = ({
+    book,
+    index = 0,
+    contentWidth,
+    actionBusy = false,
+    onBack,
+    onRead,
+    onToggleFavorite,
+    onToggleCompleted,
+    onDelete,
+    onEdit,
+}) => {
+    const progressPercent = Math.round(getBookProgress(book) * 100);
+    const isPublicDomain = !!book?.publicDomain;
+    const coverWidth = Math.min(118, Math.max(92, Math.round(contentWidth * 0.3)));
+    const coverHeight = Math.round(coverWidth * 1.34);
+    const attributionNote = [
+        book?.previewSource,
+        book?.attributionCategory,
+    ].filter(Boolean).join(' · ');
+    const readIconName = isBookDownloaded(book) || isPublicDomain ? 'book-outline' : 'download-outline';
+    const favorite = isBookFavorite(book);
+    const completed = isBookCompleted(book);
+
+    return (
+        <Screen contentContainerStyle={styles.previewScreenContent}>
+            <View style={styles.previewTopBar}>
+                <TouchableOpacity
+                    activeOpacity={0.82}
+                    onPress={onBack}
+                    style={styles.previewBackButton}
+                >
+                    <Feather name="arrow-left" size={22} color={colors.text} />
+                </TouchableOpacity>
+                <Text style={styles.previewTopTitle}>Book</Text>
+                <TouchableOpacity
+                    activeOpacity={0.88}
+                    disabled={actionBusy}
+                    onPress={onRead}
+                    style={[
+                        styles.previewTopReadButton,
+                        actionBusy && styles.previewTopReadButtonDisabled,
+                    ]}
+                >
+                    {actionBusy ? (
+                        <ActivityIndicator size="small" color={colors.white} />
+                    ) : (
+                        <Ionicons
+                            name={readIconName}
+                            size={16}
+                            color={colors.white}
+                        />
+                    )}
+                    <Text style={styles.previewTopReadButtonText}>
+                        {actionBusy ? 'Preparing' : 'Read'}
+                    </Text>
+                </TouchableOpacity>
+            </View>
+
+            <ScrollView
+                style={styles.previewScroll}
+                contentContainerStyle={styles.previewScrollContent}
+                showsVerticalScrollIndicator={false}
+            >
+                <View style={styles.previewStack}>
+                <View style={[
+                    styles.previewHero,
+                    isPublicDomain && styles.previewHeroPublicDomain,
+                ]}>
+                    {!isPublicDomain ? (
+                        <BookCover
+                            book={book}
+                            width={coverWidth}
+                            height={coverHeight}
+                            index={index}
+                            style={styles.previewCover}
+                            titleStyle={styles.previewCoverText}
+                        />
+                    ) : null}
+
+                    <View style={styles.previewHeroCopy}>
+                        <Text style={styles.previewEyebrow}>
+                            {getBookFormatLabel(book)}
+                        </Text>
+                        <Text
+                            style={[
+                                styles.previewTitle,
+                                getSerifFontForText(getBookTitle(book)),
+                            ]}
+                        >
+                            {getBookTitle(book)}
+                        </Text>
+                        <Text
+                            style={[
+                                styles.previewAuthor,
+                                hasKoreanText(getBookAuthor(book)) && styles.koreanInlineText,
+                            ]}
+                        >
+                            {getBookAuthor(book)}
+                        </Text>
+
+                        <View style={styles.previewProgressBlock}>
+                            <View style={styles.previewProgressHeader}>
+                                <Text style={styles.previewProgressLabel}>{getBookStatusLabel(book)}</Text>
+                                <Text style={styles.previewProgressValue}>{progressPercent}%</Text>
+                            </View>
+                            <View style={styles.previewProgressRail}>
+                                <View style={[
+                                    styles.previewProgressFill,
+                                    { width: `${progressPercent}%` },
+                                ]} />
+                            </View>
+                        </View>
+                    </View>
+                </View>
+
+                <View style={styles.previewActionRow}>
+                    <PreviewActionButton
+                        label={favorite ? 'Remove favorite' : 'Favorite book'}
+                        description={favorite ? 'Remove this book from favorites.' : 'Mark this book as a favorite.'}
+                        active={favorite}
+                        onPress={onToggleFavorite}
+                        icon={(
+                            <Ionicons
+                                name={favorite ? 'star' : 'star-outline'}
+                                size={22}
+                                color={favorite ? colors.warning : colors.textMuted}
+                            />
+                        )}
+                    />
+                    <PreviewActionButton
+                        label={completed ? 'Mark unfinished' : 'Mark completed'}
+                        description={completed ? 'Mark this book as not completed.' : 'Mark this book as completed reading.'}
+                        active={completed}
+                        onPress={onToggleCompleted}
+                        icon={(
+                            <Ionicons
+                                name={completed ? 'checkmark-done-circle' : 'checkmark-done-circle-outline'}
+                                size={23}
+                                color={completed ? colors.success : colors.textMuted}
+                            />
+                        )}
+                    />
+                    <PreviewActionButton
+                        label="Delete book"
+                        description="Remove this book from your library."
+                        danger
+                        onPress={onDelete}
+                        icon={<Ionicons name="trash-outline" size={22} color={colors.danger} />}
+                    />
+                    <PreviewActionButton
+                        label="Edit book"
+                        description="Change the title, author, or cover."
+                        onPress={onEdit}
+                        icon={<Ionicons name="create-outline" size={22} color={colors.textMuted} />}
+                    />
+                </View>
+
+                <View style={styles.previewMetaList}>
+                        {isPublicDomain ? (
+                            <>
+                                <View style={styles.previewMetaRow}>
+                                    <Text style={styles.previewMetaLabel}>Title</Text>
+                                    <View style={styles.previewMetaValueGroup}>
+                                        <Text
+                                            style={[
+                                                styles.previewMetaValue,
+                                                getSerifFontForText(getBookTitle(book)),
+                                            ]}
+                                        >
+                                            {getBookTitle(book)}
+                                        </Text>
+                                        {book?.titleTranslation ? (
+                                            <Text style={styles.previewMetaTranslation}>
+                                                {book.titleTranslation}
+                                            </Text>
+                                        ) : null}
+                                    </View>
+                                </View>
+                                <View style={styles.previewMetaRow}>
+                                    <Text style={styles.previewMetaLabel}>Author</Text>
+                                    <View style={styles.previewMetaValueGroup}>
+                                        <Text
+                                            style={[
+                                                styles.previewMetaValue,
+                                                hasKoreanText(getBookAuthor(book)) && styles.koreanInlineText,
+                                            ]}
+                                        >
+                                            {getBookAuthor(book)}
+                                        </Text>
+                                        {book?.authorTranslation ? (
+                                            <Text style={styles.previewMetaTranslation}>
+                                                {book.authorTranslation}
+                                            </Text>
+                                        ) : null}
+                                    </View>
+                                </View>
+                            </>
+                        ) : null}
+                        {!isPublicDomain ? (
+                            <>
+                                <View style={styles.previewMetaRow}>
+                                    <Text style={styles.previewMetaLabel}>Language</Text>
+                                    <Text style={styles.previewMetaValue}>
+                                        {formatBookLanguage(book?.language)}
+                                    </Text>
+                                </View>
+                                <View style={styles.previewMetaRow}>
+                                    <Text style={styles.previewMetaLabel}>Last opened</Text>
+                                    <Text style={styles.previewMetaValue}>
+                                        {formatPreviewDateTime(book?.lastOpenedAt)}
+                                    </Text>
+                                </View>
+                                <View style={styles.previewMetaRow}>
+                                    <Text style={styles.previewMetaLabel}>File size</Text>
+                                    <Text style={styles.previewMetaValue}>
+                                        {formatFileSize(book?.size)}
+                                    </Text>
+                                </View>
+                            </>
+                        ) : null}
+                        {book?.genre ? (
+                            <View style={styles.previewMetaRow}>
+                                <Text style={styles.previewMetaLabel}>Genre</Text>
+                                <Text style={styles.previewMetaValue}>{book.genre}</Text>
+                            </View>
+                        ) : null}
+                </View>
+
+                {isPublicDomain && book?.snippet ? (
+                    <View style={styles.previewSnippetSection}>
+                        <Text style={styles.previewSectionLabel}>Snippet</Text>
+                        <Text style={styles.previewSnippetText}>{book.snippet}</Text>
+                        {attributionNote ? (
+                            <Text style={styles.previewAttributionText}>
+                                {attributionNote}
+                            </Text>
+                        ) : null}
+                    </View>
+                ) : null}
+                </View>
+            </ScrollView>
+        </Screen>
+    );
+};
+
+const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpen, navigation, user }) => {
     const [editBook, setEditBook] = useState(null);
     const [editDraft, setEditDraft] = useState({ title: '', author: '', cover: '' });
     const [activeLibraryTab, setActiveLibraryTab] = useState('Books');
-    const [activeBookFilter, setActiveBookFilter] = useState('library');
-    const [browseCatalogId, setBrowseCatalogId] = useState(null);
-    const [activeDifficulty, setActiveDifficulty] = useState('All levels');
+    const [activeBookFilter, setActiveBookFilter] = useState('all');
+    const [activeBookMenuKey, setActiveBookMenuKey] = useState(null);
     const [songs, setSongs] = useState([]);
     const [songsLoaded, setSongsLoaded] = useState(false);
-    const [songQuery, setSongQuery] = useState('');
-    const [songResults, setSongResults] = useState([]);
-    const [songSearchLoading, setSongSearchLoading] = useState(false);
-    const [songSearchError, setSongSearchError] = useState('');
-    const [openingSongId, setOpeningSongId] = useState(null);
+    const [downloadingBookId, setDownloadingBookId] = useState(null);
     const [selectedSongId, setSelectedSongId] = useState(null);
+    const [selectedBookPreview, setSelectedBookPreview] = useState(null);
     const [showAddSongModal, setShowAddSongModal] = useState(false);
     const [songDraft, setSongDraft] = useState(EMPTY_SONG_DRAFT);
-    const songSearchRequestRef = useRef(0);
+    const [ocrStatus, setOcrStatus] = useState(EMPTY_OCR_STATUS);
+    const [ocrBusy, setOcrBusy] = useState(false);
+    const [, setOcrMessage] = useState('');
+    const [ocrSettingsLoaded, setOcrSettingsLoaded] = useState(false);
+    const songCloudSyncUserRef = useRef(null);
+    const ocrActionInFlightRef = useRef(false);
+    const ocrSettingsRef = useRef({ floatingPreferred: false, updatedAt: null });
+    const ocrSettingsCloudUserRef = useRef(null);
     const { width } = useWindowDimensions();
     const {
         isImporting,
@@ -269,10 +813,14 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         setBooks,
         setCurrentBook,
         onBookImported: () => {},
+        user,
     });
 
     const currentReadingBook = useMemo(() => (
-        books.find((book) => book.uri === currentBook) ?? books[0] ?? null
+        books.find((book) => book.uri && book.uri === currentBook)
+        ?? books.find(isBookDownloaded)
+        ?? books[0]
+        ?? null
     ), [books, currentBook]);
     const currentProgressPercent = Math.round(getBookProgress(currentReadingBook) * 100);
 
@@ -282,44 +830,166 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     );
     const bookTileWidth = Math.floor((contentWidth - (BOOK_GRID_GAP * 2)) / 3);
     const bookCoverHeight = Math.round(bookTileWidth * 1.34);
-    const catalogTileWidth = Math.floor((contentWidth - BOOK_GRID_GAP) / 2);
-    const catalogCoverHeight = Math.round(catalogTileWidth * 1.44);
+    const publicDomainBooks = useMemo(() => getPublicDomainBooks(), []);
+    const publicDomainBookRows = useMemo(() => (
+        publicDomainBooks.map((book) => {
+            const localBook = books.find((candidate) => candidate.uri === book.uri);
+            return localBook
+                ? {
+                    ...book,
+                    ...localBook,
+                    publicDomain: true,
+                    downloaded: true,
+                    format: 'txt',
+                    previewSource: localBook.previewSource ?? book.previewSource,
+                    attributionCategory: localBook.attributionCategory ?? book.attributionCategory,
+                    titleTranslation: localBook.titleTranslation ?? book.titleTranslation,
+                    authorTranslation: localBook.authorTranslation ?? book.authorTranslation,
+                    attribution: localBook.attribution ?? book.attribution,
+                    snippet: localBook.snippet ?? book.snippet,
+                    genre: localBook.genre ?? book.genre,
+                    coverColor: book.coverColor,
+                }
+                : book;
+        })
+    ), [books, publicDomainBooks]);
+    const favoriteBooks = useMemo(() => books.filter(isBookFavorite), [books]);
+    const recentBooks = useMemo(() => (
+        books
+            .map((book, index) => ({ book, index }))
+            .sort((a, b) => {
+                const timestampDiff = getBookRecentTimestamp(b.book) - getBookRecentTimestamp(a.book);
+                return timestampDiff || a.index - b.index;
+            })
+            .map(({ book }) => book)
+    ), [books]);
     const bookFilterCounts = useMemo(() => ({
-        library: books.length,
-        classics: 0,
-        'public-domain': 0,
-    }), [books.length]);
-    const activeShelfCatalog = BROWSE_CATALOGS[activeBookFilter] ?? null;
-    const activeBookFilterCount = bookFilterCounts[activeBookFilter] ?? 0;
-    const browseCatalog = browseCatalogId ? BROWSE_CATALOGS[browseCatalogId] : null;
-    const filteredBrowseBooks = useMemo(() => {
-        if (!browseCatalog) {
-            return [];
+        favorites: favoriteBooks.length,
+        all: books.length,
+        'public-domain': publicDomainBookRows.length,
+    }), [books.length, favoriteBooks.length, publicDomainBookRows.length]);
+    const filteredLibraryBooks = useMemo(() => {
+        if (activeBookFilter === 'favorites') {
+            return favoriteBooks;
         }
 
-        if (activeDifficulty === 'All levels') {
-            return browseCatalog.books;
-        }
-
-        return browseCatalog.books.filter((book) => book.difficulty === activeDifficulty);
-    }, [activeDifficulty, browseCatalog]);
+        return recentBooks;
+    }, [activeBookFilter, favoriteBooks, recentBooks]);
+    const showingEmptyLibraryPublicDomainIntro = books.length === 0 && activeBookFilter === 'all';
+    const showingPublicDomainBooks = activeLibraryTab === 'Books'
+        && (activeBookFilter === 'public-domain' || showingEmptyLibraryPublicDomainIntro);
+    const bookSectionTitle = showingPublicDomainBooks
+        ? showingEmptyLibraryPublicDomainIntro
+            ? 'Start with a public domain book'
+            : 'Public domain books'
+        : activeBookFilter === 'favorites'
+            ? 'Favorite books'
+            : 'All books';
+    const bookSectionHint = showingPublicDomainBooks
+        ? showingEmptyLibraryPublicDomainIntro
+            ? 'Pick a public domain book below, or import your own EPUB.'
+            : 'Browse public domain Korean texts and add one to your library.'
+        : null;
     const selectedSong = useMemo(() => (
         songs.find((song) => song.id === selectedSongId) ?? null
     ), [selectedSongId, songs]);
-    const filteredSongs = useMemo(() => {
-        const query = songQuery.trim().toLowerCase();
-
-        if (!query) {
-            return songs;
+    const selectedPreviewBook = useMemo(() => {
+        const previewBook = selectedBookPreview?.book;
+        if (!previewBook) {
+            return null;
         }
 
-        return songs.filter((song) => (
-            song.title.toLowerCase().includes(query)
-            || song.artist.toLowerCase().includes(query)
-            || song.lyrics.toLowerCase().includes(query)
-        ));
-    }, [songQuery, songs]);
-    const isSongSearchActive = songQuery.trim().length > 0;
+        if (previewBook.publicDomain || previewBook.uri?.startsWith('public-domain:')) {
+            return publicDomainBookRows.find((book) => book.uri === previewBook.uri) ?? previewBook;
+        }
+
+        return books.find((book) => (
+            (previewBook.cloudId && book.cloudId === previewBook.cloudId)
+            || (previewBook.uri && book.uri === previewBook.uri)
+            || (previewBook.id && book.id === previewBook.id)
+        )) ?? previewBook;
+    }, [books, publicDomainBookRows, selectedBookPreview]);
+    const isFloatingOcrVisible = Platform.OS === 'android' && ocrStatus.floatingVisible;
+
+    const syncSongToCloud = useCallback((song) => {
+        if (!user?.id || !song?.id) {
+            return;
+        }
+
+        upsertUserSong(user.id, song).catch((error) => {
+            console.warn('[Home] Failed to sync song:', error?.message ?? error);
+        });
+    }, [user?.id]);
+
+    const syncSongsFromCloud = useCallback(async () => {
+        if (!user?.id) {
+            return;
+        }
+
+        const cloudRows = await fetchUserSongs(user.id, { includeDeleted: true });
+        const normalizedLocalSongs = songs.map(normalizeStoredSong).filter(Boolean);
+        const { songs: mergedSongs, localOnly } = mergeLocalAndCloudSongs(normalizedLocalSongs, cloudRows);
+
+        setSongs(mergedSongs);
+        localOnly.forEach((song) => {
+            upsertUserSong(user.id, song).catch((error) => {
+                console.warn('[Home] Failed to upload local song:', error?.message ?? error);
+            });
+        });
+    }, [songs, user?.id]);
+
+    const persistOcrSettings = useCallback((patch, options = {}) => {
+        const { syncCloud = true, updatedAt = new Date().toISOString() } = options;
+        const nextSettings = {
+            ...ocrSettingsRef.current,
+            ...patch,
+            updatedAt,
+        };
+
+        ocrSettingsRef.current = nextSettings;
+
+        AsyncStorage.setItem(OCR_SETTINGS_KEY, JSON.stringify(nextSettings)).catch((error) => {
+            console.warn('[Home] Failed to save OCR preference:', error?.message ?? error);
+        });
+
+        if (syncCloud && user?.id) {
+            updateUserPreferenceFields(user.id, {
+                ocr_settings: nextSettings,
+                updated_at: updatedAt,
+            }).catch((error) => {
+                console.warn('[Home] Failed to sync OCR preference:', error?.message ?? error);
+            });
+        }
+    }, [user?.id]);
+
+    const mergeOcrStatus = useCallback((nextStatus = {}) => {
+        setOcrStatus((previous) => ({
+            overlayPermissionGranted: typeof nextStatus.overlayPermissionGranted === 'boolean'
+                ? nextStatus.overlayPermissionGranted
+                : previous.overlayPermissionGranted,
+            screenCaptureActive: typeof nextStatus.screenCaptureActive === 'boolean'
+                ? nextStatus.screenCaptureActive
+                : previous.screenCaptureActive,
+            floatingVisible: typeof nextStatus.floatingVisible === 'boolean'
+                ? nextStatus.floatingVisible
+                : previous.floatingVisible,
+            resultOverlayVisible: typeof nextStatus.resultOverlayVisible === 'boolean'
+                ? nextStatus.resultOverlayVisible
+                : previous.resultOverlayVisible,
+        }));
+    }, []);
+
+    const waitForScreenCapture = useCallback(async () => {
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+            if (isScreenCaptureActive()) {
+                mergeOcrStatus({ screenCaptureActive: true });
+                return true;
+            }
+            await wait(120);
+        }
+
+        return isScreenCaptureActive();
+    }, [mergeOcrStatus]);
 
     useEffect(() => {
         let isMounted = true;
@@ -352,6 +1022,131 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     }, []);
 
     useEffect(() => {
+        if (Platform.OS !== 'android') {
+            return undefined;
+        }
+
+        mergeOcrStatus({
+            overlayPermissionGranted: isOverlayPermissionGranted(),
+            screenCaptureActive: isScreenCaptureActive(),
+        });
+
+        const statusSubscription = addOverlayStatusListener((status = {}) => {
+            mergeOcrStatus(status);
+            if (status.status === 'floating_widget_visible') {
+                setOcrMessage('Screen text scanner is ready.');
+            } else if (status.status === 'floating_widget_hidden') {
+                setOcrMessage('Screen text scanner is off.');
+            } else if (status.status === 'screen_capture_stopped') {
+                setOcrMessage('Screen capture stopped.');
+            }
+        });
+
+        const errorSubscription = addOverlayErrorListener((error = {}) => {
+            setOcrMessage(error.message || 'Screen text scanner failed.');
+        });
+
+        return () => {
+            statusSubscription.remove();
+            errorSubscription.remove();
+        };
+    }, [mergeOcrStatus]);
+
+    useEffect(() => {
+        let isMounted = true;
+
+        AsyncStorage.getItem(OCR_SETTINGS_KEY)
+            .then((stored) => {
+                if (!isMounted) {
+                    return;
+                }
+
+                const parsed = parseStoredJson(stored, {});
+                ocrSettingsRef.current = {
+                    floatingPreferred: parsed.floatingPreferred === true,
+                    updatedAt: parsed.updatedAt ?? null,
+                };
+            })
+            .catch((error) => {
+                console.warn('[Home] Failed to load OCR preference:', error?.message ?? error);
+            })
+            .finally(() => {
+                if (isMounted) {
+                    setOcrSettingsLoaded(true);
+                }
+            });
+
+        return () => {
+            isMounted = false;
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!ocrSettingsLoaded) {
+            return;
+        }
+
+        if (!user?.id) {
+            ocrSettingsCloudUserRef.current = null;
+            return;
+        }
+
+        if (ocrSettingsCloudUserRef.current === user.id) {
+            return;
+        }
+
+        let isMounted = true;
+        ocrSettingsCloudUserRef.current = user.id;
+
+        const mergeCloudOcrSettings = async () => {
+            try {
+                const cloudPreferences = await fetchUserPreferences(user.id);
+                const cloudSettings = cloudPreferences?.ocr_settings;
+                const hasCloudSettings = cloudSettings
+                    && typeof cloudSettings === 'object'
+                    && !Array.isArray(cloudSettings)
+                    && Object.keys(cloudSettings).length > 0;
+                const cloudUpdatedAt = cloudSettings?.updatedAt
+                    ?? cloudSettings?.updated_at
+                    ?? cloudPreferences?.updated_at
+                    ?? null;
+                const localUpdatedAt = ocrSettingsRef.current.updatedAt;
+
+                if (hasCloudSettings && getTimestampMs(cloudUpdatedAt) > getTimestampMs(localUpdatedAt)) {
+                    const nextSettings = {
+                        floatingPreferred: cloudSettings.floatingPreferred === true,
+                        updatedAt: cloudUpdatedAt,
+                    };
+                    if (!isMounted) {
+                        return;
+                    }
+                    ocrSettingsRef.current = nextSettings;
+                    await AsyncStorage.setItem(OCR_SETTINGS_KEY, JSON.stringify(nextSettings));
+                    return;
+                }
+
+                const updatedAt = localUpdatedAt ?? new Date().toISOString();
+                await updateUserPreferenceFields(user.id, {
+                    ocr_settings: {
+                        ...ocrSettingsRef.current,
+                        updatedAt,
+                    },
+                    updated_at: updatedAt,
+                });
+            } catch (error) {
+                ocrSettingsCloudUserRef.current = null;
+                console.warn('[Home] Failed to merge cloud OCR preference:', error?.message ?? error);
+            }
+        };
+
+        mergeCloudOcrSettings();
+
+        return () => {
+            isMounted = false;
+        };
+    }, [ocrSettingsLoaded, user?.id]);
+
+    useEffect(() => {
         if (!songsLoaded) {
             return;
         }
@@ -362,49 +1157,21 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     }, [songs, songsLoaded]);
 
     useEffect(() => {
-        const query = songQuery.trim();
-        const requestId = songSearchRequestRef.current + 1;
-        songSearchRequestRef.current = requestId;
-
-        if (!query) {
-            setSongResults([]);
-            setSongSearchError('');
-            setSongSearchLoading(false);
-            return undefined;
+        if (!user?.id) {
+            songCloudSyncUserRef.current = null;
+            return;
         }
 
-        setSongResults([]);
-        setSongSearchError('');
-        setSongSearchLoading(true);
+        if (!songsLoaded || songCloudSyncUserRef.current === user.id) {
+            return;
+        }
 
-        const timeout = setTimeout(() => {
-            searchSongs(query)
-                .then((results) => {
-                    if (songSearchRequestRef.current !== requestId) {
-                        return;
-                    }
-
-                    setSongResults(results);
-                    setSongSearchError('');
-                })
-                .catch((error) => {
-                    if (songSearchRequestRef.current !== requestId) {
-                        return;
-                    }
-
-                    console.error('[Home] Song search failed:', error);
-                    setSongResults([]);
-                    setSongSearchError(error.message || 'Song search failed');
-                })
-                .finally(() => {
-                    if (songSearchRequestRef.current === requestId) {
-                        setSongSearchLoading(false);
-                    }
-                });
-        }, 300);
-
-        return () => clearTimeout(timeout);
-    }, [songQuery]);
+        songCloudSyncUserRef.current = user.id;
+        syncSongsFromCloud().catch((error) => {
+            songCloudSyncUserRef.current = null;
+            console.warn('[Home] Failed to sync cloud songs:', error?.message ?? error);
+        });
+    }, [songsLoaded, syncSongsFromCloud, user?.id]);
 
     useEffect(() => {
         if (selectedSongId && !selectedSong) {
@@ -413,7 +1180,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     }, [selectedSong, selectedSongId]);
 
     useEffect(() => {
-        const shouldHideTabBar = !!browseCatalog || !!selectedSong;
+        const shouldHideTabBar = !!selectedSong || !!selectedPreviewBook;
 
         navigation?.setOptions({
             tabBarStyle: shouldHideTabBar ? { display: 'none' } : tabBarBaseStyle,
@@ -424,15 +1191,286 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 tabBarStyle: tabBarBaseStyle,
             });
         };
-    }, [browseCatalog, navigation, selectedSong]);
+    }, [navigation, selectedPreviewBook, selectedSong]);
 
-    const updateBookRecord = useCallback((uri, patch) => {
+    const handleFloatingOcrToggle = useCallback(async () => {
+        if (ocrBusy || ocrActionInFlightRef.current) {
+            return;
+        }
+
+        if (Platform.OS !== 'android') {
+            Alert.alert('Screen text scanner', 'Screen text scanning is only available on Android right now.');
+            return;
+        }
+
+        ocrActionInFlightRef.current = true;
+        setOcrBusy(true);
+        setOcrMessage(isFloatingOcrVisible ? 'Turning scanner off...' : 'Starting scanner...');
+
+        try {
+            if (isFloatingOcrVisible) {
+                await stopFloatingWidget();
+                mergeOcrStatus({ floatingVisible: false, resultOverlayVisible: false });
+                persistOcrSettings({ floatingPreferred: false });
+                setOcrMessage('Screen text scanner is off.');
+                return;
+            }
+
+            let overlayGranted = isOverlayPermissionGranted();
+            if (!overlayGranted) {
+                setOcrMessage('Allow display over other apps to use the floating scanner.');
+                const overlayResult = await requestOverlayPermission();
+                overlayGranted = !!overlayResult?.granted || isOverlayPermissionGranted();
+            }
+
+            if (!overlayGranted) {
+                mergeOcrStatus({ overlayPermissionGranted: false });
+                setOcrMessage('Display over other apps was not allowed.');
+                return;
+            }
+            mergeOcrStatus({ overlayPermissionGranted: true });
+
+            let captureActive = isScreenCaptureActive();
+            if (!captureActive) {
+                setOcrMessage('Allow screen capture once to start this scanner session.');
+                const captureResult = await requestScreenCapture();
+                captureActive = !!captureResult?.active || !!captureResult?.granted;
+                if (captureActive) {
+                    captureActive = await waitForScreenCapture();
+                }
+            }
+
+            if (!captureActive) {
+                mergeOcrStatus({ screenCaptureActive: false, floatingVisible: false });
+                setOcrMessage('Screen capture was not allowed.');
+                return;
+            }
+            mergeOcrStatus({ screenCaptureActive: true });
+
+            const startResult = await startFloatingWidget();
+            const visible = !!startResult?.visible;
+            mergeOcrStatus({ floatingVisible: visible });
+            persistOcrSettings({ floatingPreferred: visible });
+            setOcrMessage(visible ? 'Tap the floating bubble to scan text.' : 'Scanner bubble did not start.');
+        } catch (error) {
+            const message = error?.message || 'Screen text scanner failed.';
+            setOcrMessage(message);
+            Alert.alert('Screen text scanner', message);
+        } finally {
+            ocrActionInFlightRef.current = false;
+            setOcrBusy(false);
+        }
+    }, [isFloatingOcrVisible, mergeOcrStatus, ocrBusy, persistOcrSettings, waitForScreenCapture]);
+
+    const updateBookRecord = useCallback((bookToUpdate, patch) => {
         setBooks((prevBooks) => prevBooks.map((book) => (
-            book.uri === uri ? { ...book, ...patch } : book
+            (bookToUpdate?.cloudId && book.cloudId === bookToUpdate.cloudId)
+            || (bookToUpdate?.uri && book.uri === bookToUpdate.uri)
+            || (bookToUpdate?.id && book.id === bookToUpdate.id)
+                ? { ...book, ...patch }
+                : book
         )));
     }, [setBooks]);
 
+    const handleDownloadBook = useCallback(async (book) => {
+        if (!user?.id || !book?.cloudId) {
+            Alert.alert('Download unavailable', 'Sign in again to download this book.');
+            return;
+        }
+
+        const bookKey = getBookKey(book);
+        if (downloadingBookId) {
+            return;
+        }
+
+        setDownloadingBookId(bookKey);
+
+        try {
+            const localBook = await downloadUserBook(user.id, book);
+            const openedAt = new Date().toISOString();
+            setBooks((prevBooks) => {
+                let replaced = false;
+                const nextBooks = prevBooks.map((candidate) => {
+                    if (candidate.cloudId === book.cloudId || candidate.id === book.id) {
+                        replaced = true;
+                        return {
+                            ...candidate,
+                            ...localBook,
+                            downloaded: true,
+                            lastOpenedAt: openedAt,
+                        };
+                    }
+
+                    return candidate;
+                });
+
+                return replaced ? nextBooks : [...nextBooks, { ...localBook, lastOpenedAt: openedAt }];
+            });
+            setCurrentBook(localBook.uri);
+            navigation.navigate('Read');
+        } catch (error) {
+            console.warn('[Home] Failed to download cloud book:', error);
+            Alert.alert('Download failed', error?.message || 'This book could not be downloaded right now.');
+        } finally {
+            setDownloadingBookId(null);
+        }
+    }, [downloadingBookId, navigation, setBooks, setCurrentBook, user?.id]);
+
+    const handleBookPress = useCallback((book) => {
+        if (!book) {
+            return;
+        }
+
+        if (activeBookMenuKey) {
+            setActiveBookMenuKey(null);
+            return;
+        }
+
+        if (!isBookDownloaded(book)) {
+            handleDownloadBook(book);
+            return;
+        }
+
+        const openedAt = new Date().toISOString();
+        updateBookRecord(book, { lastOpenedAt: openedAt });
+        handlePress(book.uri);
+    }, [activeBookMenuKey, handleDownloadBook, handlePress, updateBookRecord]);
+
+    const handlePublicDomainBookPress = useCallback((book) => {
+        if (!book?.uri) {
+            return;
+        }
+
+        const localBook = buildPublicDomainLocalBook(book, {
+            lastOpenedAt: new Date().toISOString(),
+        });
+
+        setBooks((prevBooks) => {
+            const exists = prevBooks.some((candidate) => candidate.uri === localBook.uri);
+            if (exists) {
+                return prevBooks.map((candidate) => (
+                    candidate.uri === localBook.uri
+                        ? {
+                            ...localBook,
+                            ...candidate,
+                            publicDomain: true,
+                            downloaded: true,
+                            format: 'txt',
+                            previewSource: candidate.previewSource ?? localBook.previewSource,
+                            attributionCategory: candidate.attributionCategory ?? localBook.attributionCategory,
+                            titleTranslation: candidate.titleTranslation ?? localBook.titleTranslation,
+                            authorTranslation: candidate.authorTranslation ?? localBook.authorTranslation,
+                            attribution: candidate.attribution ?? localBook.attribution,
+                            snippet: candidate.snippet ?? localBook.snippet,
+                            genre: candidate.genre ?? localBook.genre,
+                            coverColor: localBook.coverColor,
+                            lastOpenedAt: localBook.lastOpenedAt,
+                        }
+                        : candidate
+                ));
+            }
+
+            return [...prevBooks, localBook];
+        });
+        setCurrentBook(localBook.uri);
+        setPreprocessOnOpen(false);
+        navigation.navigate('Read');
+    }, [navigation, setBooks, setCurrentBook, setPreprocessOnOpen]);
+
+    const handleBookPreviewPress = useCallback((book, index = 0) => {
+        if (!book) {
+            return;
+        }
+
+        if (activeBookMenuKey) {
+            setActiveBookMenuKey(null);
+            return;
+        }
+
+        setSelectedBookPreview({ book, index });
+    }, [activeBookMenuKey]);
+
+    const handleReadPreviewBook = useCallback(() => {
+        if (!selectedPreviewBook) {
+            return;
+        }
+
+        setSelectedBookPreview(null);
+
+        if (selectedPreviewBook.publicDomain) {
+            handlePublicDomainBookPress(selectedPreviewBook);
+            return;
+        }
+
+        handleBookPress(selectedPreviewBook);
+    }, [handleBookPress, handlePublicDomainBookPress, selectedPreviewBook]);
+
+    const upsertPreviewBookPatch = useCallback((book, patch) => {
+        if (!book) {
+            return null;
+        }
+
+        const nextPatch = {
+            ...patch,
+            updatedAt: new Date().toISOString(),
+        };
+
+        if (book.publicDomain) {
+            const localBook = buildPublicDomainLocalBook(book, nextPatch);
+            setBooks((prevBooks) => {
+                const exists = prevBooks.some((candidate) => candidate.uri === localBook.uri);
+                if (exists) {
+                    return prevBooks.map((candidate) => (
+                        candidate.uri === localBook.uri
+                            ? {
+                                ...localBook,
+                                ...candidate,
+                                ...nextPatch,
+                                publicDomain: true,
+                                downloaded: true,
+                                format: 'txt',
+                                coverColor: localBook.coverColor,
+                            }
+                            : candidate
+                    ));
+                }
+
+                return [...prevBooks, localBook];
+            });
+            return localBook;
+        }
+
+        updateBookRecord(book, nextPatch);
+        return { ...book, ...nextPatch };
+    }, [setBooks, updateBookRecord]);
+
+    const handleTogglePreviewFavorite = useCallback(() => {
+        if (!selectedPreviewBook) {
+            return;
+        }
+
+        const nextFavorite = !isBookFavorite(selectedPreviewBook);
+        upsertPreviewBookPatch(selectedPreviewBook, {
+            isFavorite: nextFavorite,
+            favorite: nextFavorite,
+        });
+    }, [selectedPreviewBook, upsertPreviewBookPatch]);
+
+    const handleTogglePreviewCompleted = useCallback(() => {
+        if (!selectedPreviewBook) {
+            return;
+        }
+
+        const nextCompleted = !isBookCompleted(selectedPreviewBook);
+        upsertPreviewBookPatch(selectedPreviewBook, {
+            completed: nextCompleted,
+            completedAt: nextCompleted ? new Date().toISOString() : null,
+            progress: nextCompleted ? 1 : selectedPreviewBook.progress ?? 0,
+        });
+    }, [selectedPreviewBook, upsertPreviewBookPatch]);
+
     const handleDeleteBook = useCallback((bookToDelete) => {
+        setActiveBookMenuKey(null);
         Alert.alert(
             'Remove book',
             `Remove "${getBookTitle(bookToDelete)}" from your collection?`,
@@ -442,9 +1480,24 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     text: 'Remove',
                     style: 'destructive',
                     onPress: async () => {
-                        await deleteBookIndexEntries(bookToDelete.uri);
+                        if (bookToDelete.cloudId && user?.id) {
+                            try {
+                                await softDeleteUserBook(user.id, bookToDelete.cloudId);
+                            } catch (error) {
+                                console.warn('[Home] Failed to soft-delete cloud book:', error);
+                            }
+                        }
+
+                        if (bookToDelete.uri) {
+                            await deleteBookIndexEntries(bookToDelete.uri);
+                        }
+
                         setBooks((prevBooks) => {
-                            const remainingBooks = prevBooks.filter((book) => book.uri !== bookToDelete.uri);
+                            const remainingBooks = prevBooks.filter((book) => (
+                                bookToDelete.cloudId
+                                    ? book.cloudId !== bookToDelete.cloudId
+                                    : book.uri !== bookToDelete.uri
+                            ));
 
                             if (currentBook === bookToDelete.uri) {
                                 setCurrentBook(remainingBooks[0]?.uri ?? null);
@@ -453,17 +1506,30 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
                             return remainingBooks;
                         });
+                        setSelectedBookPreview((current) => {
+                            const previewBook = current?.book;
+                            if (!previewBook) {
+                                return current;
+                            }
+
+                            const matchesDeletedBook = bookToDelete.cloudId
+                                ? previewBook.cloudId === bookToDelete.cloudId
+                                : previewBook.uri === bookToDelete.uri;
+
+                            return matchesDeletedBook ? null : current;
+                        });
                     },
                 },
             ]
         );
-    }, [currentBook, setBooks, setCurrentBook, setPreprocessOnOpen]);
+    }, [currentBook, setBooks, setCurrentBook, setPreprocessOnOpen, user?.id]);
 
     const handleEditBook = useCallback((book) => {
         if (!book) {
             return;
         }
 
+        setActiveBookMenuKey(null);
         setEditBook(book);
         setEditDraft({
             title: book.title || '',
@@ -472,18 +1538,112 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         });
     }, []);
 
-    const handleBookLongPress = useCallback((book) => {
-        Alert.alert(
-            getBookTitle(book),
-            getBookAuthor(book),
-            [
-                { text: 'Open', onPress: () => handlePress(book.uri) },
-                { text: 'Edit details', onPress: () => handleEditBook(book) },
-                { text: 'Remove', style: 'destructive', onPress: () => handleDeleteBook(book) },
-                { text: 'Cancel', style: 'cancel' },
-            ]
-        );
-    }, [handleDeleteBook, handleEditBook, handlePress]);
+    const handleDeletePreviewBook = useCallback(() => {
+        if (!selectedPreviewBook) {
+            return;
+        }
+
+        const existsInLibrary = books.some((book) => (
+            selectedPreviewBook.cloudId
+                ? book.cloudId === selectedPreviewBook.cloudId
+                : book.uri === selectedPreviewBook.uri
+        ));
+
+        if (selectedPreviewBook.publicDomain && !existsInLibrary) {
+            Alert.alert('Not in library', 'This public domain text has not been added to your library yet.');
+            return;
+        }
+
+        handleDeleteBook(selectedPreviewBook);
+    }, [books, handleDeleteBook, selectedPreviewBook]);
+
+    const handleEditPreviewBook = useCallback(() => {
+        if (!selectedPreviewBook) {
+            return;
+        }
+
+        if (selectedPreviewBook.publicDomain) {
+            const localBook = buildPublicDomainLocalBook(selectedPreviewBook);
+            setBooks((prevBooks) => {
+                const exists = prevBooks.some((book) => book.uri === localBook.uri);
+                if (exists) {
+                    return prevBooks;
+                }
+
+                return [...prevBooks, localBook];
+            });
+            setSelectedBookPreview(null);
+            handleEditBook(localBook);
+            return;
+        }
+
+        setSelectedBookPreview(null);
+        handleEditBook(selectedPreviewBook);
+    }, [handleEditBook, selectedPreviewBook, setBooks]);
+
+    const handleResetBookToOriginal = useCallback(async (book) => {
+        if (!book) {
+            return;
+        }
+
+        setActiveBookMenuKey(null);
+
+        const publicDomainOriginal = book.publicDomain
+            ? publicDomainBooks.find((candidate) => candidate.uri === book.uri)
+            : null;
+
+        if (publicDomainOriginal) {
+            updateBookRecord(book, {
+                title: publicDomainOriginal.title,
+                author: publicDomainOriginal.author,
+                cover: publicDomainOriginal.cover ?? null,
+                originalTitle: publicDomainOriginal.title,
+                originalAuthor: publicDomainOriginal.author,
+                originalCover: publicDomainOriginal.cover ?? null,
+            });
+            return;
+        }
+
+        const hasStoredOriginal = !!book.originalTitle
+            || !!book.originalAuthor
+            || Object.prototype.hasOwnProperty.call(book, 'originalCover');
+
+        if (hasStoredOriginal) {
+            updateBookRecord(book, {
+                title: String(book.originalTitle || book.title || 'Untitled').trim() || 'Untitled',
+                author: String(book.originalAuthor || book.author || 'Unknown author').trim() || 'Unknown author',
+                cover: book.originalCover ?? null,
+            });
+            return;
+        }
+
+        if (!isBookDownloaded(book) || !book.uri) {
+            Alert.alert('Reset unavailable', 'Original metadata is only available after this book is downloaded.');
+            return;
+        }
+
+        try {
+            const metadata = await readEpubMetadata(
+                book.uri,
+                book.originalFilename || book.title || 'Untitled'
+            );
+            const title = String(metadata?.title || book.title || 'Untitled').trim() || 'Untitled';
+            const author = String(metadata?.author || book.author || 'Unknown author').trim() || 'Unknown author';
+            const cover = metadata?.cover ?? null;
+
+            updateBookRecord(book, {
+                title,
+                author,
+                cover,
+                originalTitle: title,
+                originalAuthor: author,
+                originalCover: cover,
+            });
+        } catch (error) {
+            console.warn('[Home] Failed to reset book metadata:', error);
+            Alert.alert('Reset failed', error?.message || 'Original book metadata could not be restored.');
+        }
+    }, [publicDomainBooks, updateBookRecord]);
 
     const handlePickCover = useCallback(async () => {
         try {
@@ -507,7 +1667,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             return;
         }
 
-        updateBookRecord(editBook.uri, {
+        updateBookRecord(editBook, {
             title: editDraft.title.trim() || 'Untitled',
             author: editDraft.author.trim() || 'Unknown author',
             cover: editDraft.cover.trim() || null,
@@ -537,96 +1697,61 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
         const nextSong = {
             id: `song-${Date.now()}`,
+            source: 'manual',
             title,
             artist,
             lyrics,
             lines: countSongLines(lyrics),
+            fontSize: DEFAULT_SONG_FONT_SIZE,
             savedTerms: [],
             createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
         };
 
         setSongs((previous) => [nextSong, ...previous]);
+        syncSongToCloud(nextSong);
         setShowAddSongModal(false);
         setSongDraft(EMPTY_SONG_DRAFT);
         setActiveLibraryTab('Songs');
-    }, [songDraft.artist, songDraft.lyrics, songDraft.title]);
+    }, [songDraft.artist, songDraft.lyrics, songDraft.title, syncSongToCloud]);
 
-    const handleSongResultPress = useCallback(async (songResult) => {
-        if (!songResult?.id || openingSongId) {
+    const handleUpdateSong = useCallback((songId, patch) => {
+        const currentSong = songs.find((song) => song.id === songId);
+        if (!currentSong) {
             return;
         }
 
-        setOpeningSongId(songResult.id);
-        setSongSearchError('');
+        const nextSong = {
+            ...currentSong,
+            ...patch,
+            lines: patch.lyrics !== undefined ? countSongLines(patch.lyrics) : currentSong.lines,
+            updatedAt: new Date().toISOString(),
+        };
+        const updatedSong = normalizeStoredSong(nextSong) ?? currentSong;
 
-        try {
-            const fullSong = await getSongLyrics(songResult.id);
-            const lyrics = getLyricsFromApiSong(fullSong)
-                || (fullSong.instrumental ? 'Instrumental' : '');
+        setSongs((previous) => previous.map((song) => (
+            song.id === songId ? updatedSong : song
+        )));
+        syncSongToCloud(updatedSong);
+    }, [songs, syncSongToCloud]);
 
-            if (!lyrics) {
-                setSongSearchError('No lyrics were available for that result.');
-                return;
-            }
-
-            const provider = fullSong.provider || songResult.provider || 'lrclib';
-            const providerId = String(fullSong.id || songResult.id);
-            const localSong = {
-                id: `${provider}:${providerId}`,
-                provider,
-                providerId,
-                title: fullSong.title || songResult.title || 'Untitled song',
-                artist: fullSong.artist || songResult.artist || 'Unknown artist',
-                album: fullSong.album || songResult.album || '',
-                duration: typeof fullSong.duration === 'number' ? fullSong.duration : null,
-                instrumental: !!fullSong.instrumental,
-                lyrics,
-                syncedLyrics: fullSong.syncedLyrics || '',
-                lines: fullSong.linesCount || countSongLines(lyrics),
-                savedTerms: [],
-                createdAt: new Date().toISOString(),
-            };
-
-            setSongs((previous) => {
-                const alreadySaved = previous.some((song) => (
-                    song.id === localSong.id
-                    || (song.provider === provider && song.providerId === providerId)
-                ));
-
-                return alreadySaved ? previous : [localSong, ...previous];
+    const handleDeleteSong = useCallback((songId) => {
+        setSongs((previous) => previous.filter((song) => song.id !== songId));
+        setSelectedSongId(null);
+        if (user?.id) {
+            softDeleteUserSong(user.id, songId).catch((error) => {
+                console.warn('[Home] Failed to delete cloud song:', error?.message ?? error);
             });
-            setSongQuery('');
-            setSongResults([]);
-            setSongSearchError('');
-        } catch (error) {
-            console.error('[Home] Failed to add song result:', error);
-            setSongSearchError(error.message || 'Could not load lyrics for that song.');
-        } finally {
-            setOpeningSongId(null);
         }
-    }, [openingSongId]);
-
-    const openBrowseCatalog = useCallback((catalogId) => {
-        setBrowseCatalogId(catalogId);
-        setActiveDifficulty('All levels');
-    }, []);
-
-    const closeBrowseCatalog = useCallback(() => {
-        setBrowseCatalogId(null);
-    }, []);
-
-    const handlePlaceholderBookPress = useCallback((book) => {
-        Alert.alert(
-            book.title,
-            'This is placeholder catalog content for now.'
-        );
-    }, []);
+    }, [user?.id]);
 
     if (selectedSong) {
         return (
             <SongReader
                 song={selectedSong}
                 onClose={() => setSelectedSongId(null)}
+                onSongUpdate={(patch) => handleUpdateSong(selectedSong.id, patch)}
+                onSongDelete={() => handleDeleteSong(selectedSong.id)}
                 onSavedTermsChange={(savedTerms) => {
                     setSongs((previous) => previous.map((song) => (
                         song.id === selectedSong.id
@@ -638,102 +1763,37 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         );
     }
 
-    if (browseCatalog) {
+    if (selectedPreviewBook) {
+        const previewKey = getBookKey(selectedPreviewBook, `${selectedBookPreview?.index ?? 0}`);
+        const previewActionBusy = (
+            (!isBookDownloaded(selectedPreviewBook) && downloadingBookId === previewKey)
+            || openingBookUri === selectedPreviewBook.uri
+        );
+
         return (
-            <Screen scroll contentContainerStyle={styles.browseScreenContent}>
-                <View style={styles.browseTopBar}>
-                    <TouchableOpacity
-                        activeOpacity={0.78}
-                        onPress={closeBrowseCatalog}
-                        style={styles.browseIconButton}
-                    >
-                        <Feather name="chevron-left" size={30} color={colors.text} />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        activeOpacity={0.78}
-                        onPress={() => Alert.alert('Search', 'Search is placeholder-only for now.')}
-                        style={styles.browseIconButton}
-                    >
-                        <Feather name="search" size={25} color={colors.textMuted} />
-                    </TouchableOpacity>
-                </View>
-
-                <View style={styles.browseTitleBlock}>
-                    <Text style={styles.browseEyebrow}>{browseCatalog.eyebrow}</Text>
-                    <Text style={styles.browseTitle}>{browseCatalog.title}</Text>
-                    <Text style={styles.browseSubtitle}>{browseCatalog.subtitle}</Text>
-                </View>
-
-                <ScrollView
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    contentContainerStyle={styles.difficultyFilters}
-                >
-                    {DIFFICULTY_FILTERS.map((difficulty) => {
-                        const isActive = activeDifficulty === difficulty;
-
-                        return (
-                            <TouchableOpacity
-                                key={difficulty}
-                                activeOpacity={0.84}
-                                onPress={() => setActiveDifficulty(difficulty)}
-                                style={[
-                                    styles.difficultyChip,
-                                    isActive && styles.difficultyChipActive,
-                                ]}
-                            >
-                                <Text style={[
-                                    styles.difficultyChipText,
-                                    isActive && styles.difficultyChipTextActive,
-                                ]}>
-                                    {difficulty}
-                                </Text>
-                            </TouchableOpacity>
-                        );
-                    })}
-                </ScrollView>
-
-                <View style={styles.catalogGrid}>
-                    {filteredBrowseBooks.map((book) => (
-                        <View
-                            key={book.id}
-                            style={[
-                                styles.catalogTile,
-                                { width: catalogTileWidth },
-                            ]}
-                        >
-                            <CatalogBookCover
-                                book={book}
-                                width={catalogTileWidth}
-                                height={catalogCoverHeight}
-                            />
-                            <Text style={styles.catalogMeta} numberOfLines={1}>
-                                {book.difficulty.toUpperCase()} · {book.length}
-                            </Text>
-                            <Text style={styles.catalogBookTitle} numberOfLines={2}>
-                                {book.title}
-                            </Text>
-                            <Text style={styles.catalogBookAuthor} numberOfLines={1}>
-                                {book.author}
-                            </Text>
-                            <TouchableOpacity
-                                activeOpacity={0.84}
-                                onPress={() => handlePlaceholderBookPress(book)}
-                                style={styles.catalogAddButton}
-                            >
-                                <Feather name="plus" size={17} color={colors.text} />
-                                <Text style={styles.catalogAddButtonText}>Add to library</Text>
-                            </TouchableOpacity>
-                        </View>
-                    ))}
-                </View>
-            </Screen>
+            <BookPreview
+                book={selectedPreviewBook}
+                index={selectedBookPreview?.index ?? 0}
+                contentWidth={contentWidth}
+                actionBusy={previewActionBusy}
+                onBack={() => setSelectedBookPreview(null)}
+                onRead={handleReadPreviewBook}
+                onToggleFavorite={handleTogglePreviewFavorite}
+                onToggleCompleted={handleTogglePreviewCompleted}
+                onDelete={handleDeletePreviewBook}
+                onEdit={handleEditPreviewBook}
+            />
         );
     }
 
     return (
         <Screen scroll contentContainerStyle={styles.screenContent}>
-            <View style={styles.stack}>
+            <Pressable
+                accessible={false}
+                disabled={!activeBookMenuKey}
+                onPress={() => setActiveBookMenuKey(null)}
+                style={styles.stack}
+            >
                 <SectionHeader
                     eyebrow="Home"
                     title="Read stories. Collect the words that matter."
@@ -742,7 +1802,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
                 {currentReadingBook ? (
                     <Pressable
-                        onPress={() => handlePress(currentReadingBook.uri)}
+                        onPress={() => handleBookPress(currentReadingBook)}
                         style={({ pressed }) => [pressed && styles.pressed]}
                     >
                         <View style={styles.continueCard}>
@@ -753,10 +1813,15 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                 index={0}
                                 style={styles.continueCover}
                                 titleStyle={styles.continueCoverText}
+                                showBars={false}
                             />
 
                             <View style={styles.continueCopy}>
-                                <Text style={styles.continueEyebrow}>CONTINUE · {currentProgressPercent}%</Text>
+                                <Text style={styles.continueEyebrow}>
+                                    {isBookDownloaded(currentReadingBook)
+                                        ? `CONTINUE · ${currentProgressPercent}%`
+                                        : 'CLOUD BOOK'}
+                                </Text>
                                 <View style={styles.continueMetaRow}>
                                     <Text
                                         style={[
@@ -781,47 +1846,32 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                             </View>
 
                             <View style={styles.continuePlayButton}>
-                                <Ionicons name="play" size={18} color={colors.white} />
+                                <Ionicons
+                                    name={isBookDownloaded(currentReadingBook) ? 'play' : 'download-outline'}
+                                    size={18}
+                                    color={colors.white}
+                                />
                             </View>
                         </View>
                     </Pressable>
                 ) : (
-                    <TouchableOpacity
-                        activeOpacity={0.88}
-                        onPress={confirmAddBook}
-                        style={styles.emptyContinueCard}
-                    >
-                        {isImporting ? (
-                            <ActivityIndicator size="small" color={colors.accentStrong} />
-                        ) : (
-                            <Feather name="plus" size={24} color={colors.accentStrong} />
-                        )}
+                    <View style={styles.emptyContinueCard}>
+                        <Feather name="book-open" size={24} color={colors.accentStrong} />
                         <Text style={styles.emptyContinueTitle}>
-                            Import your first book
+                            Choose a book below
                         </Text>
-                    </TouchableOpacity>
+                    </View>
                 )}
 
-                <TouchableOpacity
-                    activeOpacity={0.86}
-                    onPress={() => navigation?.navigate('ScreenshotOcr')}
-                    style={styles.ocrToolButton}
-                >
-                    <View style={styles.ocrToolIcon}>
-                        <Ionicons name="scan-outline" size={19} color={colors.accentStrong} />
-                    </View>
-                    <View style={styles.ocrToolCopy}>
-                        <Text style={styles.ocrToolTitle}>Screenshot OCR</Text>
-                        <Text style={styles.ocrToolMeta}>Korean image lookup lab</Text>
-                    </View>
-                    <Feather name="chevron-right" size={20} color={colors.textSubtle} />
-                </TouchableOpacity>
-
-                <View style={styles.libraryHeader}>
-                    <View style={styles.libraryTabs}>
+                <View style={styles.libraryControls}>
+                    <View style={styles.libraryHeader}>
+                        <View style={styles.libraryTabs}>
                         <TouchableOpacity
                             activeOpacity={0.82}
-                            onPress={() => setActiveLibraryTab('Books')}
+                            onPress={() => {
+                                setActiveBookMenuKey(null);
+                                setActiveLibraryTab('Books');
+                            }}
                             style={styles.libraryTab}
                         >
                             <View style={styles.libraryTabLabelRow}>
@@ -837,7 +1887,10 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
                         <TouchableOpacity
                             activeOpacity={0.82}
-                            onPress={() => setActiveLibraryTab('Songs')}
+                            onPress={() => {
+                                setActiveBookMenuKey(null);
+                                setActiveLibraryTab('Songs');
+                            }}
                             style={styles.libraryTab}
                         >
                             <View style={styles.libraryTabLabelRow}>
@@ -850,6 +1903,37 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                             </View>
                             {activeLibraryTab === 'Songs' ? <View style={styles.libraryTabUnderline} /> : null}
                         </TouchableOpacity>
+                        </View>
+
+                        <TouchableOpacity
+                            activeOpacity={0.84}
+                            accessibilityRole="switch"
+                            accessibilityLabel={isFloatingOcrVisible ? 'Turn off screen text scanner' : 'Turn on screen text scanner'}
+                            accessibilityState={{ checked: isFloatingOcrVisible, busy: ocrBusy }}
+                            disabled={ocrBusy}
+                            onPress={handleFloatingOcrToggle}
+                            style={[
+                                styles.ocrTabToggle,
+                                isFloatingOcrVisible && styles.ocrTabToggleActive,
+                                ocrBusy && styles.ocrTabToggleBusy,
+                            ]}
+                        >
+                            {ocrBusy ? (
+                                <ActivityIndicator size="small" color={colors.accentStrong} />
+                            ) : (
+                                <Ionicons
+                                    name="scan-outline"
+                                    size={15}
+                                    color={isFloatingOcrVisible ? colors.white : colors.accentStrong}
+                                />
+                            )}
+                            <Text style={[
+                                styles.ocrTabToggleText,
+                                isFloatingOcrVisible && styles.ocrTabToggleTextActive,
+                            ]}>
+                                OCR
+                            </Text>
+                        </TouchableOpacity>
                     </View>
 
                     {activeLibraryTab === 'Songs' ? (
@@ -859,7 +1943,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                             style={styles.libraryAction}
                         >
                             <Feather name="plus" size={16} color={colors.accentStrong} />
-                            <Text style={styles.libraryActionText}>Add song manually</Text>
+                            <Text style={styles.libraryActionText}>Add song</Text>
                         </TouchableOpacity>
                     ) : null}
                 </View>
@@ -875,18 +1959,31 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                 <TouchableOpacity
                                     key={filter.id}
                                     activeOpacity={0.84}
-                                    onPress={() => setActiveBookFilter(filter.id)}
+                                    onPress={() => {
+                                        setActiveBookMenuKey(null);
+                                        setActiveBookFilter(filter.id);
+                                    }}
+                                    accessibilityLabel={`${filter.label}, ${count} books`}
                                     style={[
                                         styles.bookFilterChip,
+                                        filter.iconOnly && styles.bookFilterIconChip,
                                         isActive && styles.bookFilterChipActive,
                                     ]}
                                 >
-                                    <Text style={[
-                                        styles.bookFilterChipText,
-                                        isActive && styles.bookFilterChipTextActive,
-                                    ]}>
-                                        {filter.label}
-                                    </Text>
+                                    {filter.iconOnly ? (
+                                        <Ionicons
+                                            name={isActive ? 'star' : 'star-outline'}
+                                            size={17}
+                                            color={isActive ? colors.white : colors.warning}
+                                        />
+                                    ) : (
+                                        <Text style={[
+                                            styles.bookFilterChipText,
+                                            isActive && styles.bookFilterChipTextActive,
+                                        ]}>
+                                            {filter.label}
+                                        </Text>
+                                    )}
                                     <Text style={[
                                         styles.bookFilterChipCount,
                                         isActive && styles.bookFilterChipCountActive,
@@ -898,31 +1995,196 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                         })}
                     </View>
 
-                    {activeBookFilter === 'library' ? (
+                    {!showingPublicDomainBooks ? (
                         <>
                             <View style={styles.bookSectionHeader}>
-                                <Text style={styles.bookSectionCount}>
-                                    {books.length} {books.length === 1 ? 'book' : 'books'}
-                                </Text>
-                                <TouchableOpacity
-                                    activeOpacity={0.84}
-                                    onPress={confirmAddBook}
-                                    style={styles.importInlineButton}
-                                >
-                                    {isImporting ? (
-                                        <ActivityIndicator size="small" color={colors.accentStrong} />
-                                    ) : (
-                                        <Text style={styles.importInlineText}>+ Import .epub</Text>
-                                    )}
-                                </TouchableOpacity>
+                                <View style={styles.bookSectionCopy}>
+                                    <Text style={styles.bookSectionCount}>
+                                        {bookSectionTitle}
+                                    </Text>
+                                </View>
+                                {activeBookFilter === 'all' ? (
+                                    <View style={styles.bookSectionActions}>
+                                        <TouchableOpacity
+                                            activeOpacity={0.84}
+                                            onPress={confirmAddBook}
+                                            style={styles.importInlineButton}
+                                        >
+                                            {isImporting ? (
+                                                <ActivityIndicator size="small" color={colors.accentStrong} />
+                                            ) : (
+                                                <Text style={styles.importInlineText}>+ Import .epub</Text>
+                                            )}
+                                        </TouchableOpacity>
+                                    </View>
+                                ) : null}
+                            </View>
+
+                            {filteredLibraryBooks.length === 0 ? (
+                                <View style={styles.emptyBooksPanel}>
+                                    <Text style={styles.emptyBooksTitle}>
+                                        {activeBookFilter === 'favorites' ? 'No favorites yet' : 'No books here yet'}
+                                    </Text>
+                                    <Text style={styles.emptyBooksCopy}>
+                                        {activeBookFilter === 'favorites'
+                                            ? 'Open a book preview and tap the star to save it here.'
+                                            : 'Import an EPUB or search public domain books to start reading.'}
+                                    </Text>
+                                </View>
+                            ) : (
+                                <View style={styles.bookGrid}>
+                                    {filteredLibraryBooks.map((book, index) => {
+                                        const bookKey = getBookKey(book, `${index}`);
+                                        const isBookMenuOpen = activeBookMenuKey === bookKey;
+                                        const shouldAlignMenuLeft = index % 3 === 0;
+
+                                    return (
+                                        <Pressable
+                                            key={book.uri || book.id || `${book.title}-${index}`}
+                                            onPress={() => handleBookPreviewPress(book, index)}
+                                            style={({ pressed }) => [
+                                                styles.bookTile,
+                                                { width: bookTileWidth },
+                                                isBookMenuOpen && styles.bookTileMenuOpen,
+                                                pressed && styles.pressed,
+                                            ]}
+                                        >
+                                            <BookCover
+                                                book={book}
+                                                width={bookTileWidth}
+                                                height={bookCoverHeight}
+                                                index={index}
+                                                style={styles.bookCover}
+                                                titleStyle={styles.bookCoverText}
+                                            />
+                                            {!isBookDownloaded(book) ? (
+                                                <View style={styles.bookDownloadBadge}>
+                                                    {downloadingBookId === bookKey ? (
+                                                        <ActivityIndicator size="small" color={colors.white} />
+                                                    ) : (
+                                                        <Feather name="download" size={14} color={colors.white} />
+                                                    )}
+                                                </View>
+                                            ) : null}
+                                            <TouchableOpacity
+                                                accessibilityRole="button"
+                                                accessibilityLabel={`Book options for ${getBookTitle(book)}`}
+                                                activeOpacity={0.84}
+                                                onPress={(event) => {
+                                                    event?.stopPropagation?.();
+                                                    setActiveBookMenuKey((currentKey) => (
+                                                        currentKey === bookKey ? null : bookKey
+                                                    ));
+                                                }}
+                                                style={styles.bookMenuButton}
+                                            >
+                                                <Feather name="more-vertical" size={16} color={colors.white} />
+                                            </TouchableOpacity>
+                                            {isBookMenuOpen ? (
+                                                <View style={[
+                                                    styles.bookMenu,
+                                                    shouldAlignMenuLeft ? styles.bookMenuLeft : styles.bookMenuRight,
+                                                ]}>
+                                                    <TouchableOpacity
+                                                        activeOpacity={0.78}
+                                                        onPress={(event) => {
+                                                            event?.stopPropagation?.();
+                                                            handleEditBook(book);
+                                                        }}
+                                                        style={styles.bookMenuItem}
+                                                    >
+                                                        <Feather name="edit-2" size={14} color={colors.text} />
+                                                        <Text style={styles.bookMenuItemText}>Edit</Text>
+                                                    </TouchableOpacity>
+                                                    <TouchableOpacity
+                                                        activeOpacity={0.78}
+                                                        onPress={(event) => {
+                                                            event?.stopPropagation?.();
+                                                            handleResetBookToOriginal(book);
+                                                        }}
+                                                        style={[styles.bookMenuItem, styles.bookMenuSeparatedItem]}
+                                                    >
+                                                        <Feather name="rotate-ccw" size={14} color={colors.text} />
+                                                        <Text style={styles.bookMenuItemText}>Reset to original</Text>
+                                                    </TouchableOpacity>
+                                                    <TouchableOpacity
+                                                        activeOpacity={0.78}
+                                                        onPress={(event) => {
+                                                            event?.stopPropagation?.();
+                                                            setActiveBookMenuKey(null);
+                                                            handleDeleteBook(book);
+                                                        }}
+                                                        style={[styles.bookMenuItem, styles.bookMenuDangerItem]}
+                                                    >
+                                                        <Feather name="trash-2" size={14} color={colors.danger} />
+                                                        <Text style={[styles.bookMenuItemText, styles.bookMenuDangerText]}>
+                                                            Delete
+                                                        </Text>
+                                                    </TouchableOpacity>
+                                                </View>
+                                            ) : null}
+                                            <Text
+                                                style={[
+                                                    styles.bookTitle,
+                                                    getSerifFontForText(getBookTitle(book)),
+                                                ]}
+                                                numberOfLines={1}
+                                            >
+                                                {getBookTitle(book)}
+                                            </Text>
+                                            <View style={styles.bookProgressRail}>
+                                                <View style={[
+                                                    styles.bookProgressFill,
+                                                    { width: `${Math.round(getBookProgress(book) * 100)}%` },
+                                                ]} />
+                                            </View>
+                                            {!isBookDownloaded(book) ? (
+                                                <Text style={styles.bookCloudMeta} numberOfLines={1}>
+                                                    {downloadingBookId === bookKey
+                                                        ? 'Downloading...'
+                                                        : 'Available to download'}
+                                                </Text>
+                                            ) : null}
+                                        </Pressable>
+                                    );
+                                })}
+
+                                </View>
+                            )}
+                        </>
+                    ) : showingPublicDomainBooks ? (
+                        <>
+                            <View style={styles.bookSectionHeader}>
+                                <View style={styles.bookSectionCopy}>
+                                    <Text style={styles.bookSectionCount}>
+                                        {bookSectionTitle}
+                                    </Text>
+                                    {bookSectionHint ? (
+                                        <Text style={styles.bookSectionHint}>{bookSectionHint}</Text>
+                                    ) : null}
+                                </View>
+                                {activeBookFilter === 'all' ? (
+                                    <View style={styles.bookSectionActions}>
+                                        <TouchableOpacity
+                                            activeOpacity={0.84}
+                                            onPress={confirmAddBook}
+                                            style={styles.importInlineButton}
+                                        >
+                                            {isImporting ? (
+                                                <ActivityIndicator size="small" color={colors.accentStrong} />
+                                            ) : (
+                                                <Text style={styles.importInlineText}>+ Import .epub</Text>
+                                            )}
+                                        </TouchableOpacity>
+                                    </View>
+                                ) : null}
                             </View>
 
                             <View style={styles.bookGrid}>
-                                {books.map((book, index) => (
+                                {publicDomainBookRows.map((book, index) => (
                                     <Pressable
-                                        key={book.uri || book.id || `${book.title}-${index}`}
-                                        onPress={() => handlePress(book.uri)}
-                                        onLongPress={() => handleBookLongPress(book)}
+                                        key={book.uri}
+                                        onPress={() => handleBookPreviewPress(book, index)}
                                         style={({ pressed }) => [
                                             styles.bookTile,
                                             { width: bookTileWidth },
@@ -952,182 +2214,18 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                                 { width: `${Math.round(getBookProgress(book) * 100)}%` },
                                             ]} />
                                         </View>
+                                        <Text style={styles.bookCloudMeta} numberOfLines={1}>
+                                            {getBookAuthor(book)}
+                                        </Text>
                                     </Pressable>
                                 ))}
-
-                                <TouchableOpacity
-                                    activeOpacity={0.88}
-                                    onPress={confirmAddBook}
-                                    style={[styles.addBookTile, { width: bookTileWidth, height: bookCoverHeight }]}
-                                >
-                                    {isImporting ? (
-                                        <ActivityIndicator size="small" color={colors.textSubtle} />
-                                    ) : (
-                                        <Feather name="plus" size={30} color={colors.textSubtle} />
-                                    )}
-                                    <Text style={styles.addBookText}>Import</Text>
-                                    <Text style={styles.addBookSubtext}>.epub</Text>
-                                </TouchableOpacity>
                             </View>
                         </>
-                    ) : activeShelfCatalog && activeBookFilterCount === 0 ? (
-                        <View style={styles.emptyCatalogPanel}>
-                            <View style={styles.emptyStack}>
-                                {activeShelfCatalog.books.slice(0, 3).map((book, index) => (
-                                    <CatalogBookCover
-                                        key={book.id}
-                                        book={book}
-                                        width={82}
-                                        height={116}
-                                        compact
-                                        style={[
-                                            styles.emptyStackCover,
-                                            {
-                                                marginLeft: index === 0 ? 0 : -24,
-                                                transform: [{ rotate: `${[-8, 2, 8][index]}deg` }],
-                                                zIndex: index === 1 ? 3 : 2,
-                                            },
-                                        ]}
-                                    />
-                                ))}
-                            </View>
-                            <Text style={styles.emptyCatalogTitle}>
-                                {activeShelfCatalog.emptyTitle}
-                            </Text>
-                            <Text style={styles.emptyCatalogCopy}>
-                                {activeShelfCatalog.emptyCopy}
-                            </Text>
-                            <TouchableOpacity
-                                activeOpacity={0.86}
-                                onPress={() => openBrowseCatalog(activeBookFilter)}
-                                style={styles.emptyCatalogButton}
-                            >
-                                <Text style={styles.emptyCatalogButtonText}>
-                                    {activeShelfCatalog.emptyButton}
-                                </Text>
-                                <Feather name="arrow-right" size={18} color={colors.white} />
-                            </TouchableOpacity>
-                            <Text style={styles.emptyCatalogFootnote}>
-                                {activeShelfCatalog.emptyFootnote}
-                            </Text>
-                        </View>
-                    ) : activeShelfCatalog ? (
-                        <View style={styles.categoryPreviewSection}>
-                            <View style={styles.categoryPreviewHeader}>
-                                <Text style={styles.categoryPreviewCopy}>
-                                    {activeShelfCatalog.shelfCopy}
-                                </Text>
-                                <TouchableOpacity
-                                    activeOpacity={0.84}
-                                    onPress={() => openBrowseCatalog(activeBookFilter)}
-                                >
-                                    <Text style={styles.categoryBrowseLink}>Browse →</Text>
-                                </TouchableOpacity>
-                            </View>
-                            <View style={styles.bookGrid}>
-                                <TouchableOpacity
-                                    activeOpacity={0.88}
-                                    onPress={() => openBrowseCatalog(activeBookFilter)}
-                                    style={[styles.addBookTile, { width: bookTileWidth, height: bookCoverHeight }]}
-                                >
-                                    <Feather name="plus" size={30} color={colors.textSubtle} />
-                                    <Text style={styles.addBookText}>Browse</Text>
-                                    <Text style={styles.addBookSubtext}>8+</Text>
-                                </TouchableOpacity>
-                            </View>
-                        </View>
                     ) : null}
                 </View>
             ) : (
                 <View style={styles.songsPanel}>
-                    <View style={styles.songSearchGroup}>
-                        <View style={[
-                            styles.searchBox,
-                            isSongSearchActive && styles.searchBoxConnected,
-                        ]}>
-                            <Feather name="search" size={17} color={colors.textSubtle} />
-                            <TextInput
-                                value={songQuery}
-                                onChangeText={setSongQuery}
-                                style={styles.searchInput}
-                                placeholder="Search title or artist..."
-                                placeholderTextColor={colors.textSubtle}
-                                returnKeyType="search"
-                            />
-                            {songQuery ? (
-                                <TouchableOpacity
-                                    accessibilityRole="button"
-                                    accessibilityLabel="Clear song search"
-                                    activeOpacity={0.72}
-                                    onPress={() => setSongQuery('')}
-                                    style={styles.searchClearButton}
-                                >
-                                    <Feather name="x" size={15} color={colors.textSubtle} />
-                                </TouchableOpacity>
-                            ) : null}
-                        </View>
-
-                        {isSongSearchActive ? (
-                            <View style={styles.songResultsPanel}>
-                                {songSearchLoading ? (
-                                    <View style={styles.songSearchState}>
-                                        <ActivityIndicator size="small" color={colors.accentStrong} />
-                                        <Text style={styles.songSearchStateText}>Searching songs...</Text>
-                                    </View>
-                                ) : null}
-
-                                {songSearchError ? (
-                                    <View style={styles.songSearchState}>
-                                        <Text style={styles.songSearchError}>{songSearchError}</Text>
-                                    </View>
-                                ) : null}
-
-                                {!songSearchLoading && !songSearchError && songResults.length === 0 ? (
-                                    <View style={styles.songSearchState}>
-                                        <Text style={styles.songSearchStateText}>No lyric results yet</Text>
-                                    </View>
-                                ) : null}
-
-                                {songResults.map((result, index) => {
-                                    const isOpening = openingSongId === result.id;
-
-                                    return (
-                                        <Pressable
-                                            key={`${result.provider}-${result.id}`}
-                                            disabled={!!openingSongId}
-                                            onPress={() => handleSongResultPress(result)}
-                                            style={({ pressed }) => [
-                                                styles.songResultRow,
-                                                index === songResults.length - 1 && styles.songRowLast,
-                                                pressed && styles.songRowPressed,
-                                                isOpening && styles.songResultRowDisabled,
-                                            ]}
-                                        >
-                                            <View style={styles.songCopy}>
-                                                <Text
-                                                    style={[
-                                                        styles.songResultTitle,
-                                                        getSerifFontForText(result.title),
-                                                    ]}
-                                                    numberOfLines={1}
-                                                >
-                                                    {result.title || 'Untitled song'}
-                                                </Text>
-                                                <Text style={styles.songResultMeta} numberOfLines={1}>
-                                                    {[result.artist, result.album].filter(Boolean).join(' · ') || 'Unknown artist'}
-                                                </Text>
-                                            </View>
-                                            {isOpening ? (
-                                                <ActivityIndicator size="small" color={colors.accentStrong} />
-                                            ) : null}
-                                        </Pressable>
-                                    );
-                                })}
-                            </View>
-                        ) : null}
-                    </View>
-
-                    {!isSongSearchActive && songsLoaded && songs.length === 0 ? (
+                    {songsLoaded && songs.length === 0 ? (
                         <View style={styles.emptySongsPanel}>
                             <Feather name="music" size={24} color={colors.accentStrong} />
                             <Text style={styles.emptySongsTitle}>Add songs you like</Text>
@@ -1135,7 +2233,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                 Save lyrics here so you can tap words, look them up, and keep the ones you want to remember.
                             </Text>
                         </View>
-                    ) : !isSongSearchActive ? (
+                    ) : (
                         <View style={styles.songList}>
                             {!songsLoaded ? (
                                 <View style={styles.emptySongs}>
@@ -1143,13 +2241,13 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                     <Text style={styles.emptySongsText}>Loading songs...</Text>
                                 </View>
                             ) : (
-                                filteredSongs.length > 0 ? filteredSongs.map((song, index) => (
+                                songs.map((song, index) => (
                                     <Pressable
                                         key={song.id}
                                         onPress={() => setSelectedSongId(song.id)}
                                         style={({ pressed }) => [
                                             styles.songRow,
-                                            index === filteredSongs.length - 1 && styles.songRowLast,
+                                            index === songs.length - 1 && styles.songRowLast,
                                             pressed && styles.songRowPressed,
                                         ]}
                                     >
@@ -1169,14 +2267,10 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                         </View>
                                         <Feather name="chevron-right" size={23} color={colors.textSubtle} />
                                     </Pressable>
-                                )) : (
-                                    <View style={styles.emptySongs}>
-                                        <Text style={styles.emptySongsText}>No matching songs</Text>
-                                    </View>
-                                )
+                                ))
                             )}
                         </View>
-                    ) : null}
+                    )}
                 </View>
             )}
 
@@ -1186,7 +2280,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                         <Text style={styles.loadingText}>Opening book...</Text>
                     </View>
                 )}
-            </View>
+            </Pressable>
 
             <Modal visible={!!editBook} animationType="fade" transparent onRequestClose={() => setEditBook(null)}>
                 <TouchableWithoutFeedback onPress={() => setEditBook(null)}>
@@ -1215,9 +2309,14 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
                                 <Text style={styles.editLabel}>Cover</Text>
                                 <View style={styles.coverRow}>
-                                    <Image
-                                        source={editDraft.cover ? { uri: editDraft.cover } : require('../assets/icon.png')}
-                                        style={styles.coverPreview}
+                                    <EditCoverPreview
+                                        book={{
+                                            ...editBook,
+                                            title: editDraft.title,
+                                            author: editDraft.author,
+                                            cover: null,
+                                        }}
+                                        cover={editDraft.cover}
                                     />
                                     <View style={styles.coverActions}>
                                         <IconButton
@@ -1253,7 +2352,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     <View style={styles.modalBackdrop}>
                         <TouchableWithoutFeedback>
                             <View style={styles.songModal}>
-                                <Text style={styles.editTitle}>Add song manually</Text>
+                                <Text style={styles.editTitle}>Add song</Text>
 
                                 <ScrollView
                                     style={styles.songModalScroll}
@@ -1323,154 +2422,221 @@ const styles = StyleSheet.create({
     stack: {
         gap: spacing.lg,
     },
-    browseScreenContent: {
-        flexGrow: 1,
-        paddingHorizontal: spacing.md,
-        paddingTop: spacing.sm,
-        paddingBottom: spacing.xxxl,
-        gap: spacing.md,
+    previewScreenContent: {
+        paddingHorizontal: 0,
+        paddingBottom: 0,
     },
-    browseTopBar: {
-        minHeight: 36,
+    previewScrollContent: {
+        paddingHorizontal: insets.screenHorizontal,
+        paddingTop: spacing.lg,
+        paddingBottom: spacing.xl * 2,
+    },
+    previewScroll: {
+        flex: 1,
+    },
+    previewStack: {
+        gap: spacing.lg,
+    },
+    previewTopBar: {
+        minHeight: 56,
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
+        paddingHorizontal: insets.screenHorizontal,
+        paddingBottom: spacing.sm,
+        borderBottomWidth: 1,
+        borderBottomColor: '#e6d7bf',
     },
-    browseIconButton: {
-        width: 38,
-        height: 38,
+    previewBackButton: {
+        width: 42,
+        height: 42,
         alignItems: 'center',
         justifyContent: 'center',
-        borderRadius: 19,
     },
-    browseTitleBlock: {
-        gap: 2,
-    },
-    browseEyebrow: {
-        ...textStyles.eyebrow,
-        fontSize: 13,
-        lineHeight: 17,
-        color: colors.accent,
-        letterSpacing: 3,
-    },
-    browseTitle: {
-        fontFamily: fontFamilies.serifBold,
-        fontSize: 37,
-        lineHeight: 45,
-        color: colors.text,
-        includeFontPadding: true,
+    previewTopTitle: {
+        ...textStyles.sectionTitle,
+        fontSize: 16,
+        lineHeight: 21,
+        color: colors.textMuted,
         letterSpacing: 0,
     },
-    browseSubtitle: {
+    previewTopReadButton: {
+        minWidth: 84,
+        height: 38,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 5,
+        paddingHorizontal: spacing.sm,
+        borderRadius: 999,
+        backgroundColor: colors.accentStrong,
+    },
+    previewTopReadButtonDisabled: {
+        opacity: 0.74,
+    },
+    previewTopReadButtonText: {
+        ...textStyles.sectionTitle,
+        fontSize: 14,
+        lineHeight: 18,
+        color: colors.white,
+        letterSpacing: 0,
+    },
+    previewHero: {
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        gap: spacing.md,
+    },
+    previewHeroPublicDomain: {
+        flexDirection: 'column',
+        gap: spacing.sm,
+    },
+    previewCover: {
+        borderRadius: 8,
+    },
+    previewCoverText: {
+        fontSize: 12,
+        lineHeight: 16,
+    },
+    previewHeroCopy: {
+        flex: 1,
+        minWidth: 0,
+        gap: spacing.xs,
+        paddingTop: spacing.xs,
+    },
+    previewActionRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: spacing.sm,
+    },
+    previewActionButton: {
+        flex: 1,
+        height: 44,
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: radii.xs,
+        borderWidth: 1,
+        borderColor: '#e6d7bf',
+        backgroundColor: colors.surface,
+    },
+    previewActionButtonActive: {
+        borderColor: '#ddb76d',
+        backgroundColor: '#fff4d8',
+    },
+    previewActionButtonDanger: {
+        borderColor: '#ecd0cb',
+        backgroundColor: '#fff7f5',
+    },
+    previewEyebrow: {
+        ...textStyles.eyebrow,
+        color: colors.accent,
+        letterSpacing: 1.4,
+    },
+    previewTitle: {
+        fontFamily: fontFamilies.serifBold,
+        fontSize: 26,
+        lineHeight: 33,
+        color: colors.text,
+        letterSpacing: 0,
+    },
+    previewAuthor: {
         ...textStyles.body,
         fontSize: 16,
         lineHeight: 22,
         color: colors.textMuted,
     },
-    difficultyFilters: {
-        gap: spacing.sm,
-        paddingRight: spacing.md,
-        paddingVertical: spacing.xs,
+    previewProgressBlock: {
+        gap: spacing.xs,
+        marginTop: spacing.md,
     },
-    difficultyChip: {
-        height: 42,
+    previewProgressHeader: {
+        flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'center',
-        paddingHorizontal: spacing.lg,
-        borderRadius: 999,
-        borderWidth: 1,
-        borderColor: '#eadfcb',
-        backgroundColor: '#fffaf2',
+        justifyContent: 'space-between',
+        gap: spacing.sm,
     },
-    difficultyChipActive: {
-        borderColor: colors.text,
-        backgroundColor: colors.text,
-    },
-    difficultyChipText: {
-        ...textStyles.sectionTitle,
-        fontSize: 15,
-        lineHeight: 20,
+    previewProgressLabel: {
+        ...textStyles.caption,
         color: colors.textMuted,
         letterSpacing: 0,
     },
-    difficultyChipTextActive: {
-        color: colors.white,
+    previewProgressValue: {
+        ...textStyles.caption,
+        color: colors.accentStrong,
+        letterSpacing: 0,
     },
-    catalogGrid: {
+    previewProgressRail: {
+        height: 5,
+        borderRadius: 999,
+        backgroundColor: '#e5dac7',
+        overflow: 'hidden',
+    },
+    previewProgressFill: {
+        height: '100%',
+        borderRadius: 999,
+        backgroundColor: colors.accent,
+    },
+    previewMetaList: {
+        borderTopWidth: 1,
+        borderBottomWidth: 1,
+        borderColor: '#e6d7bf',
+    },
+    previewMetaRow: {
+        minHeight: 48,
         flexDirection: 'row',
-        flexWrap: 'wrap',
-        gap: BOOK_GRID_GAP,
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: spacing.md,
+        paddingVertical: spacing.sm,
+        borderBottomWidth: 1,
+        borderBottomColor: '#eadfcb',
+    },
+    previewMetaLabel: {
+        ...textStyles.caption,
+        flexShrink: 0,
+        color: colors.textSubtle,
+        letterSpacing: 0,
+    },
+    previewMetaValue: {
+        ...textStyles.body,
+        flex: 1,
+        minWidth: 0,
+        textAlign: 'right',
+        fontSize: 14,
+        lineHeight: 20,
+        color: colors.textMuted,
+    },
+    previewMetaValueGroup: {
+        flex: 1,
+        minWidth: 0,
+        alignItems: 'flex-end',
+        gap: 2,
+    },
+    previewMetaTranslation: {
+        ...textStyles.caption,
+        textAlign: 'right',
+        color: colors.textSubtle,
+        letterSpacing: 0,
+    },
+    previewSnippetSection: {
+        gap: spacing.sm,
         paddingTop: spacing.xs,
     },
-    catalogTile: {
-        gap: 4,
-        marginBottom: spacing.lg,
-    },
-    catalogCover: {
-        justifyContent: 'space-between',
-        padding: spacing.md,
-        borderRadius: 4,
-        overflow: 'hidden',
-        backgroundColor: colors.surfaceMuted,
-        boxShadow: '0 8px 14px rgba(41, 28, 14, 0.10)',
-    },
-    catalogCoverTitle: {
-        fontFamily: fontFamilies.serifBold,
-        fontSize: 19,
-        lineHeight: 23,
-        letterSpacing: 0,
-    },
-    catalogCoverTitleCompact: {
-        fontSize: 13,
-        lineHeight: 16,
-    },
-    catalogCoverAuthor: {
-        fontFamily: fontFamilies.serifBold,
-        fontSize: 12,
-        lineHeight: 16,
-        letterSpacing: 1.3,
-        opacity: 0.78,
-    },
-    catalogCoverAuthorCompact: {
-        fontSize: 8,
-        lineHeight: 11,
-        letterSpacing: 0.7,
-    },
-    catalogMeta: {
+    previewSectionLabel: {
         ...textStyles.eyebrow,
-        marginTop: spacing.xs,
         color: colors.textSubtle,
-        letterSpacing: 1.1,
+        letterSpacing: 1.4,
     },
-    catalogBookTitle: {
-        fontFamily: fontFamilies.serifBold,
-        fontSize: 20,
-        lineHeight: 24,
-        color: colors.text,
-        letterSpacing: 0,
-    },
-    catalogBookAuthor: {
+    previewSnippetText: {
         ...textStyles.body,
         fontSize: 15,
-        lineHeight: 20,
-        color: colors.textMuted,
+        lineHeight: 22,
+        color: colors.text,
     },
-    catalogAddButton: {
-        height: 42,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: spacing.xs,
+    previewAttributionText: {
+        ...textStyles.caption,
         marginTop: spacing.xs,
-        borderRadius: 999,
-        borderWidth: 1,
-        borderColor: '#eadfcb',
-        backgroundColor: '#fffaf2',
-    },
-    catalogAddButtonText: {
-        ...textStyles.sectionTitle,
-        fontSize: 15,
-        lineHeight: 20,
+        color: colors.textSubtle,
         letterSpacing: 0,
     },
     continueCard: {
@@ -1563,48 +2729,16 @@ const styles = StyleSheet.create({
         color: colors.accentStrong,
         letterSpacing: 0,
     },
-    ocrToolButton: {
-        minHeight: 62,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: spacing.sm,
-        paddingHorizontal: spacing.md,
-        paddingVertical: spacing.sm,
-        borderWidth: 1,
-        borderColor: colors.border,
-        borderRadius: radii.xs,
-        backgroundColor: colors.surfaceElevated,
-    },
-    ocrToolIcon: {
-        width: 38,
-        height: 38,
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderRadius: radii.xs,
-        backgroundColor: colors.accentSoft,
-    },
-    ocrToolCopy: {
-        flex: 1,
-        minWidth: 0,
-    },
-    ocrToolTitle: {
-        ...textStyles.sectionTitle,
-        fontSize: 16,
-        lineHeight: 21,
-        color: colors.text,
-        letterSpacing: 0,
-    },
-    ocrToolMeta: {
-        ...textStyles.caption,
-        color: colors.textMuted,
-        letterSpacing: 0,
+    libraryControls: {
+        gap: spacing.xs,
+        marginTop: -spacing.md,
+        overflow: 'visible',
     },
     libraryHeader: {
         flexDirection: 'row',
         alignItems: 'flex-start',
         justifyContent: 'space-between',
         gap: spacing.md,
-        marginTop: -spacing.md,
         paddingTop: 0,
         overflow: 'visible',
     },
@@ -1612,7 +2746,7 @@ const styles = StyleSheet.create({
         flex: 1,
         flexDirection: 'row',
         alignItems: 'flex-start',
-        gap: spacing.lg,
+        gap: spacing.md,
         overflow: 'visible',
     },
     libraryTab: {
@@ -1645,9 +2779,38 @@ const styles = StyleSheet.create({
         borderRadius: 999,
         backgroundColor: colors.accent,
     },
+    ocrTabToggle: {
+        minHeight: 32,
+        marginTop: 16,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 4,
+        paddingHorizontal: spacing.sm,
+        borderRadius: radii.pill,
+        borderWidth: 1,
+        borderColor: '#eadfcb',
+        backgroundColor: '#fffaf2',
+    },
+    ocrTabToggleActive: {
+        borderColor: colors.accentStrong,
+        backgroundColor: colors.accentStrong,
+    },
+    ocrTabToggleBusy: {
+        opacity: 0.72,
+    },
+    ocrTabToggleText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 12,
+        lineHeight: 15,
+        color: colors.accentStrong,
+    },
+    ocrTabToggleTextActive: {
+        color: colors.white,
+    },
     libraryAction: {
         height: 36,
-        marginTop: 18,
+        alignSelf: 'flex-start',
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
@@ -1669,6 +2832,7 @@ const styles = StyleSheet.create({
     },
     bookFilterRow: {
         flexDirection: 'row',
+        flexWrap: 'wrap',
         alignItems: 'center',
         gap: spacing.xs,
     },
@@ -1683,6 +2847,10 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         borderColor: '#eadfcb',
         backgroundColor: '#fffaf2',
+    },
+    bookFilterIconChip: {
+        minWidth: 46,
+        paddingHorizontal: spacing.sm,
     },
     bookFilterChipActive: {
         borderColor: colors.text,
@@ -1699,26 +2867,50 @@ const styles = StyleSheet.create({
         color: colors.white,
     },
     bookFilterChipCount: {
-        ...textStyles.caption,
-        fontSize: 12,
-        lineHeight: 16,
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 11,
+        lineHeight: 14,
         color: colors.textSubtle,
+        opacity: 0.62,
     },
     bookFilterChipCountActive: {
-        color: '#bdb4a6',
+        color: colors.white,
+        opacity: 0.66,
     },
     bookSectionHeader: {
         minHeight: 28,
         flexDirection: 'row',
-        alignItems: 'center',
+        alignItems: 'flex-start',
         justifyContent: 'space-between',
+        flexWrap: 'wrap',
         gap: spacing.md,
+    },
+    bookSectionCopy: {
+        flex: 1,
+        minWidth: 0,
+        gap: 3,
     },
     bookSectionCount: {
         ...textStyles.body,
         fontSize: 15,
         lineHeight: 20,
         color: colors.textSubtle,
+    },
+    bookSectionHint: {
+        ...textStyles.caption,
+        maxWidth: 340,
+        fontSize: 12,
+        lineHeight: 16,
+        color: colors.textSubtle,
+        letterSpacing: 0,
+    },
+    bookSectionActions: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'flex-end',
+        flexWrap: 'wrap',
+        flexShrink: 1,
+        gap: spacing.sm,
     },
     importInlineButton: {
         minHeight: 28,
@@ -1731,84 +2923,30 @@ const styles = StyleSheet.create({
         color: colors.accentStrong,
         letterSpacing: 0,
     },
-    emptyCatalogPanel: {
-        alignItems: 'center',
-        paddingTop: spacing.xl,
-        gap: spacing.md,
-    },
-    emptyStack: {
-        flexDirection: 'row',
-        alignItems: 'center',
+    emptyBooksPanel: {
+        minHeight: 132,
         justifyContent: 'center',
-        minHeight: 136,
-        marginBottom: spacing.md,
+        gap: spacing.xs,
+        paddingHorizontal: spacing.lg,
+        paddingVertical: spacing.lg,
+        borderWidth: 1,
+        borderColor: '#eadfcb',
+        borderRadius: 16,
+        backgroundColor: '#fffaf2',
     },
-    emptyStackCover: {
-        borderRadius: 4,
-    },
-    emptyCatalogTitle: {
-        fontFamily: fontFamilies.serifBold,
-        maxWidth: 340,
-        textAlign: 'center',
-        fontSize: 28,
-        lineHeight: 34,
+    emptyBooksTitle: {
+        ...textStyles.sectionTitle,
+        fontSize: 18,
+        lineHeight: 23,
         color: colors.text,
         letterSpacing: 0,
     },
-    emptyCatalogCopy: {
+    emptyBooksCopy: {
         ...textStyles.body,
         maxWidth: 360,
-        textAlign: 'center',
-        fontSize: 16,
-        lineHeight: 24,
-        color: colors.textMuted,
-    },
-    emptyCatalogButton: {
-        height: 54,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: spacing.sm,
-        marginTop: spacing.xs,
-        paddingHorizontal: spacing.xl,
-        borderRadius: 999,
-        backgroundColor: colors.text,
-    },
-    emptyCatalogButtonText: {
-        ...textStyles.sectionTitle,
-        fontSize: 16,
-        lineHeight: 20,
-        color: colors.white,
-        letterSpacing: 0,
-    },
-    emptyCatalogFootnote: {
-        ...textStyles.body,
-        fontSize: 13,
-        lineHeight: 18,
-        color: colors.textSubtle,
-    },
-    categoryPreviewSection: {
-        gap: spacing.md,
-    },
-    categoryPreviewHeader: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: spacing.md,
-    },
-    categoryPreviewCopy: {
-        ...textStyles.body,
-        flex: 1,
-        fontSize: 15,
+        fontSize: 14,
         lineHeight: 20,
         color: colors.textSubtle,
-    },
-    categoryBrowseLink: {
-        ...textStyles.sectionTitle,
-        fontSize: 15,
-        lineHeight: 20,
-        color: colors.accentStrong,
-        letterSpacing: 0,
     },
     bookGrid: {
         flexDirection: 'row',
@@ -1817,23 +2955,47 @@ const styles = StyleSheet.create({
     },
     bookTile: {
         gap: spacing.xs,
+        position: 'relative',
+    },
+    bookTileMenuOpen: {
+        zIndex: 20,
     },
     coverImage: {
         resizeMode: 'cover',
         backgroundColor: colors.surfaceMuted,
     },
-    coverFallback: {
-        alignItems: 'center',
-        paddingTop: spacing.md,
-        paddingHorizontal: spacing.sm,
+    stacksCover: {
         overflow: 'hidden',
+        position: 'relative',
+        shadowColor: '#000',
+        shadowOpacity: 0.12,
+        shadowRadius: 2,
+        shadowOffset: { width: 0, height: 1 },
+        elevation: 1,
     },
-    coverFallbackText: {
-        fontFamily: fontFamilies.serifBold,
-        fontSize: 13,
-        lineHeight: 17,
+    stacksCoverSpine: {
+        position: 'absolute',
+        top: 0,
+        bottom: 0,
+        left: 0,
+        zIndex: 5,
+        backgroundColor: 'rgba(0, 0, 0, 0.08)',
+    },
+    stacksCoverCopy: {
+        position: 'absolute',
+    },
+    stacksCoverTitle: {
+        fontFamily: fontFamilies.krSerifBold,
+        fontWeight: '600',
         letterSpacing: 0,
-        textAlign: 'center',
+    },
+    stacksCoverAuthor: {
+        fontFamily: fontFamilies.sansRegular,
+        letterSpacing: 0,
+        opacity: 0.7,
+    },
+    stacksCoverBars: {
+        position: 'absolute',
     },
     bookCover: {
         borderRadius: 5,
@@ -1859,108 +3021,85 @@ const styles = StyleSheet.create({
         borderRadius: 999,
         backgroundColor: colors.accent,
     },
-    addBookTile: {
+    bookDownloadBadge: {
+        position: 'absolute',
+        top: 8,
+        left: 8,
+        width: 28,
+        height: 28,
+        borderRadius: 14,
         alignItems: 'center',
         justifyContent: 'center',
+        backgroundColor: colors.accentStrong,
+    },
+    bookMenuButton: {
+        position: 'absolute',
+        top: 8,
+        right: 8,
+        zIndex: 3,
+        width: 28,
+        height: 28,
+        borderRadius: 14,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: 'rgba(43, 39, 33, 0.74)',
+    },
+    bookMenu: {
+        position: 'absolute',
+        top: 0,
+        zIndex: 4,
+        minWidth: 160,
+        overflow: 'hidden',
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: '#e4d5be',
+        backgroundColor: colors.surfaceElevated,
+        shadowColor: '#2b2721',
+        shadowOpacity: 0.16,
+        shadowRadius: 12,
+        shadowOffset: { width: 0, height: 6 },
+        elevation: 7,
+    },
+    bookMenuLeft: {
+        left: 0,
+    },
+    bookMenuRight: {
+        right: 0,
+    },
+    bookMenuItem: {
+        minHeight: 38,
+        flexDirection: 'row',
+        alignItems: 'center',
         gap: spacing.xs,
-        borderRadius: 5,
-        borderWidth: 2,
-        borderStyle: 'dashed',
-        borderColor: '#e8d9be',
-        backgroundColor: 'rgba(255, 255, 255, 0.28)',
+        paddingHorizontal: spacing.sm,
+        backgroundColor: colors.surfaceElevated,
     },
-    addBookText: {
-        ...textStyles.caption,
-        fontSize: 12,
-        color: colors.textSubtle,
+    bookMenuDangerItem: {
+        borderTopWidth: 1,
+        borderTopColor: '#f0e4d2',
     },
-    addBookSubtext: {
+    bookMenuSeparatedItem: {
+        borderTopWidth: 1,
+        borderTopColor: '#f0e4d2',
+    },
+    bookMenuItemText: {
+        ...textStyles.body,
+        fontSize: 13,
+        lineHeight: 17,
+        color: colors.text,
+    },
+    bookMenuDangerText: {
+        color: colors.danger,
+    },
+    bookCloudMeta: {
         ...textStyles.caption,
-        marginTop: -spacing.xs,
-        fontSize: 11,
+        fontSize: 10,
+        lineHeight: 13,
         color: colors.textSubtle,
     },
     songsPanel: {
         gap: spacing.md,
         marginTop: -spacing.xs,
-    },
-    songSearchGroup: {
-        overflow: 'hidden',
-        borderRadius: 15,
-    },
-    searchBox: {
-        height: 46,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: spacing.xs,
-        paddingHorizontal: spacing.md,
-        borderRadius: 15,
-        borderWidth: 1,
-        borderColor: '#e6d7bf',
-        backgroundColor: colors.surfaceElevated,
-    },
-    searchBoxConnected: {
-        borderBottomLeftRadius: 0,
-        borderBottomRightRadius: 0,
-    },
-    searchInput: {
-        flex: 1,
-        height: '100%',
-        padding: 0,
-        ...textStyles.body,
-        fontSize: 13,
-        color: colors.text,
-    },
-    searchClearButton: {
-        width: 26,
-        height: 26,
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderRadius: 13,
-        backgroundColor: '#f4ede2',
-    },
-    songResultsPanel: {
-        borderWidth: 1,
-        borderTopWidth: 0,
-        borderColor: '#e6d7bf',
-        borderTopLeftRadius: 0,
-        borderTopRightRadius: 0,
-        borderBottomLeftRadius: 15,
-        borderBottomRightRadius: 15,
-        backgroundColor: colors.surfaceElevated,
-        overflow: 'hidden',
-    },
-    songResultRow: {
-        minHeight: 56,
-        flexDirection: 'row',
-        alignItems: 'center',
-        paddingHorizontal: spacing.sm,
-        paddingVertical: 7,
-        borderBottomWidth: 1,
-        borderBottomColor: '#eadcc6',
-    },
-    songResultRowDisabled: {
-        opacity: 0.64,
-    },
-    songSearchState: {
-        minHeight: 52,
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: spacing.xs,
-        paddingHorizontal: spacing.sm,
-    },
-    songSearchStateText: {
-        ...textStyles.caption,
-        fontSize: 12,
-        lineHeight: 16,
-        color: colors.textSubtle,
-    },
-    songSearchError: {
-        ...textStyles.body,
-        textAlign: 'center',
-        fontSize: 12,
-        lineHeight: 17,
-        color: colors.danger,
     },
     songList: {
         borderWidth: 1,
@@ -1999,19 +3138,6 @@ const styles = StyleSheet.create({
         ...textStyles.body,
         fontSize: 12,
         lineHeight: 17,
-        color: colors.textSubtle,
-    },
-    songResultTitle: {
-        fontFamily: fontFamilies.serifBold,
-        fontSize: 14,
-        lineHeight: 18,
-        color: colors.text,
-        letterSpacing: 0,
-    },
-    songResultMeta: {
-        ...textStyles.body,
-        fontSize: 11,
-        lineHeight: 15,
         color: colors.textSubtle,
     },
     emptySongs: {

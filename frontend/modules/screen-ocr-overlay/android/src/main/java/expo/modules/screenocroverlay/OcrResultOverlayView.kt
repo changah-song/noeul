@@ -28,6 +28,7 @@ class OcrResultOverlayView(
   private val onSaveRequested: (String, Int?) -> Unit,
   private val onHanjaRequested: (String, String) -> Unit,
   private val onRelatedKnownToggleRequested: (String, String, OverlayHanjaRelatedWord) -> Unit,
+  private var closeAnchorRectOnScreen: RectF? = null,
   private val onClose: () -> Unit
 ) : View(context) {
   private val density = resources.displayMetrics.density
@@ -289,6 +290,11 @@ class OcrResultOverlayView(
     ocrResult = null
     lookupCard = null
     hanjaPopup = null
+    invalidate()
+  }
+
+  fun setCloseAnchorRect(anchor: RectF?) {
+    closeAnchorRectOnScreen = anchor?.let { RectF(it) }
     invalidate()
   }
 
@@ -777,13 +783,15 @@ class OcrResultOverlayView(
 
   private fun drawCloseButton(canvas: Canvas) {
     val size = dp(44f)
-    val margin = dp(16f)
-    overlayCloseRect.set(
-      width - margin - size,
-      margin,
-      width - margin,
-      margin + size
-    )
+    closeAnchorRect(size)?.let(overlayCloseRect::set) ?: run {
+      val margin = dp(16f)
+      overlayCloseRect.set(
+        width - margin - size,
+        margin,
+        width - margin,
+        margin + size
+      )
+    }
 
     canvas.drawOval(overlayCloseRect, closePaint)
 
@@ -802,6 +810,23 @@ class OcrResultOverlayView(
       overlayCloseRect.bottom - inset,
       closeIconPaint
     )
+  }
+
+  private fun closeAnchorRect(size: Float): RectF? {
+    val anchor = closeAnchorRectOnScreen ?: return null
+    if (width <= 0 || height <= 0) {
+      return null
+    }
+
+    val location = IntArray(2)
+    getLocationOnScreen(location)
+    val centerX = anchor.centerX() - location[0]
+    val centerY = anchor.centerY() - location[1]
+    val margin = dp(8f)
+    val left = (centerX - size / 2f).coerceIn(margin, width - margin - size)
+    val top = (centerY - size / 2f).coerceIn(margin, height - margin - size)
+
+    return RectF(left, top, left + size, top + size)
   }
 
   private fun drawEmptyState(canvas: Canvas, result: SerializedOcrResult) {

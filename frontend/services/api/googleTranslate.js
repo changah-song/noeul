@@ -25,11 +25,9 @@ const googleTranslate = ( {query} ) => {
 
   const fetchData = async () => {
     setIsLoading(true);
-    console.log(`[googleTranslate] Translating: "${query}"`);
     try {
       const response = await axios.request(options);
       const translated = response.data.data.translations[0].translatedText;
-      console.log(`[googleTranslate] Result: "${translated}"`);
       setData(translated);
     } catch(error) {
       console.error('[googleTranslate] Error translating:', error);

@@ -3,6 +3,7 @@ package expo.modules.screenocroverlay
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
@@ -16,6 +17,7 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.widget.TextView
+import android.widget.ImageView
 import kotlin.math.abs
 import kotlin.math.max
 
@@ -36,9 +38,12 @@ class FloatingWidgetController(
   private val density = context.resources.displayMetrics.density
   private var bubbleView: View? = null
   private var bubbleParams: WindowManager.LayoutParams? = null
+  private var dismissTargetView: TextView? = null
+  private var dismissTargetActive = false
   private var resultOverlayView: OcrResultOverlayView? = null
   private var lastBubbleX: Int? = null
   private var lastBubbleY: Int? = null
+  private var lastBubbleRect: RectF? = null
   private var restoreBubbleAfterHiddenCapture = false
 
   val isBubbleVisible: Boolean
@@ -59,15 +64,14 @@ class FloatingWidgetController(
     }
 
     val size = dp(58f).toInt()
-    val view = TextView(context).apply {
-      text = "OCR"
-      textSize = 13f
-      typeface = Typeface.DEFAULT_BOLD
-      gravity = Gravity.CENTER
-      setTextColor(Color.WHITE)
+    val iconPadding = dp(5f).toInt()
+    val view = ImageView(context).apply {
+      setImageResource(context.applicationInfo.icon)
+      scaleType = ImageView.ScaleType.CENTER_CROP
+      setPadding(iconPadding, iconPadding, iconPadding, iconPadding)
       background = GradientDrawable().apply {
         shape = GradientDrawable.OVAL
-        setColor(Color.rgb(47, 125, 76))
+        setColor(Color.WHITE)
         setStroke(dp(2f).toInt(), Color.argb(150, 255, 255, 255))
       }
       elevation = dp(8f)
@@ -97,14 +101,22 @@ class FloatingWidgetController(
   }
 
   fun hideBubble() {
-    bubbleParams?.let { params ->
+    hideDismissTarget()
+
+    val params = bubbleParams
+    val view = bubbleView
+    if (params != null && view != null) {
+      lastBubbleRect = bubbleRect(params, view)
+    }
+
+    params?.let {
       lastBubbleX = params.x
       lastBubbleY = params.y
     }
 
-    bubbleView?.let { view ->
+    bubbleView?.let { floatingView ->
       try {
-        windowManager.removeView(view)
+        windowManager.removeView(floatingView)
       } catch (_: Exception) {
       }
     }
@@ -165,6 +177,7 @@ class FloatingWidgetController(
     }
 
     resultOverlayView?.let { view ->
+      view.setCloseAnchorRect(lastBubbleRect)
       if (result == null) {
         view.clearResult()
       } else {
@@ -181,6 +194,7 @@ class FloatingWidgetController(
       onSaveRequested = onSaveRequested,
       onHanjaRequested = onHanjaRequested,
       onRelatedKnownToggleRequested = onRelatedKnownToggleRequested,
+      closeAnchorRectOnScreen = lastBubbleRect?.let { RectF(it) },
       onClose = {
         hideResultOverlay()
         try {
@@ -288,6 +302,7 @@ class FloatingWidgetController(
     var downRawY = 0f
     var startX = 0
     var startY = 0
+    var isDragging = false
     var didLongPress = false
 
     val longPressRunnable = Runnable {
@@ -298,6 +313,7 @@ class FloatingWidgetController(
     view.setOnTouchListener { _, event ->
       when (event.actionMasked) {
         MotionEvent.ACTION_DOWN -> {
+          isDragging = false
           didLongPress = false
           downRawX = event.rawX
           downRawY = event.rawY
@@ -313,6 +329,7 @@ class FloatingWidgetController(
 
           if (abs(dx) > touchSlop || abs(dy) > touchSlop) {
             mainHandler.removeCallbacks(longPressRunnable)
+            isDragging = true
           }
 
           params.x = startX + dx.toInt()
@@ -324,14 +341,22 @@ class FloatingWidgetController(
             windowManager.updateViewLayout(view, params)
           } catch (_: Exception) {
           }
+
+          if (isDragging) {
+            showDismissTarget(isBubbleInsideDismissTarget(params, view))
+          }
           true
         }
 
         MotionEvent.ACTION_UP -> {
           mainHandler.removeCallbacks(longPressRunnable)
           val moved = abs(event.rawX - downRawX) > touchSlop || abs(event.rawY - downRawY) > touchSlop
+          val shouldDismiss = isDragging && isBubbleInsideDismissTarget(params, view)
+          hideDismissTarget()
 
-          if (!moved && !didLongPress) {
+          if (shouldDismiss) {
+            onStopRequested()
+          } else if (!moved && !didLongPress) {
             onBubbleTap()
           }
           true
@@ -339,6 +364,7 @@ class FloatingWidgetController(
 
         MotionEvent.ACTION_CANCEL -> {
           mainHandler.removeCallbacks(longPressRunnable)
+          hideDismissTarget()
           true
         }
 
@@ -346,6 +372,108 @@ class FloatingWidgetController(
       }
     }
   }
+
+  private fun showDismissTarget(active: Boolean) {
+    val targetWidth = dismissTargetWidth()
+    val targetHeight = dismissTargetHeight()
+    val view = dismissTargetView ?: TextView(context).apply {
+      text = "X"
+      textSize = 17f
+      typeface = Typeface.DEFAULT_BOLD
+      gravity = Gravity.CENTER or Gravity.TOP
+      includeFontPadding = false
+      setPadding(0, dp(9f).toInt(), 0, 0)
+      setTextColor(Color.WHITE)
+      elevation = dp(10f)
+      contentDescription = "Dismiss floating OCR"
+    }.also { newView ->
+      val params = WindowManager.LayoutParams(
+        targetWidth,
+        targetHeight,
+        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+          WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+          WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+        PixelFormat.TRANSLUCENT
+      ).apply {
+        gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        y = 0
+      }
+
+      windowManager.addView(newView, params)
+      dismissTargetView = newView
+    }
+
+    updateDismissTarget(view, active)
+  }
+
+  private fun updateDismissTarget(view: TextView, active: Boolean) {
+    if (dismissTargetActive == active && view.background != null) {
+      return
+    }
+
+    dismissTargetActive = active
+    view.background = GradientDrawable().apply {
+      shape = GradientDrawable.RECTANGLE
+      cornerRadii = floatArrayOf(
+        dismissTargetHeight().toFloat(),
+        dismissTargetHeight().toFloat(),
+        dismissTargetHeight().toFloat(),
+        dismissTargetHeight().toFloat(),
+        0f,
+        0f,
+        0f,
+        0f
+      )
+      setColor(if (active) Color.rgb(191, 77, 49) else Color.argb(210, 48, 42, 35))
+      setStroke(dp(2f).toInt(), Color.argb(if (active) 235 else 120, 255, 255, 255))
+    }
+  }
+
+  private fun hideDismissTarget() {
+    dismissTargetView?.let { view ->
+      try {
+        windowManager.removeView(view)
+      } catch (_: Exception) {
+      }
+    }
+
+    dismissTargetView = null
+    dismissTargetActive = false
+  }
+
+  private fun isBubbleInsideDismissTarget(params: WindowManager.LayoutParams, view: View): Boolean {
+    val bubbleRect = bubbleRect(params, view)
+    val targetRect = dismissTargetRect()
+
+    return RectF.intersects(bubbleRect, targetRect)
+  }
+
+  private fun bubbleRect(params: WindowManager.LayoutParams, view: View): RectF {
+    val bubbleWidth = view.width.takeIf { it > 0 } ?: params.width
+    val bubbleHeight = view.height.takeIf { it > 0 } ?: params.height
+
+    return RectF(
+      params.x.toFloat(),
+      params.y.toFloat(),
+      params.x + bubbleWidth.toFloat(),
+      params.y + bubbleHeight.toFloat()
+    )
+  }
+
+  private fun dismissTargetRect(): RectF {
+    val metrics = context.resources.displayMetrics
+    val width = dismissTargetWidth().toFloat()
+    val height = dismissTargetHeight().toFloat()
+    val left = (metrics.widthPixels - width) / 2f
+    val top = metrics.heightPixels - height
+
+    return RectF(left, top, left + width, metrics.heightPixels.toFloat())
+  }
+
+  private fun dismissTargetWidth(): Int = dp(74f).toInt()
+
+  private fun dismissTargetHeight(): Int = dp(38f).toInt()
 
   private fun dp(value: Float): Float = value * density
 }

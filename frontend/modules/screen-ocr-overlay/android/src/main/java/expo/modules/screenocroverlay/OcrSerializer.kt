@@ -2,7 +2,6 @@ package expo.modules.screenocroverlay
 
 import android.graphics.Rect
 import com.google.mlkit.vision.text.Text
-import kotlin.math.floor
 import kotlin.math.roundToInt
 
 data class OcrTapTarget(
@@ -183,6 +182,10 @@ object OcrSerializer {
       )
     }
 
+    val serializedElements = line.elements.map { element ->
+      serializeElement(element, debugBoxes)
+    }
+
     if (accepted && lineBox != null) {
       targets.add(
         OcrTapTarget(
@@ -193,11 +196,8 @@ object OcrSerializer {
         )
       )
 
-      targets.addAll(createSyntheticWordTargets(lineText, lineBox))
-    }
-
-    val serializedElements = line.elements.map { element ->
-      serializeElement(element, debugBoxes)
+      val elementTargets = createElementWordTargets(lineText, lineBox, line.elements)
+      targets.addAll(elementTargets.ifEmpty { createSyntheticWordTargets(lineText, lineBox) })
     }
 
     return mapOf(
@@ -303,6 +303,68 @@ private data class LineToken(
   val end: Int
 )
 
+private fun createElementWordTargets(
+  lineText: String,
+  lineBox: Rect,
+  elements: List<Text.Element>
+): List<OcrTapTarget> {
+  if (elements.isEmpty()) {
+    return emptyList()
+  }
+
+  val targets = elements
+    .mapNotNull { element ->
+      val elementText = element.text.trimLookupToken()
+      val elementBox = element.boundingBox ?: return@mapNotNull null
+
+      if (elementText.isEmpty() || elementBox.width() <= 0 || elementBox.height() <= 0) {
+        return@mapNotNull null
+      }
+      if (!lineBox.contains(elementBox.centerX(), elementBox.centerY())) {
+        return@mapNotNull null
+      }
+
+      OcrTapTarget(
+        text = elementText,
+        lineText = lineText,
+        box = Rect(elementBox),
+        kind = "word"
+      )
+    }
+    .sortedBy { it.box.left }
+
+  if (targets.isEmpty()) {
+    return emptyList()
+  }
+  if (targets.size == 1 && splitLookupTokensWithOffsets(lineText).size > 1) {
+    return emptyList()
+  }
+
+  val mergedText = targets.joinToString(separator = "") { it.text }.filter(Char::isLetterOrDigit)
+  val lineContent = lineText.filter(Char::isLetterOrDigit)
+  if (targets.size > 2 && targets.all { it.text.length == 1 } && lineContent.length > 3) {
+    return emptyList()
+  }
+
+  val likelyCoversLine = mergedText.isNotEmpty() &&
+    lineContent.isNotEmpty() &&
+    (mergedText == lineContent || lineContent.contains(mergedText) || mergedText.contains(lineContent))
+
+  if (!likelyCoversLine) {
+    return emptyList()
+  }
+
+  val reconstructedLineText = if (targets.size > 1) {
+    targets.joinToString(separator = " ") { it.text }
+  } else {
+    lineText
+  }
+
+  return targets.map { target ->
+    target.copy(lineText = reconstructedLineText)
+  }
+}
+
 private fun createSyntheticWordTargets(lineText: String, lineBox: Rect): List<OcrTapTarget> {
   val tokens = splitLookupTokensWithOffsets(lineText)
   if (tokens.isEmpty() || lineBox.width() <= 0) {
@@ -319,24 +381,17 @@ private fun createSyntheticWordTargets(lineText: String, lineBox: Rect): List<Oc
     )
   }
 
-  val measurableLength = tokens.sumOf { it.text.length }.coerceAtLeast(1)
-  var cursor = lineBox.left
+  val measurableLength = lineText.length.coerceAtLeast(1)
 
-  return tokens.mapIndexed { index, token ->
-    val isLast = index == tokens.lastIndex
-    val tokenWidth = if (isLast) {
-      lineBox.right - cursor
-    } else {
-      (lineBox.width() * (token.text.length.toFloat() / measurableLength)).roundToInt()
-        .coerceAtLeast(1)
-    }
-    val tokenRight = if (isLast) {
-      lineBox.right
-    } else {
-      (cursor + tokenWidth).coerceAtMost(lineBox.right)
-    }
-    val targetBox = Rect(cursor, lineBox.top, tokenRight, lineBox.bottom)
-    cursor = tokenRight
+  return tokens.map { token ->
+    val tokenLeft = lineBox.left + (lineBox.width() * (token.start.toFloat() / measurableLength)).roundToInt()
+    val tokenRight = lineBox.left + (lineBox.width() * (token.end.toFloat() / measurableLength)).roundToInt()
+    val targetBox = Rect(
+      tokenLeft.coerceIn(lineBox.left, lineBox.right),
+      lineBox.top,
+      tokenRight.coerceIn(lineBox.left, lineBox.right),
+      lineBox.bottom
+    )
 
     OcrTapTarget(
       text = token.text,
@@ -357,8 +412,22 @@ private fun selectLineTokenAtImageX(lineText: String, lineBox: Rect, imageX: Flo
   }
 
   val relativeX = ((imageX - lineBox.left) / lineBox.width()).coerceIn(0f, 0.999f)
-  val index = floor(relativeX * tokens.size).toInt().coerceIn(0, tokens.lastIndex)
-  return tokens[index].text
+  val estimatedOffset = (relativeX * lineText.length).roundToInt().coerceIn(0, lineText.length)
+  val containingToken = tokens.firstOrNull { token ->
+    estimatedOffset in token.start..token.end
+  }
+
+  if (containingToken != null) {
+    return containingToken.text
+  }
+
+  return tokens.minByOrNull { token ->
+    when {
+      estimatedOffset < token.start -> token.start - estimatedOffset
+      estimatedOffset > token.end -> estimatedOffset - token.end
+      else -> 0
+    }
+  }?.text ?: tokens.first().text
 }
 
 private fun splitLookupTokensWithOffsets(text: String): List<LineToken> {

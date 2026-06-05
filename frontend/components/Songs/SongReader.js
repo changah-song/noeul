@@ -1,28 +1,38 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
     ActivityIndicator,
+    Alert,
+    Modal,
     Pressable,
     ScrollView,
     StyleSheet,
     Text,
+    TextInput,
     TouchableOpacity,
     View,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import TopSection from '../Read/TopSection/TopSection';
-import {
-    getSavedVocabForHighlights,
-    recordImplicitReadingReview,
-    recordVocabEncounterBatch,
-} from '../../services/Database';
+import { getSavedWords } from '../../services/Database';
 import { colors, fontFamilies, spacing, textStyles } from '../../theme';
 
 const WORD_EDGE_PATTERN = /^[^\u3131-\u318e\uac00-\ud7a3a-zA-Z0-9]+|[^\u3131-\u318e\uac00-\ud7a3a-zA-Z0-9]+$/g;
+const DEFAULT_LYRIC_FONT_SIZE = 28;
+const MIN_LYRIC_FONT_SIZE = 20;
+const MAX_LYRIC_FONT_SIZE = 40;
+const ACTIVE_TAP_HIGHLIGHT_COLOR = 'rgba(252, 213, 180, 0.33)';
+const SAVED_HIGHLIGHT_COLOR = '#f7d488';
+const TEXT_SELECTION_HIGHLIGHT_COLOR = '#e3e7ee';
 
 const cleanLyricToken = (value) => String(value || '').replace(WORD_EDGE_PATTERN, '').trim();
 
 const normalizeForMatch = (value) => cleanLyricToken(value).toLowerCase();
+const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+const countSongLines = (lyrics) => String(lyrics || '')
+    .split(/\r?\n/)
+    .filter((line) => line.trim().length > 0)
+    .length;
 
 const uniqueTerms = (values) => [...new Set(
     (values || [])
@@ -30,57 +40,39 @@ const uniqueTerms = (values) => [...new Set(
         .filter(Boolean)
 )];
 
-const styleForHighlightTone = (tone) => {
-    switch (tone) {
-        case 'strong':
-            return styles.savedLyricWordStrong;
-        case 'soft':
-            return styles.savedLyricWordSoft;
-        case 'faint':
-            return styles.savedLyricWordFaint;
-        case 'normal':
-        default:
-            return styles.savedLyricWord;
-    }
-};
+const makeSongDraft = (song) => ({
+    title: song?.title || '',
+    artist: song?.artist || '',
+    lyrics: song?.lyrics || '',
+});
 
-const SongReader = ({ song, onClose, onSavedTermsChange }) => {
+const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsChange }) => {
     const insets = useSafeAreaInsets();
     const [savedWords, setSavedWords] = useState(null);
-    const [savedVocabRows, setSavedVocabRows] = useState([]);
     const [highlightedWord, setHighlightedWord] = useState('');
     const [highlightedWordContext, setHighlightedWordContext] = useState(null);
     const [isNativeSelection, setIsNativeSelection] = useState(false);
     const [lookupPlacement, setLookupPlacement] = useState('bottom');
-    const suppressTapUntilRef = useRef(0);
-    const scrollYRef = useRef(0);
-    const viewportHeightRef = useRef(0);
-    const lineLayoutsRef = useRef(new Map());
-    const encounterTimerRef = useRef(null);
-    const visibleLineKeysRef = useRef('');
-    const recordingEncountersRef = useRef(false);
-
-    const refreshSavedVocabRows = useCallback(async () => {
-        const rows = await getSavedVocabForHighlights();
-        setSavedVocabRows(rows);
-        setSavedWords(rows.map((row) => row.word).filter(Boolean));
-        return rows;
-    }, []);
+    const [lyricFontSize, setLyricFontSize] = useState(() => clamp(
+        Number(song?.fontSize) || DEFAULT_LYRIC_FONT_SIZE,
+        MIN_LYRIC_FONT_SIZE,
+        MAX_LYRIC_FONT_SIZE
+    ));
+    const [isEditModalVisible, setIsEditModalVisible] = useState(false);
+    const [editDraft, setEditDraft] = useState(() => makeSongDraft(song));
 
     useEffect(() => {
         let isMounted = true;
 
-        getSavedVocabForHighlights()
-            .then((rows) => {
+        getSavedWords()
+            .then((words) => {
                 if (isMounted) {
-                    setSavedVocabRows(rows);
-                    setSavedWords(rows.map((row) => row.word).filter(Boolean));
+                    setSavedWords(words);
                 }
             })
             .catch((error) => {
-                console.error('[SongReader] Failed to load saved vocab rows:', error);
+                console.error('[SongReader] Failed to load saved words:', error);
                 if (isMounted) {
-                    setSavedVocabRows([]);
                     setSavedWords([]);
                 }
             });
@@ -91,44 +83,21 @@ const SongReader = ({ song, onClose, onSavedTermsChange }) => {
     }, []);
 
     useEffect(() => {
-        if (encounterTimerRef.current) {
-            clearTimeout(encounterTimerRef.current);
-            encounterTimerRef.current = null;
-        }
-        scrollYRef.current = 0;
-        viewportHeightRef.current = 0;
-        lineLayoutsRef.current.clear();
-        visibleLineKeysRef.current = '';
-        recordingEncountersRef.current = false;
         setHighlightedWord('');
         setHighlightedWordContext(null);
         setIsNativeSelection(false);
         setLookupPlacement('bottom');
+        setLyricFontSize(clamp(
+            Number(song?.fontSize) || DEFAULT_LYRIC_FONT_SIZE,
+            MIN_LYRIC_FONT_SIZE,
+            MAX_LYRIC_FONT_SIZE
+        ));
+        setEditDraft(makeSongDraft(song));
+        setIsEditModalVisible(false);
     }, [song?.id]);
 
-    useEffect(() => () => {
-        if (encounterTimerRef.current) {
-            clearTimeout(encounterTimerRef.current);
-            encounterTimerRef.current = null;
-        }
-        lineLayoutsRef.current.clear();
-        visibleLineKeysRef.current = '';
-    }, []);
-
     const lyricLines = useMemo(() => String(song?.lyrics || '').split(/\r?\n/), [song?.lyrics]);
-    const savedVocabByToken = useMemo(() => {
-        const map = new Map();
-
-        savedVocabRows.forEach((row) => {
-            const key = normalizeForMatch(row.word);
-            if (key) {
-                map.set(key, row);
-            }
-        });
-
-        return map;
-    }, [savedVocabRows]);
-    const optimisticSavedWordSet = useMemo(() => {
+    const savedWordSet = useMemo(() => {
         const normalized = [...(savedWords || []), ...(song?.savedTerms || [])]
             .map(normalizeForMatch)
             .filter(Boolean);
@@ -140,151 +109,19 @@ const SongReader = ({ song, onClose, onSavedTermsChange }) => {
         title: song?.title || 'Untitled song',
         author: song?.artist || 'Unknown artist',
     }), [song?.artist, song?.id, song?.title]);
-    const songSourceTitle = useMemo(() => {
-        const title = song?.title || 'Untitled song';
-        const artist = song?.artist || 'Unknown artist';
-        return `${title} · ${artist}`;
-    }, [song?.artist, song?.title]);
-
-    const getVisibleLineIndices = useCallback(() => {
-        const viewportHeight = viewportHeightRef.current;
-
-        if (viewportHeight <= 0) {
-            return [];
-        }
-
-        const viewportTop = scrollYRef.current;
-        const viewportBottom = viewportTop + viewportHeight;
-
-        return Array.from(lineLayoutsRef.current.entries())
-            .filter(([, layout]) => {
-                const lineTop = layout.y;
-                const lineBottom = layout.y + layout.height;
-                return lineBottom >= viewportTop && lineTop <= viewportBottom;
-            })
-            .map(([lineIndex]) => lineIndex)
-            .sort((a, b) => a - b);
-    }, []);
-
-    const recordVisibleLyricEncounters = useCallback(async () => {
-        if (!song?.id || recordingEncountersRef.current) {
-            return;
-        }
-
-        const visibleLineIndices = getVisibleLineIndices();
-        if (visibleLineIndices.length === 0) {
-            return;
-        }
-
-        const payload = [];
-        const seenEncounterKeys = new Set();
-
-        visibleLineIndices.forEach((lineIndex) => {
-            const line = lyricLines[lineIndex] || '';
-            const locationKey = `line:${lineIndex}`;
-
-            line.split(/\s+/).forEach((token) => {
-                const tokenKey = normalizeForMatch(token);
-                const vocabRow = savedVocabByToken.get(tokenKey);
-
-                if (!vocabRow || vocabRow.highlightTone === 'hidden') {
-                    return;
-                }
-
-                const vocabId = Number(vocabRow.id);
-                if (!Number.isInteger(vocabId) || vocabId <= 0) {
-                    return;
-                }
-
-                const encounterKey = `${vocabId}:${locationKey}`;
-                if (seenEncounterKeys.has(encounterKey)) {
-                    return;
-                }
-
-                seenEncounterKeys.add(encounterKey);
-                payload.push({
-                    vocabId,
-                    sourceType: 'song',
-                    sourceUri: `song:${song.id}`,
-                    sourceTitle: songSourceTitle,
-                    locationKey,
-                });
-            });
-        });
-
-        if (payload.length === 0) {
-            return;
-        }
-
-        recordingEncountersRef.current = true;
-
-        try {
-            const result = await recordVocabEncounterBatch(payload);
-            const reviewIds = Array.isArray(result?.affectedVocabIds) && result.affectedVocabIds.length > 0
-                ? result.affectedVocabIds
-                : [...new Set(payload.map((item) => item.vocabId))];
-
-            await Promise.all(reviewIds.map((vocabId) => recordImplicitReadingReview(vocabId)));
-
-            if (result?.insertedCount > 0) {
-                await refreshSavedVocabRows();
-            }
-        } catch (error) {
-            console.error('[SongReader] Failed to record lyric encounters:', error);
-        } finally {
-            recordingEncountersRef.current = false;
-        }
-    }, [getVisibleLineIndices, lyricLines, refreshSavedVocabRows, savedVocabByToken, song?.id, songSourceTitle]);
-
-    const scheduleVisibleEncounterScan = useCallback(() => {
-        const visibleLineIndices = getVisibleLineIndices();
-        const visibleLineKey = visibleLineIndices.join(',');
-        const hadPendingTimer = !!encounterTimerRef.current;
-
-        if (encounterTimerRef.current) {
-            clearTimeout(encounterTimerRef.current);
-            encounterTimerRef.current = null;
-        }
-
-        if (!visibleLineKey) {
-            visibleLineKeysRef.current = '';
-            return;
-        }
-
-        if (visibleLineKeysRef.current === visibleLineKey && !hadPendingTimer) {
-            return;
-        }
-
-        visibleLineKeysRef.current = visibleLineKey;
-        encounterTimerRef.current = setTimeout(() => {
-            encounterTimerRef.current = null;
-            recordVisibleLyricEncounters();
-        }, 2000);
-    }, [getVisibleLineIndices, recordVisibleLyricEncounters]);
-
-    useEffect(() => {
-        visibleLineKeysRef.current = '';
-        scheduleVisibleEncounterScan();
-    }, [savedVocabRows, scheduleVisibleEncounterScan]);
 
     const savedLyricsCount = useMemo(() => {
         const lyricTerms = new Set();
         lyricLines.forEach((line) => {
             line.split(/\s+/).forEach((token) => {
                 const key = normalizeForMatch(token);
-                const vocabRow = savedVocabByToken.get(key);
-                const isVisibleSavedWord = (
-                    (vocabRow && vocabRow.highlightTone !== 'hidden') ||
-                    (!vocabRow && optimisticSavedWordSet.has(key))
-                );
-
-                if (key && isVisibleSavedWord) {
+                if (key && savedWordSet.has(key)) {
                     lyricTerms.add(key);
                 }
             });
         });
         return lyricTerms.size;
-    }, [lyricLines, optimisticSavedWordSet, savedVocabByToken]);
+    }, [lyricLines, savedWordSet]);
 
     const selectWord = useCallback((word, sourceSentence, nativeSelection = false) => {
         if (!word) {
@@ -298,16 +135,7 @@ const SongReader = ({ song, onClose, onSavedTermsChange }) => {
     }, []);
 
     const handleTokenPress = useCallback((word, sourceSentence) => {
-        if (Date.now() < suppressTapUntilRef.current) {
-            return;
-        }
-
         selectWord(word, sourceSentence, false);
-    }, [selectWord]);
-
-    const handleTokenLongPress = useCallback((word, sourceSentence) => {
-        suppressTapUntilRef.current = Date.now() + 650;
-        selectWord(word, sourceSentence, true);
     }, [selectWord]);
 
     const closeLookup = useCallback(() => {
@@ -315,6 +143,60 @@ const SongReader = ({ song, onClose, onSavedTermsChange }) => {
         setHighlightedWordContext(null);
         setIsNativeSelection(false);
     }, []);
+
+    const updateLyricFontSize = useCallback((delta) => {
+        setLyricFontSize((currentSize) => {
+            const nextSize = clamp(currentSize + delta, MIN_LYRIC_FONT_SIZE, MAX_LYRIC_FONT_SIZE);
+            if (nextSize !== currentSize) {
+                onSongUpdate?.({ fontSize: nextSize });
+            }
+            return nextSize;
+        });
+    }, [onSongUpdate]);
+
+    const openEditModal = useCallback(() => {
+        setEditDraft(makeSongDraft(song));
+        setIsEditModalVisible(true);
+    }, [song]);
+
+    const closeEditModal = useCallback(() => {
+        setIsEditModalVisible(false);
+        setEditDraft(makeSongDraft(song));
+    }, [song]);
+
+    const submitSongEdit = useCallback(() => {
+        const title = editDraft.title.trim();
+        const artist = editDraft.artist.trim() || 'Unknown artist';
+        const lyrics = editDraft.lyrics.trim();
+
+        if (!title || !lyrics) {
+            Alert.alert('Missing song details', 'Keep a title and lyrics before saving.');
+            return;
+        }
+
+        onSongUpdate?.({
+            title,
+            artist,
+            lyrics,
+            lines: countSongLines(lyrics),
+        });
+        setIsEditModalVisible(false);
+    }, [editDraft.artist, editDraft.lyrics, editDraft.title, onSongUpdate]);
+
+    const confirmDeleteSong = useCallback(() => {
+        Alert.alert(
+            'Delete song',
+            `Delete "${song?.title || 'Untitled song'}" from your saved songs?`,
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Delete',
+                    style: 'destructive',
+                    onPress: () => onSongDelete?.(),
+                },
+            ]
+        );
+    }, [onSongDelete, song?.title]);
 
     const handleWordSave = useCallback((word, options = {}) => {
         const surface = options.includeSurface === false ? '' : highlightedWord?.trim();
@@ -327,73 +209,58 @@ const SongReader = ({ song, onClose, onSavedTermsChange }) => {
         setSavedWords((previous) => (
             previous ?? []
         ).filter((term) => term !== word && term !== surface));
-        setSavedVocabRows((previous) => previous.filter((row) => row.word !== word && row.word !== surface));
         onSavedTermsChange?.((song?.savedTerms ?? []).filter((term) => term !== word && term !== surface));
     }, [highlightedWord, onSavedTermsChange, song?.savedTerms]);
 
-    const handleLineLayout = useCallback((lineIndex, event) => {
-        const { y, height } = event.nativeEvent.layout;
-        lineLayoutsRef.current.set(lineIndex, { y, height });
-        scheduleVisibleEncounterScan();
-    }, [scheduleVisibleEncounterScan]);
-
-    const renderLyricLine = (line, lineIndex) => {
-        if (!line.trim()) {
-            return (
-                <View
-                    key={`blank-${lineIndex}`}
-                    onLayout={(event) => handleLineLayout(lineIndex, event)}
-                    style={styles.lyricLineShell}
-                >
-                    <View style={styles.lyricBlankLine} />
-                </View>
-            );
-        }
-
-        const parts = line.split(/(\s+)/);
-
+    const renderLyricsText = () => {
         return (
-            <View
-                key={`${lineIndex}-${line}`}
-                onLayout={(event) => handleLineLayout(lineIndex, event)}
-                style={styles.lyricLineShell}
+            <Text
+                selectable
+                selectionColor={TEXT_SELECTION_HIGHLIGHT_COLOR}
+                style={[
+                    styles.lyricLine,
+                    {
+                        fontSize: lyricFontSize,
+                        lineHeight: Math.round(lyricFontSize * 1.54),
+                    },
+                ]}
             >
-                <Text style={styles.lyricLine}>
-                    {parts.map((part, partIndex) => {
-                        const cleanToken = cleanLyricToken(part);
+                {lyricLines.map((line, lineIndex) => {
+                    const parts = line.split(/(\s+)/);
 
-                        if (!cleanToken) {
-                            return <Text key={`${lineIndex}-${partIndex}`}>{part}</Text>;
-                        }
+                    return (
+                        <Text key={`line-${lineIndex}`}>
+                            {parts.map((part, partIndex) => {
+                                const cleanToken = cleanLyricToken(part);
 
-                        const tokenKey = normalizeForMatch(cleanToken);
-                        const vocabRow = savedVocabByToken.get(tokenKey);
-                        const optimisticSaved = !vocabRow && optimisticSavedWordSet.has(tokenKey);
-                        const isSaved = (
-                            (vocabRow && vocabRow.highlightTone !== 'hidden') ||
-                            optimisticSaved
-                        );
-                        const isActive = selectedWordKey === tokenKey;
-                        const highlightTone = vocabRow?.highlightTone || 'strong';
+                                if (!cleanToken) {
+                                    return <Text key={`${lineIndex}-${partIndex}`}>{part}</Text>;
+                                }
 
-                        return (
-                            <Text
-                                key={`${lineIndex}-${partIndex}-${cleanToken}`}
-                                suppressHighlighting
-                                onPress={() => handleTokenPress(cleanToken, line)}
-                                onLongPress={() => handleTokenLongPress(cleanToken, line)}
-                                style={[
-                                    styles.lyricWord,
-                                    isSaved && styleForHighlightTone(highlightTone),
-                                    isActive && styles.activeLyricWord,
-                                ]}
-                            >
-                                {part}
-                            </Text>
-                        );
-                    })}
-                </Text>
-            </View>
+                                const tokenKey = normalizeForMatch(cleanToken);
+                                const isSaved = savedWordSet.has(tokenKey);
+                                const isActive = selectedWordKey === tokenKey;
+
+                                return (
+                                    <Text
+                                        key={`${lineIndex}-${partIndex}-${cleanToken}`}
+                                        suppressHighlighting
+                                        onPress={() => handleTokenPress(cleanToken, line)}
+                                        style={[
+                                            styles.lyricWord,
+                                            isSaved && styles.savedLyricWord,
+                                            isActive && styles.activeLyricWord,
+                                        ]}
+                                    >
+                                        {part}
+                                    </Text>
+                                );
+                            })}
+                            {lineIndex < lyricLines.length - 1 ? '\n' : ''}
+                        </Text>
+                    );
+                })}
+            </Text>
         );
     };
 
@@ -409,8 +276,45 @@ const SongReader = ({ song, onClose, onSavedTermsChange }) => {
                 >
                     <Feather name="chevron-left" size={30} color={colors.textMuted} />
                 </TouchableOpacity>
-                <View style={styles.iconButton}>
-                    <Feather name="more-horizontal" size={24} color={colors.textMuted} />
+                <View style={styles.topActions}>
+                    <TouchableOpacity
+                        accessibilityRole="button"
+                        accessibilityLabel="Decrease lyrics font size"
+                        activeOpacity={0.78}
+                        onPress={() => updateLyricFontSize(-2)}
+                        disabled={lyricFontSize <= MIN_LYRIC_FONT_SIZE}
+                        style={[styles.fontButton, lyricFontSize <= MIN_LYRIC_FONT_SIZE && styles.disabledControl]}
+                    >
+                        <Text style={styles.fontButtonText}>A-</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        accessibilityRole="button"
+                        accessibilityLabel="Increase lyrics font size"
+                        activeOpacity={0.78}
+                        onPress={() => updateLyricFontSize(2)}
+                        disabled={lyricFontSize >= MAX_LYRIC_FONT_SIZE}
+                        style={[styles.fontButton, lyricFontSize >= MAX_LYRIC_FONT_SIZE && styles.disabledControl]}
+                    >
+                        <Text style={styles.fontButtonText}>A+</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        accessibilityRole="button"
+                        accessibilityLabel="Edit song lyrics"
+                        activeOpacity={0.78}
+                        onPress={openEditModal}
+                        style={styles.iconButton}
+                    >
+                        <Feather name="edit-3" size={20} color={colors.textMuted} />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        accessibilityRole="button"
+                        accessibilityLabel="Delete song"
+                        activeOpacity={0.78}
+                        onPress={confirmDeleteSong}
+                        style={styles.iconButton}
+                    >
+                        <Feather name="trash-2" size={20} color={colors.danger} />
+                    </TouchableOpacity>
                 </View>
             </View>
 
@@ -436,15 +340,6 @@ const SongReader = ({ song, onClose, onSavedTermsChange }) => {
 
             <ScrollView
                 showsVerticalScrollIndicator={false}
-                onLayout={(event) => {
-                    viewportHeightRef.current = event.nativeEvent.layout.height;
-                    scheduleVisibleEncounterScan();
-                }}
-                onScroll={(event) => {
-                    scrollYRef.current = event.nativeEvent.contentOffset.y;
-                    scheduleVisibleEncounterScan();
-                }}
-                scrollEventThrottle={250}
                 contentContainerStyle={[
                     styles.lyricsContent,
                     { paddingBottom: insets.bottom + 152 },
@@ -457,7 +352,7 @@ const SongReader = ({ song, onClose, onSavedTermsChange }) => {
                     </View>
                 ) : (
                     <View style={styles.lyricBlock}>
-                        {lyricLines.map(renderLyricLine)}
+                        {renderLyricsText()}
                     </View>
                 )}
             </ScrollView>
@@ -489,6 +384,67 @@ const SongReader = ({ song, onClose, onSavedTermsChange }) => {
                     savedWords={savedWords ?? []}
                 />
             </View>
+
+            <Modal visible={isEditModalVisible} animationType="fade" transparent onRequestClose={closeEditModal}>
+                <Pressable style={styles.modalBackdrop} onPress={closeEditModal}>
+                    <Pressable style={styles.editModal} onPress={() => {}}>
+                        <Text style={styles.editTitle}>Edit lyrics</Text>
+
+                        <ScrollView
+                            style={styles.editScroll}
+                            contentContainerStyle={styles.editScrollContent}
+                            showsVerticalScrollIndicator={false}
+                            keyboardShouldPersistTaps="handled"
+                        >
+                            <Text style={styles.editLabel}>Title</Text>
+                            <TextInput
+                                value={editDraft.title}
+                                onChangeText={(title) => setEditDraft((previous) => ({ ...previous, title }))}
+                                style={styles.editInput}
+                                placeholder="Song title"
+                                placeholderTextColor={colors.textSubtle}
+                            />
+
+                            <Text style={styles.editLabel}>Artist</Text>
+                            <TextInput
+                                value={editDraft.artist}
+                                onChangeText={(artist) => setEditDraft((previous) => ({ ...previous, artist }))}
+                                style={styles.editInput}
+                                placeholder="Artist"
+                                placeholderTextColor={colors.textSubtle}
+                            />
+
+                            <Text style={styles.editLabel}>Lyrics</Text>
+                            <TextInput
+                                value={editDraft.lyrics}
+                                onChangeText={(lyrics) => setEditDraft((previous) => ({ ...previous, lyrics }))}
+                                style={[styles.editInput, styles.lyricsInput]}
+                                placeholder="Paste lyrics here"
+                                placeholderTextColor={colors.textSubtle}
+                                multiline
+                                textAlignVertical="top"
+                            />
+                        </ScrollView>
+
+                        <View style={styles.modalActions}>
+                            <TouchableOpacity
+                                activeOpacity={0.84}
+                                onPress={closeEditModal}
+                                style={[styles.modalButton, styles.modalButtonSecondary]}
+                            >
+                                <Text style={styles.modalButtonSecondaryText}>Cancel</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                activeOpacity={0.84}
+                                onPress={submitSongEdit}
+                                style={[styles.modalButton, styles.modalButtonPrimary]}
+                            >
+                                <Text style={styles.modalButtonPrimaryText}>Save</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </Pressable>
+                </Pressable>
+            </Modal>
         </View>
     );
 };
@@ -512,6 +468,30 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'center',
         borderRadius: 21,
+    },
+    topActions: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 2,
+    },
+    fontButton: {
+        minWidth: 38,
+        height: 36,
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: 18,
+        backgroundColor: '#f4ede2',
+        paddingHorizontal: spacing.xs,
+    },
+    fontButtonText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 13,
+        lineHeight: 16,
+        color: colors.textMuted,
+        letterSpacing: 0,
+    },
+    disabledControl: {
+        opacity: 0.36,
     },
     songHeader: {
         paddingHorizontal: spacing.xl,
@@ -560,16 +540,10 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         gap: spacing.sm,
     },
-    lyricLineShell: {
-        width: '100%',
-        alignItems: 'center',
-    },
     lyricLine: {
         width: '100%',
         textAlign: 'center',
         fontFamily: fontFamilies.krSerifMedium,
-        fontSize: 28,
-        lineHeight: 43,
         color: colors.text,
         letterSpacing: 0,
         includeFontPadding: true,
@@ -579,28 +553,10 @@ const styles = StyleSheet.create({
         overflow: 'hidden',
     },
     activeLyricWord: {
-        backgroundColor: 'rgba(188, 204, 194, 0.38)',
-    },
-    savedLyricWordStrong: {
-        backgroundColor: 'rgba(228, 184, 104, 0.68)',
-        color: '#3d3328',
+        backgroundColor: ACTIVE_TAP_HIGHLIGHT_COLOR,
     },
     savedLyricWord: {
-        backgroundColor: 'rgba(228, 184, 104, 0.48)',
-        color: '#3d3328',
-    },
-    savedLyricWordSoft: {
-        backgroundColor: 'rgba(228, 184, 104, 0.26)',
-        color: '#3d3328',
-    },
-    savedLyricWordFaint: {
-        backgroundColor: 'rgba(228, 184, 104, 0.12)',
-        color: '#3d3328',
-        textDecorationLine: 'underline',
-        textDecorationColor: 'rgba(128, 92, 36, 0.34)',
-    },
-    lyricBlankLine: {
-        height: 28,
+        backgroundColor: SAVED_HIGHLIGHT_COLOR,
     },
     loadingState: {
         minHeight: 220,
@@ -624,6 +580,80 @@ const styles = StyleSheet.create({
     lookupDismissZone: {
         ...StyleSheet.absoluteFillObject,
         backgroundColor: 'transparent',
+    },
+    modalBackdrop: {
+        flex: 1,
+        justifyContent: 'center',
+        paddingHorizontal: spacing.lg,
+        backgroundColor: 'rgba(37, 32, 24, 0.38)',
+    },
+    editModal: {
+        maxHeight: '84%',
+        backgroundColor: colors.surfaceElevated,
+        borderRadius: 28,
+        padding: spacing.xl,
+        gap: spacing.md,
+    },
+    editTitle: {
+        ...textStyles.title,
+    },
+    editScroll: {
+        maxHeight: 460,
+    },
+    editScrollContent: {
+        gap: spacing.sm,
+        paddingBottom: spacing.xs,
+    },
+    editLabel: {
+        ...textStyles.eyebrow,
+        letterSpacing: 0,
+    },
+    editInput: {
+        borderWidth: 1,
+        borderColor: colors.border,
+        borderRadius: 16,
+        paddingHorizontal: spacing.md,
+        paddingVertical: spacing.sm,
+        color: colors.text,
+        backgroundColor: colors.surface,
+        ...textStyles.body,
+    },
+    lyricsInput: {
+        minHeight: 220,
+        lineHeight: 22,
+    },
+    modalActions: {
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+        gap: spacing.sm,
+    },
+    modalButton: {
+        minWidth: 94,
+        height: 44,
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: 999,
+        paddingHorizontal: spacing.lg,
+    },
+    modalButtonSecondary: {
+        borderWidth: 1,
+        borderColor: colors.border,
+        backgroundColor: colors.surface,
+    },
+    modalButtonPrimary: {
+        backgroundColor: colors.text,
+    },
+    modalButtonSecondaryText: {
+        ...textStyles.sectionTitle,
+        fontSize: 15,
+        color: colors.textMuted,
+        letterSpacing: 0,
+    },
+    modalButtonPrimaryText: {
+        ...textStyles.sectionTitle,
+        fontSize: 15,
+        color: colors.white,
+        letterSpacing: 0,
     },
 });
 
