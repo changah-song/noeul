@@ -7,12 +7,20 @@ import { MaterialIcons } from '@expo/vector-icons';
 import {
     insertData,
     removeData,
+    recordVocabContext,
     vocabEntryExists,
     lookupBookIndexBySurface,
     lookupCacheByStems,
     insertCacheEntries,
 } from '../../../services/Database';
-import { deleteUserVocabEntry, supabase, upsertUserVocabEntry } from '../../../services/supabase';
+import {
+    softDeleteUserVocabContextsForWord,
+    softDeleteRelatedKnownWordsForMainWord,
+    softDeleteUserVocabEntry,
+    supabase,
+    upsertUserVocabContext,
+    upsertUserVocabEntry,
+} from '../../../services/supabase';
 import HanjaDetails from './HanjaDetails';
 import { BASE_URL } from '../../../config';
 import { colors, fontFamilies, radii, spacing, textStyles } from '../../../theme';
@@ -198,6 +206,7 @@ const DictionaryContent = ({
             characters: fallbackCharacters,
             activeIndex,
             sourceWord: cleanValue(sourceWord) || null,
+            sourceWordDetails: options.sourceWordDetails ?? {},
         });
     };
 
@@ -226,9 +235,6 @@ const DictionaryContent = ({
 
         const resolveLookup = async () => {
             if (currentBook) {
-                console.log(
-                    `[DictionaryContent] checking book_index for book="${currentBook}" surface="${normalizedSurface}"`
-                );
                 const indexRows = await lookupBookIndexBySurface(currentBook, normalizedSurface);
                 if (isCancelled) {
                     return;
@@ -242,14 +248,11 @@ const DictionaryContent = ({
                 });
 
                 if (indexHits.length > 0) {
-                    console.log(`[DictionaryContent] book_index hit (${indexHits.length}) for "${normalizedSurface}"`);
                     setCachedResults(indexHits);
                     setNeedsLiveFetch(false);
                     onContentLoaded?.();
                     return;
                 }
-
-                console.log(`[DictionaryContent] book_index miss for "${normalizedSurface}" - falling back to local cache/stemming`);
             }
 
             const directCacheRows = await lookupCacheByStems([normalizedSurface]);
@@ -262,9 +265,6 @@ const DictionaryContent = ({
             );
 
             if (uniqueDirectCacheRows.length > 0) {
-                console.log(
-                    `[DictionaryContent] direct dictionary_cache hit (${uniqueDirectCacheRows.length}) for "${normalizedSurface}" after book_index miss`
-                );
                 setCachedResults(uniqueDirectCacheRows);
                 setNeedsLiveFetch(false);
                 onContentLoaded?.();
@@ -303,16 +303,13 @@ const DictionaryContent = ({
             });
 
             if (hits.length >= stemWordList.length) {
-                console.log(`[DictionaryContent] Full cache hit (${hits.length}/${stemWordList.length})`);
                 setCachedResults(hits);
                 setNeedsLiveFetch(false);
                 onContentLoaded?.();
             } else if (hits.length > 0) {
-                console.log(`[DictionaryContent] Partial cache hit (${hits.length}/${stemWordList.length})`);
                 setCachedResults(hits);
                 setNeedsLiveFetch(true);
             } else {
-                console.log('[DictionaryContent] Cache miss - falling back to live KRDICT');
                 setCachedResults([]);
                 setNeedsLiveFetch(true);
             }
@@ -361,7 +358,6 @@ const DictionaryContent = ({
                 });
                 return [term, cleanValue(response.data?.romanization)];
             } catch (error) {
-                console.log(`[DictionaryContent] romanization failed for "${term}":`, error.message);
                 return [term, ''];
             }
         }));
@@ -410,7 +406,6 @@ const DictionaryContent = ({
             .filter(Boolean);
 
         if (entries.length > 0) {
-            console.log(`[DictionaryContent] Writing ${entries.length} live result(s) back to cache`);
             insertCacheEntries(entries);
         }
 
@@ -537,18 +532,50 @@ const DictionaryContent = ({
         });
     };
 
-    const toggleSave = async (word, origin, definition, options = {}) => {
-        onWordSave?.(word, options);
-        const alreadySaved = await vocabEntryExists(word, origin, definition);
-        if (!alreadySaved) {
-            await insertData(word, origin, definition, {
-                level: 'unorganized',
-                sourceBookUri: sourceBook?.uri ?? currentBook ?? null,
-                sourceBookTitle: sourceBook?.title ?? null,
-                contextSentence: contextSentence || null,
-                relatedKnownWords: relatedKnownByWord[word] ?? [],
-            });
+    const buildSourceWordDetails = ({ hanja, definition }) => ({
+        hanja: cleanValue(hanja) || null,
+        definition: cleanValue(definition) || null,
+        level: 'unorganized',
+        sourceBookUri: sourceBook?.uri ?? currentBook ?? null,
+        sourceBookTitle: sourceBook?.title ?? null,
+        contextSentence: contextSentence || null,
+        language: sourceBook?.language ?? 'ko',
+    });
+
+    const buildCloudVocabPayload = ({
+        word,
+        hanja,
+        definition,
+        createdAt = new Date().toISOString(),
+        relatedKnownWords = [],
+    }) => ({
+        word,
+        hanja: hanja ?? null,
+        definition: definition ?? null,
+        level: 'unorganized',
+        status: 'unorganized',
+        sourceBookUri: sourceBook?.uri ?? currentBook ?? null,
+        sourceBookTitle: sourceBook?.title ?? null,
+        contextSentence: contextSentence || null,
+        isFavorite: false,
+        priority: 'normal',
+        createdAt,
+        updatedAt: createdAt,
+        lastReviewedAt: null,
+        nextReviewAt: null,
+        correctCount: 0,
+        wrongCount: 0,
+        language: sourceBook?.language ?? 'ko',
+        relatedKnownWords,
+    });
+
+    const handleSourceWordAutoSaved = async (word, details = {}) => {
+        const normalizedWord = cleanValue(word);
+        if (!normalizedWord) {
+            return;
         }
+
+        onWordSave?.(normalizedWord, { includeSurface: false });
 
         const {
             data: { user },
@@ -560,19 +587,52 @@ const DictionaryContent = ({
 
         try {
             await upsertUserVocabEntry(user.id, {
-                word,
-                hanja: origin,
-                definition,
-                level: 'unorganized',
+                ...buildCloudVocabPayload({
+                    word: normalizedWord,
+                    hanja: details.hanja ?? null,
+                    definition: details.definition ?? null,
+                }),
+                level: details.level ?? 'unorganized',
+                status: details.level ?? 'unorganized',
             });
         } catch (error) {
-            console.log('[DictionaryContent] cloud save failed:', error.message);
+            console.warn('[DictionaryContent] cloud auto-save failed:', error.message);
         }
     };
 
-    const toggleUnSave = async (word, origin, definition, options = {}) => {
-        onWordUnsave?.(word, options);
-        await removeData(word, origin, definition);
+    const toggleSave = async (word, origin, definition, options = {}) => {
+        onWordSave?.(word, options);
+        const createdAt = new Date().toISOString();
+        const relatedKnownWords = relatedKnownByWord[word] ?? [];
+        const cloudPayload = buildCloudVocabPayload({
+            word,
+            hanja: origin,
+            definition,
+            createdAt,
+            relatedKnownWords,
+        });
+        const alreadySaved = await vocabEntryExists(word, origin, definition, sourceBook?.language ?? 'ko');
+        if (!alreadySaved) {
+            await insertData(word, origin, definition, {
+                level: 'unorganized',
+                sourceBookUri: sourceBook?.uri ?? currentBook ?? null,
+                sourceBookTitle: sourceBook?.title ?? null,
+                contextSentence: contextSentence || null,
+                createdAt,
+                updatedAt: createdAt,
+                language: sourceBook?.language ?? 'ko',
+                relatedKnownWords,
+            });
+        }
+        const recordedContext = await recordVocabContext({
+            word,
+            hanja: origin,
+            definition,
+            sentence: contextSentence,
+            sourceBookUri: sourceBook?.uri ?? currentBook ?? null,
+            sourceBookTitle: sourceBook?.title ?? null,
+            language: sourceBook?.language ?? 'ko',
+        });
 
         const {
             data: { user },
@@ -583,13 +643,41 @@ const DictionaryContent = ({
         }
 
         try {
-            await deleteUserVocabEntry(user.id, {
+            await upsertUserVocabEntry(user.id, cloudPayload);
+            if (recordedContext) {
+                upsertUserVocabContext(user.id, recordedContext).catch((error) => {
+                    console.warn('[DictionaryContent] cloud context save failed:', error.message);
+                });
+            }
+        } catch (error) {
+            console.warn('[DictionaryContent] cloud save failed:', error.message);
+        }
+    };
+
+    const toggleUnSave = async (word, origin, definition, options = {}) => {
+        onWordUnsave?.(word, options);
+        await removeData(word, origin, definition, sourceBook?.language ?? 'ko');
+
+        const {
+            data: { user },
+        } = await supabase.auth.getUser();
+
+        if (!user) {
+            return;
+        }
+
+        try {
+            const cloudEntry = {
                 word,
                 hanja: origin,
                 definition,
-            });
+                language: sourceBook?.language ?? 'ko',
+            };
+            await softDeleteUserVocabEntry(user.id, cloudEntry);
+            await softDeleteUserVocabContextsForWord(user.id, cloudEntry);
+            await softDeleteRelatedKnownWordsForMainWord(user.id, cloudEntry);
         } catch (error) {
-            console.log('[DictionaryContent] cloud remove failed:', error.message);
+            console.warn('[DictionaryContent] cloud remove failed:', error.message);
         }
     };
 
@@ -655,7 +743,7 @@ const DictionaryContent = ({
         );
     };
 
-    const renderHanja = (hanja, variant = 'entry', sourceWord = null) => {
+    const renderHanja = (hanja, variant = 'entry', sourceWord = null, sourceWordDetails = {}) => {
         if (!hasHanja(hanja)) {
             return null;
         }
@@ -688,6 +776,7 @@ const DictionaryContent = ({
                             onPress={() => handleHanjaPress(char, sourceWord, {
                                 characters: hanjaCharacters,
                                 index: selectedHanjaIndex,
+                                sourceWordDetails,
                             })}
                             style={styles.hanjaToken}
                         >
@@ -741,7 +830,8 @@ const DictionaryContent = ({
 
     const renderEntryHeading = ({ word, hanja, definition, pos, romanization }) => {
         const posLabel = formatPos(pos);
-        const hanjaElement = renderHanja(hanja, 'entry', word);
+        const sourceWordDetails = buildSourceWordDetails({ hanja, definition });
+        const hanjaElement = renderHanja(hanja, 'entry', word, sourceWordDetails);
         const romanizationText = cleanValue(romanization);
         const bookmarkButton = renderBookmarkButton(word, hanja, definition);
         const wordNavigator = renderWordNavigator();
@@ -791,6 +881,8 @@ const DictionaryContent = ({
                 onPress={showLess ? onLess : onMore}
                 style={[
                     styles.moreArrowButton,
+                    showMore && styles.moreArrowButtonCollapsed,
+                    showLess && styles.moreArrowButtonExpanded,
                     {
                         backgroundColor: palette.surface,
                     },
@@ -821,6 +913,7 @@ const DictionaryContent = ({
                     const word = cleanValue(entry.word) || highlightedWord;
                     const hanja = getEntryHanja(entry);
                     const definition = getEntryDefinition(entry);
+                    const sourceWordDetails = buildSourceWordDetails({ hanja, definition });
                     const saved = isWordSaved(word);
 
                     return (
@@ -834,7 +927,7 @@ const DictionaryContent = ({
                             <View style={styles.extraDefinitionBody}>
                                 <View style={styles.extraWordLine}>
                                     <Text selectable style={[styles.extraWord, { color: palette.text }]}>{word}</Text>
-                                    {renderHanja(hanja, 'extra', word)}
+                                    {renderHanja(hanja, 'extra', word, sourceWordDetails)}
                                 </View>
                                 <Text selectable style={[styles.extraDefinition, { color: palette.secondaryText }]}>
                                     {definition || 'No English definition available'}
@@ -970,9 +1063,11 @@ const DictionaryContent = ({
                     hanjaCharacters={currentHanja?.characters ?? []}
                     initialHanjaIndex={currentHanja?.activeIndex ?? 0}
                     sourceWord={currentHanja?.sourceWord ?? stem}
+                    sourceWordDetails={currentHanja?.sourceWordDetails ?? {}}
                     handleHanjaPress={handleHanjaPress}
                     onKnownWordMarked={handleRelatedKnownWordMarked}
                     onKnownWordRemoved={handleRelatedKnownWordRemoved}
+                    onSourceWordAutoSaved={handleSourceWordAutoSaved}
                     isDarkMode={isDarkMode}
                 />
             </View>
@@ -1016,9 +1111,11 @@ const DictionaryContent = ({
                 hanjaCharacters={currentHanja?.characters ?? []}
                 initialHanjaIndex={currentHanja?.activeIndex ?? 0}
                 sourceWord={currentHanja?.sourceWord ?? word}
+                sourceWordDetails={currentHanja?.sourceWordDetails ?? {}}
                 handleHanjaPress={handleHanjaPress}
                 onKnownWordMarked={handleRelatedKnownWordMarked}
                 onKnownWordRemoved={handleRelatedKnownWordRemoved}
+                onSourceWordAutoSaved={handleSourceWordAutoSaved}
                 isDarkMode={isDarkMode}
             />
         </View>
@@ -1116,8 +1213,8 @@ const styles = StyleSheet.create({
     },
     definitionText: {
         ...textStyles.sectionTitle,
-        fontSize: 20,
-        lineHeight: 25,
+        fontSize: 18,
+        lineHeight: 23,
         letterSpacing: 0,
     },
     emptyDefinition: {
@@ -1143,6 +1240,14 @@ const styles = StyleSheet.create({
         marginTop: 0,
         marginBottom: 1,
     },
+    moreArrowButtonCollapsed: {
+        marginTop: -3,
+        marginBottom: 5,
+    },
+    moreArrowButtonExpanded: {
+        marginTop: 'auto',
+        marginBottom: 0,
+    },
     extraList: {
         flexGrow: 0,
         maxHeight: 160,
@@ -1150,7 +1255,8 @@ const styles = StyleSheet.create({
         borderTopWidth: StyleSheet.hairlineWidth,
     },
     extraListContent: {
-        paddingVertical: 2,
+        paddingTop: 2,
+        paddingBottom: 0,
     },
     extraDefinitionRow: {
         flexDirection: 'row',
@@ -1182,8 +1288,8 @@ const styles = StyleSheet.create({
     },
     extraDefinition: {
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 12,
-        lineHeight: 17,
+        fontSize: 11,
+        lineHeight: 16,
     },
     extraSaveButton: {
         width: 32,

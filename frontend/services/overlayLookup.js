@@ -5,6 +5,7 @@ import {
     addOverlayLookupRequestedListener,
     addOverlayRelatedKnownToggleRequestedListener,
     addOverlaySaveRequestedListener,
+    addOcrResultListener,
     rejectOverlayLookup,
     rejectOverlaySave,
     rejectOverlayHanja,
@@ -21,9 +22,18 @@ let isInitialized = false;
 
 const HANJA_CHARACTER_PATTERN = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/u;
 const MAX_HANJA_LOOKUP_CACHE_SIZE = 160;
+const MAX_OVERLAY_LOOKUP_CACHE_SIZE = 240;
+const MAX_OCR_PREFETCH_TARGETS = 120;
+const OCR_PREFETCH_CONCURRENCY = 4;
 const hanjaLookupCache = new Map();
+const overlayLookupCache = new Map();
+let activeOcrPrefetchRun = 0;
 
 const cleanValue = (value) => (typeof value === 'string' ? value.trim() : '');
+const lookupCacheKey = ({ selectedText, selectedLineText }) => [
+    cleanValue(selectedText),
+    cleanValue(selectedLineText),
+].join('\n');
 const relatedWordKey = (entry) => `${entry?.korean ?? ''}|${entry?.hanja ?? ''}`;
 const uniqueCleanValues = (values = []) => [...new Set(values.map(cleanValue).filter(Boolean))];
 const extractHanjaCharacters = (value) => uniqueCleanValues(
@@ -144,6 +154,101 @@ const preloadOverlayHanjaForLookupResult = async (result, fallbackSourceWord = '
         .map(settledResult => settledResult.value);
 };
 
+const trimOverlayLookupCache = () => {
+    while (overlayLookupCache.size > MAX_OVERLAY_LOOKUP_CACHE_SIZE) {
+        const oldestKey = overlayLookupCache.keys().next().value;
+        overlayLookupCache.delete(oldestKey);
+    }
+};
+
+const buildOverlayLookupPayload = async ({ selectedText, selectedLineText }) => {
+    const result = await lookupWordForOverlay({
+        surface: selectedText,
+        sourceSentence: selectedLineText,
+    });
+    const hanjaPreloads = await preloadOverlayHanjaForLookupResult(result, selectedText);
+
+    return {
+        ...result,
+        sourceSentence: cleanValue(selectedLineText),
+        hanjaPreloads,
+    };
+};
+
+const getCachedOverlayLookup = ({ selectedText, selectedLineText }) => {
+    const cacheKey = lookupCacheKey({ selectedText, selectedLineText });
+
+    if (!cleanValue(selectedText)) {
+        return Promise.reject(new Error('No text selected.'));
+    }
+
+    const cachedLookup = overlayLookupCache.get(cacheKey);
+    if (cachedLookup) {
+        return cachedLookup;
+    }
+
+    const lookupPromise = buildOverlayLookupPayload({ selectedText, selectedLineText })
+        .catch((error) => {
+            overlayLookupCache.delete(cacheKey);
+            throw error;
+        });
+
+    overlayLookupCache.set(cacheKey, lookupPromise);
+    trimOverlayLookupCache();
+
+    return lookupPromise;
+};
+
+const extractOcrPrefetchTargets = (ocrResult = {}) => {
+    const targets = Array.isArray(ocrResult.targets) ? ocrResult.targets : [];
+    const seen = new Set();
+    const prefetchTargets = [];
+
+    targets
+        .filter(target => cleanValue(target?.kind) === 'word')
+        .forEach((target) => {
+            const selectedText = cleanValue(target?.text);
+            const selectedLineText = cleanValue(target?.lineText) || selectedText;
+            const key = lookupCacheKey({ selectedText, selectedLineText });
+
+            if (!selectedText || seen.has(key)) {
+                return;
+            }
+
+            seen.add(key);
+            prefetchTargets.push({ selectedText, selectedLineText });
+        });
+
+    return prefetchTargets.slice(0, MAX_OCR_PREFETCH_TARGETS);
+};
+
+const prefetchOcrLookups = async (ocrResult = {}) => {
+    const runId = activeOcrPrefetchRun + 1;
+    activeOcrPrefetchRun = runId;
+
+    const targets = extractOcrPrefetchTargets(ocrResult);
+    if (targets.length === 0) {
+        return;
+    }
+
+    let nextIndex = 0;
+    const workerCount = Math.min(OCR_PREFETCH_CONCURRENCY, targets.length);
+    const workers = Array.from({ length: workerCount }, async () => {
+        while (runId === activeOcrPrefetchRun && nextIndex < targets.length) {
+            const target = targets[nextIndex];
+            nextIndex += 1;
+
+            try {
+                await getCachedOverlayLookup(target);
+            } catch (_error) {
+                // Failed entries are removed from the cache and can retry on tap.
+            }
+        }
+    });
+
+    await Promise.allSettled(workers);
+};
+
 const normalizeOverlayHanjaResult = async ({ requestId, character, sourceWord, result }) => {
     const readings = uniqueCleanValues((result?.firstTableData ?? []).map(row => row?.reading));
     const meanings = uniqueCleanValues((result?.firstTableData ?? []).map(row => (
@@ -188,25 +293,29 @@ export const initializeOverlayLookupBridge = () => {
 
     isInitialized = true;
 
+    const ocrResultSubscription = addOcrResultListener((event = {}) => {
+        prefetchOcrLookups(event);
+    });
+
     const lookupSubscription = addOverlayLookupRequestedListener(async (event = {}) => {
         const requestId = cleanValue(event.requestId);
         const selectedText = cleanValue(event.selectedText);
+        const selectedLineText = cleanValue(event.selectedLineText);
 
         if (!requestId) {
             return;
         }
 
         try {
-            const result = await lookupWordForOverlay({
-                surface: selectedText,
-                sourceSentence: cleanValue(event.selectedLineText),
+            const result = await getCachedOverlayLookup({
+                selectedText,
+                selectedLineText,
             });
-            const hanjaPreloads = await preloadOverlayHanjaForLookupResult(result, selectedText);
 
             await resolveOverlayLookup(requestId, {
                 requestId,
                 ...result,
-                hanjaPreloads,
+                sourceSentence: selectedLineText,
             });
         } catch (error) {
             await rejectOverlayLookup(requestId, error?.message || 'Lookup failed.');
@@ -231,6 +340,7 @@ export const initializeOverlayLookupBridge = () => {
                 ? await unsaveOverlayLookupResult(payload)
                 : await saveOverlayLookupResult(payload);
 
+            overlayLookupCache.clear();
             await resolveOverlaySave(requestId, {
                 requestId,
                 ...result,
@@ -283,15 +393,23 @@ export const initializeOverlayLookupBridge = () => {
                 await removeRelatedKnownWord(sourceWord, entry);
             }
         } catch (error) {
-            console.log(`[overlayLookup] related known word toggle failed for "${sourceWord}":`, error?.message);
+            console.warn(`[overlayLookup] related known word toggle failed for "${sourceWord}":`, error?.message);
         }
     });
 
-    subscriptions = [lookupSubscription, saveSubscription, hanjaSubscription, relatedKnownSubscription];
+    subscriptions = [
+        ocrResultSubscription,
+        lookupSubscription,
+        saveSubscription,
+        hanjaSubscription,
+        relatedKnownSubscription,
+    ];
 
     return () => {
         subscriptions.forEach((subscription) => subscription?.remove?.());
         subscriptions = [];
         isInitialized = false;
+        activeOcrPrefetchRun += 1;
+        overlayLookupCache.clear();
     };
 };

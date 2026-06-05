@@ -3,8 +3,6 @@ import hanjaRelated from "../../../services/api/hanjaRelated"
 
 const Hanja = ({ hanja }) => {
     const { firstTableData: title, similarWordsTableData: result } = hanjaRelated({ query: hanja })
-    console.log('called hanja again...');
-    console.log('----');
     return (
         <View style={{ flexDirection: 'column' }}>
             <View style={styles.headerContainer}>

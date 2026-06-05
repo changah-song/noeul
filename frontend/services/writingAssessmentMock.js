@@ -1,156 +1,144 @@
 export const MOCK_WRITING_ENTRY_ID = 'mock-writing-entry-today-concerns';
 
 export const MOCK_WRITING_ENTRY_BODY =
-  '오늘은 좀 많이 힘든 하루였습니다. 많은 고민들 속에 아무렇지도 않은 듯이 계속 살아가고있고 지칠 때도 있습니다. 내가 과연 하고 싶은게 뭔지 어떻게 하면 행복하고 만족한 삶을 이어나갈 수 있을지가 다 고민이 되네요. 현실과 세상은 미쳐가고 정부 리더들은 욕심만 부리고 망해가는 우리 행성과 인류를 그냥 망하게 두는 모습도 보기 힘듭니다. 이게 자본주의에 문제인지 그냥 근본적인 인간에 문젠지는 모르겠지만 아쉽다. 인간들은 좋은 것을 이룰 수 있는 능력과 지능이 있는데 그것 같고 남 도울 생각은 안 하나봐.';
+  '요즘 현대 사회인들은 스트레스를 해소하기 위해서 다양한 취미 활동을 이용하고 있습니다. 하지만 제 생각에는, 진정한 휴식이라는 것은 단순히 시간을 보내는 것이 아니라 자기 내면의 voice를 귀를 기울이는 과정이라고 간주합니다. 저는 지난주부터 명상을 시작했는데, 마음에 가득 찬 걱정들을 버리려고 노력하는 중입니다. 처음에는 잡생각이 자꾸 떠올라서 되게 frustrated했지만, 매일 꾸준히 하니까 정신이 맑아지는 것을 느껴졌습니다. 여러분도 바쁜 일상 속에서 잠시 멈추고 자신을 감싸안는 시간을 가지는 것을 추천을 드립니다.';
 
 export const MOCK_WRITING_ASSESSMENT = {
   annotations: [
     {
       id: '1',
-      type: 'GRAMMAR',
-      original: '살아가고있고',
+      type: 'DICTION',
+      original: '사회인들은',
       explanation:
-        "There should be a space before '있고'. In Korean, the auxiliary verb construction '-고 있다' is written with a space between the main verb ending and '있다'.",
-      suggestions: ['살아가고 있고'],
-      suggestion_notes: ["Standard spacing rule: '-고 있다' always takes a space before '있다'."],
+        "'사회인' technically means 'member of society / working adult' and is understandable, but the intended meaning of 'people in modern society' is more naturally expressed without it.",
+      suggestions: ['현대인들은', '현대 사회의 사람들은'],
+      suggestion_notes: [
+        "'현대인' is the standard compressed term for 'modern-day people / people of the modern age' - dropping '사회' avoids redundancy with '현대'.",
+        "'현대 사회의 사람들' is more explicit and also natural, though slightly longer.",
+      ],
     },
     {
       id: '2',
-      type: 'GRAMMAR',
-      original: '만족한 삶',
+      type: 'DICTION',
+      original: '취미 활동을 이용하고 있습니다',
       explanation:
-        "'만족한' is grammatically formed but '만족스러운' is the correct adjectival form when describing a noun as 'satisfying' or 'fulfilling'. '만족한' more literally means 'satisfied (having been satisfied)', used for people, not abstract nouns like 삶.",
-      suggestions: ['만족스러운 삶', '보람 있는 삶'],
+        "'이용하다' means 'to make use of / utilize' and collocates with services, facilities, or tools - not hobbies. Hobbies are things you 'engage in' or 'enjoy', not 'utilize'.",
+      suggestions: ['취미 활동을 즐기고 있습니다', '취미 활동에 참여하고 있습니다'],
       suggestion_notes: [
-        "'만족스러운' is the natural adjectival form meaning 'fulfilling/satisfying'.",
-        "'보람 있는' means 'rewarding/worthwhile' - a slightly different but very common way to describe a meaningful life.",
+        "'즐기다' is the most natural verb for hobbies - 'to enjoy'.",
+        "'참여하다' means 'to participate in' and is natural for activities, though slightly more formal.",
       ],
     },
     {
       id: '3',
-      type: 'GRAMMAR',
-      original: '이게 자본주의에 문제인지',
+      type: 'NATIVE_INSERT',
+      original: 'voice를',
       explanation:
-        "The particle '에' is incorrect here. When identifying something as the source or possessor of a problem, the possessive particle '의' is used: '자본주의의 문제'. '에' marks location or direction, not possession/attribution.",
-      suggestions: ['이게 자본주의의 문제인지', '이게 자본주의 때문인지'],
+        "The English word 'voice' was inserted, likely because the Korean equivalent wasn't certain. Several natural Korean expressions exist for this concept.",
+      suggestions: ['내면의 목소리를', '내면의 소리를', '자신의 본심에'],
       suggestion_notes: [
-        "'자본주의의 문제' - use '의' to express 'a problem of capitalism'.",
-        "'자본주의 때문인지' - 'because of capitalism', slightly more causal in nuance.",
+        "'내면의 목소리' is the direct and most common Korean equivalent of 'inner voice'.",
+        "'내면의 소리' is slightly more poetic - 'the sound within'.",
+        "'자신의 본심' shifts the nuance slightly to 'one's true feelings/heart', which may better fit the context of genuine rest.",
       ],
     },
     {
       id: '4',
       type: 'GRAMMAR',
-      original: '근본적인 인간에 문젠지는',
+      original: '귀를 기울이는',
       explanation:
-        "Same particle error as above. '인간에 문제' should be '인간의 문제' - '의' marks attribution/possession. Also '문젠지는' is a spoken contraction of '문제인지는'; in written diary entries either form is acceptable, but consistency with the rest of the entry is preferable.",
-      suggestions: ['근본적인 인간의 문제인지는', '근본적인 인간 본성의 문제인지는'],
+        "The verb '귀를 기울이다' (to lend an ear / listen attentively) requires the subject doing the listening. As written, the sentence says 'the process of listening to the inner voice's ears', which is structurally broken. The preceding noun '자기 내면의 목소리' should be the object, marked with '에', and '귀를 기울이는' should describe the act of listening to it.",
+      suggestions: ['자기 내면의 목소리에 귀를 기울이는 과정', '자기 내면의 소리를 듣는 과정'],
       suggestion_notes: [
-        "'인간의 문제' is the grammatically correct form.",
-        "'인간 본성의 문제' adds '본성 (nature)' which more precisely captures the idea of it being an inherent human flaw.",
+        "'~에 귀를 기울이다' is the correct collocation - the particle '에' marks what is being listened to.",
+        "'소리를 듣다' is a simpler, equally natural alternative if the idiom feels complex.",
       ],
     },
     {
       id: '5',
-      type: 'GRAMMAR',
-      original: '그것 같고',
+      type: 'UNNATURAL',
+      original: '간주합니다',
       explanation:
-        "'그것 같고' appears to be a truncated or mistaken form. The intended meaning seems to be '그런 능력을 갖고도' (even having such ability) or '그런 능력이 있으면서도'. As written, '그것 같고' is grammatically incomplete and unclear in meaning.",
-      suggestions: ['그런 능력이 있으면서도', '그런 능력을 갖고도'],
+        "'간주하다' means 'to regard/consider (officially or formally)' and is used in academic, legal, or analytical contexts - e.g. '법적으로 간주됩니다'. Used here to express a personal opinion in a diary, it sounds stiff and overly formal. The sentence also creates a double-expression issue: '제 생각에는 ... 간주합니다' is redundant (both say 'I think/consider').",
+      suggestions: ['제 생각에는, 진정한 휴식이란 ... 과정입니다', '저는 진정한 휴식이란 ... 과정이라고 생각합니다'],
       suggestion_notes: [
-        "'있으면서도' means 'even while having' - emphasizes the contrast with not using it.",
-        "'갖고도' means 'even possessing' - slightly more concise, common in spoken and written Korean.",
+        "Drop '간주합니다' and end with '과정입니다' after '제 생각에는' - the opener already signals it's your view.",
+        "Use '생각합니다' and drop '제 생각에는' at the start - clean and natural for diary writing.",
       ],
     },
     {
       id: '6',
-      type: 'DICTION',
-      original: '미쳐가고',
+      type: 'NATIVE_INSERT',
+      original: 'frustrated했지만',
       explanation:
-        "'미쳐가다' means 'going crazy' and is understandable here, but to describe the world and reality deteriorating or becoming chaotic, more precise alternatives exist.",
-      suggestions: ['무너져가고', '혼란스러워지고', '망가져가고'],
+        "The English adjective 'frustrated' was mixed into a Korean sentence. Several Korean equivalents express this well.",
+      suggestions: ['답답했지만', '짜증이 났지만', '좌절스러웠지만'],
       suggestion_notes: [
-        "'무너져가다' - 'crumbling/collapsing', evokes structural breakdown of society.",
-        "'혼란스러워지다' - 'becoming chaotic/turbulent', more measured and precise.",
-        "'망가져가다' - 'falling apart/breaking down', similar in tone to the original but more commonly used for systems or institutions.",
+        "'답답하다' is the most culturally resonant equivalent - it expresses a stifled, blocked feeling and is the go-to word Koreans use in this exact context (can't clear your mind, feel stuck).",
+        "'짜증이 나다' is slightly stronger - closer to 'annoyed/irritated'.",
+        "'좌절스럽다' is a closer semantic match to 'frustrated' in the sense of feeling thwarted, but is less commonly used in everyday speech.",
       ],
     },
     {
       id: '7',
-      type: 'DICTION',
-      original: '욕심만 부리고',
+      type: 'GRAMMAR',
+      original: '느껴졌습니다',
       explanation:
-        "'욕심을 부리다' is natural and correct. For political leaders specifically, stronger or more precise collocations are also common.",
-      suggestions: ['사리사욕만 채우고', '탐욕만 부리고'],
+        "'느껴지다' is the passive form of '느끼다' - it means 'to be felt (by something)' and implies the sensation comes to you from outside. When you consciously notice or feel something yourself, the active form '느끼다' is correct. '느껴지다' is only natural when something makes itself felt, e.g. '바람이 느껴졌다 (the wind was felt)'.",
+      suggestions: ['느낄 수 있었습니다', '느꼈습니다'],
       suggestion_notes: [
-        "'사리사욕을 채우다' - 'to fill one's own private greed', a set phrase specifically implying self-interest at others' expense; very fitting for political criticism.",
-        "'탐욕을 부리다' - 'to act with greed/avarice', slightly stronger and more literary than '욕심을 부리다'.",
+        "'느낄 수 있었습니다' - 'I was able to feel' - is the most natural way to express consciously noticing an internal change.",
+        "'느꼈습니다' - simply 'I felt' - is also correct and more concise.",
       ],
     },
     {
       id: '8',
-      type: 'UNNATURAL',
-      original: '아쉽다',
+      type: 'GRAMMAR',
+      original: '추천을 드립니다',
       explanation:
-        "The entry is written in formal polite style (-습니다, -네요) throughout, but '아쉽다' is a plain/informal ending. This register inconsistency breaks the flow. Even in a diary, maintaining consistent register throughout a single entry reads more naturally.",
-      suggestions: ['아쉽네요', '아쉽습니다', '참 아쉬운 일이다'],
+        "'추천을 드리다' is a common error caused by over-applying the honorific '드리다'. '추천하다' is a verb and should not be split into noun + '드리다' in this context. The natural humble/polite form is '추천드립니다' (written as one word) or simply '추천합니다'.",
+      suggestions: ['추천드립니다', '권해 드립니다'],
       suggestion_notes: [
-        "'아쉽네요' - matches the softer formal register used elsewhere in the entry.",
-        "'아쉽습니다' - matches the more formal register used in the opening sentences.",
-        "'참 아쉬운 일이다' - if you want to shift to plain style intentionally for the whole entry, this is a natural plain-style expression. But mixing styles mid-entry is what reads unnaturally.",
-      ],
-    },
-    {
-      id: '9',
-      type: 'UNNATURAL',
-      original: '남 도울 생각은 안 하나봐',
-      explanation:
-        "Like '아쉽다', '안 하나봐' is informal/plain style, inconsistent with the rest of the entry. Additionally, '남 도울 생각' is slightly clipped; '남을 도울 생각' with the object particle '을' is more complete in written form.",
-      suggestions: ['남을 도울 생각은 안 하나 봐요', '남을 도우려는 생각은 없나 봅니다'],
-      suggestion_notes: [
-        "'안 하나 봐요' - adds politeness and also note the space before '봐요'; '나 보다' is written as two words.",
-        "'없나 봅니다' - more formal and complete; '~으려는 생각이 없다' is a natural construction for 'has no intention of doing'.",
+        "'추천드립니다' (one word, no '을') is the standard polite form of '추천하다' - very commonly used.",
+        "'권해 드립니다' uses '권하다' (to recommend/suggest) with the humble auxiliary '드리다' - slightly softer and also natural.",
       ],
     },
   ],
   summary: {
     patterns: [
-      "Particle confusion between '에' and '의': '에' is being used in attribution contexts where '의' is required (자본주의에 문제 -> 자본주의의 문제, 인간에 문제 -> 인간의 문제).",
-      'Register inconsistency: The entry mixes formal polite endings (-습니다, -네요, -봐요) with plain/informal endings (-아쉽다, -하나봐), which disrupts the cohesion of the writing.',
-      'Adjectival form errors: Using noun-based or people-oriented adjective forms (만족한) where the proper descriptive adjective form is needed (만족스러운).',
+      "Code-switching into English (voice, frustrated): At an advanced level, reaching for Korean-specific emotional vocabulary like '답답하다' or '내면의 목소리' will make the writing significantly more authentic.",
+      "Active vs. passive verb confusion: '느껴졌습니다' should be '느꼈습니다' - the passive form '~어/아지다' is used when a state changes of its own accord, not when the subject consciously experiences something.",
+      "Verb-noun collocation mismatches: '취미를 이용하다' and '추천을 드리다' reflect a tendency to over-nominalize or use overly formal/utilitarian verbs where simpler, more natural collocations exist.",
     ],
     strengths: [
-      'Complex sentence structures involving indirect questions (-인지, -을지) and conjunctions are used accurately and naturally throughout.',
-      "Vocabulary range is strong for an advanced learner - words like '근본적인', '인류', '자본주의', and '이어나가다' are used appropriately and demonstrate solid command of abstract and formal vocabulary.",
+      'Cohesive use of formal polite register (-습니다/ㅂ니다) throughout the entire entry - this is maintained consistently and appropriately for an essay-style diary.',
+      'Natural use of connective endings (-는데, -지만, -니까) to build multi-clause sentences shows strong grammatical fluency with clause-chaining.',
     ],
     vocab_items: [
       {
-        word: '자괴감 (自愧感)',
-        meaning:
-          'A feeling of self-reproach or existential frustration with oneself or the world; stronger than 고민',
-        example: '세상이 이렇게 돌아가는 걸 보면 자괴감이 든다.',
+        word: '잡념 (雜念)',
+        meaning: 'Distracting or cluttered thoughts; wandering mind',
+        example: '명상 중에 잡념이 사라지는 느낌이 들었다.',
       },
       {
-        word: '무력감 (無力感)',
-        meaning: 'A sense of helplessness or powerlessness',
-        example: '아무것도 바꿀 수 없을 것 같아서 무력감을 느낀다.',
+        word: '답답하다',
+        meaning: "To feel frustrated, stifled, or mentally blocked (the Korean cultural equivalent of 'frustrated')",
+        example: '생각이 정리가 안 되니까 너무 답답했다.',
       },
       {
-        word: '씁쓸하다',
-        meaning:
-          'To feel bitter, dejected, or disheartened (often about the state of the world); more expressive than 아쉽다',
-        example: '현실을 보면 볼수록 씁쓸해진다.',
+        word: '~는 데 도움이 되다',
+        meaning: "Grammar pattern: 'to be helpful in doing ~'",
+        example: '명상은 마음을 정리하는 데 도움이 됩니다.',
       },
       {
-        word: '~(으)면서도',
-        meaning:
-          "Grammar pattern: 'even while / despite having ~'; used to highlight a contrast or irony",
-        example: '능력이 있으면서도 아무것도 하지 않는 사람들이 있다.',
+        word: '마음을 다스리다',
+        meaning: "To manage / calm / master one's mind or emotions",
+        example: '꾸준한 명상이 마음을 다스리는 데 효과적이다.',
       },
       {
-        word: '공동체 의식',
-        meaning: 'A sense of community / collective responsibility',
-        example: '공동체 의식이 있다면 서로 더 잘 도울 수 있을 텐데.',
+        word: '일상에서 벗어나다',
+        meaning: "To break away from / escape one's daily routine",
+        example: '바쁜 일상에서 벗어나 자신을 돌아보는 시간이 필요하다.',
       },
     ],
   },
@@ -170,12 +158,12 @@ export const ANNOTATION_COLORS = ANNOTATION_LEGEND.reduce((acc, item) => {
 
 export const createMockWritingEntry = () => ({
   id: MOCK_WRITING_ENTRY_ID,
-  title: '오늘의 고민',
+  title: '명상과 진정한 휴식',
   body: MOCK_WRITING_ENTRY_BODY,
   prompt: '',
-  date: '2026-06-03T09:00:00.000+09:00',
-  createdAt: '2026-06-03T09:00:00.000+09:00',
-  updatedAt: '2026-06-03T09:00:00.000+09:00',
+  date: '2026-06-04T09:00:00.000+09:00',
+  createdAt: '2026-06-04T09:00:00.000+09:00',
+  updatedAt: '2026-06-04T09:00:00.000+09:00',
   status: 'reviewed',
   assessment: MOCK_WRITING_ASSESSMENT,
 });

@@ -9,20 +9,36 @@ import TopSection from '../components/Read/TopSection/TopSection';
 import TocDrawer from '../components/Read/TocDrawer';
 import NativeEpubReaderView from '../modules/native-epub-reader/src/NativeEpubReaderView';
 import {
+    PREPROCESS_VERSION,
+    getBookPreprocessChapter,
     getSavedWords,
-    isBookPreprocessed,
     insertCacheEntries,
     insertBookIndexEntries,
     lookupBookHighlightSurfaces,
     lookupCacheByStems,
-    logDatabaseSnapshot,
+    markBookPreprocessChapter,
+    markBookPreprocessMeta,
+    recordVocabContextForSurface,
 } from '../services/Database';
-import preprocessBook from '../services/api/preprocessBook';
+import preprocessChapter from '../services/api/preprocessChapter';
+import { updateUserBookProgress } from '../services/bookCloudSync';
 import { addReadingMillis } from '../services/dailyProgress';
 import { readEpubPackageXml } from '../services/epubMetadata';
+import {
+    isPublicDomainBookUri,
+    readPublicDomainTextPackage,
+} from '../services/publicDomainBooks';
+import {
+    fetchUserPreferences,
+    getTimestampMs,
+    updateUserPreferenceFields,
+} from '../services/preferencesCloudSync';
+import { upsertUserVocabContext } from '../services/supabase';
 import { colors, radii, spacing, textStyles } from '../theme';
 
 const LOOKUP_HINT_DISMISSED_KEY = 'lookupHintDismissed';
+const READER_SETTINGS_KEY = 'readerSettings';
+const READER_SETTINGS_UPDATED_AT_KEY = 'readerSettingsUpdatedAt';
 const DEFAULT_READER_SETTINGS = {
     fontSize: 18,
     isDarkMode: false,
@@ -54,6 +70,29 @@ const chapterResourcesForReaderPackage = (readerPackage) => (
     || []
 );
 
+const chapterTextForReaderPackage = (readerPackage) => (
+    chapterBlocksForReaderPackage(readerPackage)
+        .map((block) => (typeof block?.text === 'string' ? block.text : ''))
+        .filter(Boolean)
+        .join('\n')
+);
+
+const buildChapterPreprocessOrder = (centerSpineIndex, totalSpineItems) => {
+    if (!Number.isInteger(centerSpineIndex) || totalSpineItems <= 0) {
+        return [];
+    }
+
+    const order = [centerSpineIndex];
+    for (let spineIndex = centerSpineIndex + 1; spineIndex < totalSpineItems; spineIndex += 1) {
+        order.push(spineIndex);
+    }
+    for (let spineIndex = centerSpineIndex - 1; spineIndex >= 0; spineIndex -= 1) {
+        order.push(spineIndex);
+    }
+
+    return [...new Set(order)];
+};
+
 const chapterWindowEntryForPackage = (readerPackage, role) => {
     const spineIndex = spineIndexForReaderPackage(readerPackage);
     const blocks = chapterBlocksForReaderPackage(readerPackage);
@@ -74,7 +113,7 @@ const chapterWindowEntryForPackage = (readerPackage, role) => {
     };
 };
 
-const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComplete, setIsReaderFocusMode }) => {
+const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderFocusMode, user }) => {
     const [highlightedWord, setHighlightedWord] = useState('');
     const [highlightedWordContext, setHighlightedWordContext] = useState(null);
     const [isNativeSelection, setIsNativeSelection] = useState(false);
@@ -103,17 +142,17 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
     // 'idle'         — no preprocessing requested
     // 'checking'     — querying local DB to see if this book is already cached
     // 'preprocessing'— backend call in progress
-    // 'retrying'     — network error, waiting to retry (banner stays visible)
+    // 'retrying'     — network error, waiting to retry
     // 'done'         — book is fully preprocessed and cached locally
     // 'error'        — failed after all retries (non-fatal, live API still works)
     const [preprocessStatus, setPreprocessStatus] = useState('idle');
-    const [preprocessMessage, setPreprocessMessage] = useState('');
-    const [preprocessDetail, setPreprocessDetail] = useState('');
 
-    // Stores the last extracted text so we can (re-)trigger preprocessing
-    // if the user presses Download while the book is already open
+    // Stores full extracted text for legacy reader paths; chapter preprocessing
+    // uses the current native reader package instead.
     const extractedTextRef = useRef(null);
     const preprocessingInFlightRef = useRef(false);
+    const chapterPreprocessTokenRef = useRef(0);
+    const activeChapterPreprocessRef = useRef({ bookUri: null, centerSpineIndex: null });
     const readingSessionStartedAtRef = useRef(Date.now());
     const chapterLoadTokenRef = useRef(0);
     const nativeReaderPackageRef = useRef(null);
@@ -121,14 +160,20 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
     const parsedChapterCacheRef = useRef(new Map());
     const parsedChapterInflightRef = useRef(new Map());
     const chapterPrefetchTokenRef = useRef(0);
+    const cloudProgressSyncTimeoutRef = useRef(null);
+    const cloudReaderSettingsSyncTimeoutRef = useRef(null);
+    const readerSettingsCloudUserRef = useRef(null);
+    const readerSettingsUpdatedAtRef = useRef(null);
+    const readerSettingsRef = useRef(DEFAULT_READER_SETTINGS);
+    const loadNativeReaderPackageRef = useRef(null);
     const activeBook = books.find(book => book.uri === currentBook) ?? null;
+    const activeBookLanguage = activeBook?.language ?? 'ko';
     const shouldUseHeuristicHighlights = !activeBook?.preprocessed;
 
     // Load saved words for highlighting on mount
     useEffect(() => {
         getSavedWords()
             .then(words => {
-                console.log(`[Read] Loaded ${words.length} saved word(s) for highlighting`);
                 setSavedWords(words);
             })
             .catch(err => {
@@ -163,9 +208,6 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                     ...surfaceRows.map((row) => row.surface).filter(Boolean),
                 ])];
 
-                console.log(
-                    `[Read] Loaded ${mergedTerms.length} highlight term(s) (${surfaceRows.length} book-specific surfaces)`
-                );
                 setHighlightTerms(mergedTerms);
                 setHighlightTermsReady(true);
             } catch (error) {
@@ -192,10 +234,10 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         }
 
         setPreprocessStatus('idle');
-        setPreprocessMessage('');
-        setPreprocessDetail('');
         extractedTextRef.current = null;
         preprocessingInFlightRef.current = false;
+        activeChapterPreprocessRef.current = { bookUri: null, centerSpineIndex: null };
+        chapterPreprocessTokenRef.current += 1;
         readingSessionStartedAtRef.current = Date.now();
         setHighlightedWord('');
         setHighlightedWordContext(null);
@@ -231,23 +273,41 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
             if (elapsed >= 5000) {
                 addReadingMillis(elapsed);
             }
+            if (cloudProgressSyncTimeoutRef.current) {
+                clearTimeout(cloudProgressSyncTimeoutRef.current);
+            }
+            if (cloudReaderSettingsSyncTimeoutRef.current) {
+                clearTimeout(cloudReaderSettingsSyncTimeoutRef.current);
+            }
         };
     }, []);
+
+    const scheduleCloudProgressSync = useCallback((book) => {
+        if (!user?.id || !book?.cloudId) {
+            return;
+        }
+
+        if (cloudProgressSyncTimeoutRef.current) {
+            clearTimeout(cloudProgressSyncTimeoutRef.current);
+        }
+
+        cloudProgressSyncTimeoutRef.current = setTimeout(() => {
+            updateUserBookProgress(user.id, book).catch((error) => {
+                console.warn('[Read] Cloud progress sync failed:', error);
+            });
+        }, 3000);
+    }, [user?.id]);
 
     const handleWordSave = (word, options = {}) => {
         const { includeSurface = true } = options;
         const surface = includeSurface ? highlightedWord?.trim() : '';
         setSavedWords(prev => uniqTerms([...(prev ?? []), word]));
         setOptimisticHighlightTerms((prev) => {
-            const next = uniqTerms([
+            return uniqTerms([
                 ...prev,
                 word,
                 ...(surface ? [surface] : []),
             ]);
-            console.log(
-                `[Read] optimistic save highlight: word="${word}" surface="${surface || ''}" optimisticTerms=${next.length}`
-            );
-            return next;
         });
         setClearSelectionToken((value) => value + 1);
     };
@@ -264,14 +324,31 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         if (!text) {
             return;
         }
+        const sentence = typeof event.sentence === 'string' ? event.sentence.trim() : '';
 
         setIsNativeSelection(false);
         setHighlightedWord(text);
         setHighlightedWordContext({
-            sentence: typeof event.sentence === 'string' ? event.sentence.trim() : '',
+            sentence,
         });
         setLookupPlacement(event.placement === 'top' ? 'top' : 'bottom');
-    }, []);
+
+        recordVocabContextForSurface({
+            surface: text,
+            sentence,
+            sourceBookUri: currentBook,
+            sourceBookTitle: activeBook?.title ?? null,
+            language: activeBookLanguage,
+        }).then((context) => {
+            if (user?.id && context) {
+                upsertUserVocabContext(user.id, context).catch((error) => {
+                    console.warn('[Read] Failed to sync vocab context:', error?.message ?? error);
+                });
+            }
+        }).catch((error) => {
+            console.warn('[Read] Failed to record vocab context:', error?.message ?? error);
+        });
+    }, [activeBook?.title, activeBookLanguage, currentBook, user?.id]);
 
     const handleNativeSelectionCleared = useCallback(() => {
         setHighlightedWord('');
@@ -291,155 +368,16 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         setLookupPlacement(event.placement === 'top' ? 'top' : 'bottom');
     }, []);
 
-    // ── Core preprocessing pipeline ──────────────────────────────────────────
-    // Separated from the text-extraction callback so it can be triggered both
-    // when text first arrives AND when the user presses Download on an already-open book.
-    const runPreprocessing = useCallback(async (text) => {
-        if (!currentBook || !text) return;
-        if (preprocessingInFlightRef.current) {
-            console.log('[Read] Preprocessing already in progress — ignoring duplicate trigger');
-            return;
-        }
-
-        preprocessingInFlightRef.current = true;
-        setBooks((prevBooks) => prevBooks.map((book) => (
-            book.uri === currentBook ? { ...book, preprocessing: true } : book
-        )));
-
-        console.log(`[Read] Starting preprocessing (${text.length.toLocaleString()} chars)...`);
-        setPreprocessStatus('checking');
-        setPreprocessMessage('Checking local cache...');
-        setPreprocessDetail('');
-
-        try {
-            const alreadyDone = await isBookPreprocessed(currentBook);
-            if (alreadyDone) {
-                console.log('[Read] Book already preprocessed — skipping backend call');
-                setBooks((prevBooks) => prevBooks.map((book) => (
-                    book.uri === currentBook ? { ...book, preprocessed: true, preprocessing: false } : book
-                )));
-                setPreprocessStatus('done');
-                setPreprocessMessage('Vocabulary already cached');
-                setPreprocessDetail('');
-                logDatabaseSnapshot(currentBook);
-                onPreprocessComplete?.(currentBook);
-                return;
-            }
-
-            setPreprocessStatus('preprocessing');
-            setPreprocessMessage('Starting preprocessing job...');
-            setPreprocessDetail('');
-            const { results, stats, surface_index = [], networkError, errorMessage } = await preprocessBook({
-                text,
-                onStatus: (job) => {
-                    if (job.status === 'queued') {
-                        setPreprocessStatus('queued');
-                        setPreprocessMessage(job.message || 'Job queued');
-                        setPreprocessDetail('');
-                        return;
-                    }
-
-                    if (job.status === 'running') {
-                        setPreprocessStatus('preprocessing');
-                        setPreprocessMessage(job.message || 'Preprocessing book...');
-
-                        if (job.stage === 'fetching_krdict' && job.stats?.missing_stems) {
-                            setPreprocessDetail(
-                                `${job.stats.fetched_stems ?? 0}/${job.stats.missing_stems} dictionary entries fetched`
-                            );
-                        } else if (job.stats?.total_stems) {
-                            setPreprocessDetail(`${job.stats.total_stems} stems discovered`);
-                        } else {
-                            setPreprocessDetail('');
-                        }
-                    }
-                },
-            });
-
-            if (networkError) {
-                // preprocessBook retried internally — all attempts exhausted
-                console.warn('[Read] Preprocessing failed after retries — network unreachable');
-                setPreprocessStatus('error');
-                setPreprocessMessage('Preprocessing lost connection');
-                setPreprocessDetail(errorMessage ?? 'Try again when the network is stable.');
-                setBooks((prevBooks) => prevBooks.map((book) => (
-                    book.uri === currentBook ? { ...book, preprocessing: false } : book
-                )));
-                logDatabaseSnapshot(currentBook);
-                return;
-            }
-
-            if (!results || results.length === 0) {
-                console.warn('[Read] Preprocessing returned no results — backend error');
-                setPreprocessStatus('error');
-                setPreprocessMessage('Preprocessing failed');
-                setPreprocessDetail(errorMessage ?? 'The backend did not return results.');
-                setBooks((prevBooks) => prevBooks.map((book) => (
-                    book.uri === currentBook ? { ...book, preprocessing: false } : book
-                )));
-                logDatabaseSnapshot(currentBook);
-                return;
-            }
-
-            console.log(`[Read] Preprocessing complete: ${results.length} stems | stats:`, stats);
-
-            await insertCacheEntries(results);
-
-            const stems = results.map(r => r.stem);
-            const cachedRows = await lookupCacheByStems(stems);
-            const stemToId = {};
-            cachedRows.forEach(row => { stemToId[row.stem] = row.id; });
-
-            const bookIndexEntries = surface_index
-                .filter(entry => stemToId[entry.stem] != null)
-                .map(entry => ({ surface: entry.surface, stem_id: stemToId[entry.stem] }));
-
-            await insertBookIndexEntries(currentBook, bookIndexEntries);
-            console.log(`[Read] Book index saved: ${bookIndexEntries.length} entries`);
-
-            setPreprocessStatus('done');
-            setPreprocessMessage('Vocabulary cached');
-            setPreprocessDetail(`${bookIndexEntries.length} book index entries ready`);
-            setBooks((prevBooks) => prevBooks.map((book) => (
-                book.uri === currentBook ? { ...book, preprocessed: true, preprocessing: false } : book
-            )));
-            logDatabaseSnapshot(currentBook);
-            onPreprocessComplete?.(currentBook);
-
-        } catch (err) {
-            console.error('[Read] Preprocessing pipeline failed:', err);
-            setPreprocessStatus('error');
-            setPreprocessMessage('Preprocessing failed');
-            setPreprocessDetail(err.message ?? 'Unknown error');
-            setBooks((prevBooks) => prevBooks.map((book) => (
-                book.uri === currentBook ? { ...book, preprocessing: false } : book
-            )));
-        } finally {
-            preprocessingInFlightRef.current = false;
-        }
-    }, [currentBook, onPreprocessComplete, setBooks]);
-
     // ── Book text extraction callback ────────────────────────────────────────
-    // Always stores the text so it's available if the user requests preprocessing later.
-    // Only runs the pipeline immediately if the user already pressed Download.
+    // Always stores the text so it's available for older reader paths. The
+    // native reader chapter queue drives preprocessing for the current flow.
     const handleBookTextExtracted = useCallback((text) => {
         if (!text) {
             console.warn('[Read] Received empty book text — extraction may have failed');
             return;
         }
-        console.log(`[Read] Book text received (${text.length.toLocaleString()} chars)`);
         extractedTextRef.current = text;
-        if (preprocessOnOpen || (currentBook && !activeBook?.preprocessed && !activeBook?.preprocessing)) {
-            runPreprocessing(text);
-        }
-    }, [activeBook?.preprocessed, activeBook?.preprocessing, currentBook, preprocessOnOpen, runPreprocessing]);
-
-    // ── Trigger preprocessing if Download was pressed while book was already open ─
-    useEffect(() => {
-        if (preprocessOnOpen && extractedTextRef.current) {
-            runPreprocessing(extractedTextRef.current);
-        }
-    }, [preprocessOnOpen, runPreprocessing]);
+    }, []);
 
     useEffect(() => {
         if (preprocessStatus !== 'done') {
@@ -448,8 +386,6 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
 
         const timeout = setTimeout(() => {
             setPreprocessStatus('idle');
-            setPreprocessMessage('');
-            setPreprocessDetail('');
         }, 4000);
 
         return () => clearTimeout(timeout);
@@ -457,11 +393,16 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
 
     // ── Settings ─────────────────────────────────────────────────────────────
     const [settings, setSettings] = useState(DEFAULT_READER_SETTINGS);
+    const [readerSettingsLoaded, setReaderSettingsLoaded] = useState(false);
     const insets = useSafeAreaInsets();
 
     useEffect(() => {
         loadSettings();
     }, []);
+
+    useEffect(() => {
+        readerSettingsRef.current = settings;
+    }, [settings]);
 
     useEffect(() => {
         const loadLookupHintDismissed = async () => {
@@ -476,25 +417,133 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         loadLookupHintDismissed();
     }, []);
 
+    const scheduleCloudReaderSettingsSync = useCallback((nextSettings, updatedAt = new Date().toISOString()) => {
+        if (!user?.id) {
+            return;
+        }
+
+        if (cloudReaderSettingsSyncTimeoutRef.current) {
+            clearTimeout(cloudReaderSettingsSyncTimeoutRef.current);
+        }
+
+        cloudReaderSettingsSyncTimeoutRef.current = setTimeout(() => {
+            updateUserPreferenceFields(user.id, {
+                reader_settings: {
+                    ...nextSettings,
+                    updatedAt,
+                },
+                updated_at: updatedAt,
+            }).catch((error) => {
+                console.warn('[Read] Failed to sync reader settings:', error?.message ?? error);
+            });
+        }, 2500);
+    }, [user?.id]);
+
     const loadSettings = async () => {
         try {
-            const savedSettings = await AsyncStorage.getItem('readerSettings');
+            const [savedSettings, savedUpdatedAt] = await Promise.all([
+                AsyncStorage.getItem(READER_SETTINGS_KEY),
+                AsyncStorage.getItem(READER_SETTINGS_UPDATED_AT_KEY),
+            ]);
             if (savedSettings) {
-                setSettings({ ...DEFAULT_READER_SETTINGS, ...JSON.parse(savedSettings) });
-                console.log('[Read] Settings loaded from AsyncStorage');
+                const nextSettings = { ...DEFAULT_READER_SETTINGS, ...JSON.parse(savedSettings) };
+                readerSettingsRef.current = nextSettings;
+                setSettings(nextSettings);
             }
+            readerSettingsUpdatedAtRef.current = savedUpdatedAt ?? null;
         } catch (error) {
             console.error('[Read] Error loading settings:', error);
+        } finally {
+            setReaderSettingsLoaded(true);
         }
     };
 
-    const saveSettings = async (newSettings) => {
+    const saveSettings = async (newSettings, updatedAt = new Date().toISOString(), options = {}) => {
+        const { syncCloud = true } = options;
         try {
-            await AsyncStorage.setItem('readerSettings', JSON.stringify(newSettings));
+            readerSettingsUpdatedAtRef.current = updatedAt;
+            await Promise.all([
+                AsyncStorage.setItem(READER_SETTINGS_KEY, JSON.stringify(newSettings)),
+                AsyncStorage.setItem(READER_SETTINGS_UPDATED_AT_KEY, updatedAt),
+            ]);
+            if (syncCloud) {
+                scheduleCloudReaderSettingsSync(newSettings, updatedAt);
+            }
         } catch (error) {
             console.error('[Read] Error saving settings:', error);
         }
     };
+
+    useEffect(() => {
+        if (!readerSettingsLoaded) {
+            return;
+        }
+
+        if (!user?.id) {
+            readerSettingsCloudUserRef.current = null;
+            return;
+        }
+
+        if (readerSettingsCloudUserRef.current === user.id) {
+            return;
+        }
+
+        let isMounted = true;
+        readerSettingsCloudUserRef.current = user.id;
+
+        const mergeCloudReaderSettings = async () => {
+            try {
+                const cloudPreferences = await fetchUserPreferences(user.id);
+                const cloudReaderSettings = cloudPreferences?.reader_settings;
+                const hasCloudSettings = cloudReaderSettings
+                    && typeof cloudReaderSettings === 'object'
+                    && !Array.isArray(cloudReaderSettings)
+                    && Object.keys(cloudReaderSettings).length > 0;
+
+                const cloudUpdatedAt = cloudReaderSettings?.updatedAt
+                    ?? cloudReaderSettings?.updated_at
+                    ?? cloudPreferences?.updated_at
+                    ?? null;
+                const localUpdatedAt = readerSettingsUpdatedAtRef.current;
+
+                if (hasCloudSettings && getTimestampMs(cloudUpdatedAt) > getTimestampMs(localUpdatedAt)) {
+                    const nextSettings = {
+                        ...DEFAULT_READER_SETTINGS,
+                        ...cloudReaderSettings,
+                    };
+                    delete nextSettings.updatedAt;
+                    delete nextSettings.updated_at;
+
+                    if (!isMounted) {
+                        return;
+                    }
+
+                    readerSettingsRef.current = nextSettings;
+                    setSettings(nextSettings);
+                    await saveSettings(nextSettings, cloudUpdatedAt, { syncCloud: false });
+                    return;
+                }
+
+                const updatedAt = localUpdatedAt ?? new Date().toISOString();
+                await updateUserPreferenceFields(user.id, {
+                    reader_settings: {
+                        ...readerSettingsRef.current,
+                        updatedAt,
+                    },
+                    updated_at: updatedAt,
+                });
+            } catch (error) {
+                readerSettingsCloudUserRef.current = null;
+                console.warn('[Read] Failed to merge cloud reader settings:', error?.message ?? error);
+            }
+        };
+
+        mergeCloudReaderSettings();
+
+        return () => {
+            isMounted = false;
+        };
+    }, [readerSettingsLoaded, saveSettings, user?.id]);
 
     const handleSettingChange = (key, value) => {
         const newSettings = { ...settings, [key]: value };
@@ -503,6 +552,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         setIsNativeSelection(false);
         setClearSelectionToken((current) => current + 1);
         setSettings(newSettings);
+        readerSettingsRef.current = newSettings;
         saveSettings(newSettings);
     };
 
@@ -529,12 +579,6 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
     const nativeChapterBlocks = chapterBlocksForReaderPackage(nativeReaderPackage);
     const nativeChapterResources = chapterResourcesForReaderPackage(nativeReaderPackage);
     const nativeChapterTotal = nativeReaderPackage?.spine?.length ?? 0;
-    useEffect(() => {
-        console.log(
-            `[Read] reader highlight terms: total=${readerHighlightTerms.length} optimistic=${optimisticHighlightTerms.length}`
-        );
-    }, [optimisticHighlightTerms.length, readerHighlightTerms.length]);
-
     const progressLabel = (() => {
         if (readerLocationInfo?.pageInChapter && readerLocationInfo?.pagesInChapter) {
             const chapterLabel = readerLocationInfo?.page && readerLocationInfo?.total
@@ -556,16 +600,6 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
             setIsReaderFocusMode?.(false);
         };
     }, [isFullscreen, setIsReaderFocusMode]);
-
-    useEffect(() => {
-        if (!currentBook || !activeBook || activeBook.preprocessed || activeBook.preprocessing) {
-            return;
-        }
-
-        if (extractedTextRef.current) {
-            runPreprocessing(extractedTextRef.current);
-        }
-    }, [activeBook, currentBook, runPreprocessing]);
 
     const handleBookLoadError = useCallback((reason) => {
         const lowerReason = String(reason || '').toLowerCase();
@@ -651,10 +685,6 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
             .filter(Boolean);
 
         setNativeChapterWindow(entries);
-        console.log(
-            `[Read] Native chapter window updated: center=${centerSpineIndex} ` +
-            `chapters=${entries.map((entry) => `${entry.role}:${entry.spineIndex}`).join(',') || 'none'}`
-        );
 
         return entries;
     }, [cacheParsedChapterPackage, pruneParsedChapterCache]);
@@ -666,28 +696,26 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
 
         const cacheKey = Number.isInteger(requestedSpineIndex) ? requestedSpineIndex : 'auto';
         if (Number.isInteger(requestedSpineIndex) && parsedChapterCacheRef.current.has(requestedSpineIndex)) {
-            console.log(`[Read] JS chapter load cache hit: reason=${reason} spine=${requestedSpineIndex}`);
             return parsedChapterCacheRef.current.get(requestedSpineIndex);
         }
 
         if (parsedChapterInflightRef.current.has(cacheKey)) {
-            console.log(`[Read] JS chapter load join: reason=${reason} spine=${cacheKey}`);
             return parsedChapterInflightRef.current.get(cacheKey);
         }
 
-        const startedAt = Date.now();
-        console.log(`[Read] JS chapter load start: reason=${reason} spine=${cacheKey}`);
-
-        const loadPromise = readEpubPackageXml(
-            currentBook,
-            activeBook?.title || currentBook.split('/').pop() || 'Untitled',
-            Number.isInteger(requestedSpineIndex) ? { spineIndex: requestedSpineIndex } : {}
-        ).then((parsedPackage) => {
-            const loadedSpineIndex = cacheParsedChapterPackage(parsedPackage);
-            console.log(
-                `[Read] JS chapter load end: reason=${reason} requested=${cacheKey} ` +
-                `loaded=${loadedSpineIndex ?? 'unknown'} elapsedMs=${Date.now() - startedAt}`
+        const loadOptions = Number.isInteger(requestedSpineIndex)
+            ? { spineIndex: requestedSpineIndex }
+            : {};
+        const packageLoader = isPublicDomainBookUri(currentBook)
+            ? readPublicDomainTextPackage(currentBook, loadOptions)
+            : readEpubPackageXml(
+                currentBook,
+                activeBook?.title || currentBook.split('/').pop() || 'Untitled',
+                loadOptions
             );
+
+        const loadPromise = packageLoader.then((parsedPackage) => {
+            cacheParsedChapterPackage(parsedPackage);
             return parsedPackage;
         }).finally(() => {
             parsedChapterInflightRef.current.delete(cacheKey);
@@ -731,6 +759,257 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                     });
             });
     }, [currentBook, loadParsedChapterPackage, updateNativeChapterWindowForSpine]);
+
+    const persistChapterPreprocessResults = useCallback(async ({
+        bookUri,
+        results = [],
+        surfaceIndex = [],
+    }) => {
+        const cacheEntries = (results || []).filter((entry) => entry?.stem);
+        await insertCacheEntries(cacheEntries);
+
+        const stems = [...new Set(cacheEntries.map((entry) => entry.stem).filter(Boolean))];
+        if (stems.length === 0) {
+            return 0;
+        }
+
+        const cachedRows = await lookupCacheByStems(stems);
+        const stemToId = {};
+        cachedRows.forEach(row => { stemToId[row.stem] = row.id; });
+
+        const seenSurfaceStem = new Set();
+        const bookIndexEntries = (surfaceIndex || [])
+            .filter((entry) => entry?.surface && stemToId[entry.stem] != null)
+            .map((entry) => ({
+                surface: entry.surface,
+                stem_id: stemToId[entry.stem],
+            }))
+            .filter((entry) => {
+                const key = `${entry.surface}|${entry.stem_id}`;
+                if (seenSurfaceStem.has(key)) {
+                    return false;
+                }
+                seenSurfaceStem.add(key);
+                return true;
+            });
+
+        await insertBookIndexEntries(bookUri, bookIndexEntries);
+        return bookIndexEntries.length;
+    }, []);
+
+    const startChapterPreprocessing = useCallback(async (
+        centerSpineIndex,
+        totalSpineItems,
+        currentPackage = null
+    ) => {
+        if (!currentBook || !Number.isInteger(centerSpineIndex) || totalSpineItems <= 0) {
+            return;
+        }
+
+        const queue = buildChapterPreprocessOrder(centerSpineIndex, totalSpineItems);
+        if (queue.length === 0) {
+            return;
+        }
+
+        const activePreprocess = activeChapterPreprocessRef.current;
+        if (
+            preprocessingInFlightRef.current
+            && activePreprocess.bookUri === currentBook
+            && activePreprocess.centerSpineIndex === centerSpineIndex
+        ) {
+            return;
+        }
+
+        const preprocessToken = chapterPreprocessTokenRef.current + 1;
+        chapterPreprocessTokenRef.current = preprocessToken;
+        preprocessingInFlightRef.current = true;
+        activeChapterPreprocessRef.current = { bookUri: currentBook, centerSpineIndex };
+
+        setBooks((prevBooks) => prevBooks.map((book) => (
+            book.uri === currentBook ? { ...book, preprocessed: false, preprocessing: true } : book
+        )));
+        setPreprocessStatus('preprocessing');
+
+        let completedChapters = 0;
+        let failedChapters = 0;
+        let totalSurfaceCount = 0;
+
+        try {
+            await markBookPreprocessMeta({
+                bookUri: currentBook,
+                status: 'partial',
+                surfaceCount: 0,
+                preprocessVersion: PREPROCESS_VERSION,
+            });
+
+            for (const spineIndex of queue) {
+                if (chapterPreprocessTokenRef.current !== preprocessToken) {
+                    return;
+                }
+
+                const isCurrentChapter = spineIndex === centerSpineIndex;
+                const existingChapter = await getBookPreprocessChapter(
+                    currentBook,
+                    spineIndex,
+                    PREPROCESS_VERSION
+                );
+                if (chapterPreprocessTokenRef.current !== preprocessToken) {
+                    return;
+                }
+
+                if (existingChapter?.status === 'complete') {
+                    completedChapters += 1;
+                    totalSurfaceCount += Number(existingChapter.surface_count) || 0;
+                    if (isCurrentChapter) {
+                        setPreprocessStatus('done');
+                    }
+                    continue;
+                }
+
+                await markBookPreprocessChapter({
+                    bookUri: currentBook,
+                    spineIndex,
+                    status: 'processing',
+                    surfaceCount: 0,
+                    preprocessVersion: PREPROCESS_VERSION,
+                });
+                if (chapterPreprocessTokenRef.current !== preprocessToken) {
+                    return;
+                }
+
+                setPreprocessStatus('preprocessing');
+
+                try {
+                    const chapterPackage = (
+                        isCurrentChapter
+                        && currentPackage
+                        && spineIndexForReaderPackage(currentPackage) === spineIndex
+                    )
+                        ? currentPackage
+                        : await loadParsedChapterPackage(spineIndex, `preprocess:${spineIndex}`);
+
+                    if (chapterPreprocessTokenRef.current !== preprocessToken) {
+                        return;
+                    }
+
+                    const chapterText = chapterTextForReaderPackage(chapterPackage);
+                    const {
+                        results = [],
+                        surface_index: surfaceIndex = [],
+                    } = await preprocessChapter({
+                        bookUri: currentBook,
+                        spineIndex,
+                        text: chapterText,
+                    });
+
+                    if (chapterPreprocessTokenRef.current !== preprocessToken) {
+                        return;
+                    }
+
+                    const surfaceCount = await persistChapterPreprocessResults({
+                        bookUri: currentBook,
+                        results,
+                        surfaceIndex,
+                    });
+
+                    await markBookPreprocessChapter({
+                        bookUri: currentBook,
+                        spineIndex,
+                        status: 'complete',
+                        surfaceCount,
+                        preprocessVersion: PREPROCESS_VERSION,
+                        completedAt: new Date().toISOString(),
+                    });
+
+                    if (chapterPreprocessTokenRef.current !== preprocessToken) {
+                        return;
+                    }
+
+                    completedChapters += 1;
+                    totalSurfaceCount += surfaceCount;
+                    await markBookPreprocessMeta({
+                        bookUri: currentBook,
+                        status: 'partial',
+                        surfaceCount: totalSurfaceCount,
+                        preprocessVersion: PREPROCESS_VERSION,
+                    });
+                    if (chapterPreprocessTokenRef.current !== preprocessToken) {
+                        return;
+                    }
+
+                    if (isCurrentChapter) {
+                        setPreprocessStatus('done');
+                    }
+
+                    const visibleSpineIndex = currentSpineIndexRef.current;
+                    if (
+                        Number.isInteger(visibleSpineIndex)
+                        && Math.abs(spineIndex - visibleSpineIndex) > 1
+                    ) {
+                        parsedChapterCacheRef.current.delete(spineIndex);
+                    }
+                } catch (error) {
+                    failedChapters += 1;
+                    console.warn(`[Read] Chapter preprocess failed for spine ${spineIndex}:`, error);
+                    await markBookPreprocessChapter({
+                        bookUri: currentBook,
+                        spineIndex,
+                        status: 'failed',
+                        surfaceCount: 0,
+                        preprocessVersion: PREPROCESS_VERSION,
+                        completedAt: new Date().toISOString(),
+                    });
+
+                    if (chapterPreprocessTokenRef.current !== preprocessToken) {
+                        return;
+                    }
+
+                    if (isCurrentChapter) {
+                        setPreprocessStatus('error');
+                    }
+                }
+            }
+
+            if (chapterPreprocessTokenRef.current !== preprocessToken) {
+                return;
+            }
+
+            const finalStatus = failedChapters === 0
+                ? 'complete'
+                : (completedChapters > 0 ? 'partial' : 'failed');
+            await markBookPreprocessMeta({
+                bookUri: currentBook,
+                status: finalStatus,
+                surfaceCount: totalSurfaceCount,
+                preprocessVersion: PREPROCESS_VERSION,
+                completedAt: finalStatus === 'complete' ? new Date().toISOString() : null,
+            });
+
+            setBooks((prevBooks) => prevBooks.map((book) => (
+                book.uri === currentBook
+                    ? { ...book, preprocessed: finalStatus === 'complete', preprocessing: false }
+                    : book
+            )));
+
+            if (finalStatus === 'complete') {
+                setPreprocessStatus('done');
+                onPreprocessComplete?.(currentBook);
+            } else {
+                setPreprocessStatus('error');
+            }
+        } finally {
+            if (chapterPreprocessTokenRef.current === preprocessToken) {
+                preprocessingInFlightRef.current = false;
+                activeChapterPreprocessRef.current = { bookUri: null, centerSpineIndex: null };
+            }
+        }
+    }, [
+        currentBook,
+        loadParsedChapterPackage,
+        onPreprocessComplete,
+        persistChapterPreprocessResults,
+        setBooks,
+    ]);
 
     const loadNativeReaderPackage = useCallback(async (
         requestedSpineIndex = null,
@@ -835,6 +1114,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                 pageInChapter: null,
                 pagesInChapter: null,
             });
+            startChapterPreprocessing(loadedSpineIndex, totalSpineItems, parsedPackage);
             setBookLoadState('ready');
             setBookLoadError('');
         } catch (error) {
@@ -858,24 +1138,31 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         currentBook,
         loadParsedChapterPackage,
         prefetchAdjacentChapters,
+        startChapterPreprocessing,
         updateNativeChapterWindowForSpine,
     ]);
 
+    loadNativeReaderPackageRef.current = loadNativeReaderPackage;
+
+    // Keep this tied to the actual book identity. The loader callback is
+    // recreated when Read updates parent book state, and depending on it here
+    // reloads the same spine repeatedly.
     useEffect(() => {
         const savedNativePosition = activeBook?.nativePosition || null;
         const savedSpineIndex = Number.isInteger(savedNativePosition?.spineIndex)
             ? savedNativePosition.spineIndex
             : null;
 
-        loadNativeReaderPackage(savedSpineIndex, { restorePosition: savedNativePosition });
+        loadNativeReaderPackageRef.current?.(savedSpineIndex, { restorePosition: savedNativePosition });
 
         return () => {
             chapterLoadTokenRef.current += 1;
             chapterPrefetchTokenRef.current += 1;
+            chapterPreprocessTokenRef.current += 1;
         };
-    }, [loadNativeReaderPackage, readerRetryKey]);
+    }, [activeBook?.uri, currentBook, readerRetryKey]);
 
-    const handleNativePageChange = useCallback(({ page, total, spineIndex, href, firstBlockId } = {}) => {
+    const handleNativePageChange = useCallback(({ page, total, spineIndex, href, firstBlockId, savedHighlights } = {}) => {
         const pageIndex = Number.isInteger(page) ? page : null;
         const eventSpineIndex = Number.isInteger(spineIndex) ? spineIndex : null;
         const currentLoadedSpineIndex = currentSpineIndexRef.current;
@@ -906,6 +1193,26 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
             return;
         }
 
+        if (Array.isArray(savedHighlights) && savedHighlights.length > 0) {
+            savedHighlights.forEach((highlight) => {
+                recordVocabContextForSurface({
+                    surface: typeof highlight?.text === 'string' ? highlight.text : '',
+                    sentence: typeof highlight?.sentence === 'string' ? highlight.sentence : '',
+                    sourceBookUri: currentBook,
+                    sourceBookTitle: activeBook?.title ?? null,
+                    language: activeBookLanguage,
+                }).then((context) => {
+                    if (user?.id && context) {
+                        upsertUserVocabContext(user.id, context).catch((error) => {
+                            console.warn('[Read] Failed to sync visible vocab context:', error?.message ?? error);
+                        });
+                    }
+                }).catch((error) => {
+                    console.warn('[Read] Failed to record visible vocab context:', error?.message ?? error);
+                });
+            });
+        }
+
         const loadedSpineItem = nativeReaderPackageRef.current?.spine
             ?.find((item) => item?.index === resolvedSpineIndex)
             || nativeReaderPackageRef.current?.loadedSpineItem;
@@ -924,6 +1231,26 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                     : null
             ),
         };
+        const chapterPageProgress = (
+            Number.isInteger(pageIndex) && Number.isInteger(total) && total > 0
+                ? pageIndex / total
+                : 0
+        );
+        const nextProgress = totalSpineItems > 0
+            ? Math.min(Math.max((resolvedSpineIndex + chapterPageProgress) / totalSpineItems, 0), 1)
+            : (activeBook?.progress ?? 0);
+        const nextBookPatch = {
+            nativePosition: nextPosition,
+            location: nextPosition.href || null,
+            progress: nextProgress,
+        };
+
+        if (activeBook?.cloudId) {
+            scheduleCloudProgressSync({
+                ...activeBook,
+                ...nextBookPatch,
+            });
+        }
 
         setNativeRestorePosition(nextPosition);
         setBooks((prevBooks) => prevBooks.map((book) => {
@@ -942,9 +1269,17 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
 
             return isUnchanged
                 ? book
-                : { ...book, nativePosition: nextPosition };
+                : { ...book, ...nextBookPatch };
         }));
-    }, [currentBook, nativeChapterTotal, setBooks]);
+    }, [
+        activeBook,
+        activeBookLanguage,
+        currentBook,
+        nativeChapterTotal,
+        scheduleCloudProgressSync,
+        setBooks,
+        user?.id,
+    ]);
 
     const handleNativeChapterCommit = useCallback(({
         spineIndex,
@@ -953,7 +1288,6 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         pageIndex,
         pagesInChapter,
         firstBlockId,
-        direction,
     } = {}) => {
         const committedSpineIndex = Number.isInteger(spineIndex) ? spineIndex : null;
         if (!Number.isInteger(committedSpineIndex)) {
@@ -966,10 +1300,6 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         setClearSelectionToken((value) => value + 1);
 
         const committedPackage = parsedChapterCacheRef.current.get(committedSpineIndex);
-        console.log(
-            `[Read] Native chapter commit: direction=${direction || 'none'} ` +
-            `spine=${committedSpineIndex} cached=${!!committedPackage}`
-        );
 
         if (!committedPackage) {
             loadNativeReaderPackage(committedSpineIndex, {
@@ -992,6 +1322,19 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
             href: path || href || committedPackage.loadedSpineItem?.path || committedPackage.loadedSpineItem?.href || '',
             firstBlockId: firstBlockId || null,
         };
+        const committedPageIndex = Number.isInteger(pageIndex) ? pageIndex : 0;
+        const committedPageCount = Number.isInteger(pagesInChapter) ? pagesInChapter : null;
+        const chapterPageProgress = committedPageCount && committedPageCount > 0
+            ? committedPageIndex / committedPageCount
+            : 0;
+        const nextProgress = totalSpineItems > 0
+            ? Math.min(Math.max((committedSpineIndex + chapterPageProgress) / totalSpineItems, 0), 1)
+            : (activeBook?.progress ?? 0);
+        const nextBookPatch = {
+            nativePosition: nextPosition,
+            location: nextPosition.href || null,
+            progress: nextProgress,
+        };
 
         chapterLoadTokenRef.current += 1;
         setCurrentSpineIndex(committedSpineIndex);
@@ -1002,9 +1345,15 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         if (currentBook) {
             setBooks((prevBooks) => prevBooks.map((book) => (
                 book.uri === currentBook
-                    ? { ...book, nativePosition: nextPosition }
+                    ? { ...book, ...nextBookPatch }
                     : book
             )));
+        }
+        if (activeBook?.cloudId) {
+            scheduleCloudProgressSync({
+                ...activeBook,
+                ...nextBookPatch,
+            });
         }
         setToc(Array.isArray(committedPackage.toc) ? committedPackage.toc : []);
         setChapterTransitionDirection((prev) => {
@@ -1023,11 +1372,15 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
         setBookLoadError('');
         updateNativeChapterWindowForSpine(committedSpineIndex, committedPackage);
         prefetchAdjacentChapters(committedSpineIndex, totalSpineItems);
+        startChapterPreprocessing(committedSpineIndex, totalSpineItems, committedPackage);
     }, [
+        activeBook,
         currentBook,
         loadNativeReaderPackage,
         prefetchAdjacentChapters,
+        scheduleCloudProgressSync,
         setBooks,
+        startChapterPreprocessing,
         updateNativeChapterWindowForSpine,
     ]);
 
@@ -1143,7 +1496,7 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                         <ActivityIndicator size="small" color={colors.accentStrong} />
                         <Text style={styles.readerLoadingTitle}>Opening native reader</Text>
                         <Text style={styles.readerLoadingBody}>
-                            Parsing the EPUB package and loading the first readable spine item.
+                            Loading the first readable section.
                         </Text>
                     </View>
                 ) : (
@@ -1256,9 +1609,14 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                     <View style={styles.hintCard}>
                         <View style={styles.hintCopy}>
                             <Feather name="corner-down-left" size={16} color={colors.textSubtle} />
-                            <Text style={styles.hintText}>
-                                Tap a word to look it up.
-                            </Text>
+                            <View style={styles.hintTextStack}>
+                                <Text style={styles.hintText}>
+                                    Tap a word to look it up.
+                                </Text>
+                                <Text style={styles.hintSubtext}>
+                                    Long press to translate longer sections.
+                                </Text>
+                            </View>
                         </View>
                         <TouchableOpacity onPress={dismissLookupHint} style={styles.hintCloseButton}>
                             <Feather name="x" size={14} color={colors.textSubtle} />
@@ -1266,41 +1624,6 @@ const Read = ({ books, setBooks, currentBook, preprocessOnOpen, onPreprocessComp
                     </View>
                 </View>
             ) : null}
-
-            {/* Preprocessing status indicator */}
-            {(['checking', 'queued', 'preprocessing'].includes(preprocessStatus)) && (
-                <View style={[styles.preprocessBanner, { bottom: insets.bottom + 68 }]}>
-                    <ActivityIndicator size="small" color="#ffffff" style={{ marginRight: 8 }} />
-                    <View style={styles.preprocessCopy}>
-                        <Text style={styles.preprocessBannerText}>
-                            {preprocessMessage || (preprocessStatus === 'checking' ? 'Checking cache...' : 'Preparing smart highlights...')}
-                        </Text>
-                        {preprocessDetail ? (
-                            <Text style={styles.preprocessBannerSubtext}>{preprocessDetail}</Text>
-                        ) : null}
-                    </View>
-                </View>
-            )}
-            {preprocessStatus === 'error' && (
-                <View style={[styles.preprocessBanner, { bottom: insets.bottom + 68, backgroundColor: 'rgba(180,40,40,0.75)' }]}>
-                    <View style={styles.preprocessCopy}>
-                        <Text style={styles.preprocessBannerText}>{preprocessMessage || 'Caching failed — words will look up live'}</Text>
-                        {preprocessDetail ? (
-                            <Text style={styles.preprocessBannerSubtext}>{preprocessDetail}</Text>
-                        ) : null}
-                    </View>
-                </View>
-            )}
-            {preprocessStatus === 'done' && (
-                <View style={[styles.preprocessBanner, { bottom: insets.bottom + 68, backgroundColor: 'rgba(46,125,50,0.82)' }]}>
-                    <View style={styles.preprocessCopy}>
-                        <Text style={styles.preprocessBannerText}>{preprocessMessage || 'Vocabulary cached'}</Text>
-                        {preprocessDetail ? (
-                            <Text style={styles.preprocessBannerSubtext}>{preprocessDetail}</Text>
-                        ) : null}
-                    </View>
-                </View>
-            )}
 
             {showSettings && !isFullscreen ? (
                 <View pointerEvents="box-none" style={styles.settingsOverlay}>
@@ -1534,35 +1857,22 @@ const styles = StyleSheet.create({
         color: colors.textSubtle,
         flexShrink: 1,
     },
+    hintTextStack: {
+        flex: 1,
+        minWidth: 0,
+        gap: 2,
+    },
+    hintSubtext: {
+        ...textStyles.caption,
+        color: colors.textSubtle,
+        flexShrink: 1,
+    },
     hintCloseButton: {
         width: 24,
         height: 24,
         borderRadius: 12,
         alignItems: 'center',
         justifyContent: 'center',
-    },
-    preprocessBanner: {
-        position: 'absolute',
-        left: 16,
-        right: 16,
-        flexDirection: 'row',
-        alignItems: 'center',
-        backgroundColor: 'rgba(0,0,0,0.65)',
-        paddingHorizontal: 12,
-        paddingVertical: 6,
-        borderRadius: 16,
-    },
-    preprocessBannerText: {
-        color: '#ffffff',
-        fontSize: 13,
-    },
-    preprocessCopy: {
-        flexShrink: 1,
-    },
-    preprocessBannerSubtext: {
-        color: 'rgba(255,255,255,0.9)',
-        fontSize: 11,
-        marginTop: 2,
     },
     settingsButton: {
         width: 38,

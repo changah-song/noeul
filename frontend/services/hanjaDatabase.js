@@ -298,9 +298,7 @@ export const initializeHanjaDatabase = async () => {
   initializationPromise = (async () => {
     await copyBundledDatabaseIfNeeded();
     openHanjaDatabase();
-    const stats = await getHanjaDatabaseStats();
-    console.log('[HanjaDatabase] ready', stats);
-    return stats;
+    return getHanjaDatabaseStats();
   })().catch((error) => {
     hanjaDb = null;
     initializationPromise = null;

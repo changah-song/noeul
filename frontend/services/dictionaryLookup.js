@@ -5,11 +5,19 @@ import {
     insertCacheEntries,
     insertData,
     lookupCacheByStems,
+    recordVocabContext,
     removeData,
     vocabEntryExists,
 } from './Database';
 import stemWord from './api/stemWord';
-import { deleteUserVocabEntry, supabase, upsertUserVocabEntry } from './supabase';
+import {
+    softDeleteUserVocabContextsForWord,
+    softDeleteRelatedKnownWordsForMainWord,
+    softDeleteUserVocabEntry,
+    supabase,
+    upsertUserVocabContext,
+    upsertUserVocabEntry,
+} from './supabase';
 
 const STOP_STEMS = new Set([
     '하다',
@@ -134,7 +142,6 @@ const fetchLiveEntriesForStem = async (stem) => {
         const results = await fetchLiveDictionary([cleanedStem]);
         return results[0] ?? [];
     } catch (error) {
-        console.log(`[overlayLookup] live KRDICT extra lookup failed for "${cleanedStem}":`, error.message);
         return [];
     }
 };
@@ -152,7 +159,6 @@ const fetchRomanization = async (term) => {
         });
         return nullableValue(response.data?.romanization);
     } catch (error) {
-        console.log(`[overlayLookup] romanization failed for "${cleanedTerm}":`, error.message);
         return null;
     }
 };
@@ -273,20 +279,33 @@ export const saveOverlayLookupResult = async ({
     const word = cleanValue(stem);
     const cleanedDefinition = cleanValue(definition);
     const cleanedHanja = nullableValue(hanja);
+    const createdAt = new Date().toISOString();
+    const normalizedSourceSentence = cleanValue(sourceSentence) || null;
 
     if (!word || !cleanedDefinition) {
         throw new Error('No definition to save.');
     }
 
-    const alreadySaved = await vocabEntryExists(word, cleanedHanja, cleanedDefinition);
+    const alreadySaved = await vocabEntryExists(word, cleanedHanja, cleanedDefinition, 'ko');
     if (!alreadySaved) {
         await insertData(word, cleanedHanja, cleanedDefinition, {
             level: 'unorganized',
             sourceBookUri: null,
             sourceBookTitle: 'Floating OCR',
-            contextSentence: cleanValue(sourceSentence) || null,
+            contextSentence: normalizedSourceSentence,
+            createdAt,
+            updatedAt: createdAt,
+            language: 'ko',
         });
     }
+    const recordedContext = await recordVocabContext({
+        word,
+        hanja: cleanedHanja,
+        definition: cleanedDefinition,
+        sentence: sourceSentence,
+        sourceBookTitle: 'Floating OCR',
+        language: 'ko',
+    });
 
     const {
         data: { user },
@@ -298,7 +317,25 @@ export const saveOverlayLookupResult = async ({
             hanja: cleanedHanja,
             definition: cleanedDefinition,
             level: 'unorganized',
+            status: 'unorganized',
+            sourceBookUri: null,
+            sourceBookTitle: 'Floating OCR',
+            contextSentence: normalizedSourceSentence,
+            isFavorite: false,
+            priority: 'normal',
+            createdAt,
+            updatedAt: createdAt,
+            lastReviewedAt: null,
+            nextReviewAt: null,
+            correctCount: 0,
+            wrongCount: 0,
+            language: 'ko',
         });
+        if (recordedContext) {
+            upsertUserVocabContext(user.id, recordedContext).catch((error) => {
+                console.warn('[overlayLookup] cloud context save failed:', error.message);
+            });
+        }
     }
 
     return { saved: true };
@@ -317,18 +354,22 @@ export const unsaveOverlayLookupResult = async ({
         throw new Error('No definition to unsave.');
     }
 
-    await removeData(word, cleanedHanja, cleanedDefinition);
+    await removeData(word, cleanedHanja, cleanedDefinition, 'ko');
 
     const {
         data: { user },
     } = await supabase.auth.getUser();
 
     if (user) {
-        await deleteUserVocabEntry(user.id, {
+        const cloudEntry = {
             word,
             hanja: cleanedHanja,
             definition: cleanedDefinition,
-        });
+            language: 'ko',
+        };
+        await softDeleteUserVocabEntry(user.id, cloudEntry);
+        await softDeleteUserVocabContextsForWord(user.id, cloudEntry);
+        await softDeleteRelatedKnownWordsForMainWord(user.id, cloudEntry);
     }
 
     return { saved: false };

@@ -3,6 +3,12 @@ import { ActivityIndicator, Text, View, StyleSheet, TouchableOpacity, Modal, Scr
 import { MaterialIcons } from '@expo/vector-icons';
 import { fetchHanjaRelated } from '../../../services/api/hanjaRelated';
 import { addRelatedKnownWord, getRelatedKnownWords, removeRelatedKnownWord } from '../../../services/Database';
+import {
+    softDeleteUserRelatedKnownWord,
+    supabase,
+    upsertUserRelatedKnownWord,
+    upsertUserVocabEntry,
+} from '../../../services/supabase';
 import { colors, fontFamilies, spacing, textStyles } from '../../../theme';
 
 const relatedWordKey = (entry) => `${entry?.korean ?? ''}|${entry?.hanja ?? ''}`;
@@ -65,9 +71,11 @@ const HanjaDetails = ({
     hanjaCharacters = [],
     initialHanjaIndex = 0,
     sourceWord,
+    sourceWordDetails = {},
     handleHanjaPress,
     onKnownWordMarked,
     onKnownWordRemoved,
+    onSourceWordAutoSaved,
     isDarkMode,
 }) => {
     const characters = normalizeHanjaCharacters(hanjaCharacters, hanja);
@@ -146,6 +154,7 @@ const HanjaDetails = ({
     const canGoPrevious = activeHanjaIndex > 0;
     const canGoNext = activeHanjaIndex < characters.length - 1;
     const linkedWord = sourceWord || 'this word';
+    const language = sourceWordDetails?.language ?? 'ko';
 
     useEffect(() => {
         setActiveHanjaIndex(initialIndex);
@@ -173,7 +182,7 @@ const HanjaDetails = ({
             try {
                 lookup = await fetchHanjaRelated(character);
             } catch (error) {
-                console.log(`[HanjaDetails] preload failed for "${character}":`, error.message);
+                console.warn(`[HanjaDetails] preload failed for "${character}":`, error.message);
             }
 
             if (isCancelled) {
@@ -217,20 +226,20 @@ const HanjaDetails = ({
             };
         }
 
-        getRelatedKnownWords(sourceWord)
+        getRelatedKnownWords(sourceWord, language)
             .then((knownWords) => {
                 if (!isCancelled) {
                     setKnownKeys(new Set(knownWords.map(relatedWordKey)));
                 }
             })
             .catch((error) => {
-                console.log(`[HanjaDetails] related known words load failed for "${sourceWord}":`, error.message);
+                console.warn(`[HanjaDetails] related known words load failed for "${sourceWord}":`, error.message);
             });
 
         return () => {
             isCancelled = true;
         };
-    }, [activeHanja, sourceWord]);
+    }, [activeHanja, language, sourceWord]);
 
     useEffect(() => {
         return () => {
@@ -289,11 +298,26 @@ const HanjaDetails = ({
     const handleKnownPress = async (entry) => {
         const key = relatedWordKey(entry);
         const known = knownKeys.has(key);
+        const markedAt = new Date().toISOString();
         const knownEntry = {
             korean: entry.korean,
             hanja: entry.hanja,
             meaning: entry.meaning,
             sourceHanja: activeHanja,
+            markedAt,
+            updatedAt: markedAt,
+        };
+        const relation = {
+            language,
+            mainWord: sourceWord,
+            mainHanja: sourceWordDetails?.hanja ?? null,
+            mainDefinition: sourceWordDetails?.definition ?? null,
+            relatedWord: knownEntry.korean,
+            relatedHanja: knownEntry.hanja,
+            relatedDefinition: knownEntry.meaning,
+            sourceHanja: knownEntry.sourceHanja,
+            markedAt,
+            updatedAt: markedAt,
         };
 
         setKnownKeys((previous) => {
@@ -318,14 +342,58 @@ const HanjaDetails = ({
 
         try {
             const nextKnownWords = known
-                ? await removeRelatedKnownWord(sourceWord, knownEntry)
-                : await addRelatedKnownWord(sourceWord, knownEntry);
+                ? await removeRelatedKnownWord(sourceWord, knownEntry, language, {
+                    mainHanja: sourceWordDetails?.hanja ?? null,
+                    mainDefinition: sourceWordDetails?.definition ?? null,
+                })
+                : await addRelatedKnownWord(sourceWord, knownEntry, {
+                    createIfMissing: true,
+                    mainWord: sourceWordDetails,
+                    language,
+                });
+
+            if (!known) {
+                onSourceWordAutoSaved?.(sourceWord, sourceWordDetails);
+            }
 
             if (known || nextKnownWords.length > 0) {
                 setKnownKeys(new Set(nextKnownWords.map(relatedWordKey)));
             }
+
+            supabase.auth.getUser()
+                .then(({ data: { user } }) => {
+                    if (!user) {
+                        return null;
+                    }
+
+                    if (known) {
+                        return softDeleteUserRelatedKnownWord(user.id, relation);
+                    }
+
+                    return Promise.all([
+                        upsertUserVocabEntry(user.id, {
+                            word: sourceWord,
+                            hanja: sourceWordDetails?.hanja ?? null,
+                            definition: sourceWordDetails?.definition ?? null,
+                            level: sourceWordDetails?.level ?? 'unorganized',
+                            status: sourceWordDetails?.level ?? 'unorganized',
+                            sourceBookUri: sourceWordDetails?.sourceBookUri ?? null,
+                            sourceBookTitle: sourceWordDetails?.sourceBookTitle ?? null,
+                            contextSentence: sourceWordDetails?.contextSentence ?? null,
+                            isFavorite: sourceWordDetails?.isFavorite ?? false,
+                            priority: sourceWordDetails?.priority ?? 'normal',
+                            createdAt: sourceWordDetails?.createdAt ?? markedAt,
+                            updatedAt: sourceWordDetails?.updatedAt ?? markedAt,
+                            language,
+                        }),
+                        upsertUserRelatedKnownWord(user.id, relation),
+                    ]);
+                })
+                .catch((syncError) => {
+                    console.warn(`[HanjaDetails] related known word cloud sync failed for "${sourceWord}":`, syncError.message);
+                });
         } catch (error) {
-            console.log(`[HanjaDetails] related known word toggle failed for "${sourceWord}":`, error.message);
+            console.warn(`[HanjaDetails] related known word toggle failed for "${sourceWord}":`, error.message);
         }
     };
 
@@ -507,16 +575,16 @@ const styles = StyleSheet.create({
     modalRoot: {
         flex: 1,
         alignItems: 'center',
-        justifyContent: 'flex-end',
-        paddingHorizontal: spacing.lg,
+        justifyContent: 'center',
+        paddingHorizontal: spacing.xl,
+        paddingVertical: spacing.xl,
     },
     backdrop: {
         ...StyleSheet.absoluteFillObject,
     },
     card: {
         width: '100%',
-        maxHeight: '86%',
-        marginBottom: 36,
+        maxHeight: '82%',
         borderRadius: 18,
         borderWidth: 1,
         overflow: 'hidden',
@@ -535,7 +603,7 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         gap: 16,
-        paddingHorizontal: 20,
+        paddingHorizontal: 36,
         paddingVertical: 18,
         borderBottomWidth: StyleSheet.hairlineWidth,
     },
@@ -576,7 +644,7 @@ const styles = StyleSheet.create({
     sideNavButton: {
         position: 'absolute',
         top: '50%',
-        width: 26,
+        width: 34,
         height: 64,
         marginTop: -32,
         alignItems: 'center',
@@ -585,16 +653,16 @@ const styles = StyleSheet.create({
         zIndex: 4,
     },
     sideNavLeft: {
-        left: -2,
+        left: 3,
     },
     sideNavRight: {
-        right: -2,
+        right: 3,
     },
     noteRow: {
         flexDirection: 'row',
         alignItems: 'flex-start',
         gap: spacing.xs,
-        paddingHorizontal: 20,
+        paddingHorizontal: 36,
         paddingVertical: spacing.sm,
         borderBottomWidth: StyleSheet.hairlineWidth,
     },
@@ -615,7 +683,7 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         gap: spacing.md,
-        paddingHorizontal: 20,
+        paddingHorizontal: 36,
         paddingVertical: 10,
         borderBottomWidth: StyleSheet.hairlineWidth,
     },
