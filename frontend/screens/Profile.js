@@ -54,30 +54,19 @@ const Profile = ({ user, signOut, updateUsername, updateProfile }) => {
 
     const handleSaveName = async () => {
         const trimmed = draftName.trim();
-        console.log('[Profile] handleSaveName pressed', {
-            draftName,
-            trimmed,
-            currentDisplayName: displayName,
-            ts: Date.now(),
-        });
 
         if (!trimmed) {
-            console.log('[Profile] handleSaveName aborted: empty trimmed username');
             Alert.alert('Name required', 'Please enter a username.');
             return;
         }
 
         try {
             setIsSavingName(true);
-            console.log('[Profile] handleSaveName calling updateUsername', { trimmed, ts: Date.now() });
             await updateUsername?.(trimmed);
-            console.log('[Profile] handleSaveName updateUsername resolved', { trimmed, ts: Date.now() });
             setShowNameEditor(false);
         } catch (error) {
-            console.log('[Profile] handleSaveName failed', error?.message ?? String(error));
             Alert.alert('Update failed', error.message || 'Could not update username.');
         } finally {
-            console.log('[Profile] handleSaveName finally -> clearing saving state', { ts: Date.now() });
             setIsSavingName(false);
         }
     };

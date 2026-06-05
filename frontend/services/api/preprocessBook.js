@@ -59,15 +59,11 @@ const getPreprocessStatus = async (jobId) => {
 
 const preprocessBook = async ({ text, onStatus, _attempt = 1 }) => {
   if (!text || text.trim() === '') {
-    console.log('[preprocessBook] Called with empty text — skipping');
     return { results: [], stats: {}, surface_index: [], networkError: false };
   }
 
-  console.log(`[preprocessBook] Starting preprocessing | text length: ${text.length.toLocaleString()} chars${_attempt > 1 ? ` | attempt ${_attempt}/${MAX_RETRIES + 1}` : ''}`);
-
   try {
     const { job_id: jobId, status } = await startPreprocessBookJob({ text });
-    console.log(`[preprocessBook] Job created -> job_id=${jobId} status=${status}`);
     onStatus?.({ status, stage: 'queued', message: 'Job queued' });
 
     let consecutivePollErrors = 0;
@@ -82,11 +78,6 @@ const preprocessBook = async ({ text, onStatus, _attempt = 1 }) => {
 
         if (job.status === 'completed') {
           const { results = [], stats = {}, surface_index = [] } = job;
-          console.log(
-            `[preprocessBook] Done — ${results.length} stems returned | ` +
-            `cache_hits: ${stats.cache_hits}, new_fetched: ${stats.new_fetched} | ` +
-            `surface_index: ${surface_index.length}`
-          );
           return { results, stats, surface_index, networkError: false };
         }
 

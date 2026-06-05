@@ -58,7 +58,6 @@ const Auth = ({
         }
       }
     } catch (error) {
-      console.log(`${FILE_TAG} email auth failed:`, error.message);
       Alert.alert('Authentication failed', error.message);
     } finally {
       setLoading(false);
@@ -95,7 +94,6 @@ const Auth = ({
         return;
       }
 
-      console.log(`${FILE_TAG} google auth failed:`, error.message);
       Alert.alert('Google sign in failed', error.message);
     } finally {
       setLoading(false);
@@ -129,7 +127,6 @@ const Auth = ({
         return;
       }
 
-      console.log(`${FILE_TAG} apple auth failed:`, error.message);
       Alert.alert('Apple sign in failed', error.message);
     } finally {
       setLoading(false);

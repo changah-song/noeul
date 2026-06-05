@@ -61,7 +61,7 @@ class EpubPageView(context: Context) : View(context) {
   private var pageBackgroundColor = Color.WHITE
   private var activeSelectionRanges: List<TextRange> = emptyList()
   private var activeSelectionKind: ActiveSelectionKind? = null
-  private var savedHighlightRanges: List<SavedHighlightRange> = emptyList()
+  private var savedHighlightRanges: List<TextRange> = emptyList()
   private var activeHighlightColor = Color.argb(0x55, 0xfc, 0xd5, 0xb4)
   private var textSelectionHighlightColor = Color.rgb(0xe3, 0xe7, 0xee)
   private var savedHighlightColor = Color.rgb(0xf7, 0xd4, 0x88)
@@ -104,7 +104,7 @@ class EpubPageView(context: Context) : View(context) {
     backgroundColor: Int,
     activeSelectionRanges: List<TextRange>,
     activeSelectionKind: ActiveSelectionKind?,
-    savedHighlightRanges: List<SavedHighlightRange>,
+    savedHighlightRanges: List<TextRange>,
     activeHighlightColor: Int,
     textSelectionHighlightColor: Int,
     savedHighlightColor: Int,
@@ -138,7 +138,7 @@ class EpubPageView(context: Context) : View(context) {
   fun updateHighlights(
     activeSelectionRanges: List<TextRange>,
     activeSelectionKind: ActiveSelectionKind?,
-    savedHighlightRanges: List<SavedHighlightRange>,
+    savedHighlightRanges: List<TextRange>,
     activeHighlightColor: Int,
     textSelectionHighlightColor: Int,
     savedHighlightColor: Int
@@ -173,7 +173,7 @@ class EpubPageView(context: Context) : View(context) {
 
         canvas.save()
         canvas.translate((paddingH + block.marginLeft).toFloat(), yOffset)
-        drawSavedTextHighlights(canvas, block, layout, savedHighlightRanges)
+        drawTextHighlights(canvas, block, layout, savedHighlightRanges, savedHighlightPaint)
         activeHighlightPaint.color = activePaintColor()
         drawTextHighlights(canvas, block, layout, activeSelectionRanges, activeHighlightPaint)
         layout.draw(canvas)
@@ -693,60 +693,6 @@ class EpubPageView(context: Context) : View(context) {
         highlightPath
       )
       canvas.drawPath(highlightPath, paint)
-    }
-  }
-
-  private fun drawSavedTextHighlights(
-    canvas: Canvas,
-    block: PageBlock,
-    layout: StaticLayout,
-    ranges: List<SavedHighlightRange>
-  ) {
-    val currentPage = page ?: return
-    val blockTextLength = blockTextForSelection(block).length
-    if (blockTextLength <= 0) return
-
-    ranges.forEach { savedRange ->
-      if (savedRange.highlightTone == "hidden") {
-        return@forEach
-      }
-
-      val range = savedRange.range
-      if (
-        range.pageIndex != currentPage.pageIndex ||
-        range.spineIndex != currentPage.spineIndex ||
-        range.blockId != block.blockId
-      ) {
-        return@forEach
-      }
-
-      val blockSourceStart = block.sourceStartOffset
-      val blockSourceEnd = blockSourceStart + blockTextLength
-      val localStart = max(range.sourceStartOffset, blockSourceStart) - blockSourceStart
-      val localEnd = min(range.sourceEndOffset, blockSourceEnd) - blockSourceStart
-
-      if (localStart >= localEnd) {
-        return@forEach
-      }
-
-      highlightPath.reset()
-      layout.getSelectionPath(
-        localStart.coerceIn(0, blockTextLength),
-        localEnd.coerceIn(0, blockTextLength),
-        highlightPath
-      )
-      savedHighlightPaint.color = savedHighlightColorForTone(savedRange.highlightTone)
-      canvas.drawPath(highlightPath, savedHighlightPaint)
-    }
-  }
-
-  private fun savedHighlightColorForTone(tone: String): Int {
-    return when (tone) {
-      "strong" -> Color.argb(0x9A, 0xF7, 0xD4, 0x88)
-      "normal" -> Color.argb(0x68, 0xF7, 0xD4, 0x88)
-      "soft" -> Color.argb(0x40, 0xF7, 0xD4, 0x88)
-      "faint" -> Color.argb(0x24, 0xF7, 0xD4, 0x88)
-      else -> Color.argb(0x68, 0xF7, 0xD4, 0x88)
     }
   }
 

@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Modal,
@@ -6,285 +6,596 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
-import { Feather } from '@expo/vector-icons';
+import { Feather, MaterialIcons } from '@expo/vector-icons';
 
-import BookWordSection from '../components/Learn/BookWordSection';
 import Flashcard from '../components/Learn/Flashcard';
-import { Card, Screen, SectionHeader } from '../components/ui';
+import HanjaDetails from '../components/Read/TopSection/HanjaDetails';
+import { Screen } from '../components/ui';
 import {
-  removeData,
-  clearVocabEncountersForEntry,
+  getVocabContexts,
   recordReviewOutcome,
-  updateVocabLearningState,
-  updatePriority,
+  removeData,
   updateFavorite,
-  updateLevel,
-  getVocabularyHomeData,
+  viewData,
 } from '../services/Database';
 import { incrementWordsStudied } from '../services/dailyProgress';
 import {
-  deleteUserVocabEntry,
+  softDeleteUserVocabContextsForWord,
+  softDeleteRelatedKnownWordsForMainWord,
+  softDeleteUserVocabEntry,
   supabase,
-  updateUserVocabStatus,
-  upsertUserVocabEntry,
+  updateUserVocabFields,
 } from '../services/supabase';
-import { colors, radii, spacing, textStyles } from '../theme';
+import { colors, fontFamilies, radii, spacing, textStyles } from '../theme';
 
-const STATUS_ORDER = ['unorganized', 'bad', 'mid', 'good'];
-const PRIORITY_ORDER = ['low', 'normal', 'high'];
-const DEFAULT_SORT_MODE = 'recently-seen';
-
-const SORT_MODES = [
-  { key: 'recently-seen', label: 'Recently seen' },
-  { key: 'newest-saved', label: 'Newest saved' },
-  { key: 'encounters-high', label: 'Most seen' },
-  { key: 'encounters-low', label: 'Least seen' },
-  { key: 'needs-exposure', label: 'Needs exposure' },
-  { key: 'alphabetical', label: 'A-Z' },
+const FILTERS = [
+  { key: 'recent', label: 'Recently saved' },
+  { key: 'maturity', label: 'Maturity' },
+  { key: 'not-seen', label: 'Not seen lately' },
+  { key: 'most-seen', label: 'Most seen' },
+  { key: 'starred', label: 'Starred' },
 ];
 
-const MATURITY_FILTERS = [
-  { key: 'all', label: 'All' },
-  { key: 'new', label: 'New' },
-  { key: 'growing', label: 'Growing' },
-  { key: 'familiar', label: 'Familiar' },
-  { key: 'mature', label: 'Mature' },
-  { key: 'graduated', label: 'Graduated' },
+const PROFICIENCY_LEVELS = [
+  {
+    key: 'new',
+    label: 'New',
+    rank: 1,
+    color: '#3f79aa',
+    soft: '#e7f1fa',
+    description: 'just saved - waiting for more reading',
+  },
+  {
+    key: 'growing',
+    label: 'Growing',
+    rank: 2,
+    color: '#c58b28',
+    soft: '#fff1d5',
+    description: 'seen a few times - reading keeps moving it forward',
+  },
+  {
+    key: 'familiar',
+    label: 'Familiar',
+    rank: 3,
+    color: '#b47b2a',
+    soft: '#f8ead1',
+    description: 'recognizable, but still worth seeing in context',
+  },
+  {
+    key: 'mature',
+    label: 'Mature',
+    rank: 4,
+    color: '#5c9856',
+    soft: '#e7f1dd',
+    description: 'matured through repeated reading',
+  },
+  {
+    key: 'graduated',
+    label: 'Graduated',
+    rank: 5,
+    color: '#8f897d',
+    soft: '#ece8df',
+    description: 'stable enough to fade into the background',
+  },
 ];
 
-const cycleStatus = (currentStatus) => {
-  const currentIndex = STATUS_ORDER.indexOf(currentStatus);
-  if (currentIndex === -1) {
-    return STATUS_ORDER[0];
+const proficiencyByKey = PROFICIENCY_LEVELS.reduce((acc, level) => {
+  acc[level.key] = level;
+  return acc;
+}, {});
+
+const HANJA_RE = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/;
+const cleanText = (value) => (typeof value === 'string' ? value.trim() : '');
+const getHanjaCharacters = (value) => cleanText(value).split('').filter((char) => HANJA_RE.test(char));
+
+const parseRelatedKnownWords = (value) => {
+  if (Array.isArray(value)) {
+    return value;
   }
 
-  return STATUS_ORDER[(currentIndex + 1) % STATUS_ORDER.length];
+  if (!value) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 };
 
-const cyclePriority = (currentPriority) => {
-  const currentIndex = PRIORITY_ORDER.indexOf(currentPriority);
-  if (currentIndex === -1) {
-    return PRIORITY_ORDER[1];
-  }
-
-  return PRIORITY_ORDER[(currentIndex + 1) % PRIORITY_ORDER.length];
+const numericValue = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
 };
 
-const getExposureProgress = (row) => {
-  if (row.maturity === 'graduated' || row.maturity === 'mature') {
-    return 1;
+const sameWord = (a, b) => (
+  !!a
+  && !!b
+  && a.word === b.word
+  && (a.hanja ?? null) === (b.hanja ?? null)
+  && (a.def ?? null) === (b.def ?? null)
+  && (a.language ?? 'ko') === (b.language ?? 'ko')
+);
+
+const getWordKey = (word) => [
+  word?.language ?? 'ko',
+  word?.word ?? '',
+  word?.hanja ?? '',
+  word?.def ?? '',
+].join('::');
+
+const getSeenCount = (word) => {
+  const directSeen = [
+    word?.encounter_count,
+    word?.seen_count,
+    word?.exposure_count,
+  ].find((value) => Number.isFinite(Number(value)) && Number(value) > 0);
+
+  if (directSeen !== undefined) {
+    return Math.max(1, Number(directSeen));
   }
 
-  if (row.maturity === 'familiar') {
-    return 0.72;
-  }
-
-  if (row.maturity === 'growing') {
-    return 0.44;
-  }
-
-  return Math.min((Number(row.encounter_count) || 0) / 9, 0.28);
+  return Math.max(1, numericValue(word?.correct_count) + numericValue(word?.wrong_count) + 1);
 };
 
-const getSectionProgress = (rows) => {
-  if (!rows.length) {
-    return 0;
+const getSourceLabel = (word) => (
+  cleanText(word?.source_book_title)
+  || cleanText(word?.source_book_uri)
+  || 'saved word'
+);
+
+const getLastSawDate = (word) => (
+  cleanText(word?.last_reviewed_at)
+  || cleanText(word?.created_at)
+  || null
+);
+
+const formatRelativeDate = (value) => {
+  if (!value) {
+    return 'not seen';
   }
 
-  return rows.reduce((total, row) => total + getExposureProgress(row), 0) / rows.length;
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) {
+    return 'not seen';
+  }
+
+  const now = Date.now();
+  const diffDays = Math.max(0, Math.floor((now - timestamp) / (1000 * 60 * 60 * 24)));
+
+  if (diffDays === 0) return 'today';
+  if (diffDays === 1) return 'yesterday';
+  if (diffDays < 30) return `${diffDays}d ago`;
+  if (diffDays < 365) return `${Math.floor(diffDays / 30)}mo ago`;
+  return `${Math.floor(diffDays / 365)}y ago`;
 };
 
-const dateValue = (value) => {
-  const time = new Date(value ?? 0).getTime();
-  return Number.isFinite(time) ? time : 0;
+const getDistinctDays = (word) => {
+  const dates = [word?.created_at, word?.last_reviewed_at]
+    .map((value) => {
+      const timestamp = new Date(value).getTime();
+      if (!Number.isFinite(timestamp)) {
+        return null;
+      }
+
+      return new Date(timestamp).toISOString().slice(0, 10);
+    })
+    .filter(Boolean);
+
+  return Math.max(1, new Set(dates).size);
 };
 
-const numberValue = (value) => Number(value) || 0;
+const getSourceCount = (word) => (cleanText(word?.source_book_title) || cleanText(word?.source_book_uri) ? 1 : 0);
 
-const sortVocabularyRows = (rows, sortMode = DEFAULT_SORT_MODE) =>
+const getProficiency = (word) => {
+  const seen = getSeenCount(word);
+  let key = 'new';
+
+  if (seen >= 22) {
+    key = 'graduated';
+  } else if (seen >= 13) {
+    key = 'mature';
+  } else if (seen >= 8) {
+    key = 'familiar';
+  } else if (seen >= 3) {
+    key = 'growing';
+  }
+
+  if (word?.level === 'good' && key !== 'graduated') {
+    key = seen >= 22 ? 'graduated' : 'mature';
+  } else if ((word?.level === 'mid' || word?.level === 'bad') && key === 'new') {
+    key = 'growing';
+  }
+
+  return proficiencyByKey[key] ?? proficiencyByKey.new;
+};
+
+const isNotSeenLately = (word) => {
+  const date = getLastSawDate(word);
+  if (!date) {
+    return true;
+  }
+
+  const timestamp = new Date(date).getTime();
+  if (!Number.isFinite(timestamp)) {
+    return true;
+  }
+
+  return Date.now() - timestamp > 1000 * 60 * 60 * 24 * 7;
+};
+
+const isRecentlySaved = (word) => {
+  const timestamp = new Date(word?.created_at).getTime();
+  if (!Number.isFinite(timestamp)) {
+    return false;
+  }
+
+  return Date.now() - timestamp < 1000 * 60 * 60 * 24 * 3;
+};
+
+const normalizeRows = (rows) =>
+  rows.map((row) => ({
+    ...row,
+    is_favorite: Boolean(row.is_favorite),
+    priority: row.priority ?? 'normal',
+    created_at: row.created_at ?? null,
+    next_review_at: row.next_review_at ?? null,
+    last_reviewed_at: row.last_reviewed_at ?? null,
+    correct_count: numericValue(row.correct_count),
+    wrong_count: numericValue(row.wrong_count),
+    related_known_words: parseRelatedKnownWords(row.related_known_words),
+  }));
+
+const sortRecent = (rows) =>
   [...rows].sort((a, b) => {
-    if (sortMode === 'recently-seen') {
-      const diff = dateValue(b.last_encountered_at) - dateValue(a.last_encountered_at);
-      if (diff !== 0) return diff;
-    }
-
-    if (sortMode === 'newest-saved') {
-      const diff = dateValue(b.created_at) - dateValue(a.created_at);
-      if (diff !== 0) return diff;
-    }
-
-    if (sortMode === 'encounters-high') {
-      const diff = numberValue(b.encounter_count) - numberValue(a.encounter_count);
-      if (diff !== 0) return diff;
-    }
-
-    if (sortMode === 'encounters-low') {
-      const diff = numberValue(a.encounter_count) - numberValue(b.encounter_count);
-      if (diff !== 0) return diff;
-    }
-
-    if (sortMode === 'needs-exposure') {
-      const diff = Number(Boolean(b.isLongTail)) - Number(Boolean(a.isLongTail));
-      if (diff !== 0) return diff;
-    }
-
-    if (sortMode === 'alphabetical') {
-      return (a.word ?? '').localeCompare(b.word ?? '');
+    const dateDiff = new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime();
+    if (dateDiff !== 0) {
+      return dateDiff;
     }
 
     return (a.word ?? '').localeCompare(b.word ?? '');
   });
 
-const buildVocabularySections = (rows) => {
-  const needsExposureWords = rows.filter((row) => row.isLongTail);
-  const growingWords = rows.filter((row) =>
-    row.maturity === 'new' ||
-    row.maturity === 'growing' ||
-    row.maturity === 'familiar'
-  );
-  const matureWords = rows.filter((row) =>
-    row.maturity === 'mature' ||
-    row.maturity === 'graduated'
-  );
-  const allWords = rows;
-
-  return [
-    {
-      key: 'needs-exposure',
-      title: 'Needs exposure',
-      meta: 'Words that have not shown up naturally lately',
-      practiceLabel: 'Review',
-      progress: getSectionProgress(needsExposureWords),
-      words: needsExposureWords,
-    },
-    {
-      key: 'growing',
-      title: 'Growing',
-      meta: 'Words gaining strength through reading',
-      practiceLabel: 'Practice',
-      progress: getSectionProgress(growingWords),
-      words: growingWords,
-    },
-    {
-      key: 'mature',
-      title: 'Mature',
-      meta: 'Words you have seen enough to trust',
-      practiceLabel: 'Practice',
-      progress: getSectionProgress(matureWords),
-      words: matureWords,
-    },
-    {
-      key: 'all-words',
-      title: 'All saved words',
-      meta: `${rows.length} saved words`,
-      practiceLabel: 'Practice',
-      progress: getSectionProgress(allWords),
-      words: allWords,
-    },
-  ];
-};
-
-const pluralize = (count, singular, plural = `${singular}s`) => `${count} ${count === 1 ? singular : plural}`;
-const getSourceUri = (word) => word.last_encounter_source_uri || word.source_book_uri || '';
-const getSourceTitle = (word) => word.last_encounter_source_title || word.source_book_title || '';
-const hasActiveFilters = (searchQuery, maturityFilter, sourceFilter) =>
-  searchQuery.trim().length > 0 || maturityFilter !== 'all' || sourceFilter !== 'all';
-const matchesQuery = (value, query) => String(value ?? '').toLowerCase().includes(query);
-const isNonGraduated = (row) => row.maturity !== 'graduated';
-const makeWordKey = (word) => `${word?.word ?? ''}::${word?.hanja ?? ''}::${word?.def ?? word?.definition ?? ''}`;
-
-const findMatchingWord = (rows, target) => rows.find((row) => makeWordKey(row) === makeWordKey(target));
-
-const formatDetailDate = (dateValue) => {
-  if (!dateValue) {
-    return 'Never';
+const getFilteredWords = (rows, filter) => {
+  if (filter === 'starred') {
+    return sortRecent(rows.filter((word) => word.is_favorite));
   }
 
-  const date = new Date(dateValue);
-  if (Number.isNaN(date.getTime())) {
-    return 'Never';
+  if (filter === 'not-seen') {
+    return sortRecent(rows.filter(isNotSeenLately));
   }
 
-  return date.toLocaleString([], {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
+  if (filter === 'most-seen') {
+    return [...rows].sort((a, b) => getSeenCount(b) - getSeenCount(a));
+  }
+
+  if (filter === 'maturity') {
+    return [...rows].sort((a, b) => {
+      const rankDiff = getProficiency(a).rank - getProficiency(b).rank;
+      if (rankDiff !== 0) {
+        return rankDiff;
+      }
+
+      return getSeenCount(b) - getSeenCount(a);
+    });
+  }
+
+  return sortRecent(rows);
 };
 
-const getDetailSourceTitle = (word) =>
-  word.last_encounter_source_title ||
-  word.source_book_title ||
-  'No source recorded';
+const ProficiencyDots = ({ level, size = 7 }) => (
+  <View style={styles.dotRow}>
+    {PROFICIENCY_LEVELS.map((item) => (
+      <View
+        key={item.key}
+        style={[
+          styles.proficiencyDot,
+          {
+            width: size,
+            height: size,
+            borderRadius: size / 2,
+            backgroundColor: item.rank <= level.rank ? level.color : '#ded8c9',
+          },
+        ]}
+      />
+    ))}
+  </View>
+);
 
-const getReviewSummary = (word) => {
-  const correct = numberValue(word.correct_count);
-  const wrong = numberValue(word.wrong_count);
-  const implicit = numberValue(word.implicit_review_count);
+const StatusBadge = ({ label, tone = 'blue' }) => {
+  const toneStyle = tone === 'amber'
+    ? { backgroundColor: '#f7e6bf', color: '#bd8427' }
+    : { backgroundColor: '#e3eef7', color: '#3f79aa' };
 
-  return `${correct} easy/okay · ${wrong} hard · ${implicit} reading clears`;
+  return (
+    <View style={[styles.badge, { backgroundColor: toneStyle.backgroundColor }]}>
+      <Text style={[styles.badgeText, { color: toneStyle.color }]}>{label}</Text>
+    </View>
+  );
 };
 
-const buildLongTailDeck = (rows) =>
-  rows.filter((row) => row.isLongTail && isNonGraduated(row));
+const VocabularyRow = ({ word, onPress, onLongPress, selectionMode = false, selected = false }) => {
+  const proficiency = getProficiency(word);
+  const seenCount = getSeenCount(word);
+  const source = getSourceLabel(word);
+  const lastSaw = formatRelativeDate(getLastSawDate(word));
+  const showNewBadge = isRecentlySaved(word);
+  const showNotSeenBadge = !showNewBadge && isNotSeenLately(word);
 
-const buildWeakDeck = (rows) =>
-  rows.filter((row) =>
-    isNonGraduated(row) &&
-    (
-      row.level === 'bad' ||
-      numberValue(row.wrong_count) > numberValue(row.correct_count)
-    )
+  return (
+    <Pressable
+      onPress={onPress}
+      onLongPress={onLongPress}
+      delayLongPress={280}
+      style={({ pressed }) => [
+        styles.wordRow,
+        pressed && styles.wordRowPressed,
+        selected && styles.wordRowSelected,
+      ]}
+    >
+      {selectionMode ? (
+        <View style={[styles.selectionCircle, selected && styles.selectionCircleSelected]}>
+          {selected ? <Feather name="check" size={14} color="#fffaf3" /> : null}
+        </View>
+      ) : null}
+      <View style={styles.wordCopy}>
+        <View style={styles.wordTitleLine}>
+          <Text numberOfLines={1} style={styles.wordText}>{word.word}</Text>
+          {word.hanja ? <Text numberOfLines={1} style={styles.wordHanja}>{word.hanja}</Text> : null}
+          {showNewBadge ? <StatusBadge label="NEW" /> : null}
+          {showNotSeenBadge ? <StatusBadge label="NOT SEEN" tone="amber" /> : null}
+          {word.is_favorite ? <MaterialIcons name="star" size={16} color="#a7997e" /> : null}
+        </View>
+        <Text numberOfLines={1} style={styles.wordDefinition}>{word.def || 'No definition saved'}</Text>
+        <View style={styles.wordMetaLine}>
+          <Feather name="eye" size={13} color="#a99e8c" />
+          <Text numberOfLines={1} style={styles.wordMetaText}>
+            {seenCount} seen · {source} · {lastSaw}
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.proficiencySummary}>
+        <ProficiencyDots level={proficiency} />
+        <Text style={[styles.proficiencyLabel, { color: proficiency.color }]}>{proficiency.label}</Text>
+      </View>
+    </Pressable>
   );
+};
 
-const buildNewDeck = (rows) =>
-  rows.filter((row) => row.maturity === 'new');
+const HighlightPreview = ({ word, sentence, proficiency }) => {
+  const cleanSentence = cleanText(sentence);
+  const cleanWord = cleanText(word?.word);
 
-const buildSourceDeck = (rows, sourceUri) =>
-  rows.filter((row) =>
-    sourceUri &&
-    (
-      row.source_book_uri === sourceUri ||
-      row.last_encounter_source_uri === sourceUri
-    )
+  if (!cleanSentence || !cleanWord || !cleanSentence.includes(cleanWord)) {
+    return (
+      <Text style={styles.highlightSentence}>
+        <Text style={[styles.highlightedWord, { backgroundColor: proficiency.soft }]}>
+          {cleanWord || 'word'}
+        </Text>
+        {cleanText(word?.def) ? ` - ${word.def}` : ''}
+      </Text>
+    );
+  }
+
+  const index = cleanSentence.indexOf(cleanWord);
+  const before = cleanSentence.slice(0, index);
+  const after = cleanSentence.slice(index + cleanWord.length);
+
+  return (
+    <Text style={styles.highlightSentence}>
+      {before}
+      <Text style={[styles.highlightedWord, { backgroundColor: proficiency.soft }]}>
+        {cleanWord}
+      </Text>
+      {after}
+    </Text>
   );
+};
 
-const buildDefaultPracticeDeck = (rows) => rows.filter(isNonGraduated);
+const WordDetailModal = ({
+  word,
+  contexts = [],
+  visible,
+  onClose,
+  onToggleFavorite,
+  onRemove,
+}) => {
+  const [currentHanja, setCurrentHanja] = useState(null);
 
-const Learn = () => {
+  useEffect(() => {
+    setCurrentHanja(null);
+  }, [word?.word, word?.hanja, word?.def]);
+
+  if (!word) {
+    return null;
+  }
+
+  const proficiency = getProficiency(word);
+  const seenCount = getSeenCount(word);
+  const source = getSourceLabel(word);
+  const lastSaw = formatRelativeDate(getLastSawDate(word));
+  const hanjaCharacters = getHanjaCharacters(word.hanja);
+
+  const handleHanjaPress = (hanja, sourceWord = null, options = {}) => {
+    if (!hanja) {
+      setCurrentHanja(null);
+      return;
+    }
+
+    const optionCharacters = Array.isArray(options.characters)
+      ? options.characters.map(cleanText).filter((char) => HANJA_RE.test(char))
+      : [];
+    const characters = optionCharacters.length > 0 ? optionCharacters : hanjaCharacters;
+    const fallbackCharacters = characters.length > 0 ? characters : getHanjaCharacters(hanja);
+    const requestedIndex = Number.isInteger(options.index)
+      ? options.index
+      : fallbackCharacters.indexOf(cleanText(hanja));
+    const activeIndex = requestedIndex >= 0
+      ? Math.min(requestedIndex, fallbackCharacters.length - 1)
+      : 0;
+
+    if (fallbackCharacters.length === 0) {
+      setCurrentHanja(null);
+      return;
+    }
+
+    setCurrentHanja({
+      character: fallbackCharacters[activeIndex],
+      characters: fallbackCharacters,
+      activeIndex,
+      sourceWord: cleanText(sourceWord) || word.word,
+      sourceWordDetails: {
+        hanja: word.hanja ?? null,
+        definition: word.def ?? null,
+        level: word.level ?? 'unorganized',
+        sourceBookUri: word.source_book_uri ?? null,
+        sourceBookTitle: word.source_book_title ?? null,
+        contextSentence: word.context_sentence ?? null,
+        isFavorite: word.is_favorite,
+        language: word.language ?? 'ko',
+      },
+    });
+  };
+
+  return (
+    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+      <SafeAreaView edges={['top', 'bottom']} style={styles.detailScreen}>
+        <View style={styles.detailHeader}>
+          <TouchableOpacity onPress={onClose} style={styles.detailHeaderButton}>
+            <Feather name="chevron-left" size={28} color="#2d2923" />
+          </TouchableOpacity>
+          <Text style={styles.detailHeaderTitle}>Word</Text>
+          <TouchableOpacity onPress={onToggleFavorite} style={styles.detailHeaderButton}>
+            <MaterialIcons
+              name={word.is_favorite ? 'star' : 'star-outline'}
+              size={28}
+              color={word.is_favorite ? '#a99672' : '#b3aa99'}
+            />
+          </TouchableOpacity>
+        </View>
+
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.detailContent}>
+          <View style={styles.detailHero}>
+            <View style={styles.detailWordLine}>
+              <Text style={styles.detailWord}>{word.word}</Text>
+              {hanjaCharacters.length > 0 ? (
+                <TouchableOpacity
+                  activeOpacity={0.75}
+                  onPress={() => handleHanjaPress(hanjaCharacters[0], word.word)}
+                  style={styles.detailHanjaButton}
+                >
+                  <Text style={styles.detailHanja}>{word.hanja}</Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+            <Text style={styles.detailMeta}>{source} · {lastSaw}</Text>
+            <Text style={styles.detailDefinition}>{word.def || 'No definition saved'}</Text>
+          </View>
+
+          <View style={[styles.maturityCard, { backgroundColor: proficiency.soft }]}>
+            <View style={styles.maturityTopRow}>
+              <View style={styles.maturityCopy}>
+                <Text style={[styles.maturityTitle, { color: proficiency.color }]}>{proficiency.label}</Text>
+                <Text style={styles.maturityDescription}>{proficiency.description}</Text>
+              </View>
+              <ProficiencyDots level={proficiency} size={9} />
+            </View>
+
+            <View style={styles.detailStatsRow}>
+              <View style={styles.detailStat}>
+                <Text style={styles.detailStatValue}>{seenCount}</Text>
+                <Text style={styles.detailStatLabel}>encounters</Text>
+              </View>
+              <View style={styles.detailStat}>
+                <Text style={styles.detailStatValue}>{getDistinctDays(word)}</Text>
+                <Text style={styles.detailStatLabel}>distinct days</Text>
+              </View>
+              <View style={styles.detailStat}>
+                <Text style={styles.detailStatValue}>{getSourceCount(word)}</Text>
+                <Text style={styles.detailStatLabel}>sources</Text>
+              </View>
+            </View>
+          </View>
+
+          <View style={styles.contextSection}>
+            <Text style={styles.detailSectionTitle}>Seen in context</Text>
+            {contexts.length > 0 ? (
+              contexts.map((context, index) => (
+                <View
+                  key={`${context.sentence}-${context.seenAt ?? ''}-${index}`}
+                  style={styles.contextRow}
+                >
+                  <View style={styles.contextRowHeader}>
+                    <Text numberOfLines={1} style={styles.contextSource}>
+                      {cleanText(context.sourceBookTitle) || cleanText(context.sourceBookUri) || source}
+                    </Text>
+                    <Text style={styles.contextDate}>{formatRelativeDate(context.seenAt)}</Text>
+                  </View>
+                  <HighlightPreview word={word} sentence={context.sentence} proficiency={proficiency} />
+                </View>
+              ))
+            ) : (
+              <View style={styles.contextRow}>
+                <Text style={styles.emptyContext}>No saved context sentence yet.</Text>
+              </View>
+            )}
+          </View>
+        </ScrollView>
+
+        <View style={styles.detailActions}>
+          <TouchableOpacity onPress={onRemove} style={styles.deleteWordButton}>
+            <Text style={styles.deleteWordText}>Delete</Text>
+          </TouchableOpacity>
+        </View>
+
+        <HanjaDetails
+          hanja={currentHanja?.character ?? null}
+          hanjaCharacters={currentHanja?.characters ?? []}
+          initialHanjaIndex={currentHanja?.activeIndex ?? 0}
+          sourceWord={currentHanja?.sourceWord ?? word.word}
+          sourceWordDetails={currentHanja?.sourceWordDetails ?? {}}
+          handleHanjaPress={handleHanjaPress}
+          isDarkMode={false}
+        />
+      </SafeAreaView>
+    </Modal>
+  );
+};
+
+const Learn = ({ navigation, user }) => {
   const [words, setWords] = useState([]);
-  const [expandedSections, setExpandedSections] = useState({
-    'needs-exposure': true,
-    growing: true,
-    mature: false,
-    'all-words': false,
-  });
+  const [activeFilter, setActiveFilter] = useState('recent');
   const [practiceDeck, setPracticeDeck] = useState(null);
   const [practiceIndex, setPracticeIndex] = useState(0);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [maturityFilter, setMaturityFilter] = useState('all');
-  const [sourceFilter, setSourceFilter] = useState('all');
-  const [sortMode, setSortMode] = useState(DEFAULT_SORT_MODE);
   const [selectedWord, setSelectedWord] = useState(null);
+  const [selectedWordContexts, setSelectedWordContexts] = useState([]);
+  const [selectedWordKeys, setSelectedWordKeys] = useState(() => new Set());
+
+  const isSelectionMode = selectedWordKeys.size > 0;
 
   const fetchWords = useCallback(async () => {
     try {
-      const data = await getVocabularyHomeData();
-      const normalizedRows = data.map((row) => ({
-        ...row,
-        priority: row.priority ?? 'normal',
-      }));
-      setWords(normalizedRows);
-      return normalizedRows;
+      const data = await viewData();
+      const normalized = normalizeRows(data);
+      setWords(normalized);
+      setSelectedWord((current) => {
+        if (!current) {
+          return null;
+        }
+
+        return normalized.find((candidate) => sameWord(candidate, current)) ?? current;
+      });
+      return normalized;
     } catch (error) {
-      console.error('[Learn] Error fetching vocab home data:', error);
+      console.error('[Learn] Error fetching vocab data:', error);
       return [];
     }
   }, []);
@@ -295,171 +606,74 @@ const Learn = () => {
     }, [fetchWords])
   );
 
-  const sourceOptions = useMemo(() => {
-    const sources = new Map();
+  useEffect(() => {
+    let isActive = true;
 
-    words.forEach((word) => {
-      const uri = getSourceUri(word);
-      const title = getSourceTitle(word);
-
-      if (uri && title) {
-        sources.set(uri, title);
-      }
-    });
-
-    return [
-      { key: 'all', label: 'All sources' },
-      ...Array.from(sources.entries()).map(([key, label]) => ({ key, label })),
-    ];
-  }, [words]);
-
-  const filteredWords = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-
-    return words.filter((word) => {
-      const matchesSearch =
-        !query ||
-        matchesQuery(word.word, query) ||
-        matchesQuery(word.hanja, query) ||
-        matchesQuery(word.def, query);
-
-      const matchesMaturity = maturityFilter === 'all' || word.maturity === maturityFilter;
-      const matchesSource = sourceFilter === 'all' || getSourceUri(word) === sourceFilter;
-
-      return matchesSearch && matchesMaturity && matchesSource;
-    });
-  }, [words, searchQuery, maturityFilter, sourceFilter]);
-
-  const visibleWords = useMemo(
-    () => sortVocabularyRows(filteredWords, sortMode),
-    [filteredWords, sortMode]
-  );
-  const filtersActive = hasActiveFilters(searchQuery, maturityFilter, sourceFilter);
-  const sections = useMemo(() => buildVocabularySections(visibleWords), [visibleWords]);
-  const favoriteCount = useMemo(() => words.filter((word) => word.is_favorite).length, [words]);
-  const savedCount = words.length;
-  const growingCount = useMemo(
-    () => words.filter((word) => word.maturity === 'growing' || word.maturity === 'familiar').length,
-    [words]
-  );
-  const matureCount = useMemo(
-    () => words.filter((word) => word.maturity === 'mature' || word.maturity === 'graduated').length,
-    [words]
-  );
-  const sortedAllWords = useMemo(() => sortVocabularyRows(words, sortMode), [words, sortMode]);
-  const allLongTailDeck = useMemo(() => buildLongTailDeck(sortedAllWords), [sortedAllWords]);
-  const practiceSourceRows = filtersActive ? visibleWords : sortedAllWords;
-  const longTailDeck = useMemo(() => buildLongTailDeck(practiceSourceRows), [practiceSourceRows]);
-  const weakDeck = useMemo(() => buildWeakDeck(practiceSourceRows), [practiceSourceRows]);
-  const newDeck = useMemo(() => buildNewDeck(practiceSourceRows), [practiceSourceRows]);
-  const defaultPracticeDeck = useMemo(() => buildDefaultPracticeDeck(practiceSourceRows), [practiceSourceRows]);
-  const sourceDeck = useMemo(
-    () => buildSourceDeck(visibleWords, sourceFilter).filter(isNonGraduated),
-    [sourceFilter, visibleWords]
-  );
-  const allSavedDeck = practiceSourceRows;
-  const needsExposureCount = allLongTailDeck.length;
-  const primaryPracticeDeck = useMemo(() => {
-    if (longTailDeck.length) {
-      return {
-        title: 'Needs exposure',
-        buttonLabel: 'Review words not showing up',
-        words: longTailDeck,
+    if (!selectedWord) {
+      setSelectedWordContexts([]);
+      return () => {
+        isActive = false;
       };
     }
 
-    if (weakDeck.length) {
-      return {
-        title: 'Tricky words',
-        buttonLabel: 'Review tricky words',
-        words: weakDeck,
-      };
-    }
-
-    if (newDeck.length) {
-      return {
-        title: 'New saves',
-        buttonLabel: 'Practice new saves',
-        words: newDeck,
-      };
-    }
-
-    return {
-      title: 'Saved vocabulary',
-      buttonLabel: 'Practice saved words',
-      words: defaultPracticeDeck,
-    };
-  }, [defaultPracticeDeck, longTailDeck, newDeck, weakDeck]);
-  const practiceModes = useMemo(() => {
-    const modes = [
-      {
-        key: 'needs-exposure',
-        title: 'Needs exposure',
-        count: longTailDeck.length,
-        words: longTailDeck,
-        icon: 'sunrise',
-      },
-      {
-        key: 'tricky',
-        title: 'Tricky words',
-        count: weakDeck.length,
-        words: weakDeck,
-        icon: 'alert-circle',
-      },
-      {
-        key: 'new',
-        title: 'New saves',
-        count: newDeck.length,
-        words: newDeck,
-        icon: 'plus-circle',
-      },
-    ];
-
-    if (sourceFilter !== 'all') {
-      modes.push({
-        key: 'source',
-        title: 'From current source',
-        count: sourceDeck.length,
-        words: sourceDeck,
-        icon: 'book-open',
+    getVocabContexts(selectedWord.word, selectedWord.hanja, selectedWord.def, 12, selectedWord.language ?? 'ko')
+      .then((contexts) => {
+        if (isActive) {
+          setSelectedWordContexts(contexts);
+        }
+      })
+      .catch((error) => {
+        console.warn('[Learn] Failed to load vocab contexts:', error?.message ?? error);
+        if (isActive) {
+          setSelectedWordContexts([]);
+        }
       });
+
+    return () => {
+      isActive = false;
+    };
+  }, [selectedWord?.word, selectedWord?.hanja, selectedWord?.def]);
+
+  const visibleWords = useMemo(() => getFilteredWords(words, activeFilter), [activeFilter, words]);
+  const selectedWords = useMemo(
+    () => words.filter((word) => selectedWordKeys.has(getWordKey(word))),
+    [selectedWordKeys, words]
+  );
+
+  useEffect(() => {
+    if (selectedWordKeys.size === 0) {
+      return;
     }
 
-    modes.push({
-      key: 'all-saved',
-      title: 'All saved',
-      count: allSavedDeck.length,
-      words: allSavedDeck,
-      icon: 'layers',
+    const liveKeys = new Set(words.map(getWordKey));
+    setSelectedWordKeys((current) => {
+      const next = new Set([...current].filter((key) => liveKeys.has(key)));
+      return next.size === current.size ? current : next;
     });
+  }, [selectedWordKeys.size, words]);
+  const maturedCount = useMemo(
+    () => words.filter((word) => getProficiency(word).rank >= proficiencyByKey.mature.rank).length,
+    [words]
+  );
+  const waitingCount = useMemo(
+    () => words.filter((word) => {
+      const rank = getProficiency(word).rank;
+      return rank > proficiencyByKey.new.rank && rank < proficiencyByKey.mature.rank;
+    }).length,
+    [words]
+  );
+  const notSeenCount = useMemo(() => words.filter(isNotSeenLately).length, [words]);
+  const dueWords = useMemo(
+    () => words.filter((word) => (
+      word.next_review_at
+      && new Date(word.next_review_at) <= new Date()
+      && word.level !== 'unorganized'
+    )),
+    [words]
+  );
+  const reviewDeck = dueWords.length > 0 ? dueWords : visibleWords;
 
-    return modes;
-  }, [allSavedDeck, longTailDeck, newDeck, sourceDeck, sourceFilter, weakDeck]);
-  const practiceButtonLabel = primaryPracticeDeck.buttonLabel;
-  const practiceButtonDisabled = primaryPracticeDeck.words.length === 0;
-  const nudgeText = needsExposureCount
-    ? `${pluralize(needsExposureCount, 'word')} ${needsExposureCount === 1 ? 'has' : 'have'} not appeared in your reading lately.`
-    : 'Your recent reading is keeping your vocabulary fresh.';
-  const selectedMaturityLabel = selectedWord?.maturityMeta?.label ?? 'New';
-  const selectedMaturityDescription = selectedWord?.maturityMeta?.description ?? 'Saved vocabulary';
-  const selectedSourceTitle = selectedWord ? getDetailSourceTitle(selectedWord) : '';
-  const selectedReviewSummary = selectedWord ? getReviewSummary(selectedWord) : '';
-
-  const clearFilters = useCallback(() => {
-    setSearchQuery('');
-    setMaturityFilter('all');
-    setSourceFilter('all');
-    setSortMode(DEFAULT_SORT_MODE);
-  }, []);
-
-  const toggleExpand = useCallback((sectionKey) => {
-    setExpandedSections((prev) => ({
-      ...prev,
-      [sectionKey]: !prev[sectionKey],
-    }));
-  }, []);
-
-  const syncEntryToCloud = useCallback(async (word, overrides = {}) => {
+  const syncFieldsToCloud = useCallback(async (word, patch) => {
     const {
       data: { user },
     } = await supabase.auth.getUser();
@@ -469,160 +683,158 @@ const Learn = () => {
     }
 
     try {
-      await upsertUserVocabEntry(user.id, {
-        ...word,
-        ...overrides,
-        definition: overrides.definition ?? word.def ?? word.definition,
-      });
+      await updateUserVocabFields(
+        user.id,
+        {
+          word: word.word,
+          hanja: word.hanja,
+          definition: word.def,
+          language: word.language ?? 'ko',
+        },
+        patch
+      );
     } catch (error) {
-      console.log('[Learn] cloud vocab sync failed:', error.message);
+      console.warn('[Learn] cloud vocab field sync failed:', error.message);
     }
   }, []);
 
-  const syncStatusToCloud = useCallback(async (word, status) => {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+  const deleteSavedWord = useCallback(async (word, cloudUser = null) => {
+    await removeData(word.word, word.hanja, word.def, word.language ?? 'ko');
 
-    if (!user) {
+    if (!cloudUser) {
       return;
     }
 
-    try {
-      await updateUserVocabStatus(user.id, {
-        ...word,
-        definition: word.def ?? word.definition,
-      }, status);
-    } catch (error) {
-      console.log('[Learn] cloud status sync failed:', error.message);
-    }
-  }, []);
-
-  const handleCycleStatus = useCallback(async (word, explicitStatus = null) => {
-    const nextStatus = explicitStatus ?? cycleStatus(word.level);
-    await updateLevel(word.word, word.hanja, word.def, nextStatus);
-    const updatedRows = await fetchWords();
-    const updatedWord = findMatchingWord(updatedRows, word) ?? {
-      ...word,
-      level: nextStatus,
+    const cloudEntry = {
+      word: word.word,
+      hanja: word.hanja,
+      definition: word.def,
+      language: word.language ?? 'ko',
     };
-    await syncStatusToCloud(updatedWord, nextStatus);
-    setSelectedWord((current) => (current && makeWordKey(current) === makeWordKey(word) ? updatedWord : current));
-  }, [fetchWords, syncStatusToCloud]);
+    await softDeleteUserVocabEntry(cloudUser.id, cloudEntry);
+    await softDeleteUserVocabContextsForWord(cloudUser.id, cloudEntry);
+    await softDeleteRelatedKnownWordsForMainWord(cloudUser.id, cloudEntry);
+  }, []);
 
   const handleToggleFavorite = useCallback(async (word) => {
-    await updateFavorite(word.word, word.hanja, word.def, !word.is_favorite);
-    const updatedRows = await fetchWords();
-    const updatedWord = findMatchingWord(updatedRows, word);
-    setSelectedWord((current) => (current && makeWordKey(current) === makeWordKey(word) ? updatedWord ?? current : current));
-  }, [fetchWords]);
+    if (!word) {
+      return;
+    }
 
-  const handleCyclePriority = useCallback(async (word) => {
-    const nextPriority = cyclePriority(word.priority);
-    await updatePriority(word.word, word.hanja, word.def, nextPriority);
-    const updatedRows = await fetchWords();
-    const updatedWord = findMatchingWord(updatedRows, word);
-    setSelectedWord((current) => (current && makeWordKey(current) === makeWordKey(word) ? updatedWord ?? current : current));
-  }, [fetchWords]);
+    const nextFavorite = !word.is_favorite;
+    await updateFavorite(word.word, word.hanja, word.def, nextFavorite, word.language ?? 'ko');
+    setSelectedWord((current) => sameWord(current, word) ? { ...current, is_favorite: nextFavorite } : current);
+    syncFieldsToCloud(word, {
+      is_favorite: nextFavorite,
+      updated_at: new Date().toISOString(),
+    });
+    await fetchWords();
+  }, [fetchWords, syncFieldsToCloud]);
 
-  const applyManualLearningAction = useCallback(async (word, updates) => {
-    await updateVocabLearningState(word.word, word.hanja, word.def, updates);
-    const updatedRows = await fetchWords();
-    const updatedWord = findMatchingWord(updatedRows, word) ?? {
-      ...word,
-      ...updates,
+  const handleRemoveWord = useCallback((word, options = {}) => {
+    if (!word) {
+      return;
+    }
+
+    const remove = async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      try {
+        await deleteSavedWord(word, user);
+      } catch (error) {
+        console.warn('[Learn] remove failed:', error.message);
+      }
+
+      if (options.closeDetail) {
+        setSelectedWord(null);
+      }
+      await fetchWords();
     };
 
-    setSelectedWord(updatedWord);
-    await syncEntryToCloud(updatedWord);
-  }, [fetchWords, syncEntryToCloud]);
-
-  const handleAlreadyKnow = useCallback(async (word) => {
-    const now = new Date().toISOString();
-    await applyManualLearningAction(word, {
-      level: 'good',
-      maturity: 'graduated',
-      graduated_at: word.graduated_at ?? now,
-      next_review_at: null,
-    });
-  }, [applyManualLearningAction]);
-
-  const handleStillConfusing = useCallback(async (word) => {
-    await applyManualLearningAction(word, {
-      level: 'bad',
-      maturity: 'growing',
-      graduated_at: null,
-      next_review_at: new Date().toISOString(),
-      priority: 'high',
-    });
-  }, [applyManualLearningAction]);
-
-  const handleResetProgress = useCallback((word) => {
     Alert.alert(
-      'Reset progress',
-      `Reset reading and review progress for "${word.word}"?`,
+      'Delete saved word',
+      `Delete "${word.word}" from your saved words?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Reset',
+          text: 'Delete',
           style: 'destructive',
-          onPress: async () => {
-            await clearVocabEncountersForEntry(word.word, word.hanja, word.def);
-            await applyManualLearningAction(word, {
-              level: 'unorganized',
-              encounter_count: 0,
-              last_encountered_at: null,
-              last_encounter_source_uri: null,
-              last_encounter_source_title: null,
-              maturity: 'new',
-              graduated_at: null,
-              implicit_review_count: 0,
-              last_reviewed_at: null,
-              next_review_at: null,
-              correct_count: 0,
-              wrong_count: 0,
-            });
-          },
+          onPress: remove,
         },
       ]
     );
-  }, [applyManualLearningAction]);
+  }, [deleteSavedWord, fetchWords]);
 
-  const handleRemoveWord = useCallback((word) => {
+  const toggleWordSelection = useCallback((word) => {
+    const key = getWordKey(word);
+    setSelectedWordKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }, []);
+
+  const startWordSelection = useCallback((word) => {
+    setSelectedWord(null);
+    setSelectedWordKeys((current) => {
+      const next = new Set(current);
+      next.add(getWordKey(word));
+      return next;
+    });
+  }, []);
+
+  const clearWordSelection = useCallback(() => {
+    setSelectedWordKeys(new Set());
+  }, []);
+
+  const handleBulkDelete = useCallback(() => {
+    if (selectedWords.length === 0) {
+      return;
+    }
+
+    const count = selectedWords.length;
+    const title = count === 1 ? 'Delete saved word' : 'Delete saved words';
+    const body = count === 1
+      ? `Delete "${selectedWords[0].word}" from your saved words?`
+      : `Delete ${count} saved words? This also removes their synced context history.`;
+
+    const removeSelected = async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      for (const word of selectedWords) {
+        try {
+          await deleteSavedWord(word, user);
+        } catch (error) {
+          console.warn('[Learn] bulk remove failed:', error.message);
+        }
+      }
+
+      clearWordSelection();
+      setSelectedWord(null);
+      await fetchWords();
+    };
+
     Alert.alert(
-      'Remove saved word',
-      `Remove "${word.word}" from your saved words?`,
+      title,
+      body,
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Remove',
+          text: 'Delete',
           style: 'destructive',
-          onPress: async () => {
-            await removeData(word.word, word.hanja, word.def);
-
-            const {
-              data: { user },
-            } = await supabase.auth.getUser();
-
-            if (user) {
-              try {
-                await deleteUserVocabEntry(user.id, {
-                  word: word.word,
-                  hanja: word.hanja,
-                  definition: word.def,
-                });
-              } catch (error) {
-                console.log('[Learn] cloud remove failed:', error.message);
-              }
-            }
-
-            await fetchWords();
-            setSelectedWord((current) => (current && makeWordKey(current) === makeWordKey(word) ? null : current));
-          },
+          onPress: removeSelected,
         },
       ]
     );
-  }, [fetchWords]);
+  }, [clearWordSelection, deleteSavedWord, fetchWords, selectedWords]);
 
   const startPractice = useCallback((deckWords, title) => {
     if (!deckWords || deckWords.length === 0) {
@@ -647,14 +859,27 @@ const Learn = () => {
     }
 
     const currentWord = practiceDeck.words[practiceIndex];
-    await recordReviewOutcome(currentWord.word, currentWord.hanja, currentWord.def, currentWord.level, status);
+    await recordReviewOutcome(
+      currentWord.word,
+      currentWord.hanja,
+      currentWord.def,
+      currentWord.level,
+      status,
+      currentWord.language ?? 'ko'
+    );
     await incrementWordsStudied(1);
-    const updatedRows = await fetchWords();
-    const updatedWord = findMatchingWord(updatedRows, currentWord) ?? {
-      ...currentWord,
-      level: status,
-    };
-    await syncEntryToCloud(updatedWord, { status: updatedWord.level ?? status });
+    const updatedWords = await fetchWords();
+    const updatedWord = updatedWords.find((candidate) => sameWord(candidate, currentWord));
+    if (updatedWord) {
+      await syncFieldsToCloud(updatedWord, {
+        status: updatedWord.level,
+        last_reviewed_at: updatedWord.last_reviewed_at,
+        next_review_at: updatedWord.next_review_at,
+        correct_count: updatedWord.correct_count,
+        wrong_count: updatedWord.wrong_count,
+        updated_at: updatedWord.updated_at ?? new Date().toISOString(),
+      });
+    }
 
     if (practiceIndex >= practiceDeck.words.length - 1) {
       closePractice();
@@ -662,381 +887,138 @@ const Learn = () => {
     }
 
     setPracticeIndex((prev) => prev + 1);
-  }, [closePractice, fetchWords, practiceDeck, practiceIndex, syncEntryToCloud]);
+  }, [closePractice, fetchWords, practiceDeck, practiceIndex, syncFieldsToCloud]);
 
   return (
-    <Screen scroll contentContainerStyle={styles.content}>
-      <View style={styles.stack}>
-        <SectionHeader
-          eyebrow="Vocabulary"
-          title="Your words are growing through reading"
-          subtitle="Track saved words by maturity, natural encounters, and the words that need more exposure."
-        />
+    <Screen scroll backgroundColor="#eee6d8" contentContainerStyle={styles.content}>
+      <View style={styles.header}>
+        <Text style={styles.title}>Learn</Text>
+        <Text style={styles.subtitle}>{words.length} words · reading is doing the work</Text>
+      </View>
 
-        <Card tone="muted" style={styles.heroCard} contentStyle={styles.heroContent}>
-          <View style={styles.heroCopy}>
-            <Text style={styles.heroTitle}>Vocabulary</Text>
-            <Text style={styles.heroSubtitle}>
-              Your saved words get stronger as they reappear in books, pages, and practice.
-            </Text>
+      <View style={styles.summaryCard}>
+        <View style={styles.summaryStats}>
+          <View style={styles.summaryStat}>
+            <Text style={[styles.summaryValue, styles.summaryValueGreen]}>{maturedCount}</Text>
+            <Text style={styles.summaryLabel}>matured through reading</Text>
           </View>
-
-          <View style={styles.heroStats}>
-            <View style={styles.heroStat}>
-              <Text style={styles.heroStatValue}>{savedCount}</Text>
-              <Text style={styles.heroStatLabel}>Saved</Text>
-            </View>
-            <View style={styles.heroStat}>
-              <Text style={styles.heroStatValue}>{growingCount}</Text>
-              <Text style={styles.heroStatLabel}>Growing</Text>
-            </View>
-            <View style={styles.heroStat}>
-              <Text style={styles.heroStatValue}>{matureCount}</Text>
-              <Text style={styles.heroStatLabel}>Mature</Text>
-            </View>
-            <View style={styles.heroStat}>
-              <Text style={styles.heroStatValue}>{needsExposureCount}</Text>
-              <Text style={styles.heroStatLabel}>Needs exposure</Text>
-            </View>
+          <View style={styles.summaryStat}>
+            <Text style={[styles.summaryValue, styles.summaryValueAmber]}>{waitingCount}</Text>
+            <Text style={styles.summaryLabel}>waiting for another encounter</Text>
           </View>
+          <View style={styles.summaryStat}>
+            <Text style={styles.summaryValue}>{notSeenCount}</Text>
+            <Text style={styles.summaryLabel}>not seen lately</Text>
+          </View>
+        </View>
 
-          <Text style={styles.heroNudge}>{nudgeText}</Text>
+        <View style={styles.readingGuidance}>
+          <Feather name="book-open" size={16} color="#8a6f42" />
+          <Text style={styles.readingGuidanceText}>
+            Keep reading to learn words naturally. Reviews are best for words that rarely show up again, so use them as a supplement when you want extra practice.
+          </Text>
+        </View>
 
+        <View style={styles.summaryActions}>
           <TouchableOpacity
-            onPress={() => startPractice(primaryPracticeDeck.words, primaryPracticeDeck.title)}
-            style={[styles.practiceButton, practiceButtonDisabled && styles.practiceButtonDisabled]}
-            disabled={practiceButtonDisabled}
+            onPress={() => navigation?.navigate?.('Read')}
+            style={[styles.keepReadingButton, words.length === 0 && styles.keepReadingButtonFull]}
           >
-            <Feather name="layers" size={16} color={practiceButtonDisabled ? colors.textSubtle : colors.accentStrong} />
-            <Text style={[styles.practiceButtonLabel, practiceButtonDisabled && styles.practiceButtonLabelDisabled]}>
-              {practiceButtonLabel}
-            </Text>
+            <Feather name="book-open" size={18} color="#fffaf3" />
+            <Text style={styles.keepReadingText}>Keep reading</Text>
+          </TouchableOpacity>
+          {words.length > 0 ? (
+            <TouchableOpacity
+              onPress={() => startPractice(reviewDeck, dueWords.length > 0 ? 'Due review' : 'Saved words')}
+              style={styles.reviewButton}
+            >
+              <Text style={styles.reviewButtonText}>Review {reviewDeck.length} ↗</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      </View>
+
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.filters}
+      >
+        {FILTERS.map((filter) => {
+          const active = activeFilter === filter.key;
+          return (
+            <TouchableOpacity
+              key={filter.key}
+              onPress={() => {
+                clearWordSelection();
+                setActiveFilter(filter.key);
+              }}
+              style={[styles.filterChip, active && styles.filterChipActive]}
+            >
+              <Text style={[styles.filterText, active && styles.filterTextActive]}>{filter.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
+
+      <View style={styles.listHeader}>
+        <Text style={styles.listEyebrow}>Your vocabulary</Text>
+        <Text style={styles.listCount}>{visibleWords.length}</Text>
+      </View>
+
+      {isSelectionMode ? (
+        <View style={styles.selectionBar}>
+          <TouchableOpacity onPress={clearWordSelection} style={styles.selectionBarButton}>
+            <Feather name="x" size={17} color="#756b5f" />
+            <Text style={styles.selectionBarButtonText}>Cancel</Text>
           </TouchableOpacity>
 
-          <Text style={styles.heroFooter}>
-            {favoriteCount} favorites · {words.length} saved total
+          <Text style={styles.selectionCount}>
+            {selectedWords.length} selected
           </Text>
-        </Card>
 
-        {words.length > 0 ? (
-          <Card style={styles.practiceModesCard} contentStyle={styles.practiceModesContent}>
-            <View style={styles.practiceModesHeader}>
-              <View style={styles.practiceModesCopy}>
-                <Text style={styles.practiceModesTitle}>Practice modes</Text>
-                <Text style={styles.practiceModesSubtitle}>
-                  Optional flashcards for words that need a safety net.
-                </Text>
-              </View>
-            </View>
+          <TouchableOpacity onPress={handleBulkDelete} style={[styles.selectionBarButton, styles.selectionDeleteButton]}>
+            <Feather name="trash-2" size={17} color="#fffaf3" />
+            <Text style={styles.selectionDeleteText}>Delete</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
 
-            <View style={styles.practiceModeGrid}>
-              {practiceModes.map((mode) => {
-                const disabled = mode.count === 0;
-
-                return (
-                  <TouchableOpacity
-                    key={mode.key}
-                    onPress={() => startPractice(mode.words, mode.title)}
-                    disabled={disabled}
-                    style={[styles.practiceModeButton, disabled && styles.practiceModeButtonDisabled]}
-                  >
-                    <View style={[styles.practiceModeIcon, disabled && styles.practiceModeIconDisabled]}>
-                      <Feather
-                        name={mode.icon}
-                        size={15}
-                        color={disabled ? colors.textSubtle : colors.accentStrong}
-                      />
-                    </View>
-                    <View style={styles.practiceModeCopy}>
-                      <Text style={[styles.practiceModeTitle, disabled && styles.practiceModeTextDisabled]} numberOfLines={1}>
-                        {mode.title}
-                      </Text>
-                      <Text style={[styles.practiceModeMeta, disabled && styles.practiceModeTextDisabled]}>
-                        {pluralize(mode.count, 'word')}
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          </Card>
-        ) : null}
-
-        {words.length > 0 ? (
-          <Card style={styles.controlsCard} contentStyle={styles.controlsContent}>
-            <View style={styles.searchBox}>
-              <Feather name="search" size={16} color={colors.textSubtle} />
-              <TextInput
-                value={searchQuery}
-                onChangeText={setSearchQuery}
-                placeholder="Search words, hanja, definitions"
-                placeholderTextColor={colors.textSubtle}
-                returnKeyType="search"
-                clearButtonMode="while-editing"
-                style={styles.searchInput}
-              />
-              {searchQuery ? (
-                <TouchableOpacity
-                  accessibilityLabel="Clear vocabulary search"
-                  onPress={() => setSearchQuery('')}
-                  style={styles.searchClearButton}
-                >
-                  <Feather name="x" size={15} color={colors.textMuted} />
-                </TouchableOpacity>
-              ) : null}
-            </View>
-
-            <View style={styles.controlGroup}>
-              <Text style={styles.controlLabel}>Maturity</Text>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                keyboardShouldPersistTaps="handled"
-                contentContainerStyle={styles.chipRow}
-              >
-                {MATURITY_FILTERS.map((option) => {
-                  const selected = maturityFilter === option.key;
-
-                  return (
-                    <TouchableOpacity
-                      key={option.key}
-                      onPress={() => setMaturityFilter(option.key)}
-                      style={[styles.filterChip, selected && styles.filterChipActive]}
-                    >
-                      <Text style={[styles.filterChipLabel, selected && styles.filterChipLabelActive]}>
-                        {option.label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-            </View>
-
-            {sourceOptions.length > 1 ? (
-              <View style={styles.controlGroup}>
-                <Text style={styles.controlLabel}>Source</Text>
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  keyboardShouldPersistTaps="handled"
-                  contentContainerStyle={styles.chipRow}
-                >
-                  {sourceOptions.map((option) => {
-                    const selected = sourceFilter === option.key;
-
-                    return (
-                      <TouchableOpacity
-                        key={option.key}
-                        onPress={() => setSourceFilter(option.key)}
-                        style={[styles.filterChip, styles.sourceChip, selected && styles.filterChipActive]}
-                      >
-                        <Text
-                          style={[styles.filterChipLabel, selected && styles.filterChipLabelActive]}
-                          numberOfLines={1}
-                        >
-                          {option.label}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </ScrollView>
-              </View>
-            ) : null}
-
-            <View style={styles.controlGroup}>
-              <Text style={styles.controlLabel}>Sort</Text>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                keyboardShouldPersistTaps="handled"
-                contentContainerStyle={styles.chipRow}
-              >
-                {SORT_MODES.map((option) => {
-                  const selected = sortMode === option.key;
-
-                  return (
-                    <TouchableOpacity
-                      key={option.key}
-                      onPress={() => setSortMode(option.key)}
-                      style={[styles.filterChip, selected && styles.filterChipActive]}
-                    >
-                      <Text style={[styles.filterChipLabel, selected && styles.filterChipLabelActive]}>
-                        {option.label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-            </View>
-
-            {filtersActive || sortMode !== DEFAULT_SORT_MODE ? (
-              <TouchableOpacity onPress={clearFilters} style={styles.clearFiltersButton}>
-                <Feather name="x-circle" size={15} color={colors.textMuted} />
-                <Text style={styles.clearFiltersLabel}>Clear filters</Text>
-              </TouchableOpacity>
-            ) : null}
-          </Card>
-        ) : null}
-
-        <SectionHeader
-          eyebrow="Saved vocabulary"
-          title="Saved vocabulary"
-          subtitle={filtersActive
-            ? `${visibleWords.length} of ${words.length} words match current filters.`
-            : 'Browse words by exposure and maturity, with optional practice when natural reading has not surfaced them lately.'}
-        />
-
-        {words.length === 0 ? (
-          <Card style={styles.emptyCard}>
-            <Text style={styles.emptyTitle}>No saved words yet</Text>
+      <View style={styles.list}>
+        {visibleWords.length === 0 ? (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyTitle}>No words here yet</Text>
             <Text style={styles.emptyBody}>
-              Save words while reading and they will appear here.
+              Save words while reading, or try a different filter.
             </Text>
-          </Card>
-        ) : visibleWords.length === 0 ? (
-          <Card style={styles.emptyCard}>
-            <Text style={styles.emptyTitle}>No words match these filters</Text>
-            <Text style={styles.emptyBody}>
-              Clear filters to see your saved vocabulary.
-            </Text>
-            <TouchableOpacity onPress={clearFilters} style={styles.emptyActionButton}>
-              <Feather name="x-circle" size={15} color={colors.accentStrong} />
-              <Text style={styles.emptyActionLabel}>Clear filters</Text>
-            </TouchableOpacity>
-          </Card>
-        ) : (
-          <View style={styles.sectionList}>
-            {sections.map((section) => (
-              <BookWordSection
-                key={section.key}
-                section={section}
-                expanded={!!expandedSections[section.key]}
-                onToggleExpand={() => toggleExpand(section.key)}
-                onStartPractice={() => startPractice(section.words, section.title)}
-                onToggleFavorite={handleToggleFavorite}
-                onCycleStatus={handleCycleStatus}
-                onCyclePriority={handleCyclePriority}
-                onRemoveWord={handleRemoveWord}
-                onSelectWord={setSelectedWord}
-              />
-            ))}
           </View>
+        ) : (
+          visibleWords.map((word) => (
+            <VocabularyRow
+              key={getWordKey(word)}
+              word={word}
+              selectionMode={isSelectionMode}
+              selected={selectedWordKeys.has(getWordKey(word))}
+              onPress={() => {
+                if (isSelectionMode) {
+                  toggleWordSelection(word);
+                  return;
+                }
+                setSelectedWord(word);
+              }}
+              onLongPress={() => startWordSelection(word)}
+            />
+          ))
         )}
       </View>
 
-      <Modal animationType="fade" transparent visible={!!selectedWord} onRequestClose={() => setSelectedWord(null)}>
-        <View style={styles.modalRoot}>
-          <Pressable style={styles.modalBackdrop} onPress={() => setSelectedWord(null)} />
-
-          <View style={styles.detailCard}>
-            <View style={styles.detailHeader}>
-              <View style={styles.detailTitleCopy}>
-                <Text style={styles.detailWord} selectable>{selectedWord?.word}</Text>
-                {selectedWord?.hanja ? (
-                  <Text style={styles.detailHanja} selectable>{selectedWord.hanja}</Text>
-                ) : null}
-              </View>
-
-              <TouchableOpacity
-                accessibilityLabel="Close word details"
-                onPress={() => setSelectedWord(null)}
-                style={styles.detailCloseButton}
-              >
-                <Feather name="x" size={18} color={colors.textMuted} />
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.detailScrollContent}>
-              <Text style={styles.detailDefinition} selectable>
-                {selectedWord?.def || 'No definition saved'}
-              </Text>
-
-              <View style={styles.detailBadgeRow}>
-                <View style={styles.detailBadge}>
-                  <Text style={styles.detailBadgeLabel}>{selectedMaturityLabel}</Text>
-                </View>
-                <Text style={styles.detailBadgeDescription}>{selectedMaturityDescription}</Text>
-              </View>
-
-              <View style={styles.detailGrid}>
-                <View style={styles.detailMetric}>
-                  <Text style={styles.detailMetricValue}>{numberValue(selectedWord?.encounter_count)}</Text>
-                  <Text style={styles.detailMetricLabel}>Encounters</Text>
-                </View>
-                <View style={styles.detailMetric}>
-                  <Text style={styles.detailMetricValue}>{numberValue(selectedWord?.encounter_day_count)}</Text>
-                  <Text style={styles.detailMetricLabel}>Days</Text>
-                </View>
-                <View style={styles.detailMetric}>
-                  <Text style={styles.detailMetricValue}>{numberValue(selectedWord?.encounter_source_count)}</Text>
-                  <Text style={styles.detailMetricLabel}>Sources</Text>
-                </View>
-              </View>
-
-              <View style={styles.detailInfoList}>
-                <View style={styles.detailInfoRow}>
-                  <Text style={styles.detailInfoLabel}>Last seen</Text>
-                  <Text style={styles.detailInfoValue} numberOfLines={2}>
-                    {formatDetailDate(selectedWord?.last_encountered_at)}
-                  </Text>
-                </View>
-                <View style={styles.detailInfoRow}>
-                  <Text style={styles.detailInfoLabel}>Source</Text>
-                  <Text style={styles.detailInfoValue} numberOfLines={2}>
-                    {selectedSourceTitle}
-                  </Text>
-                </View>
-                <View style={styles.detailInfoRow}>
-                  <Text style={styles.detailInfoLabel}>Review history</Text>
-                  <Text style={styles.detailInfoValue} numberOfLines={2}>
-                    {selectedReviewSummary}
-                  </Text>
-                </View>
-                <View style={styles.detailInfoRow}>
-                  <Text style={styles.detailInfoLabel}>Next review</Text>
-                  <Text style={styles.detailInfoValue} numberOfLines={2}>
-                    {formatDetailDate(selectedWord?.next_review_at)}
-                  </Text>
-                </View>
-                {selectedWord?.context_sentence ? (
-                  <View style={styles.detailContextBlock}>
-                    <Text style={styles.detailInfoLabel}>Saved context</Text>
-                    <Text style={styles.detailContextText} selectable>
-                      {selectedWord.context_sentence}
-                    </Text>
-                  </View>
-                ) : null}
-              </View>
-
-              <View style={styles.detailActions}>
-                <TouchableOpacity
-                  onPress={() => selectedWord && handleAlreadyKnow(selectedWord)}
-                  style={[styles.detailActionButton, styles.detailActionPrimary]}
-                >
-                  <Feather name="check-circle" size={15} color={colors.success} />
-                  <Text style={[styles.detailActionLabel, styles.detailActionPrimaryLabel]}>Already know</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  onPress={() => selectedWord && handleStillConfusing(selectedWord)}
-                  style={styles.detailActionButton}
-                >
-                  <Feather name="alert-circle" size={15} color={colors.warning} />
-                  <Text style={styles.detailActionLabel}>Still confusing</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  onPress={() => selectedWord && handleResetProgress(selectedWord)}
-                  style={styles.detailActionButton}
-                >
-                  <Feather name="rotate-ccw" size={15} color={colors.textMuted} />
-                  <Text style={styles.detailActionLabel}>Reset progress</Text>
-                </TouchableOpacity>
-              </View>
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
+      <WordDetailModal
+        word={selectedWord}
+        contexts={selectedWordContexts}
+        visible={!!selectedWord}
+        onClose={() => setSelectedWord(null)}
+        onToggleFavorite={() => handleToggleFavorite(selectedWord)}
+        onRemove={() => handleRemoveWord(selectedWord, { closeDetail: true })}
+      />
 
       <Modal animationType="fade" transparent visible={!!practiceDeck} onRequestClose={closePractice}>
         <View style={styles.modalRoot}>
@@ -1050,6 +1032,7 @@ const Learn = () => {
               total={practiceDeck?.words?.length ?? 0}
               onClose={closePractice}
               onMark={handlePracticeMark}
+              user={user}
             />
           </View>
         </View>
@@ -1060,259 +1043,502 @@ const Learn = () => {
 
 const styles = StyleSheet.create({
   content: {
-    paddingBottom: spacing.xl * 2,
+    paddingHorizontal: 0,
+    paddingBottom: spacing.xl,
+    gap: spacing.md,
   },
-  stack: {
-    gap: spacing.lg,
-  },
-  heroCard: {
-    borderRadius: radii.xl,
-  },
-  heroContent: {
-    gap: spacing.lg,
-  },
-  heroCopy: {
-    gap: spacing.xs,
-  },
-  heroTitle: {
-    ...textStyles.title,
-  },
-  heroSubtitle: {
-    ...textStyles.bodyMuted,
-  },
-  heroNudge: {
-    ...textStyles.bodyMuted,
-    color: colors.text,
-  },
-  heroStats: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.sm,
-  },
-  heroStat: {
-    flexGrow: 1,
-    minWidth: 72,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: radii.lg,
-    backgroundColor: colors.surfaceElevated,
-    borderWidth: 1,
-    borderColor: colors.border,
+  header: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.xs,
     gap: 2,
   },
-  heroStatValue: {
-    ...textStyles.sectionTitle,
-    fontSize: 18,
+  title: {
+    fontFamily: fontFamilies.displayBold,
+    fontSize: 34,
+    lineHeight: 39,
+    color: '#2b2721',
   },
-  heroStatLabel: {
-    ...textStyles.caption,
+  subtitle: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 14,
+    lineHeight: 19,
+    color: '#807566',
   },
-  practiceButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.xs,
-    borderRadius: radii.pill,
-    backgroundColor: colors.accentSoft,
-    paddingVertical: spacing.md,
-  },
-  practiceButtonDisabled: {
-    backgroundColor: colors.surfaceStrong,
-  },
-  practiceButtonLabel: {
-    ...textStyles.label,
-    color: colors.accentStrong,
-  },
-  practiceButtonLabelDisabled: {
-    color: colors.textSubtle,
-  },
-  heroFooter: {
-    ...textStyles.caption,
-    color: colors.textMuted,
-    textAlign: 'center',
-  },
-  practiceModesCard: {
-    borderRadius: radii.xl,
-  },
-  practiceModesContent: {
+  summaryCard: {
+    marginHorizontal: spacing.lg,
+    borderRadius: 20,
+    backgroundColor: '#fffaf3',
+    padding: spacing.md,
     gap: spacing.md,
+    shadowColor: 'rgba(70, 49, 24, 0.08)',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 1,
+    shadowRadius: 24,
+    elevation: 3,
   },
-  practiceModesHeader: {
+  summaryStats: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  summaryStat: {
+    flex: 1,
+    gap: spacing.xs,
+  },
+  summaryValue: {
+    fontFamily: fontFamilies.displayBold,
+    fontSize: 29,
+    lineHeight: 33,
+    color: '#a99f8f',
+  },
+  summaryValueGreen: {
+    color: '#5c9856',
+  },
+  summaryValueAmber: {
+    color: '#c58b28',
+  },
+  summaryLabel: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 11,
+    lineHeight: 15,
+    color: '#817568',
+  },
+  readingGuidance: {
+    minHeight: 54,
     flexDirection: 'row',
     alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: spacing.md,
-  },
-  practiceModesCopy: {
-    flex: 1,
-    gap: spacing.xs,
-  },
-  practiceModesTitle: {
-    ...textStyles.sectionTitle,
-    fontSize: 18,
-  },
-  practiceModesSubtitle: {
-    ...textStyles.caption,
-    color: colors.textMuted,
-  },
-  practiceModeGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
     gap: spacing.sm,
-  },
-  practiceModeButton: {
-    flexGrow: 1,
-    flexBasis: '45%',
-    minWidth: 136,
-    minHeight: 58,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surfaceElevated,
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.sm,
+    borderRadius: 14,
+    backgroundColor: '#f6ebd8',
   },
-  practiceModeButtonDisabled: {
-    opacity: 0.55,
-  },
-  practiceModeIcon: {
-    width: 30,
-    height: 30,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 15,
-    backgroundColor: colors.accentSoft,
-  },
-  practiceModeIconDisabled: {
-    backgroundColor: colors.surfaceMuted,
-  },
-  practiceModeCopy: {
+  readingGuidanceText: {
     flex: 1,
-    minWidth: 0,
+    fontFamily: fontFamilies.sans,
+    fontSize: 13,
+    lineHeight: 19,
+    color: '#6f5f4b',
   },
-  practiceModeTitle: {
-    ...textStyles.label,
-    color: colors.text,
+  summaryActions: {
+    flexDirection: 'row',
+    gap: spacing.sm,
   },
-  practiceModeMeta: {
-    ...textStyles.caption,
-    color: colors.textMuted,
-  },
-  practiceModeTextDisabled: {
-    color: colors.textSubtle,
-  },
-  controlsCard: {
-    borderRadius: radii.xl,
-  },
-  controlsContent: {
-    gap: spacing.md,
-  },
-  searchBox: {
+  keepReadingButton: {
+    flex: 1,
     minHeight: 46,
+    borderRadius: 15,
+    backgroundColor: '#bf5630',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.xs,
-    borderRadius: radii.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surfaceMuted,
-    paddingHorizontal: spacing.md,
+    justifyContent: 'center',
+    gap: spacing.sm,
   },
-  searchInput: {
+  keepReadingButtonFull: {
     flex: 1,
-    minWidth: 0,
-    ...textStyles.body,
-    paddingVertical: spacing.xs,
-    color: colors.text,
   },
-  searchClearButton: {
-    width: 28,
-    height: 28,
+  keepReadingText: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 15,
+    color: '#fffaf3',
+  },
+  reviewButton: {
+    minWidth: 104,
+    minHeight: 46,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: '#eadcc4',
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 14,
-    backgroundColor: colors.surfaceElevated,
+    paddingHorizontal: spacing.md,
   },
-  controlGroup: {
+  reviewButtonText: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 14,
+    color: '#756b5f',
+  },
+  filters: {
+    paddingHorizontal: spacing.lg,
     gap: spacing.xs,
-  },
-  controlLabel: {
-    ...textStyles.caption,
-    color: colors.textMuted,
-  },
-  chipRow: {
-    gap: spacing.xs,
-    paddingRight: spacing.sm,
   },
   filterChip: {
-    minHeight: 34,
-    alignItems: 'center',
-    justifyContent: 'center',
     borderRadius: radii.pill,
     borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surfaceElevated,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 7,
-  },
-  sourceChip: {
-    maxWidth: 176,
+    borderColor: '#e4d8c4',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 8,
+    backgroundColor: 'rgba(255, 250, 243, 0.5)',
   },
   filterChipActive: {
-    borderColor: colors.accentStrong,
-    backgroundColor: colors.accentSoft,
+    backgroundColor: '#2b2721',
+    borderColor: '#2b2721',
   },
-  filterChipLabel: {
+  filterText: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 13,
+    color: '#7c7163',
+  },
+  filterTextActive: {
+    color: '#fffaf3',
+  },
+  listHeader: {
+    paddingHorizontal: spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  listEyebrow: {
+    ...textStyles.eyebrow,
+    color: '#7e7468',
+    fontSize: 12,
+    letterSpacing: 1.2,
+  },
+  listCount: {
     ...textStyles.caption,
-    color: colors.textMuted,
+    color: '#a99e8c',
   },
-  filterChipLabelActive: {
-    color: colors.accentStrong,
+  selectionBar: {
+    marginHorizontal: spacing.lg,
+    minHeight: 48,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#e4d8c4',
+    backgroundColor: '#fffaf3',
+    paddingHorizontal: spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
   },
-  clearFiltersButton: {
-    alignSelf: 'flex-start',
+  selectionBarButton: {
+    minHeight: 34,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xs,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radii.pill,
+    backgroundColor: '#f4eadc',
+  },
+  selectionBarButtonText: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 13,
+    color: '#756b5f',
+  },
+  selectionCount: {
+    flex: 1,
+    textAlign: 'center',
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 14,
+    color: '#2b2721',
+  },
+  selectionDeleteButton: {
+    backgroundColor: '#b64f44',
+  },
+  selectionDeleteText: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 13,
+    color: '#fffaf3',
+  },
+  list: {
+    backgroundColor: '#fffaf3',
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: '#e4d8c4',
+  },
+  wordRow: {
+    minHeight: 84,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e9dece',
+    gap: spacing.md,
+  },
+  wordRowPressed: {
+    backgroundColor: '#f7f0e5',
+  },
+  wordRowSelected: {
+    backgroundColor: '#f3eadf',
+  },
+  selectionCircle: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#cfc1ae',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#fffaf3',
+  },
+  selectionCircleSelected: {
+    borderColor: '#bf5630',
+    backgroundColor: '#bf5630',
+  },
+  wordCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 5,
+  },
+  wordTitleLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minWidth: 0,
+    flexWrap: 'wrap',
+  },
+  wordText: {
+    fontFamily: fontFamilies.krSerifBold,
+    fontSize: 22,
+    lineHeight: 28,
+    color: '#29251f',
+  },
+  wordHanja: {
+    fontFamily: fontFamilies.krSerifMedium,
+    fontSize: 13,
+    lineHeight: 18,
+    color: '#a79a87',
+  },
+  badge: {
+    borderRadius: radii.pill,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+  },
+  badgeText: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 10,
+    lineHeight: 13,
+  },
+  wordDefinition: {
+    fontFamily: fontFamilies.sansMedium,
+    fontSize: 15,
+    lineHeight: 20,
+    color: '#756b5f',
+  },
+  wordMetaLine: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.xs,
-    borderRadius: radii.pill,
-    backgroundColor: colors.surfaceMuted,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
+    minWidth: 0,
   },
-  clearFiltersLabel: {
-    ...textStyles.caption,
-    color: colors.textMuted,
+  wordMetaText: {
+    flex: 1,
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 11,
+    lineHeight: 15,
+    color: '#a99e8c',
   },
-  sectionList: {
-    gap: spacing.md,
+  proficiencySummary: {
+    width: 78,
+    alignItems: 'flex-end',
+    gap: spacing.xs,
   },
-  emptyCard: {
-    borderRadius: radii.xl,
+  dotRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  proficiencyDot: {
+    backgroundColor: '#ded8c9',
+  },
+  proficiencyLabel: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  emptyState: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.xl,
+    gap: spacing.xs,
   },
   emptyTitle: {
     ...textStyles.sectionTitle,
-    marginBottom: spacing.xs,
   },
   emptyBody: {
     ...textStyles.bodyMuted,
   },
-  emptyActionButton: {
-    alignSelf: 'flex-start',
+  detailScreen: {
+    flex: 1,
+    backgroundColor: '#eee6d8',
+  },
+  detailHeader: {
+    height: 54,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.md,
+    backgroundColor: '#fffaf3',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e4d8c4',
+  },
+  detailHeaderButton: {
+    width: 38,
+    height: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  detailHeaderTitle: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 15,
+    color: '#776d60',
+  },
+  detailContent: {
+    paddingBottom: spacing.xl,
+  },
+  detailHero: {
+    backgroundColor: '#fffaf3',
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.lg,
+    paddingBottom: spacing.lg,
+    gap: spacing.xs,
+  },
+  detailWordLine: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.xs,
+    flexWrap: 'wrap',
+  },
+  detailWord: {
+    fontFamily: fontFamilies.krSerifBold,
+    fontSize: 38,
+    lineHeight: 47,
+    color: '#2b2721',
+  },
+  detailHanjaButton: {
+    paddingHorizontal: 3,
+    paddingVertical: 2,
+  },
+  detailHanja: {
+    fontFamily: fontFamilies.krSerifMedium,
+    fontSize: 16,
+    lineHeight: 21,
+    color: '#a79a87',
+  },
+  detailMeta: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 13,
+    lineHeight: 18,
+    color: '#817568',
+  },
+  detailDefinition: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 20,
+    lineHeight: 26,
+    color: '#29251f',
+  },
+  maturityCard: {
+    margin: spacing.lg,
+    borderRadius: 16,
+    padding: spacing.md,
+    gap: spacing.md,
+  },
+  maturityTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: spacing.md,
+  },
+  maturityCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  maturityTitle: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 17,
+    lineHeight: 22,
+  },
+  maturityDescription: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 12,
+    lineHeight: 17,
+    color: '#807566',
+  },
+  detailStatsRow: {
+    flexDirection: 'row',
+    gap: spacing.lg,
+  },
+  detailStat: {
+    gap: 2,
+  },
+  detailStatValue: {
+    fontFamily: fontFamilies.displayBold,
+    fontSize: 24,
+    lineHeight: 29,
+    color: '#2b2721',
+  },
+  detailStatLabel: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 11,
+    lineHeight: 15,
+    color: '#817568',
+  },
+  detailSectionTitle: {
+    ...textStyles.eyebrow,
+    color: '#817568',
+    fontSize: 12,
+    letterSpacing: 1,
+    marginHorizontal: spacing.lg,
+  },
+  highlightSentence: {
+    flex: 1,
+    fontFamily: fontFamilies.krSerifRegular,
+    fontSize: 17,
+    lineHeight: 24,
+    color: '#2b2721',
+  },
+  highlightedWord: {
+    borderRadius: 6,
+    overflow: 'hidden',
+    paddingHorizontal: 3,
+  },
+  contextSection: {
     marginTop: spacing.md,
-    borderRadius: radii.pill,
-    backgroundColor: colors.accentSoft,
-    paddingHorizontal: spacing.md,
+    gap: spacing.xs,
+  },
+  contextRow: {
+    backgroundColor: '#fffaf3',
+    borderTopWidth: 1,
+    borderColor: '#e4d8c4',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    gap: spacing.xs,
+  },
+  contextRowHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.md,
+  },
+  contextSource: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 12,
+    lineHeight: 16,
+    color: '#d77d4b',
+  },
+  contextDate: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 12,
+    color: '#a99e8c',
+  },
+  emptyContext: {
+    ...textStyles.bodyMuted,
+  },
+  detailActions: {
+    borderTopWidth: 1,
+    borderTopColor: '#e1d5c5',
+    backgroundColor: '#e8dfd0',
+    paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
   },
-  emptyActionLabel: {
-    ...textStyles.label,
-    color: colors.accentStrong,
+  deleteWordButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.xs,
+  },
+  deleteWordText: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 13,
+    color: '#afa391',
   },
   modalRoot: {
     flex: 1,
@@ -1325,149 +1551,6 @@ const styles = StyleSheet.create({
   },
   modalCardWrap: {
     justifyContent: 'center',
-  },
-  detailCard: {
-    maxHeight: '86%',
-    borderRadius: radii.xl,
-    backgroundColor: colors.surfaceElevated,
-    padding: spacing.lg,
-    gap: spacing.md,
-  },
-  detailHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: spacing.md,
-  },
-  detailTitleCopy: {
-    flex: 1,
-    minWidth: 0,
-    gap: 2,
-  },
-  detailWord: {
-    ...textStyles.title,
-    fontSize: 25,
-    lineHeight: 31,
-  },
-  detailHanja: {
-    ...textStyles.bodyMuted,
-  },
-  detailCloseButton: {
-    width: 34,
-    height: 34,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 17,
-    backgroundColor: colors.surfaceMuted,
-  },
-  detailScrollContent: {
-    gap: spacing.md,
-    paddingBottom: spacing.xs,
-  },
-  detailDefinition: {
-    ...textStyles.body,
-    color: colors.text,
-  },
-  detailBadgeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: spacing.sm,
-  },
-  detailBadge: {
-    borderRadius: radii.pill,
-    backgroundColor: colors.accentSoft,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 7,
-  },
-  detailBadgeLabel: {
-    ...textStyles.label,
-    color: colors.accentStrong,
-  },
-  detailBadgeDescription: {
-    flex: 1,
-    minWidth: 160,
-    ...textStyles.caption,
-    color: colors.textMuted,
-  },
-  detailGrid: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-  },
-  detailMetric: {
-    flex: 1,
-    minHeight: 68,
-    justifyContent: 'center',
-    borderRadius: radii.lg,
-    backgroundColor: colors.surfaceMuted,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.sm,
-    gap: 2,
-  },
-  detailMetricValue: {
-    ...textStyles.sectionTitle,
-    textAlign: 'center',
-    fontVariant: ['tabular-nums'],
-  },
-  detailMetricLabel: {
-    ...textStyles.caption,
-    textAlign: 'center',
-    color: colors.textMuted,
-  },
-  detailInfoList: {
-    gap: spacing.xs,
-  },
-  detailInfoRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-    paddingBottom: spacing.xs,
-  },
-  detailInfoLabel: {
-    ...textStyles.caption,
-    color: colors.textSubtle,
-  },
-  detailInfoValue: {
-    flex: 1,
-    ...textStyles.caption,
-    color: colors.text,
-    textAlign: 'right',
-  },
-  detailContextBlock: {
-    gap: spacing.xs,
-    borderRadius: radii.lg,
-    backgroundColor: colors.surfaceMuted,
-    padding: spacing.md,
-  },
-  detailContextText: {
-    ...textStyles.bodyMuted,
-    color: colors.text,
-  },
-  detailActions: {
-    gap: spacing.sm,
-  },
-  detailActionButton: {
-    minHeight: 42,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.xs,
-    borderRadius: radii.pill,
-    backgroundColor: colors.surfaceMuted,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-  },
-  detailActionPrimary: {
-    backgroundColor: 'rgba(47, 125, 76, 0.12)',
-  },
-  detailActionLabel: {
-    ...textStyles.label,
-    color: colors.textMuted,
-  },
-  detailActionPrimaryLabel: {
-    color: colors.success,
   },
 });
 

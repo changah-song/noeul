@@ -9,17 +9,14 @@ const koreanDictionary = ({ query }) => {
 
     const fetchData = async () => {
         setIsLoading(true);
-        console.log(`[koreanDictionary] Fetching definitions for ${query.length} word(s):`, query);
 
         try {
             const response = await axios.post(`${BASE_URL}/krdict_search/`, {
                 queries: query,
             });
             const results = response.data?.results ?? [];
-            console.log(`[koreanDictionary] Received ${results.length} query result set(s)`);
             setDictionaryData(results);
         } catch (fetchError) {
-            console.log('[koreanDictionary] Error finding definitions:', fetchError.message);
             setError(fetchError.message);
             setDictionaryData([]);
         } finally {

@@ -44,29 +44,6 @@ data class TextRange(
   val sourceEndOffset: Int
 )
 
-data class HighlightTerm(
-  val vocabId: Int?,
-  val term: String,
-  val maturity: String = "new",
-  val highlightTone: String = "strong"
-)
-
-data class SavedHighlightHit(
-  val vocabId: Int?,
-  val term: String,
-  val maturity: String,
-  val highlightTone: String,
-  val range: TextRange
-)
-
-data class SavedHighlightRange(
-  val range: TextRange,
-  val vocabId: Int?,
-  val term: String,
-  val maturity: String = "new",
-  val highlightTone: String = "strong"
-)
-
 data class WordHit(
   val text: String,
   val placement: String,

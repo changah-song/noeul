@@ -11,7 +11,7 @@ class EpubPageAdapter(
   private var backgroundColor: Int,
   private var activeSelectionRanges: List<TextRange>,
   private var activeSelectionKind: ActiveSelectionKind?,
-  private var savedHighlightRangesByPage: Map<Int, List<SavedHighlightRange>>,
+  private var savedHighlightRangesByPage: Map<Int, List<TextRange>>,
   private var activeHighlightColor: Int,
   private var textSelectionHighlightColor: Int,
   private var savedHighlightColor: Int,
@@ -58,7 +58,7 @@ class EpubPageAdapter(
     activeSelectionKind = selectionKind
   }
 
-  fun updateSavedHighlightRanges(rangesByPage: Map<Int, List<SavedHighlightRange>>) {
+  fun updateSavedHighlightRanges(rangesByPage: Map<Int, List<TextRange>>) {
     savedHighlightRangesByPage = rangesByPage
   }
 

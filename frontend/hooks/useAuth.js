@@ -1,235 +1,286 @@
 import { useEffect, useState, useCallback } from 'react';
-import { insertDataIfMissing, updateVocabLearningState, viewData } from '../services/Database';
-import { fetchUserVocab, supabase, upsertUserVocabEntries } from '../services/supabase';
-import { MATURITY_ORDER } from '../services/vocabLearning';
+import {
+  getAllVocabContexts,
+  getAllRelatedKnownWords,
+  insertVocabContextIfMissing,
+  addRelatedKnownWordForEntry,
+  removeRelatedKnownWordForEntry,
+  removeData,
+  upsertVocabEntryFromCloud,
+  viewData,
+} from '../services/Database';
+import {
+  fetchUserVocabContexts,
+  fetchUserRelatedKnownWords,
+  fetchUserVocab,
+  makeUserVocabContextKey,
+  makeUserRelatedKnownWordKey,
+  makeUserVocabKey,
+  softDeleteUserVocabEntry,
+  supabase,
+  upsertUserVocabContext,
+  upsertUserRelatedKnownWord,
+  upsertUserVocabEntry,
+} from '../services/supabase';
 
 const FILE_TAG = '[useAuth]';
 
-const makeVocabKey = (word, hanja, definition) => `${word}::${hanja ?? ''}::${definition ?? ''}`;
+const getTimestamp = (entry, keys = ['updated_at', 'updatedAt', 'created_at', 'createdAt']) => {
+  for (const key of keys) {
+    const value = entry?.[key];
+    if (!value) {
+      continue;
+    }
 
-const countValue = (value) => {
-  const numberValue = Number(value);
-  return Number.isFinite(numberValue) ? Math.max(0, Math.trunc(numberValue)) : 0;
-};
-
-const dateTime = (value) => {
-  if (!value) return null;
-  const time = new Date(value).getTime();
-  return Number.isFinite(time) ? time : null;
-};
-
-const newestDate = (a, b) => {
-  const aTime = dateTime(a);
-  const bTime = dateTime(b);
-
-  if (aTime === null) return b ?? null;
-  if (bTime === null) return a ?? null;
-  return bTime > aTime ? b : a;
-};
-
-const earliestDate = (a, b) => {
-  const aTime = dateTime(a);
-  const bTime = dateTime(b);
-
-  if (aTime === null) return b ?? null;
-  if (bTime === null) return a ?? null;
-  return bTime < aTime ? b : a;
-};
-
-const compareDates = (a, b) => {
-  const aTime = dateTime(a);
-  const bTime = dateTime(b);
-
-  if (aTime === null && bTime === null) return 0;
-  if (aTime === null) return -1;
-  if (bTime === null) return 1;
-  return aTime - bTime;
-};
-
-const maturityRank = (maturity) => {
-  const index = MATURITY_ORDER.indexOf(String(maturity ?? '').toLowerCase());
-  return index === -1 ? 0 : index;
-};
-
-const highestMaturity = (localMaturity, cloudMaturity, graduatedAt) => {
-  if (graduatedAt || localMaturity === 'graduated' || cloudMaturity === 'graduated') {
-    return 'graduated';
+    const timestamp = new Date(value).getTime();
+    if (Number.isFinite(timestamp)) {
+      return timestamp;
+    }
   }
 
-  return maturityRank(cloudMaturity) > maturityRank(localMaturity)
-    ? cloudMaturity
-    : (localMaturity || cloudMaturity || 'new');
+  return 0;
 };
-
-const cloudRowToLocalShape = (row) => ({
-  word: row.word,
-  hanja: row.hanja ?? null,
-  def: row.definition ?? null,
-  level: row.status ?? 'unorganized',
-  encounter_count: countValue(row.encounter_count),
-  last_encountered_at: row.last_encountered_at ?? null,
-  last_encounter_source_uri: row.last_encounter_source_uri ?? null,
-  last_encounter_source_title: row.last_encounter_source_title ?? null,
-  maturity: row.maturity ?? 'new',
-  graduated_at: row.graduated_at ?? null,
-  implicit_review_count: countValue(row.implicit_review_count),
-  last_reviewed_at: row.last_reviewed_at ?? null,
-  next_review_at: row.next_review_at ?? null,
-  correct_count: countValue(row.correct_count),
-  wrong_count: countValue(row.wrong_count),
-});
-
-const toInsertOptions = (row) => ({
-  level: row.level ?? 'unorganized',
-  encounterCount: countValue(row.encounter_count),
-  lastEncounteredAt: row.last_encountered_at ?? null,
-  lastEncounterSourceUri: row.last_encounter_source_uri ?? null,
-  lastEncounterSourceTitle: row.last_encounter_source_title ?? null,
-  maturity: row.maturity ?? 'new',
-  graduatedAt: row.graduated_at ?? null,
-  implicitReviewCount: countValue(row.implicit_review_count),
-  lastReviewedAt: row.last_reviewed_at ?? null,
-  nextReviewAt: row.next_review_at ?? null,
-  correctCount: countValue(row.correct_count),
-  wrongCount: countValue(row.wrong_count),
-});
-
-const chooseMergedLevel = (localRow, cloudRow) => {
-  const reviewComparison = compareDates(localRow.last_reviewed_at, cloudRow.last_reviewed_at);
-  if (reviewComparison < 0) return cloudRow.level ?? localRow.level ?? 'unorganized';
-  return localRow.level ?? cloudRow.level ?? 'unorganized';
-};
-
-const chooseMergedNextReview = (localRow, cloudRow, mergedMaturity, mergedLevel) => {
-  const localStateMatches = localRow.maturity === mergedMaturity && localRow.level === mergedLevel;
-  const cloudStateMatches = cloudRow.maturity === mergedMaturity && cloudRow.level === mergedLevel;
-
-  if (localStateMatches && cloudStateMatches) {
-    return newestDate(localRow.next_review_at, cloudRow.next_review_at);
-  }
-
-  if (localStateMatches) return localRow.next_review_at ?? null;
-  if (cloudStateMatches) return cloudRow.next_review_at ?? null;
-  return localRow.next_review_at ?? cloudRow.next_review_at ?? null;
-};
-
-const mergeLocalAndCloudRows = (localRow, cloudRow) => {
-  const graduatedAt = earliestDate(localRow.graduated_at, cloudRow.graduated_at);
-  const maturity = highestMaturity(localRow.maturity, cloudRow.maturity, graduatedAt);
-  const level = chooseMergedLevel(localRow, cloudRow);
-  const lastEncounteredAt = newestDate(localRow.last_encountered_at, cloudRow.last_encountered_at);
-  const cloudHasNewestEncounter = compareDates(cloudRow.last_encountered_at, localRow.last_encountered_at) > 0;
-
-  return {
-    ...localRow,
-    level,
-    encounter_count: Math.max(countValue(localRow.encounter_count), countValue(cloudRow.encounter_count)),
-    last_encountered_at: lastEncounteredAt,
-    last_encounter_source_uri: cloudHasNewestEncounter
-      ? cloudRow.last_encounter_source_uri
-      : (localRow.last_encounter_source_uri ?? cloudRow.last_encounter_source_uri ?? null),
-    last_encounter_source_title: cloudHasNewestEncounter
-      ? cloudRow.last_encounter_source_title
-      : (localRow.last_encounter_source_title ?? cloudRow.last_encounter_source_title ?? null),
-    maturity,
-    graduated_at: graduatedAt,
-    implicit_review_count: Math.max(countValue(localRow.implicit_review_count), countValue(cloudRow.implicit_review_count)),
-    last_reviewed_at: newestDate(localRow.last_reviewed_at, cloudRow.last_reviewed_at),
-    next_review_at: chooseMergedNextReview(localRow, cloudRow, maturity, level),
-    correct_count: Math.max(countValue(localRow.correct_count), countValue(cloudRow.correct_count)),
-    wrong_count: Math.max(countValue(localRow.wrong_count), countValue(cloudRow.wrong_count)),
-  };
-};
-
-const toCloudEntry = (row) => ({
-  word: row.word,
-  hanja: row.hanja,
-  definition: row.def ?? row.definition ?? null,
-  level: row.level,
-  encounter_count: row.encounter_count,
-  last_encountered_at: row.last_encountered_at,
-  last_encounter_source_uri: row.last_encounter_source_uri,
-  last_encounter_source_title: row.last_encounter_source_title,
-  maturity: row.maturity,
-  graduated_at: row.graduated_at,
-  implicit_review_count: row.implicit_review_count,
-  last_reviewed_at: row.last_reviewed_at,
-  next_review_at: row.next_review_at,
-  correct_count: row.correct_count,
-  wrong_count: row.wrong_count,
-});
 
 const syncVocabFromCloud = async (user) => {
-  console.log(`${FILE_TAG} syncing vocab for user ${user.id}`);
-
   const [cloudRows, localRows] = await Promise.all([
-    fetchUserVocab(user.id),
-    viewData(),
+    fetchUserVocab(user.id, { includeDeleted: true }),
+    viewData({ includeDeleted: true }),
   ]);
 
-  const localRowsByKey = new Map(
-    localRows.map((row) => [makeVocabKey(row.word, row.hanja, row.def), row])
+  const cloudByKey = new Map(
+    cloudRows.map((row) => [makeUserVocabKey(row), row])
   );
-  const cloudKeys = new Set();
+  const localByKey = new Map(
+    localRows.map((row) => [makeUserVocabKey({
+      language: row.language ?? 'ko',
+      word: row.word,
+      hanja: row.hanja,
+      definition: row.def,
+    }), row])
+  );
+  const allKeys = new Set([...cloudByKey.keys(), ...localByKey.keys()]);
 
-  let pulledCount = 0;
-  let mergedCount = 0;
-  const rowsToPush = [];
+  for (const key of allKeys) {
+    const cloudRow = cloudByKey.get(key);
+    const localRow = localByKey.get(key);
 
-  for (const row of cloudRows) {
-    const cloudLocalRow = cloudRowToLocalShape(row);
-    const key = makeVocabKey(cloudLocalRow.word, cloudLocalRow.hanja, cloudLocalRow.def);
-    const localRow = localRowsByKey.get(key);
-    cloudKeys.add(key);
+    if (!cloudRow && localRow) {
+      if (localRow.deleted_at) {
+        continue;
+      }
 
-    if (!localRow) {
-      const inserted = await insertDataIfMissing(
-        cloudLocalRow.word,
-        cloudLocalRow.hanja,
-        cloudLocalRow.def,
-        toInsertOptions(cloudLocalRow)
-      );
+      await upsertUserVocabEntry(user.id, localRow);
+      continue;
+    }
 
-      if (inserted) {
-        pulledCount += 1;
+    if (cloudRow && !localRow) {
+      if (!cloudRow.deleted_at) {
+        await upsertVocabEntryFromCloud(cloudRow);
       }
       continue;
     }
 
-    const mergedRow = mergeLocalAndCloudRows(localRow, cloudLocalRow);
-    await updateVocabLearningState(localRow.word, localRow.hanja, localRow.def, {
-      level: mergedRow.level,
-      encounter_count: mergedRow.encounter_count,
-      last_encountered_at: mergedRow.last_encountered_at,
-      last_encounter_source_uri: mergedRow.last_encounter_source_uri,
-      last_encounter_source_title: mergedRow.last_encounter_source_title,
-      maturity: mergedRow.maturity,
-      graduated_at: mergedRow.graduated_at,
-      implicit_review_count: mergedRow.implicit_review_count,
-      last_reviewed_at: mergedRow.last_reviewed_at,
-      next_review_at: mergedRow.next_review_at,
-      correct_count: mergedRow.correct_count,
-      wrong_count: mergedRow.wrong_count,
-    });
-    rowsToPush.push(toCloudEntry(mergedRow));
-    mergedCount += 1;
-  }
+    if (!cloudRow || !localRow) {
+      continue;
+    }
 
-  const localOnlyRows = localRows.filter(
-    (row) => !cloudKeys.has(makeVocabKey(row.word, row.hanja, row.def))
+    const cloudUpdatedAt = getTimestamp(cloudRow);
+    const localUpdatedAt = getTimestamp(localRow);
+    const cloudDeletedAt = getTimestamp(cloudRow, ['deleted_at']);
+    const localDeletedAt = getTimestamp(localRow, ['deleted_at']);
+
+    if (cloudDeletedAt && cloudDeletedAt >= localUpdatedAt) {
+      await removeData(localRow.word, localRow.hanja, localRow.def, localRow.language ?? 'ko');
+      continue;
+    }
+
+    if (localDeletedAt && localDeletedAt >= cloudUpdatedAt) {
+      await softDeleteUserVocabEntry(user.id, localRow);
+      continue;
+    }
+
+    if (cloudUpdatedAt > localUpdatedAt) {
+      await upsertVocabEntryFromCloud(cloudRow);
+      continue;
+    }
+
+    await upsertUserVocabEntry(user.id, localRow);
+  }
+};
+
+const syncVocabContextsFromCloud = async (user) => {
+  const [cloudContexts, localContexts, localVocabRows] = await Promise.all([
+    fetchUserVocabContexts(user.id, { includeDeleted: true }),
+    getAllVocabContexts(),
+    viewData(),
+  ]);
+
+  const localVocabKeys = new Set(
+    localVocabRows.map((row) => makeUserVocabKey({
+      language: row.language ?? 'ko',
+      word: row.word,
+      hanja: row.hanja,
+      definition: row.def,
+    }))
   );
-
-  if (localOnlyRows.length > 0) {
-    rowsToPush.push(...localOnlyRows.map(toCloudEntry));
-  }
-
-  if (rowsToPush.length > 0) {
-    await upsertUserVocabEntries(user.id, rowsToPush);
-  }
-
-  console.log(
-    `${FILE_TAG} vocab sync complete -> pulled=${pulledCount} merged=${mergedCount} pushed=${rowsToPush.length} cloud=${cloudRows.length} local=${localRows.length}`
+  const cloudByKey = new Map(
+    cloudContexts.map((context) => [makeUserVocabContextKey(context), context])
   );
+  const localByKey = new Map(
+    localContexts.map((context) => [makeUserVocabContextKey(context), context])
+  );
+  const allKeys = new Set([...cloudByKey.keys(), ...localByKey.keys()]);
+
+  for (const key of allKeys) {
+    const cloudContext = cloudByKey.get(key);
+    const localContext = localByKey.get(key);
+
+    if (cloudContext?.deleted_at || cloudContext?.deletedAt) {
+      continue;
+    }
+
+    if (!cloudContext && localContext) {
+      const vocabKey = makeUserVocabKey({
+        language: localContext.language ?? 'ko',
+        word: localContext.word,
+        hanja: localContext.hanja,
+        definition: localContext.def ?? localContext.definition,
+      });
+
+      if (localVocabKeys.has(vocabKey)) {
+        await upsertUserVocabContext(user.id, localContext);
+      }
+      continue;
+    }
+
+    if (cloudContext && !localContext) {
+      const vocabKey = makeUserVocabKey({
+        language: cloudContext.language ?? 'ko',
+        word: cloudContext.word,
+        hanja: cloudContext.hanja,
+        definition: cloudContext.definition,
+      });
+
+      if (localVocabKeys.has(vocabKey)) {
+        await insertVocabContextIfMissing(cloudContext);
+      }
+      continue;
+    }
+
+    if (!cloudContext || !localContext) {
+      continue;
+    }
+
+    const cloudUpdatedAt = Math.max(
+      getTimestamp(cloudContext, ['updated_at', 'updatedAt']),
+      getTimestamp(cloudContext, ['seen_at', 'seenAt'])
+    );
+    const localUpdatedAt = Math.max(
+      getTimestamp(localContext, ['updated_at', 'updatedAt']),
+      getTimestamp(localContext, ['seen_at', 'seenAt'])
+    );
+
+    if (cloudUpdatedAt > localUpdatedAt) {
+      await insertVocabContextIfMissing(cloudContext);
+      continue;
+    }
+
+    await upsertUserVocabContext(user.id, localContext);
+  }
+};
+
+const toLocalRelatedKnownRelation = (relation) => ({
+  language: relation.language ?? 'ko',
+  mainWord: relation.main_word ?? relation.mainWord,
+  mainHanja: relation.main_hanja ?? relation.mainHanja ?? null,
+  mainDefinition: relation.main_definition ?? relation.mainDefinition ?? null,
+  relatedWord: relation.related_word ?? relation.relatedWord ?? relation.korean,
+  relatedHanja: relation.related_hanja ?? relation.relatedHanja ?? relation.hanja ?? null,
+  relatedDefinition: relation.related_definition ?? relation.relatedDefinition ?? relation.meaning ?? null,
+  sourceHanja: relation.source_hanja ?? relation.sourceHanja ?? null,
+  markedAt: relation.marked_at ?? relation.markedAt ?? new Date().toISOString(),
+  updatedAt: relation.updated_at ?? relation.updatedAt ?? relation.marked_at ?? relation.markedAt,
+});
+
+const syncRelatedKnownWordsFromCloud = async (user) => {
+  const [cloudRelations, localRelations, localVocabRows] = await Promise.all([
+    fetchUserRelatedKnownWords(user.id, { includeDeleted: true }),
+    getAllRelatedKnownWords(),
+    viewData(),
+  ]);
+  const localVocabKeys = new Set(
+    localVocabRows.map((row) => makeUserVocabKey({
+      language: row.language ?? 'ko',
+      word: row.word,
+      hanja: row.hanja,
+      definition: row.def,
+    }))
+  );
+  const cloudByKey = new Map(
+    cloudRelations.map((relation) => [makeUserRelatedKnownWordKey(relation), relation])
+  );
+  const localByKey = new Map(
+    localRelations.map((relation) => [makeUserRelatedKnownWordKey(relation), relation])
+  );
+  const allKeys = new Set([...cloudByKey.keys(), ...localByKey.keys()]);
+
+  for (const key of allKeys) {
+    const cloudRelation = cloudByKey.get(key);
+    const localRelation = localByKey.get(key);
+
+    if (!cloudRelation && localRelation) {
+      const vocabKey = makeUserVocabKey({
+        language: localRelation.language ?? 'ko',
+        word: localRelation.mainWord,
+        hanja: localRelation.mainHanja,
+        definition: localRelation.mainDefinition,
+      });
+
+      if (localVocabKeys.has(vocabKey)) {
+        await upsertUserRelatedKnownWord(user.id, localRelation);
+      }
+      continue;
+    }
+
+    if (cloudRelation && !localRelation) {
+      if (!cloudRelation.deleted_at) {
+        await addRelatedKnownWordForEntry(toLocalRelatedKnownRelation(cloudRelation));
+      }
+      continue;
+    }
+
+    if (!cloudRelation || !localRelation) {
+      continue;
+    }
+
+    const cloudUpdatedAt = Math.max(
+      getTimestamp(cloudRelation, ['updated_at', 'updatedAt']),
+      getTimestamp(cloudRelation, ['marked_at', 'markedAt'])
+    );
+    const localUpdatedAt = Math.max(
+      getTimestamp(localRelation, ['updated_at', 'updatedAt']),
+      getTimestamp(localRelation, ['marked_at', 'markedAt'])
+    );
+    const cloudDeletedAt = getTimestamp(cloudRelation, ['deleted_at', 'deletedAt']);
+
+    if (cloudDeletedAt && cloudDeletedAt >= localUpdatedAt) {
+      await removeRelatedKnownWordForEntry(toLocalRelatedKnownRelation(cloudRelation));
+      continue;
+    }
+
+    if (cloudUpdatedAt > localUpdatedAt) {
+      await addRelatedKnownWordForEntry(toLocalRelatedKnownRelation(cloudRelation));
+      continue;
+    }
+
+    await upsertUserRelatedKnownWord(user.id, localRelation);
+  }
+};
+
+const syncUserDataFromCloud = async (user) => {
+  await syncVocabFromCloud(user);
+  await syncVocabContextsFromCloud(user);
+  await syncRelatedKnownWordsFromCloud(user);
 };
 
 const useAuth = () => {
@@ -259,10 +310,10 @@ const useAuth = () => {
         setUser(currentSession?.user ?? null);
 
         if (currentSession?.user) {
-          await syncVocabFromCloud(currentSession.user);
+          await syncUserDataFromCloud(currentSession.user);
         }
       } catch (error) {
-        console.log(`${FILE_TAG} failed to restore session:`, error.message);
+        console.warn(`${FILE_TAG} failed to restore session:`, error.message);
       } finally {
         if (isMounted) {
           setLoading(false);
@@ -275,15 +326,14 @@ const useAuth = () => {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, nextSession) => {
-      console.log(`${FILE_TAG} auth state changed -> ${event}`);
       setSession(nextSession);
       setUser(nextSession?.user ?? null);
       setLoading(false);
 
       if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && nextSession?.user) {
         setTimeout(() => {
-          syncVocabFromCloud(nextSession.user).catch((error) => {
-            console.log(`${FILE_TAG} vocab sync failed:`, error.message);
+          syncUserDataFromCloud(nextSession.user).catch((error) => {
+            console.warn(`${FILE_TAG} user data sync failed:`, error.message);
           });
         }, 0);
       }
@@ -303,27 +353,11 @@ const useAuth = () => {
   }, []);
 
   const updateProfile = useCallback(async (patch) => {
-    console.log(`${FILE_TAG} updateProfile start`, {
-      patchKeys: Object.keys(patch || {}),
-      hasUser: !!user?.id,
-      userId: user?.id ?? null,
-      ts: Date.now(),
-    });
-
     const { data, error } = await supabase.auth.updateUser({
       data: patch,
     });
 
-    console.log(`${FILE_TAG} updateProfile resolved`, {
-      hasError: !!error,
-      errorMessage: error?.message ?? null,
-      hasUser: !!data?.user,
-      metadataKeys: data?.user?.user_metadata ? Object.keys(data.user.user_metadata) : [],
-      ts: Date.now(),
-    });
-
     if (error) {
-      console.log(`${FILE_TAG} updateProfile throwing error`, error.message);
       throw error;
     }
 
@@ -347,38 +381,20 @@ const useAuth = () => {
           : null);
 
     if (nextUser) {
-      console.log(`${FILE_TAG} updateProfile applying local user state`, {
-        username: nextUser?.user_metadata?.username ?? null,
-        displayName: nextUser?.user_metadata?.display_name ?? null,
-        ts: Date.now(),
-      });
       setUser(nextUser);
       setSession((prev) => (prev ? { ...prev, user: nextUser } : prev));
     }
 
-    console.log(`${FILE_TAG} updateProfile complete`, { ts: Date.now() });
     return nextUser;
   }, [user]);
 
   const updateUsername = useCallback(async (username) => {
     const trimmed = username.trim();
 
-    console.log(`${FILE_TAG} updateUsername start`, {
-      original: username,
-      trimmed,
-      ts: Date.now(),
-    });
-
-    const result = await updateProfile({
+    return updateProfile({
       username: trimmed,
       display_name: trimmed,
     });
-    console.log(`${FILE_TAG} updateUsername complete`, {
-      username: result?.user_metadata?.username ?? null,
-      displayName: result?.user_metadata?.display_name ?? null,
-      ts: Date.now(),
-    });
-    return result;
   }, [updateProfile]);
 
   return {

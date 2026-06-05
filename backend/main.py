@@ -4,9 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import sqlite3
 import httpx
 import asyncio
-import json
 import xml.etree.ElementTree as ET
-from typing import Any, Optional
+from typing import Optional
 import os
 from functools import partial
 from uuid import uuid4
@@ -32,10 +31,6 @@ MAX_STEMS_DEFAULT = None
 KRDICT_CONCURRENCY_LIMIT = 10
 JOB_PROGRESS_LOG_INTERVAL = 25
 KRDICT_API_URL = "https://krdict.korean.go.kr/api/search"
-LRCLIB_BASE_URL = "https://lrclib.net/api"
-LRCLIB_HEADERS = {
-    "User-Agent": os.getenv("LRCLIB_USER_AGENT", "FluentFable/0.1")
-}
 
 # ─── Server-Side Cache DB ─────────────────────────────────────────────────────
 # This SQLite database lives on the backend server and persists across app restarts.
@@ -70,22 +65,6 @@ def init_cache_db():
     """)
     # Index on stem for O(1) lookups when checking cache hits
     conn.execute("CREATE INDEX IF NOT EXISTS idx_stem ON dictionary_cache(stem)")
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS song_cache (
-            provider TEXT NOT NULL,
-            provider_id TEXT NOT NULL,
-            title TEXT NOT NULL,
-            artist TEXT NOT NULL,
-            album TEXT,
-            duration REAL,
-            instrumental INTEGER DEFAULT 0,
-            plain_lyrics TEXT,
-            synced_lyrics TEXT,
-            source_payload TEXT,
-            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (provider, provider_id)
-        )
-    """)
     conn.commit()
     conn.close()
     print("[main] Server-side cache database initialized.")
@@ -420,101 +399,6 @@ async def romanize_text(text: str):
     return {"romanization": romanize_korean_text(normalized)}
 
 
-@app.get("/songs/search")
-async def search_songs(q: str = "", limit: int = 10):
-    query = q.strip() if isinstance(q, str) else ""
-    if not query:
-        return {"results": []}
-
-    result_limit = max(1, min(limit, 25))
-
-    try:
-        async with httpx.AsyncClient(headers=LRCLIB_HEADERS) as client:
-            response = await client.get(
-                f"{LRCLIB_BASE_URL}/search",
-                params={"q": query},
-                timeout=10.0,
-            )
-    except httpx.RequestError as error:
-        print(f"[main] LRCLIB search failed for {query!r}: {error}")
-        raise HTTPException(status_code=502, detail="Lyrics provider request failed") from error
-
-    if response.status_code != 200:
-        print(f"[main] LRCLIB search HTTP {response.status_code} for {query!r}: {response.text[:200]}")
-        raise HTTPException(status_code=502, detail="Lyrics provider request failed")
-
-    try:
-        payload = response.json()
-    except ValueError as error:
-        print(f"[main] LRCLIB search returned invalid JSON for {query!r}: {error}")
-        raise HTTPException(status_code=502, detail="Lyrics provider returned invalid data") from error
-
-    raw_results = payload if isinstance(payload, list) else payload.get("data", [])
-    if not isinstance(raw_results, list):
-        raw_results = []
-
-    results: list[dict[str, Any]] = []
-    for raw_song in raw_results:
-        if not isinstance(raw_song, dict):
-            continue
-
-        normalized = normalize_lrclib_song(raw_song)
-        if not normalized["id"] or not song_has_lyrics(normalized):
-            continue
-
-        results.append(normalized)
-        cache_lrclib_song(normalized, raw_song)
-
-        if len(results) >= result_limit:
-            break
-
-    return {"results": results}
-
-
-@app.get("/songs/{song_id}")
-async def get_song(song_id: str):
-    normalized_song_id = song_id.strip() if isinstance(song_id, str) else ""
-    if not normalized_song_id:
-        raise HTTPException(status_code=404, detail="Song not found")
-
-    cached_song = get_cached_lrclib_song(normalized_song_id)
-    if cached_song and song_has_lyrics(cached_song):
-        return cached_song
-
-    try:
-        async with httpx.AsyncClient(headers=LRCLIB_HEADERS) as client:
-            response = await client.get(
-                f"{LRCLIB_BASE_URL}/get/{normalized_song_id}",
-                timeout=10.0,
-            )
-    except httpx.RequestError as error:
-        print(f"[main] LRCLIB get failed for {normalized_song_id!r}: {error}")
-        raise HTTPException(status_code=502, detail="Lyrics provider request failed") from error
-
-    if response.status_code == 404:
-        raise HTTPException(status_code=404, detail="Song lyrics not found")
-
-    if response.status_code != 200:
-        print(f"[main] LRCLIB get HTTP {response.status_code} for {normalized_song_id!r}: {response.text[:200]}")
-        raise HTTPException(status_code=502, detail="Lyrics provider request failed")
-
-    try:
-        payload = response.json()
-    except ValueError as error:
-        print(f"[main] LRCLIB get returned invalid JSON for {normalized_song_id!r}: {error}")
-        raise HTTPException(status_code=502, detail="Lyrics provider returned invalid data") from error
-
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=404, detail="Song lyrics not found")
-
-    normalized = normalize_lrclib_song(payload)
-    if not normalized["id"] or not song_has_lyrics(normalized):
-        raise HTTPException(status_code=404, detail="Song lyrics not found")
-
-    cache_lrclib_song(normalized, payload)
-    return normalized
-
-
 # ─── KRDICT Helper ────────────────────────────────────────────────────────────
 async def lookup_stem_in_krdict(
     client: httpx.AsyncClient,
@@ -632,125 +516,106 @@ async def search_krdict_entries(
         return []
 
 
-def get_lrclib_field(raw: dict, camel_key: str, snake_key: str, default=None):
-    if camel_key in raw:
-        return raw.get(camel_key)
-    return raw.get(snake_key, default)
-
-
-def strip_synced_lyric_timestamps(synced_lyrics: str) -> str:
-    lines = []
-    for raw_line in str(synced_lyrics or "").splitlines():
-        line = raw_line.strip()
-        while line.startswith("[") and "]" in line:
-            line = line[line.find("]") + 1:].strip()
-        if line:
-            lines.append(line)
-    return "\n".join(lines)
-
-
-def count_nonempty_lyric_lines(plain_lyrics: str, synced_lyrics: str) -> int:
-    source = plain_lyrics or strip_synced_lyric_timestamps(synced_lyrics)
-    return len([line for line in str(source or "").splitlines() if line.strip()])
-
-
-def normalize_lrclib_song(raw: dict[str, Any]) -> dict[str, Any]:
-    plain_lyrics = get_lrclib_field(raw, "plainLyrics", "plain_lyrics") or ""
-    synced_lyrics = get_lrclib_field(raw, "syncedLyrics", "synced_lyrics") or ""
-    provider_id = get_lrclib_field(raw, "id", "id")
-
-    return {
-        "id": str(provider_id) if provider_id is not None else "",
-        "provider": "lrclib",
-        "title": get_lrclib_field(raw, "trackName", "track_name") or raw.get("title") or "",
-        "artist": get_lrclib_field(raw, "artistName", "artist_name") or raw.get("artist") or "",
-        "album": get_lrclib_field(raw, "albumName", "album_name") or raw.get("album") or "",
-        "duration": get_lrclib_field(raw, "duration", "duration"),
-        "instrumental": bool(get_lrclib_field(raw, "instrumental", "instrumental", False)),
-        "plainLyrics": plain_lyrics,
-        "syncedLyrics": synced_lyrics,
-        "hasSyncedLyrics": bool(synced_lyrics),
-        "linesCount": count_nonempty_lyric_lines(plain_lyrics, synced_lyrics),
-    }
-
-
-def normalize_cached_song(row: sqlite3.Row) -> dict[str, Any]:
-    return {
-        "id": str(row["provider_id"]),
-        "provider": row["provider"],
-        "title": row["title"] or "",
-        "artist": row["artist"] or "",
-        "album": row["album"] or "",
-        "duration": row["duration"],
-        "instrumental": bool(row["instrumental"]),
-        "plainLyrics": row["plain_lyrics"] or "",
-        "syncedLyrics": row["synced_lyrics"] or "",
-        "hasSyncedLyrics": bool(row["synced_lyrics"]),
-        "linesCount": count_nonempty_lyric_lines(row["plain_lyrics"] or "", row["synced_lyrics"] or ""),
-    }
-
-
-def cache_lrclib_song(song: dict[str, Any], source_payload: dict[str, Any] | None = None):
-    if not song.get("id"):
-        return
-
-    conn = get_db_connection()
-    conn.execute(
-        """
-        INSERT INTO song_cache (
-            provider, provider_id, title, artist, album, duration, instrumental,
-            plain_lyrics, synced_lyrics, source_payload, last_updated
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(provider, provider_id) DO UPDATE SET
-            title = excluded.title,
-            artist = excluded.artist,
-            album = excluded.album,
-            duration = excluded.duration,
-            instrumental = excluded.instrumental,
-            plain_lyrics = excluded.plain_lyrics,
-            synced_lyrics = excluded.synced_lyrics,
-            source_payload = excluded.source_payload,
-            last_updated = CURRENT_TIMESTAMP
-        """,
-        [
-            "lrclib",
-            song["id"],
-            song.get("title", ""),
-            song.get("artist", ""),
-            song.get("album", ""),
-            song.get("duration"),
-            1 if song.get("instrumental") else 0,
-            song.get("plainLyrics", ""),
-            song.get("syncedLyrics", ""),
-            json.dumps(source_payload or song, ensure_ascii=False),
-        ],
+async def preprocess_text_for_dictionary(text: str, krdict_key: str, max_stems=None) -> dict:
+    allowed_pos = {"Noun", "Verb", "Adverb", "Adjective"}
+    loop = asyncio.get_event_loop()
+    raw_surface_morphs, raw_stem_morphs = await asyncio.gather(
+        loop.run_in_executor(None, partial(okt.pos, text, stem=False)),
+        loop.run_in_executor(None, partial(okt.pos, text, stem=True)),
     )
-    conn.commit()
-    conn.close()
 
+    merged_stem_morphs = merge_noun_hada(raw_stem_morphs)
+    surface_index = build_surface_index(raw_surface_morphs, raw_stem_morphs, allowed_pos)
+    filtered_stem_morphs = filter_lookup_morphs(merged_stem_morphs, text)
 
-def get_cached_lrclib_song(song_id: str) -> Optional[dict[str, Any]]:
+    stem_pos_map: dict[str, str] = {}
+    for word, pos in filtered_stem_morphs:
+        if word not in stem_pos_map:
+            stem_pos_map[word] = pos
+
+    unique_stems = list(stem_pos_map.keys()) if not max_stems else list(stem_pos_map.keys())[:max_stems]
+    processed_stems = set(unique_stems)
+    surface_index = [entry for entry in surface_index if entry["stem"] in processed_stems]
+
+    if not unique_stems:
+        return {
+            "results": [],
+            "surface_index": surface_index,
+            "stats": {"total_stems": 0, "cache_hits": 0, "new_fetched": 0},
+        }
+
     conn = get_db_connection()
-    row = conn.execute(
-        """
-        SELECT provider, provider_id, title, artist, album, duration, instrumental,
-               plain_lyrics, synced_lyrics
-        FROM song_cache
-        WHERE provider = ? AND provider_id = ?
-        """,
-        ["lrclib", song_id],
-    ).fetchone()
+    placeholders = ",".join(["?"] * len(unique_stems))
+    cached_rows = conn.execute(
+        f"SELECT stem, definition, hanja, pos, domain FROM dictionary_cache WHERE stem IN ({placeholders})",
+        unique_stems,
+    ).fetchall()
     conn.close()
 
-    if not row:
-        return None
+    cached_stems = {row["stem"] for row in cached_rows}
+    cached_results = [dict(row) for row in cached_rows]
+    missing_stems = [stem for stem in unique_stems if stem not in cached_stems]
 
-    return normalize_cached_song(row)
+    new_results: list[dict] = []
+    no_entry_results: list[dict] = []
 
+    if missing_stems:
+        semaphore = asyncio.Semaphore(KRDICT_CONCURRENCY_LIMIT)
 
-def song_has_lyrics(song: dict[str, Any]) -> bool:
-    return bool(song.get("plainLyrics") or song.get("syncedLyrics") or song.get("instrumental"))
+        async def fetch_missing_stem(client: httpx.AsyncClient, stem: str):
+            async with semaphore:
+                if ENABLE_RATE_LIMIT_DELAY:
+                    await asyncio.sleep(RATE_LIMIT_DELAY_SECONDS)
+
+                result = await lookup_stem_in_krdict(client, stem, krdict_key)
+
+                if ENABLE_RATE_LIMIT_DELAY:
+                    await asyncio.sleep(RATE_LIMIT_DELAY_SECONDS)
+
+                return result
+
+        async with httpx.AsyncClient() as client:
+            ordered_results = await asyncio.gather(
+                *(fetch_missing_stem(client, stem) for stem in missing_stems)
+            )
+
+        new_results = [result for result in ordered_results if result]
+        fetched_stems = {row["stem"] for row in new_results}
+        no_entry_results = [
+            {"stem": stem, "definition": None, "hanja": None, "pos": None, "domain": None}
+            for stem in missing_stems if stem not in fetched_stems
+        ]
+
+        rows_to_insert = [
+            {
+                "stem": row.get("stem"),
+                "definition": row.get("definition"),
+                "hanja": row.get("hanja"),
+                "pos": row.get("pos"),
+                "domain": row.get("domain"),
+            }
+            for row in new_results + no_entry_results
+        ]
+        if rows_to_insert:
+            conn = get_db_connection()
+            conn.executemany(
+                """INSERT OR IGNORE INTO dictionary_cache (stem, definition, hanja, pos, domain)
+                   VALUES (:stem, :definition, :hanja, :pos, :domain)""",
+                rows_to_insert,
+            )
+            conn.commit()
+            conn.close()
+
+    all_results = cached_results + new_results + no_entry_results
+    return {
+        "results": all_results,
+        "surface_index": surface_index,
+        "stats": {
+            "total_stems": len(unique_stems),
+            "cache_hits": len(cached_stems),
+            "new_fetched": len(new_results),
+        },
+    }
 
 
 async def run_preprocess_pipeline(job_id: str, text: str, krdict_key: str, max_stems):
@@ -894,7 +759,16 @@ async def run_preprocess_pipeline(job_id: str, text: str, krdict_key: str, max_s
             for s in missing_stems if s not in fetched_stems
         ]
 
-        rows_to_insert = new_results + no_entry_results
+        rows_to_insert = [
+            {
+                "stem": row.get("stem"),
+                "definition": row.get("definition"),
+                "hanja": row.get("hanja"),
+                "pos": row.get("pos"),
+                "domain": row.get("domain"),
+            }
+            for row in new_results + no_entry_results
+        ]
         if rows_to_insert:
             conn = get_db_connection()
             conn.executemany(
@@ -924,7 +798,41 @@ async def run_preprocess_pipeline(job_id: str, text: str, krdict_key: str, max_s
     )
 
 
-# ─── New Endpoint: Full Book Preprocessing ────────────────────────────────────
+# ─── Endpoint: Chapter Preprocessing ──────────────────────────────────────────
+@app.post("/preprocess_chapter/")
+async def preprocess_chapter(payload: dict):
+    text = payload.get("text", "")
+    book_uri = payload.get("book_uri", "")
+    spine_index = payload.get("spine_index", None)
+    max_stems = payload.get("max_stems", MAX_STEMS_DEFAULT)
+
+    if not isinstance(spine_index, int):
+        raise HTTPException(status_code=400, detail="spine_index must be an integer")
+
+    if not text:
+        return {
+            "book_uri": book_uri,
+            "spine_index": spine_index,
+            "results": [],
+            "surface_index": [],
+            "stats": {"total_stems": 0, "cache_hits": 0, "new_fetched": 0},
+        }
+
+    if not KRDICT_CLIENT_ID:
+        raise HTTPException(status_code=500, detail="No KRDICT key configured on server")
+
+    print(
+        f"[main] /preprocess_chapter/ | spine={spine_index} "
+        f"text length={len(text):,} chars | max_stems={max_stems}"
+    )
+    result = await preprocess_text_for_dictionary(text, KRDICT_CLIENT_ID, max_stems)
+    return {
+        "book_uri": book_uri,
+        "spine_index": spine_index,
+        **result,
+    }
+
+
 @app.post("/preprocess_book/")
 async def preprocess_book(payload: dict):
     """
