@@ -3,15 +3,38 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { initAllTables } from '../services/Database';
 import { cloudBookToLocalBook, fetchUserBooks } from '../services/bookCloudSync';
 import { persistCoverDataUri, stripInlineCoverForStorage } from '../services/epubMetadata';
+import { GUEST_OWNER_ID, makeScopedStorageKey } from '../services/localDataScope';
+import {
+    getSyncGeneration,
+    isCurrentSyncGeneration,
+} from '../services/localOwnerCoordinator';
 import {
     fetchUserPreferences,
     getTimestampMs,
     updateUserPreferenceFields,
 } from '../services/preferencesCloudSync';
 
-const BOOKS_STORAGE_KEY = '@ff/books';
-const CURRENT_BOOK_STORAGE_KEY = '@ff/current-book';
-const CURRENT_BOOK_META_STORAGE_KEY = '@ff/current-book-meta';
+const LEGACY_BOOKS_STORAGE_KEY = '@ff/books';
+const LEGACY_CURRENT_BOOK_STORAGE_KEY = '@ff/current-book';
+const LEGACY_CURRENT_BOOK_META_STORAGE_KEY = '@ff/current-book-meta';
+
+const getBooksStorageKey = (ownerId) => makeScopedStorageKey(ownerId, 'books');
+const getCurrentBookStorageKey = (ownerId) => makeScopedStorageKey(ownerId, 'current-book');
+const getCurrentBookMetaStorageKey = (ownerId) => makeScopedStorageKey(ownerId, 'current-book-meta');
+const emptyCurrentBookMeta = () => ({ currentBookUri: null, currentBookCloudId: null, updatedAt: null });
+
+let initTablesPromise = null;
+
+const ensureTablesInitialized = () => {
+    if (!initTablesPromise) {
+        initTablesPromise = initAllTables().catch((error) => {
+            initTablesPromise = null;
+            throw error;
+        });
+    }
+
+    return initTablesPromise;
+};
 
 const isCursorWindowTooLargeError = (error) => {
     const message = String(error?.message || error || '').toLowerCase();
@@ -165,10 +188,10 @@ const parseStoredJson = (value, fallback = null) => {
     }
 };
 
-const readCurrentBookMeta = async () => {
+const readCurrentBookMeta = async (ownerId) => {
     const [storedUri, storedMeta] = await Promise.all([
-        AsyncStorage.getItem(CURRENT_BOOK_STORAGE_KEY),
-        AsyncStorage.getItem(CURRENT_BOOK_META_STORAGE_KEY),
+        AsyncStorage.getItem(getCurrentBookStorageKey(ownerId)),
+        AsyncStorage.getItem(getCurrentBookMetaStorageKey(ownerId)),
     ]);
     const parsedMeta = parseStoredJson(storedMeta, {});
 
@@ -177,6 +200,71 @@ const readCurrentBookMeta = async () => {
         currentBookCloudId: parsedMeta.currentBookCloudId ?? parsedMeta.current_book_cloud_id ?? null,
         updatedAt: parsedMeta.updatedAt ?? parsedMeta.updated_at ?? null,
     };
+};
+
+const readOwnerBookStorage = async (ownerId) => {
+    const scopedKeys = [
+        getBooksStorageKey(ownerId),
+        getCurrentBookStorageKey(ownerId),
+        getCurrentBookMetaStorageKey(ownerId),
+    ];
+
+    let storedBooksRaw = null;
+    let storedCurrentBook = null;
+    let storedCurrentBookMetaRaw = null;
+
+    try {
+        [storedBooksRaw, storedCurrentBook, storedCurrentBookMetaRaw] = await Promise.all(
+            scopedKeys.map((key) => AsyncStorage.getItem(key))
+        );
+    } catch (error) {
+        if (!isCursorWindowTooLargeError(error)) {
+            throw error;
+        }
+
+        console.warn('[useAppSetup] Scoped stored book metadata was too large; clearing oversized scoped book list.', error);
+        await AsyncStorage.multiRemove(scopedKeys);
+    }
+
+    const scopedKeysAreEmpty = !storedBooksRaw && !storedCurrentBook && !storedCurrentBookMetaRaw;
+    if (ownerId !== GUEST_OWNER_ID || !scopedKeysAreEmpty) {
+        return { storedBooksRaw, storedCurrentBook, storedCurrentBookMetaRaw };
+    }
+
+    try {
+        const [legacyBooksRaw, legacyCurrentBook, legacyCurrentBookMetaRaw] = await Promise.all([
+            AsyncStorage.getItem(LEGACY_BOOKS_STORAGE_KEY),
+            AsyncStorage.getItem(LEGACY_CURRENT_BOOK_STORAGE_KEY),
+            AsyncStorage.getItem(LEGACY_CURRENT_BOOK_META_STORAGE_KEY),
+        ]);
+
+        if (!legacyBooksRaw && !legacyCurrentBook && !legacyCurrentBookMetaRaw) {
+            return { storedBooksRaw, storedCurrentBook, storedCurrentBookMetaRaw };
+        }
+
+        const writes = [
+            [scopedKeys[0], legacyBooksRaw],
+            [scopedKeys[1], legacyCurrentBook],
+            [scopedKeys[2], legacyCurrentBookMetaRaw],
+        ]
+            .filter(([, value]) => value != null)
+            .map(([key, value]) => AsyncStorage.setItem(key, value));
+
+        await Promise.all(writes);
+
+        return {
+            storedBooksRaw: legacyBooksRaw,
+            storedCurrentBook: legacyCurrentBook,
+            storedCurrentBookMetaRaw: legacyCurrentBookMetaRaw,
+        };
+    } catch (error) {
+        if (!isCursorWindowTooLargeError(error)) {
+            throw error;
+        }
+
+        console.warn('[useAppSetup] Legacy stored book metadata was too large; skipping guest fallback import.', error);
+        return { storedBooksRaw, storedCurrentBook, storedCurrentBookMetaRaw };
+    }
 };
 
 const buildCurrentBookPreference = (books, currentBookUri, updatedAt = new Date().toISOString()) => {
@@ -214,15 +302,17 @@ const resolveCurrentBookUriFromPreferences = (books, preferences) => {
     return null;
 };
 
-const useAppSetup = () => {
+const useAppSetup = ({ ownerId, ownerReady = true, user = null } = {}) => {
     const [books, setBooks] = useState([]);
     const [currentBook, setCurrentBook] = useState(null);
     const [loading, setLoading] = useState(true);
+    const [loadedOwnerId, setLoadedOwnerId] = useState(null);
     const booksRef = useRef([]);
     const currentBookRef = useRef(null);
-    const currentBookMetaRef = useRef({ currentBookUri: null, currentBookCloudId: null, updatedAt: null });
-    const currentUserIdRef = useRef(null);
+    const currentBookMetaRef = useRef(emptyCurrentBookMeta());
+    const currentUserRef = useRef(null);
     const applyingCloudCurrentBookRef = useRef(false);
+    const ownerLoadGenerationRef = useRef(0);
 
     // true when the user presses the download button for a book —
     // tells Read.js to run the preprocessing pipeline on next text extraction
@@ -237,32 +327,37 @@ const useAppSetup = () => {
     }, [currentBook]);
 
     useEffect(() => {
-        let isMounted = true;
+        currentUserRef.current = user?.id && ownerId === user.id ? user : null;
+    }, [ownerId, user?.id]);
+
+    useEffect(() => {
+        const loadGeneration = ownerLoadGenerationRef.current + 1;
+        ownerLoadGenerationRef.current = loadGeneration;
+        let isActive = true;
 
         const bootstrap = async () => {
+            setLoading(true);
+            setBooks([]);
+            setCurrentBook(null);
+            currentBookMetaRef.current = emptyCurrentBookMeta();
+            currentUserRef.current = null;
+            applyingCloudCurrentBookRef.current = false;
+            setLoadedOwnerId(null);
+
+            if (!ownerReady || !ownerId) {
+                return;
+            }
+
             try {
-                await initAllTables();
+                await ensureTablesInitialized();
 
-                let storedBooksRaw = null;
-                let storedCurrentBook = null;
-                let storedCurrentBookMetaRaw = null;
+                const {
+                    storedBooksRaw,
+                    storedCurrentBook,
+                    storedCurrentBookMetaRaw,
+                } = await readOwnerBookStorage(ownerId);
 
-                try {
-                    [storedBooksRaw, storedCurrentBook, storedCurrentBookMetaRaw] = await Promise.all([
-                        AsyncStorage.getItem(BOOKS_STORAGE_KEY),
-                        AsyncStorage.getItem(CURRENT_BOOK_STORAGE_KEY),
-                        AsyncStorage.getItem(CURRENT_BOOK_META_STORAGE_KEY),
-                    ]);
-                } catch (error) {
-                    if (!isCursorWindowTooLargeError(error)) {
-                        throw error;
-                    }
-
-                    console.warn('[useAppSetup] Stored book metadata was too large for Android storage; clearing oversized book list.', error);
-                    await AsyncStorage.multiRemove([BOOKS_STORAGE_KEY, CURRENT_BOOK_STORAGE_KEY]);
-                }
-
-                if (!isMounted) {
+                if (!isActive || ownerLoadGenerationRef.current !== loadGeneration) {
                     return;
                 }
 
@@ -270,7 +365,7 @@ const useAppSetup = () => {
                 const nextBooks = Array.isArray(storedBooks)
                     ? await normalizeStoredBooks(storedBooks)
                     : [];
-                if (!isMounted) {
+                if (!isActive || ownerLoadGenerationRef.current !== loadGeneration) {
                     return;
                 }
 
@@ -292,7 +387,8 @@ const useAppSetup = () => {
             } catch (error) {
                 console.error('[useAppSetup] App setup bootstrap error:', error);
             } finally {
-                if (isMounted) {
+                if (isActive && ownerLoadGenerationRef.current === loadGeneration && ownerReady && ownerId) {
+                    setLoadedOwnerId(ownerId);
                     setLoading(false);
                 }
             }
@@ -301,12 +397,12 @@ const useAppSetup = () => {
         bootstrap();
 
         return () => {
-            isMounted = false;
+            isActive = false;
         };
-    }, []);
+    }, [ownerId, ownerReady]);
 
     useEffect(() => {
-        if (loading) {
+        if (loading || !ownerReady || !ownerId) {
             return;
         }
 
@@ -320,27 +416,35 @@ const useAppSetup = () => {
             setBooks(storageBooks);
         }
 
-        AsyncStorage.setItem(BOOKS_STORAGE_KEY, JSON.stringify(storageBooks)).catch((error) => {
+        const storageKey = getBooksStorageKey(ownerId);
+        AsyncStorage.setItem(storageKey, JSON.stringify(storageBooks)).catch((error) => {
             console.error('[useAppSetup] Failed to persist books:', error);
         });
-    }, [books, loading]);
+    }, [books, loading, ownerId, ownerReady]);
 
     useEffect(() => {
-        if (loading) {
+        if (loading || !ownerReady || !ownerId) {
             return;
         }
 
-        const userId = currentUserIdRef.current;
+        const cloudUser = currentUserRef.current;
+        const currentBookStorageKey = getCurrentBookStorageKey(ownerId);
+        const currentBookMetaStorageKey = getCurrentBookMetaStorageKey(ownerId);
 
         if (!currentBook) {
-            currentBookMetaRef.current = { currentBookUri: null, currentBookCloudId: null, updatedAt: null };
-            AsyncStorage.multiRemove([CURRENT_BOOK_STORAGE_KEY, CURRENT_BOOK_META_STORAGE_KEY]).catch((error) => {
+            currentBookMetaRef.current = emptyCurrentBookMeta();
+            AsyncStorage.multiRemove([currentBookStorageKey, currentBookMetaStorageKey]).catch((error) => {
                 console.error('[useAppSetup] Failed to clear current book:', error);
             });
-            if (userId && !applyingCloudCurrentBookRef.current) {
-                updateUserPreferenceFields(userId, {
-                    current_book_cloud_id: null,
-                    current_book_uri: null,
+            if (cloudUser?.id && ownerId === cloudUser.id && !applyingCloudCurrentBookRef.current) {
+                updateUserPreferenceFields({
+                    user: cloudUser,
+                    ownerId,
+                    generation: getSyncGeneration(),
+                    patch: {
+                        current_book_cloud_id: null,
+                        current_book_uri: null,
+                    },
                 }).catch((error) => {
                     console.warn('[useAppSetup] Failed to clear cloud current book preference:', error?.message ?? error);
                 });
@@ -357,47 +461,59 @@ const useAppSetup = () => {
         currentBookMetaRef.current = meta;
 
         Promise.all([
-            AsyncStorage.setItem(CURRENT_BOOK_STORAGE_KEY, currentBook),
-            AsyncStorage.setItem(CURRENT_BOOK_META_STORAGE_KEY, JSON.stringify(meta)),
+            AsyncStorage.setItem(currentBookStorageKey, currentBook),
+            AsyncStorage.setItem(currentBookMetaStorageKey, JSON.stringify(meta)),
         ]).catch((error) => {
             console.error('[useAppSetup] Failed to persist current book:', error);
         });
 
-        if (userId && !applyingCloudCurrentBookRef.current) {
+        if (cloudUser?.id && ownerId === cloudUser.id && !applyingCloudCurrentBookRef.current) {
             const syncMeta = {
                 ...meta,
                 updatedAt: meta.updatedAt ?? new Date().toISOString(),
             };
             currentBookMetaRef.current = syncMeta;
-            updateUserPreferenceFields(userId, {
-                current_book_cloud_id: syncMeta.currentBookCloudId,
-                current_book_uri: syncMeta.currentBookUri,
-                updated_at: syncMeta.updatedAt,
+            updateUserPreferenceFields({
+                user: cloudUser,
+                ownerId,
+                generation: getSyncGeneration(),
+                patch: {
+                    current_book_cloud_id: syncMeta.currentBookCloudId,
+                    current_book_uri: syncMeta.currentBookUri,
+                    updated_at: syncMeta.updatedAt,
+                },
             }).catch((error) => {
                 console.warn('[useAppSetup] Failed to sync current book preference:', error?.message ?? error);
             });
         }
 
         applyingCloudCurrentBookRef.current = false;
-    }, [books, currentBook, loading]);
+    }, [books, currentBook, loading, ownerId, ownerReady]);
 
     // Called by Read.js after preprocessing completes — marks the book as cached
     const updateBookPreprocessed = (uri) => {
         setBooks(prev => normalizeBookList(prev).map(b => b?.uri === uri ? { ...b, preprocessed: true } : b));
     };
 
-    const syncCloudBooks = useCallback(async (user) => {
-        if (loading) {
+    const syncCloudBooks = useCallback(async ({ user, ownerId: syncOwnerId, generation } = {}) => {
+        if (loading || !ownerReady) {
             return;
         }
 
         if (!user?.id) {
-            currentUserIdRef.current = null;
-            setBooks((prevBooks) => normalizeBookList(prevBooks).filter((book) => book.downloaded !== false));
+            currentUserRef.current = null;
             return;
         }
 
-        currentUserIdRef.current = user.id;
+        if (syncOwnerId !== user.id) {
+            return;
+        }
+
+        if (generation != null && !isCurrentSyncGeneration(generation)) {
+            return;
+        }
+
+        currentUserRef.current = user;
         let phase = 'start';
         let cloudBooks = null;
         let cloudPreferences = null;
@@ -412,8 +528,12 @@ const useAppSetup = () => {
                     console.warn('[useAppSetup] Failed to fetch cloud preferences:', error?.message ?? error);
                     return null;
                 }),
-                readCurrentBookMeta(),
+                readCurrentBookMeta(syncOwnerId),
             ]);
+            if (generation != null && !isCurrentSyncGeneration(generation)) {
+                return;
+            }
+
             currentBookMetaRef.current = localCurrentBookMeta;
             phase = 'merge-cloud-books';
             mergedBooks = mergeCloudBooks(
@@ -426,6 +546,10 @@ const useAppSetup = () => {
 
             phase = 'set-merged-books';
             setBooks(mergedBooks);
+
+            if (generation != null && !isCurrentSyncGeneration(generation)) {
+                return;
+            }
 
             phase = 'resolve-current-book-preference';
             const cloudCurrentUpdatedAt = cloudPreferences?.updated_at ?? null;
@@ -445,10 +569,10 @@ const useAppSetup = () => {
                         currentBookUri: cloudPreferences.current_book_uri ?? null,
                         currentBookCloudId: cloudPreferences.current_book_cloud_id ?? null,
                         updatedAt: cloudCurrentUpdatedAt,
-                    };
+                };
                 currentBookMetaRef.current = cloudMeta;
                 phase = 'persist-cloud-current-book-meta';
-                await AsyncStorage.setItem(CURRENT_BOOK_META_STORAGE_KEY, JSON.stringify(cloudMeta));
+                await AsyncStorage.setItem(getCurrentBookMetaStorageKey(syncOwnerId), JSON.stringify(cloudMeta));
                 return;
             }
 
@@ -460,10 +584,15 @@ const useAppSetup = () => {
             );
             currentBookMetaRef.current = localPreference;
             phase = 'sync-current-book-preference';
-            await updateUserPreferenceFields(user.id, {
-                current_book_cloud_id: localPreference.currentBookCloudId,
-                current_book_uri: localPreference.currentBookUri,
-                updated_at: localPreference.updatedAt,
+            await updateUserPreferenceFields({
+                user,
+                ownerId: syncOwnerId,
+                generation,
+                patch: {
+                    current_book_cloud_id: localPreference.currentBookCloudId,
+                    current_book_uri: localPreference.currentBookUri,
+                    updated_at: localPreference.updatedAt,
+                },
             });
         } catch (error) {
             logCloudBookSyncError({
@@ -477,7 +606,7 @@ const useAppSetup = () => {
                 currentBook: currentBookRef.current,
             });
         }
-    }, [loading]);
+    }, [loading, ownerReady]);
 
     return {
         books,
@@ -489,6 +618,7 @@ const useAppSetup = () => {
         updateBookPreprocessed,
         syncCloudBooks,
         loading,
+        loadedOwnerId,
     };
 };
 

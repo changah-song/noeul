@@ -1,7 +1,14 @@
 import * as FileSystem from 'expo-file-system';
+import {
+  assertCanUploadForOwner,
+  isCurrentSyncGeneration,
+} from './localOwnerCoordinator';
+import { makeOwnerDataDirectory } from './localDataScope';
 import { USER_BOOKS_BUCKET, supabase } from './supabase';
 
 const FILE_TAG = '[bookCloudSync]';
+const BOOK_DOWNLOAD_TIMEOUT_MS = 45000;
+const COVER_DOWNLOAD_TIMEOUT_MS = 10000;
 const USER_BOOK_SELECT = `
   id,
   user_id,
@@ -21,7 +28,8 @@ const USER_BOOK_SELECT = `
   deleted_at
 `;
 
-const BOOKS_DIRECTORY = `${FileSystem.documentDirectory}cloud-books/`;
+const getBooksDirectory = (ownerId) =>
+  `${FileSystem.documentDirectory}${makeOwnerDataDirectory(ownerId)}cloud-books/`;
 
 const createUuid = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (char) => {
   const random = Math.floor(Math.random() * 16);
@@ -34,13 +42,37 @@ const sanitizeText = (value, fallback = '') => {
   return text || fallback;
 };
 
-const ensureBooksDirectory = async () => {
-  await FileSystem.makeDirectoryAsync(BOOKS_DIRECTORY, { intermediates: true }).catch((error) => {
+const assertCloudWriteAllowed = ({ user, ownerId, generation }) => {
+  assertCanUploadForOwner({ ownerId, user });
+  if (generation != null && !isCurrentSyncGeneration(generation)) {
+    throw new Error('Refusing cloud upload for stale sync generation');
+  }
+
+  return user.id;
+};
+
+const ensureBooksDirectory = async (ownerId) => {
+  const booksDirectory = getBooksDirectory(ownerId);
+
+  await FileSystem.makeDirectoryAsync(booksDirectory, { intermediates: true }).catch((error) => {
     if (!String(error?.message || '').toLowerCase().includes('already exists')) {
       throw error;
     }
   });
+
+  return booksDirectory;
 };
+
+const withTimeout = (promise, timeoutMs, message) => new Promise((resolve, reject) => {
+  const timeout = setTimeout(() => {
+    reject(new Error(message));
+  }, timeoutMs);
+
+  promise
+    .then(resolve)
+    .catch(reject)
+    .finally(() => clearTimeout(timeout));
+});
 
 const getContentTypeForUri = (uri, fallback = 'application/octet-stream') => {
   const value = String(uri || '').toLowerCase();
@@ -110,8 +142,9 @@ const readUriAsArrayBuffer = async (uri) => {
   return base64ToArrayBuffer(base64);
 };
 
-const uploadStorageObject = async (path, uri, contentType) => {
+const uploadStorageObject = async ({ user, ownerId, generation, path, uri, contentType }) => {
   const body = await readUriAsArrayBuffer(uri);
+  assertCloudWriteAllowed({ user, ownerId, generation });
   const { error } = await supabase.storage
     .from(USER_BOOKS_BUCKET)
     .upload(path, body, {
@@ -124,20 +157,24 @@ const uploadStorageObject = async (path, uri, contentType) => {
   }
 };
 
-const uploadCoverIfAvailable = async (userId, cloudBookId, coverUri) => {
+const uploadCoverIfAvailable = async ({ user, ownerId, generation, cloudBookId, coverUri }) => {
   const cover = sanitizeText(coverUri);
   if (!cover || cover.startsWith('http:') || cover.startsWith('https:')) {
     return null;
   }
 
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
   const coverPath = `${userId}/${cloudBookId}/cover.jpg`;
 
   try {
-    await uploadStorageObject(
-      coverPath,
-      cover,
-      getContentTypeForUri(cover, 'image/jpeg')
-    );
+    await uploadStorageObject({
+      user,
+      ownerId,
+      generation,
+      path: coverPath,
+      uri: cover,
+      contentType: getContentTypeForUri(cover, 'image/jpeg'),
+    });
     return coverPath;
   } catch (error) {
     console.warn(`${FILE_TAG} cover upload failed`, error);
@@ -212,10 +249,8 @@ export const cloudBookToLocalBook = (cloudBook = {}, overrides = {}) => ({
   downloaded: overrides.downloaded ?? false,
 });
 
-export const uploadUserBook = async (userId, localBook, pickedAsset) => {
-  if (!userId) {
-    throw new Error('Cannot upload book without a user id');
-  }
+export const uploadUserBook = async ({ user, ownerId, generation, localBook, pickedAsset } = {}) => {
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
 
   const localUri = sanitizeText(pickedAsset?.uri || localBook?.uri);
   if (!localUri) {
@@ -225,8 +260,21 @@ export const uploadUserBook = async (userId, localBook, pickedAsset) => {
   const cloudBookId = localBook?.cloudId || createUuid();
   const filePath = localBook?.cloudFilePath || `${userId}/${cloudBookId}/book.epub`;
 
-  await uploadStorageObject(filePath, localUri, getContentTypeForUri(localUri, 'application/epub+zip'));
-  const coverPath = await uploadCoverIfAvailable(userId, cloudBookId, localBook?.cover);
+  await uploadStorageObject({
+    user,
+    ownerId,
+    generation,
+    path: filePath,
+    uri: localUri,
+    contentType: getContentTypeForUri(localUri, 'application/epub+zip'),
+  });
+  const coverPath = await uploadCoverIfAvailable({
+    user,
+    ownerId,
+    generation,
+    cloudBookId,
+    coverUri: localBook?.cover,
+  });
 
   const row = toUserBookRow({
     userId,
@@ -237,6 +285,7 @@ export const uploadUserBook = async (userId, localBook, pickedAsset) => {
     coverPath: coverPath || localBook?.cloudCoverPath || null,
   });
 
+  assertCloudWriteAllowed({ user, ownerId, generation });
   const { data, error } = await supabase
     .from('user_books')
     .upsert(row, { onConflict: 'user_id,file_path' })
@@ -271,26 +320,52 @@ export const fetchUserBooks = async (userId) => {
   return data ?? [];
 };
 
-const downloadStoragePath = async (storagePath, destinationUri) => {
+const downloadStoragePath = async (storagePath, destinationUri, { timeoutMs = BOOK_DOWNLOAD_TIMEOUT_MS } = {}) => {
   if (/^https?:\/\//i.test(String(storagePath || ''))) {
-    const result = await FileSystem.downloadAsync(storagePath, destinationUri);
+    const result = await withTimeout(
+      FileSystem.downloadAsync(storagePath, destinationUri),
+      timeoutMs,
+      'Timed out while downloading book file'
+    );
     return result.uri;
   }
 
-  const { data, error } = await supabase.storage
-    .from(USER_BOOKS_BUCKET)
-    .createSignedUrl(storagePath, 60);
+  const { data, error } = await withTimeout(
+    supabase.storage
+      .from(USER_BOOKS_BUCKET)
+      .createSignedUrl(storagePath, 60),
+    timeoutMs,
+    'Timed out while preparing book download'
+  );
 
   if (error) {
     throw error;
   }
 
-  const result = await FileSystem.downloadAsync(data.signedUrl, destinationUri);
+  const result = await withTimeout(
+    FileSystem.downloadAsync(data.signedUrl, destinationUri),
+    timeoutMs,
+    'Timed out while downloading book file'
+  );
   return result.uri;
 };
 
-export const downloadUserBook = async (userId, cloudBook) => {
-  if (!userId || !cloudBook?.cloudId) {
+const assertDownloadedFileReady = async (uri) => {
+  const info = await FileSystem.getInfoAsync(uri, { size: true });
+
+  if (!info.exists) {
+    throw new Error('Downloaded book file was not saved on this device');
+  }
+
+  if (typeof info.size === 'number' && info.size <= 0) {
+    throw new Error('Downloaded book file is empty');
+  }
+};
+
+export const downloadUserBook = async ({ user, ownerId, generation, cloudBook } = {}) => {
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
+
+  if (!cloudBook?.cloudId) {
     throw new Error('Cannot download book without a user id and cloud book id');
   }
 
@@ -299,19 +374,24 @@ export const downloadUserBook = async (userId, cloudBook) => {
     throw new Error('Cloud book does not have a file path');
   }
 
-  await ensureBooksDirectory();
+  const booksDirectory = await ensureBooksDirectory(ownerId);
+  assertCloudWriteAllowed({ user, ownerId, generation });
 
-  const localUri = `${BOOKS_DIRECTORY}${cloudBook.cloudId}.epub`;
+  const localUri = `${booksDirectory}${cloudBook.cloudId}.epub`;
   const downloadedUri = await downloadStoragePath(filePath, localUri);
+  await assertDownloadedFileReady(downloadedUri);
+  assertCloudWriteAllowed({ user, ownerId, generation });
   let coverUri = cloudBook.cover ?? null;
   const coverPath = cloudBook.cloudCoverPath || cloudBook.cover_path;
 
   if (coverPath) {
-    try {
-      coverUri = await downloadStoragePath(coverPath, `${BOOKS_DIRECTORY}${cloudBook.cloudId}-cover.jpg`);
-    } catch (error) {
+    downloadStoragePath(
+      coverPath,
+      `${booksDirectory}${cloudBook.cloudId}-cover.jpg`,
+      { timeoutMs: COVER_DOWNLOAD_TIMEOUT_MS }
+    ).catch((error) => {
       console.warn(`${FILE_TAG} cover download failed`, error);
-    }
+    });
   }
 
   return cloudBookToLocalBook(
@@ -341,11 +421,12 @@ export const downloadUserBook = async (userId, cloudBook) => {
   );
 };
 
-export const updateUserBookProgress = async (userId, book) => {
-  if (!userId || !book?.cloudId) {
+export const updateUserBookProgress = async ({ user, ownerId, generation, book } = {}) => {
+  if (!book?.cloudId) {
     return;
   }
 
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
   const { error } = await supabase
     .from('user_books')
     .update({
@@ -363,11 +444,12 @@ export const updateUserBookProgress = async (userId, book) => {
   }
 };
 
-export const softDeleteUserBook = async (userId, cloudBookId) => {
-  if (!userId || !cloudBookId) {
+export const softDeleteUserBook = async ({ user, ownerId, generation, cloudBookId } = {}) => {
+  if (!cloudBookId) {
     return;
   }
 
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
   const { error } = await supabase
     .from('user_books')
     .update({

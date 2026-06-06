@@ -13,6 +13,8 @@ import {
   DEFAULT_LANGUAGE_SETTINGS,
   normalizeLanguageCode,
 } from '../constants/languages';
+import { useLocalOwner } from './LocalOwnerContext';
+import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
 import {
   fetchUserPreferences,
   getTimestampMs,
@@ -68,6 +70,7 @@ const toCloudLanguagePatch = (settings) => ({
 });
 
 export const AppProvider = ({ children, user }) => {
+  const { activeOwnerId, syncPaused, syncGeneration } = useLocalOwner();
   const [dictMode, setDictMode] = useState(true);
   const [languageSettings, setLanguageSettings] = useState({
     ...DEFAULT_LANGUAGE_SETTINGS,
@@ -103,29 +106,56 @@ export const AppProvider = ({ children, user }) => {
         console.warn('[AppContext] Failed to persist language settings:', error);
       });
 
-      if (syncCloud && user?.id) {
-        updateUserPreferenceFields(user.id, toCloudLanguagePatch(next)).catch((error) => {
+      if (
+        syncCloud
+        && user?.id
+        && activeOwnerId === user.id
+        && !syncPaused
+        && isCurrentSyncGeneration(syncGeneration)
+      ) {
+        updateUserPreferenceFields({
+          user,
+          ownerId: activeOwnerId,
+          generation: syncGeneration,
+          patch: toCloudLanguagePatch(next),
+        }).catch((error) => {
           console.warn('[AppContext] Failed to sync language settings:', error?.message ?? error);
         });
       }
 
       return next;
     });
-  }, [persistLocalLanguageSettings, user?.id]);
+  }, [activeOwnerId, persistLocalLanguageSettings, syncGeneration, syncPaused, user]);
 
   const syncLanguagePreferences = useCallback(async (nextUser = user) => {
-    if (!languageSettingsReady || !nextUser?.id) {
+    if (
+      !languageSettingsReady
+      || !nextUser?.id
+      || syncPaused
+      || activeOwnerId !== nextUser.id
+      || !isCurrentSyncGeneration(syncGeneration)
+    ) {
       return;
     }
 
+    const ownerId = activeOwnerId;
+    const generation = syncGeneration;
     const localSettings = latestLanguageSettingsRef.current;
     const cloudPreferences = await fetchUserPreferences(nextUser.id);
+    if (!isCurrentSyncGeneration(generation)) {
+      return;
+    }
 
     if (!cloudPreferences) {
-      await upsertUserPreferences(nextUser.id, toCloudLanguagePatch({
-        ...localSettings,
-        updatedAt: localSettings.updatedAt ?? new Date().toISOString(),
-      }));
+      await upsertUserPreferences({
+        user: nextUser,
+        ownerId,
+        generation,
+        preferences: toCloudLanguagePatch({
+          ...localSettings,
+          updatedAt: localSettings.updatedAt ?? new Date().toISOString(),
+        }),
+      });
       return;
     }
 
@@ -138,17 +168,25 @@ export const AppProvider = ({ children, user }) => {
         ...cloudSettings,
         updatedAt: cloudTimestamp,
       };
+      if (!isCurrentSyncGeneration(generation)) {
+        return;
+      }
       latestLanguageSettingsRef.current = nextSettings;
       setLanguageSettings(nextSettings);
       await persistLocalLanguageSettings(nextSettings);
       return;
     }
 
-    await updateUserPreferenceFields(nextUser.id, toCloudLanguagePatch({
-      ...localSettings,
-      updatedAt: localSettings.updatedAt ?? new Date().toISOString(),
-    }));
-  }, [languageSettingsReady, persistLocalLanguageSettings, user]);
+    await updateUserPreferenceFields({
+      user: nextUser,
+      ownerId,
+      generation,
+      patch: toCloudLanguagePatch({
+        ...localSettings,
+        updatedAt: localSettings.updatedAt ?? new Date().toISOString(),
+      }),
+    });
+  }, [activeOwnerId, languageSettingsReady, persistLocalLanguageSettings, syncGeneration, syncPaused, user]);
 
   useEffect(() => {
     let isMounted = true;
@@ -190,7 +228,7 @@ export const AppProvider = ({ children, user }) => {
       return;
     }
 
-    if (!user?.id) {
+    if (!user?.id || syncPaused || activeOwnerId !== user.id || !isCurrentSyncGeneration(syncGeneration)) {
       lastSyncedUserIdRef.current = null;
       return;
     }
@@ -204,7 +242,7 @@ export const AppProvider = ({ children, user }) => {
       lastSyncedUserIdRef.current = null;
       console.warn('[AppContext] Failed to merge cloud language preferences:', error?.message ?? error);
     });
-  }, [languageSettingsReady, syncLanguagePreferences, user]);
+  }, [activeOwnerId, languageSettingsReady, syncGeneration, syncLanguagePreferences, syncPaused, user]);
 
   const value = useMemo(() => ({
     dictMode,

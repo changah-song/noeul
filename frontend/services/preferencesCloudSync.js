@@ -1,4 +1,8 @@
 import { USER_PREFERENCES_TABLE, supabase } from './supabase';
+import {
+  assertCanUploadForOwner,
+  isCurrentSyncGeneration,
+} from './localOwnerCoordinator';
 
 const FILE_TAG = '[preferencesCloudSync]';
 const USER_PREFERENCES_SELECT = `
@@ -15,6 +19,15 @@ const USER_PREFERENCES_SELECT = `
 `;
 
 const firstDefined = (...values) => values.find((value) => value !== undefined);
+
+const assertCloudWriteAllowed = ({ user, ownerId, generation }) => {
+  assertCanUploadForOwner({ ownerId, user });
+  if (generation != null && !isCurrentSyncGeneration(generation)) {
+    throw new Error('Refusing cloud upload for stale sync generation');
+  }
+
+  return user.id;
+};
 
 const toPreferencesRow = (userId, preferences = {}) => ({
   user_id: userId,
@@ -61,10 +74,8 @@ export const fetchUserPreferences = async (userId) => {
   return data ?? null;
 };
 
-export const upsertUserPreferences = async (userId, preferences = {}) => {
-  if (!userId) {
-    return null;
-  }
+export const upsertUserPreferences = async ({ user, ownerId, generation, preferences = {} } = {}) => {
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
 
   const { data, error } = await supabase
     .from(USER_PREFERENCES_TABLE)
@@ -82,10 +93,8 @@ export const upsertUserPreferences = async (userId, preferences = {}) => {
   return data;
 };
 
-export const updateUserPreferenceFields = async (userId, patch = {}) => {
-  if (!userId) {
-    return null;
-  }
+export const updateUserPreferenceFields = async ({ user, ownerId, generation, patch = {} } = {}) => {
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
 
   const rowPatch = omitUndefined({
     ...toPreferencesRow(userId, patch),
@@ -95,9 +104,10 @@ export const updateUserPreferenceFields = async (userId, patch = {}) => {
 
   const existing = await fetchUserPreferences(userId);
   if (!existing) {
-    return upsertUserPreferences(userId, patch);
+    return upsertUserPreferences({ user, ownerId, generation, preferences: patch });
   }
 
+  assertCloudWriteAllowed({ user, ownerId, generation });
   const { data, error } = await supabase
     .from(USER_PREFERENCES_TABLE)
     .update(rowPatch)

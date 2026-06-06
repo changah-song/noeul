@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Text, View, StyleSheet, TouchableOpacity, Modal, ScrollView } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
+import { useLocalOwner } from '../../../contexts/LocalOwnerContext';
 import { fetchHanjaRelated } from '../../../services/api/hanjaRelated';
 import { addRelatedKnownWord, getRelatedKnownWords, removeRelatedKnownWord } from '../../../services/Database';
 import {
@@ -9,6 +10,7 @@ import {
     upsertUserRelatedKnownWord,
     upsertUserVocabEntry,
 } from '../../../services/supabase';
+import { isCurrentSyncGeneration } from '../../../services/localOwnerCoordinator';
 import { colors, fontFamilies, spacing, textStyles } from '../../../theme';
 
 const relatedWordKey = (entry) => `${entry?.korean ?? ''}|${entry?.hanja ?? ''}`;
@@ -78,6 +80,7 @@ const HanjaDetails = ({
     onSourceWordAutoSaved,
     isDarkMode,
 }) => {
+    const { activeOwnerId, syncGeneration } = useLocalOwner();
     const characters = normalizeHanjaCharacters(hanjaCharacters, hanja);
     const charactersKey = characters.join('|');
     const fallbackIndex = characters.indexOf(cleanValue(hanja));
@@ -226,7 +229,7 @@ const HanjaDetails = ({
             };
         }
 
-        getRelatedKnownWords(sourceWord, language)
+        getRelatedKnownWords(sourceWord, language, { ownerId: activeOwnerId })
             .then((knownWords) => {
                 if (!isCancelled) {
                     setKnownKeys(new Set(knownWords.map(relatedWordKey)));
@@ -239,7 +242,7 @@ const HanjaDetails = ({
         return () => {
             isCancelled = true;
         };
-    }, [activeHanja, language, sourceWord]);
+    }, [activeHanja, activeOwnerId, language, sourceWord]);
 
     useEffect(() => {
         return () => {
@@ -343,10 +346,12 @@ const HanjaDetails = ({
         try {
             const nextKnownWords = known
                 ? await removeRelatedKnownWord(sourceWord, knownEntry, language, {
+                    ownerId: activeOwnerId,
                     mainHanja: sourceWordDetails?.hanja ?? null,
                     mainDefinition: sourceWordDetails?.definition ?? null,
                 })
                 : await addRelatedKnownWord(sourceWord, knownEntry, {
+                    ownerId: activeOwnerId,
                     createIfMissing: true,
                     mainWord: sourceWordDetails,
                     language,
@@ -360,33 +365,51 @@ const HanjaDetails = ({
                 setKnownKeys(new Set(nextKnownWords.map(relatedWordKey)));
             }
 
+            const ownerId = activeOwnerId;
+            const generation = syncGeneration;
+
             supabase.auth.getUser()
                 .then(({ data: { user } }) => {
-                    if (!user) {
+                    if (!user || ownerId !== user.id || !isCurrentSyncGeneration(generation)) {
                         return null;
                     }
 
                     if (known) {
-                        return softDeleteUserRelatedKnownWord(user.id, relation);
+                        return softDeleteUserRelatedKnownWord({
+                            user,
+                            ownerId,
+                            generation,
+                            relation,
+                        });
                     }
 
                     return Promise.all([
-                        upsertUserVocabEntry(user.id, {
-                            word: sourceWord,
-                            hanja: sourceWordDetails?.hanja ?? null,
-                            definition: sourceWordDetails?.definition ?? null,
-                            level: sourceWordDetails?.level ?? 'unorganized',
-                            status: sourceWordDetails?.level ?? 'unorganized',
-                            sourceBookUri: sourceWordDetails?.sourceBookUri ?? null,
-                            sourceBookTitle: sourceWordDetails?.sourceBookTitle ?? null,
-                            contextSentence: sourceWordDetails?.contextSentence ?? null,
-                            isFavorite: sourceWordDetails?.isFavorite ?? false,
-                            priority: sourceWordDetails?.priority ?? 'normal',
-                            createdAt: sourceWordDetails?.createdAt ?? markedAt,
-                            updatedAt: sourceWordDetails?.updatedAt ?? markedAt,
-                            language,
+                        upsertUserVocabEntry({
+                            user,
+                            ownerId,
+                            generation,
+                            entry: {
+                                word: sourceWord,
+                                hanja: sourceWordDetails?.hanja ?? null,
+                                definition: sourceWordDetails?.definition ?? null,
+                                level: sourceWordDetails?.level ?? 'unorganized',
+                                status: sourceWordDetails?.level ?? 'unorganized',
+                                sourceBookUri: sourceWordDetails?.sourceBookUri ?? null,
+                                sourceBookTitle: sourceWordDetails?.sourceBookTitle ?? null,
+                                contextSentence: sourceWordDetails?.contextSentence ?? null,
+                                isFavorite: sourceWordDetails?.isFavorite ?? false,
+                                priority: sourceWordDetails?.priority ?? 'normal',
+                                createdAt: sourceWordDetails?.createdAt ?? markedAt,
+                                updatedAt: sourceWordDetails?.updatedAt ?? markedAt,
+                                language,
+                            },
                         }),
-                        upsertUserRelatedKnownWord(user.id, relation),
+                        upsertUserRelatedKnownWord({
+                            user,
+                            ownerId,
+                            generation,
+                            relation,
+                        }),
                     ]);
                 })
                 .catch((syncError) => {
