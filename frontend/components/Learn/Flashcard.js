@@ -8,7 +8,8 @@ import {
   getTimestampMs,
   updateUserPreferenceFields,
 } from '../../services/preferencesCloudSync';
-import { colors, radii, spacing, textStyles } from '../../theme';
+import { isCurrentSyncGeneration } from '../../services/localOwnerCoordinator';
+import { colors, fontFamilies, radii, spacing, textStyles } from '../../theme';
 
 const STATUS_ACTIONS = [
   { key: 'bad', label: 'Hard', tone: 'danger' },
@@ -39,7 +40,7 @@ const DEFAULT_FRONT_SETTINGS = {
   showRelated: false,
 };
 
-const Flashcard = ({ vocab, title, index, total, onClose, onMark, user }) => {
+const Flashcard = ({ vocab, title, index, total, onClose, onMark, user, ownerId, syncGeneration }) => {
   const [isFlipped, setIsFlipped] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [frontSettings, setFrontSettings] = useState(DEFAULT_FRONT_SETTINGS);
@@ -94,18 +95,23 @@ const Flashcard = ({ vocab, title, index, total, onClose, onMark, user }) => {
       AsyncStorage.setItem(FRONT_SETTINGS_UPDATED_AT_KEY, updatedAt),
     ]).catch(() => {});
 
-    if (syncCloud && user?.id) {
-      updateUserPreferenceFields(user.id, {
-        flashcard_settings: {
-          ...nextSettings,
-          updatedAt,
+    if (syncCloud && user?.id && ownerId === user.id) {
+      updateUserPreferenceFields({
+        user,
+        ownerId,
+        generation: syncGeneration,
+        patch: {
+          flashcard_settings: {
+            ...nextSettings,
+            updatedAt,
+          },
+          updated_at: updatedAt,
         },
-        updated_at: updatedAt,
       }).catch((error) => {
         console.warn('[Flashcard] Failed to sync front-card settings:', error?.message ?? error);
       });
     }
-  }, [user?.id]);
+  }, [ownerId, syncGeneration, user]);
 
   useEffect(() => {
     let isMounted = true;
@@ -147,7 +153,7 @@ const Flashcard = ({ vocab, title, index, total, onClose, onMark, user }) => {
       return;
     }
 
-    if (!user?.id) {
+    if (!user?.id || ownerId !== user.id) {
       frontSettingsCloudUserRef.current = null;
       return;
     }
@@ -162,6 +168,9 @@ const Flashcard = ({ vocab, title, index, total, onClose, onMark, user }) => {
     const mergeCloudFrontSettings = async () => {
       try {
         const cloudPreferences = await fetchUserPreferences(user.id);
+        if (!isMounted || !isCurrentSyncGeneration(syncGeneration)) {
+          return;
+        }
         const cloudSettings = cloudPreferences?.flashcard_settings;
         const hasCloudSettings = cloudSettings
           && typeof cloudSettings === 'object'
@@ -191,12 +200,17 @@ const Flashcard = ({ vocab, title, index, total, onClose, onMark, user }) => {
         }
 
         const updatedAt = localUpdatedAt ?? new Date().toISOString();
-        await updateUserPreferenceFields(user.id, {
-          flashcard_settings: {
-            ...frontSettingsRef.current,
-            updatedAt,
+        await updateUserPreferenceFields({
+          user,
+          ownerId,
+          generation: syncGeneration,
+          patch: {
+            flashcard_settings: {
+              ...frontSettingsRef.current,
+              updatedAt,
+            },
+            updated_at: updatedAt,
           },
-          updated_at: updatedAt,
         });
       } catch (error) {
         frontSettingsCloudUserRef.current = null;
@@ -209,7 +223,7 @@ const Flashcard = ({ vocab, title, index, total, onClose, onMark, user }) => {
     return () => {
       isMounted = false;
     };
-  }, [frontSettingsLoaded, persistFrontSettings, user?.id]);
+  }, [frontSettingsLoaded, ownerId, persistFrontSettings, syncGeneration, user]);
 
   const updateFrontSetting = (key, value) => {
     setFrontSettings((current) => {
@@ -440,11 +454,21 @@ const styles = StyleSheet.create({
   },
   word: {
     ...textStyles.hero,
+    width: '100%',
+    paddingHorizontal: spacing.xs,
+    fontFamily: fontFamilies.krSerifBold,
+    letterSpacing: 0,
     textAlign: 'center',
+    includeFontPadding: true,
   },
   wordSmall: {
     ...textStyles.title,
+    width: '100%',
+    paddingHorizontal: spacing.xs,
+    fontFamily: fontFamilies.krSerifMedium,
+    letterSpacing: 0,
     textAlign: 'center',
+    includeFontPadding: true,
   },
   hanja: {
     ...textStyles.body,

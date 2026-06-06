@@ -14,6 +14,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather } from '@expo/vector-icons';
 
 import { Card, IconButton, Screen, SectionHeader } from '../components/ui';
+import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import {
   cloudWritingRowToEntry,
   fetchUserWritingEntries,
@@ -28,9 +29,15 @@ import {
   buildAnnotatedSpans,
   createMockWritingEntry,
 } from '../services/writingAssessmentMock';
+import { GUEST_OWNER_ID, makeScopedStorageKey } from '../services/localDataScope';
+import {
+  assertCanUploadForOwner,
+  isCurrentSyncGeneration,
+} from '../services/localOwnerCoordinator';
 import { colors, radii, spacing, textStyles } from '../theme';
 
-const STORAGE_KEY = 'writing_entries_v1';
+const LEGACY_STORAGE_KEY = 'writing_entries_v1';
+const getWritingStorageKey = (ownerId) => makeScopedStorageKey(ownerId, 'writing-entries-v1');
 
 const PROMPT_CATEGORIES = [
   {
@@ -419,6 +426,7 @@ const AssessmentSummary = ({ summary }) => {
 };
 
 const Write = ({ user }) => {
+  const { activeOwnerId, syncPaused, syncGeneration } = useLocalOwner();
   const [entries, setEntries] = useState([]);
   const [mode, setMode] = useState('list');
   const [draft, setDraft] = useState(makeEmptyDraft());
@@ -428,19 +436,59 @@ const Write = ({ user }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    let isMounted = true;
+    if (!activeOwnerId) {
+      return undefined;
+    }
+
+    let isActive = true;
+    const ownerId = activeOwnerId;
+    const generation = syncGeneration;
 
     const loadEntries = async () => {
+      setLoading(true);
+      setEntries([]);
+      setMode('list');
+      setDraft(makeEmptyDraft());
+      setSelectedEntryId(null);
+      setSelectedAnnotation(null);
+      setExpandedCategories(getExpandedStateForPrompt(''));
+
       try {
-        const raw = await AsyncStorage.getItem(STORAGE_KEY);
+        const storageKey = getWritingStorageKey(ownerId);
+        let raw = await AsyncStorage.getItem(storageKey);
+
+        if (!raw && ownerId === GUEST_OWNER_ID) {
+          const legacyRaw = await AsyncStorage.getItem(LEGACY_STORAGE_KEY);
+          if (legacyRaw) {
+            const legacyParsed = JSON.parse(legacyRaw);
+            if (Array.isArray(legacyParsed)) {
+              const normalizedLegacyEntries = legacyParsed.map(normalizeEntry);
+              raw = JSON.stringify(normalizedLegacyEntries);
+              await AsyncStorage.setItem(storageKey, raw);
+            }
+          }
+        }
+
+        if (!isActive || !isCurrentSyncGeneration(generation)) {
+          return;
+        }
+
         const parsed = raw ? JSON.parse(raw) : [];
         const normalizedEntries = Array.isArray(parsed) ? parsed.map(normalizeEntry) : [];
         let nextEntries = ensureMockEntry(normalizedEntries);
         let uploadCandidates = [];
+        const canSyncCloud = user?.id
+          && ownerId === user.id
+          && !syncPaused
+          && isCurrentSyncGeneration(generation);
 
-        if (user?.id) {
+        if (canSyncCloud) {
           try {
             const cloudRows = await fetchUserWritingEntries(user.id, { includeDeleted: true });
+            if (!isActive || !isCurrentSyncGeneration(generation)) {
+              return;
+            }
+
             const merged = mergeWritingEntries(normalizedEntries, cloudRows);
             nextEntries = merged.entries;
             uploadCandidates = merged.uploadCandidates;
@@ -449,30 +497,45 @@ const Write = ({ user }) => {
           }
         }
 
-        if (!isMounted) {
+        if (!isActive || !isCurrentSyncGeneration(generation)) {
           return;
         }
 
         setEntries(nextEntries);
 
         if (JSON.stringify(nextEntries) !== JSON.stringify(normalizedEntries)) {
-          await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(nextEntries));
+          await AsyncStorage.setItem(storageKey, JSON.stringify(nextEntries));
+          if (!isActive || !isCurrentSyncGeneration(generation)) {
+            return;
+          }
         }
 
-        if (user?.id && uploadCandidates.length > 0) {
-          upsertUserWritingEntries(user.id, uploadCandidates).catch((error) => {
+        if (canSyncCloud && uploadCandidates.length > 0) {
+          if (!isActive || !isCurrentSyncGeneration(generation)) {
+            return;
+          }
+
+          try {
+            assertCanUploadForOwner({ ownerId, user });
+            await upsertUserWritingEntries({
+              user,
+              ownerId,
+              generation,
+              entries: uploadCandidates,
+            });
+          } catch (error) {
             console.warn('[Write] Background writing upload failed:', error);
-          });
+          }
         }
       } catch (error) {
         console.error('[Write] Failed to load entries:', error);
         const fallbackEntries = ensureMockEntry([]);
-        if (isMounted) {
+        if (isActive && isCurrentSyncGeneration(generation)) {
           setEntries(fallbackEntries);
+          await AsyncStorage.setItem(getWritingStorageKey(ownerId), JSON.stringify(fallbackEntries));
         }
-        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(fallbackEntries));
       } finally {
-        if (isMounted) {
+        if (isActive && isCurrentSyncGeneration(generation)) {
           setLoading(false);
         }
       }
@@ -482,31 +545,70 @@ const Write = ({ user }) => {
     loadEntries();
 
     return () => {
-      isMounted = false;
+      isActive = false;
     };
-  }, [user?.id]);
+  }, [activeOwnerId, syncGeneration, syncPaused, user?.id]);
 
   const persistEntries = async (nextEntries) => {
     setEntries(nextEntries);
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(nextEntries));
+    await AsyncStorage.setItem(
+      getWritingStorageKey(activeOwnerId),
+      JSON.stringify(nextEntries)
+    );
   };
 
   const syncEntryToCloud = (entry) => {
-    if (!user?.id || isMockWritingEntry(entry)) {
+    if (
+      !user?.id
+      || syncPaused
+      || activeOwnerId !== user.id
+      || isMockWritingEntry(entry)
+      || !isCurrentSyncGeneration(syncGeneration)
+    ) {
       return;
     }
 
-    upsertUserWritingEntry(user.id, entry).catch((error) => {
+    try {
+      assertCanUploadForOwner({ ownerId: activeOwnerId, user });
+    } catch (error) {
+      console.warn('[Write] Refusing writing entry upload:', error?.message ?? error);
+      return;
+    }
+
+    upsertUserWritingEntry({
+      user,
+      ownerId: activeOwnerId,
+      generation: syncGeneration,
+      entry,
+    }).catch((error) => {
       console.warn('[Write] Background writing entry sync failed:', error);
     });
   };
 
   const syncEntryDeleteToCloud = (entryId) => {
-    if (!user?.id || isMockWritingEntry(entryId)) {
+    if (
+      !user?.id
+      || syncPaused
+      || activeOwnerId !== user.id
+      || isMockWritingEntry(entryId)
+      || !isCurrentSyncGeneration(syncGeneration)
+    ) {
       return;
     }
 
-    softDeleteUserWritingEntry(user.id, entryId).catch((error) => {
+    try {
+      assertCanUploadForOwner({ ownerId: activeOwnerId, user });
+    } catch (error) {
+      console.warn('[Write] Refusing writing delete sync:', error?.message ?? error);
+      return;
+    }
+
+    softDeleteUserWritingEntry({
+      user,
+      ownerId: activeOwnerId,
+      generation: syncGeneration,
+      entryId,
+    }).catch((error) => {
       console.warn('[Write] Background writing delete sync failed:', error);
     });
   };

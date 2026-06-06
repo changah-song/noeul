@@ -1,6 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { GUEST_OWNER_ID, makeScopedStorageKey } from './localDataScope';
 
-const STORAGE_KEY = 'dailyProgress';
+const LEGACY_STORAGE_KEY = 'dailyProgress';
+const getDailyProgressStorageKey = (ownerId) => (
+  makeScopedStorageKey(ownerId || GUEST_OWNER_ID, 'daily-progress')
+);
 
 const getTodayKey = () => {
   const now = new Date();
@@ -10,9 +14,37 @@ const getTodayKey = () => {
   return `${year}-${month}-${day}`;
 };
 
-const readStore = async () => {
+export const migrateLegacyDailyProgressToGuest = async () => {
+  const key = getDailyProgressStorageKey(GUEST_OWNER_ID);
+
   try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEY);
+    const scopedRaw = await AsyncStorage.getItem(key);
+    if (scopedRaw) {
+      return scopedRaw;
+    }
+
+    const legacyRaw = await AsyncStorage.getItem(LEGACY_STORAGE_KEY);
+    if (legacyRaw) {
+      await AsyncStorage.setItem(key, legacyRaw);
+      return legacyRaw;
+    }
+  } catch (error) {
+    console.error('[dailyProgress] Failed to migrate legacy guest store:', error);
+  }
+
+  return null;
+};
+
+const readStore = async (ownerId) => {
+  const resolvedOwnerId = ownerId || GUEST_OWNER_ID;
+  const key = getDailyProgressStorageKey(resolvedOwnerId);
+
+  try {
+    let raw = await AsyncStorage.getItem(key);
+    if (!raw && resolvedOwnerId === GUEST_OWNER_ID) {
+      raw = await migrateLegacyDailyProgressToGuest();
+    }
+
     return raw ? JSON.parse(raw) : {};
   } catch (error) {
     console.error('[dailyProgress] Failed to read store:', error);
@@ -20,9 +52,11 @@ const readStore = async () => {
   }
 };
 
-const writeStore = async (store) => {
+const writeStore = async (ownerId, store) => {
+  const key = getDailyProgressStorageKey(ownerId || GUEST_OWNER_ID);
+
   try {
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+    await AsyncStorage.setItem(key, JSON.stringify(store));
   } catch (error) {
     console.error('[dailyProgress] Failed to write store:', error);
   }
@@ -34,36 +68,36 @@ const ensureTodayEntry = (store) => {
   return { key, today };
 };
 
-export const getTodayProgress = async () => {
-  const store = await readStore();
+export const getTodayProgress = async (ownerId) => {
+  const store = await readStore(ownerId);
   const { today } = ensureTodayEntry(store);
   return today;
 };
 
-export const addReadingMillis = async (millis) => {
+export const addReadingMillis = async (ownerId, millis) => {
   if (!Number.isFinite(millis) || millis <= 0) {
     return;
   }
 
-  const store = await readStore();
+  const store = await readStore(ownerId);
   const { key, today } = ensureTodayEntry(store);
   store[key] = {
     ...today,
     readingMillis: Math.max(0, (today.readingMillis ?? 0) + millis),
   };
-  await writeStore(store);
+  await writeStore(ownerId, store);
 };
 
-export const incrementWordsStudied = async (count = 1) => {
+export const incrementWordsStudied = async (ownerId, count = 1) => {
   if (!Number.isFinite(count) || count <= 0) {
     return;
   }
 
-  const store = await readStore();
+  const store = await readStore(ownerId);
   const { key, today } = ensureTodayEntry(store);
   store[key] = {
     ...today,
     wordsStudied: Math.max(0, (today.wordsStudied ?? 0) + count),
   };
-  await writeStore(store);
+  await writeStore(ownerId, store);
 };

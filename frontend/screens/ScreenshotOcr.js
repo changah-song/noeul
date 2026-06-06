@@ -17,6 +17,7 @@ import { Feather, MaterialIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import TopSection from '../components/Read/TopSection/TopSection';
+import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { recognizeImage } from '../modules/screen-ocr/src';
 import {
     addOcrResultListener,
@@ -141,6 +142,7 @@ const buildWordTargets = (ocrResult) => (
 );
 
 const ScreenshotOcr = ({ navigation, route }) => {
+    const { activeOwnerId } = useLocalOwner();
     const safeAreaInsets = useSafeAreaInsets();
     const { width } = useWindowDimensions();
     const recognitionRunRef = useRef(0);
@@ -218,7 +220,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
                 });
             }
 
-            getSavedWords()
+            getSavedWords({ ownerId: activeOwnerId })
                 .then((words) => {
                     if (isActive) {
                         setSavedWords(words);
@@ -237,7 +239,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
                 overlayErrorSubscription?.remove();
                 ocrResultSubscription?.remove();
             };
-        }, [mergeFloatingStatus])
+        }, [activeOwnerId, mergeFloatingStatus])
     );
 
     useEffect(() => {

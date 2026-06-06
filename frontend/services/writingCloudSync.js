@@ -1,4 +1,8 @@
 import { USER_WRITING_ENTRIES_TABLE, supabase } from './supabase';
+import {
+  assertCanUploadForOwner,
+  isCurrentSyncGeneration,
+} from './localOwnerCoordinator';
 
 const FILE_TAG = '[writingCloudSync]';
 const USER_WRITING_ENTRY_SELECT = `
@@ -19,6 +23,15 @@ const safeString = (value, fallback = '') => {
   const text = typeof value === 'string' ? value : String(value ?? '');
   const trimmed = text.trim();
   return trimmed || fallback;
+};
+
+const assertCloudWriteAllowed = ({ user, ownerId, generation }) => {
+  assertCanUploadForOwner({ ownerId, user });
+  if (generation != null && !isCurrentSyncGeneration(generation)) {
+    throw new Error('Refusing cloud upload for stale sync generation');
+  }
+
+  return user.id;
 };
 
 const toIsoString = (value, fallback = new Date().toISOString()) => {
@@ -84,11 +97,12 @@ export const fetchUserWritingEntries = async (userId, { includeDeleted = false }
   return data ?? [];
 };
 
-export const upsertUserWritingEntry = async (userId, entry) => {
-  if (!userId || !entry?.id) {
+export const upsertUserWritingEntry = async ({ user, ownerId, generation, entry } = {}) => {
+  if (!entry?.id) {
     return null;
   }
 
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
   const { data, error } = await supabase
     .from(USER_WRITING_ENTRIES_TABLE)
     .upsert(toUserWritingEntryRow(userId, entry), {
@@ -105,12 +119,13 @@ export const upsertUserWritingEntry = async (userId, entry) => {
   return data;
 };
 
-export const upsertUserWritingEntries = async (userId, entries) => {
+export const upsertUserWritingEntries = async ({ user, ownerId, generation, entries } = {}) => {
   const validEntries = (entries || []).filter((entry) => entry?.id);
-  if (!userId || validEntries.length === 0) {
+  if (validEntries.length === 0) {
     return [];
   }
 
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
   const { data, error } = await supabase
     .from(USER_WRITING_ENTRIES_TABLE)
     .upsert(validEntries.map((entry) => toUserWritingEntryRow(userId, entry)), {
@@ -126,11 +141,12 @@ export const upsertUserWritingEntries = async (userId, entries) => {
   return data ?? [];
 };
 
-export const softDeleteUserWritingEntry = async (userId, entryId) => {
-  if (!userId || !entryId) {
+export const softDeleteUserWritingEntry = async ({ user, ownerId, generation, entryId } = {}) => {
+  if (!entryId) {
     return;
   }
 
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
   const { error } = await supabase
     .from(USER_WRITING_ENTRIES_TABLE)
     .update({
