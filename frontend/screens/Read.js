@@ -7,6 +7,7 @@ import { Slider } from 'react-native-elements';
 
 import TopSection from '../components/Read/TopSection/TopSection';
 import TocDrawer from '../components/Read/TocDrawer';
+import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import NativeEpubReaderView from '../modules/native-epub-reader/src/NativeEpubReaderView';
 import {
     PREPROCESS_VERSION,
@@ -33,6 +34,7 @@ import {
     getTimestampMs,
     updateUserPreferenceFields,
 } from '../services/preferencesCloudSync';
+import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
 import { upsertUserVocabContext } from '../services/supabase';
 import { colors, radii, spacing, textStyles } from '../theme';
 
@@ -114,6 +116,7 @@ const chapterWindowEntryForPackage = (readerPackage, role) => {
 };
 
 const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderFocusMode, user }) => {
+    const { activeOwnerId, syncPaused, syncGeneration } = useLocalOwner();
     const [highlightedWord, setHighlightedWord] = useState('');
     const [highlightedWordContext, setHighlightedWordContext] = useState(null);
     const [isNativeSelection, setIsNativeSelection] = useState(false);
@@ -154,6 +157,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
     const chapterPreprocessTokenRef = useRef(0);
     const activeChapterPreprocessRef = useRef({ bookUri: null, centerSpineIndex: null });
     const readingSessionStartedAtRef = useRef(Date.now());
+    const readingSessionOwnerIdRef = useRef(activeOwnerId);
     const chapterLoadTokenRef = useRef(0);
     const nativeReaderPackageRef = useRef(null);
     const currentSpineIndexRef = useRef(null);
@@ -172,7 +176,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
 
     // Load saved words for highlighting on mount
     useEffect(() => {
-        getSavedWords()
+        getSavedWords({ ownerId: activeOwnerId })
             .then(words => {
                 setSavedWords(words);
             })
@@ -180,7 +184,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
                 console.error('[Read] Failed to load saved words:', err);
                 setSavedWords([]);
             });
-    }, []);
+    }, [activeOwnerId]);
 
     useEffect(() => {
         if (savedWords === null) {
@@ -198,7 +202,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
 
         const loadHighlightTerms = async () => {
             try {
-                const surfaceRows = await lookupBookHighlightSurfaces(currentBook, savedWords);
+                const surfaceRows = await lookupBookHighlightSurfaces(activeOwnerId, currentBook, savedWords);
                 if (!isActive) {
                     return;
                 }
@@ -224,13 +228,14 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
         return () => {
             isActive = false;
         };
-    }, [currentBook, preprocessStatus, savedWords, shouldUseHeuristicHighlights]);
+    }, [activeOwnerId, currentBook, preprocessStatus, savedWords, shouldUseHeuristicHighlights]);
 
     // Reset status and clear stored text whenever the open book changes
     useEffect(() => {
         const elapsed = Date.now() - readingSessionStartedAtRef.current;
+        const sessionOwnerId = readingSessionOwnerIdRef.current || activeOwnerId;
         if (elapsed >= 5000) {
-            addReadingMillis(elapsed);
+            addReadingMillis(sessionOwnerId, elapsed);
         }
 
         setPreprocessStatus('idle');
@@ -261,17 +266,19 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
         setChapterTransitionDirection('none:0');
         chapterLoadTokenRef.current += 1;
         chapterPrefetchTokenRef.current += 1;
+        readingSessionOwnerIdRef.current = activeOwnerId;
         parsedChapterCacheRef.current = new Map();
         parsedChapterInflightRef.current = new Map();
         setToc([]);
         setShowToc(false);
-    }, [currentBook]);
+    }, [activeOwnerId, currentBook]);
 
     useEffect(() => {
         return () => {
             const elapsed = Date.now() - readingSessionStartedAtRef.current;
+            const sessionOwnerId = readingSessionOwnerIdRef.current || activeOwnerId;
             if (elapsed >= 5000) {
-                addReadingMillis(elapsed);
+                addReadingMillis(sessionOwnerId, elapsed);
             }
             if (cloudProgressSyncTimeoutRef.current) {
                 clearTimeout(cloudProgressSyncTimeoutRef.current);
@@ -283,20 +290,37 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
     }, []);
 
     const scheduleCloudProgressSync = useCallback((book) => {
-        if (!user?.id || !book?.cloudId) {
+        if (
+            !user?.id
+            || !book?.cloudId
+            || syncPaused
+            || activeOwnerId !== user.id
+            || !isCurrentSyncGeneration(syncGeneration)
+        ) {
             return;
         }
 
+        const ownerId = activeOwnerId;
+        const generation = syncGeneration;
         if (cloudProgressSyncTimeoutRef.current) {
             clearTimeout(cloudProgressSyncTimeoutRef.current);
         }
 
         cloudProgressSyncTimeoutRef.current = setTimeout(() => {
-            updateUserBookProgress(user.id, book).catch((error) => {
+            if (!isCurrentSyncGeneration(generation)) {
+                return;
+            }
+
+            updateUserBookProgress({
+                user,
+                ownerId,
+                generation,
+                book,
+            }).catch((error) => {
                 console.warn('[Read] Cloud progress sync failed:', error);
             });
         }, 3000);
-    }, [user?.id]);
+    }, [activeOwnerId, syncGeneration, syncPaused, user]);
 
     const handleWordSave = (word, options = {}) => {
         const { includeSurface = true } = options;
@@ -333,22 +357,31 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
         });
         setLookupPlacement(event.placement === 'top' ? 'top' : 'bottom');
 
+        const ownerId = activeOwnerId;
+        const generation = syncGeneration;
+
         recordVocabContextForSurface({
+            ownerId: activeOwnerId,
             surface: text,
             sentence,
             sourceBookUri: currentBook,
             sourceBookTitle: activeBook?.title ?? null,
             language: activeBookLanguage,
         }).then((context) => {
-            if (user?.id && context) {
-                upsertUserVocabContext(user.id, context).catch((error) => {
+            if (user?.id && ownerId === user.id && context && isCurrentSyncGeneration(generation)) {
+                upsertUserVocabContext({
+                    user,
+                    ownerId,
+                    generation,
+                    context,
+                }).catch((error) => {
                     console.warn('[Read] Failed to sync vocab context:', error?.message ?? error);
                 });
             }
         }).catch((error) => {
             console.warn('[Read] Failed to record vocab context:', error?.message ?? error);
         });
-    }, [activeBook?.title, activeBookLanguage, currentBook, user?.id]);
+    }, [activeBook?.title, activeBookLanguage, activeOwnerId, currentBook, syncGeneration, user]);
 
     const handleNativeSelectionCleared = useCallback(() => {
         setHighlightedWord('');
@@ -418,26 +451,42 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
     }, []);
 
     const scheduleCloudReaderSettingsSync = useCallback((nextSettings, updatedAt = new Date().toISOString()) => {
-        if (!user?.id) {
+        if (
+            !user?.id
+            || syncPaused
+            || activeOwnerId !== user.id
+            || !isCurrentSyncGeneration(syncGeneration)
+        ) {
             return;
         }
 
+        const ownerId = activeOwnerId;
+        const generation = syncGeneration;
         if (cloudReaderSettingsSyncTimeoutRef.current) {
             clearTimeout(cloudReaderSettingsSyncTimeoutRef.current);
         }
 
         cloudReaderSettingsSyncTimeoutRef.current = setTimeout(() => {
-            updateUserPreferenceFields(user.id, {
-                reader_settings: {
-                    ...nextSettings,
-                    updatedAt,
+            if (!isCurrentSyncGeneration(generation)) {
+                return;
+            }
+
+            updateUserPreferenceFields({
+                user,
+                ownerId,
+                generation,
+                patch: {
+                    reader_settings: {
+                        ...nextSettings,
+                        updatedAt,
+                    },
+                    updated_at: updatedAt,
                 },
-                updated_at: updatedAt,
             }).catch((error) => {
                 console.warn('[Read] Failed to sync reader settings:', error?.message ?? error);
             });
         }, 2500);
-    }, [user?.id]);
+    }, [activeOwnerId, syncGeneration, syncPaused, user]);
 
     const loadSettings = async () => {
         try {
@@ -484,16 +533,30 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
             return;
         }
 
+        if (
+            syncPaused
+            || activeOwnerId !== user.id
+            || !isCurrentSyncGeneration(syncGeneration)
+        ) {
+            readerSettingsCloudUserRef.current = null;
+            return;
+        }
+
         if (readerSettingsCloudUserRef.current === user.id) {
             return;
         }
 
         let isMounted = true;
         readerSettingsCloudUserRef.current = user.id;
+        const ownerId = activeOwnerId;
+        const generation = syncGeneration;
 
         const mergeCloudReaderSettings = async () => {
             try {
                 const cloudPreferences = await fetchUserPreferences(user.id);
+                if (!isMounted || !isCurrentSyncGeneration(generation)) {
+                    return;
+                }
                 const cloudReaderSettings = cloudPreferences?.reader_settings;
                 const hasCloudSettings = cloudReaderSettings
                     && typeof cloudReaderSettings === 'object'
@@ -525,12 +588,17 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
                 }
 
                 const updatedAt = localUpdatedAt ?? new Date().toISOString();
-                await updateUserPreferenceFields(user.id, {
-                    reader_settings: {
-                        ...readerSettingsRef.current,
-                        updatedAt,
+                await updateUserPreferenceFields({
+                    user,
+                    ownerId,
+                    generation,
+                    patch: {
+                        reader_settings: {
+                            ...readerSettingsRef.current,
+                            updatedAt,
+                        },
+                        updated_at: updatedAt,
                     },
-                    updated_at: updatedAt,
                 });
             } catch (error) {
                 readerSettingsCloudUserRef.current = null;
@@ -543,7 +611,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
         return () => {
             isMounted = false;
         };
-    }, [readerSettingsLoaded, saveSettings, user?.id]);
+    }, [activeOwnerId, readerSettingsLoaded, saveSettings, syncGeneration, syncPaused, user]);
 
     const handleSettingChange = (key, value) => {
         const newSettings = { ...settings, [key]: value };
@@ -793,9 +861,9 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
                 return true;
             });
 
-        await insertBookIndexEntries(bookUri, bookIndexEntries);
+        await insertBookIndexEntries(bookUri, bookIndexEntries, { ownerId: activeOwnerId });
         return bookIndexEntries.length;
-    }, []);
+    }, [activeOwnerId]);
 
     const startChapterPreprocessing = useCallback(async (
         centerSpineIndex,
@@ -836,6 +904,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
 
         try {
             await markBookPreprocessMeta({
+                ownerId: activeOwnerId,
                 bookUri: currentBook,
                 status: 'partial',
                 surfaceCount: 0,
@@ -849,6 +918,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
 
                 const isCurrentChapter = spineIndex === centerSpineIndex;
                 const existingChapter = await getBookPreprocessChapter(
+                    activeOwnerId,
                     currentBook,
                     spineIndex,
                     PREPROCESS_VERSION
@@ -867,6 +937,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
                 }
 
                 await markBookPreprocessChapter({
+                    ownerId: activeOwnerId,
                     bookUri: currentBook,
                     spineIndex,
                     status: 'processing',
@@ -913,6 +984,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
                     });
 
                     await markBookPreprocessChapter({
+                        ownerId: activeOwnerId,
                         bookUri: currentBook,
                         spineIndex,
                         status: 'complete',
@@ -928,6 +1000,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
                     completedChapters += 1;
                     totalSurfaceCount += surfaceCount;
                     await markBookPreprocessMeta({
+                        ownerId: activeOwnerId,
                         bookUri: currentBook,
                         status: 'partial',
                         surfaceCount: totalSurfaceCount,
@@ -952,6 +1025,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
                     failedChapters += 1;
                     console.warn(`[Read] Chapter preprocess failed for spine ${spineIndex}:`, error);
                     await markBookPreprocessChapter({
+                        ownerId: activeOwnerId,
                         bookUri: currentBook,
                         spineIndex,
                         status: 'failed',
@@ -978,6 +1052,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
                 ? 'complete'
                 : (completedChapters > 0 ? 'partial' : 'failed');
             await markBookPreprocessMeta({
+                ownerId: activeOwnerId,
                 bookUri: currentBook,
                 status: finalStatus,
                 surfaceCount: totalSurfaceCount,
@@ -1005,6 +1080,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
         }
     }, [
         currentBook,
+        activeOwnerId,
         loadParsedChapterPackage,
         onPreprocessComplete,
         persistChapterPreprocessResults,
@@ -1195,15 +1271,23 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
 
         if (Array.isArray(savedHighlights) && savedHighlights.length > 0) {
             savedHighlights.forEach((highlight) => {
+                const ownerId = activeOwnerId;
+                const generation = syncGeneration;
                 recordVocabContextForSurface({
+                    ownerId,
                     surface: typeof highlight?.text === 'string' ? highlight.text : '',
                     sentence: typeof highlight?.sentence === 'string' ? highlight.sentence : '',
                     sourceBookUri: currentBook,
                     sourceBookTitle: activeBook?.title ?? null,
                     language: activeBookLanguage,
                 }).then((context) => {
-                    if (user?.id && context) {
-                        upsertUserVocabContext(user.id, context).catch((error) => {
+                    if (user?.id && ownerId === user.id && context && isCurrentSyncGeneration(generation)) {
+                        upsertUserVocabContext({
+                            user,
+                            ownerId,
+                            generation,
+                            context,
+                        }).catch((error) => {
                             console.warn('[Read] Failed to sync visible vocab context:', error?.message ?? error);
                         });
                     }
@@ -1274,6 +1358,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
     }, [
         activeBook,
         activeBookLanguage,
+        activeOwnerId,
         currentBook,
         nativeChapterTotal,
         scheduleCloudProgressSync,

@@ -1,6 +1,7 @@
 import * as SQLite from 'expo-sqlite';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { initializeHanjaDatabase } from './hanjaDatabase';
+import { GUEST_OWNER_ID } from './localDataScope';
 
 // ─── Database Setup ───────────────────────────────────────────────────────────
 // NOTE: Change the db filename here if you ever need to reset all tables by
@@ -8,7 +9,18 @@ import { initializeHanjaDatabase } from './hanjaDatabase';
 const db = SQLite.openDatabase('temp.db');
 const BOOK_INDEX_MIGRATION_KEY = 'book_index_migration_v2';
 const DICTIONARY_CACHE_MIGRATION_KEY = 'dictionary_cache_migration_v1';
+const LOCAL_OWNER_SQLITE_MIGRATION_KEY = 'local_owner_sqlite_migration_v1';
 export const PREPROCESS_VERSION = 1;
+
+const resolveOwnerId = (value) => {
+  if (typeof value === 'string') {
+    const ownerId = value.trim();
+    return ownerId || GUEST_OWNER_ID;
+  }
+
+  const ownerId = typeof value?.ownerId === 'string' ? value.ownerId.trim() : '';
+  return ownerId || GUEST_OWNER_ID;
+};
 
 
 // ─── Table Creation ───────────────────────────────────────────────────────────
@@ -24,6 +36,7 @@ export const createTable = () => {
       tx.executeSql(
         `CREATE TABLE IF NOT EXISTS vocab (
           id    INTEGER PRIMARY KEY AUTOINCREMENT,
+          owner_id TEXT NOT NULL DEFAULT 'guest',
           word  TEXT,
           hanja TEXT,
           def   TEXT,
@@ -51,6 +64,7 @@ export const createVocabContextTable = () => {
       tx.executeSql(
         `CREATE TABLE IF NOT EXISTS vocab_contexts (
           id                INTEGER PRIMARY KEY AUTOINCREMENT,
+          owner_id          TEXT NOT NULL DEFAULT 'guest',
           vocab_id          INTEGER,
           word              TEXT NOT NULL,
           hanja             TEXT,
@@ -88,6 +102,10 @@ export const migrateVocabContextTable = async () => {
   const columns = await getTableColumns('vocab_contexts');
   const alterations = [];
 
+  if (!columns.includes('owner_id')) {
+    alterations.push(`ALTER TABLE vocab_contexts ADD COLUMN owner_id TEXT DEFAULT '${GUEST_OWNER_ID}'`);
+  }
+
   if (!columns.includes('language')) {
     alterations.push(`ALTER TABLE vocab_contexts ADD COLUMN language TEXT DEFAULT 'ko'`);
   }
@@ -104,6 +122,7 @@ export const migrateVocabContextTable = async () => {
     db.transaction(
       tx => {
         alterations.forEach((statement) => tx.executeSql(statement));
+        tx.executeSql(`UPDATE vocab_contexts SET owner_id = ? WHERE owner_id IS NULL OR TRIM(owner_id) = ''`, [GUEST_OWNER_ID]);
         tx.executeSql(`UPDATE vocab_contexts SET language = 'ko' WHERE language IS NULL OR TRIM(language) = ''`);
         tx.executeSql(`UPDATE vocab_contexts SET seen_at = COALESCE(seen_at, CURRENT_TIMESTAMP)`);
         tx.executeSql(`UPDATE vocab_contexts SET updated_at = COALESCE(updated_at, seen_at, CURRENT_TIMESTAMP)`);
@@ -113,10 +132,11 @@ export const migrateVocabContextTable = async () => {
         );
         tx.executeSql(
           `INSERT INTO vocab_contexts (
-            vocab_id, word, hanja, def, source_book_uri, source_book_title, sentence,
+            owner_id, vocab_id, word, hanja, def, source_book_uri, source_book_title, sentence,
             seen_at, language, updated_at, deleted_at
           )
            SELECT
+            COALESCE(v.owner_id, ?),
             v.id,
             v.word,
             v.hanja,
@@ -135,14 +155,16 @@ export const migrateVocabContextTable = async () => {
              AND NOT EXISTS (
                SELECT 1
                FROM vocab_contexts vc
-               WHERE vc.language = COALESCE(v.language, 'ko')
+               WHERE vc.owner_id = COALESCE(v.owner_id, ?)
+                 AND vc.language = COALESCE(v.language, 'ko')
                  AND vc.word = v.word
                  AND vc.hanja IS v.hanja
                  AND vc.def IS v.def
                  AND COALESCE(vc.source_book_uri, '') = COALESCE(v.source_book_uri, '')
                  AND vc.sentence = v.context_sentence
                  AND vc.deleted_at IS NULL
-             )`
+             )`,
+          [GUEST_OWNER_ID, GUEST_OWNER_ID]
         );
       },
       (error) => {
@@ -173,6 +195,10 @@ const getTableColumns = (tableName) => {
 export const migrateVocabTable = async () => {
   const columns = await getTableColumns('vocab');
   const alterations = [];
+
+  if (!columns.includes('owner_id')) {
+    alterations.push(`ALTER TABLE vocab ADD COLUMN owner_id TEXT DEFAULT '${GUEST_OWNER_ID}'`);
+  }
 
   if (!columns.includes('source_book_uri')) {
     alterations.push('ALTER TABLE vocab ADD COLUMN source_book_uri TEXT');
@@ -241,6 +267,7 @@ export const migrateVocabTable = async () => {
         tx.executeSql(`UPDATE vocab SET related_known_words = '[]' WHERE related_known_words IS NULL`);
         tx.executeSql(`UPDATE vocab SET updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)`);
         tx.executeSql(`UPDATE vocab SET language = 'ko' WHERE language IS NULL OR TRIM(language) = ''`);
+        tx.executeSql(`UPDATE vocab SET owner_id = ? WHERE owner_id IS NULL OR TRIM(owner_id) = ''`, [GUEST_OWNER_ID]);
       },
       (error) => {
         console.error('[Database] Error migrating vocab table:', error);
@@ -373,10 +400,11 @@ export const createBookIndexTable = () => {
       tx.executeSql(
         `CREATE TABLE IF NOT EXISTS book_index (
           id       INTEGER PRIMARY KEY AUTOINCREMENT,
+          owner_id TEXT NOT NULL DEFAULT 'guest',
           book_uri TEXT NOT NULL,
           surface  TEXT NOT NULL,
           stem_id  INTEGER NOT NULL,
-          UNIQUE(book_uri, surface, stem_id)
+          UNIQUE(owner_id, book_uri, surface, stem_id)
         )`,
         [],
         () => resolve(),
@@ -395,30 +423,33 @@ export const createBookPreprocessTables = () => {
       tx => {
         tx.executeSql(
           `CREATE TABLE IF NOT EXISTS book_preprocess_meta (
-            book_uri           TEXT PRIMARY KEY,
+            owner_id           TEXT NOT NULL DEFAULT 'guest',
+            book_uri           TEXT NOT NULL,
             status             TEXT,
-            preprocess_version INTEGER,
+            preprocess_version INTEGER DEFAULT ${PREPROCESS_VERSION},
             started_at         TEXT,
             completed_at       TEXT,
-            surface_count      INTEGER DEFAULT 0
+            surface_count      INTEGER DEFAULT 0,
+            PRIMARY KEY (owner_id, book_uri, preprocess_version)
           )`,
           []
         );
         tx.executeSql(
           `CREATE TABLE IF NOT EXISTS book_preprocess_chapters (
+            owner_id           TEXT NOT NULL DEFAULT 'guest',
             book_uri           TEXT NOT NULL,
             spine_index        INTEGER NOT NULL,
             status             TEXT,
             surface_count      INTEGER DEFAULT 0,
             completed_at       TEXT,
-            preprocess_version INTEGER,
-            PRIMARY KEY (book_uri, spine_index, preprocess_version)
+            preprocess_version INTEGER DEFAULT ${PREPROCESS_VERSION},
+            PRIMARY KEY (owner_id, book_uri, spine_index, preprocess_version)
           )`,
           []
         );
         tx.executeSql(
           `CREATE INDEX IF NOT EXISTS idx_book_preprocess_chapters_book_status
-           ON book_preprocess_chapters(book_uri, preprocess_version, status)`,
+           ON book_preprocess_chapters(owner_id, book_uri, preprocess_version, status)`,
           []
         );
       },
@@ -451,6 +482,367 @@ export const migrateBookIndex = async () => {
 
   await createBookIndexTable();
   await AsyncStorage.setItem(BOOK_INDEX_MIGRATION_KEY, 'done');
+};
+
+const createOwnerIndexes = () => {
+  return new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        tx.executeSql(
+          `CREATE INDEX IF NOT EXISTS idx_vocab_owner_identity
+           ON vocab(owner_id, language, word, hanja, def)`
+        );
+        tx.executeSql(
+          `CREATE INDEX IF NOT EXISTS idx_vocab_contexts_owner_identity
+           ON vocab_contexts(owner_id, language, word, hanja, def, source_book_uri, sentence)`
+        );
+        tx.executeSql(
+          `CREATE INDEX IF NOT EXISTS idx_vocab_contexts_owner_vocab_seen
+           ON vocab_contexts(owner_id, vocab_id, seen_at DESC)`
+        );
+        tx.executeSql(
+          `CREATE INDEX IF NOT EXISTS idx_book_index_owner_surface
+           ON book_index(owner_id, book_uri, surface)`
+        );
+        tx.executeSql(
+          `CREATE INDEX IF NOT EXISTS idx_book_preprocess_meta_owner_book
+           ON book_preprocess_meta(owner_id, book_uri, preprocess_version)`
+        );
+        tx.executeSql(
+          `CREATE INDEX IF NOT EXISTS idx_book_preprocess_chapters_owner_book_status
+           ON book_preprocess_chapters(owner_id, book_uri, preprocess_version, status)`
+        );
+      },
+      (error) => {
+        console.error('[Database] Error creating owner indexes:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+};
+
+export const migrateLocalOwnerSqlite = async () => {
+  const migrationState = await AsyncStorage.getItem(LOCAL_OWNER_SQLITE_MIGRATION_KEY);
+  if (migrationState === 'done') {
+    await createOwnerIndexes();
+    return;
+  }
+
+  const [
+    vocabColumns,
+    contextColumns,
+    bookIndexColumns,
+    preprocessMetaColumns,
+    preprocessChapterColumns,
+  ] = await Promise.all([
+    getTableColumns('vocab'),
+    getTableColumns('vocab_contexts'),
+    getTableColumns('book_index'),
+    getTableColumns('book_preprocess_meta'),
+    getTableColumns('book_preprocess_chapters'),
+  ]);
+
+  await new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        if (!vocabColumns.includes('owner_id')) {
+          tx.executeSql(`ALTER TABLE vocab ADD COLUMN owner_id TEXT DEFAULT '${GUEST_OWNER_ID}'`);
+        }
+        if (!contextColumns.includes('owner_id')) {
+          tx.executeSql(`ALTER TABLE vocab_contexts ADD COLUMN owner_id TEXT DEFAULT '${GUEST_OWNER_ID}'`);
+        }
+        tx.executeSql(
+          `UPDATE vocab SET owner_id = ? WHERE owner_id IS NULL OR TRIM(owner_id) = ''`,
+          [GUEST_OWNER_ID]
+        );
+        tx.executeSql(
+          `UPDATE vocab_contexts SET owner_id = ? WHERE owner_id IS NULL OR TRIM(owner_id) = ''`,
+          [GUEST_OWNER_ID]
+        );
+
+        if (!bookIndexColumns.includes('owner_id')) {
+          tx.executeSql(`ALTER TABLE book_index ADD COLUMN owner_id TEXT DEFAULT '${GUEST_OWNER_ID}'`);
+        }
+        tx.executeSql(`DROP TABLE IF EXISTS book_index_owner_new`);
+        tx.executeSql(
+          `CREATE TABLE book_index_owner_new (
+            id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_id TEXT NOT NULL DEFAULT 'guest',
+            book_uri TEXT NOT NULL,
+            surface  TEXT NOT NULL,
+            stem_id  INTEGER NOT NULL,
+            UNIQUE(owner_id, book_uri, surface, stem_id)
+          )`
+        );
+        tx.executeSql(
+          `INSERT OR IGNORE INTO book_index_owner_new (owner_id, book_uri, surface, stem_id)
+           SELECT COALESCE(owner_id, ?), book_uri, surface, stem_id
+           FROM book_index
+           WHERE book_uri IS NOT NULL AND surface IS NOT NULL AND stem_id IS NOT NULL`,
+          [GUEST_OWNER_ID]
+        );
+        tx.executeSql(`DROP TABLE IF EXISTS book_index`);
+        tx.executeSql(`ALTER TABLE book_index_owner_new RENAME TO book_index`);
+
+        if (!preprocessMetaColumns.includes('owner_id')) {
+          tx.executeSql(`ALTER TABLE book_preprocess_meta ADD COLUMN owner_id TEXT DEFAULT '${GUEST_OWNER_ID}'`);
+        }
+        tx.executeSql(`DROP TABLE IF EXISTS book_preprocess_meta_owner_new`);
+        tx.executeSql(
+          `CREATE TABLE book_preprocess_meta_owner_new (
+            owner_id           TEXT NOT NULL DEFAULT 'guest',
+            book_uri           TEXT NOT NULL,
+            status             TEXT,
+            preprocess_version INTEGER DEFAULT ${PREPROCESS_VERSION},
+            started_at         TEXT,
+            completed_at       TEXT,
+            surface_count      INTEGER DEFAULT 0,
+            PRIMARY KEY (owner_id, book_uri, preprocess_version)
+          )`
+        );
+        tx.executeSql(
+          `INSERT OR REPLACE INTO book_preprocess_meta_owner_new (
+            owner_id, book_uri, status, preprocess_version, started_at, completed_at, surface_count
+          )
+           SELECT
+            COALESCE(owner_id, ?),
+            book_uri,
+            status,
+            COALESCE(preprocess_version, ?),
+            started_at,
+            completed_at,
+            COALESCE(surface_count, 0)
+           FROM book_preprocess_meta
+           WHERE book_uri IS NOT NULL`,
+          [GUEST_OWNER_ID, PREPROCESS_VERSION]
+        );
+        tx.executeSql(`DROP TABLE IF EXISTS book_preprocess_meta`);
+        tx.executeSql(`ALTER TABLE book_preprocess_meta_owner_new RENAME TO book_preprocess_meta`);
+
+        if (!preprocessChapterColumns.includes('owner_id')) {
+          tx.executeSql(`ALTER TABLE book_preprocess_chapters ADD COLUMN owner_id TEXT DEFAULT '${GUEST_OWNER_ID}'`);
+        }
+        tx.executeSql(`DROP TABLE IF EXISTS book_preprocess_chapters_owner_new`);
+        tx.executeSql(
+          `CREATE TABLE book_preprocess_chapters_owner_new (
+            owner_id           TEXT NOT NULL DEFAULT 'guest',
+            book_uri           TEXT NOT NULL,
+            spine_index        INTEGER NOT NULL,
+            status             TEXT,
+            surface_count      INTEGER DEFAULT 0,
+            completed_at       TEXT,
+            preprocess_version INTEGER DEFAULT ${PREPROCESS_VERSION},
+            PRIMARY KEY (owner_id, book_uri, spine_index, preprocess_version)
+          )`
+        );
+        tx.executeSql(
+          `INSERT OR REPLACE INTO book_preprocess_chapters_owner_new (
+            owner_id, book_uri, spine_index, status, surface_count, completed_at, preprocess_version
+          )
+           SELECT
+            COALESCE(owner_id, ?),
+            book_uri,
+            spine_index,
+            status,
+            COALESCE(surface_count, 0),
+            completed_at,
+            COALESCE(preprocess_version, ?)
+           FROM book_preprocess_chapters
+           WHERE book_uri IS NOT NULL AND spine_index IS NOT NULL`,
+          [GUEST_OWNER_ID, PREPROCESS_VERSION]
+        );
+        tx.executeSql(`DROP TABLE IF EXISTS book_preprocess_chapters`);
+        tx.executeSql(`ALTER TABLE book_preprocess_chapters_owner_new RENAME TO book_preprocess_chapters`);
+      },
+      (error) => {
+        console.error('[Database] Error migrating local owner SQLite tables:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+
+  await createOwnerIndexes();
+  await AsyncStorage.setItem(LOCAL_OWNER_SQLITE_MIGRATION_KEY, 'done');
+};
+
+const SQLITE_USER_DATA_TABLES = [
+  'vocab',
+  'vocab_contexts',
+  'book_index',
+  'book_preprocess_meta',
+  'book_preprocess_chapters',
+];
+
+export const hasSqliteUserData = async (ownerId = GUEST_OWNER_ID) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+
+  return new Promise((resolve, reject) => {
+    let pending = SQLITE_USER_DATA_TABLES.length;
+    let hasData = false;
+    let settled = false;
+
+    const finishOne = () => {
+      pending -= 1;
+      if (pending === 0 && !settled) {
+        settled = true;
+        resolve(hasData);
+      }
+    };
+
+    db.transaction(tx => {
+      SQLITE_USER_DATA_TABLES.forEach((tableName) => {
+        tx.executeSql(
+          `SELECT 1 AS has_data FROM ${tableName} WHERE owner_id = ? LIMIT 1`,
+          [scopedOwnerId],
+          (_, result) => {
+            hasData = hasData || result.rows.length > 0;
+            finishOne();
+          },
+          (_, error) => {
+            if (!settled) {
+              settled = true;
+              console.error(`[Database] Error checking owner data in ${tableName}:`, error);
+              reject(error);
+            }
+            return false;
+          }
+        );
+      });
+    });
+  });
+};
+
+export const clearSqliteUserData = async (ownerId = GUEST_OWNER_ID) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+
+  return new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        SQLITE_USER_DATA_TABLES.forEach((tableName) => {
+          tx.executeSql(`DELETE FROM ${tableName} WHERE owner_id = ?`, [scopedOwnerId]);
+        });
+      },
+      (error) => {
+        console.error(`[Database] Error clearing SQLite user data for "${scopedOwnerId}":`, error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+};
+
+export const hasUnscopedSqliteUserData = async () => {
+  return new Promise((resolve, reject) => {
+    let pending = SQLITE_USER_DATA_TABLES.length;
+    let hasData = false;
+    let settled = false;
+
+    const finishOne = () => {
+      pending -= 1;
+      if (pending === 0 && !settled) {
+        settled = true;
+        resolve(hasData);
+      }
+    };
+
+    db.transaction(tx => {
+      SQLITE_USER_DATA_TABLES.forEach((tableName) => {
+        tx.executeSql(
+          `SELECT 1 AS has_data FROM ${tableName}
+           WHERE owner_id IS NULL OR TRIM(owner_id) = ''
+           LIMIT 1`,
+          [],
+          (_, result) => {
+            hasData = hasData || result.rows.length > 0;
+            finishOne();
+          },
+          (_, error) => {
+            if (!settled) {
+              settled = true;
+              console.error(`[Database] Error checking unscoped owner data in ${tableName}:`, error);
+              reject(error);
+            }
+            return false;
+          }
+        );
+      });
+    });
+  });
+};
+
+export const assignUnscopedSqliteUserDataToGuest = async () => {
+  return new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        SQLITE_USER_DATA_TABLES.forEach((tableName) => {
+          tx.executeSql(
+            `UPDATE ${tableName}
+             SET owner_id = ?
+             WHERE owner_id IS NULL OR TRIM(owner_id) = ''`,
+            [GUEST_OWNER_ID]
+          );
+        });
+      },
+      (error) => {
+        console.error('[Database] Error assigning unscoped SQLite user data to guest:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+};
+
+export const clearUnscopedSqliteUserData = async () => {
+  return new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        SQLITE_USER_DATA_TABLES.forEach((tableName) => {
+          tx.executeSql(
+            `DELETE FROM ${tableName}
+             WHERE owner_id IS NULL OR TRIM(owner_id) = ''`
+          );
+        });
+      },
+      (error) => {
+        console.error('[Database] Error clearing unscoped SQLite user data:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+};
+
+export const reassignSqliteUserData = async (fromOwnerId, toOwnerId) => {
+  const sourceOwnerId = resolveOwnerId(fromOwnerId);
+  const targetOwnerId = resolveOwnerId(toOwnerId);
+
+  if (sourceOwnerId === targetOwnerId) {
+    return;
+  }
+
+  if (await hasSqliteUserData(targetOwnerId)) {
+    throw new Error('Refusing to reassign SQLite user data because target owner already has local rows');
+  }
+
+  return new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        SQLITE_USER_DATA_TABLES.forEach((tableName) => {
+          tx.executeSql(
+            `UPDATE ${tableName} SET owner_id = ? WHERE owner_id = ?`,
+            [targetOwnerId, sourceOwnerId]
+          );
+        });
+      },
+      (error) => {
+        console.error(`[Database] Error reassigning SQLite data from "${sourceOwnerId}" to "${targetOwnerId}":`, error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
 };
 
 /**
@@ -488,6 +880,8 @@ export const initAllTables = async () => {
   await migrateBookIndex();
   await createBookIndexTable();
   await createBookPreprocessTables();
+  await migrateLocalOwnerSqlite();
+  await createOwnerIndexes();
   await deduplicateCacheTable();
   await initializeHanjaDatabase();
 };
@@ -516,19 +910,22 @@ export const insertData = (word, hanja, definition, levelOrOptions) => {
     updatedAt = createdAt,
     deletedAt = null,
     language = 'ko',
+    ownerId = GUEST_OWNER_ID,
   } = options;
+  const scopedOwnerId = resolveOwnerId(ownerId);
   const relatedKnownWordsJson = JSON.stringify(Array.isArray(relatedKnownWords) ? relatedKnownWords : []);
 
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
       tx.executeSql(
         `INSERT INTO vocab (
-          word, hanja, def, level, source_book_uri, source_book_title, context_sentence, is_favorite,
+          owner_id, word, hanja, def, level, source_book_uri, source_book_title, context_sentence, is_favorite,
           priority, created_at, last_reviewed_at, next_review_at, correct_count, wrong_count,
           related_known_words, updated_at, deleted_at, language
         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
+          scopedOwnerId,
           word,
           hanja,
           definition,
@@ -558,14 +955,16 @@ export const insertData = (word, hanja, definition, levelOrOptions) => {
   });
 };
 
-export const vocabEntryExists = (word, hanja, definition, language = 'ko') => {
+export const vocabEntryExists = (word, hanja, definition, language = 'ko', options = {}) => {
+  const ownerId = resolveOwnerId(options);
+
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
       tx.executeSql(
         `SELECT COUNT(*) AS count
          FROM vocab
-         WHERE word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
-        [word, hanja ?? null, definition ?? null, language],
+         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
+        [ownerId, word, hanja ?? null, definition ?? null, language],
         (_, result) => {
           const { count } = result.rows.item(0);
           resolve(count > 0);
@@ -580,21 +979,21 @@ export const vocabEntryExists = (word, hanja, definition, language = 'ko') => {
 };
 
 export const insertDataIfMissing = async (word, hanja, definition, levelOrOptions) => {
-  const language = (
-    typeof levelOrOptions === 'object' && levelOrOptions !== null
-      ? levelOrOptions.language
-      : 'ko'
-  ) ?? 'ko';
-  const exists = await vocabEntryExists(word, hanja, definition, language);
+  const options = typeof levelOrOptions === 'object' && levelOrOptions !== null
+    ? levelOrOptions
+    : { level: levelOrOptions };
+  const language = options.language ?? 'ko';
+  const ownerId = resolveOwnerId(options);
+  const exists = await vocabEntryExists(word, hanja, definition, language, { ownerId });
   if (exists) {
     return false;
   }
 
-  await insertData(word, hanja, definition, levelOrOptions);
+  await insertData(word, hanja, definition, { ...options, ownerId });
   return true;
 };
 
-export const upsertVocabEntryFromCloud = (entry) => {
+export const upsertVocabEntryFromCloud = (entry, options = {}) => {
   const now = new Date().toISOString();
   const word = entry.word;
   const hanja = entry.hanja ?? null;
@@ -603,6 +1002,7 @@ export const upsertVocabEntryFromCloud = (entry) => {
   const language = entry.language ?? 'ko';
   const createdAt = entry.created_at ?? entry.createdAt ?? now;
   const updatedAt = entry.updated_at ?? entry.updatedAt ?? createdAt;
+  const ownerId = resolveOwnerId(options.ownerId ?? entry.owner_id ?? entry.ownerId);
 
   return new Promise((resolve, reject) => {
     if (!word) {
@@ -614,12 +1014,13 @@ export const upsertVocabEntryFromCloud = (entry) => {
       tx.executeSql(
         `SELECT id
          FROM vocab
-         WHERE word = ? AND hanja IS ? AND def IS ? AND language = ?
+         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ?
          ORDER BY id ASC
          LIMIT 1`,
-        [word, hanja, definition, language],
+        [ownerId, word, hanja, definition, language],
         (_, result) => {
           const params = [
+            ownerId,
             word,
             hanja,
             definition,
@@ -645,11 +1046,11 @@ export const upsertVocabEntryFromCloud = (entry) => {
           if (result.rows.length === 0) {
             tx.executeSql(
               `INSERT INTO vocab (
-                word, hanja, def, level, source_book_uri, source_book_title, context_sentence,
+                owner_id, word, hanja, def, level, source_book_uri, source_book_title, context_sentence,
                 is_favorite, priority, created_at, last_reviewed_at, next_review_at,
                 correct_count, wrong_count, related_known_words, updated_at, deleted_at, language
               )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               params,
               () => resolve(true),
               (_, insertError) => {
@@ -664,6 +1065,7 @@ export const upsertVocabEntryFromCloud = (entry) => {
           tx.executeSql(
             `UPDATE vocab
              SET word = ?,
+                 owner_id = ?,
                  hanja = ?,
                  def = ?,
                  level = ?,
@@ -682,7 +1084,30 @@ export const upsertVocabEntryFromCloud = (entry) => {
                  deleted_at = ?,
                  language = ?
              WHERE id = ?`,
-            [...params, result.rows.item(0).id],
+            [
+              word,
+              ownerId,
+              hanja,
+              definition,
+              level,
+              entry.source_book_uri ?? entry.sourceBookUri ?? null,
+              entry.source_book_title ?? entry.sourceBookTitle ?? null,
+              entry.context_sentence ?? entry.contextSentence ?? null,
+              entry.is_favorite || entry.isFavorite ? 1 : 0,
+              entry.priority ?? 'normal',
+              createdAt,
+              entry.last_reviewed_at ?? entry.lastReviewedAt ?? null,
+              entry.next_review_at ?? entry.nextReviewAt ?? null,
+              Number(entry.correct_count ?? entry.correctCount ?? 0) || 0,
+              Number(entry.wrong_count ?? entry.wrongCount ?? 0) || 0,
+              Array.isArray(entry.related_known_words ?? entry.relatedKnownWords)
+                ? JSON.stringify(entry.related_known_words ?? entry.relatedKnownWords)
+                : (entry.related_known_words ?? entry.relatedKnownWords ?? '[]'),
+              updatedAt,
+              entry.deleted_at ?? entry.deletedAt ?? null,
+              language,
+              result.rows.item(0).id,
+            ],
             () => resolve(true),
             (_, updateError) => {
               console.error(`[Database] Error updating cloud vocab row "${word}":`, updateError);
@@ -726,6 +1151,7 @@ const relatedKnownWordKey = (entry) => `${entry?.korean ?? ''}|${entry?.hanja ??
 const nowIso = () => new Date().toISOString();
 
 const upsertContextForVocabRow = (tx, row, {
+  ownerId = row?.owner_id ?? GUEST_OWNER_ID,
   sentence,
   sourceBookUri = null,
   sourceBookTitle = null,
@@ -742,8 +1168,11 @@ const upsertContextForVocabRow = (tx, row, {
   const normalizedSourceUri = resolveNullable(sourceBookUri);
   const normalizedSourceTitle = resolveNullable(sourceBookTitle);
   const normalizedLanguage = language || row?.language || 'ko';
+  const scopedOwnerId = resolveOwnerId(ownerId);
   const buildContextRow = (id) => ({
     id,
+    owner_id: scopedOwnerId,
+    ownerId: scopedOwnerId,
     vocab_id: row.id,
     word: row.word,
     hanja: row.hanja ?? null,
@@ -761,7 +1190,8 @@ const upsertContextForVocabRow = (tx, row, {
   tx.executeSql(
     `SELECT id
      FROM vocab_contexts
-     WHERE language = ?
+     WHERE owner_id = ?
+       AND language = ?
        AND word = ?
        AND hanja IS ?
        AND def IS ?
@@ -770,7 +1200,15 @@ const upsertContextForVocabRow = (tx, row, {
        AND deleted_at IS NULL
      ORDER BY id ASC
      LIMIT 1`,
-    [normalizedLanguage, row.word, row.hanja ?? null, row.def ?? null, cleanedSentence, normalizedSourceUri],
+    [
+      scopedOwnerId,
+      normalizedLanguage,
+      row.word,
+      row.hanja ?? null,
+      row.def ?? null,
+      cleanedSentence,
+      normalizedSourceUri,
+    ],
     (_, existingResult) => {
       if (existingResult.rows.length > 0) {
         const contextId = existingResult.rows.item(0).id;
@@ -795,11 +1233,12 @@ const upsertContextForVocabRow = (tx, row, {
 
       tx.executeSql(
         `INSERT INTO vocab_contexts (
-          vocab_id, word, hanja, def, source_book_uri, source_book_title, sentence,
+          owner_id, vocab_id, word, hanja, def, source_book_uri, source_book_title, sentence,
           seen_at, language, updated_at, deleted_at
         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
+          scopedOwnerId,
           row.id,
           row.word,
           row.hanja ?? null,
@@ -838,9 +1277,11 @@ export const recordVocabContext = ({
   seenAt = new Date().toISOString(),
   language = 'ko',
   force = false,
+  ownerId = GUEST_OWNER_ID,
 }) => {
   const cleanedWord = cleanValue(word);
   const cleanedSentence = cleanValue(sentence);
+  const scopedOwnerId = resolveOwnerId(ownerId);
 
   return new Promise((resolve, reject) => {
     if (!cleanedWord || !cleanedSentence) {
@@ -850,12 +1291,12 @@ export const recordVocabContext = ({
 
     db.transaction(tx => {
       tx.executeSql(
-        `SELECT id, word, hanja, def, level, language
+        `SELECT id, owner_id, word, hanja, def, level, language
          FROM vocab
-         WHERE word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL
+         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL
          ORDER BY id ASC
          LIMIT 1`,
-        [cleanedWord, hanja ?? null, definition ?? null, language],
+        [scopedOwnerId, cleanedWord, hanja ?? null, definition ?? null, language],
         (_, result) => {
           if (result.rows.length === 0) {
             resolve(false);
@@ -874,6 +1315,7 @@ export const recordVocabContext = ({
             sourceBookTitle,
             seenAt,
             language,
+            ownerId: scopedOwnerId,
           }, resolve, reject);
         },
         (_, error) => {
@@ -893,9 +1335,11 @@ export const recordVocabContextForSurface = ({
   sourceBookTitle = null,
   seenAt = new Date().toISOString(),
   language = 'ko',
+  ownerId = GUEST_OWNER_ID,
 }) => {
   const cleanedSurface = cleanValue(surface);
   const cleanedSentence = cleanValue(sentence);
+  const scopedOwnerId = resolveOwnerId(ownerId);
 
   return new Promise((resolve, reject) => {
     if (!cleanedSurface || !cleanedSentence) {
@@ -921,11 +1365,11 @@ export const recordVocabContextForSurface = ({
       };
 
       tx.executeSql(
-        `SELECT id, word, hanja, def, level, language
+        `SELECT id, owner_id, word, hanja, def, level, language
          FROM vocab
-         WHERE word = ? AND language = ? AND deleted_at IS NULL
+         WHERE owner_id = ? AND word = ? AND language = ? AND deleted_at IS NULL
          ORDER BY id ASC`,
-        [cleanedSurface, language],
+        [scopedOwnerId, cleanedSurface, language],
         (_, exactResult) => {
           const exactRows = exactResult.rows._array ?? [];
           if (exactRows.length > 0) {
@@ -939,13 +1383,18 @@ export const recordVocabContextForSurface = ({
           }
 
           tx.executeSql(
-            `SELECT v.id, v.word, v.hanja, v.def, v.level, v.language
+            `SELECT v.id, v.owner_id, v.word, v.hanja, v.def, v.level, v.language
              FROM book_index bi
              JOIN dictionary_cache dc ON dc.id = bi.stem_id
              JOIN vocab v ON v.word = dc.stem
-             WHERE bi.book_uri = ? AND bi.surface = ? AND v.language = ? AND v.deleted_at IS NULL
+             WHERE bi.owner_id = ?
+               AND v.owner_id = ?
+               AND bi.book_uri = ?
+               AND bi.surface = ?
+               AND v.language = ?
+               AND v.deleted_at IS NULL
              ORDER BY v.id ASC`,
-            [sourceBookUri, cleanedSurface, language],
+            [scopedOwnerId, scopedOwnerId, sourceBookUri, cleanedSurface, language],
             (_, indexResult) => {
               recordFirstAvailableRow(indexResult.rows._array ?? []);
             },
@@ -966,8 +1415,9 @@ export const recordVocabContextForSurface = ({
   });
 };
 
-export const getVocabContexts = (word, hanja, definition, limit = 12, language = 'ko') => {
+export const getVocabContexts = (word, hanja, definition, limit = 12, language = 'ko', options = {}) => {
   const cleanedWord = cleanValue(word);
+  const ownerId = resolveOwnerId(options);
 
   return new Promise((resolve, reject) => {
     if (!cleanedWord) {
@@ -977,12 +1427,12 @@ export const getVocabContexts = (word, hanja, definition, limit = 12, language =
 
     db.transaction(tx => {
       tx.executeSql(
-        `SELECT id, word, hanja, def, source_book_uri, source_book_title, context_sentence, created_at, language
+        `SELECT id, owner_id, word, hanja, def, source_book_uri, source_book_title, context_sentence, created_at, language
          FROM vocab
-         WHERE word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL
+         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL
          ORDER BY id ASC
          LIMIT 1`,
-        [cleanedWord, hanja ?? null, definition ?? null, language],
+        [ownerId, cleanedWord, hanja ?? null, definition ?? null, language],
         (_, vocabResult) => {
           if (vocabResult.rows.length === 0) {
             resolve([]);
@@ -993,10 +1443,10 @@ export const getVocabContexts = (word, hanja, definition, limit = 12, language =
           tx.executeSql(
             `SELECT sentence, source_book_uri, source_book_title, seen_at
              FROM vocab_contexts
-             WHERE vocab_id = ? AND language = ? AND deleted_at IS NULL
+             WHERE owner_id = ? AND vocab_id = ? AND language = ? AND deleted_at IS NULL
              ORDER BY datetime(seen_at) DESC, id DESC
              LIMIT ?`,
-            [vocabRow.id, language, limit],
+            [ownerId, vocabRow.id, language, limit],
             (_, contextResult) => {
               const rows = contextResult.rows._array ?? [];
               const contexts = rows.map((row) => ({
@@ -1044,6 +1494,7 @@ export const getVocabContexts = (word, hanja, definition, limit = 12, language =
 
 export const getAllVocabContexts = (options = {}) => {
   const { includeDeleted = false } = options;
+  const ownerId = resolveOwnerId(options);
 
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
@@ -1051,9 +1502,9 @@ export const getAllVocabContexts = (options = {}) => {
         `SELECT id, vocab_id, word, hanja, def, source_book_uri, source_book_title,
                 sentence, seen_at, language, updated_at, deleted_at
          FROM vocab_contexts
-         ${includeDeleted ? '' : 'WHERE deleted_at IS NULL'}
+         WHERE owner_id = ?${includeDeleted ? '' : ' AND deleted_at IS NULL'}
          ORDER BY datetime(seen_at) DESC, id DESC`,
-        [],
+        [ownerId],
         (_, result) => resolve(result.rows._array ?? []),
         (_, error) => {
           console.error('[Database] Error reading all vocab contexts:', error);
@@ -1065,7 +1516,7 @@ export const getAllVocabContexts = (options = {}) => {
   });
 };
 
-export const insertVocabContextIfMissing = (context) => {
+export const insertVocabContextIfMissing = (context, options = {}) => {
   const cleanedWord = cleanValue(context?.word);
   const cleanedSentence = cleanValue(context?.sentence);
   const language = context?.language ?? 'ko';
@@ -1073,6 +1524,7 @@ export const insertVocabContextIfMissing = (context) => {
   const hanja = context?.hanja ?? null;
   const seenAt = context?.seen_at ?? context?.seenAt ?? new Date().toISOString();
   const updatedAt = context?.updated_at ?? context?.updatedAt ?? seenAt;
+  const ownerId = resolveOwnerId(options.ownerId ?? context?.owner_id ?? context?.ownerId);
 
   return new Promise((resolve, reject) => {
     if (!cleanedWord || !cleanedSentence || context?.deleted_at || context?.deletedAt) {
@@ -1082,12 +1534,12 @@ export const insertVocabContextIfMissing = (context) => {
 
     db.transaction(tx => {
       tx.executeSql(
-        `SELECT id, word, hanja, def, level, language
+        `SELECT id, owner_id, word, hanja, def, level, language
          FROM vocab
-         WHERE word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL
+         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL
          ORDER BY id ASC
          LIMIT 1`,
-        [cleanedWord, hanja, definition, language],
+        [ownerId, cleanedWord, hanja, definition, language],
         (_, result) => {
           if (result.rows.length === 0) {
             resolve(false);
@@ -1101,6 +1553,7 @@ export const insertVocabContextIfMissing = (context) => {
             seenAt,
             updatedAt,
             language,
+            ownerId,
           }, resolve, reject);
         },
         (_, error) => {
@@ -1113,16 +1566,17 @@ export const insertVocabContextIfMissing = (context) => {
   });
 };
 
-export const softDeleteVocabContextsForWord = (word, hanja, definition, language = 'ko') => {
+export const softDeleteVocabContextsForWord = (word, hanja, definition, language = 'ko', options = {}) => {
   const deletedAt = nowIso();
+  const ownerId = resolveOwnerId(options);
 
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
       tx.executeSql(
         `UPDATE vocab_contexts
          SET deleted_at = ?, updated_at = ?
-         WHERE word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
-        [deletedAt, deletedAt, word, hanja ?? null, definition ?? null, language],
+         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
+        [deletedAt, deletedAt, ownerId, word, hanja ?? null, definition ?? null, language],
         (_, result) => resolve(result.rowsAffected ?? 0),
         (_, error) => {
           console.error(`[Database] Error soft-deleting vocab contexts for "${word}":`, error);
@@ -1134,16 +1588,18 @@ export const softDeleteVocabContextsForWord = (word, hanja, definition, language
   });
 };
 
-export const getRelatedKnownWords = (word, language = 'ko') => {
+export const getRelatedKnownWords = (word, language = 'ko', options = {}) => {
+  const ownerId = resolveOwnerId(options);
+
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
       tx.executeSql(
         `SELECT related_known_words
          FROM vocab
-         WHERE word = ? AND language = ? AND deleted_at IS NULL
+         WHERE owner_id = ? AND word = ? AND language = ? AND deleted_at IS NULL
          ORDER BY id ASC
          LIMIT 1`,
-        [word, language],
+        [ownerId, word, language],
         (_, result) => {
           const row = result.rows.length > 0 ? result.rows.item(0) : null;
           resolve(parseRelatedKnownWords(row?.related_known_words));
@@ -1171,7 +1627,9 @@ export const addRelatedKnownWord = (word, relatedWord, options = {}) => {
     createIfMissing = false,
     mainWord = {},
     language = mainWord.language ?? 'ko',
+    ownerId = GUEST_OWNER_ID,
   } = options;
+  const scopedOwnerId = resolveOwnerId(ownerId);
   const shouldScopeToEntry = (
     Object.prototype.hasOwnProperty.call(options, 'mainHanja')
     || Object.prototype.hasOwnProperty.call(options, 'mainDefinition')
@@ -1187,9 +1645,11 @@ export const addRelatedKnownWord = (word, relatedWord, options = {}) => {
         shouldScopeToEntry
           ? `SELECT id, related_known_words
              FROM vocab
-             WHERE word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`
-          : 'SELECT id, related_known_words FROM vocab WHERE word = ? AND language = ? AND deleted_at IS NULL',
-        shouldScopeToEntry ? [word, mainHanja, mainDefinition, language] : [word, language],
+             WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`
+          : 'SELECT id, related_known_words FROM vocab WHERE owner_id = ? AND word = ? AND language = ? AND deleted_at IS NULL',
+        shouldScopeToEntry
+          ? [scopedOwnerId, word, mainHanja, mainDefinition, language]
+          : [scopedOwnerId, word, language],
         (_, result) => {
           if (result.rows.length === 0) {
             if (!createIfMissing) {
@@ -1200,12 +1660,13 @@ export const addRelatedKnownWord = (word, relatedWord, options = {}) => {
             const relatedKnownWordsJson = JSON.stringify([normalizedEntry]);
             tx.executeSql(
               `INSERT INTO vocab (
-                word, hanja, def, level, source_book_uri, source_book_title, context_sentence, is_favorite,
+                owner_id, word, hanja, def, level, source_book_uri, source_book_title, context_sentence, is_favorite,
                 priority, created_at, last_reviewed_at, next_review_at, correct_count, wrong_count,
                 related_known_words, updated_at, deleted_at, language
               )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [
+                scopedOwnerId,
                 word,
                 mainWord.hanja ?? null,
                 mainWord.definition ?? null,
@@ -1265,6 +1726,7 @@ export const addRelatedKnownWord = (word, relatedWord, options = {}) => {
 
 export const removeRelatedKnownWord = (word, relatedWord, language = 'ko', options = {}) => {
   const keyToRemove = relatedKnownWordKey(relatedWord);
+  const ownerId = resolveOwnerId(options);
   const shouldScopeToEntry = (
     Object.prototype.hasOwnProperty.call(options, 'mainHanja')
     || Object.prototype.hasOwnProperty.call(options, 'mainDefinition')
@@ -1278,9 +1740,11 @@ export const removeRelatedKnownWord = (word, relatedWord, language = 'ko', optio
         shouldScopeToEntry
           ? `SELECT id, related_known_words
              FROM vocab
-             WHERE word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`
-          : 'SELECT id, related_known_words FROM vocab WHERE word = ? AND language = ? AND deleted_at IS NULL',
-        shouldScopeToEntry ? [word, mainHanja, mainDefinition, language] : [word, language],
+             WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`
+          : 'SELECT id, related_known_words FROM vocab WHERE owner_id = ? AND word = ? AND language = ? AND deleted_at IS NULL',
+        shouldScopeToEntry
+          ? [ownerId, word, mainHanja, mainDefinition, language]
+          : [ownerId, word, language],
         (_, result) => {
           if (result.rows.length === 0) {
             resolve([]);
@@ -1311,17 +1775,20 @@ export const removeRelatedKnownWord = (word, relatedWord, language = 'ko', optio
   });
 };
 
-export const getAllRelatedKnownWords = () => {
+export const getAllRelatedKnownWords = (options = {}) => {
+  const ownerId = resolveOwnerId(options);
+
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
       tx.executeSql(
         `SELECT word, hanja, def, related_known_words, language, updated_at
          FROM vocab
-         WHERE related_known_words IS NOT NULL
+         WHERE owner_id = ?
+           AND related_known_words IS NOT NULL
            AND related_known_words != ''
            AND related_known_words != '[]'
            AND deleted_at IS NULL`,
-        [],
+        [ownerId],
         (_, result) => {
           const relations = [];
           const rows = result.rows._array ?? [];
@@ -1372,6 +1839,7 @@ export const addRelatedKnownWordForEntry = ({
   markedAt = new Date().toISOString(),
   updatedAt = markedAt,
   language = 'ko',
+  ownerId = GUEST_OWNER_ID,
 }) => {
   if (!mainWord || !relatedWord) {
     return Promise.resolve([]);
@@ -1389,6 +1857,7 @@ export const addRelatedKnownWordForEntry = ({
     },
     {
       createIfMissing: true,
+      ownerId,
       language,
       mainWord: {
         hanja: mainHanja,
@@ -1409,6 +1878,7 @@ export const removeRelatedKnownWordForEntry = ({
   relatedWord,
   relatedHanja = null,
   language = 'ko',
+  ownerId = GUEST_OWNER_ID,
 }) => {
   if (!mainWord || !relatedWord) {
     return Promise.resolve([]);
@@ -1422,21 +1892,24 @@ export const removeRelatedKnownWordForEntry = ({
     },
     language,
     {
+      ownerId,
       mainHanja,
       mainDefinition,
     }
   );
 };
 
-export const updateLevel = (word, hanja, definition, newLevel, language = 'ko') => {
+export const updateLevel = (word, hanja, definition, newLevel, language = 'ko', options = {}) => {
+  const ownerId = resolveOwnerId(options);
+
   return new Promise((resolve, reject) => {
     const updatedAt = nowIso();
     db.transaction(tx => {
       tx.executeSql(
         `UPDATE vocab
          SET level = ?, updated_at = ?
-         WHERE word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
-        [newLevel, updatedAt, word, hanja, definition, language],
+         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
+        [newLevel, updatedAt, ownerId, word, hanja, definition, language],
         () => resolve(),
         (_, error) => {
           console.error(`[Database] Error updating level for "${word}":`, error);
@@ -1447,15 +1920,17 @@ export const updateLevel = (word, hanja, definition, newLevel, language = 'ko') 
   });
 };
 
-export const updateFavorite = (word, hanja, definition, isFavorite, language = 'ko') => {
+export const updateFavorite = (word, hanja, definition, isFavorite, language = 'ko', options = {}) => {
+  const ownerId = resolveOwnerId(options);
+
   return new Promise((resolve, reject) => {
     const updatedAt = nowIso();
     db.transaction(tx => {
       tx.executeSql(
         `UPDATE vocab
          SET is_favorite = ?, updated_at = ?
-         WHERE word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
-        [isFavorite ? 1 : 0, updatedAt, word, hanja, definition, language],
+         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
+        [isFavorite ? 1 : 0, updatedAt, ownerId, word, hanja, definition, language],
         () => resolve(),
         (_, error) => {
           console.error(`[Database] Error updating favorite for "${word}":`, error);
@@ -1466,15 +1941,17 @@ export const updateFavorite = (word, hanja, definition, isFavorite, language = '
   });
 };
 
-export const updatePriority = (word, hanja, definition, priority, language = 'ko') => {
+export const updatePriority = (word, hanja, definition, priority, language = 'ko', options = {}) => {
+  const ownerId = resolveOwnerId(options);
+
   return new Promise((resolve, reject) => {
     const updatedAt = nowIso();
     db.transaction(tx => {
       tx.executeSql(
         `UPDATE vocab
          SET priority = ?, updated_at = ?
-         WHERE word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
-        [priority, updatedAt, word, hanja, definition, language],
+         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
+        [priority, updatedAt, ownerId, word, hanja, definition, language],
         () => resolve(),
         (_, error) => {
           console.error(`[Database] Error updating priority for "${word}":`, error);
@@ -1491,7 +1968,8 @@ const addDays = (days) => {
   return date.toISOString();
 };
 
-export const recordReviewOutcome = (word, hanja, definition, currentLevel, outcome, language = 'ko') => {
+export const recordReviewOutcome = (word, hanja, definition, currentLevel, outcome, language = 'ko', options = {}) => {
+  const ownerId = resolveOwnerId(options);
   const reviewMap = {
     bad: {
       level: 'bad',
@@ -1529,7 +2007,7 @@ export const recordReviewOutcome = (word, hanja, definition, currentLevel, outco
              correct_count = COALESCE(correct_count, 0) + ?,
              wrong_count = COALESCE(wrong_count, 0) + ?,
              updated_at = ?
-         WHERE word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
+         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
         [
           config.level,
           reviewedAt,
@@ -1537,6 +2015,7 @@ export const recordReviewOutcome = (word, hanja, definition, currentLevel, outco
           config.correctInc,
           config.wrongInc,
           reviewedAt,
+          ownerId,
           word,
           hanja,
           definition,
@@ -1552,16 +2031,18 @@ export const recordReviewOutcome = (word, hanja, definition, currentLevel, outco
   });
 };
 
-export const removeData = (word, hanja, definition, language = 'ko') => {
+export const removeData = (word, hanja, definition, language = 'ko', options = {}) => {
+  const ownerId = resolveOwnerId(options);
+
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
       tx.executeSql(
-        'DELETE FROM vocab_contexts WHERE word = ? AND hanja IS ? AND def IS ? AND language = ?',
-        [word, hanja, definition, language]
+        'DELETE FROM vocab_contexts WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ?',
+        [ownerId, word, hanja, definition, language]
       );
       tx.executeSql(
-        'DELETE FROM vocab WHERE word = ? AND hanja IS ? AND def IS ? AND language = ?',
-        [word, hanja, definition, language],
+        'DELETE FROM vocab WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ?',
+        [ownerId, word, hanja, definition, language],
         (_, result) => resolve(result),
         (_, error) => {
           console.error(`[Database] Error removing vocab word "${word}":`, error);
@@ -1572,12 +2053,14 @@ export const removeData = (word, hanja, definition, language = 'ko') => {
   });
 };
 
-export const wordExists = (word, language = 'ko') => {
+export const wordExists = (word, language = 'ko', options = {}) => {
+  const ownerId = resolveOwnerId(options);
+
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
       tx.executeSql(
-        'SELECT COUNT(*) AS count FROM vocab WHERE word = ? AND language = ? AND deleted_at IS NULL',
-        [word, language],
+        'SELECT COUNT(*) AS count FROM vocab WHERE owner_id = ? AND word = ? AND language = ? AND deleted_at IS NULL',
+        [ownerId, word, language],
         (_, result) => {
           const { count } = result.rows.item(0);
           resolve(count > 0);
@@ -1591,16 +2074,22 @@ export const wordExists = (word, language = 'ko') => {
   });
 };
 
-export const getSavedWords = (language = 'ko') => {
+export const getSavedWords = (options = {}) => {
+  const normalizedOptions = typeof options === 'string' || options === null
+    ? { language: options }
+    : options;
+  const { language = 'ko' } = normalizedOptions ?? {};
+  const ownerId = resolveOwnerId(normalizedOptions);
+
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
       const sql = language == null
-        ? 'SELECT DISTINCT word FROM vocab WHERE deleted_at IS NULL'
-        : 'SELECT DISTINCT word FROM vocab WHERE language = ? AND deleted_at IS NULL';
+        ? 'SELECT DISTINCT word FROM vocab WHERE owner_id = ? AND deleted_at IS NULL'
+        : 'SELECT DISTINCT word FROM vocab WHERE owner_id = ? AND language = ? AND deleted_at IS NULL';
 
       tx.executeSql(
         sql,
-        language == null ? [] : [language],
+        language == null ? [ownerId] : [ownerId, language],
         (_, result) => {
           const words = result.rows._array.map(row => row.word).filter(Boolean);
           resolve(words);
@@ -1619,11 +2108,12 @@ export const viewData = (options = {}) => {
     ? { language: options }
     : options;
   const { includeDeleted = false, language = null } = normalizedOptions;
+  const ownerId = resolveOwnerId(normalizedOptions);
 
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
-      const whereClauses = [];
-      const params = [];
+      const whereClauses = ['owner_id = ?'];
+      const params = [ownerId];
 
       if (!includeDeleted) {
         whereClauses.push('deleted_at IS NULL');
@@ -1635,9 +2125,7 @@ export const viewData = (options = {}) => {
       }
 
       tx.executeSql(
-        whereClauses.length > 0
-          ? `SELECT * FROM vocab WHERE ${whereClauses.join(' AND ')}`
-          : 'SELECT * FROM vocab',
+        `SELECT * FROM vocab WHERE ${whereClauses.join(' AND ')}`,
         params,
         (_, result) => {
           const data = result.rows._array;
@@ -1686,13 +2174,15 @@ export const getTableSchema = () => {
   });
 };
 
-export const deleteAllDataFromTable = () => {
+export const deleteAllDataFromTable = (options = {}) => {
+  const ownerId = resolveOwnerId(options);
+
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
-      tx.executeSql(`DELETE FROM vocab_contexts`);
+      tx.executeSql(`DELETE FROM vocab_contexts WHERE owner_id = ?`, [ownerId]);
       tx.executeSql(
-        `DELETE FROM vocab`,
-        [],
+        `DELETE FROM vocab WHERE owner_id = ?`,
+        [ownerId],
         () => resolve(),
         (_, error) => {
           console.error(`[Database] Error deleting all vocab data:`, error);
@@ -1789,7 +2279,9 @@ export const lookupCacheByStem = (stem) => {
   });
 };
 
-export const lookupBookIndexBySurface = (bookUri, surface) => {
+export const lookupBookIndexBySurface = (ownerId, bookUri, surface) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+
   return new Promise((resolve, reject) => {
     if (!bookUri || !surface) {
       return resolve([]);
@@ -1800,8 +2292,8 @@ export const lookupBookIndexBySurface = (bookUri, surface) => {
         `SELECT dc.id, dc.stem, dc.definition, dc.hanja, dc.pos, dc.domain
          FROM book_index bi
          JOIN dictionary_cache dc ON dc.id = bi.stem_id
-         WHERE bi.book_uri = ? AND bi.surface = ?`,
-        [bookUri, surface],
+         WHERE bi.owner_id = ? AND bi.book_uri = ? AND bi.surface = ?`,
+        [scopedOwnerId, bookUri, surface],
         (_, result) => {
           resolve(result.rows._array);
         },
@@ -1814,7 +2306,9 @@ export const lookupBookIndexBySurface = (bookUri, surface) => {
   });
 };
 
-export const lookupBookHighlightSurfaces = (bookUri, savedStems) => {
+export const lookupBookHighlightSurfaces = (ownerId, bookUri, savedStems) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+
   return new Promise((resolve, reject) => {
     if (!bookUri || !savedStems || savedStems.length === 0) {
       return resolve([]);
@@ -1832,8 +2326,8 @@ export const lookupBookHighlightSurfaces = (bookUri, savedStems) => {
         `SELECT DISTINCT bi.surface, dc.stem
          FROM book_index bi
          JOIN dictionary_cache dc ON dc.id = bi.stem_id
-         WHERE bi.book_uri = ? AND dc.stem IN (${placeholders})`,
-        [bookUri, ...uniqueStems],
+         WHERE bi.owner_id = ? AND bi.book_uri = ? AND dc.stem IN (${placeholders})`,
+        [scopedOwnerId, bookUri, ...uniqueStems],
         (_, result) => {
           resolve(result.rows._array);
         },
@@ -1846,7 +2340,9 @@ export const lookupBookHighlightSurfaces = (bookUri, savedStems) => {
   });
 };
 
-export const getBookPreprocessMeta = (bookUri, preprocessVersion = PREPROCESS_VERSION) => {
+export const getBookPreprocessMeta = (ownerId, bookUri, preprocessVersion = PREPROCESS_VERSION) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+
   return new Promise((resolve, reject) => {
     if (!bookUri) {
       resolve(null);
@@ -1855,11 +2351,11 @@ export const getBookPreprocessMeta = (bookUri, preprocessVersion = PREPROCESS_VE
 
     db.transaction(tx => {
       tx.executeSql(
-        `SELECT book_uri, status, preprocess_version, started_at, completed_at, surface_count
+        `SELECT owner_id, book_uri, status, preprocess_version, started_at, completed_at, surface_count
          FROM book_preprocess_meta
-         WHERE book_uri = ? AND preprocess_version = ?
+         WHERE owner_id = ? AND book_uri = ? AND preprocess_version = ?
          LIMIT 1`,
-        [bookUri, preprocessVersion],
+        [scopedOwnerId, bookUri, preprocessVersion],
         (_, result) => {
           resolve(result.rows.length > 0 ? result.rows.item(0) : null);
         },
@@ -1873,6 +2369,7 @@ export const getBookPreprocessMeta = (bookUri, preprocessVersion = PREPROCESS_VE
 };
 
 export const markBookPreprocessMeta = ({
+  ownerId = GUEST_OWNER_ID,
   bookUri,
   status = 'partial',
   surfaceCount = 0,
@@ -1880,6 +2377,8 @@ export const markBookPreprocessMeta = ({
   startedAt = new Date().toISOString(),
   completedAt = null,
 }) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+
   return new Promise((resolve, reject) => {
     if (!bookUri) {
       resolve();
@@ -1889,17 +2388,20 @@ export const markBookPreprocessMeta = ({
     db.transaction(tx => {
       tx.executeSql(
         `INSERT OR REPLACE INTO book_preprocess_meta (
-          book_uri, status, preprocess_version, started_at, completed_at, surface_count
+          owner_id, book_uri, status, preprocess_version, started_at, completed_at, surface_count
         )
-         VALUES (?, ?, ?, COALESCE(
-           (SELECT started_at FROM book_preprocess_meta WHERE book_uri = ?),
+         VALUES (?, ?, ?, ?, COALESCE(
+           (SELECT started_at FROM book_preprocess_meta WHERE owner_id = ? AND book_uri = ? AND preprocess_version = ?),
            ?
          ), ?, ?)`,
         [
+          scopedOwnerId,
           bookUri,
           status,
           preprocessVersion,
+          scopedOwnerId,
           bookUri,
+          preprocessVersion,
           startedAt,
           completedAt,
           surfaceCount,
@@ -1915,10 +2417,13 @@ export const markBookPreprocessMeta = ({
 };
 
 export const getBookPreprocessChapter = (
+  ownerId,
   bookUri,
   spineIndex,
   preprocessVersion = PREPROCESS_VERSION
 ) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+
   return new Promise((resolve, reject) => {
     if (!bookUri || !Number.isInteger(spineIndex)) {
       resolve(null);
@@ -1927,11 +2432,11 @@ export const getBookPreprocessChapter = (
 
     db.transaction(tx => {
       tx.executeSql(
-        `SELECT book_uri, spine_index, status, surface_count, completed_at, preprocess_version
+        `SELECT owner_id, book_uri, spine_index, status, surface_count, completed_at, preprocess_version
          FROM book_preprocess_chapters
-         WHERE book_uri = ? AND spine_index = ? AND preprocess_version = ?
+         WHERE owner_id = ? AND book_uri = ? AND spine_index = ? AND preprocess_version = ?
          LIMIT 1`,
-        [bookUri, spineIndex, preprocessVersion],
+        [scopedOwnerId, bookUri, spineIndex, preprocessVersion],
         (_, result) => {
           resolve(result.rows.length > 0 ? result.rows.item(0) : null);
         },
@@ -1947,7 +2452,9 @@ export const getBookPreprocessChapter = (
   });
 };
 
-export const getBookPreprocessChapters = (bookUri, preprocessVersion = PREPROCESS_VERSION) => {
+export const getBookPreprocessChapters = (ownerId, bookUri, preprocessVersion = PREPROCESS_VERSION) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+
   return new Promise((resolve, reject) => {
     if (!bookUri) {
       resolve([]);
@@ -1956,11 +2463,11 @@ export const getBookPreprocessChapters = (bookUri, preprocessVersion = PREPROCES
 
     db.transaction(tx => {
       tx.executeSql(
-        `SELECT book_uri, spine_index, status, surface_count, completed_at, preprocess_version
+        `SELECT owner_id, book_uri, spine_index, status, surface_count, completed_at, preprocess_version
          FROM book_preprocess_chapters
-         WHERE book_uri = ? AND preprocess_version = ?
+         WHERE owner_id = ? AND book_uri = ? AND preprocess_version = ?
          ORDER BY spine_index ASC`,
-        [bookUri, preprocessVersion],
+        [scopedOwnerId, bookUri, preprocessVersion],
         (_, result) => {
           resolve(result.rows._array);
         },
@@ -1974,6 +2481,7 @@ export const getBookPreprocessChapters = (bookUri, preprocessVersion = PREPROCES
 };
 
 export const markBookPreprocessChapter = ({
+  ownerId = GUEST_OWNER_ID,
   bookUri,
   spineIndex,
   status,
@@ -1981,6 +2489,8 @@ export const markBookPreprocessChapter = ({
   preprocessVersion = PREPROCESS_VERSION,
   completedAt = null,
 }) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+
   return new Promise((resolve, reject) => {
     if (!bookUri || !Number.isInteger(spineIndex)) {
       resolve();
@@ -1990,10 +2500,10 @@ export const markBookPreprocessChapter = ({
     db.transaction(tx => {
       tx.executeSql(
         `INSERT OR REPLACE INTO book_preprocess_chapters (
-          book_uri, spine_index, status, surface_count, completed_at, preprocess_version
+          owner_id, book_uri, spine_index, status, surface_count, completed_at, preprocess_version
         )
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [bookUri, spineIndex, status, surfaceCount, completedAt, preprocessVersion],
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [scopedOwnerId, bookUri, spineIndex, status, surfaceCount, completedAt, preprocessVersion],
         () => resolve(),
         (_, error) => {
           console.error(
@@ -2016,8 +2526,8 @@ export const markBookPreprocessChapter = ({
  * @param {string} bookUri
  * @returns {Promise<boolean>}
  */
-export const isBookPreprocessed = async (bookUri) => {
-  const meta = await getBookPreprocessMeta(bookUri);
+export const isBookPreprocessed = async (bookUri, options = {}) => {
+  const meta = await getBookPreprocessMeta(resolveOwnerId(options), bookUri);
   return meta?.status === 'complete';
 };
 
@@ -2038,7 +2548,9 @@ export const isBookPreprocessed = async (bookUri) => {
  */
 export const logDatabaseSnapshot = () => {};
 
-export const insertBookIndexEntries = (bookUri, entries) => {
+export const insertBookIndexEntries = (bookUri, entries, options = {}) => {
+  const ownerId = resolveOwnerId(options);
+
   return new Promise((resolve, reject) => {
     if (!entries || entries.length === 0) {
       return resolve();
@@ -2047,8 +2559,8 @@ export const insertBookIndexEntries = (bookUri, entries) => {
       tx => {
         entries.forEach(({ surface, stem_id }) => {
           tx.executeSql(
-            `INSERT OR IGNORE INTO book_index (book_uri, surface, stem_id) VALUES (?, ?, ?)`,
-            [bookUri, surface, stem_id]
+            `INSERT OR IGNORE INTO book_index (owner_id, book_uri, surface, stem_id) VALUES (?, ?, ?, ?)`,
+            [ownerId, bookUri, surface, stem_id]
           );
         });
       },
@@ -2061,7 +2573,9 @@ export const insertBookIndexEntries = (bookUri, entries) => {
   });
 };
 
-export const deleteBookIndexEntries = (bookUri) => {
+export const deleteBookIndexEntries = (bookUri, options = {}) => {
+  const ownerId = resolveOwnerId(options);
+
   return new Promise((resolve, reject) => {
     if (!bookUri) {
       resolve();
@@ -2070,8 +2584,8 @@ export const deleteBookIndexEntries = (bookUri) => {
 
     db.transaction(tx => {
       tx.executeSql(
-        'DELETE FROM book_index WHERE book_uri = ?',
-        [bookUri],
+        'DELETE FROM book_index WHERE owner_id = ? AND book_uri = ?',
+        [ownerId, bookUri],
         () => {},
         (_, error) => {
           console.error(`[Database] Error deleting book_index rows for "${bookUri}":`, error);
@@ -2079,8 +2593,8 @@ export const deleteBookIndexEntries = (bookUri) => {
         }
       );
       tx.executeSql(
-        'DELETE FROM book_preprocess_chapters WHERE book_uri = ?',
-        [bookUri],
+        'DELETE FROM book_preprocess_chapters WHERE owner_id = ? AND book_uri = ?',
+        [ownerId, bookUri],
         () => {},
         (_, error) => {
           console.error(`[Database] Error deleting preprocess chapter rows for "${bookUri}":`, error);
@@ -2088,8 +2602,8 @@ export const deleteBookIndexEntries = (bookUri) => {
         }
       );
       tx.executeSql(
-        'DELETE FROM book_preprocess_meta WHERE book_uri = ?',
-        [bookUri],
+        'DELETE FROM book_preprocess_meta WHERE owner_id = ? AND book_uri = ?',
+        [ownerId, bookUri],
         (_, result) => resolve(result.rowsAffected),
         (_, error) => {
           console.error(`[Database] Error deleting preprocess meta for "${bookUri}":`, error);

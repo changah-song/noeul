@@ -4,6 +4,7 @@ import axios from 'axios';
 import koreanDictionary from '../../../services/api/koreanDictionary';
 import stemWord from '../../../services/api/stemWord';
 import { MaterialIcons } from '@expo/vector-icons';
+import { useLocalOwner } from '../../../contexts/LocalOwnerContext';
 import {
     insertData,
     removeData,
@@ -23,6 +24,7 @@ import {
 } from '../../../services/supabase';
 import HanjaDetails from './HanjaDetails';
 import { BASE_URL } from '../../../config';
+import { isCurrentSyncGeneration } from '../../../services/localOwnerCoordinator';
 import { colors, fontFamilies, radii, spacing, textStyles } from '../../../theme';
 
 const STOP_STEMS = new Set([
@@ -142,6 +144,7 @@ const DictionaryContent = ({
     sourceBook,
     savedWords = [],
 }) => {
+    const { activeOwnerId, syncGeneration } = useLocalOwner();
     const palette = isDarkMode
         ? {
             text: '#f7efe5',
@@ -235,7 +238,7 @@ const DictionaryContent = ({
 
         const resolveLookup = async () => {
             if (currentBook) {
-                const indexRows = await lookupBookIndexBySurface(currentBook, normalizedSurface);
+                const indexRows = await lookupBookIndexBySurface(activeOwnerId, currentBook, normalizedSurface);
                 if (isCancelled) {
                     return;
                 }
@@ -288,7 +291,7 @@ const DictionaryContent = ({
         return () => {
             isCancelled = true;
         };
-    }, [currentBook, highlightedWord, onContentLoaded]);
+    }, [activeOwnerId, currentBook, highlightedWord, onContentLoaded]);
 
     useEffect(() => {
         if (stemWordList.length === 0) return;
@@ -576,24 +579,31 @@ const DictionaryContent = ({
         }
 
         onWordSave?.(normalizedWord, { includeSurface: false });
+        const ownerId = activeOwnerId;
+        const generation = syncGeneration;
 
         const {
             data: { user },
         } = await supabase.auth.getUser();
 
-        if (!user) {
+        if (!user || ownerId !== user.id || !isCurrentSyncGeneration(generation)) {
             return;
         }
 
         try {
-            await upsertUserVocabEntry(user.id, {
-                ...buildCloudVocabPayload({
-                    word: normalizedWord,
-                    hanja: details.hanja ?? null,
-                    definition: details.definition ?? null,
-                }),
-                level: details.level ?? 'unorganized',
-                status: details.level ?? 'unorganized',
+            await upsertUserVocabEntry({
+                user,
+                ownerId,
+                generation,
+                entry: {
+                    ...buildCloudVocabPayload({
+                        word: normalizedWord,
+                        hanja: details.hanja ?? null,
+                        definition: details.definition ?? null,
+                    }),
+                    level: details.level ?? 'unorganized',
+                    status: details.level ?? 'unorganized',
+                },
             });
         } catch (error) {
             console.warn('[DictionaryContent] cloud auto-save failed:', error.message);
@@ -604,6 +614,8 @@ const DictionaryContent = ({
         onWordSave?.(word, options);
         const createdAt = new Date().toISOString();
         const relatedKnownWords = relatedKnownByWord[word] ?? [];
+        const ownerId = activeOwnerId;
+        const generation = syncGeneration;
         const cloudPayload = buildCloudVocabPayload({
             word,
             hanja: origin,
@@ -611,9 +623,12 @@ const DictionaryContent = ({
             createdAt,
             relatedKnownWords,
         });
-        const alreadySaved = await vocabEntryExists(word, origin, definition, sourceBook?.language ?? 'ko');
+        const alreadySaved = await vocabEntryExists(word, origin, definition, sourceBook?.language ?? 'ko', {
+            ownerId: activeOwnerId,
+        });
         if (!alreadySaved) {
             await insertData(word, origin, definition, {
+                ownerId: activeOwnerId,
                 level: 'unorganized',
                 sourceBookUri: sourceBook?.uri ?? currentBook ?? null,
                 sourceBookTitle: sourceBook?.title ?? null,
@@ -625,6 +640,7 @@ const DictionaryContent = ({
             });
         }
         const recordedContext = await recordVocabContext({
+            ownerId: activeOwnerId,
             word,
             hanja: origin,
             definition,
@@ -638,14 +654,24 @@ const DictionaryContent = ({
             data: { user },
         } = await supabase.auth.getUser();
 
-        if (!user) {
+        if (!user || ownerId !== user.id || !isCurrentSyncGeneration(generation)) {
             return;
         }
 
         try {
-            await upsertUserVocabEntry(user.id, cloudPayload);
+            await upsertUserVocabEntry({
+                user,
+                ownerId,
+                generation,
+                entry: cloudPayload,
+            });
             if (recordedContext) {
-                upsertUserVocabContext(user.id, recordedContext).catch((error) => {
+                upsertUserVocabContext({
+                    user,
+                    ownerId,
+                    generation,
+                    context: recordedContext,
+                }).catch((error) => {
                     console.warn('[DictionaryContent] cloud context save failed:', error.message);
                 });
             }
@@ -656,13 +682,17 @@ const DictionaryContent = ({
 
     const toggleUnSave = async (word, origin, definition, options = {}) => {
         onWordUnsave?.(word, options);
-        await removeData(word, origin, definition, sourceBook?.language ?? 'ko');
+        const ownerId = activeOwnerId;
+        const generation = syncGeneration;
+        await removeData(word, origin, definition, sourceBook?.language ?? 'ko', {
+            ownerId,
+        });
 
         const {
             data: { user },
         } = await supabase.auth.getUser();
 
-        if (!user) {
+        if (!user || ownerId !== user.id || !isCurrentSyncGeneration(generation)) {
             return;
         }
 
@@ -673,9 +703,9 @@ const DictionaryContent = ({
                 definition,
                 language: sourceBook?.language ?? 'ko',
             };
-            await softDeleteUserVocabEntry(user.id, cloudEntry);
-            await softDeleteUserVocabContextsForWord(user.id, cloudEntry);
-            await softDeleteRelatedKnownWordsForMainWord(user.id, cloudEntry);
+            await softDeleteUserVocabEntry({ user, ownerId, generation, entry: cloudEntry });
+            await softDeleteUserVocabContextsForWord({ user, ownerId, generation, entry: cloudEntry });
+            await softDeleteRelatedKnownWordsForMainWord({ user, ownerId, generation, entry: cloudEntry });
         } catch (error) {
             console.warn('[DictionaryContent] cloud remove failed:', error.message);
         }
@@ -1245,7 +1275,7 @@ const styles = StyleSheet.create({
         marginBottom: 5,
     },
     moreArrowButtonExpanded: {
-        marginTop: 'auto',
+        marginTop: 0,
         marginBottom: 0,
     },
     extraList: {

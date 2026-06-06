@@ -21,6 +21,7 @@ import { Feather, Ionicons } from '@expo/vector-icons';
 import { tabBarBaseStyle } from '../components/shared/TabBar';
 import SongReader from '../components/Songs/SongReader';
 import { IconButton, Screen, SectionHeader } from '../components/ui';
+import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { colors, fontFamilies, insets, layout, radii, spacing, textStyles } from '../theme';
 import useBooks from '../hooks/useBooks';
 import { deleteBookIndexEntries } from '../services/Database';
@@ -38,6 +39,11 @@ import {
     softDeleteUserSong,
     upsertUserSong,
 } from '../services/songCloudSync';
+import { GUEST_OWNER_ID, makeScopedStorageKey } from '../services/localDataScope';
+import {
+    assertCanUploadForOwner,
+    isCurrentSyncGeneration,
+} from '../services/localOwnerCoordinator';
 import {
     addOverlayErrorListener,
     addOverlayStatusListener,
@@ -51,7 +57,8 @@ import {
 import { getLanguageLabel } from '../constants/languages';
 
 const BOOK_GRID_GAP = 18;
-const SONGS_STORAGE_KEY = 'manualSongs';
+const LEGACY_SONGS_STORAGE_KEY = 'manualSongs';
+const getSongsStorageKey = (ownerId) => makeScopedStorageKey(ownerId, 'manual-songs');
 const OCR_SETTINGS_KEY = '@ff/ocr-settings';
 const EMPTY_SONG_DRAFT = { title: '', artist: '', lyrics: '' };
 const DEFAULT_SONG_FONT_SIZE = 28;
@@ -556,6 +563,11 @@ const BookPreview = ({
         book?.attributionCategory,
     ].filter(Boolean).join(' · ');
     const readIconName = isBookDownloaded(book) || isPublicDomain ? 'book-outline' : 'download-outline';
+    const readActionLabel = actionBusy
+        ? 'Preparing'
+        : isBookDownloaded(book) || isPublicDomain
+            ? 'Read'
+            : 'Download';
     const favorite = isBookFavorite(book);
     const completed = isBookCompleted(book);
 
@@ -589,7 +601,7 @@ const BookPreview = ({
                         />
                     )}
                     <Text style={styles.previewTopReadButtonText}>
-                        {actionBusy ? 'Preparing' : 'Read'}
+                        {readActionLabel}
                     </Text>
                 </TouchableOpacity>
             </View>
@@ -782,6 +794,7 @@ const BookPreview = ({
 };
 
 const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpen, navigation, user }) => {
+    const { activeOwnerId, syncPaused, syncGeneration } = useLocalOwner();
     const [editBook, setEditBook] = useState(null);
     const [editDraft, setEditDraft] = useState({ title: '', author: '', cover: '' });
     const [activeLibraryTab, setActiveLibraryTab] = useState('Books');
@@ -798,7 +811,9 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const [ocrBusy, setOcrBusy] = useState(false);
     const [, setOcrMessage] = useState('');
     const [ocrSettingsLoaded, setOcrSettingsLoaded] = useState(false);
-    const songCloudSyncUserRef = useRef(null);
+    const songCloudSyncOwnerRef = useRef(null);
+    const activeOwnerIdRef = useRef(activeOwnerId);
+    activeOwnerIdRef.current = activeOwnerId;
     const ocrActionInFlightRef = useRef(false);
     const ocrSettingsRef = useRef({ floatingPreferred: false, updatedAt: null });
     const ocrSettingsCloudUserRef = useRef(null);
@@ -814,6 +829,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         setCurrentBook,
         onBookImported: () => {},
         user,
+        ownerId: activeOwnerId,
+        syncGeneration,
     });
 
     const currentReadingBook = useMemo(() => (
@@ -912,31 +929,93 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const isFloatingOcrVisible = Platform.OS === 'android' && ocrStatus.floatingVisible;
 
     const syncSongToCloud = useCallback((song) => {
-        if (!user?.id || !song?.id) {
+        if (
+            !user?.id
+            || !song?.id
+            || syncPaused
+            || activeOwnerId !== user.id
+            || !isCurrentSyncGeneration(syncGeneration)
+        ) {
             return;
         }
 
-        upsertUserSong(user.id, song).catch((error) => {
+        try {
+            assertCanUploadForOwner({ ownerId: activeOwnerId, user });
+        } catch (error) {
+            console.warn('[Home] Refusing song upload:', error?.message ?? error);
+            return;
+        }
+
+        upsertUserSong({
+            user,
+            ownerId: activeOwnerId,
+            generation: syncGeneration,
+            song,
+        }).catch((error) => {
             console.warn('[Home] Failed to sync song:', error?.message ?? error);
         });
-    }, [user?.id]);
+    }, [activeOwnerId, syncGeneration, syncPaused, user]);
 
     const syncSongsFromCloud = useCallback(async () => {
-        if (!user?.id) {
+        const ownerId = activeOwnerId;
+        const generation = syncGeneration;
+
+        if (
+            !user?.id
+            || syncPaused
+            || ownerId !== user.id
+            || !isCurrentSyncGeneration(generation)
+        ) {
+            return;
+        }
+
+        try {
+            assertCanUploadForOwner({ ownerId, user });
+        } catch (error) {
+            console.warn('[Home] Refusing song cloud sync:', error?.message ?? error);
             return;
         }
 
         const cloudRows = await fetchUserSongs(user.id, { includeDeleted: true });
+        if (!isCurrentSyncGeneration(generation) || ownerId !== activeOwnerIdRef.current) {
+            return;
+        }
+
         const normalizedLocalSongs = songs.map(normalizeStoredSong).filter(Boolean);
         const { songs: mergedSongs, localOnly } = mergeLocalAndCloudSongs(normalizedLocalSongs, cloudRows);
 
-        setSongs(mergedSongs);
-        localOnly.forEach((song) => {
-            upsertUserSong(user.id, song).catch((error) => {
+        if (!isCurrentSyncGeneration(generation) || ownerId !== activeOwnerIdRef.current) {
+            return;
+        }
+
+        setSongs((currentSongs) => (
+            isCurrentSyncGeneration(generation) && ownerId === activeOwnerIdRef.current
+                ? mergedSongs
+                : currentSongs
+        ));
+
+        if (!isCurrentSyncGeneration(generation) || ownerId !== activeOwnerIdRef.current) {
+            return;
+        }
+
+        for (const song of localOnly) {
+            if (!isCurrentSyncGeneration(generation) || ownerId !== activeOwnerIdRef.current) {
+                return;
+            }
+
+            try {
+                assertCanUploadForOwner({ ownerId, user });
+                await upsertUserSong({
+                    user,
+                    ownerId,
+                    generation,
+                    song,
+                });
+            } catch (error) {
                 console.warn('[Home] Failed to upload local song:', error?.message ?? error);
-            });
-        });
-    }, [songs, user?.id]);
+            }
+        }
+    }, [activeOwnerId, songs, syncGeneration, syncPaused, user]);
 
     const persistOcrSettings = useCallback((patch, options = {}) => {
         const { syncCloud = true, updatedAt = new Date().toISOString() } = options;
@@ -952,15 +1031,26 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             console.warn('[Home] Failed to save OCR preference:', error?.message ?? error);
         });
 
-        if (syncCloud && user?.id) {
-            updateUserPreferenceFields(user.id, {
-                ocr_settings: nextSettings,
-                updated_at: updatedAt,
+        if (
+            syncCloud
+            && user?.id
+            && activeOwnerId === user.id
+            && !syncPaused
+            && isCurrentSyncGeneration(syncGeneration)
+        ) {
+            updateUserPreferenceFields({
+                user,
+                ownerId: activeOwnerId,
+                generation: syncGeneration,
+                patch: {
+                    ocr_settings: nextSettings,
+                    updated_at: updatedAt,
+                },
             }).catch((error) => {
                 console.warn('[Home] Failed to sync OCR preference:', error?.message ?? error);
             });
         }
-    }, [user?.id]);
+    }, [activeOwnerId, syncGeneration, syncPaused, user]);
 
     const mergeOcrStatus = useCallback((nextStatus = {}) => {
         setOcrStatus((previous) => ({
@@ -992,11 +1082,44 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     }, [mergeOcrStatus]);
 
     useEffect(() => {
-        let isMounted = true;
+        if (!activeOwnerId) {
+            return undefined;
+        }
 
-        AsyncStorage.getItem(SONGS_STORAGE_KEY)
-            .then((storedSongs) => {
-                if (!isMounted || !storedSongs) {
+        let isActive = true;
+        const ownerId = activeOwnerId;
+
+        const loadSongs = async () => {
+            setSongsLoaded(false);
+            setSongs([]);
+            setSelectedSongId(null);
+            setShowAddSongModal(false);
+            setSongDraft(EMPTY_SONG_DRAFT);
+            songCloudSyncOwnerRef.current = null;
+
+            try {
+                const storageKey = getSongsStorageKey(ownerId);
+                let storedSongs = await AsyncStorage.getItem(storageKey);
+
+                if (!storedSongs && ownerId === GUEST_OWNER_ID) {
+                    const legacySongs = await AsyncStorage.getItem(LEGACY_SONGS_STORAGE_KEY);
+                    if (legacySongs) {
+                        const parsedLegacySongs = JSON.parse(legacySongs);
+                        if (Array.isArray(parsedLegacySongs)) {
+                            const normalizedLegacySongs = parsedLegacySongs
+                                .map(normalizeStoredSong)
+                                .filter(Boolean);
+                            storedSongs = JSON.stringify(normalizedLegacySongs);
+                            await AsyncStorage.setItem(storageKey, storedSongs);
+                        }
+                    }
+                }
+
+                if (!isActive) {
+                    return;
+                }
+
+                if (!storedSongs) {
                     return;
                 }
 
@@ -1006,20 +1129,21 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 }
 
                 setSongs(parsedSongs.map(normalizeStoredSong).filter(Boolean));
-            })
-            .catch((error) => {
+            } catch (error) {
                 console.error('[Home] Failed to load songs:', error);
-            })
-            .finally(() => {
-                if (isMounted) {
+            } finally {
+                if (isActive) {
                     setSongsLoaded(true);
                 }
-            });
+            }
+        };
+
+        loadSongs();
 
         return () => {
-            isMounted = false;
+            isActive = false;
         };
-    }, []);
+    }, [activeOwnerId]);
 
     useEffect(() => {
         if (Platform.OS !== 'android') {
@@ -1091,16 +1215,30 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             return;
         }
 
+        if (
+            syncPaused
+            || activeOwnerId !== user.id
+            || !isCurrentSyncGeneration(syncGeneration)
+        ) {
+            ocrSettingsCloudUserRef.current = null;
+            return;
+        }
+
         if (ocrSettingsCloudUserRef.current === user.id) {
             return;
         }
 
         let isMounted = true;
         ocrSettingsCloudUserRef.current = user.id;
+        const ownerId = activeOwnerId;
+        const generation = syncGeneration;
 
         const mergeCloudOcrSettings = async () => {
             try {
                 const cloudPreferences = await fetchUserPreferences(user.id);
+                if (!isMounted || !isCurrentSyncGeneration(generation) || ownerId !== activeOwnerIdRef.current) {
+                    return;
+                }
                 const cloudSettings = cloudPreferences?.ocr_settings;
                 const hasCloudSettings = cloudSettings
                     && typeof cloudSettings === 'object'
@@ -1126,12 +1264,17 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 }
 
                 const updatedAt = localUpdatedAt ?? new Date().toISOString();
-                await updateUserPreferenceFields(user.id, {
-                    ocr_settings: {
-                        ...ocrSettingsRef.current,
-                        updatedAt,
+                await updateUserPreferenceFields({
+                    user,
+                    ownerId,
+                    generation,
+                    patch: {
+                        ocr_settings: {
+                            ...ocrSettingsRef.current,
+                            updatedAt,
+                        },
+                        updated_at: updatedAt,
                     },
-                    updated_at: updatedAt,
                 });
             } catch (error) {
                 ocrSettingsCloudUserRef.current = null;
@@ -1144,34 +1287,44 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         return () => {
             isMounted = false;
         };
-    }, [ocrSettingsLoaded, user?.id]);
+    }, [activeOwnerId, ocrSettingsLoaded, syncGeneration, syncPaused, user]);
 
     useEffect(() => {
+        if (!songsLoaded || !activeOwnerId) {
+            return;
+        }
+
+        AsyncStorage.setItem(getSongsStorageKey(activeOwnerId), JSON.stringify(songs)).catch((error) => {
+            console.error('[Home] Failed to save songs:', error);
+        });
+    }, [activeOwnerId, songs, songsLoaded]);
+
+    useEffect(() => {
+        if (
+            !user?.id
+            || syncPaused
+            || activeOwnerId !== user.id
+            || !isCurrentSyncGeneration(syncGeneration)
+        ) {
+            songCloudSyncOwnerRef.current = null;
+            return;
+        }
+
         if (!songsLoaded) {
             return;
         }
 
-        AsyncStorage.setItem(SONGS_STORAGE_KEY, JSON.stringify(songs)).catch((error) => {
-            console.error('[Home] Failed to save songs:', error);
-        });
-    }, [songs, songsLoaded]);
-
-    useEffect(() => {
-        if (!user?.id) {
-            songCloudSyncUserRef.current = null;
+        const syncKey = `${activeOwnerId}:${user.id}`;
+        if (songCloudSyncOwnerRef.current === syncKey) {
             return;
         }
 
-        if (!songsLoaded || songCloudSyncUserRef.current === user.id) {
-            return;
-        }
-
-        songCloudSyncUserRef.current = user.id;
+        songCloudSyncOwnerRef.current = syncKey;
         syncSongsFromCloud().catch((error) => {
-            songCloudSyncUserRef.current = null;
+            songCloudSyncOwnerRef.current = null;
             console.warn('[Home] Failed to sync cloud songs:', error?.message ?? error);
         });
-    }, [songsLoaded, syncSongsFromCloud, user?.id]);
+    }, [activeOwnerId, songsLoaded, syncGeneration, syncPaused, syncSongsFromCloud, user?.id]);
 
     useEffect(() => {
         if (selectedSongId && !selectedSong) {
@@ -1273,7 +1426,13 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     }, [setBooks]);
 
     const handleDownloadBook = useCallback(async (book) => {
-        if (!user?.id || !book?.cloudId) {
+        if (
+            !user?.id
+            || !book?.cloudId
+            || syncPaused
+            || activeOwnerId !== user.id
+            || !isCurrentSyncGeneration(syncGeneration)
+        ) {
             Alert.alert('Download unavailable', 'Sign in again to download this book.');
             return;
         }
@@ -1284,9 +1443,20 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         }
 
         setDownloadingBookId(bookKey);
+        const ownerId = activeOwnerId;
+        const generation = syncGeneration;
 
         try {
-            const localBook = await downloadUserBook(user.id, book);
+            const localBook = await downloadUserBook({
+                user,
+                ownerId,
+                generation,
+                cloudBook: book,
+            });
+            if (!isCurrentSyncGeneration(generation) || activeOwnerIdRef.current !== ownerId) {
+                return;
+            }
+
             const openedAt = new Date().toISOString();
             setBooks((prevBooks) => {
                 let replaced = false;
@@ -1314,7 +1484,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         } finally {
             setDownloadingBookId(null);
         }
-    }, [downloadingBookId, navigation, setBooks, setCurrentBook, user?.id]);
+    }, [activeOwnerId, downloadingBookId, navigation, setBooks, setCurrentBook, syncGeneration, syncPaused, user]);
 
     const handleBookPress = useCallback((book) => {
         if (!book) {
@@ -1482,14 +1652,19 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     onPress: async () => {
                         if (bookToDelete.cloudId && user?.id) {
                             try {
-                                await softDeleteUserBook(user.id, bookToDelete.cloudId);
+                                await softDeleteUserBook({
+                                    user,
+                                    ownerId: activeOwnerId,
+                                    generation: syncGeneration,
+                                    cloudBookId: bookToDelete.cloudId,
+                                });
                             } catch (error) {
                                 console.warn('[Home] Failed to soft-delete cloud book:', error);
                             }
                         }
 
                         if (bookToDelete.uri) {
-                            await deleteBookIndexEntries(bookToDelete.uri);
+                            await deleteBookIndexEntries(bookToDelete.uri, { ownerId: activeOwnerId });
                         }
 
                         setBooks((prevBooks) => {
@@ -1522,7 +1697,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 },
             ]
         );
-    }, [currentBook, setBooks, setCurrentBook, setPreprocessOnOpen, user?.id]);
+    }, [activeOwnerId, currentBook, setBooks, setCurrentBook, setPreprocessOnOpen, syncGeneration, user]);
 
     const handleEditBook = useCallback((book) => {
         if (!book) {
@@ -1738,12 +1913,32 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const handleDeleteSong = useCallback((songId) => {
         setSongs((previous) => previous.filter((song) => song.id !== songId));
         setSelectedSongId(null);
-        if (user?.id) {
-            softDeleteUserSong(user.id, songId).catch((error) => {
-                console.warn('[Home] Failed to delete cloud song:', error?.message ?? error);
-            });
+
+        if (
+            !user?.id
+            || syncPaused
+            || activeOwnerId !== user.id
+            || !isCurrentSyncGeneration(syncGeneration)
+        ) {
+            return;
         }
-    }, [user?.id]);
+
+        try {
+            assertCanUploadForOwner({ ownerId: activeOwnerId, user });
+        } catch (error) {
+            console.warn('[Home] Refusing song delete sync:', error?.message ?? error);
+            return;
+        }
+
+        softDeleteUserSong({
+            user,
+            ownerId: activeOwnerId,
+            generation: syncGeneration,
+            songId,
+        }).catch((error) => {
+            console.warn('[Home] Failed to delete cloud song:', error?.message ?? error);
+        });
+    }, [activeOwnerId, syncGeneration, syncPaused, user]);
 
     if (selectedSong) {
         return (
@@ -1765,9 +1960,10 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
     if (selectedPreviewBook) {
         const previewKey = getBookKey(selectedPreviewBook, `${selectedBookPreview?.index ?? 0}`);
+        const previewUri = selectedPreviewBook.uri;
         const previewActionBusy = (
             (!isBookDownloaded(selectedPreviewBook) && downloadingBookId === previewKey)
-            || openingBookUri === selectedPreviewBook.uri
+            || (!!previewUri && openingBookUri === previewUri)
         );
 
         return (
@@ -2347,69 +2543,67 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 </TouchableWithoutFeedback>
             </Modal>
 
-            <Modal visible={showAddSongModal} animationType="fade" transparent onRequestClose={handleCancelSongAdd}>
-                <TouchableWithoutFeedback onPress={handleCancelSongAdd}>
-                    <View style={styles.modalBackdrop}>
-                        <TouchableWithoutFeedback>
-                            <View style={styles.songModal}>
-                                <Text style={styles.editTitle}>Add song</Text>
+            <Modal visible={showAddSongModal} animationType="fade" transparent onRequestClose={() => {}}>
+                <View style={styles.modalBackdrop}>
+                    <TouchableWithoutFeedback>
+                        <View style={styles.songModal}>
+                            <Text style={styles.editTitle}>Add song</Text>
 
-                                <ScrollView
-                                    style={styles.songModalScroll}
-                                    contentContainerStyle={styles.songModalContent}
-                                    showsVerticalScrollIndicator={false}
-                                    keyboardShouldPersistTaps="handled"
+                            <ScrollView
+                                style={styles.songModalScroll}
+                                contentContainerStyle={styles.songModalContent}
+                                showsVerticalScrollIndicator={false}
+                                keyboardShouldPersistTaps="handled"
+                            >
+                                <Text style={styles.editLabel}>Title</Text>
+                                <TextInput
+                                    value={songDraft.title}
+                                    onChangeText={(title) => setSongDraft((prev) => ({ ...prev, title }))}
+                                    style={styles.editInput}
+                                    placeholder="Song title"
+                                    placeholderTextColor={colors.textSubtle}
+                                />
+
+                                <Text style={styles.editLabel}>Artist</Text>
+                                <TextInput
+                                    value={songDraft.artist}
+                                    onChangeText={(artist) => setSongDraft((prev) => ({ ...prev, artist }))}
+                                    style={styles.editInput}
+                                    placeholder="Artist"
+                                    placeholderTextColor={colors.textSubtle}
+                                />
+
+                                <Text style={styles.editLabel}>Lyrics</Text>
+                                <TextInput
+                                    value={songDraft.lyrics}
+                                    onChangeText={(lyrics) => setSongDraft((prev) => ({ ...prev, lyrics }))}
+                                    style={[styles.editInput, styles.lyricsInput]}
+                                    placeholder="Paste lyrics here"
+                                    placeholderTextColor={colors.textSubtle}
+                                    multiline
+                                    textAlignVertical="top"
+                                />
+                            </ScrollView>
+
+                            <View style={styles.songModalActions}>
+                                <TouchableOpacity
+                                    activeOpacity={0.84}
+                                    onPress={handleCancelSongAdd}
+                                    style={[styles.songModalButton, styles.songModalButtonSecondary]}
                                 >
-                                    <Text style={styles.editLabel}>Title</Text>
-                                    <TextInput
-                                        value={songDraft.title}
-                                        onChangeText={(title) => setSongDraft((prev) => ({ ...prev, title }))}
-                                        style={styles.editInput}
-                                        placeholder="Song title"
-                                        placeholderTextColor={colors.textSubtle}
-                                    />
-
-                                    <Text style={styles.editLabel}>Artist</Text>
-                                    <TextInput
-                                        value={songDraft.artist}
-                                        onChangeText={(artist) => setSongDraft((prev) => ({ ...prev, artist }))}
-                                        style={styles.editInput}
-                                        placeholder="Artist"
-                                        placeholderTextColor={colors.textSubtle}
-                                    />
-
-                                    <Text style={styles.editLabel}>Lyrics</Text>
-                                    <TextInput
-                                        value={songDraft.lyrics}
-                                        onChangeText={(lyrics) => setSongDraft((prev) => ({ ...prev, lyrics }))}
-                                        style={[styles.editInput, styles.lyricsInput]}
-                                        placeholder="Paste lyrics here"
-                                        placeholderTextColor={colors.textSubtle}
-                                        multiline
-                                        textAlignVertical="top"
-                                    />
-                                </ScrollView>
-
-                                <View style={styles.songModalActions}>
-                                    <TouchableOpacity
-                                        activeOpacity={0.84}
-                                        onPress={handleCancelSongAdd}
-                                        style={[styles.songModalButton, styles.songModalButtonSecondary]}
-                                    >
-                                        <Text style={styles.songModalButtonSecondaryText}>Cancel</Text>
-                                    </TouchableOpacity>
-                                    <TouchableOpacity
-                                        activeOpacity={0.84}
-                                        onPress={handleSubmitSong}
-                                        style={[styles.songModalButton, styles.songModalButtonPrimary]}
-                                    >
-                                        <Text style={styles.songModalButtonPrimaryText}>Submit</Text>
-                                    </TouchableOpacity>
-                                </View>
+                                    <Text style={styles.songModalButtonSecondaryText}>Cancel</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                    activeOpacity={0.84}
+                                    onPress={handleSubmitSong}
+                                    style={[styles.songModalButton, styles.songModalButtonPrimary]}
+                                >
+                                    <Text style={styles.songModalButtonPrimaryText}>Submit</Text>
+                                </TouchableOpacity>
                             </View>
-                        </TouchableWithoutFeedback>
-                    </View>
-                </TouchableWithoutFeedback>
+                        </View>
+                    </TouchableWithoutFeedback>
+                </View>
             </Modal>
         </Screen>
     );

@@ -16,6 +16,7 @@ import { Feather, MaterialIcons } from '@expo/vector-icons';
 import Flashcard from '../components/Learn/Flashcard';
 import HanjaDetails from '../components/Read/TopSection/HanjaDetails';
 import { Screen } from '../components/ui';
+import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import {
   getVocabContexts,
   recordReviewOutcome,
@@ -31,6 +32,7 @@ import {
   supabase,
   updateUserVocabFields,
 } from '../services/supabase';
+import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
 import { colors, fontFamilies, radii, spacing, textStyles } from '../theme';
 
 const FILTERS = [
@@ -239,6 +241,32 @@ const isRecentlySaved = (word) => {
 
   return Date.now() - timestamp < 1000 * 60 * 60 * 24 * 3;
 };
+
+const getNextReviewTimestamp = (word) => {
+  if (!word?.next_review_at) {
+    return null;
+  }
+
+  const timestamp = new Date(word?.next_review_at).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+};
+
+const isReviewDue = (word, now = Date.now()) => {
+  const nextReviewAt = getNextReviewTimestamp(word);
+  return nextReviewAt !== null && nextReviewAt <= now && word?.level !== 'unorganized';
+};
+
+const isReviewCoolingDown = (word, now = Date.now()) => {
+  const nextReviewAt = getNextReviewTimestamp(word);
+  return nextReviewAt !== null && nextReviewAt > now;
+};
+
+const isReviewAvailable = (word, now = Date.now()) => !isReviewCoolingDown(word, now);
+
+const sortDueReviews = (rows) => [...rows].sort((a, b) => (
+  (getNextReviewTimestamp(a) ?? Number.MAX_SAFE_INTEGER)
+  - (getNextReviewTimestamp(b) ?? Number.MAX_SAFE_INTEGER)
+));
 
 const normalizeRows = (rows) =>
   rows.map((row) => ({
@@ -571,6 +599,7 @@ const WordDetailModal = ({
 };
 
 const Learn = ({ navigation, user }) => {
+  const { activeOwnerId, syncGeneration } = useLocalOwner();
   const [words, setWords] = useState([]);
   const [activeFilter, setActiveFilter] = useState('recent');
   const [practiceDeck, setPracticeDeck] = useState(null);
@@ -583,7 +612,7 @@ const Learn = ({ navigation, user }) => {
 
   const fetchWords = useCallback(async () => {
     try {
-      const data = await viewData();
+      const data = await viewData({ ownerId: activeOwnerId });
       const normalized = normalizeRows(data);
       setWords(normalized);
       setSelectedWord((current) => {
@@ -598,7 +627,17 @@ const Learn = ({ navigation, user }) => {
       console.error('[Learn] Error fetching vocab data:', error);
       return [];
     }
-  }, []);
+  }, [activeOwnerId]);
+
+  useEffect(() => {
+    setWords([]);
+    setPracticeDeck(null);
+    setPracticeIndex(0);
+    setSelectedWord(null);
+    setSelectedWordContexts([]);
+    setSelectedWordKeys(new Set());
+    fetchWords();
+  }, [activeOwnerId, fetchWords]);
 
   useFocusEffect(
     useCallback(() => {
@@ -616,7 +655,14 @@ const Learn = ({ navigation, user }) => {
       };
     }
 
-    getVocabContexts(selectedWord.word, selectedWord.hanja, selectedWord.def, 12, selectedWord.language ?? 'ko')
+    getVocabContexts(
+      selectedWord.word,
+      selectedWord.hanja,
+      selectedWord.def,
+      12,
+      selectedWord.language ?? 'ko',
+      { ownerId: activeOwnerId }
+    )
       .then((contexts) => {
         if (isActive) {
           setSelectedWordContexts(contexts);
@@ -632,7 +678,7 @@ const Learn = ({ navigation, user }) => {
     return () => {
       isActive = false;
     };
-  }, [selectedWord?.word, selectedWord?.hanja, selectedWord?.def]);
+  }, [activeOwnerId, selectedWord?.word, selectedWord?.hanja, selectedWord?.def, selectedWord?.language]);
 
   const visibleWords = useMemo(() => getFilteredWords(words, activeFilter), [activeFilter, words]);
   const selectedWords = useMemo(
@@ -664,44 +710,50 @@ const Learn = ({ navigation, user }) => {
   );
   const notSeenCount = useMemo(() => words.filter(isNotSeenLately).length, [words]);
   const dueWords = useMemo(
-    () => words.filter((word) => (
-      word.next_review_at
-      && new Date(word.next_review_at) <= new Date()
-      && word.level !== 'unorganized'
-    )),
+    () => sortDueReviews(words.filter((word) => isReviewDue(word))),
     [words]
   );
-  const reviewDeck = dueWords.length > 0 ? dueWords : visibleWords;
+  const availableVisibleWords = useMemo(
+    () => {
+      const now = Date.now();
+      return visibleWords.filter((word) => isReviewAvailable(word, now));
+    },
+    [visibleWords]
+  );
+  const reviewDeck = dueWords.length > 0 ? dueWords : availableVisibleWords;
+  const reviewDeckTitle = dueWords.length > 0 ? 'Due review' : 'Saved words';
 
   const syncFieldsToCloud = useCallback(async (word, patch) => {
     const {
-      data: { user },
+      data: { user: cloudUser },
     } = await supabase.auth.getUser();
 
-    if (!user) {
+    if (!cloudUser || activeOwnerId !== cloudUser.id || !isCurrentSyncGeneration(syncGeneration)) {
       return;
     }
 
     try {
-      await updateUserVocabFields(
-        user.id,
-        {
+      await updateUserVocabFields({
+        user: cloudUser,
+        ownerId: activeOwnerId,
+        generation: syncGeneration,
+        entry: {
           word: word.word,
           hanja: word.hanja,
           definition: word.def,
           language: word.language ?? 'ko',
         },
-        patch
-      );
+        patch,
+      });
     } catch (error) {
       console.warn('[Learn] cloud vocab field sync failed:', error.message);
     }
-  }, []);
+  }, [activeOwnerId, syncGeneration]);
 
   const deleteSavedWord = useCallback(async (word, cloudUser = null) => {
-    await removeData(word.word, word.hanja, word.def, word.language ?? 'ko');
+    await removeData(word.word, word.hanja, word.def, word.language ?? 'ko', { ownerId: activeOwnerId });
 
-    if (!cloudUser) {
+    if (!cloudUser || activeOwnerId !== cloudUser.id || !isCurrentSyncGeneration(syncGeneration)) {
       return;
     }
 
@@ -711,10 +763,25 @@ const Learn = ({ navigation, user }) => {
       definition: word.def,
       language: word.language ?? 'ko',
     };
-    await softDeleteUserVocabEntry(cloudUser.id, cloudEntry);
-    await softDeleteUserVocabContextsForWord(cloudUser.id, cloudEntry);
-    await softDeleteRelatedKnownWordsForMainWord(cloudUser.id, cloudEntry);
-  }, []);
+    await softDeleteUserVocabEntry({
+      user: cloudUser,
+      ownerId: activeOwnerId,
+      generation: syncGeneration,
+      entry: cloudEntry,
+    });
+    await softDeleteUserVocabContextsForWord({
+      user: cloudUser,
+      ownerId: activeOwnerId,
+      generation: syncGeneration,
+      entry: cloudEntry,
+    });
+    await softDeleteRelatedKnownWordsForMainWord({
+      user: cloudUser,
+      ownerId: activeOwnerId,
+      generation: syncGeneration,
+      entry: cloudEntry,
+    });
+  }, [activeOwnerId, syncGeneration]);
 
   const handleToggleFavorite = useCallback(async (word) => {
     if (!word) {
@@ -722,14 +789,16 @@ const Learn = ({ navigation, user }) => {
     }
 
     const nextFavorite = !word.is_favorite;
-    await updateFavorite(word.word, word.hanja, word.def, nextFavorite, word.language ?? 'ko');
+    await updateFavorite(word.word, word.hanja, word.def, nextFavorite, word.language ?? 'ko', {
+      ownerId: activeOwnerId,
+    });
     setSelectedWord((current) => sameWord(current, word) ? { ...current, is_favorite: nextFavorite } : current);
     syncFieldsToCloud(word, {
       is_favorite: nextFavorite,
       updated_at: new Date().toISOString(),
     });
     await fetchWords();
-  }, [fetchWords, syncFieldsToCloud]);
+  }, [activeOwnerId, fetchWords, syncFieldsToCloud]);
 
   const handleRemoveWord = useCallback((word, options = {}) => {
     if (!word) {
@@ -837,13 +906,16 @@ const Learn = ({ navigation, user }) => {
   }, [clearWordSelection, deleteSavedWord, fetchWords, selectedWords]);
 
   const startPractice = useCallback((deckWords, title) => {
-    if (!deckWords || deckWords.length === 0) {
+    const now = Date.now();
+    const availableDeckWords = (deckWords || []).filter((word) => isReviewAvailable(word, now));
+
+    if (availableDeckWords.length === 0) {
       return;
     }
 
     setPracticeDeck({
       title,
-      words: deckWords,
+      words: availableDeckWords,
     });
     setPracticeIndex(0);
   }, []);
@@ -865,9 +937,10 @@ const Learn = ({ navigation, user }) => {
       currentWord.def,
       currentWord.level,
       status,
-      currentWord.language ?? 'ko'
+      currentWord.language ?? 'ko',
+      { ownerId: activeOwnerId }
     );
-    await incrementWordsStudied(1);
+    await incrementWordsStudied(activeOwnerId, 1);
     const updatedWords = await fetchWords();
     const updatedWord = updatedWords.find((candidate) => sameWord(candidate, currentWord));
     if (updatedWord) {
@@ -887,7 +960,7 @@ const Learn = ({ navigation, user }) => {
     }
 
     setPracticeIndex((prev) => prev + 1);
-  }, [closePractice, fetchWords, practiceDeck, practiceIndex, syncFieldsToCloud]);
+  }, [activeOwnerId, closePractice, fetchWords, practiceDeck, practiceIndex, syncFieldsToCloud]);
 
   return (
     <Screen scroll backgroundColor="#eee6d8" contentContainerStyle={styles.content}>
@@ -929,10 +1002,19 @@ const Learn = ({ navigation, user }) => {
           </TouchableOpacity>
           {words.length > 0 ? (
             <TouchableOpacity
-              onPress={() => startPractice(reviewDeck, dueWords.length > 0 ? 'Due review' : 'Saved words')}
-              style={styles.reviewButton}
+              disabled={reviewDeck.length === 0}
+              onPress={() => startPractice(reviewDeck, reviewDeckTitle)}
+              style={[
+                styles.reviewButton,
+                reviewDeck.length === 0 && styles.reviewButtonDisabled,
+              ]}
             >
-              <Text style={styles.reviewButtonText}>Review {reviewDeck.length} ↗</Text>
+              <Text style={[
+                styles.reviewButtonText,
+                reviewDeck.length === 0 && styles.reviewButtonTextDisabled,
+              ]}>
+                {reviewDeck.length > 0 ? `Review ${reviewDeck.length} ↗` : 'No reviews due'}
+              </Text>
             </TouchableOpacity>
           ) : null}
         </View>
@@ -1033,6 +1115,8 @@ const Learn = ({ navigation, user }) => {
               onClose={closePractice}
               onMark={handlePracticeMark}
               user={user}
+              ownerId={activeOwnerId}
+              syncGeneration={syncGeneration}
             />
           </View>
         </View>
@@ -1151,10 +1235,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: spacing.md,
   },
+  reviewButtonDisabled: {
+    opacity: 0.48,
+  },
   reviewButtonText: {
     fontFamily: fontFamilies.sansBold,
     fontSize: 14,
     color: '#756b5f',
+  },
+  reviewButtonTextDisabled: {
+    color: '#9b9185',
   },
   filters: {
     paddingHorizontal: spacing.lg,

@@ -1,4 +1,8 @@
 import { USER_SONGS_TABLE, supabase } from './supabase';
+import {
+  assertCanUploadForOwner,
+  isCurrentSyncGeneration,
+} from './localOwnerCoordinator';
 
 const FILE_TAG = '[songCloudSync]';
 const USER_SONG_SELECT = `
@@ -21,6 +25,15 @@ const safeString = (value, fallback = '') => {
   const text = typeof value === 'string' ? value : String(value ?? '');
   const trimmed = text.trim();
   return trimmed || fallback;
+};
+
+const assertCloudWriteAllowed = ({ user, ownerId, generation }) => {
+  assertCanUploadForOwner({ ownerId, user });
+  if (generation != null && !isCurrentSyncGeneration(generation)) {
+    throw new Error('Refusing cloud upload for stale sync generation');
+  }
+
+  return user.id;
 };
 
 const toIsoString = (value, fallback = new Date().toISOString()) => {
@@ -100,11 +113,12 @@ export const fetchUserSongs = async (userId, { includeDeleted = true } = {}) => 
   return data ?? [];
 };
 
-export const upsertUserSong = async (userId, song) => {
-  if (!userId || !song?.id) {
+export const upsertUserSong = async ({ user, ownerId, generation, song } = {}) => {
+  if (!song?.id) {
     return null;
   }
 
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
   const { data, error } = await supabase
     .from(USER_SONGS_TABLE)
     .upsert(toUserSongRow(userId, song), {
@@ -121,12 +135,13 @@ export const upsertUserSong = async (userId, song) => {
   return data;
 };
 
-export const upsertUserSongs = async (userId, songs) => {
+export const upsertUserSongs = async ({ user, ownerId, generation, songs } = {}) => {
   const validSongs = (songs || []).filter((song) => song?.id);
-  if (!userId || validSongs.length === 0) {
+  if (validSongs.length === 0) {
     return [];
   }
 
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
   const { data, error } = await supabase
     .from(USER_SONGS_TABLE)
     .upsert(validSongs.map((song) => toUserSongRow(userId, song)), {
@@ -142,11 +157,12 @@ export const upsertUserSongs = async (userId, songs) => {
   return data ?? [];
 };
 
-export const softDeleteUserSong = async (userId, songId) => {
-  if (!userId || !songId) {
+export const softDeleteUserSong = async ({ user, ownerId, generation, songId } = {}) => {
+  if (!songId) {
     return;
   }
 
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
   const { error } = await supabase
     .from(USER_SONGS_TABLE)
     .update({

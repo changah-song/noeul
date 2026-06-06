@@ -2,6 +2,10 @@ import 'react-native-url-polyfill/auto';
 
 import { createClient } from '@supabase/supabase-js';
 import * as SecureStore from 'expo-secure-store';
+import {
+  assertCanUploadForOwner,
+  isCurrentSyncGeneration,
+} from './localOwnerCoordinator';
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
@@ -9,6 +13,19 @@ const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 if (!supabaseUrl || !supabaseAnonKey) {
   console.warn('[supabase] Missing EXPO_PUBLIC_SUPABASE_URL or EXPO_PUBLIC_SUPABASE_ANON_KEY');
 }
+
+const assertCloudWriteAllowed = ({ user, ownerId, generation }) => {
+  assertCanUploadForOwner({ ownerId, user });
+  if (generation != null && !isCurrentSyncGeneration(generation)) {
+    throw new Error('Refusing cloud upload for stale sync generation');
+  }
+
+  return user.id;
+};
+
+const isStaleSyncGenerationError = (error) => (
+  String(error?.message || error || '').includes('stale sync generation')
+);
 
 // SecureStore has a 2048-byte limit per key. Supabase session JWTs exceed this,
 // so we chunk large values across multiple keys and reassemble on read.
@@ -281,10 +298,12 @@ export const fetchUserVocab = async (userId, { includeDeleted = true } = {}) => 
   return data ?? [];
 };
 
-export const upsertUserVocabEntry = async (userId, entry) => {
+export const upsertUserVocabEntry = async ({ user, ownerId, generation, entry } = {}) => {
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
   const row = toUserVocabRow(userId, entry);
   const existing = await fetchExistingUserVocabEntry(userId, row);
   const query = supabase.from(USER_VOCAB_TABLE);
+  assertCloudWriteAllowed({ user, ownerId, generation });
   const { error } = existing
     ? await applyVocabIdentityFilters(
         query
@@ -300,18 +319,20 @@ export const upsertUserVocabEntry = async (userId, entry) => {
   }
 };
 
-export const upsertUserVocabEntries = async (userId, entries) => {
+export const upsertUserVocabEntries = async ({ user, ownerId, generation, entries } = {}) => {
   if (!entries || entries.length === 0) {
     return;
   }
 
   for (const entry of entries) {
-    await upsertUserVocabEntry(userId, entry);
+    await upsertUserVocabEntry({ user, ownerId, generation, entry });
   }
 };
 
-export const softDeleteUserVocabEntry = async (userId, entry) => {
+export const softDeleteUserVocabEntry = async ({ user, ownerId, generation, entry } = {}) => {
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
   const deletedAt = new Date().toISOString();
+  assertCloudWriteAllowed({ user, ownerId, generation });
   const { error } = await applyVocabIdentityFilters(
     supabase
       .from(USER_VOCAB_TABLE)
@@ -331,7 +352,8 @@ export const softDeleteUserVocabEntry = async (userId, entry) => {
 
 export const deleteUserVocabEntry = softDeleteUserVocabEntry;
 
-export const updateUserVocabFields = async (userId, entry, patch) => {
+export const updateUserVocabFields = async ({ user, ownerId, generation, entry, patch } = {}) => {
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
   const updatedAt = patch.updated_at ?? patch.updatedAt ?? new Date().toISOString();
   const rowPatch = {
     ...patch,
@@ -339,6 +361,7 @@ export const updateUserVocabFields = async (userId, entry, patch) => {
   };
   delete rowPatch.updatedAt;
 
+  assertCloudWriteAllowed({ user, ownerId, generation });
   const { error } = await applyVocabIdentityFilters(
     supabase
       .from(USER_VOCAB_TABLE)
@@ -353,8 +376,14 @@ export const updateUserVocabFields = async (userId, entry, patch) => {
   }
 };
 
-export const updateUserVocabStatus = async (userId, entry, status) => {
-  await updateUserVocabFields(userId, entry, { status });
+export const updateUserVocabStatus = async ({ user, ownerId, generation, entry, status } = {}) => {
+  await updateUserVocabFields({
+    user,
+    ownerId,
+    generation,
+    entry,
+    patch: { status },
+  });
 };
 
 const toUserVocabContextRow = (userId, context) => {
@@ -437,13 +466,15 @@ export const fetchUserVocabContexts = async (userId, { includeDeleted = true } =
   return data ?? [];
 };
 
-export const upsertUserVocabContext = async (userId, context) => {
+export const upsertUserVocabContext = async ({ user, ownerId, generation, context } = {}) => {
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
   const row = toUserVocabContextRow(userId, context);
   if (!row.word || !row.sentence) {
     return;
   }
 
   const updateExistingContext = async () => {
+    assertCloudWriteAllowed({ user, ownerId, generation });
     const { error } = await applyVocabContextIdentityFilters(
       supabase
         .from(USER_VOCAB_CONTEXTS_TABLE)
@@ -463,12 +494,15 @@ export const upsertUserVocabContext = async (userId, context) => {
     try {
       await updateExistingContext();
     } catch (error) {
-      console.warn(`${FILE_TAG} upsertUserVocabContext failed`, error);
+      if (!isStaleSyncGenerationError(error)) {
+        console.warn(`${FILE_TAG} upsertUserVocabContext failed`, error);
+      }
       throw error;
     }
     return;
   }
 
+  assertCloudWriteAllowed({ user, ownerId, generation });
   const { error } = await supabase
     .from(USER_VOCAB_CONTEXTS_TABLE)
     .insert(row);
@@ -482,27 +516,33 @@ export const upsertUserVocabContext = async (userId, context) => {
       await updateExistingContext();
       return;
     } catch (updateError) {
-      console.warn(`${FILE_TAG} upsertUserVocabContext duplicate repair failed`, updateError);
+      if (!isStaleSyncGenerationError(updateError)) {
+        console.warn(`${FILE_TAG} upsertUserVocabContext duplicate repair failed`, updateError);
+      }
       throw updateError;
     }
   }
 
-  console.warn(`${FILE_TAG} upsertUserVocabContext failed`, error);
+  if (!isStaleSyncGenerationError(error)) {
+    console.warn(`${FILE_TAG} upsertUserVocabContext failed`, error);
+  }
   throw error;
 };
 
-export const upsertUserVocabContexts = async (userId, contexts) => {
+export const upsertUserVocabContexts = async ({ user, ownerId, generation, contexts } = {}) => {
   if (!contexts || contexts.length === 0) {
     return;
   }
 
   for (const context of contexts) {
-    await upsertUserVocabContext(userId, context);
+    await upsertUserVocabContext({ user, ownerId, generation, context });
   }
 };
 
-export const softDeleteUserVocabContextsForWord = async (userId, entry) => {
+export const softDeleteUserVocabContextsForWord = async ({ user, ownerId, generation, entry } = {}) => {
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
   const deletedAt = new Date().toISOString();
+  assertCloudWriteAllowed({ user, ownerId, generation });
   const { error } = await applyVocabIdentityFilters(
     supabase
       .from(USER_VOCAB_CONTEXTS_TABLE)
@@ -631,7 +671,8 @@ export const fetchUserRelatedKnownWords = async (userId, { includeDeleted = true
   return data ?? [];
 };
 
-export const upsertUserRelatedKnownWord = async (userId, relation) => {
+export const upsertUserRelatedKnownWord = async ({ user, ownerId, generation, relation } = {}) => {
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
   const row = toUserRelatedKnownWordRow(userId, relation);
   if (!row.main_word || !row.related_word) {
     return;
@@ -639,6 +680,7 @@ export const upsertUserRelatedKnownWord = async (userId, relation) => {
 
   const existing = await fetchExistingUserRelatedKnownWord(userId, row);
   const query = supabase.from(USER_VOCAB_RELATED_KNOWN_TABLE);
+  assertCloudWriteAllowed({ user, ownerId, generation });
   const { error } = existing
     ? await applyRelatedKnownIdentityFilters(
         query
@@ -655,18 +697,20 @@ export const upsertUserRelatedKnownWord = async (userId, relation) => {
   }
 };
 
-export const upsertUserRelatedKnownWords = async (userId, relations) => {
+export const upsertUserRelatedKnownWords = async ({ user, ownerId, generation, relations } = {}) => {
   if (!relations || relations.length === 0) {
     return;
   }
 
   for (const relation of relations) {
-    await upsertUserRelatedKnownWord(userId, relation);
+    await upsertUserRelatedKnownWord({ user, ownerId, generation, relation });
   }
 };
 
-export const softDeleteUserRelatedKnownWord = async (userId, relation) => {
+export const softDeleteUserRelatedKnownWord = async ({ user, ownerId, generation, relation } = {}) => {
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
   const deletedAt = new Date().toISOString();
+  assertCloudWriteAllowed({ user, ownerId, generation });
   const { error } = await applyRelatedKnownIdentityFilters(
     supabase
       .from(USER_VOCAB_RELATED_KNOWN_TABLE)
@@ -685,8 +729,10 @@ export const softDeleteUserRelatedKnownWord = async (userId, relation) => {
   }
 };
 
-export const softDeleteRelatedKnownWordsForMainWord = async (userId, entry) => {
+export const softDeleteRelatedKnownWordsForMainWord = async ({ user, ownerId, generation, entry } = {}) => {
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
   const deletedAt = new Date().toISOString();
+  assertCloudWriteAllowed({ user, ownerId, generation });
   const { error } = await applyRelatedKnownMainWordFilters(
     supabase
       .from(USER_VOCAB_RELATED_KNOWN_TABLE)

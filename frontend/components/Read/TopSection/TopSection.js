@@ -7,7 +7,7 @@ import TranslationContent from './TranslationContent';
 import DictionaryContent from './DictionaryContent';
 
 const DICTIONARY_COMPACT_HEIGHT = 122;
-const DICTIONARY_EXPANDED_MIN_HEIGHT = 260;
+const DICTIONARY_EXPANDED_MIN_HEIGHT = 202;
 const DICTIONARY_EXPANDED_MAX_HEIGHT = 360;
 const DICTIONARY_EXTRA_ROW_HEIGHT = 58;
 const TRANSLATION_SOURCE_LANGUAGE = 'KO';

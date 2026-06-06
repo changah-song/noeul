@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
@@ -14,6 +14,7 @@ import {
 import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import TopSection from '../Read/TopSection/TopSection';
+import { useLocalOwner } from '../../contexts/LocalOwnerContext';
 import { getSavedWords } from '../../services/Database';
 import { colors, fontFamilies, spacing, textStyles } from '../../theme';
 
@@ -23,7 +24,6 @@ const MIN_LYRIC_FONT_SIZE = 20;
 const MAX_LYRIC_FONT_SIZE = 40;
 const ACTIVE_TAP_HIGHLIGHT_COLOR = 'rgba(252, 213, 180, 0.33)';
 const SAVED_HIGHLIGHT_COLOR = '#f7d488';
-const TEXT_SELECTION_HIGHLIGHT_COLOR = '#e3e7ee';
 
 const cleanLyricToken = (value) => String(value || '').replace(WORD_EDGE_PATTERN, '').trim();
 
@@ -47,6 +47,7 @@ const makeSongDraft = (song) => ({
 });
 
 const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsChange }) => {
+    const { activeOwnerId } = useLocalOwner();
     const insets = useSafeAreaInsets();
     const [savedWords, setSavedWords] = useState(null);
     const [highlightedWord, setHighlightedWord] = useState('');
@@ -60,11 +61,12 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     ));
     const [isEditModalVisible, setIsEditModalVisible] = useState(false);
     const [editDraft, setEditDraft] = useState(() => makeSongDraft(song));
+    const suppressNextTokenPressRef = useRef(false);
 
     useEffect(() => {
         let isMounted = true;
 
-        getSavedWords()
+        getSavedWords({ ownerId: activeOwnerId })
             .then((words) => {
                 if (isMounted) {
                     setSavedWords(words);
@@ -80,7 +82,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         return () => {
             isMounted = false;
         };
-    }, []);
+    }, [activeOwnerId]);
 
     useEffect(() => {
         setHighlightedWord('');
@@ -135,7 +137,22 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     }, []);
 
     const handleTokenPress = useCallback((word, sourceSentence) => {
+        if (suppressNextTokenPressRef.current) {
+            suppressNextTokenPressRef.current = false;
+            return;
+        }
+
         selectWord(word, sourceSentence, false);
+    }, [selectWord]);
+
+    const handleTokenLongPress = useCallback((word, sourceSentence) => {
+        const translationText = String(sourceSentence || word || '').trim();
+        if (!translationText) {
+            return;
+        }
+
+        suppressNextTokenPressRef.current = true;
+        selectWord(translationText, sourceSentence, true);
     }, [selectWord]);
 
     const closeLookup = useCallback(() => {
@@ -215,8 +232,6 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     const renderLyricsText = () => {
         return (
             <Text
-                selectable
-                selectionColor={TEXT_SELECTION_HIGHLIGHT_COLOR}
                 style={[
                     styles.lyricLine,
                     {
@@ -246,6 +261,8 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                                         key={`${lineIndex}-${partIndex}-${cleanToken}`}
                                         suppressHighlighting
                                         onPress={() => handleTokenPress(cleanToken, line)}
+                                        onLongPress={() => handleTokenLongPress(cleanToken, line)}
+                                        delayLongPress={300}
                                         style={[
                                             styles.lyricWord,
                                             isSaved && styles.savedLyricWord,

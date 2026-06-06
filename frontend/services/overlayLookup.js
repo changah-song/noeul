@@ -16,6 +16,7 @@ import {
 import { fetchHanjaRelated } from './api/hanjaRelated';
 import { addRelatedKnownWord, getRelatedKnownWords, removeRelatedKnownWord } from './Database';
 import { lookupWordForOverlay, saveOverlayLookupResult, unsaveOverlayLookupResult } from './dictionaryLookup';
+import { getActiveOwnerId } from './localOwnerCoordinator';
 
 let subscriptions = [];
 let isInitialized = false;
@@ -255,7 +256,10 @@ const normalizeOverlayHanjaResult = async ({ requestId, character, sourceWord, r
         row?.meaning || row?.hun_english || row?.hun_korean
     )));
     const characters = uniqueCleanValues((result?.firstTableData ?? []).map(row => row?.hanja));
-    const knownWords = sourceWord ? await getRelatedKnownWords(sourceWord).catch(() => []) : [];
+    const ownerId = getActiveOwnerId();
+    const knownWords = sourceWord
+        ? await getRelatedKnownWords(sourceWord, 'ko', { ownerId }).catch(() => [])
+        : [];
     const knownKeys = new Set(knownWords.map(relatedWordKey));
     const relatedWords = (result?.similarWordsTableData ?? [])
         .slice()
@@ -387,10 +391,11 @@ export const initializeOverlayLookupBridge = () => {
         }
 
         try {
+            const ownerId = getActiveOwnerId();
             if (event.known) {
-                await addRelatedKnownWord(sourceWord, entry);
+                await addRelatedKnownWord(sourceWord, entry, { ownerId });
             } else {
-                await removeRelatedKnownWord(sourceWord, entry);
+                await removeRelatedKnownWord(sourceWord, entry, 'ko', { ownerId });
             }
         } catch (error) {
             console.warn(`[overlayLookup] related known word toggle failed for "${sourceWord}":`, error?.message);
