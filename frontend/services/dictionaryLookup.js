@@ -18,6 +18,11 @@ import {
     upsertUserVocabContext,
     upsertUserVocabEntry,
 } from './supabase';
+import {
+    getActiveOwnerId,
+    getSyncGeneration,
+    isCurrentSyncGeneration,
+} from './localOwnerCoordinator';
 
 const STOP_STEMS = new Set([
     '하다',
@@ -52,7 +57,7 @@ const uniqueValues = (values) => [...new Set(
         .filter(Boolean)
 )];
 
-const cacheEntryToLookupResult = async ({ entry, surface, sourceSentence }) => {
+const cacheEntryToLookupResult = async ({ entry, surface, sourceSentence, ownerId }) => {
     const primary = cacheEntryToDefinitionEntry(entry, surface);
     const liveEntries = await fetchLiveEntriesForStem(primary.word);
     const alternatives = normalizeLiveAlternatives(liveEntries.slice(1), primary)
@@ -63,6 +68,7 @@ const cacheEntryToLookupResult = async ({ entry, surface, sourceSentence }) => {
         sourceSentence,
         primary,
         alternatives,
+        ownerId,
     });
 };
 
@@ -163,7 +169,7 @@ const fetchRomanization = async (term) => {
     }
 };
 
-const hydrateDefinitionEntry = async (entry) => {
+const hydrateDefinitionEntry = async (entry, ownerId) => {
     const word = cleanValue(entry?.word);
     const definition = nullableValue(entry?.definition);
     const hanja = nullableValue(entry?.hanja);
@@ -174,7 +180,7 @@ const hydrateDefinitionEntry = async (entry) => {
         hanja,
         pos: nullableValue(entry?.pos),
         romanization: nullableValue(entry?.romanization) || await fetchRomanization(word),
-        saved: definition ? await vocabEntryExists(word, hanja, definition) : false,
+        saved: definition ? await vocabEntryExists(word, hanja, definition, 'ko', { ownerId }) : false,
     };
 };
 
@@ -183,10 +189,11 @@ const buildLookupResult = async ({
     sourceSentence,
     primary,
     alternatives = [],
+    ownerId,
 }) => {
-    const hydratedPrimary = await hydrateDefinitionEntry(primary);
+    const hydratedPrimary = await hydrateDefinitionEntry(primary, ownerId);
     const hydratedAlternatives = await Promise.all(
-        alternatives.slice(0, MAX_ALTERNATIVES).map(hydrateDefinitionEntry)
+        alternatives.slice(0, MAX_ALTERNATIVES).map((entry) => hydrateDefinitionEntry(entry, ownerId))
     );
 
     return {
@@ -205,6 +212,7 @@ const buildLookupResult = async ({
 export const lookupWordForOverlay = async ({ surface, sourceSentence = '' }) => {
     const rawSurface = cleanValue(surface);
     const normalizedSurface = normalizeSurfaceWord(rawSurface) || rawSurface;
+    const ownerId = getActiveOwnerId();
 
     if (!normalizedSurface) {
         throw new Error('No text selected.');
@@ -216,6 +224,7 @@ export const lookupWordForOverlay = async ({ surface, sourceSentence = '' }) => 
             entry: directRows[0],
             surface: rawSurface || normalizedSurface,
             sourceSentence,
+            ownerId,
         });
     }
 
@@ -229,6 +238,7 @@ export const lookupWordForOverlay = async ({ surface, sourceSentence = '' }) => 
             entry: cachedRows[0],
             surface: rawSurface || normalizedSurface,
             sourceSentence,
+            ownerId,
         });
     }
 
@@ -254,6 +264,7 @@ export const lookupWordForOverlay = async ({ surface, sourceSentence = '' }) => 
             sourceSentence,
             primary,
             alternatives,
+            ownerId,
         });
     }
 
@@ -276,6 +287,8 @@ export const saveOverlayLookupResult = async ({
     hanja = null,
     sourceSentence = '',
 }) => {
+    const ownerId = getActiveOwnerId();
+    const generation = getSyncGeneration();
     const word = cleanValue(stem);
     const cleanedDefinition = cleanValue(definition);
     const cleanedHanja = nullableValue(hanja);
@@ -286,9 +299,10 @@ export const saveOverlayLookupResult = async ({
         throw new Error('No definition to save.');
     }
 
-    const alreadySaved = await vocabEntryExists(word, cleanedHanja, cleanedDefinition, 'ko');
+    const alreadySaved = await vocabEntryExists(word, cleanedHanja, cleanedDefinition, 'ko', { ownerId });
     if (!alreadySaved) {
         await insertData(word, cleanedHanja, cleanedDefinition, {
+            ownerId,
             level: 'unorganized',
             sourceBookUri: null,
             sourceBookTitle: 'Floating OCR',
@@ -299,6 +313,7 @@ export const saveOverlayLookupResult = async ({
         });
     }
     const recordedContext = await recordVocabContext({
+        ownerId,
         word,
         hanja: cleanedHanja,
         definition: cleanedDefinition,
@@ -311,28 +326,38 @@ export const saveOverlayLookupResult = async ({
         data: { user },
     } = await supabase.auth.getUser();
 
-    if (user) {
-        await upsertUserVocabEntry(user.id, {
-            word,
-            hanja: cleanedHanja,
-            definition: cleanedDefinition,
-            level: 'unorganized',
-            status: 'unorganized',
-            sourceBookUri: null,
-            sourceBookTitle: 'Floating OCR',
-            contextSentence: normalizedSourceSentence,
-            isFavorite: false,
-            priority: 'normal',
-            createdAt,
-            updatedAt: createdAt,
-            lastReviewedAt: null,
-            nextReviewAt: null,
-            correctCount: 0,
-            wrongCount: 0,
-            language: 'ko',
+    if (user && ownerId === user.id && isCurrentSyncGeneration(generation)) {
+        await upsertUserVocabEntry({
+            user,
+            ownerId,
+            generation,
+            entry: {
+                word,
+                hanja: cleanedHanja,
+                definition: cleanedDefinition,
+                level: 'unorganized',
+                status: 'unorganized',
+                sourceBookUri: null,
+                sourceBookTitle: 'Floating OCR',
+                contextSentence: normalizedSourceSentence,
+                isFavorite: false,
+                priority: 'normal',
+                createdAt,
+                updatedAt: createdAt,
+                lastReviewedAt: null,
+                nextReviewAt: null,
+                correctCount: 0,
+                wrongCount: 0,
+                language: 'ko',
+            },
         });
         if (recordedContext) {
-            upsertUserVocabContext(user.id, recordedContext).catch((error) => {
+            upsertUserVocabContext({
+                user,
+                ownerId,
+                generation,
+                context: recordedContext,
+            }).catch((error) => {
                 console.warn('[overlayLookup] cloud context save failed:', error.message);
             });
         }
@@ -346,6 +371,8 @@ export const unsaveOverlayLookupResult = async ({
     definition,
     hanja = null,
 }) => {
+    const ownerId = getActiveOwnerId();
+    const generation = getSyncGeneration();
     const word = cleanValue(stem);
     const cleanedDefinition = cleanValue(definition);
     const cleanedHanja = nullableValue(hanja);
@@ -354,22 +381,22 @@ export const unsaveOverlayLookupResult = async ({
         throw new Error('No definition to unsave.');
     }
 
-    await removeData(word, cleanedHanja, cleanedDefinition, 'ko');
+    await removeData(word, cleanedHanja, cleanedDefinition, 'ko', { ownerId });
 
     const {
         data: { user },
     } = await supabase.auth.getUser();
 
-    if (user) {
+    if (user && ownerId === user.id && isCurrentSyncGeneration(generation)) {
         const cloudEntry = {
             word,
             hanja: cleanedHanja,
             definition: cleanedDefinition,
             language: 'ko',
         };
-        await softDeleteUserVocabEntry(user.id, cloudEntry);
-        await softDeleteUserVocabContextsForWord(user.id, cloudEntry);
-        await softDeleteRelatedKnownWordsForMainWord(user.id, cloudEntry);
+        await softDeleteUserVocabEntry({ user, ownerId, generation, entry: cloudEntry });
+        await softDeleteUserVocabContextsForWord({ user, ownerId, generation, entry: cloudEntry });
+        await softDeleteRelatedKnownWordsForMainWord({ user, ownerId, generation, entry: cloudEntry });
     }
 
     return { saved: false };

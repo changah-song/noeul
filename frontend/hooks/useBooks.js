@@ -5,8 +5,9 @@ import * as DocumentPicker from 'expo-document-picker';
 import { isBookPreprocessed } from '../services/Database';
 import { uploadUserBook } from '../services/bookCloudSync';
 import { readEpubMetadata } from '../services/epubMetadata';
+import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
 
-const useBooks = ({ books, setBooks, setCurrentBook, onBookImported, user }) => {
+const useBooks = ({ books, setBooks, setCurrentBook, onBookImported, user, ownerId, syncGeneration }) => {
     const [isImporting, setIsImporting] = useState(false);
     const [openingBookUri, setOpeningBookUri] = useState(null);
 
@@ -97,7 +98,7 @@ const useBooks = ({ books, setBooks, setCurrentBook, onBookImported, user }) => 
                 return;
             }
 
-            const preprocessed = await isBookPreprocessed(uri);
+            const preprocessed = await isBookPreprocessed(uri, { ownerId });
             const newBook = {
                 id: Math.random().toString(),
                 uri,
@@ -127,9 +128,18 @@ const useBooks = ({ books, setBooks, setCurrentBook, onBookImported, user }) => 
             setIsImporting(false);
             navigation.navigate('Read');
 
-            if (user?.id) {
-                uploadUserBook(user.id, newBook, pickedAsset)
+            if (user?.id && ownerId === user.id && isCurrentSyncGeneration(syncGeneration)) {
+                uploadUserBook({
+                    user,
+                    ownerId,
+                    generation: syncGeneration,
+                    localBook: newBook,
+                    pickedAsset,
+                })
                     .then((cloudBook) => {
+                        if (!isCurrentSyncGeneration(syncGeneration)) {
+                            return;
+                        }
                         setBooks((prevBooks) => prevBooks.map((book) => (
                             book.id === newBook.id
                                 ? {

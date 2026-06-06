@@ -5,6 +5,14 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
 import Auth from './Auth';
 import { Card, IconButton, Screen, SectionHeader } from '../components/ui';
+import {
+    bumpSyncGeneration,
+    pauseCloudSync,
+    resumeCloudSync,
+} from '../services/localOwnerCoordinator';
+import { deleteCurrentUserProfile } from '../services/accountDeletion';
+import { makeOwnerDataDirectory } from '../services/localDataScope';
+import { clearLocalUserData } from '../services/localUserData';
 import { colors, radii, spacing, textStyles } from '../theme';
 
 const FEEDBACK_EMAIL = 'casong00@gmail.com';
@@ -17,6 +25,8 @@ const Profile = ({ user, signOut, updateUsername, updateProfile }) => {
     const [showFeedbackComposer, setShowFeedbackComposer] = useState(false);
     const [feedbackMessage, setFeedbackMessage] = useState('');
     const [isSavingAvatar, setIsSavingAvatar] = useState(false);
+    const [isSigningOut, setIsSigningOut] = useState(false);
+    const [isDeletingProfile, setIsDeletingProfile] = useState(false);
 
     const joinedDate = user?.created_at
         ? new Date(user.created_at).toLocaleDateString('en-US', {
@@ -85,7 +95,7 @@ const Profile = ({ user, signOut, updateUsername, updateProfile }) => {
 
             const picked = assets[0];
             const extension = (picked.name?.split('.').pop() || picked.uri.split('.').pop() || 'jpg').replace(/[^a-zA-Z0-9]/g, '');
-            const avatarDir = `${FileSystem.documentDirectory}profile/`;
+            const avatarDir = `${FileSystem.documentDirectory}${makeOwnerDataDirectory(user?.id)}profile/`;
             const timestamp = Date.now();
             const destination = `${avatarDir}avatar-${user?.id || 'local'}-${timestamp}.${extension || 'jpg'}`;
 
@@ -124,22 +134,108 @@ const Profile = ({ user, signOut, updateUsername, updateProfile }) => {
         }
     };
 
+    const performSignOut = async ({ removeLocalData = false } = {}) => {
+        if (isSigningOut || isDeletingProfile) {
+            return;
+        }
+
+        const userId = user?.id;
+        setIsSigningOut(true);
+        pauseCloudSync();
+        bumpSyncGeneration();
+
+        try {
+            if (removeLocalData && userId) {
+                await clearLocalUserData(userId);
+            }
+
+            await signOut?.();
+        } catch (error) {
+            resumeCloudSync();
+            Alert.alert('Sign out failed', error.message || 'Could not sign out.');
+        } finally {
+            setIsSigningOut(false);
+        }
+    };
+
     const handleSignOut = () => {
         Alert.alert(
             'Sign out',
-            'Sign out of FluentFable?',
+            'Choose whether to keep this account data cached on this device.',
             [
                 { text: 'Cancel', style: 'cancel' },
                 {
                     text: 'Sign out',
+                    onPress: () => performSignOut(),
+                },
+                {
+                    text: 'Sign out and remove data from this device',
                     style: 'destructive',
-                    onPress: async () => {
-                        try {
-                            await signOut?.();
-                        } catch (error) {
-                            Alert.alert('Sign out failed', error.message);
-                        }
-                    },
+                    onPress: () => performSignOut({ removeLocalData: true }),
+                },
+            ]
+        );
+    };
+
+    const signOutLocally = async () => {
+        try {
+            await signOut?.({ scope: 'local' });
+        } catch (error) {
+            console.warn('[Profile] Failed to clear deleted account session locally', error);
+        }
+    };
+
+    const performDeleteProfile = async () => {
+        if (isDeletingProfile || isSigningOut) {
+            return;
+        }
+
+        const userId = user?.id;
+        let didDeleteRemoteProfile = false;
+        setIsDeletingProfile(true);
+        pauseCloudSync();
+        bumpSyncGeneration();
+
+        try {
+            await deleteCurrentUserProfile();
+            didDeleteRemoteProfile = true;
+
+            if (userId) {
+                await clearLocalUserData(userId);
+            }
+
+            await signOutLocally();
+        } catch (error) {
+            if (didDeleteRemoteProfile) {
+                await signOutLocally();
+                Alert.alert(
+                    'Profile deleted',
+                    'Your account was deleted, but some cached data on this device may not have been removed.'
+                );
+                return;
+            }
+
+            resumeCloudSync();
+            Alert.alert('Delete profile failed', error.message || 'Could not delete your profile.');
+        } finally {
+            setIsDeletingProfile(false);
+        }
+    };
+
+    const handleDeleteProfile = () => {
+        if (isDeletingProfile || isSigningOut) {
+            return;
+        }
+
+        Alert.alert(
+            'Delete profile?',
+            'This permanently deletes your account and all data in it, including books, vocabulary, songs, writing, reading progress, settings, and cloud files. This cannot be undone.',
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Delete everything',
+                    style: 'destructive',
+                    onPress: performDeleteProfile,
                 },
             ]
         );
@@ -228,13 +324,30 @@ const Profile = ({ user, signOut, updateUsername, updateProfile }) => {
                             <Text style={styles.expandText}>Analysis to be implemented soon</Text>
                         </View>
                     ) : null}
+
+                    <TouchableOpacity
+                        style={[
+                            styles.optionRow,
+                            styles.deleteOptionRow,
+                            (isDeletingProfile || isSigningOut) && styles.optionRowDisabled,
+                        ]}
+                        activeOpacity={0.8}
+                        onPress={handleDeleteProfile}
+                        disabled={isDeletingProfile || isSigningOut}
+                    >
+                        <Text style={[styles.optionText, styles.deleteOptionText]}>
+                            {isDeletingProfile ? 'Deleting profile...' : 'Delete profile'}
+                        </Text>
+                        <Feather name="trash-2" size={16} color={colors.danger} />
+                    </TouchableOpacity>
                 </View>
             </Card>
 
             <IconButton
-                label="Sign out"
+                label={isSigningOut ? 'Signing out...' : 'Sign out'}
                 tone="neutral"
                 onPress={handleSignOut}
+                disabled={isSigningOut || isDeletingProfile}
                 icon={<Feather name="log-out" size={16} color={colors.text} />}
                 style={styles.signOutButton}
             />
@@ -366,9 +479,21 @@ const styles = StyleSheet.create({
         justifyContent: 'space-between',
         backgroundColor: colors.surface,
     },
+    optionRowDisabled: {
+        opacity: 0.55,
+    },
     optionText: {
         ...textStyles.body,
         color: colors.text,
+    },
+    deleteOptionRow: {
+        borderWidth: 1,
+        borderColor: 'rgba(182, 79, 68, 0.28)',
+        backgroundColor: 'rgba(182, 79, 68, 0.08)',
+    },
+    deleteOptionText: {
+        color: colors.danger,
+        fontWeight: '700',
     },
     expandBody: {
         paddingHorizontal: spacing.sm,
