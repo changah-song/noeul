@@ -72,6 +72,164 @@ const normalizeBox = (box) => ({
     height: Number(box.height),
 });
 
+const clamp = (value, minimum, maximum) => Math.min(Math.max(value, minimum), maximum);
+
+const boxRight = (box) => box.x + box.width;
+
+const boxBottom = (box) => box.y + box.height;
+
+const normalizeOcrWhitespace = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+
+const isLookupCharacter = (character) => (
+    /[0-9A-Za-z\u1100-\u11FF\u3130-\u318F\uAC00-\uD7A3\u4E00-\u9FFF]/.test(character)
+);
+
+const trimLookupToken = (value) => {
+    const characters = Array.from(String(value || '').trim());
+    let start = 0;
+    let end = characters.length;
+
+    while (start < end && !isLookupCharacter(characters[start])) {
+        start += 1;
+    }
+    while (end > start && !isLookupCharacter(characters[end - 1])) {
+        end -= 1;
+    }
+
+    return characters.slice(start, end).join('');
+};
+
+const lookupContent = (value) => Array.from(String(value || '')).filter(isLookupCharacter).join('');
+
+const lookupContentLength = (value) => lookupContent(value).length;
+
+const textsLikelyMatch = (firstValue, secondValue) => {
+    const first = lookupContent(firstValue);
+    const second = lookupContent(secondValue);
+
+    if (!first || !second) {
+        return false;
+    }
+    if (first === second || first.includes(second) || second.includes(first)) {
+        return true;
+    }
+    if (Math.abs(first.length - second.length) > 2) {
+        return false;
+    }
+
+    const shorterLength = Math.min(first.length, second.length);
+    let matchingCharacters = 0;
+    for (let index = 0; index < shorterLength; index += 1) {
+        if (first[index] === second[index]) {
+            matchingCharacters += 1;
+        }
+    }
+
+    return matchingCharacters / shorterLength >= 0.72;
+};
+
+const splitLookupTokensWithOffsets = (text) => {
+    const source = String(text || '');
+    const tokens = [];
+    const matcher = /\S+/g;
+    let match = matcher.exec(source);
+
+    while (match) {
+        const tokenText = trimLookupToken(match[0]);
+        if (tokenText) {
+            tokens.push({
+                text: tokenText,
+                start: match.index,
+                end: match.index + match[0].length,
+            });
+        }
+        match = matcher.exec(source);
+    }
+
+    return tokens;
+};
+
+const isBoxNearLine = (box, lineBox) => {
+    if (!lineBox) {
+        return true;
+    }
+
+    const xPadding = Math.max(4, lineBox.height / 2);
+    const yPadding = Math.max(4, lineBox.height / 2);
+    const centerX = box.x + (box.width / 2);
+    const centerY = box.y + (box.height / 2);
+
+    return centerX >= lineBox.x - xPadding
+        && centerX <= boxRight(lineBox) + xPadding
+        && centerY >= lineBox.y - yPadding
+        && centerY <= boxBottom(lineBox) + yPadding;
+};
+
+const mergeBoxes = (boxes) => {
+    const left = Math.min(...boxes.map((box) => box.x));
+    const top = Math.min(...boxes.map((box) => box.y));
+    const right = Math.max(...boxes.map(boxRight));
+    const bottom = Math.max(...boxes.map(boxBottom));
+
+    return {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+    };
+};
+
+const splitElementIntoWordParts = (element, lineBox) => {
+    const rawText = String(element?.text || '').trim();
+
+    if (!rawText || !hasValidBox(element?.box)) {
+        return [];
+    }
+
+    const elementBox = normalizeBox(element.box);
+    if (!isBoxNearLine(elementBox, lineBox)) {
+        return [];
+    }
+
+    const matches = [];
+    const matcher = /\S+/g;
+    let match = matcher.exec(rawText);
+    while (match) {
+        matches.push(match);
+        match = matcher.exec(rawText);
+    }
+
+    if (matches.length <= 1) {
+        const text = trimLookupToken(rawText);
+        return text ? [{ text, box: elementBox }] : [];
+    }
+
+    const measurableLength = Math.max(1, rawText.length);
+    return matches.map((currentMatch) => {
+        const text = trimLookupToken(currentMatch[0]);
+        if (!text) {
+            return null;
+        }
+
+        const left = elementBox.x + (elementBox.width * (currentMatch.index / measurableLength));
+        const right = elementBox.x + (
+            elementBox.width * ((currentMatch.index + currentMatch[0].length) / measurableLength)
+        );
+        const partLeft = clamp(left, elementBox.x, boxRight(elementBox) - 1);
+        const partRight = clamp(Math.max(right, partLeft + 1), partLeft + 1, boxRight(elementBox));
+
+        return {
+            text,
+            box: {
+                x: partLeft,
+                y: elementBox.y,
+                width: partRight - partLeft,
+                height: elementBox.height,
+            },
+        };
+    }).filter(Boolean);
+};
+
 const getImageSize = (uri) => new Promise((resolve) => {
     Image.getSize(
         uri,
@@ -104,7 +262,7 @@ const normalizeOcrResult = (result) => {
 const buildLineTargets = (ocrResult) => (
     (ocrResult?.blocks || []).flatMap((block, blockIndex) => (
         (block.lines || []).map((line, lineIndex) => {
-            const text = String(line?.text || '').trim();
+            const text = normalizeOcrWhitespace(line?.text);
 
             if (!text || !hasValidBox(line?.box)) {
                 return null;
@@ -120,23 +278,201 @@ const buildLineTargets = (ocrResult) => (
     ))
 );
 
+const createSyntheticWordTargets = (lineText, lineBox) => {
+    const tokens = splitLookupTokensWithOffsets(lineText);
+    if (!tokens.length || !lineBox?.width) {
+        return [];
+    }
+    if (tokens.length === 1) {
+        return [{
+            text: tokens[0].text,
+            contextSentence: normalizeOcrWhitespace(lineText),
+            box: lineBox,
+        }];
+    }
+
+    const measurableLength = Math.max(1, String(lineText || '').length);
+    return tokens.map((token) => {
+        const tokenLeft = lineBox.x + (lineBox.width * (token.start / measurableLength));
+        const tokenRight = lineBox.x + (lineBox.width * (token.end / measurableLength));
+        const left = clamp(tokenLeft, lineBox.x, boxRight(lineBox) - 1);
+        const right = clamp(Math.max(tokenRight, left + 1), left + 1, boxRight(lineBox));
+
+        return {
+            text: token.text,
+            contextSentence: normalizeOcrWhitespace(lineText),
+            box: {
+                x: left,
+                y: lineBox.y,
+                width: right - left,
+                height: lineBox.height,
+            },
+        };
+    });
+};
+
+const createLineTokenTargetsFromParts = (lineText, lineBox, parts) => {
+    const tokens = splitLookupTokensWithOffsets(lineText);
+    if (tokens.length <= 1) {
+        return [];
+    }
+    if (parts.length === 1) {
+        return createSyntheticWordTargets(lineText, lineBox);
+    }
+    if (!textsLikelyMatch(parts.map((part) => part.text).join(''), lineText)) {
+        return [];
+    }
+
+    const groups = [];
+    let partIndex = 0;
+    tokens.forEach((token, tokenIndex) => {
+        const targetLength = Math.max(1, lookupContentLength(token.text));
+        const startPartIndex = partIndex;
+        let consumedLength = 0;
+
+        while (
+            partIndex < parts.length
+            && (
+                consumedLength < targetLength
+                || startPartIndex === partIndex
+                || tokenIndex === tokens.length - 1
+            )
+        ) {
+            consumedLength += Math.max(1, lookupContentLength(parts[partIndex].text));
+            partIndex += 1;
+        }
+
+        if (startPartIndex < partIndex) {
+            const groupParts = parts.slice(startPartIndex, partIndex);
+            groups.push({
+                text: token.text,
+                box: mergeBoxes(groupParts.map((part) => part.box)),
+            });
+        }
+    });
+
+    if (groups.length !== tokens.length) {
+        return [];
+    }
+
+    return groups.map((group) => ({
+        text: group.text,
+        contextSentence: normalizeOcrWhitespace(lineText),
+        box: group.box,
+    }));
+};
+
+const wordGapThreshold = (parts, lineBox) => {
+    const totalCharacters = Math.max(
+        1,
+        parts.reduce((total, part) => total + Math.max(1, lookupContentLength(part.text)), 0)
+    );
+    const averageCharacterWidth = parts.reduce((total, part) => total + part.box.width, 0) / totalCharacters;
+    const baseThreshold = Math.max(3, Math.min(lineBox.height * 0.22, averageCharacterWidth * 0.45));
+    const positiveGaps = [];
+
+    for (let index = 1; index < parts.length; index += 1) {
+        const gap = parts[index].box.x - boxRight(parts[index - 1].box);
+        if (gap > 0) {
+            positiveGaps.push(gap);
+        }
+    }
+    positiveGaps.sort((left, right) => left - right);
+
+    if (positiveGaps.length >= 3) {
+        const medianGap = positiveGaps[Math.floor(positiveGaps.length / 2)];
+        const largestGap = positiveGaps[positiveGaps.length - 1];
+        if (largestGap > (medianGap * 2) + 2) {
+            return Math.max(3, Math.min(baseThreshold, (medianGap * 1.6) + 1.5));
+        }
+    }
+
+    return baseThreshold;
+};
+
+const createGeometryWordGroups = (parts, lineBox) => {
+    if (!parts.length) {
+        return [];
+    }
+    if (parts.length === 1) {
+        return [{ text: parts[0].text, box: parts[0].box }];
+    }
+    if (parts.every((part) => lookupContentLength(part.text) > 1)) {
+        return parts.map((part) => ({ text: part.text, box: part.box }));
+    }
+
+    const threshold = wordGapThreshold(parts, lineBox);
+    const groupedParts = [];
+    let currentGroup = [parts[0]];
+
+    parts.slice(1).forEach((part) => {
+        const previous = currentGroup[currentGroup.length - 1];
+        const gap = part.box.x - boxRight(previous.box);
+
+        if (gap >= threshold) {
+            groupedParts.push(currentGroup);
+            currentGroup = [part];
+        } else {
+            currentGroup.push(part);
+        }
+    });
+    groupedParts.push(currentGroup);
+
+    return groupedParts.map((groupParts) => {
+        const text = trimLookupToken(groupParts.map((part) => part.text).join(''));
+        if (!text) {
+            return null;
+        }
+
+        return {
+            text,
+            box: mergeBoxes(groupParts.map((part) => part.box)),
+        };
+    }).filter(Boolean);
+};
+
+const buildWordTargetsForLine = (line) => {
+    const lineText = normalizeOcrWhitespace(line?.text);
+    const lineBox = hasValidBox(line?.box) ? normalizeBox(line.box) : null;
+    const parts = (line?.elements || [])
+        .flatMap((element) => splitElementIntoWordParts(element, lineBox))
+        .sort((left, right) => (
+            left.box.x - right.box.x
+            || (left.box.y + (left.box.height / 2)) - (right.box.y + (right.box.height / 2))
+        ));
+    const effectiveLineBox = lineBox || (parts.length ? mergeBoxes(parts.map((part) => part.box)) : null);
+
+    if (!effectiveLineBox) {
+        return [];
+    }
+    if (!parts.length) {
+        return createSyntheticWordTargets(lineText, effectiveLineBox);
+    }
+
+    const tokenTargets = createLineTokenTargetsFromParts(lineText, effectiveLineBox, parts);
+    if (tokenTargets.length) {
+        return tokenTargets;
+    }
+
+    const groups = createGeometryWordGroups(parts, effectiveLineBox);
+    const contextSentence = groups.length > 1
+        ? groups.map((group) => group.text).join(' ')
+        : lineText;
+
+    return groups.map((group) => ({
+        text: group.text,
+        contextSentence,
+        box: group.box,
+    }));
+};
+
 const buildWordTargets = (ocrResult) => (
     (ocrResult?.blocks || []).flatMap((block, blockIndex) => (
         (block.lines || []).flatMap((line, lineIndex) => (
-            (line.elements || []).map((element, elementIndex) => {
-                const text = String(element?.text || '').trim();
-
-                if (!text || !hasValidBox(element?.box)) {
-                    return null;
-                }
-
-                return {
-                    key: `word-${blockIndex}-${lineIndex}-${elementIndex}`,
-                    text,
-                    contextSentence: String(line?.text || '').trim(),
-                    box: normalizeBox(element.box),
-                };
-            }).filter(Boolean)
+            buildWordTargetsForLine(line).map((target, targetIndex) => ({
+                key: `word-${blockIndex}-${lineIndex}-${targetIndex}`,
+                ...target,
+            }))
         ))
     ))
 );

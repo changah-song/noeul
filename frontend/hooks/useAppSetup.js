@@ -13,6 +13,10 @@ import {
     getTimestampMs,
     updateUserPreferenceFields,
 } from '../services/preferencesCloudSync';
+import {
+    getPublicDomainBookByUri,
+    isPublicDomainBookUri,
+} from '../services/publicDomainBooks';
 
 const LEGACY_BOOKS_STORAGE_KEY = '@ff/books';
 const LEGACY_CURRENT_BOOK_STORAGE_KEY = '@ff/current-book';
@@ -47,17 +51,26 @@ const normalizeStoredBooks = async (storedBooks) => Promise.all(
             return null;
         }
 
-        const cover = typeof book.cover === 'string' ? book.cover.trim() : '';
+        const publicDomainMeta = isPublicDomainBookUri(book.uri)
+            ? getPublicDomainBookByUri(book.uri)
+            : null;
+        const normalizedBook = (
+            publicDomainMeta?.wordCount && !book.wordCount
+                ? { ...book, wordCount: publicDomainMeta.wordCount }
+                : book
+        );
+
+        const cover = typeof normalizedBook.cover === 'string' ? normalizedBook.cover.trim() : '';
         if (!cover.startsWith('data:')) {
-            return book;
+            return normalizedBook;
         }
 
         const persistedCover = await persistCoverDataUri(
             cover,
-            `${book.uri || book.id || book.title || 'book'}:${book.title || ''}`
+            `${normalizedBook.uri || normalizedBook.id || normalizedBook.title || 'book'}:${normalizedBook.title || ''}`
         );
 
-        return { ...book, cover: persistedCover };
+        return { ...normalizedBook, cover: persistedCover };
     })
 ).then((books) => books.filter(Boolean));
 
@@ -147,17 +160,22 @@ const mergeCloudBooks = (localBooks = [], cloudBooks = [], userId) => {
 
         if (existingIndex >= 0) {
             const existingBook = nextBooks[existingIndex] ?? {};
+            const cloudUpdatedAt = cloudBook.updated_at ?? cloudBook.uploaded_at ?? null;
+            const localUpdatedAt = existingBook.updatedAt ?? null;
+            const shouldKeepLocalMetadata = localUpdatedAt
+                && getTimestampMs(localUpdatedAt) > getTimestampMs(cloudUpdatedAt);
             nextBooks[existingIndex] = {
                 ...existingBook,
                 cloudId: cloudBook.id,
                 cloudOwnerId: userId,
                 cloudFilePath,
                 cloudCoverPath: cloudBook.cover_path ?? existingBook.cloudCoverPath ?? null,
-                cloudSyncedAt: cloudBook.updated_at ?? cloudBook.uploaded_at ?? existingBook.cloudSyncedAt ?? null,
-                title: cloudBook.title || existingBook.title,
-                author: cloudBook.author || existingBook.author,
+                cloudSyncedAt: cloudUpdatedAt ?? existingBook.cloudSyncedAt ?? null,
+                title: shouldKeepLocalMetadata ? existingBook.title : (cloudBook.title || existingBook.title),
+                author: shouldKeepLocalMetadata ? existingBook.author : (cloudBook.author || existingBook.author),
                 originalFilename: cloudBook.original_filename ?? existingBook.originalFilename ?? null,
                 size: cloudBook.size_bytes ?? existingBook.size ?? null,
+                wordCount: cloudBook.word_count ?? existingBook.wordCount ?? null,
                 language: cloudBook.language ?? existingBook.language ?? null,
                 progress: typeof cloudBook.progress === 'number' ? cloudBook.progress : (existingBook.progress ?? 0),
                 location: cloudBook.location ?? existingBook.location ?? null,

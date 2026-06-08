@@ -10,6 +10,7 @@ const Screen = ({
   backgroundColor = colors.backgroundWarm,
   style,
   contentContainerStyle,
+  scrollViewProps,
   edges = ['top', 'left', 'right'],
 }) => {
   if (scroll) {
@@ -18,6 +19,7 @@ const Screen = ({
         <ScrollView
           contentContainerStyle={[styles.scrollContent, contentContainerStyle]}
           showsVerticalScrollIndicator={false}
+          {...scrollViewProps}
         >
           {children}
         </ScrollView>

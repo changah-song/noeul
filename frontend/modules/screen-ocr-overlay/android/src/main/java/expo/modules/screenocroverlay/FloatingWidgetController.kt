@@ -234,6 +234,9 @@ class FloatingWidgetController(
     resultOverlayView?.showLookupError(requestId, message, fallback)
   }
 
+  fun hasLookupCard(requestId: String): Boolean =
+    resultOverlayView?.hasLookupCard(requestId) == true
+
   fun showSaving(requestId: String, alternativeIndex: Int?) {
     resultOverlayView?.showSaving(requestId, alternativeIndex)
   }
@@ -253,6 +256,9 @@ class FloatingWidgetController(
   fun showHanjaResult(result: OverlayHanjaResult) {
     resultOverlayView?.showHanjaResult(result)
   }
+
+  fun hasHanjaPopup(requestId: String): Boolean =
+    resultOverlayView?.hasHanjaPopup(requestId) == true
 
   fun showHanjaError(requestId: String, message: String) {
     resultOverlayView?.showHanjaError(requestId, message)

@@ -6,10 +6,9 @@ import { colors, radii, spacing, textStyles } from '../../../theme';
 import TranslationContent from './TranslationContent';
 import DictionaryContent from './DictionaryContent';
 
-const DICTIONARY_COMPACT_HEIGHT = 122;
-const DICTIONARY_EXPANDED_MIN_HEIGHT = 202;
-const DICTIONARY_EXPANDED_MAX_HEIGHT = 360;
-const DICTIONARY_EXTRA_ROW_HEIGHT = 58;
+const DICTIONARY_COMPACT_HEIGHT = 124;
+const DICTIONARY_EXPANDED_MAX_HEIGHT = 390;
+const DICTIONARY_EXTRA_ROW_HEIGHT = 52;
 const TRANSLATION_SOURCE_LANGUAGE = 'KO';
 const TRANSLATION_TARGET_LANGUAGE = 'EN';
 
@@ -17,7 +16,9 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
     const insets = useSafeAreaInsets();
     const [isLoading, setIsLoading] = useState(false);
     const [dictionaryExpandedRows, setDictionaryExpandedRows] = useState(0);
+    const [dictionaryContentHeight, setDictionaryContentHeight] = useState(0);
     const [visibleWord, setVisibleWord] = useState('');
+    const [translationTarget, setTranslationTarget] = useState('');
     const prevWordRef = useRef('');
     const translateY = useRef(new Animated.Value(24)).current;
     const opacity = useRef(new Animated.Value(0)).current;
@@ -31,6 +32,8 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
         if (highlightedWord && highlightedWord !== prevWordRef.current) {
             prevWordRef.current = highlightedWord;
             setDictionaryExpandedRows(0);
+            setDictionaryContentHeight(0);
+            setTranslationTarget('');
 
             if (!hasLookupCandidate) {
                 setIsLoading(false);
@@ -97,6 +100,17 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
         setIsLoading(false);
     }, []);
 
+    const handleDictionaryExpandedStateChange = useCallback((rowCount) => {
+        const nextRowCount = Number.isFinite(rowCount) ? rowCount : 0;
+        setDictionaryExpandedRows((previousRowCount) => {
+            if (previousRowCount !== nextRowCount) {
+                setDictionaryContentHeight(0);
+            }
+
+            return nextRowCount;
+        });
+    }, []);
+
     if (!visibleWord) {
         return null;
     }
@@ -121,24 +135,36 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
             spinner: colors.accentStrong,
         };
 
+    const expandedFallbackHeight = DICTIONARY_COMPACT_HEIGHT + (dictionaryExpandedRows * DICTIONARY_EXTRA_ROW_HEIGHT);
+    const expandedContentHeight = dictionaryContentHeight > 0
+        ? Math.ceil(dictionaryContentHeight)
+        : expandedFallbackHeight;
     const dictionaryHeight = dictionaryExpandedRows > 0
         ? Math.min(
             DICTIONARY_EXPANDED_MAX_HEIGHT,
-            Math.max(
-                DICTIONARY_EXPANDED_MIN_HEIGHT,
-                DICTIONARY_COMPACT_HEIGHT + (dictionaryExpandedRows * DICTIONARY_EXTRA_ROW_HEIGHT)
-            )
+            Math.max(DICTIONARY_COMPACT_HEIGHT, expandedContentHeight)
         )
         : DICTIONARY_COMPACT_HEIGHT;
-    const sheetSizeStyle = isNativeSelection
+    const isTranslationMode = isNativeSelection || !!translationTarget;
+    const translationText = translationTarget || visibleWord;
+    const sheetSizeStyle = isTranslationMode
         ? styles.sheetTranslation
         : { height: dictionaryHeight };
+    const closeTranslation = () => {
+        if (translationTarget) {
+            setTranslationTarget('');
+            setIsLoading(false);
+            return;
+        }
+
+        onClose?.();
+    };
 
     return (
         <Animated.View
             style={[
                 styles.sheet,
-                !isNativeSelection && styles.sheetDictionary,
+                !isTranslationMode && styles.sheetDictionary,
                 sheetSizeStyle,
                 { marginBottom: Math.max(6, insets.bottom + 10) },
                 { backgroundColor: panelColors.background, borderColor: panelColors.border },
@@ -148,7 +174,7 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
                 },
             ]}
         >
-            {isNativeSelection ? (
+            {isTranslationMode ? (
                 <View style={styles.translationHeader}>
                     <View style={styles.translationHeaderLeft}>
                         <MaterialIcons name="translate" size={18} color={panelColors.accent} />
@@ -160,7 +186,7 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
                         accessibilityRole="button"
                         accessibilityLabel="Close translation"
                         activeOpacity={0.75}
-                        onPress={onClose}
+                        onPress={closeTranslation}
                         style={styles.translationCloseButton}
                     >
                         <MaterialIcons name="close" size={22} color={panelColors.closeIcon} />
@@ -178,7 +204,7 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
             ) : null}
 
             <View style={[styles.content, isNativeSelection && isLoading && hasLookupCandidate && styles.contentDimmed]}>
-                {!isNativeSelection ? (
+                {!isTranslationMode ? (
                     <DictionaryContent
                         highlightedWord={visibleWord}
                         sourceSentence={sourceSentence}
@@ -186,7 +212,13 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
                         onContentLoaded={handleContentLoaded}
                         onWordSave={onWordSave}
                         onWordUnsave={onWordUnsave}
-                        onExpandedStateChange={setDictionaryExpandedRows}
+                        onTranslatePress={(text) => {
+                            const target = typeof text === 'string' && text.trim() ? text.trim() : visibleWord;
+                            setTranslationTarget(target);
+                            setIsLoading(true);
+                        }}
+                        onExpandedStateChange={handleDictionaryExpandedStateChange}
+                        onContentHeightChange={setDictionaryContentHeight}
                         currentBook={currentBook}
                         sourceBook={sourceBook}
                         savedWords={savedWords}
@@ -194,8 +226,8 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
                 ) : (
                     <View style={styles.contentFill}>
                         <TranslationContent
-                            key={`${visibleWord}-native`}
-                            highlightedWord={visibleWord}
+                            key={`${translationText}-translation`}
+                            highlightedWord={translationText}
                             isDarkMode={isDarkMode}
                             onContentLoaded={handleContentLoaded}
                         />

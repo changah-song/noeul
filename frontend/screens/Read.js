@@ -24,7 +24,7 @@ import {
 import preprocessChapter from '../services/api/preprocessChapter';
 import { updateUserBookProgress } from '../services/bookCloudSync';
 import { addReadingMillis } from '../services/dailyProgress';
-import { readEpubPackageXml } from '../services/epubMetadata';
+import { countReadableTextWords, readEpubPackageXml } from '../services/epubMetadata';
 import {
     isPublicDomainBookUri,
     readPublicDomainTextPackage,
@@ -46,6 +46,7 @@ const DEFAULT_READER_SETTINGS = {
     isDarkMode: false,
     lineSpacing: 1.5,
 };
+const READ_SCREEN_BACKGROUND = '#faf6ee';
 
 const uniqTerms = (values) => [...new Set(
     (values || [])
@@ -901,6 +902,8 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
         let completedChapters = 0;
         let failedChapters = 0;
         let totalSurfaceCount = 0;
+        let totalWordCount = 0;
+        let countedWordChapters = 0;
 
         try {
             await markBookPreprocessMeta({
@@ -964,6 +967,8 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
                     }
 
                     const chapterText = chapterTextForReaderPackage(chapterPackage);
+                    totalWordCount += countReadableTextWords(chapterText);
+                    countedWordChapters += 1;
                     const {
                         results = [],
                         surface_index: surfaceIndex = [],
@@ -1051,6 +1056,13 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
             const finalStatus = failedChapters === 0
                 ? 'complete'
                 : (completedChapters > 0 ? 'partial' : 'failed');
+            const completedWordCount = (
+                finalStatus === 'complete'
+                && countedWordChapters === queue.length
+                && totalWordCount > 0
+                    ? totalWordCount
+                    : null
+            );
             await markBookPreprocessMeta({
                 ownerId: activeOwnerId,
                 bookUri: currentBook,
@@ -1062,9 +1074,25 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
 
             setBooks((prevBooks) => prevBooks.map((book) => (
                 book.uri === currentBook
-                    ? { ...book, preprocessed: finalStatus === 'complete', preprocessing: false }
+                    ? {
+                        ...book,
+                        preprocessed: finalStatus === 'complete',
+                        preprocessing: false,
+                        ...(completedWordCount != null
+                            ? { wordCount: completedWordCount }
+                            : {}),
+                    }
                     : book
             )));
+
+            if (completedWordCount != null && activeBook?.cloudId) {
+                scheduleCloudProgressSync({
+                    ...activeBook,
+                    wordCount: completedWordCount,
+                    preprocessed: finalStatus === 'complete',
+                    preprocessing: false,
+                });
+            }
 
             if (finalStatus === 'complete') {
                 setPreprocessStatus('done');
@@ -1081,9 +1109,11 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
     }, [
         currentBook,
         activeOwnerId,
+        activeBook,
         loadParsedChapterPackage,
         onPreprocessComplete,
         persistChapterPreprocessResults,
+        scheduleCloudProgressSync,
         setBooks,
     ]);
 
@@ -1490,7 +1520,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
         loadNativeReaderPackage(loadedSpineIndex - 1, { animateChapterTransition: true });
     }, [loadNativeReaderPackage]);
 
-    const fullscreenReaderChromeColor = settings.isDarkMode ? '#1f2937' : '#f9f7f2';
+    const fullscreenReaderChromeColor = settings.isDarkMode ? '#1f2937' : READ_SCREEN_BACKGROUND;
 
     return (
         <View style={styles.container}>
@@ -1779,7 +1809,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: colors.backgroundWarm,
+        backgroundColor: READ_SCREEN_BACKGROUND,
     },
     headerBar: {
         flexDirection: 'row',
@@ -1838,7 +1868,7 @@ const styles = StyleSheet.create({
     },
     nativeReaderView: {
         flex: 1,
-        backgroundColor: colors.surface,
+        backgroundColor: READ_SCREEN_BACKGROUND,
     },
     readerErrorState: {
         flex: 1,

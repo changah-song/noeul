@@ -22,8 +22,13 @@ const Auth = ({
   embedded = false,
   title = 'FluentFable',
   subtitle = 'Sign in to sync your books and saved words.',
+  initialMode = 'signin',
+  showApple = true,
+  showHeader = true,
+  showModeToggle = true,
+  onAuthenticated,
 }) => {
-  const [mode, setMode] = useState('signin');
+  const [mode, setMode] = useState(initialMode === 'signup' ? 'signup' : 'signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -57,6 +62,7 @@ const Auth = ({
           throw error;
         }
       }
+      onAuthenticated?.();
     } catch (error) {
       Alert.alert('Authentication failed', error.message);
     } finally {
@@ -89,6 +95,7 @@ const Auth = ({
       if (error) {
         throw error;
       }
+      onAuthenticated?.();
     } catch (error) {
       if (error?.code === 'SIGN_IN_CANCELLED') {
         return;
@@ -135,8 +142,12 @@ const Auth = ({
 
   const content = (
       <View style={[styles.card, embedded && styles.embeddedCard]}>
-        <Text style={styles.title}>{title}</Text>
-        <Text style={styles.subtitle}>{subtitle}</Text>
+        {showHeader ? (
+          <>
+            <Text style={styles.title}>{title}</Text>
+            <Text style={styles.subtitle}>{subtitle}</Text>
+          </>
+        ) : null}
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Email</Text>
@@ -159,14 +170,16 @@ const Auth = ({
             value={password}
             onChangeText={setPassword}
           />
-          <View style={styles.modeRow}>
-            <TouchableOpacity onPress={() => setMode('signin')}>
-              <Text style={[styles.modeText, mode === 'signin' && styles.modeActive]}>Sign In</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => setMode('signup')}>
-              <Text style={[styles.modeText, mode === 'signup' && styles.modeActive]}>Sign Up</Text>
-            </TouchableOpacity>
-          </View>
+          {showModeToggle ? (
+            <View style={styles.modeRow}>
+              <TouchableOpacity onPress={() => setMode('signin')}>
+                <Text style={[styles.modeText, mode === 'signin' && styles.modeActive]}>Sign In</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setMode('signup')}>
+                <Text style={[styles.modeText, mode === 'signup' && styles.modeActive]}>Sign Up</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
           <TouchableOpacity style={styles.primaryButton} onPress={handleEmailAuth} disabled={loading}>
             <Text style={styles.primaryButtonText}>
               {loading ? 'Working...' : mode === 'signin' ? 'Sign In' : 'Create Account'}
@@ -177,11 +190,13 @@ const Auth = ({
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Google</Text>
           <TouchableOpacity style={styles.secondaryButton} onPress={handleGoogleAuth} disabled={loading}>
-            <Text style={styles.secondaryButtonText}>Continue with Google</Text>
+            <Text style={styles.secondaryButtonText}>
+              {mode === 'signup' ? 'Sign up with Google' : 'Sign in with Google'}
+            </Text>
           </TouchableOpacity>
         </View>
 
-        {Platform.OS === 'ios' ? (
+        {showApple && Platform.OS === 'ios' ? (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Apple</Text>
             <AppleAuthentication.AppleAuthenticationButton

@@ -19,6 +19,7 @@ const USER_BOOK_SELECT = `
   file_url,
   cover_path,
   size_bytes,
+  word_count,
   language,
   progress,
   location,
@@ -197,6 +198,19 @@ const getBookProgress = (book) => {
   return Math.min(Math.max(progress, 0), 1);
 };
 
+const getBookWordCount = (book) => {
+  const wordCount = Number(
+    book?.wordCount
+    ?? book?.word_count
+    ?? book?.totalWords
+    ?? book?.total_words
+    ?? book?.estimatedWordCount
+    ?? book?.estimated_word_count
+  );
+
+  return Number.isFinite(wordCount) && wordCount > 0 ? Math.round(wordCount) : null;
+};
+
 const toUserBookRow = ({
   userId,
   cloudBookId,
@@ -217,6 +231,7 @@ const toUserBookRow = ({
   file_url: filePath,
   cover_path: coverPath,
   size_bytes: pickedAsset?.size ?? localBook?.size ?? null,
+  word_count: getBookWordCount(localBook),
   language: localBook?.language ?? null,
   progress: getBookProgress(localBook),
   location: normalizeLocation(localBook?.location),
@@ -233,6 +248,7 @@ export const cloudBookToLocalBook = (cloudBook = {}, overrides = {}) => ({
   cloudSyncedAt: cloudBook.updated_at ?? cloudBook.uploaded_at ?? null,
   uri: overrides.uri ?? null,
   size: cloudBook.size_bytes ?? null,
+  wordCount: getBookWordCount(cloudBook),
   title: sanitizeText(cloudBook.title, 'Untitled'),
   author: sanitizeText(cloudBook.author, 'Unknown author'),
   originalTitle: sanitizeText(cloudBook.title, 'Untitled'),
@@ -294,6 +310,55 @@ export const uploadUserBook = async ({ user, ownerId, generation, localBook, pic
 
   if (error) {
     console.warn(`${FILE_TAG} uploadUserBook metadata upsert failed`, error);
+    throw error;
+  }
+
+  return data;
+};
+
+export const updateUserBookMetadata = async ({ user, ownerId, generation, book } = {}) => {
+  if (!book?.cloudId) {
+    return null;
+  }
+
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
+  const coverPath = await uploadCoverIfAvailable({
+    user,
+    ownerId,
+    generation,
+    cloudBookId: book.cloudId,
+    coverUri: book.cover,
+  });
+  const updatedAt = book.updatedAt || new Date().toISOString();
+  const patch = {
+    title: sanitizeText(book.title, 'Untitled'),
+    author: sanitizeText(book.author, 'Unknown author'),
+    updated_at: updatedAt,
+  };
+
+  if (coverPath || Object.prototype.hasOwnProperty.call(book, 'cloudCoverPath')) {
+    patch.cover_path = coverPath || book.cloudCoverPath || null;
+  }
+
+  const wordCount = getBookWordCount(book);
+  if (wordCount != null) {
+    patch.word_count = wordCount;
+  }
+
+  if (book.language != null) {
+    patch.language = book.language;
+  }
+
+  const { data, error } = await supabase
+    .from('user_books')
+    .update(patch)
+    .eq('user_id', userId)
+    .eq('id', book.cloudId)
+    .select(USER_BOOK_SELECT)
+    .single();
+
+  if (error) {
+    console.warn(`${FILE_TAG} updateUserBookMetadata failed`, error);
     throw error;
   }
 
@@ -385,12 +450,13 @@ export const downloadUserBook = async ({ user, ownerId, generation, cloudBook } 
   const coverPath = cloudBook.cloudCoverPath || cloudBook.cover_path;
 
   if (coverPath) {
-    downloadStoragePath(
+    coverUri = await downloadStoragePath(
       coverPath,
       `${booksDirectory}${cloudBook.cloudId}-cover.jpg`,
       { timeoutMs: COVER_DOWNLOAD_TIMEOUT_MS }
     ).catch((error) => {
       console.warn(`${FILE_TAG} cover download failed`, error);
+      return coverUri;
     });
   }
 
@@ -404,6 +470,7 @@ export const downloadUserBook = async ({ user, ownerId, generation, cloudBook } 
       file_path: filePath,
       cover_path: coverPath,
       size_bytes: cloudBook.size,
+      word_count: cloudBook.wordCount ?? cloudBook.word_count ?? null,
       language: cloudBook.language,
       progress: cloudBook.progress,
       location: cloudBook.location,
@@ -427,14 +494,21 @@ export const updateUserBookProgress = async ({ user, ownerId, generation, book }
   }
 
   const userId = assertCloudWriteAllowed({ user, ownerId, generation });
+  const wordCount = getBookWordCount(book);
+  const patch = {
+    progress: getBookProgress(book),
+    location: normalizeLocation(book.location),
+    native_position: book.nativePosition ?? null,
+    updated_at: new Date().toISOString(),
+  };
+
+  if (wordCount != null) {
+    patch.word_count = wordCount;
+  }
+
   const { error } = await supabase
     .from('user_books')
-    .update({
-      progress: getBookProgress(book),
-      location: normalizeLocation(book.location),
-      native_position: book.nativePosition ?? null,
-      updated_at: new Date().toISOString(),
-    })
+    .update(patch)
     .eq('user_id', userId)
     .eq('id', book.cloudId);
 

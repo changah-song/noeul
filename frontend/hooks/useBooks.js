@@ -3,6 +3,7 @@ import { Alert } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import * as DocumentPicker from 'expo-document-picker';
 import { isBookPreprocessed } from '../services/Database';
+import { extractBookCoverColors } from '../services/bookCoverColors';
 import { uploadUserBook } from '../services/bookCloudSync';
 import { readEpubMetadata } from '../services/epubMetadata';
 import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
@@ -57,10 +58,16 @@ const useBooks = ({ books, setBooks, setCurrentBook, onBookImported, user, owner
             const { uri } = pickedAsset;
             setIsImporting(true);
 
-            const { title, author, cover, language } = await readEpubMetadata(
+            const { title, author, cover, language, wordCount } = await readEpubMetadata(
                 uri,
                 pickedAsset?.name || uri.split('/').pop() || 'Untitled'
             );
+            const coverColors = cover
+                ? await extractBookCoverColors({
+                    coverUri: cover,
+                    cacheKey: `import:${uri}:${title}:${author}`,
+                })
+                : {};
 
             const existingBook = books.find(
                 (book) => book.downloaded !== false && (
@@ -74,7 +81,10 @@ const useBooks = ({ books, setBooks, setCurrentBook, onBookImported, user, owner
                     || !existingBook.originalAuthor
                     || !Object.prototype.hasOwnProperty.call(existingBook, 'originalCover')
                     || (!existingBook.cover && cover)
-                    || (!existingBook.language && language);
+                    || (!existingBook.language && language)
+                    || (!existingBook.wordCount && wordCount)
+                    || (!existingBook.coverAccentColor && coverColors.coverAccentColor)
+                    || (!existingBook.coverBackgroundColor && coverColors.coverBackgroundColor);
 
                 if (needsMetadataPatch) {
                     setBooks((prevBooks) => prevBooks.map((book) => (
@@ -82,12 +92,15 @@ const useBooks = ({ books, setBooks, setCurrentBook, onBookImported, user, owner
                             ? {
                                 ...book,
                                 cover: book.cover || cover,
+                                coverAccentColor: book.coverAccentColor || coverColors.coverAccentColor,
+                                coverBackgroundColor: book.coverBackgroundColor || coverColors.coverBackgroundColor,
                                 originalTitle: book.originalTitle || title,
                                 originalAuthor: book.originalAuthor || author,
                                 originalCover: Object.prototype.hasOwnProperty.call(book, 'originalCover')
                                     ? book.originalCover
                                     : cover ?? null,
                                 language: book.language || language || null,
+                                wordCount: book.wordCount || wordCount || null,
                             }
                             : book
                     )));
@@ -106,7 +119,9 @@ const useBooks = ({ books, setBooks, setCurrentBook, onBookImported, user, owner
                 title,
                 author,
                 cover,
+                ...coverColors,
                 language,
+                wordCount: wordCount ?? null,
                 originalTitle: title,
                 originalAuthor: author,
                 originalCover: cover ?? null,

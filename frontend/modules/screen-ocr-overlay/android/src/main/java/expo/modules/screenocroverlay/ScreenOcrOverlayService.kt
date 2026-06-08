@@ -21,9 +21,9 @@ import java.util.concurrent.Executors
 
 private const val CAPTURE_HIDE_DELAY_MS = 180L
 private const val OVERLAY_BOUNDS_TIMEOUT_MS = 600L
-private const val OVERLAY_LOOKUP_TIMEOUT_MS = 3500L
+private const val OVERLAY_LOOKUP_TIMEOUT_MS = 9000L
 private const val OVERLAY_SAVE_TIMEOUT_MS = 3500L
-private const val OVERLAY_HANJA_TIMEOUT_MS = 3500L
+private const val OVERLAY_HANJA_TIMEOUT_MS = 9000L
 private const val TAG = "ScreenOcrOverlayService"
 
 class ScreenOcrOverlayService : Service() {
@@ -356,27 +356,52 @@ class ScreenOcrOverlayService : Service() {
     pendingHanjaTimeoutRunnable = null
   }
 
-  private fun parseLookupResult(requestId: String, result: Map<String, Any?>): OverlayLookupResult? {
+  private fun parseLookupResult(
+    requestId: String,
+    result: Map<String, Any?>,
+    currentResult: OverlayLookupResult? = null
+  ): OverlayLookupResult? {
     val selectedTarget = pendingSelectedTarget
-    val surface = stringValue(result["surface"]).ifBlank { selectedTarget?.selectedText.orEmpty() }
+    val surface = stringValue(result["surface"]).ifBlank {
+      currentResult?.surface ?: selectedTarget?.selectedText.orEmpty()
+    }
     if (surface.isBlank()) {
       return null
     }
 
-    val stem = stringValue(result["stem"]).ifBlank { surface }
+    val stem = stringValue(result["stem"]).ifBlank { currentResult?.stem ?: surface }
+    val alternatives = if (result.containsKey("alternatives")) {
+      parseDefinitionEntries(result["alternatives"])
+    } else {
+      currentResult?.alternatives ?: emptyList()
+    }
+    val hanjaPreloads = if (result.containsKey("hanjaPreloads")) {
+      parseHanjaPreloads(result["hanjaPreloads"])
+    } else {
+      currentResult?.hanjaPreloads ?: emptyList()
+    }
+    val wordOptions = if (result.containsKey("wordOptions")) {
+      parseStringList(result["wordOptions"])
+    } else {
+      currentResult?.wordOptions ?: emptyList()
+    }
 
     return OverlayLookupResult(
       requestId = requestId,
       surface = surface,
       stem = stem,
-      definition = nullableStringValue(result["definition"]),
-      hanja = nullableStringValue(result["hanja"]),
-      pos = nullableStringValue(result["pos"]),
-      romanization = nullableStringValue(result["romanization"]),
-      saved = boolValue(result["saved"]) ?: false,
-      sourceSentence = stringValue(result["sourceSentence"]).ifBlank { selectedTarget?.lineText.orEmpty() },
-      alternatives = parseDefinitionEntries(result["alternatives"]),
-      hanjaPreloads = parseHanjaPreloads(result["hanjaPreloads"])
+      definition = nullableStringValue(result["definition"]) ?: currentResult?.definition,
+      translation = nullableStringValue(result["translation"]) ?: currentResult?.translation,
+      hanja = nullableStringValue(result["hanja"]) ?: currentResult?.hanja,
+      pos = nullableStringValue(result["pos"]) ?: currentResult?.pos,
+      romanization = nullableStringValue(result["romanization"]) ?: currentResult?.romanization,
+      saved = boolValue(result["saved"]) ?: currentResult?.saved ?: false,
+      sourceSentence = stringValue(result["sourceSentence"]).ifBlank {
+        currentResult?.sourceSentence ?: selectedTarget?.lineText.orEmpty()
+      },
+      alternatives = alternatives,
+      hanjaPreloads = hanjaPreloads,
+      wordOptions = wordOptions
     )
   }
 
@@ -399,6 +424,27 @@ class ScreenOcrOverlayService : Service() {
         saved = boolValue(map["saved"]) ?: false
       )
     }
+  }
+
+  private fun parseStringList(value: Any?): List<String> {
+    val seen = linkedSetOf<String>()
+    when (value) {
+      is List<*> -> value.forEach { item ->
+        stringValue(item).takeIf(String::isNotBlank)?.let(seen::add)
+      }
+      is Array<*> -> value.forEach { item ->
+        stringValue(item).takeIf(String::isNotBlank)?.let(seen::add)
+      }
+      is String -> value
+        .split(Regex("\\s+"))
+        .forEach { item ->
+          item.trim().takeIf(String::isNotBlank)?.let(seen::add)
+        }
+      null -> Unit
+      else -> stringValue(value).takeIf(String::isNotBlank)?.let(seen::add)
+    }
+
+    return seen.toList()
   }
 
   private fun parseHanjaResult(requestId: String, result: Map<String, Any?>): OverlayHanjaResult? {
@@ -561,6 +607,7 @@ class ScreenOcrOverlayService : Service() {
       }
 
       pendingLookupRequestId = null
+      pendingLookupTimeoutRunnable = null
       widgetController?.showLookupError(
         requestId = requestId,
         message = "Open FluentFable to look this up.",
@@ -575,12 +622,16 @@ class ScreenOcrOverlayService : Service() {
   fun resolveOverlayLookup(requestId: String, result: Map<String, Any?>): Boolean {
     val lookupResult = parseLookupResult(requestId, result) ?: return false
     mainHandler.post {
-      if (pendingLookupRequestId != requestId) {
+      val isPending = pendingLookupRequestId == requestId
+      val isVisible = widgetController?.hasLookupCard(requestId) == true
+      if (!isPending && !isVisible) {
         return@post
       }
 
-      clearPendingLookupTimeout()
-      pendingLookupRequestId = null
+      if (isPending) {
+        clearPendingLookupTimeout()
+        pendingLookupRequestId = null
+      }
       currentLookupResult = lookupResult
       widgetController?.showLookupResult(lookupResult)
       emitStatus("overlay_lookup_resolved")
@@ -588,14 +639,30 @@ class ScreenOcrOverlayService : Service() {
     return true
   }
 
+  fun updateOverlayLookup(requestId: String, result: Map<String, Any?>): Boolean {
+    mainHandler.post {
+      val currentResult = currentLookupResult?.takeIf { it.requestId == requestId } ?: return@post
+      val lookupResult = parseLookupResult(requestId, result, currentResult) ?: return@post
+
+      currentLookupResult = lookupResult
+      widgetController?.showLookupResult(lookupResult)
+      emitStatus("overlay_lookup_updated")
+    }
+    return true
+  }
+
   fun rejectOverlayLookup(requestId: String, message: String): Boolean {
     mainHandler.post {
-      if (pendingLookupRequestId != requestId) {
+      val isPending = pendingLookupRequestId == requestId
+      val isVisible = widgetController?.hasLookupCard(requestId) == true
+      if (!isPending && !isVisible) {
         return@post
       }
 
-      clearPendingLookupTimeout()
-      pendingLookupRequestId = null
+      if (isPending) {
+        clearPendingLookupTimeout()
+        pendingLookupRequestId = null
+      }
       widgetController?.showLookupError(
         requestId = requestId,
         message = message.ifBlank { "Lookup failed." },
@@ -753,6 +820,7 @@ class ScreenOcrOverlayService : Service() {
       }
 
       pendingHanjaRequestId = null
+      pendingHanjaTimeoutRunnable = null
       widgetController?.showHanjaError(requestId, "Hanja lookup timed out.")
       emitStatus("overlay_hanja_timeout")
     }
@@ -784,12 +852,16 @@ class ScreenOcrOverlayService : Service() {
   fun resolveOverlayHanja(requestId: String, result: Map<String, Any?>): Boolean {
     val hanjaResult = parseHanjaResult(requestId, result) ?: return false
     mainHandler.post {
-      if (pendingHanjaRequestId != requestId) {
+      val isPending = pendingHanjaRequestId == requestId
+      val isVisible = widgetController?.hasHanjaPopup(requestId) == true
+      if (!isPending && !isVisible) {
         return@post
       }
 
-      clearPendingHanjaTimeout()
-      pendingHanjaRequestId = null
+      if (isPending) {
+        clearPendingHanjaTimeout()
+        pendingHanjaRequestId = null
+      }
       widgetController?.showHanjaResult(hanjaResult)
       emitStatus("overlay_hanja_resolved")
     }
@@ -798,12 +870,16 @@ class ScreenOcrOverlayService : Service() {
 
   fun rejectOverlayHanja(requestId: String, message: String): Boolean {
     mainHandler.post {
-      if (pendingHanjaRequestId != requestId) {
+      val isPending = pendingHanjaRequestId == requestId
+      val isVisible = widgetController?.hasHanjaPopup(requestId) == true
+      if (!isPending && !isVisible) {
         return@post
       }
 
-      clearPendingHanjaTimeout()
-      pendingHanjaRequestId = null
+      if (isPending) {
+        clearPendingHanjaTimeout()
+        pendingHanjaRequestId = null
+      }
       widgetController?.showHanjaError(requestId, message.ifBlank { "Hanja lookup failed." })
       emitStatus("overlay_hanja_rejected")
     }
