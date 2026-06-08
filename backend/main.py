@@ -1,14 +1,20 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from konlpy.tag import Okt
 from fastapi.middleware.cors import CORSMiddleware
+import jwt
+from jwt import PyJWKClient
 import sqlite3
+import ssl
 import httpx
 import asyncio
 import xml.etree.ElementTree as ET
-from typing import Optional
+from typing import Any, Optional
 import os
+import time
+from datetime import datetime, timezone
 from functools import partial
 from uuid import uuid4
+import certifi
 from dotenv import load_dotenv
 
 try:
@@ -19,9 +25,7 @@ except ImportError:
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 # ─── Rate Limit Config ────────────────────────────────────────────────────────
-# Set ENABLE_RATE_LIMIT_DELAY = True in production to be polite to the KRDICT API.
-# Keep False during local testing so preprocessing finishes quickly.
-ENABLE_RATE_LIMIT_DELAY = False
+ENABLE_RATE_LIMIT_DELAY = True
 RATE_LIMIT_DELAY_SECONDS = 0.1  # 100ms between KRDICT calls when enabled
 
 # Maximum unique stems to process per book.
@@ -31,6 +35,30 @@ MAX_STEMS_DEFAULT = None
 KRDICT_CONCURRENCY_LIMIT = 10
 JOB_PROGRESS_LOG_INTERVAL = 25
 KRDICT_API_URL = "https://krdict.korean.go.kr/api/search"
+GOOGLE_TRANSLATE_RAPIDAPI_URL = "https://google-translator9.p.rapidapi.com/v2"
+GOOGLE_TRANSLATE_RAPIDAPI_HOST = "google-translator9.p.rapidapi.com"
+MAX_TEXT_LENGTH = 500_000
+
+AUTHENTICATED_LIMITS = {
+    "max_text_chars_per_request": 500_000,
+    "max_translate_chars_per_request": 4_000,
+    "max_krdict_queries_per_request": 25,
+    "max_stems_per_preprocess_job": 5_000,
+    "max_active_jobs": 3,
+    "daily_quota": 1_000,
+}
+ANONYMOUS_LIMITS = {
+    "max_text_chars_per_request": 150_000,
+    "max_translate_chars_per_request": 1_500,
+    "max_krdict_queries_per_request": 10,
+    "max_stems_per_preprocess_job": 1_000,
+    "max_active_jobs": 1,
+    "daily_quota": 300,
+}
+PREPROCESS_TERMINAL_STATUSES = {"completed", "failed"}
+PREPROCESS_JOB_TTL_SECONDS = 300
+PREPROCESS_JOB_READ_TTL_SECONDS = 60
+PREPROCESS_ACTIVE_JOB_TTL_SECONDS = 60 * 60
 
 # ─── Server-Side Cache DB ─────────────────────────────────────────────────────
 # This SQLite database lives on the backend server and persists across app restarts.
@@ -80,31 +108,215 @@ okt = Okt()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 KRDICT_CLIENT_ID = os.getenv("KOREAN_DICTIONARY_CLIENT_ID", "").strip()
+GOOGLE_TRANSLATE_RAPIDAPI_KEY = os.getenv("GOOGLE_TRANSLATE_RAPIDAPI_KEY", "").strip()
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+SUPABASE_JWT_AUDIENCE = os.getenv("SUPABASE_JWT_AUDIENCE", "").strip() or "authenticated"
+SUPABASE_ISSUER = f"{SUPABASE_URL}/auth/v1" if SUPABASE_URL else ""
+SUPABASE_JWKS_URL = f"{SUPABASE_ISSUER}/.well-known/jwks.json" if SUPABASE_ISSUER else ""
+SUPABASE_JWT_ALGORITHMS = ["ES256", "RS256"]
+SUPABASE_JWKS_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+supabase_jwks_client = (
+    PyJWKClient(SUPABASE_JWKS_URL, ssl_context=SUPABASE_JWKS_SSL_CONTEXT)
+    if SUPABASE_JWKS_URL
+    else None
+)
 
 preprocess_jobs: dict[str, dict] = {}
 preprocess_jobs_lock = asyncio.Lock()
+daily_usage: dict[tuple[str, str], int] = {}
+daily_usage_lock = asyncio.Lock()
 
 LOOKUP_ALLOWED_POS = {"Noun", "Verb", "Adverb", "Adjective"}
+
+# Okt occasionally mislabels these as Noun in eojeol-final position.
+# Verified against 563k chars of public domain Korean text (22 books):
+# removing this filter adds exactly 2 bogus lookup stems: 요 (63 hits) and 고요 (4 hits).
+# Everything else in the original list is already excluded by Okt's POS tags.
 TRAILING_ENDING_FRAGMENTS = {
-    "고요",
-    "군요",
-    "네요",
-    "나요",
-    "대요",
-    "데요",
-    "라고요",
-    "다고요",
-    "죠",
-    "지요",
-    "요",
+    "요",   # politeness marker — mislabeled as Noun ~63x per 563k chars
+    "고요", # emphatic politeness form — mislabeled as Noun ~4x per 563k chars
 }
+
 COPULA_STEMS = {"이다"}
+
+
+def verify_supabase_token(authorization: str = Header(default="")) -> dict[str, Any]:
+    if not supabase_jwks_client:
+        print("[auth] Supabase auth is not configured")
+        raise HTTPException(status_code=500, detail="Supabase auth is not configured")
+
+    if not authorization.startswith("Bearer "):
+        print("[auth] Missing bearer token")
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+
+    token = authorization.removeprefix("Bearer ").strip()
+    if not token:
+        print("[auth] Empty bearer token")
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+
+    try:
+        signing_key = supabase_jwks_client.get_signing_key_from_jwt(token).key
+        claims = jwt.decode(
+            token,
+            signing_key,
+            algorithms=SUPABASE_JWT_ALGORITHMS,
+            audience=SUPABASE_JWT_AUDIENCE,
+            issuer=SUPABASE_ISSUER,
+            options={"require": ["sub", "exp"]},
+        )
+    except jwt.ExpiredSignatureError:
+        print("[auth] Token expired")
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.PyJWKClientConnectionError as error:
+        print(f"[auth] JWKS fetch failed: {error.__class__.__name__}: {error}")
+        raise HTTPException(status_code=503, detail="Unable to fetch Supabase signing keys")
+    except (jwt.InvalidTokenError, jwt.PyJWKClientError) as error:
+        print(f"[auth] Invalid token: {error.__class__.__name__}: {error}")
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    if claims.get("role") != "authenticated":
+        print(f"[auth] Forbidden token role: {claims.get('role')!r}")
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    user_id = claims.get("sub")
+    if not isinstance(user_id, str) or not user_id:
+        print("[auth] Token missing valid sub claim")
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    return {
+        "user_id": user_id,
+        "is_anonymous": bool(claims.get("is_anonymous", False)),
+        "claims": claims,
+    }
+
+
+def get_auth_limits(auth_or_is_anonymous) -> dict[str, int]:
+    if isinstance(auth_or_is_anonymous, dict):
+        is_anonymous = bool(auth_or_is_anonymous.get("is_anonymous", False))
+    else:
+        is_anonymous = bool(auth_or_is_anonymous)
+
+    return ANONYMOUS_LIMITS if is_anonymous else AUTHENTICATED_LIMITS
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def cleanup_preprocess_jobs_locked(now_ts: Optional[float] = None):
+    now_ts = now_ts if now_ts is not None else time.time()
+    expired_job_ids = [
+        job_id
+        for job_id, job in preprocess_jobs.items()
+        if (
+            (
+                job.get("status") in PREPROCESS_TERMINAL_STATUSES
+                and now_ts - float(job.get("updated_at_ts", now_ts)) > PREPROCESS_JOB_TTL_SECONDS
+            )
+            or (
+                job.get("status") not in PREPROCESS_TERMINAL_STATUSES
+                and now_ts - float(job.get("created_at_ts", now_ts)) > PREPROCESS_ACTIVE_JOB_TTL_SECONDS
+            )
+        )
+    ]
+
+    for job_id in expired_job_ids:
+        del preprocess_jobs[job_id]
+
+
+async def cleanup_preprocess_job_later(job_id: str, delay_seconds: int):
+    await asyncio.sleep(delay_seconds)
+    async with preprocess_jobs_lock:
+        job = preprocess_jobs.pop(job_id, None)
+
+    if job:
+        print(f"[main] cleaned up preprocess job {job_id}")
+
+
+def schedule_preprocess_job_cleanup(job_id: str, delay_seconds: int):
+    asyncio.create_task(cleanup_preprocess_job_later(job_id, delay_seconds))
+
+
+async def schedule_preprocess_job_read_cleanup(job_id: str, user_id: str):
+    should_schedule = False
+    async with preprocess_jobs_lock:
+        job = preprocess_jobs.get(job_id)
+        if (
+            job
+            and job.get("user_id") == user_id
+            and job.get("status") in PREPROCESS_TERMINAL_STATUSES
+            and not job.get("read_cleanup_scheduled")
+        ):
+            job["read_cleanup_scheduled"] = True
+            job["read_cleanup_scheduled_at"] = utc_now_iso()
+            should_schedule = True
+
+    if should_schedule:
+        schedule_preprocess_job_cleanup(job_id, PREPROCESS_JOB_READ_TTL_SECONDS)
+
+
+def enforce_text_limit(
+    text: str,
+    auth: dict[str, Any],
+    *,
+    field_name: str = "text",
+    limit_key: str = "max_text_chars_per_request",
+):
+    limit = get_auth_limits(auth)[limit_key]
+    if len(text) > limit:
+        raise HTTPException(
+            status_code=413,
+            detail=f"{field_name} exceeds {limit} characters",
+        )
+
+
+def enforce_preprocess_text_limit(text: str):
+    if len(text) > MAX_TEXT_LENGTH:
+        raise HTTPException(status_code=400, detail=f"Text too long: {len(text)} chars")
+
+
+def limited_preprocess_max_stems(max_stems, auth: dict[str, Any]):
+    limit = get_auth_limits(auth)["max_stems_per_preprocess_job"]
+    if max_stems is None:
+        return limit
+
+    if isinstance(max_stems, bool):
+        raise HTTPException(status_code=400, detail="max_stems must be a positive integer")
+
+    try:
+        normalized = int(max_stems)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="max_stems must be a positive integer")
+
+    if normalized <= 0:
+        raise HTTPException(status_code=400, detail="max_stems must be a positive integer")
+
+    return min(normalized, limit)
+
+
+async def enforce_daily_quota(auth: dict[str, Any], amount: int = 1):
+    normalized_amount = max(1, int(amount or 1))
+    limit = get_auth_limits(auth)["daily_quota"]
+    user_id = auth["user_id"]
+    today = datetime.now(timezone.utc).date().isoformat()
+
+    async with daily_usage_lock:
+        stale_keys = [key for key in daily_usage if key[1] != today]
+        for key in stale_keys:
+            del daily_usage[key]
+
+        key = (user_id, today)
+        used = daily_usage.get(key, 0)
+        if used + normalized_amount > limit:
+            raise HTTPException(status_code=429, detail="Daily backend quota exceeded")
+
+        daily_usage[key] = used + normalized_amount
 
 
 def romanize_korean_text(text: str) -> str:
@@ -132,17 +344,42 @@ async def update_preprocess_job(job_id: str, **updates):
         existing = preprocess_jobs.get(job_id)
         if not existing:
             return
+        updates["updated_at"] = utc_now_iso()
+        updates["updated_at_ts"] = time.time()
         existing.update(updates)
 
 
-async def create_preprocess_job():
+async def create_preprocess_job(user_id: str, is_anonymous: bool):
     job_id = str(uuid4())
+    now_ts = time.time()
+    now_iso = utc_now_iso()
+    limits = get_auth_limits(is_anonymous)
+
     async with preprocess_jobs_lock:
+        cleanup_preprocess_jobs_locked(now_ts)
+        active_job_count = sum(
+            1
+            for job in preprocess_jobs.values()
+            if (
+                job.get("user_id") == user_id
+                and job.get("status") not in PREPROCESS_TERMINAL_STATUSES
+            )
+        )
+
+        if active_job_count >= limits["max_active_jobs"]:
+            raise HTTPException(status_code=429, detail="Too many active preprocessing jobs")
+
         preprocess_jobs[job_id] = {
             "job_id": job_id,
+            "user_id": user_id,
+            "is_anonymous": is_anonymous,
             "status": "queued",
             "stage": "queued",
             "message": "Job queued",
+            "created_at": now_iso,
+            "updated_at": now_iso,
+            "created_at_ts": now_ts,
+            "updated_at_ts": now_ts,
             "stats": {},
             "results": None,
             "surface_index": None,
@@ -153,6 +390,7 @@ async def create_preprocess_job():
 
 async def get_preprocess_job(job_id: str):
     async with preprocess_jobs_lock:
+        cleanup_preprocess_jobs_locked()
         job = preprocess_jobs.get(job_id)
         return dict(job) if job else None
 
@@ -373,30 +611,101 @@ def build_surface_index(
 
 # ─── Existing Endpoint: Single-text Stemming ─────────────────────────────────
 @app.get("/okt_morphs/")
-async def get_okt_morphs(text: str):
+async def get_okt_morphs(text: str, auth: dict[str, Any] = Depends(verify_supabase_token)):
     """
     Stem a single text query (used during real-time word taps when a word
     isn't in the book's preprocessed cache yet).
     """
+    normalized_text = text if isinstance(text, str) else ""
+    enforce_text_limit(normalized_text, auth)
+    await enforce_daily_quota(auth)
     print(f"[main] /okt_morphs/ | text: {text!r}")
-    raw_morphs = merge_noun_hada(okt.pos(text, stem=True))
+    raw_morphs = merge_noun_hada(okt.pos(normalized_text, stem=True))
     print(f"[main] Raw morphs ({len(raw_morphs)} total): {raw_morphs}")
 
-    filtered_stems = filter_lookup_stems(raw_morphs, text)
+    filtered_stems = filter_lookup_stems(raw_morphs, normalized_text)
     print(f"[main] Filtered stems (first 20): {filtered_stems[:20]}")
     return {"result": filtered_stems}
 
 
 @app.get("/romanize/")
-async def romanize_text(text: str):
+async def romanize_text(text: str, auth: dict[str, Any] = Depends(verify_supabase_token)):
     normalized = text.strip() if isinstance(text, str) else ""
     if not normalized:
         return {"romanization": ""}
+
+    enforce_text_limit(normalized, auth)
+    await enforce_daily_quota(auth)
 
     if koroman_romanize is None:
         raise HTTPException(status_code=503, detail="koroman is not installed on the backend")
 
     return {"romanization": romanize_korean_text(normalized)}
+
+
+@app.post("/translate/")
+async def translate_text(payload: dict, auth: dict[str, Any] = Depends(verify_supabase_token)):
+    query = payload.get("query", payload.get("q", ""))
+    cleaned_query = query.strip() if isinstance(query, str) else ""
+    source = payload.get("source", "ko")
+    target = payload.get("target", "en-US")
+
+    if not cleaned_query:
+        return {"translatedText": ""}
+
+    enforce_text_limit(
+        cleaned_query,
+        auth,
+        field_name="query",
+        limit_key="max_translate_chars_per_request",
+    )
+    await enforce_daily_quota(auth)
+
+    if not GOOGLE_TRANSLATE_RAPIDAPI_KEY:
+        raise HTTPException(status_code=500, detail="No Google Translate RapidAPI key configured on server")
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                GOOGLE_TRANSLATE_RAPIDAPI_URL,
+                headers={
+                    "content-type": "application/json",
+                    "X-RapidAPI-Key": GOOGLE_TRANSLATE_RAPIDAPI_KEY,
+                    "X-RapidAPI-Host": GOOGLE_TRANSLATE_RAPIDAPI_HOST,
+                },
+                json={
+                    "q": cleaned_query,
+                    "source": source if isinstance(source, str) and source.strip() else "ko",
+                    "target": target if isinstance(target, str) and target.strip() else "en-US",
+                    "format": "text",
+                },
+                timeout=8.0,
+            )
+            response.raise_for_status()
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Google Translate request timed out")
+    except httpx.HTTPStatusError as error:
+        print(f"[main] Google Translate returned HTTP {error.response.status_code}")
+        raise HTTPException(status_code=502, detail="Google Translate request failed")
+    except httpx.RequestError as error:
+        print(f"[main] Google Translate request error: {error}")
+        raise HTTPException(status_code=502, detail="Google Translate request failed")
+
+    try:
+        data = response.json()
+    except ValueError:
+        raise HTTPException(status_code=502, detail="Google Translate returned an invalid response")
+
+    response_data = data.get("data", {}) if isinstance(data, dict) else {}
+    translations = response_data.get("translations", []) if isinstance(response_data, dict) else []
+    first_translation = translations[0] if translations else {}
+    translated_text = first_translation.get("translatedText", "") if isinstance(first_translation, dict) else ""
+    if isinstance(translated_text, str):
+        translated_text = translated_text.strip()
+    else:
+        translated_text = ""
+
+    return {"translatedText": translated_text}
 
 
 # ─── KRDICT Helper ────────────────────────────────────────────────────────────
@@ -516,8 +825,12 @@ async def search_krdict_entries(
         return []
 
 
-async def preprocess_text_for_dictionary(text: str, krdict_key: str, max_stems=None) -> dict:
-    allowed_pos = {"Noun", "Verb", "Adverb", "Adjective"}
+async def _preprocess_core(text: str, krdict_key: str, max_stems=None, progress_callback=None) -> dict:
+    async def report(event: str, **data):
+        if progress_callback:
+            await progress_callback(event, data)
+
+    allowed_pos = LOOKUP_ALLOWED_POS
     loop = asyncio.get_event_loop()
     raw_surface_morphs, raw_stem_morphs = await asyncio.gather(
         loop.run_in_executor(None, partial(okt.pos, text, stem=False)),
@@ -537,12 +850,23 @@ async def preprocess_text_for_dictionary(text: str, krdict_key: str, max_stems=N
     processed_stems = set(unique_stems)
     surface_index = [entry for entry in surface_index if entry["stem"] in processed_stems]
 
+    await report(
+        "stemmed",
+        raw_surface_count=len(raw_surface_morphs),
+        raw_stem_count=len(raw_stem_morphs),
+        candidate_stems=len(stem_pos_map),
+        total_stems=len(unique_stems),
+        surface_count=len(surface_index),
+    )
+
     if not unique_stems:
         return {
             "results": [],
             "surface_index": surface_index,
             "stats": {"total_stems": 0, "cache_hits": 0, "new_fetched": 0},
         }
+
+    await report("checking_cache", total_stems=len(unique_stems))
 
     conn = get_db_connection()
     placeholders = ",".join(["?"] * len(unique_stems))
@@ -556,13 +880,24 @@ async def preprocess_text_for_dictionary(text: str, krdict_key: str, max_stems=N
     cached_results = [dict(row) for row in cached_rows]
     missing_stems = [stem for stem in unique_stems if stem not in cached_stems]
 
+    await report(
+        "cache_checked",
+        total_stems=len(unique_stems),
+        cache_hits=len(cached_stems),
+        missing_stems=len(missing_stems),
+        fetched_stems=0,
+    )
+
     new_results: list[dict] = []
     no_entry_results: list[dict] = []
 
     if missing_stems:
+        await report("fetch_started", missing_stems=len(missing_stems))
         semaphore = asyncio.Semaphore(KRDICT_CONCURRENCY_LIMIT)
+        completed_fetches = 0
 
         async def fetch_missing_stem(client: httpx.AsyncClient, stem: str):
+            nonlocal completed_fetches
             async with semaphore:
                 if ENABLE_RATE_LIMIT_DELAY:
                     await asyncio.sleep(RATE_LIMIT_DELAY_SECONDS)
@@ -571,6 +906,19 @@ async def preprocess_text_for_dictionary(text: str, krdict_key: str, max_stems=N
 
                 if ENABLE_RATE_LIMIT_DELAY:
                     await asyncio.sleep(RATE_LIMIT_DELAY_SECONDS)
+
+                completed_fetches += 1
+                if (
+                    completed_fetches % JOB_PROGRESS_LOG_INTERVAL == 0
+                    or completed_fetches == len(missing_stems)
+                ):
+                    await report(
+                        "fetch_progress",
+                        total_stems=len(unique_stems),
+                        cache_hits=len(cached_stems),
+                        missing_stems=len(missing_stems),
+                        fetched_stems=completed_fetches,
+                    )
 
                 return result
 
@@ -606,6 +954,12 @@ async def preprocess_text_for_dictionary(text: str, krdict_key: str, max_stems=N
             conn.commit()
             conn.close()
 
+        await report(
+            "cached_inserted",
+            new_fetched=len(new_results),
+            no_entry_count=len(no_entry_results),
+        )
+
     all_results = cached_results + new_results + no_entry_results
     return {
         "results": all_results,
@@ -618,6 +972,10 @@ async def preprocess_text_for_dictionary(text: str, krdict_key: str, max_stems=N
     }
 
 
+async def preprocess_text_for_dictionary(text: str, krdict_key: str, max_stems=None) -> dict:
+    return await _preprocess_core(text, krdict_key, max_stems)
+
+
 async def run_preprocess_pipeline(job_id: str, text: str, krdict_key: str, max_stems):
     print(f"[main] preprocess job {job_id} started")
     await update_preprocess_job(
@@ -627,187 +985,94 @@ async def run_preprocess_pipeline(job_id: str, text: str, krdict_key: str, max_s
         message="Analyzing book text",
     )
 
-    allowed_pos = {"Noun", "Verb", "Adverb", "Adjective"}
-    loop = asyncio.get_event_loop()
-    raw_surface_morphs, raw_stem_morphs = await asyncio.gather(
-        loop.run_in_executor(None, partial(okt.pos, text, stem=False)),
-        loop.run_in_executor(None, partial(okt.pos, text, stem=True)),
-    )
-    print(
-        f"[main] Okt returned {len(raw_surface_morphs)} unstemmed morphs and "
-        f"{len(raw_stem_morphs)} stemmed morphs"
-    )
-
-    merged_stem_morphs = merge_noun_hada(raw_stem_morphs)
-    surface_index = build_surface_index(raw_surface_morphs, raw_stem_morphs, allowed_pos)
-
-    filtered_stem_morphs = filter_lookup_morphs(merged_stem_morphs, text)
-
-    stem_pos_map: dict[str, str] = {}
-    for word, pos in filtered_stem_morphs:
-        if word not in stem_pos_map:
-            stem_pos_map[word] = pos
-
-    unique_stems = list(stem_pos_map.keys()) if not max_stems else list(stem_pos_map.keys())[:max_stems]
-    processed_stems = set(unique_stems)
-    surface_index = [entry for entry in surface_index if entry["stem"] in processed_stems]
-    print(f"[main] {len(stem_pos_map)} unique stems found, processing {len(unique_stems)}")
-    print(f"[main] surface_index contains {len(surface_index)} unique surface→stem pairs")
-
-    if not unique_stems:
-        stats = {"total_stems": 0, "cache_hits": 0, "new_fetched": 0}
-        await update_preprocess_job(
-            job_id,
-            status="completed",
-            stage="completed",
-            message="No stems found",
-            stats=stats,
-            results=[],
-            surface_index=surface_index,
-        )
-        return
-
-    await update_preprocess_job(
-        job_id,
-        stage="checking_cache",
-        message="Checking cached dictionary entries",
-        stats={"total_stems": len(unique_stems)},
-    )
-
-    conn = get_db_connection()
-    placeholders = ",".join(["?"] * len(unique_stems))
-    cached_rows = conn.execute(
-        f"SELECT stem, definition, hanja, pos, domain FROM dictionary_cache WHERE stem IN ({placeholders})",
-        unique_stems
-    ).fetchall()
-    conn.close()
-
-    cached_stems = {row["stem"] for row in cached_rows}
-    cached_results = [dict(row) for row in cached_rows]
-    missing_stems = [s for s in unique_stems if s not in cached_stems]
-
-    print(f"[main] Cache hits: {len(cached_stems)} | Stems to fetch from KRDICT: {len(missing_stems)}")
-    await update_preprocess_job(
-        job_id,
-        stage="fetching_krdict" if missing_stems else "finalizing",
-        message=(
-            "Fetching missing dictionary entries"
-            if missing_stems
-            else "Finalizing cached preprocessing results"
-        ),
-        stats={
-            "total_stems": len(unique_stems),
-            "cache_hits": len(cached_stems),
-            "new_fetched": 0,
-            "missing_stems": len(missing_stems),
-            "fetched_stems": 0,
-        },
-    )
-
-    new_results: list[dict] = []
-    no_entry_results: list[dict] = []
-
-    if missing_stems:
-        print(f"[main] Fetching {len(missing_stems)} stems from KRDICT "
-              f"({'with' if ENABLE_RATE_LIMIT_DELAY else 'without'} rate-limit delay)...")
-
-        semaphore = asyncio.Semaphore(KRDICT_CONCURRENCY_LIMIT)
-        completed_fetches = 0
-
-        async def fetch_missing_stem(client: httpx.AsyncClient, stem: str, index: int):
-            nonlocal completed_fetches
-            async with semaphore:
-                if ENABLE_RATE_LIMIT_DELAY:
-                    await asyncio.sleep(RATE_LIMIT_DELAY_SECONDS)
-
-                result = await lookup_stem_in_krdict(client, stem, krdict_key)
-
-                if ENABLE_RATE_LIMIT_DELAY:
-                    await asyncio.sleep(RATE_LIMIT_DELAY_SECONDS)
-
-                completed_fetches += 1
-                if (
-                    completed_fetches % JOB_PROGRESS_LOG_INTERVAL == 0
-                    or completed_fetches == len(missing_stems)
-                ):
-                    print(f"[main] KRDICT progress: {completed_fetches}/{len(missing_stems)} stems")
-                    await update_preprocess_job(
-                        job_id,
-                        stage="fetching_krdict",
-                        message=f"Fetching dictionary entries ({completed_fetches}/{len(missing_stems)})",
-                        stats={
-                            "total_stems": len(unique_stems),
-                            "cache_hits": len(cached_stems),
-                            "new_fetched": 0,
-                            "missing_stems": len(missing_stems),
-                            "fetched_stems": completed_fetches,
-                        },
-                    )
-
-                return result
-
-        async with httpx.AsyncClient() as client:
-            ordered_results = await asyncio.gather(
-                *(fetch_missing_stem(client, stem, index) for index, stem in enumerate(missing_stems))
+    async def update_progress(event: str, data: dict):
+        if event == "stemmed":
+            print(
+                f"[main] Okt returned {data['raw_surface_count']} unstemmed morphs and "
+                f"{data['raw_stem_count']} stemmed morphs"
             )
-
-        new_results = [result for result in ordered_results if result]
-
-        fetched_stems = {r["stem"] for r in new_results}
-        no_entry_results = [
-            {"stem": s, "definition": None, "hanja": None, "pos": None, "domain": None}
-            for s in missing_stems if s not in fetched_stems
-        ]
-
-        rows_to_insert = [
-            {
-                "stem": row.get("stem"),
-                "definition": row.get("definition"),
-                "hanja": row.get("hanja"),
-                "pos": row.get("pos"),
-                "domain": row.get("domain"),
-            }
-            for row in new_results + no_entry_results
-        ]
-        if rows_to_insert:
-            conn = get_db_connection()
-            conn.executemany(
-                """INSERT OR IGNORE INTO dictionary_cache (stem, definition, hanja, pos, domain)
-                   VALUES (:stem, :definition, :hanja, :pos, :domain)""",
-                rows_to_insert
+            print(
+                f"[main] {data['candidate_stems']} unique stems found, "
+                f"processing {data['total_stems']}"
             )
-            conn.commit()
-            conn.close()
-            print(f"[main] Cached {len(new_results)} found + {len(no_entry_results)} no-entry stems")
+            print(f"[main] surface_index contains {data['surface_count']} unique surface→stem pairs")
+        elif event == "checking_cache":
+            await update_preprocess_job(
+                job_id,
+                stage="checking_cache",
+                message="Checking cached dictionary entries",
+                stats={"total_stems": data["total_stems"]},
+            )
+        elif event == "cache_checked":
+            print(
+                f"[main] Cache hits: {data['cache_hits']} | "
+                f"Stems to fetch from KRDICT: {data['missing_stems']}"
+            )
+            await update_preprocess_job(
+                job_id,
+                stage="fetching_krdict" if data["missing_stems"] else "finalizing",
+                message=(
+                    "Fetching missing dictionary entries"
+                    if data["missing_stems"]
+                    else "Finalizing cached preprocessing results"
+                ),
+                stats={
+                    "total_stems": data["total_stems"],
+                    "cache_hits": data["cache_hits"],
+                    "new_fetched": 0,
+                    "missing_stems": data["missing_stems"],
+                    "fetched_stems": data["fetched_stems"],
+                },
+            )
+        elif event == "fetch_started":
+            print(
+                f"[main] Fetching {data['missing_stems']} stems from KRDICT "
+                f"({'with' if ENABLE_RATE_LIMIT_DELAY else 'without'} rate-limit delay)..."
+            )
+        elif event == "fetch_progress":
+            print(f"[main] KRDICT progress: {data['fetched_stems']}/{data['missing_stems']} stems")
+            await update_preprocess_job(
+                job_id,
+                stage="fetching_krdict",
+                message=f"Fetching dictionary entries ({data['fetched_stems']}/{data['missing_stems']})",
+                stats={
+                    "total_stems": data["total_stems"],
+                    "cache_hits": data["cache_hits"],
+                    "new_fetched": 0,
+                    "missing_stems": data["missing_stems"],
+                    "fetched_stems": data["fetched_stems"],
+                },
+            )
+        elif event == "cached_inserted":
+            print(f"[main] Cached {data['new_fetched']} found + {data['no_entry_count']} no-entry stems")
 
-    all_results = cached_results + new_results + no_entry_results
-    stats = {
-        "total_stems": len(unique_stems),
-        "cache_hits": len(cached_stems),
-        "new_fetched": len(new_results),
-    }
+    result = await _preprocess_core(text, krdict_key, max_stems, progress_callback=update_progress)
+    stats = result["stats"]
     print(f"[main] /preprocess_book/ complete | {stats}")
     await update_preprocess_job(
         job_id,
         status="completed",
         stage="completed",
-        message="Preprocessing complete",
+        message="No stems found" if stats["total_stems"] == 0 else "Preprocessing complete",
         stats=stats,
-        results=all_results,
-        surface_index=surface_index,
+        results=result["results"],
+        surface_index=result["surface_index"],
     )
 
 
 # ─── Endpoint: Chapter Preprocessing ──────────────────────────────────────────
 @app.post("/preprocess_chapter/")
-async def preprocess_chapter(payload: dict):
+async def preprocess_chapter(payload: dict, auth: dict[str, Any] = Depends(verify_supabase_token)):
     text = payload.get("text", "")
     book_uri = payload.get("book_uri", "")
     spine_index = payload.get("spine_index", None)
-    max_stems = payload.get("max_stems", MAX_STEMS_DEFAULT)
+    max_stems = limited_preprocess_max_stems(payload.get("max_stems", MAX_STEMS_DEFAULT), auth)
 
     if not isinstance(spine_index, int):
         raise HTTPException(status_code=400, detail="spine_index must be an integer")
+
+    if not isinstance(text, str):
+        raise HTTPException(status_code=400, detail="text must be a string")
 
     if not text:
         return {
@@ -817,6 +1082,9 @@ async def preprocess_chapter(payload: dict):
             "surface_index": [],
             "stats": {"total_stems": 0, "cache_hits": 0, "new_fetched": 0},
         }
+
+    enforce_preprocess_text_limit(text)
+    await enforce_daily_quota(auth)
 
     if not KRDICT_CLIENT_ID:
         raise HTTPException(status_code=500, detail="No KRDICT key configured on server")
@@ -834,7 +1102,7 @@ async def preprocess_chapter(payload: dict):
 
 
 @app.post("/preprocess_book/")
-async def preprocess_book(payload: dict):
+async def preprocess_book(payload: dict, auth: dict[str, Any] = Depends(verify_supabase_token)):
     """
     Full preprocessing pipeline for a book's raw text content.
     Intended to be called once per book, after text is extracted on the client.
@@ -857,17 +1125,23 @@ async def preprocess_book(payload: dict):
         status (str): Initial job status
     """
     text       = payload.get("text", "")
-    max_stems  = payload.get("max_stems", MAX_STEMS_DEFAULT)
+    max_stems  = limited_preprocess_max_stems(payload.get("max_stems", MAX_STEMS_DEFAULT), auth)
+
+    if not isinstance(text, str):
+        raise HTTPException(status_code=400, detail="text must be a string")
 
     if not text:
         print("[main] /preprocess_book/ called with empty text")
         return {"error": "No text provided", "job_id": None, "status": "failed"}
+    enforce_preprocess_text_limit(text)
+    await enforce_daily_quota(auth)
+
     if not KRDICT_CLIENT_ID:
         print("[main] /preprocess_book/ called without backend KRDICT key")
         return {"error": "No KRDICT key configured on server", "job_id": None, "status": "failed"}
 
     print(f"[main] /preprocess_book/ | text length: {len(text):,} chars | max_stems: {max_stems}")
-    job_id = await create_preprocess_job()
+    job_id = await create_preprocess_job(auth["user_id"], auth["is_anonymous"])
     asyncio.create_task(run_preprocess_job(job_id, text, KRDICT_CLIENT_ID, max_stems))
     return {"job_id": job_id, "status": "queued"}
 
@@ -886,22 +1160,41 @@ async def run_preprocess_job(job_id: str, text: str, krdict_key: str, max_stems)
             results=[],
             surface_index=[],
         )
+    finally:
+        schedule_preprocess_job_cleanup(job_id, PREPROCESS_JOB_TTL_SECONDS)
 
 
 @app.get("/preprocess_status/{job_id}")
-async def preprocess_status(job_id: str):
+async def preprocess_status(job_id: str, auth: dict[str, Any] = Depends(verify_supabase_token)):
     job = await get_preprocess_job(job_id)
-    if not job:
+    if not job or job.get("user_id") != auth["user_id"]:
         raise HTTPException(status_code=404, detail="Unknown preprocessing job")
 
-    return job
+    if job.get("status") in PREPROCESS_TERMINAL_STATUSES:
+        await schedule_preprocess_job_read_cleanup(job_id, auth["user_id"])
+
+    return {
+        key: value
+        for key, value in job.items()
+        if key not in {
+            "user_id",
+            "is_anonymous",
+            "created_at_ts",
+            "updated_at_ts",
+            "read_cleanup_scheduled",
+            "read_cleanup_scheduled_at",
+        }
+    }
 
 
 @app.post("/krdict_search/")
-async def krdict_search(payload: dict):
+async def krdict_search(payload: dict, auth: dict[str, Any] = Depends(verify_supabase_token)):
     queries = payload.get("queries", [])
     if not KRDICT_CLIENT_ID:
         raise HTTPException(status_code=500, detail="No KRDICT key configured on server")
+
+    if not isinstance(queries, list):
+        raise HTTPException(status_code=400, detail="queries must be an array")
 
     normalized_queries = [
         query.strip()
@@ -911,6 +1204,15 @@ async def krdict_search(payload: dict):
 
     if not normalized_queries:
         return {"results": []}
+
+    query_limit = get_auth_limits(auth)["max_krdict_queries_per_request"]
+    if len(normalized_queries) > query_limit:
+        raise HTTPException(status_code=413, detail=f"Too many KRDICT queries; max {query_limit}")
+
+    for query in normalized_queries:
+        enforce_text_limit(query, auth, field_name="query")
+
+    await enforce_daily_quota(auth, amount=len(normalized_queries))
 
     async with httpx.AsyncClient() as client:
         results = await asyncio.gather(

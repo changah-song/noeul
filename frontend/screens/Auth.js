@@ -18,6 +18,21 @@ const FILE_TAG = '[Auth]';
 const GOOGLE_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;
 const GOOGLE_WEB_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
 
+const isAnonymousUser = (user) => Boolean(user?.is_anonymous);
+
+const getCurrentSession = async () => {
+  const {
+    data: { session },
+    error,
+  } = await supabase.auth.getSession();
+
+  if (error) {
+    throw error;
+  }
+
+  return session;
+};
+
 const Auth = ({
   embedded = false,
   title = 'FluentFable',
@@ -53,13 +68,35 @@ const Auth = ({
           throw error;
         }
       } else {
-        const { error } = await supabase.auth.signUp({
-          email: trimmedEmail,
-          password,
-        });
+        const currentSession = await getCurrentSession();
 
-        if (error) {
-          throw error;
+        if (isAnonymousUser(currentSession?.user)) {
+          const { error: emailError } = await supabase.auth.updateUser({
+            email: trimmedEmail,
+          });
+
+          if (emailError) {
+            throw emailError;
+          }
+
+          const { error: passwordError } = await supabase.auth.updateUser({
+            password,
+          });
+
+          if (passwordError) {
+            throw passwordError;
+          }
+
+          Alert.alert('Check your email', 'Confirm your email to finish upgrading your account.');
+        } else {
+          const { error } = await supabase.auth.signUp({
+            email: trimmedEmail,
+            password,
+          });
+
+          if (error) {
+            throw error;
+          }
         }
       }
       onAuthenticated?.();
@@ -82,15 +119,35 @@ const Auth = ({
 
       const signInResult = await GoogleSignin.signIn();
       const idToken = signInResult?.data?.idToken ?? signInResult?.idToken;
+      let accessToken = signInResult?.data?.accessToken ?? signInResult?.accessToken;
 
       if (!idToken) {
         throw new Error('No Google ID token returned');
       }
 
-      const { error } = await supabase.auth.signInWithIdToken({
-        provider: 'google',
-        token: idToken,
-      });
+      if (!accessToken) {
+        try {
+          const tokens = await GoogleSignin.getTokens();
+          accessToken = tokens?.accessToken;
+        } catch {
+          accessToken = null;
+        }
+      }
+
+      const currentSession = await getCurrentSession();
+      const shouldLinkIdentity = mode === 'signup' && isAnonymousUser(currentSession?.user);
+
+      const { error } = shouldLinkIdentity
+        ? await supabase.auth.linkIdentity({
+            provider: 'google',
+            token: idToken,
+            ...(accessToken ? { access_token: accessToken } : {}),
+          })
+        : await supabase.auth.signInWithIdToken({
+            provider: 'google',
+            token: idToken,
+            ...(accessToken ? { access_token: accessToken } : {}),
+          });
 
       if (error) {
         throw error;
@@ -121,14 +178,23 @@ const Auth = ({
         throw new Error('No Apple identity token returned');
       }
 
-      const { error } = await supabase.auth.signInWithIdToken({
-        provider: 'apple',
-        token: credential.identityToken,
-      });
+      const currentSession = await getCurrentSession();
+      const shouldLinkIdentity = mode === 'signup' && isAnonymousUser(currentSession?.user);
+
+      const { error } = shouldLinkIdentity
+        ? await supabase.auth.linkIdentity({
+            provider: 'apple',
+            token: credential.identityToken,
+          })
+        : await supabase.auth.signInWithIdToken({
+            provider: 'apple',
+            token: credential.identityToken,
+          });
 
       if (error) {
         throw error;
       }
+      onAuthenticated?.();
     } catch (error) {
       if (error?.code === 'ERR_REQUEST_CANCELED') {
         return;

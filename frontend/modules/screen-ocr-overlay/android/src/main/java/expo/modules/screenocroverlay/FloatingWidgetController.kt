@@ -1,10 +1,11 @@
 package expo.modules.screenocroverlay
 
 import android.content.Context
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.RectF
-import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Handler
@@ -16,7 +17,6 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
-import android.widget.TextView
 import android.widget.ImageView
 import kotlin.math.abs
 import kotlin.math.max
@@ -38,7 +38,7 @@ class FloatingWidgetController(
   private val density = context.resources.displayMetrics.density
   private var bubbleView: View? = null
   private var bubbleParams: WindowManager.LayoutParams? = null
-  private var dismissTargetView: TextView? = null
+  private var dismissTargetView: DismissTargetView? = null
   private var dismissTargetActive = false
   private var resultOverlayView: OcrResultOverlayView? = null
   private var lastBubbleX: Int? = null
@@ -382,14 +382,7 @@ class FloatingWidgetController(
   private fun showDismissTarget(active: Boolean) {
     val targetWidth = dismissTargetWidth()
     val targetHeight = dismissTargetHeight()
-    val view = dismissTargetView ?: TextView(context).apply {
-      text = "X"
-      textSize = 17f
-      typeface = Typeface.DEFAULT_BOLD
-      gravity = Gravity.CENTER or Gravity.TOP
-      includeFontPadding = false
-      setPadding(0, dp(9f).toInt(), 0, 0)
-      setTextColor(Color.WHITE)
+    val view = dismissTargetView ?: DismissTargetView(context, density).apply {
       elevation = dp(10f)
       contentDescription = "Dismiss floating OCR"
     }.also { newView ->
@@ -413,12 +406,13 @@ class FloatingWidgetController(
     updateDismissTarget(view, active)
   }
 
-  private fun updateDismissTarget(view: TextView, active: Boolean) {
+  private fun updateDismissTarget(view: DismissTargetView, active: Boolean) {
     if (dismissTargetActive == active && view.background != null) {
       return
     }
 
     dismissTargetActive = active
+    view.setDismissActive(active)
     view.background = GradientDrawable().apply {
       shape = GradientDrawable.RECTANGLE
       cornerRadii = floatArrayOf(
@@ -480,6 +474,48 @@ class FloatingWidgetController(
   private fun dismissTargetWidth(): Int = dp(74f).toInt()
 
   private fun dismissTargetHeight(): Int = dp(38f).toInt()
+
+  private fun dp(value: Float): Float = value * density
+}
+
+private class DismissTargetView(
+  context: Context,
+  private val density: Float
+) : View(context) {
+  private val closeIconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    color = Color.WHITE
+    strokeWidth = dp(2.6f)
+    strokeCap = Paint.Cap.ROUND
+  }
+
+  private var active = false
+
+  init {
+    setWillNotDraw(false)
+  }
+
+  fun setDismissActive(nextActive: Boolean) {
+    if (active == nextActive) {
+      return
+    }
+
+    active = nextActive
+    invalidate()
+  }
+
+  override fun onDraw(canvas: Canvas) {
+    super.onDraw(canvas)
+
+    closeIconPaint.alpha = if (active) 255 else 235
+    closeIconPaint.strokeWidth = if (active) dp(2.5f) else dp(2.2f)
+
+    val centerX = width / 2f
+    val centerY = dp(15.2f)
+    val half = dp(5.2f)
+
+    canvas.drawLine(centerX - half, centerY - half, centerX + half, centerY + half, closeIconPaint)
+    canvas.drawLine(centerX + half, centerY - half, centerX - half, centerY + half, closeIconPaint)
+  }
 
   private fun dp(value: Float): Float = value * density
 }

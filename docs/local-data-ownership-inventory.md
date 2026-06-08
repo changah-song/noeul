@@ -18,7 +18,7 @@ This repo does not currently have a JavaScript test setup. There are no frontend
 ## SQLite Tables
 
 - `frontend/services/Database.js`
-  - `SQLite.openDatabase('temp.db')`
+  - `SQLite.openDatabase('fluentfable.db')`
   - `vocab`
   - `vocab_contexts`
   - `book_index`
