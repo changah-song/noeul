@@ -1400,6 +1400,36 @@ const extractBodyText = (xhtmlXml) => {
     return normalizeTextValue(text).trim();
 };
 
+export const countReadableTextWords = (text = '') => {
+    const normalized = normalizeTextValue(text).trim();
+    if (!normalized) {
+        return 0;
+    }
+
+    const tokens = normalized.match(/[A-Za-z0-9]+(?:'[A-Za-z0-9]+)?|[가-힣]+|[\u3400-\u4DBF\u4E00-\u9FFF]+/g);
+    return tokens?.length ?? 0;
+};
+
+const countEpubSpineWords = async (zip, parsedPackage) => {
+    let total = 0;
+
+    for (const spineItem of parsedPackage.spine || []) {
+        if (spineItemSkipReason(spineItem) || spineItemAutoSkipReason(spineItem)) {
+            continue;
+        }
+
+        const chapterFile = findZipFile(zip, spineItem.path);
+        if (!chapterFile) {
+            continue;
+        }
+
+        const chapterXml = await chapterFile.async('string');
+        total += countReadableTextWords(extractBodyText(chapterXml));
+    }
+
+    return total > 0 ? total : null;
+};
+
 const blockTags = new Set([
     'body',
     'section',
@@ -2869,6 +2899,7 @@ const parseOpfMetadata = async (zip, packagePath, fallbackName, sourceUri = '') 
             author: 'Unknown author',
             cover: null,
             language: null,
+            wordCount: null,
         };
     }
 
@@ -2883,6 +2914,10 @@ const parseOpfMetadata = async (zip, packagePath, fallbackName, sourceUri = '') 
     const author = parsedPackage.metadata.author;
     const packageDir = parsedPackage.packageDir;
     const manifestItems = parsedPackage.manifest;
+    const wordCount = await countEpubSpineWords(zip, parsedPackage).catch((error) => {
+        console.warn('[epubMetadata] Failed to count EPUB words:', error);
+        return null;
+    });
 
     const isImageItem = (item) => (
         String(item?.mediaType || '').toLowerCase().startsWith('image/') ||
@@ -2996,7 +3031,7 @@ const parseOpfMetadata = async (zip, packagePath, fallbackName, sourceUri = '') 
         }
 
         if (!isImageItem({ path: coverPath, mediaType: coverType })) {
-            return { title, author, cover: null, language: parsedPackage.metadata.language };
+            return { title, author, cover: null, language: parsedPackage.metadata.language, wordCount };
         }
 
         const coverFile = findZipFile(zip, coverPath);
@@ -3017,7 +3052,7 @@ const parseOpfMetadata = async (zip, packagePath, fallbackName, sourceUri = '') 
         }
     }
 
-    return { title, author, cover, language: parsedPackage.metadata.language };
+    return { title, author, cover, language: parsedPackage.metadata.language, wordCount };
 };
 
 export const readEpubMetadata = async (uri, fallbackName = '') => {
@@ -3031,6 +3066,7 @@ export const readEpubMetadata = async (uri, fallbackName = '') => {
                 author: 'Unknown author',
                 cover: null,
                 language: null,
+                wordCount: null,
             };
         }
 
@@ -3043,6 +3079,7 @@ export const readEpubMetadata = async (uri, fallbackName = '') => {
                 author: 'Unknown author',
                 cover: null,
                 language: null,
+                wordCount: null,
             };
         }
 
@@ -3054,6 +3091,7 @@ export const readEpubMetadata = async (uri, fallbackName = '') => {
             author: 'Unknown author',
             cover: null,
             language: null,
+            wordCount: null,
         };
     }
 };

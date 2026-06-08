@@ -134,6 +134,11 @@ class ScreenOcrOverlayModule : Module() {
       promise.resolve(mapOf("handled" to handled))
     }
 
+    AsyncFunction("updateOverlayLookup") { requestId: String, result: Map<String, Any?>, promise: Promise ->
+      val handled = ScreenOcrOverlayService.getActiveInstance()?.updateOverlayLookup(requestId, result) == true
+      promise.resolve(mapOf("handled" to handled))
+    }
+
     AsyncFunction("rejectOverlayLookup") { requestId: String, message: String, promise: Promise ->
       val handled = ScreenOcrOverlayService.getActiveInstance()?.rejectOverlayLookup(requestId, message) == true
       promise.resolve(mapOf("handled" to handled))

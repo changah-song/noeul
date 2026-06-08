@@ -16,6 +16,7 @@ const NativeEpubReaderView = ({
     fontSize = 18,
     lineHeight = 1.5,
     theme = 'light',
+    renderMode = 'paged',
     highlightTerms = [],
     clearSelectionToken = 0,
     onPageChange,
@@ -75,6 +76,7 @@ const NativeEpubReaderView = ({
             fontSize={fontSize}
             lineHeight={lineHeight}
             theme={theme}
+            renderMode={renderMode}
             highlightTerms={highlightTerms || []}
             clearSelectionToken={clearSelectionToken}
             onPageChange={handlePageChange}

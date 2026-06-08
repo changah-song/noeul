@@ -57,11 +57,19 @@ const uniqueValues = (values) => [...new Set(
         .filter(Boolean)
 )];
 
-const cacheEntryToLookupResult = async ({ entry, surface, sourceSentence, ownerId }) => {
+const cacheEntryToLookupResult = async ({
+    entry,
+    surface,
+    sourceSentence,
+    ownerId,
+    includeEnrichment = true,
+    wordOptions = [],
+}) => {
     const primary = cacheEntryToDefinitionEntry(entry, surface);
-    const liveEntries = await fetchLiveEntriesForStem(primary.word);
-    const alternatives = normalizeLiveAlternatives(liveEntries.slice(1), primary)
-        .slice(0, MAX_ALTERNATIVES);
+    const liveEntries = includeEnrichment ? await fetchLiveEntriesForStem(primary.word) : [];
+    const alternatives = includeEnrichment
+        ? normalizeLiveAlternatives(liveEntries.slice(1), primary).slice(0, MAX_ALTERNATIVES)
+        : [];
 
     return buildLookupResult({
         surface,
@@ -69,6 +77,8 @@ const cacheEntryToLookupResult = async ({ entry, surface, sourceSentence, ownerI
         primary,
         alternatives,
         ownerId,
+        includeRomanization: includeEnrichment,
+        wordOptions,
     });
 };
 
@@ -169,17 +179,18 @@ const fetchRomanization = async (term) => {
     }
 };
 
-const hydrateDefinitionEntry = async (entry, ownerId) => {
+const hydrateDefinitionEntry = async (entry, ownerId, options = {}) => {
     const word = cleanValue(entry?.word);
     const definition = nullableValue(entry?.definition);
     const hanja = nullableValue(entry?.hanja);
+    const includeRomanization = options.includeRomanization !== false;
 
     return {
         word,
         definition,
         hanja,
         pos: nullableValue(entry?.pos),
-        romanization: nullableValue(entry?.romanization) || await fetchRomanization(word),
+        romanization: nullableValue(entry?.romanization) || (includeRomanization ? await fetchRomanization(word) : null),
         saved: definition ? await vocabEntryExists(word, hanja, definition, 'ko', { ownerId }) : false,
     };
 };
@@ -190,10 +201,14 @@ const buildLookupResult = async ({
     primary,
     alternatives = [],
     ownerId,
+    includeRomanization = true,
+    wordOptions = [],
 }) => {
-    const hydratedPrimary = await hydrateDefinitionEntry(primary, ownerId);
+    const hydratedPrimary = await hydrateDefinitionEntry(primary, ownerId, { includeRomanization });
     const hydratedAlternatives = await Promise.all(
-        alternatives.slice(0, MAX_ALTERNATIVES).map((entry) => hydrateDefinitionEntry(entry, ownerId))
+        alternatives
+            .slice(0, MAX_ALTERNATIVES)
+            .map((entry) => hydrateDefinitionEntry(entry, ownerId, { includeRomanization }))
     );
 
     return {
@@ -206,10 +221,17 @@ const buildLookupResult = async ({
         saved: hydratedPrimary.saved,
         sourceSentence: cleanValue(sourceSentence),
         alternatives: hydratedAlternatives,
+        wordOptions: uniqueValues(wordOptions).length > 0
+            ? uniqueValues(wordOptions)
+            : uniqueValues([hydratedPrimary.word]),
     };
 };
 
-export const lookupWordForOverlay = async ({ surface, sourceSentence = '' }) => {
+export const lookupWordForOverlay = async ({
+    surface,
+    sourceSentence = '',
+    includeEnrichment = true,
+}) => {
     const rawSurface = cleanValue(surface);
     const normalizedSurface = normalizeSurfaceWord(rawSurface) || rawSurface;
     const ownerId = getActiveOwnerId();
@@ -225,6 +247,8 @@ export const lookupWordForOverlay = async ({ surface, sourceSentence = '' }) => 
             surface: rawSurface || normalizedSurface,
             sourceSentence,
             ownerId,
+            includeEnrichment,
+            wordOptions: [directRows[0].stem],
         });
     }
 
@@ -239,6 +263,8 @@ export const lookupWordForOverlay = async ({ surface, sourceSentence = '' }) => 
             surface: rawSurface || normalizedSurface,
             sourceSentence,
             ownerId,
+            includeEnrichment,
+            wordOptions: stems,
         });
     }
 
@@ -256,8 +282,9 @@ export const lookupWordForOverlay = async ({ surface, sourceSentence = '' }) => 
         const primaryStem = stems[firstResultIndex] || cacheEntries[0].stem;
         const liveEntries = liveResults[firstResultIndex] ?? [];
         const primary = liveEntryToDefinitionEntry(liveEntries[0], primaryStem);
-        const alternatives = normalizeLiveAlternatives(liveEntries.slice(1), primary)
-            .slice(0, MAX_ALTERNATIVES);
+        const alternatives = includeEnrichment
+            ? normalizeLiveAlternatives(liveEntries.slice(1), primary).slice(0, MAX_ALTERNATIVES)
+            : [];
 
         return buildLookupResult({
             surface: rawSurface || normalizedSurface,
@@ -265,6 +292,8 @@ export const lookupWordForOverlay = async ({ surface, sourceSentence = '' }) => 
             primary,
             alternatives,
             ownerId,
+            includeRomanization: includeEnrichment,
+            wordOptions: stems,
         });
     }
 
@@ -278,6 +307,7 @@ export const lookupWordForOverlay = async ({ surface, sourceSentence = '' }) => 
         saved: false,
         sourceSentence: cleanValue(sourceSentence),
         alternatives: [],
+        wordOptions: stems,
     };
 };
 

@@ -7,9 +7,12 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.MotionEvent
+import android.view.View
 import android.view.View.MeasureSpec
 import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.widget.FrameLayout
+import android.widget.ScrollView
 import androidx.recyclerview.widget.RecyclerView
 import androidx.viewpager2.widget.ViewPager2
 import expo.modules.kotlin.AppContext
@@ -64,6 +67,10 @@ class NativeEpubReaderModule : Module() {
         view.setReaderTheme(theme)
       }
 
+      Prop("renderMode") { view: NativeEpubReaderView, mode: String ->
+        view.setReaderRenderMode(mode)
+      }
+
       Prop("highlightTerms") { view: NativeEpubReaderView, terms: List<Any?> ->
         view.setHighlightTerms(terms)
       }
@@ -111,6 +118,44 @@ private data class PaginationResult(
   val chapterCount: Int
 )
 
+private class ContinuousReaderScrollView(context: Context) : ScrollView(context) {
+  private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+  private var startX = 0f
+  private var startY = 0f
+  var onVerticalDragIntercepted: (() -> Unit)? = null
+  private var reportedVerticalDrag = false
+
+  init {
+    isFillViewport = true
+    overScrollMode = OVER_SCROLL_IF_CONTENT_SCROLLS
+  }
+
+  override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
+    when (event.actionMasked) {
+      MotionEvent.ACTION_DOWN -> {
+        startX = event.x
+        startY = event.y
+        reportedVerticalDrag = false
+        super.onInterceptTouchEvent(event)
+        return false
+      }
+      MotionEvent.ACTION_MOVE -> {
+        val dx = abs(event.x - startX)
+        val dy = abs(event.y - startY)
+        if (dy > touchSlop && dy > dx) {
+          if (!reportedVerticalDrag) {
+            reportedVerticalDrag = true
+            onVerticalDragIntercepted?.invoke()
+          }
+          return true
+        }
+      }
+    }
+
+    return super.onInterceptTouchEvent(event)
+  }
+}
+
 class NativeEpubReaderView(
   context: Context,
   appContext: AppContext
@@ -123,6 +168,8 @@ class NativeEpubReaderView(
   private val onTextSelected by EventDispatcher()
   private val onSelectionCleared by EventDispatcher()
   private val viewPager = ViewPager2(context)
+  private val continuousScrollView = ContinuousReaderScrollView(context)
+  private val continuousPageView = EpubPageView(context)
   private val mainHandler = Handler(Looper.getMainLooper())
   private val paginationExecutor = Executors.newSingleThreadExecutor { runnable ->
     Thread(runnable, "NativeEpubPaginator").apply {
@@ -149,13 +196,15 @@ class NativeEpubReaderView(
   private var readerFontSizeSp = 18f
   private var readerLineHeightMultiplier = 1.5f
   private var readerTheme = "light"
+  private var readerRenderMode = "paged"
+  private var continuousPageIndex = 0
   private var highlightTerms: List<String> = emptyList()
   private var savedHighlightRangesByPage: Map<Int, List<TextRange>> = emptyMap()
   private var activeSelectionRanges: List<TextRange> = emptyList()
   private var activeSelectionKind: ActiveSelectionKind? = null
   private var lastClearSelectionToken: Int? = null
   private var activeHighlightColor = Color.argb(0x55, 0xfc, 0xd5, 0xb4)
-  private var textSelectionHighlightColor = Color.rgb(0xe3, 0xe7, 0xee)
+  private var textSelectionHighlightColor = Color.argb(0x66, 0x7a, 0xb3, 0xff)
   private var savedHighlightColor = Color.rgb(0xf7, 0xd4, 0x88)
   private var userDraggedPager = false
   private var previousPageIndex = 0
@@ -216,6 +265,20 @@ class NativeEpubReaderView(
       false
     }
 
+    continuousScrollView.visibility = View.GONE
+    continuousScrollView.isFillViewport = true
+    continuousScrollView.setBackgroundColor(readerBackgroundColor())
+    continuousScrollView.onVerticalDragIntercepted = {
+      clearActiveSelection(dispatchEvent = true, forceEvent = true)
+    }
+    continuousScrollView.addView(
+      continuousPageView,
+      FrameLayout.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.MATCH_PARENT
+      )
+    )
+
     addView(
       viewPager,
       ViewGroup.LayoutParams(
@@ -223,6 +286,14 @@ class NativeEpubReaderView(
         ViewGroup.LayoutParams.MATCH_PARENT
       )
     )
+    addView(
+      continuousScrollView,
+      ViewGroup.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.MATCH_PARENT
+      )
+    )
+    updateRenderModeVisibility()
   }
 
   override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
@@ -253,6 +324,9 @@ class NativeEpubReaderView(
   }
 
   fun setBookManifest(manifest: Map<String, Any?>) {
+    manifest.stringValue("renderMode")?.let { mode ->
+      setReaderRenderMode(mode)
+    }
     manifest.stringValue("chapterTransitionDirection")?.let { direction ->
       setChapterTransitionDirection(direction)
     }
@@ -385,6 +459,22 @@ class NativeEpubReaderView(
     repaginate(resetToFirstPage = false)
   }
 
+  fun setReaderRenderMode(mode: String) {
+    val nextMode = when (mode.lowercase()) {
+      "continuous", "vertical", "scroll", "scrolling" -> "continuous"
+      else -> "paged"
+    }
+    if (readerRenderMode == nextMode) {
+      return
+    }
+
+    readerRenderMode = nextMode
+    updateRenderModeVisibility()
+    chapterTransitionDirection = "none"
+    clearActiveSelection(dispatchEvent = false)
+    repaginate(resetToFirstPage = pageAdapter == null)
+  }
+
   fun setHighlightTerms(terms: List<Any?>) {
     val nextTerms = normalizeHighlightTerms(terms)
     if (highlightTerms == nextTerms) {
@@ -427,6 +517,7 @@ class NativeEpubReaderView(
     val previousLogicalPage = logicalPageForDisplayPosition(viewPager.currentItem)
     val transitionDirection = chapterTransitionDirection
     val backgroundColor = readerBackgroundColor()
+    val renderModeSnapshot = readerRenderMode
     chapterTransitionDirection = "none"
 
     paginationTask = paginationExecutor.submit {
@@ -442,7 +533,11 @@ class NativeEpubReaderView(
           isDark = isDarkSnapshot,
           context = appContext
         )
-        paginateChapterWindow(paginator, windowSnapshot)
+        if (renderModeSnapshot == "continuous") {
+          buildContinuousChapterWindow(paginator, windowSnapshot)
+        } else {
+          paginateChapterWindow(paginator, windowSnapshot)
+        }
       } catch (_: CancellationException) {
         return@submit
       }
@@ -503,6 +598,46 @@ class NativeEpubReaderView(
           path = chapter.path,
           startIndex = startIndex,
           pageCount = pageCount
+        )
+      )
+    }
+
+    return PaginationResult(
+      pages = nextPages.ifEmpty { listOf(ReaderPage(0, emptyList())) },
+      ranges = ranges,
+      chapterCount = chapters.size
+    )
+  }
+
+  private fun buildContinuousChapterWindow(
+    paginator: EpubPaginator,
+    chapters: List<ChapterWindowItem>
+  ): PaginationResult {
+    val nextPages = mutableListOf<ReaderPage>()
+    val ranges = mutableListOf<ChapterPageRange>()
+
+    chapters.forEach { chapter ->
+      val continuousPage = paginator.buildContinuousPage(chapter.blocks)
+      val startIndex = nextPages.size
+
+      nextPages.add(
+        continuousPage.copy(
+          pageIndex = startIndex,
+          spineIndex = chapter.spineIndex,
+          href = chapter.href,
+          path = chapter.path,
+          chapterPageIndex = 0,
+          chapterPageCount = 1
+        )
+      )
+
+      ranges.add(
+        ChapterPageRange(
+          spineIndex = chapter.spineIndex,
+          href = chapter.href,
+          path = chapter.path,
+          startIndex = startIndex,
+          pageCount = 1
         )
       )
     }
@@ -628,6 +763,18 @@ class NativeEpubReaderView(
     }
     val didDropActiveSelection = previousActiveSelectionRanges.isNotEmpty() && activeSelectionRanges.isEmpty()
     savedHighlightRangesByPage = buildSavedHighlightRanges(nextPages, highlightTerms)
+
+    if (readerRenderMode == "continuous") {
+      pages = nextPages
+      pagePositionOffset = 0
+      continuousPageIndex = targetPage.coerceIn(0, pages.lastIndex.coerceAtLeast(0))
+      bindContinuousPage(continuousPageIndex, backgroundColor, resetScroll = resetToFirstPage)
+      dispatchPageChange(continuousPageIndex, pages.size)
+      if (didDropActiveSelection) {
+        onSelectionCleared(mapOf<String, Any>())
+      }
+      return
+    }
 
     val adapter = pageAdapter
     if (adapter == null) {
@@ -774,6 +921,60 @@ class NativeEpubReaderView(
     }
   }
 
+  private fun bindContinuousPage(position: Int, backgroundColor: Int, resetScroll: Boolean) {
+    val page = pages.getOrNull(position) ?: ReaderPage(0, emptyList())
+    continuousPageIndex = position
+    val contentHeight = continuousContentHeightForPage(page).coerceAtLeast(layoutHeight)
+    continuousPageView.layoutParams = FrameLayout.LayoutParams(
+      ViewGroup.LayoutParams.MATCH_PARENT,
+      contentHeight
+    )
+    continuousPageView.minimumHeight = contentHeight
+    Log.d(
+      TAG,
+      "continuous render: page=$position blocks=${page.blocks.size} " +
+        "contentHeight=$contentHeight viewportHeight=$layoutHeight"
+    )
+    continuousPageView.bind(
+      page = page,
+      paddingH = pagePaddingH,
+      paddingV = pagePaddingV,
+      lineHeightMult = readerLineHeightMultiplier,
+      backgroundColor = backgroundColor,
+      activeSelectionRanges = activeSelectionRanges,
+      activeSelectionKind = activeSelectionKind,
+      savedHighlightRanges = savedHighlightRangesByPage[page.pageIndex].orEmpty(),
+      activeHighlightColor = activeHighlightColor,
+      textSelectionHighlightColor = textSelectionHighlightColor,
+      savedHighlightColor = savedHighlightColor,
+      onWordSelected = ::handlePageWordSelected,
+      onTextSelected = ::handlePageTextSelected,
+      onSelectionCleared = ::handlePageSelectionCleared,
+      onSelectionDragStateChanged = ::handlePageSelectionDragStateChanged
+    )
+    if (resetScroll) {
+      continuousScrollView.post {
+        continuousScrollView.scrollTo(0, 0)
+      }
+    }
+  }
+
+  private fun continuousContentHeightForPage(page: ReaderPage): Int {
+    var contentHeight = pagePaddingV * 2
+
+    page.blocks.forEach { block ->
+      contentHeight += block.marginTop
+      contentHeight += if (block.type == "image") {
+        block.imageHeight
+      } else {
+        block.textLayout?.height ?: 0
+      }
+      contentHeight += block.marginBottom
+    }
+
+    return contentHeight
+  }
+
   private fun handlePageWordSelected(hit: WordHit) {
     activeSelectionRanges = listOf(hit.range)
     activeSelectionKind = ActiveSelectionKind.WORD
@@ -828,6 +1029,7 @@ class NativeEpubReaderView(
 
   private fun handlePageSelectionDragStateChanged(isDraggingSelection: Boolean) {
     viewPager.isUserInputEnabled = !isDraggingSelection
+    continuousScrollView.requestDisallowInterceptTouchEvent(isDraggingSelection)
   }
 
   private fun clearActiveSelection(dispatchEvent: Boolean, forceEvent: Boolean = false) {
@@ -837,6 +1039,7 @@ class NativeEpubReaderView(
     pageAdapter?.updateActiveSelectionRanges(activeSelectionRanges, activeSelectionKind)
     invalidateVisiblePageHighlights()
     viewPager.isUserInputEnabled = true
+    continuousScrollView.requestDisallowInterceptTouchEvent(false)
 
     if (dispatchEvent && (hadSelection || forceEvent)) {
       onSelectionCleared(mapOf<String, Any>())
@@ -858,6 +1061,17 @@ class NativeEpubReaderView(
 
   private fun invalidateVisiblePageHighlights() {
     pageAdapter?.invalidateVisiblePages(recyclerView(), viewPager.currentItem)
+    if (readerRenderMode == "continuous") {
+      val page = pages.getOrNull(continuousPageIndex) ?: return
+      continuousPageView.updateHighlights(
+        activeSelectionRanges = activeSelectionRanges,
+        activeSelectionKind = activeSelectionKind,
+        savedHighlightRanges = savedHighlightRangesByPage[page.pageIndex].orEmpty(),
+        activeHighlightColor = activeHighlightColor,
+        textSelectionHighlightColor = textSelectionHighlightColor,
+        savedHighlightColor = savedHighlightColor
+      )
+    }
   }
 
   private fun recyclerView(): RecyclerView? {
@@ -1106,7 +1320,7 @@ class NativeEpubReaderView(
 
   private fun updateHighlightColorsForTheme() {
     activeHighlightColor = Color.argb(0x55, 0xfc, 0xd5, 0xb4)
-    textSelectionHighlightColor = Color.rgb(0xe3, 0xe7, 0xee)
+    textSelectionHighlightColor = Color.argb(0x66, 0x7a, 0xb3, 0xff)
     savedHighlightColor = Color.rgb(0xf7, 0xd4, 0x88)
 
     pageAdapter?.updateHighlightColors(activeHighlightColor, textSelectionHighlightColor, savedHighlightColor)
@@ -1356,6 +1570,13 @@ class NativeEpubReaderView(
     val backgroundColor = readerBackgroundColor()
     setBackgroundColor(backgroundColor)
     viewPager.setBackgroundColor(backgroundColor)
+    continuousScrollView.setBackgroundColor(backgroundColor)
+  }
+
+  private fun updateRenderModeVisibility() {
+    val isContinuous = readerRenderMode == "continuous"
+    viewPager.visibility = if (isContinuous) View.GONE else View.VISIBLE
+    continuousScrollView.visibility = if (isContinuous) View.VISIBLE else View.GONE
   }
 
   private fun readerBackgroundColor(): Int {

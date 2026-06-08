@@ -12,6 +12,7 @@ create table if not exists public.user_books (
   cover_path text,
 
   size_bytes bigint,
+  word_count bigint,
   language text,
 
   progress real default 0,
@@ -33,6 +34,7 @@ add column if not exists file_path text,
 add column if not exists file_url text,
 add column if not exists cover_path text,
 add column if not exists size_bytes bigint,
+add column if not exists word_count bigint,
 add column if not exists language text,
 add column if not exists progress real default 0,
 add column if not exists location text,

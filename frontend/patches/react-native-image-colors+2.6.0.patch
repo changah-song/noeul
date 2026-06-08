@@ -1,0 +1,30 @@
+diff --git a/node_modules/react-native-image-colors/android/build.gradle b/node_modules/react-native-image-colors/android/build.gradle
+index 25d0f74..eee0ef7 100644
+--- a/node_modules/react-native-image-colors/android/build.gradle
++++ b/node_modules/react-native-image-colors/android/build.gradle
+@@ -6,12 +6,6 @@ group = 'com.reactnativeimagecolors'
+ version = '2.0.0'
+ 
+ buildscript {
+-  def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
+-  if (expoModulesCorePlugin.exists()) {
+-    apply from: expoModulesCorePlugin
+-    applyKotlinExpoModulesCorePlugin()
+-  }
+-
+   // Simple helper that allows the root project to override versions declared by this library.
+   ext.safeExtGet = { prop, fallback ->
+     rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
+@@ -35,6 +29,12 @@ buildscript {
+   }
+ }
+ 
++def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
++if (expoModulesCorePlugin.exists()) {
++  apply from: expoModulesCorePlugin
++  applyKotlinExpoModulesCorePlugin()
++}
++
+ afterEvaluate {
+   publishing {
+     publications {

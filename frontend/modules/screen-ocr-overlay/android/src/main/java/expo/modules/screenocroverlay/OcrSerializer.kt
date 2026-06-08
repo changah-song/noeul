@@ -2,6 +2,7 @@ package expo.modules.screenocroverlay
 
 import android.graphics.Rect
 import com.google.mlkit.vision.text.Text
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 data class OcrTapTarget(
@@ -68,13 +69,15 @@ data class OverlayLookupResult(
   val surface: String,
   val stem: String,
   val definition: String?,
+  val translation: String?,
   val hanja: String?,
   val pos: String?,
   val romanization: String?,
   val saved: Boolean,
   val sourceSentence: String,
   val alternatives: List<OverlayDefinitionEntry>,
-  val hanjaPreloads: List<OverlayHanjaPreload>
+  val hanjaPreloads: List<OverlayHanjaPreload>,
+  val wordOptions: List<String>
 )
 
 data class OverlayDefinitionEntry(
@@ -196,8 +199,19 @@ object OcrSerializer {
         )
       )
 
-      val elementTargets = createElementWordTargets(lineText, lineBox, line.elements)
-      targets.addAll(elementTargets.ifEmpty { createSyntheticWordTargets(lineText, lineBox) })
+      val wordTargets = createElementWordTargets(lineText, lineBox, line.elements)
+        .ifEmpty { createSyntheticWordTargets(lineText, lineBox) }
+      wordTargets.forEach { target ->
+        debugBoxes.add(
+          OcrDebugBox(
+            text = target.text,
+            box = Rect(target.box),
+            kind = target.kind,
+            accepted = true
+          )
+        )
+      }
+      targets.addAll(wordTargets)
     }
 
     return mapOf(
@@ -303,6 +317,16 @@ private data class LineToken(
   val end: Int
 )
 
+private data class WordPart(
+  val text: String,
+  val box: Rect
+)
+
+private data class WordGroup(
+  val text: String,
+  val box: Rect
+)
+
 private fun createElementWordTargets(
   lineText: String,
   lineBox: Rect,
@@ -312,57 +336,244 @@ private fun createElementWordTargets(
     return emptyList()
   }
 
-  val targets = elements
-    .mapNotNull { element ->
-      val elementText = element.text.trimLookupToken()
-      val elementBox = element.boundingBox ?: return@mapNotNull null
+  val parts = elements
+    .flatMap { element -> createElementWordParts(element, lineBox) }
+    .sortedWith(compareBy<WordPart> { it.box.left }.thenBy { it.box.centerY() })
 
-      if (elementText.isEmpty() || elementBox.width() <= 0 || elementBox.height() <= 0) {
-        return@mapNotNull null
-      }
-      if (!lineBox.contains(elementBox.centerX(), elementBox.centerY())) {
-        return@mapNotNull null
-      }
-
-      OcrTapTarget(
-        text = elementText,
-        lineText = lineText,
-        box = Rect(elementBox),
-        kind = "word"
-      )
-    }
-    .sortedBy { it.box.left }
-
-  if (targets.isEmpty()) {
-    return emptyList()
-  }
-  if (targets.size == 1 && splitLookupTokensWithOffsets(lineText).size > 1) {
+  if (parts.isEmpty()) {
     return emptyList()
   }
 
-  val mergedText = targets.joinToString(separator = "") { it.text }.filter(Char::isLetterOrDigit)
-  val lineContent = lineText.filter(Char::isLetterOrDigit)
-  if (targets.size > 2 && targets.all { it.text.length == 1 } && lineContent.length > 3) {
+  val tokenTargets = createLineTokenTargetsFromElementParts(lineText, lineBox, parts)
+  if (tokenTargets.isNotEmpty()) {
+    return tokenTargets
+  }
+
+  val groups = createGeometryWordGroups(parts, lineBox)
+  if (groups.isEmpty()) {
     return emptyList()
   }
 
-  val likelyCoversLine = mergedText.isNotEmpty() &&
-    lineContent.isNotEmpty() &&
-    (mergedText == lineContent || lineContent.contains(mergedText) || mergedText.contains(lineContent))
-
-  if (!likelyCoversLine) {
-    return emptyList()
-  }
-
-  val reconstructedLineText = if (targets.size > 1) {
-    targets.joinToString(separator = " ") { it.text }
+  val reconstructedLineText = if (groups.size > 1) {
+    groups.joinToString(separator = " ") { it.text }
   } else {
     lineText
   }
 
-  return targets.map { target ->
-    target.copy(lineText = reconstructedLineText)
+  return groups.map { group ->
+    OcrTapTarget(
+      text = group.text,
+      lineText = reconstructedLineText,
+      box = Rect(group.box),
+      kind = "word"
+    )
   }
+}
+
+private fun createElementWordParts(element: Text.Element, lineBox: Rect): List<WordPart> {
+  val elementBox = element.boundingBox ?: return emptyList()
+  val rawText = element.text.trim()
+
+  if (rawText.isEmpty() || elementBox.width() <= 0 || elementBox.height() <= 0) {
+    return emptyList()
+  }
+  if (!isBoxNearLine(elementBox, lineBox)) {
+    return emptyList()
+  }
+
+  val matches = Regex("\\S+").findAll(rawText).toList()
+  if (matches.size <= 1) {
+    val elementText = rawText.trimLookupToken()
+    return if (elementText.isEmpty()) {
+      emptyList()
+    } else {
+      listOf(WordPart(text = elementText, box = Rect(elementBox)))
+    }
+  }
+
+  val measurableLength = rawText.length.coerceAtLeast(1)
+  return matches.mapNotNull { match ->
+    val text = match.value.trimLookupToken()
+    if (text.isEmpty()) {
+      return@mapNotNull null
+    }
+
+    val left = elementBox.left + (elementBox.width() * (match.range.first.toFloat() / measurableLength)).roundToInt()
+    val right = elementBox.left + (elementBox.width() * ((match.range.last + 1).toFloat() / measurableLength)).roundToInt()
+    WordPart(
+      text = text,
+      box = Rect(
+        left.coerceIn(elementBox.left, elementBox.right - 1),
+        elementBox.top,
+        right.coerceIn(left + 1, elementBox.right),
+        elementBox.bottom
+      )
+    )
+  }
+}
+
+private fun createLineTokenTargetsFromElementParts(
+  lineText: String,
+  lineBox: Rect,
+  parts: List<WordPart>
+): List<OcrTapTarget> {
+  val tokens = splitLookupTokensWithOffsets(lineText)
+  if (tokens.size <= 1) {
+    return emptyList()
+  }
+  if (parts.size == 1) {
+    return createSyntheticWordTargets(lineText, lineBox)
+  }
+
+  val lineContent = lookupContent(lineText)
+  val partsContent = lookupContent(parts.joinToString(separator = "") { it.text })
+  if (!textsLikelyMatch(partsContent, lineContent)) {
+    return emptyList()
+  }
+
+  val groups = mutableListOf<WordGroup>()
+  var partIndex = 0
+  tokens.forEachIndexed { tokenIndex, token ->
+    val targetLength = lookupContentLength(token.text).coerceAtLeast(1)
+    val startPartIndex = partIndex
+    var consumedLength = 0
+
+    while (
+      partIndex < parts.size &&
+      (consumedLength < targetLength || startPartIndex == partIndex || tokenIndex == tokens.lastIndex)
+    ) {
+      consumedLength += lookupContentLength(parts[partIndex].text).coerceAtLeast(1)
+      partIndex += 1
+    }
+
+    if (startPartIndex < partIndex) {
+      val groupParts = parts.subList(startPartIndex, partIndex)
+      groups.add(
+        WordGroup(
+          text = token.text,
+          box = mergePartBoxes(groupParts)
+        )
+      )
+    }
+  }
+
+  if (groups.size != tokens.size) {
+    return emptyList()
+  }
+
+  return groups.map { group ->
+    OcrTapTarget(
+      text = group.text,
+      lineText = lineText,
+      box = Rect(group.box),
+      kind = "word"
+    )
+  }
+}
+
+private fun createGeometryWordGroups(parts: List<WordPart>, lineBox: Rect): List<WordGroup> {
+  if (parts.isEmpty()) {
+    return emptyList()
+  }
+  if (parts.size == 1) {
+    return listOf(WordGroup(text = parts.first().text, box = Rect(parts.first().box)))
+  }
+  if (parts.all { lookupContentLength(it.text) > 1 }) {
+    return parts.map { part ->
+      WordGroup(text = part.text, box = Rect(part.box))
+    }
+  }
+
+  val gapThreshold = wordGapThreshold(parts, lineBox)
+  val groupedParts = mutableListOf<MutableList<WordPart>>()
+  var currentGroup = mutableListOf(parts.first())
+
+  parts.drop(1).forEach { part ->
+    val previous = currentGroup.last()
+    val gap = part.box.left - previous.box.right
+    if (gap >= gapThreshold) {
+      groupedParts.add(currentGroup)
+      currentGroup = mutableListOf(part)
+    } else {
+      currentGroup.add(part)
+    }
+  }
+  groupedParts.add(currentGroup)
+
+  return groupedParts.mapNotNull { groupParts ->
+    val text = groupParts.joinToString(separator = "") { it.text }.trimLookupToken()
+    if (text.isEmpty()) {
+      return@mapNotNull null
+    }
+
+    WordGroup(
+      text = text,
+      box = mergePartBoxes(groupParts)
+    )
+  }
+}
+
+private fun wordGapThreshold(parts: List<WordPart>, lineBox: Rect): Float {
+  val totalChars = parts.sumOf { lookupContentLength(it.text).coerceAtLeast(1) }.coerceAtLeast(1)
+  val averageCharWidth = parts.sumOf { it.box.width() }.toFloat() / totalChars
+  val baseThreshold = maxOf(3f, minOf(lineBox.height() * 0.22f, averageCharWidth * 0.45f))
+  val positiveGaps = parts.zipWithNext()
+    .map { (previous, next) -> (next.box.left - previous.box.right).toFloat() }
+    .filter { it > 0f }
+    .sorted()
+
+  if (positiveGaps.size >= 3) {
+    val medianGap = positiveGaps[positiveGaps.size / 2]
+    val largestGap = positiveGaps.last()
+    if (largestGap > medianGap * 2f + 2f) {
+      return maxOf(3f, minOf(baseThreshold, medianGap * 1.6f + 1.5f))
+    }
+  }
+
+  return baseThreshold
+}
+
+private fun isBoxNearLine(box: Rect, lineBox: Rect): Boolean {
+  val xPadding = maxOf(4, lineBox.height() / 2)
+  val yPadding = maxOf(4, lineBox.height() / 2)
+  val centerX = box.centerX()
+  val centerY = box.centerY()
+
+  return centerX >= lineBox.left - xPadding &&
+    centerX <= lineBox.right + xPadding &&
+    centerY >= lineBox.top - yPadding &&
+    centerY <= lineBox.bottom + yPadding
+}
+
+private fun mergePartBoxes(parts: List<WordPart>): Rect =
+  Rect(
+    parts.minOf { it.box.left },
+    parts.minOf { it.box.top },
+    parts.maxOf { it.box.right },
+    parts.maxOf { it.box.bottom }
+  )
+
+private fun lookupContent(text: String): String =
+  text.filter(Char::isLetterOrDigit)
+
+private fun lookupContentLength(text: String): Int =
+  lookupContent(text).length
+
+private fun textsLikelyMatch(first: String, second: String): Boolean {
+  if (first.isEmpty() || second.isEmpty()) {
+    return false
+  }
+  if (first == second || first.contains(second) || second.contains(first)) {
+    return true
+  }
+
+  val shorterLength = minOf(first.length, second.length)
+  if (shorterLength == 0 || abs(first.length - second.length) > 2) {
+    return false
+  }
+
+  val matchingCharacters = first.zip(second).count { (left, right) -> left == right }
+  return matchingCharacters.toFloat() / shorterLength >= 0.72f
 }
 
 private fun createSyntheticWordTargets(lineText: String, lineBox: Rect): List<OcrTapTarget> {

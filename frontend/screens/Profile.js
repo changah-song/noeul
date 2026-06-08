@@ -1,40 +1,459 @@
-import React, { useMemo, useState } from 'react';
-import { Alert, Image, Linking, Modal, Pressable, StyleSheet, Text, TextInput, TouchableOpacity, TouchableWithoutFeedback, View } from 'react-native';
-import { Feather } from '@expo/vector-icons';
-import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system';
-import Auth from './Auth';
-import { Card, IconButton, Screen, SectionHeader } from '../components/ui';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
-    bumpSyncGeneration,
-    pauseCloudSync,
-    resumeCloudSync,
-} from '../services/localOwnerCoordinator';
-import { deleteCurrentUserProfile } from '../services/accountDeletion';
-import { makeOwnerDataDirectory } from '../services/localDataScope';
-import { clearLocalUserData } from '../services/localUserData';
-import { colors, radii, spacing, textStyles } from '../theme';
+    Alert,
+    Modal,
+    Pressable,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    TouchableWithoutFeedback,
+    useWindowDimensions,
+    View,
+} from 'react-native';
+import { Feather } from '@expo/vector-icons';
+import Auth from './Auth';
+import { Screen } from '../components/ui';
+import { colors, fontFamilies, radii, spacing, textStyles } from '../theme';
+import {
+    darkenHex,
+    getGeneratedBookCoverPalette,
+    getStoredBookCoverColors,
+    lightenHex,
+} from '../services/bookCoverColors';
 
-const FEEDBACK_EMAIL = 'casong00@gmail.com';
+const WORDS_PER_PAGE = 250;
+const SHELF_WIDTH = 346;
+const SHELF_GAP = 2;
+const MIN_EMPTY_SLOT_WIDTH = 52;
+const SHELF_ROW_HEIGHT = 140;
+const SHELF_BASE_HEIGHT = 4;
+const DEFAULT_SPINE_WIDTH = 24;
+const BOOKSHELF_HORIZONTAL_PADDING = 22;
+const SPINE_MIN_HEIGHT = 96;
+const SPINE_MAX_HEIGHT = SHELF_ROW_HEIGHT;
+const DEFAULT_SPINE_HEIGHT = Math.round((SPINE_MIN_HEIGHT + SPINE_MAX_HEIGHT) / 2);
+const SPINE_TITLE_VERTICAL_INSET_EXTRA = 8;
+const TOOLTIP_WIDTH = 150;
+const TOOLTIP_EDGE_PADDING = 6;
+const TOOLTIP_TAIL_SIZE = 7;
+const SPINE_TITLE_MIN_WIDTH = 30;
+const SPINE_PAGE_BUCKETS = [
+    { minPages: 0, maxPages: 24, width: 12 },
+    { minPages: 24, maxPages: 48, width: 17 },
+    { minPages: 48, maxPages: 80, width: 23 },
+    { minPages: 80, maxPages: 160, width: 29 },
+    { minPages: 160, maxPages: 280, width: 35 },
+    { minPages: 280, maxPages: 420, width: 41 },
+    { minPages: 420, maxPages: 640, width: 47 },
+];
 
-const Profile = ({ user, signOut, updateUsername, updateProfile }) => {
+const PROFILE_COLORS = {
+    bg: '#ece4d6',
+    surface: '#faf6ee',
+    ink: '#2c2620',
+    sub: '#766a59',
+    faint: '#a89b86',
+    border: '#e4dac6',
+    shelf: '#d8c6a6',
+    accent: '#b8552e',
+    danger: '#c0492f',
+    tooltip: '#2c2620',
+    white: '#ffffff',
+};
+
+const preferenceRows = [
+    { label: 'Default language', value: 'English' },
+    { label: 'Notifications', value: 'On' },
+    { label: 'Reading level', value: 'Beginner' },
+    { label: 'Appearance', value: 'Light' },
+];
+
+const clampProgress = (value) => {
+    const progress = Number(value);
+    if (!Number.isFinite(progress)) {
+        return 0;
+    }
+    return Math.min(Math.max(progress, 0), 1);
+};
+
+const isBookCompleted = (book) => (
+    book?.completed === false
+        ? false
+        : book?.completed === true || clampProgress(book?.progress) >= 1
+);
+
+const getBookTitle = (book) => (
+    String(book?.title || book?.originalTitle || book?.name || 'Untitled').trim()
+);
+
+const getBookAuthor = (book) => (
+    String(book?.author || book?.originalAuthor || 'Unknown author').trim()
+);
+
+const getBookKey = (book, fallback = '') => (
+    book?.cloudId || book?.uri || book?.id || `${getBookTitle(book)}-${fallback}`
+);
+
+const spinePaletteForBook = (book) => {
+    const generatedPalette = getGeneratedBookCoverPalette(book);
+    const useGeneratedDefaultCover = !!book?.publicDomain && !book?.cover;
+    const storedColors = useGeneratedDefaultCover ? {} : getStoredBookCoverColors(book);
+    const accent = storedColors.coverAccentColor || generatedPalette.accent;
+    const fieldSource = storedColors.coverBackgroundColor || generatedPalette.bg;
+    const panel = darkenHex(accent, 0.46) || darkenHex(generatedPalette.accent, 0.46);
+
+    return {
+        field: panel,
+        panel,
+        rule: useGeneratedDefaultCover
+            ? generatedPalette.soft
+            : lightenHex(fieldSource, 0.78) || generatedPalette.soft,
+        title: useGeneratedDefaultCover
+            ? generatedPalette.soft
+            : lightenHex(fieldSource, 0.82) || generatedPalette.soft,
+    };
+};
+
+const getSpineTitleGlyphs = (title, spine) => {
+    const glyphs = String(title || '').replace(/\s/g, '').split('');
+    const titleInsetY = spine.titleInsetY || spine.panelInsetY + SPINE_TITLE_VERTICAL_INSET_EXTRA;
+    const titleBandHeight = Math.max(0, spine.height - (titleInsetY * 2));
+    const maxGlyphs = Math.max(1, Math.floor(Math.max(0, titleBandHeight - 4) / Math.max(1, spine.titleLineHeight)));
+    return glyphs.slice(0, maxGlyphs);
+};
+
+const firstFiniteNumber = (values) => {
+    for (const value of values) {
+        const number = Number(value);
+        if (Number.isFinite(number) && number > 0) {
+            return number;
+        }
+    }
+    return null;
+};
+
+const getStoredWordCount = (book) => (
+    firstFiniteNumber([
+        book?.wordCount,
+        book?.word_count,
+        book?.totalWords,
+        book?.total_words,
+        book?.estimatedWordCount,
+        book?.estimated_word_count,
+    ])
+);
+
+const estimatePageCount = (book) => {
+    const wordCount = getStoredWordCount(book);
+    return wordCount ? Math.max(1, Math.ceil(Math.round(wordCount) / WORDS_PER_PAGE)) : null;
+};
+
+const getSpinePageBucket = (pages) => {
+    const pageCount = Number(pages);
+    if (!Number.isFinite(pageCount) || pageCount <= 0) {
+        return null;
+    }
+
+    return SPINE_PAGE_BUCKETS.find((bucket) => pageCount <= bucket.maxPages)
+        || SPINE_PAGE_BUCKETS[SPINE_PAGE_BUCKETS.length - 1];
+};
+
+const spineWidthForPages = (pages) => {
+    const bucket = getSpinePageBucket(pages);
+    return bucket ? bucket.width : DEFAULT_SPINE_WIDTH;
+};
+
+const spineHeightForPages = (pages) => {
+    const bucket = getSpinePageBucket(pages);
+    if (!bucket) {
+        return DEFAULT_SPINE_HEIGHT;
+    }
+
+    const pageCount = Math.min(Math.max(Number(pages), bucket.minPages), bucket.maxPages);
+    const bucketRange = Math.max(1, bucket.maxPages - bucket.minPages);
+    const bucketProgress = (pageCount - bucket.minPages) / bucketRange;
+
+    return Math.round(SPINE_MIN_HEIGHT + ((SPINE_MAX_HEIGHT - SPINE_MIN_HEIGHT) * bucketProgress));
+};
+
+const pageLabelForBook = (book) => {
+    const pages = estimatePageCount(book);
+    return pages
+        ? {
+            pages,
+            tooltip: `${pages} ${pages === 1 ? 'page' : 'pages'}`,
+            accessibility: `about ${pages} ${pages === 1 ? 'page' : 'pages'}`,
+        }
+        : {
+            pages: null,
+            tooltip: 'Page number unclear, using default',
+            accessibility: 'page number unclear, using default spine width',
+        };
+};
+
+const spineStyleForBook = (book) => {
+    const pages = estimatePageCount(book);
+    const width = spineWidthForPages(pages);
+    const height = spineHeightForPages(pages);
+    const palette = spinePaletteForBook(book);
+    const panelInsetX = Math.max(2, Math.round(width * (7 / 48)));
+    const panelInsetY = Math.max(5, Math.round(height * 0.07));
+    const ruleInsetX = Math.max(2, Math.round(width * 0.1));
+    const ruleInsetY = Math.max(4, Math.round(height * 0.055));
+    const fontSize = Math.min(14, Math.max(10, width * 0.34));
+    const titleInsetY = panelInsetY + SPINE_TITLE_VERTICAL_INSET_EXTRA;
+
+    return {
+        width,
+        height,
+        fieldColor: palette.field,
+        panelColor: palette.panel,
+        ruleColor: palette.rule,
+        titleColor: palette.title,
+        panelInsetX,
+        panelInsetY,
+        ruleInsetX,
+        ruleInsetY,
+        titleInsetY,
+        fontSize,
+        titleLineHeight: Math.max(12, Math.round(fontSize * 1.18)),
+    };
+};
+
+const tooltipLeftForSpine = ({ x = 0, spine = {} } = {}, shelfWidth = SHELF_WIDTH) => {
+    const spineWidth = spine.width || DEFAULT_SPINE_WIDTH;
+    const centeredLeft = x + (spineWidth / 2) - (TOOLTIP_WIDTH / 2);
+
+    if (centeredLeft < TOOLTIP_EDGE_PADDING) {
+        return 0;
+    }
+
+    if (centeredLeft + TOOLTIP_WIDTH > shelfWidth - TOOLTIP_EDGE_PADDING) {
+        return spineWidth - TOOLTIP_WIDTH;
+    }
+
+    return centeredLeft - x;
+};
+
+const tooltipTailLeftForSpine = ({ tooltipLeft = 0, spine = {} } = {}) => {
+    const spineCenter = (spine.width || DEFAULT_SPINE_WIDTH) / 2;
+    const centeredTailLeft = spineCenter - tooltipLeft - TOOLTIP_TAIL_SIZE;
+    const minLeft = TOOLTIP_TAIL_SIZE;
+    const maxLeft = TOOLTIP_WIDTH - (TOOLTIP_TAIL_SIZE * 3);
+
+    return Math.min(Math.max(centeredTailLeft, minLeft), maxLeft);
+};
+
+const completedTimestamp = (book) => {
+    const candidates = [
+        book?.completedAt,
+        book?.completed_at,
+        book?.updatedAt,
+        book?.cloudSyncedAt,
+        book?.lastOpenedAt,
+        book?.createdAt,
+    ];
+
+    for (const value of candidates) {
+        const time = new Date(value).getTime();
+        if (Number.isFinite(time)) {
+            return time;
+        }
+    }
+
+    return 0;
+};
+
+const chunkBooksIntoShelfRows = (books, shelfWidth = SHELF_WIDTH) => {
+    const rows = [];
+    let currentRow = [];
+    let rowWidth = 0;
+
+    books.forEach((book, index) => {
+        const spine = spineStyleForBook(book);
+        const gapBefore = currentRow.length > 0 ? SHELF_GAP : 0;
+        const x = rowWidth + gapBefore;
+        const nextWidth = x + spine.width;
+        const needsNewRow = (
+            currentRow.length > 0
+            && nextWidth > shelfWidth - MIN_EMPTY_SLOT_WIDTH
+        );
+
+        if (needsNewRow) {
+            rows.push(currentRow);
+            currentRow = [];
+            rowWidth = 0;
+        }
+
+        const nextX = needsNewRow ? 0 : x;
+        currentRow.push({ book, spine, x: nextX });
+        rowWidth = nextX + spine.width;
+    });
+
+    if (currentRow.length > 0) {
+        rows.push(currentRow);
+    }
+
+    while (rows.length < 2) {
+        rows.push([]);
+    }
+
+    return rows;
+};
+
+const BookSpine = ({ item, index, activeBookKey, shelfWidth, onShow }) => {
+    const { book, spine } = item;
+    const bookKey = getBookKey(book, String(index));
+    const title = getBookTitle(book);
+    const author = getBookAuthor(book);
+    const pageLabel = pageLabelForBook(book);
+    const isActive = activeBookKey === bookKey;
+    const tooltipLeft = tooltipLeftForSpine(item, shelfWidth);
+    const tooltipTailLeft = tooltipTailLeftForSpine({ tooltipLeft, spine });
+    const showSpineTitle = spine.width >= SPINE_TITLE_MIN_WIDTH;
+    const spineTitleGlyphs = showSpineTitle ? getSpineTitleGlyphs(title, spine) : [];
+
+    return (
+        <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`${title} by ${author}, ${pageLabel.accessibility}`}
+            onPress={(event) => {
+                event?.stopPropagation?.();
+                onShow(isActive ? null : bookKey);
+            }}
+            style={[
+                styles.bookSpine,
+                {
+                    width: spine.width,
+                    height: spine.height,
+                },
+                isActive && styles.bookSpineActive,
+            ]}
+        >
+            <View
+                pointerEvents="none"
+                style={[
+                    styles.spineFace,
+                    {
+                        backgroundColor: spine.fieldColor,
+                    },
+                ]}
+            >
+                <View
+                    style={[
+                        styles.spinePanel,
+                        {
+                            top: spine.panelInsetY,
+                            bottom: spine.panelInsetY,
+                            left: spine.panelInsetX,
+                            right: spine.panelInsetX,
+                            backgroundColor: spine.panelColor,
+                        },
+                    ]}
+                />
+                <View
+                    style={[
+                        styles.spinePanelRule,
+                        {
+                            top: spine.ruleInsetY,
+                            bottom: spine.ruleInsetY,
+                            left: spine.ruleInsetX,
+                            right: spine.ruleInsetX,
+                            borderColor: spine.ruleColor,
+                        },
+                    ]}
+                />
+                <View style={styles.spineSeam} />
+                {spineTitleGlyphs.length > 0 ? (
+                    <View
+                        style={[
+                            styles.spineTitleBand,
+                            {
+                                top: spine.titleInsetY,
+                                bottom: spine.titleInsetY,
+                            },
+                        ]}
+                    >
+                        {spineTitleGlyphs.map((glyph, glyphIndex) => (
+                            <Text
+                                key={`${bookKey}-spine-glyph-${glyphIndex}`}
+                                style={[
+                                    styles.spineTitleGlyph,
+                                    {
+                                        color: spine.titleColor,
+                                        fontSize: spine.fontSize,
+                                        lineHeight: spine.titleLineHeight,
+                                    },
+                                ]}
+                                numberOfLines={1}
+                            >
+                                {glyph}
+                            </Text>
+                        ))}
+                    </View>
+                ) : null}
+            </View>
+            {isActive ? (
+                <View style={[styles.bookTooltip, { left: tooltipLeft }]}>
+                    <Text style={styles.tooltipTitle} numberOfLines={2}>{title}</Text>
+                    <Text style={styles.tooltipMeta} numberOfLines={1}>{author}</Text>
+                    <Text style={styles.tooltipMeta}>{pageLabel.tooltip}</Text>
+                    <View style={[styles.bookTooltipTail, { left: tooltipTailLeft }]} />
+                </View>
+            ) : null}
+        </Pressable>
+    );
+};
+
+const ShelfRow = ({ row, rowIndex, isLast, activeBookKey, shelfWidth, onShowBook }) => (
+    <View style={[styles.shelfBlock, isLast && styles.shelfBlockLast]}>
+        <View style={styles.shelfBookRow}>
+            {row.map((item, index) => (
+                <BookSpine
+                    key={getBookKey(item.book, `${rowIndex}-${index}`)}
+                    item={item}
+                    index={(rowIndex * 100) + index}
+                    activeBookKey={activeBookKey}
+                    shelfWidth={shelfWidth}
+                    onShow={onShowBook}
+                />
+            ))}
+            <View style={styles.emptyShelfSlot}>
+                <Text style={styles.emptyShelfText}>empty{'\n'}space</Text>
+            </View>
+        </View>
+        <View style={styles.shelfBase} />
+    </View>
+);
+
+const PreferenceRow = ({ label, value, accent = false, isLast = false, onPress }) => (
+    <TouchableOpacity
+        activeOpacity={0.82}
+        onPress={onPress}
+        style={[styles.preferenceRow, isLast && styles.preferenceRowLast]}
+    >
+        <Text style={styles.preferenceLabel}>{label}</Text>
+        <View style={styles.preferenceValueWrap}>
+            <Text style={[styles.preferenceValue, accent && styles.preferenceValueAccent]}>
+                {value}
+            </Text>
+            <Text style={styles.preferenceChevron}>›</Text>
+        </View>
+    </TouchableOpacity>
+);
+
+const Profile = ({ user, signOut, books = [], updateUsername }) => {
+    const [activeBookKey, setActiveBookKey] = useState(null);
+    const [isSigningOut, setIsSigningOut] = useState(false);
+    const [showSignOutModal, setShowSignOutModal] = useState(false);
+    const [showAuthModal, setShowAuthModal] = useState(false);
+    const [authMode, setAuthMode] = useState('signin');
     const [showNameEditor, setShowNameEditor] = useState(false);
     const [draftName, setDraftName] = useState('');
     const [isSavingName, setIsSavingName] = useState(false);
-    const [statsExpanded, setStatsExpanded] = useState(false);
-    const [showFeedbackComposer, setShowFeedbackComposer] = useState(false);
-    const [feedbackMessage, setFeedbackMessage] = useState('');
-    const [isSavingAvatar, setIsSavingAvatar] = useState(false);
-    const [isSigningOut, setIsSigningOut] = useState(false);
-    const [isDeletingProfile, setIsDeletingProfile] = useState(false);
-
-    const joinedDate = user?.created_at
-        ? new Date(user.created_at).toLocaleDateString('en-US', {
-            year: 'numeric',
-            month: 'short',
-            day: 'numeric',
-        })
-        : 'Recently';
+    const { width: viewportWidth } = useWindowDimensions();
+    const isGuest = !user?.id;
 
     const displayName = useMemo(() => {
         const metadataName = user?.user_metadata?.username
@@ -48,336 +467,295 @@ const Profile = ({ user, signOut, updateUsername, updateProfile }) => {
         return 'Reader';
     }, [user?.user_metadata]);
 
-    const avatarUri = useMemo(() => {
-        const avatar = user?.user_metadata?.avatar_uri;
-        const updatedAt = user?.user_metadata?.avatar_updated_at;
-        if (!avatar || !String(avatar).trim()) {
-            return null;
+    const learningSince = useMemo(() => {
+        if (!user?.created_at) {
+            return 'Recently';
         }
-        return updatedAt ? `${String(avatar).trim()}?t=${encodeURIComponent(String(updatedAt))}` : String(avatar).trim();
-    }, [user?.user_metadata]);
 
-    const handleStartEditName = () => {
-        setDraftName(displayName);
+        return new Date(user.created_at).toLocaleDateString('en-US', {
+            month: 'short',
+            year: 'numeric',
+        });
+    }, [user?.created_at]);
+
+    const completedBooks = useMemo(() => (
+        (books || [])
+            .filter(isBookCompleted)
+            .sort((a, b) => completedTimestamp(b) - completedTimestamp(a))
+    ), [books]);
+
+    const shelfWidth = useMemo(() => {
+        const availableWidth = viewportWidth - (BOOKSHELF_HORIZONTAL_PADDING * 2);
+        return Math.max(
+            TOOLTIP_WIDTH + (TOOLTIP_EDGE_PADDING * 2),
+            Math.min(SHELF_WIDTH, availableWidth)
+        );
+    }, [viewportWidth]);
+
+    const shelfRows = useMemo(() => (
+        chunkBooksIntoShelfRows(completedBooks, shelfWidth)
+    ), [completedBooks, shelfWidth]);
+
+    useEffect(() => {
+        if (user?.id) {
+            setShowAuthModal(false);
+        }
+    }, [user?.id]);
+
+    const performSignOut = async () => {
+        if (isSigningOut) {
+            return;
+        }
+
+        setIsSigningOut(true);
+        try {
+            await signOut?.();
+        } catch (error) {
+            Alert.alert('Sign out failed', error.message || 'Could not sign out.');
+        } finally {
+            setIsSigningOut(false);
+            setShowSignOutModal(false);
+        }
+    };
+
+    const dismissActiveBook = () => {
+        if (activeBookKey) {
+            setActiveBookKey(null);
+        }
+    };
+
+    const handlePreferencePress = (label) => {
+        dismissActiveBook();
+        Alert.alert(label, 'This preference will be configurable soon.');
+    };
+
+    const openAuthModal = (mode) => {
+        dismissActiveBook();
+        setAuthMode(mode);
+        setShowAuthModal(true);
+    };
+
+    const openNameEditor = () => {
+        dismissActiveBook();
+        setDraftName(displayName === 'Reader' ? '' : displayName);
         setShowNameEditor(true);
     };
 
     const handleSaveName = async () => {
-        const trimmed = draftName.trim();
-
-        if (!trimmed) {
-            Alert.alert('Name required', 'Please enter a username.');
+        const nextName = draftName.trim();
+        if (!nextName) {
+            Alert.alert('Username required', 'Enter a username before saving.');
             return;
         }
 
+        if (!updateUsername) {
+            Alert.alert('Username unavailable', 'Username editing is not available right now.');
+            return;
+        }
+
+        setIsSavingName(true);
         try {
-            setIsSavingName(true);
-            await updateUsername?.(trimmed);
+            await updateUsername(nextName);
             setShowNameEditor(false);
         } catch (error) {
-            Alert.alert('Update failed', error.message || 'Could not update username.');
+            Alert.alert('Save failed', error?.message || 'Could not update your username.');
         } finally {
             setIsSavingName(false);
         }
     };
 
-    const handlePickAvatar = async () => {
-        try {
-            setIsSavingAvatar(true);
-            const { assets, canceled } = await DocumentPicker.getDocumentAsync({
-                type: ['image/*'],
-                copyToCacheDirectory: true,
-            });
-
-            if (canceled || !assets?.[0]?.uri) {
-                return;
-            }
-
-            const picked = assets[0];
-            const extension = (picked.name?.split('.').pop() || picked.uri.split('.').pop() || 'jpg').replace(/[^a-zA-Z0-9]/g, '');
-            const avatarDir = `${FileSystem.documentDirectory}${makeOwnerDataDirectory(user?.id)}profile/`;
-            const timestamp = Date.now();
-            const destination = `${avatarDir}avatar-${user?.id || 'local'}-${timestamp}.${extension || 'jpg'}`;
-
-            await FileSystem.makeDirectoryAsync(avatarDir, { intermediates: true });
-            await FileSystem.copyAsync({
-                from: picked.uri,
-                to: destination,
-            });
-
-            await updateProfile?.({
-                avatar_uri: destination,
-                avatar_updated_at: timestamp,
-            });
-        } catch (error) {
-            Alert.alert('Upload failed', error.message || 'Could not update your profile image.');
-        } finally {
-            setIsSavingAvatar(false);
-        }
-    };
-
-    const handleSendFeedback = async () => {
-        const trimmed = feedbackMessage.trim();
-        const subject = encodeURIComponent('Fluent Fable feedback');
-        const body = encodeURIComponent(trimmed || 'Hi, I wanted to share some feedback:\n\n');
-        const url = `mailto:${FEEDBACK_EMAIL}?subject=${subject}&body=${body}`;
-
-        try {
-            await Linking.openURL(url);
-            setShowFeedbackComposer(false);
-            setFeedbackMessage('');
-        } catch (error) {
-            Alert.alert(
-                'Mail app unavailable',
-                `Direct in-app sending would require backend email setup. For now, please email ${FEEDBACK_EMAIL} and paste your message there.`
-            );
-        }
-    };
-
-    const performSignOut = async ({ removeLocalData = false } = {}) => {
-        if (isSigningOut || isDeletingProfile) {
-            return;
-        }
-
-        const userId = user?.id;
-        setIsSigningOut(true);
-        pauseCloudSync();
-        bumpSyncGeneration();
-
-        try {
-            if (removeLocalData && userId) {
-                await clearLocalUserData(userId);
-            }
-
-            await signOut?.();
-        } catch (error) {
-            resumeCloudSync();
-            Alert.alert('Sign out failed', error.message || 'Could not sign out.');
-        } finally {
-            setIsSigningOut(false);
-        }
-    };
-
-    const handleSignOut = () => {
-        Alert.alert(
-            'Sign out',
-            'Choose whether to keep this account data cached on this device.',
-            [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                    text: 'Sign out',
-                    onPress: () => performSignOut(),
-                },
-                {
-                    text: 'Sign out and remove data from this device',
-                    style: 'destructive',
-                    onPress: () => performSignOut({ removeLocalData: true }),
-                },
-            ]
-        );
-    };
-
-    const signOutLocally = async () => {
-        try {
-            await signOut?.({ scope: 'local' });
-        } catch (error) {
-            console.warn('[Profile] Failed to clear deleted account session locally', error);
-        }
-    };
-
-    const performDeleteProfile = async () => {
-        if (isDeletingProfile || isSigningOut) {
-            return;
-        }
-
-        const userId = user?.id;
-        let didDeleteRemoteProfile = false;
-        setIsDeletingProfile(true);
-        pauseCloudSync();
-        bumpSyncGeneration();
-
-        try {
-            await deleteCurrentUserProfile();
-            didDeleteRemoteProfile = true;
-
-            if (userId) {
-                await clearLocalUserData(userId);
-            }
-
-            await signOutLocally();
-        } catch (error) {
-            if (didDeleteRemoteProfile) {
-                await signOutLocally();
-                Alert.alert(
-                    'Profile deleted',
-                    'Your account was deleted, but some cached data on this device may not have been removed.'
-                );
-                return;
-            }
-
-            resumeCloudSync();
-            Alert.alert('Delete profile failed', error.message || 'Could not delete your profile.');
-        } finally {
-            setIsDeletingProfile(false);
-        }
-    };
-
-    const handleDeleteProfile = () => {
-        if (isDeletingProfile || isSigningOut) {
-            return;
-        }
-
-        Alert.alert(
-            'Delete profile?',
-            'This permanently deletes your account and all data in it, including books, vocabulary, songs, writing, reading progress, settings, and cloud files. This cannot be undone.',
-            [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                    text: 'Delete everything',
-                    style: 'destructive',
-                    onPress: performDeleteProfile,
-                },
-            ]
-        );
-    };
-
-    if (!user) {
-        return (
-            <Screen scroll>
-                <SectionHeader
-                    eyebrow="Profile"
-                    title="Guest mode is active"
-                    subtitle="Keep reading as a guest, or sign in to sync saved words, track progress, and unlock strength, weakness, and level analysis."
-                />
-
-                <View style={styles.guestAuthWrap}>
-                    <Auth
-                        embedded
-                        title="Sign in later if you want"
-                        subtitle="Guest mode keeps your reading and saved words on this device. Signing in lets us sync them to your account."
-                    />
-                </View>
-            </Screen>
-        );
-    }
-
     return (
-        <Screen scroll>
-            <SectionHeader
-                eyebrow="Profile"
-                title="Your profile"
-            />
-
-            <Card style={styles.profileCard}>
-                <View style={styles.profileTop}>
-                    {avatarUri ? (
-                        <Image source={{ uri: avatarUri }} style={styles.avatar} />
-                    ) : (
-                        <View style={styles.avatar}>
-                            <Feather name="user" size={28} color={colors.textMuted} />
+        <Screen
+            backgroundColor={PROFILE_COLORS.bg}
+            contentContainerStyle={styles.screenContent}
+        >
+            <Pressable
+                accessible={false}
+                onPress={dismissActiveBook}
+                style={styles.screenTapArea}
+            >
+                <View style={styles.profileHeader}>
+                    <View style={styles.profileHeaderTopRow}>
+                        <View style={styles.profileIdentity}>
+                            <Text style={styles.profileName}>{displayName}</Text>
+                            <Text style={styles.profileSubtitle}>
+                                {isGuest ? 'Guest mode · local reading' : `Beginner · learning since ${learningSince}`}
+                            </Text>
                         </View>
-                    )}
-                    <View style={styles.identity}>
-                        <Text style={styles.nameText}>{displayName}</Text>
-                        <Text style={styles.placeholderText}>Analysis to be implemented soon</Text>
-                        <Text style={styles.joinedText}>Joined {joinedDate}</Text>
+                        {!isGuest ? (
+                            <TouchableOpacity
+                                accessibilityRole="button"
+                                accessibilityLabel="Edit username"
+                                activeOpacity={0.78}
+                                onPress={openNameEditor}
+                                style={styles.editUsernameButton}
+                            >
+                                <Feather name="edit-2" size={16} color={PROFILE_COLORS.sub} />
+                            </TouchableOpacity>
+                        ) : null}
                     </View>
                 </View>
 
-                <View style={styles.profileActions}>
-                    <IconButton
-                        label="Change username"
-                        onPress={handleStartEditName}
-                        icon={<Feather name="edit-3" size={15} color={colors.text} />}
-                    />
-                    <IconButton
-                        label={isSavingAvatar ? 'Uploading…' : 'Change photo'}
-                        onPress={handlePickAvatar}
-                        disabled={isSavingAvatar}
-                        icon={<Feather name="image" size={15} color={colors.text} />}
-                    />
-                </View>
-            </Card>
+                <View style={styles.bookshelfSection}>
+                    <View style={styles.sectionLabelRow}>
+                        <Text style={styles.sectionEyebrow}>Your Bookshelf</Text>
+                        <Text style={styles.finishedCount}>{completedBooks.length} finished</Text>
+                    </View>
 
-            <Card tone="muted" subtle style={styles.sectionCard}>
-                <View style={styles.optionList}>
-                    <TouchableOpacity style={styles.optionRow} activeOpacity={0.8} onPress={() => setShowFeedbackComposer(true)}>
-                        <Text style={styles.optionText}>Help & feedback</Text>
-                        <Feather name="mail" size={16} color={colors.textMuted} />
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                        style={styles.optionRow}
-                        activeOpacity={0.8}
-                        onPress={() => setStatsExpanded((prev) => !prev)}
-                    >
-                        <Text style={styles.optionText}>Reading and vocab stats</Text>
-                        <Feather
-                            name={statsExpanded ? 'chevron-up' : 'chevron-down'}
-                            size={16}
-                            color={colors.textMuted}
+                    {shelfRows.map((row, index) => (
+                        <ShelfRow
+                            key={`shelf-row-${index}`}
+                            row={row}
+                            rowIndex={index}
+                            isLast={index === shelfRows.length - 1}
+                            activeBookKey={activeBookKey}
+                            shelfWidth={shelfWidth}
+                            onShowBook={setActiveBookKey}
                         />
-                    </TouchableOpacity>
-
-                    {statsExpanded ? (
-                        <View style={styles.expandBody}>
-                            <Text style={styles.expandText}>Analysis to be implemented soon</Text>
-                        </View>
-                    ) : null}
-
-                    <TouchableOpacity
-                        style={[
-                            styles.optionRow,
-                            styles.deleteOptionRow,
-                            (isDeletingProfile || isSigningOut) && styles.optionRowDisabled,
-                        ]}
-                        activeOpacity={0.8}
-                        onPress={handleDeleteProfile}
-                        disabled={isDeletingProfile || isSigningOut}
-                    >
-                        <Text style={[styles.optionText, styles.deleteOptionText]}>
-                            {isDeletingProfile ? 'Deleting profile...' : 'Delete profile'}
-                        </Text>
-                        <Feather name="trash-2" size={16} color={colors.danger} />
-                    </TouchableOpacity>
+                    ))}
                 </View>
-            </Card>
 
-            <IconButton
-                label={isSigningOut ? 'Signing out...' : 'Sign out'}
-                tone="neutral"
-                onPress={handleSignOut}
-                disabled={isSigningOut || isDeletingProfile}
-                icon={<Feather name="log-out" size={16} color={colors.text} />}
-                style={styles.signOutButton}
-            />
+                <View style={styles.preferencesSection}>
+                    <View style={styles.sectionLabelRow}>
+                        <Text style={styles.sectionEyebrow}>Preferences</Text>
+                    </View>
+                    <View style={styles.preferencesCard}>
+                        {preferenceRows.map((row, index) => (
+                            <PreferenceRow
+                                key={row.label}
+                                label={row.label}
+                                value={row.value}
+                                accent={index === 0}
+                                isLast={index === preferenceRows.length - 1}
+                                onPress={() => handlePreferencePress(row.label)}
+                            />
+                        ))}
+                    </View>
+                </View>
 
-            <Modal visible={showNameEditor} animationType="fade" transparent onRequestClose={() => setShowNameEditor(false)}>
+                {isGuest ? (
+                    <View style={styles.guestAccountSection}>
+                        <Text style={styles.guestAccountTitle}>Take your library with you</Text>
+                        <Text style={styles.guestAccountCopy}>
+                            Create an account to sync books, saved words, writing, songs, and progress across devices. Your guest data stays on this device unless you choose to save or merge it.
+                        </Text>
+                        <View style={styles.guestAuthActions}>
+                            <TouchableOpacity
+                                activeOpacity={0.86}
+                                onPress={() => openAuthModal('signin')}
+                                style={[styles.guestAuthButton, styles.guestAuthButtonSecondary]}
+                            >
+                                <Text style={styles.guestAuthButtonSecondaryText}>Sign in</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                activeOpacity={0.86}
+                                onPress={() => openAuthModal('signup')}
+                                style={[styles.guestAuthButton, styles.guestAuthButtonPrimary]}
+                            >
+                                <Text style={styles.guestAuthButtonPrimaryText}>Sign up</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                ) : (
+                    <View style={styles.logoutSection}>
+                        <TouchableOpacity
+                            activeOpacity={0.86}
+                            onPress={() => {
+                                dismissActiveBook();
+                                setShowSignOutModal(true);
+                            }}
+                            disabled={isSigningOut}
+                            style={[styles.logoutButton, isSigningOut && styles.logoutButtonDisabled]}
+                        >
+                            <Text style={styles.logoutText}>{isSigningOut ? 'Logging out...' : 'Log out'}</Text>
+                        </TouchableOpacity>
+                    </View>
+                )}
+            </Pressable>
+
+            <Modal
+                visible={showAuthModal}
+                animationType="fade"
+                transparent
+                onRequestClose={() => setShowAuthModal(false)}
+            >
+                <View style={styles.authModalBackdrop}>
+                    <Pressable style={styles.authModalScrim} onPress={() => setShowAuthModal(false)} />
+                    <View style={styles.authModalCard}>
+                        <View style={styles.authModalHeader}>
+                            <View style={styles.authModalCopy}>
+                                <Text style={styles.authModalTitle}>
+                                    {authMode === 'signup' ? 'Create account' : 'Sign in'}
+                                </Text>
+                                <Text style={styles.authModalHelper}>
+                                    Use email and password or continue with Google.
+                                </Text>
+                            </View>
+                            <TouchableOpacity
+                                accessibilityRole="button"
+                                accessibilityLabel="Close sign in"
+                                activeOpacity={0.78}
+                                onPress={() => setShowAuthModal(false)}
+                                style={styles.authModalCloseButton}
+                            >
+                                <Text style={styles.authModalCloseText}>×</Text>
+                            </TouchableOpacity>
+                        </View>
+                        <Auth
+                            key={authMode}
+                            embedded
+                            initialMode={authMode}
+                            showApple={false}
+                            showHeader={false}
+                            showModeToggle={false}
+                            title=""
+                            subtitle=""
+                            onAuthenticated={() => setShowAuthModal(false)}
+                        />
+                    </View>
+                </View>
+            </Modal>
+
+            <Modal
+                visible={showNameEditor}
+                animationType="fade"
+                transparent
+                onRequestClose={() => setShowNameEditor(false)}
+            >
                 <TouchableWithoutFeedback onPress={() => setShowNameEditor(false)}>
                     <View style={styles.modalBackdrop}>
                         <TouchableWithoutFeedback>
                             <View style={styles.modalCard}>
-                                <Text style={styles.modalTitle}>Change username</Text>
+                                <Text style={styles.modalTitle}>Edit username</Text>
                                 <TextInput
                                     value={draftName}
                                     onChangeText={setDraftName}
                                     autoCapitalize="none"
                                     autoCorrect={false}
-                                    placeholder="Enter username"
-                                    placeholderTextColor={colors.textSubtle}
-                                    style={styles.input}
+                                    editable={!isSavingName}
+                                    placeholder="Username"
+                                    placeholderTextColor={PROFILE_COLORS.faint}
+                                    style={styles.usernameInput}
                                 />
                                 <View style={styles.modalActions}>
-                                    <Pressable onPress={() => setShowNameEditor(false)} style={styles.modalButton}>
+                                    <Pressable
+                                        onPress={() => setShowNameEditor(false)}
+                                        style={styles.modalButton}
+                                        disabled={isSavingName}
+                                    >
                                         <Text style={styles.modalButtonText}>Cancel</Text>
                                     </Pressable>
                                     <Pressable
                                         onPress={handleSaveName}
-                                        style={[styles.modalButton, styles.modalPrimaryButton, isSavingName && styles.modalButtonDisabled]}
+                                        style={[
+                                            styles.modalButton,
+                                            styles.modalPrimaryButton,
+                                            isSavingName && styles.modalButtonDisabled,
+                                        ]}
                                         disabled={isSavingName}
                                     >
                                         <Text style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>
-                                            {isSavingName ? 'Saving…' : 'Save'}
+                                            {isSavingName ? 'Saving...' : 'Save'}
                                         </Text>
                                     </Pressable>
                                 </View>
@@ -387,33 +765,34 @@ const Profile = ({ user, signOut, updateUsername, updateProfile }) => {
                 </TouchableWithoutFeedback>
             </Modal>
 
-            <Modal visible={showFeedbackComposer} animationType="fade" transparent onRequestClose={() => setShowFeedbackComposer(false)}>
-                <TouchableWithoutFeedback onPress={() => setShowFeedbackComposer(false)}>
+            <Modal
+                visible={showSignOutModal}
+                animationType="fade"
+                transparent
+                onRequestClose={() => setShowSignOutModal(false)}
+            >
+                <TouchableWithoutFeedback onPress={() => setShowSignOutModal(false)}>
                     <View style={styles.modalBackdrop}>
                         <TouchableWithoutFeedback>
                             <View style={styles.modalCard}>
-                                <Text style={styles.modalTitle}>Help & feedback</Text>
+                                <Text style={styles.modalTitle}>Log out?</Text>
                                 <Text style={styles.modalHelper}>
-                                    Write your message here. Tapping send will open your mail app with the message addressed to {FEEDBACK_EMAIL}.
+                                    Choose whether to keep this account data cached on this device.
                                 </Text>
-                                <TextInput
-                                    value={feedbackMessage}
-                                    onChangeText={setFeedbackMessage}
-                                    multiline
-                                    textAlignVertical="top"
-                                    placeholder="Type your feedback here"
-                                    placeholderTextColor={colors.textSubtle}
-                                    style={[styles.input, styles.feedbackInput]}
-                                />
                                 <View style={styles.modalActions}>
-                                    <Pressable onPress={() => setShowFeedbackComposer(false)} style={styles.modalButton}>
+                                    <Pressable
+                                        onPress={() => setShowSignOutModal(false)}
+                                        style={styles.modalButton}
+                                    >
                                         <Text style={styles.modalButtonText}>Cancel</Text>
                                     </Pressable>
                                     <Pressable
-                                        onPress={handleSendFeedback}
+                                        onPress={() => performSignOut()}
                                         style={[styles.modalButton, styles.modalPrimaryButton]}
                                     >
-                                        <Text style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>Send</Text>
+                                        <Text style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>
+                                            Log out
+                                        </Text>
                                     </Pressable>
                                 </View>
                             </View>
@@ -426,86 +805,407 @@ const Profile = ({ user, signOut, updateUsername, updateProfile }) => {
 };
 
 const styles = StyleSheet.create({
-    guestAuthWrap: {
-        marginTop: spacing.xl,
-    },
-    profileCard: {
-        marginTop: spacing.xl,
-    },
-    profileTop: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: spacing.md,
-    },
-    avatar: {
-        width: 72,
-        height: 72,
-        borderRadius: 36,
-        backgroundColor: colors.surfaceMuted,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    identity: {
+    screenContent: {
         flex: 1,
-        gap: spacing.xxs,
+        paddingHorizontal: 0,
+        paddingTop: 0,
+        paddingBottom: 0,
+        backgroundColor: PROFILE_COLORS.bg,
     },
-    nameText: {
-        ...textStyles.title,
+    screenTapArea: {
+        flex: 1,
+        width: '100%',
     },
-    placeholderText: {
-        ...textStyles.bodyMuted,
+    profileHeader: {
+        minHeight: 85,
+        paddingTop: 22,
+        paddingBottom: 18,
+        paddingHorizontal: 22,
+        backgroundColor: PROFILE_COLORS.surface,
+        borderBottomWidth: 1,
+        borderBottomColor: PROFILE_COLORS.border,
     },
-    joinedText: {
-        ...textStyles.caption,
-    },
-    profileActions: {
-        marginTop: spacing.lg,
-        alignItems: 'flex-start',
-        gap: spacing.sm,
-    },
-    sectionCard: {
-        marginTop: spacing.lg,
-    },
-    optionList: {
-        gap: spacing.xs,
-    },
-    optionRow: {
-        minHeight: 44,
-        borderRadius: radii.md,
-        paddingHorizontal: spacing.sm,
-        paddingVertical: spacing.sm,
+    profileHeaderTopRow: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        backgroundColor: colors.surface,
+        gap: 14,
     },
-    optionRowDisabled: {
+    profileIdentity: {
+        flex: 1,
+        minWidth: 0,
+    },
+    profileName: {
+        width: '100%',
+        fontFamily: fontFamilies.serifBold,
+        fontSize: 24,
+        lineHeight: 28,
+        letterSpacing: -0.4,
+        color: PROFILE_COLORS.ink,
+    },
+    profileSubtitle: {
+        marginTop: 3,
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 13,
+        lineHeight: 17,
+        color: PROFILE_COLORS.sub,
+    },
+    editUsernameButton: {
+        width: 38,
+        height: 38,
+        borderRadius: radii.pill,
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderWidth: 1,
+        borderColor: PROFILE_COLORS.border,
+        backgroundColor: '#f5ead9',
+    },
+    bookshelfSection: {
+        paddingTop: 18,
+        paddingHorizontal: BOOKSHELF_HORIZONTAL_PADDING,
+    },
+    sectionLabelRow: {
+        width: '100%',
+        minHeight: 15.5,
+        marginBottom: 12,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+    },
+    sectionEyebrow: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 11,
+        lineHeight: 14.5,
+        textTransform: 'uppercase',
+        letterSpacing: 0.66,
+        color: PROFILE_COLORS.sub,
+    },
+    finishedCount: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 12,
+        lineHeight: 15.5,
+        color: PROFILE_COLORS.sub,
+    },
+    shelfBlock: {
+        width: '100%',
+        height: SHELF_ROW_HEIGHT + SHELF_BASE_HEIGHT,
+        marginBottom: 16,
+        overflow: 'visible',
+    },
+    shelfBlockLast: {
+        marginBottom: 0,
+    },
+    shelfBookRow: {
+        height: SHELF_ROW_HEIGHT,
+        flexDirection: 'row',
+        alignItems: 'flex-end',
+        gap: SHELF_GAP,
+        overflow: 'visible',
+    },
+    bookSpine: {
+        position: 'relative',
+        alignItems: 'center',
+        justifyContent: 'center',
+        overflow: 'visible',
+    },
+    bookSpineActive: {
+        zIndex: 20,
+    },
+    spineFace: {
+        ...StyleSheet.absoluteFillObject,
+        borderTopLeftRadius: 1,
+        borderTopRightRadius: 1,
+        overflow: 'hidden',
+    },
+    spinePanel: {
+        position: 'absolute',
+        borderRadius: 3,
+    },
+    spinePanelRule: {
+        position: 'absolute',
+        borderWidth: 1,
         opacity: 0.55,
     },
-    optionText: {
-        ...textStyles.body,
-        color: colors.text,
+    spineSeam: {
+        position: 'absolute',
+        top: 0,
+        right: 0,
+        bottom: 0,
+        width: 1,
+        backgroundColor: 'rgba(255,255,255,0.1)',
     },
-    deleteOptionRow: {
+    spineTitleBand: {
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        alignItems: 'center',
+        justifyContent: 'center',
+        overflow: 'hidden',
+    },
+    spineTitleGlyph: {
+        width: '100%',
+        fontFamily: fontFamilies.krSerifSemiBold,
+        fontWeight: '600',
+        textAlign: 'center',
+        letterSpacing: 0,
+    },
+    emptyShelfSlot: {
+        flex: 1,
+        minWidth: MIN_EMPTY_SLOT_WIDTH,
+        height: SHELF_ROW_HEIGHT,
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderWidth: 1.5,
+        borderStyle: 'dashed',
+        borderColor: PROFILE_COLORS.border,
+    },
+    emptyShelfText: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 11,
+        lineHeight: 15.4,
+        textAlign: 'center',
+        color: PROFILE_COLORS.faint,
+    },
+    shelfBase: {
+        width: '100%',
+        height: SHELF_BASE_HEIGHT,
+        backgroundColor: PROFILE_COLORS.shelf,
+    },
+    bookTooltip: {
+        position: 'absolute',
+        top: -72,
+        width: TOOLTIP_WIDTH,
+        paddingHorizontal: 10,
+        paddingVertical: 8,
+        borderRadius: 8,
+        backgroundColor: PROFILE_COLORS.tooltip,
+        zIndex: 30,
+        overflow: 'visible',
+    },
+    bookTooltipTail: {
+        position: 'absolute',
+        bottom: -(TOOLTIP_TAIL_SIZE - 1),
+        width: 0,
+        height: 0,
+        borderLeftWidth: TOOLTIP_TAIL_SIZE,
+        borderRightWidth: TOOLTIP_TAIL_SIZE,
+        borderTopWidth: TOOLTIP_TAIL_SIZE,
+        borderLeftColor: 'transparent',
+        borderRightColor: 'transparent',
+        borderTopColor: PROFILE_COLORS.tooltip,
+    },
+    tooltipTitle: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 11.5,
+        lineHeight: 15,
+        color: PROFILE_COLORS.white,
+    },
+    tooltipMeta: {
+        marginTop: 2,
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 10.5,
+        lineHeight: 13,
+        color: 'rgba(255,255,255,0.72)',
+    },
+    preferencesSection: {
+        paddingTop: 8,
+        paddingHorizontal: 22,
+    },
+    preferencesCard: {
+        width: '100%',
+        borderRadius: 0,
+        backgroundColor: PROFILE_COLORS.surface,
+        shadowColor: 'rgba(70,48,20,0.36)',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.06,
+        shadowRadius: 14,
+        elevation: 2,
+        overflow: 'hidden',
+    },
+    preferenceRow: {
+        minHeight: 52.5,
+        paddingVertical: 14,
+        paddingHorizontal: 18,
+        flexDirection: 'row',
+        alignItems: 'center',
+        borderBottomWidth: 1,
+        borderBottomColor: PROFILE_COLORS.border,
+    },
+    preferenceRowLast: {
+        borderBottomWidth: 0,
+    },
+    preferenceLabel: {
+        flex: 1,
+        minWidth: 0,
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 15,
+        lineHeight: 19.5,
+        color: PROFILE_COLORS.ink,
+    },
+    preferenceValueWrap: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+    },
+    preferenceValue: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 13,
+        lineHeight: 17,
+        color: PROFILE_COLORS.sub,
+    },
+    preferenceValueAccent: {
+        fontSize: 14,
+        lineHeight: 18.5,
+        color: PROFILE_COLORS.accent,
+    },
+    preferenceChevron: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 18,
+        lineHeight: 23.5,
+        color: PROFILE_COLORS.faint,
+    },
+    logoutSection: {
+        marginTop: 'auto',
+        paddingTop: 16,
+        paddingBottom: 18,
+        paddingHorizontal: 22,
+    },
+    logoutButton: {
+        minHeight: 49.5,
+        paddingVertical: 14,
+        paddingHorizontal: 14,
+        alignItems: 'center',
+        justifyContent: 'center',
         borderWidth: 1,
-        borderColor: 'rgba(182, 79, 68, 0.28)',
-        backgroundColor: 'rgba(182, 79, 68, 0.08)',
+        borderColor: 'rgba(192,73,47,0.267)',
+        backgroundColor: PROFILE_COLORS.surface,
+        shadowColor: 'rgba(70,48,20,0.36)',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.06,
+        shadowRadius: 14,
+        elevation: 2,
     },
-    deleteOptionText: {
-        color: colors.danger,
-        fontWeight: '700',
+    logoutButtonDisabled: {
+        opacity: 0.62,
     },
-    expandBody: {
-        paddingHorizontal: spacing.sm,
-        paddingBottom: spacing.xs,
+    logoutText: {
+        fontFamily: fontFamilies.sansMedium,
+        fontSize: 15,
+        lineHeight: 19,
+        color: PROFILE_COLORS.danger,
     },
-    expandText: {
-        ...textStyles.bodyMuted,
+    guestAccountSection: {
+        marginTop: 'auto',
+        paddingHorizontal: 22,
+        paddingTop: 14,
+        paddingBottom: 18,
+        gap: 10,
     },
-    signOutButton: {
-        marginTop: spacing.lg,
-        marginBottom: spacing.md,
-        alignSelf: 'flex-start',
+    guestAccountTitle: {
+        fontFamily: fontFamilies.serifBold,
+        fontSize: 19,
+        lineHeight: 24,
+        color: PROFILE_COLORS.ink,
+    },
+    guestAccountCopy: {
+        maxWidth: 360,
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 12.5,
+        lineHeight: 18,
+        color: PROFILE_COLORS.sub,
+    },
+    guestAuthActions: {
+        flexDirection: 'row',
+        gap: 10,
+        paddingTop: 4,
+    },
+    guestAuthButton: {
+        flex: 1,
+        minHeight: 46,
+        borderRadius: radii.pill,
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: 14,
+        paddingVertical: 12,
+    },
+    guestAuthButtonSecondary: {
+        borderWidth: 1,
+        borderColor: PROFILE_COLORS.border,
+        backgroundColor: PROFILE_COLORS.surface,
+    },
+    guestAuthButtonPrimary: {
+        backgroundColor: PROFILE_COLORS.ink,
+    },
+    guestAuthButtonSecondaryText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 14,
+        lineHeight: 18,
+        color: PROFILE_COLORS.ink,
+    },
+    guestAuthButtonPrimaryText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 14,
+        lineHeight: 18,
+        color: PROFILE_COLORS.surface,
+    },
+    authModalBackdrop: {
+        flex: 1,
+        justifyContent: 'center',
+        paddingHorizontal: 18,
+        backgroundColor: 'rgba(44,38,32,0.35)',
+    },
+    authModalScrim: {
+        ...StyleSheet.absoluteFillObject,
+    },
+    authModalCard: {
+        maxHeight: '88%',
+        borderRadius: 24,
+        borderWidth: 1,
+        borderColor: PROFILE_COLORS.border,
+        backgroundColor: PROFILE_COLORS.surface,
+        padding: 18,
+        shadowColor: 'rgba(70,48,20,0.36)',
+        shadowOffset: { width: 0, height: 12 },
+        shadowOpacity: 0.18,
+        shadowRadius: 24,
+        elevation: 8,
+    },
+    authModalHeader: {
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        justifyContent: 'space-between',
+        gap: 12,
+        paddingBottom: 2,
+    },
+    authModalCopy: {
+        flex: 1,
+        gap: 3,
+    },
+    authModalTitle: {
+        fontFamily: fontFamilies.serifBold,
+        fontSize: 23,
+        lineHeight: 28,
+        color: PROFILE_COLORS.ink,
+    },
+    authModalHelper: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 12.5,
+        lineHeight: 17,
+        color: PROFILE_COLORS.sub,
+    },
+    authModalCloseButton: {
+        width: 34,
+        height: 34,
+        borderRadius: radii.pill,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: '#efe3d0',
+    },
+    authModalCloseText: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 24,
+        lineHeight: 28,
+        color: PROFILE_COLORS.sub,
     },
     modalBackdrop: {
         flex: 1,
@@ -528,19 +1228,6 @@ const styles = StyleSheet.create({
         ...textStyles.bodyMuted,
         lineHeight: 20,
     },
-    input: {
-        borderWidth: 1,
-        borderColor: colors.border,
-        borderRadius: radii.md,
-        paddingHorizontal: spacing.md,
-        paddingVertical: spacing.sm,
-        color: colors.text,
-        backgroundColor: colors.surface,
-        ...textStyles.body,
-    },
-    feedbackInput: {
-        minHeight: 140,
-    },
     modalActions: {
         flexDirection: 'row',
         justifyContent: 'flex-end',
@@ -559,7 +1246,20 @@ const styles = StyleSheet.create({
         backgroundColor: colors.accentSoft,
     },
     modalButtonDisabled: {
-        opacity: 0.6,
+        opacity: 0.62,
+    },
+    usernameInput: {
+        minHeight: 46,
+        borderWidth: 1,
+        borderColor: PROFILE_COLORS.border,
+        borderRadius: radii.md,
+        paddingHorizontal: spacing.md,
+        paddingVertical: spacing.sm,
+        backgroundColor: PROFILE_COLORS.surface,
+        color: PROFILE_COLORS.ink,
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 15,
+        lineHeight: 20,
     },
     modalButtonText: {
         ...textStyles.label,
