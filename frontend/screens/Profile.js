@@ -453,7 +453,8 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
     const [draftName, setDraftName] = useState('');
     const [isSavingName, setIsSavingName] = useState(false);
     const { width: viewportWidth } = useWindowDimensions();
-    const isGuest = !user?.id;
+    const isAnonymous = Boolean(user?.is_anonymous);
+    const isGuest = !user?.id || isAnonymous;
 
     const displayName = useMemo(() => {
         const metadataName = user?.user_metadata?.username
@@ -635,10 +636,6 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
 
                 {isGuest ? (
                     <View style={styles.guestAccountSection}>
-                        <Text style={styles.guestAccountTitle}>Take your library with you</Text>
-                        <Text style={styles.guestAccountCopy}>
-                            Create an account to sync books, saved words, writing, songs, and progress across devices. Your guest data stays on this device unless you choose to save or merge it.
-                        </Text>
                         <View style={styles.guestAuthActions}>
                             <TouchableOpacity
                                 activeOpacity={0.86}
@@ -685,10 +682,10 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                         <View style={styles.authModalHeader}>
                             <View style={styles.authModalCopy}>
                                 <Text style={styles.authModalTitle}>
-                                    {authMode === 'signup' ? 'Create account' : 'Sign in'}
+                                    Take your library with you
                                 </Text>
                                 <Text style={styles.authModalHelper}>
-                                    Use email and password or continue with Google.
+                                    Create an account to sync books, saved words, writing, songs, and progress across devices. Your guest data stays on this device unless you choose to save or merge it.
                                 </Text>
                             </View>
                             <TouchableOpacity
@@ -1099,20 +1096,6 @@ const styles = StyleSheet.create({
         paddingHorizontal: 22,
         paddingTop: 14,
         paddingBottom: 18,
-        gap: 10,
-    },
-    guestAccountTitle: {
-        fontFamily: fontFamilies.serifBold,
-        fontSize: 19,
-        lineHeight: 24,
-        color: PROFILE_COLORS.ink,
-    },
-    guestAccountCopy: {
-        maxWidth: 360,
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 12.5,
-        lineHeight: 18,
-        color: PROFILE_COLORS.sub,
     },
     guestAuthActions: {
         flexDirection: 'row',
@@ -1175,11 +1158,11 @@ const styles = StyleSheet.create({
         alignItems: 'flex-start',
         justifyContent: 'space-between',
         gap: 12,
-        paddingBottom: 2,
+        paddingBottom: 14,
     },
     authModalCopy: {
         flex: 1,
-        gap: 3,
+        gap: 8,
     },
     authModalTitle: {
         fontFamily: fontFamilies.serifBold,

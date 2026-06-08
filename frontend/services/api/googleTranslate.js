@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
-import axios from 'axios';
-import { GOOGLE_TRANSLATE_RAPIDAPI_KEY } from '@env';
+import { api } from './client';
 
 export const translateText = async ({
   query,
@@ -14,28 +13,18 @@ export const translateText = async ({
     return '';
   }
 
-  if (!GOOGLE_TRANSLATE_RAPIDAPI_KEY) {
-    throw new Error('Missing GOOGLE_TRANSLATE_RAPIDAPI_KEY');
-  }
-
-  const response = await axios.request({
-    method: 'POST',
-    url: 'https://google-translator9.p.rapidapi.com/v2',
-    headers: {
-      'content-type': 'application/json',
-      'X-RapidAPI-Key': GOOGLE_TRANSLATE_RAPIDAPI_KEY,
-      'X-RapidAPI-Host': 'google-translator9.p.rapidapi.com',
-    },
+  const response = await api.post('/translate/', {
+    query: cleanedQuery,
+    source,
+    target,
+  }, {
     timeout,
-    data: {
-      q: cleanedQuery,
-      source,
-      target,
-      format: 'text',
+    headers: {
+      'Content-Type': 'application/json',
     },
   });
 
-  return response.data?.data?.translations?.[0]?.translatedText?.trim?.() ?? '';
+  return response.data?.translatedText?.trim?.() ?? '';
 };
 
 const googleTranslate = ( {query} ) => {

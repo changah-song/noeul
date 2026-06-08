@@ -6,11 +6,17 @@ import { GUEST_OWNER_ID } from './localDataScope';
 // ─── Database Setup ───────────────────────────────────────────────────────────
 // NOTE: Change the db filename here if you ever need to reset all tables by
 // wiping the old database (e.g., rename to 'app_v2.db' to start fresh).
-const db = SQLite.openDatabase('temp.db');
+const db = SQLite.openDatabase('fluentfable.db');
 const BOOK_INDEX_MIGRATION_KEY = 'book_index_migration_v2';
 const DICTIONARY_CACHE_MIGRATION_KEY = 'dictionary_cache_migration_v1';
 const LOCAL_OWNER_SQLITE_MIGRATION_KEY = 'local_owner_sqlite_migration_v1';
 export const PREPROCESS_VERSION = 1;
+const DEFAULT_STABILITY = 1.0;
+const DEFAULT_DIFFICULTY = 5.0;
+const FSRS_PARAMS = {
+  requestRetention: 0.9,
+  maximumInterval: 365,
+};
 
 const resolveOwnerId = (value) => {
   if (typeof value === 'string') {
@@ -20,6 +26,19 @@ const resolveOwnerId = (value) => {
 
   const ownerId = typeof value?.ownerId === 'string' ? value.ownerId.trim() : '';
   return ownerId || GUEST_OWNER_ID;
+};
+
+const normalizeFsrsValue = (value, fallback, min = 0.01, max = Number.POSITIVE_INFINITY) => {
+  if (value == null || value === '') {
+    return fallback;
+  }
+
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return fallback;
+  }
+
+  return Math.min(Math.max(number, min), max);
 };
 
 
@@ -41,8 +60,9 @@ export const createTable = () => {
           hanja TEXT,
           def   TEXT,
           level TEXT,
-          context_sentence TEXT,
           related_known_words TEXT DEFAULT '[]',
+          stability REAL DEFAULT 1.0,
+          difficulty REAL DEFAULT 5.0,
           updated_at TEXT,
           deleted_at TEXT,
           language TEXT DEFAULT 'ko'
@@ -130,42 +150,6 @@ export const migrateVocabContextTable = async () => {
           `CREATE INDEX IF NOT EXISTS idx_vocab_contexts_identity
            ON vocab_contexts(language, word, hanja, def, source_book_uri, sentence)`
         );
-        tx.executeSql(
-          `INSERT INTO vocab_contexts (
-            owner_id, vocab_id, word, hanja, def, source_book_uri, source_book_title, sentence,
-            seen_at, language, updated_at, deleted_at
-          )
-           SELECT
-            COALESCE(v.owner_id, ?),
-            v.id,
-            v.word,
-            v.hanja,
-            v.def,
-            v.source_book_uri,
-            v.source_book_title,
-            v.context_sentence,
-            COALESCE(v.created_at, CURRENT_TIMESTAMP),
-            COALESCE(v.language, 'ko'),
-            COALESCE(v.updated_at, v.created_at, CURRENT_TIMESTAMP),
-            NULL
-           FROM vocab v
-           WHERE v.context_sentence IS NOT NULL
-             AND TRIM(v.context_sentence) != ''
-             AND v.deleted_at IS NULL
-             AND NOT EXISTS (
-               SELECT 1
-               FROM vocab_contexts vc
-               WHERE vc.owner_id = COALESCE(v.owner_id, ?)
-                 AND vc.language = COALESCE(v.language, 'ko')
-                 AND vc.word = v.word
-                 AND vc.hanja IS v.hanja
-                 AND vc.def IS v.def
-                 AND COALESCE(vc.source_book_uri, '') = COALESCE(v.source_book_uri, '')
-                 AND vc.sentence = v.context_sentence
-                 AND vc.deleted_at IS NULL
-             )`,
-          [GUEST_OWNER_ID, GUEST_OWNER_ID]
-        );
       },
       (error) => {
         console.error('[Database] Error migrating vocab_contexts table:', error);
@@ -208,10 +192,6 @@ export const migrateVocabTable = async () => {
     alterations.push('ALTER TABLE vocab ADD COLUMN source_book_title TEXT');
   }
 
-  if (!columns.includes('context_sentence')) {
-    alterations.push('ALTER TABLE vocab ADD COLUMN context_sentence TEXT');
-  }
-
   if (!columns.includes('related_known_words')) {
     alterations.push(`ALTER TABLE vocab ADD COLUMN related_known_words TEXT DEFAULT '[]'`);
   }
@@ -244,6 +224,14 @@ export const migrateVocabTable = async () => {
     alterations.push('ALTER TABLE vocab ADD COLUMN wrong_count INTEGER DEFAULT 0');
   }
 
+  if (!columns.includes('stability')) {
+    alterations.push('ALTER TABLE vocab ADD COLUMN stability REAL DEFAULT 1.0');
+  }
+
+  if (!columns.includes('difficulty')) {
+    alterations.push('ALTER TABLE vocab ADD COLUMN difficulty REAL DEFAULT 5.0');
+  }
+
   if (!columns.includes('updated_at')) {
     alterations.push('ALTER TABLE vocab ADD COLUMN updated_at TEXT');
   }
@@ -264,6 +252,8 @@ export const migrateVocabTable = async () => {
         tx.executeSql(`UPDATE vocab SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL`);
         tx.executeSql(`UPDATE vocab SET correct_count = 0 WHERE correct_count IS NULL`);
         tx.executeSql(`UPDATE vocab SET wrong_count = 0 WHERE wrong_count IS NULL`);
+        tx.executeSql(`UPDATE vocab SET stability = 1.0 WHERE stability IS NULL`);
+        tx.executeSql(`UPDATE vocab SET difficulty = 5.0 WHERE difficulty IS NULL`);
         tx.executeSql(`UPDATE vocab SET related_known_words = '[]' WHERE related_known_words IS NULL`);
         tx.executeSql(`UPDATE vocab SET updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)`);
         tx.executeSql(`UPDATE vocab SET language = 'ko' WHERE language IS NULL OR TRIM(language) = ''`);
@@ -675,43 +665,37 @@ const SQLITE_USER_DATA_TABLES = [
   'book_preprocess_chapters',
 ];
 
-export const hasSqliteUserData = async (ownerId = GUEST_OWNER_ID) => {
-  const scopedOwnerId = resolveOwnerId(ownerId);
-
-  return new Promise((resolve, reject) => {
-    let pending = SQLITE_USER_DATA_TABLES.length;
-    let hasData = false;
-    let settled = false;
-
-    const finishOne = () => {
-      pending -= 1;
-      if (pending === 0 && !settled) {
-        settled = true;
-        resolve(hasData);
-      }
-    };
-
-    db.transaction(tx => {
-      SQLITE_USER_DATA_TABLES.forEach((tableName) => {
+const sqliteTableHasData = (tableName, whereClause, params = [], logLabel = 'owner data') => (
+  new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
         tx.executeSql(
-          `SELECT 1 AS has_data FROM ${tableName} WHERE owner_id = ? LIMIT 1`,
-          [scopedOwnerId],
-          (_, result) => {
-            hasData = hasData || result.rows.length > 0;
-            finishOne();
-          },
+          `SELECT 1 AS has_data FROM ${tableName}
+           WHERE ${whereClause}
+           LIMIT 1`,
+          params,
+          (_, result) => resolve(result.rows.length > 0),
           (_, error) => {
-            if (!settled) {
-              settled = true;
-              console.error(`[Database] Error checking owner data in ${tableName}:`, error);
-              reject(error);
-            }
+            console.error(`[Database] Error checking ${logLabel} in ${tableName}:`, error);
+            reject(error);
             return false;
           }
         );
-      });
-    });
-  });
+      },
+      (error) => reject(error)
+    );
+  })
+);
+
+export const hasSqliteUserData = async (ownerId = GUEST_OWNER_ID) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const results = await Promise.all(
+    SQLITE_USER_DATA_TABLES.map((tableName) => (
+      sqliteTableHasData(tableName, 'owner_id = ?', [scopedOwnerId], 'owner data')
+    ))
+  );
+
+  return results.some(Boolean);
 };
 
 export const clearSqliteUserData = async (ownerId = GUEST_OWNER_ID) => {
@@ -734,42 +718,18 @@ export const clearSqliteUserData = async (ownerId = GUEST_OWNER_ID) => {
 };
 
 export const hasUnscopedSqliteUserData = async () => {
-  return new Promise((resolve, reject) => {
-    let pending = SQLITE_USER_DATA_TABLES.length;
-    let hasData = false;
-    let settled = false;
+  const results = await Promise.all(
+    SQLITE_USER_DATA_TABLES.map((tableName) => (
+      sqliteTableHasData(
+        tableName,
+        "owner_id IS NULL OR TRIM(owner_id) = ''",
+        [],
+        'unscoped owner data'
+      )
+    ))
+  );
 
-    const finishOne = () => {
-      pending -= 1;
-      if (pending === 0 && !settled) {
-        settled = true;
-        resolve(hasData);
-      }
-    };
-
-    db.transaction(tx => {
-      SQLITE_USER_DATA_TABLES.forEach((tableName) => {
-        tx.executeSql(
-          `SELECT 1 AS has_data FROM ${tableName}
-           WHERE owner_id IS NULL OR TRIM(owner_id) = ''
-           LIMIT 1`,
-          [],
-          (_, result) => {
-            hasData = hasData || result.rows.length > 0;
-            finishOne();
-          },
-          (_, error) => {
-            if (!settled) {
-              settled = true;
-              console.error(`[Database] Error checking unscoped owner data in ${tableName}:`, error);
-              reject(error);
-            }
-            return false;
-          }
-        );
-      });
-    });
-  });
+  return results.some(Boolean);
 };
 
 export const assignUnscopedSqliteUserDataToGuest = async () => {
@@ -898,7 +858,6 @@ export const insertData = (word, hanja, definition, levelOrOptions) => {
     level = 'unorganized',
     sourceBookUri = null,
     sourceBookTitle = null,
-    contextSentence = null,
     isFavorite = 0,
     priority = 'normal',
     createdAt = new Date().toISOString(),
@@ -906,6 +865,8 @@ export const insertData = (word, hanja, definition, levelOrOptions) => {
     nextReviewAt = null,
     correctCount = 0,
     wrongCount = 0,
+    stability = DEFAULT_STABILITY,
+    difficulty = DEFAULT_DIFFICULTY,
     relatedKnownWords = [],
     updatedAt = createdAt,
     deletedAt = null,
@@ -919,11 +880,11 @@ export const insertData = (word, hanja, definition, levelOrOptions) => {
     db.transaction(tx => {
       tx.executeSql(
         `INSERT INTO vocab (
-          owner_id, word, hanja, def, level, source_book_uri, source_book_title, context_sentence, is_favorite,
+          owner_id, word, hanja, def, level, source_book_uri, source_book_title, is_favorite,
           priority, created_at, last_reviewed_at, next_review_at, correct_count, wrong_count,
-          related_known_words, updated_at, deleted_at, language
+          stability, difficulty, related_known_words, updated_at, deleted_at, language
         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           scopedOwnerId,
           word,
@@ -932,7 +893,6 @@ export const insertData = (word, hanja, definition, levelOrOptions) => {
           level,
           sourceBookUri,
           sourceBookTitle,
-          contextSentence,
           isFavorite ? 1 : 0,
           priority,
           createdAt,
@@ -940,6 +900,8 @@ export const insertData = (word, hanja, definition, levelOrOptions) => {
           nextReviewAt,
           correctCount,
           wrongCount,
+          normalizeFsrsValue(stability, DEFAULT_STABILITY),
+          normalizeFsrsValue(difficulty, DEFAULT_DIFFICULTY, 1, 10),
           relatedKnownWordsJson,
           updatedAt ?? createdAt,
           deletedAt,
@@ -1002,6 +964,8 @@ export const upsertVocabEntryFromCloud = (entry, options = {}) => {
   const language = entry.language ?? 'ko';
   const createdAt = entry.created_at ?? entry.createdAt ?? now;
   const updatedAt = entry.updated_at ?? entry.updatedAt ?? createdAt;
+  const stability = normalizeFsrsValue(entry.stability, DEFAULT_STABILITY);
+  const difficulty = normalizeFsrsValue(entry.difficulty, DEFAULT_DIFFICULTY, 1, 10);
   const ownerId = resolveOwnerId(options.ownerId ?? entry.owner_id ?? entry.ownerId);
 
   return new Promise((resolve, reject) => {
@@ -1027,7 +991,6 @@ export const upsertVocabEntryFromCloud = (entry, options = {}) => {
             level,
             entry.source_book_uri ?? entry.sourceBookUri ?? null,
             entry.source_book_title ?? entry.sourceBookTitle ?? null,
-            entry.context_sentence ?? entry.contextSentence ?? null,
             entry.is_favorite || entry.isFavorite ? 1 : 0,
             entry.priority ?? 'normal',
             createdAt,
@@ -1035,6 +998,8 @@ export const upsertVocabEntryFromCloud = (entry, options = {}) => {
             entry.next_review_at ?? entry.nextReviewAt ?? null,
             Number(entry.correct_count ?? entry.correctCount ?? 0) || 0,
             Number(entry.wrong_count ?? entry.wrongCount ?? 0) || 0,
+            stability,
+            difficulty,
             Array.isArray(entry.related_known_words ?? entry.relatedKnownWords)
               ? JSON.stringify(entry.related_known_words ?? entry.relatedKnownWords)
               : (entry.related_known_words ?? entry.relatedKnownWords ?? '[]'),
@@ -1046,11 +1011,11 @@ export const upsertVocabEntryFromCloud = (entry, options = {}) => {
           if (result.rows.length === 0) {
             tx.executeSql(
               `INSERT INTO vocab (
-                owner_id, word, hanja, def, level, source_book_uri, source_book_title, context_sentence,
-                is_favorite, priority, created_at, last_reviewed_at, next_review_at,
-                correct_count, wrong_count, related_known_words, updated_at, deleted_at, language
+                owner_id, word, hanja, def, level, source_book_uri, source_book_title, is_favorite,
+                priority, created_at, last_reviewed_at, next_review_at,
+                correct_count, wrong_count, stability, difficulty, related_known_words, updated_at, deleted_at, language
               )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               params,
               () => resolve(true),
               (_, insertError) => {
@@ -1071,7 +1036,6 @@ export const upsertVocabEntryFromCloud = (entry, options = {}) => {
                  level = ?,
                  source_book_uri = ?,
                  source_book_title = ?,
-                 context_sentence = ?,
                  is_favorite = ?,
                  priority = ?,
                  created_at = ?,
@@ -1079,6 +1043,8 @@ export const upsertVocabEntryFromCloud = (entry, options = {}) => {
                  next_review_at = ?,
                  correct_count = ?,
                  wrong_count = ?,
+                 stability = ?,
+                 difficulty = ?,
                  related_known_words = ?,
                  updated_at = ?,
                  deleted_at = ?,
@@ -1092,7 +1058,6 @@ export const upsertVocabEntryFromCloud = (entry, options = {}) => {
               level,
               entry.source_book_uri ?? entry.sourceBookUri ?? null,
               entry.source_book_title ?? entry.sourceBookTitle ?? null,
-              entry.context_sentence ?? entry.contextSentence ?? null,
               entry.is_favorite || entry.isFavorite ? 1 : 0,
               entry.priority ?? 'normal',
               createdAt,
@@ -1100,6 +1065,8 @@ export const upsertVocabEntryFromCloud = (entry, options = {}) => {
               entry.next_review_at ?? entry.nextReviewAt ?? null,
               Number(entry.correct_count ?? entry.correctCount ?? 0) || 0,
               Number(entry.wrong_count ?? entry.wrongCount ?? 0) || 0,
+              stability,
+              difficulty,
               Array.isArray(entry.related_known_words ?? entry.relatedKnownWords)
                 ? JSON.stringify(entry.related_known_words ?? entry.relatedKnownWords)
                 : (entry.related_known_words ?? entry.relatedKnownWords ?? '[]'),
@@ -1427,7 +1394,7 @@ export const getVocabContexts = (word, hanja, definition, limit = 12, language =
 
     db.transaction(tx => {
       tx.executeSql(
-        `SELECT id, owner_id, word, hanja, def, source_book_uri, source_book_title, context_sentence, created_at, language
+        `SELECT id
          FROM vocab
          WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL
          ORDER BY id ASC
@@ -1456,24 +1423,7 @@ export const getVocabContexts = (word, hanja, definition, limit = 12, language =
                 seenAt: row.seen_at,
               }));
 
-              const fallbackSentence = cleanValue(vocabRow.context_sentence);
-              const hasFallback = fallbackSentence
-                && !contexts.some((context) => cleanValue(context.sentence) === fallbackSentence);
-
-              if (hasFallback && contexts.length < limit) {
-                contexts.push({
-                  sentence: fallbackSentence,
-                  sourceBookUri: vocabRow.source_book_uri,
-                  sourceBookTitle: vocabRow.source_book_title,
-                  seenAt: vocabRow.created_at,
-                });
-              }
-
-              contexts.sort((a, b) => (
-                new Date(b.seenAt ?? 0).getTime() - new Date(a.seenAt ?? 0).getTime()
-              ));
-
-              resolve(contexts.slice(0, limit));
+              resolve(contexts);
             },
             (_, contextError) => {
               console.error(`[Database] Error reading contexts for "${cleanedWord}":`, contextError);
@@ -1660,11 +1610,11 @@ export const addRelatedKnownWord = (word, relatedWord, options = {}) => {
             const relatedKnownWordsJson = JSON.stringify([normalizedEntry]);
             tx.executeSql(
               `INSERT INTO vocab (
-                owner_id, word, hanja, def, level, source_book_uri, source_book_title, context_sentence, is_favorite,
+                owner_id, word, hanja, def, level, source_book_uri, source_book_title, is_favorite,
                 priority, created_at, last_reviewed_at, next_review_at, correct_count, wrong_count,
-                related_known_words, updated_at, deleted_at, language
+                stability, difficulty, related_known_words, updated_at, deleted_at, language
               )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [
                 scopedOwnerId,
                 word,
@@ -1673,7 +1623,6 @@ export const addRelatedKnownWord = (word, relatedWord, options = {}) => {
                 mainWord.level ?? 'unorganized',
                 mainWord.sourceBookUri ?? null,
                 mainWord.sourceBookTitle ?? null,
-                mainWord.contextSentence ?? null,
                 mainWord.isFavorite ? 1 : 0,
                 mainWord.priority ?? 'normal',
                 mainWord.createdAt ?? new Date().toISOString(),
@@ -1681,6 +1630,8 @@ export const addRelatedKnownWord = (word, relatedWord, options = {}) => {
                 mainWord.nextReviewAt ?? null,
                 mainWord.correctCount ?? 0,
                 mainWord.wrongCount ?? 0,
+                normalizeFsrsValue(mainWord.stability, DEFAULT_STABILITY),
+                normalizeFsrsValue(mainWord.difficulty, DEFAULT_DIFFICULTY, 1, 10),
                 relatedKnownWordsJson,
                 mainWord.updatedAt ?? nowIso(),
                 mainWord.deletedAt ?? null,
@@ -1962,58 +1913,116 @@ export const updatePriority = (word, hanja, definition, priority, language = 'ko
   });
 };
 
+const MS_PER_DAY = 86_400_000;
+
 const addDays = (days) => {
+  const safeDays = Math.max(0, Number(days) || 0);
   const date = new Date();
-  date.setDate(date.getDate() + days);
+  date.setDate(date.getDate() + safeDays);
   return date.toISOString();
 };
 
-export const recordReviewOutcome = (word, hanja, definition, currentLevel, outcome, language = 'ko', options = {}) => {
-  const ownerId = resolveOwnerId(options);
-  const reviewMap = {
-    bad: {
-      level: 'bad',
-      nextReviewAt: addDays(1),
-      correctInc: 0,
-      wrongInc: 1,
-    },
-    mid: {
-      level: 'mid',
-      nextReviewAt: addDays(3),
-      correctInc: 1,
-      wrongInc: 0,
-    },
-    good: {
-      level: 'good',
-      nextReviewAt: currentLevel === 'good' ? addDays(21) : currentLevel === 'mid' ? addDays(7) : addDays(5),
-      correctInc: 1,
-      wrongInc: 0,
-    },
-  };
+const forgettingCurve = (stability, days) => (
+  Math.pow(1 + days / (9 * normalizeFsrsValue(stability, DEFAULT_STABILITY)), -1)
+);
 
-  const config = reviewMap[outcome];
-  if (!config) {
+const nextInterval = (stability) => {
+  const { requestRetention, maximumInterval } = FSRS_PARAMS;
+  const interval = 9 * normalizeFsrsValue(stability, DEFAULT_STABILITY) * ((1 / requestRetention) - 1);
+  return Math.min(Math.max(1, Math.round(interval)), maximumInterval);
+};
+
+const updateStability = (stability, difficulty, retrievability, grade) => {
+  if (grade === 1) {
+    return 0.4;
+  }
+
+  const currentStability = normalizeFsrsValue(stability, DEFAULT_STABILITY);
+  const currentDifficulty = normalizeFsrsValue(difficulty, DEFAULT_DIFFICULTY, 1, 10);
+  const next = currentStability * (
+    1
+    + Math.exp(0.9)
+    * (11 - currentDifficulty)
+    * Math.pow(currentStability, -0.2)
+    * (Math.exp(0.1 * (1 - retrievability)) - 1)
+  );
+
+  return normalizeFsrsValue(next, currentStability);
+};
+
+const updateDifficulty = (difficulty, grade) => {
+  const currentDifficulty = normalizeFsrsValue(difficulty, DEFAULT_DIFFICULTY, 1, 10);
+  const delta = -0.72 * (grade - 3);
+  const next = currentDifficulty + delta + 0.14 * (DEFAULT_DIFFICULTY - currentDifficulty);
+  return Math.min(Math.max(next, 1), 10);
+};
+
+export const fsrsSchedule = (wordData = {}, outcome, daysSinceLastReview) => {
+  const gradeMap = { bad: 1, mid: 2, good: 3 };
+  const grade = gradeMap[outcome];
+  if (!grade) {
+    return null;
+  }
+
+  const currentStability = normalizeFsrsValue(wordData.stability, DEFAULT_STABILITY);
+  const currentDifficulty = normalizeFsrsValue(wordData.difficulty, DEFAULT_DIFFICULTY, 1, 10);
+  const elapsedDays = Math.max(0, Number(daysSinceLastReview) || 0);
+  const retrievability = elapsedDays > 0
+    ? forgettingCurve(currentStability, elapsedDays)
+    : 1.0;
+
+  const stability = updateStability(currentStability, currentDifficulty, retrievability, grade);
+  const difficulty = updateDifficulty(currentDifficulty, grade);
+  const interval = grade === 1 ? 1 : nextInterval(stability);
+
+  return {
+    stability,
+    difficulty,
+    interval,
+  };
+};
+
+export const recordReviewOutcome = (word, hanja, definition, _currentLevel, outcome, language = 'ko', options = {}) => {
+  const ownerId = resolveOwnerId(options);
+  const wordData = options.wordData ?? {};
+  const lastReviewedAt = wordData.last_reviewed_at ?? wordData.lastReviewedAt;
+  const lastReviewedTimestamp = new Date(lastReviewedAt).getTime();
+  const daysSinceLastReview = Number.isFinite(lastReviewedTimestamp)
+    ? Math.max(0, (Date.now() - lastReviewedTimestamp) / MS_PER_DAY)
+    : null;
+  const schedule = fsrsSchedule(wordData, outcome, daysSinceLastReview);
+
+  if (!schedule) {
     return Promise.resolve();
   }
 
+  const levelMap = { bad: 'bad', mid: 'mid', good: 'good' };
+  const correctInc = outcome !== 'bad' ? 1 : 0;
+  const wrongInc = outcome === 'bad' ? 1 : 0;
+
   return new Promise((resolve, reject) => {
     const reviewedAt = nowIso();
+    const nextReviewAt = addDays(schedule.interval);
     db.transaction(tx => {
       tx.executeSql(
         `UPDATE vocab
          SET level = ?,
              last_reviewed_at = ?,
              next_review_at = ?,
+             stability = ?,
+             difficulty = ?,
              correct_count = COALESCE(correct_count, 0) + ?,
              wrong_count = COALESCE(wrong_count, 0) + ?,
              updated_at = ?
          WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
         [
-          config.level,
+          levelMap[outcome],
           reviewedAt,
-          config.nextReviewAt,
-          config.correctInc,
-          config.wrongInc,
+          nextReviewAt,
+          schedule.stability,
+          schedule.difficulty,
+          correctInc,
+          wrongInc,
           reviewedAt,
           ownerId,
           word,
@@ -2021,7 +2030,11 @@ export const recordReviewOutcome = (word, hanja, definition, currentLevel, outco
           definition,
           language,
         ],
-        () => resolve(),
+        () => resolve({
+          ...schedule,
+          nextReviewAt,
+          reviewedAt,
+        }),
         (_, error) => {
           console.error(`[Database] Error recording review outcome for "${word}":`, error);
           reject(error);
@@ -2035,39 +2048,30 @@ export const removeData = (word, hanja, definition, language = 'ko', options = {
   const ownerId = resolveOwnerId(options);
 
   return new Promise((resolve, reject) => {
+    const deletedAt = nowIso();
     db.transaction(tx => {
       tx.executeSql(
-        'DELETE FROM vocab_contexts WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ?',
-        [ownerId, word, hanja, definition, language]
+        `UPDATE vocab_contexts
+         SET deleted_at = ?, updated_at = ?
+         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
+        [deletedAt, deletedAt, ownerId, word, hanja, definition, language],
+        () => {},
+        (_, error) => {
+          console.error(`[Database] Error soft-deleting vocab contexts for "${word}":`, error);
+          reject(error);
+          return false;
+        }
       );
       tx.executeSql(
-        'DELETE FROM vocab WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ?',
-        [ownerId, word, hanja, definition, language],
+        `UPDATE vocab
+         SET deleted_at = ?, updated_at = ?
+         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
+        [deletedAt, deletedAt, ownerId, word, hanja, definition, language],
         (_, result) => resolve(result),
         (_, error) => {
           console.error(`[Database] Error removing vocab word "${word}":`, error);
           reject(error);
-        }
-      );
-    });
-  });
-};
-
-export const wordExists = (word, language = 'ko', options = {}) => {
-  const ownerId = resolveOwnerId(options);
-
-  return new Promise((resolve, reject) => {
-    db.transaction(tx => {
-      tx.executeSql(
-        'SELECT COUNT(*) AS count FROM vocab WHERE owner_id = ? AND word = ? AND language = ? AND deleted_at IS NULL',
-        [ownerId, word, language],
-        (_, result) => {
-          const { count } = result.rows.item(0);
-          resolve(count > 0);
-        },
-        (_, error) => {
-          console.error(`[Database] Error checking vocab existence for "${word}":`, error);
-          reject(error);
+          return false;
         }
       );
     });
@@ -2546,7 +2550,13 @@ export const isBookPreprocessed = async (bookUri, options = {}) => {
  *
  * @param {string} [bookUri] - If provided, scopes book_index sample to this book
  */
-export const logDatabaseSnapshot = () => {};
+export const logDatabaseSnapshot = async (bookUri) => {
+    if (!__DEV__) return;
+
+    const vocabCount = await getDictionaryCacheCount();
+    console.log('[DB Snapshot] dictionary_cache rows:', vocabCount);
+    // whatever else you want to inspect
+};
 
 export const insertBookIndexEntries = (bookUri, entries, options = {}) => {
   const ownerId = resolveOwnerId(options);

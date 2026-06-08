@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Text, View, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView } from 'react-native';
-import axios from 'axios';
 import koreanDictionary from '../../../services/api/koreanDictionary';
 import stemWord from '../../../services/api/stemWord';
 import { MaterialIcons } from '@expo/vector-icons';
+import { api } from '../../../services/api/client';
 import { useLocalOwner } from '../../../contexts/LocalOwnerContext';
 import {
     insertData,
@@ -23,7 +23,6 @@ import {
     upsertUserVocabEntry,
 } from '../../../services/supabase';
 import HanjaDetails from './HanjaDetails';
-import { BASE_URL } from '../../../config';
 import { isCurrentSyncGeneration } from '../../../services/localOwnerCoordinator';
 import { colors, fontFamilies, radii, spacing, textStyles } from '../../../theme';
 
@@ -359,7 +358,7 @@ const DictionaryContent = ({
 
         const pairs = await Promise.all(missingTerms.map(async (term) => {
             try {
-                const response = await axios.get(`${BASE_URL}/romanize/`, {
+                const response = await api.get('/romanize/', {
                     params: { text: term },
                     timeout: 6000,
                 });
@@ -422,7 +421,7 @@ const DictionaryContent = ({
     const prefetchExtra = async (stem) => {
         setExtraDefs(prev => ({ ...prev, [stem]: 'prefetching' }));
         try {
-            const response = await axios.post(`${BASE_URL}/krdict_search/`, {
+            const response = await api.post('/krdict_search/', {
                 queries: [stem],
             }, {
                 timeout: 10000,

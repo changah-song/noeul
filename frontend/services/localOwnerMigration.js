@@ -10,6 +10,10 @@ import {
   reassignSqliteUserData,
 } from './Database';
 import { GUEST_OWNER_ID, makeScopedStorageKey } from './localDataScope';
+import {
+  isSongStorageLimitError,
+  serializeSongsForStorage,
+} from './songStorageLimits';
 
 export const LOCAL_OWNER_MIGRATION_KEY = '@ff/local-owner-migration-v1';
 
@@ -160,6 +164,19 @@ const getScopedStorageValueForLegacy = ({ scopedName, type }, legacyRaw, targetR
   return { value: null, conflict: true };
 };
 
+const prepareScopedStorageWrite = (entry, value) => {
+  if (entry.scopedName !== 'manual-songs' || value == null) {
+    return value;
+  }
+
+  const songs = parseJsonStore(entry.scopedName, value, []);
+  if (!Array.isArray(songs)) {
+    throw new Error('Unable to migrate legacy manual-songs storage because it is not an array');
+  }
+
+  return serializeSongsForStorage(songs);
+};
+
 const copyLegacyStorageToOwner = async (ownerId) => {
   const scopedOwnerId = normalizeOwnerId(ownerId);
   const legacyPairs = await getLegacyStoragePairs();
@@ -188,7 +205,21 @@ const copyLegacyStorageToOwner = async (ownerId) => {
     }
 
     if (value !== null) {
-      writes.push([scopedKey, value]);
+      try {
+        writes.push([scopedKey, prepareScopedStorageWrite(entry, value)]);
+      } catch (error) {
+        if (!isSongStorageLimitError(error)) {
+          throw error;
+        }
+
+        console.warn('[localOwnerMigration] Skipping oversized legacy songs:', error.message);
+        conflicts.push({
+          legacyKey,
+          scopedKey,
+          reason: 'storage-limit',
+          message: error.message,
+        });
+      }
     }
   });
 

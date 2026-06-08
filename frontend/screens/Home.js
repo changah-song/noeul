@@ -51,6 +51,10 @@ import {
     softDeleteUserSong,
     upsertUserSong,
 } from '../services/songCloudSync';
+import {
+    isSongStorageLimitError,
+    serializeSongsForStorage,
+} from '../services/songStorageLimits';
 import { GUEST_OWNER_ID, makeScopedStorageKey } from '../services/localDataScope';
 import {
     assertCanUploadForOwner,
@@ -150,6 +154,12 @@ const STACKS_COVER_REF_HEIGHT = 298;
 const KOREAN_TEXT_PATTERN = /[\u3131-\u318e\uac00-\ud7a3]/;
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+const showSongStorageLimitAlert = (error) => {
+    Alert.alert(
+        'Song storage limit reached',
+        `${error?.message ?? 'Saved songs are too large to store locally.'} Remove some songs or shorten lyrics before adding more.`
+    );
+};
 const countSongLines = (lyrics) => String(lyrics || '')
     .split(/\r?\n/)
     .filter((line) => line.trim().length > 0)
@@ -1042,6 +1052,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const [, setOcrMessage] = useState('');
     const [ocrSettingsLoaded, setOcrSettingsLoaded] = useState(false);
     const songCloudSyncOwnerRef = useRef(null);
+    const songStorageLimitAlertedRef = useRef(false);
     const activeOwnerIdRef = useRef(activeOwnerId);
     activeOwnerIdRef.current = activeOwnerId;
     const ocrActionInFlightRef = useRef(false);
@@ -1386,8 +1397,21 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                             const normalizedLegacySongs = parsedLegacySongs
                                 .map(normalizeStoredSong)
                                 .filter(Boolean);
-                            storedSongs = JSON.stringify(normalizedLegacySongs);
-                            await AsyncStorage.setItem(storageKey, storedSongs);
+                            try {
+                                storedSongs = serializeSongsForStorage(normalizedLegacySongs);
+                                await AsyncStorage.setItem(storageKey, storedSongs);
+                            } catch (error) {
+                                if (!isSongStorageLimitError(error)) {
+                                    throw error;
+                                }
+
+                                console.warn('[Home] Legacy songs exceed local storage cap:', error.message);
+                                storedSongs = JSON.stringify(normalizedLegacySongs);
+                                if (!songStorageLimitAlertedRef.current) {
+                                    songStorageLimitAlertedRef.current = true;
+                                    showSongStorageLimitAlert(error);
+                                }
+                            }
                         }
                     }
                 }
@@ -1571,9 +1595,25 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             return;
         }
 
-        AsyncStorage.setItem(getSongsStorageKey(activeOwnerId), JSON.stringify(songs)).catch((error) => {
+        let serializedSongs;
+        try {
+            serializedSongs = serializeSongsForStorage(songs);
+        } catch (error) {
             console.error('[Home] Failed to save songs:', error);
-        });
+            if (isSongStorageLimitError(error) && !songStorageLimitAlertedRef.current) {
+                songStorageLimitAlertedRef.current = true;
+                showSongStorageLimitAlert(error);
+            }
+            return;
+        }
+
+        AsyncStorage.setItem(getSongsStorageKey(activeOwnerId), serializedSongs)
+            .then(() => {
+                songStorageLimitAlertedRef.current = false;
+            })
+            .catch((error) => {
+                console.error('[Home] Failed to save songs:', error);
+            });
     }, [activeOwnerId, songs, songsLoaded]);
 
     useEffect(() => {
@@ -2274,12 +2314,23 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             updatedAt: new Date().toISOString(),
         };
 
-        setSongs((previous) => [nextSong, ...previous]);
+        const nextSongs = [nextSong, ...songs];
+        try {
+            serializeSongsForStorage(nextSongs);
+        } catch (error) {
+            if (isSongStorageLimitError(error)) {
+                showSongStorageLimitAlert(error);
+                return;
+            }
+            throw error;
+        }
+
+        setSongs(nextSongs);
         syncSongToCloud(nextSong);
         setShowAddSongModal(false);
         setSongDraft(EMPTY_SONG_DRAFT);
         setActiveLibraryTab('Songs');
-    }, [songDraft.artist, songDraft.lyrics, songDraft.title, syncSongToCloud]);
+    }, [songDraft.artist, songDraft.lyrics, songDraft.title, songs, syncSongToCloud]);
 
     const handleUpdateSong = useCallback((songId, patch) => {
         const currentSong = songs.find((song) => song.id === songId);
@@ -2294,10 +2345,21 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             updatedAt: new Date().toISOString(),
         };
         const updatedSong = normalizeStoredSong(nextSong) ?? currentSong;
-
-        setSongs((previous) => previous.map((song) => (
+        const nextSongs = songs.map((song) => (
             song.id === songId ? updatedSong : song
-        )));
+        ));
+
+        try {
+            serializeSongsForStorage(nextSongs);
+        } catch (error) {
+            if (isSongStorageLimitError(error)) {
+                showSongStorageLimitAlert(error);
+                return;
+            }
+            throw error;
+        }
+
+        setSongs(nextSongs);
         syncSongToCloud(updatedSong);
     }, [songs, syncSongToCloud]);
 
@@ -2331,6 +2393,30 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         });
     }, [activeOwnerId, syncGeneration, syncPaused, user]);
 
+    const handleSelectedSongSavedTermsChange = useCallback((savedTerms) => {
+        if (!selectedSong) {
+            return;
+        }
+
+        const nextSongs = songs.map((song) => (
+            song.id === selectedSong.id
+                ? { ...song, savedTerms }
+                : song
+        ));
+
+        try {
+            serializeSongsForStorage(nextSongs);
+        } catch (error) {
+            if (isSongStorageLimitError(error)) {
+                showSongStorageLimitAlert(error);
+                return;
+            }
+            throw error;
+        }
+
+        setSongs(nextSongs);
+    }, [selectedSong, songs]);
+
     if (selectedSong) {
         return (
             <SongReader
@@ -2338,13 +2424,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 onClose={() => setSelectedSongId(null)}
                 onSongUpdate={(patch) => handleUpdateSong(selectedSong.id, patch)}
                 onSongDelete={() => handleDeleteSong(selectedSong.id)}
-                onSavedTermsChange={(savedTerms) => {
-                    setSongs((previous) => previous.map((song) => (
-                        song.id === selectedSong.id
-                            ? { ...song, savedTerms }
-                            : song
-                    )));
-                }}
+                onSavedTermsChange={handleSelectedSongSavedTermsChange}
             />
         );
     }

@@ -1,6 +1,4 @@
-import axios from 'axios';
-
-import { BASE_URL } from '../config';
+import { api } from './api/client';
 import {
     insertCacheEntries,
     insertData,
@@ -139,7 +137,7 @@ const fetchLiveDictionary = async (stems) => {
         return [];
     }
 
-    const response = await axios.post(`${BASE_URL}/krdict_search/`, {
+    const response = await api.post('/krdict_search/', {
         queries: stems,
     }, {
         timeout: 10000,
@@ -169,7 +167,7 @@ const fetchRomanization = async (term) => {
     }
 
     try {
-        const response = await axios.get(`${BASE_URL}/romanize/`, {
+        const response = await api.get('/romanize/', {
             params: { text: cleanedTerm },
             timeout: 6000,
         });

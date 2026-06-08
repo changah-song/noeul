@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Animated, Easing, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Animated, Easing, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { colors, radii, spacing, textStyles } from '../../../theme';
+import { colors, spacing, textStyles } from '../../../theme';
 import TranslationContent from './TranslationContent';
 import DictionaryContent from './DictionaryContent';
 
@@ -14,7 +14,6 @@ const TRANSLATION_TARGET_LANGUAGE = 'EN';
 
 const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, isDarkMode, onClose, onWordSave, onWordUnsave, currentBook, sourceBook, savedWords }) => {
     const insets = useSafeAreaInsets();
-    const [isLoading, setIsLoading] = useState(false);
     const [dictionaryExpandedRows, setDictionaryExpandedRows] = useState(0);
     const [dictionaryContentHeight, setDictionaryContentHeight] = useState(0);
     const [visibleWord, setVisibleWord] = useState('');
@@ -23,31 +22,14 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
     const translateY = useRef(new Animated.Value(24)).current;
     const opacity = useRef(new Animated.Value(0)).current;
 
-    const hasLookupCandidate = useMemo(
-        () => /[\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]/.test(highlightedWord || ''),
-        [highlightedWord]
-    );
-
     useEffect(() => {
         if (highlightedWord && highlightedWord !== prevWordRef.current) {
             prevWordRef.current = highlightedWord;
             setDictionaryExpandedRows(0);
             setDictionaryContentHeight(0);
             setTranslationTarget('');
-
-            if (!hasLookupCandidate) {
-                setIsLoading(false);
-                return;
-            }
-
-            setIsLoading(true);
-            const timeout = setTimeout(() => {
-                setIsLoading(false);
-            }, 5000);
-
-            return () => clearTimeout(timeout);
         }
-    }, [hasLookupCandidate, highlightedWord]);
+    }, [highlightedWord]);
 
     useEffect(() => {
         if (highlightedWord) {
@@ -90,16 +72,6 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
         });
     }, [highlightedWord, opacity, translateY]);
 
-    useEffect(() => {
-        if (highlightedWord && hasLookupCandidate) {
-            setIsLoading(true);
-        }
-    }, [hasLookupCandidate, highlightedWord, isNativeSelection]);
-
-    const handleContentLoaded = useCallback(() => {
-        setIsLoading(false);
-    }, []);
-
     const handleDictionaryExpandedStateChange = useCallback((rowCount) => {
         const nextRowCount = Number.isFinite(rowCount) ? rowCount : 0;
         setDictionaryExpandedRows((previousRowCount) => {
@@ -120,19 +92,15 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
             background: '#171513',
             border: 'rgba(239, 230, 214, 0.18)',
             text: '#f3ede3',
-            mutedText: '#b6aa99',
             accent: colors.accent,
             closeIcon: '#b6aa99',
-            spinner: '#d2b793',
         }
         : {
             background: colors.surfaceElevated,
             border: colors.border,
             text: colors.text,
-            mutedText: colors.textMuted,
             accent: colors.accentStrong,
             closeIcon: colors.textSubtle,
-            spinner: colors.accentStrong,
         };
 
     const expandedFallbackHeight = DICTIONARY_COMPACT_HEIGHT + (dictionaryExpandedRows * DICTIONARY_EXTRA_ROW_HEIGHT);
@@ -153,7 +121,6 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
     const closeTranslation = () => {
         if (translationTarget) {
             setTranslationTarget('');
-            setIsLoading(false);
             return;
         }
 
@@ -194,28 +161,17 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
                 </View>
             ) : null}
 
-            {isNativeSelection && isLoading && hasLookupCandidate ? (
-                <View style={styles.loadingState}>
-                    <ActivityIndicator size="small" color={panelColors.spinner} />
-                    <Text style={[styles.loadingText, { color: panelColors.mutedText }]}>
-                        {isNativeSelection ? 'Translating…' : 'Looking up word…'}
-                    </Text>
-                </View>
-            ) : null}
-
-            <View style={[styles.content, isNativeSelection && isLoading && hasLookupCandidate && styles.contentDimmed]}>
+            <View style={styles.content}>
                 {!isTranslationMode ? (
                     <DictionaryContent
                         highlightedWord={visibleWord}
                         sourceSentence={sourceSentence}
                         isDarkMode={isDarkMode}
-                        onContentLoaded={handleContentLoaded}
                         onWordSave={onWordSave}
                         onWordUnsave={onWordUnsave}
                         onTranslatePress={(text) => {
                             const target = typeof text === 'string' && text.trim() ? text.trim() : visibleWord;
                             setTranslationTarget(target);
-                            setIsLoading(true);
                         }}
                         onExpandedStateChange={handleDictionaryExpandedStateChange}
                         onContentHeightChange={setDictionaryContentHeight}
@@ -229,7 +185,6 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
                             key={`${translationText}-translation`}
                             highlightedWord={translationText}
                             isDarkMode={isDarkMode}
-                            onContentLoaded={handleContentLoaded}
                         />
                     </View>
                 )}
@@ -294,17 +249,6 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
         borderRadius: 16,
     },
-    loadingState: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: spacing.xs,
-        marginTop: spacing.sm,
-        marginBottom: spacing.xs,
-    },
-    loadingText: {
-        ...textStyles.caption,
-        color: colors.textMuted,
-    },
     content: {
         marginTop: 0,
         flex: 1,
@@ -313,9 +257,6 @@ const styles = StyleSheet.create({
     contentFill: {
         flex: 1,
         minHeight: 0,
-    },
-    contentDimmed: {
-        opacity: 0.35,
     },
 });
 

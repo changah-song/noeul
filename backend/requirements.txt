@@ -4,3 +4,5 @@ uvicorn
 httpx
 python-dotenv
 koroman
+PyJWT[crypto]
+certifi

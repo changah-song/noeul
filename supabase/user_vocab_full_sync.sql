@@ -9,6 +9,8 @@ add column if not exists last_reviewed_at timestamptz,
 add column if not exists next_review_at timestamptz,
 add column if not exists correct_count integer default 0,
 add column if not exists wrong_count integer default 0,
+add column if not exists stability double precision default 1.0,
+add column if not exists difficulty double precision default 5.0,
 add column if not exists updated_at timestamptz default now(),
 add column if not exists deleted_at timestamptz,
 add column if not exists language text default 'ko';
@@ -37,6 +39,14 @@ update public.user_vocab
 set wrong_count = 0
 where wrong_count is null;
 
+update public.user_vocab
+set stability = 1.0
+where stability is null;
+
+update public.user_vocab
+set difficulty = 5.0
+where difficulty is null;
+
 alter table public.user_vocab
 drop constraint if exists user_vocab_user_word_definition_idx;
 
@@ -51,6 +61,45 @@ on public.user_vocab (
   coalesce(definition, '')
 )
 where deleted_at is null;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conrelid = 'public.user_vocab'::regclass
+      and conname = 'user_vocab_user_id_fkey'
+  ) then
+    alter table public.user_vocab
+    add constraint user_vocab_user_id_fkey
+    foreign key (user_id) references auth.users(id) on delete cascade;
+  end if;
+end;
+$$;
+
+alter table public.user_vocab enable row level security;
+
+drop policy if exists "Users can read their own vocab"
+on public.user_vocab;
+
+create policy "Users can read their own vocab"
+on public.user_vocab for select
+using (auth.uid() = user_id);
+
+drop policy if exists "Users can insert their own vocab"
+on public.user_vocab;
+
+create policy "Users can insert their own vocab"
+on public.user_vocab for insert
+with check (auth.uid() = user_id);
+
+drop policy if exists "Users can update their own vocab"
+on public.user_vocab;
+
+create policy "Users can update their own vocab"
+on public.user_vocab for update
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
 
 create or replace function public.set_user_vocab_updated_at()
 returns trigger
