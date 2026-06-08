@@ -88,6 +88,18 @@ class EpubPaginator(
     return pages.ifEmpty { listOf(ReaderPage(0, emptyList())) }
   }
 
+  fun buildContinuousPage(rawBlocks: List<Any?>): ReaderPage {
+    val pageBlocks = normalizeParagraphBoundarySpacing(
+      rawBlocks.mapNotNull { raw ->
+        throwIfCancelled()
+        val block = raw.asMap() ?: return@mapNotNull null
+        buildPageBlock(block)
+      }
+    )
+
+    return ReaderPage(0, pageBlocks)
+  }
+
   private fun normalizeParagraphBoundarySpacing(blocks: List<PageBlock>): List<PageBlock> {
     return blocks.mapIndexed { index, block ->
       val nextBlock = blocks.getOrNull(index + 1)

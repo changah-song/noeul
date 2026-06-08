@@ -36,11 +36,11 @@ import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
 import { colors, fontFamilies, radii, spacing, textStyles } from '../theme';
 
 const FILTERS = [
+  { key: 'starred', label: 'Starred', icon: 'star' },
   { key: 'recent', label: 'Recently saved' },
   { key: 'maturity', label: 'Maturity' },
   { key: 'not-seen', label: 'Not seen lately' },
   { key: 'most-seen', label: 'Most seen' },
-  { key: 'starred', label: 'Starred' },
 ];
 
 const PROFICIENCY_LEVELS = [
@@ -92,6 +92,7 @@ const proficiencyByKey = PROFICIENCY_LEVELS.reduce((acc, level) => {
 }, {});
 
 const HANJA_RE = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/;
+const LEARN_SIDE_PADDING = 16;
 const cleanText = (value) => (typeof value === 'string' ? value.trim() : '');
 const getHanjaCharacters = (value) => cleanText(value).split('').filter((char) => HANJA_RE.test(char));
 
@@ -1030,13 +1031,27 @@ const Learn = ({ navigation, user }) => {
           return (
             <TouchableOpacity
               key={filter.key}
+              accessibilityRole="button"
+              accessibilityLabel={filter.label}
               onPress={() => {
                 clearWordSelection();
                 setActiveFilter(filter.key);
               }}
-              style={[styles.filterChip, active && styles.filterChipActive]}
+              style={[
+                styles.filterChip,
+                filter.icon && styles.filterIconChip,
+                active && styles.filterChipActive,
+              ]}
             >
-              <Text style={[styles.filterText, active && styles.filterTextActive]}>{filter.label}</Text>
+              {filter.icon ? (
+                <MaterialIcons
+                  name={active ? filter.icon : `${filter.icon}-border`}
+                  size={17}
+                  color={active ? '#fffaf3' : '#8d806e'}
+                />
+              ) : (
+                <Text style={[styles.filterText, active && styles.filterTextActive]}>{filter.label}</Text>
+              )}
             </TouchableOpacity>
           );
         })}
@@ -1128,50 +1143,50 @@ const Learn = ({ navigation, user }) => {
 const styles = StyleSheet.create({
   content: {
     paddingHorizontal: 0,
-    paddingBottom: spacing.xl,
-    gap: spacing.md,
+    paddingBottom: spacing.lg,
+    gap: 12,
   },
   header: {
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.xs,
+    paddingHorizontal: LEARN_SIDE_PADDING,
+    paddingTop: 2,
     gap: 2,
   },
   title: {
     fontFamily: fontFamilies.displayBold,
-    fontSize: 34,
-    lineHeight: 39,
+    fontSize: 27,
+    lineHeight: 32,
     color: '#2b2721',
   },
   subtitle: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 14,
-    lineHeight: 19,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 13,
+    lineHeight: 17,
     color: '#807566',
   },
   summaryCard: {
-    marginHorizontal: spacing.lg,
-    borderRadius: 20,
+    marginHorizontal: LEARN_SIDE_PADDING,
+    borderRadius: 16,
     backgroundColor: '#fffaf3',
-    padding: spacing.md,
-    gap: spacing.md,
+    padding: 12,
+    gap: 12,
     shadowColor: 'rgba(70, 49, 24, 0.08)',
-    shadowOffset: { width: 0, height: 12 },
+    shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 1,
-    shadowRadius: 24,
+    shadowRadius: 18,
     elevation: 3,
   },
   summaryStats: {
     flexDirection: 'row',
-    gap: spacing.sm,
+    gap: 10,
   },
   summaryStat: {
     flex: 1,
-    gap: spacing.xs,
+    gap: 4,
   },
   summaryValue: {
     fontFamily: fontFamilies.displayBold,
-    fontSize: 29,
-    lineHeight: 33,
+    fontSize: 25,
+    lineHeight: 29,
     color: '#a99f8f',
   },
   summaryValueGreen: {
@@ -1181,82 +1196,89 @@ const styles = StyleSheet.create({
     color: '#c58b28',
   },
   summaryLabel: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 11,
-    lineHeight: 15,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 10.5,
+    lineHeight: 14,
     color: '#817568',
   },
   readingGuidance: {
-    minHeight: 54,
+    minHeight: 46,
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: spacing.sm,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.sm,
-    borderRadius: 14,
+    gap: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 12,
     backgroundColor: '#f6ebd8',
   },
   readingGuidanceText: {
     flex: 1,
-    fontFamily: fontFamilies.sans,
-    fontSize: 13,
-    lineHeight: 19,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 12,
+    lineHeight: 16,
     color: '#6f5f4b',
   },
   summaryActions: {
     flexDirection: 'row',
-    gap: spacing.sm,
+    gap: 8,
   },
   keepReadingButton: {
     flex: 1,
-    minHeight: 46,
-    borderRadius: 15,
+    minHeight: 40,
+    borderRadius: 13,
     backgroundColor: '#bf5630',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: spacing.sm,
+    gap: 8,
   },
   keepReadingButtonFull: {
     flex: 1,
   },
   keepReadingText: {
     fontFamily: fontFamilies.sansBold,
-    fontSize: 15,
+    fontSize: 13.5,
     color: '#fffaf3',
   },
   reviewButton: {
-    minWidth: 104,
-    minHeight: 46,
-    borderRadius: 15,
+    minWidth: 96,
+    minHeight: 40,
+    borderRadius: 13,
     borderWidth: 1,
     borderColor: '#eadcc4',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: spacing.md,
+    paddingHorizontal: 12,
   },
   reviewButtonDisabled: {
     opacity: 0.48,
   },
   reviewButtonText: {
     fontFamily: fontFamilies.sansBold,
-    fontSize: 14,
+    fontSize: 13,
     color: '#756b5f',
   },
   reviewButtonTextDisabled: {
     color: '#9b9185',
   },
   filters: {
-    paddingHorizontal: spacing.lg,
-    gap: spacing.xs,
+    paddingHorizontal: LEARN_SIDE_PADDING,
+    gap: 6,
   },
   filterChip: {
     borderRadius: radii.pill,
     borderWidth: 1,
     borderColor: '#e4d8c4',
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 8,
+    minHeight: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 13,
+    paddingVertical: 6,
     backgroundColor: 'rgba(255, 250, 243, 0.5)',
+  },
+  filterIconChip: {
+    width: 36,
+    paddingHorizontal: 0,
   },
   filterChipActive: {
     backgroundColor: '#2b2721',
@@ -1264,14 +1286,14 @@ const styles = StyleSheet.create({
   },
   filterText: {
     fontFamily: fontFamilies.sansBold,
-    fontSize: 13,
+    fontSize: 12,
     color: '#7c7163',
   },
   filterTextActive: {
     color: '#fffaf3',
   },
   listHeader: {
-    paddingHorizontal: spacing.lg,
+    paddingHorizontal: LEARN_SIDE_PADDING,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -1279,17 +1301,17 @@ const styles = StyleSheet.create({
   listEyebrow: {
     ...textStyles.eyebrow,
     color: '#7e7468',
-    fontSize: 12,
-    letterSpacing: 1.2,
+    fontSize: 11,
+    letterSpacing: 0.9,
   },
   listCount: {
     ...textStyles.caption,
     color: '#a99e8c',
   },
   selectionBar: {
-    marginHorizontal: spacing.lg,
-    minHeight: 48,
-    borderRadius: 16,
+    marginHorizontal: LEARN_SIDE_PADDING,
+    minHeight: 42,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: '#e4d8c4',
     backgroundColor: '#fffaf3',
@@ -1300,25 +1322,25 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   selectionBarButton: {
-    minHeight: 34,
+    minHeight: 30,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: spacing.xs,
-    paddingHorizontal: spacing.sm,
+    paddingHorizontal: 10,
     borderRadius: radii.pill,
     backgroundColor: '#f4eadc',
   },
   selectionBarButtonText: {
     fontFamily: fontFamilies.sansBold,
-    fontSize: 13,
+    fontSize: 12,
     color: '#756b5f',
   },
   selectionCount: {
     flex: 1,
     textAlign: 'center',
     fontFamily: fontFamilies.sansBold,
-    fontSize: 14,
+    fontSize: 13,
     color: '#2b2721',
   },
   selectionDeleteButton: {
@@ -1326,7 +1348,7 @@ const styles = StyleSheet.create({
   },
   selectionDeleteText: {
     fontFamily: fontFamilies.sansBold,
-    fontSize: 13,
+    fontSize: 12,
     color: '#fffaf3',
   },
   list: {
@@ -1336,14 +1358,14 @@ const styles = StyleSheet.create({
     borderColor: '#e4d8c4',
   },
   wordRow: {
-    minHeight: 84,
+    minHeight: 70,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
+    paddingHorizontal: LEARN_SIDE_PADDING,
+    paddingVertical: 8,
     borderBottomWidth: 1,
     borderBottomColor: '#e9dece',
-    gap: spacing.md,
+    gap: 12,
   },
   wordRowPressed: {
     backgroundColor: '#f7f0e5',
@@ -1352,9 +1374,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#f3eadf',
   },
   selectionCircle: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     borderWidth: 2,
     borderColor: '#cfc1ae',
     alignItems: 'center',
@@ -1368,7 +1390,7 @@ const styles = StyleSheet.create({
   wordCopy: {
     flex: 1,
     minWidth: 0,
-    gap: 5,
+    gap: 3,
   },
   wordTitleLine: {
     flexDirection: 'row',
@@ -1379,30 +1401,30 @@ const styles = StyleSheet.create({
   },
   wordText: {
     fontFamily: fontFamilies.krSerifBold,
-    fontSize: 22,
-    lineHeight: 28,
+    fontSize: 19,
+    lineHeight: 24,
     color: '#29251f',
   },
   wordHanja: {
     fontFamily: fontFamilies.krSerifMedium,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 12,
+    lineHeight: 16,
     color: '#a79a87',
   },
   badge: {
     borderRadius: radii.pill,
-    paddingHorizontal: 7,
+    paddingHorizontal: 6,
     paddingVertical: 2,
   },
   badgeText: {
     fontFamily: fontFamilies.sansBold,
-    fontSize: 10,
-    lineHeight: 13,
+    fontSize: 9,
+    lineHeight: 12,
   },
   wordDefinition: {
     fontFamily: fontFamilies.sansMedium,
-    fontSize: 15,
-    lineHeight: 20,
+    fontSize: 13,
+    lineHeight: 17,
     color: '#756b5f',
   },
   wordMetaLine: {
@@ -1415,26 +1437,26 @@ const styles = StyleSheet.create({
     flex: 1,
     fontFamily: fontFamilies.sansBold,
     fontSize: 11,
-    lineHeight: 15,
+    lineHeight: 14,
     color: '#a99e8c',
   },
   proficiencySummary: {
-    width: 78,
+    width: 66,
     alignItems: 'flex-end',
-    gap: spacing.xs,
+    gap: 4,
   },
   dotRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 4,
   },
   proficiencyDot: {
     backgroundColor: '#ded8c9',
   },
   proficiencyLabel: {
     fontFamily: fontFamilies.sansBold,
-    fontSize: 12,
-    lineHeight: 16,
+    fontSize: 10.5,
+    lineHeight: 14,
   },
   emptyState: {
     paddingHorizontal: spacing.lg,
@@ -1452,24 +1474,24 @@ const styles = StyleSheet.create({
     backgroundColor: '#eee6d8',
   },
   detailHeader: {
-    height: 54,
+    height: 48,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: spacing.md,
+    paddingHorizontal: 12,
     backgroundColor: '#fffaf3',
     borderBottomWidth: 1,
     borderBottomColor: '#e4d8c4',
   },
   detailHeaderButton: {
-    width: 38,
-    height: 38,
+    width: 34,
+    height: 34,
     alignItems: 'center',
     justifyContent: 'center',
   },
   detailHeaderTitle: {
     fontFamily: fontFamilies.sansBold,
-    fontSize: 15,
+    fontSize: 14,
     color: '#776d60',
   },
   detailContent: {
@@ -1477,9 +1499,9 @@ const styles = StyleSheet.create({
   },
   detailHero: {
     backgroundColor: '#fffaf3',
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.lg,
-    paddingBottom: spacing.lg,
+    paddingHorizontal: LEARN_SIDE_PADDING,
+    paddingTop: 16,
+    paddingBottom: 16,
     gap: spacing.xs,
   },
   detailWordLine: {
@@ -1490,8 +1512,8 @@ const styles = StyleSheet.create({
   },
   detailWord: {
     fontFamily: fontFamilies.krSerifBold,
-    fontSize: 38,
-    lineHeight: 47,
+    fontSize: 32,
+    lineHeight: 40,
     color: '#2b2721',
   },
   detailHanjaButton: {
@@ -1500,27 +1522,27 @@ const styles = StyleSheet.create({
   },
   detailHanja: {
     fontFamily: fontFamilies.krSerifMedium,
-    fontSize: 16,
-    lineHeight: 21,
+    fontSize: 14,
+    lineHeight: 19,
     color: '#a79a87',
   },
   detailMeta: {
     fontFamily: fontFamilies.sansBold,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 12,
+    lineHeight: 16,
     color: '#817568',
   },
   detailDefinition: {
     fontFamily: fontFamilies.sansBold,
-    fontSize: 20,
-    lineHeight: 26,
+    fontSize: 17,
+    lineHeight: 23,
     color: '#29251f',
   },
   maturityCard: {
-    margin: spacing.lg,
-    borderRadius: 16,
-    padding: spacing.md,
-    gap: spacing.md,
+    margin: LEARN_SIDE_PADDING,
+    borderRadius: 14,
+    padding: 12,
+    gap: 12,
   },
   maturityTopRow: {
     flexDirection: 'row',
@@ -1534,46 +1556,46 @@ const styles = StyleSheet.create({
   },
   maturityTitle: {
     fontFamily: fontFamilies.sansBold,
-    fontSize: 17,
-    lineHeight: 22,
+    fontSize: 15,
+    lineHeight: 20,
   },
   maturityDescription: {
     fontFamily: fontFamilies.sansBold,
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 11,
+    lineHeight: 15,
     color: '#807566',
   },
   detailStatsRow: {
     flexDirection: 'row',
-    gap: spacing.lg,
+    gap: 16,
   },
   detailStat: {
     gap: 2,
   },
   detailStatValue: {
     fontFamily: fontFamilies.displayBold,
-    fontSize: 24,
-    lineHeight: 29,
+    fontSize: 21,
+    lineHeight: 26,
     color: '#2b2721',
   },
   detailStatLabel: {
     fontFamily: fontFamilies.sansBold,
-    fontSize: 11,
-    lineHeight: 15,
+    fontSize: 10.5,
+    lineHeight: 14,
     color: '#817568',
   },
   detailSectionTitle: {
     ...textStyles.eyebrow,
     color: '#817568',
-    fontSize: 12,
-    letterSpacing: 1,
-    marginHorizontal: spacing.lg,
+    fontSize: 11,
+    letterSpacing: 0.9,
+    marginHorizontal: LEARN_SIDE_PADDING,
   },
   highlightSentence: {
     flex: 1,
     fontFamily: fontFamilies.krSerifRegular,
-    fontSize: 17,
-    lineHeight: 24,
+    fontSize: 15,
+    lineHeight: 21,
     color: '#2b2721',
   },
   highlightedWord: {
@@ -1589,8 +1611,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#fffaf3',
     borderTopWidth: 1,
     borderColor: '#e4d8c4',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
+    paddingHorizontal: LEARN_SIDE_PADDING,
+    paddingVertical: 8,
     gap: spacing.xs,
   },
   contextRowHeader: {
@@ -1617,8 +1639,8 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: '#e1d5c5',
     backgroundColor: '#e8dfd0',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
+    paddingHorizontal: LEARN_SIDE_PADDING,
+    paddingVertical: 8,
   },
   deleteWordButton: {
     alignItems: 'center',
@@ -1628,12 +1650,12 @@ const styles = StyleSheet.create({
   deleteWordText: {
     fontFamily: fontFamilies.sansBold,
     fontSize: 13,
-    color: '#afa391',
+    color: '#d9857b',
   },
   modalRoot: {
     flex: 1,
     justifyContent: 'center',
-    padding: spacing.lg,
+    padding: LEARN_SIDE_PADDING,
   },
   modalBackdrop: {
     ...StyleSheet.absoluteFillObject,

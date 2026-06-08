@@ -401,6 +401,7 @@ function AppContent() {
                             <Profile
                                 {...props}
                                 user={user}
+                                books={books}
                                 signOut={signOut}
                                 updateUsername={updateUsername}
                                 updateProfile={updateProfile}
