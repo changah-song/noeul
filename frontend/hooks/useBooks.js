@@ -8,6 +8,14 @@ import { uploadUserBook } from '../services/bookCloudSync';
 import { readEpubMetadata } from '../services/epubMetadata';
 import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
 
+const createBookId = () => {
+    if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
+        return globalThis.crypto.randomUUID();
+    }
+
+    return `book-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+};
+
 const useBooks = ({ books, setBooks, setCurrentBook, onBookImported, user, ownerId, syncGeneration }) => {
     const [isImporting, setIsImporting] = useState(false);
     const [openingBookUri, setOpeningBookUri] = useState(null);
@@ -113,7 +121,7 @@ const useBooks = ({ books, setBooks, setCurrentBook, onBookImported, user, owner
 
             const preprocessed = await isBookPreprocessed(uri, { ownerId });
             const newBook = {
-                id: Math.random().toString(),
+                id: createBookId(),
                 uri,
                 size: pickedAsset?.size ?? null,
                 title,

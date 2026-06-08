@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
-import axios from 'axios';
-import { BASE_URL } from '../../config';
+import { api } from './client';
 
 const koreanDictionary = ({ query }) => {
     const [dictionaryData, setDictionaryData] = useState([]);
@@ -11,7 +10,7 @@ const koreanDictionary = ({ query }) => {
         setIsLoading(true);
 
         try {
-            const response = await axios.post(`${BASE_URL}/krdict_search/`, {
+            const response = await api.post('/krdict_search/', {
                 queries: query,
             });
             const results = response.data?.results ?? [];
