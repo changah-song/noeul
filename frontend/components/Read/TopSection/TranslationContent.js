@@ -1,12 +1,12 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Text, View, ScrollView, StyleSheet } from 'react-native';
-import Translator from 'react-native-translator';
+import React, { useState, useEffect } from 'react';
+import { ActivityIndicator, Text, View, ScrollView, StyleSheet } from 'react-native';
+import { translateText } from '../../../services/api/googleTranslate';
 import { colors, spacing, textStyles } from '../../../theme';
 
 const TranslationContent = ({ highlightedWord, isDarkMode, onContentLoaded }) => {
-    const [googleTranslated, setGoogleTranslated] = useState('');
-    const [showOffline, setShowOffline] = useState(false);
-    const translationArrivedRef = useRef(false);
+    const [translatedText, setTranslatedText] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const [errorMessage, setErrorMessage] = useState('');
 
     const palette = isDarkMode
         ? {
@@ -19,52 +19,63 @@ const TranslationContent = ({ highlightedWord, isDarkMode, onContentLoaded }) =>
         };
 
     useEffect(() => {
-        setGoogleTranslated('');
-        setShowOffline(false);
-    }, [highlightedWord]);
+        const query = typeof highlightedWord === 'string' ? highlightedWord.trim() : '';
+        let isCancelled = false;
 
-    useEffect(() => {
-        setShowOffline(false);
-        translationArrivedRef.current = false;
-        if (!highlightedWord) return;
+        setTranslatedText('');
+        setErrorMessage('');
 
-        const timer = setTimeout(() => {
-            if (!translationArrivedRef.current) setShowOffline(true);
-        }, 8000);
-        return () => clearTimeout(timer);
-    }, [highlightedWord]);
-
-    useEffect(() => {
-        if (googleTranslated) {
-            translationArrivedRef.current = true;
-            setShowOffline(false);
+        if (!query) {
+            setIsLoading(false);
             onContentLoaded?.();
+            return undefined;
         }
-    }, [googleTranslated, onContentLoaded]);
+
+        setIsLoading(true);
+        translateText({ query })
+            .then((translation) => {
+                if (isCancelled) {
+                    return;
+                }
+                setTranslatedText(translation || '');
+                setErrorMessage(translation ? '' : 'No translation available');
+            })
+            .catch((error) => {
+                if (isCancelled) {
+                    return;
+                }
+                setErrorMessage(error?.message || 'Internet connection required');
+            })
+            .finally(() => {
+                if (isCancelled) {
+                    return;
+                }
+                setIsLoading(false);
+                onContentLoaded?.();
+            });
+
+        return () => {
+            isCancelled = true;
+        };
+    }, [highlightedWord, onContentLoaded]);
 
     return (
         <View style={styles.container}>
-            <View style={styles.hiddenTranslatorHost}>
-                <Translator
-                    from="ko"
-                    to="en"
-                    value={highlightedWord}
-                    type="google"
-                    onTranslated={(t) => setGoogleTranslated(t)}
-                />
-            </View>
-
             <ScrollView
                 style={styles.translationSection}
                 contentContainerStyle={styles.translationContent}
                 showsVerticalScrollIndicator={true}
             >
-                {showOffline
-                    ? <Text style={[styles.offlineText, { color: palette.muted }]}>Internet connection required</Text>
-                    : googleTranslated
-                        ? <Text style={[styles.translationText, { color: palette.text }]}>{googleTranslated}</Text>
-                        : null
-                }
+                {isLoading ? (
+                    <View style={styles.loadingRow}>
+                        <ActivityIndicator size="small" color={palette.muted} />
+                        <Text style={[styles.offlineText, { color: palette.muted }]}>Translating...</Text>
+                    </View>
+                ) : errorMessage ? (
+                    <Text style={[styles.offlineText, { color: palette.muted }]}>{errorMessage}</Text>
+                ) : translatedText ? (
+                    <Text style={[styles.translationText, { color: palette.text }]}>{translatedText}</Text>
+                ) : null}
             </ScrollView>   
         </View>
     );
@@ -75,12 +86,6 @@ const styles = StyleSheet.create({
         flex: 1,
         minHeight: 0,
     },
-    hiddenTranslatorHost: {
-        width: 0,
-        height: 0,
-        opacity: 0,
-        overflow: 'hidden',
-    },
     translationSection: {
         flex: 1,
         minHeight: 0,
@@ -89,6 +94,11 @@ const styles = StyleSheet.create({
         flexGrow: 1,
         paddingRight: spacing.xs,
         paddingBottom: spacing.md,
+    },
+    loadingRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: spacing.sm,
     },
     offlineText: {
         ...textStyles.caption,

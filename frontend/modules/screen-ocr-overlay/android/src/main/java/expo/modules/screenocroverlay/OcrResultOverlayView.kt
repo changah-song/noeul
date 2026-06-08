@@ -255,6 +255,7 @@ class OcrResultOverlayView(
   private val overlayCloseRect = RectF()
   private val cardRect = RectF()
   private val saveButtonRect = RectF()
+  private val translationButtonRect = RectF()
   private val moreButtonRect = RectF()
   private val wordNavPreviousRect = RectF()
   private val wordNavNextRect = RectF()
@@ -311,12 +312,14 @@ class OcrResultOverlayView(
       surface = selection.selectedText,
       stem = "",
       definition = null,
+      translation = null,
       hanja = null,
       pos = null,
       romanization = null,
       saved = false,
       alternatives = emptyList(),
       hanjaPreloads = emptyList(),
+      showingTranslation = false,
       expandedAlternatives = false,
       savingAlternativeIndex = null,
       message = "Looking up..."
@@ -326,32 +329,55 @@ class OcrResultOverlayView(
   }
 
   fun showLookupResult(result: OverlayLookupResult) {
-    clearHanjaLoadMore()
-    val selection = lookupCard?.takeIf { it.requestId == result.requestId }?.selection ?: return
-    val wordOptions = lookupWordOptionsFor(selection)
-    val activeWordIndex = wordOptions.indexOf(selection.selectedText.trim()).takeIf { it >= 0 } ?: 0
+    val currentCard = lookupCard?.takeIf { it.requestId == result.requestId } ?: return
+    if (currentCard.state == LookupCardState.LOADING) {
+      clearHanjaLoadMore()
+    }
+    val selection = currentCard.selection
+    val resultOptions = result.wordOptions.map(String::trim).filter(String::isNotBlank).distinct()
+    val preservedOptions = currentCard.wordOptions.takeIf { options ->
+      options.size > 1 && listOf(result.stem, result.surface, selection.selectedText).any { value ->
+        options.contains(value.trim())
+      }
+    } ?: emptyList()
+    val wordOptions = when {
+      resultOptions.size > 1 -> resultOptions
+      preservedOptions.isNotEmpty() -> preservedOptions
+      resultOptions.isNotEmpty() -> resultOptions
+      else -> lookupWordOptionsFor(selection)
+    }
+    val activeWordIndex = listOf(result.stem, result.surface, selection.selectedText)
+      .map { candidate -> wordOptions.indexOf(candidate.trim()) }
+      .firstOrNull { index -> index >= 0 } ?: 0
     lookupCard = LookupCard(
       requestId = result.requestId,
       selection = selection,
       wordOptions = wordOptions,
       activeWordIndex = activeWordIndex,
-      state = LookupCardState.LOADED,
+      state = if (currentCard.state == LookupCardState.SAVING) currentCard.state else LookupCardState.LOADED,
       surface = result.surface,
       stem = result.stem,
       definition = result.definition,
+      translation = result.translation,
       hanja = result.hanja,
       pos = result.pos,
       romanization = result.romanization,
       saved = result.saved,
       alternatives = result.alternatives,
       hanjaPreloads = result.hanjaPreloads,
-      expandedAlternatives = false,
-      savingAlternativeIndex = null,
-      message = null
+      showingTranslation = currentCard.showingTranslation,
+      expandedAlternatives = currentCard.expandedAlternatives,
+      savingAlternativeIndex = currentCard.savingAlternativeIndex,
+      message = if (currentCard.state == LookupCardState.SAVING) currentCard.message else null
     )
-    hanjaPopup = null
+    if (currentCard.state == LookupCardState.LOADING) {
+      hanjaPopup = null
+    }
     invalidate()
   }
+
+  fun hasLookupCard(requestId: String): Boolean =
+    lookupCard?.requestId == requestId
 
   fun showLookupError(requestId: String, message: String, fallback: Boolean) {
     val current = lookupCard?.takeIf { it.requestId == requestId } ?: return
@@ -488,6 +514,9 @@ class OcrResultOverlayView(
     )
     invalidate()
   }
+
+  fun hasHanjaPopup(requestId: String): Boolean =
+    hanjaPopup?.requestId == requestId
 
   fun showHanjaError(requestId: String, message: String) {
     val current = hanjaPopup?.takeIf { it.requestId == requestId } ?: return
@@ -736,6 +765,12 @@ class OcrResultOverlayView(
         }
         return true
       }
+      if (translationButtonRect.contains(event.x, event.y) && card.state == LookupCardState.LOADED) {
+        lookupCard = card.copy(showingTranslation = true, expandedAlternatives = false)
+        hanjaPopup = null
+        invalidate()
+        return true
+      }
       if (saveButtonRect.contains(event.x, event.y) && card.canToggleSave) {
         onSaveRequested(card.requestId, null)
         return true
@@ -846,6 +881,7 @@ class OcrResultOverlayView(
     val card = lookupCard ?: return
     hanjaTouchRects.clear()
     alternativeSaveRects.clear()
+    translationButtonRect.setEmpty()
     moreButtonRect.setEmpty()
     wordNavPreviousRect.setEmpty()
     wordNavNextRect.setEmpty()
@@ -859,18 +895,26 @@ class OcrResultOverlayView(
     drawPanelSurface(canvas, cardRect)
 
     val padding = dp(15f)
-    val contentLeft = cardRect.left + padding
-    val contentRight = cardRect.right - padding
+    val sideNavInset = if (card.wordOptions.size > 1 && card.state != LookupCardState.SAVING) dp(18f) else 0f
+    val contentLeft = cardRect.left + padding + sideNavInset
+    val contentRight = cardRect.right - padding - sideNavInset
 
-    drawHeaderSaveButton(canvas, card)
-    val navRight = if (!saveButtonRect.isEmpty) saveButtonRect.left - dp(5f) else contentRight
-    val navLeft = drawWordNavigator(canvas, card, navRight, cardRect.top + dp(9f))
-    val titleRight = if (navLeft < navRight) navLeft - dp(6f) else navRight
+    drawHeaderButtons(canvas, card)
+    val actionLeft = listOf(translationButtonRect, saveButtonRect)
+      .filter { !it.isEmpty }
+      .minOfOrNull { it.left }
+    val titleRight = actionLeft?.let { it - dp(8f) } ?: contentRight
     drawCardTitleLine(canvas, card, contentLeft, titleRight.coerceAtLeast(contentLeft + dp(62f)), cardRect.top + dp(25f))
 
-    val metaRight = if (!saveButtonRect.isEmpty) saveButtonRect.left - dp(8f) else contentRight
-    val metaBottom = drawCardMetaLine(canvas, card, contentLeft, metaRight, cardRect.top + dp(46f))
-    var y = max(cardRect.top + dp(63f), metaBottom + dp(8f))
+    if (card.showingTranslation) {
+      drawTranslationOnlyCard(canvas, card, contentLeft, contentRight)
+      drawWordSideNavigator(canvas, card)
+      return
+    }
+
+    val metaBaseline = cardRect.top + dp(43f)
+    val metaBottom = drawCardMetaLine(canvas, card, contentLeft, contentRight, metaBaseline)
+    var y = max(metaBaseline + dp(17f), metaBottom + dp(8f))
 
     val bodyPaint = if (card.state == LookupCardState.ERROR || card.state == LookupCardState.FALLBACK) {
       cardErrorPaint
@@ -885,10 +929,11 @@ class OcrResultOverlayView(
     }
 
     if (card.expandedAlternatives) {
-      drawAlternatives(canvas, card, contentLeft, contentRight, cardRect.top + dp(78f))
+      drawAlternatives(canvas, card, contentLeft, contentRight, y + dp(3f))
     }
 
     drawMoreButton(canvas, card)
+    drawWordSideNavigator(canvas, card)
   }
 
   private fun lookupCardWidth(): Float =
@@ -903,9 +948,12 @@ class OcrResultOverlayView(
     } else {
       0
     }
+    if (card.showingTranslation) {
+      return dp(126f).coerceAtMost(height - dp(96f)).coerceAtLeast(dp(100f))
+    }
     val moreHeight = if (card.alternatives.isNotEmpty()) dp(22f) else 0f
     val alternativeHeight = alternativeCount * alternativeRowHeight()
-    val baseHeight = if (card.expandedAlternatives) dp(78f) else dp(70f)
+    val baseHeight = if (card.expandedAlternatives) dp(82f) else dp(74f)
     return (baseHeight + alternativeHeight + moreHeight)
       .coerceAtMost(height - dp(96f))
       .coerceAtLeast(dp(86f))
@@ -915,12 +963,12 @@ class OcrResultOverlayView(
     val title = card.stem.ifBlank { card.surface }
     val posLabel = formatPos(card.pos)
     val posWidth = if (posLabel.isNotEmpty()) {
-      min(dp(92f), badgeTextPaint.measureText(posLabel) + dp(14f))
+      min(dp(82f), badgeTextPaint.measureText(posLabel) + dp(12f))
     } else {
       0f
     }
     val hanjaWidth = measureHanjaGroup(card.hanja)
-    val reservedWidth = hanjaWidth + if (posWidth > 0f) posWidth + dp(14f) else 0f
+    val reservedWidth = hanjaWidth + if (posWidth > 0f) posWidth + dp(12f) else 0f
     val titleWidth = (right - left - reservedWidth - dp(7f)).coerceAtLeast(dp(62f))
     val titleText = ellipsize(title, cardTitlePaint, titleWidth)
     canvas.drawText(titleText, left, baseline, cardTitlePaint)
@@ -939,9 +987,9 @@ class OcrResultOverlayView(
 
     if (posLabel.isNotEmpty() && cursor + dp(7f) + posWidth <= right) {
       val chipLeft = cursor + dp(7f)
-      val badgeRect = RectF(chipLeft, baseline - dp(15f), chipLeft + posWidth, baseline + dp(5f))
-      canvas.drawRoundRect(badgeRect, dp(6f), dp(6f), badgePaint)
-      canvas.drawText(posLabel, badgeRect.centerX(), badgeRect.centerY() + dp(3.5f), badgeTextPaint)
+      val badgeRect = RectF(chipLeft, baseline - dp(14f), chipLeft + posWidth, baseline + dp(4f))
+      canvas.drawRoundRect(badgeRect, dp(5f), dp(5f), badgePaint)
+      canvas.drawText(posLabel, badgeRect.centerX(), badgeRect.centerY() + dp(3.2f), badgeTextPaint)
     }
   }
 
@@ -961,53 +1009,82 @@ class OcrResultOverlayView(
     return baseline - dp(8f)
   }
 
-  private fun drawHeaderSaveButton(canvas: Canvas, card: LookupCard) {
-    val buttonWidth = dp(28f)
+  private fun drawHeaderButtons(canvas: Canvas, card: LookupCard) {
+    val buttonWidth = dp(26f)
     val buttonHeight = dp(28f)
     val top = cardRect.top + dp(8f)
-    val right = cardRect.right - dp(11f)
-    saveButtonRect.set(right - buttonWidth, top, right, top + buttonHeight)
+    val right = cardRect.right - dp(7f)
+    val canShowSave = card.showSaveButton && !card.showingTranslation
+    val canShowTranslate = card.state == LookupCardState.LOADED && !card.showingTranslation
 
-    if (!card.showSaveButton) {
+    if (canShowSave) {
+      saveButtonRect.set(right - buttonWidth, top, right, top + buttonHeight)
+    } else {
       saveButtonRect.setEmpty()
-      return
     }
 
-    if (card.state == LookupCardState.SAVING) {
-      canvas.drawText("...", saveButtonRect.centerX(), saveButtonRect.centerY() + dp(4f), secondaryButtonTextPaint)
-      return
+    if (canShowTranslate) {
+      val translateRight = if (!saveButtonRect.isEmpty) saveButtonRect.left - dp(2f) else right
+      translationButtonRect.set(translateRight - buttonWidth, top, translateRight, top + buttonHeight)
+      drawTranslateIcon(canvas, translationButtonRect)
+    } else {
+      translationButtonRect.setEmpty()
     }
 
-    drawBookmarkIcon(canvas, saveButtonRect, card.saved)
+    if (!saveButtonRect.isEmpty) {
+      if (card.state == LookupCardState.SAVING) {
+        canvas.drawText("...", saveButtonRect.centerX(), saveButtonRect.centerY() + dp(4f), secondaryButtonTextPaint)
+      } else {
+        drawBookmarkIcon(canvas, saveButtonRect, card.saved)
+      }
+    }
   }
 
-  private fun drawWordNavigator(canvas: Canvas, card: LookupCard, right: Float, top: Float): Float {
+  private fun drawTranslationOnlyCard(canvas: Canvas, card: LookupCard, left: Float, right: Float) {
+    val labelTop = cardRect.top + dp(45f)
+    val iconSize = dp(20f)
+    val iconRect = RectF(left, labelTop - dp(14f), left + iconSize, labelTop + dp(6f))
+    drawTranslateIcon(canvas, iconRect)
+    canvas.drawText("TRANSLATION · KO → EN", iconRect.right + dp(8f), labelTop + dp(1f), cardMetaPaint)
+
+    val translation = card.translation?.trim().orEmpty()
+    val body = when {
+      translation.isNotBlank() -> translation
+      card.state == LookupCardState.LOADED -> "Translating..."
+      else -> card.displayBody
+    }
+    val bodyTop = labelTop + dp(25f)
+    val lines = wrapText(body, cardBodyPaint, right - left, maxLines = 3)
+    var y = bodyTop
+    lines.forEach { line ->
+      canvas.drawText(line, left, y, cardBodyPaint)
+      y += dp(19f)
+    }
+  }
+
+  private fun drawTranslateIcon(canvas: Canvas, rect: RectF) {
+    canvas.drawRoundRect(rect, dp(8f), dp(8f), secondaryButtonPaint)
+    canvas.drawRoundRect(rect, dp(8f), dp(8f), buttonStrokePaint)
+    canvas.drawText("A", rect.centerX(), rect.centerY() + dp(4.5f), wordNavCountPaint)
+  }
+
+  private fun drawWordSideNavigator(canvas: Canvas, card: LookupCard) {
     if (card.wordOptions.size <= 1 || card.state == LookupCardState.SAVING) {
       wordNavPreviousRect.setEmpty()
       wordNavNextRect.setEmpty()
-      return right
+      return
     }
 
-    val height = dp(26f)
     val buttonWidth = dp(22f)
-    val countWidth = dp(28f)
-    val totalWidth = buttonWidth * 2f + countWidth
-    val left = right - totalWidth
-    val centerY = top + height / 2f
+    val buttonHeight = dp(34f)
+    val top = cardRect.centerY() - buttonHeight / 2f
+    val bottom = top + buttonHeight
 
-    wordNavPreviousRect.set(left, top, left + buttonWidth, top + height)
-    wordNavNextRect.set(right - buttonWidth, top, right, top + height)
+    wordNavPreviousRect.set(cardRect.left, top, cardRect.left + buttonWidth, bottom)
+    wordNavNextRect.set(cardRect.right - buttonWidth, top, cardRect.right, bottom)
 
     drawHorizontalChevron(canvas, wordNavPreviousRect, leftDirection = true)
-    canvas.drawText(
-      "${card.activeWordIndex + 1}/${card.wordOptions.size}",
-      left + buttonWidth + countWidth / 2f,
-      centerY + dp(4f),
-      wordNavCountPaint
-    )
     drawHorizontalChevron(canvas, wordNavNextRect, leftDirection = false)
-
-    return left
   }
 
   private fun drawBookmarkIcon(canvas: Canvas, rect: RectF, filled: Boolean) {
@@ -1437,12 +1514,14 @@ class OcrResultOverlayView(
       surface = options[nextIndex],
       stem = "",
       definition = null,
+      translation = null,
       hanja = null,
       pos = null,
       romanization = null,
       saved = false,
       alternatives = emptyList(),
       hanjaPreloads = emptyList(),
+      showingTranslation = false,
       expandedAlternatives = false,
       savingAlternativeIndex = null,
       message = "Looking up..."
@@ -1620,12 +1699,14 @@ private data class LookupCard(
   val surface: String,
   val stem: String,
   val definition: String?,
+  val translation: String?,
   val hanja: String?,
   val pos: String?,
   val romanization: String?,
   val saved: Boolean,
   val alternatives: List<OverlayDefinitionEntry>,
   val hanjaPreloads: List<OverlayHanjaPreload>,
+  val showingTranslation: Boolean,
   val expandedAlternatives: Boolean,
   val savingAlternativeIndex: Int?,
   val message: String?

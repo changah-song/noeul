@@ -1,19 +1,21 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-    ActivityIndicator,
     Alert,
     Modal,
+    Platform,
     Pressable,
     ScrollView,
     StyleSheet,
     Text,
     TextInput,
     TouchableOpacity,
+    useWindowDimensions,
     View,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import TopSection from '../Read/TopSection/TopSection';
+import NativeEpubReaderView from '../../modules/native-epub-reader/src/NativeEpubReaderView';
 import { useLocalOwner } from '../../contexts/LocalOwnerContext';
 import { getSavedWords } from '../../services/Database';
 import { colors, fontFamilies, spacing, textStyles } from '../../theme';
@@ -21,9 +23,8 @@ import { colors, fontFamilies, spacing, textStyles } from '../../theme';
 const WORD_EDGE_PATTERN = /^[^\u3131-\u318e\uac00-\ud7a3a-zA-Z0-9]+|[^\u3131-\u318e\uac00-\ud7a3a-zA-Z0-9]+$/g;
 const DEFAULT_LYRIC_FONT_SIZE = 28;
 const MIN_LYRIC_FONT_SIZE = 20;
-const MAX_LYRIC_FONT_SIZE = 40;
-const ACTIVE_TAP_HIGHLIGHT_COLOR = 'rgba(252, 213, 180, 0.33)';
-const SAVED_HIGHLIGHT_COLOR = '#f7d488';
+const MAX_LYRIC_FONT_SIZE = 30;
+const SONG_READER_LINE_HEIGHT = 1.54;
 
 const cleanLyricToken = (value) => String(value || '').replace(WORD_EDGE_PATTERN, '').trim();
 
@@ -46,22 +47,62 @@ const makeSongDraft = (song) => ({
     lyrics: song?.lyrics || '',
 });
 
+const splitLyricSegments = (line = '') => {
+    const segments = String(line || '').match(/[\u3131-\u318e\uac00-\ud7a3a-zA-Z0-9]+|[^\u3131-\u318e\uac00-\ud7a3a-zA-Z0-9]+/g);
+    return (segments || [String(line || '')]).map((text, index) => ({
+        id: `segment-${index}`,
+        text,
+        isWord: !!normalizeForMatch(text),
+    }));
+};
+
+const buildLyricLines = (lyrics) => {
+    const lines = String(lyrics || '').split(/\r?\n/);
+    const sourceLines = lines.length > 0 ? lines : [''];
+
+    return sourceLines.map((line, index) => ({
+        id: `song-lyric-line-${index}`,
+        text: String(line ?? ''),
+        isBlank: !String(line || '').trim(),
+        segments: splitLyricSegments(line),
+    }));
+};
+
+const buildNativeLyricBlocks = (lyricLines) => lyricLines.map((line, index) => {
+    const text = line.isBlank ? ' ' : line.text;
+    return {
+        id: line.id || `song-lyric-line-${index}`,
+        type: 'text',
+        tag: 'p',
+        text,
+        styleTokens: {
+            textAlign: 'center',
+            marginTop: 0,
+            marginBottom: line.isBlank ? 18 : 10,
+            fontFamily: 'serif',
+        },
+        spans: [{ text }],
+    };
+});
+
 const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsChange }) => {
     const { activeOwnerId } = useLocalOwner();
     const insets = useSafeAreaInsets();
+    const { height: viewportHeight } = useWindowDimensions();
     const [savedWords, setSavedWords] = useState(null);
     const [highlightedWord, setHighlightedWord] = useState('');
     const [highlightedWordContext, setHighlightedWordContext] = useState(null);
     const [isNativeSelection, setIsNativeSelection] = useState(false);
     const [lookupPlacement, setLookupPlacement] = useState('bottom');
+    const [clearSelectionToken, setClearSelectionToken] = useState(0);
     const [lyricFontSize, setLyricFontSize] = useState(() => clamp(
         Number(song?.fontSize) || DEFAULT_LYRIC_FONT_SIZE,
         MIN_LYRIC_FONT_SIZE,
         MAX_LYRIC_FONT_SIZE
     ));
+    const [isMenuVisible, setIsMenuVisible] = useState(false);
     const [isEditModalVisible, setIsEditModalVisible] = useState(false);
     const [editDraft, setEditDraft] = useState(() => makeSongDraft(song));
-    const suppressNextTokenPressRef = useRef(false);
 
     useEffect(() => {
         let isMounted = true;
@@ -89,89 +130,114 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         setHighlightedWordContext(null);
         setIsNativeSelection(false);
         setLookupPlacement('bottom');
+        setClearSelectionToken((token) => token + 1);
         setLyricFontSize(clamp(
             Number(song?.fontSize) || DEFAULT_LYRIC_FONT_SIZE,
             MIN_LYRIC_FONT_SIZE,
             MAX_LYRIC_FONT_SIZE
         ));
+        setIsMenuVisible(false);
         setEditDraft(makeSongDraft(song));
         setIsEditModalVisible(false);
     }, [song?.id]);
 
-    const lyricLines = useMemo(() => String(song?.lyrics || '').split(/\r?\n/), [song?.lyrics]);
-    const savedWordSet = useMemo(() => {
-        const normalized = [...(savedWords || []), ...(song?.savedTerms || [])]
-            .map(normalizeForMatch)
-            .filter(Boolean);
-        return new Set(normalized);
-    }, [savedWords, song?.savedTerms]);
-    const selectedWordKey = normalizeForMatch(highlightedWord);
+    const lyricLines = useMemo(() => buildLyricLines(song?.lyrics), [song?.lyrics]);
+    const songHighlightTerms = useMemo(() => uniqueTerms([
+        ...(savedWords || []),
+        ...(song?.savedTerms || []),
+    ]), [savedWords, song?.savedTerms]);
+    const songHighlightSet = useMemo(() => new Set(
+        songHighlightTerms.map(normalizeForMatch).filter(Boolean)
+    ), [songHighlightTerms]);
     const sourceBook = useMemo(() => ({
         uri: song?.id ? `song:${song.id}` : null,
         title: song?.title || 'Untitled song',
         author: song?.artist || 'Unknown artist',
+        language: 'ko',
     }), [song?.artist, song?.id, song?.title]);
+    const nativeSongManifest = useMemo(() => ({
+        sourceUri: song?.id ? `song:${song.id}` : 'song:unknown',
+        currentSpineIndex: 0,
+        currentSpineHref: 'lyrics',
+        currentSpinePath: 'lyrics',
+        renderMode: 'continuous',
+    }), [song?.id]);
+    const nativeLyricBlocks = useMemo(() => buildNativeLyricBlocks(lyricLines), [lyricLines]);
 
     const savedLyricsCount = useMemo(() => {
-        const lyricTerms = new Set();
-        lyricLines.forEach((line) => {
-            line.split(/\s+/).forEach((token) => {
-                const key = normalizeForMatch(token);
-                if (key && savedWordSet.has(key)) {
-                    lyricTerms.add(key);
-                }
-            });
-        });
-        return lyricTerms.size;
-    }, [lyricLines, savedWordSet]);
-
-    const selectWord = useCallback((word, sourceSentence, nativeSelection = false) => {
-        if (!word) {
-            return;
-        }
-
-        setHighlightedWord(word);
-        setHighlightedWordContext({ sentence: sourceSentence || '' });
-        setIsNativeSelection(nativeSelection);
-        setLookupPlacement('bottom');
-    }, []);
-
-    const handleTokenPress = useCallback((word, sourceSentence) => {
-        if (suppressNextTokenPressRef.current) {
-            suppressNextTokenPressRef.current = false;
-            return;
-        }
-
-        selectWord(word, sourceSentence, false);
-    }, [selectWord]);
-
-    const handleTokenLongPress = useCallback((word, sourceSentence) => {
-        const translationText = String(sourceSentence || word || '').trim();
-        if (!translationText) {
-            return;
-        }
-
-        suppressNextTokenPressRef.current = true;
-        selectWord(translationText, sourceSentence, true);
-    }, [selectWord]);
+        const lyricTokens = new Set(
+            String(song?.lyrics || '')
+                .split(/\s+/)
+                .map(normalizeForMatch)
+                .filter(Boolean)
+        );
+        return songHighlightTerms.filter((term) => lyricTokens.has(normalizeForMatch(term))).length;
+    }, [song?.lyrics, songHighlightTerms]);
 
     const closeLookup = useCallback(() => {
         setHighlightedWord('');
         setHighlightedWordContext(null);
         setIsNativeSelection(false);
+        setClearSelectionToken((token) => token + 1);
+    }, []);
+
+    const lookupPlacementForEvent = useCallback((event = {}) => {
+        const pageY = Number(event?.nativeEvent?.pageY);
+        return Number.isFinite(pageY) && pageY > viewportHeight * 0.56 ? 'top' : 'bottom';
+    }, [viewportHeight]);
+
+    const handleLyricWordPress = useCallback((word, line, event = {}) => {
+        const text = cleanLyricToken(word);
+        if (!text) {
+            return;
+        }
+
+        setHighlightedWord(text);
+        setHighlightedWordContext({
+            sentence: String(line || '').trim(),
+        });
+        setIsNativeSelection(false);
+        setLookupPlacement(lookupPlacementForEvent(event));
+    }, [lookupPlacementForEvent]);
+
+    const handleNativeWordSelected = useCallback((event = {}) => {
+        const text = cleanLyricToken(event.text);
+        if (!text) {
+            return;
+        }
+
+        setHighlightedWord(text);
+        setHighlightedWordContext({
+            sentence: String(event.sentence || '').trim(),
+        });
+        setIsNativeSelection(false);
+        setLookupPlacement(event.placement === 'top' ? 'top' : 'bottom');
+    }, []);
+
+    const handleNativeTextSelected = useCallback((event = {}) => {
+        const text = String(event.text || '').trim();
+        if (!text) {
+            return;
+        }
+
+        setHighlightedWord(text);
+        setHighlightedWordContext(null);
+        setIsNativeSelection(true);
+        setLookupPlacement(event.placement === 'top' ? 'top' : 'bottom');
     }, []);
 
     const updateLyricFontSize = useCallback((delta) => {
-        setLyricFontSize((currentSize) => {
-            const nextSize = clamp(currentSize + delta, MIN_LYRIC_FONT_SIZE, MAX_LYRIC_FONT_SIZE);
-            if (nextSize !== currentSize) {
-                onSongUpdate?.({ fontSize: nextSize });
-            }
-            return nextSize;
-        });
-    }, [onSongUpdate]);
+        const nextSize = clamp(lyricFontSize + delta, MIN_LYRIC_FONT_SIZE, MAX_LYRIC_FONT_SIZE);
+        if (nextSize === lyricFontSize) {
+            return;
+        }
+
+        setLyricFontSize(nextSize);
+        onSongUpdate?.({ fontSize: nextSize });
+    }, [lyricFontSize, onSongUpdate]);
 
     const openEditModal = useCallback(() => {
+        setIsMenuVisible(false);
         setEditDraft(makeSongDraft(song));
         setIsEditModalVisible(true);
     }, [song]);
@@ -201,6 +267,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     }, [editDraft.artist, editDraft.lyrics, editDraft.title, onSongUpdate]);
 
     const confirmDeleteSong = useCallback(() => {
+        setIsMenuVisible(false);
         Alert.alert(
             'Delete song',
             `Delete "${song?.title || 'Untitled song'}" from your saved songs?`,
@@ -228,58 +295,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         ).filter((term) => term !== word && term !== surface));
         onSavedTermsChange?.((song?.savedTerms ?? []).filter((term) => term !== word && term !== surface));
     }, [highlightedWord, onSavedTermsChange, song?.savedTerms]);
-
-    const renderLyricsText = () => {
-        return (
-            <Text
-                style={[
-                    styles.lyricLine,
-                    {
-                        fontSize: lyricFontSize,
-                        lineHeight: Math.round(lyricFontSize * 1.54),
-                    },
-                ]}
-            >
-                {lyricLines.map((line, lineIndex) => {
-                    const parts = line.split(/(\s+)/);
-
-                    return (
-                        <Text key={`line-${lineIndex}`}>
-                            {parts.map((part, partIndex) => {
-                                const cleanToken = cleanLyricToken(part);
-
-                                if (!cleanToken) {
-                                    return <Text key={`${lineIndex}-${partIndex}`}>{part}</Text>;
-                                }
-
-                                const tokenKey = normalizeForMatch(cleanToken);
-                                const isSaved = savedWordSet.has(tokenKey);
-                                const isActive = selectedWordKey === tokenKey;
-
-                                return (
-                                    <Text
-                                        key={`${lineIndex}-${partIndex}-${cleanToken}`}
-                                        suppressHighlighting
-                                        onPress={() => handleTokenPress(cleanToken, line)}
-                                        onLongPress={() => handleTokenLongPress(cleanToken, line)}
-                                        delayLongPress={300}
-                                        style={[
-                                            styles.lyricWord,
-                                            isSaved && styles.savedLyricWord,
-                                            isActive && styles.activeLyricWord,
-                                        ]}
-                                    >
-                                        {part}
-                                    </Text>
-                                );
-                            })}
-                            {lineIndex < lyricLines.length - 1 ? '\n' : ''}
-                        </Text>
-                    );
-                })}
-            </Text>
-        );
-    };
+    const useNativeLyricReader = Platform.OS === 'android';
 
     return (
         <View style={styles.container}>
@@ -293,86 +309,174 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                 >
                     <Feather name="chevron-left" size={30} color={colors.textMuted} />
                 </TouchableOpacity>
-                <View style={styles.topActions}>
-                    <TouchableOpacity
-                        accessibilityRole="button"
-                        accessibilityLabel="Decrease lyrics font size"
-                        activeOpacity={0.78}
-                        onPress={() => updateLyricFontSize(-2)}
-                        disabled={lyricFontSize <= MIN_LYRIC_FONT_SIZE}
-                        style={[styles.fontButton, lyricFontSize <= MIN_LYRIC_FONT_SIZE && styles.disabledControl]}
-                    >
-                        <Text style={styles.fontButtonText}>A-</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        accessibilityRole="button"
-                        accessibilityLabel="Increase lyrics font size"
-                        activeOpacity={0.78}
-                        onPress={() => updateLyricFontSize(2)}
-                        disabled={lyricFontSize >= MAX_LYRIC_FONT_SIZE}
-                        style={[styles.fontButton, lyricFontSize >= MAX_LYRIC_FONT_SIZE && styles.disabledControl]}
-                    >
-                        <Text style={styles.fontButtonText}>A+</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        accessibilityRole="button"
-                        accessibilityLabel="Edit song lyrics"
-                        activeOpacity={0.78}
-                        onPress={openEditModal}
-                        style={styles.iconButton}
-                    >
-                        <Feather name="edit-3" size={20} color={colors.textMuted} />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        accessibilityRole="button"
-                        accessibilityLabel="Delete song"
-                        activeOpacity={0.78}
-                        onPress={confirmDeleteSong}
-                        style={styles.iconButton}
-                    >
-                        <Feather name="trash-2" size={20} color={colors.danger} />
-                    </TouchableOpacity>
-                </View>
-            </View>
-
-            <View style={styles.songHeader}>
                 <Text
                     style={[
-                        styles.songTitle,
+                        styles.topSongTitle,
                         /[\u3131-\u318e\uac00-\ud7a3]/.test(song?.title || '') && styles.koreanTitle,
                     ]}
-                    numberOfLines={2}
+                    numberOfLines={1}
                 >
                     {song?.title || 'Untitled song'}
                 </Text>
-                <Text style={styles.songMeta} numberOfLines={1}>
+                <TouchableOpacity
+                    accessibilityRole="button"
+                    accessibilityLabel="Song options"
+                    activeOpacity={0.78}
+                    onPress={() => setIsMenuVisible((visible) => !visible)}
+                    style={styles.iconButton}
+                >
+                    <Feather name="more-horizontal" size={24} color={colors.textMuted} />
+                </TouchableOpacity>
+            </View>
+
+            <View style={styles.songMetaRow}>
+                <Text style={styles.songArtist} numberOfLines={1}>
                     {song?.artist || 'Unknown artist'}
                 </Text>
-                <Text style={styles.savedMeta}>
-                    {savedLyricsCount} saved
+                <Text style={styles.savedMeta} numberOfLines={1}>
+                    {savedLyricsCount} {savedLyricsCount === 1 ? 'word' : 'words'} saved
                 </Text>
             </View>
 
             <View style={styles.divider} />
 
-            <ScrollView
-                showsVerticalScrollIndicator={false}
-                contentContainerStyle={[
-                    styles.lyricsContent,
-                    { paddingBottom: insets.bottom + 152 },
-                ]}
-            >
-                {savedWords === null ? (
-                    <View style={styles.loadingState}>
-                        <ActivityIndicator size="small" color={colors.accentStrong} />
-                        <Text style={styles.loadingText}>Loading saved highlights...</Text>
-                    </View>
+            {isMenuVisible ? (
+                <Pressable
+                    style={styles.menuDismissLayer}
+                    onPress={() => setIsMenuVisible(false)}
+                >
+                    <Pressable
+                        style={[styles.songMenu, { top: insets.top + 54 }]}
+                        onPress={() => {}}
+                    >
+                        <View style={styles.menuFontRow}>
+                            <Text style={styles.menuLabel}>Font size</Text>
+                            <View style={styles.menuFontControls}>
+                                <TouchableOpacity
+                                    accessibilityRole="button"
+                                    accessibilityLabel="Decrease lyrics font size"
+                                    activeOpacity={0.78}
+                                    onPress={() => updateLyricFontSize(-2)}
+                                    disabled={lyricFontSize <= MIN_LYRIC_FONT_SIZE}
+                                    style={[
+                                        styles.menuFontButton,
+                                        lyricFontSize <= MIN_LYRIC_FONT_SIZE && styles.disabledControl,
+                                    ]}
+                                >
+                                    <Text style={styles.menuFontButtonText}>A-</Text>
+                                </TouchableOpacity>
+                                <Text style={styles.menuFontValue}>{lyricFontSize}</Text>
+                                <TouchableOpacity
+                                    accessibilityRole="button"
+                                    accessibilityLabel="Increase lyrics font size"
+                                    activeOpacity={0.78}
+                                    onPress={() => updateLyricFontSize(2)}
+                                    disabled={lyricFontSize >= MAX_LYRIC_FONT_SIZE}
+                                    style={[
+                                        styles.menuFontButton,
+                                        lyricFontSize >= MAX_LYRIC_FONT_SIZE && styles.disabledControl,
+                                    ]}
+                                >
+                                    <Text style={styles.menuFontButtonText}>A+</Text>
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+                        <TouchableOpacity
+                            accessibilityRole="button"
+                            activeOpacity={0.82}
+                            onPress={openEditModal}
+                            style={styles.menuActionRow}
+                        >
+                            <Feather name="edit-3" size={18} color={colors.textMuted} />
+                            <Text style={styles.menuActionText}>Edit</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            accessibilityRole="button"
+                            activeOpacity={0.82}
+                            onPress={confirmDeleteSong}
+                            style={styles.menuActionRow}
+                        >
+                            <Feather name="trash-2" size={18} color={colors.danger} />
+                            <Text style={[styles.menuActionText, styles.menuDangerText]}>Delete</Text>
+                        </TouchableOpacity>
+                    </Pressable>
+                </Pressable>
+            ) : null}
+
+            <View style={styles.readerSurface}>
+                {useNativeLyricReader ? (
+                    <NativeEpubReaderView
+                        style={styles.nativeLyricReader}
+                        bookManifest={nativeSongManifest}
+                        chapterBlocks={nativeLyricBlocks}
+                        chapterResources={[]}
+                        chapterWindow={[]}
+                        restorePosition={{ spineIndex: 0, pageIndex: 0 }}
+                        renderMode="continuous"
+                        fontSize={lyricFontSize}
+                        lineHeight={SONG_READER_LINE_HEIGHT}
+                        theme="light"
+                        highlightTerms={songHighlightTerms}
+                        clearSelectionToken={clearSelectionToken}
+                        onWordSelected={handleNativeWordSelected}
+                        onTextSelected={handleNativeTextSelected}
+                        onSelectionCleared={closeLookup}
+                    />
                 ) : (
-                    <View style={styles.lyricBlock}>
-                        {renderLyricsText()}
-                    </View>
+                    <ScrollView
+                        style={styles.lyricsScroll}
+                        contentContainerStyle={[
+                            styles.lyricsContent,
+                            { paddingBottom: insets.bottom + 190 },
+                        ]}
+                        showsVerticalScrollIndicator={false}
+                        scrollEventThrottle={16}
+                        onScroll={highlightedWord ? closeLookup : undefined}
+                        onTouchStart={highlightedWord ? closeLookup : undefined}
+                    >
+                        {lyricLines.map((line) => (
+                            <Text
+                                key={line.id}
+                                selectable
+                                style={[
+                                    styles.lyricLine,
+                                    {
+                                        fontSize: lyricFontSize,
+                                        lineHeight: lyricFontSize * SONG_READER_LINE_HEIGHT,
+                                    },
+                                    line.isBlank && styles.lyricLineBlank,
+                                ]}
+                            >
+                                {line.isBlank ? ' ' : line.segments.map((segment) => {
+                                    const normalized = normalizeForMatch(segment.text);
+                                    const isSaved = segment.isWord && songHighlightSet.has(normalized);
+                                    const isActive = segment.isWord
+                                        && normalized
+                                        && normalizeForMatch(highlightedWord) === normalized
+                                        && !isNativeSelection;
+
+                                    return (
+                                        <Text
+                                            key={segment.id}
+                                            suppressHighlighting
+                                            onPress={segment.isWord
+                                                ? (event) => handleLyricWordPress(segment.text, line.text, event)
+                                                : undefined}
+                                            style={[
+                                                segment.isWord && styles.lyricWord,
+                                                isSaved && styles.savedLyricWord,
+                                                isActive && styles.activeLyricWord,
+                                            ]}
+                                        >
+                                            {segment.text}
+                                        </Text>
+                                    );
+                                })}
+                            </Text>
+                        ))}
+                    </ScrollView>
                 )}
-            </ScrollView>
+            </View>
 
             <View
                 style={[
@@ -384,10 +488,6 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                 ]}
                 pointerEvents="box-none"
             >
-                {highlightedWord ? (
-                    <Pressable style={styles.lookupDismissZone} onPress={closeLookup} />
-                ) : null}
-
                 <TopSection
                     highlightedWord={highlightedWord}
                     sourceSentence={highlightedWordContext?.sentence ?? ''}
@@ -486,103 +586,168 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
         borderRadius: 21,
     },
-    topActions: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 2,
-    },
-    fontButton: {
-        minWidth: 38,
-        height: 36,
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderRadius: 18,
-        backgroundColor: '#f4ede2',
-        paddingHorizontal: spacing.xs,
-    },
-    fontButtonText: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 13,
-        lineHeight: 16,
-        color: colors.textMuted,
-        letterSpacing: 0,
-    },
     disabledControl: {
         opacity: 0.36,
     },
-    songHeader: {
-        paddingHorizontal: spacing.xl,
-        paddingTop: spacing.md,
-        paddingBottom: spacing.lg,
-        backgroundColor: colors.surfaceElevated,
-    },
-    songTitle: {
+    topSongTitle: {
+        flex: 1,
+        minWidth: 0,
         fontFamily: fontFamilies.serifBold,
-        fontSize: 32,
-        lineHeight: 39,
+        fontSize: 20,
+        lineHeight: 25,
         color: colors.text,
         letterSpacing: 0,
     },
     koreanTitle: {
         fontFamily: fontFamilies.krSerifBold,
     },
-    songMeta: {
-        ...textStyles.sectionTitle,
-        marginTop: 2,
-        fontSize: 17,
-        lineHeight: 22,
+    songMetaRow: {
+        minHeight: 36,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: spacing.md,
+        paddingHorizontal: spacing.xl,
+        paddingBottom: spacing.sm,
+        backgroundColor: colors.surfaceElevated,
+    },
+    songArtist: {
+        flex: 1,
+        minWidth: 0,
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 14,
+        lineHeight: 18,
         color: colors.textMuted,
         letterSpacing: 0,
     },
     savedMeta: {
-        ...textStyles.body,
-        marginTop: 4,
-        fontSize: 14,
-        lineHeight: 19,
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 13,
+        lineHeight: 17,
         color: colors.textSubtle,
+    },
+    menuDismissLayer: {
+        ...StyleSheet.absoluteFillObject,
+        zIndex: 20,
+    },
+    songMenu: {
+        position: 'absolute',
+        right: spacing.md,
+        width: 236,
+        borderRadius: 18,
+        borderWidth: 1,
+        borderColor: '#e4d8c8',
+        backgroundColor: colors.surfaceElevated,
+        paddingVertical: spacing.xs,
+        shadowColor: 'rgba(37, 32, 24, 0.2)',
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 0.18,
+        shadowRadius: 22,
+        elevation: 8,
+    },
+    menuFontRow: {
+        paddingHorizontal: spacing.md,
+        paddingVertical: spacing.sm,
+        gap: spacing.xs,
+        borderBottomWidth: 1,
+        borderBottomColor: '#eee4d7',
+    },
+    menuLabel: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 12,
+        lineHeight: 15,
+        color: colors.textSubtle,
+        letterSpacing: 0,
+    },
+    menuFontControls: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: spacing.xs,
+    },
+    menuFontButton: {
+        width: 42,
+        height: 34,
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: 17,
+        backgroundColor: '#f4ede2',
+    },
+    menuFontButtonText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 13,
+        lineHeight: 16,
+        color: colors.textMuted,
+        letterSpacing: 0,
+    },
+    menuFontValue: {
+        minWidth: 34,
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 13,
+        lineHeight: 16,
+        textAlign: 'center',
+        color: colors.textMuted,
+        fontVariant: ['tabular-nums'],
+    },
+    menuActionRow: {
+        minHeight: 44,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: spacing.sm,
+        paddingHorizontal: spacing.md,
+        paddingVertical: spacing.sm,
+    },
+    menuActionText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 14,
+        lineHeight: 18,
+        color: colors.textMuted,
+        letterSpacing: 0,
+    },
+    menuDangerText: {
+        color: colors.danger,
     },
     divider: {
         height: 1,
         backgroundColor: '#e2d7c8',
     },
-    lyricsContent: {
-        flexGrow: 1,
-        alignItems: 'center',
-        paddingHorizontal: spacing.lg,
-        paddingTop: spacing.xl,
+    readerSurface: {
+        flex: 1,
+        backgroundColor: '#f6f1e9',
     },
-    lyricBlock: {
-        width: '100%',
-        maxWidth: 520,
+    nativeLyricReader: {
+        flex: 1,
+        backgroundColor: '#f6f1e9',
+    },
+    lyricsScroll: {
+        flex: 1,
+        backgroundColor: '#f6f1e9',
+    },
+    lyricsContent: {
+        paddingTop: spacing.xl,
+        paddingHorizontal: spacing.xl,
         alignItems: 'center',
-        gap: spacing.sm,
     },
     lyricLine: {
         width: '100%',
-        textAlign: 'center',
-        fontFamily: fontFamilies.krSerifMedium,
+        marginBottom: 10,
+        fontFamily: fontFamilies.krSerifRegular,
         color: colors.text,
+        textAlign: 'center',
         letterSpacing: 0,
-        includeFontPadding: true,
+    },
+    lyricLineBlank: {
+        marginBottom: 18,
     },
     lyricWord: {
-        borderRadius: 4,
-        overflow: 'hidden',
-    },
-    activeLyricWord: {
-        backgroundColor: ACTIVE_TAP_HIGHLIGHT_COLOR,
+        color: colors.text,
     },
     savedLyricWord: {
-        backgroundColor: SAVED_HIGHLIGHT_COLOR,
+        color: colors.accentStrong,
+        backgroundColor: 'rgba(184, 85, 46, 0.13)',
     },
-    loadingState: {
-        minHeight: 220,
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: spacing.sm,
-    },
-    loadingText: {
-        ...textStyles.bodyMuted,
+    activeLyricWord: {
+        color: colors.accentStrong,
+        backgroundColor: 'rgba(252, 213, 180, 0.55)',
     },
     lookupLayer: {
         ...StyleSheet.absoluteFillObject,
@@ -593,10 +758,6 @@ const styles = StyleSheet.create({
     },
     lookupLayerBottom: {
         justifyContent: 'flex-end',
-    },
-    lookupDismissZone: {
-        ...StyleSheet.absoluteFillObject,
-        backgroundColor: 'transparent',
     },
     modalBackdrop: {
         flex: 1,

@@ -139,7 +139,9 @@ const DictionaryContent = ({
     onContentLoaded,
     onWordSave,
     onWordUnsave,
+    onTranslatePress,
     onExpandedStateChange,
+    onContentHeightChange,
     currentBook,
     sourceBook,
     savedWords = [],
@@ -186,6 +188,8 @@ const DictionaryContent = ({
     const [relatedKnownByWord, setRelatedKnownByWord] = useState({});
     const [currentHanja, setCurrentHanja] = useState(null);
     const [activeWordIndex, setActiveWordIndex] = useState(0);
+    const [dictionaryViewportHeight, setDictionaryViewportHeight] = useState(0);
+    const [dictionaryContentHeight, setDictionaryContentHeight] = useState(0);
     const handleHanjaPress = (hanja, sourceWord = null, options = {}) => {
         if (!hanja) {
             setCurrentHanja(null);
@@ -476,6 +480,9 @@ const DictionaryContent = ({
         ? Math.min(activeWordIndex, lookupItemCount - 1)
         : 0;
     const activeLookupItem = lookupItems[currentLookupIndex] || null;
+    const hasWordNavigation = lookupItemCount > 1;
+    const isDictionaryScrollable = dictionaryViewportHeight > 0
+        && dictionaryContentHeight > dictionaryViewportHeight + 2;
 
     useEffect(() => {
         setActiveWordIndex((currentIndex) => {
@@ -741,37 +748,63 @@ const DictionaryContent = ({
         handleHanjaPress(null);
     };
 
-    const renderWordNavigator = () => {
-        if (lookupItemCount <= 1) {
+    const renderWordSideNavigation = () => {
+        if (!hasWordNavigation) {
             return null;
         }
 
         return (
-            <View style={[styles.wordNavigator, { borderColor: palette.border, backgroundColor: palette.secondaryButtonBg }]}>
+            <View pointerEvents="box-none" style={styles.wordSideNavigation}>
                 <TouchableOpacity
                     accessibilityRole="button"
                     accessibilityLabel="Previous detected word"
                     activeOpacity={0.78}
                     onPress={goToPreviousWord}
-                    style={styles.wordNavButton}
+                    hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+                    style={[styles.wordSideNavButton, styles.wordSideNavButtonLeft]}
                 >
-                    <MaterialIcons name="chevron-left" size={20} color={palette.secondaryButtonText} />
+                    <MaterialIcons name="chevron-left" size={24} color={palette.secondaryButtonText} />
                 </TouchableOpacity>
-                <Text style={[styles.wordNavCount, { color: palette.mutedText }]}>
-                    {currentLookupIndex + 1}/{lookupItemCount}
-                </Text>
                 <TouchableOpacity
                     accessibilityRole="button"
                     accessibilityLabel="Next detected word"
                     activeOpacity={0.78}
                     onPress={goToNextWord}
-                    style={styles.wordNavButton}
+                    hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+                    style={[styles.wordSideNavButton, styles.wordSideNavButtonRight]}
                 >
-                    <MaterialIcons name="chevron-right" size={20} color={palette.secondaryButtonText} />
+                    <MaterialIcons name="chevron-right" size={24} color={palette.secondaryButtonText} />
                 </TouchableOpacity>
             </View>
         );
     };
+
+    const renderDictionaryPanel = (children) => (
+        <View style={[styles.panelContent, styles.dictionaryPanelContent, { backgroundColor: palette.surface }]}>
+            <ScrollView
+                style={styles.dictionaryScroll}
+                contentContainerStyle={[
+                    styles.dictionaryScrollContent,
+                    hasWordNavigation && styles.dictionaryScrollContentWithNav,
+                ]}
+                keyboardShouldPersistTaps="handled"
+                nestedScrollEnabled={isDictionaryScrollable}
+                scrollEnabled={isDictionaryScrollable}
+                showsVerticalScrollIndicator={isDictionaryScrollable}
+                bounces={isDictionaryScrollable}
+                onLayout={(event) => {
+                    setDictionaryViewportHeight(event.nativeEvent.layout.height);
+                }}
+                onContentSizeChange={(_, height) => {
+                    setDictionaryContentHeight(height);
+                    onContentHeightChange?.(height);
+                }}
+            >
+                {children}
+            </ScrollView>
+            {renderWordSideNavigation()}
+        </View>
+    );
 
     const renderHanja = (hanja, variant = 'entry', sourceWord = null, sourceWordDetails = {}) => {
         if (!hasHanja(hanja)) {
@@ -858,41 +891,59 @@ const DictionaryContent = ({
         );
     };
 
+    const renderTranslateButton = () => (
+        <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel={`Translate ${highlightedWord}`}
+            activeOpacity={0.8}
+            onPress={() => onTranslatePress?.(cleanValue(highlightedWord) || tappedSurface)}
+            style={styles.translateButton}
+        >
+            <MaterialIcons
+                name="translate"
+                size={21}
+                color={palette.mutedText}
+            />
+        </TouchableOpacity>
+    );
+
     const renderEntryHeading = ({ word, hanja, definition, pos, romanization }) => {
         const posLabel = formatPos(pos);
         const sourceWordDetails = buildSourceWordDetails({ hanja, definition });
         const hanjaElement = renderHanja(hanja, 'entry', word, sourceWordDetails);
         const romanizationText = cleanValue(romanization);
         const bookmarkButton = renderBookmarkButton(word, hanja, definition);
-        const wordNavigator = renderWordNavigator();
+        const translateButton = renderTranslateButton();
 
         return (
             <View style={styles.entryHeading}>
-                <View style={styles.entryTitleColumn}>
-                    <View style={styles.wordLine}>
-                        <Text selectable style={[styles.entryWord, { color: palette.text }]}>
-                            {word}
-                        </Text>
-                        {hanjaElement}
+                <View style={styles.entryHeadingTopRow}>
+                    <View style={styles.entryTitleColumn}>
+                        <View style={styles.wordLine}>
+                            <Text selectable style={[styles.entryWord, { color: palette.text }]}>
+                                {word}
+                            </Text>
+                            {hanjaElement}
+                        </View>
                     </View>
-                    {(romanizationText || (tappedSurface && tappedSurface !== word)) ? (
-                        <Text selectable style={[styles.entryMeta, { color: palette.mutedText }]}>
-                            {romanizationText}
-                            {romanizationText && tappedSurface && tappedSurface !== word ? ' · ' : ''}
-                            {tappedSurface && tappedSurface !== word ? `from ${tappedSurface}` : ''}
-                        </Text>
+                    {(translateButton || bookmarkButton || posLabel) ? (
+                        <View style={styles.headerActions}>
+                            {posLabel ? (
+                                <View style={[styles.posBadge, { backgroundColor: isDarkMode ? 'rgba(255,250,242,0.1)' : '#eee8db' }]}>
+                                    <Text style={[styles.posBadgeText, { color: palette.secondaryButtonText }]}>{posLabel}</Text>
+                                </View>
+                            ) : null}
+                            {translateButton}
+                            {bookmarkButton}
+                        </View>
                     ) : null}
                 </View>
-                {(wordNavigator || bookmarkButton || posLabel) ? (
-                    <View style={styles.headerActions}>
-                        {wordNavigator}
-                        {posLabel ? (
-                            <View style={[styles.posBadge, { backgroundColor: isDarkMode ? 'rgba(255,250,242,0.1)' : '#eee8db' }]}>
-                                <Text style={[styles.posBadgeText, { color: palette.secondaryButtonText }]}>{posLabel}</Text>
-                            </View>
-                        ) : null}
-                        {bookmarkButton}
-                    </View>
+                {(romanizationText || (tappedSurface && tappedSurface !== word)) ? (
+                    <Text selectable style={[styles.entryMeta, { color: palette.mutedText }]}>
+                        {romanizationText}
+                        {romanizationText && tappedSurface && tappedSurface !== word ? ' · ' : ''}
+                        {tappedSurface && tappedSurface !== word ? `from ${tappedSurface}` : ''}
+                    </Text>
                 ) : null}
             </View>
         );
@@ -1072,7 +1123,8 @@ const DictionaryContent = ({
         const showLess = isExpanded && Array.isArray(extra) && extra.length > 0;
 
         return (
-            <View style={[styles.panelContent, { backgroundColor: palette.surface }]}>
+            renderDictionaryPanel(
+                <>
                 {renderPrimaryEntry({
                     key: `${stem}-${cachedEntry.hanja ?? ''}`,
                     word: stem,
@@ -1100,7 +1152,8 @@ const DictionaryContent = ({
                     onSourceWordAutoSaved={handleSourceWordAutoSaved}
                     isDarkMode={isDarkMode}
                 />
-            </View>
+                </>
+            )
         );
     }
 
@@ -1109,8 +1162,8 @@ const DictionaryContent = ({
     const isExpanded = expandedWords.includes(word);
     const extraEntries = first ? uniqueEntriesByWord(liveEntries.slice(1), first?.word || word) : [];
 
-    return (
-        <View style={[styles.panelContent, { backgroundColor: palette.surface }]}>
+    return renderDictionaryPanel(
+        <>
             {first ? renderPrimaryEntry({
                 key: `${word}-${first.origin ?? ''}`,
                 word: cleanValue(first.word) || word,
@@ -1148,7 +1201,7 @@ const DictionaryContent = ({
                 onSourceWordAutoSaved={handleSourceWordAutoSaved}
                 isDarkMode={isDarkMode}
             />
-        </View>
+        </>
     );
 };
 
@@ -1159,16 +1212,36 @@ const styles = StyleSheet.create({
         paddingTop: 16,
         paddingBottom: 12,
     },
-    primaryEntry: {
+    dictionaryPanelContent: {
+        paddingHorizontal: 0,
+        paddingTop: 0,
+        paddingBottom: 0,
+        position: 'relative',
+    },
+    dictionaryScroll: {
         flex: 1,
+        minHeight: 0,
+    },
+    dictionaryScrollContent: {
+        paddingHorizontal: 20,
+        paddingTop: 16,
+        paddingBottom: 7,
+    },
+    dictionaryScrollContentWithNav: {
+        paddingHorizontal: 30,
+    },
+    primaryEntry: {
         gap: 5,
         paddingBottom: 0,
     },
     entryHeading: {
+        gap: 0,
+    },
+    entryHeadingTopRow: {
         flexDirection: 'row',
         alignItems: 'flex-start',
         justifyContent: 'space-between',
-        gap: spacing.md,
+        gap: spacing.sm,
     },
     entryTitleColumn: {
         flex: 1,
@@ -1197,49 +1270,48 @@ const styles = StyleSheet.create({
     entryMeta: {
         fontFamily: fontFamilies.sansRegular,
         fontSize: 14,
-        lineHeight: 19,
-        marginTop: 0,
+        lineHeight: 17,
+        marginTop: -4,
     },
     headerActions: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'flex-end',
         flexShrink: 0,
-        flexWrap: 'wrap',
-        gap: 6,
+        gap: 2,
         paddingTop: 0,
+        marginRight: -4,
     },
     posBadge: {
-        borderRadius: 9,
-        paddingHorizontal: 8,
-        paddingVertical: 4,
+        borderRadius: 8,
+        paddingHorizontal: 6,
+        paddingVertical: 3,
     },
     posBadgeText: {
         ...textStyles.caption,
         fontFamily: fontFamilies.sansBold,
+        fontSize: 10,
+        lineHeight: 13,
         letterSpacing: 0,
     },
-    wordNavigator: {
-        height: 34,
-        flexDirection: 'row',
-        alignItems: 'center',
-        borderWidth: 1,
-        borderRadius: 17,
-        overflow: 'hidden',
+    wordSideNavigation: {
+        ...StyleSheet.absoluteFillObject,
     },
-    wordNavButton: {
-        width: 27,
-        height: 32,
+    wordSideNavButton: {
+        position: 'absolute',
+        top: '50%',
+        width: 24,
+        height: 34,
+        marginTop: -17,
+        borderRadius: 12,
         alignItems: 'center',
         justifyContent: 'center',
     },
-    wordNavCount: {
-        minWidth: 28,
-        textAlign: 'center',
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 11,
-        lineHeight: 14,
-        letterSpacing: 0,
+    wordSideNavButtonLeft: {
+        left: 0,
+    },
+    wordSideNavButtonRight: {
+        right: 0,
     },
     definitionText: {
         ...textStyles.sectionTitle,
@@ -1252,7 +1324,15 @@ const styles = StyleSheet.create({
         fontStyle: 'italic',
     },
     bookmarkButton: {
-        width: 34,
+        width: 30,
+        height: 34,
+        borderRadius: 17,
+        borderWidth: 0,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    translateButton: {
+        width: 30,
         height: 34,
         borderRadius: 17,
         borderWidth: 0,
@@ -1272,7 +1352,7 @@ const styles = StyleSheet.create({
     },
     moreArrowButtonCollapsed: {
         marginTop: -3,
-        marginBottom: 5,
+        marginBottom: 0,
     },
     moreArrowButtonExpanded: {
         marginTop: 0,

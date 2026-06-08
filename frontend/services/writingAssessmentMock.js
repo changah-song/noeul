@@ -9,8 +9,7 @@ export const MOCK_WRITING_ASSESSMENT = {
       id: '1',
       type: 'DICTION',
       original: '사회인들은',
-      explanation:
-        "'사회인' technically means 'member of society / working adult' and is understandable, but the intended meaning of 'people in modern society' is more naturally expressed without it.",
+      explanation: "'사회인' technically means 'member of society / working adult' and is understandable, but the intended meaning of 'people in modern society' is more naturally expressed without it.",
       suggestions: ['현대인들은', '현대 사회의 사람들은'],
       suggestion_notes: [
         "'현대인' is the standard compressed term for 'modern-day people / people of the modern age' - dropping '사회' avoids redundancy with '현대'.",
@@ -21,8 +20,7 @@ export const MOCK_WRITING_ASSESSMENT = {
       id: '2',
       type: 'DICTION',
       original: '취미 활동을 이용하고 있습니다',
-      explanation:
-        "'이용하다' means 'to make use of / utilize' and collocates with services, facilities, or tools - not hobbies. Hobbies are things you 'engage in' or 'enjoy', not 'utilize'.",
+      explanation: "'이용하다' means 'to make use of / utilize' and collocates with services, facilities, or tools - not hobbies. Hobbies are things you 'engage in' or 'enjoy', not 'utilize'.",
       suggestions: ['취미 활동을 즐기고 있습니다', '취미 활동에 참여하고 있습니다'],
       suggestion_notes: [
         "'즐기다' is the most natural verb for hobbies - 'to enjoy'.",
@@ -33,8 +31,7 @@ export const MOCK_WRITING_ASSESSMENT = {
       id: '3',
       type: 'NATIVE_INSERT',
       original: 'voice를',
-      explanation:
-        "The English word 'voice' was inserted, likely because the Korean equivalent wasn't certain. Several natural Korean expressions exist for this concept.",
+      explanation: "The English word 'voice' was inserted, likely because the Korean equivalent wasn't certain. Several natural Korean expressions exist for this concept.",
       suggestions: ['내면의 목소리를', '내면의 소리를', '자신의 본심에'],
       suggestion_notes: [
         "'내면의 목소리' is the direct and most common Korean equivalent of 'inner voice'.",
@@ -46,8 +43,7 @@ export const MOCK_WRITING_ASSESSMENT = {
       id: '4',
       type: 'GRAMMAR',
       original: '귀를 기울이는',
-      explanation:
-        "The verb '귀를 기울이다' (to lend an ear / listen attentively) requires the subject doing the listening. As written, the sentence says 'the process of listening to the inner voice's ears', which is structurally broken. The preceding noun '자기 내면의 목소리' should be the object, marked with '에', and '귀를 기울이는' should describe the act of listening to it.",
+      explanation: "The verb '귀를 기울이다' (to lend an ear / listen attentively) requires the subject doing the listening. As written, the sentence says 'the process of listening to the inner voice's ears', which is structurally broken. The preceding noun '자기 내면의 목소리' should be the object, marked with '에', and '귀를 기울이는' should describe the act of listening to it.",
       suggestions: ['자기 내면의 목소리에 귀를 기울이는 과정', '자기 내면의 소리를 듣는 과정'],
       suggestion_notes: [
         "'~에 귀를 기울이다' is the correct collocation - the particle '에' marks what is being listened to.",
@@ -58,8 +54,7 @@ export const MOCK_WRITING_ASSESSMENT = {
       id: '5',
       type: 'UNNATURAL',
       original: '간주합니다',
-      explanation:
-        "'간주하다' means 'to regard/consider (officially or formally)' and is used in academic, legal, or analytical contexts - e.g. '법적으로 간주됩니다'. Used here to express a personal opinion in a diary, it sounds stiff and overly formal. The sentence also creates a double-expression issue: '제 생각에는 ... 간주합니다' is redundant (both say 'I think/consider').",
+      explanation: "'간주하다' means 'to regard/consider (officially or formally)' and is used in academic, legal, or analytical contexts - e.g. '법적으로 간주됩니다'. Used here to express a personal opinion in a diary, it sounds stiff and overly formal. The sentence also creates a double-expression issue: '제 생각에는 ... 간주합니다' is redundant (both say 'I think/consider').",
       suggestions: ['제 생각에는, 진정한 휴식이란 ... 과정입니다', '저는 진정한 휴식이란 ... 과정이라고 생각합니다'],
       suggestion_notes: [
         "Drop '간주합니다' and end with '과정입니다' after '제 생각에는' - the opener already signals it's your view.",
@@ -70,8 +65,7 @@ export const MOCK_WRITING_ASSESSMENT = {
       id: '6',
       type: 'NATIVE_INSERT',
       original: 'frustrated했지만',
-      explanation:
-        "The English adjective 'frustrated' was mixed into a Korean sentence. Several Korean equivalents express this well.",
+      explanation: "The English adjective 'frustrated' was mixed into a Korean sentence. Several Korean equivalents express this well.",
       suggestions: ['답답했지만', '짜증이 났지만', '좌절스러웠지만'],
       suggestion_notes: [
         "'답답하다' is the most culturally resonant equivalent - it expresses a stifled, blocked feeling and is the go-to word Koreans use in this exact context (can't clear your mind, feel stuck).",
@@ -83,8 +77,7 @@ export const MOCK_WRITING_ASSESSMENT = {
       id: '7',
       type: 'GRAMMAR',
       original: '느껴졌습니다',
-      explanation:
-        "'느껴지다' is the passive form of '느끼다' - it means 'to be felt (by something)' and implies the sensation comes to you from outside. When you consciously notice or feel something yourself, the active form '느끼다' is correct. '느껴지다' is only natural when something makes itself felt, e.g. '바람이 느껴졌다 (the wind was felt)'.",
+      explanation: "'느껴지다' is the passive form of '느끼다' - it means 'to be felt (by something)' and implies the sensation comes to you from outside. When you consciously notice or feel something yourself, the active form '느끼다' is correct. '느껴지다' is only natural when something makes itself felt, e.g. '바람이 느껴졌다 (the wind was felt)'.",
       suggestions: ['느낄 수 있었습니다', '느꼈습니다'],
       suggestion_notes: [
         "'느낄 수 있었습니다' - 'I was able to feel' - is the most natural way to express consciously noticing an internal change.",
@@ -95,8 +88,7 @@ export const MOCK_WRITING_ASSESSMENT = {
       id: '8',
       type: 'GRAMMAR',
       original: '추천을 드립니다',
-      explanation:
-        "'추천을 드리다' is a common error caused by over-applying the honorific '드리다'. '추천하다' is a verb and should not be split into noun + '드리다' in this context. The natural humble/polite form is '추천드립니다' (written as one word) or simply '추천합니다'.",
+      explanation: "'추천을 드리다' is a common error caused by over-applying the honorific '드리다'. '추천하다' is a verb and should not be split into noun + '드리다' in this context. The natural humble/polite form is '추천드립니다' (written as one word) or simply '추천합니다'.",
       suggestions: ['추천드립니다', '권해 드립니다'],
       suggestion_notes: [
         "'추천드립니다' (one word, no '을') is the standard polite form of '추천하다' - very commonly used.",
@@ -158,12 +150,12 @@ export const ANNOTATION_COLORS = ANNOTATION_LEGEND.reduce((acc, item) => {
 
 export const createMockWritingEntry = () => ({
   id: MOCK_WRITING_ENTRY_ID,
-  title: '명상과 진정한 휴식',
+  title: '진정한 휴식의 의미',
   body: MOCK_WRITING_ENTRY_BODY,
-  prompt: '',
-  date: '2026-06-04T09:00:00.000+09:00',
-  createdAt: '2026-06-04T09:00:00.000+09:00',
-  updatedAt: '2026-06-04T09:00:00.000+09:00',
+  prompt: 'What does true rest mean in modern life?',
+  date: '2026-04-20T09:00:00.000+09:00',
+  createdAt: '2026-04-20T09:00:00.000+09:00',
+  updatedAt: '2026-04-20T09:00:00.000+09:00',
   status: 'reviewed',
   assessment: MOCK_WRITING_ASSESSMENT,
 });

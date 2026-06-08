@@ -12,8 +12,10 @@ import {
     resolveOverlayLookup,
     resolveOverlaySave,
     resolveOverlayHanja,
+    updateOverlayLookup,
 } from '../modules/screen-ocr-overlay/src';
 import { fetchHanjaRelated } from './api/hanjaRelated';
+import { translateText } from './api/googleTranslate';
 import { addRelatedKnownWord, getRelatedKnownWords, removeRelatedKnownWord } from './Database';
 import { lookupWordForOverlay, saveOverlayLookupResult, unsaveOverlayLookupResult } from './dictionaryLookup';
 import { getActiveOwnerId } from './localOwnerCoordinator';
@@ -28,6 +30,7 @@ const MAX_OCR_PREFETCH_TARGETS = 120;
 const OCR_PREFETCH_CONCURRENCY = 4;
 const hanjaLookupCache = new Map();
 const overlayLookupCache = new Map();
+const overlayLookupEnrichmentCache = new Map();
 let activeOcrPrefetchRun = 0;
 
 const cleanValue = (value) => (typeof value === 'string' ? value.trim() : '');
@@ -160,19 +163,42 @@ const trimOverlayLookupCache = () => {
         const oldestKey = overlayLookupCache.keys().next().value;
         overlayLookupCache.delete(oldestKey);
     }
+    while (overlayLookupEnrichmentCache.size > MAX_OVERLAY_LOOKUP_CACHE_SIZE) {
+        const oldestKey = overlayLookupEnrichmentCache.keys().next().value;
+        overlayLookupEnrichmentCache.delete(oldestKey);
+    }
 };
 
 const buildOverlayLookupPayload = async ({ selectedText, selectedLineText }) => {
     const result = await lookupWordForOverlay({
         surface: selectedText,
         sourceSentence: selectedLineText,
+        includeEnrichment: false,
     });
-    const hanjaPreloads = await preloadOverlayHanjaForLookupResult(result, selectedText);
 
     return {
         ...result,
         sourceSentence: cleanValue(selectedLineText),
-        hanjaPreloads,
+        hanjaPreloads: [],
+    };
+};
+
+const buildOverlayLookupEnrichmentPayload = async ({ selectedText, selectedLineText }) => {
+    const result = await lookupWordForOverlay({
+        surface: selectedText,
+        sourceSentence: selectedLineText,
+        includeEnrichment: true,
+    });
+    const [hanjaPreloads, translationResult] = await Promise.allSettled([
+        preloadOverlayHanjaForLookupResult(result, selectedText),
+        translateText({ query: cleanValue(result?.stem) || selectedText }),
+    ]);
+
+    return {
+        ...result,
+        sourceSentence: cleanValue(selectedLineText),
+        translation: translationResult.status === 'fulfilled' ? cleanValue(translationResult.value) : null,
+        hanjaPreloads: hanjaPreloads.status === 'fulfilled' ? hanjaPreloads.value : [],
     };
 };
 
@@ -198,6 +224,44 @@ const getCachedOverlayLookup = ({ selectedText, selectedLineText }) => {
     trimOverlayLookupCache();
 
     return lookupPromise;
+};
+
+const getCachedOverlayLookupEnrichment = ({ selectedText, selectedLineText }) => {
+    const cacheKey = lookupCacheKey({ selectedText, selectedLineText });
+
+    if (!cleanValue(selectedText)) {
+        return Promise.reject(new Error('No text selected.'));
+    }
+
+    const cachedLookup = overlayLookupEnrichmentCache.get(cacheKey);
+    if (cachedLookup) {
+        return cachedLookup;
+    }
+
+    const lookupPromise = buildOverlayLookupEnrichmentPayload({ selectedText, selectedLineText })
+        .catch((error) => {
+            overlayLookupEnrichmentCache.delete(cacheKey);
+            throw error;
+        });
+
+    overlayLookupEnrichmentCache.set(cacheKey, lookupPromise);
+    trimOverlayLookupCache();
+
+    return lookupPromise;
+};
+
+const enrichOverlayLookupInBackground = ({ requestId, selectedText, selectedLineText }) => {
+    getCachedOverlayLookupEnrichment({ selectedText, selectedLineText })
+        .then(async (result) => {
+            await updateOverlayLookup(requestId, {
+                requestId,
+                ...result,
+                sourceSentence: selectedLineText,
+            });
+        })
+        .catch((error) => {
+            console.warn(`[overlayLookup] enrichment failed for "${selectedText}":`, error?.message ?? error);
+        });
 };
 
 const extractOcrPrefetchTargets = (ocrResult = {}) => {
@@ -321,6 +385,11 @@ export const initializeOverlayLookupBridge = () => {
                 ...result,
                 sourceSentence: selectedLineText,
             });
+            enrichOverlayLookupInBackground({
+                requestId,
+                selectedText,
+                selectedLineText,
+            });
         } catch (error) {
             await rejectOverlayLookup(requestId, error?.message || 'Lookup failed.');
         }
@@ -345,6 +414,7 @@ export const initializeOverlayLookupBridge = () => {
                 : await saveOverlayLookupResult(payload);
 
             overlayLookupCache.clear();
+            overlayLookupEnrichmentCache.clear();
             await resolveOverlaySave(requestId, {
                 requestId,
                 ...result,
@@ -416,5 +486,6 @@ export const initializeOverlayLookupBridge = () => {
         isInitialized = false;
         activeOcrPrefetchRun += 1;
         overlayLookupCache.clear();
+        overlayLookupEnrichmentCache.clear();
     };
 };

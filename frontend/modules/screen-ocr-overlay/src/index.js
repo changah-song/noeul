@@ -44,6 +44,10 @@ export const resolveOverlayLookup = (requestId, result) => (
     NativeScreenOcrOverlay?.resolveOverlayLookup(requestId, result) ?? androidOnly()
 );
 
+export const updateOverlayLookup = (requestId, result) => (
+    NativeScreenOcrOverlay?.updateOverlayLookup(requestId, result) ?? androidOnly()
+);
+
 export const rejectOverlayLookup = (requestId, message) => (
     NativeScreenOcrOverlay?.rejectOverlayLookup(requestId, message) ?? androidOnly()
 );
@@ -121,6 +125,7 @@ export default {
     stopFloatingWidget,
     analyzeCurrentScreen,
     resolveOverlayLookup,
+    updateOverlayLookup,
     rejectOverlayLookup,
     resolveOverlaySave,
     rejectOverlaySave,

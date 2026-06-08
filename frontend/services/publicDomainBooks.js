@@ -37,6 +37,7 @@ export const getPublicDomainBooks = () => PUBLIC_DOMAIN_TEXTS.map((book) => ({
   genre: book.genre,
   coverColor: book.coverColor,
   language: book.language ?? 'ko',
+  wordCount: book.wordCount ?? null,
   publicDomain: true,
   format: 'txt',
   downloaded: true,
@@ -61,6 +62,7 @@ export const getPublicDomainBookByUri = (uri) => {
     title: normalizeDisplayText(catalogBook.title),
     author: normalizeDisplayText(catalogBook.author),
     language: catalogBook.language ?? 'ko',
+    wordCount: catalogBook.wordCount ?? null,
   };
 };
 
@@ -200,6 +202,7 @@ export const readPublicDomainTextPackage = async (uri, options = {}) => {
     snippet: book.snippet,
     genre: book.genre,
     coverColor: book.coverColor,
+    wordCount: book.wordCount ?? null,
     format: 'txt',
     totalSpineItems: spine.length,
     currentSpineIndex,
@@ -213,6 +216,7 @@ export const readPublicDomainTextPackage = async (uri, options = {}) => {
       title: book.title,
       author: book.author,
       language: book.language,
+      wordCount: book.wordCount ?? null,
     },
     spine,
     toc: spine.map((item) => ({

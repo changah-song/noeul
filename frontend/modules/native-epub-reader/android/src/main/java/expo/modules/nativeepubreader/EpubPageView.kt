@@ -63,7 +63,7 @@ class EpubPageView(context: Context) : View(context) {
   private var activeSelectionKind: ActiveSelectionKind? = null
   private var savedHighlightRanges: List<TextRange> = emptyList()
   private var activeHighlightColor = Color.argb(0x55, 0xfc, 0xd5, 0xb4)
-  private var textSelectionHighlightColor = Color.rgb(0xe3, 0xe7, 0xee)
+  private var textSelectionHighlightColor = Color.argb(0x66, 0x7a, 0xb3, 0xff)
   private var savedHighlightColor = Color.rgb(0xf7, 0xd4, 0x88)
   private var onWordSelected: ((WordHit) -> Unit)? = null
   private var onTextSelected: ((TextSelectionHit) -> Unit)? = null
@@ -201,12 +201,19 @@ class EpubPageView(context: Context) : View(context) {
           return true
         }
 
+        val dx = abs(event.x - tapStartX)
+        val dy = abs(event.y - tapStartY)
         if (
-          abs(event.x - tapStartX) > touchSlop ||
-          abs(event.y - tapStartY) > touchSlop
+          dx > touchSlop ||
+          dy > touchSlop
         ) {
           isTapCandidate = false
           cancelPendingLongPress()
+        }
+
+        if (dy > touchSlop && dy > dx) {
+          parent?.requestDisallowInterceptTouchEvent(false)
+          return false
         }
       }
       MotionEvent.ACTION_UP -> {

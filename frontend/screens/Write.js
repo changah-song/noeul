@@ -34,10 +34,29 @@ import {
   assertCanUploadForOwner,
   isCurrentSyncGeneration,
 } from '../services/localOwnerCoordinator';
-import { colors, radii, spacing, textStyles } from '../theme';
+import { colors, fontFamilies, radii, spacing, textStyles } from '../theme';
 
 const LEGACY_STORAGE_KEY = 'writing_entries_v1';
 const getWritingStorageKey = (ownerId) => makeScopedStorageKey(ownerId, 'writing-entries-v1');
+const WRITE_SCREEN_BACKGROUND = '#ece4d6';
+const WRITE_SIDE_PADDING = 18;
+const WRITING_FILTERS = [
+  { key: 'all', label: 'All' },
+  { key: 'free', label: 'Free' },
+  { key: 'diary', label: 'Diary' },
+  { key: 'essay', label: 'Essay' },
+];
+const EDITOR_TYPE_FILTERS = WRITING_FILTERS.filter((filter) => filter.key !== 'all');
+const DEFAULT_ENTRY_FORMATTING = {
+  bold: false,
+  italic: false,
+  underline: false,
+};
+const FORMAT_BUTTONS = [
+  { key: 'bold', label: 'B', textStyle: 'editorToolbarTextBold' },
+  { key: 'italic', label: 'I', textStyle: 'editorToolbarTextItalic' },
+  { key: 'underline', label: 'U', textStyle: 'editorToolbarTextUnderline' },
+];
 
 const PROMPT_CATEGORIES = [
   {
@@ -91,6 +110,21 @@ const PROMPT_CATEGORIES = [
   },
 ];
 
+const EDITOR_PROMPT_OPTIONS = {
+  free: [],
+  diary: [
+    'Describe a moment from today that surprised you.',
+    'Write about a memory that came to mind recently.',
+    'How have your habits changed in the past year?',
+  ],
+  essay: [
+    'Is modern life making people more isolated?',
+    'What does it mean to belong to a place?',
+    'Compare city life and rural life in Korea.',
+    ...PROMPT_CATEGORIES[5].prompts,
+  ],
+};
+
 const makeEmptyDraft = () => ({
   id: null,
   title: '',
@@ -100,6 +134,13 @@ const makeEmptyDraft = () => ({
   createdAt: null,
   updatedAt: null,
   status: 'draft',
+  formatting: DEFAULT_ENTRY_FORMATTING,
+});
+
+const normalizeEntryFormatting = (formatting) => ({
+  bold: Boolean(formatting?.bold),
+  italic: Boolean(formatting?.italic),
+  underline: Boolean(formatting?.underline),
 });
 
 const formatEntryDate = (value) => {
@@ -124,6 +165,75 @@ const formatStatusLabel = (status) => {
     .join(' ');
 };
 
+const getEntryDateParts = (value) => {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) {
+    return { day: '--', month: '' };
+  }
+
+  return {
+    day: new Intl.DateTimeFormat('en-US', { day: '2-digit' }).format(date),
+    month: new Intl.DateTimeFormat('en-US', { month: 'short' }).format(date).toUpperCase(),
+  };
+};
+
+const getEntryCharacterCount = (entry) => String(entry?.body ?? '').length;
+
+const getEntryFilterKey = (entry = {}) => {
+  if (!entry.prompt) {
+    return 'free';
+  }
+
+  const directType = Object.entries(EDITOR_PROMPT_OPTIONS).find(([, prompts]) =>
+    prompts.includes(entry.prompt)
+  )?.[0];
+  if (directType) {
+    return directType;
+  }
+
+  const categoryTitle = PROMPT_CATEGORIES.find((category) =>
+    category.prompts.includes(entry.prompt)
+  )?.title ?? '';
+
+  if (/personal|reaction|prediction/i.test(categoryTitle)) {
+    return 'diary';
+  }
+
+  return 'essay';
+};
+
+const getEntryStatusTone = (status) => {
+  const normalizedStatus = String(status || '').toLowerCase();
+  if (normalizedStatus === 'reviewed') {
+    return {
+      backgroundColor: '#e7f0e2',
+      color: '#5c8754',
+    };
+  }
+
+  if (normalizedStatus === 'submitted') {
+    return {
+      backgroundColor: '#f6ecd6',
+      color: '#a9782c',
+    };
+  }
+
+  return {
+    backgroundColor: '#f0ece2',
+    color: '#8c8172',
+  };
+};
+
+const getEntryNativeInsertWords = (entry) => {
+  const explicitWords = entry?.assessment?.summary?.native_inserts;
+  if (Array.isArray(explicitWords) && explicitWords.length > 0) {
+    return explicitWords;
+  }
+
+  const englishMatches = String(entry?.body ?? '').match(/[A-Za-z][A-Za-z'-]*/g);
+  return [...new Set(englishMatches ?? [])];
+};
+
 const normalizeEntry = (entry = {}, index = 0) => {
   const body = typeof entry.body === 'string' ? entry.body : entry.content ?? '';
   const date = entry.date ?? entry.createdAt ?? entry.updatedAt ?? new Date().toISOString();
@@ -141,6 +251,7 @@ const normalizeEntry = (entry = {}, index = 0) => {
     createdAt: entry.createdAt ?? date,
     updatedAt: entry.updatedAt ?? date,
     status: entry.status ?? (assessment ? 'reviewed' : 'draft'),
+    formatting: normalizeEntryFormatting(entry.formatting),
     ...(assessment ? { assessment } : {}),
   };
 };
@@ -148,6 +259,49 @@ const normalizeEntry = (entry = {}, index = 0) => {
 const isMockWritingEntry = (entryOrId) => (
   (typeof entryOrId === 'string' ? entryOrId : entryOrId?.id) === MOCK_WRITING_ENTRY_ID
 );
+
+const WritingEntryRow = ({ entry, onPress }) => {
+  const dateParts = getEntryDateParts(entry.date ?? entry.createdAt ?? entry.updatedAt);
+  const statusTone = getEntryStatusTone(entry.status);
+  const statusLabel = formatStatusLabel(entry.status);
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.writeEntryRow,
+        pressed && styles.writeEntryRowPressed,
+      ]}
+    >
+      <View style={styles.writeEntryDate}>
+        <Text style={styles.writeEntryDay}>{dateParts.day}</Text>
+        <Text style={styles.writeEntryMonth}>{dateParts.month}</Text>
+      </View>
+
+      <View style={styles.writeEntryMain}>
+        <Text numberOfLines={1} style={styles.writeEntryTitle}>
+          {entry.title}
+        </Text>
+        <View style={styles.writeEntryMeta}>
+          <Text style={styles.writeEntryMetaText}>{getEntryCharacterCount(entry)}</Text>
+          <Text style={styles.writeEntryMetaText}>chars</Text>
+          <Text style={styles.writeEntryMetaDot}>·</Text>
+          <Text numberOfLines={1} style={styles.writeEntryType}>
+            {WRITING_FILTERS.find((filter) => filter.key === getEntryFilterKey(entry))?.label ?? 'Free'}
+          </Text>
+        </View>
+      </View>
+
+      <View style={[styles.writeEntryStatusBadge, { backgroundColor: statusTone.backgroundColor }]}>
+        <Text style={[styles.writeEntryStatusText, { color: statusTone.color }]}>
+          {statusLabel}
+        </Text>
+      </View>
+
+      <Feather name="chevron-right" size={16} color="#b3a892" />
+    </Pressable>
+  );
+};
 
 const getEntryTimestamp = (entry, keys = ['updatedAt', 'updated_at', 'date', 'createdAt', 'created_at']) => {
   for (const key of keys) {
@@ -212,7 +366,15 @@ const mergeWritingEntries = (localEntries, cloudRows) => {
     }
 
     if (cloudUpdatedAt > localUpdatedAt) {
-      mergedEntries.push(normalizeEntry(cloudWritingRowToEntry(cloudRow)));
+      const cloudEntry = normalizeEntry(cloudWritingRowToEntry(cloudRow));
+      mergedEntries.push({
+        ...cloudEntry,
+        formatting: (
+          localEntry.body === cloudEntry.body
+            ? normalizeEntryFormatting(localEntry.formatting)
+            : cloudEntry.formatting
+        ),
+      });
       return;
     }
 
@@ -243,16 +405,6 @@ const ensureMockEntry = (entries) => {
   });
 };
 
-const getExpandedStateForPrompt = (prompt) => {
-  const selectedCategory = PROMPT_CATEGORIES.find((category) =>
-    category.prompts.includes(prompt)
-  );
-
-  return {
-    [(selectedCategory ?? PROMPT_CATEGORIES[0]).title]: true,
-  };
-};
-
 const getAnnotationLabel = (type) =>
   ANNOTATION_LEGEND.find((item) => item.type === type)?.label ?? type;
 
@@ -278,11 +430,11 @@ const AnnotationLegend = () => (
   </View>
 );
 
-const AnnotatedEntry = ({ text, annotations, onAnnotationPress }) => {
+const AnnotatedEntry = ({ text, annotations, onAnnotationPress, style }) => {
   const spans = buildAnnotatedSpans(text, annotations);
 
   return (
-    <Text selectable style={styles.assessmentEntryText}>
+    <Text selectable style={[styles.assessmentEntryText, style]}>
       {spans.map((span, index) => {
         if (span.type === 'plain') {
           return <Text key={`plain-${index}`}>{span.text}</Text>;
@@ -307,6 +459,49 @@ const AnnotatedEntry = ({ text, annotations, onAnnotationPress }) => {
         );
       })}
     </Text>
+  );
+};
+
+const InlineCorrectionList = ({ annotations = [], onAnnotationPress }) => {
+  if (!annotations.length) {
+    return null;
+  }
+
+  return (
+    <View style={styles.inlineCorrectionList}>
+      {annotations.map((annotation) => {
+        const color = ANNOTATION_COLORS[annotation.type] ?? colors.accentStrong;
+        const suggestion = annotation.suggestions?.[0] ?? '';
+
+        return (
+          <Pressable
+            key={annotation.id}
+            onPress={() => onAnnotationPress(annotation)}
+            style={({ pressed }) => [
+              styles.inlineCorrectionItem,
+              { borderLeftColor: color },
+              pressed && styles.inlineCorrectionItemPressed,
+            ]}
+          >
+            <View style={styles.inlineCorrectionHeader}>
+              <View style={[styles.inlineCorrectionDot, { backgroundColor: color }]} />
+              <Text style={[styles.inlineCorrectionType, { color }]}>
+                {getAnnotationLabel(annotation.type)}
+              </Text>
+            </View>
+            <Text selectable style={styles.inlineCorrectionText}>
+              <Text style={styles.inlineCorrectionOriginal}>{annotation.original}</Text>
+              {suggestion ? (
+                <>
+                  <Text style={styles.inlineCorrectionArrow}> -> </Text>
+                  <Text style={styles.inlineCorrectionSuggestion}>{suggestion}</Text>
+                </>
+              ) : null}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
   );
 };
 
@@ -363,64 +558,57 @@ const AnnotationSheet = ({ annotation, onClose }) => (
   </Modal>
 );
 
-const SummaryList = ({ title, items }) => {
-  if (!items?.length) {
-    return null;
-  }
+const FormattingToolbar = ({ formatting, onToggle }) => {
+  const normalizedFormatting = normalizeEntryFormatting(formatting);
+  const interactive = typeof onToggle === 'function';
 
   return (
-    <Card style={styles.summaryCard} contentStyle={styles.summaryCardContent} subtle>
-      <Text style={styles.summaryTitle}>{title}</Text>
-      <View style={styles.summaryItemList}>
-        {items.map((item, index) => (
-          <View key={`${title}-${index}`} style={styles.summaryItem}>
-            <View style={styles.summaryBullet} />
-            <Text selectable style={styles.summaryText}>
-              {item}
-            </Text>
-          </View>
-        ))}
-      </View>
-    </Card>
-  );
-};
+    <View style={styles.editorToolbar}>
+      {FORMAT_BUTTONS.map((button) => {
+        const active = normalizedFormatting[button.key];
+        const content = (
+          <Text
+            style={[
+              styles.editorToolbarText,
+              styles[button.textStyle],
+              active && styles.editorToolbarTextActive,
+            ]}
+          >
+            {button.label}
+          </Text>
+        );
 
-const AssessmentSummary = ({ summary }) => {
-  if (!summary) {
-    return null;
-  }
+        if (!interactive) {
+          return (
+            <View
+              key={button.key}
+              style={[
+                styles.editorToolbarButton,
+                active && styles.editorToolbarButtonActive,
+              ]}
+            >
+              {content}
+            </View>
+          );
+        }
 
-  return (
-    <View style={styles.assessmentSummary}>
-      <SummaryList title="Patterns" items={summary.patterns} />
-      <SummaryList title="Strengths" items={summary.strengths} />
-
-      {summary.vocab_items?.length ? (
-        <View style={styles.vocabSection}>
-          <Text style={styles.summaryTitle}>Vocabulary</Text>
-          {summary.vocab_items.map((item) => (
-            <Card key={item.word} style={styles.vocabCard} contentStyle={styles.vocabCardContent} subtle>
-              <View style={styles.vocabHeader}>
-                <Text selectable style={styles.vocabWord}>
-                  {item.word}
-                </Text>
-                <IconButton
-                  label="Save"
-                  disabled
-                  icon={<Feather name="bookmark" size={14} color={colors.text} />}
-                  style={styles.vocabSaveButton}
-                />
-              </View>
-              <Text selectable style={styles.vocabMeaning}>
-                {item.meaning}
-              </Text>
-              <Text selectable style={styles.vocabExample}>
-                {item.example}
-              </Text>
-            </Card>
-          ))}
-        </View>
-      ) : null}
+        return (
+          <TouchableOpacity
+            key={button.key}
+            accessibilityRole="button"
+            accessibilityLabel={`Toggle ${button.key}`}
+            accessibilityState={{ selected: active }}
+            activeOpacity={0.78}
+            onPress={() => onToggle(button.key)}
+            style={[
+              styles.editorToolbarButton,
+              active && styles.editorToolbarButtonActive,
+            ]}
+          >
+            {content}
+          </TouchableOpacity>
+        );
+      })}
     </View>
   );
 };
@@ -432,7 +620,9 @@ const Write = ({ user }) => {
   const [draft, setDraft] = useState(makeEmptyDraft());
   const [selectedEntryId, setSelectedEntryId] = useState(null);
   const [selectedAnnotation, setSelectedAnnotation] = useState(null);
-  const [expandedCategories, setExpandedCategories] = useState(getExpandedStateForPrompt(''));
+  const [activeWriteFilter, setActiveWriteFilter] = useState('all');
+  const [activeEditorType, setActiveEditorType] = useState('diary');
+  const [promptPickerExpanded, setPromptPickerExpanded] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -451,7 +641,7 @@ const Write = ({ user }) => {
       setDraft(makeEmptyDraft());
       setSelectedEntryId(null);
       setSelectedAnnotation(null);
-      setExpandedCategories(getExpandedStateForPrompt(''));
+      setPromptPickerExpanded(false);
 
       try {
         const storageKey = getWritingStorageKey(ownerId);
@@ -615,36 +805,57 @@ const Write = ({ user }) => {
 
   const sortedEntries = useMemo(
     () =>
-      [...entries].sort(
-        (a, b) => new Date(b.updatedAt ?? b.date ?? 0) - new Date(a.updatedAt ?? a.date ?? 0)
-      ),
+      [...entries].sort((a, b) => {
+        if (isMockWritingEntry(a)) return -1;
+        if (isMockWritingEntry(b)) return 1;
+
+        return new Date(b.updatedAt ?? b.date ?? 0) - new Date(a.updatedAt ?? a.date ?? 0);
+      }),
     [entries]
   );
+  const visibleEntries = useMemo(() => {
+    if (activeWriteFilter === 'all') {
+      return sortedEntries;
+    }
+
+    return sortedEntries.filter((entry) => getEntryFilterKey(entry) === activeWriteFilter);
+  }, [activeWriteFilter, sortedEntries]);
+  const editorPromptOptions = EDITOR_PROMPT_OPTIONS[activeEditorType] ?? [];
   const selectedEntry = useMemo(
     () => entries.find((entry) => entry.id === selectedEntryId),
     [entries, selectedEntryId]
   );
-
+  const selectedEntryIsReviewed = Boolean(
+    selectedEntry?.assessment || String(selectedEntry?.status || '').toLowerCase() === 'reviewed'
+  );
+  const selectedEntryAnnotations = selectedEntry?.assessment?.annotations ?? [];
+  const selectedEntryNativeInsertWords = selectedEntry
+    ? getEntryNativeInsertWords(selectedEntry)
+    : [];
   const canSave = draft.title.trim().length > 0 || draft.body.trim().length > 0;
 
   const openNewDraft = () => {
     setDraft(makeEmptyDraft());
     setSelectedEntryId(null);
     setSelectedAnnotation(null);
-    setExpandedCategories(getExpandedStateForPrompt(''));
+    setActiveEditorType('diary');
+    setPromptPickerExpanded(false);
     setMode('editor');
   };
 
   const openEntryDetail = (entry) => {
     setSelectedEntryId(entry.id);
     setSelectedAnnotation(null);
+    setActiveEditorType(getEntryFilterKey(entry));
+    setPromptPickerExpanded(false);
     setMode('detail');
   };
 
   const openExistingDraft = (entry) => {
     const normalizedEntry = normalizeEntry(entry);
     setDraft(normalizedEntry);
-    setExpandedCategories(getExpandedStateForPrompt(normalizedEntry.prompt));
+    setActiveEditorType(getEntryFilterKey(normalizedEntry));
+    setPromptPickerExpanded(false);
     setSelectedAnnotation(null);
     setMode('editor');
   };
@@ -669,15 +880,17 @@ const Write = ({ user }) => {
     const existingEntry = entries.find((entry) => entry.id === draft.id);
     const preservedAssessment =
       draft.assessment && existingEntry?.body === draft.body ? draft.assessment : null;
+    const fallbackTitle = draft.body.trim().replace(/\s+/g, ' ').slice(0, 24);
     const nextEntry = {
       id: draft.id ?? `entry-${Date.now()}`,
-      title: draft.title.trim() || '[Untitled]',
+      title: draft.title.trim() || fallbackTitle || '[Untitled]',
       body: draft.body,
       prompt: draft.prompt,
       date: draft.date ?? now,
       createdAt: draft.createdAt ?? now,
       updatedAt: now,
       status: preservedAssessment ? draft.status ?? 'reviewed' : 'draft',
+      formatting: normalizeEntryFormatting(draft.formatting),
       ...(preservedAssessment ? { assessment: preservedAssessment } : {}),
     };
 
@@ -704,16 +917,30 @@ const Write = ({ user }) => {
     setDraft((prev) => ({ ...prev, ...patch }));
   };
 
-  const togglePromptCategory = (categoryTitle) => {
-    setExpandedCategories((prev) => ({
-      ...prev,
-      [categoryTitle]: !prev[categoryTitle],
-    }));
+  const toggleDraftFormatting = (formatKey) => {
+    setDraft((prev) => {
+      const formatting = normalizeEntryFormatting(prev.formatting);
+      return {
+        ...prev,
+        formatting: {
+          ...formatting,
+          [formatKey]: !formatting[formatKey],
+        },
+      };
+    });
+  };
+
+  const selectEditorType = (type) => {
+    setActiveEditorType(type);
+    setPromptPickerExpanded(type !== 'free');
+    if (type === 'free' || !EDITOR_PROMPT_OPTIONS[type]?.includes(draft.prompt)) {
+      updateDraft({ prompt: '' });
+    }
   };
 
   if (loading) {
     return (
-      <Screen>
+      <Screen backgroundColor={WRITE_SCREEN_BACKGROUND}>
         <View style={styles.loadingWrap}>
           <Text style={styles.loadingText}>Loading your writing...</Text>
         </View>
@@ -722,29 +949,54 @@ const Write = ({ user }) => {
   }
 
   return (
-    <Screen scroll contentContainerStyle={styles.screenContent}>
+    <Screen scroll backgroundColor={WRITE_SCREEN_BACKGROUND} contentContainerStyle={styles.screenContent}>
       {mode === 'list' ? (
-        <View style={styles.stack}>
-          <SectionHeader
-            eyebrow="Write"
-            title="Recent writing"
-            subtitle="Review your latest entries or start a new one."
-            action={
-              <IconButton
-                tone="accent"
-                label="New Entry"
-                onPress={openNewDraft}
-                icon={<Feather name="plus" size={16} color={colors.accentStrong} />}
-              />
-            }
-          />
+        <View style={styles.writeHome}>
+          <View style={styles.writeHomeHeader}>
+            <View style={styles.writeHomeTitleBlock}>
+              <Text style={styles.writeHomeTitle}>Write</Text>
+              <View style={styles.writeHomeCountRow}>
+                <Text style={styles.writeHomeCount}>{entries.length}</Text>
+                <Text style={styles.writeHomeCountLabel}>entries</Text>
+              </View>
+            </View>
 
-          {sortedEntries.length === 0 ? (
+            <TouchableOpacity
+              disabled
+              accessibilityState={{ disabled: true }}
+              style={[styles.writeNewButton, styles.writeNewButtonDisabled]}
+            >
+              <Text style={styles.writeNewButtonText}>+ New</Text>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.writeFilterRow}
+          >
+            {WRITING_FILTERS.map((filter) => {
+              const active = activeWriteFilter === filter.key;
+              return (
+                <TouchableOpacity
+                  key={filter.key}
+                  onPress={() => setActiveWriteFilter(filter.key)}
+                  style={[styles.writeFilterChip, active && styles.writeFilterChipActive]}
+                >
+                  <Text style={[styles.writeFilterText, active && styles.writeFilterTextActive]}>
+                    {filter.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+
+          {visibleEntries.length === 0 ? (
             <Card style={styles.emptyCard} contentStyle={styles.emptyContent}>
               <View style={styles.emptyCopy}>
                 <Text style={styles.emptyTitle}>No writing yet</Text>
                 <Text style={styles.emptyBody}>
-                  Start a short entry and it will appear here.
+                  Start a short entry or try a different filter.
                 </Text>
               </View>
               <IconButton
@@ -755,221 +1007,294 @@ const Write = ({ user }) => {
               />
             </Card>
           ) : (
-            <View style={styles.entryList}>
-              {sortedEntries.map((entry) => (
-                <Pressable key={entry.id} onPress={() => openEntryDetail(entry)} style={styles.entryPressable}>
-                  <Card style={styles.entryCard} contentStyle={styles.entryCardContent} subtle>
-                    <View style={styles.entryMainRow}>
-                      <View style={styles.entryCopy}>
-                        <Text style={styles.entryDate}>{formatEntryDate(entry.date)}</Text>
-                        <Text style={styles.entryTitle} numberOfLines={1}>
-                          {entry.title}
-                        </Text>
-                        <Text style={styles.entryPreview} numberOfLines={2}>
-                          {entry.body || 'No body text yet.'}
-                        </Text>
-                      </View>
-                      <Feather name="chevron-right" size={16} color={colors.textSubtle} />
-                    </View>
-
-                    <View style={styles.entryMetaRow}>
-                      <Text style={styles.entryPrompt} numberOfLines={1}>
-                        {entry.prompt || 'No prompt selected'}
-                      </Text>
-                      <Text style={styles.entryStatus}>{formatStatusLabel(entry.status)}</Text>
-                    </View>
-                  </Card>
-                </Pressable>
+            <View style={styles.writeEntryList}>
+              {visibleEntries.map((entry) => (
+                <WritingEntryRow
+                  key={entry.id}
+                  entry={entry}
+                  onPress={() => openEntryDetail(entry)}
+                />
               ))}
             </View>
           )}
         </View>
       ) : mode === 'detail' && selectedEntry ? (
-        <View style={styles.stack}>
-          <SectionHeader
-            eyebrow="Entry"
-            title={selectedEntry.title}
-            subtitle={`${formatEntryDate(selectedEntry.date)} - ${formatStatusLabel(selectedEntry.status)}`}
-            action={
-              <TouchableOpacity onPress={leaveDetail} style={styles.backButton}>
-                <Feather name="arrow-left" size={16} color={colors.text} />
-                <Text style={styles.backButtonLabel}>Back</Text>
-              </TouchableOpacity>
-            }
-          />
+        <View style={styles.reviewShell}>
+          <View style={styles.editorTopBar}>
+            <TouchableOpacity
+              accessibilityLabel="Back to writing list"
+              onPress={leaveDetail}
+              style={styles.editorBackButton}
+            >
+              <Feather name="chevron-left" size={18} color="#2c261f" />
+            </TouchableOpacity>
 
-          {selectedEntry.prompt ? (
-            <Card tone="muted" style={styles.detailPromptCard} contentStyle={styles.detailPromptContent}>
-              <Text style={styles.selectedPromptLabel}>Prompt</Text>
-              <Text selectable style={styles.selectedPromptText}>
-                {selectedEntry.prompt}
-              </Text>
-            </Card>
+            {selectedEntryIsReviewed ? (
+              <View style={styles.editorTopBarSpacer} />
+            ) : (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.editorTypeChips}
+                style={styles.editorTypeScroller}
+              >
+                {EDITOR_TYPE_FILTERS.map((filter) => {
+                  const active = getEntryFilterKey(selectedEntry) === filter.key;
+
+                  return (
+                    <View
+                      key={filter.key}
+                      style={[styles.editorTypeChip, active && styles.editorTypeChipActive]}
+                    >
+                      <Text style={[styles.editorTypeText, active && styles.editorTypeTextActive]}>
+                        {filter.label}
+                      </Text>
+                    </View>
+                  );
+                })}
+              </ScrollView>
+            )}
+
+            {!selectedEntryIsReviewed ? (
+              <TouchableOpacity onPress={() => openExistingDraft(selectedEntry)} style={styles.editorSaveButton}>
+                <Text style={styles.editorSaveText}>Edit</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+
+          {selectedEntry.prompt && !selectedEntryIsReviewed ? (
+            <View style={styles.editorPromptPanel}>
+              <View style={styles.editorPromptHeader}>
+                <Text style={styles.editorPromptHeaderText}>Choose a prompt</Text>
+                <View style={styles.editorPromptChevronIcon}>
+                  <Feather name="chevron-right" size={16} color="#776b5e" />
+                </View>
+              </View>
+            </View>
           ) : null}
 
-          {selectedEntry.assessment ? (
-            <>
-              <AnnotationLegend />
-              <Card style={styles.assessmentCard} contentStyle={styles.assessmentCardContent}>
+          <View style={styles.reviewTitleBlock}>
+            <Text selectable style={styles.reviewTitleText}>
+              {selectedEntry.title}
+            </Text>
+            <View style={styles.reviewTitleMetaRow}>
+              <View style={styles.reviewStatusPill}>
+                <Text style={styles.reviewStatusText}>Reviewed</Text>
+              </View>
+              <Text style={styles.reviewTitleMeta}>
+                {WRITING_FILTERS.find((filter) => filter.key === getEntryFilterKey(selectedEntry))?.label ?? 'Free'}
+              </Text>
+              <Text style={styles.reviewTitleMetaDot}>·</Text>
+              <Text style={styles.reviewTitleMeta}>
+                {formatEntryDate(selectedEntry.date ?? selectedEntry.createdAt ?? selectedEntry.updatedAt)}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.reviewWritingPanel}>
+            {!selectedEntryIsReviewed ? (
+              <FormattingToolbar formatting={selectedEntry.formatting} />
+            ) : null}
+
+            <View style={styles.reviewEntryMetaBar}>
+              <Text style={styles.reviewEntryMetaText}>
+                {getEntryCharacterCount(selectedEntry)} chars
+              </Text>
+              <View style={styles.reviewTranslateBadge}>
+                <Text style={styles.reviewTranslateCount}>
+                  {selectedEntryNativeInsertWords.length}
+                </Text>
+                <Text style={styles.reviewTranslateLabel}>to translate</Text>
+              </View>
+            </View>
+
+            {selectedEntryAnnotations.length > 0 ? (
+              <>
                 <AnnotatedEntry
-                  text={selectedEntry.body}
-                  annotations={selectedEntry.assessment.annotations}
+                  text={selectedEntry.body || 'Start writing in Korean…'}
+                  annotations={selectedEntryAnnotations}
+                  onAnnotationPress={setSelectedAnnotation}
+                  style={[
+                    styles.reviewEntryBodyText,
+                    selectedEntry.formatting?.bold && styles.formattedBodyBold,
+                    selectedEntry.formatting?.italic && styles.formattedBodyItalic,
+                    selectedEntry.formatting?.underline && styles.formattedBodyUnderline,
+                  ]}
+                />
+                <InlineCorrectionList
+                  annotations={selectedEntryAnnotations}
                   onAnnotationPress={setSelectedAnnotation}
                 />
-              </Card>
-              <AssessmentSummary summary={selectedEntry.assessment.summary} />
-            </>
-          ) : (
-            <>
-              <Card style={styles.assessmentCard} contentStyle={styles.assessmentCardContent}>
-                <Text selectable style={styles.assessmentEntryText}>
-                  {selectedEntry.body || 'No body text yet.'}
-                </Text>
-              </Card>
-              <Card tone="muted" style={styles.detailPromptCard} contentStyle={styles.detailPromptContent}>
-                <Text style={styles.selectedPromptLabel}>Assessment</Text>
-                <Text style={styles.selectedPromptText}>
-                  Feedback has not been run for this entry yet.
-                </Text>
-              </Card>
-            </>
-          )}
+              </>
+            ) : (
+              <Text
+                selectable
+                style={[
+                  styles.reviewEntryBodyText,
+                  selectedEntry.formatting?.bold && styles.formattedBodyBold,
+                  selectedEntry.formatting?.italic && styles.formattedBodyItalic,
+                  selectedEntry.formatting?.underline && styles.formattedBodyUnderline,
+                ]}
+              >
+                {selectedEntry.body || 'Start writing in Korean…'}
+              </Text>
+            )}
 
-          <View style={styles.detailActions}>
-            <IconButton
-              label="Edit"
-              onPress={() => openExistingDraft(selectedEntry)}
-              icon={<Feather name="edit-3" size={15} color={colors.text} />}
-              style={styles.actionButton}
-            />
-            <IconButton
-              label="Delete"
-              onPress={() =>
-                Alert.alert(
-                  'Delete entry',
-                  'Remove this writing from your recent entries?',
-                  [
-                    { text: 'Cancel', style: 'cancel' },
-                    { text: 'Delete', style: 'destructive', onPress: () => deleteEntry(selectedEntry.id) },
-                  ]
-                )
-              }
-              icon={<Feather name="trash-2" size={15} color={colors.danger} />}
-              style={styles.actionButton}
-            />
+            {selectedEntryNativeInsertWords.length > 0 ? (
+              <View style={styles.reviewEnglishWords}>
+                <Text style={styles.reviewEnglishWordsLabel}>
+                  Words you wrote in English — AI will help you learn these:
+                </Text>
+                <View style={styles.reviewEnglishWordChips}>
+                  {selectedEntryNativeInsertWords.map((word) => (
+                    <View key={word} style={styles.reviewEnglishWordChip}>
+                      <Text style={styles.reviewEnglishWordText}>{word}</Text>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            ) : null}
           </View>
+
+          {!selectedEntryIsReviewed ? (
+            <TouchableOpacity onPress={() => openExistingDraft(selectedEntry)} style={styles.editorSubmitButton}>
+              <Text style={styles.editorSubmitText}>Submit for Review</Text>
+            </TouchableOpacity>
+          ) : null}
+
+          <TouchableOpacity onPress={leaveDetail} style={styles.reviewDoneButton}>
+            <Text style={styles.reviewDoneText}>Done</Text>
+          </TouchableOpacity>
         </View>
       ) : (
-        <View style={styles.stack}>
-          <SectionHeader
-            eyebrow="Write"
-            title={draft.id ? 'Edit entry' : 'New entry'}
-            subtitle="Choose a prompt, add a title, and write your response."
-            action={
-              <TouchableOpacity onPress={leaveEditor} style={styles.backButton}>
-                <Feather name="arrow-left" size={16} color={colors.text} />
-                <Text style={styles.backButtonLabel}>Back</Text>
-              </TouchableOpacity>
-            }
-          />
+        <View style={styles.editorShell}>
+          <View style={styles.editorTopBar}>
+            <TouchableOpacity
+              accessibilityLabel="Back to writing list"
+              onPress={leaveEditor}
+              style={styles.editorBackButton}
+            >
+              <Feather name="chevron-left" size={18} color="#2c261f" />
+            </TouchableOpacity>
 
-          <Card tone="muted" style={styles.promptSelectorCard} contentStyle={styles.promptSelectorContent}>
-            <Text style={styles.promptSelectorTitle}>Prompts</Text>
-            <View style={styles.categoryList}>
-              {PROMPT_CATEGORIES.map((category) => {
-                const expanded = Boolean(expandedCategories[category.title]);
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.editorTypeChips}
+              style={styles.editorTypeScroller}
+            >
+              {EDITOR_TYPE_FILTERS.map((filter) => {
+                const active = activeEditorType === filter.key;
 
                 return (
-                  <View key={category.title} style={styles.categoryGroup}>
-                    <Pressable
-                      onPress={() => togglePromptCategory(category.title)}
-                      style={styles.categoryHeader}
-                    >
-                      <Text style={styles.categoryTitle}>{category.title}</Text>
-                      <Feather
-                        name={expanded ? 'chevron-up' : 'chevron-down'}
-                        size={16}
-                        color={colors.textMuted}
-                      />
-                    </Pressable>
-
-                    {expanded ? (
-                      <View style={styles.promptOptionList}>
-                        {category.prompts.map((prompt) => {
-                          const selected = draft.prompt === prompt;
-
-                          return (
-                            <Pressable
-                              key={prompt}
-                              onPress={() => updateDraft({ prompt })}
-                              style={[
-                                styles.promptOption,
-                                selected && styles.promptOptionSelected,
-                              ]}
-                            >
-                              <Text
-                                style={[
-                                  styles.promptOptionText,
-                                  selected && styles.promptOptionTextSelected,
-                                ]}
-                              >
-                                {prompt}
-                              </Text>
-                            </Pressable>
-                          );
-                        })}
-                      </View>
-                    ) : null}
-                  </View>
+                  <TouchableOpacity
+                    key={filter.key}
+                    onPress={() => selectEditorType(filter.key)}
+                    style={[styles.editorTypeChip, active && styles.editorTypeChipActive]}
+                  >
+                    <Text style={[styles.editorTypeText, active && styles.editorTypeTextActive]}>
+                      {filter.label}
+                    </Text>
+                  </TouchableOpacity>
                 );
               })}
-            </View>
-          </Card>
+            </ScrollView>
 
-          <Card style={styles.editorCard} contentStyle={styles.editorContent}>
+            <TouchableOpacity
+              disabled={!canSave}
+              onPress={saveEntry}
+              style={[styles.editorSaveButton, !canSave && styles.editorSaveButtonDisabled]}
+            >
+              <Text style={[styles.editorSaveText, !canSave && styles.editorSaveTextDisabled]}>
+                Save
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {activeEditorType !== 'free' ? (
+            <View style={styles.editorPromptPanel}>
+              <Pressable
+                onPress={() => setPromptPickerExpanded((expanded) => !expanded)}
+                style={styles.editorPromptHeader}
+              >
+                <Text style={styles.editorPromptHeaderText}>Choose a prompt</Text>
+                <View style={styles.editorPromptChevronIcon}>
+                  <Feather
+                    name={promptPickerExpanded ? 'chevron-down' : 'chevron-right'}
+                    size={16}
+                    color="#776b5e"
+                  />
+                </View>
+              </Pressable>
+              {promptPickerExpanded ? (
+                <View style={styles.editorPromptOptions}>
+                  {editorPromptOptions.map((prompt, index) => {
+                    const selected = draft.prompt === prompt;
+                    const last = index === editorPromptOptions.length - 1;
+
+                    return (
+                      <Pressable
+                        key={prompt}
+                        onPress={() => {
+                          updateDraft({ prompt });
+                          setPromptPickerExpanded(false);
+                        }}
+                        style={[
+                          styles.editorPromptOption,
+                          selected && styles.editorPromptOptionSelected,
+                          last && styles.editorPromptOptionLast,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.editorPromptOptionText,
+                            selected && styles.editorPromptOptionTextSelected,
+                          ]}
+                        >
+                          {prompt}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+
+          <View style={styles.editorWritingPanel}>
+            <FormattingToolbar formatting={draft.formatting} onToggle={toggleDraftFormatting} />
+
             <TextInput
               value={draft.title}
               onChangeText={(title) => updateDraft({ title })}
               placeholder="Title"
-              placeholderTextColor={colors.textSubtle}
-              style={styles.titleInput}
+              placeholderTextColor="#b4a893"
+              style={styles.editorTitleInput}
             />
-
-            <View style={styles.selectedPromptBox}>
-              <Text style={styles.selectedPromptLabel}>Selected prompt</Text>
-              <Text style={[styles.selectedPromptText, !draft.prompt && styles.selectedPromptPlaceholder]}>
-                {draft.prompt || 'Choose a prompt above, or write without one.'}
-              </Text>
-            </View>
 
             <TextInput
               value={draft.body}
               onChangeText={(body) => updateDraft({ body })}
-              placeholder="Start writing here..."
-              placeholderTextColor={colors.textSubtle}
+              placeholder="Start writing in Korean…"
+              placeholderTextColor="#b4a893"
               multiline
               textAlignVertical="top"
-              style={styles.editorInput}
+              style={[
+                styles.editorBodyInput,
+                draft.formatting?.bold && styles.formattedBodyBold,
+                draft.formatting?.italic && styles.formattedBodyItalic,
+                draft.formatting?.underline && styles.formattedBodyUnderline,
+              ]}
             />
+          </View>
 
-            <View style={styles.editorActions}>
-              <IconButton
-                label="Save Draft"
-                onPress={saveEntry}
-                disabled={!canSave}
-                icon={<Feather name="save" size={15} color={colors.text} />}
-                style={styles.actionButton}
-              />
-              <IconButton
-                tone="accent"
-                label="Submit"
-                onPress={saveEntry}
-                disabled={!canSave}
-                icon={<Feather name="check" size={15} color={colors.accentStrong} />}
-                style={styles.actionButton}
-              />
-            </View>
-          </Card>
+          <TouchableOpacity
+            disabled={!canSave}
+            onPress={saveEntry}
+            style={[styles.editorSubmitButton, !canSave && styles.editorSubmitButtonDisabled]}
+          >
+            <Text style={styles.editorSubmitText}>Submit for Review</Text>
+          </TouchableOpacity>
 
           {draft.id ? (
             <TouchableOpacity
@@ -1000,7 +1325,173 @@ const Write = ({ user }) => {
 
 const styles = StyleSheet.create({
   screenContent: {
+    paddingHorizontal: 0,
     paddingBottom: spacing.xl * 2,
+  },
+  writeHome: {
+    gap: 16,
+  },
+  writeHomeHeader: {
+    paddingHorizontal: WRITE_SIDE_PADDING,
+    paddingTop: 2,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: spacing.md,
+  },
+  writeHomeTitleBlock: {
+    gap: 2,
+  },
+  writeHomeTitle: {
+    fontFamily: fontFamilies.displaySemiBold,
+    fontSize: 26,
+    lineHeight: 31,
+    color: '#26211b',
+  },
+  writeHomeCountRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 4,
+  },
+  writeHomeCount: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 13,
+    lineHeight: 17,
+    color: '#7a6f61',
+  },
+  writeHomeCountLabel: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 13,
+    lineHeight: 17,
+    color: '#7a6f61',
+  },
+  writeNewButton: {
+    minHeight: 31,
+    borderRadius: radii.pill,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#2c261f',
+  },
+  writeNewButtonDisabled: {
+    opacity: 0.42,
+  },
+  writeNewButtonText: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 14,
+    color: '#fff8ec',
+  },
+  writeFilterRow: {
+    paddingHorizontal: WRITE_SIDE_PADDING,
+    gap: 8,
+  },
+  writeFilterChip: {
+    minHeight: 26,
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: '#d9cbb6',
+    paddingHorizontal: 14,
+    paddingVertical: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 250, 243, 0.42)',
+  },
+  writeFilterChipActive: {
+    backgroundColor: '#b8552e',
+    borderColor: '#b8552e',
+  },
+  writeFilterText: {
+    fontFamily: fontFamilies.sansMedium,
+    fontSize: 12,
+    lineHeight: 16,
+    color: '#796d5f',
+  },
+  writeFilterTextActive: {
+    color: '#fff8ec',
+  },
+  writeEntryList: {
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: '#d9cbb6',
+    backgroundColor: '#fff8ec',
+  },
+  writeEntryRow: {
+    minHeight: 70,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: WRITE_SIDE_PADDING,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e4d9c8',
+  },
+  writeEntryRowPressed: {
+    backgroundColor: '#f7efe2',
+  },
+  writeEntryDate: {
+    width: 34,
+    alignItems: 'center',
+    gap: 1,
+  },
+  writeEntryDay: {
+    fontFamily: fontFamilies.displayBold,
+    fontSize: 16,
+    lineHeight: 18,
+    color: '#302a23',
+  },
+  writeEntryMonth: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 10,
+    lineHeight: 13,
+    color: '#9a8e7a',
+  },
+  writeEntryMain: {
+    flex: 1,
+    minWidth: 0,
+    gap: 5,
+  },
+  writeEntryTitle: {
+    fontFamily: fontFamilies.krSerifSemiBold,
+    fontSize: 15,
+    lineHeight: 22,
+    color: '#27231d',
+  },
+  writeEntryMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    minWidth: 0,
+  },
+  writeEntryMetaText: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 11,
+    lineHeight: 15,
+    color: '#9a8e7a',
+  },
+  writeEntryMetaDot: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 11,
+    color: '#b7aa95',
+  },
+  writeEntryType: {
+    flexShrink: 1,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 11,
+    lineHeight: 15,
+    color: '#9a8e7a',
+  },
+  writeEntryStatusBadge: {
+    minHeight: 21,
+    borderRadius: radii.pill,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  writeEntryStatusText: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 11,
+    lineHeight: 15,
   },
   stack: {
     gap: spacing.md,
@@ -1013,54 +1504,8 @@ const styles = StyleSheet.create({
   loadingText: {
     ...textStyles.bodyMuted,
   },
-  entryList: {
-    gap: spacing.sm,
-  },
-  entryPressable: {
-    borderRadius: radii.md,
-  },
-  entryCard: {
-    borderRadius: radii.md,
-  },
-  entryCardContent: {
-    gap: spacing.sm,
-    paddingVertical: spacing.md,
-  },
-  entryMainRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  entryCopy: {
-    flex: 1,
-    gap: spacing.xxs,
-  },
-  entryDate: {
-    ...textStyles.eyebrow,
-  },
-  entryTitle: {
-    ...textStyles.label,
-    color: colors.text,
-  },
-  entryPreview: {
-    ...textStyles.bodyMuted,
-  },
-  entryMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: spacing.sm,
-  },
-  entryPrompt: {
-    ...textStyles.caption,
-    flex: 1,
-  },
-  entryStatus: {
-    ...textStyles.caption,
-    color: colors.textMuted,
-    textTransform: 'capitalize',
-  },
   emptyCard: {
+    marginHorizontal: WRITE_SIDE_PADDING,
     borderRadius: radii.md,
   },
   emptyContent: {
@@ -1090,108 +1535,431 @@ const styles = StyleSheet.create({
     ...textStyles.label,
     color: colors.text,
   },
-  promptSelectorCard: {
-    borderRadius: radii.md,
+  editorShell: {
+    gap: 14,
   },
-  promptSelectorContent: {
-    gap: spacing.sm,
-    paddingVertical: spacing.md,
+  editorTopBar: {
+    paddingHorizontal: WRITE_SIDE_PADDING,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
-  promptSelectorTitle: {
-    ...textStyles.label,
-    color: colors.text,
+  editorTopBarSpacer: {
+    flex: 1,
   },
-  categoryList: {
-    gap: spacing.xs,
-  },
-  categoryGroup: {
+  editorBackButton: {
+    width: 32,
+    height: 32,
+    borderRadius: radii.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 250, 243, 0.48)',
     borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radii.sm,
-    backgroundColor: colors.surface,
+    borderColor: '#d9cbb6',
+  },
+  editorTypeScroller: {
+    flex: 1,
+  },
+  editorTypeChips: {
+    alignItems: 'center',
+    gap: 6,
+  },
+  editorTypeChip: {
+    minHeight: 23,
+    borderRadius: radii.pill,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderWidth: 1,
+    borderColor: '#d8cbb8',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 250, 243, 0.42)',
+  },
+  editorTypeChipActive: {
+    backgroundColor: '#2c261f',
+    borderColor: '#2c261f',
+  },
+  editorTypeText: {
+    fontFamily: fontFamilies.sansMedium,
+    fontSize: 11,
+    lineHeight: 15,
+    color: '#776b5e',
+  },
+  editorTypeTextActive: {
+    color: '#fff8ec',
+  },
+  editorSaveButton: {
+    minHeight: 32,
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  editorSaveButtonDisabled: {
+    opacity: 0.5,
+  },
+  editorSaveText: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 12,
+    lineHeight: 16,
+    color: '#6f6559',
+  },
+  editorSaveTextDisabled: {
+    color: '#a79b88',
+  },
+  editorPromptPanel: {
+    marginHorizontal: WRITE_SIDE_PADDING,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#d8cbb8',
+    backgroundColor: '#fff8ec',
     overflow: 'hidden',
   },
-  categoryHeader: {
-    minHeight: 42,
+  editorPromptHeader: {
+    minHeight: 35,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: spacing.sm,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-  },
-  categoryTitle: {
-    ...textStyles.label,
-    color: colors.text,
-    flex: 1,
-  },
-  promptOptionList: {
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-    padding: spacing.xs,
-    gap: spacing.xs,
-  },
-  promptOption: {
-    borderRadius: radii.xs,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.sm,
-  },
-  promptOptionSelected: {
-    backgroundColor: colors.accentSoft,
-  },
-  promptOptionText: {
-    ...textStyles.bodyMuted,
-  },
-  promptOptionTextSelected: {
-    color: colors.accentStrong,
-    fontFamily: 'FFSans-Medium',
-  },
-  editorCard: {
-    borderRadius: radii.md,
-  },
-  editorContent: {
-    gap: spacing.md,
-  },
-  titleInput: {
-    ...textStyles.sectionTitle,
-    minHeight: 42,
     borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-    padding: 0,
-    color: colors.text,
+    borderBottomColor: '#e4d9c8',
+    paddingLeft: 18,
   },
-  selectedPromptBox: {
+  editorPromptHeaderText: {
+    fontFamily: fontFamilies.sansMedium,
+    fontSize: 13,
+    lineHeight: 18,
+    color: '#2c261f',
+  },
+  editorPromptChevronIcon: {
+    width: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  editorPromptOptions: {
+    backgroundColor: '#fff8ec',
+  },
+  editorPromptOption: {
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee3d2',
+  },
+  editorPromptOptionSelected: {
+    backgroundColor: '#f6ecd6',
+  },
+  editorPromptOptionLast: {
+    borderBottomWidth: 0,
+  },
+  editorPromptOptionText: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 13,
+    lineHeight: 20,
+    color: '#655a4d',
+  },
+  editorPromptOptionTextSelected: {
+    color: '#2c261f',
+    fontFamily: fontFamilies.sansMedium,
+  },
+  editorWritingPanel: {
+    marginHorizontal: WRITE_SIDE_PADDING,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#d8cbb8',
+    backgroundColor: '#fff8ec',
+    overflow: 'hidden',
+  },
+  editorToolbar: {
+    minHeight: 32,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee3d2',
+    backgroundColor: '#fbf2e5',
+  },
+  editorToolbarButton: {
+    width: 32,
+    height: 32,
     borderRadius: radii.sm,
-    backgroundColor: colors.surfaceMuted,
-    padding: spacing.md,
-    gap: spacing.xs,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  editorToolbarButtonActive: {
+    backgroundColor: '#ead8bf',
+  },
+  editorToolbarText: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 14,
+    lineHeight: 18,
+    color: '#5f5548',
+  },
+  editorToolbarTextActive: {
+    color: '#2c261f',
+  },
+  editorToolbarTextBold: {
+    fontFamily: fontFamilies.sansBold,
+  },
+  editorToolbarTextItalic: {
+    fontStyle: 'italic',
+  },
+  editorToolbarTextUnderline: {
+    textDecorationLine: 'underline',
+  },
+  editorTitleInput: {
+    minHeight: 49,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee3d2',
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    color: '#26211b',
+    fontFamily: fontFamilies.krSerifSemiBold,
+    fontSize: 18,
+    lineHeight: 25,
+  },
+  editorBodyInput: {
+    minHeight: 285,
+    paddingHorizontal: 18,
+    paddingTop: 14,
+    paddingBottom: 18,
+    color: '#26211b',
+    fontFamily: fontFamilies.krSerifRegular,
+    fontSize: 17,
+    lineHeight: 34,
+  },
+  formattedBodyBold: {
+    fontFamily: fontFamilies.krSerifBold,
+  },
+  formattedBodyItalic: {
+    fontStyle: 'italic',
+  },
+  formattedBodyUnderline: {
+    textDecorationLine: 'underline',
+  },
+  editorSubmitButton: {
+    marginHorizontal: WRITE_SIDE_PADDING,
+    minHeight: 45,
+    borderRadius: 16,
+    paddingHorizontal: 13,
+    paddingVertical: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#b8552e',
+  },
+  editorSubmitButtonDisabled: {
+    opacity: 0.5,
+  },
+  editorSubmitText: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 14,
+    lineHeight: 18,
+    color: '#fff8ec',
+  },
+  reviewShell: {
+    gap: 14,
+  },
+  reviewTitleBlock: {
+    marginHorizontal: WRITE_SIDE_PADDING,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: '#d8cbb8',
+    backgroundColor: '#fff8ec',
+    gap: 10,
+    paddingHorizontal: 18,
+    paddingVertical: 16,
+  },
+  reviewTitleText: {
+    fontFamily: fontFamilies.krSerifBold,
+    fontSize: 23,
+    lineHeight: 31,
+    color: '#26211b',
+    letterSpacing: 0,
+  },
+  reviewTitleMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 7,
+  },
+  reviewStatusPill: {
+    minHeight: 23,
+    borderRadius: radii.pill,
+    backgroundColor: '#e7f0e2',
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reviewStatusText: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 11,
+    lineHeight: 15,
+    color: '#5c8754',
+  },
+  reviewTitleMeta: {
+    fontFamily: fontFamilies.sansMedium,
+    fontSize: 12,
+    lineHeight: 17,
+    color: '#776b5e',
+  },
+  reviewTitleMetaDot: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 12,
+    lineHeight: 17,
+    color: '#b7aa95',
+  },
+  reviewWritingPanel: {
+    marginHorizontal: WRITE_SIDE_PADDING,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#d8cbb8',
+    backgroundColor: '#fff8ec',
+    overflow: 'hidden',
+  },
+  reviewEntryMetaBar: {
+    minHeight: 34,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee3d2',
+    paddingHorizontal: 18,
+  },
+  reviewEntryMetaText: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 12,
+    lineHeight: 16,
+    color: '#9a8e7a',
+  },
+  reviewTranslateBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  reviewTranslateCount: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 12,
+    lineHeight: 16,
+    color: '#2c261f',
+  },
+  reviewTranslateLabel: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 11,
+    lineHeight: 15,
+    color: '#b8552e',
+  },
+  reviewEntryBodyText: {
+    paddingHorizontal: 18,
+    paddingTop: 14,
+    paddingBottom: 14,
+    color: '#26211b',
+    fontFamily: fontFamilies.krSerifRegular,
+    fontSize: 17,
+    lineHeight: 34,
+  },
+  reviewEnglishWords: {
+    borderTopWidth: 1,
+    borderTopColor: '#eee3d2',
+    gap: 10,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    backgroundColor: '#fbf2e5',
+  },
+  reviewEnglishWordsLabel: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 12,
+    lineHeight: 16,
+    color: '#5f5548',
+  },
+  reviewEnglishWordChips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  reviewEnglishWordChip: {
+    minHeight: 25,
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: '#d8cbb8',
+    backgroundColor: '#fff8ec',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  reviewEnglishWordText: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 12,
+    lineHeight: 16,
+    color: '#b8552e',
+  },
+  inlineCorrectionList: {
+    borderTopWidth: 1,
+    borderTopColor: '#eee3d2',
+    gap: 9,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    backgroundColor: '#fff8ec',
+  },
+  inlineCorrectionItem: {
+    borderLeftWidth: 3,
+    borderRadius: 12,
+    backgroundColor: '#fbf2e5',
+    gap: 5,
+    paddingHorizontal: 11,
+    paddingVertical: 9,
+  },
+  inlineCorrectionItemPressed: {
+    backgroundColor: '#f4e6d1',
+  },
+  inlineCorrectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  inlineCorrectionDot: {
+    width: 7,
+    height: 7,
+    borderRadius: radii.pill,
+  },
+  inlineCorrectionType: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 10,
+    lineHeight: 14,
+  },
+  inlineCorrectionText: {
+    fontFamily: fontFamilies.krSerifMedium,
+    fontSize: 13,
+    lineHeight: 20,
+    color: '#2c261f',
+  },
+  inlineCorrectionOriginal: {
+    color: '#2c261f',
+  },
+  inlineCorrectionArrow: {
+    fontFamily: fontFamilies.sansRegular,
+    color: '#9a8e7a',
+  },
+  inlineCorrectionSuggestion: {
+    color: '#b8552e',
+  },
+  reviewDoneButton: {
+    marginHorizontal: WRITE_SIDE_PADDING,
+    minHeight: 45,
+    borderRadius: 16,
+    paddingHorizontal: 13,
+    paddingVertical: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#2c261f',
+  },
+  reviewDoneText: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 14,
+    lineHeight: 18,
+    color: '#fff8ec',
   },
   selectedPromptLabel: {
     ...textStyles.eyebrow,
   },
   selectedPromptText: {
     ...textStyles.body,
-  },
-  selectedPromptPlaceholder: {
-    color: colors.textSubtle,
-  },
-  editorInput: {
-    minHeight: 260,
-    borderRadius: radii.sm,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.md,
-    color: colors.text,
-    fontFamily: 'FFSans-Regular',
-    fontSize: 16,
-    lineHeight: 24,
-  },
-  editorActions: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: spacing.sm,
   },
   actionButton: {
     flex: 1,
@@ -1345,75 +2113,6 @@ const styles = StyleSheet.create({
     ...textStyles.bodyMuted,
     fontSize: 13,
     lineHeight: 19,
-  },
-  assessmentSummary: {
-    gap: spacing.sm,
-  },
-  summaryCard: {
-    borderRadius: radii.md,
-  },
-  summaryCardContent: {
-    gap: spacing.sm,
-    paddingVertical: spacing.md,
-  },
-  summaryTitle: {
-    ...textStyles.label,
-    color: colors.text,
-  },
-  summaryItemList: {
-    gap: spacing.sm,
-  },
-  summaryItem: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: spacing.sm,
-  },
-  summaryBullet: {
-    width: 6,
-    height: 6,
-    borderRadius: radii.pill,
-    backgroundColor: colors.accentStrong,
-    marginTop: 8,
-  },
-  summaryText: {
-    ...textStyles.bodyMuted,
-    flex: 1,
-  },
-  vocabSection: {
-    gap: spacing.sm,
-  },
-  vocabCard: {
-    borderRadius: radii.md,
-  },
-  vocabCardContent: {
-    gap: spacing.sm,
-    paddingVertical: spacing.md,
-  },
-  vocabHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: spacing.sm,
-  },
-  vocabWord: {
-    ...textStyles.label,
-    color: colors.text,
-    flex: 1,
-    fontSize: 15,
-    lineHeight: 22,
-  },
-  vocabSaveButton: {
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-  },
-  vocabMeaning: {
-    ...textStyles.bodyMuted,
-  },
-  vocabExample: {
-    color: colors.text,
-    fontFamily: 'FFSerif-Regular',
-    fontSize: 15,
-    lineHeight: 24,
   },
   deleteLink: {
     alignSelf: 'center',
