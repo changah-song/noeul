@@ -1,5 +1,4 @@
-import axios from 'axios';
-import { BASE_URL } from '../../config';
+import { api } from './client';
 
 const emptyChapterResult = {
   results: [],
@@ -20,8 +19,8 @@ const preprocessChapter = async ({ bookUri, spineIndex, text }) => {
     };
   }
 
-  const response = await axios.post(
-    `${BASE_URL}/preprocess_chapter/`,
+  const response = await api.post(
+    '/preprocess_chapter/',
     {
       book_uri: bookUri,
       spine_index: spineIndex,

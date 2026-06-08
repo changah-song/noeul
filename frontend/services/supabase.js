@@ -137,6 +137,8 @@ const USER_VOCAB_SELECT = `
   next_review_at,
   correct_count,
   wrong_count,
+  stability,
+  difficulty,
   updated_at,
   deleted_at,
   language
@@ -202,6 +204,24 @@ const normalizeInteger = (value, fallback = 0) => {
   return Number.isFinite(number) ? number : fallback;
 };
 
+const normalizeNumber = (
+  value,
+  fallback,
+  min = Number.NEGATIVE_INFINITY,
+  max = Number.POSITIVE_INFINITY
+) => {
+  if (value == null || value === '') {
+    return fallback;
+  }
+
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return fallback;
+  }
+
+  return Math.min(Math.max(number, min), max);
+};
+
 const normalizeTimestamp = (value, fallback = null) => {
   if (!value) {
     return fallback;
@@ -236,6 +256,8 @@ const toUserVocabRow = (userId, entry) => {
     next_review_at: normalizeTimestamp(entry.next_review_at ?? entry.nextReviewAt),
     correct_count: normalizeInteger(entry.correct_count ?? entry.correctCount),
     wrong_count: normalizeInteger(entry.wrong_count ?? entry.wrongCount),
+    stability: normalizeNumber(entry.stability, 1.0, 0.01),
+    difficulty: normalizeNumber(entry.difficulty, 5.0, 1, 10),
     updated_at: updatedAt,
     deleted_at: normalizeTimestamp(entry.deleted_at ?? entry.deletedAt),
     language: entry.language ?? 'ko',

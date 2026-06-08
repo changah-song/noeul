@@ -22,14 +22,29 @@ const useAuth = () => {
           throw error;
         }
 
+        let session = currentSession;
+
+        if (!session) {
+          const {
+            data: { session: anonymousSession },
+            error: anonymousError,
+          } = await supabase.auth.signInAnonymously();
+
+          if (anonymousError) {
+            throw anonymousError;
+          }
+
+          session = anonymousSession;
+        }
+
         if (!isMounted) {
           return;
         }
 
-        setSession(currentSession);
-        setUser(currentSession?.user ?? null);
+        setSession(session);
+        setUser(session?.user ?? null);
       } catch (error) {
-        console.warn(`${FILE_TAG} failed to restore session:`, error.message);
+        console.warn(`${FILE_TAG} failed to restore or create session:`, error.message);
       } finally {
         if (isMounted) {
           setLoading(false);

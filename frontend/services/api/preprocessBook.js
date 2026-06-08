@@ -8,8 +8,7 @@
  *   - Building and inserting book_index rows via insertBookIndexEntries()
  */
 
-import axios from 'axios';
-import { BASE_URL } from '../../config';
+import { api } from './client';
 
 /**
  * preprocessBook
@@ -35,8 +34,8 @@ const MAX_POLL_ERRORS = 4;
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 const startPreprocessBookJob = async ({ text }) => {
-  const response = await axios.post(
-    `${BASE_URL}/preprocess_book/`,
+  const response = await api.post(
+    '/preprocess_book/',
     {
       text,
     },
@@ -50,11 +49,22 @@ const startPreprocessBookJob = async ({ text }) => {
 };
 
 const getPreprocessStatus = async (jobId) => {
-  const response = await axios.get(`${BASE_URL}/preprocess_status/${jobId}`, {
-    timeout: 30000,
-  });
+  try {
+    const response = await api.get(`/preprocess_status/${jobId}`, {
+      timeout: 30000,
+    });
 
-  return response.data;
+    return response.data;
+  } catch (error) {
+    if (error.response?.status === 404) {
+      return {
+        status: 'failed',
+        error: 'Preprocessing job expired or the server restarted.',
+      };
+    }
+
+    throw error;
+  }
 };
 
 const preprocessBook = async ({ text, onStatus, _attempt = 1 }) => {

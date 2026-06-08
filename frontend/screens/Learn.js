@@ -118,6 +118,15 @@ const numericValue = (value) => {
   return Number.isFinite(number) ? number : 0;
 };
 
+const fsrsNumber = (value, fallback) => {
+  if (value == null || value === '') {
+    return fallback;
+  }
+
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+};
+
 const sameWord = (a, b) => (
   !!a
   && !!b
@@ -279,6 +288,8 @@ const normalizeRows = (rows) =>
     last_reviewed_at: row.last_reviewed_at ?? null,
     correct_count: numericValue(row.correct_count),
     wrong_count: numericValue(row.wrong_count),
+    stability: fsrsNumber(row.stability, 1.0),
+    difficulty: fsrsNumber(row.difficulty, 5.0),
     related_known_words: parseRelatedKnownWords(row.related_known_words),
   }));
 
@@ -939,7 +950,10 @@ const Learn = ({ navigation, user }) => {
       currentWord.level,
       status,
       currentWord.language ?? 'ko',
-      { ownerId: activeOwnerId }
+      {
+        ownerId: activeOwnerId,
+        wordData: currentWord,
+      }
     );
     await incrementWordsStudied(activeOwnerId, 1);
     const updatedWords = await fetchWords();
@@ -949,6 +963,8 @@ const Learn = ({ navigation, user }) => {
         status: updatedWord.level,
         last_reviewed_at: updatedWord.last_reviewed_at,
         next_review_at: updatedWord.next_review_at,
+        stability: updatedWord.stability,
+        difficulty: updatedWord.difficulty,
         correct_count: updatedWord.correct_count,
         wrong_count: updatedWord.wrong_count,
         updated_at: updatedWord.updated_at ?? new Date().toISOString(),

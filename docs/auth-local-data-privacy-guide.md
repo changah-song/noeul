@@ -18,7 +18,7 @@ User-owned data currently uses unscoped local storage:
   - `@ff/current-book`
   - `@ff/current-book-meta`
 - `frontend/services/Database.js`
-  - `SQLite.openDatabase('temp.db')`
+  - `SQLite.openDatabase('fluentfable.db')`
   - `vocab`
   - `vocab_contexts`
   - `book_index`
