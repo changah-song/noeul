@@ -420,7 +420,7 @@ const ShelfRow = ({ row, rowIndex, isLast, activeBookKey, shelfWidth, onShowBook
                 />
             ))}
             <View style={styles.emptyShelfSlot}>
-                <Text style={styles.emptyShelfText}>room{'\n'}to grow</Text>
+                <Text style={styles.emptyShelfText}>empty{'\n'}space</Text>
             </View>
         </View>
         <View style={styles.shelfBase} />
