@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Animated, Easing, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useTranslation } from '../../../hooks/useTranslation';
 import { colors, spacing, textStyles } from '../../../theme';
 import TranslationContent from './TranslationContent';
 import DictionaryContent from './DictionaryContent';
@@ -13,6 +14,7 @@ const TRANSLATION_SOURCE_LANGUAGE = 'KO';
 const TRANSLATION_TARGET_LANGUAGE = 'EN';
 
 const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, isDarkMode, onClose, onWordSave, onWordUnsave, currentBook, sourceBook, savedWords }) => {
+    const { t } = useTranslation();
     const insets = useSafeAreaInsets();
     const [dictionaryExpandedRows, setDictionaryExpandedRows] = useState(0);
     const [dictionaryContentHeight, setDictionaryContentHeight] = useState(0);
@@ -146,12 +148,15 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
                     <View style={styles.translationHeaderLeft}>
                         <MaterialIcons name="translate" size={18} color={panelColors.accent} />
                         <Text numberOfLines={1} style={[styles.translationHeaderText, { color: panelColors.accent }]}>
-                            {`TRANSLATION · ${TRANSLATION_SOURCE_LANGUAGE} → ${TRANSLATION_TARGET_LANGUAGE}`}
+                            {t('lookup.translationHeader', {
+                                source: TRANSLATION_SOURCE_LANGUAGE,
+                                target: TRANSLATION_TARGET_LANGUAGE,
+                            })}
                         </Text>
                     </View>
                     <TouchableOpacity
                         accessibilityRole="button"
-                        accessibilityLabel="Close translation"
+                        accessibilityLabel={t('lookup.closeTranslation')}
                         activeOpacity={0.75}
                         onPress={closeTranslation}
                         style={styles.translationCloseButton}

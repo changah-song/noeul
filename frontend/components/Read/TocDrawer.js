@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useTranslation } from '../../hooks/useTranslation';
 import { colors, radii, spacing, textStyles } from '../../theme';
 
 const stripHref = (href) => {
@@ -34,6 +35,7 @@ const TocDrawer = ({
     onClose,
     onSelect,
 }) => {
+    const { t } = useTranslation();
     const flatItems = useMemo(() => flattenToc(toc), [toc]);
     const minDepth = useMemo(() => {
         if (!flatItems.length) {
@@ -97,7 +99,7 @@ const TocDrawer = ({
                 <Pressable style={styles.backdrop} onPress={onClose} />
                 <View style={[styles.dropdown, { backgroundColor: palette.sheet, borderColor: palette.border }]}>
                     <View style={styles.header}>
-                        <Text style={[styles.headerTitle, { color: palette.text }]}>Contents</Text>
+                        <Text style={[styles.headerTitle, { color: palette.text }]}>{t('read.contents')}</Text>
                     </View>
 
                     <ScrollView
@@ -111,7 +113,7 @@ const TocDrawer = ({
                             const normalizedDepth = Math.min(1, Math.max(0, (item?.depth ?? 0) - minDepth));
                             const isSubchapter = normalizedDepth > 0;
                             const isDisabled = item?.disabled || !Number.isInteger(item?.spineIndex);
-                            const title = String(item?.title || item?.label || 'Untitled').trim() || 'Untitled';
+                            const title = String(item?.title || item?.label || t('read.untitledSection')).trim() || t('read.untitledSection');
                             const positionLabel = item?.positionLabel || (
                                 Number.isInteger(item?.spineIndex) && totalSpineItems
                                     ? `${item.spineIndex + 1}/${totalSpineItems}`

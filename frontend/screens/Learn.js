@@ -16,7 +16,9 @@ import { Feather, MaterialIcons } from '@expo/vector-icons';
 import Flashcard from '../components/Learn/Flashcard';
 import HanjaDetails from '../components/Read/TopSection/HanjaDetails';
 import { Screen } from '../components/ui';
+import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
+import { useTranslation } from '../hooks/useTranslation';
 import {
   getVocabContexts,
   recordReviewOutcome,
@@ -36,53 +38,53 @@ import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
 import { colors, fontFamilies, radii, spacing, textStyles } from '../theme';
 
 const FILTERS = [
-  { key: 'starred', label: 'Starred', icon: 'star' },
-  { key: 'recent', label: 'Recently saved' },
-  { key: 'maturity', label: 'Maturity' },
-  { key: 'not-seen', label: 'Not seen lately' },
-  { key: 'most-seen', label: 'Most seen' },
+  { key: 'starred', labelKey: 'learn.filters.starred', icon: 'star' },
+  { key: 'recent', labelKey: 'learn.filters.recent' },
+  { key: 'maturity', labelKey: 'learn.filters.maturity' },
+  { key: 'not-seen', labelKey: 'learn.filters.notSeen' },
+  { key: 'most-seen', labelKey: 'learn.filters.mostSeen' },
 ];
 
 const PROFICIENCY_LEVELS = [
   {
     key: 'new',
-    label: 'New',
+    labelKey: 'learn.proficiency.new',
     rank: 1,
     color: '#3f79aa',
     soft: '#e7f1fa',
-    description: 'just saved - waiting for more reading',
+    descriptionKey: 'learn.proficiency.newDescription',
   },
   {
     key: 'growing',
-    label: 'Growing',
+    labelKey: 'learn.proficiency.growing',
     rank: 2,
     color: '#c58b28',
     soft: '#fff1d5',
-    description: 'seen a few times - reading keeps moving it forward',
+    descriptionKey: 'learn.proficiency.growingDescription',
   },
   {
     key: 'familiar',
-    label: 'Familiar',
+    labelKey: 'learn.proficiency.familiar',
     rank: 3,
     color: '#b47b2a',
     soft: '#f8ead1',
-    description: 'recognizable, but still worth seeing in context',
+    descriptionKey: 'learn.proficiency.familiarDescription',
   },
   {
     key: 'mature',
-    label: 'Mature',
+    labelKey: 'learn.proficiency.mature',
     rank: 4,
     color: '#5c9856',
     soft: '#e7f1dd',
-    description: 'matured through repeated reading',
+    descriptionKey: 'learn.proficiency.matureDescription',
   },
   {
     key: 'graduated',
-    label: 'Graduated',
+    labelKey: 'learn.proficiency.graduated',
     rank: 5,
     color: '#8f897d',
     soft: '#ece8df',
-    description: 'stable enough to fade into the background',
+    descriptionKey: 'learn.proficiency.graduatedDescription',
   },
 ];
 
@@ -157,10 +159,10 @@ const getSeenCount = (word) => {
   return Math.max(1, numericValue(word?.correct_count) + numericValue(word?.wrong_count) + 1);
 };
 
-const getSourceLabel = (word) => (
+const getSourceLabel = (word, t = null) => (
   cleanText(word?.source_book_title)
   || cleanText(word?.source_book_uri)
-  || 'saved word'
+  || (t ? t('learn.savedWord') : 'saved word')
 );
 
 const getLastSawDate = (word) => (
@@ -169,24 +171,30 @@ const getLastSawDate = (word) => (
   || null
 );
 
-const formatRelativeDate = (value) => {
+const formatRelativeDate = (value, t = null) => {
+  const label = (key, params) => (t ? t(key, params) : null);
+
   if (!value) {
-    return 'not seen';
+    return label('learn.notSeenDate') ?? 'not seen';
   }
 
   const timestamp = new Date(value).getTime();
   if (!Number.isFinite(timestamp)) {
-    return 'not seen';
+    return label('learn.notSeenDate') ?? 'not seen';
   }
 
   const now = Date.now();
   const diffDays = Math.max(0, Math.floor((now - timestamp) / (1000 * 60 * 60 * 24)));
 
-  if (diffDays === 0) return 'today';
-  if (diffDays === 1) return 'yesterday';
-  if (diffDays < 30) return `${diffDays}d ago`;
-  if (diffDays < 365) return `${Math.floor(diffDays / 30)}mo ago`;
-  return `${Math.floor(diffDays / 365)}y ago`;
+  if (diffDays === 0) return label('learn.today') ?? 'today';
+  if (diffDays === 1) return label('learn.yesterday') ?? 'yesterday';
+  if (diffDays < 30) return label('learn.daysAgo', { count: diffDays }) ?? `${diffDays}d ago`;
+  if (diffDays < 365) {
+    const months = Math.floor(diffDays / 30);
+    return label('learn.monthsAgo', { count: months }) ?? `${months}mo ago`;
+  }
+  const years = Math.floor(diffDays / 365);
+  return label('learn.yearsAgo', { count: years }) ?? `${years}y ago`;
 };
 
 const getDistinctDays = (word) => {
@@ -362,10 +370,11 @@ const StatusBadge = ({ label, tone = 'blue' }) => {
 };
 
 const VocabularyRow = ({ word, onPress, onLongPress, selectionMode = false, selected = false }) => {
+  const { t } = useTranslation();
   const proficiency = getProficiency(word);
   const seenCount = getSeenCount(word);
-  const source = getSourceLabel(word);
-  const lastSaw = formatRelativeDate(getLastSawDate(word));
+  const source = getSourceLabel(word, t);
+  const lastSaw = formatRelativeDate(getLastSawDate(word), t);
   const showNewBadge = isRecentlySaved(word);
   const showNotSeenBadge = !showNewBadge && isNotSeenLately(word);
 
@@ -389,28 +398,29 @@ const VocabularyRow = ({ word, onPress, onLongPress, selectionMode = false, sele
         <View style={styles.wordTitleLine}>
           <Text numberOfLines={1} style={styles.wordText}>{word.word}</Text>
           {word.hanja ? <Text numberOfLines={1} style={styles.wordHanja}>{word.hanja}</Text> : null}
-          {showNewBadge ? <StatusBadge label="NEW" /> : null}
-          {showNotSeenBadge ? <StatusBadge label="NOT SEEN" tone="amber" /> : null}
+          {showNewBadge ? <StatusBadge label={t('learn.newBadge')} /> : null}
+          {showNotSeenBadge ? <StatusBadge label={t('learn.notSeenBadge')} tone="amber" /> : null}
           {word.is_favorite ? <MaterialIcons name="star" size={16} color="#a7997e" /> : null}
         </View>
-        <Text numberOfLines={1} style={styles.wordDefinition}>{word.def || 'No definition saved'}</Text>
+        <Text numberOfLines={1} style={styles.wordDefinition}>{word.def || t('learn.noDefinition')}</Text>
         <View style={styles.wordMetaLine}>
           <Feather name="eye" size={13} color="#a99e8c" />
           <Text numberOfLines={1} style={styles.wordMetaText}>
-            {seenCount} seen · {source} · {lastSaw}
+            {t('learn.seenMeta', { count: seenCount, source, date: lastSaw })}
           </Text>
         </View>
       </View>
 
       <View style={styles.proficiencySummary}>
         <ProficiencyDots level={proficiency} />
-        <Text style={[styles.proficiencyLabel, { color: proficiency.color }]}>{proficiency.label}</Text>
+        <Text style={[styles.proficiencyLabel, { color: proficiency.color }]}>{t(proficiency.labelKey)}</Text>
       </View>
     </Pressable>
   );
 };
 
 const HighlightPreview = ({ word, sentence, proficiency }) => {
+  const { t } = useTranslation();
   const cleanSentence = cleanText(sentence);
   const cleanWord = cleanText(word?.word);
 
@@ -418,7 +428,7 @@ const HighlightPreview = ({ word, sentence, proficiency }) => {
     return (
       <Text style={styles.highlightSentence}>
         <Text style={[styles.highlightedWord, { backgroundColor: proficiency.soft }]}>
-          {cleanWord || 'word'}
+          {cleanWord || t('learn.word')}
         </Text>
         {cleanText(word?.def) ? ` - ${word.def}` : ''}
       </Text>
@@ -448,6 +458,7 @@ const WordDetailModal = ({
   onToggleFavorite,
   onRemove,
 }) => {
+  const { t } = useTranslation();
   const [currentHanja, setCurrentHanja] = useState(null);
 
   useEffect(() => {
@@ -460,8 +471,8 @@ const WordDetailModal = ({
 
   const proficiency = getProficiency(word);
   const seenCount = getSeenCount(word);
-  const source = getSourceLabel(word);
-  const lastSaw = formatRelativeDate(getLastSawDate(word));
+  const source = getSourceLabel(word, t);
+  const lastSaw = formatRelativeDate(getLastSawDate(word), t);
   const hanjaCharacters = getHanjaCharacters(word.hanja);
 
   const handleHanjaPress = (hanja, sourceWord = null, options = {}) => {
@@ -512,7 +523,7 @@ const WordDetailModal = ({
           <TouchableOpacity onPress={onClose} style={styles.detailHeaderButton}>
             <Feather name="chevron-left" size={28} color="#2d2923" />
           </TouchableOpacity>
-          <Text style={styles.detailHeaderTitle}>Word</Text>
+          <Text style={styles.detailHeaderTitle}>{t('learn.word')}</Text>
           <TouchableOpacity onPress={onToggleFavorite} style={styles.detailHeaderButton}>
             <MaterialIcons
               name={word.is_favorite ? 'star' : 'star-outline'}
@@ -537,14 +548,14 @@ const WordDetailModal = ({
               ) : null}
             </View>
             <Text style={styles.detailMeta}>{source} · {lastSaw}</Text>
-            <Text style={styles.detailDefinition}>{word.def || 'No definition saved'}</Text>
+            <Text style={styles.detailDefinition}>{word.def || t('learn.noDefinition')}</Text>
           </View>
 
           <View style={[styles.maturityCard, { backgroundColor: proficiency.soft }]}>
             <View style={styles.maturityTopRow}>
               <View style={styles.maturityCopy}>
-                <Text style={[styles.maturityTitle, { color: proficiency.color }]}>{proficiency.label}</Text>
-                <Text style={styles.maturityDescription}>{proficiency.description}</Text>
+                <Text style={[styles.maturityTitle, { color: proficiency.color }]}>{t(proficiency.labelKey)}</Text>
+                <Text style={styles.maturityDescription}>{t(proficiency.descriptionKey)}</Text>
               </View>
               <ProficiencyDots level={proficiency} size={9} />
             </View>
@@ -552,21 +563,21 @@ const WordDetailModal = ({
             <View style={styles.detailStatsRow}>
               <View style={styles.detailStat}>
                 <Text style={styles.detailStatValue}>{seenCount}</Text>
-                <Text style={styles.detailStatLabel}>encounters</Text>
+                <Text style={styles.detailStatLabel}>{t('learn.encounters')}</Text>
               </View>
               <View style={styles.detailStat}>
                 <Text style={styles.detailStatValue}>{getDistinctDays(word)}</Text>
-                <Text style={styles.detailStatLabel}>distinct days</Text>
+                <Text style={styles.detailStatLabel}>{t('learn.distinctDays')}</Text>
               </View>
               <View style={styles.detailStat}>
                 <Text style={styles.detailStatValue}>{getSourceCount(word)}</Text>
-                <Text style={styles.detailStatLabel}>sources</Text>
+                <Text style={styles.detailStatLabel}>{t('learn.sources')}</Text>
               </View>
             </View>
           </View>
 
           <View style={styles.contextSection}>
-            <Text style={styles.detailSectionTitle}>Seen in context</Text>
+            <Text style={styles.detailSectionTitle}>{t('learn.seenContext')}</Text>
             {contexts.length > 0 ? (
               contexts.map((context, index) => (
                 <View
@@ -577,14 +588,14 @@ const WordDetailModal = ({
                     <Text numberOfLines={1} style={styles.contextSource}>
                       {cleanText(context.sourceBookTitle) || cleanText(context.sourceBookUri) || source}
                     </Text>
-                    <Text style={styles.contextDate}>{formatRelativeDate(context.seenAt)}</Text>
+                    <Text style={styles.contextDate}>{formatRelativeDate(context.seenAt, t)}</Text>
                   </View>
                   <HighlightPreview word={word} sentence={context.sentence} proficiency={proficiency} />
                 </View>
               ))
             ) : (
               <View style={styles.contextRow}>
-                <Text style={styles.emptyContext}>No saved context sentence yet.</Text>
+                <Text style={styles.emptyContext}>{t('learn.noContext')}</Text>
               </View>
             )}
           </View>
@@ -592,7 +603,7 @@ const WordDetailModal = ({
 
         <View style={styles.detailActions}>
           <TouchableOpacity onPress={onRemove} style={styles.deleteWordButton}>
-            <Text style={styles.deleteWordText}>Delete</Text>
+            <Text style={styles.deleteWordText}>{t('common.delete')}</Text>
           </TouchableOpacity>
         </View>
 
@@ -611,6 +622,8 @@ const WordDetailModal = ({
 };
 
 const Learn = ({ navigation, user }) => {
+  const { t } = useTranslation();
+  const { targetLanguage } = useAppContext();
   const { activeOwnerId, syncGeneration } = useLocalOwner();
   const [words, setWords] = useState([]);
   const [activeFilter, setActiveFilter] = useState('recent');
@@ -624,7 +637,7 @@ const Learn = ({ navigation, user }) => {
 
   const fetchWords = useCallback(async () => {
     try {
-      const data = await viewData({ ownerId: activeOwnerId });
+      const data = await viewData({ ownerId: activeOwnerId, language: targetLanguage });
       const normalized = normalizeRows(data);
       setWords(normalized);
       setSelectedWord((current) => {
@@ -639,7 +652,7 @@ const Learn = ({ navigation, user }) => {
       console.error('[Learn] Error fetching vocab data:', error);
       return [];
     }
-  }, [activeOwnerId]);
+  }, [activeOwnerId, targetLanguage]);
 
   useEffect(() => {
     setWords([]);
@@ -649,7 +662,7 @@ const Learn = ({ navigation, user }) => {
     setSelectedWordContexts([]);
     setSelectedWordKeys(new Set());
     fetchWords();
-  }, [activeOwnerId, fetchWords]);
+  }, [activeOwnerId, fetchWords, targetLanguage]);
 
   useFocusEffect(
     useCallback(() => {
@@ -733,7 +746,7 @@ const Learn = ({ navigation, user }) => {
     [visibleWords]
   );
   const reviewDeck = dueWords.length > 0 ? dueWords : availableVisibleWords;
-  const reviewDeckTitle = dueWords.length > 0 ? 'Due review' : 'Saved words';
+  const reviewDeckTitle = dueWords.length > 0 ? t('learn.dueReview') : t('learn.savedWords');
 
   const syncFieldsToCloud = useCallback(async (word, patch) => {
     const {
@@ -835,18 +848,18 @@ const Learn = ({ navigation, user }) => {
     };
 
     Alert.alert(
-      'Delete saved word',
-      `Delete "${word.word}" from your saved words?`,
+      t('learn.deleteSavedWordTitle'),
+      t('learn.deleteWordBody', { word: word.word }),
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('common.cancel'), style: 'cancel' },
         {
-          text: 'Delete',
+          text: t('common.delete'),
           style: 'destructive',
           onPress: remove,
         },
       ]
     );
-  }, [deleteSavedWord, fetchWords]);
+  }, [deleteSavedWord, fetchWords, t]);
 
   const toggleWordSelection = useCallback((word) => {
     const key = getWordKey(word);
@@ -880,10 +893,10 @@ const Learn = ({ navigation, user }) => {
     }
 
     const count = selectedWords.length;
-    const title = count === 1 ? 'Delete saved word' : 'Delete saved words';
+    const title = count === 1 ? t('learn.deleteSavedWordTitle') : t('learn.deleteSavedWordsTitle');
     const body = count === 1
-      ? `Delete "${selectedWords[0].word}" from your saved words?`
-      : `Delete ${count} saved words? This also removes their synced context history.`;
+      ? t('learn.deleteWordBody', { word: selectedWords[0].word })
+      : t('learn.deleteWordsBody', { count });
 
     const removeSelected = async () => {
       const {
@@ -907,15 +920,15 @@ const Learn = ({ navigation, user }) => {
       title,
       body,
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: t('common.cancel'), style: 'cancel' },
         {
-          text: 'Delete',
+          text: t('common.delete'),
           style: 'destructive',
           onPress: removeSelected,
         },
       ]
     );
-  }, [clearWordSelection, deleteSavedWord, fetchWords, selectedWords]);
+  }, [clearWordSelection, deleteSavedWord, fetchWords, selectedWords, t]);
 
   const startPractice = useCallback((deckWords, title) => {
     const now = Date.now();
@@ -982,30 +995,30 @@ const Learn = ({ navigation, user }) => {
   return (
     <Screen scroll backgroundColor="#eee6d8" contentContainerStyle={styles.content}>
       <View style={styles.header}>
-        <Text style={styles.title}>Learn</Text>
-        <Text style={styles.subtitle}>{words.length} words · reading is doing the work</Text>
+        <Text style={styles.title}>{t('learn.title')}</Text>
+        <Text style={styles.subtitle}>{t('learn.subtitle', { count: words.length })}</Text>
       </View>
 
       <View style={styles.summaryCard}>
         <View style={styles.summaryStats}>
           <View style={styles.summaryStat}>
             <Text style={[styles.summaryValue, styles.summaryValueGreen]}>{maturedCount}</Text>
-            <Text style={styles.summaryLabel}>matured through reading</Text>
+            <Text style={styles.summaryLabel}>{t('learn.matured')}</Text>
           </View>
           <View style={styles.summaryStat}>
             <Text style={[styles.summaryValue, styles.summaryValueAmber]}>{waitingCount}</Text>
-            <Text style={styles.summaryLabel}>waiting for another encounter</Text>
+            <Text style={styles.summaryLabel}>{t('learn.waiting')}</Text>
           </View>
           <View style={styles.summaryStat}>
             <Text style={styles.summaryValue}>{notSeenCount}</Text>
-            <Text style={styles.summaryLabel}>not seen lately</Text>
+            <Text style={styles.summaryLabel}>{t('learn.notSeen')}</Text>
           </View>
         </View>
 
         <View style={styles.readingGuidance}>
           <Feather name="book-open" size={16} color="#8a6f42" />
           <Text style={styles.readingGuidanceText}>
-            Keep reading to learn words naturally. Reviews are best for words that rarely show up again, so use them as a supplement when you want extra practice.
+            {t('learn.guidance')}
           </Text>
         </View>
 
@@ -1015,7 +1028,7 @@ const Learn = ({ navigation, user }) => {
             style={[styles.keepReadingButton, words.length === 0 && styles.keepReadingButtonFull]}
           >
             <Feather name="book-open" size={18} color="#fffaf3" />
-            <Text style={styles.keepReadingText}>Keep reading</Text>
+            <Text style={styles.keepReadingText}>{t('learn.keepReading')}</Text>
           </TouchableOpacity>
           {words.length > 0 ? (
             <TouchableOpacity
@@ -1030,7 +1043,7 @@ const Learn = ({ navigation, user }) => {
                 styles.reviewButtonText,
                 reviewDeck.length === 0 && styles.reviewButtonTextDisabled,
               ]}>
-                {reviewDeck.length > 0 ? `Review ${reviewDeck.length} ↗` : 'No reviews due'}
+                {reviewDeck.length > 0 ? t('learn.reviewCount', { count: reviewDeck.length }) : t('learn.noReviews')}
               </Text>
             </TouchableOpacity>
           ) : null}
@@ -1048,7 +1061,7 @@ const Learn = ({ navigation, user }) => {
             <TouchableOpacity
               key={filter.key}
               accessibilityRole="button"
-              accessibilityLabel={filter.label}
+              accessibilityLabel={t(filter.labelKey)}
               onPress={() => {
                 clearWordSelection();
                 setActiveFilter(filter.key);
@@ -1066,7 +1079,7 @@ const Learn = ({ navigation, user }) => {
                   color={active ? '#fffaf3' : '#8d806e'}
                 />
               ) : (
-                <Text style={[styles.filterText, active && styles.filterTextActive]}>{filter.label}</Text>
+                <Text style={[styles.filterText, active && styles.filterTextActive]}>{t(filter.labelKey)}</Text>
               )}
             </TouchableOpacity>
           );
@@ -1074,7 +1087,7 @@ const Learn = ({ navigation, user }) => {
       </ScrollView>
 
       <View style={styles.listHeader}>
-        <Text style={styles.listEyebrow}>Your vocabulary</Text>
+        <Text style={styles.listEyebrow}>{t('learn.vocabulary')}</Text>
         <Text style={styles.listCount}>{visibleWords.length}</Text>
       </View>
 
@@ -1082,16 +1095,16 @@ const Learn = ({ navigation, user }) => {
         <View style={styles.selectionBar}>
           <TouchableOpacity onPress={clearWordSelection} style={styles.selectionBarButton}>
             <Feather name="x" size={17} color="#756b5f" />
-            <Text style={styles.selectionBarButtonText}>Cancel</Text>
+            <Text style={styles.selectionBarButtonText}>{t('common.cancel')}</Text>
           </TouchableOpacity>
 
           <Text style={styles.selectionCount}>
-            {selectedWords.length} selected
+            {t('common.selected', { count: selectedWords.length })}
           </Text>
 
           <TouchableOpacity onPress={handleBulkDelete} style={[styles.selectionBarButton, styles.selectionDeleteButton]}>
             <Feather name="trash-2" size={17} color="#fffaf3" />
-            <Text style={styles.selectionDeleteText}>Delete</Text>
+            <Text style={styles.selectionDeleteText}>{t('common.delete')}</Text>
           </TouchableOpacity>
         </View>
       ) : null}
@@ -1099,9 +1112,9 @@ const Learn = ({ navigation, user }) => {
       <View style={styles.list}>
         {visibleWords.length === 0 ? (
           <View style={styles.emptyState}>
-            <Text style={styles.emptyTitle}>No words here yet</Text>
+            <Text style={styles.emptyTitle}>{t('learn.emptyTitle')}</Text>
             <Text style={styles.emptyBody}>
-              Save words while reading, or try a different filter.
+              {t('learn.emptyBody')}
             </Text>
           </View>
         ) : (
@@ -1140,7 +1153,7 @@ const Learn = ({ navigation, user }) => {
           <View style={styles.modalCardWrap}>
             <Flashcard
               vocab={practiceDeck?.words?.[practiceIndex]}
-              title={practiceDeck?.title ?? 'Practice'}
+              title={practiceDeck?.title ?? t('learn.practice')}
               index={practiceIndex}
               total={practiceDeck?.words?.length ?? 0}
               onClose={closePractice}

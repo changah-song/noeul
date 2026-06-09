@@ -22,6 +22,7 @@ import { tabBarBaseStyle } from '../components/shared/TabBar';
 import SongReader from '../components/Songs/SongReader';
 import { IconButton, Screen } from '../components/ui';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
+import { useTranslation } from '../hooks/useTranslation';
 import { colors, fontFamilies, insets, layout, radii, spacing, textStyles } from '../theme';
 import useBooks from '../hooks/useBooks';
 import { deleteBookIndexEntries } from '../services/Database';
@@ -44,6 +45,7 @@ import {
     updateUserPreferenceFields,
 } from '../services/preferencesCloudSync';
 import { readEpubMetadata } from '../services/epubMetadata';
+import { readPdfMetadata } from '../services/pdfMetadata';
 import { getPublicDomainBooks } from '../services/publicDomainBooks';
 import {
     cloudSongToLocalSong,
@@ -100,16 +102,16 @@ const EMPTY_OCR_STATUS = {
 };
 
 const BOOK_FILTERS = [
-    { id: 'favorites', label: 'Favorite books', iconOnly: true },
-    { id: 'all', label: 'My books' },
-    { id: 'public-domain', label: 'Public domain' },
+    { id: 'favorites', labelKey: 'home.favoriteBooks', iconOnly: true },
+    { id: 'all', labelKey: 'home.myBooks' },
+    { id: 'public-domain', labelKey: 'home.publicDomain' },
 ];
 
 const PUBLIC_DOMAIN_SORTS = [
-    { id: 'title', label: 'Alphabetical' },
-    { id: 'author', label: 'Author' },
-    { id: 'length', label: 'Length' },
-    { id: 'genre', label: 'Genre' },
+    { id: 'title', labelKey: 'home.alphabetical' },
+    { id: 'author', labelKey: 'common.author' },
+    { id: 'length', labelKey: 'home.length' },
+    { id: 'genre', labelKey: 'home.genre' },
 ];
 
 const HOME_COLORS = {
@@ -154,10 +156,13 @@ const STACKS_COVER_REF_HEIGHT = 298;
 const KOREAN_TEXT_PATTERN = /[\u3131-\u318e\uac00-\ud7a3]/;
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
-const showSongStorageLimitAlert = (error) => {
+const showSongStorageLimitAlert = (error, t) => {
+    const fallbackMessage = t ? t('home.songStorageLimitFallback') : 'Saved songs are too large to store locally.';
     Alert.alert(
-        'Song storage limit reached',
-        `${error?.message ?? 'Saved songs are too large to store locally.'} Remove some songs or shorten lyrics before adding more.`
+        t ? t('home.songStorageLimitTitle') : 'Song storage limit reached',
+        t
+            ? t('home.songStorageLimitBody', { message: error?.message ?? fallbackMessage })
+            : `${error?.message ?? fallbackMessage} Remove some songs or shorten lyrics before adding more.`
     );
 };
 const countSongLines = (lyrics) => String(lyrics || '')
@@ -203,10 +208,14 @@ const normalizeStoredSong = (song) => {
         deletedAt: song.deletedAt ?? null,
     };
 };
-const getBookTitle = (book) => book?.title?.trim() || 'Untitled';
-const getBookAuthor = (book) => book?.author?.trim() || 'Unknown author';
+const getBookTitle = (book, t = null) => book?.title?.trim() || (t ? t('common.untitled') : 'Untitled');
+const getBookAuthor = (book, t = null) => book?.author?.trim() || (t ? t('common.unknownAuthor') : 'Unknown author');
 const hasKoreanText = (value) => KOREAN_TEXT_PATTERN.test(String(value || ''));
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const isPdfBook = (book) => (
+    String(book?.format || '').toLowerCase() === 'pdf'
+    || String(book?.uri || '').toLowerCase().split('?')[0].endsWith('.pdf')
+);
 
 const parseStoredJson = (value, fallback = {}) => {
     if (!value) {
@@ -344,10 +353,10 @@ const getBookRecentTimestamp = (book) => {
     return 0;
 };
 
-const formatFileSize = (bytes) => {
+const formatFileSize = (bytes, t = null) => {
     const value = Number(bytes);
     if (!Number.isFinite(value) || value <= 0) {
-        return 'Unknown';
+        return t ? t('common.unknown') : 'Unknown';
     }
 
     const units = ['B', 'KB', 'MB', 'GB'];
@@ -378,8 +387,10 @@ const getBookWordCount = (book) => {
     return null;
 };
 
-const formatWordCount = (wordCount) => (
-    wordCount ? `${wordCount.toLocaleString()} words` : 'Unknown'
+const formatWordCount = (wordCount, t = null) => (
+    wordCount
+        ? (t ? t('home.words', { count: wordCount.toLocaleString() }) : `${wordCount.toLocaleString()} words`)
+        : (t ? t('common.unknown') : 'Unknown')
 );
 
 const estimateBookPages = (book) => {
@@ -434,14 +445,14 @@ const compareSortText = (a, b) => (
     })
 );
 
-const formatPreviewDateTime = (value) => {
+const formatPreviewDateTime = (value, t = null) => {
     if (!value) {
-        return 'Not opened yet';
+        return t ? t('home.notOpened') : 'Not opened yet';
     }
 
     const date = new Date(value);
     if (!Number.isFinite(date.getTime())) {
-        return 'Not opened yet';
+        return t ? t('home.notOpened') : 'Not opened yet';
     }
 
     return date.toLocaleString(undefined, {
@@ -453,10 +464,10 @@ const formatPreviewDateTime = (value) => {
     });
 };
 
-const formatBookLanguage = (language) => {
+const formatBookLanguage = (language, t = null) => {
     const raw = String(language || '').trim();
     if (!raw) {
-        return 'Unknown';
+        return t ? t('common.unknown') : 'Unknown';
     }
 
     const shortCode = raw.toLowerCase().split(/[-_]/)[0];
@@ -484,6 +495,7 @@ const getStacksCoverTitleSize = (title, baseSize) => {
 };
 
 const BookCover = ({ book, width, height, index, style, titleStyle, showBars = true }) => {
+    const { t } = useTranslation();
     const [coverFailed, setCoverFailed] = useState(false);
     const coverUri = typeof book?.cover === 'string' ? book.cover.trim() : '';
 
@@ -505,8 +517,8 @@ const BookCover = ({ book, width, height, index, style, titleStyle, showBars = t
     const scaleX = width / STACKS_COVER_REF_WIDTH;
     const scaleY = height / STACKS_COVER_REF_HEIGHT;
     const scale = Math.min(scaleX, scaleY);
-    const title = getBookTitle(book);
-    const author = getBookAuthor(book);
+    const title = getBookTitle(book, t);
+    const author = getBookAuthor(book, t);
     const titleFontSize = getStacksCoverTitleSize(title, 26 * scale);
 
     return (
@@ -589,6 +601,7 @@ const BookCover = ({ book, width, height, index, style, titleStyle, showBars = t
 };
 
 const PreviewBookSpine = ({ book, height }) => {
+    const { t } = useTranslation();
     const width = getPreviewSpineWidth(book);
     const spineColors = getPreviewSpineColors(book);
     const panelInsetX = Math.max(2, Math.round(width * (7 / 48)));
@@ -601,7 +614,7 @@ const PreviewBookSpine = ({ book, height }) => {
     const showTitle = width >= PREVIEW_SPINE_TITLE_MIN_WIDTH;
     const titleGlyphs = showTitle
         ? getPreviewSpineTitleGlyphs({
-            title: getBookTitle(book),
+            title: getBookTitle(book, t),
             height,
             lineHeight,
             titleInsetY,
@@ -716,17 +729,17 @@ const buildPublicDomainLocalBook = (book, patch = {}) => ({
     preprocessing: false,
 });
 
-const getBookStatusLabel = (book) => {
+const getBookStatusLabel = (book, t = null) => {
     if (book?.publicDomain) {
-        return 'Ready to read';
+        return t ? t('home.readyToRead') : 'Ready to read';
     }
 
-    return 'Progress';
+    return t ? t('home.progress') : 'Progress';
 };
 
-const getBookFormatLabel = (book) => {
+const getBookFormatLabel = (book, t = null) => {
     if (book?.publicDomain) {
-        return 'Public domain text';
+        return t ? t('home.publicDomainText') : 'Public domain text';
     }
 
     return String(book?.format || 'epub').toUpperCase();
@@ -772,6 +785,7 @@ const BookPreview = ({
     onDelete,
     onEdit,
 }) => {
+    const { t } = useTranslation();
     const progressPercent = Math.round(getBookProgress(book) * 100);
     const isPublicDomain = !!book?.publicDomain;
     const wordCount = getBookWordCount(book);
@@ -783,10 +797,10 @@ const BookPreview = ({
     ].filter(Boolean).join(' · ');
     const readIconName = isBookDownloaded(book) || isPublicDomain ? 'book-outline' : 'download-outline';
     const readActionLabel = actionBusy
-        ? 'Preparing'
+        ? t('home.preparing')
         : isBookDownloaded(book) || isPublicDomain
-            ? 'Read'
-            : 'Download';
+            ? t('home.read')
+            : t('home.download');
     const favorite = isBookFavorite(book);
     const completed = isBookCompleted(book);
 
@@ -800,7 +814,7 @@ const BookPreview = ({
                 >
                     <Feather name="arrow-left" size={22} color={colors.text} />
                 </TouchableOpacity>
-                <Text style={styles.previewTopTitle}>Book</Text>
+                <Text style={styles.previewTopTitle}>{t('home.book')}</Text>
                 <TouchableOpacity
                     activeOpacity={0.88}
                     disabled={actionBusy}
@@ -848,30 +862,30 @@ const BookPreview = ({
 
                         <View style={styles.previewHeroCopy}>
                             <Text style={styles.previewEyebrow}>
-                                {getBookFormatLabel(book)}
+                                {getBookFormatLabel(book, t)}
                             </Text>
                             <Text
                                 style={[
                                     styles.previewTitle,
-                                    getSerifFontForText(getBookTitle(book)),
+                                    getSerifFontForText(getBookTitle(book, t)),
                                 ]}
                             >
-                                {getBookTitle(book)}
+                                {getBookTitle(book, t)}
                             </Text>
                             <Text
                                 style={[
                                     styles.previewAuthor,
-                                    hasKoreanText(getBookAuthor(book)) && styles.koreanInlineText,
+                                    hasKoreanText(getBookAuthor(book, t)) && styles.koreanInlineText,
                                 ]}
                             >
-                                {getBookAuthor(book)}
+                                {getBookAuthor(book, t)}
                             </Text>
                         </View>
                     </View>
 
                     <View style={styles.previewProgressBlock}>
                         <View style={styles.previewProgressHeader}>
-                            <Text style={styles.previewProgressLabel}>{getBookStatusLabel(book)}</Text>
+                            <Text style={styles.previewProgressLabel}>{getBookStatusLabel(book, t)}</Text>
                             <Text style={styles.previewProgressValue}>{progressPercent}%</Text>
                         </View>
                         <View style={styles.previewProgressRail}>
@@ -885,22 +899,22 @@ const BookPreview = ({
                     {isPublicDomain && !isInLibrary ? (
                         <TouchableOpacity
                             accessibilityRole="button"
-                            accessibilityLabel="Add to my library"
+                            accessibilityLabel={t('home.addToLibrary')}
                             activeOpacity={0.86}
                             onPress={onAddToLibrary}
                             style={styles.previewAddLibraryButton}
                         >
                             <Ionicons name="add-circle-outline" size={18} color={colors.white} />
                             <Text style={styles.previewAddLibraryButtonText}>
-                                Add to my library
+                                {t('home.addToLibrary')}
                             </Text>
                         </TouchableOpacity>
                     ) : null}
 
                     <View style={styles.previewActionRow}>
                         <PreviewActionButton
-                            label={favorite ? 'Remove favorite' : 'Favorite book'}
-                            description={favorite ? 'Remove this book from favorites.' : 'Mark this book as a favorite.'}
+                            label={favorite ? t('home.removeFavorite') : t('home.favoriteBook')}
+                            description={favorite ? t('home.removeFavoriteDescription') : t('home.favoriteBookDescription')}
                             active={favorite}
                             onPress={onToggleFavorite}
                             icon={(
@@ -912,8 +926,8 @@ const BookPreview = ({
                             )}
                         />
                         <PreviewActionButton
-                            label={completed ? 'Mark unfinished' : 'Mark completed'}
-                            description={completed ? 'Mark this book as not completed.' : 'Mark this book as completed reading.'}
+                            label={completed ? t('home.markUnfinished') : t('home.markCompleted')}
+                            description={completed ? t('home.markUnfinishedDescription') : t('home.markCompletedDescription')}
                             active={completed}
                             onPress={onToggleCompleted}
                             icon={(
@@ -925,15 +939,15 @@ const BookPreview = ({
                             )}
                         />
                         <PreviewActionButton
-                            label="Delete book"
-                            description="Remove this book from your library."
+                            label={t('home.deleteBook')}
+                            description={t('home.deleteBookDescription')}
                             danger
                             onPress={onDelete}
                             icon={<Ionicons name="trash-outline" size={22} color={colors.danger} />}
                         />
                         <PreviewActionButton
-                            label="Edit book"
-                            description="Change the title, author, or cover."
+                            label={t('home.editBook')}
+                            description={t('home.editBookDescription')}
                             onPress={onEdit}
                             icon={<Ionicons name="create-outline" size={22} color={colors.textMuted} />}
                         />
@@ -941,15 +955,15 @@ const BookPreview = ({
 
                     <View style={styles.previewMetaList}>
                         <View style={styles.previewMetaRow}>
-                            <Text style={styles.previewMetaLabel}>Title</Text>
+                            <Text style={styles.previewMetaLabel}>{t('common.title')}</Text>
                             <View style={styles.previewMetaValueGroup}>
                                 <Text
                                     style={[
                                         styles.previewMetaValue,
-                                        getSerifFontForText(getBookTitle(book)),
+                                        getSerifFontForText(getBookTitle(book, t)),
                                     ]}
                                 >
-                                    {getBookTitle(book)}
+                                    {getBookTitle(book, t)}
                                 </Text>
                                 {book?.titleTranslation ? (
                                     <Text style={styles.previewMetaTranslation}>
@@ -959,15 +973,15 @@ const BookPreview = ({
                             </View>
                         </View>
                         <View style={styles.previewMetaRow}>
-                            <Text style={styles.previewMetaLabel}>Author</Text>
+                            <Text style={styles.previewMetaLabel}>{t('common.author')}</Text>
                             <View style={styles.previewMetaValueGroup}>
                                 <Text
                                     style={[
                                         styles.previewMetaValue,
-                                        hasKoreanText(getBookAuthor(book)) && styles.koreanInlineText,
+                                        hasKoreanText(getBookAuthor(book, t)) && styles.koreanInlineText,
                                     ]}
                                 >
-                                    {getBookAuthor(book)}
+                                    {getBookAuthor(book, t)}
                                 </Text>
                                 {book?.authorTranslation ? (
                                     <Text style={styles.previewMetaTranslation}>
@@ -977,36 +991,36 @@ const BookPreview = ({
                             </View>
                         </View>
                         <View style={styles.previewMetaRow}>
-                            <Text style={styles.previewMetaLabel}>Language</Text>
+                            <Text style={styles.previewMetaLabel}>{t('home.language')}</Text>
                             <Text style={styles.previewMetaValue}>
-                                {formatBookLanguage(book?.language)}
+                                {formatBookLanguage(book?.language, t)}
                             </Text>
                         </View>
                         <View style={styles.previewMetaRow}>
-                            <Text style={styles.previewMetaLabel}>Last opened</Text>
+                            <Text style={styles.previewMetaLabel}>{t('home.lastOpened')}</Text>
                             <Text style={styles.previewMetaValue}>
-                                {formatPreviewDateTime(book?.lastOpenedAt)}
+                                {formatPreviewDateTime(book?.lastOpenedAt, t)}
                             </Text>
                         </View>
                         <View style={styles.previewMetaRow}>
-                            <Text style={styles.previewMetaLabel}>Word count</Text>
+                            <Text style={styles.previewMetaLabel}>{t('home.wordCount')}</Text>
                             <Text style={styles.previewMetaValue}>
-                                {formatWordCount(wordCount)}
+                                {formatWordCount(wordCount, t)}
                             </Text>
                         </View>
                         {!isPublicDomain ? (
                             <View style={styles.previewMetaRow}>
-                                <Text style={styles.previewMetaLabel}>File size</Text>
+                                <Text style={styles.previewMetaLabel}>{t('home.fileSize')}</Text>
                                 <Text style={styles.previewMetaValue}>
-                                    {formatFileSize(book?.size)}
+                                    {formatFileSize(book?.size, t)}
                                 </Text>
                             </View>
                         ) : null}
                         {(isPublicDomain && book?.genre) || !isPublicDomain ? (
                             <View style={styles.previewMetaRow}>
-                                <Text style={styles.previewMetaLabel}>Genre</Text>
+                                <Text style={styles.previewMetaLabel}>{t('home.genre')}</Text>
                                 <Text style={styles.previewMetaValue}>
-                                    {isPublicDomain ? book.genre : 'Auto detection to be implemented soon'}
+                                    {isPublicDomain ? book.genre : t('home.autoDetectionSoon')}
                                 </Text>
                             </View>
                         ) : null}
@@ -1014,9 +1028,9 @@ const BookPreview = ({
 
                     {(isPublicDomain && book?.snippet) || !isPublicDomain ? (
                         <View style={styles.previewSnippetSection}>
-                            <Text style={styles.previewSectionLabel}>Snippet</Text>
+                            <Text style={styles.previewSectionLabel}>{t('home.snippet')}</Text>
                             <Text style={styles.previewSnippetText}>
-                                {isPublicDomain ? book.snippet : 'Auto detection to be implemented soon'}
+                                {isPublicDomain ? book.snippet : t('home.autoDetectionSoon')}
                             </Text>
                             {attributionNote ? (
                                 <Text style={styles.previewAttributionText}>
@@ -1032,6 +1046,7 @@ const BookPreview = ({
 };
 
 const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpen, navigation, user }) => {
+    const { t } = useTranslation();
     const { activeOwnerId, syncPaused, syncGeneration } = useLocalOwner();
     const [editBook, setEditBook] = useState(null);
     const [editDraft, setEditDraft] = useState({ title: '', author: '', cover: '' });
@@ -1062,6 +1077,12 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const {
         isImporting,
         openingBookUri,
+        pdfCoverPrompt,
+        pdfCoverPageInput,
+        setPdfCoverPageInput,
+        choosePdfCoverDefault,
+        choosePdfCoverNone,
+        choosePdfCoverCustom,
         confirmAddBook,
         handlePress,
     } = useBooks({
@@ -1188,12 +1209,21 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     }, [activeBookFilter, favoriteBooks, recentBooks]);
     const showingPublicDomainBooks = activeLibraryTab === 'Books' && activeBookFilter === 'public-domain';
     const bookSectionLabel = showingPublicDomainBooks
-        ? `${sortedPublicDomainBookRows.length} public domain ${sortedPublicDomainBookRows.length === 1 ? 'book' : 'books'}`
+        ? t('home.publicDomainCount', {
+            count: sortedPublicDomainBookRows.length,
+            noun: sortedPublicDomainBookRows.length === 1 ? t('home.bookSingular') : t('home.bookPlural'),
+        })
         : activeBookFilter === 'favorites'
-            ? `${favoriteBooks.length} favorite ${favoriteBooks.length === 1 ? 'book' : 'books'}`
-            : `${books.length} ${books.length === 1 ? 'book' : 'books'}`;
+            ? t('home.favoriteCount', {
+                count: favoriteBooks.length,
+                noun: favoriteBooks.length === 1 ? t('home.bookSingular') : t('home.bookPlural'),
+            })
+            : t('home.bookCount', {
+                count: books.length,
+                noun: books.length === 1 ? t('home.bookSingular') : t('home.bookPlural'),
+            });
     const bookSectionHint = showingPublicDomainBooks
-        ? 'Browse public domain Korean texts and add one to your library.'
+        ? t('home.publicDomainHint')
         : null;
     const selectedSong = useMemo(() => (
         songs.find((song) => song.id === selectedSongId) ?? null
@@ -1409,7 +1439,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                 storedSongs = JSON.stringify(normalizedLegacySongs);
                                 if (!songStorageLimitAlertedRef.current) {
                                     songStorageLimitAlertedRef.current = true;
-                                    showSongStorageLimitAlert(error);
+                                    showSongStorageLimitAlert(error, t);
                                 }
                             }
                         }
@@ -1444,7 +1474,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         return () => {
             isActive = false;
         };
-    }, [activeOwnerId]);
+    }, [activeOwnerId, t]);
 
     useEffect(() => {
         if (Platform.OS !== 'android') {
@@ -1459,23 +1489,23 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         const statusSubscription = addOverlayStatusListener((status = {}) => {
             mergeOcrStatus(status);
             if (status.status === 'floating_widget_visible') {
-                setOcrMessage('Screen text scanner is ready.');
+                setOcrMessage(t('home.ocrReady'));
             } else if (status.status === 'floating_widget_hidden') {
-                setOcrMessage('Screen text scanner is off.');
+                setOcrMessage(t('home.ocrOff'));
             } else if (status.status === 'screen_capture_stopped') {
-                setOcrMessage('Screen capture stopped.');
+                setOcrMessage(t('home.ocrCaptureStopped'));
             }
         });
 
         const errorSubscription = addOverlayErrorListener((error = {}) => {
-            setOcrMessage(error.message || 'Screen text scanner failed.');
+            setOcrMessage(error.message || t('home.ocrFailed'));
         });
 
         return () => {
             statusSubscription.remove();
             errorSubscription.remove();
         };
-    }, [mergeOcrStatus]);
+    }, [mergeOcrStatus, t]);
 
     useEffect(() => {
         let isMounted = true;
@@ -1602,7 +1632,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             console.error('[Home] Failed to save songs:', error);
             if (isSongStorageLimitError(error) && !songStorageLimitAlertedRef.current) {
                 songStorageLimitAlertedRef.current = true;
-                showSongStorageLimitAlert(error);
+                showSongStorageLimitAlert(error, t);
             }
             return;
         }
@@ -1614,7 +1644,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             .catch((error) => {
                 console.error('[Home] Failed to save songs:', error);
             });
-    }, [activeOwnerId, songs, songsLoaded]);
+    }, [activeOwnerId, songs, songsLoaded, t]);
 
     useEffect(() => {
         if (
@@ -1669,40 +1699,40 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         }
 
         if (Platform.OS !== 'android') {
-            Alert.alert('Screen text scanner', 'Screen text scanning is only available on Android right now.');
+            Alert.alert(t('home.ocrScanner'), t('home.ocrAndroidOnly'));
             return;
         }
 
         ocrActionInFlightRef.current = true;
         setOcrBusy(true);
-        setOcrMessage(isFloatingOcrVisible ? 'Turning scanner off...' : 'Starting scanner...');
+        setOcrMessage(isFloatingOcrVisible ? t('home.ocrTurningOff') : t('home.ocrStarting'));
 
         try {
             if (isFloatingOcrVisible) {
                 await stopFloatingWidget();
                 mergeOcrStatus({ floatingVisible: false, resultOverlayVisible: false });
                 persistOcrSettings({ floatingPreferred: false });
-                setOcrMessage('Screen text scanner is off.');
+                setOcrMessage(t('home.ocrOff'));
                 return;
             }
 
             let overlayGranted = isOverlayPermissionGranted();
             if (!overlayGranted) {
-                setOcrMessage('Allow display over other apps to use the floating scanner.');
+                setOcrMessage(t('home.ocrAllowOverlay'));
                 const overlayResult = await requestOverlayPermission();
                 overlayGranted = !!overlayResult?.granted || isOverlayPermissionGranted();
             }
 
             if (!overlayGranted) {
                 mergeOcrStatus({ overlayPermissionGranted: false });
-                setOcrMessage('Display over other apps was not allowed.');
+                setOcrMessage(t('home.ocrOverlayDenied'));
                 return;
             }
             mergeOcrStatus({ overlayPermissionGranted: true });
 
             let captureActive = isScreenCaptureActive();
             if (!captureActive) {
-                setOcrMessage('Allow screen capture once to start this scanner session.');
+                setOcrMessage(t('home.ocrAllowCapture'));
                 const captureResult = await requestScreenCapture();
                 captureActive = !!captureResult?.active || !!captureResult?.granted;
                 if (captureActive) {
@@ -1712,7 +1742,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
             if (!captureActive) {
                 mergeOcrStatus({ screenCaptureActive: false, floatingVisible: false });
-                setOcrMessage('Screen capture was not allowed.');
+                setOcrMessage(t('home.ocrCaptureDenied'));
                 return;
             }
             mergeOcrStatus({ screenCaptureActive: true });
@@ -1721,16 +1751,16 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             const visible = !!startResult?.visible;
             mergeOcrStatus({ floatingVisible: visible });
             persistOcrSettings({ floatingPreferred: visible });
-            setOcrMessage(visible ? 'Tap the floating bubble to scan text.' : 'Scanner bubble did not start.');
+            setOcrMessage(visible ? t('home.ocrTapBubble') : t('home.ocrBubbleFailed'));
         } catch (error) {
-            const message = error?.message || 'Screen text scanner failed.';
+            const message = error?.message || t('home.ocrFailed');
             setOcrMessage(message);
-            Alert.alert('Screen text scanner', message);
+            Alert.alert(t('home.ocrScanner'), message);
         } finally {
             ocrActionInFlightRef.current = false;
             setOcrBusy(false);
         }
-    }, [isFloatingOcrVisible, mergeOcrStatus, ocrBusy, persistOcrSettings, waitForScreenCapture]);
+    }, [isFloatingOcrVisible, mergeOcrStatus, ocrBusy, persistOcrSettings, t, waitForScreenCapture]);
 
     const updateBookRecord = useCallback((bookToUpdate, patch) => {
         setBooks((prevBooks) => prevBooks.map((book) => (
@@ -1750,7 +1780,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             || activeOwnerId !== user.id
             || !isCurrentSyncGeneration(syncGeneration)
         ) {
-            Alert.alert('Download unavailable', 'Sign in again to download this book.');
+            Alert.alert(t('home.downloadUnavailableTitle'), t('home.downloadUnavailableBody'));
             return;
         }
 
@@ -1807,11 +1837,11 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             navigation.navigate('Read');
         } catch (error) {
             console.warn('[Home] Failed to download cloud book:', error);
-            Alert.alert('Download failed', error?.message || 'This book could not be downloaded right now.');
+            Alert.alert(t('home.downloadFailedTitle'), error?.message || t('home.downloadFailedBody'));
         } finally {
             setDownloadingBookId(null);
         }
-    }, [activeOwnerId, downloadingBookId, navigation, setBooks, setCurrentBook, syncGeneration, syncPaused, user]);
+    }, [activeOwnerId, downloadingBookId, navigation, setBooks, setCurrentBook, syncGeneration, syncPaused, t, user]);
 
     const handleBookPress = useCallback((book) => {
         if (!book) {
@@ -2001,12 +2031,12 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const handleDeleteBook = useCallback((bookToDelete) => {
         setActiveBookMenuKey(null);
         Alert.alert(
-            'Remove book',
-            `Remove "${getBookTitle(bookToDelete)}" from your collection?`,
+            t('home.removeBookTitle'),
+            t('home.removeBookBody', { title: getBookTitle(bookToDelete, t) }),
             [
-                { text: 'Cancel', style: 'cancel' },
+                { text: t('common.cancel'), style: 'cancel' },
                 {
-                    text: 'Remove',
+                    text: t('common.remove'),
                     style: 'destructive',
                     onPress: async () => {
                         if (bookToDelete.cloudId && user?.id) {
@@ -2056,7 +2086,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 },
             ]
         );
-    }, [activeOwnerId, currentBook, setBooks, setCurrentBook, setPreprocessOnOpen, syncGeneration, user]);
+    }, [activeOwnerId, currentBook, setBooks, setCurrentBook, setPreprocessOnOpen, syncGeneration, t, user]);
 
     const handleEditBook = useCallback((book) => {
         if (!book) {
@@ -2084,12 +2114,12 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         ));
 
         if (selectedPreviewBook.publicDomain && !existsInLibrary) {
-            Alert.alert('Not in library', 'This public domain text has not been added to your library yet.');
+            Alert.alert(t('home.notInLibraryTitle'), t('home.notInLibraryBody'));
             return;
         }
 
         handleDeleteBook(selectedPreviewBook);
-    }, [books, handleDeleteBook, selectedPreviewBook]);
+    }, [books, handleDeleteBook, selectedPreviewBook, t]);
 
     const handleEditPreviewBook = useCallback(() => {
         if (!selectedPreviewBook) {
@@ -2157,8 +2187,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 };
 
             updateBookRecord(book, {
-                title: String(book.originalTitle || book.title || 'Untitled').trim() || 'Untitled',
-                author: String(book.originalAuthor || book.author || 'Unknown author').trim() || 'Unknown author',
+                title: String(book.originalTitle || book.title || t('common.untitled')).trim() || t('common.untitled'),
+                author: String(book.originalAuthor || book.author || t('common.unknownAuthor')).trim() || t('common.unknownAuthor'),
                 cover,
                 ...coverColors,
             });
@@ -2166,17 +2196,17 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         }
 
         if (!isBookDownloaded(book) || !book.uri) {
-            Alert.alert('Reset unavailable', 'Original metadata is only available after this book is downloaded.');
+            Alert.alert(t('home.resetUnavailableTitle'), t('home.resetUnavailableBody'));
             return;
         }
 
         try {
-            const metadata = await readEpubMetadata(
-                book.uri,
-                book.originalFilename || book.title || 'Untitled'
-            );
-            const title = String(metadata?.title || book.title || 'Untitled').trim() || 'Untitled';
-            const author = String(metadata?.author || book.author || 'Unknown author').trim() || 'Unknown author';
+            const fallbackName = book.originalFilename || book.title || t('common.untitled');
+            const metadata = isPdfBook(book)
+                ? await readPdfMetadata(book.uri, fallbackName)
+                : await readEpubMetadata(book.uri, fallbackName);
+            const title = String(metadata?.title || book.title || t('common.untitled')).trim() || t('common.untitled');
+            const author = String(metadata?.author || book.author || t('common.unknownAuthor')).trim() || t('common.unknownAuthor');
             const cover = metadata?.cover ?? null;
             const coverColors = cover
                 ? await extractBookCoverColors({
@@ -2197,12 +2227,13 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 originalTitle: title,
                 originalAuthor: author,
                 originalCover: cover,
+                format: metadata?.format || book.format || 'epub',
             });
         } catch (error) {
             console.warn('[Home] Failed to reset book metadata:', error);
-            Alert.alert('Reset failed', error?.message || 'Original book metadata could not be restored.');
+            Alert.alert(t('home.resetFailedTitle'), error?.message || t('home.resetFailedBody'));
         }
-    }, [publicDomainBooks, updateBookRecord]);
+    }, [publicDomainBooks, t, updateBookRecord]);
 
     const handlePickCover = useCallback(async () => {
         try {
@@ -2240,8 +2271,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
         const updatedAt = new Date().toISOString();
         const patch = {
-            title: editDraft.title.trim() || 'Untitled',
-            author: editDraft.author.trim() || 'Unknown author',
+            title: editDraft.title.trim() || t('common.untitled'),
+            author: editDraft.author.trim() || t('common.unknownAuthor'),
             cover,
             ...coverColors,
             updatedAt,
@@ -2279,6 +2310,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         syncPaused,
         updateBookRecord,
         user,
+        t,
     ]);
 
     const handleAddSong = useCallback(() => {
@@ -2293,11 +2325,11 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
     const handleSubmitSong = useCallback(() => {
         const title = songDraft.title.trim();
-        const artist = songDraft.artist.trim() || 'Unknown artist';
+        const artist = songDraft.artist.trim() || t('common.unknownArtist');
         const lyrics = songDraft.lyrics.trim();
 
         if (!title || !lyrics) {
-            Alert.alert('Missing song details', 'Add a title and lyrics before submitting.');
+            Alert.alert(t('home.missingSongTitle'), t('home.missingSongBody'));
             return;
         }
 
@@ -2319,7 +2351,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             serializeSongsForStorage(nextSongs);
         } catch (error) {
             if (isSongStorageLimitError(error)) {
-                showSongStorageLimitAlert(error);
+                showSongStorageLimitAlert(error, t);
                 return;
             }
             throw error;
@@ -2330,7 +2362,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         setShowAddSongModal(false);
         setSongDraft(EMPTY_SONG_DRAFT);
         setActiveLibraryTab('Songs');
-    }, [songDraft.artist, songDraft.lyrics, songDraft.title, songs, syncSongToCloud]);
+    }, [songDraft.artist, songDraft.lyrics, songDraft.title, songs, syncSongToCloud, t]);
 
     const handleUpdateSong = useCallback((songId, patch) => {
         const currentSong = songs.find((song) => song.id === songId);
@@ -2353,7 +2385,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             serializeSongsForStorage(nextSongs);
         } catch (error) {
             if (isSongStorageLimitError(error)) {
-                showSongStorageLimitAlert(error);
+                showSongStorageLimitAlert(error, t);
                 return;
             }
             throw error;
@@ -2361,7 +2393,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
         setSongs(nextSongs);
         syncSongToCloud(updatedSong);
-    }, [songs, syncSongToCloud]);
+    }, [songs, syncSongToCloud, t]);
 
     const handleDeleteSong = useCallback((songId) => {
         setSongs((previous) => previous.filter((song) => song.id !== songId));
@@ -2408,14 +2440,14 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             serializeSongsForStorage(nextSongs);
         } catch (error) {
             if (isSongStorageLimitError(error)) {
-                showSongStorageLimitAlert(error);
+                showSongStorageLimitAlert(error, t);
                 return;
             }
             throw error;
         }
 
         setSongs(nextSongs);
-    }, [selectedSong, songs]);
+    }, [selectedSong, songs, t]);
 
     if (selectedSong) {
         return (
@@ -2467,12 +2499,12 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 style={styles.stack}
             >
                 <View style={styles.homeHeroHeader}>
-                    <Text style={styles.homeHeroEyebrow}>Home</Text>
+                    <Text style={styles.homeHeroEyebrow}>{t('home.title')}</Text>
                     <Text style={styles.homeHeroTitle}>
-                        Read stories. Collect the words that matter.
+                        {t('home.heroTitle')}
                     </Text>
                     <Text style={styles.homeHeroSubtitle}>
-                        Reading gives new words context, so every saved word connects back to a story you understand.
+                        {t('home.heroSubtitle')}
                     </Text>
                 </View>
 
@@ -2495,28 +2527,28 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                             <View style={styles.continueCopy}>
                                 <Text style={styles.continueEyebrow}>
                                     {isBookDownloaded(currentReadingBook)
-                                        ? `CONTINUE · ${currentProgressPercent}%`
-                                        : 'CLOUD BOOK'}
+                                        ? t('home.continue', { percent: currentProgressPercent })
+                                        : t('home.cloudBook')}
                                 </Text>
                                 <View style={styles.continueMetaRow}>
                                     <Text
                                         style={[
                                             styles.continueTitle,
-                                            getSerifFontForText(getBookTitle(currentReadingBook)),
+                                            getSerifFontForText(getBookTitle(currentReadingBook, t)),
                                         ]}
                                         numberOfLines={1}
                                     >
-                                        {getBookTitle(currentReadingBook)}
+                                        {getBookTitle(currentReadingBook, t)}
                                     </Text>
                                     <Text style={styles.continueDivider}>·</Text>
                                     <Text
                                         style={[
                                             styles.continueAuthor,
-                                            hasKoreanText(getBookAuthor(currentReadingBook)) && styles.koreanInlineText,
+                                            hasKoreanText(getBookAuthor(currentReadingBook, t)) && styles.koreanInlineText,
                                         ]}
                                         numberOfLines={1}
                                     >
-                                        {getBookAuthor(currentReadingBook)}
+                                        {getBookAuthor(currentReadingBook, t)}
                                     </Text>
                                 </View>
                             </View>
@@ -2534,7 +2566,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     <View style={styles.emptyContinueCard}>
                         <Feather name="book-open" size={24} color={HOME_COLORS.accent} />
                         <Text style={styles.emptyContinueTitle}>
-                            Choose a book below
+                            {t('home.chooseBook')}
                         </Text>
                     </View>
                 )}
@@ -2555,7 +2587,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                         styles.libraryTabText,
                                         activeLibraryTab === 'Books' && styles.libraryTabTextActive,
                                     ]}>
-                                        Books
+                                        {t('home.books')}
                                     </Text>
                                 </View>
                                 {activeLibraryTab === 'Books' ? <View style={styles.libraryTabUnderline} /> : null}
@@ -2574,7 +2606,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                         styles.libraryTabText,
                                         activeLibraryTab === 'Songs' && styles.libraryTabTextActive,
                                     ]}>
-                                        Songs
+                                        {t('home.songs')}
                                     </Text>
                                 </View>
                                 {activeLibraryTab === 'Songs' ? <View style={styles.libraryTabUnderline} /> : null}
@@ -2584,7 +2616,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                         <TouchableOpacity
                             activeOpacity={0.84}
                             accessibilityRole="switch"
-                            accessibilityLabel={isFloatingOcrVisible ? 'Turn off screen text scanner' : 'Turn on screen text scanner'}
+                            accessibilityLabel={isFloatingOcrVisible ? t('home.turnOcrOff') : t('home.turnOcrOn')}
                             accessibilityState={{ checked: isFloatingOcrVisible, busy: ocrBusy }}
                             disabled={ocrBusy}
                             onPress={handleFloatingOcrToggle}
@@ -2607,7 +2639,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                 styles.ocrTabToggleText,
                                 isFloatingOcrVisible && styles.ocrTabToggleTextActive,
                             ]}>
-                                OCR
+                                {t('home.ocr')}
                             </Text>
                         </TouchableOpacity>
                     </View>
@@ -2633,7 +2665,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                         setActiveBookMenuKey(null);
                                         setActiveBookFilter(filter.id);
                                     }}
-                                    accessibilityLabel={`${filter.label}, ${count} books`}
+                                    accessibilityLabel={`${t(filter.labelKey)}, ${count} ${t('home.bookPlural')}`}
                                     style={[
                                         styles.bookFilterChip,
                                         filter.iconOnly && styles.bookFilterIconChip,
@@ -2651,7 +2683,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                             styles.bookFilterChipText,
                                             isActive && styles.bookFilterChipTextActive,
                                         ]}>
-                                            {filter.label}
+                                            {t(filter.labelKey)}
                                         </Text>
                                     )}
                                     <Text style={[
@@ -2683,7 +2715,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                             {isImporting ? (
                                                 <ActivityIndicator size="small" color={HOME_COLORS.accent} />
                                             ) : (
-                                                <Text style={styles.importInlineText}>+ Import .epub</Text>
+                                                <Text style={styles.importInlineText}>{t('home.importBook')}</Text>
                                             )}
                                         </TouchableOpacity>
                                     </View>
@@ -2693,12 +2725,12 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                             {filteredLibraryBooks.length === 0 ? (
                                 <View style={styles.emptyBooksPanel}>
                                     <Text style={styles.emptyBooksTitle}>
-                                        {activeBookFilter === 'favorites' ? 'No favorites yet' : 'No books here yet'}
+                                        {activeBookFilter === 'favorites' ? t('home.noFavoritesTitle') : t('home.noBooksTitle')}
                                     </Text>
                                     <Text style={styles.emptyBooksCopy}>
                                         {activeBookFilter === 'favorites'
-                                            ? 'Open a book preview and tap the star to save it here.'
-                                            : 'Import an EPUB or search public domain books to start reading.'}
+                                            ? t('home.noFavoritesBody')
+                                            : t('home.noBooksBody')}
                                     </Text>
                                 </View>
                             ) : (
@@ -2738,7 +2770,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                             ) : null}
                                             <TouchableOpacity
                                                 accessibilityRole="button"
-                                                accessibilityLabel={`Book options for ${getBookTitle(book)}`}
+                                                accessibilityLabel={t('home.bookOptions', { title: getBookTitle(book, t) })}
                                                 activeOpacity={0.84}
                                                 onPress={(event) => {
                                                     event?.stopPropagation?.();
@@ -2764,7 +2796,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                                         style={styles.bookMenuItem}
                                                     >
                                                         <Feather name="edit-2" size={14} color={colors.text} />
-                                                        <Text style={styles.bookMenuItemText}>Edit</Text>
+                                                        <Text style={styles.bookMenuItemText}>{t('common.edit')}</Text>
                                                     </TouchableOpacity>
                                                     <TouchableOpacity
                                                         activeOpacity={0.78}
@@ -2775,7 +2807,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                                         style={[styles.bookMenuItem, styles.bookMenuSeparatedItem]}
                                                     >
                                                         <Feather name="rotate-ccw" size={14} color={colors.text} />
-                                                        <Text style={styles.bookMenuItemText}>Reset to original</Text>
+                                                        <Text style={styles.bookMenuItemText}>{t('home.resetOriginal')}</Text>
                                                     </TouchableOpacity>
                                                     <TouchableOpacity
                                                         activeOpacity={0.78}
@@ -2788,7 +2820,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                                     >
                                                         <Feather name="trash-2" size={14} color={colors.danger} />
                                                         <Text style={[styles.bookMenuItemText, styles.bookMenuDangerText]}>
-                                                            Delete
+                                                            {t('common.delete')}
                                                         </Text>
                                                     </TouchableOpacity>
                                                 </View>
@@ -2796,11 +2828,11 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                             <Text
                                                 style={[
                                                     styles.bookTitle,
-                                                    getSerifFontForText(getBookTitle(book)),
+                                                    getSerifFontForText(getBookTitle(book, t)),
                                                 ]}
                                                 numberOfLines={1}
                                             >
-                                                {getBookTitle(book)}
+                                                {getBookTitle(book, t)}
                                             </Text>
                                             <View style={styles.bookProgressRail}>
                                                 <View style={[
@@ -2812,8 +2844,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                             {!isBookDownloaded(book) ? (
                                                 <Text style={styles.bookCloudMeta} numberOfLines={1}>
                                                     {downloadingBookId === bookKey
-                                                        ? 'Downloading...'
-                                                        : 'Available to download'}
+                                                        ? t('home.downloading')
+                                                        : t('home.availableToDownload')}
                                                 </Text>
                                             ) : null}
                                         </Pressable>
@@ -2860,7 +2892,12 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                                 setPublicDomainSortDirection('asc');
                                             }}
                                             accessibilityRole="button"
-                                            accessibilityLabel={`Sort public domain books by ${sort.label}, ${isActive && publicDomainSortDirection === 'desc' ? 'descending' : 'ascending'}`}
+                                            accessibilityLabel={t('home.sortPublicDomain', {
+                                                label: t(sort.labelKey),
+                                                direction: isActive && publicDomainSortDirection === 'desc'
+                                                    ? t('home.descending')
+                                                    : t('home.ascending'),
+                                            })}
                                             style={[
                                                 styles.publicDomainSortChip,
                                                 isActive && styles.publicDomainSortChipActive,
@@ -2870,7 +2907,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                                 styles.publicDomainSortChipText,
                                                 isActive && styles.publicDomainSortChipTextActive,
                                             ]}>
-                                                {sort.label}
+                                                {t(sort.labelKey)}
                                             </Text>
                                             {isActive ? (
                                                 <Feather
@@ -2906,14 +2943,14 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                         <Text
                                             style={[
                                                 styles.bookTitle,
-                                                getSerifFontForText(getBookTitle(book)),
+                                                getSerifFontForText(getBookTitle(book, t)),
                                             ]}
                                             numberOfLines={1}
                                         >
-                                            {getBookTitle(book)}
+                                            {getBookTitle(book, t)}
                                         </Text>
                                         <Text style={styles.publicDomainAuthor} numberOfLines={1}>
-                                            {getBookAuthor(book)}
+                                            {getBookAuthor(book, t)}
                                         </Text>
                                         <View style={styles.publicDomainMetaRow}>
                                             {book?.genre ? (
@@ -2924,7 +2961,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                                 </View>
                                             ) : null}
                                             <Text style={styles.publicDomainWordCount} numberOfLines={1}>
-                                                {formatWordCount(getBookWordCount(book))}
+                                                {formatWordCount(getBookWordCount(book), t)}
                                             </Text>
                                         </View>
                                     </Pressable>
@@ -2941,15 +2978,15 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                             onPress={handleAddSong}
                             style={styles.songTextAction}
                         >
-                            <Text style={styles.songTextActionLabel}>+ Add song</Text>
+                            <Text style={styles.songTextActionLabel}>{t('home.addSong')}</Text>
                         </TouchableOpacity>
                     </View>
                     {songsLoaded && songs.length === 0 ? (
                         <View style={styles.emptySongsPanel}>
                             <Feather name="music" size={24} color={HOME_COLORS.accent} />
-                            <Text style={styles.emptySongsTitle}>Add songs you like</Text>
+                            <Text style={styles.emptySongsTitle}>{t('home.emptySongsTitle')}</Text>
                             <Text style={styles.emptySongsCopy}>
-                                Save lyrics here so you can tap words, look them up, and keep the ones you want to remember.
+                                {t('home.emptySongsBody')}
                             </Text>
                         </View>
                     ) : (
@@ -2957,7 +2994,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                             {!songsLoaded ? (
                                 <View style={styles.emptySongs}>
                                     <ActivityIndicator size="small" color={HOME_COLORS.accent} />
-                                    <Text style={styles.emptySongsText}>Loading songs...</Text>
+                                    <Text style={styles.emptySongsText}>{t('home.loadingSongs')}</Text>
                                 </View>
                             ) : (
                                 songs.map((song, index) => (
@@ -2996,37 +3033,94 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 {!!openingBookUri && (
                     <View style={styles.loadingOverlay}>
                         <ActivityIndicator size="small" color={HOME_COLORS.accent} />
-                        <Text style={styles.loadingText}>Opening book...</Text>
+                        <Text style={styles.loadingText}>{t('home.openingBook')}</Text>
                     </View>
                 )}
             </Pressable>
+
+            <Modal visible={!!pdfCoverPrompt} animationType="fade" transparent onRequestClose={choosePdfCoverDefault}>
+                <View style={styles.modalBackdrop}>
+                    <TouchableWithoutFeedback>
+                        <View style={styles.pdfCoverModal}>
+                            <Text style={styles.editTitle}>{t('home.pdfCover')}</Text>
+                            <Text style={styles.pdfCoverCopy}>
+                                {pdfCoverPrompt?.pageCount
+                                    ? t('home.pdfPageCount', {
+                                        title: pdfCoverPrompt.title,
+                                        count: pdfCoverPrompt.pageCount,
+                                    })
+                                    : t('home.pdfReady', {
+                                        title: pdfCoverPrompt?.title || 'PDF',
+                                    })}
+                            </Text>
+
+                            <IconButton
+                                tone="accent"
+                                label={t('home.useFirstPage')}
+                                onPress={choosePdfCoverDefault}
+                                icon={<Feather name="image" size={15} color={colors.accentStrong} />}
+                                style={styles.pdfCoverDefaultButton}
+                            />
+
+                            <Text style={styles.editLabel}>{t('home.specificPage')}</Text>
+                            <TextInput
+                                value={pdfCoverPageInput}
+                                onChangeText={setPdfCoverPageInput}
+                                onSubmitEditing={choosePdfCoverCustom}
+                                style={styles.editInput}
+                                placeholder="1"
+                                placeholderTextColor={colors.textSubtle}
+                                keyboardType="number-pad"
+                                inputMode="numeric"
+                                returnKeyType="done"
+                                selectTextOnFocus
+                            />
+
+                            <View style={styles.pdfCoverActions}>
+                                <IconButton
+                                    label={t('home.noCover')}
+                                    onPress={choosePdfCoverNone}
+                                    icon={<Feather name="slash" size={15} color={colors.text} />}
+                                    style={styles.pdfCoverActionButton}
+                                />
+                                <IconButton
+                                    label={t('home.usePage')}
+                                    onPress={choosePdfCoverCustom}
+                                    icon={<Feather name="hash" size={15} color={colors.text} />}
+                                    style={styles.pdfCoverActionButton}
+                                />
+                            </View>
+                        </View>
+                    </TouchableWithoutFeedback>
+                </View>
+            </Modal>
 
             <Modal visible={!!editBook} animationType="fade" transparent onRequestClose={() => setEditBook(null)}>
                 <TouchableWithoutFeedback onPress={() => setEditBook(null)}>
                     <View style={styles.modalBackdrop}>
                         <TouchableWithoutFeedback>
                             <View style={styles.editModal}>
-                                <Text style={styles.editTitle}>Edit book</Text>
+                                <Text style={styles.editTitle}>{t('home.editBook')}</Text>
 
-                                <Text style={styles.editLabel}>Title</Text>
+                                <Text style={styles.editLabel}>{t('common.title')}</Text>
                                 <TextInput
                                     value={editDraft.title}
                                     onChangeText={(title) => setEditDraft((prev) => ({ ...prev, title }))}
                                     style={styles.editInput}
-                                    placeholder="Untitled"
+                                    placeholder={t('common.untitled')}
                                     placeholderTextColor={colors.textSubtle}
                                 />
 
-                                <Text style={styles.editLabel}>Author</Text>
+                                <Text style={styles.editLabel}>{t('common.author')}</Text>
                                 <TextInput
                                     value={editDraft.author}
                                     onChangeText={(author) => setEditDraft((prev) => ({ ...prev, author }))}
                                     style={styles.editInput}
-                                    placeholder="Unknown author"
+                                    placeholder={t('common.unknownAuthor')}
                                     placeholderTextColor={colors.textSubtle}
                                 />
 
-                                <Text style={styles.editLabel}>Cover</Text>
+                                <Text style={styles.editLabel}>{t('common.cover')}</Text>
                                 <View style={styles.coverRow}>
                                     <EditCoverPreview
                                         book={{
@@ -3039,12 +3133,12 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                     />
                                     <View style={styles.coverActions}>
                                         <IconButton
-                                            label="Change cover"
+                                            label={t('home.changeCover')}
                                             onPress={handlePickCover}
                                             icon={<Feather name="image" size={15} color={colors.text} />}
                                         />
                                         <IconButton
-                                            label="Remove cover"
+                                            label={t('home.removeCover')}
                                             onPress={() => setEditDraft((prev) => ({ ...prev, cover: '' }))}
                                             icon={<Feather name="trash-2" size={15} color={colors.danger} />}
                                         />
@@ -3052,10 +3146,10 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                 </View>
 
                                 <View style={styles.modalActions}>
-                                    <IconButton label="Cancel" onPress={() => setEditBook(null)} />
+                                    <IconButton label={t('common.cancel')} onPress={() => setEditBook(null)} />
                                     <IconButton
                                         tone="accent"
-                                        label="Save"
+                                        label={t('common.save')}
                                         onPress={handleSaveBookEdit}
                                         icon={<Feather name="check" size={15} color={colors.accentStrong} />}
                                     />
@@ -3070,7 +3164,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 <View style={styles.modalBackdrop}>
                     <TouchableWithoutFeedback>
                         <View style={styles.songModal}>
-                            <Text style={styles.editTitle}>Add song</Text>
+                            <Text style={styles.editTitle}>{t('home.addSongTitle')}</Text>
 
                             <ScrollView
                                 style={styles.songModalScroll}
@@ -3078,30 +3172,30 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                 showsVerticalScrollIndicator={false}
                                 keyboardShouldPersistTaps="handled"
                             >
-                                <Text style={styles.editLabel}>Title</Text>
+                                <Text style={styles.editLabel}>{t('common.title')}</Text>
                                 <TextInput
                                     value={songDraft.title}
                                     onChangeText={(title) => setSongDraft((prev) => ({ ...prev, title }))}
                                     style={styles.editInput}
-                                    placeholder="Song title"
+                                    placeholder={t('home.songTitlePlaceholder')}
                                     placeholderTextColor={colors.textSubtle}
                                 />
 
-                                <Text style={styles.editLabel}>Artist</Text>
+                                <Text style={styles.editLabel}>{t('common.artist')}</Text>
                                 <TextInput
                                     value={songDraft.artist}
                                     onChangeText={(artist) => setSongDraft((prev) => ({ ...prev, artist }))}
                                     style={styles.editInput}
-                                    placeholder="Artist"
+                                    placeholder={t('common.artist')}
                                     placeholderTextColor={colors.textSubtle}
                                 />
 
-                                <Text style={styles.editLabel}>Lyrics</Text>
+                                <Text style={styles.editLabel}>{t('common.lyrics')}</Text>
                                 <TextInput
                                     value={songDraft.lyrics}
                                     onChangeText={(lyrics) => setSongDraft((prev) => ({ ...prev, lyrics }))}
                                     style={[styles.editInput, styles.lyricsInput]}
-                                    placeholder="Paste lyrics here"
+                                    placeholder={t('home.pasteLyrics')}
                                     placeholderTextColor={colors.textSubtle}
                                     multiline
                                     textAlignVertical="top"
@@ -3114,14 +3208,14 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                     onPress={handleCancelSongAdd}
                                     style={[styles.songModalButton, styles.songModalButtonSecondary]}
                                 >
-                                    <Text style={styles.songModalButtonSecondaryText}>Cancel</Text>
+                                    <Text style={styles.songModalButtonSecondaryText}>{t('common.cancel')}</Text>
                                 </TouchableOpacity>
                                 <TouchableOpacity
                                     activeOpacity={0.84}
                                     onPress={handleSubmitSong}
                                     style={[styles.songModalButton, styles.songModalButtonPrimary]}
                                 >
-                                    <Text style={styles.songModalButtonPrimaryText}>Submit</Text>
+                                    <Text style={styles.songModalButtonPrimaryText}>{t('common.submit')}</Text>
                                 </TouchableOpacity>
                             </View>
                         </View>
@@ -4124,6 +4218,27 @@ const styles = StyleSheet.create({
         borderRadius: 28,
         padding: spacing.xl,
         gap: spacing.md,
+    },
+    pdfCoverModal: {
+        backgroundColor: colors.surfaceElevated,
+        borderRadius: 28,
+        padding: spacing.xl,
+        gap: spacing.md,
+    },
+    pdfCoverCopy: {
+        ...textStyles.bodyMuted,
+        color: colors.textSubtle,
+    },
+    pdfCoverDefaultButton: {
+        alignSelf: 'stretch',
+    },
+    pdfCoverActions: {
+        flexDirection: 'row',
+        gap: spacing.sm,
+        marginTop: spacing.xs,
+    },
+    pdfCoverActionButton: {
+        flex: 1,
     },
     songModal: {
         maxHeight: '82%',

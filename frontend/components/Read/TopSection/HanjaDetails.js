@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Text, View, StyleSheet, TouchableOpacity, Modal, ScrollView } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
+import { useAppContext } from '../../../contexts/AppContext';
+import { useTranslation } from '../../../hooks/useTranslation';
 import { useLocalOwner } from '../../../contexts/LocalOwnerContext';
 import { fetchHanjaRelated } from '../../../services/api/hanjaRelated';
 import { addRelatedKnownWord, getRelatedKnownWords, removeRelatedKnownWord } from '../../../services/Database';
@@ -32,7 +34,7 @@ const normalizeReadingEntries = (entries = []) => {
     entries.forEach((entry) => {
         const reading = cleanValue(entry?.reading);
         const koreanMeaning = cleanValue(entry?.hun_korean);
-        const englishMeaning = cleanValue(entry?.hun_english) || cleanValue(entry?.meaning);
+        const englishMeaning = cleanValue(entry?.hun_display) || cleanValue(entry?.meaning);
         const fallbackMeaning = cleanValue(entry?.meaning);
         const key = `${reading}|${koreanMeaning}|${englishMeaning || fallbackMeaning}`;
 
@@ -80,6 +82,8 @@ const HanjaDetails = ({
     onSourceWordAutoSaved,
     isDarkMode,
 }) => {
+    const { interfaceLanguage } = useAppContext();
+    const { t } = useTranslation();
     const { activeOwnerId, syncGeneration } = useLocalOwner();
     const characters = normalizeHanjaCharacters(hanjaCharacters, hanja);
     const charactersKey = characters.join('|');
@@ -183,7 +187,7 @@ const HanjaDetails = ({
             let lookup = EMPTY_HANJA_LOOKUP;
 
             try {
-                lookup = await fetchHanjaRelated(character);
+                lookup = await fetchHanjaRelated(character, { interfaceLanguage });
             } catch (error) {
                 console.warn(`[HanjaDetails] preload failed for "${character}":`, error.message);
             }
@@ -206,7 +210,7 @@ const HanjaDetails = ({
         return () => {
             isCancelled = true;
         };
-    }, [charactersKey]);
+    }, [charactersKey, interfaceLanguage]);
 
     useEffect(() => {
         setVisibleRelatedCount(RELATED_WORD_PAGE_SIZE);
@@ -425,7 +429,7 @@ const HanjaDetails = ({
             <View style={styles.modalRoot}>
                 <TouchableOpacity
                     accessibilityRole="button"
-                    accessibilityLabel="Close Hanja details"
+                    accessibilityLabel={t('hanja.close')}
                     activeOpacity={1}
                     style={[styles.backdrop, { backgroundColor: palette.overlay }]}
                     onPress={close}
@@ -455,10 +459,10 @@ const HanjaDetails = ({
                                                 </Text>
                                             ) : null}
                                         </Text>
-                                    )) : (headerEntry.reading || (isLoading ? 'Loading...' : 'Hanja'))}
+                                    )) : (headerEntry.reading || (isLoading ? t('common.loading') : 'Hanja'))}
                                 </Text>
                                 <Text selectable numberOfLines={2} style={[styles.meaningText, { color: palette.muted }]}>
-                                    {headerMeaning || (isLoading ? 'Fetching related hanja details' : 'Meaning unavailable')}
+                                    {headerMeaning || (isLoading ? t('hanja.fetchingDetails') : t('hanja.meaningUnavailable'))}
                                 </Text>
                             </View>
                         </View>
@@ -466,8 +470,7 @@ const HanjaDetails = ({
                         <View style={[styles.noteRow, { backgroundColor: palette.card, borderBottomColor: palette.border }]}>
                             <MaterialIcons name="link" size={18} color={palette.accent} />
                             <Text style={[styles.noteText, { color: palette.muted }]}>
-                                Mark words you <Text style={[styles.noteStrong, { color: palette.text }]}>already know</Text> - they'll be linked to{' '}
-                                <Text style={[styles.noteStrong, { color: palette.text }]}>{linkedWord}</Text> as related references.
+                                {t('hanja.markKnownNote', { word: linkedWord })}
                             </Text>
                         </View>
 
@@ -480,7 +483,7 @@ const HanjaDetails = ({
                             {isLoading ? (
                                 <View style={styles.emptyState}>
                                     <ActivityIndicator size="small" color={palette.accent} />
-                                    <Text style={[styles.emptyText, { color: palette.muted }]}>Loading related words...</Text>
+                                    <Text style={[styles.emptyText, { color: palette.muted }]}>{t('hanja.loading')}</Text>
                                 </View>
                             ) : relatedWords.length > 0 ? (
                                 <>
@@ -505,13 +508,15 @@ const HanjaDetails = ({
                                                         </Text>
                                                     </View>
                                                     <Text selectable numberOfLines={2} style={[styles.relatedMeaning, { color: palette.muted }]}>
-                                                        {word.meaning}
+                                                        {word.meaning || t('hanja.meaningUnavailable')}
                                                     </Text>
                                                 </View>
 
                                                 <TouchableOpacity
                                                     accessibilityRole="button"
-                                                    accessibilityLabel={known ? `${word.korean} marked as known` : `Mark ${word.korean} as already known`}
+                                                    accessibilityLabel={known
+                                                        ? t('hanja.markedKnown', { word: word.korean })
+                                                        : t('hanja.markKnown', { word: word.korean })}
                                                     activeOpacity={0.82}
                                                     onPress={() => handleKnownPress(word)}
                                                     style={[
@@ -538,7 +543,7 @@ const HanjaDetails = ({
                                                             { color: known ? palette.knownText : palette.muted },
                                                         ]}
                                                     >
-                                                        I already know
+                                                        {t('hanja.known')}
                                                     </Text>
                                                 </TouchableOpacity>
                                             </View>
@@ -547,7 +552,7 @@ const HanjaDetails = ({
                                 </>
                             ) : (
                                 <View style={styles.emptyState}>
-                                    <Text style={[styles.emptyText, { color: palette.muted }]}>No related words available</Text>
+                                    <Text style={[styles.emptyText, { color: palette.muted }]}>{t('hanja.none')}</Text>
                                 </View>
                             )}
                         </ScrollView>
@@ -556,7 +561,7 @@ const HanjaDetails = ({
                     {canGoPrevious ? (
                         <TouchableOpacity
                             accessibilityRole="button"
-                            accessibilityLabel="Previous Hanja"
+                            accessibilityLabel={t('hanja.previous')}
                             activeOpacity={0.72}
                             onPress={goToPreviousHanja}
                             style={[
@@ -571,7 +576,7 @@ const HanjaDetails = ({
                     {canGoNext ? (
                         <TouchableOpacity
                             accessibilityRole="button"
-                            accessibilityLabel="Next Hanja"
+                            accessibilityLabel={t('hanja.next')}
                             activeOpacity={0.72}
                             onPress={goToNextHanja}
                             style={[

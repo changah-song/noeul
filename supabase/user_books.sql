@@ -118,6 +118,7 @@ values (
   false,
   array[
     'application/epub+zip',
+    'application/pdf',
     'application/octet-stream',
     'image/jpeg',
     'image/png',

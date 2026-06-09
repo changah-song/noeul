@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef, useEffect } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { Reader, useReader } from '@epubjs-react-native/core';
 import { useFileSystem } from '@epubjs-react-native/expo-file-system';
+import { useTranslation } from '../../hooks/useTranslation';
 
 const BottomSection = ({
     books,
@@ -24,6 +25,7 @@ const BottomSection = ({
     onTocChange,
     navigationRef,
 }) => {
+    const { t } = useTranslation();
     const { getCurrentLocation, goToLocation, injectJavascript } = useReader();
     const currentLocationRef = useRef(null);
     const pendingLocationRestoreRef = useRef('');
@@ -279,7 +281,7 @@ const BottomSection = ({
     if (!currentBook || savedWords === null) {
         return (
             <View style={styles.noBookContainer}>
-                <Text style={styles.noBookText}>{!currentBook ? 'No book selected' : 'Loading...'}</Text>
+                <Text style={styles.noBookText}>{!currentBook ? t('read.noBook') : t('common.loading')}</Text>
             </View>
         );
     }

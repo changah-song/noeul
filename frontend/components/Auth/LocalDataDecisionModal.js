@@ -9,39 +9,40 @@ import {
 } from 'react-native';
 
 import { colors, radii, spacing, textStyles } from '../../theme';
+import { useTranslation } from '../../hooks/useTranslation';
 
 const DECISION_CONTENT = {
   'legacy-signed-in': {
-    title: 'Local data found',
-    body: 'This device has older offline data that is not tied to an account yet. Choose where it should live before cloud sync resumes.',
+    titleKey: 'localData.legacyTitle',
+    bodyKey: 'localData.legacyBody',
     actions: [
-      { action: 'import-to-account', label: 'Import to this account', tone: 'primary' },
-      { action: 'keep-as-guest', label: 'Keep as guest', tone: 'secondary' },
-      { action: 'discard', label: 'Discard', tone: 'danger' },
+      { action: 'import-to-account', labelKey: 'localData.importAccount', tone: 'primary' },
+      { action: 'keep-as-guest', labelKey: 'localData.keepGuest', tone: 'secondary' },
+      { action: 'discard', labelKey: 'localData.discard', tone: 'danger' },
     ],
   },
   'guest-signup-empty-remote': {
-    title: 'Save offline progress?',
-    body: 'You have guest progress on this device. Save it to this account or start fresh.',
+    titleKey: 'localData.saveProgressTitle',
+    bodyKey: 'localData.saveProgressBody',
     actions: [
-      { action: 'save-progress', label: 'Save progress', tone: 'primary' },
-      { action: 'start-fresh', label: 'Start fresh', tone: 'secondary' },
+      { action: 'save-progress', labelKey: 'localData.saveProgress', tone: 'primary' },
+      { action: 'start-fresh', labelKey: 'localData.startFresh', tone: 'secondary' },
     ],
   },
   'guest-login-existing-remote': {
-    title: 'Offline progress found',
-    body: 'This device has guest progress and this account may already have cloud data. Choose what to do before cloud sync resumes.',
+    titleKey: 'localData.offlineFoundTitle',
+    bodyKey: 'localData.offlineFoundBody',
     actions: [
-      { action: 'merge', label: 'Merge', tone: 'primary' },
-      { action: 'discard', label: 'Discard', tone: 'danger' },
+      { action: 'merge', labelKey: 'localData.merge', tone: 'primary' },
+      { action: 'discard', labelKey: 'localData.discard', tone: 'danger' },
     ],
   },
 };
 
 const getContent = (decision) => (
   DECISION_CONTENT[decision?.type] ?? {
-    title: 'Local data needs review',
-    body: 'Choose what to do with local data before cloud sync resumes.',
+    titleKey: 'localData.reviewTitle',
+    bodyKey: 'localData.reviewBody',
     actions: [],
   }
 );
@@ -53,6 +54,7 @@ const LocalDataDecisionModal = ({
   onCancel,
   busy = false,
 }) => {
+  const { t } = useTranslation();
   const visible = Boolean(decision);
   const content = getContent(decision);
   const email = user?.email || user?.user_metadata?.email || '';
@@ -70,9 +72,9 @@ const LocalDataDecisionModal = ({
     >
       <View style={styles.backdrop}>
         <View style={styles.card}>
-          <Text style={styles.title}>{content.title}</Text>
+          <Text style={styles.title}>{t(content.titleKey)}</Text>
           {email ? <Text style={styles.account}>{email}</Text> : null}
-          <Text style={styles.body}>{content.body}</Text>
+          <Text style={styles.body}>{t(content.bodyKey)}</Text>
 
           <View style={styles.actions}>
             {content.actions.map((item) => (
@@ -96,7 +98,7 @@ const LocalDataDecisionModal = ({
                     item.tone === 'danger' && styles.dangerButtonText,
                   ]}
                 >
-                  {item.label}
+                  {t(item.labelKey)}
                 </Text>
               </Pressable>
             ))}
@@ -105,7 +107,7 @@ const LocalDataDecisionModal = ({
           {busy ? (
             <View style={styles.busyRow}>
               <ActivityIndicator size="small" color={colors.accentStrong} />
-              <Text style={styles.busyText}>Resolving local data...</Text>
+              <Text style={styles.busyText}>{t('localData.resolving')}</Text>
             </View>
           ) : null}
         </View>
