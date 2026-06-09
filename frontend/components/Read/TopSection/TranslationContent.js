@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { ActivityIndicator, Text, View, ScrollView, StyleSheet } from 'react-native';
 import { translateText } from '../../../services/api/googleTranslate';
+import { useTranslation } from '../../../hooks/useTranslation';
 import { colors, spacing, textStyles } from '../../../theme';
 
 const TranslationContent = ({ highlightedWord, isDarkMode, onContentLoaded }) => {
+    const { t } = useTranslation();
     const [translatedText, setTranslatedText] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [errorMessage, setErrorMessage] = useState('');
@@ -38,13 +40,13 @@ const TranslationContent = ({ highlightedWord, isDarkMode, onContentLoaded }) =>
                     return;
                 }
                 setTranslatedText(translation || '');
-                setErrorMessage(translation ? '' : 'No translation available');
+                setErrorMessage(translation ? '' : t('lookup.noTranslation'));
             })
             .catch((error) => {
                 if (isCancelled) {
                     return;
                 }
-                setErrorMessage(error?.message || 'Internet connection required');
+                setErrorMessage(error?.message || t('lookup.internetRequired'));
             })
             .finally(() => {
                 if (isCancelled) {
@@ -57,7 +59,7 @@ const TranslationContent = ({ highlightedWord, isDarkMode, onContentLoaded }) =>
         return () => {
             isCancelled = true;
         };
-    }, [highlightedWord, onContentLoaded]);
+    }, [highlightedWord, onContentLoaded, t]);
 
     return (
         <View style={styles.container}>
@@ -69,7 +71,7 @@ const TranslationContent = ({ highlightedWord, isDarkMode, onContentLoaded }) =>
                 {isLoading ? (
                     <View style={styles.loadingRow}>
                         <ActivityIndicator size="small" color={palette.muted} />
-                        <Text style={[styles.offlineText, { color: palette.muted }]}>Translating...</Text>
+                        <Text style={[styles.offlineText, { color: palette.muted }]}>{t('lookup.translating')}</Text>
                     </View>
                 ) : errorMessage ? (
                     <Text style={[styles.offlineText, { color: palette.muted }]}>{errorMessage}</Text>

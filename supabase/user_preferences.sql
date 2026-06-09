@@ -1,9 +1,9 @@
 create table if not exists public.user_preferences (
   user_id uuid primary key references auth.users(id) on delete cascade,
 
+  active_profile_id uuid,
   native_language text default 'en',
   target_language text default 'ko',
-  interface_language text default 'en',
 
   current_book_cloud_id uuid,
   current_book_uri text,
@@ -16,15 +16,31 @@ create table if not exists public.user_preferences (
 );
 
 alter table public.user_preferences
+add column if not exists active_profile_id uuid,
 add column if not exists native_language text default 'en',
 add column if not exists target_language text default 'ko',
-add column if not exists interface_language text default 'en',
 add column if not exists current_book_cloud_id uuid,
 add column if not exists current_book_uri text,
 add column if not exists reader_settings jsonb default '{}'::jsonb,
 add column if not exists flashcard_settings jsonb default '{}'::jsonb,
 add column if not exists ocr_settings jsonb default '{}'::jsonb,
 add column if not exists updated_at timestamptz default now();
+
+do $$
+begin
+  if to_regclass('public.user_profiles') is not null
+     and not exists (
+       select 1
+       from pg_constraint
+       where conname = 'user_preferences_active_profile_id_fkey'
+         and conrelid = 'public.user_preferences'::regclass
+     ) then
+    alter table public.user_preferences
+    add constraint user_preferences_active_profile_id_fkey
+    foreign key (active_profile_id) references public.user_profiles(id);
+  end if;
+end;
+$$;
 
 update public.user_preferences
 set native_language = 'en'
@@ -34,9 +50,18 @@ update public.user_preferences
 set target_language = 'ko'
 where target_language is null or btrim(target_language) = '';
 
-update public.user_preferences
-set interface_language = 'en'
-where interface_language is null or btrim(interface_language) = '';
+do $$
+begin
+  if to_regclass('public.user_profiles') is not null then
+    update public.user_preferences preferences
+    set active_profile_id = profiles.id
+    from public.user_profiles profiles
+    where preferences.user_id = profiles.user_id
+      and profiles.target_language = preferences.target_language
+      and preferences.active_profile_id is null;
+  end if;
+end;
+$$;
 
 update public.user_preferences
 set reader_settings = '{}'::jsonb

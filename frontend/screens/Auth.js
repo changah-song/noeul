@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import * as AppleAuthentication from 'expo-apple-authentication';
+import { useTranslation } from '../hooks/useTranslation';
 import { supabase } from '../services/supabase';
 import { colors, radii, spacing, textStyles } from '../theme';
 
@@ -35,14 +36,15 @@ const getCurrentSession = async () => {
 
 const Auth = ({
   embedded = false,
-  title = 'FluentFable',
-  subtitle = 'Sign in to sync your books and saved words.',
+  title = null,
+  subtitle = null,
   initialMode = 'signin',
   showApple = true,
   showHeader = true,
   showModeToggle = true,
   onAuthenticated,
 }) => {
+  const { t } = useTranslation();
   const [mode, setMode] = useState(initialMode === 'signup' ? 'signup' : 'signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -52,7 +54,7 @@ const Auth = ({
 
   const handleEmailAuth = async () => {
     if (!trimmedEmail || !password) {
-      Alert.alert('Missing info', 'Enter both email and password.');
+      Alert.alert(t('auth.missingInfoTitle'), t('auth.missingInfoBody'));
       return;
     }
 
@@ -87,7 +89,7 @@ const Auth = ({
             throw passwordError;
           }
 
-          Alert.alert('Check your email', 'Confirm your email to finish upgrading your account.');
+          Alert.alert(t('auth.checkEmailTitle'), t('auth.checkEmailBody'));
         } else {
           const { error } = await supabase.auth.signUp({
             email: trimmedEmail,
@@ -101,7 +103,7 @@ const Auth = ({
       }
       onAuthenticated?.();
     } catch (error) {
-      Alert.alert('Authentication failed', error.message);
+      Alert.alert(t('auth.failedTitle'), error.message);
     } finally {
       setLoading(false);
     }
@@ -158,7 +160,7 @@ const Auth = ({
         return;
       }
 
-      Alert.alert('Google sign in failed', error.message);
+      Alert.alert(t('auth.googleFailedTitle'), error.message);
     } finally {
       setLoading(false);
     }
@@ -200,7 +202,7 @@ const Auth = ({
         return;
       }
 
-      Alert.alert('Apple sign in failed', error.message);
+      Alert.alert(t('auth.appleFailedTitle'), error.message);
     } finally {
       setLoading(false);
     }
@@ -210,18 +212,18 @@ const Auth = ({
       <View style={[styles.card, embedded && styles.embeddedCard]}>
         {showHeader ? (
           <>
-            <Text style={styles.title}>{title}</Text>
-            <Text style={styles.subtitle}>{subtitle}</Text>
+            <Text style={styles.title}>{title ?? t('auth.defaultTitle')}</Text>
+            <Text style={styles.subtitle}>{subtitle ?? t('auth.defaultSubtitle')}</Text>
           </>
         ) : null}
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Email</Text>
+          <Text style={styles.sectionTitle}>{t('auth.email')}</Text>
           <TextInput
             autoCapitalize="none"
             autoComplete="email"
             keyboardType="email-address"
-            placeholder="Email"
+            placeholder={t('auth.emailPlaceholder')}
             placeholderTextColor="#7b8794"
             style={styles.input}
             value={email}
@@ -229,7 +231,7 @@ const Auth = ({
           />
           <TextInput
             autoCapitalize="none"
-            placeholder="Password"
+            placeholder={t('auth.passwordPlaceholder')}
             placeholderTextColor="#7b8794"
             secureTextEntry
             style={styles.input}
@@ -239,32 +241,32 @@ const Auth = ({
           {showModeToggle ? (
             <View style={styles.modeRow}>
               <TouchableOpacity onPress={() => setMode('signin')}>
-                <Text style={[styles.modeText, mode === 'signin' && styles.modeActive]}>Sign In</Text>
+                <Text style={[styles.modeText, mode === 'signin' && styles.modeActive]}>{t('auth.signIn')}</Text>
               </TouchableOpacity>
               <TouchableOpacity onPress={() => setMode('signup')}>
-                <Text style={[styles.modeText, mode === 'signup' && styles.modeActive]}>Sign Up</Text>
+                <Text style={[styles.modeText, mode === 'signup' && styles.modeActive]}>{t('auth.signUp')}</Text>
               </TouchableOpacity>
             </View>
           ) : null}
           <TouchableOpacity style={styles.primaryButton} onPress={handleEmailAuth} disabled={loading}>
             <Text style={styles.primaryButtonText}>
-              {loading ? 'Working...' : mode === 'signin' ? 'Sign In' : 'Create Account'}
+              {loading ? t('common.working') : mode === 'signin' ? t('auth.signIn') : t('auth.createAccount')}
             </Text>
           </TouchableOpacity>
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Google</Text>
+          <Text style={styles.sectionTitle}>{t('auth.google')}</Text>
           <TouchableOpacity style={styles.secondaryButton} onPress={handleGoogleAuth} disabled={loading}>
             <Text style={styles.secondaryButtonText}>
-              {mode === 'signup' ? 'Sign up with Google' : 'Sign in with Google'}
+              {mode === 'signup' ? t('auth.signUpGoogle') : t('auth.signInGoogle')}
             </Text>
           </TouchableOpacity>
         </View>
 
         {showApple && Platform.OS === 'ios' ? (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Apple</Text>
+            <Text style={styles.sectionTitle}>{t('auth.apple')}</Text>
             <AppleAuthentication.AppleAuthenticationButton
               buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
               buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}

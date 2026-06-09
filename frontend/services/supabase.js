@@ -114,6 +114,8 @@ export const supabase = createClient(supabaseUrl ?? '', supabaseAnonKey ?? '', {
 });
 
 const FILE_TAG = '[supabase]';
+export const USER_ACCOUNT_TABLE = 'users';
+export const USER_PROFILES_TABLE = 'user_profiles';
 export const USER_BOOKS_BUCKET = 'user-books';
 export const USER_PREFERENCES_TABLE = 'user_preferences';
 export const USER_WRITING_ENTRIES_TABLE = 'user_writing_entries';

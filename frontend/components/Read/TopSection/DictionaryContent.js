@@ -4,6 +4,8 @@ import koreanDictionary from '../../../services/api/koreanDictionary';
 import stemWord from '../../../services/api/stemWord';
 import { MaterialIcons } from '@expo/vector-icons';
 import { api } from '../../../services/api/client';
+import { useAppContext } from '../../../contexts/AppContext';
+import { useTranslation } from '../../../hooks/useTranslation';
 import { useLocalOwner } from '../../../contexts/LocalOwnerContext';
 import {
     insertData,
@@ -145,6 +147,8 @@ const DictionaryContent = ({
     sourceBook,
     savedWords = [],
 }) => {
+    const { interfaceLanguage } = useAppContext();
+    const { t } = useTranslation();
     const { activeOwnerId, syncGeneration } = useLocalOwner();
     const palette = isDarkMode
         ? {
@@ -241,7 +245,12 @@ const DictionaryContent = ({
 
         const resolveLookup = async () => {
             if (currentBook) {
-                const indexRows = await lookupBookIndexBySurface(activeOwnerId, currentBook, normalizedSurface);
+                const indexRows = await lookupBookIndexBySurface(
+                    activeOwnerId,
+                    currentBook,
+                    normalizedSurface,
+                    interfaceLanguage
+                );
                 if (isCancelled) {
                     return;
                 }
@@ -261,7 +270,7 @@ const DictionaryContent = ({
                 }
             }
 
-            const directCacheRows = await lookupCacheByStems([normalizedSurface]);
+            const directCacheRows = await lookupCacheByStems([normalizedSurface], interfaceLanguage);
             if (isCancelled) {
                 return;
             }
@@ -294,13 +303,13 @@ const DictionaryContent = ({
         return () => {
             isCancelled = true;
         };
-    }, [activeOwnerId, currentBook, highlightedWord, onContentLoaded]);
+    }, [activeOwnerId, currentBook, highlightedWord, interfaceLanguage, onContentLoaded]);
 
     useEffect(() => {
         if (stemWordList.length === 0) return;
 
         const checkCache = async () => {
-            const raw = await lookupCacheByStems(stemWordList);
+            const raw = await lookupCacheByStems(stemWordList, interfaceLanguage);
             const seen = new Set();
             const hits = raw.filter(row => {
                 if (seen.has(row.stem)) return false;
@@ -321,7 +330,7 @@ const DictionaryContent = ({
             }
         };
         checkCache();
-    }, [stemWordList, onContentLoaded]);
+    }, [interfaceLanguage, stemWordList, onContentLoaded]);
 
     const { dictionaryData, isLoading: isLiveLoading, error: liveError } = koreanDictionary({ query: needsLiveFetch ? stemWordList : [] });
 
@@ -412,17 +421,18 @@ const DictionaryContent = ({
             .filter(Boolean);
 
         if (entries.length > 0) {
-            insertCacheEntries(entries);
+            insertCacheEntries(entries, interfaceLanguage);
         }
 
         onContentLoaded?.();
-    }, [dictionaryData, needsLiveFetch, onContentLoaded, stemWordList]);
+    }, [dictionaryData, interfaceLanguage, needsLiveFetch, onContentLoaded, stemWordList]);
 
     const prefetchExtra = async (stem) => {
         setExtraDefs(prev => ({ ...prev, [stem]: 'prefetching' }));
         try {
             const response = await api.post('/krdict_search/', {
                 queries: [stem],
+                language: interfaceLanguage,
             }, {
                 timeout: 10000,
             });
@@ -756,7 +766,7 @@ const DictionaryContent = ({
             <View pointerEvents="box-none" style={styles.wordSideNavigation}>
                 <TouchableOpacity
                     accessibilityRole="button"
-                    accessibilityLabel="Previous detected word"
+                    accessibilityLabel={t('lookup.previousDetectedWord')}
                     activeOpacity={0.78}
                     onPress={goToPreviousWord}
                     hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
@@ -766,7 +776,7 @@ const DictionaryContent = ({
                 </TouchableOpacity>
                 <TouchableOpacity
                     accessibilityRole="button"
-                    accessibilityLabel="Next detected word"
+                    accessibilityLabel={t('lookup.nextDetectedWord')}
                     activeOpacity={0.78}
                     onPress={goToNextWord}
                     hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
@@ -866,7 +876,9 @@ const DictionaryContent = ({
         return (
             <TouchableOpacity
                 accessibilityRole="button"
-                accessibilityLabel={saved ? `Remove ${word} from saved words` : `Save ${word}`}
+                accessibilityLabel={saved
+                    ? t('lookup.removeWord', { word })
+                    : t('lookup.saveWord', { word })}
                 activeOpacity={0.8}
                 onPress={() =>
                     saved
@@ -893,7 +905,7 @@ const DictionaryContent = ({
     const renderTranslateButton = () => (
         <TouchableOpacity
             accessibilityRole="button"
-            accessibilityLabel={`Translate ${highlightedWord}`}
+            accessibilityLabel={t('lookup.translateWord', { word: highlightedWord })}
             activeOpacity={0.8}
             onPress={() => onTranslatePress?.(cleanValue(highlightedWord) || tappedSurface)}
             style={styles.translateButton}
@@ -941,7 +953,7 @@ const DictionaryContent = ({
                     <Text selectable style={[styles.entryMeta, { color: palette.mutedText }]}>
                         {romanizationText}
                         {romanizationText && tappedSurface && tappedSurface !== word ? ' · ' : ''}
-                        {tappedSurface && tappedSurface !== word ? `from ${tappedSurface}` : ''}
+                        {tappedSurface && tappedSurface !== word ? t('lookup.fromSurface', { surface: tappedSurface }) : ''}
                     </Text>
                 ) : null}
             </View>
@@ -956,7 +968,7 @@ const DictionaryContent = ({
         return (
             <TouchableOpacity
                 accessibilityRole="button"
-                accessibilityLabel={showLess ? 'Hide alternate definitions' : 'Show alternate definitions'}
+                accessibilityLabel={showLess ? t('lookup.hideAlternates') : t('lookup.showAlternates')}
                 activeOpacity={0.8}
                 onPress={showLess ? onLess : onMore}
                 style={[
@@ -1010,13 +1022,15 @@ const DictionaryContent = ({
                                     {renderHanja(hanja, 'extra', word, sourceWordDetails)}
                                 </View>
                                 <Text selectable style={[styles.extraDefinition, { color: palette.secondaryText }]}>
-                                    {definition || 'No English definition available'}
+                                    {definition || t('lookup.noEnglishDefinition')}
                                 </Text>
                             </View>
                             {hasSavableDefinition(definition) ? (
                                 <TouchableOpacity
                                     accessibilityRole="button"
-                                    accessibilityLabel={saved ? `Remove ${word} from saved words` : `Save ${word}`}
+                                    accessibilityLabel={saved
+                                        ? t('lookup.removeWord', { word })
+                                        : t('lookup.saveWord', { word })}
                                     activeOpacity={0.85}
                                     style={[
                                         styles.extraSaveButton,
@@ -1067,7 +1081,7 @@ const DictionaryContent = ({
                 </Text>
             ) : (
                 <Text selectable style={[styles.emptyDefinition, { color: palette.emptyText }]}>
-                    No dictionary entry available
+                    {t('lookup.noDictionaryEntry')}
                 </Text>
             )}
             {showLess ? renderExtraDefinitions(extraEntries) : null}
@@ -1079,7 +1093,7 @@ const DictionaryContent = ({
         return (
             <View style={[styles.panelContent, styles.stateRow, { backgroundColor: palette.surface }]}>
                 <ActivityIndicator size="small" color={palette.mutedText} />
-                <Text style={[styles.stateText, { color: palette.mutedText }]}>Looking up...</Text>
+                <Text style={[styles.stateText, { color: palette.mutedText }]}>{t('lookup.lookingUp')}</Text>
             </View>
         );
     }
@@ -1087,7 +1101,7 @@ const DictionaryContent = ({
     if (cachedResults.length === 0 && !needsLiveFetch && lookupItemCount === 0) {
         return (
             <View style={[styles.panelContent, styles.emptyState, { backgroundColor: palette.surface }]}>
-                <Text style={[styles.emptyStateText, { color: palette.emptyText }]}>No lookup available</Text>
+                <Text style={[styles.emptyStateText, { color: palette.emptyText }]}>{t('lookup.noLookup')}</Text>
             </View>
         );
     }
@@ -1096,7 +1110,7 @@ const DictionaryContent = ({
         return (
             <View style={[styles.panelContent, styles.stateRow, { backgroundColor: palette.surface }]}>
                 <ActivityIndicator size="small" color={palette.mutedText} />
-                <Text style={[styles.stateText, { color: palette.mutedText }]}>Fetching definitions...</Text>
+                <Text style={[styles.stateText, { color: palette.mutedText }]}>{t('lookup.fetchingDefinitions')}</Text>
             </View>
         );
     }
@@ -1104,7 +1118,7 @@ const DictionaryContent = ({
     if (!activeLookupItem) {
         return (
             <View style={[styles.panelContent, styles.emptyState, { backgroundColor: palette.surface }]}>
-                <Text style={[styles.emptyStateText, { color: palette.emptyText }]}>No lookup available</Text>
+                <Text style={[styles.emptyStateText, { color: palette.emptyText }]}>{t('lookup.noLookup')}</Text>
             </View>
         );
     }

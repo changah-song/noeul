@@ -11,18 +11,36 @@ import React, {
 
 import {
   DEFAULT_LANGUAGE_SETTINGS,
+  getLanguageLabel,
   normalizeLanguageCode,
+  normalizeInterfaceLanguageForTarget,
 } from '../constants/languages';
 import { useLocalOwner } from './LocalOwnerContext';
 import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
+import {
+  fetchUserAccountSettings,
+  updateUserAccountSettingsFields,
+  upsertUserAccountSettings,
+} from '../services/accountSettingsCloudSync';
+import {
+  LANGUAGE_SETTINGS_KEY,
+  setRuntimeInterfaceLanguage,
+} from '../services/interfaceLanguage';
+import {
+  DEFAULT_ACTIVE_PROFILE_ID,
+  getDefaultProfileIdForLanguage,
+  setRuntimeActiveProfileId,
+} from '../services/profileScope';
+import {
+  replaceDefaultProfileId,
+} from '../services/Database';
 import {
   fetchUserPreferences,
   getTimestampMs,
   updateUserPreferenceFields,
   upsertUserPreferences,
 } from '../services/preferencesCloudSync';
-
-const LANGUAGE_SETTINGS_KEY = '@ff/language-settings';
+import { upsertUserProfile } from '../services/profilesCloudSync';
 
 const AppContext = createContext({
   dictMode: true,
@@ -31,49 +49,101 @@ const AppContext = createContext({
   setTargetLanguage: () => {},
   setNativeLanguage: () => {},
   setInterfaceLanguage: () => {},
+  activeProfileId: DEFAULT_ACTIVE_PROFILE_ID,
+  setActiveProfileId: () => {},
+  switchProfile: () => {},
   languageSettingsReady: false,
   updateLanguageSettings: () => {},
   syncLanguagePreferences: () => Promise.resolve(),
 });
 
-const normalizeLanguageSettings = (settings = {}) => ({
-  targetLanguage: normalizeLanguageCode(
+const normalizeProfileId = (profileId, targetLanguage) => {
+  const fallbackProfileId = getDefaultProfileIdForLanguage(targetLanguage);
+  return typeof profileId === 'string' && profileId.trim()
+    ? profileId.trim()
+    : fallbackProfileId;
+};
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const isUuid = (value) => typeof value === 'string' && UUID_RE.test(value);
+
+const normalizeLanguageSettings = (settings = {}) => {
+  const targetLanguage = normalizeLanguageCode(
     settings.targetLanguage ?? settings.target_language,
     DEFAULT_LANGUAGE_SETTINGS.targetLanguage
-  ),
-  nativeLanguage: normalizeLanguageCode(
-    settings.nativeLanguage ?? settings.native_language,
-    DEFAULT_LANGUAGE_SETTINGS.nativeLanguage
-  ),
-  interfaceLanguage: normalizeLanguageCode(
-    settings.interfaceLanguage
-      ?? settings.interface_language,
-    DEFAULT_LANGUAGE_SETTINGS.interfaceLanguage
-  ),
-  updatedAt: settings.updatedAt
-    ?? settings.updated_at
-    ?? null,
-});
+  );
+
+  return {
+    targetLanguage,
+    nativeLanguage: normalizeLanguageCode(
+      settings.nativeLanguage ?? settings.native_language,
+      DEFAULT_LANGUAGE_SETTINGS.nativeLanguage
+    ),
+    interfaceLanguage: normalizeInterfaceLanguageForTarget(
+      settings.interfaceLanguage
+        ?? settings.interface_language,
+      targetLanguage
+    ),
+    activeProfileId: normalizeProfileId(
+      settings.activeProfileId ?? settings.active_profile_id,
+      targetLanguage
+    ),
+    updatedAt: settings.updatedAt
+      ?? settings.updated_at
+      ?? null,
+  };
+};
 
 const settingsFromCloudPreferences = (preferences = {}) => normalizeLanguageSettings({
   target_language: preferences.target_language,
   native_language: preferences.native_language,
-  interface_language: preferences.interface_language,
+  active_profile_id: preferences.active_profile_id,
   updated_at: preferences.updated_at,
 });
 
-const toCloudLanguagePatch = (settings) => ({
+const settingsFromCloudAccount = (account = {}) => normalizeLanguageSettings({
+  interface_language: account.interface_language,
+  updated_at: account.updated_at,
+});
+
+const toCloudLanguagePreferencePatch = (settings) => ({
   target_language: settings.targetLanguage,
   native_language: settings.nativeLanguage,
+  active_profile_id: isUuid(settings.activeProfileId) ? settings.activeProfileId : undefined,
+  updated_at: settings.updatedAt,
+});
+
+const toCloudAccountLanguagePatch = (settings) => ({
   interface_language: settings.interfaceLanguage,
   updated_at: settings.updatedAt,
 });
+
+const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
+
+const hasLearningLanguagePatch = (patch = {}) => (
+  hasOwn(patch, 'targetLanguage')
+  || hasOwn(patch, 'target_language')
+  || hasOwn(patch, 'nativeLanguage')
+  || hasOwn(patch, 'native_language')
+  || hasOwn(patch, 'activeProfileId')
+  || hasOwn(patch, 'active_profile_id')
+);
+
+const hasInterfaceLanguagePatch = (patch = {}) => (
+  hasOwn(patch, 'interfaceLanguage')
+  || hasOwn(patch, 'interface_language')
+);
+
+const latestTimestamp = (...values) => values.reduce((latest, value) => (
+  getTimestampMs(value) > getTimestampMs(latest) ? value : latest
+), null);
 
 export const AppProvider = ({ children, user }) => {
   const { activeOwnerId, syncPaused, syncGeneration } = useLocalOwner();
   const [dictMode, setDictMode] = useState(true);
   const [languageSettings, setLanguageSettings] = useState({
     ...DEFAULT_LANGUAGE_SETTINGS,
+    activeProfileId: DEFAULT_ACTIVE_PROFILE_ID,
     updatedAt: null,
   });
   const [languageSettingsReady, setLanguageSettingsReady] = useState(false);
@@ -102,6 +172,8 @@ export const AppProvider = ({ children, user }) => {
       });
 
       latestLanguageSettingsRef.current = next;
+      setRuntimeInterfaceLanguage(next.interfaceLanguage);
+      setRuntimeActiveProfileId(next.activeProfileId, next.targetLanguage);
       persistLocalLanguageSettings(next).catch((error) => {
         console.warn('[AppContext] Failed to persist language settings:', error);
       });
@@ -113,12 +185,25 @@ export const AppProvider = ({ children, user }) => {
         && !syncPaused
         && isCurrentSyncGeneration(syncGeneration)
       ) {
-        updateUserPreferenceFields({
-          user,
-          ownerId: activeOwnerId,
-          generation: syncGeneration,
-          patch: toCloudLanguagePatch(next),
-        }).catch((error) => {
+        const syncTasks = [];
+        if (hasLearningLanguagePatch(patch)) {
+          syncTasks.push(updateUserPreferenceFields({
+            user,
+            ownerId: activeOwnerId,
+            generation: syncGeneration,
+            patch: toCloudLanguagePreferencePatch(next),
+          }));
+        }
+        if (hasInterfaceLanguagePatch(patch)) {
+          syncTasks.push(updateUserAccountSettingsFields({
+            user,
+            ownerId: activeOwnerId,
+            generation: syncGeneration,
+            patch: toCloudAccountLanguagePatch(next),
+          }));
+        }
+
+        Promise.all(syncTasks).catch((error) => {
           console.warn('[AppContext] Failed to sync language settings:', error?.message ?? error);
         });
       }
@@ -126,6 +211,39 @@ export const AppProvider = ({ children, user }) => {
       return next;
     });
   }, [activeOwnerId, persistLocalLanguageSettings, syncGeneration, syncPaused, user]);
+
+  const ensureCloudProfileForSettings = useCallback(async (nextUser, ownerId, generation, settings) => {
+    if (!nextUser?.id) {
+      return settings;
+    }
+
+    if (isUuid(settings.activeProfileId)) {
+      return settings;
+    }
+
+    const profile = await upsertUserProfile({
+      user: nextUser,
+      ownerId,
+      generation,
+      targetLanguage: settings.targetLanguage,
+      displayName: getLanguageLabel(settings.targetLanguage),
+    });
+
+    if (!isCurrentSyncGeneration(generation)) {
+      return null;
+    }
+
+    const nextSettings = normalizeLanguageSettings({
+      ...settings,
+      activeProfileId: profile.id,
+    });
+
+    replaceDefaultProfileId(profile.id, settings.targetLanguage).catch((error) => {
+      console.warn('[AppContext] Failed to backfill local profile id:', error?.message ?? error);
+    });
+
+    return nextSettings;
+  }, []);
 
   const syncLanguagePreferences = useCallback(async (nextUser = user) => {
     if (
@@ -141,26 +259,90 @@ export const AppProvider = ({ children, user }) => {
     const ownerId = activeOwnerId;
     const generation = syncGeneration;
     const localSettings = latestLanguageSettingsRef.current;
-    const cloudPreferences = await fetchUserPreferences(nextUser.id);
+    const [cloudPreferences, cloudAccount] = await Promise.all([
+      fetchUserPreferences(nextUser.id),
+      fetchUserAccountSettings(nextUser.id),
+    ]);
     if (!isCurrentSyncGeneration(generation)) {
       return;
     }
 
-    if (!cloudPreferences) {
-      await upsertUserPreferences({
-        user: nextUser,
-        ownerId,
-        generation,
-        preferences: toCloudLanguagePatch({
-          ...localSettings,
-          updatedAt: localSettings.updatedAt ?? new Date().toISOString(),
-        }),
-      });
+    let localWithTimestamp = {
+      ...localSettings,
+      updatedAt: localSettings.updatedAt ?? new Date().toISOString(),
+    };
+    localWithTimestamp = await ensureCloudProfileForSettings(
+      nextUser,
+      ownerId,
+      generation,
+      localWithTimestamp
+    );
+    if (!localWithTimestamp) {
       return;
     }
 
-    const cloudSettings = settingsFromCloudPreferences(cloudPreferences);
-    const cloudTimestamp = cloudSettings.updatedAt ?? cloudPreferences.updated_at;
+    if (!cloudPreferences && !cloudAccount) {
+      await Promise.all([
+        upsertUserPreferences({
+          user: nextUser,
+          ownerId,
+          generation,
+          preferences: toCloudLanguagePreferencePatch(localWithTimestamp),
+        }),
+        upsertUserAccountSettings({
+          user: nextUser,
+          ownerId,
+          generation,
+          account: toCloudAccountLanguagePatch(localWithTimestamp),
+        }),
+      ]);
+      if (!isCurrentSyncGeneration(generation)) {
+        return;
+      }
+      latestLanguageSettingsRef.current = localWithTimestamp;
+      setRuntimeActiveProfileId(localWithTimestamp.activeProfileId, localWithTimestamp.targetLanguage);
+      setLanguageSettings(localWithTimestamp);
+      await persistLocalLanguageSettings(localWithTimestamp);
+      return;
+    }
+
+    const cloudTimestamp = latestTimestamp(
+      cloudPreferences?.updated_at,
+      cloudAccount?.updated_at
+    );
+    const cloudPreferenceSettings = settingsFromCloudPreferences({
+      ...cloudPreferences,
+      interface_language: localSettings.interfaceLanguage,
+    });
+    const cloudAccountSettings = settingsFromCloudAccount({
+      ...cloudAccount,
+      target_language: localSettings.targetLanguage,
+      native_language: localSettings.nativeLanguage,
+    });
+    let cloudSettings = normalizeLanguageSettings({
+      targetLanguage: cloudPreferences
+        ? cloudPreferenceSettings.targetLanguage
+        : localSettings.targetLanguage,
+      nativeLanguage: cloudPreferences
+        ? cloudPreferenceSettings.nativeLanguage
+        : localSettings.nativeLanguage,
+      interfaceLanguage: cloudAccount
+        ? cloudAccountSettings.interfaceLanguage
+        : localSettings.interfaceLanguage,
+      activeProfileId: cloudPreferences
+        ? cloudPreferenceSettings.activeProfileId
+        : localSettings.activeProfileId,
+      updatedAt: cloudTimestamp,
+    });
+    cloudSettings = await ensureCloudProfileForSettings(
+      nextUser,
+      ownerId,
+      generation,
+      cloudSettings
+    );
+    if (!cloudSettings) {
+      return;
+    }
     const localTimestamp = localSettings.updatedAt;
 
     if (cloudTimestamp && getTimestampMs(cloudTimestamp) > getTimestampMs(localTimestamp)) {
@@ -172,21 +354,54 @@ export const AppProvider = ({ children, user }) => {
         return;
       }
       latestLanguageSettingsRef.current = nextSettings;
+      setRuntimeInterfaceLanguage(nextSettings.interfaceLanguage);
+      setRuntimeActiveProfileId(nextSettings.activeProfileId, nextSettings.targetLanguage);
       setLanguageSettings(nextSettings);
       await persistLocalLanguageSettings(nextSettings);
+      if (!cloudPreferences?.active_profile_id && isUuid(nextSettings.activeProfileId)) {
+        await updateUserPreferenceFields({
+          user: nextUser,
+          ownerId,
+          generation,
+          patch: toCloudLanguagePreferencePatch(nextSettings),
+        });
+      }
       return;
     }
 
-    await updateUserPreferenceFields({
-      user: nextUser,
-      ownerId,
-      generation,
-      patch: toCloudLanguagePatch({
-        ...localSettings,
-        updatedAt: localSettings.updatedAt ?? new Date().toISOString(),
+    await Promise.all([
+      cloudPreferences ? updateUserPreferenceFields({
+        user: nextUser,
+        ownerId,
+        generation,
+        patch: toCloudLanguagePreferencePatch(localWithTimestamp),
+      }) : upsertUserPreferences({
+        user: nextUser,
+        ownerId,
+        generation,
+        preferences: toCloudLanguagePreferencePatch(localWithTimestamp),
       }),
-    });
-  }, [activeOwnerId, languageSettingsReady, persistLocalLanguageSettings, syncGeneration, syncPaused, user]);
+      cloudAccount ? updateUserAccountSettingsFields({
+        user: nextUser,
+        ownerId,
+        generation,
+        patch: toCloudAccountLanguagePatch(localWithTimestamp),
+      }) : upsertUserAccountSettings({
+        user: nextUser,
+        ownerId,
+        generation,
+        account: toCloudAccountLanguagePatch(localWithTimestamp),
+      }),
+    ]);
+  }, [
+    activeOwnerId,
+    ensureCloudProfileForSettings,
+    languageSettingsReady,
+    persistLocalLanguageSettings,
+    syncGeneration,
+    syncPaused,
+    user,
+  ]);
 
   useEffect(() => {
     let isMounted = true;
@@ -206,6 +421,8 @@ export const AppProvider = ({ children, user }) => {
         }
 
         latestLanguageSettingsRef.current = nextSettings;
+        setRuntimeInterfaceLanguage(nextSettings.interfaceLanguage);
+        setRuntimeActiveProfileId(nextSettings.activeProfileId, nextSettings.targetLanguage);
         setLanguageSettings(nextSettings);
       } catch (error) {
         console.warn('[AppContext] Failed to load language settings:', error);
@@ -253,6 +470,12 @@ export const AppProvider = ({ children, user }) => {
     setNativeLanguage: (nativeLanguage) => saveLanguageSettings({ nativeLanguage }),
     interfaceLanguage: languageSettings.interfaceLanguage,
     setInterfaceLanguage: (interfaceLanguage) => saveLanguageSettings({ interfaceLanguage }),
+    activeProfileId: languageSettings.activeProfileId,
+    setActiveProfileId: (activeProfileId) => saveLanguageSettings({ activeProfileId }),
+    switchProfile: (profileId, targetLanguage) => saveLanguageSettings({
+      activeProfileId: profileId,
+      targetLanguage,
+    }),
     languageSettingsReady,
     updateLanguageSettings: saveLanguageSettings,
     syncLanguagePreferences,
@@ -260,6 +483,7 @@ export const AppProvider = ({ children, user }) => {
     dictMode,
     languageSettings.interfaceLanguage,
     languageSettings.nativeLanguage,
+    languageSettings.activeProfileId,
     languageSettings.targetLanguage,
     languageSettingsReady,
     saveLanguageSettings,

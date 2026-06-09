@@ -8,6 +8,7 @@ import {
     ScrollView,
     Switch
 } from 'react-native';
+import { useTranslation } from '../../hooks/useTranslation';
 
 const SettingsMenu = ({
     visible,
@@ -15,6 +16,7 @@ const SettingsMenu = ({
     settings,
     onSettingChange
 }) => {
+    const { t } = useTranslation();
     const fontSizes = [12, 14, 16, 18, 20, 24, 28, 32];
     const lineSpacings = [1.0, 1.2, 1.5, 1.8, 2.0, 2.5];
 
@@ -28,7 +30,7 @@ const SettingsMenu = ({
             <View style={styles.modalOverlay}>
                 <View style={styles.modalContent}>
                     <View style={styles.header}>
-                        <Text style={styles.title}>Reader Settings</Text>
+                        <Text style={styles.title}>{t('read.readerSettings')}</Text>
                         <TouchableOpacity onPress={onClose} style={styles.closeButton}>
                             <Text style={styles.closeButtonText}>✕</Text>
                         </TouchableOpacity>
@@ -37,7 +39,7 @@ const SettingsMenu = ({
                     <ScrollView style={styles.settingsContainer}>
                         {/* Font Size */}
                         <View style={styles.settingSection}>
-                            <Text style={styles.settingLabel}>Font Size</Text>
+                            <Text style={styles.settingLabel}>{t('read.fontSize')}</Text>
                             <View style={styles.optionsGrid}>
                                 {fontSizes.map((size) => (
                                     <TouchableOpacity
@@ -61,10 +63,10 @@ const SettingsMenu = ({
 
                         {/* Theme Mode */}
                         <View style={styles.settingSection}>
-                            <Text style={styles.settingLabel}>Theme Mode</Text>
+                            <Text style={styles.settingLabel}>{t('read.themeMode')}</Text>
                             <View style={styles.switchContainer}>
                                 <Text style={styles.switchLabel}>
-                                    {settings.isDarkMode ? 'Night Mode' : 'Day Mode'}
+                                    {settings.isDarkMode ? t('read.nightMode') : t('read.dayMode')}
                                 </Text>
                                 <Switch
                                     value={settings.isDarkMode}
@@ -77,7 +79,7 @@ const SettingsMenu = ({
 
                         {/* Line Spacing */}
                         <View style={styles.settingSection}>
-                            <Text style={styles.settingLabel}>Line Spacing</Text>
+                            <Text style={styles.settingLabel}>{t('read.lineSpacing')}</Text>
                             <View style={styles.optionsGrid}>
                                 {lineSpacings.map((spacing) => (
                                     <TouchableOpacity

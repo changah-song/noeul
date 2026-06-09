@@ -1,22 +1,24 @@
 import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
+import { useTranslation } from '../../hooks/useTranslation';
 import { colors, radii, spacing, textStyles } from '../../theme';
 
 const STATUS_META = {
-  unorganized: { label: 'New', backgroundColor: colors.surfaceMuted, color: colors.textMuted },
-  bad: { label: 'Hard', backgroundColor: 'rgba(182, 79, 68, 0.12)', color: colors.danger },
-  mid: { label: 'Review', backgroundColor: 'rgba(181, 118, 24, 0.14)', color: colors.warning },
-  good: { label: 'Mastered', backgroundColor: 'rgba(47, 125, 76, 0.12)', color: colors.success },
+  unorganized: { labelKey: 'learn.proficiency.new', backgroundColor: colors.surfaceMuted, color: colors.textMuted },
+  bad: { labelKey: 'learn.hard', backgroundColor: 'rgba(182, 79, 68, 0.12)', color: colors.danger },
+  mid: { labelKey: 'learn.review', backgroundColor: 'rgba(181, 118, 24, 0.14)', color: colors.warning },
+  good: { labelKey: 'learn.mastered', backgroundColor: 'rgba(47, 125, 76, 0.12)', color: colors.success },
 };
 
 const PRIORITY_META = {
-  low: { label: 'Low', backgroundColor: colors.surfaceMuted, color: colors.textMuted },
-  normal: { label: 'Normal', backgroundColor: 'rgba(181, 118, 24, 0.12)', color: colors.warning },
-  high: { label: 'High', backgroundColor: 'rgba(182, 79, 68, 0.12)', color: colors.danger },
+  low: { labelKey: 'learn.lowPriority', backgroundColor: colors.surfaceMuted, color: colors.textMuted },
+  normal: { labelKey: 'learn.normalPriority', backgroundColor: 'rgba(181, 118, 24, 0.12)', color: colors.warning },
+  high: { labelKey: 'learn.highPriority', backgroundColor: 'rgba(182, 79, 68, 0.12)', color: colors.danger },
 };
 
 const WordRow = ({ vocab, onToggleFavorite, onCycleStatus, onCyclePriority, onRemove }) => {
+  const { t } = useTranslation();
   const status = STATUS_META[vocab.level] ?? STATUS_META.unorganized;
   const priority = PRIORITY_META[vocab.priority] ?? PRIORITY_META.normal;
 
@@ -45,14 +47,14 @@ const WordRow = ({ vocab, onToggleFavorite, onCycleStatus, onCyclePriority, onRe
           onPress={onCycleStatus}
           style={[styles.statusPill, { backgroundColor: status.backgroundColor }]}
         >
-          <Text style={[styles.statusLabel, { color: status.color }]}>{status.label}</Text>
+          <Text style={[styles.statusLabel, { color: status.color }]}>{t(status.labelKey)}</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
           onPress={onCyclePriority}
           style={[styles.statusPill, { backgroundColor: priority.backgroundColor }]}
         >
-          <Text style={[styles.statusLabel, { color: priority.color }]}>{priority.label}</Text>
+          <Text style={[styles.statusLabel, { color: priority.color }]}>{t(priority.labelKey)}</Text>
         </TouchableOpacity>
 
         <TouchableOpacity onPress={onRemove} style={styles.iconButton}>

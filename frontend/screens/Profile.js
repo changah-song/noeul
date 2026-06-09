@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
     Alert,
     Modal,
     Pressable,
+    ScrollView,
     StyleSheet,
     Text,
     TextInput,
@@ -14,6 +15,15 @@ import {
 import { Feather } from '@expo/vector-icons';
 import Auth from './Auth';
 import { Screen } from '../components/ui';
+import { useAppContext } from '../contexts/AppContext';
+import { useLocalOwner } from '../contexts/LocalOwnerContext';
+import { useTranslation } from '../hooks/useTranslation';
+import {
+    getInterfaceLanguageLabel,
+    getLanguageLabel,
+    KRDICT_INTERFACE_LANGUAGE_OPTIONS,
+    TARGET_LANGUAGE_OPTIONS,
+} from '../constants/languages';
 import { colors, fontFamilies, radii, spacing, textStyles } from '../theme';
 import {
     darkenHex,
@@ -21,6 +31,8 @@ import {
     getStoredBookCoverColors,
     lightenHex,
 } from '../services/bookCoverColors';
+import { getDefaultProfileIdForLanguage } from '../services/profileScope';
+import { fetchUserProfiles, upsertUserProfile } from '../services/profilesCloudSync';
 
 const WORDS_PER_PAGE = 250;
 const SHELF_WIDTH = 346;
@@ -28,6 +40,15 @@ const SHELF_GAP = 2;
 const MIN_EMPTY_SLOT_WIDTH = 52;
 const SHELF_ROW_HEIGHT = 140;
 const SHELF_BASE_HEIGHT = 4;
+const SHELF_ROW_SPACING = 16;
+const SHELF_VIEWPORT_ROW_COUNT = 2;
+const SHELF_EXPANSION_ROW_COUNT = 2;
+const SHELF_ROW_STRIDE = SHELF_ROW_HEIGHT + SHELF_BASE_HEIGHT + SHELF_ROW_SPACING;
+const SHELF_VIEWPORT_HEIGHT = (
+    (SHELF_ROW_HEIGHT + SHELF_BASE_HEIGHT) * SHELF_VIEWPORT_ROW_COUNT
+) + (SHELF_ROW_SPACING * (SHELF_VIEWPORT_ROW_COUNT - 1));
+const SHELF_SCROLL_PAGE_STRIDE = SHELF_ROW_STRIDE * SHELF_VIEWPORT_ROW_COUNT;
+const SHELF_SCROLL_THROTTLE_MS = 16;
 const DEFAULT_SPINE_WIDTH = 24;
 const BOOKSHELF_HORIZONTAL_PADDING = 22;
 const SPINE_MIN_HEIGHT = 96;
@@ -63,10 +84,9 @@ const PROFILE_COLORS = {
 };
 
 const preferenceRows = [
-    { label: 'Default language', value: 'English' },
-    { label: 'Notifications', value: 'On' },
-    { label: 'Reading level', value: 'Beginner' },
-    { label: 'Appearance', value: 'Light' },
+    { key: 'notifications', labelKey: 'profile.notifications', valueKey: 'profile.notificationsOn' },
+    { key: 'readingLevel', labelKey: 'profile.readingLevel', valueKey: 'profile.beginner' },
+    { key: 'appearance', labelKey: 'profile.appearance', valueKey: 'profile.light' },
 ];
 
 const clampProgress = (value) => {
@@ -295,11 +315,28 @@ const chunkBooksIntoShelfRows = (books, shelfWidth = SHELF_WIDTH) => {
         rows.push(currentRow);
     }
 
-    while (rows.length < 2) {
-        rows.push([]);
+    return rows;
+};
+
+const padShelfRows = (rows, minimumRows) => {
+    const paddedRows = [...rows];
+
+    while (paddedRows.length < minimumRows) {
+        paddedRows.push([]);
     }
 
-    return rows;
+    return paddedRows;
+};
+
+const getRenderedShelfRowCount = (actualRowCount) => {
+    if (actualRowCount <= SHELF_VIEWPORT_ROW_COUNT) {
+        return SHELF_VIEWPORT_ROW_COUNT;
+    }
+
+    return Math.max(
+        SHELF_VIEWPORT_ROW_COUNT + SHELF_EXPANSION_ROW_COUNT,
+        Math.ceil(actualRowCount / SHELF_EXPANSION_ROW_COUNT) * SHELF_EXPANSION_ROW_COUNT
+    );
 };
 
 const BookSpine = ({ item, index, activeBookKey, shelfWidth, onShow }) => {
@@ -443,15 +480,50 @@ const PreferenceRow = ({ label, value, accent = false, isLast = false, onPress }
     </TouchableOpacity>
 );
 
+const normalizeProfileRow = (profile, fallbackLanguage = 'ko') => {
+    const targetLanguage = profile?.target_language || profile?.targetLanguage || fallbackLanguage;
+    return {
+        id: profile?.id || getDefaultProfileIdForLanguage(targetLanguage),
+        target_language: targetLanguage,
+        display_name: profile?.display_name || profile?.displayName || getLanguageLabel(targetLanguage),
+    };
+};
+
+const mergeProfileRows = (profiles, nextProfile) => {
+    const normalizedNextProfile = normalizeProfileRow(nextProfile);
+    return [
+        ...profiles.filter((profile) => (
+            profile.id !== normalizedNextProfile.id
+            && profile.target_language !== normalizedNextProfile.target_language
+        )),
+        normalizedNextProfile,
+    ];
+};
+
 const Profile = ({ user, signOut, books = [], updateUsername }) => {
     const [activeBookKey, setActiveBookKey] = useState(null);
+    const [visibleShelfPage, setVisibleShelfPage] = useState(1);
     const [isSigningOut, setIsSigningOut] = useState(false);
     const [showSignOutModal, setShowSignOutModal] = useState(false);
     const [showAuthModal, setShowAuthModal] = useState(false);
     const [authMode, setAuthMode] = useState('signin');
     const [showNameEditor, setShowNameEditor] = useState(false);
+    const [showInterfaceLanguagePicker, setShowInterfaceLanguagePicker] = useState(false);
+    const [showProfileSwitcher, setShowProfileSwitcher] = useState(false);
+    const [profiles, setProfiles] = useState([]);
+    const [profilesLoading, setProfilesLoading] = useState(false);
+    const [profilesBusy, setProfilesBusy] = useState(false);
     const [draftName, setDraftName] = useState('');
     const [isSavingName, setIsSavingName] = useState(false);
+    const {
+        interfaceLanguage,
+        setInterfaceLanguage,
+        targetLanguage,
+        activeProfileId,
+        switchProfile,
+    } = useAppContext();
+    const { activeOwnerId, syncGeneration } = useLocalOwner();
+    const { t } = useTranslation();
     const { width: viewportWidth } = useWindowDimensions();
     const isAnonymous = Boolean(user?.is_anonymous);
     const isGuest = !user?.id || isAnonymous;
@@ -493,15 +565,124 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
         );
     }, [viewportWidth]);
 
-    const shelfRows = useMemo(() => (
+    const actualShelfRows = useMemo(() => (
         chunkBooksIntoShelfRows(completedBooks, shelfWidth)
     ), [completedBooks, shelfWidth]);
+    const isBookshelfScrollable = actualShelfRows.length > SHELF_VIEWPORT_ROW_COUNT;
+    const renderedShelfRowCount = getRenderedShelfRowCount(actualShelfRows.length);
+    const shelfRows = useMemo(() => (
+        padShelfRows(actualShelfRows, renderedShelfRowCount)
+    ), [actualShelfRows, renderedShelfRowCount]);
+    const totalShelfPages = Math.max(1, Math.ceil(shelfRows.length / SHELF_VIEWPORT_ROW_COUNT));
+    const interfaceLanguageOptions = useMemo(() => (
+        KRDICT_INTERFACE_LANGUAGE_OPTIONS.filter((option) => option.code !== targetLanguage)
+    ), [targetLanguage]);
+    const fallbackProfiles = useMemo(() => ([
+        normalizeProfileRow({
+            id: getDefaultProfileIdForLanguage(targetLanguage),
+            target_language: targetLanguage,
+            display_name: getLanguageLabel(targetLanguage),
+        }, targetLanguage),
+    ]), [targetLanguage]);
+    const availableProfiles = useMemo(() => {
+        const sourceProfiles = profiles.length > 0 ? profiles : fallbackProfiles;
+        const profilesWithActive = activeProfileId && !sourceProfiles.some((profile) => profile.id === activeProfileId)
+            ? [
+                normalizeProfileRow({
+                    id: activeProfileId,
+                    target_language: targetLanguage,
+                    display_name: getLanguageLabel(targetLanguage),
+                }, targetLanguage),
+                ...sourceProfiles,
+            ]
+            : sourceProfiles;
+        const seen = new Set();
+        return profilesWithActive
+            .map((profile) => normalizeProfileRow(profile, targetLanguage))
+            .filter((profile) => {
+                const key = profile.target_language || profile.id;
+                if (seen.has(key)) {
+                    return false;
+                }
+                seen.add(key);
+                return true;
+            });
+    }, [activeProfileId, fallbackProfiles, profiles, targetLanguage]);
+    const currentProfile = useMemo(() => (
+        availableProfiles.find((profile) => profile.id === activeProfileId)
+            || availableProfiles.find((profile) => profile.target_language === targetLanguage)
+            || fallbackProfiles[0]
+    ), [activeProfileId, availableProfiles, fallbackProfiles, targetLanguage]);
+    const currentProfileLabel = currentProfile?.display_name || getLanguageLabel(targetLanguage);
+    const addLanguageOptions = useMemo(() => {
+        const existingLanguages = new Set(
+            availableProfiles.map((profile) => profile.target_language).filter(Boolean)
+        );
+        return TARGET_LANGUAGE_OPTIONS.filter((option) => !existingLanguages.has(option.code));
+    }, [availableProfiles]);
+
+    useEffect(() => {
+        setVisibleShelfPage((currentPage) => {
+            if (!isBookshelfScrollable) {
+                return currentPage === 1 ? currentPage : 1;
+            }
+
+            return Math.min(Math.max(currentPage, 1), totalShelfPages);
+        });
+    }, [isBookshelfScrollable, totalShelfPages]);
 
     useEffect(() => {
         if (user?.id) {
             setShowAuthModal(false);
         }
     }, [user?.id]);
+
+    useEffect(() => {
+        let isMounted = true;
+
+        const loadProfiles = async () => {
+            if (isGuest) {
+                setProfiles([]);
+                setProfilesLoading(false);
+                return;
+            }
+
+            setProfilesLoading(true);
+            try {
+                const rows = await fetchUserProfiles(user.id);
+                if (isMounted) {
+                    setProfiles(rows.map((profile) => normalizeProfileRow(profile)));
+                }
+            } catch (error) {
+                console.warn('[Profile] Failed to load language profiles:', error?.message ?? error);
+                if (isMounted) {
+                    setProfiles([]);
+                }
+            } finally {
+                if (isMounted) {
+                    setProfilesLoading(false);
+                }
+            }
+        };
+
+        loadProfiles();
+
+        return () => {
+            isMounted = false;
+        };
+    }, [isGuest, user?.id]);
+
+    const handleBookshelfScroll = useCallback((event) => {
+        const offsetY = event?.nativeEvent?.contentOffset?.y || 0;
+        const nextPage = Math.min(
+            totalShelfPages,
+            Math.max(1, Math.round(offsetY / SHELF_SCROLL_PAGE_STRIDE) + 1)
+        );
+
+        setVisibleShelfPage((currentPage) => (
+            currentPage === nextPage ? currentPage : nextPage
+        ));
+    }, [totalShelfPages]);
 
     const performSignOut = async () => {
         if (isSigningOut) {
@@ -512,7 +693,7 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
         try {
             await signOut?.();
         } catch (error) {
-            Alert.alert('Sign out failed', error.message || 'Could not sign out.');
+            Alert.alert(t('profile.signOutFailed'), error.message || t('profile.preferenceSoon'));
         } finally {
             setIsSigningOut(false);
             setShowSignOutModal(false);
@@ -525,9 +706,64 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
         }
     };
 
-    const handlePreferencePress = (label) => {
+    const handlePreferencePress = (row) => {
         dismissActiveBook();
-        Alert.alert(label, 'This preference will be configurable soon.');
+        if (row.key === 'interfaceLanguage') {
+            setShowInterfaceLanguagePicker(true);
+            return;
+        }
+
+        if (row.key === 'profile') {
+            setShowProfileSwitcher(true);
+            return;
+        }
+
+        Alert.alert(t(row.labelKey), t('profile.preferenceSoon'));
+    };
+
+    const handleInterfaceLanguageSelect = (language) => {
+        setInterfaceLanguage(language);
+        setShowInterfaceLanguagePicker(false);
+    };
+
+    const handleProfileSelect = (profile) => {
+        const normalizedProfile = normalizeProfileRow(profile, targetLanguage);
+        switchProfile(normalizedProfile.id, normalizedProfile.target_language);
+        setShowProfileSwitcher(false);
+    };
+
+    const handleAddProfile = async (option) => {
+        if (profilesBusy) {
+            return;
+        }
+
+        setProfilesBusy(true);
+        try {
+            let nextProfile = normalizeProfileRow({
+                id: getDefaultProfileIdForLanguage(option.code),
+                target_language: option.code,
+                display_name: option.label,
+            }, option.code);
+
+            if (!isGuest) {
+                nextProfile = await upsertUserProfile({
+                    user,
+                    ownerId: activeOwnerId,
+                    generation: syncGeneration,
+                    targetLanguage: option.code,
+                    displayName: option.label,
+                });
+            }
+
+            const normalizedProfile = normalizeProfileRow(nextProfile, option.code);
+            setProfiles((currentProfiles) => mergeProfileRows(currentProfiles, normalizedProfile));
+            switchProfile(normalizedProfile.id, normalizedProfile.target_language);
+            setShowProfileSwitcher(false);
+        } catch (error) {
+            Alert.alert(t('profile.createProfileFailed'), error?.message || t('profile.preferenceSoon'));
+        } finally {
+            setProfilesBusy(false);
+        }
     };
 
     const openAuthModal = (mode) => {
@@ -545,12 +781,12 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
     const handleSaveName = async () => {
         const nextName = draftName.trim();
         if (!nextName) {
-            Alert.alert('Username required', 'Enter a username before saving.');
+            Alert.alert(t('profile.usernameRequiredTitle'), t('profile.usernameRequiredBody'));
             return;
         }
 
         if (!updateUsername) {
-            Alert.alert('Username unavailable', 'Username editing is not available right now.');
+            Alert.alert(t('profile.usernameUnavailableTitle'), t('profile.usernameUnavailableBody'));
             return;
         }
 
@@ -559,7 +795,7 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
             await updateUsername(nextName);
             setShowNameEditor(false);
         } catch (error) {
-            Alert.alert('Save failed', error?.message || 'Could not update your username.');
+            Alert.alert(t('profile.saveFailed'), error?.message || t('profile.preferenceSoon'));
         } finally {
             setIsSavingName(false);
         }
@@ -580,13 +816,15 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                         <View style={styles.profileIdentity}>
                             <Text style={styles.profileName}>{displayName}</Text>
                             <Text style={styles.profileSubtitle}>
-                                {isGuest ? 'Guest mode · local reading' : `Beginner · learning since ${learningSince}`}
+                                {isGuest
+                                    ? t('profile.guestSubtitle')
+                                    : t('profile.userSubtitle', { date: learningSince })}
                             </Text>
                         </View>
                         {!isGuest ? (
                             <TouchableOpacity
                                 accessibilityRole="button"
-                                accessibilityLabel="Edit username"
+                                accessibilityLabel={t('profile.editUsername')}
                                 activeOpacity={0.78}
                                 onPress={openNameEditor}
                                 style={styles.editUsernameButton}
@@ -599,36 +837,82 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
 
                 <View style={styles.bookshelfSection}>
                     <View style={styles.sectionLabelRow}>
-                        <Text style={styles.sectionEyebrow}>Your Bookshelf</Text>
-                        <Text style={styles.finishedCount}>{completedBooks.length} finished</Text>
+                        <Text style={styles.sectionEyebrow}>{t('profile.bookshelf')}</Text>
+                        <View style={styles.bookshelfMeta}>
+                            <Text style={styles.finishedCount}>
+                                {t('profile.finished', { count: completedBooks.length })}
+                            </Text>
+                            {isBookshelfScrollable ? (
+                                <Text style={styles.shelfPosition}>
+                                    {visibleShelfPage}/{totalShelfPages}
+                                </Text>
+                            ) : null}
+                        </View>
                     </View>
 
-                    {shelfRows.map((row, index) => (
-                        <ShelfRow
-                            key={`shelf-row-${index}`}
-                            row={row}
-                            rowIndex={index}
-                            isLast={index === shelfRows.length - 1}
-                            activeBookKey={activeBookKey}
-                            shelfWidth={shelfWidth}
-                            onShowBook={setActiveBookKey}
-                        />
-                    ))}
+                    {isBookshelfScrollable ? (
+                        <ScrollView
+                            style={styles.bookshelfScroller}
+                            contentContainerStyle={styles.bookshelfScrollerContent}
+                            showsVerticalScrollIndicator={false}
+                            nestedScrollEnabled
+                            onScroll={handleBookshelfScroll}
+                            scrollEventThrottle={SHELF_SCROLL_THROTTLE_MS}
+                            snapToInterval={SHELF_SCROLL_PAGE_STRIDE}
+                            decelerationRate="fast"
+                        >
+                            {shelfRows.map((row, index) => (
+                                <ShelfRow
+                                    key={`shelf-row-${index}`}
+                                    row={row}
+                                    rowIndex={index}
+                                    isLast={index === shelfRows.length - 1}
+                                    activeBookKey={activeBookKey}
+                                    shelfWidth={shelfWidth}
+                                    onShowBook={setActiveBookKey}
+                                />
+                            ))}
+                        </ScrollView>
+                    ) : (
+                        shelfRows.map((row, index) => (
+                            <ShelfRow
+                                key={`shelf-row-${index}`}
+                                row={row}
+                                rowIndex={index}
+                                isLast={index === shelfRows.length - 1}
+                                activeBookKey={activeBookKey}
+                                shelfWidth={shelfWidth}
+                                onShowBook={setActiveBookKey}
+                            />
+                        ))
+                    )}
                 </View>
 
                 <View style={styles.preferencesSection}>
                     <View style={styles.sectionLabelRow}>
-                        <Text style={styles.sectionEyebrow}>Preferences</Text>
+                        <Text style={styles.sectionEyebrow}>{t('profile.preferences')}</Text>
                     </View>
                     <View style={styles.preferencesCard}>
+                        <PreferenceRow
+                            label={t('profile.languageProfile')}
+                            value={currentProfileLabel}
+                            accent
+                            onPress={() => handlePreferencePress({ key: 'profile', labelKey: 'profile.languageProfile' })}
+                        />
+                        <PreferenceRow
+                            label={t('profile.interfaceLanguage')}
+                            value={getInterfaceLanguageLabel(interfaceLanguage)}
+                            accent
+                            isLast={preferenceRows.length === 0}
+                            onPress={() => handlePreferencePress({ key: 'interfaceLanguage', labelKey: 'profile.interfaceLanguage' })}
+                        />
                         {preferenceRows.map((row, index) => (
                             <PreferenceRow
-                                key={row.label}
-                                label={row.label}
-                                value={row.value}
-                                accent={index === 0}
+                                key={row.key}
+                                label={t(row.labelKey)}
+                                value={t(row.valueKey)}
                                 isLast={index === preferenceRows.length - 1}
-                                onPress={() => handlePreferencePress(row.label)}
+                                onPress={() => handlePreferencePress(row)}
                             />
                         ))}
                     </View>
@@ -642,14 +926,14 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                                 onPress={() => openAuthModal('signin')}
                                 style={[styles.guestAuthButton, styles.guestAuthButtonSecondary]}
                             >
-                                <Text style={styles.guestAuthButtonSecondaryText}>Sign in</Text>
+                                <Text style={styles.guestAuthButtonSecondaryText}>{t('profile.signIn')}</Text>
                             </TouchableOpacity>
                             <TouchableOpacity
                                 activeOpacity={0.86}
                                 onPress={() => openAuthModal('signup')}
                                 style={[styles.guestAuthButton, styles.guestAuthButtonPrimary]}
                             >
-                                <Text style={styles.guestAuthButtonPrimaryText}>Sign up</Text>
+                                <Text style={styles.guestAuthButtonPrimaryText}>{t('profile.signUp')}</Text>
                             </TouchableOpacity>
                         </View>
                     </View>
@@ -664,11 +948,152 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                             disabled={isSigningOut}
                             style={[styles.logoutButton, isSigningOut && styles.logoutButtonDisabled]}
                         >
-                            <Text style={styles.logoutText}>{isSigningOut ? 'Logging out...' : 'Log out'}</Text>
+                            <Text style={styles.logoutText}>
+                                {isSigningOut ? t('profile.loggingOut') : t('profile.logout')}
+                            </Text>
                         </TouchableOpacity>
                     </View>
                 )}
             </Pressable>
+
+            <Modal
+                visible={showInterfaceLanguagePicker}
+                animationType="fade"
+                transparent
+                onRequestClose={() => setShowInterfaceLanguagePicker(false)}
+            >
+                <TouchableWithoutFeedback onPress={() => setShowInterfaceLanguagePicker(false)}>
+                    <View style={styles.modalBackdrop}>
+                        <TouchableWithoutFeedback>
+                            <View style={[styles.modalCard, styles.languageModalCard]}>
+                                <Text style={styles.modalTitle}>{t('profile.interfaceLanguage')}</Text>
+                                <View style={styles.languageOptions}>
+                                    {interfaceLanguageOptions.map((option) => {
+                                        const selected = option.code === interfaceLanguage;
+
+                                        return (
+                                            <Pressable
+                                                key={option.code}
+                                                accessibilityRole="radio"
+                                                accessibilityState={{ selected }}
+                                                onPress={() => handleInterfaceLanguageSelect(option.code)}
+                                                style={[
+                                                    styles.languageOptionRow,
+                                                    selected && styles.languageOptionRowSelected,
+                                                ]}
+                                            >
+                                                <Feather
+                                                    name={selected ? 'check-circle' : 'circle'}
+                                                    size={18}
+                                                    color={selected ? PROFILE_COLORS.accent : PROFILE_COLORS.faint}
+                                                />
+                                                <Text
+                                                    style={[
+                                                        styles.languageOptionText,
+                                                        selected && styles.languageOptionTextSelected,
+                                                    ]}
+                                                >
+                                                    {option.label}
+                                                </Text>
+                                            </Pressable>
+                                        );
+                                    })}
+                                </View>
+                            </View>
+                        </TouchableWithoutFeedback>
+                    </View>
+                </TouchableWithoutFeedback>
+            </Modal>
+
+            <Modal
+                visible={showProfileSwitcher}
+                animationType="fade"
+                transparent
+                onRequestClose={() => setShowProfileSwitcher(false)}
+            >
+                <TouchableWithoutFeedback onPress={() => setShowProfileSwitcher(false)}>
+                    <View style={styles.modalBackdrop}>
+                        <TouchableWithoutFeedback>
+                            <View style={[styles.modalCard, styles.languageModalCard]}>
+                                <Text style={styles.modalTitle}>{t('profile.languageProfile')}</Text>
+                                <View style={styles.languageOptions}>
+                                    {profilesLoading ? (
+                                        <Text style={styles.modalHelper}>{t('profile.loadingProfiles')}</Text>
+                                    ) : availableProfiles.map((profile) => {
+                                        const selected = (
+                                            profile.id === activeProfileId
+                                            || (
+                                                profile.target_language === targetLanguage
+                                                && currentProfile?.id === profile.id
+                                            )
+                                        );
+
+                                        return (
+                                            <Pressable
+                                                key={profile.id}
+                                                accessibilityRole="radio"
+                                                accessibilityState={{ selected }}
+                                                onPress={() => handleProfileSelect(profile)}
+                                                style={[
+                                                    styles.languageOptionRow,
+                                                    selected && styles.languageOptionRowSelected,
+                                                ]}
+                                            >
+                                                <Feather
+                                                    name={selected ? 'check-circle' : 'circle'}
+                                                    size={18}
+                                                    color={selected ? PROFILE_COLORS.accent : PROFILE_COLORS.faint}
+                                                />
+                                                <View style={styles.languageOptionContent}>
+                                                    <Text
+                                                        style={[
+                                                            styles.languageOptionText,
+                                                            selected && styles.languageOptionTextSelected,
+                                                        ]}
+                                                    >
+                                                        {profile.display_name}
+                                                    </Text>
+                                                    <Text style={styles.languageOptionMeta}>
+                                                        {getLanguageLabel(profile.target_language)}
+                                                    </Text>
+                                                </View>
+                                            </Pressable>
+                                        );
+                                    })}
+
+                                    <Text style={styles.languageSectionTitle}>{t('profile.addLanguage')}</Text>
+                                    {addLanguageOptions.length > 0 ? addLanguageOptions.map((option) => (
+                                        <Pressable
+                                            key={option.code}
+                                            accessibilityRole="button"
+                                            disabled={profilesBusy}
+                                            onPress={() => handleAddProfile(option)}
+                                            style={[
+                                                styles.languageOptionRow,
+                                                profilesBusy && styles.languageOptionRowDisabled,
+                                            ]}
+                                        >
+                                            <Feather
+                                                name="plus-circle"
+                                                size={18}
+                                                color={PROFILE_COLORS.accent}
+                                            />
+                                            <View style={styles.languageOptionContent}>
+                                                <Text style={styles.languageOptionText}>{option.label}</Text>
+                                                <Text style={styles.languageOptionMeta}>
+                                                    {t('profile.addLanguageProfile')}
+                                                </Text>
+                                            </View>
+                                        </Pressable>
+                                    )) : (
+                                        <Text style={styles.modalHelper}>{t('profile.noLanguagesToAdd')}</Text>
+                                    )}
+                                </View>
+                            </View>
+                        </TouchableWithoutFeedback>
+                    </View>
+                </TouchableWithoutFeedback>
+            </Modal>
 
             <Modal
                 visible={showAuthModal}
@@ -682,15 +1107,15 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                         <View style={styles.authModalHeader}>
                             <View style={styles.authModalCopy}>
                                 <Text style={styles.authModalTitle}>
-                                    Take your library with you
+                                    {t('profile.authTitle')}
                                 </Text>
                                 <Text style={styles.authModalHelper}>
-                                    Create an account to sync books, saved words, writing, songs, and progress across devices. Your guest data stays on this device unless you choose to save or merge it.
+                                    {t('profile.authBody')}
                                 </Text>
                             </View>
                             <TouchableOpacity
                                 accessibilityRole="button"
-                                accessibilityLabel="Close sign in"
+                                accessibilityLabel={t('profile.closeSignIn')}
                                 activeOpacity={0.78}
                                 onPress={() => setShowAuthModal(false)}
                                 style={styles.authModalCloseButton}
@@ -723,14 +1148,14 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                     <View style={styles.modalBackdrop}>
                         <TouchableWithoutFeedback>
                             <View style={styles.modalCard}>
-                                <Text style={styles.modalTitle}>Edit username</Text>
+                                <Text style={styles.modalTitle}>{t('profile.editUsernameTitle')}</Text>
                                 <TextInput
                                     value={draftName}
                                     onChangeText={setDraftName}
                                     autoCapitalize="none"
                                     autoCorrect={false}
                                     editable={!isSavingName}
-                                    placeholder="Username"
+                                    placeholder={t('profile.usernamePlaceholder')}
                                     placeholderTextColor={PROFILE_COLORS.faint}
                                     style={styles.usernameInput}
                                 />
@@ -740,7 +1165,7 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                                         style={styles.modalButton}
                                         disabled={isSavingName}
                                     >
-                                        <Text style={styles.modalButtonText}>Cancel</Text>
+                                        <Text style={styles.modalButtonText}>{t('common.cancel')}</Text>
                                     </Pressable>
                                     <Pressable
                                         onPress={handleSaveName}
@@ -752,7 +1177,7 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                                         disabled={isSavingName}
                                     >
                                         <Text style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>
-                                            {isSavingName ? 'Saving...' : 'Save'}
+                                            {isSavingName ? t('common.working') : t('common.save')}
                                         </Text>
                                     </Pressable>
                                 </View>
@@ -772,23 +1197,23 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                     <View style={styles.modalBackdrop}>
                         <TouchableWithoutFeedback>
                             <View style={styles.modalCard}>
-                                <Text style={styles.modalTitle}>Log out?</Text>
+                                <Text style={styles.modalTitle}>{t('profile.logoutTitle')}</Text>
                                 <Text style={styles.modalHelper}>
-                                    Choose whether to keep this account data cached on this device.
+                                    {t('profile.logoutBody')}
                                 </Text>
                                 <View style={styles.modalActions}>
                                     <Pressable
                                         onPress={() => setShowSignOutModal(false)}
                                         style={styles.modalButton}
                                     >
-                                        <Text style={styles.modalButtonText}>Cancel</Text>
+                                        <Text style={styles.modalButtonText}>{t('common.cancel')}</Text>
                                     </Pressable>
                                     <Pressable
                                         onPress={() => performSignOut()}
                                         style={[styles.modalButton, styles.modalPrimaryButton]}
                                     >
                                         <Text style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>
-                                            Log out
+                                            {t('profile.logout')}
                                         </Text>
                                     </Pressable>
                                 </View>
@@ -877,16 +1302,42 @@ const styles = StyleSheet.create({
         letterSpacing: 0.66,
         color: PROFILE_COLORS.sub,
     },
+    bookshelfMeta: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
     finishedCount: {
         fontFamily: fontFamilies.sansRegular,
         fontSize: 12,
         lineHeight: 15.5,
         color: PROFILE_COLORS.sub,
     },
+    shelfPosition: {
+        minWidth: 34,
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+        borderRadius: radii.pill,
+        overflow: 'hidden',
+        backgroundColor: '#efe3d0',
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 11,
+        lineHeight: 14,
+        textAlign: 'center',
+        color: PROFILE_COLORS.accent,
+        fontVariant: ['tabular-nums'],
+    },
+    bookshelfScroller: {
+        width: '100%',
+        height: SHELF_VIEWPORT_HEIGHT,
+    },
+    bookshelfScrollerContent: {
+        width: '100%',
+    },
     shelfBlock: {
         width: '100%',
         height: SHELF_ROW_HEIGHT + SHELF_BASE_HEIGHT,
-        marginBottom: 16,
+        marginBottom: SHELF_ROW_SPACING,
         overflow: 'visible',
     },
     shelfBlockLast: {
@@ -1059,6 +1510,61 @@ const styles = StyleSheet.create({
         fontFamily: fontFamilies.sansRegular,
         fontSize: 18,
         lineHeight: 23.5,
+        color: PROFILE_COLORS.faint,
+    },
+    languageModalCard: {
+        gap: 14,
+    },
+    languageOptions: {
+        gap: 8,
+    },
+    languageOptionRow: {
+        minHeight: 44,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 10,
+        borderWidth: 1,
+        borderColor: PROFILE_COLORS.border,
+        backgroundColor: PROFILE_COLORS.surface,
+    },
+    languageOptionRowSelected: {
+        borderColor: 'rgba(184,85,46,0.45)',
+        backgroundColor: '#f5ead9',
+    },
+    languageOptionRowDisabled: {
+        opacity: 0.56,
+    },
+    languageOptionContent: {
+        flex: 1,
+        minWidth: 0,
+    },
+    languageOptionText: {
+        flex: 1,
+        minWidth: 0,
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 14,
+        lineHeight: 18,
+        color: PROFILE_COLORS.ink,
+    },
+    languageOptionTextSelected: {
+        fontFamily: fontFamilies.sansBold,
+        color: PROFILE_COLORS.accent,
+    },
+    languageOptionMeta: {
+        marginTop: 2,
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 11.5,
+        lineHeight: 15,
+        color: PROFILE_COLORS.sub,
+    },
+    languageSectionTitle: {
+        marginTop: 6,
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 11.5,
+        lineHeight: 15,
+        textTransform: 'uppercase',
         color: PROFILE_COLORS.faint,
     },
     logoutSection: {

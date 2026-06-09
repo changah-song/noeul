@@ -3,8 +3,8 @@
 Build a local SQLite Hanja database from frozen JSON artifacts.
 
 Inputs:
-  - scripts/hanja_translated.json
-  - scripts/hanja_words.json
+  - scripts/hanja_translated_multilingual.json
+  - scripts/hanja_words_multilingual.json
 
 Output:
   - frontend/assets/data/hanja.db
@@ -25,10 +25,46 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = ROOT_DIR / "scripts"
 OUTPUT_DIR = ROOT_DIR / "frontend" / "assets" / "data"
 
-CHARACTERS_PATH = SCRIPTS_DIR / "hanja_translated.json"
-WORDS_PATH = SCRIPTS_DIR / "hanja_words.json"
+CHARACTERS_PATH = SCRIPTS_DIR / "hanja_translated_multilingual.json"
+WORDS_PATH = SCRIPTS_DIR / "hanja_words_multilingual.json"
 DB_PATH = OUTPUT_DIR / "hanja.db"
 MANIFEST_PATH = OUTPUT_DIR / "hanja_manifest.json"
+TRANSLATION_LANGUAGES = ("fr", "es", "zh", "ar", "mn", "vi", "th", "id", "ru")
+BAD_TRANSLATION_MARKERS = (
+    "i'd be happy",
+    "i would be happy",
+    "i appreciate",
+    "i apologize",
+    "i don't see",
+    "i do not see",
+    "i need",
+    "i notice",
+    "i cannot",
+    "i can't",
+    "i'm unable",
+    "i am unable",
+    "i don't have enough",
+    "i do not have enough",
+    "as an ai",
+    "could you please",
+    "please provide",
+    "please share",
+    "you haven't provided",
+    "you have not provided",
+    "you've only provided",
+    "you have only provided",
+    "without the actual",
+    "actual definition",
+    "actual korean",
+    "actual hanja",
+    "complete definition",
+    "full definition",
+    "need more information",
+    "unable to complete",
+    "wait, let me",
+    "let me reconsider",
+    "actually,",
+)
 
 CHARACTER_REQUIRED_KEYS = {
     "character",
@@ -76,6 +112,18 @@ def nullable_string(value: Any) -> str | None:
     return normalized or None
 
 
+def nullable_translation(value: Any) -> str | None:
+    normalized = normalize_string(value)
+    if not normalized:
+        return None
+
+    lowered = normalized.lower()
+    if any(marker in lowered for marker in BAD_TRANSLATION_MARKERS):
+        return None
+
+    return normalized
+
+
 def load_json_rows(path: Path, required_keys: set[str], label: str) -> list[dict[str, Any]]:
     if not path.exists():
         raise FileNotFoundError(f"Missing required {label} input file: {path}")
@@ -114,13 +162,17 @@ def duplicate_keys(values: list[Any]) -> list[Any]:
     return [value for value, count in counts.items() if count > 1]
 
 
-def normalize_character_rows(rows: list[dict[str, Any]]) -> list[tuple[str, str, str, str | None]]:
+def normalize_character_rows(rows: list[dict[str, Any]]) -> list[tuple[Any, ...]]:
     normalized = []
     for index, row in enumerate(rows):
         character = normalize_string(row["character"])
         eum = normalize_string(row["eum"])
         hun_korean = normalize_string(row["hun_korean"])
         hun_english = nullable_string(row.get("hun_english"))
+        translated_hun = [
+            nullable_translation(row.get(f"hun_{language}"))
+            for language in TRANSLATION_LANGUAGES
+        ]
 
         if not character or not eum or not hun_korean:
             raise ValueError(
@@ -128,17 +180,17 @@ def normalize_character_rows(rows: list[dict[str, Any]]) -> list[tuple[str, str,
                 f"{index}: character, eum, and hun_korean must be non-empty"
             )
 
-        normalized.append((character, eum, hun_korean, hun_english))
+        normalized.append((character, eum, hun_korean, hun_english, *translated_hun))
 
     duplicate_character_keys = duplicate_keys(
-        [(character, eum) for character, eum, _, _ in normalized]
+        [(row[0], row[1]) for row in normalized]
     )
     if duplicate_character_keys:
         preview = ", ".join(
             f"{character}/{eum}" for character, eum in duplicate_character_keys[:10]
         )
         raise ValueError(
-            "Duplicate character primary keys found in hanja_translated.json: "
+            f"Duplicate character primary keys found in {CHARACTERS_PATH.name}: "
             f"{preview}"
         )
 
@@ -153,9 +205,7 @@ def normalize_character_rows(rows: list[dict[str, Any]]) -> list[tuple[str, str,
     )
 
 
-def normalize_word_rows(
-    rows: list[dict[str, Any]],
-) -> tuple[list[tuple[str, str, str | None, str | None, str | None, str | None]], int]:
+def normalize_word_rows(rows: list[dict[str, Any]]) -> tuple[list[tuple[Any, ...]], int]:
     normalized = []
     skipped_count = 0
 
@@ -166,6 +216,10 @@ def normalize_word_rows(
             skipped_count += 1
             continue
 
+        translated_definitions = [
+            nullable_translation(row.get(f"definition_{language}"))
+            for language in TRANSLATION_LANGUAGES
+        ]
         normalized.append(
             (
                 word_id,
@@ -173,6 +227,7 @@ def normalize_word_rows(
                 nullable_string(row.get("hanja")),
                 nullable_string(row.get("definition_korean")),
                 nullable_string(row.get("definition_english")),
+                *translated_definitions,
                 nullable_string(row.get("pos")),
                 nullable_string(row.get("word_grade")),
             )
@@ -181,7 +236,7 @@ def normalize_word_rows(
     duplicate_word_ids = duplicate_keys([row[0] for row in normalized])
     if duplicate_word_ids:
         preview = ", ".join(str(word_id) for word_id in duplicate_word_ids[:10])
-        raise ValueError(f"Duplicate word ids found in hanja_words.json: {preview}")
+        raise ValueError(f"Duplicate word ids found in {WORDS_PATH.name}: {preview}")
 
     return (
         sorted(
@@ -207,10 +262,11 @@ def extract_hangul_syllables(value: str) -> list[str]:
 
 
 def build_join_rows(
-    word_rows: list[tuple[str, str, str | None, str | None, str | None, str | None]],
+    word_rows: list[tuple[Any, ...]],
 ) -> list[tuple[str, str, int, str | None]]:
     join_rows = []
-    for word_id, hangul, hanja, _, _, _, _ in word_rows:
+    for row in word_rows:
+        word_id, hangul, hanja = row[:3]
         hanja_chars = extract_cjk_chars(hanja)
         hangul_syllables = extract_hangul_syllables(hangul)
         for char_index, character in enumerate(hanja_chars):
@@ -235,6 +291,15 @@ def create_schema(conn: sqlite3.Connection) -> None:
           eum TEXT NOT NULL,
           hun_korean TEXT NOT NULL,
           hun_english TEXT,
+          hun_fr TEXT,
+          hun_es TEXT,
+          hun_zh TEXT,
+          hun_ar TEXT,
+          hun_mn TEXT,
+          hun_vi TEXT,
+          hun_th TEXT,
+          hun_id TEXT,
+          hun_ru TEXT,
           PRIMARY KEY (character, eum)
         );
 
@@ -244,6 +309,15 @@ def create_schema(conn: sqlite3.Connection) -> None:
           hanja TEXT,
           definition_korean TEXT,
           definition_english TEXT,
+          definition_fr TEXT,
+          definition_es TEXT,
+          definition_zh TEXT,
+          definition_ar TEXT,
+          definition_mn TEXT,
+          definition_vi TEXT,
+          definition_th TEXT,
+          definition_id TEXT,
+          definition_ru TEXT,
           pos TEXT,
           word_grade TEXT
         );
@@ -267,8 +341,8 @@ def create_schema(conn: sqlite3.Connection) -> None:
 
 
 def build_database(
-    character_rows: list[tuple[str, str, str, str | None]],
-    word_rows: list[tuple[str, str, str | None, str | None, str | None, str | None]],
+    character_rows: list[tuple[Any, ...]],
+    word_rows: list[tuple[Any, ...]],
     join_rows: list[tuple[str, str, int, str | None]],
 ) -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -282,16 +356,19 @@ def build_database(
         conn.executemany(
             """
             INSERT INTO hanja_characters
-              (character, eum, hun_korean, hun_english)
-            VALUES (?, ?, ?, ?)
+              (character, eum, hun_korean, hun_english,
+               hun_fr, hun_es, hun_zh, hun_ar, hun_mn, hun_vi, hun_th, hun_id, hun_ru)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             character_rows,
         )
         conn.executemany(
             """
             INSERT INTO hanja_words
-              (id, hangul, hanja, definition_korean, definition_english, pos, word_grade)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+              (id, hangul, hanja, definition_korean, definition_english,
+               definition_fr, definition_es, definition_zh, definition_ar, definition_mn,
+               definition_vi, definition_th, definition_id, definition_ru, pos, word_grade)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             word_rows,
         )
@@ -334,7 +411,7 @@ def smoke_test() -> None:
         word_sample = fetch_rows(
             conn,
             """
-            SELECT id, hangul, hanja, pos
+            SELECT id, hangul, hanja, definition_english, definition_fr, definition_es, definition_zh, pos
             FROM hanja_words
             WHERE hangul = ?
             ORDER BY hanja, id
@@ -347,7 +424,7 @@ def smoke_test() -> None:
             word_sample = fetch_rows(
                 conn,
                 """
-                SELECT id, hangul, hanja, pos
+                SELECT id, hangul, hanja, definition_english, definition_fr, definition_es, definition_zh, pos
                 FROM hanja_words
                 WHERE hangul = ?
                 ORDER BY hanja, id
@@ -359,7 +436,7 @@ def smoke_test() -> None:
         character_sample = fetch_rows(
             conn,
             """
-            SELECT character, eum, hun_korean, hun_english
+            SELECT character, eum, hun_korean, hun_english, hun_fr, hun_es, hun_zh
             FROM hanja_characters
             WHERE character = ?
             ORDER BY eum
@@ -399,8 +476,8 @@ def write_manifest(
         .isoformat()
         .replace("+00:00", "Z"),
         "inputs": {
-            "characters": "scripts/hanja_translated.json",
-            "words": "scripts/hanja_words.json",
+            "characters": "scripts/hanja_translated_multilingual.json",
+            "words": "scripts/hanja_words_multilingual.json",
         },
         "outputs": {
             "database": "frontend/assets/data/hanja.db",
