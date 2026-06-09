@@ -2,6 +2,7 @@ import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { Card } from '../ui';
+import { useTranslation } from '../../hooks/useTranslation';
 import { colors, radii, spacing, textStyles } from '../../theme';
 import WordRow from './WordRow';
 
@@ -15,6 +16,7 @@ const BookWordSection = ({
   onCyclePriority,
   onRemoveWord,
 }) => {
+  const { t } = useTranslation();
   const masteredCount = section.words.filter((word) => word.level === 'good').length;
   const favoriteCount = section.words.filter((word) => word.is_favorite).length;
   const progress = typeof section.progress === 'number'
@@ -22,8 +24,12 @@ const BookWordSection = ({
     : section.words.length > 0
       ? masteredCount / section.words.length
       : 0;
-  const meta = section.meta ?? `${section.words.length} saved words · ${masteredCount} mastered${favoriteCount ? ` · ${favoriteCount} favorites` : ''}`;
-  const actionLabel = section.practiceLabel ?? 'Practice';
+  const meta = section.meta ?? t('learn.savedWordsMeta', {
+    saved: section.words.length,
+    mastered: masteredCount,
+    favorites: favoriteCount ? t('learn.favoritesMeta', { count: favoriteCount }) : '',
+  });
+  const actionLabel = section.practiceLabel ?? t('learn.practice');
 
   return (
     <Card style={styles.card} contentStyle={styles.cardContent}>

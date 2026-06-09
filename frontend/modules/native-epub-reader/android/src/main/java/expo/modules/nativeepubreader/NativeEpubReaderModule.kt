@@ -16,6 +16,7 @@ import android.widget.ScrollView
 import androidx.recyclerview.widget.RecyclerView
 import androidx.viewpager2.widget.ViewPager2
 import expo.modules.kotlin.AppContext
+import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.viewevent.EventDispatcher
@@ -29,6 +30,16 @@ import java.util.concurrent.Future
 class NativeEpubReaderModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("NativeEpubReader")
+
+    AsyncFunction("extractPdfDocument") { options: Map<String, Any?> ->
+      val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+      PdfDocumentExtractor(context).extract(options)
+    }
+
+    AsyncFunction("renderPdfCover") { options: Map<String, Any?> ->
+      val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+      PdfDocumentExtractor(context).renderCover(options)
+    }
 
     View(NativeEpubReaderView::class) {
       Prop("bookManifest") { view: NativeEpubReaderView, manifest: Map<String, Any?> ->

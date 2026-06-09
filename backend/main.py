@@ -35,6 +35,19 @@ MAX_STEMS_DEFAULT = None
 KRDICT_CONCURRENCY_LIMIT = 10
 JOB_PROGRESS_LOG_INTERVAL = 25
 KRDICT_API_URL = "https://krdict.korean.go.kr/api/search"
+KRDICT_INTERFACE_LANGUAGES = {
+    "en": "1",
+    "fr": "3",
+    "es": "4",
+    "ar": "5",
+    "mn": "6",
+    "vi": "7",
+    "th": "8",
+    "id": "9",
+    "ru": "10",
+    "zh": "11",
+}
+DEFAULT_INTERFACE_LANGUAGE = "en"
 GOOGLE_TRANSLATE_RAPIDAPI_URL = "https://google-translator9.p.rapidapi.com/v2"
 GOOGLE_TRANSLATE_RAPIDAPI_HOST = "google-translator9.p.rapidapi.com"
 MAX_TEXT_LENGTH = 500_000
@@ -775,7 +788,13 @@ async def search_krdict_entries(
     client: httpx.AsyncClient,
     query: str,
     krdict_key: str,
+    interface_language: str = DEFAULT_INTERFACE_LANGUAGE,
 ) -> list[dict]:
+    trans_lang = KRDICT_INTERFACE_LANGUAGES.get(
+        interface_language,
+        KRDICT_INTERFACE_LANGUAGES[DEFAULT_INTERFACE_LANGUAGE],
+    )
+
     try:
         response = await client.get(
             KRDICT_API_URL,
@@ -784,7 +803,7 @@ async def search_krdict_entries(
                 "q": query,
                 "sort": "popular",
                 "translated": "y",
-                "trans_lang": "1",
+                "trans_lang": trans_lang,
             },
             timeout=10.0,
         )
@@ -1190,6 +1209,17 @@ async def preprocess_status(job_id: str, auth: dict[str, Any] = Depends(verify_s
 @app.post("/krdict_search/")
 async def krdict_search(payload: dict, auth: dict[str, Any] = Depends(verify_supabase_token)):
     queries = payload.get("queries", [])
+    raw_language = payload.get("language", payload.get("lang", DEFAULT_INTERFACE_LANGUAGE))
+    interface_language = (
+        str(raw_language or DEFAULT_INTERFACE_LANGUAGE)
+        .strip()
+        .lower()
+        .replace("_", "-")
+        .split("-")[0]
+    )
+    if interface_language not in KRDICT_INTERFACE_LANGUAGES:
+        interface_language = DEFAULT_INTERFACE_LANGUAGE
+
     if not KRDICT_CLIENT_ID:
         raise HTTPException(status_code=500, detail="No KRDICT key configured on server")
 
@@ -1216,7 +1246,15 @@ async def krdict_search(payload: dict, auth: dict[str, Any] = Depends(verify_sup
 
     async with httpx.AsyncClient() as client:
         results = await asyncio.gather(
-            *(search_krdict_entries(client, query, KRDICT_CLIENT_ID) for query in normalized_queries)
+            *(
+                search_krdict_entries(
+                    client,
+                    query,
+                    KRDICT_CLIENT_ID,
+                    interface_language,
+                )
+                for query in normalized_queries
+            )
         )
 
     return {"results": results}

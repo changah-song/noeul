@@ -178,8 +178,9 @@ class EpubPaginator(
 
     if (rawType == "image") {
       val imageUri = block.stringValue("fileUri") ?: block.mapValue("resource").stringValue("fileUri")
-      val imageHeight = spacingFromToken(styleTokens["height"], 260f, 420f).coerceAtLeast(dp(120f))
       val marginLeft = blockLeftInset(styleTokens)
+      val imageContentWidth = (contentWidth - marginLeft).coerceAtLeast(1)
+      val imageHeight = imageHeightForBlock(styleTokens, imageContentWidth)
 
       return PageBlock(
         blockId = blockId,
@@ -187,7 +188,7 @@ class EpubPaginator(
         tag = tag,
         imageUri = imageUri,
         imageHeight = imageHeight,
-        contentWidth = (contentWidth - marginLeft).coerceAtLeast(1),
+        contentWidth = imageContentWidth,
         marginLeft = marginLeft,
         marginTop = spacingFromToken(styleTokens["marginTop"], 8f),
         marginBottom = spacingFromToken(styleTokens["marginBottom"], 12f)
@@ -643,6 +644,27 @@ class EpubPaginator(
     val paddingLeft = spacingFromToken(styleTokens["paddingLeft"], 0f)
 
     return (marginLeft + paddingLeft).coerceAtLeast(0)
+  }
+
+  private fun imageHeightForBlock(styleTokens: Map<*, *>, imageContentWidth: Int): Int {
+    if (styleTokens.containsKey("height")) {
+      return spacingFromToken(styleTokens["height"], 260f, 900f).coerceAtLeast(dp(120f))
+    }
+
+    val intrinsicWidth = numericValue(styleTokens["intrinsicWidth"])?.toFloat()
+    val intrinsicHeight = numericValue(styleTokens["intrinsicHeight"])?.toFloat()
+    if (
+      intrinsicWidth != null &&
+      intrinsicHeight != null &&
+      intrinsicWidth > 0f &&
+      intrinsicHeight > 0f
+    ) {
+      return ((imageContentWidth * intrinsicHeight) / intrinsicWidth)
+        .roundToInt()
+        .coerceIn(dp(120f), dp(900f))
+    }
+
+    return dp(260f)
   }
 
   private fun resetLeadingMarginSpansForContinuation(text: SpannableStringBuilder) {

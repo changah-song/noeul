@@ -43,6 +43,7 @@ import {
 import { getLegacyMigrationStatus } from './services/localOwnerMigration';
 import { applyOwnershipDecision } from './services/localOwnershipDecisions';
 import { hasLocalUserData } from './services/localUserData';
+import { loadRuntimeInterfaceLanguage } from './services/interfaceLanguage';
 import { initializeOverlayLookupBridge } from './services/overlayLookup';
 import { syncUserDataFromCloud } from './services/userDataSync';
 
@@ -107,7 +108,23 @@ function AppContent() {
             return undefined;
         }
 
-        return initializeOverlayLookupBridge();
+        let cleanup = null;
+        let isActive = true;
+
+        loadRuntimeInterfaceLanguage()
+            .catch((error) => {
+                console.warn('[App] Failed to load interface language for overlay:', error?.message ?? error);
+            })
+            .finally(() => {
+                if (isActive) {
+                    cleanup = initializeOverlayLookupBridge();
+                }
+            });
+
+        return () => {
+            isActive = false;
+            cleanup?.();
+        };
     }, [appReady]);
 
     useEffect(() => {

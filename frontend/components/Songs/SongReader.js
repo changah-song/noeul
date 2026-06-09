@@ -17,6 +17,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import TopSection from '../Read/TopSection/TopSection';
 import NativeEpubReaderView from '../../modules/native-epub-reader/src/NativeEpubReaderView';
 import { useLocalOwner } from '../../contexts/LocalOwnerContext';
+import { useTranslation } from '../../hooks/useTranslation';
 import { getSavedWords } from '../../services/Database';
 import { colors, fontFamilies, spacing, textStyles } from '../../theme';
 
@@ -86,6 +87,7 @@ const buildNativeLyricBlocks = (lyricLines) => lyricLines.map((line, index) => {
 });
 
 const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsChange }) => {
+    const { t } = useTranslation();
     const { activeOwnerId } = useLocalOwner();
     const insets = useSafeAreaInsets();
     const { height: viewportHeight } = useWindowDimensions();
@@ -151,10 +153,10 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     ), [songHighlightTerms]);
     const sourceBook = useMemo(() => ({
         uri: song?.id ? `song:${song.id}` : null,
-        title: song?.title || 'Untitled song',
-        author: song?.artist || 'Unknown artist',
+        title: song?.title || t('song.untitled'),
+        author: song?.artist || t('common.unknownArtist'),
         language: 'ko',
-    }), [song?.artist, song?.id, song?.title]);
+    }), [song?.artist, song?.id, song?.title, t]);
     const nativeSongManifest = useMemo(() => ({
         sourceUri: song?.id ? `song:${song.id}` : 'song:unknown',
         currentSpineIndex: 0,
@@ -249,11 +251,11 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
 
     const submitSongEdit = useCallback(() => {
         const title = editDraft.title.trim();
-        const artist = editDraft.artist.trim() || 'Unknown artist';
+        const artist = editDraft.artist.trim() || t('common.unknownArtist');
         const lyrics = editDraft.lyrics.trim();
 
         if (!title || !lyrics) {
-            Alert.alert('Missing song details', 'Keep a title and lyrics before saving.');
+            Alert.alert(t('song.missingDetailsTitle'), t('song.missingDetailsBody'));
             return;
         }
 
@@ -264,23 +266,23 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
             lines: countSongLines(lyrics),
         });
         setIsEditModalVisible(false);
-    }, [editDraft.artist, editDraft.lyrics, editDraft.title, onSongUpdate]);
+    }, [editDraft.artist, editDraft.lyrics, editDraft.title, onSongUpdate, t]);
 
     const confirmDeleteSong = useCallback(() => {
         setIsMenuVisible(false);
         Alert.alert(
-            'Delete song',
-            `Delete "${song?.title || 'Untitled song'}" from your saved songs?`,
+            t('song.deleteTitle'),
+            t('song.deleteBody', { title: song?.title || t('song.untitled') }),
             [
-                { text: 'Cancel', style: 'cancel' },
+                { text: t('common.cancel'), style: 'cancel' },
                 {
-                    text: 'Delete',
+                    text: t('common.delete'),
                     style: 'destructive',
                     onPress: () => onSongDelete?.(),
                 },
             ]
         );
-    }, [onSongDelete, song?.title]);
+    }, [onSongDelete, song?.title, t]);
 
     const handleWordSave = useCallback((word, options = {}) => {
         const surface = options.includeSurface === false ? '' : highlightedWord?.trim();
@@ -302,7 +304,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
             <View style={[styles.topBar, { paddingTop: insets.top + spacing.xs }]}>
                 <TouchableOpacity
                     accessibilityRole="button"
-                    accessibilityLabel="Back to songs"
+                    accessibilityLabel={t('song.back')}
                     activeOpacity={0.78}
                     onPress={onClose}
                     style={styles.iconButton}
@@ -316,11 +318,11 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                     ]}
                     numberOfLines={1}
                 >
-                    {song?.title || 'Untitled song'}
+                    {song?.title || t('song.untitled')}
                 </Text>
                 <TouchableOpacity
                     accessibilityRole="button"
-                    accessibilityLabel="Song options"
+                    accessibilityLabel={t('song.options')}
                     activeOpacity={0.78}
                     onPress={() => setIsMenuVisible((visible) => !visible)}
                     style={styles.iconButton}
@@ -331,10 +333,13 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
 
             <View style={styles.songMetaRow}>
                 <Text style={styles.songArtist} numberOfLines={1}>
-                    {song?.artist || 'Unknown artist'}
+                    {song?.artist || t('common.unknownArtist')}
                 </Text>
                 <Text style={styles.savedMeta} numberOfLines={1}>
-                    {savedLyricsCount} {savedLyricsCount === 1 ? 'word' : 'words'} saved
+                    {t('song.wordsSaved', {
+                        count: savedLyricsCount,
+                        noun: savedLyricsCount === 1 ? t('song.wordSingular') : t('song.wordPlural'),
+                    })}
                 </Text>
             </View>
 
@@ -350,11 +355,11 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                         onPress={() => {}}
                     >
                         <View style={styles.menuFontRow}>
-                            <Text style={styles.menuLabel}>Font size</Text>
+                            <Text style={styles.menuLabel}>{t('song.fontSize')}</Text>
                             <View style={styles.menuFontControls}>
                                 <TouchableOpacity
                                     accessibilityRole="button"
-                                    accessibilityLabel="Decrease lyrics font size"
+                                    accessibilityLabel={t('song.decreaseFont')}
                                     activeOpacity={0.78}
                                     onPress={() => updateLyricFontSize(-2)}
                                     disabled={lyricFontSize <= MIN_LYRIC_FONT_SIZE}
@@ -368,7 +373,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                                 <Text style={styles.menuFontValue}>{lyricFontSize}</Text>
                                 <TouchableOpacity
                                     accessibilityRole="button"
-                                    accessibilityLabel="Increase lyrics font size"
+                                    accessibilityLabel={t('song.increaseFont')}
                                     activeOpacity={0.78}
                                     onPress={() => updateLyricFontSize(2)}
                                     disabled={lyricFontSize >= MAX_LYRIC_FONT_SIZE}
@@ -388,7 +393,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                             style={styles.menuActionRow}
                         >
                             <Feather name="edit-3" size={18} color={colors.textMuted} />
-                            <Text style={styles.menuActionText}>Edit</Text>
+                            <Text style={styles.menuActionText}>{t('common.edit')}</Text>
                         </TouchableOpacity>
                         <TouchableOpacity
                             accessibilityRole="button"
@@ -397,7 +402,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                             style={styles.menuActionRow}
                         >
                             <Feather name="trash-2" size={18} color={colors.danger} />
-                            <Text style={[styles.menuActionText, styles.menuDangerText]}>Delete</Text>
+                            <Text style={[styles.menuActionText, styles.menuDangerText]}>{t('common.delete')}</Text>
                         </TouchableOpacity>
                     </Pressable>
                 </Pressable>
@@ -505,7 +510,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
             <Modal visible={isEditModalVisible} animationType="fade" transparent onRequestClose={closeEditModal}>
                 <Pressable style={styles.modalBackdrop} onPress={closeEditModal}>
                     <Pressable style={styles.editModal} onPress={() => {}}>
-                        <Text style={styles.editTitle}>Edit lyrics</Text>
+                        <Text style={styles.editTitle}>{t('song.editLyrics')}</Text>
 
                         <ScrollView
                             style={styles.editScroll}
@@ -513,30 +518,30 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                             showsVerticalScrollIndicator={false}
                             keyboardShouldPersistTaps="handled"
                         >
-                            <Text style={styles.editLabel}>Title</Text>
+                            <Text style={styles.editLabel}>{t('common.title')}</Text>
                             <TextInput
                                 value={editDraft.title}
                                 onChangeText={(title) => setEditDraft((previous) => ({ ...previous, title }))}
                                 style={styles.editInput}
-                                placeholder="Song title"
+                                placeholder={t('home.songTitlePlaceholder')}
                                 placeholderTextColor={colors.textSubtle}
                             />
 
-                            <Text style={styles.editLabel}>Artist</Text>
+                            <Text style={styles.editLabel}>{t('common.artist')}</Text>
                             <TextInput
                                 value={editDraft.artist}
                                 onChangeText={(artist) => setEditDraft((previous) => ({ ...previous, artist }))}
                                 style={styles.editInput}
-                                placeholder="Artist"
+                                placeholder={t('common.artist')}
                                 placeholderTextColor={colors.textSubtle}
                             />
 
-                            <Text style={styles.editLabel}>Lyrics</Text>
+                            <Text style={styles.editLabel}>{t('common.lyrics')}</Text>
                             <TextInput
                                 value={editDraft.lyrics}
                                 onChangeText={(lyrics) => setEditDraft((previous) => ({ ...previous, lyrics }))}
                                 style={[styles.editInput, styles.lyricsInput]}
-                                placeholder="Paste lyrics here"
+                                placeholder={t('home.pasteLyrics')}
                                 placeholderTextColor={colors.textSubtle}
                                 multiline
                                 textAlignVertical="top"
@@ -549,14 +554,14 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                                 onPress={closeEditModal}
                                 style={[styles.modalButton, styles.modalButtonSecondary]}
                             >
-                                <Text style={styles.modalButtonSecondaryText}>Cancel</Text>
+                                <Text style={styles.modalButtonSecondaryText}>{t('common.cancel')}</Text>
                             </TouchableOpacity>
                             <TouchableOpacity
                                 activeOpacity={0.84}
                                 onPress={submitSongEdit}
                                 style={[styles.modalButton, styles.modalButtonPrimary]}
                             >
-                                <Text style={styles.modalButtonPrimaryText}>Save</Text>
+                                <Text style={styles.modalButtonPrimaryText}>{t('common.save')}</Text>
                             </TouchableOpacity>
                         </View>
                     </Pressable>

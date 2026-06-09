@@ -15,6 +15,7 @@ import { Feather } from '@expo/vector-icons';
 
 import { Card, IconButton, Screen, SectionHeader } from '../components/ui';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
+import { useTranslation } from '../hooks/useTranslation';
 import {
   cloudWritingRowToEntry,
   fetchUserWritingEntries,
@@ -41,10 +42,10 @@ const getWritingStorageKey = (ownerId) => makeScopedStorageKey(ownerId, 'writing
 const WRITE_SCREEN_BACKGROUND = '#ece4d6';
 const WRITE_SIDE_PADDING = 18;
 const WRITING_FILTERS = [
-  { key: 'all', label: 'All' },
-  { key: 'free', label: 'Free' },
-  { key: 'diary', label: 'Diary' },
-  { key: 'essay', label: 'Essay' },
+  { key: 'all', labelKey: 'write.filters.all' },
+  { key: 'free', labelKey: 'write.filters.free' },
+  { key: 'diary', labelKey: 'write.filters.diary' },
+  { key: 'essay', labelKey: 'write.filters.essay' },
 ];
 const EDITOR_TYPE_FILTERS = WRITING_FILTERS.filter((filter) => filter.key !== 'all');
 const DEFAULT_ENTRY_FORMATTING = {
@@ -143,11 +144,11 @@ const normalizeEntryFormatting = (formatting) => ({
   underline: Boolean(formatting?.underline),
 });
 
-const formatEntryDate = (value) => {
+const formatEntryDate = (value, language = 'en') => {
   if (!value) return '';
 
   try {
-    return new Intl.DateTimeFormat('en-US', {
+    return new Intl.DateTimeFormat(language, {
       month: 'short',
       day: 'numeric',
       year: 'numeric',
@@ -157,23 +158,20 @@ const formatEntryDate = (value) => {
   }
 };
 
-const formatStatusLabel = (status) => {
-  if (!status) return 'Draft';
-  return status
-    .split(/[-_]/)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ');
+const formatStatusLabel = (status, t) => {
+  const normalized = String(status || 'draft').toLowerCase().replace(/_/g, '-');
+  return t(`write.status.${normalized}`) || t('write.status.draft');
 };
 
-const getEntryDateParts = (value) => {
+const getEntryDateParts = (value, language = 'en') => {
   const date = value ? new Date(value) : null;
   if (!date || Number.isNaN(date.getTime())) {
     return { day: '--', month: '' };
   }
 
   return {
-    day: new Intl.DateTimeFormat('en-US', { day: '2-digit' }).format(date),
-    month: new Intl.DateTimeFormat('en-US', { month: 'short' }).format(date).toUpperCase(),
+    day: new Intl.DateTimeFormat(language, { day: '2-digit' }).format(date),
+    month: new Intl.DateTimeFormat(language, { month: 'short' }).format(date).toUpperCase(),
   };
 };
 
@@ -261,9 +259,11 @@ const isMockWritingEntry = (entryOrId) => (
 );
 
 const WritingEntryRow = ({ entry, onPress }) => {
-  const dateParts = getEntryDateParts(entry.date ?? entry.createdAt ?? entry.updatedAt);
+  const { t, language } = useTranslation();
+  const dateParts = getEntryDateParts(entry.date ?? entry.createdAt ?? entry.updatedAt, language);
   const statusTone = getEntryStatusTone(entry.status);
-  const statusLabel = formatStatusLabel(entry.status);
+  const statusLabel = formatStatusLabel(entry.status, t);
+  const filter = WRITING_FILTERS.find((item) => item.key === getEntryFilterKey(entry));
 
   return (
     <Pressable
@@ -284,10 +284,10 @@ const WritingEntryRow = ({ entry, onPress }) => {
         </Text>
         <View style={styles.writeEntryMeta}>
           <Text style={styles.writeEntryMetaText}>{getEntryCharacterCount(entry)}</Text>
-          <Text style={styles.writeEntryMetaText}>chars</Text>
+          <Text style={styles.writeEntryMetaText}>{t('write.chars', { count: '' }).trim() || 'chars'}</Text>
           <Text style={styles.writeEntryMetaDot}>·</Text>
           <Text numberOfLines={1} style={styles.writeEntryType}>
-            {WRITING_FILTERS.find((filter) => filter.key === getEntryFilterKey(entry))?.label ?? 'Free'}
+            {filter?.labelKey ? t(filter.labelKey) : t('write.free')}
           </Text>
         </View>
       </View>
@@ -559,6 +559,7 @@ const AnnotationSheet = ({ annotation, onClose }) => (
 );
 
 const FormattingToolbar = ({ formatting, onToggle }) => {
+  const { t } = useTranslation();
   const normalizedFormatting = normalizeEntryFormatting(formatting);
   const interactive = typeof onToggle === 'function';
 
@@ -596,7 +597,7 @@ const FormattingToolbar = ({ formatting, onToggle }) => {
           <TouchableOpacity
             key={button.key}
             accessibilityRole="button"
-            accessibilityLabel={`Toggle ${button.key}`}
+            accessibilityLabel={t('write.toggleFormat', { format: button.key })}
             accessibilityState={{ selected: active }}
             activeOpacity={0.78}
             onPress={() => onToggle(button.key)}
@@ -614,6 +615,7 @@ const FormattingToolbar = ({ formatting, onToggle }) => {
 };
 
 const Write = ({ user }) => {
+  const { t, language } = useTranslation();
   const { activeOwnerId, syncPaused, syncGeneration } = useLocalOwner();
   const [entries, setEntries] = useState([]);
   const [mode, setMode] = useState('list');
@@ -942,7 +944,7 @@ const Write = ({ user }) => {
     return (
       <Screen backgroundColor={WRITE_SCREEN_BACKGROUND}>
         <View style={styles.loadingWrap}>
-          <Text style={styles.loadingText}>Loading your writing...</Text>
+          <Text style={styles.loadingText}>{t('write.loading')}</Text>
         </View>
       </Screen>
     );
@@ -954,10 +956,10 @@ const Write = ({ user }) => {
         <View style={styles.writeHome}>
           <View style={styles.writeHomeHeader}>
             <View style={styles.writeHomeTitleBlock}>
-              <Text style={styles.writeHomeTitle}>Write</Text>
+              <Text style={styles.writeHomeTitle}>{t('write.title')}</Text>
               <View style={styles.writeHomeCountRow}>
                 <Text style={styles.writeHomeCount}>{entries.length}</Text>
-                <Text style={styles.writeHomeCountLabel}>entries</Text>
+                <Text style={styles.writeHomeCountLabel}>{t('write.entries')}</Text>
               </View>
             </View>
 
@@ -966,7 +968,7 @@ const Write = ({ user }) => {
               accessibilityState={{ disabled: true }}
               style={[styles.writeNewButton, styles.writeNewButtonDisabled]}
             >
-              <Text style={styles.writeNewButtonText}>+ New</Text>
+              <Text style={styles.writeNewButtonText}>{t('write.new')}</Text>
             </TouchableOpacity>
           </View>
 
@@ -984,7 +986,7 @@ const Write = ({ user }) => {
                   style={[styles.writeFilterChip, active && styles.writeFilterChipActive]}
                 >
                   <Text style={[styles.writeFilterText, active && styles.writeFilterTextActive]}>
-                    {filter.label}
+                    {t(filter.labelKey)}
                   </Text>
                 </TouchableOpacity>
               );
@@ -994,14 +996,14 @@ const Write = ({ user }) => {
           {visibleEntries.length === 0 ? (
             <Card style={styles.emptyCard} contentStyle={styles.emptyContent}>
               <View style={styles.emptyCopy}>
-                <Text style={styles.emptyTitle}>No writing yet</Text>
+                <Text style={styles.emptyTitle}>{t('write.emptyTitle')}</Text>
                 <Text style={styles.emptyBody}>
-                  Start a short entry or try a different filter.
+                  {t('write.emptyBody')}
                 </Text>
               </View>
               <IconButton
                 tone="accent"
-                label="New Entry"
+                label={t('write.newEntry')}
                 onPress={openNewDraft}
                 icon={<Feather name="plus" size={16} color={colors.accentStrong} />}
               />
@@ -1022,7 +1024,7 @@ const Write = ({ user }) => {
         <View style={styles.reviewShell}>
           <View style={styles.editorTopBar}>
             <TouchableOpacity
-              accessibilityLabel="Back to writing list"
+              accessibilityLabel={t('write.backList')}
               onPress={leaveDetail}
               style={styles.editorBackButton}
             >
@@ -1047,7 +1049,7 @@ const Write = ({ user }) => {
                       style={[styles.editorTypeChip, active && styles.editorTypeChipActive]}
                     >
                       <Text style={[styles.editorTypeText, active && styles.editorTypeTextActive]}>
-                        {filter.label}
+                        {t(filter.labelKey)}
                       </Text>
                     </View>
                   );
@@ -1057,7 +1059,7 @@ const Write = ({ user }) => {
 
             {!selectedEntryIsReviewed ? (
               <TouchableOpacity onPress={() => openExistingDraft(selectedEntry)} style={styles.editorSaveButton}>
-                <Text style={styles.editorSaveText}>Edit</Text>
+                <Text style={styles.editorSaveText}>{t('common.edit')}</Text>
               </TouchableOpacity>
             ) : null}
           </View>
@@ -1065,7 +1067,7 @@ const Write = ({ user }) => {
           {selectedEntry.prompt && !selectedEntryIsReviewed ? (
             <View style={styles.editorPromptPanel}>
               <View style={styles.editorPromptHeader}>
-                <Text style={styles.editorPromptHeaderText}>Choose a prompt</Text>
+                <Text style={styles.editorPromptHeaderText}>{t('write.choosePrompt')}</Text>
                 <View style={styles.editorPromptChevronIcon}>
                   <Feather name="chevron-right" size={16} color="#776b5e" />
                 </View>
@@ -1079,14 +1081,14 @@ const Write = ({ user }) => {
             </Text>
             <View style={styles.reviewTitleMetaRow}>
               <View style={styles.reviewStatusPill}>
-                <Text style={styles.reviewStatusText}>Reviewed</Text>
+                <Text style={styles.reviewStatusText}>{t('write.reviewed')}</Text>
               </View>
               <Text style={styles.reviewTitleMeta}>
-                {WRITING_FILTERS.find((filter) => filter.key === getEntryFilterKey(selectedEntry))?.label ?? 'Free'}
+                {t(WRITING_FILTERS.find((filter) => filter.key === getEntryFilterKey(selectedEntry))?.labelKey ?? 'write.filters.free')}
               </Text>
               <Text style={styles.reviewTitleMetaDot}>·</Text>
               <Text style={styles.reviewTitleMeta}>
-                {formatEntryDate(selectedEntry.date ?? selectedEntry.createdAt ?? selectedEntry.updatedAt)}
+                {formatEntryDate(selectedEntry.date ?? selectedEntry.createdAt ?? selectedEntry.updatedAt, language)}
               </Text>
             </View>
           </View>
@@ -1098,20 +1100,20 @@ const Write = ({ user }) => {
 
             <View style={styles.reviewEntryMetaBar}>
               <Text style={styles.reviewEntryMetaText}>
-                {getEntryCharacterCount(selectedEntry)} chars
+                {t('write.chars', { count: getEntryCharacterCount(selectedEntry) })}
               </Text>
               <View style={styles.reviewTranslateBadge}>
                 <Text style={styles.reviewTranslateCount}>
                   {selectedEntryNativeInsertWords.length}
                 </Text>
-                <Text style={styles.reviewTranslateLabel}>to translate</Text>
+                <Text style={styles.reviewTranslateLabel}>{t('write.toTranslate')}</Text>
               </View>
             </View>
 
             {selectedEntryAnnotations.length > 0 ? (
               <>
                 <AnnotatedEntry
-                  text={selectedEntry.body || 'Start writing in Korean…'}
+                  text={selectedEntry.body || t('write.startKorean')}
                   annotations={selectedEntryAnnotations}
                   onAnnotationPress={setSelectedAnnotation}
                   style={[
@@ -1136,14 +1138,14 @@ const Write = ({ user }) => {
                   selectedEntry.formatting?.underline && styles.formattedBodyUnderline,
                 ]}
               >
-                {selectedEntry.body || 'Start writing in Korean…'}
+                {selectedEntry.body || t('write.startKorean')}
               </Text>
             )}
 
             {selectedEntryNativeInsertWords.length > 0 ? (
               <View style={styles.reviewEnglishWords}>
                 <Text style={styles.reviewEnglishWordsLabel}>
-                  Words you wrote in English — AI will help you learn these:
+                  {t('write.englishWords')}
                 </Text>
                 <View style={styles.reviewEnglishWordChips}>
                   {selectedEntryNativeInsertWords.map((word) => (
@@ -1158,19 +1160,19 @@ const Write = ({ user }) => {
 
           {!selectedEntryIsReviewed ? (
             <TouchableOpacity onPress={() => openExistingDraft(selectedEntry)} style={styles.editorSubmitButton}>
-              <Text style={styles.editorSubmitText}>Submit for Review</Text>
+              <Text style={styles.editorSubmitText}>{t('write.submitReview')}</Text>
             </TouchableOpacity>
           ) : null}
 
           <TouchableOpacity onPress={leaveDetail} style={styles.reviewDoneButton}>
-            <Text style={styles.reviewDoneText}>Done</Text>
+            <Text style={styles.reviewDoneText}>{t('common.done')}</Text>
           </TouchableOpacity>
         </View>
       ) : (
         <View style={styles.editorShell}>
           <View style={styles.editorTopBar}>
             <TouchableOpacity
-              accessibilityLabel="Back to writing list"
+              accessibilityLabel={t('write.backList')}
               onPress={leaveEditor}
               style={styles.editorBackButton}
             >
@@ -1193,7 +1195,7 @@ const Write = ({ user }) => {
                     style={[styles.editorTypeChip, active && styles.editorTypeChipActive]}
                   >
                     <Text style={[styles.editorTypeText, active && styles.editorTypeTextActive]}>
-                      {filter.label}
+                      {t(filter.labelKey)}
                     </Text>
                   </TouchableOpacity>
                 );
@@ -1206,7 +1208,7 @@ const Write = ({ user }) => {
               style={[styles.editorSaveButton, !canSave && styles.editorSaveButtonDisabled]}
             >
               <Text style={[styles.editorSaveText, !canSave && styles.editorSaveTextDisabled]}>
-                Save
+                {t('common.save')}
               </Text>
             </TouchableOpacity>
           </View>
@@ -1217,7 +1219,7 @@ const Write = ({ user }) => {
                 onPress={() => setPromptPickerExpanded((expanded) => !expanded)}
                 style={styles.editorPromptHeader}
               >
-                <Text style={styles.editorPromptHeaderText}>Choose a prompt</Text>
+                <Text style={styles.editorPromptHeaderText}>{t('write.choosePrompt')}</Text>
                 <View style={styles.editorPromptChevronIcon}>
                   <Feather
                     name={promptPickerExpanded ? 'chevron-down' : 'chevron-right'}
@@ -1267,7 +1269,7 @@ const Write = ({ user }) => {
             <TextInput
               value={draft.title}
               onChangeText={(title) => updateDraft({ title })}
-              placeholder="Title"
+              placeholder={t('write.titlePlaceholder')}
               placeholderTextColor="#b4a893"
               style={styles.editorTitleInput}
             />
@@ -1275,7 +1277,7 @@ const Write = ({ user }) => {
             <TextInput
               value={draft.body}
               onChangeText={(body) => updateDraft({ body })}
-              placeholder="Start writing in Korean…"
+              placeholder={t('write.startKorean')}
               placeholderTextColor="#b4a893"
               multiline
               textAlignVertical="top"
@@ -1293,24 +1295,24 @@ const Write = ({ user }) => {
             onPress={saveEntry}
             style={[styles.editorSubmitButton, !canSave && styles.editorSubmitButtonDisabled]}
           >
-            <Text style={styles.editorSubmitText}>Submit for Review</Text>
+            <Text style={styles.editorSubmitText}>{t('write.submitReview')}</Text>
           </TouchableOpacity>
 
           {draft.id ? (
             <TouchableOpacity
               onPress={() =>
                 Alert.alert(
-                  'Delete entry',
-                  'Remove this writing from your recent entries?',
+                  t('write.deleteEntryTitle'),
+                  t('write.deleteEntryBody'),
                   [
-                    { text: 'Cancel', style: 'cancel' },
-                    { text: 'Delete', style: 'destructive', onPress: () => deleteEntry(draft.id) },
+                    { text: t('common.cancel'), style: 'cancel' },
+                    { text: t('common.delete'), style: 'destructive', onPress: () => deleteEntry(draft.id) },
                   ]
                 )
               }
               style={styles.deleteLink}
             >
-              <Text style={styles.deleteLinkText}>Delete entry</Text>
+              <Text style={styles.deleteLinkText}>{t('write.deleteEntry')}</Text>
             </TouchableOpacity>
           ) : null}
         </View>

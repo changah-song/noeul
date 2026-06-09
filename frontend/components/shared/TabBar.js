@@ -4,6 +4,7 @@ import {
     MaterialCommunityIcons,
 } from '@expo/vector-icons';
 import { StyleSheet, Text, View } from 'react-native';
+import { useTranslation } from '../../hooks/useTranslation';
 import { fontFamilies } from '../../theme';
 
 const TAB_COLORS = {
@@ -14,12 +15,34 @@ const TAB_COLORS = {
 };
 
 const tabIcons = {
-    Home: { Component: Ionicons, name: 'home-outline', label: 'Home' },
-    Read: { Component: Ionicons, name: 'book-outline', label: 'Read' },
-    Learn: { Component: Ionicons, name: 'sparkles-outline', label: 'Learn' },
-    ScreenshotOcr: { Component: Ionicons, name: 'scan-outline', label: 'OCR' },
-    Write: { Component: Feather, name: 'edit-3', label: 'Write' },
-    Profile: { Component: MaterialCommunityIcons, name: 'account-circle-outline', label: 'Profile' },
+    Home: { Component: Ionicons, name: 'home-outline', labelKey: 'tabs.home' },
+    Read: { Component: Ionicons, name: 'book-outline', labelKey: 'tabs.read' },
+    Learn: { Component: Ionicons, name: 'sparkles-outline', labelKey: 'tabs.learn' },
+    ScreenshotOcr: { Component: Ionicons, name: 'scan-outline', labelKey: 'tabs.ocr' },
+    Write: { Component: Feather, name: 'edit-3', labelKey: 'tabs.write' },
+    Profile: { Component: MaterialCommunityIcons, name: 'account-circle-outline', labelKey: 'tabs.profile' },
+};
+
+const TabIcon = ({ routeName, focused, color }) => {
+    const { t } = useTranslation();
+    const { Component, name, labelKey } = tabIcons[routeName] ?? tabIcons.Home;
+
+    return (
+        <View style={styles.tabContent}>
+            <Component
+                name={name}
+                color={color}
+                size={24}
+            />
+            <Text style={[
+                styles.tabLabel,
+                focused && styles.tabLabelActive,
+                { color },
+            ]}>
+                {t(labelKey)}
+            </Text>
+        </View>
+    );
 };
 
 export const tabScreenOptions = ({ route }, { hideTabChrome = false } = {}) => ({
@@ -30,25 +53,9 @@ export const tabScreenOptions = ({ route }, { hideTabChrome = false } = {}) => (
     tabBarStyle: hideTabChrome ? styles.tabBarHidden : tabBarBaseStyle,
     tabBarItemStyle: styles.tabBarItem,
     tabBarIconStyle: styles.iconSlot,
-    tabBarIcon: ({ focused, color }) => {
-        const { Component, name, label } = tabIcons[route.name] ?? tabIcons.Home;
-        return (
-            <View style={styles.tabContent}>
-                <Component
-                    name={name}
-                    color={color}
-                    size={24}
-                />
-                <Text style={[
-                    styles.tabLabel,
-                    focused && styles.tabLabelActive,
-                    { color },
-                ]}>
-                    {label}
-                </Text>
-            </View>
-        );
-    },
+    tabBarIcon: ({ focused, color }) => (
+        <TabIcon routeName={route.name} focused={focused} color={color} />
+    ),
     tabBarShowLabel: false,
 });
 

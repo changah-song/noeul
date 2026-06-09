@@ -18,6 +18,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import TopSection from '../components/Read/TopSection/TopSection';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
+import { useTranslation } from '../hooks/useTranslation';
 import { recognizeImage } from '../modules/screen-ocr/src';
 import {
     addOcrResultListener,
@@ -35,8 +36,8 @@ import { getSavedWords } from '../services/Database';
 import { colors, fontFamilies, insets, layout, radii, spacing, textStyles } from '../theme';
 
 const OCR_MODES = [
-    { id: 'lines', label: 'Lines' },
-    { id: 'words', label: 'Words' },
+    { id: 'lines', labelKey: 'ocr.lines' },
+    { id: 'words', labelKey: 'ocr.words' },
 ];
 
 const OCR_SOURCE_BOOK = {
@@ -478,6 +479,7 @@ const buildWordTargets = (ocrResult) => (
 );
 
 const ScreenshotOcr = ({ navigation, route }) => {
+    const { t } = useTranslation();
     const { activeOwnerId } = useLocalOwner();
     const safeAreaInsets = useSafeAreaInsets();
     const { width } = useWindowDimensions();
@@ -536,7 +538,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
                 : null;
             const overlayErrorSubscription = Platform.OS === 'android'
                 ? addOverlayErrorListener((status) => {
-                    setFloatingError(status?.message || 'Floating OCR failed.');
+                    setFloatingError(status?.message || t('ocr.failedFloating'));
                 })
                 : null;
             const ocrResultSubscription = Platform.OS === 'android'
@@ -545,7 +547,10 @@ const ScreenshotOcr = ({ navigation, route }) => {
                     const targetCount = normalizedResult.targets.length
                         || buildWordTargets(normalizedResult).length
                         || buildLineTargets(normalizedResult).length;
-                    setFloatingMessage(`OCR found ${targetCount} tappable item${targetCount === 1 ? '' : 's'}.`);
+                    setFloatingMessage(t('ocr.foundItems', {
+                        count: targetCount,
+                        noun: targetCount === 1 ? t('ocr.itemSingular') : t('ocr.itemPlural'),
+                    }));
                 })
                 : null;
 
@@ -575,7 +580,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
                 overlayErrorSubscription?.remove();
                 ocrResultSubscription?.remove();
             };
-        }, [activeOwnerId, mergeFloatingStatus])
+        }, [activeOwnerId, mergeFloatingStatus, t])
     );
 
     useEffect(() => {
@@ -603,9 +608,9 @@ const ScreenshotOcr = ({ navigation, route }) => {
             ...FLOATING_OCR_SOURCE_BOOK,
             title: selection?.sourceBookTitle || FLOATING_OCR_SOURCE_BOOK.title,
         });
-        setFloatingMessage('Selected text from floating OCR.');
+        setFloatingMessage(t('ocr.selectedFloating'));
         navigation?.setParams?.({ floatingSelection: undefined });
-    }, [navigation, route?.params?.floatingSelection]);
+    }, [navigation, route?.params?.floatingSelection, t]);
 
     const imageMetrics = useMemo(() => {
         if (ocrResult?.imageWidth && ocrResult?.imageHeight) {
@@ -659,20 +664,20 @@ const ScreenshotOcr = ({ navigation, route }) => {
                 setImageSize({ width: result.imageWidth, height: result.imageHeight });
             }
             if ((result.blocks || []).length === 0) {
-                setError('No Korean text was found in this image.');
+                setError(t('ocr.noKoreanText'));
             }
         } catch (recognitionError) {
             console.error('[ScreenshotOcr] OCR failed:', recognitionError);
             if (recognitionRunRef.current === runId) {
                 setOcrResult(null);
-                setError(recognitionError?.message || 'OCR failed for this image.');
+                setError(recognitionError?.message || t('ocr.failedImage'));
             }
         } finally {
             if (recognitionRunRef.current === runId) {
                 setIsRecognizing(false);
             }
         }
-    }, []);
+    }, [t]);
 
     const handlePickImage = useCallback(async () => {
         try {
@@ -703,9 +708,9 @@ const ScreenshotOcr = ({ navigation, route }) => {
             await runRecognition(asset.uri);
         } catch (pickError) {
             console.error('[ScreenshotOcr] Failed to pick image:', pickError);
-            setError(pickError?.message || 'Could not open that image.');
+            setError(pickError?.message || t('ocr.openImageFailed'));
         }
-    }, [runRecognition]);
+    }, [runRecognition, t]);
 
     const handleRerunOcr = useCallback(() => {
         if (canRunOcr) {
@@ -757,7 +762,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
 
     const runFloatingAction = useCallback(async (busyLabel, action) => {
         if (Platform.OS !== 'android') {
-            setFloatingError('Floating OCR is only available on Android.');
+            setFloatingError(t('ocr.androidOnly'));
             return null;
         }
 
@@ -768,12 +773,12 @@ const ScreenshotOcr = ({ navigation, route }) => {
             return await action();
         } catch (floatingActionError) {
             console.error('[ScreenshotOcr] Floating OCR action failed:', floatingActionError);
-            setFloatingError(floatingActionError?.message || 'Floating OCR failed.');
+            setFloatingError(floatingActionError?.message || t('ocr.failedFloating'));
             return null;
         } finally {
             setFloatingBusy('');
         }
-    }, []);
+    }, [t]);
 
     const handleCheckFloatingStatus = useCallback(() => {
         mergeFloatingStatus({
@@ -781,40 +786,40 @@ const ScreenshotOcr = ({ navigation, route }) => {
             screenCaptureActive: isScreenCaptureActive(),
         });
         setFloatingError('');
-        setFloatingMessage('Floating OCR status refreshed.');
-    }, [mergeFloatingStatus]);
+        setFloatingMessage(t('ocr.statusRefreshed'));
+    }, [mergeFloatingStatus, t]);
 
     const handleRequestOverlayPermission = useCallback(async () => {
         const result = await runFloatingAction('overlay', requestOverlayPermission);
         if (result) {
             mergeFloatingStatus({ overlayPermissionGranted: !!result.granted });
-            setFloatingMessage(result.granted ? 'Overlay permission granted.' : 'Overlay permission not granted.');
+            setFloatingMessage(result.granted ? t('ocr.overlayGranted') : t('ocr.overlayDenied'));
         }
-    }, [mergeFloatingStatus, runFloatingAction]);
+    }, [mergeFloatingStatus, runFloatingAction, t]);
 
     const handleRequestScreenCapture = useCallback(async () => {
         const result = await runFloatingAction('capture', requestScreenCapture);
         if (result) {
             mergeFloatingStatus({ screenCaptureActive: !!result.active });
-            setFloatingMessage(result.granted ? 'Screen capture is active.' : 'Screen capture was not granted.');
+            setFloatingMessage(result.granted ? t('ocr.captureActive') : t('ocr.captureDenied'));
         }
-    }, [mergeFloatingStatus, runFloatingAction]);
+    }, [mergeFloatingStatus, runFloatingAction, t]);
 
     const handleStartFloatingWidget = useCallback(async () => {
         const result = await runFloatingAction('start', startFloatingWidget);
         if (result) {
             mergeFloatingStatus({ floatingVisible: !!result.visible });
-            setFloatingMessage(result.visible ? 'Floating OCR bubble started.' : 'Floating OCR bubble did not start.');
+            setFloatingMessage(result.visible ? t('ocr.bubbleStarted') : t('ocr.bubbleFailed'));
         }
-    }, [mergeFloatingStatus, runFloatingAction]);
+    }, [mergeFloatingStatus, runFloatingAction, t]);
 
     const handleStopFloatingWidget = useCallback(async () => {
         const result = await runFloatingAction('stop', stopFloatingWidget);
         if (result) {
             mergeFloatingStatus({ floatingVisible: !!result.visible, resultOverlayVisible: false });
-            setFloatingMessage('Floating OCR bubble stopped.');
+            setFloatingMessage(t('ocr.bubbleStopped'));
         }
-    }, [mergeFloatingStatus, runFloatingAction]);
+    }, [mergeFloatingStatus, runFloatingAction, t]);
 
     const handleAnalyzeCurrentScreen = useCallback(async () => {
         const result = await runFloatingAction('analyze', analyzeCurrentScreen);
@@ -823,9 +828,12 @@ const ScreenshotOcr = ({ navigation, route }) => {
             const targetCount = normalizedResult.targets.length
                 || buildWordTargets(normalizedResult).length
                 || buildLineTargets(normalizedResult).length;
-            setFloatingMessage(`Test OCR found ${targetCount} tappable item${targetCount === 1 ? '' : 's'}.`);
+            setFloatingMessage(t('ocr.testFoundItems', {
+                count: targetCount,
+                noun: targetCount === 1 ? t('ocr.itemSingular') : t('ocr.itemPlural'),
+            }));
         }
-    }, [runFloatingAction]);
+    }, [runFloatingAction, t]);
 
     const renderTargetBox = (target) => {
         if (!renderedImageLayout || !imageMetrics?.width || !imageMetrics?.height) {
@@ -840,7 +848,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
             <Pressable
                 key={target.key}
                 accessibilityRole="button"
-                accessibilityLabel={`Look up ${target.text}`}
+                accessibilityLabel={t('ocr.lookup', { text: target.text })}
                 hitSlop={{ top: 4, right: 4, bottom: 4, left: 4 }}
                 onPress={() => selectTarget(target)}
                 style={({ pressed }) => [
@@ -863,7 +871,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
             <View style={[styles.topBar, { paddingTop: safeAreaInsets.top + spacing.xs }]}>
                 <TouchableOpacity
                     accessibilityRole="button"
-                    accessibilityLabel="Back"
+                    accessibilityLabel={t('ocr.back')}
                     activeOpacity={0.78}
                     onPress={() => navigation?.goBack()}
                     style={styles.iconButton}
@@ -873,12 +881,12 @@ const ScreenshotOcr = ({ navigation, route }) => {
 
                 <View style={styles.titleBlock}>
                     <Text style={styles.eyebrow}>LAB</Text>
-                    <Text style={styles.title} numberOfLines={1}>Screenshot OCR</Text>
+                    <Text style={styles.title} numberOfLines={1}>{t('ocr.screenshotTitle')}</Text>
                 </View>
 
                 <TouchableOpacity
                     accessibilityRole="button"
-                    accessibilityLabel="Clear"
+                    accessibilityLabel={t('ocr.clear')}
                     activeOpacity={0.78}
                     onPress={handleClear}
                     disabled={!imageUri && !ocrResult && !error}
@@ -896,7 +904,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
                     style={styles.primaryAction}
                 >
                     <Feather name="image" size={17} color={colors.white} />
-                    <Text style={styles.primaryActionText}>Pick image</Text>
+                    <Text style={styles.primaryActionText}>{t('ocr.pickImage')}</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
@@ -933,7 +941,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
                                     styles.segmentButtonText,
                                     isActive && styles.segmentButtonTextActive,
                                 ]}>
-                                    {option.label}
+                                    {t(option.labelKey)}
                                 </Text>
                             </TouchableOpacity>
                         );
@@ -945,26 +953,26 @@ const ScreenshotOcr = ({ navigation, route }) => {
                 <View style={styles.floatingPanel}>
                     <View style={styles.floatingHeader}>
                         <View>
-                            <Text style={styles.floatingTitle}>Floating OCR</Text>
+                            <Text style={styles.floatingTitle}>{t('ocr.floatingTitle')}</Text>
                             <Text style={styles.floatingStatusText} numberOfLines={1}>
-                                {floatingMessage || 'Ready'}
+                                {floatingMessage || t('ocr.ready')}
                             </Text>
                         </View>
 
                         <View style={styles.floatingChips}>
                             <View style={[styles.statusChip, floatingStatus.overlayPermissionGranted && styles.statusChipActive]}>
                                 <Text style={[styles.statusChipText, floatingStatus.overlayPermissionGranted && styles.statusChipTextActive]}>
-                                    Overlay
+                                    {t('ocr.overlay')}
                                 </Text>
                             </View>
                             <View style={[styles.statusChip, floatingStatus.screenCaptureActive && styles.statusChipActive]}>
                                 <Text style={[styles.statusChipText, floatingStatus.screenCaptureActive && styles.statusChipTextActive]}>
-                                    Capture
+                                    {t('ocr.capture')}
                                 </Text>
                             </View>
                             <View style={[styles.statusChip, floatingStatus.floatingVisible && styles.statusChipActive]}>
                                 <Text style={[styles.statusChipText, floatingStatus.floatingVisible && styles.statusChipTextActive]}>
-                                    Bubble
+                                    {t('ocr.bubble')}
                                 </Text>
                             </View>
                         </View>
@@ -982,7 +990,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
                             style={styles.floatingAction}
                         >
                             <Feather name="check-circle" size={15} color={colors.textMuted} />
-                            <Text style={styles.floatingActionText}>Check</Text>
+                            <Text style={styles.floatingActionText}>{t('ocr.check')}</Text>
                         </TouchableOpacity>
 
                         <TouchableOpacity
@@ -997,7 +1005,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
                             ) : (
                                 <Feather name="shield" size={15} color={colors.textMuted} />
                             )}
-                            <Text style={styles.floatingActionText}>Overlay</Text>
+                            <Text style={styles.floatingActionText}>{t('ocr.overlay')}</Text>
                         </TouchableOpacity>
 
                         <TouchableOpacity
@@ -1012,7 +1020,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
                             ) : (
                                 <Feather name="monitor" size={15} color={colors.textMuted} />
                             )}
-                            <Text style={styles.floatingActionText}>Capture</Text>
+                            <Text style={styles.floatingActionText}>{t('ocr.capture')}</Text>
                         </TouchableOpacity>
 
                         <TouchableOpacity
@@ -1027,7 +1035,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
                             ) : (
                                 <Feather name="play-circle" size={15} color={colors.textMuted} />
                             )}
-                            <Text style={styles.floatingActionText}>Start</Text>
+                            <Text style={styles.floatingActionText}>{t('ocr.start')}</Text>
                         </TouchableOpacity>
 
                         <TouchableOpacity
@@ -1042,7 +1050,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
                             ) : (
                                 <Feather name="square" size={15} color={colors.textMuted} />
                             )}
-                            <Text style={styles.floatingActionText}>Stop</Text>
+                            <Text style={styles.floatingActionText}>{t('ocr.stop')}</Text>
                         </TouchableOpacity>
 
                         <TouchableOpacity
@@ -1057,7 +1065,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
                             ) : (
                                 <Feather name="zap" size={15} color={colors.textMuted} />
                             )}
-                            <Text style={styles.floatingActionText}>Test</Text>
+                            <Text style={styles.floatingActionText}>{t('ocr.test')}</Text>
                         </TouchableOpacity>
                     </ScrollView>
 
@@ -1071,7 +1079,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
                 {!imageUri ? (
                     <View style={styles.emptyState}>
                         <MaterialIcons name="document-scanner" size={34} color={colors.textSubtle} />
-                        <Text style={styles.emptyTitle}>Select a screenshot</Text>
+                        <Text style={styles.emptyTitle}>{t('ocr.selectScreenshot')}</Text>
                     </View>
                 ) : (
                     <ScrollView
@@ -1102,7 +1110,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
                             {isRecognizing ? (
                                 <View style={styles.recognitionOverlay}>
                                     <ActivityIndicator size="small" color={colors.white} />
-                                    <Text style={styles.recognitionText}>Recognizing text</Text>
+                                    <Text style={styles.recognitionText}>{t('ocr.recognizing')}</Text>
                                 </View>
                             ) : null}
                         </View>
@@ -1112,7 +1120,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
                         ) : null}
 
                         {ocrResult && !hasRecognizedText && !isRecognizing && !error ? (
-                            <Text style={styles.emptyOcrText}>No text blocks found.</Text>
+                            <Text style={styles.emptyOcrText}>{t('ocr.noTextBlocks')}</Text>
                         ) : null}
                     </ScrollView>
                 )}
@@ -1145,7 +1153,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
 
             {Platform.OS !== 'android' ? (
                 <View style={styles.platformBadge}>
-                    <Text style={styles.platformBadgeText}>Android only</Text>
+                    <Text style={styles.platformBadgeText}>{t('ocr.androidOnlyBadge')}</Text>
                 </View>
             ) : null}
         </View>

@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, Switch, Text, TouchableOpacity, View } from 'rea
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather } from '@expo/vector-icons';
 import { Card } from '../ui';
+import { useTranslation } from '../../hooks/useTranslation';
 import {
   fetchUserPreferences,
   getTimestampMs,
@@ -12,9 +13,9 @@ import { isCurrentSyncGeneration } from '../../services/localOwnerCoordinator';
 import { colors, fontFamilies, radii, spacing, textStyles } from '../../theme';
 
 const STATUS_ACTIONS = [
-  { key: 'bad', label: 'Hard', tone: 'danger' },
-  { key: 'mid', label: 'Okay', tone: 'warning' },
-  { key: 'good', label: 'Easy', tone: 'success' },
+  { key: 'bad', labelKey: 'learn.hard', tone: 'danger' },
+  { key: 'mid', labelKey: 'learn.okay', tone: 'warning' },
+  { key: 'good', labelKey: 'learn.easy', tone: 'success' },
 ];
 
 const toneStyles = {
@@ -41,6 +42,7 @@ const DEFAULT_FRONT_SETTINGS = {
 };
 
 const Flashcard = ({ vocab, title, index, total, onClose, onMark, user, ownerId, syncGeneration }) => {
+  const { t } = useTranslation();
   const [isFlipped, setIsFlipped] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [frontSettings, setFrontSettings] = useState(DEFAULT_FRONT_SETTINGS);
@@ -243,7 +245,7 @@ const Flashcard = ({ vocab, title, index, total, onClose, onMark, user, ownerId,
 
     return (
       <View style={styles.relatedSection}>
-        <Text style={styles.relatedTitle}>Related words you know</Text>
+        <Text style={styles.relatedTitle}>{t('learn.relatedWordsYouKnow')}</Text>
         <View style={styles.relatedList}>
           {relatedKnownWords.map((entry, relatedIndex) => (
             <Text
@@ -251,7 +253,7 @@ const Flashcard = ({ vocab, title, index, total, onClose, onMark, user, ownerId,
               numberOfLines={1}
               style={styles.relatedText}
             >
-              {entry.korean || 'Related word'}{entry.meaning ? ` - ${entry.meaning}` : ''}
+              {entry.korean || t('learn.relatedWord')}{entry.meaning ? ` - ${entry.meaning}` : ''}
             </Text>
           ))}
         </View>
@@ -267,9 +269,9 @@ const Flashcard = ({ vocab, title, index, total, onClose, onMark, user, ownerId,
     <Card style={styles.shell} contentStyle={styles.shellContent}>
       <View style={styles.header}>
         <View style={styles.headerCopy}>
-          <Text style={styles.kicker}>Practice</Text>
+          <Text style={styles.kicker}>{t('learn.practice')}</Text>
           <Text style={styles.deckTitle}>{title}</Text>
-          <Text style={styles.progress}>{index + 1} of {total}</Text>
+          <Text style={styles.progress}>{t('learn.progress', { current: index + 1, total })}</Text>
         </View>
 
         <View style={styles.headerActions}>
@@ -287,9 +289,9 @@ const Flashcard = ({ vocab, title, index, total, onClose, onMark, user, ownerId,
 
       {showSettings ? (
         <View style={styles.settingsMenu}>
-          <Text style={styles.settingsTitle}>Front card</Text>
+          <Text style={styles.settingsTitle}>{t('learn.frontCard')}</Text>
           <View style={styles.settingRow}>
-            <Text style={styles.settingLabel}>Show Hanja</Text>
+            <Text style={styles.settingLabel}>{t('learn.showHanja')}</Text>
             <Switch
               value={frontSettings.showHanja}
               onValueChange={(value) => updateFrontSetting('showHanja', value)}
@@ -298,7 +300,7 @@ const Flashcard = ({ vocab, title, index, total, onClose, onMark, user, ownerId,
             />
           </View>
           <View style={styles.settingRow}>
-            <Text style={styles.settingLabel}>Show definition</Text>
+            <Text style={styles.settingLabel}>{t('learn.showDefinition')}</Text>
             <Switch
               value={frontSettings.showDefinition}
               onValueChange={(value) => updateFrontSetting('showDefinition', value)}
@@ -307,7 +309,7 @@ const Flashcard = ({ vocab, title, index, total, onClose, onMark, user, ownerId,
             />
           </View>
           <View style={styles.settingRow}>
-            <Text style={styles.settingLabel}>Show related words</Text>
+            <Text style={styles.settingLabel}>{t('learn.showRelatedWords')}</Text>
             <Switch
               value={frontSettings.showRelated}
               onValueChange={(value) => updateFrontSetting('showRelated', value)}
@@ -333,7 +335,7 @@ const Flashcard = ({ vocab, title, index, total, onClose, onMark, user, ownerId,
               {hanjaText ? <Text style={styles.hanja}>{hanjaText}</Text> : null}
               <Text style={styles.definition}>{vocab.def}</Text>
               {renderRelatedWords()}
-              <Text style={styles.flipHint}>Tap again to hide</Text>
+              <Text style={styles.flipHint}>{t('learn.tapAgainHide')}</Text>
             </>
           )}
         </View>
@@ -353,7 +355,7 @@ const Flashcard = ({ vocab, title, index, total, onClose, onMark, user, ownerId,
             ]}
           >
             <Text style={[styles.actionLabel, { color: toneStyles[action.tone].color }]}>
-              {action.label}
+              {t(action.labelKey)}
             </Text>
           </TouchableOpacity>
         ))}

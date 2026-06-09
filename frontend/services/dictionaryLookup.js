@@ -21,6 +21,7 @@ import {
     getSyncGeneration,
     isCurrentSyncGeneration,
 } from './localOwnerCoordinator';
+import { getRuntimeInterfaceLanguage } from './interfaceLanguage';
 
 const STOP_STEMS = new Set([
     '하다',
@@ -62,9 +63,12 @@ const cacheEntryToLookupResult = async ({
     ownerId,
     includeEnrichment = true,
     wordOptions = [],
+    interfaceLanguage = getRuntimeInterfaceLanguage(),
 }) => {
     const primary = cacheEntryToDefinitionEntry(entry, surface);
-    const liveEntries = includeEnrichment ? await fetchLiveEntriesForStem(primary.word) : [];
+    const liveEntries = includeEnrichment
+        ? await fetchLiveEntriesForStem(primary.word, interfaceLanguage)
+        : [];
     const alternatives = includeEnrichment
         ? normalizeLiveAlternatives(liveEntries.slice(1), primary).slice(0, MAX_ALTERNATIVES)
         : [];
@@ -80,12 +84,13 @@ const cacheEntryToLookupResult = async ({
     });
 };
 
-const liveEntryToCacheEntry = (stem, entry) => ({
+const liveEntryToCacheEntry = (stem, entry, interfaceLanguage = getRuntimeInterfaceLanguage()) => ({
     stem,
     definition: nullableValue(entry?.transWord),
     hanja: nullableValue(entry?.origin),
     pos: nullableValue(entry?.pos),
     domain: null,
+    interfaceLanguage,
 });
 
 const cacheEntryToDefinitionEntry = (entry, fallbackWord) => ({
@@ -132,13 +137,14 @@ const normalizeLiveAlternatives = (entries, primary) => {
         });
 };
 
-const fetchLiveDictionary = async (stems) => {
+const fetchLiveDictionary = async (stems, interfaceLanguage = getRuntimeInterfaceLanguage()) => {
     if (!stems.length) {
         return [];
     }
 
     const response = await api.post('/krdict_search/', {
         queries: stems,
+        language: interfaceLanguage,
     }, {
         timeout: 10000,
     });
@@ -146,14 +152,14 @@ const fetchLiveDictionary = async (stems) => {
     return response.data?.results ?? [];
 };
 
-const fetchLiveEntriesForStem = async (stem) => {
+const fetchLiveEntriesForStem = async (stem, interfaceLanguage = getRuntimeInterfaceLanguage()) => {
     const cleanedStem = cleanValue(stem);
     if (!cleanedStem) {
         return [];
     }
 
     try {
-        const results = await fetchLiveDictionary([cleanedStem]);
+        const results = await fetchLiveDictionary([cleanedStem], interfaceLanguage);
         return results[0] ?? [];
     } catch (error) {
         return [];
@@ -233,12 +239,13 @@ export const lookupWordForOverlay = async ({
     const rawSurface = cleanValue(surface);
     const normalizedSurface = normalizeSurfaceWord(rawSurface) || rawSurface;
     const ownerId = getActiveOwnerId();
+    const interfaceLanguage = getRuntimeInterfaceLanguage();
 
     if (!normalizedSurface) {
         throw new Error('No text selected.');
     }
 
-    const directRows = await lookupCacheByStems([normalizedSurface]);
+    const directRows = await lookupCacheByStems([normalizedSurface], interfaceLanguage);
     if (directRows.length > 0) {
         return cacheEntryToLookupResult({
             entry: directRows[0],
@@ -247,13 +254,14 @@ export const lookupWordForOverlay = async ({
             ownerId,
             includeEnrichment,
             wordOptions: [directRows[0].stem],
+            interfaceLanguage,
         });
     }
 
     const stemCandidates = uniqueValues(await stemWord({ query: rawSurface || normalizedSurface }))
         .filter((stem) => !STOP_STEMS.has(stem));
     const stems = stemCandidates.length > 0 ? stemCandidates : [normalizedSurface];
-    const cachedRows = await lookupCacheByStems(stems);
+    const cachedRows = await lookupCacheByStems(stems, interfaceLanguage);
 
     if (cachedRows.length > 0) {
         return cacheEntryToLookupResult({
@@ -263,19 +271,20 @@ export const lookupWordForOverlay = async ({
             ownerId,
             includeEnrichment,
             wordOptions: stems,
+            interfaceLanguage,
         });
     }
 
-    const liveResults = await fetchLiveDictionary(stems);
+    const liveResults = await fetchLiveDictionary(stems, interfaceLanguage);
     const cacheEntries = stems
         .map((stem, index) => {
             const first = liveResults[index]?.[0];
-            return first ? liveEntryToCacheEntry(stem, first) : null;
+            return first ? liveEntryToCacheEntry(stem, first, interfaceLanguage) : null;
         })
         .filter(Boolean);
 
     if (cacheEntries.length > 0) {
-        await insertCacheEntries(cacheEntries);
+        await insertCacheEntries(cacheEntries, interfaceLanguage);
         const firstResultIndex = liveResults.findIndex(entries => entries?.[0]);
         const primaryStem = stems[firstResultIndex] || cacheEntries[0].stem;
         const liveEntries = liveResults[firstResultIndex] ?? [];

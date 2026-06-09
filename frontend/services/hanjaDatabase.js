@@ -2,6 +2,7 @@ import * as SQLite from 'expo-sqlite';
 import * as FileSystem from 'expo-file-system';
 import { Asset } from 'expo-asset';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { normalizeInterfaceLanguageCode } from '../constants/languages';
 
 const HANJA_DB_NAME = 'hanja.db';
 const HANJA_DB_ASSET = require('../assets/data/hanja.db');
@@ -11,11 +12,33 @@ const HANJA_DB_VERSION_KEY = '@ff/hanja-db-version';
 const SQLITE_DIR = `${FileSystem.documentDirectory}SQLite`;
 const HANJA_DB_PATH = `${SQLITE_DIR}/${HANJA_DB_NAME}`;
 const DEFAULT_RELATED_WORD_LIMIT = 8;
+const MULTILINGUAL_HANJA_LANGUAGES = new Set(['fr', 'es', 'zh', 'ar', 'mn', 'vi', 'th', 'id', 'ru']);
 
 let hanjaDb = null;
 let initializationPromise = null;
 
 const normalizeString = (value) => (value == null ? '' : String(value).trim());
+
+const getHanjaDisplayLanguage = (interfaceLanguage = 'en') => {
+  const language = normalizeInterfaceLanguageCode(interfaceLanguage);
+  return MULTILINGUAL_HANJA_LANGUAGES.has(language) ? language : 'en';
+};
+
+const getHunColumn = (interfaceLanguage = 'en') => {
+  const language = getHanjaDisplayLanguage(interfaceLanguage);
+  return language === 'en' ? 'hun_english' : `hun_${language}`;
+};
+
+const getDefinitionColumn = (interfaceLanguage = 'en') => {
+  const language = getHanjaDisplayLanguage(interfaceLanguage);
+  return language === 'en' ? 'definition_english' : `definition_${language}`;
+};
+
+const getDisplayExpression = (column, englishColumn, alias, interfaceLanguage = 'en') => (
+  getHanjaDisplayLanguage(interfaceLanguage) === 'en'
+    ? `${englishColumn} AS ${alias}`
+    : `NULLIF(${column}, '') AS ${alias}`
+);
 
 const normalizeLimit = (limit) => {
   if (limit === 'all' || limit === null) {
@@ -71,6 +94,7 @@ const normalizeWordRow = (row = {}) => ({
   hanja: row.hanja || '',
   definition_korean: row.definition_korean || '',
   definition_english: row.definition_english || '',
+  definition_display: row.definition_display || '',
   pos: row.pos || '',
   word_grade: row.word_grade || '',
 });
@@ -157,6 +181,7 @@ export const getRelatedHanjaWords = async (character, options = {}) => {
     return [];
   }
 
+  const definitionColumn = getDefinitionColumn(options.interfaceLanguage);
   const excludeHangul = normalizeString(options.excludeHangul);
   const limit = normalizeLimit(options.limit);
   const limitClause = limit == null ? '' : 'LIMIT ?';
@@ -170,6 +195,7 @@ export const getRelatedHanjaWords = async (character, options = {}) => {
        hw.hanja,
        hw.definition_korean,
        hw.definition_english,
+       ${getDisplayExpression(`hw.${definitionColumn}`, 'hw.definition_english', 'definition_display', options.interfaceLanguage)},
        hw.pos,
        hw.word_grade
      FROM hanja_word_characters hwc
@@ -197,9 +223,11 @@ export const lookupHanjaCharacter = async (character, options = {}) => {
     return [];
   }
 
+  const hunColumn = getHunColumn(options.interfaceLanguage);
   const preferredEum = normalizeString(options.eum);
   const rows = await executeSql(
-    `SELECT character, eum, hun_korean, hun_english
+    `SELECT character, eum, hun_korean, hun_english,
+            ${getDisplayExpression(hunColumn, 'hun_english', 'hun_display', options.interfaceLanguage)}
      FROM hanja_characters
      WHERE character = ?
      ORDER BY
@@ -215,19 +243,24 @@ export const lookupHanjaCharacter = async (character, options = {}) => {
       eum: row.eum || '',
       hun_korean: row.hun_korean || '',
       hun_english: row.hun_english || '',
+      hun_display: row.hun_display || '',
       related_words: await getRelatedHanjaWords(normalizedCharacter, options),
     }))
   );
 };
 
-export const lookupHanjaWord = async (hangul) => {
+export const lookupHanjaWord = async (hangul, options = {}) => {
   const normalizedHangul = normalizeString(hangul);
   if (!normalizedHangul) {
     return null;
   }
 
+  const definitionColumn = getDefinitionColumn(options.interfaceLanguage);
+  const hunColumn = getHunColumn(options.interfaceLanguage);
   const rows = await executeSql(
-    `SELECT id, hangul, hanja, definition_korean, definition_english, pos, word_grade
+    `SELECT id, hangul, hanja, definition_korean, definition_english,
+            ${getDisplayExpression(definitionColumn, 'definition_english', 'definition_display', options.interfaceLanguage)},
+            pos, word_grade
      FROM hanja_words
      WHERE hangul = ?
      ORDER BY hanja ASC, id ASC
@@ -245,7 +278,8 @@ export const lookupHanjaWord = async (hangul) => {
     hanjaChars.map(async (char, index) => {
       const eum = inferEum(word.hangul, index);
       const [characterInfo] = await executeSql(
-        `SELECT character, eum, hun_korean, hun_english
+        `SELECT character, eum, hun_korean, hun_english,
+                ${getDisplayExpression(hunColumn, 'hun_english', 'hun_display', options.interfaceLanguage)}
          FROM hanja_characters
          WHERE character = ?
            AND eum = ?
@@ -258,8 +292,10 @@ export const lookupHanjaWord = async (hangul) => {
         eum: characterInfo?.eum || eum,
         hun_korean: characterInfo?.hun_korean || '',
         hun_english: characterInfo?.hun_english || '',
+        hun_display: characterInfo?.hun_display || '',
         related_words: await getRelatedHanjaWords(char, {
           excludeHangul: word.hangul,
+          interfaceLanguage: options.interfaceLanguage,
         }),
       };
     })
@@ -270,6 +306,7 @@ export const lookupHanjaWord = async (hangul) => {
     hanja: word.hanja || '',
     definition_korean: word.definition_korean || '',
     definition_english: word.definition_english || '',
+    definition_display: word.definition_display || '',
     pos: word.pos || '',
     word_grade: word.word_grade || '',
     characters,
