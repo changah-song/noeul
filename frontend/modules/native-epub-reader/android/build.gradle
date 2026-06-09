@@ -101,4 +101,5 @@ dependencies {
 
   implementation 'com.facebook.react:react-android'
   implementation "androidx.viewpager2:viewpager2:1.1.0"
+  implementation "com.tom-roush:pdfbox-android:2.0.27.0"
 }

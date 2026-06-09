@@ -8,6 +8,7 @@ import { Slider } from 'react-native-elements';
 import TopSection from '../components/Read/TopSection/TopSection';
 import TocDrawer from '../components/Read/TocDrawer';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
+import { useTranslation } from '../hooks/useTranslation';
 import NativeEpubReaderView from '../modules/native-epub-reader/src/NativeEpubReaderView';
 import {
     PREPROCESS_VERSION,
@@ -25,6 +26,7 @@ import preprocessChapter from '../services/api/preprocessChapter';
 import { updateUserBookProgress } from '../services/bookCloudSync';
 import { addReadingMillis } from '../services/dailyProgress';
 import { countReadableTextWords, readEpubPackageXml } from '../services/epubMetadata';
+import { readPdfPackageXml } from '../services/pdfMetadata';
 import {
     isPublicDomainBookUri,
     readPublicDomainTextPackage,
@@ -75,9 +77,15 @@ const chapterResourcesForReaderPackage = (readerPackage) => (
 
 const chapterTextForReaderPackage = (readerPackage) => (
     chapterBlocksForReaderPackage(readerPackage)
+        .filter((block) => !block?.excludeFromText)
         .map((block) => (typeof block?.text === 'string' ? block.text : ''))
         .filter(Boolean)
         .join('\n')
+);
+
+const isPdfBook = (book, uri = '') => (
+    String(book?.format || '').toLowerCase() === 'pdf'
+    || String(uri || '').toLowerCase().split('?')[0].endsWith('.pdf')
 );
 
 const buildChapterPreprocessOrder = (centerSpineIndex, totalSpineItems) => {
@@ -117,6 +125,7 @@ const chapterWindowEntryForPackage = (readerPackage, role) => {
 };
 
 const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderFocusMode, user }) => {
+    const { t } = useTranslation();
     const { activeOwnerId, syncPaused, syncGeneration } = useLocalOwner();
     const [highlightedWord, setHighlightedWord] = useState('');
     const [highlightedWordContext, setHighlightedWordContext] = useState(null);
@@ -652,7 +661,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
         if (readerLocationInfo?.pageInChapter && readerLocationInfo?.pagesInChapter) {
             const chapterLabel = readerLocationInfo?.page && readerLocationInfo?.total
                 ? `${readerLocationInfo.page}/${readerLocationInfo.total}`
-                : 'Chapter';
+                : t('read.chapter');
             return `${chapterLabel} · ${readerLocationInfo.pageInChapter}/${readerLocationInfo.pagesInChapter}`;
         }
         if (readerLocationInfo?.page && readerLocationInfo?.total) {
@@ -661,7 +670,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
         if (typeof readerLocationInfo?.percentage === 'number') {
             return `${Math.round(readerLocationInfo.percentage * 100)}%`;
         }
-        return 'Start';
+        return t('read.start');
     })();
     useEffect(() => {
         setIsReaderFocusMode?.(isFullscreen);
@@ -679,10 +688,10 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
         setBookLoadState('error');
         setBookLoadError(
             likelyTooLarge
-                ? 'This EPUB appears too large for the current reader on this device. Please try a smaller file and try again.'
-                : 'This book could not be opened. Please try again.'
+                ? t('read.bookTooLarge')
+                : t('read.bookOpenFailed')
         );
-    }, [activeBookSizeMb]);
+    }, [activeBookSizeMb, t]);
 
     const retryBookLoad = useCallback(() => {
         setBookLoadError('');
@@ -775,13 +784,19 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
         const loadOptions = Number.isInteger(requestedSpineIndex)
             ? { spineIndex: requestedSpineIndex }
             : {};
+        const fallbackName = activeBook?.originalFilename
+            || activeBook?.title
+            || currentBook.split('/').pop()
+            || 'Untitled';
         const packageLoader = isPublicDomainBookUri(currentBook)
             ? readPublicDomainTextPackage(currentBook, loadOptions)
-            : readEpubPackageXml(
-                currentBook,
-                activeBook?.title || currentBook.split('/').pop() || 'Untitled',
-                loadOptions
-            );
+            : isPdfBook(activeBook, currentBook)
+                ? readPdfPackageXml(currentBook, fallbackName, loadOptions)
+                : readEpubPackageXml(
+                    currentBook,
+                    fallbackName,
+                    loadOptions
+                );
 
         const loadPromise = packageLoader.then((parsedPackage) => {
             cacheParsedChapterPackage(parsedPackage);
@@ -792,7 +807,13 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
 
         parsedChapterInflightRef.current.set(cacheKey, loadPromise);
         return loadPromise;
-    }, [activeBook?.title, cacheParsedChapterPackage, currentBook]);
+    }, [
+        activeBook?.format,
+        activeBook?.originalFilename,
+        activeBook?.title,
+        cacheParsedChapterPackage,
+        currentBook,
+    ]);
 
     const prefetchAdjacentChapters = useCallback((centerSpineIndex, totalSpineItems) => {
         if (!currentBook || !Number.isInteger(centerSpineIndex) || totalSpineItems <= 0) {
@@ -1228,16 +1249,16 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
                 return;
             }
 
-            console.error('[Read] Native EPUB load failed:', error);
+            console.error('[Read] Native reader load failed:', error);
             if (canKeepCurrentReader && nativeReaderPackageRef.current) {
                 setBookLoadState('ready');
-                setBookLoadError(error?.message || 'This chapter could not be opened by the native reader yet.');
+                setBookLoadError(error?.message || t('read.nativeChapterUnsupported'));
                 setChapterTransitionDirection('none:0');
                 return;
             }
 
             setBookLoadState('error');
-            setBookLoadError(error?.message || 'This book could not be opened by the native reader yet.');
+            setBookLoadError(error?.message || t('read.nativeUnsupported'));
             setChapterTransitionDirection('none:0');
         }
     }, [
@@ -1245,6 +1266,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
         loadParsedChapterPackage,
         prefetchAdjacentChapters,
         startChapterPreprocessing,
+        t,
         updateNativeChapterWindowForSpine,
     ]);
 
@@ -1545,10 +1567,10 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
                 <View style={[styles.headerBar, { paddingTop: insets.top + spacing.xs }]}>
                     <View style={styles.headerLeft}>
                         <Text numberOfLines={1} style={styles.headerBookTitle}>
-                            {activeBook?.title || 'Reading'}
+                            {activeBook?.title || t('read.defaultTitle')}
                         </Text>
                         <Text numberOfLines={1} style={styles.headerBookMeta}>
-                            {activeBook?.author || 'Tap any word for lookup'}
+                            {activeBook?.author || t('read.defaultMeta')}
                         </Text>
                     </View>
 
@@ -1583,35 +1605,35 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
             <View style={styles.reader}>
                 {bookLoadState === 'error' ? (
                     <View style={styles.readerErrorState}>
-                        <Text style={styles.readerErrorTitle}>Couldn’t open this book</Text>
+                        <Text style={styles.readerErrorTitle}>{t('read.openErrorTitle')}</Text>
                         <Text style={styles.readerErrorBody}>{bookLoadError}</Text>
                         {typeof activeBookSizeMb === 'number' ? (
                             <Text style={styles.readerErrorMeta}>
-                                File size: {activeBookSizeMb.toFixed(1)} MB
+                                {t('common.fileSize', { size: activeBookSizeMb.toFixed(1) })}
                             </Text>
                         ) : null}
                         <TouchableOpacity style={styles.retryButton} onPress={retryBookLoad}>
-                            <Text style={styles.retryButtonText}>Try again</Text>
+                            <Text style={styles.retryButtonText}>{t('common.tryAgain')}</Text>
                         </TouchableOpacity>
                     </View>
                 ) : !currentBook ? (
                     <View style={styles.readerLoadingState}>
-                        <Text style={styles.readerLoadingTitle}>No book selected</Text>
+                        <Text style={styles.readerLoadingTitle}>{t('read.noBook')}</Text>
                     </View>
                 ) : isReaderWaitingForHighlights ? (
                     <View style={styles.readerLoadingState}>
                         <ActivityIndicator size="small" color={colors.accentStrong} />
-                        <Text style={styles.readerLoadingTitle}>Preparing smart highlights</Text>
+                        <Text style={styles.readerLoadingTitle}>{t('read.preparingHighlights')}</Text>
                         <Text style={styles.readerLoadingBody}>
-                            Loading this book&apos;s saved-word surfaces before the first native render.
+                            {t('read.preparingHighlightsBody')}
                         </Text>
                     </View>
                 ) : bookLoadState === 'loading' || !nativeReaderPackage ? (
                     <View style={styles.readerLoadingState}>
                         <ActivityIndicator size="small" color={colors.accentStrong} />
-                        <Text style={styles.readerLoadingTitle}>Opening native reader</Text>
+                        <Text style={styles.readerLoadingTitle}>{t('read.openingReader')}</Text>
                         <Text style={styles.readerLoadingBody}>
-                            Loading the first readable section.
+                            {t('read.openingReaderBody')}
                         </Text>
                     </View>
                 ) : (
@@ -1726,10 +1748,10 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
                             <Feather name="corner-down-left" size={16} color={colors.textSubtle} />
                             <View style={styles.hintTextStack}>
                                 <Text style={styles.hintText}>
-                                    Tap a word to look it up.
+                                    {t('read.tapHint')}
                                 </Text>
                                 <Text style={styles.hintSubtext}>
-                                    Long press to translate longer sections.
+                                    {t('read.longPressHint')}
                                 </Text>
                             </View>
                         </View>
@@ -1744,11 +1766,11 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
                 <View pointerEvents="box-none" style={styles.settingsOverlay}>
                     <Pressable style={styles.settingsBackdrop} onPress={() => setShowSettings(false)} />
                     <View style={[styles.settingsDropdown, { top: insets.top + 56, right: spacing.lg }]}>
-                        <Text style={styles.settingsHeading}>Reader settings</Text>
+                        <Text style={styles.settingsHeading}>{t('read.settings')}</Text>
 
                         <View style={styles.settingsSection}>
                             <View style={styles.settingsRow}>
-                                <Text style={styles.settingsLabel}>Font size</Text>
+                                <Text style={styles.settingsLabel}>{t('read.fontSize')}</Text>
                                 <Text style={styles.settingsValue}>{settings.fontSize}</Text>
                             </View>
                             <Slider
@@ -1768,7 +1790,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
 
                         <View style={styles.settingsSection}>
                             <View style={styles.settingsRow}>
-                                <Text style={styles.settingsLabel}>Line spacing</Text>
+                                <Text style={styles.settingsLabel}>{t('read.lineSpacing')}</Text>
                                 <Text style={styles.settingsValue}>{settings.lineSpacing.toFixed(1)}</Text>
                             </View>
                             <View style={styles.stepperRow}>
@@ -1790,7 +1812,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
 
                         <View style={[styles.settingsSection, styles.settingsSectionLast]}>
                             <View style={styles.settingsRow}>
-                                <Text style={styles.settingsLabel}>Dark mode</Text>
+                                <Text style={styles.settingsLabel}>{t('read.darkMode')}</Text>
                                 <Switch
                                     value={settings.isDarkMode}
                                     onValueChange={(value) => handleSettingChange('isDarkMode', value)}

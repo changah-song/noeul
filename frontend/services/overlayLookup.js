@@ -18,6 +18,7 @@ import { fetchHanjaRelated } from './api/hanjaRelated';
 import { translateText } from './api/googleTranslate';
 import { addRelatedKnownWord, getRelatedKnownWords, removeRelatedKnownWord } from './Database';
 import { lookupWordForOverlay, saveOverlayLookupResult, unsaveOverlayLookupResult } from './dictionaryLookup';
+import { getRuntimeInterfaceLanguage } from './interfaceLanguage';
 import { getActiveOwnerId } from './localOwnerCoordinator';
 
 let subscriptions = [];
@@ -35,6 +36,7 @@ let activeOcrPrefetchRun = 0;
 
 const cleanValue = (value) => (typeof value === 'string' ? value.trim() : '');
 const lookupCacheKey = ({ selectedText, selectedLineText }) => [
+    getRuntimeInterfaceLanguage(),
     cleanValue(selectedText),
     cleanValue(selectedLineText),
 ].join('\n');
@@ -57,9 +59,11 @@ const gradeRank = (grade) => {
 };
 
 const getCachedHanjaRelated = (character) => {
-    const cacheKey = cleanValue(character);
+    const interfaceLanguage = getRuntimeInterfaceLanguage();
+    const cleanedCharacter = cleanValue(character);
+    const cacheKey = [interfaceLanguage, cleanedCharacter].join('|');
 
-    if (!cacheKey) {
+    if (!cleanedCharacter) {
         return Promise.resolve({
             firstTableData: [],
             similarWordsTableData: [],
@@ -71,7 +75,7 @@ const getCachedHanjaRelated = (character) => {
         return cachedLookup;
     }
 
-    const lookupPromise = fetchHanjaRelated(cacheKey).catch((error) => {
+    const lookupPromise = fetchHanjaRelated(cleanedCharacter, { interfaceLanguage }).catch((error) => {
         hanjaLookupCache.delete(cacheKey);
         throw error;
     });

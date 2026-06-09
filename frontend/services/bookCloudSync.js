@@ -82,11 +82,31 @@ const getContentTypeForUri = (uri, fallback = 'application/octet-stream') => {
     return match?.[1] || fallback;
   }
   if (value.endsWith('.epub')) return 'application/epub+zip';
+  if (value.endsWith('.pdf')) return 'application/pdf';
   if (value.endsWith('.png')) return 'image/png';
   if (value.endsWith('.webp')) return 'image/webp';
   if (value.endsWith('.jpg') || value.endsWith('.jpeg')) return 'image/jpeg';
   return fallback;
 };
+
+const inferBookFormat = (...values) => {
+  const joined = values
+    .map((value) => String(value || '').trim().toLowerCase())
+    .filter(Boolean)
+    .join(' ');
+
+  if (joined.includes('application/pdf') || /\.pdf(?:\?|$|\s)/.test(joined)) {
+    return 'pdf';
+  }
+
+  return 'epub';
+};
+
+const extensionForFormat = (format) => (format === 'pdf' ? 'pdf' : 'epub');
+
+const contentTypeForBookFormat = (format) => (
+  format === 'pdf' ? 'application/pdf' : 'application/epub+zip'
+);
 
 const base64ToArrayBuffer = (base64) => {
   const clean = String(base64 || '').replace(/\s/g, '');
@@ -260,6 +280,12 @@ export const cloudBookToLocalBook = (cloudBook = {}, overrides = {}) => ({
   nativePosition: cloudBook.native_position ?? null,
   progress: getBookProgress(cloudBook),
   language: cloudBook.language ?? null,
+  format: overrides.format || inferBookFormat(
+    cloudBook.format,
+    cloudBook.original_filename,
+    cloudBook.file_path,
+    cloudBook.file_url
+  ),
   preprocessed: overrides.preprocessed ?? false,
   preprocessing: false,
   downloaded: overrides.downloaded ?? false,
@@ -270,11 +296,13 @@ export const uploadUserBook = async ({ user, ownerId, generation, localBook, pic
 
   const localUri = sanitizeText(pickedAsset?.uri || localBook?.uri);
   if (!localUri) {
-    throw new Error('Cannot upload book without a local EPUB URI');
+    throw new Error('Cannot upload book without a local file URI');
   }
 
   const cloudBookId = localBook?.cloudId || createUuid();
-  const filePath = localBook?.cloudFilePath || `${userId}/${cloudBookId}/book.epub`;
+  const format = inferBookFormat(localBook?.format, pickedAsset?.name, localUri, pickedAsset?.mimeType);
+  const fileExtension = extensionForFormat(format);
+  const filePath = localBook?.cloudFilePath || `${userId}/${cloudBookId}/book.${fileExtension}`;
 
   await uploadStorageObject({
     user,
@@ -282,7 +310,7 @@ export const uploadUserBook = async ({ user, ownerId, generation, localBook, pic
     generation,
     path: filePath,
     uri: localUri,
-    contentType: getContentTypeForUri(localUri, 'application/epub+zip'),
+    contentType: getContentTypeForUri(localUri, contentTypeForBookFormat(format)),
   });
   const coverPath = await uploadCoverIfAvailable({
     user,
@@ -438,11 +466,13 @@ export const downloadUserBook = async ({ user, ownerId, generation, cloudBook } 
   if (!filePath) {
     throw new Error('Cloud book does not have a file path');
   }
+  const format = inferBookFormat(cloudBook.format, cloudBook.originalFilename, filePath);
+  const fileExtension = extensionForFormat(format);
 
   const booksDirectory = await ensureBooksDirectory(ownerId);
   assertCloudWriteAllowed({ user, ownerId, generation });
 
-  const localUri = `${booksDirectory}${cloudBook.cloudId}.epub`;
+  const localUri = `${booksDirectory}${cloudBook.cloudId}.${fileExtension}`;
   const downloadedUri = await downloadStoragePath(filePath, localUri);
   await assertDownloadedFileReady(downloadedUri);
   assertCloudWriteAllowed({ user, ownerId, generation });
@@ -483,6 +513,7 @@ export const downloadUserBook = async ({ user, ownerId, generation, cloudBook } 
       uri: downloadedUri,
       cover: coverUri,
       downloaded: true,
+      format,
       preprocessed: false,
     }
   );

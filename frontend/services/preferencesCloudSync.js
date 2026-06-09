@@ -7,9 +7,9 @@ import {
 const FILE_TAG = '[preferencesCloudSync]';
 const USER_PREFERENCES_SELECT = `
   user_id,
+  active_profile_id,
   native_language,
   target_language,
-  interface_language,
   current_book_cloud_id,
   current_book_uri,
   reader_settings,
@@ -31,9 +31,9 @@ const assertCloudWriteAllowed = ({ user, ownerId, generation }) => {
 
 const toPreferencesRow = (userId, preferences = {}) => ({
   user_id: userId,
+  active_profile_id: firstDefined(preferences.active_profile_id, preferences.activeProfileId),
   native_language: firstDefined(preferences.native_language, preferences.nativeLanguage),
   target_language: firstDefined(preferences.target_language, preferences.targetLanguage),
-  interface_language: firstDefined(preferences.interface_language, preferences.interfaceLanguage),
   current_book_cloud_id: firstDefined(preferences.current_book_cloud_id, preferences.currentBookCloudId),
   current_book_uri: firstDefined(preferences.current_book_uri, preferences.currentBookUri),
   reader_settings: firstDefined(preferences.reader_settings, preferences.readerSettings),

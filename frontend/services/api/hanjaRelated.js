@@ -17,20 +17,22 @@ const relatedWordKey = (word) => [
 const mapMeaningRow = (meaning) => {
     const hunKorean = cleanValue(meaning?.hun_korean);
     const hunEnglish = cleanValue(meaning?.hun_english);
+    const hunDisplay = cleanValue(meaning?.hun_display);
 
     return {
         hanja: cleanValue(meaning?.char || meaning?.character),
         reading: cleanValue(meaning?.eum),
-        meaning: hunEnglish || hunKorean,
+        meaning: hunDisplay,
         hun_korean: hunKorean,
         hun_english: hunEnglish,
+        hun_display: hunDisplay,
     };
 };
 
 const mapRelatedWordRow = (word) => ({
     hanja: cleanValue(word?.hanja),
     korean: cleanValue(word?.hangul),
-    meaning: cleanValue(word?.definition_english || word?.definition_korean),
+    meaning: cleanValue(word?.definition_display || word?.definition_english || word?.definition_korean),
     word_grade: cleanValue(word?.word_grade),
 });
 
@@ -56,14 +58,17 @@ const getUniqueRelatedWords = (meanings) => {
         .filter(word => word.hanja || word.korean || word.meaning);
 };
 
-export const fetchHanjaRelated = async (query) => {
+export const fetchHanjaRelated = async (query, options = {}) => {
     const cleanedQuery = cleanValue(query);
 
     if (!cleanedQuery) {
         return emptyResult();
     }
 
-    const meanings = await lookupHanjaCharacter(cleanedQuery, { limit: 'all' });
+    const meanings = await lookupHanjaCharacter(cleanedQuery, {
+        limit: 'all',
+        interfaceLanguage: options.interfaceLanguage,
+    });
 
     if (!Array.isArray(meanings) || meanings.length === 0) {
         return emptyResult();
@@ -80,7 +85,7 @@ export const fetchHanjaRelated = async (query) => {
     };
 };
 
-const hanjaRelated = ({ query }) => {
+const hanjaRelated = ({ query, interfaceLanguage = 'en' }) => {
     const [firstTableData, setFirstTableData] = useState([]);
     const [similarWordsTableData, setSimilarWordsTableData] = useState([]);
     const [isLoading, setIsLoading] = useState(false);
@@ -96,7 +101,7 @@ const hanjaRelated = ({ query }) => {
 
             setIsLoading(true);
             setError(null);
-            const result = await fetchHanjaRelated(query);
+            const result = await fetchHanjaRelated(query, { interfaceLanguage });
             setFirstTableData(result.firstTableData);
             setSimilarWordsTableData(result.similarWordsTableData);
         } catch (error) {
@@ -109,7 +114,7 @@ const hanjaRelated = ({ query }) => {
 
     useEffect(() => {
         fetchData();
-    }, [query]);
+    }, [query, interfaceLanguage]);
 
     return { firstTableData, similarWordsTableData, isLoading, error };
 };
