@@ -34,24 +34,17 @@ OUTPUT_PATH = SCRIPTS_DIR / "hanja_translated_multilingual.json"
 BATCH_ID_FILE = SCRIPTS_DIR / ".hanja_characters_batch_id"
 
 LANGUAGES = {
-    "fr": "French",
-    "es": "Spanish",
-    "zh": "Chinese",
-    "ar": "Arabic",
-    "mn": "Mongolian",
-    "vi": "Vietnamese",
-    "th": "Thai",
-    "id": "Indonesian",
-    "ru": "Russian",
+    "zh": "Chinese (Simplified)",
 }
 
 # Chinese gets a different prompt — Chinese speakers learning Korean already know
 # the character. Show them how the Korean usage compares to modern Chinese instead.
 ZH_PROMPT = (
-    "This hanja character is used in Korean. Its Korean keyword meaning is: {hun_english}\n"
-    "In one short phrase in Chinese (Simplified), briefly note how this character's "
-    "meaning in Korean relates to or differs from its usage in modern Chinese. "
-    "Return only the Chinese phrase, nothing else."
+    "Translate this hanja character keyword meaning into Simplified Chinese. "
+    "It is a short keyword or phrase (1-4 words) used as a mnemonic meaning "
+    "for a Chinese character used in Korean. "
+    "Korean keyword: {hun_english}\n"
+    "Return only the translated keyword in Chinese, nothing else. No punctuation unless essential."
 )
 
 DEFAULT_PROMPT = (
@@ -78,13 +71,11 @@ def build_requests(entries: list[dict]) -> list[dict]:
             continue  # skip entries with no English keyword
 
         for lang, language_name in LANGUAGES.items():
-            if lang == "zh":
-                prompt = ZH_PROMPT.format(hun_english=hun_english)
-            else:
-                prompt = DEFAULT_PROMPT.format(
-                    language=language_name,
-                    hun_english=hun_english,
-                )
+            
+            prompt = DEFAULT_PROMPT.format(
+                language=language_name,
+                hun_english=hun_english,
+            )
 
             requests.append({
                 "custom_id": make_request_id(character, eum, lang),

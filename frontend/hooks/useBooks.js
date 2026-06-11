@@ -8,6 +8,7 @@ import { uploadUserBook } from '../services/bookCloudSync';
 import { readEpubMetadata } from '../services/epubMetadata';
 import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
 import { readPdfMetadata, renderPdfCover } from '../services/pdfMetadata';
+import { getLanguageLabel, normalizeBookLanguage } from '../constants/languages';
 
 const createBookId = () => {
     if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
@@ -17,7 +18,16 @@ const createBookId = () => {
     return `book-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 };
 
-const useBooks = ({ books, setBooks, setCurrentBook, onBookImported, user, ownerId, syncGeneration }) => {
+const useBooks = ({
+    books,
+    setBooks,
+    setCurrentBook,
+    onBookImported,
+    user,
+    ownerId,
+    syncGeneration,
+    targetLanguage = 'ko',
+}) => {
     const [isImporting, setIsImporting] = useState(false);
     const [openingBookUri, setOpeningBookUri] = useState(null);
     const [pdfCoverPrompt, setPdfCoverPrompt] = useState(null);
@@ -25,6 +35,7 @@ const useBooks = ({ books, setBooks, setCurrentBook, onBookImported, user, owner
     const pdfCoverChoiceResolverRef = useRef(null);
 
     const navigation = useNavigation();
+    const activeTargetLanguage = normalizeBookLanguage(targetLanguage);
 
     const getAssetFormat = (asset) => {
         const name = String(asset?.name || '').toLowerCase();
@@ -162,6 +173,15 @@ const useBooks = ({ books, setBooks, setCurrentBook, onBookImported, user, owner
                 ? await readPdfMetadata(uri, fallbackName)
                 : await readEpubMetadata(uri, fallbackName);
             const { title, author, language, wordCount } = metadata;
+            const detectedLanguage = normalizeBookLanguage(language ?? 'ko');
+            if (detectedLanguage !== activeTargetLanguage) {
+                Alert.alert(
+                    'Book language mismatch',
+                    `This book is marked as ${getLanguageLabel(detectedLanguage)}. Switch to your ${getLanguageLabel(detectedLanguage)} profile before importing it.`
+                );
+                setIsImporting(false);
+                return;
+            }
             let cover = metadata.cover;
             let pdfCoverPageNumber = null;
 
@@ -193,7 +213,9 @@ const useBooks = ({ books, setBooks, setCurrentBook, onBookImported, user, owner
                 : {};
 
             const existingBook = books.find(
-                (book) => book.downloaded !== false && (
+                (book) => book.downloaded !== false
+                && normalizeBookLanguage(book.language ?? 'ko') === detectedLanguage
+                && (
                     book.uri === uri
                     || (
                         book.title === title
@@ -208,7 +230,7 @@ const useBooks = ({ books, setBooks, setCurrentBook, onBookImported, user, owner
                     || !existingBook.originalAuthor
                     || !Object.prototype.hasOwnProperty.call(existingBook, 'originalCover')
                     || (!existingBook.cover && cover)
-                    || (!existingBook.language && language)
+                    || (!existingBook.language && detectedLanguage)
                     || (!existingBook.wordCount && wordCount)
                     || (!existingBook.format && format)
                     || (!existingBook.coverAccentColor && coverColors.coverAccentColor)
@@ -230,7 +252,7 @@ const useBooks = ({ books, setBooks, setCurrentBook, onBookImported, user, owner
                                     : cover ?? null,
                                 originalFilename: book.originalFilename || fallbackName,
                                 format: book.format || format,
-                                language: book.language || language || null,
+                                language: book.language || detectedLanguage || null,
                                 wordCount: book.wordCount || wordCount || null,
                                 pdfCoverPageNumber: book.pdfCoverPageNumber || pdfCoverPageNumber || null,
                             }
@@ -253,7 +275,7 @@ const useBooks = ({ books, setBooks, setCurrentBook, onBookImported, user, owner
                 author,
                 cover,
                 ...coverColors,
-                language,
+                language: detectedLanguage,
                 wordCount: wordCount ?? null,
                 pdfCoverPageNumber,
                 originalTitle: title,

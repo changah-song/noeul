@@ -25,6 +25,7 @@ import {
 import {
   LANGUAGE_SETTINGS_KEY,
   setRuntimeInterfaceLanguage,
+  setRuntimeTargetLanguage,
 } from '../services/interfaceLanguage';
 import {
   DEFAULT_ACTIVE_PROFILE_ID,
@@ -173,6 +174,7 @@ export const AppProvider = ({ children, user }) => {
 
       latestLanguageSettingsRef.current = next;
       setRuntimeInterfaceLanguage(next.interfaceLanguage);
+      setRuntimeTargetLanguage(next.targetLanguage);
       setRuntimeActiveProfileId(next.activeProfileId, next.targetLanguage);
       persistLocalLanguageSettings(next).catch((error) => {
         console.warn('[AppContext] Failed to persist language settings:', error);
@@ -300,6 +302,8 @@ export const AppProvider = ({ children, user }) => {
         return;
       }
       latestLanguageSettingsRef.current = localWithTimestamp;
+      setRuntimeInterfaceLanguage(localWithTimestamp.interfaceLanguage);
+      setRuntimeTargetLanguage(localWithTimestamp.targetLanguage);
       setRuntimeActiveProfileId(localWithTimestamp.activeProfileId, localWithTimestamp.targetLanguage);
       setLanguageSettings(localWithTimestamp);
       await persistLocalLanguageSettings(localWithTimestamp);
@@ -355,6 +359,7 @@ export const AppProvider = ({ children, user }) => {
       }
       latestLanguageSettingsRef.current = nextSettings;
       setRuntimeInterfaceLanguage(nextSettings.interfaceLanguage);
+      setRuntimeTargetLanguage(nextSettings.targetLanguage);
       setRuntimeActiveProfileId(nextSettings.activeProfileId, nextSettings.targetLanguage);
       setLanguageSettings(nextSettings);
       await persistLocalLanguageSettings(nextSettings);
@@ -422,6 +427,7 @@ export const AppProvider = ({ children, user }) => {
 
         latestLanguageSettingsRef.current = nextSettings;
         setRuntimeInterfaceLanguage(nextSettings.interfaceLanguage);
+        setRuntimeTargetLanguage(nextSettings.targetLanguage);
         setRuntimeActiveProfileId(nextSettings.activeProfileId, nextSettings.targetLanguage);
         setLanguageSettings(nextSettings);
       } catch (error) {

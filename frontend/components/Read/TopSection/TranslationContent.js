@@ -4,7 +4,13 @@ import { translateText } from '../../../services/api/googleTranslate';
 import { useTranslation } from '../../../hooks/useTranslation';
 import { colors, spacing, textStyles } from '../../../theme';
 
-const TranslationContent = ({ highlightedWord, isDarkMode, onContentLoaded }) => {
+const TranslationContent = ({
+    highlightedWord,
+    isDarkMode,
+    onContentLoaded,
+    sourceLanguage = 'ko',
+    targetLanguage = 'en',
+}) => {
     const { t } = useTranslation();
     const [translatedText, setTranslatedText] = useState('');
     const [isLoading, setIsLoading] = useState(false);
@@ -34,7 +40,11 @@ const TranslationContent = ({ highlightedWord, isDarkMode, onContentLoaded }) =>
         }
 
         setIsLoading(true);
-        translateText({ query })
+        translateText({
+            query,
+            source: sourceLanguage,
+            target: targetLanguage,
+        })
             .then((translation) => {
                 if (isCancelled) {
                     return;
@@ -59,7 +69,7 @@ const TranslationContent = ({ highlightedWord, isDarkMode, onContentLoaded }) =>
         return () => {
             isCancelled = true;
         };
-    }, [highlightedWord, onContentLoaded, t]);
+    }, [highlightedWord, onContentLoaded, sourceLanguage, t, targetLanguage]);
 
     return (
         <View style={styles.container}>

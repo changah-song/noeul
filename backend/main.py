@@ -22,6 +22,11 @@ try:
 except ImportError:
     koroman_romanize = None
 
+try:
+    import spacy
+except ImportError:
+    spacy = None
+
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 # ─── Rate Limit Config ────────────────────────────────────────────────────────
@@ -77,6 +82,7 @@ PREPROCESS_ACTIVE_JOB_TTL_SECONDS = 60 * 60
 # This SQLite database lives on the backend server and persists across app restarts.
 # It prevents re-calling KRDICT for words that have already been looked up in any book.
 CACHE_DB_PATH = os.path.join(os.path.dirname(__file__), "cache.db")
+EN_DICT_DB_PATH = os.path.join(os.path.dirname(__file__), "en_dict.db")
 
 
 def get_db_connection():
@@ -86,37 +92,176 @@ def get_db_connection():
     return conn
 
 
+def get_kaikki_db_connection():
+    """Open a read-only connection to the local Kaikki English dictionary DB."""
+    if not os.path.exists(EN_DICT_DB_PATH):
+        raise HTTPException(status_code=503, detail="English dictionary database is not installed")
+
+    conn = sqlite3.connect(f"file:{EN_DICT_DB_PATH}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def create_dictionary_cache_table(conn: sqlite3.Connection, table_name: str = "dictionary_cache"):
+    conn.execute(f"""
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            stem               TEXT NOT NULL,
+            language           TEXT NOT NULL DEFAULT 'ko',
+            interface_language TEXT NOT NULL DEFAULT 'en',
+            definition         TEXT,
+            gloss              TEXT,
+            hanja              TEXT,
+            pos                TEXT,
+            domain             TEXT,
+            ipa                TEXT,
+            etymology          TEXT,
+            derived            TEXT,
+            related            TEXT,
+            last_updated       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(stem, language, interface_language)
+        )
+    """)
+
+
+def _dictionary_cache_columns(conn: sqlite3.Connection) -> list[str]:
+    return [row[1] for row in conn.execute("PRAGMA table_info(dictionary_cache)").fetchall()]
+
+
+def _dictionary_cache_has_old_unique_stem_index(conn: sqlite3.Connection) -> bool:
+    for index_row in conn.execute("PRAGMA index_list(dictionary_cache)").fetchall():
+        # PRAGMA index_list columns: seq, name, unique, origin, partial
+        if not index_row[2]:
+            continue
+
+        index_name = index_row[1]
+        index_columns = [
+            column_row[2]
+            for column_row in conn.execute(f"PRAGMA index_info({index_name})").fetchall()
+        ]
+        if index_columns == ["stem"]:
+            return True
+
+    return False
+
+
+def _sql_column_or_default(existing_columns: list[str], column: str, default_sql: str) -> str:
+    return column if column in existing_columns else default_sql
+
+
 def init_cache_db():
     """
     Create the dictionary_cache table on startup if it doesn't already exist.
-    This table stores one row per unique Korean stem, with its KRDICT definition.
+    This table stores one row per dictionary stem, target language, and UI language.
     """
     print("[main] Initializing server-side cache database at:", CACHE_DB_PATH)
     conn = get_db_connection()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS dictionary_cache (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            stem        TEXT UNIQUE NOT NULL,
-            definition  TEXT,
-            hanja       TEXT,
-            pos         TEXT,
-            domain      TEXT,
-            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    # Index on stem for O(1) lookups when checking cache hits
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_stem ON dictionary_cache(stem)")
+    create_dictionary_cache_table(conn)
     conn.commit()
     conn.close()
     print("[main] Server-side cache database initialized.")
 
 
+def migrate_cache_db():
+    """
+    Upgrade older server cache DBs from UNIQUE(stem) to
+    UNIQUE(stem, language, interface_language).
+
+    SQLite cannot drop the old UNIQUE(stem) constraint in place, so when we
+    detect the old schema we rebuild the table and copy rows forward.
+    """
+    conn = get_db_connection()
+    try:
+        existing_columns = _dictionary_cache_columns(conn)
+        required_columns = {
+            "stem",
+            "language",
+            "interface_language",
+            "definition",
+            "gloss",
+            "hanja",
+            "pos",
+            "domain",
+            "ipa",
+            "etymology",
+            "derived",
+            "related",
+            "last_updated",
+        }
+        needs_rebuild = (
+            not required_columns.issubset(set(existing_columns))
+            or _dictionary_cache_has_old_unique_stem_index(conn)
+        )
+
+        if needs_rebuild:
+            print("[main] Migrating dictionary_cache schema for language-aware cache keys")
+            conn.execute("DROP TABLE IF EXISTS dictionary_cache_new")
+            create_dictionary_cache_table(conn, "dictionary_cache_new")
+
+            select_stem = _sql_column_or_default(existing_columns, "stem", "NULL")
+            select_language = (
+                "COALESCE(NULLIF(TRIM(language), ''), 'ko')"
+                if "language" in existing_columns
+                else "'ko'"
+            )
+            select_interface_language = (
+                "COALESCE(NULLIF(TRIM(interface_language), ''), 'en')"
+                if "interface_language" in existing_columns
+                else "'en'"
+            )
+            select_definition = _sql_column_or_default(existing_columns, "definition", "NULL")
+            select_gloss = _sql_column_or_default(existing_columns, "gloss", "NULL")
+            select_hanja = _sql_column_or_default(existing_columns, "hanja", "NULL")
+            select_pos = _sql_column_or_default(existing_columns, "pos", "NULL")
+            select_domain = _sql_column_or_default(existing_columns, "domain", "NULL")
+            select_ipa = _sql_column_or_default(existing_columns, "ipa", "NULL")
+            select_etymology = _sql_column_or_default(existing_columns, "etymology", "NULL")
+            select_derived = _sql_column_or_default(existing_columns, "derived", "NULL")
+            select_related = _sql_column_or_default(existing_columns, "related", "NULL")
+            select_last_updated = _sql_column_or_default(existing_columns, "last_updated", "CURRENT_TIMESTAMP")
+
+            conn.execute(f"""
+                INSERT OR IGNORE INTO dictionary_cache_new
+                    (stem, language, interface_language, definition, gloss, hanja, pos, domain,
+                     ipa, etymology, derived, related, last_updated)
+                SELECT
+                    {select_stem},
+                    {select_language},
+                    {select_interface_language},
+                    {select_definition},
+                    {select_gloss},
+                    {select_hanja},
+                    {select_pos},
+                    {select_domain},
+                    {select_ipa},
+                    {select_etymology},
+                    {select_derived},
+                    {select_related},
+                    {select_last_updated}
+                FROM dictionary_cache
+                WHERE stem IS NOT NULL AND TRIM(stem) != ''
+                ORDER BY id ASC
+            """)
+            conn.execute("DROP TABLE dictionary_cache")
+            conn.execute("ALTER TABLE dictionary_cache_new RENAME TO dictionary_cache")
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_stem_lang "
+            "ON dictionary_cache(stem, language, interface_language)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # Run on module load (executes when uvicorn starts the server)
 init_cache_db()
+migrate_cache_db()
 
 # ─── App + NLP Setup ──────────────────────────────────────────────────────────
 app = FastAPI()
 okt = Okt()
+nlp_en = None
 
 app.add_middleware(
     CORSMiddleware,
@@ -146,6 +291,7 @@ daily_usage: dict[tuple[str, str], int] = {}
 daily_usage_lock = asyncio.Lock()
 
 LOOKUP_ALLOWED_POS = {"Noun", "Verb", "Adverb", "Adjective"}
+EN_LOOKUP_ALLOWED_POS = {"NOUN", "PROPN", "VERB", "ADJ", "ADV", "NUM"}
 
 # Okt occasionally mislabels these as Noun in eojeol-final position.
 # Verified against 563k chars of public domain Korean text (22 books):
@@ -157,6 +303,21 @@ TRAILING_ENDING_FRAGMENTS = {
 }
 
 COPULA_STEMS = {"이다"}
+
+
+def get_en_nlp():
+    global nlp_en
+
+    if spacy is None:
+        raise HTTPException(status_code=503, detail="spaCy is not installed on the backend")
+
+    if nlp_en is None:
+        try:
+            nlp_en = spacy.load("en_core_web_sm")
+        except OSError:
+            raise HTTPException(status_code=503, detail="spaCy English model en_core_web_sm is not installed")
+
+    return nlp_en
 
 
 def verify_supabase_token(authorization: str = Header(default="")) -> dict[str, Any]:
@@ -622,6 +783,211 @@ def build_surface_index(
     return surface_index
 
 
+def extract_en_lookup_tokens(text: str) -> tuple[list[str], list[dict]]:
+    doc = get_en_nlp()(text)
+    seen_lemmas: set[str] = set()
+    seen_surface_pairs: set[tuple[str, str]] = set()
+    lemmas: list[str] = []
+    surface_index: list[dict] = []
+
+    for token in doc:
+        lemma = token.lemma_.strip().lower()
+        raw_surface = token.text.strip()
+        lower_surface = raw_surface.lower()
+
+        if (
+            token.pos_ not in EN_LOOKUP_ALLOWED_POS
+            or (token.is_stop and token.pos_ != "NUM")
+            or token.is_punct
+            or token.is_space
+            or len(lemma) <= 1
+        ):
+            continue
+
+        if lemma not in seen_lemmas:
+            seen_lemmas.add(lemma)
+            lemmas.append(lemma)
+
+        for surface in dict.fromkeys([raw_surface, lower_surface]):
+            if len(surface) > 1:
+                pair = (surface, lemma)
+                if pair not in seen_surface_pairs:
+                    seen_surface_pairs.add(pair)
+                    surface_index.append({
+                        "surface": surface,
+                        "stem": lemma,
+                    })
+
+    return lemmas, surface_index
+
+
+def en_dictionary_no_entry(stem: str) -> dict:
+    return {
+        "stem": stem,
+        "word": stem,
+        "definition": None,
+        "gloss": None,
+        "hanja": None,
+        "pos": None,
+        "domain": None,
+        "ipa": None,
+        "etymology": None,
+        "derived": "[]",
+        "related": "[]",
+        "language": "en",
+        "interface_language": "en",
+    }
+
+
+def build_en_definition_gloss(definition: str | None) -> str | None:
+    raw_definition = definition.strip() if isinstance(definition, str) else ""
+    if not raw_definition:
+        return None
+
+    short = raw_definition.split(",")[0].split(";")[0].strip()
+    return short if short and len(short) <= 40 else None
+
+
+def en_dictionary_row_to_result(row: sqlite3.Row) -> dict:
+    data = dict(row)
+    word = (data.get("word") or "").strip().lower()
+    return {
+        "stem": word,
+        "word": word,
+        "definition": data.get("definition"),
+        "gloss": build_en_definition_gloss(data.get("definition")),
+        "hanja": None,
+        "pos": data.get("pos"),
+        "domain": None,
+        "ipa": data.get("ipa"),
+        "etymology": data.get("etymology"),
+        "derived": data.get("derived") or "[]",
+        "related": data.get("related") or "[]",
+        "language": "en",
+        "interface_language": "en",
+    }
+
+
+def is_likely_untranslated_english_definition(definition: str | None, interface_language: str) -> bool:
+    text = definition.strip() if isinstance(definition, str) else ""
+    normalized_language = (
+        interface_language.strip().lower().replace("_", "-").split("-")[0]
+        if isinstance(interface_language, str)
+        else ""
+    )
+    has_latin = any(("a" <= char.lower() <= "z") for char in text)
+
+    if not text or not has_latin:
+        return False
+
+    if normalized_language == "ko":
+        has_korean = any(
+            "\uac00" <= char <= "\ud7a3"
+            or "\u1100" <= char <= "\u11ff"
+            or "\u3130" <= char <= "\u318f"
+            for char in text
+        )
+        return not has_korean
+
+    if normalized_language == "zh":
+        has_cjk = any("\u4e00" <= char <= "\u9fff" for char in text)
+        return not has_cjk
+
+    return False
+
+
+def lookup_en_dictionary_entries(stems: list[str]) -> tuple[list[dict], int]:
+    normalized_stems = [
+        stem.strip().lower()
+        for stem in stems
+        if isinstance(stem, str) and stem.strip()
+    ]
+    if not normalized_stems:
+        return [], 0
+
+    conn = get_kaikki_db_connection()
+    placeholders = ",".join(["?"] * len(normalized_stems))
+    rows = conn.execute(
+        f"""
+        SELECT word, pos, ipa, definition, etymology, derived, related
+        FROM en_dictionary
+        WHERE word IN ({placeholders})
+        """,
+        normalized_stems,
+    ).fetchall()
+    conn.close()
+
+    rows_by_word = {
+        row["word"].strip().lower(): en_dictionary_row_to_result(row)
+        for row in rows
+        if row["word"]
+    }
+
+    results = [
+        rows_by_word.get(stem, en_dictionary_no_entry(stem))
+        for stem in normalized_stems
+    ]
+    return results, len(rows_by_word)
+
+
+async def _preprocess_en_core(
+    text: str,
+    max_stems=None,
+    progress_callback=None,
+    interface_language: str = "en",
+) -> dict:
+    async def report(event: str, **data):
+        if progress_callback:
+            await progress_callback(event, data)
+
+    loop = asyncio.get_event_loop()
+    unique_stems, surface_index = await loop.run_in_executor(None, extract_en_lookup_tokens, text)
+    if max_stems:
+        processed_stems = set(unique_stems[:max_stems])
+        unique_stems = unique_stems[:max_stems]
+        surface_index = [entry for entry in surface_index if entry["stem"] in processed_stems]
+
+    await report(
+        "stemmed",
+        candidate_stems=len(unique_stems),
+        total_stems=len(unique_stems),
+        surface_count=len(surface_index),
+    )
+
+    if not unique_stems:
+        return {
+            "results": [],
+            "surface_index": surface_index,
+            "stats": {"total_stems": 0, "cache_hits": 0, "new_fetched": 0},
+        }
+
+    results, found_count = await loop.run_in_executor(None, lookup_en_dictionary_entries, unique_stems)
+    normalized_interface_language = (
+        interface_language.strip().lower().replace("_", "-").split("-")[0]
+        if isinstance(interface_language, str) and interface_language.strip()
+        else "en"
+    )
+    if normalized_interface_language != "en":
+        results = [
+            {
+                **result,
+                "definition": None,
+                "gloss": None,
+                "interface_language": normalized_interface_language,
+            }
+            for result in results
+        ]
+    return {
+        "results": results,
+        "surface_index": surface_index,
+        "stats": {
+            "total_stems": len(unique_stems),
+            "cache_hits": found_count,
+            "new_fetched": 0,
+        },
+    }
+
+
 # ─── Existing Endpoint: Single-text Stemming ─────────────────────────────────
 @app.get("/okt_morphs/")
 async def get_okt_morphs(text: str, auth: dict[str, Any] = Depends(verify_supabase_token)):
@@ -641,6 +1007,18 @@ async def get_okt_morphs(text: str, auth: dict[str, Any] = Depends(verify_supaba
     return {"result": filtered_stems}
 
 
+@app.get("/en_morphs/")
+async def get_en_morphs(text: str, auth: dict[str, Any] = Depends(verify_supabase_token)):
+    normalized_text = text if isinstance(text, str) else ""
+    enforce_text_limit(normalized_text, auth)
+    await enforce_daily_quota(auth)
+    print(f"[main] /en_morphs/ | text: {text!r}")
+
+    lemmas, _surface_index = extract_en_lookup_tokens(normalized_text)
+    print(f"[main] English lemmas (first 20): {lemmas[:20]}")
+    return {"result": lemmas}
+
+
 @app.get("/romanize/")
 async def romanize_text(text: str, auth: dict[str, Any] = Depends(verify_supabase_token)):
     normalized = text.strip() if isinstance(text, str) else ""
@@ -654,6 +1032,47 @@ async def romanize_text(text: str, auth: dict[str, Any] = Depends(verify_supabas
         raise HTTPException(status_code=503, detail="koroman is not installed on the backend")
 
     return {"romanization": romanize_korean_text(normalized)}
+
+
+async def _translate_text(text: str, source: str = "en", target: str = "en") -> str | None:
+    cleaned_text = text.strip() if isinstance(text, str) else ""
+    normalized_source = source.strip() if isinstance(source, str) and source.strip() else "en"
+    normalized_target = target.strip() if isinstance(target, str) and target.strip() else "en"
+
+    if not cleaned_text or normalized_source == normalized_target or not GOOGLE_TRANSLATE_RAPIDAPI_KEY:
+        return None
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                GOOGLE_TRANSLATE_RAPIDAPI_URL,
+                headers={
+                    "content-type": "application/json",
+                    "X-RapidAPI-Key": GOOGLE_TRANSLATE_RAPIDAPI_KEY,
+                    "X-RapidAPI-Host": GOOGLE_TRANSLATE_RAPIDAPI_HOST,
+                },
+                json={
+                    "q": cleaned_text,
+                    "source": normalized_source,
+                    "target": normalized_target,
+                    "format": "text",
+                },
+                timeout=8.0,
+            )
+            response.raise_for_status()
+            data = response.json()
+            response_data = data.get("data", {}) if isinstance(data, dict) else {}
+            translations = response_data.get("translations", []) if isinstance(response_data, dict) else []
+            first_translation = translations[0] if translations else {}
+            translated_text = (
+                first_translation.get("translatedText", "")
+                if isinstance(first_translation, dict)
+                else ""
+            )
+            return translated_text.strip() if isinstance(translated_text, str) else None
+    except Exception as error:
+        print(f"[main] Internal translation failed: {error}")
+        return None
 
 
 @app.post("/translate/")
@@ -890,8 +1309,14 @@ async def _preprocess_core(text: str, krdict_key: str, max_stems=None, progress_
     conn = get_db_connection()
     placeholders = ",".join(["?"] * len(unique_stems))
     cached_rows = conn.execute(
-        f"SELECT stem, definition, hanja, pos, domain FROM dictionary_cache WHERE stem IN ({placeholders})",
-        unique_stems,
+        f"""
+        SELECT stem, definition, hanja, pos, domain
+        FROM dictionary_cache
+        WHERE language = 'ko'
+          AND interface_language = ?
+          AND stem IN ({placeholders})
+        """,
+        [DEFAULT_INTERFACE_LANGUAGE, *unique_stems],
     ).fetchall()
     conn.close()
 
@@ -949,7 +1374,15 @@ async def _preprocess_core(text: str, krdict_key: str, max_stems=None, progress_
         new_results = [result for result in ordered_results if result]
         fetched_stems = {row["stem"] for row in new_results}
         no_entry_results = [
-            {"stem": stem, "definition": None, "hanja": None, "pos": None, "domain": None}
+            {
+                "stem": stem,
+                "definition": None,
+                "hanja": None,
+                "pos": None,
+                "domain": None,
+                "language": "ko",
+                "interface_language": DEFAULT_INTERFACE_LANGUAGE,
+            }
             for stem in missing_stems if stem not in fetched_stems
         ]
 
@@ -960,14 +1393,17 @@ async def _preprocess_core(text: str, krdict_key: str, max_stems=None, progress_
                 "hanja": row.get("hanja"),
                 "pos": row.get("pos"),
                 "domain": row.get("domain"),
+                "language": "ko",
+                "interface_language": DEFAULT_INTERFACE_LANGUAGE,
             }
             for row in new_results + no_entry_results
         ]
         if rows_to_insert:
             conn = get_db_connection()
             conn.executemany(
-                """INSERT OR IGNORE INTO dictionary_cache (stem, definition, hanja, pos, domain)
-                   VALUES (:stem, :definition, :hanja, :pos, :domain)""",
+                """INSERT OR IGNORE INTO dictionary_cache
+                   (stem, language, interface_language, definition, hanja, pos, domain)
+                   VALUES (:stem, :language, :interface_language, :definition, :hanja, :pos, :domain)""",
                 rows_to_insert,
             )
             conn.commit()
@@ -1113,6 +1549,180 @@ async def preprocess_chapter(payload: dict, auth: dict[str, Any] = Depends(verif
         f"text length={len(text):,} chars | max_stems={max_stems}"
     )
     result = await preprocess_text_for_dictionary(text, KRDICT_CLIENT_ID, max_stems)
+    return {
+        "book_uri": book_uri,
+        "spine_index": spine_index,
+        **result,
+    }
+
+
+@app.get("/en_dict_search/")
+async def en_dict_search(
+    stem: str,
+    interface_language: str = "en",
+    auth: dict[str, Any] = Depends(verify_supabase_token),
+):
+    normalized_stem = stem.strip().lower() if isinstance(stem, str) else ""
+    normalized_lang = (
+        interface_language.strip().lower().replace("_", "-").split("-")[0]
+        if isinstance(interface_language, str) and interface_language.strip()
+        else "en"
+    )
+    if not normalized_stem:
+        return {"result": None}
+
+    enforce_text_limit(normalized_stem, auth, field_name="stem")
+    await enforce_daily_quota(auth)
+
+    conn = get_db_connection()
+    cached = conn.execute(
+        """
+        SELECT id, stem, language, interface_language, definition, gloss, hanja, pos, domain,
+               ipa, etymology, derived, related, last_updated
+        FROM dictionary_cache
+        WHERE stem = ?
+          AND language = 'en'
+          AND interface_language = ?
+        LIMIT 1
+        """,
+        (normalized_stem, normalized_lang),
+    ).fetchone()
+    conn.close()
+
+    if cached:
+        cached_result = dict(cached)
+        is_stale_fallback = is_likely_untranslated_english_definition(
+            cached_result.get("definition"),
+            normalized_lang,
+        )
+        if not is_stale_fallback:
+            if not cached_result.get("gloss"):
+                cached_result["gloss"] = (
+                    build_en_definition_gloss(cached_result.get("definition"))
+                    if normalized_lang == "en"
+                    else await _translate_text(normalized_stem, source="en", target=normalized_lang)
+                )
+                if cached_result.get("gloss"):
+                    conn = get_db_connection()
+                    conn.execute(
+                        """
+                        UPDATE dictionary_cache
+                        SET gloss = ?, last_updated = CURRENT_TIMESTAMP
+                        WHERE stem = ? AND language = 'en' AND interface_language = ?
+                        """,
+                        (cached_result["gloss"], normalized_stem, normalized_lang),
+                    )
+                    conn.commit()
+                    conn.close()
+            cached_result["word"] = cached_result.get("stem")
+            return {"result": cached_result}
+
+    results, _found_count = lookup_en_dictionary_entries([normalized_stem])
+    entry = dict(results[0]) if results else None
+
+    if not entry or not entry.get("definition"):
+        return {"result": None}
+
+    entry["language"] = "en"
+    entry["interface_language"] = normalized_lang
+
+    translation_failed = False
+    if normalized_lang != "en":
+        translated, translated_gloss = await asyncio.gather(
+            _translate_text(entry["definition"], source="en", target=normalized_lang),
+            _translate_text(normalized_stem, source="en", target=normalized_lang),
+        )
+        if translated:
+            entry["definition"] = translated
+        else:
+            translation_failed = True
+        entry["gloss"] = translated_gloss
+    else:
+        entry["gloss"] = build_en_definition_gloss(entry.get("definition"))
+
+    if not translation_failed:
+        conn = get_db_connection()
+        conn.execute(
+            """
+            INSERT INTO dictionary_cache
+                (stem, language, interface_language, definition, gloss, hanja, pos, domain,
+                 ipa, etymology, derived, related)
+            VALUES (?, 'en', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(stem, language, interface_language) DO UPDATE SET
+                definition = excluded.definition,
+                gloss = excluded.gloss,
+                hanja = excluded.hanja,
+                pos = excluded.pos,
+                domain = excluded.domain,
+                ipa = excluded.ipa,
+                etymology = excluded.etymology,
+                derived = excluded.derived,
+                related = excluded.related,
+                last_updated = CURRENT_TIMESTAMP
+            """,
+            (
+                normalized_stem,
+                normalized_lang,
+                entry.get("definition"),
+                entry.get("gloss"),
+                entry.get("hanja"),
+                entry.get("pos"),
+                entry.get("domain"),
+                entry.get("ipa"),
+                entry.get("etymology"),
+                entry.get("derived"),
+                entry.get("related"),
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+    return {"result": entry}
+
+
+@app.post("/preprocess_chapter_en/")
+async def preprocess_chapter_en(payload: dict, auth: dict[str, Any] = Depends(verify_supabase_token)):
+    text = payload.get("text", "")
+    book_uri = payload.get("book_uri", "")
+    spine_index = payload.get("spine_index", None)
+    raw_interface_language = payload.get("interface_language", payload.get("language", "en"))
+    interface_language = (
+        str(raw_interface_language or "en")
+        .strip()
+        .lower()
+        .replace("_", "-")
+        .split("-")[0]
+    )
+    max_stems = limited_preprocess_max_stems(payload.get("max_stems", MAX_STEMS_DEFAULT), auth)
+
+    if not isinstance(spine_index, int):
+        raise HTTPException(status_code=400, detail="spine_index must be an integer")
+
+    if not isinstance(text, str):
+        raise HTTPException(status_code=400, detail="text must be a string")
+
+    if not text:
+        return {
+            "book_uri": book_uri,
+            "spine_index": spine_index,
+            "results": [],
+            "surface_index": [],
+            "stats": {"total_stems": 0, "cache_hits": 0, "new_fetched": 0},
+        }
+
+    enforce_preprocess_text_limit(text)
+    await enforce_daily_quota(auth)
+
+    print(
+        f"[main] /preprocess_chapter_en/ | spine={spine_index} "
+        f"text length={len(text):,} chars | interface_language={interface_language} "
+        f"max_stems={max_stems}"
+    )
+    result = await _preprocess_en_core(
+        text,
+        max_stems,
+        interface_language=interface_language,
+    )
     return {
         "book_uri": book_uri,
         "spine_index": spine_index,

@@ -1,22 +1,41 @@
 import { useState, useEffect } from 'react';
+import {
+  getRuntimeInterfaceLanguage,
+  getRuntimeTargetLanguage,
+} from '../interfaceLanguage';
 import { api } from './client';
+
+const normalizeTranslationLanguageCode = (language, fallback) => {
+  const normalized = String(language || fallback || '')
+    .trim()
+    .toLowerCase()
+    .split(/[-_]/)[0];
+
+  return normalized || fallback;
+};
 
 export const translateText = async ({
   query,
   source = 'ko',
-  target = 'en-US',
+  target = 'en',
   timeout = 8000,
 } = {}) => {
   const cleanedQuery = typeof query === 'string' ? query.trim() : '';
+  const sourceLanguage = normalizeTranslationLanguageCode(source, 'ko');
+  const targetLanguage = normalizeTranslationLanguageCode(target, 'en');
 
   if (!cleanedQuery) {
     return '';
   }
 
+  if (sourceLanguage === targetLanguage) {
+    return cleanedQuery;
+  }
+
   const response = await api.post('/translate/', {
     query: cleanedQuery,
-    source,
-    target,
+    source: sourceLanguage,
+    target: targetLanguage,
   }, {
     timeout,
     headers: {
@@ -27,14 +46,18 @@ export const translateText = async ({
   return response.data?.translatedText?.trim?.() ?? '';
 };
 
-const googleTranslate = ( {query} ) => {
+const googleTranslate = ({ query, source = null, target = null } = {}) => {
   const [translatedData, setData] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
 
   const fetchData = async () => {
     setIsLoading(true);
     try {
-      const translated = await translateText({ query });
+      const translated = await translateText({
+        query,
+        source: source ?? getRuntimeTargetLanguage(),
+        target: target ?? getRuntimeInterfaceLanguage(),
+      });
       setData(translated);
     } catch(error) {
       console.error('[googleTranslate] Error translating:', error);
@@ -45,7 +68,7 @@ const googleTranslate = ( {query} ) => {
 
   useEffect(() => {
     fetchData();
-  }, [query]);
+  }, [query, source, target]);
 
   return { translatedData };
 }
