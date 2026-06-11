@@ -3,6 +3,11 @@ import { Animated, Easing, StyleSheet, Text, TouchableOpacity, View } from 'reac
 import { MaterialIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from '../../../hooks/useTranslation';
+import { useAppContext } from '../../../contexts/AppContext';
+import {
+    normalizeBookLanguage,
+    normalizeInterfaceLanguageCode,
+} from '../../../constants/languages';
 import { colors, spacing, textStyles } from '../../../theme';
 import TranslationContent from './TranslationContent';
 import DictionaryContent from './DictionaryContent';
@@ -10,11 +15,17 @@ import DictionaryContent from './DictionaryContent';
 const DICTIONARY_COMPACT_HEIGHT = 124;
 const DICTIONARY_EXPANDED_MAX_HEIGHT = 390;
 const DICTIONARY_EXTRA_ROW_HEIGHT = 52;
-const TRANSLATION_SOURCE_LANGUAGE = 'KO';
-const TRANSLATION_TARGET_LANGUAGE = 'EN';
+
+const formatTranslationLanguageCode = (language) => (
+    String(language || '')
+        .trim()
+        .split(/[-_]/)[0]
+        .toUpperCase()
+);
 
 const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, isDarkMode, onClose, onWordSave, onWordUnsave, currentBook, sourceBook, savedWords }) => {
     const { t } = useTranslation();
+    const { interfaceLanguage, targetLanguage: activeTargetLanguage } = useAppContext();
     const insets = useSafeAreaInsets();
     const [dictionaryExpandedRows, setDictionaryExpandedRows] = useState(0);
     const [dictionaryContentHeight, setDictionaryContentHeight] = useState(0);
@@ -117,6 +128,14 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
         : DICTIONARY_COMPACT_HEIGHT;
     const isTranslationMode = isNativeSelection || !!translationTarget;
     const translationText = translationTarget || visibleWord;
+    const translationSourceLanguage = normalizeBookLanguage(
+        sourceBook?.language ?? activeTargetLanguage ?? 'ko'
+    );
+    const translationTargetLanguage = normalizeInterfaceLanguageCode(interfaceLanguage);
+    const translationHeaderParams = {
+        source: formatTranslationLanguageCode(translationSourceLanguage),
+        target: formatTranslationLanguageCode(translationTargetLanguage),
+    };
     const sheetSizeStyle = isTranslationMode
         ? styles.sheetTranslation
         : { height: dictionaryHeight };
@@ -148,10 +167,7 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
                     <View style={styles.translationHeaderLeft}>
                         <MaterialIcons name="translate" size={18} color={panelColors.accent} />
                         <Text numberOfLines={1} style={[styles.translationHeaderText, { color: panelColors.accent }]}>
-                            {t('lookup.translationHeader', {
-                                source: TRANSLATION_SOURCE_LANGUAGE,
-                                target: TRANSLATION_TARGET_LANGUAGE,
-                            })}
+                            {t('lookup.translationHeader', translationHeaderParams)}
                         </Text>
                     </View>
                     <TouchableOpacity
@@ -187,9 +203,11 @@ const TopSection = ({ highlightedWord, sourceSentence = '', isNativeSelection, i
                 ) : (
                     <View style={styles.contentFill}>
                         <TranslationContent
-                            key={`${translationText}-translation`}
+                            key={`${translationText}-${translationSourceLanguage}-${translationTargetLanguage}-translation`}
                             highlightedWord={translationText}
                             isDarkMode={isDarkMode}
+                            sourceLanguage={translationSourceLanguage}
+                            targetLanguage={translationTargetLanguage}
                         />
                     </View>
                 )}

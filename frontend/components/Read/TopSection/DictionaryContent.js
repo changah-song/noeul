@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Text, View, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView } from 'react-native';
 import koreanDictionary from '../../../services/api/koreanDictionary';
 import stemWord from '../../../services/api/stemWord';
@@ -26,6 +26,7 @@ import {
 } from '../../../services/supabase';
 import HanjaDetails from './HanjaDetails';
 import { isCurrentSyncGeneration } from '../../../services/localOwnerCoordinator';
+import { normalizeBookLanguage } from '../../../constants/languages';
 import { colors, fontFamilies, radii, spacing, textStyles } from '../../../theme';
 
 const STOP_STEMS = new Set([
@@ -40,7 +41,11 @@ const STOP_STEMS = new Set([
 ]);
 
 const KOREAN_RE = /[^\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]/g;
+const ENGLISH_EDGE_RE = /^[^A-Za-z]+|[^A-Za-z]+$/g;
 const HANJA_RE = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/;
+const LATIN_RE = /[A-Za-z]/;
+const HANGUL_RE = /[\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]/;
+const CJK_RE = /[\u4E00-\u9FFF]/;
 const POS_LABELS = {
     Noun: 'NOUN',
     Verb: 'VERB',
@@ -69,8 +74,6 @@ const POS_LABELS = {
     '품사 없음': '',
 };
 
-const normalizeSurfaceWord = (word) => (word ?? '').replace(KOREAN_RE, '');
-
 const cleanValue = (value) => {
     if (typeof value !== 'string') {
         return '';
@@ -78,6 +81,14 @@ const cleanValue = (value) => {
     const trimmed = value.trim();
     return trimmed === 'N/A' || trimmed === 'Unknown' ? '' : trimmed;
 };
+
+const normalizeSurfaceWord = (word) => cleanValue(word).replace(KOREAN_RE, '');
+const normalizeEnglishSurfaceWord = (word) => cleanValue(word).replace(ENGLISH_EDGE_RE, '').toLowerCase();
+const normalizeSurfaceWordForLanguage = (word, language) => (
+    normalizeBookLanguage(language) === 'en'
+        ? normalizeEnglishSurfaceWord(word)
+        : normalizeSurfaceWord(word)
+);
 
 const hasSavableDefinition = (definition) => {
     const normalized = cleanValue(definition);
@@ -90,8 +101,27 @@ const getHanjaCharacters = (value) => cleanValue(value).split('').filter((char) 
 const getEntryWord = (entry, fallback) => cleanValue(entry?.stem) || cleanValue(entry?.word) || fallback;
 const getEntryHanja = (entry) => cleanValue(entry?.hanja) || cleanValue(entry?.origin);
 const getEntryDefinition = (entry) => cleanValue(entry?.definition) || cleanValue(entry?.transWord);
+const getEntryGloss = (entry) => cleanValue(entry?.gloss);
 const getEntryPos = (entry) => cleanValue(entry?.pos);
 const getEntryRomanization = (entry) => cleanValue(entry?.romanization);
+const getEntryIpa = (entry) => cleanValue(entry?.ipa);
+const isLikelyUntranslatedEnglishDefinition = (definition, interfaceLanguage) => {
+    const text = cleanValue(definition);
+
+    if (!text || !LATIN_RE.test(text)) {
+        return false;
+    }
+
+    if (interfaceLanguage === 'ko') {
+        return !HANGUL_RE.test(text);
+    }
+
+    if (interfaceLanguage === 'zh') {
+        return !CJK_RE.test(text);
+    }
+
+    return false;
+};
 const getRelatedKnownWordKey = (entry) => `${entry?.korean ?? ''}|${entry?.hanja ?? ''}`;
 
 const formatPos = (pos) => {
@@ -178,8 +208,23 @@ const DictionaryContent = ({
             icon: '#fffdf8',
         };
 
+    const targetLanguage = normalizeBookLanguage(sourceBook?.language ?? 'ko');
+    const isEnglishBook = targetLanguage === 'en';
+    const isUsableCachedEntry = useCallback((entry) => {
+        if (!isEnglishBook || interfaceLanguage === 'en') {
+            return true;
+        }
+
+        const definition = getEntryDefinition(entry);
+        return Boolean(definition)
+            && !isLikelyUntranslatedEnglishDefinition(definition, interfaceLanguage);
+    }, [interfaceLanguage, isEnglishBook]);
+    const cacheScope = useMemo(() => ({
+        language: targetLanguage,
+        interfaceLanguage,
+    }), [interfaceLanguage, targetLanguage]);
     const contextSentence = cleanValue(sourceSentence);
-    const tappedSurface = cleanValue(normalizeSurfaceWord(highlightedWord)) || cleanValue(highlightedWord);
+    const tappedSurface = cleanValue(normalizeSurfaceWordForLanguage(highlightedWord, targetLanguage)) || cleanValue(highlightedWord);
     const [expandedWords, setExpandedWords] = useState([]);
     const [stemWordList, setStemWordList] = useState([]);
     const [cachedResults, setCachedResults] = useState(null);
@@ -234,7 +279,7 @@ const DictionaryContent = ({
 
         if (!highlightedWord) return;
 
-        const normalizedSurface = normalizeSurfaceWord(highlightedWord);
+        const normalizedSurface = normalizeSurfaceWordForLanguage(highlightedWord, targetLanguage);
         if (!normalizedSurface) {
             setCachedResults([]);
             onContentLoaded?.();
@@ -249,7 +294,7 @@ const DictionaryContent = ({
                     activeOwnerId,
                     currentBook,
                     normalizedSurface,
-                    interfaceLanguage
+                    cacheScope
                 );
                 if (isCancelled) {
                     return;
@@ -263,14 +308,23 @@ const DictionaryContent = ({
                 });
 
                 if (indexHits.length > 0) {
-                    setCachedResults(indexHits);
-                    setNeedsLiveFetch(false);
-                    onContentLoaded?.();
+                    const usableHits = indexHits.filter(isUsableCachedEntry);
+                    const staleStems = indexHits
+                        .filter((entry) => !isUsableCachedEntry(entry))
+                        .map((entry) => cleanValue(entry?.stem))
+                        .filter(Boolean);
+
+                    setCachedResults(usableHits);
+                    setStemWordList(staleStems);
+                    setNeedsLiveFetch(staleStems.length > 0);
+                    if (staleStems.length === 0) {
+                        onContentLoaded?.();
+                    }
                     return;
                 }
             }
 
-            const directCacheRows = await lookupCacheByStems([normalizedSurface], interfaceLanguage);
+            const directCacheRows = await lookupCacheByStems([normalizedSurface], cacheScope);
             if (isCancelled) {
                 return;
             }
@@ -280,17 +334,29 @@ const DictionaryContent = ({
             );
 
             if (uniqueDirectCacheRows.length > 0) {
-                setCachedResults(uniqueDirectCacheRows);
-                setNeedsLiveFetch(false);
-                onContentLoaded?.();
+                const usableRows = uniqueDirectCacheRows.filter(isUsableCachedEntry);
+                const staleStems = uniqueDirectCacheRows
+                    .filter((entry) => !isUsableCachedEntry(entry))
+                    .map((entry) => cleanValue(entry?.stem))
+                    .filter(Boolean);
+
+                setCachedResults(usableRows);
+                setStemWordList(staleStems);
+                setNeedsLiveFetch(staleStems.length > 0);
+                if (staleStems.length === 0) {
+                    onContentLoaded?.();
+                }
                 return;
             }
 
-            const result = await stemWord({ query: highlightedWord });
+            const result = await stemWord({ query: highlightedWord, language: targetLanguage });
             if (isCancelled) {
                 return;
             }
-            const filtered = [...new Set(result.filter(stem => !STOP_STEMS.has(stem)))];
+            let filtered = [...new Set(result.filter(stem => !STOP_STEMS.has(stem)))];
+            if (filtered.length === 0 && isEnglishBook && normalizedSurface) {
+                filtered = [normalizedSurface];
+            }
             setStemWordList(filtered);
             if (filtered.length === 0) {
                 setCachedResults([]);
@@ -303,26 +369,32 @@ const DictionaryContent = ({
         return () => {
             isCancelled = true;
         };
-    }, [activeOwnerId, currentBook, highlightedWord, interfaceLanguage, onContentLoaded]);
+    }, [activeOwnerId, cacheScope, currentBook, highlightedWord, isEnglishBook, isUsableCachedEntry, onContentLoaded, targetLanguage]);
 
     useEffect(() => {
         if (stemWordList.length === 0) return;
 
         const checkCache = async () => {
-            const raw = await lookupCacheByStems(stemWordList, interfaceLanguage);
+            const raw = await lookupCacheByStems(stemWordList, cacheScope);
             const seen = new Set();
             const hits = raw.filter(row => {
                 if (seen.has(row.stem)) return false;
                 seen.add(row.stem);
                 return true;
             });
+            const usableHits = hits.filter(isUsableCachedEntry);
+            const staleStems = hits
+                .filter((entry) => !isUsableCachedEntry(entry))
+                .map((entry) => cleanValue(entry?.stem))
+                .filter(Boolean);
+            const missingOrStaleCount = (stemWordList.length - usableHits.length) + staleStems.length;
 
-            if (hits.length >= stemWordList.length) {
-                setCachedResults(hits);
+            if (usableHits.length >= stemWordList.length && staleStems.length === 0) {
+                setCachedResults(usableHits);
                 setNeedsLiveFetch(false);
                 onContentLoaded?.();
-            } else if (hits.length > 0) {
-                setCachedResults(hits);
+            } else if (usableHits.length > 0 || missingOrStaleCount > 0) {
+                setCachedResults(usableHits);
                 setNeedsLiveFetch(true);
             } else {
                 setCachedResults([]);
@@ -330,9 +402,12 @@ const DictionaryContent = ({
             }
         };
         checkCache();
-    }, [interfaceLanguage, stemWordList, onContentLoaded]);
+    }, [cacheScope, isUsableCachedEntry, stemWordList, onContentLoaded]);
 
-    const { dictionaryData, isLoading: isLiveLoading, error: liveError } = koreanDictionary({ query: needsLiveFetch ? stemWordList : [] });
+    const { dictionaryData, isLoading: isLiveLoading, error: liveError } = koreanDictionary({
+        query: needsLiveFetch ? stemWordList : [],
+        language: targetLanguage,
+    });
 
     useEffect(() => {
         const expandedCachedCount = Object.entries(expandedCached).reduce((maxCount, [stem, isExpanded]) => {
@@ -358,6 +433,10 @@ const DictionaryContent = ({
     }, [dictionaryData, expandedCached, expandedWords, extraDefs, onExpandedStateChange, stemWordList]);
 
     const fetchRomanizations = async (terms) => {
+        if (isEnglishBook) {
+            return;
+        }
+
         const missingTerms = [...new Set((terms || []).map(cleanValue).filter(Boolean))]
             .filter((term) => romanizations[term] === undefined);
 
@@ -412,22 +491,36 @@ const DictionaryContent = ({
                 const first = results[0];
                 return {
                     stem,
-                    definition: first.transWord !== 'N/A' ? first.transWord : null,
-                    hanja: first.origin !== 'N/A' ? first.origin : null,
+                    language: targetLanguage,
+                    interfaceLanguage,
+                    definition: isEnglishBook
+                        ? (first.definition ?? null)
+                        : (first.transWord !== 'N/A' ? first.transWord : null),
+                    gloss: isEnglishBook ? (first.gloss ?? null) : null,
+                    hanja: isEnglishBook ? null : (first.origin !== 'N/A' ? first.origin : null),
                     pos: first.pos ?? null,
                     domain: null,
+                    ipa: isEnglishBook ? (first.ipa ?? null) : null,
+                    etymology: isEnglishBook ? (first.etymology ?? null) : null,
+                    derived: isEnglishBook ? (first.derived ?? null) : null,
+                    related: isEnglishBook ? (first.related ?? null) : null,
                 };
             })
             .filter(Boolean);
 
         if (entries.length > 0) {
-            insertCacheEntries(entries, interfaceLanguage);
+            insertCacheEntries(entries, cacheScope);
         }
 
         onContentLoaded?.();
-    }, [dictionaryData, interfaceLanguage, needsLiveFetch, onContentLoaded, stemWordList]);
+    }, [cacheScope, dictionaryData, interfaceLanguage, isEnglishBook, needsLiveFetch, onContentLoaded, stemWordList, targetLanguage]);
 
     const prefetchExtra = async (stem) => {
+        if (isEnglishBook) {
+            setExtraDefs(prev => ({ ...prev, [stem]: [] }));
+            return;
+        }
+
         setExtraDefs(prev => ({ ...prev, [stem]: 'prefetching' }));
         try {
             const response = await api.post('/krdict_search/', {
@@ -558,7 +651,7 @@ const DictionaryContent = ({
         sourceBookUri: sourceBook?.uri ?? currentBook ?? null,
         sourceBookTitle: sourceBook?.title ?? null,
         contextSentence: contextSentence || null,
-        language: sourceBook?.language ?? 'ko',
+        language: targetLanguage,
     });
 
     const buildCloudVocabPayload = ({
@@ -584,7 +677,7 @@ const DictionaryContent = ({
         nextReviewAt: null,
         correctCount: 0,
         wrongCount: 0,
-        language: sourceBook?.language ?? 'ko',
+        language: targetLanguage,
         relatedKnownWords,
     });
 
@@ -639,7 +732,7 @@ const DictionaryContent = ({
             createdAt,
             relatedKnownWords,
         });
-        const alreadySaved = await vocabEntryExists(word, origin, definition, sourceBook?.language ?? 'ko', {
+        const alreadySaved = await vocabEntryExists(word, origin, definition, targetLanguage, {
             ownerId: activeOwnerId,
         });
         if (!alreadySaved) {
@@ -651,7 +744,7 @@ const DictionaryContent = ({
                 contextSentence: contextSentence || null,
                 createdAt,
                 updatedAt: createdAt,
-                language: sourceBook?.language ?? 'ko',
+                language: targetLanguage,
                 relatedKnownWords,
             });
         }
@@ -663,7 +756,7 @@ const DictionaryContent = ({
             sentence: contextSentence,
             sourceBookUri: sourceBook?.uri ?? currentBook ?? null,
             sourceBookTitle: sourceBook?.title ?? null,
-            language: sourceBook?.language ?? 'ko',
+            language: targetLanguage,
         });
 
         const {
@@ -700,7 +793,7 @@ const DictionaryContent = ({
         onWordUnsave?.(word, options);
         const ownerId = activeOwnerId;
         const generation = syncGeneration;
-        await removeData(word, origin, definition, sourceBook?.language ?? 'ko', {
+        await removeData(word, origin, definition, targetLanguage, {
             ownerId,
         });
 
@@ -717,7 +810,7 @@ const DictionaryContent = ({
                 word,
                 hanja: origin,
                 definition,
-                language: sourceBook?.language ?? 'ko',
+                language: targetLanguage,
             };
             await softDeleteUserVocabEntry({ user, ownerId, generation, entry: cloudEntry });
             await softDeleteUserVocabContextsForWord({ user, ownerId, generation, entry: cloudEntry });
@@ -918,13 +1011,15 @@ const DictionaryContent = ({
         </TouchableOpacity>
     );
 
-    const renderEntryHeading = ({ word, hanja, definition, pos, romanization }) => {
+    const renderEntryHeading = ({ word, hanja, definition, pos, romanization, ipa }) => {
         const posLabel = formatPos(pos);
         const sourceWordDetails = buildSourceWordDetails({ hanja, definition });
-        const hanjaElement = renderHanja(hanja, 'entry', word, sourceWordDetails);
+        const hanjaElement = isEnglishBook ? null : renderHanja(hanja, 'entry', word, sourceWordDetails);
         const romanizationText = cleanValue(romanization);
+        const ipaText = cleanValue(ipa);
         const bookmarkButton = renderBookmarkButton(word, hanja, definition);
         const translateButton = renderTranslateButton();
+        const pronunciationText = isEnglishBook ? ipaText : romanizationText;
 
         return (
             <View style={styles.entryHeading}>
@@ -949,10 +1044,10 @@ const DictionaryContent = ({
                         </View>
                     ) : null}
                 </View>
-                {(romanizationText || (tappedSurface && tappedSurface !== word)) ? (
+                {(pronunciationText || (tappedSurface && tappedSurface !== word)) ? (
                     <Text selectable style={[styles.entryMeta, { color: palette.mutedText }]}>
-                        {romanizationText}
-                        {romanizationText && tappedSurface && tappedSurface !== word ? ' · ' : ''}
+                        {pronunciationText}
+                        {pronunciationText && tappedSurface && tappedSurface !== word ? ' · ' : ''}
                         {tappedSurface && tappedSurface !== word ? t('lookup.fromSurface', { surface: tappedSurface }) : ''}
                     </Text>
                 ) : null}
@@ -1064,8 +1159,10 @@ const DictionaryContent = ({
         word,
         hanja,
         definition,
+        gloss,
         pos,
         romanization,
+        ipa,
         showMore,
         showLess,
         onMore,
@@ -1074,16 +1171,21 @@ const DictionaryContent = ({
         separated,
     }) => (
         <View key={key} style={[styles.primaryEntry, separated && { borderTopColor: palette.border, borderTopWidth: StyleSheet.hairlineWidth }]}>
-            {renderEntryHeading({ word, hanja, definition, pos, romanization })}
+            {renderEntryHeading({ word, hanja, definition, pos, romanization, ipa })}
+            {isEnglishBook && gloss ? (
+                <Text selectable style={[styles.glossText, { color: palette.text }]}>
+                    {gloss}
+                </Text>
+            ) : null}
             {definition ? (
                 <Text selectable style={[styles.definitionText, { color: palette.text }]}>
                     {definition}
                 </Text>
             ) : (
-                <Text selectable style={[styles.emptyDefinition, { color: palette.emptyText }]}>
-                    {t('lookup.noDictionaryEntry')}
-                </Text>
-            )}
+            <Text selectable style={[styles.emptyDefinition, { color: palette.emptyText }]}>
+                {t('lookup.noDictionaryEntry')}
+            </Text>
+        )}
             {showLess ? renderExtraDefinitions(extraEntries) : null}
             {renderMoreArrow({ showMore, showLess, onMore, onLess })}
         </View>
@@ -1143,8 +1245,10 @@ const DictionaryContent = ({
                     word: stem,
                     hanja: getEntryHanja(cachedEntry),
                     definition: getEntryDefinition(cachedEntry),
+                    gloss: getEntryGloss(cachedEntry) || getEntryGloss(liveMeta),
                     pos: getEntryPos(cachedEntry) || getEntryPos(liveMeta),
                     romanization: romanizations[stem] || getEntryRomanization(liveMeta),
+                    ipa: getEntryIpa(cachedEntry) || getEntryIpa(liveMeta),
                     showMore,
                     showLess,
                     onMore: () => setExpandedCached(prev => ({ ...prev, [cachedEntry.stem]: true })),
@@ -1153,6 +1257,7 @@ const DictionaryContent = ({
                     separated: false,
                 })}
 
+                {!isEnglishBook ? (
                 <HanjaDetails
                     hanja={currentHanja?.character ?? null}
                     hanjaCharacters={currentHanja?.characters ?? []}
@@ -1165,6 +1270,7 @@ const DictionaryContent = ({
                     onSourceWordAutoSaved={handleSourceWordAutoSaved}
                     isDarkMode={isDarkMode}
                 />
+                ) : null}
                 </>
             )
         );
@@ -1182,8 +1288,10 @@ const DictionaryContent = ({
                 word: cleanValue(first.word) || word,
                 hanja: getEntryHanja(first),
                 definition: getEntryDefinition(first),
+                gloss: getEntryGloss(first),
                 pos: getEntryPos(first),
                 romanization: romanizations[word] || getEntryRomanization(first),
+                ipa: getEntryIpa(first),
                 showMore: extraEntries.length > 0 && !isExpanded,
                 showLess: extraEntries.length > 0 && isExpanded,
                 onMore: () => setExpandedWords(prev => [...prev, word]),
@@ -1195,13 +1303,16 @@ const DictionaryContent = ({
                 word,
                 hanja: '',
                 definition: '',
+                gloss: '',
                 pos: '',
                 romanization: romanizations[word],
+                ipa: '',
                 showMore: false,
                 showLess: false,
                 separated: false,
             })}
 
+            {!isEnglishBook ? (
             <HanjaDetails
                 hanja={currentHanja?.character ?? null}
                 hanjaCharacters={currentHanja?.characters ?? []}
@@ -1214,6 +1325,7 @@ const DictionaryContent = ({
                 onSourceWordAutoSaved={handleSourceWordAutoSaved}
                 isDarkMode={isDarkMode}
             />
+            ) : null}
         </>
     );
 };
@@ -1330,6 +1442,14 @@ const styles = StyleSheet.create({
         ...textStyles.sectionTitle,
         fontSize: 18,
         lineHeight: 23,
+        letterSpacing: 0,
+    },
+    glossText: {
+        fontFamily: fontFamilies.sans,
+        fontSize: 18,
+        lineHeight: 23,
+        fontWeight: '600',
+        marginBottom: spacing.xs,
         letterSpacing: 0,
     },
     emptyDefinition: {

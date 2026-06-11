@@ -21,6 +21,7 @@ import { Feather, Ionicons } from '@expo/vector-icons';
 import { tabBarBaseStyle } from '../components/shared/TabBar';
 import SongReader from '../components/Songs/SongReader';
 import { IconButton, Screen } from '../components/ui';
+import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
 import { colors, fontFamilies, insets, layout, radii, spacing, textStyles } from '../theme';
@@ -48,6 +49,13 @@ import { readEpubMetadata } from '../services/epubMetadata';
 import { readPdfMetadata } from '../services/pdfMetadata';
 import { getPublicDomainBooks } from '../services/publicDomainBooks';
 import {
+    downloadFeaturedBooks,
+    downloadPublicBook,
+    fetchPublicLibrary,
+    getLocalPath as getPublicLibraryLocalPath,
+    isBookDownloaded as isPublicLibraryBookDownloaded,
+} from '../services/publicLibraryService';
+import {
     cloudSongToLocalSong,
     fetchUserSongs,
     softDeleteUserSong,
@@ -72,7 +80,7 @@ import {
     startFloatingWidget,
     stopFloatingWidget,
 } from '../modules/screen-ocr-overlay/src';
-import { getLanguageLabel } from '../constants/languages';
+import { getLanguageLabel, normalizeBookLanguage } from '../constants/languages';
 
 const BOOK_GRID_GAP = 18;
 const HOME_CONTENT_HORIZONTAL_PADDING = 22;
@@ -90,7 +98,13 @@ const PREVIEW_SPINE_PAGE_BUCKETS = [
     { maxPages: 640, width: 47 },
 ];
 const LEGACY_SONGS_STORAGE_KEY = 'manualSongs';
-const getSongsStorageKey = (ownerId) => makeScopedStorageKey(ownerId, 'manual-songs');
+const getSongsStorageKey = (ownerId, language = 'ko') => {
+    const normalizedLanguage = normalizeBookLanguage(language);
+    return makeScopedStorageKey(
+        ownerId,
+        normalizedLanguage === 'ko' ? 'manual-songs' : `manual-songs-${normalizedLanguage}`
+    );
+};
 const OCR_SETTINGS_KEY = '@ff/ocr-settings';
 const EMPTY_SONG_DRAFT = { title: '', artist: '', lyrics: '' };
 const DEFAULT_SONG_FONT_SIZE = 28;
@@ -113,6 +127,27 @@ const PUBLIC_DOMAIN_SORTS = [
     { id: 'length', labelKey: 'home.length' },
     { id: 'genre', labelKey: 'home.genre' },
 ];
+
+const makePublicLibraryDiagnostics = (patch = {}) => ({
+    stage: 'idle',
+    detail: '',
+    targetLanguage: null,
+    rowCount: null,
+    checkedCount: null,
+    downloadedCount: null,
+    errorMessage: null,
+    ...patch,
+});
+
+const getPublicLibraryDiagnosticLines = (diagnostics = {}) => [
+    diagnostics.detail,
+    diagnostics.stage ? `Stage: ${diagnostics.stage}` : null,
+    diagnostics.targetLanguage ? `Target language: ${diagnostics.targetLanguage}` : null,
+    diagnostics.rowCount != null ? `Rows: ${diagnostics.rowCount}` : null,
+    diagnostics.checkedCount != null ? `Local checks: ${diagnostics.checkedCount}` : null,
+    diagnostics.downloadedCount != null ? `Downloaded locally: ${diagnostics.downloadedCount}` : null,
+    diagnostics.errorMessage ? `Error: ${diagnostics.errorMessage}` : null,
+].filter(Boolean);
 
 const HOME_COLORS = {
     bg: '#ece4d6',
@@ -169,7 +204,7 @@ const countSongLines = (lyrics) => String(lyrics || '')
     .split(/\r?\n/)
     .filter((line) => line.trim().length > 0)
     .length;
-const normalizeStoredSong = (song) => {
+const normalizeStoredSong = (song, fallbackLanguage = 'ko') => {
     if (!song || typeof song !== 'object') {
         return null;
     }
@@ -206,6 +241,7 @@ const normalizeStoredSong = (song) => {
         createdAt: song.createdAt || new Date().toISOString(),
         updatedAt: song.updatedAt || song.createdAt || new Date().toISOString(),
         deletedAt: song.deletedAt ?? null,
+        language: normalizeBookLanguage(song.language ?? song.targetLanguage ?? song.target_language ?? fallbackLanguage),
     };
 };
 const getBookTitle = (book, t = null) => book?.title?.trim() || (t ? t('common.untitled') : 'Untitled');
@@ -245,7 +281,7 @@ const getSongTimestamp = (song, keys = ['updatedAt', 'updated_at', 'createdAt', 
     return 0;
 };
 
-const mergeLocalAndCloudSongs = (localSongs, cloudRows) => {
+const mergeLocalAndCloudSongs = (localSongs, cloudRows, targetLanguage = 'ko') => {
     const localById = new Map((localSongs || []).map((song) => [song.id, song]));
     const cloudById = new Map((cloudRows || []).map((row) => [row.client_id, row]));
     const ids = new Set([...localById.keys(), ...cloudById.keys()].filter(Boolean));
@@ -268,7 +304,7 @@ const mergeLocalAndCloudSongs = (localSongs, cloudRows) => {
 
         if (cloudRow && !localSong) {
             if (!cloudRow.deleted_at) {
-                merged.push(normalizeStoredSong(cloudSongToLocalSong(cloudRow)));
+                merged.push(normalizeStoredSong(cloudSongToLocalSong(cloudRow), targetLanguage));
             }
             return;
         }
@@ -289,7 +325,7 @@ const mergeLocalAndCloudSongs = (localSongs, cloudRows) => {
             merged.push(normalizeStoredSong({
                 ...cloudSongToLocalSong(cloudRow),
                 savedTerms: localSong.savedTerms ?? [],
-            }));
+            }, targetLanguage));
             return;
         }
 
@@ -301,6 +337,7 @@ const mergeLocalAndCloudSongs = (localSongs, cloudRows) => {
     return {
         songs: merged
             .filter(Boolean)
+            .filter((song) => normalizeBookLanguage(song.language ?? targetLanguage) === targetLanguage)
             .sort((a, b) => getSongTimestamp(b) - getSongTimestamp(a)),
         localOnly: localOnly.filter((song) => keptLocalIds.has(song.id)),
     };
@@ -329,6 +366,26 @@ const getBookProgress = (book) => clamp(
 );
 const isBookDownloaded = (book) => book?.downloaded !== false && !!book?.uri;
 const getBookKey = (book, fallback = '') => book?.cloudId || book?.uri || book?.id || fallback;
+const isPublicLibraryBook = (book) => !!(book?.publicLibraryId || book?.publicLibraryStoragePath || book?.storagePath);
+const isSamePublicDomainBook = (candidate, book) => {
+    if (!candidate || !book) {
+        return false;
+    }
+
+    const candidateLibraryId = candidate.publicLibraryId ?? candidate.public_library_id;
+    const bookLibraryId = book.publicLibraryId ?? book.public_library_id;
+    if (candidateLibraryId && bookLibraryId && String(candidateLibraryId) === String(bookLibraryId)) {
+        return true;
+    }
+
+    const candidateStoragePath = candidate.publicLibraryStoragePath ?? candidate.storagePath ?? candidate.storage_path;
+    const bookStoragePath = book.publicLibraryStoragePath ?? book.storagePath ?? book.storage_path;
+    if (candidateStoragePath && bookStoragePath && candidateStoragePath === bookStoragePath) {
+        return true;
+    }
+
+    return Boolean(candidate.uri && book.uri && candidate.uri === book.uri);
+};
 const isBookFavorite = (book) => book?.isFavorite === true || book?.favorite === true;
 const isBookCompleted = (book) => (
     book?.completed === false
@@ -711,34 +768,83 @@ const EditCoverPreview = ({ book, cover }) => {
     );
 };
 
-const buildPublicDomainLocalBook = (book, patch = {}) => ({
-    ...book,
-    ...getPublicDomainBookCoverColors(book),
-    ...patch,
-    id: book?.id || `public-domain-${book?.publicDomainId}`,
-    publicDomain: true,
-    format: 'txt',
-    downloaded: true,
-    originalTitle: book?.originalTitle || book?.title,
-    originalAuthor: book?.originalAuthor || book?.author,
-    originalCover: book?.originalCover ?? book?.cover ?? null,
-    progress: patch.progress ?? book?.progress ?? 0,
-    location: patch.location ?? book?.location ?? null,
-    nativePosition: patch.nativePosition ?? book?.nativePosition ?? null,
-    preprocessed: patch.preprocessed ?? book?.preprocessed ?? false,
-    preprocessing: false,
-});
+const buildPublicDomainLocalBook = (book, patch = {}) => {
+    const publicLibrary = isPublicLibraryBook(book);
+    const uri = patch.uri ?? book?.uri ?? null;
+    const format = patch.format ?? book?.format ?? (publicLibrary ? 'epub' : 'txt');
+
+    return {
+        ...book,
+        ...getPublicDomainBookCoverColors(book),
+        ...patch,
+        id: book?.id || `public-domain-${book?.publicDomainId}`,
+        publicDomain: true,
+        publicLibrary,
+        publicLibraryId: book?.publicLibraryId ?? book?.public_library_id ?? null,
+        publicLibraryStoragePath: book?.publicLibraryStoragePath ?? book?.storagePath ?? book?.storage_path ?? null,
+        storagePath: book?.storagePath ?? book?.publicLibraryStoragePath ?? book?.storage_path ?? null,
+        uri,
+        format,
+        downloaded: patch.downloaded ?? book?.downloaded ?? Boolean(uri),
+        originalTitle: book?.originalTitle || book?.title,
+        originalAuthor: book?.originalAuthor || book?.author,
+        originalCover: book?.originalCover ?? book?.cover ?? null,
+        originalFilename: book?.originalFilename || book?.original_filename || book?.storagePath?.split('/').pop() || book?.title,
+        progress: patch.progress ?? book?.progress ?? 0,
+        location: patch.location ?? book?.location ?? null,
+        nativePosition: patch.nativePosition ?? book?.nativePosition ?? null,
+        preprocessed: patch.preprocessed ?? book?.preprocessed ?? false,
+        preprocessing: false,
+    };
+};
+
+const readPublicLibraryBookMetadataPatch = async (book, uri) => {
+    if (!uri) {
+        return {};
+    }
+
+    const format = String(book?.format || 'epub').toLowerCase();
+    const fallbackName = book?.originalFilename
+        || book?.original_filename
+        || book?.storagePath?.split('/').pop()
+        || book?.publicLibraryStoragePath?.split('/').pop()
+        || book?.title
+        || 'Untitled';
+    const metadata = format === 'pdf'
+        ? await readPdfMetadata(uri, fallbackName)
+        : await readEpubMetadata(uri, fallbackName);
+    const cover = metadata?.cover ?? book?.cover ?? null;
+    const coverColors = cover
+        ? await extractBookCoverColors({
+            coverUri: cover,
+            fallbackColor: book?.coverAccentColor || book?.coverColor,
+            cacheKey: `public-library:${book?.publicLibraryId || book?.storagePath || uri}`,
+        })
+        : {};
+
+    return {
+        cover,
+        ...coverColors,
+        originalCover: cover ?? book?.originalCover ?? null,
+        title: book?.title || metadata?.title || 'Untitled',
+        author: book?.author || metadata?.author || 'Unknown author',
+        wordCount: book?.wordCount ?? metadata?.wordCount ?? null,
+        language: normalizeBookLanguage(metadata?.language ?? book?.language ?? book?.targetLanguage ?? 'en'),
+    };
+};
 
 const getBookStatusLabel = (book, t = null) => {
     if (book?.publicDomain) {
-        return t ? t('home.readyToRead') : 'Ready to read';
+        return isBookDownloaded(book)
+            ? (t ? t('home.readyToRead') : 'Ready to read')
+            : (t ? t('home.availableToDownload') : 'Available to download');
     }
 
     return t ? t('home.progress') : 'Progress';
 };
 
 const getBookFormatLabel = (book, t = null) => {
-    if (book?.publicDomain) {
+    if (book?.publicDomain && !isPublicLibraryBook(book)) {
         return t ? t('home.publicDomainText') : 'Public domain text';
     }
 
@@ -795,10 +901,11 @@ const BookPreview = ({
         book?.previewSource,
         book?.attributionCategory,
     ].filter(Boolean).join(' · ');
-    const readIconName = isBookDownloaded(book) || isPublicDomain ? 'book-outline' : 'download-outline';
+    const canReadBook = isBookDownloaded(book);
+    const readIconName = canReadBook ? 'book-outline' : 'download-outline';
     const readActionLabel = actionBusy
         ? t('home.preparing')
-        : isBookDownloaded(book) || isPublicDomain
+        : canReadBook
             ? t('home.read')
             : t('home.download');
     const favorite = isBookFavorite(book);
@@ -1008,11 +1115,19 @@ const BookPreview = ({
                                 {formatWordCount(wordCount, t)}
                             </Text>
                         </View>
-                        {!isPublicDomain ? (
+                        {(!isPublicDomain || isPublicLibraryBook(book)) ? (
                             <View style={styles.previewMetaRow}>
                                 <Text style={styles.previewMetaLabel}>{t('home.fileSize')}</Text>
                                 <Text style={styles.previewMetaValue}>
                                     {formatFileSize(book?.size, t)}
+                                </Text>
+                            </View>
+                        ) : null}
+                        {book?.difficulty ? (
+                            <View style={styles.previewMetaRow}>
+                                <Text style={styles.previewMetaLabel}>{t('home.difficulty')}</Text>
+                                <Text style={styles.previewMetaValue}>
+                                    {book.difficulty}
                                 </Text>
                             </View>
                         ) : null}
@@ -1047,6 +1162,7 @@ const BookPreview = ({
 
 const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpen, navigation, user }) => {
     const { t } = useTranslation();
+    const { languageSettingsReady, targetLanguage } = useAppContext();
     const { activeOwnerId, syncPaused, syncGeneration } = useLocalOwner();
     const [editBook, setEditBook] = useState(null);
     const [editDraft, setEditDraft] = useState({ title: '', author: '', cover: '' });
@@ -1054,6 +1170,11 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const [activeBookFilter, setActiveBookFilter] = useState('all');
     const [activePublicDomainSort, setActivePublicDomainSort] = useState('title');
     const [publicDomainSortDirection, setPublicDomainSortDirection] = useState('asc');
+    const [publicLibraryBooks, setPublicLibraryBooks] = useState([]);
+    const [publicLibraryLoading, setPublicLibraryLoading] = useState(false);
+    const [publicLibraryError, setPublicLibraryError] = useState(null);
+    const [publicLibraryDiagnostics, setPublicLibraryDiagnostics] = useState(makePublicLibraryDiagnostics());
+    const [publicLibraryDownloadStates, setPublicLibraryDownloadStates] = useState({});
     const [activeBookMenuKey, setActiveBookMenuKey] = useState(null);
     const [songs, setSongs] = useState([]);
     const [songsLoaded, setSongsLoaded] = useState(false);
@@ -1073,6 +1194,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const ocrActionInFlightRef = useRef(false);
     const ocrSettingsRef = useRef({ floatingPreferred: false, updatedAt: null });
     const ocrSettingsCloudUserRef = useRef(null);
+    const publicDomainBookPressRef = useRef(null);
     const { width } = useWindowDimensions();
     const {
         isImporting,
@@ -1093,14 +1215,44 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         user,
         ownerId: activeOwnerId,
         syncGeneration,
+        targetLanguage,
     });
 
+    const languageFilteredBooks = useMemo(() => (
+        books.filter((book) => normalizeBookLanguage(book?.language ?? 'ko') === targetLanguage)
+    ), [books, targetLanguage]);
+
+    useEffect(() => {
+        const currentBookMatchesTarget = currentBook
+            ? languageFilteredBooks.some((book) => book.uri === currentBook)
+            : false;
+        if (currentBookMatchesTarget) {
+            return;
+        }
+
+        const nextBookUri = (
+            languageFilteredBooks.find(isBookDownloaded)?.uri
+            ?? languageFilteredBooks[0]?.uri
+            ?? null
+        );
+
+        if (nextBookUri !== currentBook) {
+            setCurrentBook(nextBookUri);
+        }
+    }, [currentBook, languageFilteredBooks, setCurrentBook]);
+
+    useEffect(() => {
+        setSelectedSongId(null);
+        setSelectedBookPreview(null);
+        setShowAddSongModal(false);
+    }, [targetLanguage]);
+
     const currentReadingBook = useMemo(() => (
-        books.find((book) => book.uri && book.uri === currentBook)
-        ?? books.find(isBookDownloaded)
-        ?? books[0]
+        languageFilteredBooks.find((book) => book.uri && book.uri === currentBook)
+        ?? languageFilteredBooks.find(isBookDownloaded)
+        ?? languageFilteredBooks[0]
         ?? null
-    ), [books, currentBook]);
+    ), [currentBook, languageFilteredBooks]);
     const currentProgressPercent = Math.round(getBookProgress(currentReadingBook) * 100);
 
     const contentWidth = Math.min(
@@ -1110,19 +1262,201 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const homeGridContentWidth = Math.max(width - (HOME_CONTENT_HORIZONTAL_PADDING * 2), 0);
     const bookTileWidth = Math.max(Math.floor((homeGridContentWidth - (BOOK_GRID_GAP * 2)) / 3), 0);
     const bookCoverHeight = Math.round(bookTileWidth * 1.34);
-    const publicDomainBooks = useMemo(() => getPublicDomainBooks(), []);
+    const useRemotePublicLibrary = targetLanguage === 'en';
+    const bundledPublicDomainBooks = useMemo(() => getPublicDomainBooks(targetLanguage), [targetLanguage]);
+    const publicDomainBooks = useMemo(() => (
+        useRemotePublicLibrary ? publicLibraryBooks : bundledPublicDomainBooks
+    ), [bundledPublicDomainBooks, publicLibraryBooks, useRemotePublicLibrary]);
+
+    useEffect(() => {
+        let isActive = true;
+
+        if (!languageSettingsReady || !useRemotePublicLibrary) {
+            setPublicLibraryBooks([]);
+            setPublicLibraryDownloadStates({});
+            setPublicLibraryError(null);
+            setPublicLibraryLoading(false);
+            setPublicLibraryDiagnostics(makePublicLibraryDiagnostics({
+                stage: languageSettingsReady ? 'inactive' : 'waiting-language-settings',
+                detail: languageSettingsReady
+                    ? 'Remote public library is only used for English target language.'
+                    : 'Waiting for language settings before loading public library.',
+                targetLanguage,
+            }));
+            return () => {
+                isActive = false;
+            };
+        }
+
+        const loadPublicLibrary = async () => {
+            setPublicLibraryLoading(true);
+            setPublicLibraryError(null);
+            setPublicLibraryDiagnostics(makePublicLibraryDiagnostics({
+                stage: 'fetching-rows',
+                detail: 'Querying Supabase table public_library...',
+                targetLanguage,
+            }));
+
+            try {
+                const libraryBooks = await fetchPublicLibrary(targetLanguage);
+                const downloadStates = {};
+                let checkedCount = 0;
+
+                if (isActive) {
+                    setPublicLibraryDiagnostics(makePublicLibraryDiagnostics({
+                        stage: 'checking-local-files',
+                        detail: `Supabase returned ${libraryBooks.length} rows. Checking downloaded files on this device...`,
+                        targetLanguage,
+                        rowCount: libraryBooks.length,
+                        checkedCount,
+                    }));
+                }
+
+                for (const book of libraryBooks) {
+                    const storagePath = book.storagePath ?? book.publicLibraryStoragePath;
+                    if (storagePath) {
+                        downloadStates[book.publicLibraryId] = await isPublicLibraryBookDownloaded(storagePath, book.format);
+                    }
+                    checkedCount += 1;
+
+                    if (isActive) {
+                        setPublicLibraryDiagnostics(makePublicLibraryDiagnostics({
+                            stage: 'checking-local-files',
+                            detail: `Checked local file state for ${checkedCount}/${libraryBooks.length} public books.`,
+                            targetLanguage,
+                            rowCount: libraryBooks.length,
+                            checkedCount,
+                            downloadedCount: Object.values(downloadStates).filter(Boolean).length,
+                        }));
+                    }
+                }
+
+                if (!isActive) {
+                    return;
+                }
+
+                setPublicLibraryBooks(libraryBooks);
+                setPublicLibraryDownloadStates((current) => ({
+                    ...downloadStates,
+                    ...current,
+                }));
+                setPublicLibraryDiagnostics(makePublicLibraryDiagnostics({
+                    stage: 'ready',
+                    detail: `Loaded ${libraryBooks.length} public library rows. ${Object.values(downloadStates).filter(Boolean).length} are already local.`,
+                    targetLanguage,
+                    rowCount: libraryBooks.length,
+                    checkedCount,
+                    downloadedCount: Object.values(downloadStates).filter(Boolean).length,
+                }));
+            } catch (error) {
+                if (!isActive) {
+                    return;
+                }
+
+                console.warn('[Home] Failed to load public library:', error?.message ?? error);
+                setPublicLibraryBooks([]);
+                setPublicLibraryDownloadStates({});
+                setPublicLibraryError(error);
+                setPublicLibraryDiagnostics(makePublicLibraryDiagnostics({
+                    stage: 'error',
+                    detail: 'Public library load failed.',
+                    targetLanguage,
+                    errorMessage: error?.message || String(error),
+                }));
+            } finally {
+                if (isActive) {
+                    setPublicLibraryLoading(false);
+                }
+            }
+        };
+
+        loadPublicLibrary();
+
+        return () => {
+            isActive = false;
+        };
+    }, [languageSettingsReady, targetLanguage, useRemotePublicLibrary]);
+
+    useEffect(() => {
+        if (!languageSettingsReady || !useRemotePublicLibrary) {
+            return undefined;
+        }
+
+        let isActive = true;
+        downloadFeaturedBooks(targetLanguage, (book) => {
+            if (!isActive) {
+                return;
+            }
+
+            setPublicLibraryDownloadStates((current) => ({
+                ...current,
+                [book.publicLibraryId]: true,
+            }));
+            readPublicLibraryBookMetadataPatch(book, book.uri)
+                .then((metadataPatch) => {
+                    if (!isActive) {
+                        return;
+                    }
+
+                    setPublicLibraryBooks((currentBooks) => currentBooks.map((candidate) => (
+                        isSamePublicDomainBook(candidate, book)
+                            ? {
+                                ...candidate,
+                                ...metadataPatch,
+                                uri: book.uri,
+                                downloaded: true,
+                            }
+                            : candidate
+                    )));
+                })
+                .catch((error) => {
+                    if (isActive) {
+                        console.warn(
+                            `[Home] Failed to read embedded cover for public book "${book.title}":`,
+                            error?.message ?? error
+                        );
+                    }
+                });
+        }).catch((error) => {
+            if (isActive) {
+                console.warn('[Home] Failed to pre-download featured public books:', error?.message ?? error);
+            }
+        });
+
+        return () => {
+            isActive = false;
+        };
+    }, [languageSettingsReady, targetLanguage, useRemotePublicLibrary]);
+
     const publicDomainBookRows = useMemo(() => (
         publicDomainBooks.map((book) => {
-            const localBook = books.find((candidate) => candidate.uri === book.uri);
+            const localBook = languageFilteredBooks.find((candidate) => isSamePublicDomainBook(candidate, book));
             const catalogCoverColors = getPublicDomainBookCoverColors(book);
             const hasCustomCover = !!localBook?.cover;
+            const publicLibrary = isPublicLibraryBook(book);
+            const downloadState = publicLibraryDownloadStates[book.publicLibraryId];
+            const downloaded = publicLibrary
+                ? downloadState === true
+                : localBook
+                    ? isBookDownloaded(localBook)
+                    : book.downloaded !== false;
+            const localUri = downloaded
+                ? localBook?.uri
+                    ?? book.uri
+                    ?? (publicLibrary ? getPublicLibraryLocalPath(book.storagePath ?? book.publicLibraryStoragePath) : null)
+                : null;
             return localBook
                 ? {
                     ...book,
                     ...localBook,
                     publicDomain: true,
-                    downloaded: true,
-                    format: 'txt',
+                    publicLibrary,
+                    publicLibraryId: localBook.publicLibraryId ?? book.publicLibraryId ?? null,
+                    publicLibraryStoragePath: localBook.publicLibraryStoragePath ?? book.publicLibraryStoragePath ?? null,
+                    storagePath: localBook.storagePath ?? book.storagePath ?? null,
+                    uri: localBook.uri ?? localUri,
+                    downloaded,
+                    format: localBook.format ?? book.format ?? (publicLibrary ? 'epub' : 'txt'),
                     previewSource: localBook.previewSource ?? book.previewSource,
                     attributionCategory: localBook.attributionCategory ?? book.attributionCategory,
                     titleTranslation: localBook.titleTranslation ?? book.titleTranslation,
@@ -1130,6 +1464,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     attribution: localBook.attribution ?? book.attribution,
                     snippet: localBook.snippet ?? book.snippet,
                     genre: localBook.genre ?? book.genre,
+                    difficulty: localBook.difficulty ?? book.difficulty,
                     coverColor: book.coverColor,
                     coverAccentColor: hasCustomCover
                         ? localBook.coverAccentColor ?? catalogCoverColors.coverAccentColor
@@ -1141,9 +1476,11 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 : {
                     ...book,
                     ...catalogCoverColors,
+                    uri: localUri,
+                    downloaded,
                 };
         })
-    ), [books, publicDomainBooks]);
+    ), [languageFilteredBooks, publicDomainBooks, publicLibraryDownloadStates]);
     const sortedPublicDomainBookRows = useMemo(() => (
         publicDomainBookRows
             .map((book, index) => ({ book, index }))
@@ -1185,21 +1522,21 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             })
             .map(({ book }) => book)
     ), [activePublicDomainSort, publicDomainBookRows, publicDomainSortDirection]);
-    const favoriteBooks = useMemo(() => books.filter(isBookFavorite), [books]);
+    const favoriteBooks = useMemo(() => languageFilteredBooks.filter(isBookFavorite), [languageFilteredBooks]);
     const recentBooks = useMemo(() => (
-        books
+        languageFilteredBooks
             .map((book, index) => ({ book, index }))
             .sort((a, b) => {
                 const timestampDiff = getBookRecentTimestamp(b.book) - getBookRecentTimestamp(a.book);
                 return timestampDiff || a.index - b.index;
             })
             .map(({ book }) => book)
-    ), [books]);
+    ), [languageFilteredBooks]);
     const bookFilterCounts = useMemo(() => ({
         favorites: favoriteBooks.length,
-        all: books.length,
+        all: languageFilteredBooks.length,
         'public-domain': sortedPublicDomainBookRows.length,
-    }), [books.length, favoriteBooks.length, sortedPublicDomainBookRows.length]);
+    }), [favoriteBooks.length, languageFilteredBooks.length, sortedPublicDomainBookRows.length]);
     const filteredLibraryBooks = useMemo(() => {
         if (activeBookFilter === 'favorites') {
             return favoriteBooks;
@@ -1219,8 +1556,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 noun: favoriteBooks.length === 1 ? t('home.bookSingular') : t('home.bookPlural'),
             })
             : t('home.bookCount', {
-                count: books.length,
-                noun: books.length === 1 ? t('home.bookSingular') : t('home.bookPlural'),
+                count: languageFilteredBooks.length,
+                noun: languageFilteredBooks.length === 1 ? t('home.bookSingular') : t('home.bookPlural'),
             });
     const bookSectionHint = showingPublicDomainBooks
         ? t('home.publicDomainHint')
@@ -1238,12 +1575,12 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             return publicDomainBookRows.find((book) => book.uri === previewBook.uri) ?? previewBook;
         }
 
-        return books.find((book) => (
+        return languageFilteredBooks.find((book) => (
             (previewBook.cloudId && book.cloudId === previewBook.cloudId)
             || (previewBook.uri && book.uri === previewBook.uri)
             || (previewBook.id && book.id === previewBook.id)
         )) ?? previewBook;
-    }, [books, publicDomainBookRows, selectedBookPreview]);
+    }, [languageFilteredBooks, publicDomainBookRows, selectedBookPreview]);
     const isFloatingOcrVisible = Platform.OS === 'android' && ocrStatus.floatingVisible;
 
     const syncSongToCloud = useCallback((song) => {
@@ -1268,11 +1605,14 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             user,
             ownerId: activeOwnerId,
             generation: syncGeneration,
-            song,
+            song: {
+                ...song,
+                language: normalizeBookLanguage(song.language ?? targetLanguage),
+            },
         }).catch((error) => {
             console.warn('[Home] Failed to sync song:', error?.message ?? error);
         });
-    }, [activeOwnerId, syncGeneration, syncPaused, user]);
+    }, [activeOwnerId, syncGeneration, syncPaused, targetLanguage, user]);
 
     const syncSongsFromCloud = useCallback(async () => {
         const ownerId = activeOwnerId;
@@ -1294,13 +1634,22 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             return;
         }
 
-        const cloudRows = await fetchUserSongs(user.id, { includeDeleted: true });
+        const cloudRows = await fetchUserSongs(user.id, {
+            includeDeleted: true,
+            targetLanguage,
+        });
         if (!isCurrentSyncGeneration(generation) || ownerId !== activeOwnerIdRef.current) {
             return;
         }
 
-        const normalizedLocalSongs = songs.map(normalizeStoredSong).filter(Boolean);
-        const { songs: mergedSongs, localOnly } = mergeLocalAndCloudSongs(normalizedLocalSongs, cloudRows);
+        const normalizedLocalSongs = songs
+            .map((song) => normalizeStoredSong(song, targetLanguage))
+            .filter(Boolean);
+        const { songs: mergedSongs, localOnly } = mergeLocalAndCloudSongs(
+            normalizedLocalSongs,
+            cloudRows,
+            targetLanguage
+        );
 
         if (!isCurrentSyncGeneration(generation) || ownerId !== activeOwnerIdRef.current) {
             return;
@@ -1327,13 +1676,16 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     user,
                     ownerId,
                     generation,
-                    song,
+                    song: {
+                        ...song,
+                        language: normalizeBookLanguage(song.language ?? targetLanguage),
+                    },
                 });
             } catch (error) {
                 console.warn('[Home] Failed to upload local song:', error?.message ?? error);
             }
         }
-    }, [activeOwnerId, songs, syncGeneration, syncPaused, user]);
+    }, [activeOwnerId, songs, syncGeneration, syncPaused, targetLanguage, user]);
 
     const persistOcrSettings = useCallback((patch, options = {}) => {
         const { syncCloud = true, updatedAt = new Date().toISOString() } = options;
@@ -1416,16 +1768,16 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             songCloudSyncOwnerRef.current = null;
 
             try {
-                const storageKey = getSongsStorageKey(ownerId);
+                const storageKey = getSongsStorageKey(ownerId, targetLanguage);
                 let storedSongs = await AsyncStorage.getItem(storageKey);
 
-                if (!storedSongs && ownerId === GUEST_OWNER_ID) {
+                if (!storedSongs && ownerId === GUEST_OWNER_ID && targetLanguage === 'ko') {
                     const legacySongs = await AsyncStorage.getItem(LEGACY_SONGS_STORAGE_KEY);
                     if (legacySongs) {
                         const parsedLegacySongs = JSON.parse(legacySongs);
                         if (Array.isArray(parsedLegacySongs)) {
                             const normalizedLegacySongs = parsedLegacySongs
-                                .map(normalizeStoredSong)
+                                .map((song) => normalizeStoredSong(song, targetLanguage))
                                 .filter(Boolean);
                             try {
                                 storedSongs = serializeSongsForStorage(normalizedLegacySongs);
@@ -1459,7 +1811,9 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     return;
                 }
 
-                setSongs(parsedSongs.map(normalizeStoredSong).filter(Boolean));
+                setSongs(parsedSongs
+                    .map((song) => normalizeStoredSong(song, targetLanguage))
+                    .filter((song) => song && normalizeBookLanguage(song.language ?? targetLanguage) === targetLanguage));
             } catch (error) {
                 console.error('[Home] Failed to load songs:', error);
             } finally {
@@ -1474,7 +1828,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         return () => {
             isActive = false;
         };
-    }, [activeOwnerId, t]);
+    }, [activeOwnerId, targetLanguage, t]);
 
     useEffect(() => {
         if (Platform.OS !== 'android') {
@@ -1637,14 +1991,14 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             return;
         }
 
-        AsyncStorage.setItem(getSongsStorageKey(activeOwnerId), serializedSongs)
+        AsyncStorage.setItem(getSongsStorageKey(activeOwnerId, targetLanguage), serializedSongs)
             .then(() => {
                 songStorageLimitAlertedRef.current = false;
             })
             .catch((error) => {
                 console.error('[Home] Failed to save songs:', error);
             });
-    }, [activeOwnerId, songs, songsLoaded, t]);
+    }, [activeOwnerId, songs, songsLoaded, targetLanguage, t]);
 
     useEffect(() => {
         if (
@@ -1661,7 +2015,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             return;
         }
 
-        const syncKey = `${activeOwnerId}:${user.id}`;
+        const syncKey = `${activeOwnerId}:${user.id}:${targetLanguage}`;
         if (songCloudSyncOwnerRef.current === syncKey) {
             return;
         }
@@ -1671,7 +2025,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             songCloudSyncOwnerRef.current = null;
             console.warn('[Home] Failed to sync cloud songs:', error?.message ?? error);
         });
-    }, [activeOwnerId, songsLoaded, syncGeneration, syncPaused, syncSongsFromCloud, user?.id]);
+    }, [activeOwnerId, songsLoaded, syncGeneration, syncPaused, syncSongsFromCloud, targetLanguage, user?.id]);
 
     useEffect(() => {
         if (selectedSongId && !selectedSong) {
@@ -1853,6 +2207,11 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             return;
         }
 
+        if (isPublicLibraryBook(book)) {
+            publicDomainBookPressRef.current?.(book);
+            return;
+        }
+
         if (!isBookDownloaded(book)) {
             handleDownloadBook(book);
             return;
@@ -1863,26 +2222,27 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         handlePress(book.uri);
     }, [activeBookMenuKey, handleDownloadBook, handlePress, updateBookRecord]);
 
-    const handlePublicDomainBookPress = useCallback((book) => {
-        if (!book?.uri) {
+    const upsertPublicDomainBookInLibrary = useCallback((localBook) => {
+        if (!localBook?.uri) {
             return;
         }
 
-        const localBook = buildPublicDomainLocalBook(book, {
-            lastOpenedAt: new Date().toISOString(),
-        });
-
         setBooks((prevBooks) => {
-            const exists = prevBooks.some((candidate) => candidate.uri === localBook.uri);
+            const exists = prevBooks.some((candidate) => isSamePublicDomainBook(candidate, localBook));
             if (exists) {
                 return prevBooks.map((candidate) => (
-                    candidate.uri === localBook.uri
+                    isSamePublicDomainBook(candidate, localBook)
                         ? {
                             ...localBook,
                             ...candidate,
+                            uri: localBook.uri,
                             publicDomain: true,
                             downloaded: true,
-                            format: 'txt',
+                            format: localBook.format ?? candidate.format ?? 'epub',
+                            publicLibrary: localBook.publicLibrary ?? candidate.publicLibrary ?? false,
+                            publicLibraryId: localBook.publicLibraryId ?? candidate.publicLibraryId ?? null,
+                            publicLibraryStoragePath: localBook.publicLibraryStoragePath ?? candidate.publicLibraryStoragePath ?? null,
+                            storagePath: localBook.storagePath ?? candidate.storagePath ?? null,
                             previewSource: candidate.previewSource ?? localBook.previewSource,
                             attributionCategory: candidate.attributionCategory ?? localBook.attributionCategory,
                             titleTranslation: candidate.titleTranslation ?? localBook.titleTranslation,
@@ -1901,30 +2261,129 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
             return [...prevBooks, localBook];
         });
-        setCurrentBook(localBook.uri);
-        setPreprocessOnOpen(false);
-        navigation.navigate('Read');
-    }, [navigation, setBooks, setCurrentBook, setPreprocessOnOpen]);
+    }, [setBooks]);
 
-    const addPublicDomainBookToLibrary = useCallback((book) => {
-        if (!book?.uri) {
+    const downloadPublicLibraryBookToLocal = useCallback(async (book, patch = {}) => {
+        const storagePath = book?.storagePath ?? book?.publicLibraryStoragePath;
+        if (!storagePath) {
+            Alert.alert(t('home.downloadFailedTitle'), t('home.downloadFailedBody'));
             return null;
         }
 
-        const localBook = buildPublicDomainLocalBook(book);
+        const bookKey = getBookKey(book);
+        if (downloadingBookId && downloadingBookId !== bookKey) {
+            return null;
+        }
 
-        setBooks((prevBooks) => {
-            const exists = prevBooks.some((candidate) => candidate.uri === localBook.uri);
-            if (exists) {
-                return prevBooks;
-            }
+        setDownloadingBookId(bookKey);
+        setPublicLibraryDownloadStates((current) => ({
+            ...current,
+            [book.publicLibraryId]: 'downloading',
+        }));
 
-            return [...prevBooks, localBook];
-        });
+        try {
+            const uri = await downloadPublicBook(book, ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
+                const expected = Number(totalBytesExpectedToWrite);
+                const progress = expected > 0
+                    ? totalBytesWritten / expected
+                    : 'downloading';
+                setPublicLibraryDownloadStates((current) => ({
+                    ...current,
+                    [book.publicLibraryId]: progress,
+                    }));
+                });
+            const metadataPatch = await readPublicLibraryBookMetadataPatch(book, uri).catch((error) => {
+                console.warn(
+                    `[Home] Failed to read embedded cover for public book "${book.title}":`,
+                    error?.message ?? error
+                );
+                return {};
+            });
+            const localBook = buildPublicDomainLocalBook(book, {
+                ...patch,
+                ...metadataPatch,
+                uri,
+                downloaded: true,
+                format: book.format || 'epub',
+            });
+
+            setPublicLibraryDownloadStates((current) => ({
+                ...current,
+                [book.publicLibraryId]: true,
+            }));
+            setPublicLibraryBooks((currentBooks) => currentBooks.map((candidate) => (
+                isSamePublicDomainBook(candidate, localBook)
+                    ? {
+                        ...candidate,
+                        uri,
+                        downloaded: true,
+                    }
+                    : candidate
+            )));
+
+            return localBook;
+        } catch (error) {
+            console.warn('[Home] Failed to download public library book:', error?.message ?? error);
+            setPublicLibraryDownloadStates((current) => ({
+                ...current,
+                [book.publicLibraryId]: false,
+            }));
+            Alert.alert(t('home.downloadFailedTitle'), error?.message || t('home.downloadFailedBody'));
+            return null;
+        } finally {
+            setDownloadingBookId((current) => (current === bookKey ? null : current));
+        }
+    }, [downloadingBookId, t]);
+
+    const handlePublicDomainBookPress = useCallback(async (book) => {
+        if (!book) {
+            return;
+        }
+
+        const openedAt = new Date().toISOString();
+        const localBook = isPublicLibraryBook(book)
+            ? await downloadPublicLibraryBookToLocal(book, { lastOpenedAt: openedAt })
+            : buildPublicDomainLocalBook(book, {
+                lastOpenedAt: openedAt,
+                downloaded: true,
+            });
+
+        if (!localBook?.uri) {
+            return;
+        }
+
+        upsertPublicDomainBookInLibrary(localBook);
+        setCurrentBook(localBook.uri);
+        setPreprocessOnOpen(isPublicLibraryBook(localBook));
+        navigation.navigate('Read');
+    }, [
+        downloadPublicLibraryBookToLocal,
+        navigation,
+        setCurrentBook,
+        setPreprocessOnOpen,
+        upsertPublicDomainBookInLibrary,
+    ]);
+
+    publicDomainBookPressRef.current = handlePublicDomainBookPress;
+
+    const addPublicDomainBookToLibrary = useCallback(async (book) => {
+        if (!book) {
+            return null;
+        }
+
+        const localBook = isPublicLibraryBook(book)
+            ? await downloadPublicLibraryBookToLocal(book)
+            : buildPublicDomainLocalBook(book);
+
+        if (!localBook?.uri) {
+            return null;
+        }
+
+        upsertPublicDomainBookInLibrary(localBook);
         setActiveLibraryTab('Books');
         setActiveBookFilter('all');
         return localBook;
-    }, [setBooks]);
+    }, [downloadPublicLibraryBookToLocal, upsertPublicDomainBookInLibrary]);
 
     const handleBookPreviewPress = useCallback((book, index = 0) => {
         if (!book) {
@@ -1975,17 +2434,21 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         if (book.publicDomain) {
             const localBook = buildPublicDomainLocalBook(book, nextPatch);
             setBooks((prevBooks) => {
-                const exists = prevBooks.some((candidate) => candidate.uri === localBook.uri);
+                const exists = prevBooks.some((candidate) => isSamePublicDomainBook(candidate, localBook));
                 if (exists) {
                     return prevBooks.map((candidate) => (
-                        candidate.uri === localBook.uri
+                        isSamePublicDomainBook(candidate, localBook)
                             ? {
                                 ...localBook,
                                 ...candidate,
                                 ...nextPatch,
                                 publicDomain: true,
                                 downloaded: true,
-                                format: 'txt',
+                                format: localBook.format ?? candidate.format ?? 'epub',
+                                publicLibrary: localBook.publicLibrary ?? candidate.publicLibrary ?? false,
+                                publicLibraryId: localBook.publicLibraryId ?? candidate.publicLibraryId ?? null,
+                                publicLibraryStoragePath: localBook.publicLibraryStoragePath ?? candidate.publicLibraryStoragePath ?? null,
+                                storagePath: localBook.storagePath ?? candidate.storagePath ?? null,
                                 coverColor: localBook.coverColor,
                                 coverAccentColor: localBook.coverAccentColor,
                                 coverBackgroundColor: localBook.coverBackgroundColor,
@@ -2078,7 +2541,9 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
                             const matchesDeletedBook = bookToDelete.cloudId
                                 ? previewBook.cloudId === bookToDelete.cloudId
-                                : previewBook.uri === bookToDelete.uri;
+                                : bookToDelete.publicDomain
+                                    ? isSamePublicDomainBook(previewBook, bookToDelete)
+                                    : previewBook.uri === bookToDelete.uri;
 
                             return matchesDeletedBook ? null : current;
                         });
@@ -2108,7 +2573,9 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         }
 
         const existsInLibrary = books.some((book) => (
-            selectedPreviewBook.cloudId
+            selectedPreviewBook.publicDomain
+                ? isSamePublicDomainBook(book, selectedPreviewBook)
+                : selectedPreviewBook.cloudId
                 ? book.cloudId === selectedPreviewBook.cloudId
                 : book.uri === selectedPreviewBook.uri
         ));
@@ -2121,21 +2588,21 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         handleDeleteBook(selectedPreviewBook);
     }, [books, handleDeleteBook, selectedPreviewBook, t]);
 
-    const handleEditPreviewBook = useCallback(() => {
+    const handleEditPreviewBook = useCallback(async () => {
         if (!selectedPreviewBook) {
             return;
         }
 
         if (selectedPreviewBook.publicDomain) {
-            const localBook = buildPublicDomainLocalBook(selectedPreviewBook);
-            setBooks((prevBooks) => {
-                const exists = prevBooks.some((book) => book.uri === localBook.uri);
-                if (exists) {
-                    return prevBooks;
-                }
+            const localBook = isPublicLibraryBook(selectedPreviewBook)
+                ? await downloadPublicLibraryBookToLocal(selectedPreviewBook)
+                : buildPublicDomainLocalBook(selectedPreviewBook);
 
-                return [...prevBooks, localBook];
-            });
+            if (!localBook?.uri) {
+                return;
+            }
+
+            upsertPublicDomainBookInLibrary(localBook);
             setSelectedBookPreview(null);
             handleEditBook(localBook);
             return;
@@ -2143,7 +2610,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
         setSelectedBookPreview(null);
         handleEditBook(selectedPreviewBook);
-    }, [handleEditBook, selectedPreviewBook, setBooks]);
+    }, [downloadPublicLibraryBookToLocal, handleEditBook, selectedPreviewBook, upsertPublicDomainBookInLibrary]);
 
     const handleResetBookToOriginal = useCallback(async (book) => {
         if (!book) {
@@ -2153,7 +2620,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         setActiveBookMenuKey(null);
 
         const publicDomainOriginal = book.publicDomain
-            ? publicDomainBooks.find((candidate) => candidate.uri === book.uri)
+            ? publicDomainBooks.find((candidate) => isSamePublicDomainBook(candidate, book))
             : null;
 
         if (publicDomainOriginal) {
@@ -2342,6 +2809,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             lines: countSongLines(lyrics),
             fontSize: DEFAULT_SONG_FONT_SIZE,
             savedTerms: [],
+            language: targetLanguage,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
         };
@@ -2362,7 +2830,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         setShowAddSongModal(false);
         setSongDraft(EMPTY_SONG_DRAFT);
         setActiveLibraryTab('Songs');
-    }, [songDraft.artist, songDraft.lyrics, songDraft.title, songs, syncSongToCloud, t]);
+    }, [songDraft.artist, songDraft.lyrics, songDraft.title, songs, syncSongToCloud, targetLanguage, t]);
 
     const handleUpdateSong = useCallback((songId, patch) => {
         const currentSong = songs.find((song) => song.id === songId);
@@ -2373,10 +2841,11 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         const nextSong = {
             ...currentSong,
             ...patch,
+            language: normalizeBookLanguage(patch.language ?? currentSong.language ?? targetLanguage),
             lines: patch.lyrics !== undefined ? countSongLines(patch.lyrics) : currentSong.lines,
             updatedAt: new Date().toISOString(),
         };
-        const updatedSong = normalizeStoredSong(nextSong) ?? currentSong;
+        const updatedSong = normalizeStoredSong(nextSong, targetLanguage) ?? currentSong;
         const nextSongs = songs.map((song) => (
             song.id === songId ? updatedSong : song
         ));
@@ -2393,7 +2862,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
         setSongs(nextSongs);
         syncSongToCloud(updatedSong);
-    }, [songs, syncSongToCloud, t]);
+    }, [songs, syncSongToCloud, targetLanguage, t]);
 
     const handleDeleteSong = useCallback((songId) => {
         setSongs((previous) => previous.filter((song) => song.id !== songId));
@@ -2420,10 +2889,11 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             ownerId: activeOwnerId,
             generation: syncGeneration,
             songId,
+            targetLanguage,
         }).catch((error) => {
             console.warn('[Home] Failed to delete cloud song:', error?.message ?? error);
         });
-    }, [activeOwnerId, syncGeneration, syncPaused, user]);
+    }, [activeOwnerId, syncGeneration, syncPaused, targetLanguage, user]);
 
     const handleSelectedSongSavedTermsChange = useCallback((savedTerms) => {
         if (!selectedSong) {
@@ -2465,7 +2935,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         const previewKey = getBookKey(selectedPreviewBook, `${selectedBookPreview?.index ?? 0}`);
         const previewUri = selectedPreviewBook.uri;
         const previewBookInLibrary = selectedPreviewBook.publicDomain
-            ? books.some((book) => book.uri === selectedPreviewBook.uri)
+            ? books.some((book) => isSamePublicDomainBook(book, selectedPreviewBook))
             : true;
         const previewActionBusy = (
             (!isBookDownloaded(selectedPreviewBook) && downloadingBookId === previewKey)
@@ -2921,52 +3391,144 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                 })}
                             </ScrollView>
 
-                            <View style={styles.bookGrid}>
-                                {sortedPublicDomainBookRows.map((book, index) => (
-                                    <Pressable
-                                        key={book.uri}
-                                        onPress={() => handleBookPreviewPress(book, index)}
-                                        style={({ pressed }) => [
-                                            styles.bookTile,
-                                            { width: bookTileWidth },
-                                            pressed && styles.pressed,
-                                        ]}
-                                    >
-                                        <BookCover
-                                            book={book}
-                                            width={bookTileWidth}
-                                            height={bookCoverHeight}
-                                            index={index}
-                                            style={styles.bookCover}
-                                            titleStyle={styles.bookCoverText}
-                                        />
-                                        <Text
-                                            style={[
-                                                styles.bookTitle,
-                                                getSerifFontForText(getBookTitle(book, t)),
-                                            ]}
-                                            numberOfLines={1}
-                                        >
-                                            {getBookTitle(book, t)}
-                                        </Text>
-                                        <Text style={styles.publicDomainAuthor} numberOfLines={1}>
-                                            {getBookAuthor(book, t)}
-                                        </Text>
-                                        <View style={styles.publicDomainMetaRow}>
-                                            {book?.genre ? (
-                                                <View style={styles.publicDomainGenreTag}>
-                                                    <Text style={styles.publicDomainGenreText} numberOfLines={1}>
-                                                        {book.genre}
+                            {publicLibraryLoading ? (
+                                <View style={styles.emptyBooksPanel}>
+                                    <ActivityIndicator size="small" color={HOME_COLORS.accent} />
+                                    <Text style={styles.emptyBooksCopy}>{t('home.loadingPublicLibrary')}</Text>
+                                    <View style={styles.publicLibraryDiagnostics}>
+                                        {getPublicLibraryDiagnosticLines(publicLibraryDiagnostics).map((line) => (
+                                            <Text key={line} style={styles.publicLibraryDiagnosticText}>
+                                                {line}
+                                            </Text>
+                                        ))}
+                                    </View>
+                                </View>
+                            ) : publicLibraryError ? (
+                                <View style={styles.emptyBooksPanel}>
+                                    <Text style={styles.emptyBooksTitle}>{t('home.publicLibraryUnavailableTitle')}</Text>
+                                    <Text style={styles.emptyBooksCopy}>{t('home.publicLibraryUnavailableBody')}</Text>
+                                    <View style={styles.publicLibraryDiagnostics}>
+                                        {getPublicLibraryDiagnosticLines(publicLibraryDiagnostics).map((line) => (
+                                            <Text key={line} style={styles.publicLibraryDiagnosticText}>
+                                                {line}
+                                            </Text>
+                                        ))}
+                                    </View>
+                                </View>
+                            ) : sortedPublicDomainBookRows.length === 0 ? (
+                                <View style={styles.emptyBooksPanel}>
+                                    <Text style={styles.emptyBooksTitle}>{t('home.publicLibraryEmptyTitle')}</Text>
+                                    <Text style={styles.emptyBooksCopy}>{t('home.publicLibraryEmptyBody')}</Text>
+                                    <View style={styles.publicLibraryDiagnostics}>
+                                        {getPublicLibraryDiagnosticLines(publicLibraryDiagnostics).map((line) => (
+                                            <Text key={line} style={styles.publicLibraryDiagnosticText}>
+                                                {line}
+                                            </Text>
+                                        ))}
+                                    </View>
+                                </View>
+                            ) : (
+                                <View style={styles.bookGrid}>
+                                    {sortedPublicDomainBookRows.map((book, index) => {
+                                        const bookKey = getBookKey(book, `${index}`);
+                                        const downloadState = publicLibraryDownloadStates[book.publicLibraryId];
+                                        const isDownloadingPublicBook = downloadingBookId === bookKey
+                                            || downloadState === 'downloading'
+                                            || typeof downloadState === 'number';
+                                        const metaBadge = book?.difficulty || book?.genre;
+                                        const secondaryMeta = book?.size
+                                            ? formatFileSize(book.size, t)
+                                            : formatWordCount(getBookWordCount(book), t);
+
+                                        return (
+                                            <Pressable
+                                                key={book.uri || book.id || book.publicLibraryId || `${book.title}-${index}`}
+                                                onPress={() => handleBookPreviewPress(book, index)}
+                                                style={({ pressed }) => [
+                                                    styles.bookTile,
+                                                    { width: bookTileWidth },
+                                                    pressed && styles.pressed,
+                                                ]}
+                                            >
+                                                <BookCover
+                                                    book={book}
+                                                    width={bookTileWidth}
+                                                    height={bookCoverHeight}
+                                                    index={index}
+                                                    style={styles.bookCover}
+                                                    titleStyle={styles.bookCoverText}
+                                                />
+                                                <Text
+                                                    style={[
+                                                        styles.bookTitle,
+                                                        getSerifFontForText(getBookTitle(book, t)),
+                                                    ]}
+                                                    numberOfLines={1}
+                                                >
+                                                    {getBookTitle(book, t)}
+                                                </Text>
+                                                <Text style={styles.publicDomainAuthor} numberOfLines={1}>
+                                                    {getBookAuthor(book, t)}
+                                                </Text>
+                                                <View style={styles.publicDomainMetaRow}>
+                                                    {metaBadge ? (
+                                                        <View style={styles.publicDomainGenreTag}>
+                                                            <Text style={styles.publicDomainGenreText} numberOfLines={1}>
+                                                                {metaBadge}
+                                                            </Text>
+                                                        </View>
+                                                    ) : null}
+                                                    <Text style={styles.publicDomainWordCount} numberOfLines={1}>
+                                                        {secondaryMeta}
                                                     </Text>
                                                 </View>
-                                            ) : null}
-                                            <Text style={styles.publicDomainWordCount} numberOfLines={1}>
-                                                {formatWordCount(getBookWordCount(book), t)}
-                                            </Text>
-                                        </View>
-                                    </Pressable>
-                                ))}
-                            </View>
+                                                {isPublicLibraryBook(book) ? (
+                                                    <TouchableOpacity
+                                                        accessibilityRole="button"
+                                                        activeOpacity={0.84}
+                                                        disabled={isDownloadingPublicBook}
+                                                        onPress={(event) => {
+                                                            event?.stopPropagation?.();
+                                                            if (isBookDownloaded(book)) {
+                                                                handlePublicDomainBookPress(book);
+                                                                return;
+                                                            }
+
+                                                            addPublicDomainBookToLibrary(book);
+                                                        }}
+                                                        style={[
+                                                            styles.publicDomainActionButton,
+                                                            isBookDownloaded(book) && styles.publicDomainActionButtonReady,
+                                                            isDownloadingPublicBook && styles.publicDomainActionButtonDisabled,
+                                                        ]}
+                                                    >
+                                                        {isDownloadingPublicBook ? (
+                                                            <ActivityIndicator size="small" color={HOME_COLORS.onAccent} />
+                                                        ) : (
+                                                            <>
+                                                                <Feather
+                                                                    name={isBookDownloaded(book) ? 'book-open' : 'download'}
+                                                                    size={12}
+                                                                    color={isBookDownloaded(book) ? HOME_COLORS.accentDeep : HOME_COLORS.onAccent}
+                                                                />
+                                                                <Text
+                                                                    style={[
+                                                                        styles.publicDomainActionText,
+                                                                        isBookDownloaded(book) && styles.publicDomainActionTextReady,
+                                                                    ]}
+                                                                    numberOfLines={1}
+                                                                >
+                                                                    {isBookDownloaded(book) ? t('home.read') : t('home.download')}
+                                                                </Text>
+                                                            </>
+                                                        )}
+                                                    </TouchableOpacity>
+                                                ) : null}
+                                            </Pressable>
+                                        );
+                                    })}
+                                </View>
+                            )}
                         </>
                     ) : null}
                 </View>
@@ -4011,6 +4573,46 @@ const styles = StyleSheet.create({
         lineHeight: 12,
         color: HOME_COLORS.faint,
         letterSpacing: 0,
+    },
+    publicLibraryDiagnostics: {
+        gap: 3,
+        marginTop: 8,
+    },
+    publicLibraryDiagnosticText: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 11,
+        lineHeight: 15,
+        color: HOME_COLORS.faint,
+        letterSpacing: 0,
+    },
+    publicDomainActionButton: {
+        minHeight: 28,
+        marginTop: 7,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 5,
+        paddingHorizontal: 8,
+        borderRadius: 6,
+        backgroundColor: HOME_COLORS.accent,
+    },
+    publicDomainActionButtonReady: {
+        borderWidth: 1,
+        borderColor: HOME_COLORS.accent,
+        backgroundColor: HOME_COLORS.accentBg,
+    },
+    publicDomainActionButtonDisabled: {
+        opacity: 0.78,
+    },
+    publicDomainActionText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 10,
+        lineHeight: 13,
+        color: HOME_COLORS.onAccent,
+        letterSpacing: 0,
+    },
+    publicDomainActionTextReady: {
+        color: HOME_COLORS.accentDeep,
     },
     bookDownloadBadge: {
         position: 'absolute',

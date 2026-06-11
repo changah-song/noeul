@@ -1,4 +1,5 @@
 import { api } from './client';
+import { normalizeBookLanguage, normalizeInterfaceLanguageCode } from '../../constants/languages';
 
 const emptyChapterResult = {
   results: [],
@@ -10,7 +11,16 @@ const emptyChapterResult = {
   },
 };
 
-const preprocessChapter = async ({ bookUri, spineIndex, text }) => {
+const preprocessChapter = async ({
+  bookUri,
+  spineIndex,
+  text,
+  language = 'ko',
+  interfaceLanguage = 'en',
+}) => {
+  const targetLanguage = normalizeBookLanguage(language);
+  const normalizedInterfaceLanguage = normalizeInterfaceLanguageCode(interfaceLanguage);
+
   if (!text || text.trim() === '') {
     return {
       book_uri: bookUri,
@@ -19,12 +29,16 @@ const preprocessChapter = async ({ bookUri, spineIndex, text }) => {
     };
   }
 
+  const endpoint = targetLanguage === 'en' ? '/preprocess_chapter_en/' : '/preprocess_chapter/';
+
   const response = await api.post(
-    '/preprocess_chapter/',
+    endpoint,
     {
       book_uri: bookUri,
       spine_index: spineIndex,
       text,
+      language: targetLanguage,
+      interface_language: normalizedInterfaceLanguage,
     },
     {
       timeout: 45000,

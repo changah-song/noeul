@@ -313,6 +313,8 @@ class OcrResultOverlayView(
       stem = "",
       definition = null,
       translation = null,
+      translationSourceLanguage = null,
+      translationTargetLanguage = null,
       hanja = null,
       pos = null,
       romanization = null,
@@ -359,6 +361,8 @@ class OcrResultOverlayView(
       stem = result.stem,
       definition = result.definition,
       translation = result.translation,
+      translationSourceLanguage = result.translationSourceLanguage,
+      translationTargetLanguage = result.translationTargetLanguage,
       hanja = result.hanja,
       pos = result.pos,
       romanization = result.romanization,
@@ -1045,7 +1049,7 @@ class OcrResultOverlayView(
     val iconSize = dp(20f)
     val iconRect = RectF(left, labelTop - dp(14f), left + iconSize, labelTop + dp(6f))
     drawTranslateIcon(canvas, iconRect)
-    canvas.drawText("TRANSLATION · KO → EN", iconRect.right + dp(8f), labelTop + dp(1f), cardMetaPaint)
+    canvas.drawText(translationHeaderLabel(card), iconRect.right + dp(8f), labelTop + dp(1f), cardMetaPaint)
 
     val translation = card.translation?.trim().orEmpty()
     val body = when {
@@ -1059,6 +1063,16 @@ class OcrResultOverlayView(
     lines.forEach { line ->
       canvas.drawText(line, left, y, cardBodyPaint)
       y += dp(19f)
+    }
+  }
+
+  private fun translationHeaderLabel(card: LookupCard): String {
+    val source = card.translationSourceLanguage?.trim().orEmpty()
+    val target = card.translationTargetLanguage?.trim().orEmpty()
+    return if (source.isNotBlank() && target.isNotBlank()) {
+      "TRANSLATION · $source → $target"
+    } else {
+      "TRANSLATION"
     }
   }
 
@@ -1515,6 +1529,8 @@ class OcrResultOverlayView(
       stem = "",
       definition = null,
       translation = null,
+      translationSourceLanguage = null,
+      translationTargetLanguage = null,
       hanja = null,
       pos = null,
       romanization = null,
@@ -1700,6 +1716,8 @@ private data class LookupCard(
   val stem: String,
   val definition: String?,
   val translation: String?,
+  val translationSourceLanguage: String?,
+  val translationTargetLanguage: String?,
   val hanja: String?,
   val pos: String?,
   val romanization: String?,

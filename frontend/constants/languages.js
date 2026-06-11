@@ -10,6 +10,8 @@ export const TARGET_LANGUAGE_OPTIONS = Object.entries(SUPPORTED_LANGUAGES).map((
 
 export const KRDICT_INTERFACE_LANGUAGE_OPTIONS = [
   { code: 'en', label: 'English' },
+  { code: 'ko', label: '한국어' },
+  { code: 'zh', label: '中文' },
   { code: 'fr', label: 'Français' },
   { code: 'es', label: 'Español' },
   { code: 'ar', label: 'العربية' },
@@ -18,7 +20,6 @@ export const KRDICT_INTERFACE_LANGUAGE_OPTIONS = [
   { code: 'th', label: 'ไทย' },
   { code: 'id', label: 'Bahasa Indonesia' },
   { code: 'ru', label: 'Русский' },
-  { code: 'zh', label: '中文' },
 ];
 
 export const SUPPORTED_INTERFACE_LANGUAGES = KRDICT_INTERFACE_LANGUAGE_OPTIONS.reduce(

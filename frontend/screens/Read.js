@@ -7,6 +7,7 @@ import { Slider } from 'react-native-elements';
 
 import TopSection from '../components/Read/TopSection/TopSection';
 import TocDrawer from '../components/Read/TocDrawer';
+import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
 import NativeEpubReaderView from '../modules/native-epub-reader/src/NativeEpubReaderView';
@@ -38,6 +39,7 @@ import {
 } from '../services/preferencesCloudSync';
 import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
 import { upsertUserVocabContext } from '../services/supabase';
+import { normalizeBookLanguage, normalizeInterfaceLanguageCode } from '../constants/languages';
 import { colors, radii, spacing, textStyles } from '../theme';
 
 const LOOKUP_HINT_DISMISSED_KEY = 'lookupHintDismissed';
@@ -124,8 +126,9 @@ const chapterWindowEntryForPackage = (readerPackage, role) => {
     };
 };
 
-const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderFocusMode, user }) => {
-    const { t } = useTranslation();
+const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessComplete, setIsReaderFocusMode, user }) => {
+    const { t, language: interfaceLanguage } = useTranslation();
+    const { targetLanguage } = useAppContext();
     const { activeOwnerId, syncPaused, syncGeneration } = useLocalOwner();
     const [highlightedWord, setHighlightedWord] = useState('');
     const [highlightedWordContext, setHighlightedWordContext] = useState(null);
@@ -180,13 +183,16 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
     const readerSettingsUpdatedAtRef = useRef(null);
     const readerSettingsRef = useRef(DEFAULT_READER_SETTINGS);
     const loadNativeReaderPackageRef = useRef(null);
-    const activeBook = books.find(book => book.uri === currentBook) ?? null;
-    const activeBookLanguage = activeBook?.language ?? 'ko';
+    const selectedBook = books.find(book => book.uri === selectedCurrentBook) ?? null;
+    const selectedBookLanguage = normalizeBookLanguage(selectedBook?.language ?? 'ko');
+    const activeBook = selectedBook && selectedBookLanguage === targetLanguage ? selectedBook : null;
+    const currentBook = activeBook?.uri ?? null;
+    const activeBookLanguage = activeBook ? selectedBookLanguage : targetLanguage;
     const shouldUseHeuristicHighlights = !activeBook?.preprocessed;
 
     // Load saved words for highlighting on mount
     useEffect(() => {
-        getSavedWords({ ownerId: activeOwnerId })
+        getSavedWords({ ownerId: activeOwnerId, language: activeBookLanguage })
             .then(words => {
                 setSavedWords(words);
             })
@@ -194,7 +200,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
                 console.error('[Read] Failed to load saved words:', err);
                 setSavedWords([]);
             });
-    }, [activeOwnerId]);
+    }, [activeBookLanguage, activeOwnerId]);
 
     useEffect(() => {
         if (savedWords === null) {
@@ -212,7 +218,10 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
 
         const loadHighlightTerms = async () => {
             try {
-                const surfaceRows = await lookupBookHighlightSurfaces(activeOwnerId, currentBook, savedWords);
+                const surfaceRows = await lookupBookHighlightSurfaces(activeOwnerId, currentBook, savedWords, {
+                    language: activeBookLanguage,
+                    interfaceLanguage,
+                });
                 if (!isActive) {
                     return;
                 }
@@ -238,7 +247,15 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
         return () => {
             isActive = false;
         };
-    }, [activeOwnerId, currentBook, preprocessStatus, savedWords, shouldUseHeuristicHighlights]);
+    }, [
+        activeBookLanguage,
+        activeOwnerId,
+        currentBook,
+        interfaceLanguage,
+        preprocessStatus,
+        savedWords,
+        shouldUseHeuristicHighlights,
+    ]);
 
     // Reset status and clear stored text whenever the open book changes
     useEffect(() => {
@@ -854,16 +871,31 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
         bookUri,
         results = [],
         surfaceIndex = [],
+        language = 'ko',
     }) => {
-        const cacheEntries = (results || []).filter((entry) => entry?.stem);
-        await insertCacheEntries(cacheEntries);
+        const cacheScope = { language, interfaceLanguage };
+        const normalizedInterfaceLanguage = normalizeInterfaceLanguageCode(interfaceLanguage);
+        const cacheEntries = (results || [])
+            .filter((entry) => entry?.stem)
+            .map((entry) => {
+                const entryInterfaceLanguage = normalizeInterfaceLanguageCode(
+                    entry.interfaceLanguage ?? entry.interface_language ?? normalizedInterfaceLanguage
+                );
+
+                if (language === 'en' && normalizedInterfaceLanguage !== 'en' && entryInterfaceLanguage !== normalizedInterfaceLanguage) {
+                    return { ...entry, definition: null };
+                }
+
+                return entry;
+            });
+        await insertCacheEntries(cacheEntries, cacheScope);
 
         const stems = [...new Set(cacheEntries.map((entry) => entry.stem).filter(Boolean))];
         if (stems.length === 0) {
             return 0;
         }
 
-        const cachedRows = await lookupCacheByStems(stems);
+        const cachedRows = await lookupCacheByStems(stems, cacheScope);
         const stemToId = {};
         cachedRows.forEach(row => { stemToId[row.stem] = row.id; });
 
@@ -885,7 +917,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
 
         await insertBookIndexEntries(bookUri, bookIndexEntries, { ownerId: activeOwnerId });
         return bookIndexEntries.length;
-    }, [activeOwnerId]);
+    }, [activeOwnerId, interfaceLanguage]);
 
     const startChapterPreprocessing = useCallback(async (
         centerSpineIndex,
@@ -997,6 +1029,8 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
                         bookUri: currentBook,
                         spineIndex,
                         text: chapterText,
+                        language: activeBookLanguage,
+                        interfaceLanguage,
                     });
 
                     if (chapterPreprocessTokenRef.current !== preprocessToken) {
@@ -1007,6 +1041,7 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
                         bookUri: currentBook,
                         results,
                         surfaceIndex,
+                        language: activeBookLanguage,
                     });
 
                     await markBookPreprocessChapter({
@@ -1131,6 +1166,8 @@ const Read = ({ books, setBooks, currentBook, onPreprocessComplete, setIsReaderF
         currentBook,
         activeOwnerId,
         activeBook,
+        activeBookLanguage,
+        interfaceLanguage,
         loadParsedChapterPackage,
         onPreprocessComplete,
         persistChapterPreprocessResults,

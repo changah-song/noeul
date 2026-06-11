@@ -18,7 +18,7 @@ import { fetchHanjaRelated } from './api/hanjaRelated';
 import { translateText } from './api/googleTranslate';
 import { addRelatedKnownWord, getRelatedKnownWords, removeRelatedKnownWord } from './Database';
 import { lookupWordForOverlay, saveOverlayLookupResult, unsaveOverlayLookupResult } from './dictionaryLookup';
-import { getRuntimeInterfaceLanguage } from './interfaceLanguage';
+import { getRuntimeInterfaceLanguage, getRuntimeTargetLanguage } from './interfaceLanguage';
 import { getActiveOwnerId } from './localOwnerCoordinator';
 
 let subscriptions = [];
@@ -36,12 +36,17 @@ let activeOcrPrefetchRun = 0;
 
 const cleanValue = (value) => (typeof value === 'string' ? value.trim() : '');
 const lookupCacheKey = ({ selectedText, selectedLineText }) => [
+    getRuntimeTargetLanguage(),
     getRuntimeInterfaceLanguage(),
     cleanValue(selectedText),
     cleanValue(selectedLineText),
 ].join('\n');
 const relatedWordKey = (entry) => `${entry?.korean ?? ''}|${entry?.hanja ?? ''}`;
 const uniqueCleanValues = (values = []) => [...new Set(values.map(cleanValue).filter(Boolean))];
+const formatTranslationLanguageCode = (language) => String(language || '')
+    .trim()
+    .split(/[-_]/)[0]
+    .toUpperCase();
 const extractHanjaCharacters = (value) => uniqueCleanValues(
     Array.from(cleanValue(value)).filter(char => HANJA_CHARACTER_PATTERN.test(char))
 );
@@ -188,6 +193,8 @@ const buildOverlayLookupPayload = async ({ selectedText, selectedLineText }) => 
 };
 
 const buildOverlayLookupEnrichmentPayload = async ({ selectedText, selectedLineText }) => {
+    const targetLanguage = getRuntimeTargetLanguage();
+    const interfaceLanguage = getRuntimeInterfaceLanguage();
     const result = await lookupWordForOverlay({
         surface: selectedText,
         sourceSentence: selectedLineText,
@@ -195,13 +202,19 @@ const buildOverlayLookupEnrichmentPayload = async ({ selectedText, selectedLineT
     });
     const [hanjaPreloads, translationResult] = await Promise.allSettled([
         preloadOverlayHanjaForLookupResult(result, selectedText),
-        translateText({ query: cleanValue(result?.stem) || selectedText }),
+        translateText({
+            query: cleanValue(result?.stem) || selectedText,
+            source: targetLanguage,
+            target: interfaceLanguage,
+        }),
     ]);
 
     return {
         ...result,
         sourceSentence: cleanValue(selectedLineText),
         translation: translationResult.status === 'fulfilled' ? cleanValue(translationResult.value) : null,
+        translationSourceLanguage: formatTranslationLanguageCode(targetLanguage),
+        translationTargetLanguage: formatTranslationLanguageCode(interfaceLanguage),
         hanjaPreloads: hanjaPreloads.status === 'fulfilled' ? hanjaPreloads.value : [],
     };
 };

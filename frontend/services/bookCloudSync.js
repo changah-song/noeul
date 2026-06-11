@@ -3,6 +3,7 @@ import {
   assertCanUploadForOwner,
   isCurrentSyncGeneration,
 } from './localOwnerCoordinator';
+import { normalizeBookLanguage } from '../constants/languages';
 import { makeOwnerDataDirectory } from './localDataScope';
 import { USER_BOOKS_BUCKET, supabase } from './supabase';
 
@@ -393,17 +394,23 @@ export const updateUserBookMetadata = async ({ user, ownerId, generation, book }
   return data;
 };
 
-export const fetchUserBooks = async (userId) => {
+export const fetchUserBooks = async (userId, options = {}) => {
   if (!userId) {
     return [];
   }
 
-  const { data, error } = await supabase
+  const targetLanguage = options?.targetLanguage ?? options?.language ?? null;
+  let query = supabase
     .from('user_books')
     .select(USER_BOOK_SELECT)
     .eq('user_id', userId)
-    .is('deleted_at', null)
-    .order('updated_at', { ascending: false });
+    .is('deleted_at', null);
+
+  if (targetLanguage != null) {
+    query = query.eq('language', normalizeBookLanguage(targetLanguage));
+  }
+
+  const { data, error } = await query.order('updated_at', { ascending: false });
 
   if (error) {
     console.warn(`${FILE_TAG} fetchUserBooks failed`, error);

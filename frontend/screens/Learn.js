@@ -35,6 +35,7 @@ import {
   updateUserVocabFields,
 } from '../services/supabase';
 import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
+import { normalizeBookLanguage } from '../constants/languages';
 import { colors, fontFamilies, radii, spacing, textStyles } from '../theme';
 
 const FILTERS = [
@@ -473,6 +474,7 @@ const WordDetailModal = ({
   const seenCount = getSeenCount(word);
   const source = getSourceLabel(word, t);
   const lastSaw = formatRelativeDate(getLastSawDate(word), t);
+  const isKoreanWord = normalizeBookLanguage(word.language ?? 'ko') === 'ko';
   const hanjaCharacters = getHanjaCharacters(word.hanja);
 
   const handleHanjaPress = (hanja, sourceWord = null, options = {}) => {
@@ -537,7 +539,7 @@ const WordDetailModal = ({
           <View style={styles.detailHero}>
             <View style={styles.detailWordLine}>
               <Text style={styles.detailWord}>{word.word}</Text>
-              {hanjaCharacters.length > 0 ? (
+              {isKoreanWord && hanjaCharacters.length > 0 ? (
                 <TouchableOpacity
                   activeOpacity={0.75}
                   onPress={() => handleHanjaPress(hanjaCharacters[0], word.word)}
@@ -607,15 +609,17 @@ const WordDetailModal = ({
           </TouchableOpacity>
         </View>
 
-        <HanjaDetails
-          hanja={currentHanja?.character ?? null}
-          hanjaCharacters={currentHanja?.characters ?? []}
-          initialHanjaIndex={currentHanja?.activeIndex ?? 0}
-          sourceWord={currentHanja?.sourceWord ?? word.word}
-          sourceWordDetails={currentHanja?.sourceWordDetails ?? {}}
-          handleHanjaPress={handleHanjaPress}
-          isDarkMode={false}
-        />
+        {isKoreanWord ? (
+          <HanjaDetails
+            hanja={currentHanja?.character ?? null}
+            hanjaCharacters={currentHanja?.characters ?? []}
+            initialHanjaIndex={currentHanja?.activeIndex ?? 0}
+            sourceWord={currentHanja?.sourceWord ?? word.word}
+            sourceWordDetails={currentHanja?.sourceWordDetails ?? {}}
+            handleHanjaPress={handleHanjaPress}
+            isDarkMode={false}
+          />
+        ) : null}
       </SafeAreaView>
     </Modal>
   );
