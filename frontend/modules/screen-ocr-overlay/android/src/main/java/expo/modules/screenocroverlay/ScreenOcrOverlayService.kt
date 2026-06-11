@@ -392,6 +392,10 @@ class ScreenOcrOverlayService : Service() {
       stem = stem,
       definition = nullableStringValue(result["definition"]) ?: currentResult?.definition,
       translation = nullableStringValue(result["translation"]) ?: currentResult?.translation,
+      translationSourceLanguage = nullableStringValue(result["translationSourceLanguage"])
+        ?: currentResult?.translationSourceLanguage,
+      translationTargetLanguage = nullableStringValue(result["translationTargetLanguage"])
+        ?: currentResult?.translationTargetLanguage,
       hanja = nullableStringValue(result["hanja"]) ?: currentResult?.hanja,
       pos = nullableStringValue(result["pos"]) ?: currentResult?.pos,
       romanization = nullableStringValue(result["romanization"]) ?: currentResult?.romanization,

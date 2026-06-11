@@ -1,9 +1,13 @@
 import { api } from './client';
+import { normalizeBookLanguage } from '../../constants/languages';
 
-const stemWord = async ({ query }) => {
+const stemWord = async ({ query, language = 'ko' }) => {
   if (!query || query.trim() === "") return [];
+  const targetLanguage = normalizeBookLanguage(language);
+  const endpoint = targetLanguage === 'en' ? '/en_morphs/' : '/okt_morphs/';
+
   try {
-      const response = await api.get('/okt_morphs/', {
+      const response = await api.get(endpoint, {
           params: { text: query }
       });
       return response.data.result;

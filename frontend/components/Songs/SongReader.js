@@ -16,6 +16,7 @@ import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import TopSection from '../Read/TopSection/TopSection';
 import NativeEpubReaderView from '../../modules/native-epub-reader/src/NativeEpubReaderView';
+import { useAppContext } from '../../contexts/AppContext';
 import { useLocalOwner } from '../../contexts/LocalOwnerContext';
 import { useTranslation } from '../../hooks/useTranslation';
 import { getSavedWords } from '../../services/Database';
@@ -88,6 +89,7 @@ const buildNativeLyricBlocks = (lyricLines) => lyricLines.map((line, index) => {
 
 const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsChange }) => {
     const { t } = useTranslation();
+    const { targetLanguage } = useAppContext();
     const { activeOwnerId } = useLocalOwner();
     const insets = useSafeAreaInsets();
     const { height: viewportHeight } = useWindowDimensions();
@@ -109,7 +111,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     useEffect(() => {
         let isMounted = true;
 
-        getSavedWords({ ownerId: activeOwnerId })
+        getSavedWords({ ownerId: activeOwnerId, language: targetLanguage })
             .then((words) => {
                 if (isMounted) {
                     setSavedWords(words);
@@ -125,7 +127,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         return () => {
             isMounted = false;
         };
-    }, [activeOwnerId]);
+    }, [activeOwnerId, targetLanguage]);
 
     useEffect(() => {
         setHighlightedWord('');
@@ -155,8 +157,8 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         uri: song?.id ? `song:${song.id}` : null,
         title: song?.title || t('song.untitled'),
         author: song?.artist || t('common.unknownArtist'),
-        language: 'ko',
-    }), [song?.artist, song?.id, song?.title, t]);
+        language: targetLanguage,
+    }), [song?.artist, song?.id, song?.title, t, targetLanguage]);
     const nativeSongManifest = useMemo(() => ({
         sourceUri: song?.id ? `song:${song.id}` : 'song:unknown',
         currentSpineIndex: 0,

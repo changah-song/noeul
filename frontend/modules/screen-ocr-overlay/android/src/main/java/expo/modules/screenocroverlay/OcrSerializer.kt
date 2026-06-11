@@ -70,6 +70,8 @@ data class OverlayLookupResult(
   val stem: String,
   val definition: String?,
   val translation: String?,
+  val translationSourceLanguage: String?,
+  val translationTargetLanguage: String?,
   val hanja: String?,
   val pos: String?,
   val romanization: String?,

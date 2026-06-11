@@ -22,6 +22,8 @@ import {
     getInterfaceLanguageLabel,
     getLanguageLabel,
     KRDICT_INTERFACE_LANGUAGE_OPTIONS,
+    normalizeBookLanguage,
+    normalizeInterfaceLanguageCode,
     TARGET_LANGUAGE_OPTIONS,
 } from '../constants/languages';
 import { colors, fontFamilies, radii, spacing, textStyles } from '../theme';
@@ -480,6 +482,13 @@ const PreferenceRow = ({ label, value, accent = false, isLast = false, onPress }
     </TouchableOpacity>
 );
 
+const LANGUAGE_FLAGS = {
+    en: '🇺🇸',
+    ko: '🇰🇷',
+};
+
+const getLanguageFlag = (language) => LANGUAGE_FLAGS[language] ?? '🌐';
+
 const normalizeProfileRow = (profile, fallbackLanguage = 'ko') => {
     const targetLanguage = profile?.target_language || profile?.targetLanguage || fallbackLanguage;
     return {
@@ -521,6 +530,7 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
         targetLanguage,
         activeProfileId,
         switchProfile,
+        updateLanguageSettings,
     } = useAppContext();
     const { activeOwnerId, syncGeneration } = useLocalOwner();
     const { t } = useTranslation();
@@ -542,20 +552,24 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
 
     const learningSince = useMemo(() => {
         if (!user?.created_at) {
-            return 'Recently';
+            return t('profile.recently');
         }
 
-        return new Date(user.created_at).toLocaleDateString('en-US', {
+        return new Date(user.created_at).toLocaleDateString(normalizeInterfaceLanguageCode(interfaceLanguage), {
             month: 'short',
             year: 'numeric',
         });
-    }, [user?.created_at]);
+    }, [interfaceLanguage, t, user?.created_at]);
+
+    const activeProfileBooks = useMemo(() => (
+        (books || []).filter((book) => normalizeBookLanguage(book?.language ?? 'ko') === targetLanguage)
+    ), [books, targetLanguage]);
 
     const completedBooks = useMemo(() => (
-        (books || [])
+        activeProfileBooks
             .filter(isBookCompleted)
             .sort((a, b) => completedTimestamp(b) - completedTimestamp(a))
-    ), [books]);
+    ), [activeProfileBooks]);
 
     const shelfWidth = useMemo(() => {
         const availableWidth = viewportWidth - (BOOKSHELF_HORIZONTAL_PADDING * 2);
@@ -574,9 +588,7 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
         padShelfRows(actualShelfRows, renderedShelfRowCount)
     ), [actualShelfRows, renderedShelfRowCount]);
     const totalShelfPages = Math.max(1, Math.ceil(shelfRows.length / SHELF_VIEWPORT_ROW_COUNT));
-    const interfaceLanguageOptions = useMemo(() => (
-        KRDICT_INTERFACE_LANGUAGE_OPTIONS.filter((option) => option.code !== targetLanguage)
-    ), [targetLanguage]);
+    const interfaceLanguageOptions = KRDICT_INTERFACE_LANGUAGE_OPTIONS;
     const fallbackProfiles = useMemo(() => ([
         normalizeProfileRow({
             id: getDefaultProfileIdForLanguage(targetLanguage),
@@ -618,8 +630,13 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
         const existingLanguages = new Set(
             availableProfiles.map((profile) => profile.target_language).filter(Boolean)
         );
-        return TARGET_LANGUAGE_OPTIONS.filter((option) => !existingLanguages.has(option.code));
-    }, [availableProfiles]);
+        return TARGET_LANGUAGE_OPTIONS
+            .filter((option) => !existingLanguages.has(option.code))
+            .map((option) => ({
+                ...option,
+                swapsUserLanguage: option.code === interfaceLanguage,
+            }));
+    }, [availableProfiles, interfaceLanguage]);
 
     useEffect(() => {
         setVisibleShelfPage((currentPage) => {
@@ -722,13 +739,25 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
     };
 
     const handleInterfaceLanguageSelect = (language) => {
+        if (language === targetLanguage) {
+            return;
+        }
+
         setInterfaceLanguage(language);
         setShowInterfaceLanguagePicker(false);
     };
 
     const handleProfileSelect = (profile) => {
         const normalizedProfile = normalizeProfileRow(profile, targetLanguage);
-        switchProfile(normalizedProfile.id, normalizedProfile.target_language);
+        if (normalizedProfile.target_language === interfaceLanguage) {
+            updateLanguageSettings({
+                activeProfileId: normalizedProfile.id,
+                targetLanguage: normalizedProfile.target_language,
+                interfaceLanguage: targetLanguage,
+            });
+        } else {
+            switchProfile(normalizedProfile.id, normalizedProfile.target_language);
+        }
         setShowProfileSwitcher(false);
     };
 
@@ -757,7 +786,15 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
 
             const normalizedProfile = normalizeProfileRow(nextProfile, option.code);
             setProfiles((currentProfiles) => mergeProfileRows(currentProfiles, normalizedProfile));
-            switchProfile(normalizedProfile.id, normalizedProfile.target_language);
+            if (normalizedProfile.target_language === interfaceLanguage) {
+                updateLanguageSettings({
+                    activeProfileId: normalizedProfile.id,
+                    targetLanguage: normalizedProfile.target_language,
+                    interfaceLanguage: targetLanguage,
+                });
+            } else {
+                switchProfile(normalizedProfile.id, normalizedProfile.target_language);
+            }
             setShowProfileSwitcher(false);
         } catch (error) {
             Alert.alert(t('profile.createProfileFailed'), error?.message || t('profile.preferenceSoon'));
@@ -811,6 +848,13 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                 onPress={dismissActiveBook}
                 style={styles.screenTapArea}
             >
+                <ScrollView
+                    style={styles.pageScroller}
+                    contentContainerStyle={styles.pageScrollerContent}
+                    showsVerticalScrollIndicator={false}
+                    keyboardShouldPersistTaps="handled"
+                    nestedScrollEnabled
+                >
                 <View style={styles.profileHeader}>
                     <View style={styles.profileHeaderTopRow}>
                         <View style={styles.profileIdentity}>
@@ -895,7 +939,7 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                     <View style={styles.preferencesCard}>
                         <PreferenceRow
                             label={t('profile.languageProfile')}
-                            value={currentProfileLabel}
+                            value={`${getLanguageFlag(targetLanguage)} ${currentProfileLabel}`}
                             accent
                             onPress={() => handlePreferencePress({ key: 'profile', labelKey: 'profile.languageProfile' })}
                         />
@@ -916,28 +960,29 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                             />
                         ))}
                     </View>
+                    {isGuest ? (
+                        <View style={styles.guestAccountSection}>
+                            <View style={styles.guestAuthActions}>
+                                <TouchableOpacity
+                                    activeOpacity={0.86}
+                                    onPress={() => openAuthModal('signin')}
+                                    style={[styles.guestAuthButton, styles.guestAuthButtonSecondary]}
+                                >
+                                    <Text style={styles.guestAuthButtonSecondaryText}>{t('profile.signIn')}</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                    activeOpacity={0.86}
+                                    onPress={() => openAuthModal('signup')}
+                                    style={[styles.guestAuthButton, styles.guestAuthButtonPrimary]}
+                                >
+                                    <Text style={styles.guestAuthButtonPrimaryText}>{t('profile.signUp')}</Text>
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+                    ) : null}
                 </View>
 
-                {isGuest ? (
-                    <View style={styles.guestAccountSection}>
-                        <View style={styles.guestAuthActions}>
-                            <TouchableOpacity
-                                activeOpacity={0.86}
-                                onPress={() => openAuthModal('signin')}
-                                style={[styles.guestAuthButton, styles.guestAuthButtonSecondary]}
-                            >
-                                <Text style={styles.guestAuthButtonSecondaryText}>{t('profile.signIn')}</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                                activeOpacity={0.86}
-                                onPress={() => openAuthModal('signup')}
-                                style={[styles.guestAuthButton, styles.guestAuthButtonPrimary]}
-                            >
-                                <Text style={styles.guestAuthButtonPrimaryText}>{t('profile.signUp')}</Text>
-                            </TouchableOpacity>
-                        </View>
-                    </View>
-                ) : (
+                {!isGuest ? (
                     <View style={styles.logoutSection}>
                         <TouchableOpacity
                             activeOpacity={0.86}
@@ -953,7 +998,8 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                             </Text>
                         </TouchableOpacity>
                     </View>
-                )}
+                ) : null}
+                </ScrollView>
             </Pressable>
 
             <Modal
@@ -970,27 +1016,31 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                                 <View style={styles.languageOptions}>
                                     {interfaceLanguageOptions.map((option) => {
                                         const selected = option.code === interfaceLanguage;
+                                        const disabled = option.code === targetLanguage;
 
                                         return (
                                             <Pressable
                                                 key={option.code}
                                                 accessibilityRole="radio"
-                                                accessibilityState={{ selected }}
+                                                accessibilityState={{ selected, disabled }}
+                                                disabled={disabled}
                                                 onPress={() => handleInterfaceLanguageSelect(option.code)}
                                                 style={[
                                                     styles.languageOptionRow,
                                                     selected && styles.languageOptionRowSelected,
+                                                    disabled && styles.languageOptionRowDisabled,
                                                 ]}
                                             >
                                                 <Feather
                                                     name={selected ? 'check-circle' : 'circle'}
                                                     size={18}
-                                                    color={selected ? PROFILE_COLORS.accent : PROFILE_COLORS.faint}
+                                                    color={selected && !disabled ? PROFILE_COLORS.accent : PROFILE_COLORS.faint}
                                                 />
                                                 <Text
                                                     style={[
                                                         styles.languageOptionText,
                                                         selected && styles.languageOptionTextSelected,
+                                                        disabled && styles.languageOptionTextDisabled,
                                                     ]}
                                                 >
                                                     {option.label}
@@ -1027,6 +1077,9 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                                                 && currentProfile?.id === profile.id
                                             )
                                         );
+                                        const swapUserLanguageTo = !selected && profile.target_language === interfaceLanguage
+                                            ? getLanguageLabel(targetLanguage)
+                                            : null;
 
                                         return (
                                             <Pressable
@@ -1044,6 +1097,9 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                                                     size={18}
                                                     color={selected ? PROFILE_COLORS.accent : PROFILE_COLORS.faint}
                                                 />
+                                                <Text style={styles.languageOptionFlag}>
+                                                    {getLanguageFlag(profile.target_language)}
+                                                </Text>
                                                 <View style={styles.languageOptionContent}>
                                                     <Text
                                                         style={[
@@ -1054,7 +1110,9 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                                                         {profile.display_name}
                                                     </Text>
                                                     <Text style={styles.languageOptionMeta}>
-                                                        {getLanguageLabel(profile.target_language)}
+                                                        {swapUserLanguageTo
+                                                            ? t('profile.userLanguageWillSwitch', { language: swapUserLanguageTo })
+                                                            : getLanguageLabel(profile.target_language)}
                                                     </Text>
                                                 </View>
                                             </Pressable>
@@ -1078,10 +1136,17 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                                                 size={18}
                                                 color={PROFILE_COLORS.accent}
                                             />
+                                            <Text style={styles.languageOptionFlag}>
+                                                {getLanguageFlag(option.code)}
+                                            </Text>
                                             <View style={styles.languageOptionContent}>
-                                                <Text style={styles.languageOptionText}>{option.label}</Text>
+                                                <Text style={styles.languageOptionText}>
+                                                    {option.label}
+                                                </Text>
                                                 <Text style={styles.languageOptionMeta}>
-                                                    {t('profile.addLanguageProfile')}
+                                                    {option.swapsUserLanguage
+                                                        ? t('profile.userLanguageWillSwitch', { language: getLanguageLabel(targetLanguage) })
+                                                        : t('profile.addLanguageProfile')}
                                                 </Text>
                                             </View>
                                         </Pressable>
@@ -1237,6 +1302,14 @@ const styles = StyleSheet.create({
     screenTapArea: {
         flex: 1,
         width: '100%',
+    },
+    pageScroller: {
+        flex: 1,
+        width: '100%',
+    },
+    pageScrollerContent: {
+        flexGrow: 1,
+        paddingBottom: 18,
     },
     profileHeader: {
         minHeight: 85,
@@ -1536,6 +1609,12 @@ const styles = StyleSheet.create({
     languageOptionRowDisabled: {
         opacity: 0.56,
     },
+    languageOptionFlag: {
+        width: 22,
+        textAlign: 'center',
+        fontSize: 16,
+        lineHeight: 20,
+    },
     languageOptionContent: {
         flex: 1,
         minWidth: 0,
@@ -1551,6 +1630,9 @@ const styles = StyleSheet.create({
     languageOptionTextSelected: {
         fontFamily: fontFamilies.sansBold,
         color: PROFILE_COLORS.accent,
+    },
+    languageOptionTextDisabled: {
+        color: PROFILE_COLORS.faint,
     },
     languageOptionMeta: {
         marginTop: 2,
@@ -1598,10 +1680,7 @@ const styles = StyleSheet.create({
         color: PROFILE_COLORS.danger,
     },
     guestAccountSection: {
-        marginTop: 'auto',
-        paddingHorizontal: 22,
-        paddingTop: 14,
-        paddingBottom: 18,
+        paddingTop: 12,
     },
     guestAuthActions: {
         flexDirection: 'row',

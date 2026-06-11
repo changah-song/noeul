@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 import { DOMParser } from '@xmldom/xmldom';
 import * as FileSystem from 'expo-file-system';
+import { normalizeBookLanguage } from '../constants/languages';
 
 const parser = new DOMParser();
 const NATIVE_EPUB_DIR = 'epub-native';
@@ -1077,7 +1078,7 @@ const parsePackageDocument = (opfXml, packagePath, fallbackName = '', extractedR
         metadata: {
             title: textOf(titleNode) || cleanFallbackTitle(fallbackName),
             author: textOf(creatorNode) || 'Unknown author',
-            language: textOf(languageNode) || null,
+            language: normalizeBookLanguage(textOf(languageNode), null),
             identifier: textOf(firstDescendant(metadataNode, (node) => localNameOf(node) === 'identifier')) || null,
         },
         packagePath,

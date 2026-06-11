@@ -1,6 +1,7 @@
 import { Asset } from 'expo-asset';
 import * as FileSystem from 'expo-file-system';
 
+import { normalizeBookLanguage } from '../constants/languages';
 import { PUBLIC_DOMAIN_TEXTS } from '../assets/data/public-domain/catalog';
 
 const PUBLIC_DOMAIN_URI_PREFIX = 'public-domain:';
@@ -21,7 +22,10 @@ export const isPublicDomainBookUri = (uri) => (
   String(uri || '').startsWith(PUBLIC_DOMAIN_URI_PREFIX)
 );
 
-export const getPublicDomainBooks = () => PUBLIC_DOMAIN_TEXTS.map((book) => ({
+export const getPublicDomainBooks = (targetLanguage = null) => PUBLIC_DOMAIN_TEXTS.filter((book) => (
+  targetLanguage == null
+    || normalizeBookLanguage(book.language ?? 'ko') === normalizeBookLanguage(targetLanguage)
+)).map((book) => ({
   id: `public-domain-${book.id}`,
   publicDomainId: book.id,
   uri: publicDomainUriForId(book.id),

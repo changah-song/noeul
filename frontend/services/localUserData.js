@@ -17,6 +17,7 @@ const USER_STORAGE_KEYS = [
   'current-book',
   'current-book-meta',
   'manual-songs',
+  'manual-songs-en',
   'writing-entries-v1',
   'daily-progress',
 ];
@@ -24,6 +25,7 @@ const USER_STORAGE_KEYS = [
 const ARRAY_STORAGE_KEYS = new Set([
   'books',
   'manual-songs',
+  'manual-songs-en',
   'writing-entries-v1',
 ]);
 
@@ -195,6 +197,7 @@ export const readOwnerStorageState = async (ownerId = GUEST_OWNER_ID) => {
     currentBook: await AsyncStorage.getItem(makeScopedStorageKey(scopedOwnerId, 'current-book')),
     currentBookMetaRaw: await AsyncStorage.getItem(makeScopedStorageKey(scopedOwnerId, 'current-book-meta')),
     songsRaw: await AsyncStorage.getItem(makeScopedStorageKey(scopedOwnerId, 'manual-songs')),
+    englishSongsRaw: await AsyncStorage.getItem(makeScopedStorageKey(scopedOwnerId, 'manual-songs-en')),
     writingRaw: await AsyncStorage.getItem(makeScopedStorageKey(scopedOwnerId, 'writing-entries-v1')),
     dailyProgressRaw: await AsyncStorage.getItem(makeScopedStorageKey(scopedOwnerId, 'daily-progress')),
   };

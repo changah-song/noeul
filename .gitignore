@@ -1,5 +1,6 @@
 .claude/
 .idea/
+.DS_Store
 __pycache__/
 *.pyc
 scripts/hanja_translated.json

@@ -1,6 +1,6 @@
 import * as SQLite from 'expo-sqlite';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { normalizeInterfaceLanguageCode } from '../constants/languages';
+import { normalizeBookLanguage, normalizeInterfaceLanguageCode } from '../constants/languages';
 import { initializeHanjaDatabase } from './hanjaDatabase';
 import { GUEST_OWNER_ID } from './localDataScope';
 import {
@@ -16,9 +16,11 @@ const db = SQLite.openDatabase('fluentfable.db');
 const BOOK_INDEX_MIGRATION_KEY = 'book_index_migration_v2';
 const DICTIONARY_CACHE_MIGRATION_KEY = 'dictionary_cache_migration_v1';
 const DICTIONARY_CACHE_LANGUAGE_MIGRATION_KEY = 'dictionary_cache_language_migration_v1';
+const DICTIONARY_CACHE_TARGET_LANGUAGE_MIGRATION_KEY = 'dictionary_cache_target_language_migration_v1';
+const DICTIONARY_CACHE_GLOSS_MIGRATION_KEY = 'dictionary_cache_gloss_migration_v1';
 const LOCAL_OWNER_SQLITE_MIGRATION_KEY = 'local_owner_sqlite_migration_v1';
 const PROFILE_SQLITE_MIGRATION_KEY = 'profile_sqlite_migration_v1';
-export const PREPROCESS_VERSION = 1;
+export const PREPROCESS_VERSION = 2;
 const DEFAULT_STABILITY = 1.0;
 const DEFAULT_DIFFICULTY = 5.0;
 const FSRS_PARAMS = {
@@ -62,6 +64,39 @@ const normalizeFsrsValue = (value, fallback, min = 0.01, max = Number.POSITIVE_I
 
   return Math.min(Math.max(number, min), max);
 };
+
+const normalizeDictionaryCacheScope = (scopeOrInterfaceLanguage = 'en', options = {}) => {
+  if (typeof scopeOrInterfaceLanguage === 'object' && scopeOrInterfaceLanguage !== null) {
+    return {
+      language: normalizeBookLanguage(scopeOrInterfaceLanguage.language ?? scopeOrInterfaceLanguage.targetLanguage ?? 'ko'),
+      interfaceLanguage: normalizeInterfaceLanguageCode(
+        scopeOrInterfaceLanguage.interfaceLanguage
+          ?? scopeOrInterfaceLanguage.interface_language
+          ?? 'en'
+      ),
+    };
+  }
+
+  return {
+    language: normalizeBookLanguage(options.language ?? options.targetLanguage ?? 'ko'),
+    interfaceLanguage: normalizeInterfaceLanguageCode(
+      options.interfaceLanguage
+        ?? options.interface_language
+        ?? scopeOrInterfaceLanguage
+        ?? 'en'
+    ),
+  };
+};
+
+const sqlTextColumnOrNull = (columns, column) => (
+  columns.includes(column) ? column : 'NULL'
+);
+
+const sqlNormalizedColumnOrDefault = (columns, column, fallback) => (
+  columns.includes(column)
+    ? `COALESCE(NULLIF(TRIM(${column}), ''), '${fallback}')`
+    : `'${fallback}'`
+);
 
 
 // ─── Table Creation ───────────────────────────────────────────────────────────
@@ -311,12 +346,18 @@ export const migrateVocabTable = async () => {
  * here so we never hit the API for the same word twice.
  *
  * Schema:
- *   stem        — Korean dictionary base form (e.g. "달리다", "사랑")
+ *   language    — target/book language for the stem (ko, en)
+ *   stem        — dictionary base form (e.g. "달리다", "사랑", "run")
  *   interface_language — KRDICT translation language for display definitions
- *   definition  — primary definition from KRDICT in the interface language
+ *   definition  — primary definition from the target dictionary
+ *   gloss       — short translated label for English entries — optional
  *   hanja       — Hanja characters (e.g. "愛情"), or "N/A"
  *   pos         — part of speech (Noun, Verb, Adjective, Adverb)
  *   domain      — subject domain from KRDICT (e.g. "Law", "Science") — optional
+ *   ipa         — English IPA pronunciation from Kaikki — optional
+ *   etymology   — English etymology text from Kaikki — optional
+ *   derived     — JSON array of derived English words — optional
+ *   related     — JSON array of related English words — optional
  *   last_updated — auto-set on insert; helps purge stale data in the future
  */
 export const createDictionaryCacheTable = () => {
@@ -326,13 +367,19 @@ export const createDictionaryCacheTable = () => {
         `CREATE TABLE IF NOT EXISTS dictionary_cache (
           id           INTEGER PRIMARY KEY AUTOINCREMENT,
           stem         TEXT NOT NULL,
+          language     TEXT NOT NULL DEFAULT 'ko',
           interface_language TEXT NOT NULL DEFAULT 'en',
           definition   TEXT,
+          gloss        TEXT,
           hanja        TEXT,
           pos          TEXT,
           domain       TEXT,
+          ipa          TEXT,
+          etymology    TEXT,
+          derived      TEXT,
+          related      TEXT,
           last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          UNIQUE(stem, interface_language)
+          UNIQUE(language, stem, interface_language)
         )`,
         [],
         () => resolve(),
@@ -349,6 +396,20 @@ export const migrateDictionaryCache = async () => {
   const migrationState = await AsyncStorage.getItem(DICTIONARY_CACHE_MIGRATION_KEY);
   if (migrationState === 'done') return;
 
+  const columns = await getTableColumns('dictionary_cache');
+  const selectLanguage = sqlNormalizedColumnOrDefault(columns, 'language', 'ko');
+  const selectInterfaceLanguage = sqlNormalizedColumnOrDefault(columns, 'interface_language', 'en');
+  const selectDefinition = sqlTextColumnOrNull(columns, 'definition');
+  const selectGloss = sqlTextColumnOrNull(columns, 'gloss');
+  const selectHanja = sqlTextColumnOrNull(columns, 'hanja');
+  const selectPos = sqlTextColumnOrNull(columns, 'pos');
+  const selectDomain = sqlTextColumnOrNull(columns, 'domain');
+  const selectIpa = sqlTextColumnOrNull(columns, 'ipa');
+  const selectEtymology = sqlTextColumnOrNull(columns, 'etymology');
+  const selectDerived = sqlTextColumnOrNull(columns, 'derived');
+  const selectRelated = sqlTextColumnOrNull(columns, 'related');
+  const selectLastUpdated = columns.includes('last_updated') ? 'last_updated' : 'CURRENT_TIMESTAMP';
+
   await new Promise((resolve, reject) => {
     db.transaction(tx => {
       tx.executeSql('DROP TABLE IF EXISTS dictionary_cache_new');
@@ -356,13 +417,19 @@ export const migrateDictionaryCache = async () => {
         `CREATE TABLE dictionary_cache_new (
           id           INTEGER PRIMARY KEY AUTOINCREMENT,
           stem         TEXT NOT NULL,
+          language     TEXT NOT NULL DEFAULT 'ko',
           interface_language TEXT NOT NULL DEFAULT 'en',
           definition   TEXT,
+          gloss        TEXT,
           hanja        TEXT,
           pos          TEXT,
           domain       TEXT,
+          ipa          TEXT,
+          etymology    TEXT,
+          derived      TEXT,
+          related      TEXT,
           last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          UNIQUE(stem, interface_language)
+          UNIQUE(language, stem, interface_language)
         )`,
         [],
         () => {},
@@ -375,8 +442,10 @@ export const migrateDictionaryCache = async () => {
 
       tx.executeSql(
         `INSERT OR IGNORE INTO dictionary_cache_new
-           (id, stem, interface_language, definition, hanja, pos, domain, last_updated)
-         SELECT id, stem, 'en', definition, hanja, pos, domain, last_updated
+           (id, stem, language, interface_language, definition, gloss, hanja, pos, domain, ipa, etymology, derived, related, last_updated)
+         SELECT id, stem, ${selectLanguage}, ${selectInterfaceLanguage}, ${selectDefinition}, ${selectGloss}, ${selectHanja},
+                ${selectPos}, ${selectDomain}, ${selectIpa}, ${selectEtymology}, ${selectDerived},
+                ${selectRelated}, ${selectLastUpdated}
          FROM dictionary_cache
          WHERE stem IS NOT NULL AND TRIM(stem) != ''
          ORDER BY id ASC`,
@@ -396,7 +465,7 @@ export const migrateDictionaryCache = async () => {
       tx.executeSql('DROP TABLE IF EXISTS dictionary_cache');
       tx.executeSql('ALTER TABLE dictionary_cache_new RENAME TO dictionary_cache');
       tx.executeSql(
-        'CREATE INDEX IF NOT EXISTS idx_dictionary_cache_stem_language ON dictionary_cache(stem, interface_language)',
+        'CREATE INDEX IF NOT EXISTS idx_dictionary_cache_stem_language ON dictionary_cache(language, stem, interface_language)',
         [],
         () => resolve(),
         (_, error) => {
@@ -416,10 +485,18 @@ export const migrateDictionaryCacheInterfaceLanguage = async () => {
   if (migrationState === 'done') return;
 
   const columns = await getTableColumns('dictionary_cache');
-  const hasInterfaceLanguage = columns.includes('interface_language');
-  const selectInterfaceLanguage = hasInterfaceLanguage
-    ? "COALESCE(NULLIF(TRIM(interface_language), ''), 'en')"
-    : "'en'";
+  const selectLanguage = sqlNormalizedColumnOrDefault(columns, 'language', 'ko');
+  const selectInterfaceLanguage = sqlNormalizedColumnOrDefault(columns, 'interface_language', 'en');
+  const selectDefinition = sqlTextColumnOrNull(columns, 'definition');
+  const selectGloss = sqlTextColumnOrNull(columns, 'gloss');
+  const selectHanja = sqlTextColumnOrNull(columns, 'hanja');
+  const selectPos = sqlTextColumnOrNull(columns, 'pos');
+  const selectDomain = sqlTextColumnOrNull(columns, 'domain');
+  const selectIpa = sqlTextColumnOrNull(columns, 'ipa');
+  const selectEtymology = sqlTextColumnOrNull(columns, 'etymology');
+  const selectDerived = sqlTextColumnOrNull(columns, 'derived');
+  const selectRelated = sqlTextColumnOrNull(columns, 'related');
+  const selectLastUpdated = columns.includes('last_updated') ? 'last_updated' : 'CURRENT_TIMESTAMP';
 
   await new Promise((resolve, reject) => {
     db.transaction(tx => {
@@ -428,13 +505,19 @@ export const migrateDictionaryCacheInterfaceLanguage = async () => {
         `CREATE TABLE dictionary_cache_language_new (
           id           INTEGER PRIMARY KEY AUTOINCREMENT,
           stem         TEXT NOT NULL,
+          language     TEXT NOT NULL DEFAULT 'ko',
           interface_language TEXT NOT NULL DEFAULT 'en',
           definition   TEXT,
+          gloss        TEXT,
           hanja        TEXT,
           pos          TEXT,
           domain       TEXT,
+          ipa          TEXT,
+          etymology    TEXT,
+          derived      TEXT,
+          related      TEXT,
           last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          UNIQUE(stem, interface_language)
+          UNIQUE(language, stem, interface_language)
         )`,
         [],
         () => {},
@@ -447,8 +530,10 @@ export const migrateDictionaryCacheInterfaceLanguage = async () => {
 
       tx.executeSql(
         `INSERT OR IGNORE INTO dictionary_cache_language_new
-           (id, stem, interface_language, definition, hanja, pos, domain, last_updated)
-         SELECT id, stem, ${selectInterfaceLanguage}, definition, hanja, pos, domain, last_updated
+           (id, stem, language, interface_language, definition, gloss, hanja, pos, domain, ipa, etymology, derived, related, last_updated)
+         SELECT id, stem, ${selectLanguage}, ${selectInterfaceLanguage}, ${selectDefinition}, ${selectGloss}, ${selectHanja},
+                ${selectPos}, ${selectDomain}, ${selectIpa}, ${selectEtymology}, ${selectDerived},
+                ${selectRelated}, ${selectLastUpdated}
          FROM dictionary_cache
          WHERE stem IS NOT NULL AND TRIM(stem) != ''
          ORDER BY id ASC`,
@@ -464,7 +549,7 @@ export const migrateDictionaryCacheInterfaceLanguage = async () => {
       tx.executeSql('DROP TABLE IF EXISTS dictionary_cache');
       tx.executeSql('ALTER TABLE dictionary_cache_language_new RENAME TO dictionary_cache');
       tx.executeSql(
-        'CREATE INDEX IF NOT EXISTS idx_dictionary_cache_stem_language ON dictionary_cache(stem, interface_language)',
+        'CREATE INDEX IF NOT EXISTS idx_dictionary_cache_stem_language ON dictionary_cache(language, stem, interface_language)',
         [],
         () => resolve(),
         (_, error) => {
@@ -477,6 +562,126 @@ export const migrateDictionaryCacheInterfaceLanguage = async () => {
   });
 
   await AsyncStorage.setItem(DICTIONARY_CACHE_LANGUAGE_MIGRATION_KEY, 'done');
+};
+
+export const migrateDictionaryCacheTargetLanguage = async () => {
+  const migrationState = await AsyncStorage.getItem(DICTIONARY_CACHE_TARGET_LANGUAGE_MIGRATION_KEY);
+  const columns = await getTableColumns('dictionary_cache');
+
+  const hasFinalColumns = [
+    'language',
+    'interface_language',
+    'gloss',
+    'ipa',
+    'etymology',
+    'derived',
+    'related',
+  ].every((column) => columns.includes(column));
+
+  if (migrationState === 'done' && hasFinalColumns) return;
+
+  const selectLanguage = sqlNormalizedColumnOrDefault(columns, 'language', 'ko');
+  const selectInterfaceLanguage = sqlNormalizedColumnOrDefault(columns, 'interface_language', 'en');
+  const selectDefinition = sqlTextColumnOrNull(columns, 'definition');
+  const selectGloss = sqlTextColumnOrNull(columns, 'gloss');
+  const selectHanja = sqlTextColumnOrNull(columns, 'hanja');
+  const selectPos = sqlTextColumnOrNull(columns, 'pos');
+  const selectDomain = sqlTextColumnOrNull(columns, 'domain');
+  const selectIpa = sqlTextColumnOrNull(columns, 'ipa');
+  const selectEtymology = sqlTextColumnOrNull(columns, 'etymology');
+  const selectDerived = sqlTextColumnOrNull(columns, 'derived');
+  const selectRelated = sqlTextColumnOrNull(columns, 'related');
+  const selectLastUpdated = columns.includes('last_updated') ? 'last_updated' : 'CURRENT_TIMESTAMP';
+
+  await new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql('DROP TABLE IF EXISTS dictionary_cache_target_language_new');
+      tx.executeSql(
+        `CREATE TABLE dictionary_cache_target_language_new (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          stem         TEXT NOT NULL,
+          language     TEXT NOT NULL DEFAULT 'ko',
+          interface_language TEXT NOT NULL DEFAULT 'en',
+          definition   TEXT,
+          gloss        TEXT,
+          hanja        TEXT,
+          pos          TEXT,
+          domain       TEXT,
+          ipa          TEXT,
+          etymology    TEXT,
+          derived      TEXT,
+          related      TEXT,
+          last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(language, stem, interface_language)
+        )`,
+        [],
+        () => {},
+        (_, error) => {
+          console.error('[Database] Error creating dictionary_cache_target_language_new:', error);
+          reject(error);
+          return false;
+        }
+      );
+
+      tx.executeSql(
+        `INSERT OR IGNORE INTO dictionary_cache_target_language_new
+           (id, stem, language, interface_language, definition, gloss, hanja, pos, domain, ipa, etymology, derived, related, last_updated)
+         SELECT id, stem, ${selectLanguage}, ${selectInterfaceLanguage}, ${selectDefinition}, ${selectGloss}, ${selectHanja},
+                ${selectPos}, ${selectDomain}, ${selectIpa}, ${selectEtymology}, ${selectDerived},
+                ${selectRelated}, ${selectLastUpdated}
+         FROM dictionary_cache
+         WHERE stem IS NOT NULL AND TRIM(stem) != ''
+         ORDER BY id ASC`,
+        [],
+        () => {},
+        (_, error) => {
+          console.error('[Database] Error copying dictionary_cache target language rows:', error);
+          reject(error);
+          return false;
+        }
+      );
+
+      tx.executeSql('DROP TABLE IF EXISTS dictionary_cache');
+      tx.executeSql('ALTER TABLE dictionary_cache_target_language_new RENAME TO dictionary_cache');
+      tx.executeSql(
+        'CREATE INDEX IF NOT EXISTS idx_dictionary_cache_stem_language ON dictionary_cache(language, stem, interface_language)',
+        [],
+        () => resolve(),
+        (_, error) => {
+          console.error('[Database] Error finalizing dictionary_cache target language migration:', error);
+          reject(error);
+          return false;
+        }
+      );
+    });
+  });
+
+  await AsyncStorage.setItem(DICTIONARY_CACHE_TARGET_LANGUAGE_MIGRATION_KEY, 'done');
+};
+
+export const migrateDictionaryCacheGloss = async () => {
+  const migrationState = await AsyncStorage.getItem(DICTIONARY_CACHE_GLOSS_MIGRATION_KEY);
+  if (migrationState === 'done') return;
+
+  const columns = await getTableColumns('dictionary_cache');
+  if (!columns.includes('gloss')) {
+    await new Promise((resolve, reject) => {
+      db.transaction(tx => {
+        tx.executeSql(
+          'ALTER TABLE dictionary_cache ADD COLUMN gloss TEXT',
+          [],
+          () => resolve(),
+          (_, error) => {
+            console.error('[Database] Error adding dictionary_cache.gloss:', error);
+            reject(error);
+            return false;
+          }
+        );
+      });
+    });
+  }
+
+  await AsyncStorage.setItem(DICTIONARY_CACHE_GLOSS_MIGRATION_KEY, 'done');
 };
 
 /**
@@ -1062,11 +1267,11 @@ export const reassignSqliteUserData = async (fromOwnerId, toOwnerId) => {
 const deduplicateCacheTable = () => {
   return new Promise((resolve) => {
     db.transaction(tx => {
-      // Keep only the lowest-id row per stem, deleting any extras
+      // Keep only the lowest-id row per target language, stem, and interface language.
       tx.executeSql(
         `DELETE FROM dictionary_cache
          WHERE id NOT IN (
-           SELECT MIN(id) FROM dictionary_cache GROUP BY stem, interface_language
+           SELECT MIN(id) FROM dictionary_cache GROUP BY language, stem, interface_language
          )`,
         [],
         () => resolve(),
@@ -1087,6 +1292,8 @@ export const initAllTables = async () => {
   await createDictionaryCacheTable();
   await migrateDictionaryCache();
   await migrateDictionaryCacheInterfaceLanguage();
+  await migrateDictionaryCacheTargetLanguage();
+  await migrateDictionaryCacheGloss();
   await migrateBookIndex();
   await createBookIndexTable();
   await createBookPreprocessTables();
@@ -1173,14 +1380,15 @@ export const insertData = (word, hanja, definition, levelOrOptions) => {
 
 export const vocabEntryExists = (word, hanja, definition, language = 'ko', options = {}) => {
   const ownerId = resolveOwnerId(options);
+  const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, language);
 
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
       tx.executeSql(
         `SELECT COUNT(*) AS count
          FROM vocab
-         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
-        [ownerId, word, hanja ?? null, definition ?? null, language],
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
+        [ownerId, profileId, word, hanja ?? null, definition ?? null, language],
         (_, result) => {
           const { count } = result.rows.item(0);
           resolve(count > 0);
@@ -1200,7 +1408,7 @@ export const insertDataIfMissing = async (word, hanja, definition, levelOrOption
     : { level: levelOrOptions };
   const language = options.language ?? 'ko';
   const ownerId = resolveOwnerId(options);
-  const exists = await vocabEntryExists(word, hanja, definition, language, { ownerId });
+  const exists = await vocabEntryExists(word, hanja, definition, language, { ...options, ownerId });
   if (exists) {
     return false;
   }
@@ -1233,10 +1441,10 @@ export const upsertVocabEntryFromCloud = (entry, options = {}) => {
       tx.executeSql(
         `SELECT id
          FROM vocab
-         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ?
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ?
          ORDER BY id ASC
          LIMIT 1`,
-        [ownerId, word, hanja, definition, language],
+        [ownerId, profileId, word, hanja, definition, language],
         (_, result) => {
           const params = [
             ownerId,
@@ -1511,10 +1719,12 @@ export const recordVocabContext = ({
   language = 'ko',
   force = false,
   ownerId = GUEST_OWNER_ID,
+  profileId = null,
 }) => {
   const cleanedWord = cleanValue(word);
   const cleanedSentence = cleanValue(sentence);
   const scopedOwnerId = resolveOwnerId(ownerId);
+  const scopedProfileId = resolveProfileId(profileId, language);
 
   return new Promise((resolve, reject) => {
     if (!cleanedWord || !cleanedSentence) {
@@ -1526,10 +1736,10 @@ export const recordVocabContext = ({
       tx.executeSql(
         `SELECT id, owner_id, profile_id, word, hanja, def, level, language
          FROM vocab
-         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL
          ORDER BY id ASC
          LIMIT 1`,
-        [scopedOwnerId, cleanedWord, hanja ?? null, definition ?? null, language],
+        [scopedOwnerId, scopedProfileId, cleanedWord, hanja ?? null, definition ?? null, language],
         (_, result) => {
           if (result.rows.length === 0) {
             resolve(false);
@@ -1549,6 +1759,7 @@ export const recordVocabContext = ({
             seenAt,
             language,
             ownerId: scopedOwnerId,
+            profileId: scopedProfileId,
           }, resolve, reject);
         },
         (_, error) => {
@@ -1601,9 +1812,9 @@ export const recordVocabContextForSurface = ({
       tx.executeSql(
         `SELECT id, owner_id, profile_id, word, hanja, def, level, language
          FROM vocab
-         WHERE owner_id = ? AND word = ? AND language = ? AND deleted_at IS NULL
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND language = ? AND deleted_at IS NULL
          ORDER BY id ASC`,
-        [scopedOwnerId, cleanedSurface, language],
+        [scopedOwnerId, scopedProfileId, cleanedSurface, language],
         (_, exactResult) => {
           const exactRows = exactResult.rows._array ?? [];
           if (exactRows.length > 0) {
@@ -1624,12 +1835,14 @@ export const recordVocabContextForSurface = ({
              WHERE bi.owner_id = ?
                AND bi.profile_id = ?
                AND v.owner_id = ?
+               AND v.profile_id = ?
                AND bi.book_uri = ?
                AND bi.surface = ?
+               AND dc.language = ?
                AND v.language = ?
                AND v.deleted_at IS NULL
              ORDER BY v.id ASC`,
-            [scopedOwnerId, scopedProfileId, scopedOwnerId, sourceBookUri, cleanedSurface, language],
+            [scopedOwnerId, scopedProfileId, scopedOwnerId, scopedProfileId, sourceBookUri, cleanedSurface, language, language],
             (_, indexResult) => {
               recordFirstAvailableRow(indexResult.rows._array ?? []);
             },
@@ -1653,6 +1866,7 @@ export const recordVocabContextForSurface = ({
 export const getVocabContexts = (word, hanja, definition, limit = 12, language = 'ko', options = {}) => {
   const cleanedWord = cleanValue(word);
   const ownerId = resolveOwnerId(options);
+  const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, language);
 
   return new Promise((resolve, reject) => {
     if (!cleanedWord) {
@@ -1664,10 +1878,10 @@ export const getVocabContexts = (word, hanja, definition, limit = 12, language =
       tx.executeSql(
         `SELECT id
          FROM vocab
-         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL
          ORDER BY id ASC
          LIMIT 1`,
-        [ownerId, cleanedWord, hanja ?? null, definition ?? null, language],
+        [ownerId, profileId, cleanedWord, hanja ?? null, definition ?? null, language],
         (_, vocabResult) => {
           if (vocabResult.rows.length === 0) {
             resolve([]);
@@ -1678,10 +1892,10 @@ export const getVocabContexts = (word, hanja, definition, limit = 12, language =
           tx.executeSql(
             `SELECT sentence, source_book_uri, source_book_title, seen_at
              FROM vocab_contexts
-             WHERE owner_id = ? AND vocab_id = ? AND language = ? AND deleted_at IS NULL
+             WHERE owner_id = ? AND profile_id = ? AND vocab_id = ? AND language = ? AND deleted_at IS NULL
              ORDER BY datetime(seen_at) DESC, id DESC
              LIMIT ?`,
-            [ownerId, vocabRow.id, language, limit],
+            [ownerId, profileId, vocabRow.id, language, limit],
             (_, contextResult) => {
               const rows = contextResult.rows._array ?? [];
               const contexts = rows.map((row) => ({
@@ -1713,6 +1927,7 @@ export const getVocabContexts = (word, hanja, definition, limit = 12, language =
 export const getAllVocabContexts = (options = {}) => {
   const { includeDeleted = false } = options;
   const ownerId = resolveOwnerId(options);
+  const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, options.language ?? 'ko');
 
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
@@ -1720,9 +1935,9 @@ export const getAllVocabContexts = (options = {}) => {
         `SELECT id, vocab_id, word, hanja, def, source_book_uri, source_book_title,
                 sentence, seen_at, language, updated_at, deleted_at
          FROM vocab_contexts
-         WHERE owner_id = ?${includeDeleted ? '' : ' AND deleted_at IS NULL'}
+         WHERE owner_id = ? AND profile_id = ?${includeDeleted ? '' : ' AND deleted_at IS NULL'}
          ORDER BY datetime(seen_at) DESC, id DESC`,
-        [ownerId],
+        [ownerId, profileId],
         (_, result) => resolve(result.rows._array ?? []),
         (_, error) => {
           console.error('[Database] Error reading all vocab contexts:', error);
@@ -1743,6 +1958,7 @@ export const insertVocabContextIfMissing = (context, options = {}) => {
   const seenAt = context?.seen_at ?? context?.seenAt ?? new Date().toISOString();
   const updatedAt = context?.updated_at ?? context?.updatedAt ?? seenAt;
   const ownerId = resolveOwnerId(options.ownerId ?? context?.owner_id ?? context?.ownerId);
+  const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? context?.profile_id ?? context?.profileId ?? options, language);
 
   return new Promise((resolve, reject) => {
     if (!cleanedWord || !cleanedSentence || context?.deleted_at || context?.deletedAt) {
@@ -1754,10 +1970,10 @@ export const insertVocabContextIfMissing = (context, options = {}) => {
       tx.executeSql(
         `SELECT id, owner_id, profile_id, word, hanja, def, level, language
          FROM vocab
-         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL
          ORDER BY id ASC
          LIMIT 1`,
-        [ownerId, cleanedWord, hanja, definition, language],
+        [ownerId, profileId, cleanedWord, hanja, definition, language],
         (_, result) => {
           if (result.rows.length === 0) {
             resolve(false);
@@ -1772,6 +1988,7 @@ export const insertVocabContextIfMissing = (context, options = {}) => {
             updatedAt,
             language,
             ownerId,
+            profileId,
           }, resolve, reject);
         },
         (_, error) => {
@@ -1787,14 +2004,15 @@ export const insertVocabContextIfMissing = (context, options = {}) => {
 export const softDeleteVocabContextsForWord = (word, hanja, definition, language = 'ko', options = {}) => {
   const deletedAt = nowIso();
   const ownerId = resolveOwnerId(options);
+  const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, language);
 
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
       tx.executeSql(
         `UPDATE vocab_contexts
          SET deleted_at = ?, updated_at = ?
-         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
-        [deletedAt, deletedAt, ownerId, word, hanja ?? null, definition ?? null, language],
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
+        [deletedAt, deletedAt, ownerId, profileId, word, hanja ?? null, definition ?? null, language],
         (_, result) => resolve(result.rowsAffected ?? 0),
         (_, error) => {
           console.error(`[Database] Error soft-deleting vocab contexts for "${word}":`, error);
@@ -1808,16 +2026,17 @@ export const softDeleteVocabContextsForWord = (word, hanja, definition, language
 
 export const getRelatedKnownWords = (word, language = 'ko', options = {}) => {
   const ownerId = resolveOwnerId(options);
+  const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, language);
 
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
       tx.executeSql(
         `SELECT related_known_words
          FROM vocab
-         WHERE owner_id = ? AND word = ? AND language = ? AND deleted_at IS NULL
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND language = ? AND deleted_at IS NULL
          ORDER BY id ASC
          LIMIT 1`,
-        [ownerId, word, language],
+        [ownerId, profileId, word, language],
         (_, result) => {
           const row = result.rows.length > 0 ? result.rows.item(0) : null;
           resolve(parseRelatedKnownWords(row?.related_known_words));
@@ -1864,11 +2083,11 @@ export const addRelatedKnownWord = (word, relatedWord, options = {}) => {
         shouldScopeToEntry
           ? `SELECT id, related_known_words
              FROM vocab
-             WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`
-          : 'SELECT id, related_known_words FROM vocab WHERE owner_id = ? AND word = ? AND language = ? AND deleted_at IS NULL',
+             WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`
+          : 'SELECT id, related_known_words FROM vocab WHERE owner_id = ? AND profile_id = ? AND word = ? AND language = ? AND deleted_at IS NULL',
         shouldScopeToEntry
-          ? [scopedOwnerId, word, mainHanja, mainDefinition, language]
-          : [scopedOwnerId, word, language],
+          ? [scopedOwnerId, profileId, word, mainHanja, mainDefinition, language]
+          : [scopedOwnerId, profileId, word, language],
         (_, result) => {
           if (result.rows.length === 0) {
             if (!createIfMissing) {
@@ -1948,6 +2167,7 @@ export const addRelatedKnownWord = (word, relatedWord, options = {}) => {
 export const removeRelatedKnownWord = (word, relatedWord, language = 'ko', options = {}) => {
   const keyToRemove = relatedKnownWordKey(relatedWord);
   const ownerId = resolveOwnerId(options);
+  const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, language);
   const shouldScopeToEntry = (
     Object.prototype.hasOwnProperty.call(options, 'mainHanja')
     || Object.prototype.hasOwnProperty.call(options, 'mainDefinition')
@@ -1961,11 +2181,11 @@ export const removeRelatedKnownWord = (word, relatedWord, language = 'ko', optio
         shouldScopeToEntry
           ? `SELECT id, related_known_words
              FROM vocab
-             WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`
-          : 'SELECT id, related_known_words FROM vocab WHERE owner_id = ? AND word = ? AND language = ? AND deleted_at IS NULL',
+             WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`
+          : 'SELECT id, related_known_words FROM vocab WHERE owner_id = ? AND profile_id = ? AND word = ? AND language = ? AND deleted_at IS NULL',
         shouldScopeToEntry
-          ? [ownerId, word, mainHanja, mainDefinition, language]
-          : [ownerId, word, language],
+          ? [ownerId, profileId, word, mainHanja, mainDefinition, language]
+          : [ownerId, profileId, word, language],
         (_, result) => {
           if (result.rows.length === 0) {
             resolve([]);
@@ -1998,6 +2218,7 @@ export const removeRelatedKnownWord = (word, relatedWord, language = 'ko', optio
 
 export const getAllRelatedKnownWords = (options = {}) => {
   const ownerId = resolveOwnerId(options);
+  const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, options.language ?? 'ko');
 
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
@@ -2005,11 +2226,12 @@ export const getAllRelatedKnownWords = (options = {}) => {
         `SELECT word, hanja, def, related_known_words, language, updated_at
          FROM vocab
          WHERE owner_id = ?
+           AND profile_id = ?
            AND related_known_words IS NOT NULL
            AND related_known_words != ''
            AND related_known_words != '[]'
            AND deleted_at IS NULL`,
-        [ownerId],
+        [ownerId, profileId],
         (_, result) => {
           const relations = [];
           const rows = result.rows._array ?? [];
@@ -2122,6 +2344,7 @@ export const removeRelatedKnownWordForEntry = ({
 
 export const updateLevel = (word, hanja, definition, newLevel, language = 'ko', options = {}) => {
   const ownerId = resolveOwnerId(options);
+  const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, language);
 
   return new Promise((resolve, reject) => {
     const updatedAt = nowIso();
@@ -2129,8 +2352,8 @@ export const updateLevel = (word, hanja, definition, newLevel, language = 'ko', 
       tx.executeSql(
         `UPDATE vocab
          SET level = ?, updated_at = ?
-         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
-        [newLevel, updatedAt, ownerId, word, hanja, definition, language],
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
+        [newLevel, updatedAt, ownerId, profileId, word, hanja, definition, language],
         () => resolve(),
         (_, error) => {
           console.error(`[Database] Error updating level for "${word}":`, error);
@@ -2143,6 +2366,7 @@ export const updateLevel = (word, hanja, definition, newLevel, language = 'ko', 
 
 export const updateFavorite = (word, hanja, definition, isFavorite, language = 'ko', options = {}) => {
   const ownerId = resolveOwnerId(options);
+  const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, language);
 
   return new Promise((resolve, reject) => {
     const updatedAt = nowIso();
@@ -2150,8 +2374,8 @@ export const updateFavorite = (word, hanja, definition, isFavorite, language = '
       tx.executeSql(
         `UPDATE vocab
          SET is_favorite = ?, updated_at = ?
-         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
-        [isFavorite ? 1 : 0, updatedAt, ownerId, word, hanja, definition, language],
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
+        [isFavorite ? 1 : 0, updatedAt, ownerId, profileId, word, hanja, definition, language],
         () => resolve(),
         (_, error) => {
           console.error(`[Database] Error updating favorite for "${word}":`, error);
@@ -2164,6 +2388,7 @@ export const updateFavorite = (word, hanja, definition, isFavorite, language = '
 
 export const updatePriority = (word, hanja, definition, priority, language = 'ko', options = {}) => {
   const ownerId = resolveOwnerId(options);
+  const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, language);
 
   return new Promise((resolve, reject) => {
     const updatedAt = nowIso();
@@ -2171,8 +2396,8 @@ export const updatePriority = (word, hanja, definition, priority, language = 'ko
       tx.executeSql(
         `UPDATE vocab
          SET priority = ?, updated_at = ?
-         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
-        [priority, updatedAt, ownerId, word, hanja, definition, language],
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
+        [priority, updatedAt, ownerId, profileId, word, hanja, definition, language],
         () => resolve(),
         (_, error) => {
           console.error(`[Database] Error updating priority for "${word}":`, error);
@@ -2254,6 +2479,7 @@ export const fsrsSchedule = (wordData = {}, outcome, daysSinceLastReview) => {
 
 export const recordReviewOutcome = (word, hanja, definition, _currentLevel, outcome, language = 'ko', options = {}) => {
   const ownerId = resolveOwnerId(options);
+  const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, language);
   const wordData = options.wordData ?? {};
   const lastReviewedAt = wordData.last_reviewed_at ?? wordData.lastReviewedAt;
   const lastReviewedTimestamp = new Date(lastReviewedAt).getTime();
@@ -2284,7 +2510,7 @@ export const recordReviewOutcome = (word, hanja, definition, _currentLevel, outc
              correct_count = COALESCE(correct_count, 0) + ?,
              wrong_count = COALESCE(wrong_count, 0) + ?,
              updated_at = ?
-         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
         [
           levelMap[outcome],
           reviewedAt,
@@ -2295,6 +2521,7 @@ export const recordReviewOutcome = (word, hanja, definition, _currentLevel, outc
           wrongInc,
           reviewedAt,
           ownerId,
+          profileId,
           word,
           hanja,
           definition,
@@ -2316,6 +2543,7 @@ export const recordReviewOutcome = (word, hanja, definition, _currentLevel, outc
 
 export const removeData = (word, hanja, definition, language = 'ko', options = {}) => {
   const ownerId = resolveOwnerId(options);
+  const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, language);
 
   return new Promise((resolve, reject) => {
     const deletedAt = nowIso();
@@ -2323,8 +2551,8 @@ export const removeData = (word, hanja, definition, language = 'ko', options = {
       tx.executeSql(
         `UPDATE vocab_contexts
          SET deleted_at = ?, updated_at = ?
-         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
-        [deletedAt, deletedAt, ownerId, word, hanja, definition, language],
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
+        [deletedAt, deletedAt, ownerId, profileId, word, hanja, definition, language],
         () => {},
         (_, error) => {
           console.error(`[Database] Error soft-deleting vocab contexts for "${word}":`, error);
@@ -2335,8 +2563,8 @@ export const removeData = (word, hanja, definition, language = 'ko', options = {
       tx.executeSql(
         `UPDATE vocab
          SET deleted_at = ?, updated_at = ?
-         WHERE owner_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
-        [deletedAt, deletedAt, ownerId, word, hanja, definition, language],
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
+        [deletedAt, deletedAt, ownerId, profileId, word, hanja, definition, language],
         (_, result) => resolve(result),
         (_, error) => {
           console.error(`[Database] Error removing vocab word "${word}":`, error);
@@ -2354,16 +2582,17 @@ export const getSavedWords = (options = {}) => {
     : options;
   const { language = 'ko' } = normalizedOptions ?? {};
   const ownerId = resolveOwnerId(normalizedOptions);
+  const profileId = resolveProfileId(normalizedOptions, language ?? 'ko');
 
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
       const sql = language == null
-        ? 'SELECT DISTINCT word FROM vocab WHERE owner_id = ? AND deleted_at IS NULL'
-        : 'SELECT DISTINCT word FROM vocab WHERE owner_id = ? AND language = ? AND deleted_at IS NULL';
+        ? 'SELECT DISTINCT word FROM vocab WHERE owner_id = ? AND profile_id = ? AND deleted_at IS NULL'
+        : 'SELECT DISTINCT word FROM vocab WHERE owner_id = ? AND profile_id = ? AND language = ? AND deleted_at IS NULL';
 
       tx.executeSql(
         sql,
-        language == null ? [ownerId] : [ownerId, language],
+        language == null ? [ownerId, profileId] : [ownerId, profileId, language],
         (_, result) => {
           const words = result.rows._array.map(row => row.word).filter(Boolean);
           resolve(words);
@@ -2383,11 +2612,12 @@ export const viewData = (options = {}) => {
     : options;
   const { includeDeleted = false, language = null } = normalizedOptions;
   const ownerId = resolveOwnerId(normalizedOptions);
+  const profileId = resolveProfileId(normalizedOptions, language ?? 'ko');
 
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
-      const whereClauses = ['owner_id = ?'];
-      const params = [ownerId];
+      const whereClauses = ['owner_id = ?', 'profile_id = ?'];
+      const params = [ownerId, profileId];
 
       if (!includeDeleted) {
         whereClauses.push('deleted_at IS NULL');
@@ -2450,13 +2680,14 @@ export const getTableSchema = () => {
 
 export const deleteAllDataFromTable = (options = {}) => {
   const ownerId = resolveOwnerId(options);
+  const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, options.language ?? 'ko');
 
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
-      tx.executeSql(`DELETE FROM vocab_contexts WHERE owner_id = ?`, [ownerId]);
+      tx.executeSql(`DELETE FROM vocab_contexts WHERE owner_id = ? AND profile_id = ?`, [ownerId, profileId]);
       tx.executeSql(
-        `DELETE FROM vocab WHERE owner_id = ?`,
-        [ownerId],
+        `DELETE FROM vocab WHERE owner_id = ? AND profile_id = ?`,
+        [ownerId, profileId],
         () => resolve(),
         (_, error) => {
           console.error(`[Database] Error deleting all vocab data:`, error);
@@ -2474,26 +2705,69 @@ export const deleteAllDataFromTable = (options = {}) => {
  * insertCacheEntries
  * Bulk-insert an array of {stem, definition, hanja, pos, domain?} objects
  * returned by the backend /preprocess_book/ endpoint.
- * Uses INSERT OR IGNORE so re-running preprocessing is safe (no duplicates).
+ * Uses an upsert so translated live lookups can replace stale fallback rows
+ * while preprocessing rows with null fields do not wipe existing data.
  *
- * @param {Array<{stem, definition, hanja, pos, domain?}>} entries
+ * @param {Array<{stem, definition, gloss?, hanja, pos, domain?}>} entries
  */
-export const insertCacheEntries = (entries, interfaceLanguage = 'en') => {
+export const insertCacheEntries = (entries, scopeOrInterfaceLanguage = 'en', options = {}) => {
+  const scope = normalizeDictionaryCacheScope(scopeOrInterfaceLanguage, options);
+
   return new Promise((resolve, reject) => {
     if (!entries || entries.length === 0) {
       return resolve();
     }
     db.transaction(
       tx => {
-        entries.forEach(({ stem, definition, hanja, pos, domain, interface_language, interfaceLanguage: entryInterfaceLanguage }) => {
+        entries.forEach((entry) => {
+          const {
+            stem,
+            definition,
+            gloss,
+            hanja,
+            pos,
+            domain,
+            ipa,
+            etymology,
+            derived,
+            related,
+            interface_language,
+            interfaceLanguage: entryInterfaceLanguage,
+            language,
+          } = entry;
+          const normalizedLanguage = normalizeBookLanguage(language ?? scope.language);
           const normalizedInterfaceLanguage = normalizeInterfaceLanguageCode(
-            entryInterfaceLanguage ?? interface_language ?? interfaceLanguage
+            entryInterfaceLanguage ?? interface_language ?? scope.interfaceLanguage
           );
           tx.executeSql(
-            `INSERT OR IGNORE INTO dictionary_cache
-               (stem, interface_language, definition, hanja, pos, domain)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            [stem, normalizedInterfaceLanguage, definition ?? null, hanja ?? null, pos ?? null, domain ?? null]
+            `INSERT INTO dictionary_cache
+               (stem, language, interface_language, definition, gloss, hanja, pos, domain, ipa, etymology, derived, related)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(stem, language, interface_language) DO UPDATE SET
+               definition = COALESCE(excluded.definition, dictionary_cache.definition),
+               gloss = COALESCE(excluded.gloss, dictionary_cache.gloss),
+               hanja = COALESCE(excluded.hanja, dictionary_cache.hanja),
+               pos = COALESCE(excluded.pos, dictionary_cache.pos),
+               domain = COALESCE(excluded.domain, dictionary_cache.domain),
+               ipa = COALESCE(excluded.ipa, dictionary_cache.ipa),
+               etymology = COALESCE(excluded.etymology, dictionary_cache.etymology),
+               derived = COALESCE(excluded.derived, dictionary_cache.derived),
+               related = COALESCE(excluded.related, dictionary_cache.related),
+               last_updated = CURRENT_TIMESTAMP`,
+            [
+              stem,
+              normalizedLanguage,
+              normalizedInterfaceLanguage,
+              definition ?? null,
+              gloss ?? null,
+              hanja ?? null,
+              pos ?? null,
+              domain ?? null,
+              ipa ?? null,
+              etymology ?? null,
+              Array.isArray(derived) ? JSON.stringify(derived) : (derived ?? null),
+              Array.isArray(related) ? JSON.stringify(related) : (related ?? null),
+            ]
           );
         });
       },
@@ -2515,20 +2789,20 @@ export const insertCacheEntries = (entries, interfaceLanguage = 'en') => {
  * before deciding whether a live API call is needed.
  *
  * @param {string[]} stems
- * @returns {Promise<Array<{id, stem, definition, hanja, pos, domain}>>}
+ * @returns {Promise<Array<{id, stem, language, interface_language, definition, gloss, hanja, pos, domain}>>}
  */
-export const lookupCacheByStems = (stems, interfaceLanguage = 'en') => {
+export const lookupCacheByStems = (stems, scopeOrInterfaceLanguage = 'en', options = {}) => {
   return new Promise((resolve, reject) => {
     if (!stems || stems.length === 0) return resolve([]);
     const placeholders = stems.map(() => '?').join(',');
     const stemOrder = new Map(stems.map((stem, index) => [stem, index]));
-    const normalizedInterfaceLanguage = normalizeInterfaceLanguageCode(interfaceLanguage);
+    const scope = normalizeDictionaryCacheScope(scopeOrInterfaceLanguage, options);
     db.transaction(tx => {
       tx.executeSql(
-        `SELECT id, stem, interface_language, definition, hanja, pos, domain
+        `SELECT id, stem, language, interface_language, definition, gloss, hanja, pos, domain, ipa, etymology, derived, related
          FROM dictionary_cache
-         WHERE interface_language = ? AND stem IN (${placeholders})`,
-        [normalizedInterfaceLanguage, ...stems],
+         WHERE language = ? AND interface_language = ? AND stem IN (${placeholders})`,
+        [scope.language, scope.interfaceLanguage, ...stems],
         (_, result) => {
           const rows = [...result.rows._array].sort((a, b) => (
             (stemOrder.get(a.stem) ?? Number.MAX_SAFE_INTEGER)
@@ -2551,18 +2825,18 @@ export const lookupCacheByStems = (stems, interfaceLanguage = 'en') => {
  * Returns the matching row or null if not cached.
  *
  * @param {string} stem
- * @returns {Promise<{id, stem, definition, hanja, pos, domain} | null>}
+ * @returns {Promise<{id, stem, language, interface_language, definition, gloss, hanja, pos, domain} | null>}
  */
-export const lookupCacheByStem = (stem, interfaceLanguage = 'en') => {
-  return lookupCacheByStems([stem], interfaceLanguage).then(rows => {
+export const lookupCacheByStem = (stem, scopeOrInterfaceLanguage = 'en', options = {}) => {
+  return lookupCacheByStems([stem], scopeOrInterfaceLanguage, options).then(rows => {
     return rows[0] ?? null;
   });
 };
 
-export const lookupBookIndexBySurface = (ownerId, bookUri, surface, interfaceLanguage = 'en') => {
+export const lookupBookIndexBySurface = (ownerId, bookUri, surface, scopeOrInterfaceLanguage = 'en', options = {}) => {
   const scopedOwnerId = resolveOwnerId(ownerId);
-  const scopedProfileId = resolveProfileId(null);
-  const normalizedInterfaceLanguage = normalizeInterfaceLanguageCode(interfaceLanguage);
+  const scope = normalizeDictionaryCacheScope(scopeOrInterfaceLanguage, options);
+  const scopedProfileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, scope.language);
 
   return new Promise((resolve, reject) => {
     if (!bookUri || !surface) {
@@ -2571,15 +2845,17 @@ export const lookupBookIndexBySurface = (ownerId, bookUri, surface, interfaceLan
 
     db.transaction(tx => {
       tx.executeSql(
-        `SELECT dc.id, dc.stem, dc.interface_language, dc.definition, dc.hanja, dc.pos, dc.domain
+        `SELECT dc.id, dc.stem, dc.language, dc.interface_language, dc.definition, dc.gloss, dc.hanja, dc.pos,
+                dc.domain, dc.ipa, dc.etymology, dc.derived, dc.related
          FROM book_index bi
          JOIN dictionary_cache dc ON dc.id = bi.stem_id
          WHERE bi.owner_id = ?
            AND bi.profile_id = ?
            AND bi.book_uri = ?
            AND bi.surface = ?
+           AND dc.language = ?
            AND dc.interface_language = ?`,
-        [scopedOwnerId, scopedProfileId, bookUri, surface, normalizedInterfaceLanguage],
+        [scopedOwnerId, scopedProfileId, bookUri, surface, scope.language, scope.interfaceLanguage],
         (_, result) => {
           resolve(result.rows._array);
         },
@@ -2592,9 +2868,10 @@ export const lookupBookIndexBySurface = (ownerId, bookUri, surface, interfaceLan
   });
 };
 
-export const lookupBookHighlightSurfaces = (ownerId, bookUri, savedStems) => {
+export const lookupBookHighlightSurfaces = (ownerId, bookUri, savedStems, scopeOrInterfaceLanguage = 'en', options = {}) => {
   const scopedOwnerId = resolveOwnerId(ownerId);
-  const scopedProfileId = resolveProfileId(null);
+  const scope = normalizeDictionaryCacheScope(scopeOrInterfaceLanguage, options);
+  const scopedProfileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, scope.language);
 
   return new Promise((resolve, reject) => {
     if (!bookUri || !savedStems || savedStems.length === 0) {
@@ -2613,8 +2890,13 @@ export const lookupBookHighlightSurfaces = (ownerId, bookUri, savedStems) => {
         `SELECT DISTINCT bi.surface, dc.stem
          FROM book_index bi
          JOIN dictionary_cache dc ON dc.id = bi.stem_id
-         WHERE bi.owner_id = ? AND bi.profile_id = ? AND bi.book_uri = ? AND dc.stem IN (${placeholders})`,
-        [scopedOwnerId, scopedProfileId, bookUri, ...uniqueStems],
+         WHERE bi.owner_id = ?
+           AND bi.profile_id = ?
+           AND bi.book_uri = ?
+           AND dc.language = ?
+           AND dc.interface_language = ?
+           AND dc.stem IN (${placeholders})`,
+        [scopedOwnerId, scopedProfileId, bookUri, scope.language, scope.interfaceLanguage, ...uniqueStems],
         (_, result) => {
           resolve(result.rows._array);
         },
@@ -2877,7 +3159,7 @@ export const logDatabaseSnapshot = async (bookUri) => {
 
 export const insertBookIndexEntries = (bookUri, entries, options = {}) => {
   const ownerId = resolveOwnerId(options);
-  const profileId = resolveProfileId(options);
+  const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, options.language ?? 'ko');
 
   return new Promise((resolve, reject) => {
     if (!entries || entries.length === 0) {
@@ -2903,6 +3185,7 @@ export const insertBookIndexEntries = (bookUri, entries, options = {}) => {
 
 export const deleteBookIndexEntries = (bookUri, options = {}) => {
   const ownerId = resolveOwnerId(options);
+  const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, options.language ?? 'ko');
 
   return new Promise((resolve, reject) => {
     if (!bookUri) {
@@ -2912,8 +3195,8 @@ export const deleteBookIndexEntries = (bookUri, options = {}) => {
 
     db.transaction(tx => {
       tx.executeSql(
-        'DELETE FROM book_index WHERE owner_id = ? AND book_uri = ?',
-        [ownerId, bookUri],
+        'DELETE FROM book_index WHERE owner_id = ? AND profile_id = ? AND book_uri = ?',
+        [ownerId, profileId, bookUri],
         () => {},
         (_, error) => {
           console.error(`[Database] Error deleting book_index rows for "${bookUri}":`, error);
@@ -2921,8 +3204,8 @@ export const deleteBookIndexEntries = (bookUri, options = {}) => {
         }
       );
       tx.executeSql(
-        'DELETE FROM book_preprocess_chapters WHERE owner_id = ? AND book_uri = ?',
-        [ownerId, bookUri],
+        'DELETE FROM book_preprocess_chapters WHERE owner_id = ? AND profile_id = ? AND book_uri = ?',
+        [ownerId, profileId, bookUri],
         () => {},
         (_, error) => {
           console.error(`[Database] Error deleting preprocess chapter rows for "${bookUri}":`, error);
@@ -2930,8 +3213,8 @@ export const deleteBookIndexEntries = (bookUri, options = {}) => {
         }
       );
       tx.executeSql(
-        'DELETE FROM book_preprocess_meta WHERE owner_id = ? AND book_uri = ?',
-        [ownerId, bookUri],
+        'DELETE FROM book_preprocess_meta WHERE owner_id = ? AND profile_id = ? AND book_uri = ?',
+        [ownerId, profileId, bookUri],
         (_, result) => resolve(result.rowsAffected),
         (_, error) => {
           console.error(`[Database] Error deleting preprocess meta for "${bookUri}":`, error);
