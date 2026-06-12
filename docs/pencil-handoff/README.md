@@ -4,6 +4,8 @@ This is the source packet to give Pencil enough context to redesign or extend th
 
 Fluent Fable is a mobile reading and language-learning app. Its core idea is simple: users learn Korean and other supported languages by reading real text, tapping words in context, saving useful vocabulary, and reviewing only when reading has not exposed the word enough.
 
+For a current-state inventory of every major feature, screen state, and user interaction, read [`FEATURES_AND_INTERACTIONS.md`](FEATURES_AND_INTERACTIONS.md) before redesigning flows.
+
 ## Visual References
 
 The current screenshots in `docs/pencil-handoff/visuals/` are the primary visual references for Pencil. They are all 1080 x 2400 PNGs and are named by screen/state. Use these instead of the old showcase GIF.
@@ -247,6 +249,7 @@ Shape and spacing:
 | `README.md` | Product summary and original feature intent. |
 | `frontend/README.md` | Historical notes, completed ideas, and older UX priorities. |
 | `docs/pencil-handoff/README.md` | This UX/UI brief and source map. |
+| `docs/pencil-handoff/FEATURES_AND_INTERACTIONS.md` | Current feature and interaction inventory for design agents. |
 | `docs/pencil-handoff/visuals/*.png` | Current screenshot set; primary source for existing visual state and UI density. |
 | `docs/local-data-ownership-inventory.md` | Inventory of guest/account-owned local data. |
 | `docs/auth-local-data-privacy-guide.md` | Privacy and data-ownership behavior around auth. |

@@ -23,6 +23,7 @@ import {
     getLanguageLabel,
     KRDICT_INTERFACE_LANGUAGE_OPTIONS,
     normalizeBookLanguage,
+    normalizeChineseScript,
     normalizeInterfaceLanguageCode,
     TARGET_LANGUAGE_OPTIONS,
 } from '../constants/languages';
@@ -485,6 +486,7 @@ const PreferenceRow = ({ label, value, accent = false, isLast = false, onPress }
 const LANGUAGE_FLAGS = {
     en: '🇺🇸',
     ko: '🇰🇷',
+    zh: '🇨🇳',
 };
 
 const getLanguageFlag = (language) => LANGUAGE_FLAGS[language] ?? '🌐';
@@ -494,6 +496,9 @@ const normalizeProfileRow = (profile, fallbackLanguage = 'ko') => {
     return {
         id: profile?.id || getDefaultProfileIdForLanguage(targetLanguage),
         target_language: targetLanguage,
+        script: targetLanguage === 'zh'
+            ? normalizeChineseScript(profile?.script ?? profile?.chinese_script)
+            : null,
         display_name: profile?.display_name || profile?.displayName || getLanguageLabel(targetLanguage),
     };
 };
@@ -771,6 +776,7 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
             let nextProfile = normalizeProfileRow({
                 id: getDefaultProfileIdForLanguage(option.code),
                 target_language: option.code,
+                script: option.code === 'zh' ? 'zh-Hans' : null,
                 display_name: option.label,
             }, option.code);
 
@@ -780,6 +786,7 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                     ownerId: activeOwnerId,
                     generation: syncGeneration,
                     targetLanguage: option.code,
+                    script: option.code === 'zh' ? 'zh-Hans' : undefined,
                     displayName: option.label,
                 });
             }

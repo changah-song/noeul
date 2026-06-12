@@ -42,6 +42,7 @@ const STOP_STEMS = new Set([
 
 const KOREAN_RE = /[^\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]/g;
 const ENGLISH_EDGE_RE = /^[^A-Za-z]+|[^A-Za-z]+$/g;
+const CHINESE_EDGE_RE = /^[^\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]+|[^\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]+$/g;
 const HANJA_RE = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/;
 const LATIN_RE = /[A-Za-z]/;
 const HANGUL_RE = /[\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]/;
@@ -84,11 +85,17 @@ const cleanValue = (value) => {
 
 const normalizeSurfaceWord = (word) => cleanValue(word).replace(KOREAN_RE, '');
 const normalizeEnglishSurfaceWord = (word) => cleanValue(word).replace(ENGLISH_EDGE_RE, '').toLowerCase();
-const normalizeSurfaceWordForLanguage = (word, language) => (
-    normalizeBookLanguage(language) === 'en'
-        ? normalizeEnglishSurfaceWord(word)
-        : normalizeSurfaceWord(word)
-);
+const normalizeChineseSurfaceWord = (word) => cleanValue(word).replace(CHINESE_EDGE_RE, '');
+const normalizeSurfaceWordForLanguage = (word, language) => {
+    const normalizedLanguage = normalizeBookLanguage(language);
+    if (normalizedLanguage === 'en') {
+        return normalizeEnglishSurfaceWord(word);
+    }
+    if (normalizedLanguage === 'zh') {
+        return normalizeChineseSurfaceWord(word);
+    }
+    return normalizeSurfaceWord(word);
+};
 
 const hasSavableDefinition = (definition) => {
     const normalized = cleanValue(definition);
@@ -105,6 +112,7 @@ const getEntryGloss = (entry) => cleanValue(entry?.gloss);
 const getEntryPos = (entry) => cleanValue(entry?.pos);
 const getEntryRomanization = (entry) => cleanValue(entry?.romanization);
 const getEntryIpa = (entry) => cleanValue(entry?.ipa);
+const getEntryPinyin = (entry) => cleanValue(entry?.pinyin) || getEntryIpa(entry);
 const isLikelyUntranslatedEnglishDefinition = (definition, interfaceLanguage) => {
     const text = cleanValue(definition);
 
@@ -210,15 +218,17 @@ const DictionaryContent = ({
 
     const targetLanguage = normalizeBookLanguage(sourceBook?.language ?? 'ko');
     const isEnglishBook = targetLanguage === 'en';
+    const isChineseBook = targetLanguage === 'zh';
+    const isKoreanBook = targetLanguage === 'ko';
     const isUsableCachedEntry = useCallback((entry) => {
-        if (!isEnglishBook || interfaceLanguage === 'en') {
+        if ((!isEnglishBook && !isChineseBook) || interfaceLanguage === 'en') {
             return true;
         }
 
         const definition = getEntryDefinition(entry);
         return Boolean(definition)
             && !isLikelyUntranslatedEnglishDefinition(definition, interfaceLanguage);
-    }, [interfaceLanguage, isEnglishBook]);
+    }, [interfaceLanguage, isChineseBook, isEnglishBook]);
     const cacheScope = useMemo(() => ({
         language: targetLanguage,
         interfaceLanguage,
@@ -353,8 +363,8 @@ const DictionaryContent = ({
             if (isCancelled) {
                 return;
             }
-            let filtered = [...new Set(result.filter(stem => !STOP_STEMS.has(stem)))];
-            if (filtered.length === 0 && isEnglishBook && normalizedSurface) {
+            let filtered = [...new Set(result.filter(stem => !isKoreanBook || !STOP_STEMS.has(stem)))];
+            if (filtered.length === 0 && (isEnglishBook || isChineseBook) && normalizedSurface) {
                 filtered = [normalizedSurface];
             }
             setStemWordList(filtered);
@@ -369,7 +379,7 @@ const DictionaryContent = ({
         return () => {
             isCancelled = true;
         };
-    }, [activeOwnerId, cacheScope, currentBook, highlightedWord, isEnglishBook, isUsableCachedEntry, onContentLoaded, targetLanguage]);
+    }, [activeOwnerId, cacheScope, currentBook, highlightedWord, isChineseBook, isEnglishBook, isKoreanBook, isUsableCachedEntry, onContentLoaded, targetLanguage]);
 
     useEffect(() => {
         if (stemWordList.length === 0) return;
@@ -433,7 +443,7 @@ const DictionaryContent = ({
     }, [dictionaryData, expandedCached, expandedWords, extraDefs, onExpandedStateChange, stemWordList]);
 
     const fetchRomanizations = async (terms) => {
-        if (isEnglishBook) {
+        if (!isKoreanBook) {
             return;
         }
 
@@ -489,18 +499,19 @@ const DictionaryContent = ({
                 const results = dictionaryData[i];
                 if (!results || results.length === 0) return null;
                 const first = results[0];
+                const isLocalDictionaryLanguage = isEnglishBook || isChineseBook;
                 return {
                     stem,
                     language: targetLanguage,
                     interfaceLanguage,
-                    definition: isEnglishBook
+                    definition: isLocalDictionaryLanguage
                         ? (first.definition ?? null)
                         : (first.transWord !== 'N/A' ? first.transWord : null),
-                    gloss: isEnglishBook ? (first.gloss ?? null) : null,
-                    hanja: isEnglishBook ? null : (first.origin !== 'N/A' ? first.origin : null),
+                    gloss: isLocalDictionaryLanguage ? (first.gloss ?? null) : null,
+                    hanja: isLocalDictionaryLanguage ? null : (first.origin !== 'N/A' ? first.origin : null),
                     pos: first.pos ?? null,
                     domain: null,
-                    ipa: isEnglishBook ? (first.ipa ?? null) : null,
+                    ipa: isEnglishBook ? (first.ipa ?? null) : (isChineseBook ? (first.pinyin ?? first.ipa ?? null) : null),
                     etymology: isEnglishBook ? (first.etymology ?? null) : null,
                     derived: isEnglishBook ? (first.derived ?? null) : null,
                     related: isEnglishBook ? (first.related ?? null) : null,
@@ -513,11 +524,29 @@ const DictionaryContent = ({
         }
 
         onContentLoaded?.();
-    }, [cacheScope, dictionaryData, interfaceLanguage, isEnglishBook, needsLiveFetch, onContentLoaded, stemWordList, targetLanguage]);
+    }, [cacheScope, dictionaryData, interfaceLanguage, isChineseBook, isEnglishBook, needsLiveFetch, onContentLoaded, stemWordList, targetLanguage]);
 
     const prefetchExtra = async (stem) => {
         if (isEnglishBook) {
             setExtraDefs(prev => ({ ...prev, [stem]: [] }));
+            return;
+        }
+
+        if (isChineseBook) {
+            setExtraDefs(prev => ({ ...prev, [stem]: 'prefetching' }));
+            try {
+                const response = await api.get('/zh_dict_search/', {
+                    params: { stem, interface_language: interfaceLanguage },
+                    timeout: 10000,
+                });
+                const entries = response.data?.results ?? [];
+                if (entries[0]) {
+                    setLiveEntryMeta(prev => ({ ...prev, [stem]: entries[0] }));
+                }
+                setExtraDefs(prev => ({ ...prev, [stem]: uniqueEntriesByWord(entries.slice(1), entries[0]?.word) }));
+            } catch {
+                setExtraDefs(prev => ({ ...prev, [stem]: [] }));
+            }
             return;
         }
 
@@ -1011,15 +1040,16 @@ const DictionaryContent = ({
         </TouchableOpacity>
     );
 
-    const renderEntryHeading = ({ word, hanja, definition, pos, romanization, ipa }) => {
+    const renderEntryHeading = ({ word, hanja, definition, pos, romanization, ipa, pinyin }) => {
         const posLabel = formatPos(pos);
         const sourceWordDetails = buildSourceWordDetails({ hanja, definition });
-        const hanjaElement = isEnglishBook ? null : renderHanja(hanja, 'entry', word, sourceWordDetails);
+        const hanjaElement = isKoreanBook ? renderHanja(hanja, 'entry', word, sourceWordDetails) : null;
         const romanizationText = cleanValue(romanization);
         const ipaText = cleanValue(ipa);
+        const pinyinText = cleanValue(pinyin);
         const bookmarkButton = renderBookmarkButton(word, hanja, definition);
         const translateButton = renderTranslateButton();
-        const pronunciationText = isEnglishBook ? ipaText : romanizationText;
+        const pronunciationText = isEnglishBook ? ipaText : (isChineseBook ? pinyinText : romanizationText);
 
         return (
             <View style={styles.entryHeading}>
@@ -1100,6 +1130,7 @@ const DictionaryContent = ({
                     const word = cleanValue(entry.word) || highlightedWord;
                     const hanja = getEntryHanja(entry);
                     const definition = getEntryDefinition(entry);
+                    const pinyin = getEntryPinyin(entry);
                     const sourceWordDetails = buildSourceWordDetails({ hanja, definition });
                     const saved = isWordSaved(word);
 
@@ -1114,8 +1145,13 @@ const DictionaryContent = ({
                             <View style={styles.extraDefinitionBody}>
                                 <View style={styles.extraWordLine}>
                                     <Text selectable style={[styles.extraWord, { color: palette.text }]}>{word}</Text>
-                                    {renderHanja(hanja, 'extra', word, sourceWordDetails)}
+                                    {isKoreanBook ? renderHanja(hanja, 'extra', word, sourceWordDetails) : null}
                                 </View>
+                                {isChineseBook && pinyin ? (
+                                    <Text selectable style={[styles.extraMeta, { color: palette.mutedText }]}>
+                                        {pinyin}
+                                    </Text>
+                                ) : null}
                                 <Text selectable style={[styles.extraDefinition, { color: palette.secondaryText }]}>
                                     {definition || t('lookup.noEnglishDefinition')}
                                 </Text>
@@ -1163,6 +1199,7 @@ const DictionaryContent = ({
         pos,
         romanization,
         ipa,
+        pinyin,
         showMore,
         showLess,
         onMore,
@@ -1171,7 +1208,7 @@ const DictionaryContent = ({
         separated,
     }) => (
         <View key={key} style={[styles.primaryEntry, separated && { borderTopColor: palette.border, borderTopWidth: StyleSheet.hairlineWidth }]}>
-            {renderEntryHeading({ word, hanja, definition, pos, romanization, ipa })}
+            {renderEntryHeading({ word, hanja, definition, pos, romanization, ipa, pinyin })}
             {isEnglishBook && gloss ? (
                 <Text selectable style={[styles.glossText, { color: palette.text }]}>
                     {gloss}
@@ -1249,6 +1286,7 @@ const DictionaryContent = ({
                     pos: getEntryPos(cachedEntry) || getEntryPos(liveMeta),
                     romanization: romanizations[stem] || getEntryRomanization(liveMeta),
                     ipa: getEntryIpa(cachedEntry) || getEntryIpa(liveMeta),
+                    pinyin: getEntryPinyin(cachedEntry) || getEntryPinyin(liveMeta),
                     showMore,
                     showLess,
                     onMore: () => setExpandedCached(prev => ({ ...prev, [cachedEntry.stem]: true })),
@@ -1257,7 +1295,7 @@ const DictionaryContent = ({
                     separated: false,
                 })}
 
-                {!isEnglishBook ? (
+                {isKoreanBook ? (
                 <HanjaDetails
                     hanja={currentHanja?.character ?? null}
                     hanjaCharacters={currentHanja?.characters ?? []}
@@ -1292,6 +1330,7 @@ const DictionaryContent = ({
                 pos: getEntryPos(first),
                 romanization: romanizations[word] || getEntryRomanization(first),
                 ipa: getEntryIpa(first),
+                pinyin: getEntryPinyin(first),
                 showMore: extraEntries.length > 0 && !isExpanded,
                 showLess: extraEntries.length > 0 && isExpanded,
                 onMore: () => setExpandedWords(prev => [...prev, word]),
@@ -1307,12 +1346,13 @@ const DictionaryContent = ({
                 pos: '',
                 romanization: romanizations[word],
                 ipa: '',
+                pinyin: '',
                 showMore: false,
                 showLess: false,
                 separated: false,
             })}
 
-            {!isEnglishBook ? (
+            {isKoreanBook ? (
             <HanjaDetails
                 hanja={currentHanja?.character ?? null}
                 hanjaCharacters={currentHanja?.characters ?? []}
@@ -1528,6 +1568,11 @@ const styles = StyleSheet.create({
         fontFamily: fontFamilies.krSerifMedium,
         fontSize: 12,
         lineHeight: 18,
+    },
+    extraMeta: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 11,
+        lineHeight: 15,
     },
     extraDefinition: {
         fontFamily: fontFamilies.sansRegular,

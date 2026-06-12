@@ -16,6 +16,8 @@ import android.util.Log
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import java.text.BreakIterator
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -734,6 +736,10 @@ class EpubPageView(context: Context) : View(context) {
       probe -= 1
     }
 
+    if (isCjkIdeograph(text[probe])) {
+      cjkTokenRangeAtOffset(text, probe)?.let { return it }
+    }
+
     if (!isReaderTokenChar(text[probe])) {
       probe = when {
         probe > 0 && isReaderTokenChar(text[probe - 1]) -> probe - 1
@@ -753,6 +759,44 @@ class EpubPageView(context: Context) : View(context) {
     }
 
     return if (start < end) LocalTokenRange(start, end) else null
+  }
+
+  private fun cjkTokenRangeAtOffset(text: String, offset: Int): LocalTokenRange? {
+    val probe = offset.coerceIn(0, text.length - 1)
+    if (!isCjkIdeograph(text[probe])) {
+      return null
+    }
+
+    var runStart = probe
+    while (runStart > 0 && isCjkIdeograph(text[runStart - 1])) {
+      runStart -= 1
+    }
+
+    var runEnd = probe + 1
+    while (runEnd < text.length && isCjkIdeograph(text[runEnd])) {
+      runEnd += 1
+    }
+
+    val runText = text.substring(runStart, runEnd)
+    val relativeProbe = probe - runStart
+    val iterator = BreakIterator.getWordInstance(Locale.CHINESE)
+    iterator.setText(runText)
+
+    val segmentStart = iterator.preceding(relativeProbe + 1)
+    val segmentEnd = iterator.following(relativeProbe)
+
+    if (
+      segmentStart != BreakIterator.DONE &&
+      segmentEnd != BreakIterator.DONE &&
+      segmentStart < segmentEnd
+    ) {
+      val candidate = runText.substring(segmentStart, segmentEnd).trim()
+      if (candidate.any { isCjkIdeograph(it) }) {
+        return LocalTokenRange(runStart + segmentStart, runStart + segmentEnd)
+      }
+    }
+
+    return LocalTokenRange(probe, probe + 1)
   }
 
   private fun sentenceForToken(text: String, tokenRange: LocalTokenRange): String {

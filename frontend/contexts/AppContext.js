@@ -228,6 +228,7 @@ export const AppProvider = ({ children, user }) => {
       ownerId,
       generation,
       targetLanguage: settings.targetLanguage,
+      script: settings.targetLanguage === 'zh' ? 'zh-Hans' : undefined,
       displayName: getLanguageLabel(settings.targetLanguage),
     });
 

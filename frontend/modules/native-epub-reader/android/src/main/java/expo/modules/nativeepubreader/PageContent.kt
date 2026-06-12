@@ -64,6 +64,17 @@ enum class ActiveSelectionKind {
   TEXT
 }
 
+internal fun isCjkIdeograph(char: Char): Boolean {
+  val code = char.code
+
+  return when {
+    code in 0x4E00..0x9FFF -> true // CJK Unified Ideographs
+    code in 0x3400..0x4DBF -> true // CJK Unified Ideographs Extension A
+    code in 0xF900..0xFAFF -> true // CJK Compatibility Ideographs
+    else -> false
+  }
+}
+
 internal fun isReaderTokenChar(char: Char): Boolean {
   val code = char.code
 
@@ -71,9 +82,7 @@ internal fun isReaderTokenChar(char: Char): Boolean {
     code in 0xAC00..0xD7A3 -> true // Hangul syllables
     code in 0x1100..0x11FF -> true // Hangul Jamo
     code in 0x3130..0x318F -> true // Hangul Compatibility Jamo
-    code in 0x4E00..0x9FFF -> true // CJK Unified Ideographs
-    code in 0x3400..0x4DBF -> true // CJK Unified Ideographs Extension A
-    code in 0xF900..0xFAFF -> true // CJK Compatibility Ideographs
+    isCjkIdeograph(char) -> true
     char in 'A'..'Z' || char in 'a'..'z' -> true
     char.isDigit() -> true
     else -> false

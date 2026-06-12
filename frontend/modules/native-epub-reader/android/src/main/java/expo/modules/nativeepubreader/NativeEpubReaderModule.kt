@@ -1276,12 +1276,14 @@ class NativeEpubReaderView(
   ): Boolean {
     val startsWithToken = term.firstOrNull()?.let { isReaderTokenChar(it) } == true
     val endsWithToken = term.lastOrNull()?.let { isReaderTokenChar(it) } == true
+    val startsWithCjk = term.firstOrNull()?.let { isCjkIdeograph(it) } == true
+    val endsWithCjk = term.lastOrNull()?.let { isCjkIdeograph(it) } == true
 
-    if (startsWithToken && start > 0 && isReaderTokenChar(text[start - 1])) {
+    if (startsWithToken && !startsWithCjk && start > 0 && isReaderTokenChar(text[start - 1])) {
       return false
     }
 
-    if (endsWithToken && end < text.length && isReaderTokenChar(text[end])) {
+    if (endsWithToken && !endsWithCjk && end < text.length && isReaderTokenChar(text[end])) {
       return false
     }
 

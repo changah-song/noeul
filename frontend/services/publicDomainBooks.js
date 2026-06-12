@@ -41,6 +41,7 @@ export const getPublicDomainBooks = (targetLanguage = null) => PUBLIC_DOMAIN_TEX
   genre: book.genre,
   coverColor: book.coverColor,
   language: book.language ?? 'ko',
+  script: book.script ?? null,
   wordCount: book.wordCount ?? null,
   publicDomain: true,
   format: 'txt',
@@ -66,6 +67,7 @@ export const getPublicDomainBookByUri = (uri) => {
     title: normalizeDisplayText(catalogBook.title),
     author: normalizeDisplayText(catalogBook.author),
     language: catalogBook.language ?? 'ko',
+    script: catalogBook.script ?? null,
     wordCount: catalogBook.wordCount ?? null,
   };
 };
@@ -197,6 +199,7 @@ export const readPublicDomainTextPackage = async (uri, options = {}) => {
     title: book.title,
     author: book.author,
     language: book.language,
+    script: book.script ?? null,
     source: book.source,
     previewSource: book.previewSource,
     attributionCategory: book.attributionCategory,
@@ -220,6 +223,7 @@ export const readPublicDomainTextPackage = async (uri, options = {}) => {
       title: book.title,
       author: book.author,
       language: book.language,
+      script: book.script ?? null,
       wordCount: book.wordCount ?? null,
     },
     spine,

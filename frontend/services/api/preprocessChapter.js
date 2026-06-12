@@ -17,6 +17,7 @@ const preprocessChapter = async ({
   text,
   language = 'ko',
   interfaceLanguage = 'en',
+  script = 'zh-Hans',
 }) => {
   const targetLanguage = normalizeBookLanguage(language);
   const normalizedInterfaceLanguage = normalizeInterfaceLanguageCode(interfaceLanguage);
@@ -29,7 +30,11 @@ const preprocessChapter = async ({
     };
   }
 
-  const endpoint = targetLanguage === 'en' ? '/preprocess_chapter_en/' : '/preprocess_chapter/';
+  const endpointByLanguage = {
+    en: '/preprocess_chapter_en/',
+    zh: '/preprocess_chapter_zh/',
+  };
+  const endpoint = endpointByLanguage[targetLanguage] ?? '/preprocess_chapter/';
 
   const response = await api.post(
     endpoint,
@@ -39,6 +44,7 @@ const preprocessChapter = async ({
       text,
       language: targetLanguage,
       interface_language: normalizedInterfaceLanguage,
+      script,
     },
     {
       timeout: 45000,
