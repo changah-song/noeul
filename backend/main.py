@@ -10,6 +10,7 @@ import asyncio
 import xml.etree.ElementTree as ET
 from typing import Any, Optional
 import os
+import re
 import time
 from datetime import datetime, timezone
 from functools import partial
@@ -26,6 +27,11 @@ try:
     import spacy
 except ImportError:
     spacy = None
+
+try:
+    import jieba.posseg as zh_pseg
+except ImportError:
+    zh_pseg = None
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
@@ -83,6 +89,7 @@ PREPROCESS_ACTIVE_JOB_TTL_SECONDS = 60 * 60
 # It prevents re-calling KRDICT for words that have already been looked up in any book.
 CACHE_DB_PATH = os.path.join(os.path.dirname(__file__), "cache.db")
 EN_DICT_DB_PATH = os.path.join(os.path.dirname(__file__), "en_dict.db")
+ZH_DICT_DB_PATH = os.path.join(os.path.dirname(__file__), "zh_dict.db")
 
 
 def get_db_connection():
@@ -100,6 +107,20 @@ def get_kaikki_db_connection():
     conn = sqlite3.connect(f"file:{EN_DICT_DB_PATH}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def get_zh_dict_db_connection():
+    """Open a read-only connection to the local CC-CEDICT Chinese dictionary DB."""
+    if not os.path.exists(ZH_DICT_DB_PATH):
+        raise HTTPException(status_code=503, detail="Chinese dictionary database is not installed")
+
+    conn = sqlite3.connect(f"file:{ZH_DICT_DB_PATH}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def is_zh_dict_db_installed() -> bool:
+    return os.path.exists(ZH_DICT_DB_PATH)
 
 
 def create_dictionary_cache_table(conn: sqlite3.Connection, table_name: str = "dictionary_cache"):
@@ -292,6 +313,25 @@ daily_usage_lock = asyncio.Lock()
 
 LOOKUP_ALLOWED_POS = {"Noun", "Verb", "Adverb", "Adjective"}
 EN_LOOKUP_ALLOWED_POS = {"NOUN", "PROPN", "VERB", "ADJ", "ADV", "NUM"}
+ZH_LOOKUP_ALLOWED_POS_PREFIXES = ("n", "v", "a", "d")
+ZH_SEARCH_RESULT_LIMIT = 6
+ZH_FALLBACK_MAX_WORD_LEN = 8
+DEFAULT_CHINESE_SCRIPT = "zh-Hans"
+ZH_CJK_BLOCK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
+ZH_POS_LABELS = {
+    "n": "Noun",
+    "nr": "Proper noun",
+    "ns": "Place noun",
+    "nt": "Organization noun",
+    "nz": "Proper noun",
+    "v": "Verb",
+    "vd": "Adverbial verb",
+    "vn": "Verb noun",
+    "a": "Adjective",
+    "ad": "Adverbial adjective",
+    "an": "Adjectival noun",
+    "d": "Adverb",
+}
 
 # Okt occasionally mislabels these as Noun in eojeol-final position.
 # Verified against 563k chars of public domain Korean text (22 books):
@@ -318,6 +358,31 @@ def get_en_nlp():
             raise HTTPException(status_code=503, detail="spaCy English model en_core_web_sm is not installed")
 
     return nlp_en
+
+
+def require_zh_segmenter():
+    if zh_pseg is None:
+        raise HTTPException(status_code=503, detail="jieba is not installed on the backend")
+
+    return zh_pseg
+
+
+def normalize_short_language_code(value, default=DEFAULT_INTERFACE_LANGUAGE) -> str:
+    normalized = (
+        str(value or default)
+        .strip()
+        .lower()
+        .replace("_", "-")
+        .split("-")[0]
+    )
+    return normalized or default
+
+
+def normalize_chinese_script(value=DEFAULT_CHINESE_SCRIPT) -> str:
+    raw = str(value or DEFAULT_CHINESE_SCRIPT).strip().lower().replace("_", "-")
+    if raw in {"zh-hant", "hant", "traditional", "trad", "tc"}:
+        return "zh-Hant"
+    return "zh-Hans"
 
 
 def verify_supabase_token(authorization: str = Header(default="")) -> dict[str, Any]:
@@ -930,6 +995,352 @@ def lookup_en_dictionary_entries(stems: list[str]) -> tuple[list[dict], int]:
     return results, len(rows_by_word)
 
 
+def zh_pos_label(flag: str | None) -> str | None:
+    normalized = flag.strip().lower() if isinstance(flag, str) else ""
+    if not normalized:
+        return None
+
+    return ZH_POS_LABELS.get(normalized) or ZH_POS_LABELS.get(normalized[0]) or normalized
+
+
+def append_zh_lookup_token(
+    word: str,
+    pos: str | None,
+    *,
+    seen_words: set[str],
+    seen_surface_pairs: set[tuple[str, str]],
+    words: list[str],
+    surface_index: list[dict],
+    pos_by_word: dict[str, str],
+):
+    normalized_word = word.strip() if isinstance(word, str) else ""
+    if not normalized_word or len(normalized_word) <= 1:
+        return
+
+    if normalized_word not in seen_words:
+        seen_words.add(normalized_word)
+        words.append(normalized_word)
+        if pos:
+            pos_by_word[normalized_word] = pos
+
+    pair_key = (normalized_word, normalized_word)
+    if pair_key not in seen_surface_pairs:
+        seen_surface_pairs.add(pair_key)
+        surface_index.append({
+            "surface": normalized_word,
+            "stem": normalized_word,
+        })
+
+
+def extract_zh_lookup_tokens_with_jieba(text: str) -> tuple[list[str], list[dict], dict[str, str]]:
+    segmenter = zh_pseg
+    seen_words: set[str] = set()
+    seen_surface_pairs: set[tuple[str, str]] = set()
+    words: list[str] = []
+    surface_index: list[dict] = []
+    pos_by_word: dict[str, str] = {}
+
+    if segmenter is None:
+        return words, surface_index, pos_by_word
+
+    for pair in segmenter.cut(text):
+        word = getattr(pair, "word", "").strip()
+        flag = getattr(pair, "flag", "").strip()
+        if (
+            not word
+            or len(word) <= 1
+            or not flag.startswith(ZH_LOOKUP_ALLOWED_POS_PREFIXES)
+        ):
+            continue
+
+        append_zh_lookup_token(
+            word,
+            zh_pos_label(flag),
+            seen_words=seen_words,
+            seen_surface_pairs=seen_surface_pairs,
+            words=words,
+            surface_index=surface_index,
+            pos_by_word=pos_by_word,
+        )
+
+    return words, surface_index, pos_by_word
+
+
+def fetch_zh_dictionary_candidate_words(candidates: set[str]) -> set[str]:
+    if not candidates or not is_zh_dict_db_installed():
+        return set()
+
+    conn = get_zh_dict_db_connection()
+    found_words: set[str] = set()
+    candidate_list = list(candidates)
+    batch_size = 450
+
+    try:
+        for start in range(0, len(candidate_list), batch_size):
+            batch = candidate_list[start:start + batch_size]
+            placeholders = ",".join(["?"] * len(batch))
+            rows = conn.execute(
+                f"""
+                SELECT simplified, traditional
+                FROM zh_dictionary
+                WHERE simplified IN ({placeholders})
+                   OR traditional IN ({placeholders})
+                """,
+                [*batch, *batch],
+            ).fetchall()
+            for row in rows:
+                simplified = (row["simplified"] or "").strip()
+                traditional = (row["traditional"] or "").strip()
+                if simplified:
+                    found_words.add(simplified)
+                if traditional:
+                    found_words.add(traditional)
+    finally:
+        conn.close()
+
+    return found_words
+
+
+def extract_zh_lookup_tokens_with_dictionary(text: str) -> tuple[list[str], list[dict], dict[str, str]]:
+    seen_words: set[str] = set()
+    seen_surface_pairs: set[tuple[str, str]] = set()
+    words: list[str] = []
+    surface_index: list[dict] = []
+    pos_by_word: dict[str, str] = {}
+    blocks = [match.group(0) for match in ZH_CJK_BLOCK_RE.finditer(text)]
+    candidates: set[str] = set()
+
+    for block in blocks:
+        block_length = len(block)
+        for start in range(block_length):
+            max_end = min(block_length, start + ZH_FALLBACK_MAX_WORD_LEN)
+            for end in range(start + 2, max_end + 1):
+                candidates.add(block[start:end])
+
+    dictionary_words = fetch_zh_dictionary_candidate_words(candidates)
+
+    for block in blocks:
+        index = 0
+        while index < len(block):
+            match = ""
+            max_end = min(len(block), index + ZH_FALLBACK_MAX_WORD_LEN)
+            for end in range(max_end, index + 1, -1):
+                candidate = block[index:end]
+                if candidate in dictionary_words:
+                    match = candidate
+                    break
+
+            if match:
+                append_zh_lookup_token(
+                    match,
+                    None,
+                    seen_words=seen_words,
+                    seen_surface_pairs=seen_surface_pairs,
+                    words=words,
+                    surface_index=surface_index,
+                    pos_by_word=pos_by_word,
+                )
+                index += len(match)
+                continue
+
+            index += 1
+
+    return words, surface_index, pos_by_word
+
+
+def extract_zh_lookup_tokens(text: str) -> tuple[list[str], list[dict], dict[str, str]]:
+    if zh_pseg is not None:
+        return extract_zh_lookup_tokens_with_jieba(text)
+
+    print("[main] jieba unavailable; using dictionary-based Chinese tokenizer fallback")
+    return extract_zh_lookup_tokens_with_dictionary(text)
+
+
+def zh_definition_gloss(definition: str | None) -> str | None:
+    raw_definition = definition.strip() if isinstance(definition, str) else ""
+    if not raw_definition:
+        return None
+
+    short = raw_definition.split(";")[0].split(",")[0].strip()
+    return short if short and len(short) <= 40 else None
+
+
+def zh_dictionary_no_entry(
+    stem: str,
+    script: str,
+    pos: str | None = None,
+    interface_language: str = "en",
+) -> dict:
+    return {
+        "stem": stem,
+        "word": stem,
+        "simplified": stem if script == "zh-Hans" else None,
+        "traditional": stem if script == "zh-Hant" else None,
+        "definition": None,
+        "gloss": None,
+        "hanja": None,
+        "pos": pos,
+        "domain": None,
+        "pinyin": None,
+        "ipa": None,
+        "etymology": None,
+        "derived": "[]",
+        "related": "[]",
+        "language": "zh",
+        "interface_language": interface_language,
+    }
+
+
+def zh_dictionary_row_to_result(
+    row: sqlite3.Row,
+    *,
+    script: str = DEFAULT_CHINESE_SCRIPT,
+    interface_language: str = "en",
+    pos: str | None = None,
+) -> dict:
+    data = dict(row)
+    simplified = (data.get("simplified") or "").strip()
+    traditional = (data.get("traditional") or "").strip()
+    word = traditional if script == "zh-Hant" and traditional else simplified
+    definition = (data.get("definition") or "").strip() or None
+    pinyin = (data.get("pinyin") or "").strip() or None
+
+    return {
+        "stem": word,
+        "word": word,
+        "simplified": simplified or None,
+        "traditional": traditional or None,
+        "definition": definition,
+        "gloss": zh_definition_gloss(definition),
+        "hanja": None,
+        "pos": pos,
+        "domain": None,
+        "pinyin": pinyin,
+        "ipa": pinyin,
+        "etymology": None,
+        "derived": "[]",
+        "related": "[]",
+        "language": "zh",
+        "interface_language": interface_language,
+    }
+
+
+def lookup_zh_dictionary_entries(
+    stems: list[str],
+    *,
+    script: str = DEFAULT_CHINESE_SCRIPT,
+    interface_language: str = "en",
+    pos_by_stem: dict[str, str] | None = None,
+    limit_per_stem: int | None = 1,
+    allow_missing_db: bool = False,
+) -> tuple[list[list[dict]], int]:
+    normalized_stems = [
+        stem.strip()
+        for stem in stems
+        if isinstance(stem, str) and stem.strip()
+    ]
+    if not normalized_stems:
+        return [], 0
+
+    if not is_zh_dict_db_installed():
+        if not allow_missing_db:
+            raise HTTPException(status_code=503, detail="Chinese dictionary database is not installed")
+
+        print("[main] Chinese dictionary database missing; returning segmentation-only Chinese results")
+        return [
+            [
+                zh_dictionary_no_entry(
+                    stem,
+                    script,
+                    (pos_by_stem or {}).get(stem),
+                    interface_language,
+                )
+            ]
+            for stem in normalized_stems
+        ], 0
+
+    conn = get_zh_dict_db_connection()
+    unique_stems = list(dict.fromkeys(normalized_stems))
+    placeholders = ",".join(["?"] * len(unique_stems))
+    rows = conn.execute(
+        f"""
+        SELECT simplified, traditional, pinyin, definition
+        FROM zh_dictionary
+        WHERE simplified IN ({placeholders})
+           OR traditional IN ({placeholders})
+        ORDER BY frequency_rank ASC, id ASC
+        """,
+        [*unique_stems, *unique_stems],
+    ).fetchall()
+    conn.close()
+
+    rows_by_lookup: dict[str, list[sqlite3.Row]] = {stem: [] for stem in unique_stems}
+    for row in rows:
+        simplified = (row["simplified"] or "").strip()
+        traditional = (row["traditional"] or "").strip()
+        if simplified in rows_by_lookup:
+            rows_by_lookup[simplified].append(row)
+        if traditional in rows_by_lookup and traditional != simplified:
+            rows_by_lookup[traditional].append(row)
+
+    found_count = sum(1 for stem in unique_stems if rows_by_lookup.get(stem))
+    results: list[list[dict]] = []
+    for stem in normalized_stems:
+        stem_rows = rows_by_lookup.get(stem, [])
+        if limit_per_stem is not None:
+            stem_rows = stem_rows[:limit_per_stem]
+
+        if not stem_rows:
+            results.append([
+                zh_dictionary_no_entry(
+                    stem,
+                    script,
+                    (pos_by_stem or {}).get(stem),
+                    interface_language,
+                )
+            ])
+            continue
+
+        results.append([
+            zh_dictionary_row_to_result(
+                row,
+                script=script,
+                interface_language=interface_language,
+                pos=(pos_by_stem or {}).get(stem),
+            )
+            for row in stem_rows
+        ])
+
+    return results, found_count
+
+
+async def translate_zh_results(results: list[dict], interface_language: str) -> list[dict]:
+    normalized_lang = normalize_short_language_code(interface_language, "en")
+    if normalized_lang == "en":
+        return results
+
+    async def translate_entry(entry: dict) -> dict:
+        definition = entry.get("definition")
+        if not definition:
+            return {
+                **entry,
+                "interface_language": normalized_lang,
+            }
+
+        translated_definition, translated_gloss = await asyncio.gather(
+            _translate_text(definition, source="en", target=normalized_lang),
+            _translate_text(entry.get("word") or entry.get("stem") or "", source="zh", target=normalized_lang),
+        )
+        return {
+            **entry,
+            "definition": translated_definition or definition,
+            "gloss": translated_gloss or entry.get("gloss"),
+            "interface_language": normalized_lang,
+        }
+
+    return await asyncio.gather(*(translate_entry(entry) for entry in results))
+
+
 async def _preprocess_en_core(
     text: str,
     max_stems=None,
@@ -988,6 +1399,92 @@ async def _preprocess_en_core(
     }
 
 
+async def _preprocess_zh_core(
+    text: str,
+    max_stems=None,
+    progress_callback=None,
+    interface_language: str = "en",
+    script: str = DEFAULT_CHINESE_SCRIPT,
+) -> dict:
+    async def report(event: str, **data):
+        if progress_callback:
+            await progress_callback(event, data)
+
+    normalized_script = normalize_chinese_script(script)
+    normalized_interface_language = normalize_short_language_code(interface_language, "en")
+    loop = asyncio.get_event_loop()
+    unique_lookup_words, surface_index, pos_by_word = await loop.run_in_executor(
+        None,
+        extract_zh_lookup_tokens,
+        text,
+    )
+    if max_stems:
+        processed_words = set(unique_lookup_words[:max_stems])
+        unique_lookup_words = unique_lookup_words[:max_stems]
+        surface_index = [entry for entry in surface_index if entry["stem"] in processed_words]
+
+    await report(
+        "stemmed",
+        candidate_stems=len(unique_lookup_words),
+        total_stems=len(unique_lookup_words),
+        surface_count=len(surface_index),
+    )
+
+    if not unique_lookup_words:
+        return {
+            "results": [],
+            "surface_index": surface_index,
+            "stats": {"total_stems": 0, "cache_hits": 0, "new_fetched": 0},
+        }
+
+    result_groups, found_count = await loop.run_in_executor(
+        None,
+        partial(
+            lookup_zh_dictionary_entries,
+            unique_lookup_words,
+            script=normalized_script,
+            interface_language=normalized_interface_language,
+            pos_by_stem=pos_by_word,
+            limit_per_stem=1,
+            allow_missing_db=True,
+        ),
+    )
+
+    results = [group[0] for group in result_groups if group]
+    lookup_to_result_stem = {
+        lookup_word: result.get("stem") or lookup_word
+        for lookup_word, result in zip(unique_lookup_words, results)
+    }
+    surface_index = [
+        {
+            **entry,
+            "stem": lookup_to_result_stem.get(entry["stem"], entry["stem"]),
+        }
+        for entry in surface_index
+    ]
+
+    if normalized_interface_language != "en":
+        results = [
+            {
+                **result,
+                "definition": None,
+                "gloss": None,
+                "interface_language": normalized_interface_language,
+            }
+            for result in results
+        ]
+
+    return {
+        "results": results,
+        "surface_index": surface_index,
+        "stats": {
+            "total_stems": len(unique_lookup_words),
+            "cache_hits": found_count,
+            "new_fetched": 0,
+        },
+    }
+
+
 # ─── Existing Endpoint: Single-text Stemming ─────────────────────────────────
 @app.get("/okt_morphs/")
 async def get_okt_morphs(text: str, auth: dict[str, Any] = Depends(verify_supabase_token)):
@@ -1017,6 +1514,18 @@ async def get_en_morphs(text: str, auth: dict[str, Any] = Depends(verify_supabas
     lemmas, _surface_index = extract_en_lookup_tokens(normalized_text)
     print(f"[main] English lemmas (first 20): {lemmas[:20]}")
     return {"result": lemmas}
+
+
+@app.get("/zh_morphs/")
+async def get_zh_morphs(text: str, auth: dict[str, Any] = Depends(verify_supabase_token)):
+    normalized_text = text if isinstance(text, str) else ""
+    enforce_text_limit(normalized_text, auth)
+    await enforce_daily_quota(auth)
+    print(f"[main] /zh_morphs/ | text: {text!r}")
+
+    words, _surface_index, _pos_by_word = extract_zh_lookup_tokens(normalized_text)
+    print(f"[main] Chinese tokens (first 20): {words[:20]}")
+    return {"result": words}
 
 
 @app.get("/romanize/")
@@ -1680,6 +2189,114 @@ async def en_dict_search(
     return {"result": entry}
 
 
+@app.get("/zh_dict_search/")
+async def zh_dict_search(
+    stem: str,
+    interface_language: str = "en",
+    script: str = DEFAULT_CHINESE_SCRIPT,
+    auth: dict[str, Any] = Depends(verify_supabase_token),
+):
+    normalized_stem = stem.strip() if isinstance(stem, str) else ""
+    normalized_lang = normalize_short_language_code(interface_language, "en")
+    normalized_script = normalize_chinese_script(script)
+    if not normalized_stem:
+        return {"result": None, "results": []}
+
+    enforce_text_limit(normalized_stem, auth, field_name="stem")
+    await enforce_daily_quota(auth)
+
+    if not is_zh_dict_db_installed():
+        print("[main] /zh_dict_search/ called before Chinese dictionary database is installed")
+        return {
+            "result": None,
+            "results": [],
+            "dictionary_available": False,
+            "message": "Chinese dictionary database is not installed",
+        }
+
+    result_groups, _found_count = lookup_zh_dictionary_entries(
+        [normalized_stem],
+        script=normalized_script,
+        interface_language=normalized_lang,
+        limit_per_stem=ZH_SEARCH_RESULT_LIMIT,
+    )
+    entries = result_groups[0] if result_groups else []
+    entries = [entry for entry in entries if entry.get("definition")]
+    if not entries:
+        return {"result": None, "results": [], "dictionary_available": True}
+
+    cached_result = None
+    if normalized_lang != "en":
+        conn = get_db_connection()
+        cached = conn.execute(
+            """
+            SELECT id, stem, language, interface_language, definition, gloss, hanja, pos, domain,
+                   ipa, etymology, derived, related, last_updated
+            FROM dictionary_cache
+            WHERE stem = ?
+              AND language = 'zh'
+              AND interface_language = ?
+            LIMIT 1
+            """,
+            (entries[0]["stem"], normalized_lang),
+        ).fetchone()
+        conn.close()
+        if cached and cached["definition"]:
+            cached_result = {
+                **entries[0],
+                **dict(cached),
+                "word": entries[0]["word"],
+                "simplified": entries[0].get("simplified"),
+                "traditional": entries[0].get("traditional"),
+                "pinyin": cached["ipa"] or entries[0].get("pinyin"),
+            }
+
+    if cached_result:
+        entries = [cached_result, *entries[1:]]
+    else:
+        entries = await translate_zh_results(entries, normalized_lang)
+
+        first_entry = entries[0]
+        if first_entry.get("definition"):
+            conn = get_db_connection()
+            conn.execute(
+                """
+                INSERT INTO dictionary_cache
+                    (stem, language, interface_language, definition, gloss, hanja, pos, domain,
+                     ipa, etymology, derived, related)
+                VALUES (?, 'zh', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(stem, language, interface_language) DO UPDATE SET
+                    definition = excluded.definition,
+                    gloss = excluded.gloss,
+                    hanja = excluded.hanja,
+                    pos = excluded.pos,
+                    domain = excluded.domain,
+                    ipa = excluded.ipa,
+                    etymology = excluded.etymology,
+                    derived = excluded.derived,
+                    related = excluded.related,
+                    last_updated = CURRENT_TIMESTAMP
+                """,
+                (
+                    first_entry.get("stem"),
+                    normalized_lang,
+                    first_entry.get("definition"),
+                    first_entry.get("gloss"),
+                    None,
+                    first_entry.get("pos"),
+                    first_entry.get("domain"),
+                    first_entry.get("pinyin"),
+                    first_entry.get("etymology"),
+                    first_entry.get("derived"),
+                    first_entry.get("related"),
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+    return {"result": entries[0], "results": entries, "dictionary_available": True}
+
+
 @app.post("/preprocess_chapter_en/")
 async def preprocess_chapter_en(payload: dict, auth: dict[str, Any] = Depends(verify_supabase_token)):
     text = payload.get("text", "")
@@ -1722,6 +2339,52 @@ async def preprocess_chapter_en(payload: dict, auth: dict[str, Any] = Depends(ve
         text,
         max_stems,
         interface_language=interface_language,
+    )
+    return {
+        "book_uri": book_uri,
+        "spine_index": spine_index,
+        **result,
+    }
+
+
+@app.post("/preprocess_chapter_zh/")
+async def preprocess_chapter_zh(payload: dict, auth: dict[str, Any] = Depends(verify_supabase_token)):
+    text = payload.get("text", "")
+    book_uri = payload.get("book_uri", "")
+    spine_index = payload.get("spine_index", None)
+    raw_interface_language = payload.get("interface_language", payload.get("language", "en"))
+    interface_language = normalize_short_language_code(raw_interface_language, "en")
+    script = normalize_chinese_script(payload.get("script", DEFAULT_CHINESE_SCRIPT))
+    max_stems = limited_preprocess_max_stems(payload.get("max_stems", MAX_STEMS_DEFAULT), auth)
+
+    if not isinstance(spine_index, int):
+        raise HTTPException(status_code=400, detail="spine_index must be an integer")
+
+    if not isinstance(text, str):
+        raise HTTPException(status_code=400, detail="text must be a string")
+
+    if not text:
+        return {
+            "book_uri": book_uri,
+            "spine_index": spine_index,
+            "results": [],
+            "surface_index": [],
+            "stats": {"total_stems": 0, "cache_hits": 0, "new_fetched": 0},
+        }
+
+    enforce_preprocess_text_limit(text)
+    await enforce_daily_quota(auth)
+
+    print(
+        f"[main] /preprocess_chapter_zh/ | spine={spine_index} "
+        f"text length={len(text):,} chars | interface_language={interface_language} "
+        f"script={script} max_stems={max_stems}"
+    )
+    result = await _preprocess_zh_core(
+        text,
+        max_stems,
+        interface_language=interface_language,
+        script=script,
     )
     return {
         "book_uri": book_uri,

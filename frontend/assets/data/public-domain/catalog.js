@@ -1,6 +1,8 @@
 const SOURCE = '공유마당';
 const PREVIEW_SOURCE = '공유마당 (gongu.copyright.or.kr)';
 const ATTRIBUTION_CATEGORY = '기증저작물, CC BY 4.0';
+const ZH_SOURCE = '维基文库';
+const ZH_PREVIEW_SOURCE = '中文维基文库 (zh.wikisource.org)';
 
 const PUBLIC_DOMAIN_COVER_COLORS = [
   '#7c4d8a',
@@ -23,6 +25,12 @@ const PUBLIC_DOMAIN_COVER_COLORS = [
 
 const PUBLIC_DOMAIN_TITLE_TRANSLATIONS = {
   'b-sagam-and-love-letter': 'Miss B and the Love Letter',
+  'ah-q-true-story': 'The True Story of Ah Q',
+  'chen-lun-yu-dafu': 'Sinking',
+  'fang-huang-lu-xun': 'Wandering',
+  'kong-yiji-lu-xun': 'Kong Yiji',
+  'madmans-diary-lu-xun': "A Madman's Diary",
+  'na-han-lu-xun': 'Call to Arms',
   'snow-queen': 'The Snow Queen',
   'ugly-duckling': 'The Ugly Duckling',
   'little-match-girl': 'The Little Match Girl',
@@ -48,6 +56,12 @@ const PUBLIC_DOMAIN_TITLE_TRANSLATIONS = {
 
 const PUBLIC_DOMAIN_AUTHOR_TRANSLATIONS = {
   'b-sagam-and-love-letter': 'Hyeon Jin-geon',
+  'ah-q-true-story': 'Lu Xun',
+  'chen-lun-yu-dafu': 'Yu Dafu',
+  'fang-huang-lu-xun': 'Lu Xun',
+  'kong-yiji-lu-xun': 'Lu Xun',
+  'madmans-diary-lu-xun': 'Lu Xun',
+  'na-han-lu-xun': 'Lu Xun',
   'snow-queen': 'Kim Seonhui, tr. / H.C. Andersen',
   'ugly-duckling': 'Kim Seonhui, tr. / H.C. Andersen',
   'little-match-girl': 'Kim Seonhui, tr. / H.C. Andersen',
@@ -72,6 +86,66 @@ const PUBLIC_DOMAIN_AUTHOR_TRANSLATIONS = {
 };
 
 const PUBLIC_DOMAIN_PREVIEW_METADATA = {
+  'ah-q-true-story': {
+    previewSource: ZH_PREVIEW_SOURCE,
+    attributionCategory: 'Public domain (PD-old-80-1996)',
+    attribution: '阿Q正传, 鲁迅, 中文维基文库, public domain',
+    genre: 'Modern fiction / Satire',
+    snippet: [
+      `Ah Q survives by turning humiliation into imaginary victory. Every beating, rejection, and failure can be rewritten in his own mind as triumph.`,
+      `Lu Xun's most famous novella is a sharp, unsparing satire of self-deception, social cruelty, and revolutionary slogans that change everything except the people crushed beneath them.`,
+    ].join('\n\n'),
+  },
+  'chen-lun-yu-dafu': {
+    previewSource: ZH_PREVIEW_SOURCE,
+    attributionCategory: 'Public domain (PD-old-80-1923)',
+    attribution: '沉沦, 郁达夫, 中文维基文库, public domain in the United States and countries or regions with copyright terms of life plus 80 years or less',
+    genre: 'Modern fiction / Psychological short story',
+    snippet: [
+      `A lonely Chinese student in Japan drifts through study, shame, desire, and homesickness until his private despair becomes inseparable from his sense of national humiliation.`,
+      `Published in 1921, Yu Dafu's most famous story is compact but intense: an early modern Chinese work built from confession, self-division, and the painful pressure of being seen as a weak-country subject abroad.`,
+    ].join('\n\n'),
+  },
+  'fang-huang-lu-xun': {
+    previewSource: ZH_PREVIEW_SOURCE,
+    attributionCategory: 'Public domain (PD-old-80-1996)',
+    attribution: '彷徨, 鲁迅, 中文维基文库, public domain',
+    genre: 'Modern fiction collection / Social realism',
+    snippet: [
+      `A collection of Lu Xun stories about families, intellectuals, villagers, rituals, marriages, and people trapped inside systems they can barely name.`,
+      `Compared with Call to Arms, Wandering often feels quieter and more inward, but the pressure is just as severe: compromise, loneliness, failed reform, and the exhaustion of people who know something is wrong but cannot see a way out.`,
+    ].join('\n\n'),
+  },
+  'kong-yiji-lu-xun': {
+    previewSource: ZH_PREVIEW_SOURCE,
+    attributionCategory: 'Public domain (PD-old-80-1996)',
+    attribution: '孔乙己, 鲁迅, 中文维基文库, public domain',
+    genre: 'Modern fiction / Character sketch',
+    snippet: [
+      `Kong Yiji is a failed scholar who still clings to the gestures of learning while standing outside the tavern counter, laughed at by workers and children alike.`,
+      `One of Lu Xun's most compact stories, it turns a comic tavern scene into a portrait of class, education, shame, and how easily a person can become entertainment for everyone else.`,
+    ].join('\n\n'),
+  },
+  'madmans-diary-lu-xun': {
+    previewSource: ZH_PREVIEW_SOURCE,
+    attributionCategory: 'Public domain (PD-old-80-1996)',
+    attribution: '狂人日记, 鲁迅, 中文维基文库, public domain',
+    genre: 'Modern fiction / Psychological allegory',
+    snippet: [
+      `A man reads the world around him as a conspiracy of cannibalism. Neighbors, family, books, and history itself all seem to whisper the same command: eat people.`,
+      `Published in 1918, this landmark of modern Chinese fiction uses madness as a lens for moral horror, social violence, and the suffocating inheritance of old rituals.`,
+    ].join('\n\n'),
+  },
+  'na-han-lu-xun': {
+    previewSource: ZH_PREVIEW_SOURCE,
+    attributionCategory: 'Public domain (PD-old-80-1996)',
+    attribution: '呐喊, 鲁迅, 中文维基文库, public domain',
+    genre: 'Modern fiction collection / Social critique',
+    snippet: [
+      `Lu Xun's first story collection gathers A Madman's Diary, Kong Yiji, Medicine, Hometown, The True Story of Ah Q, and other foundational works of modern Chinese fiction.`,
+      `The book's title is usually rendered Call to Arms, but the force is less heroic than urgent: a cry against numbness, superstition, humiliation, and the habits that teach people to survive by looking away.`,
+    ].join('\n\n'),
+  },
   'b-sagam-and-love-letter': {
     genre: 'Ironic comedy / Character study',
     attribution: 'B사감과 러브레터, 기증 현진건, 공유마당, CC BY 4.0',
@@ -252,6 +326,66 @@ const PUBLIC_DOMAIN_PREVIEW_METADATA = {
 };
 
 const PUBLIC_DOMAIN_TEXTS_BASE = [
+  {
+    id: 'ah-q-true-story',
+    title: '阿Q正传',
+    author: '鲁迅',
+    language: 'zh',
+    script: 'zh-Hans',
+    wordCount: 12996,
+    source: ZH_SOURCE,
+    textAsset: require('./books/阿Q正传 - 鲁迅.txt'),
+  },
+  {
+    id: 'chen-lun-yu-dafu',
+    title: '沉沦',
+    author: '郁达夫',
+    language: 'zh',
+    script: 'zh-Hans',
+    wordCount: 10694,
+    source: ZH_SOURCE,
+    textAsset: require('./books/沉沦 - 郁达夫.txt'),
+  },
+  {
+    id: 'fang-huang-lu-xun',
+    title: '彷徨',
+    author: '鲁迅',
+    language: 'zh',
+    script: 'zh-Hans',
+    wordCount: 41836,
+    source: ZH_SOURCE,
+    textAsset: require('./books/彷徨 - 鲁迅.txt'),
+  },
+  {
+    id: 'kong-yiji-lu-xun',
+    title: '孔乙己',
+    author: '鲁迅',
+    language: 'zh',
+    script: 'zh-Hans',
+    wordCount: 1584,
+    source: ZH_SOURCE,
+    textAsset: require('./books/孔乙己 - 鲁迅.txt'),
+  },
+  {
+    id: 'madmans-diary-lu-xun',
+    title: '狂人日记',
+    author: '鲁迅',
+    language: 'zh',
+    script: 'zh-Hans',
+    wordCount: 2660,
+    source: ZH_SOURCE,
+    textAsset: require('./books/狂人日记 - 鲁迅.txt'),
+  },
+  {
+    id: 'na-han-lu-xun',
+    title: '呐喊',
+    author: '鲁迅',
+    language: 'zh',
+    script: 'zh-Hans',
+    wordCount: 41805,
+    source: ZH_SOURCE,
+    textAsset: require('./books/呐喊 - 鲁迅.txt'),
+  },
   {
     id: 'b-sagam-and-love-letter',
     title: 'B사감과 러브레터',

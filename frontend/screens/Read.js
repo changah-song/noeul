@@ -873,7 +873,8 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
         surfaceIndex = [],
         language = 'ko',
     }) => {
-        const cacheScope = { language, interfaceLanguage };
+        const normalizedLanguage = normalizeBookLanguage(language);
+        const cacheScope = { language: normalizedLanguage, interfaceLanguage };
         const normalizedInterfaceLanguage = normalizeInterfaceLanguageCode(interfaceLanguage);
         const cacheEntries = (results || [])
             .filter((entry) => entry?.stem)
@@ -882,7 +883,11 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
                     entry.interfaceLanguage ?? entry.interface_language ?? normalizedInterfaceLanguage
                 );
 
-                if (language === 'en' && normalizedInterfaceLanguage !== 'en' && entryInterfaceLanguage !== normalizedInterfaceLanguage) {
+                if (
+                    ['en', 'zh'].includes(normalizedLanguage)
+                    && normalizedInterfaceLanguage !== 'en'
+                    && entryInterfaceLanguage !== normalizedInterfaceLanguage
+                ) {
                     return { ...entry, definition: null };
                 }
 

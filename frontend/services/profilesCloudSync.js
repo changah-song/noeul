@@ -1,4 +1,8 @@
-import { getLanguageLabel, normalizeLanguageCode } from '../constants/languages';
+import {
+  getLanguageLabel,
+  normalizeChineseScript,
+  normalizeLanguageCode,
+} from '../constants/languages';
 import { USER_PREFERENCES_TABLE, USER_PROFILES_TABLE, supabase } from './supabase';
 import {
   assertCanUploadForOwner,
@@ -6,7 +10,7 @@ import {
 } from './localOwnerCoordinator';
 
 const FILE_TAG = '[profilesCloudSync]';
-const USER_PROFILE_SELECT = `
+const USER_PROFILE_SELECT_BASE = `
   id,
   user_id,
   target_language,
@@ -14,6 +18,22 @@ const USER_PROFILE_SELECT = `
   created_at,
   updated_at
 `;
+const USER_PROFILE_SELECT = `
+  id,
+  user_id,
+  target_language,
+  script,
+  display_name,
+  created_at,
+  updated_at
+`;
+
+const isMissingScriptColumnError = (error) => {
+  const message = String(error?.message ?? error?.details ?? '').toLowerCase();
+  return error?.code === '42703'
+    || error?.code === 'PGRST204'
+    || (message.includes('script') && message.includes('column'));
+};
 
 const assertCloudWriteAllowed = ({ user, ownerId, generation }) => {
   assertCanUploadForOwner({ ownerId, user });
@@ -36,6 +56,9 @@ const toProfileRow = (userId, profile = {}) => {
   return omitUndefined({
     user_id: userId,
     target_language: targetLanguage,
+    script: targetLanguage === 'zh'
+      ? normalizeChineseScript(profile.script ?? profile.chineseScript)
+      : undefined,
     display_name: profile.display_name
       ?? profile.displayName
       ?? getLanguageLabel(targetLanguage),
@@ -48,11 +71,19 @@ export const fetchUserProfiles = async (userId) => {
     return [];
   }
 
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from(USER_PROFILES_TABLE)
     .select(USER_PROFILE_SELECT)
     .eq('user_id', userId)
     .order('created_at', { ascending: true });
+
+  if (error && isMissingScriptColumnError(error)) {
+    ({ data, error } = await supabase
+      .from(USER_PROFILES_TABLE)
+      .select(USER_PROFILE_SELECT_BASE)
+      .eq('user_id', userId)
+      .order('created_at', { ascending: true }));
+  }
 
   if (error) {
     console.warn(`${FILE_TAG} fetchUserProfiles failed`, error);
@@ -67,21 +98,35 @@ export const upsertUserProfile = async ({
   ownerId,
   generation,
   targetLanguage,
+  script,
   displayName,
 } = {}) => {
   const userId = assertCloudWriteAllowed({ user, ownerId, generation });
   const row = toProfileRow(userId, {
     targetLanguage,
+    script,
     displayName,
   });
 
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from(USER_PROFILES_TABLE)
     .upsert(row, {
       onConflict: 'user_id,target_language',
     })
     .select(USER_PROFILE_SELECT)
     .single();
+
+  if (error && isMissingScriptColumnError(error)) {
+    const fallbackRow = { ...row };
+    delete fallbackRow.script;
+    ({ data, error } = await supabase
+      .from(USER_PROFILES_TABLE)
+      .upsert(fallbackRow, {
+        onConflict: 'user_id,target_language',
+      })
+      .select(USER_PROFILE_SELECT_BASE)
+      .single());
+  }
 
   if (error) {
     console.warn(`${FILE_TAG} upsertUserProfile failed`, error);

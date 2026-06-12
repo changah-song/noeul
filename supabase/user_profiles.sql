@@ -2,11 +2,22 @@ create table if not exists public.user_profiles (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
   target_language text not null,
+  script text,
   display_name text,
   created_at timestamptz default now(),
   updated_at timestamptz default now(),
   unique(user_id, target_language)
 );
+
+alter table public.user_profiles
+add column if not exists script text;
+
+alter table public.user_profiles
+drop constraint if exists user_profiles_script_check;
+
+alter table public.user_profiles
+add constraint user_profiles_script_check
+check (script is null or script in ('zh-Hans', 'zh-Hant'));
 
 alter table public.user_profiles enable row level security;
 
