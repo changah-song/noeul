@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
@@ -16,15 +16,33 @@ import {
     View,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { BlurView } from 'expo-blur';
 import * as DocumentPicker from 'expo-document-picker';
-import { Feather, Ionicons } from '@expo/vector-icons';
-import { tabBarBaseStyle } from '../components/shared/TabBar';
+import { Feather, Ionicons, MaterialIcons } from '@expo/vector-icons';
+import { createTabBarBaseStyle } from '../components/shared/TabBar';
 import SongReader from '../components/Songs/SongReader';
 import { IconButton, Screen } from '../components/ui';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
-import { colors, fontFamilies, insets, layout, radii, spacing, textStyles } from '../theme';
+import {
+    colors,
+    elevation,
+    fontFamilies,
+    insets,
+    layout,
+    radii,
+    spacing,
+    textStyles,
+    IconDefaults,
+    Layout,
+    Motion,
+    Radii,
+    Shadows,
+    Spacing,
+    TextStyles,
+    useTheme,
+} from '../theme';
 import useBooks from '../hooks/useBooks';
 import { deleteBookIndexEntries } from '../services/Database';
 import {
@@ -34,6 +52,7 @@ import {
     getPublicDomainBookCoverColors,
     getStoredBookCoverColors,
     lightenHex,
+    normalizeHexColor,
 } from '../services/bookCoverColors';
 import {
     downloadUserBook,
@@ -66,6 +85,7 @@ import {
     serializeSongsForStorage,
 } from '../services/songStorageLimits';
 import { GUEST_OWNER_ID, makeScopedStorageKey } from '../services/localDataScope';
+import { getDefaultProfileIdForLanguage } from '../services/profileScope';
 import {
     assertCanUploadForOwner,
     isCurrentSyncGeneration,
@@ -82,9 +102,18 @@ import {
 } from '../modules/screen-ocr-overlay/src';
 import { getLanguageLabel, normalizeBookLanguage } from '../constants/languages';
 
-const BOOK_GRID_GAP = 18;
-const HOME_CONTENT_HORIZONTAL_PADDING = 22;
+const BOOK_GRID_GAP = Spacing.xl4;
+const HOME_CONTENT_HORIZONTAL_PADDING = Spacing.screenHorizontal;
+const FAB_EDGE_OFFSET = Spacing.xl5;
+const FAB_MENU_GAP = Spacing.xl;
+const FAB_WINDOW_BOTTOM_OFFSET = Layout.tabBarHeight + FAB_EDGE_OFFSET;
+const PROFILE_LANGUAGE_OPTIONS = [
+    { code: 'ko', label: 'KO' },
+    { code: 'en', label: 'EN' },
+    { code: 'zh', label: 'CH' },
+];
 const WORDS_PER_PAGE = 250;
+const OCR_ICON_SOURCE = require('../assets/ocr-icon.png');
 const DEFAULT_PREVIEW_SPINE_WIDTH = 24;
 const PREVIEW_SPINE_TITLE_MIN_WIDTH = 30;
 const PREVIEW_SPINE_TITLE_VERTICAL_INSET_EXTRA = 8;
@@ -149,44 +178,47 @@ const getPublicLibraryDiagnosticLines = (diagnostics = {}) => [
     diagnostics.errorMessage ? `Error: ${diagnostics.errorMessage}` : null,
 ].filter(Boolean);
 
-const HOME_COLORS = {
-    bg: '#ece4d6',
-    surface: '#faf6ee',
-    surface2: '#f2ecdf',
-    paper: '#f8efe2',
-    text: '#2c2620',
-    sub: '#766a59',
-    faint: '#a89b86',
-    border: '#e4dac6',
-    accent: '#b8552e',
-    accentBg: '#f5e6db',
-    accentDeep: '#93421f',
-    onAccent: '#ffffff',
-    success: '#5a8a4a',
-    track: '#e6ddcd',
-    continueBorder: '#eaddc7',
-};
+const createHomeColors = (themeColors) => ({
+    bg: themeColors.bgPage,
+    surface: themeColors.surface,
+    surface2: themeColors.surfaceMuted,
+    paper: themeColors.surface,
+    card: themeColors.surfaceCard,
+    assist: themeColors.surfaceAssist,
+    text: themeColors.text,
+    sub: themeColors.textMuted,
+    secondary: themeColors.textSecondary,
+    tertiary: themeColors.textTertiary,
+    faint: themeColors.textSubtle,
+    border: themeColors.border,
+    divider: themeColors.divider,
+    strongBorder: themeColors.borderStrong,
+    frame: themeColors.frame,
+    accent: themeColors.accent,
+    accentBg: themeColors.surfaceMuted,
+    accentDeep: themeColors.accentDeep,
+    onAccent: themeColors.readerTappedWordText,
+    success: themeColors.accent,
+    track: themeColors.readerProgressTrack,
+    continueBorder: themeColors.border,
+    coverSlate: themeColors.coverSlate,
+    coverMid: themeColors.coverMid,
+});
+
+const HOME_COLORS = createHomeColors(colors);
 
 const HOME_SHADOWS = {
-    card: {
-        shadowColor: 'rgba(70,48,20,0.36)',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.08,
-        shadowRadius: 14,
-        elevation: 2,
-    },
-    cta: {
-        shadowColor: 'rgba(184,85,46,0.52)',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.22,
-        shadowRadius: 14,
-        elevation: 3,
-    },
+    card: elevation.card,
+    cta: Shadows.fab,
 };
 
-const STACKS_COVER_BAR_WIDTHS = [40, 64, 52, 80, 30];
-const STACKS_COVER_REF_WIDTH = 200;
-const STACKS_COVER_REF_HEIGHT = 298;
+const HomeThemeContext = createContext(null);
+const useHomeTheme = () => (
+    useContext(HomeThemeContext) ?? { homeColors: HOME_COLORS, styles: defaultHomeStyles }
+);
+
+const DEFAULT_COVER_REF_WIDTH = Layout.bookPreviewCoverWidth;
+const DEFAULT_COVER_REF_HEIGHT = Layout.bookPreviewCoverHeight;
 
 const KOREAN_TEXT_PATTERN = /[\u3131-\u318e\uac00-\ud7a3]/;
 
@@ -365,7 +397,16 @@ const getBookProgress = (book) => clamp(
     1
 );
 const isBookDownloaded = (book) => book?.downloaded !== false && !!book?.uri;
-const getBookKey = (book, fallback = '') => book?.cloudId || book?.uri || book?.id || fallback;
+const getBookKey = (book, fallback = '') => (
+    book?.cloudId
+    || book?.uri
+    || book?.id
+    || book?.publicLibraryId
+    || book?.publicDomainId
+    || book?.storagePath
+    || book?.publicLibraryStoragePath
+    || fallback
+);
 const isPublicLibraryBook = (book) => !!(book?.publicLibraryId || book?.publicLibraryStoragePath || book?.storagePath);
 const isSamePublicDomainBook = (candidate, book) => {
     if (!candidate || !book) {
@@ -512,14 +553,30 @@ const formatPreviewDateTime = (value, t = null) => {
         return t ? t('home.notOpened') : 'Not opened yet';
     }
 
-    return date.toLocaleString(undefined, {
+    return date.toLocaleDateString(undefined, {
         year: 'numeric',
         month: 'short',
         day: 'numeric',
-        hour: 'numeric',
-        minute: '2-digit',
     });
 };
+
+const formatShortDate = (value) => {
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) {
+        return null;
+    }
+
+    return date.toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+    });
+};
+
+const formatSongWordCount = (song) => String(song?.lyrics || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .length;
 
 const formatBookLanguage = (language, t = null) => {
     const raw = String(language || '').trim();
@@ -535,9 +592,54 @@ const formatBookLanguage = (language, t = null) => {
     return raw.toUpperCase();
 };
 
-const getStacksCoverPalette = (book) => getGeneratedBookCoverPalette(book);
+const getCoverColorLuminance = (value) => {
+    const color = normalizeHexColor(value);
+    if (!color) {
+        return 0;
+    }
 
-const getStacksCoverTitleSize = (title, baseSize) => {
+    const channelLuminance = (hexChannel) => {
+        const channel = Number.parseInt(hexChannel, 16) / 255;
+        return channel <= 0.03928
+            ? channel / 12.92
+            : ((channel + 0.055) / 1.055) ** 2.4;
+    };
+
+    return (
+        (0.2126 * channelLuminance(color.slice(1, 3)))
+        + (0.7152 * channelLuminance(color.slice(3, 5)))
+        + (0.0722 * channelLuminance(color.slice(5, 7)))
+    );
+};
+
+const getCoverContrastRatio = (firstColor, secondColor) => {
+    const firstLuminance = getCoverColorLuminance(firstColor);
+    const secondLuminance = getCoverColorLuminance(secondColor);
+    const lighter = Math.max(firstLuminance, secondLuminance);
+    const darker = Math.min(firstLuminance, secondLuminance);
+    return (lighter + 0.05) / (darker + 0.05);
+};
+
+const getReadableCoverColor = ({
+    background,
+    preferred,
+    light = HOME_COLORS.surface,
+    dark = HOME_COLORS.text,
+    minContrast = 4.5,
+}) => {
+    const preferredColor = normalizeHexColor(preferred);
+    if (preferredColor && getCoverContrastRatio(background, preferredColor) >= minContrast) {
+        return preferredColor;
+    }
+
+    const lightColor = normalizeHexColor(light) || HOME_COLORS.surface;
+    const darkColor = normalizeHexColor(dark) || HOME_COLORS.text;
+    return getCoverContrastRatio(background, darkColor) >= getCoverContrastRatio(background, lightColor)
+        ? darkColor
+        : lightColor;
+};
+
+const getDefaultCoverTitleSize = (title, baseSize) => {
     const glyphCount = String(title || '').replace(/\s/g, '').length;
     if (glyphCount <= 3) {
         return baseSize;
@@ -551,114 +653,138 @@ const getStacksCoverTitleSize = (title, baseSize) => {
     return Math.round(baseSize * 0.54);
 };
 
-const BookCover = ({ book, width, height, index, style, titleStyle, showBars = true }) => {
+const getDefaultCoverPalette = (book, homeColors = HOME_COLORS) => {
+    const generatedPalette = getGeneratedBookCoverPalette(book);
+    const baseBackground = generatedPalette.bg;
+    const background = (
+        getCoverColorLuminance(baseBackground) < 0.5
+        && getCoverContrastRatio(baseBackground, homeColors.surface) < 5
+    )
+        ? darkenHex(baseBackground, 0.12) || baseBackground
+        : baseBackground;
+    const accent = generatedPalette.accent;
+    const isLightBackground = getCoverColorLuminance(background) >= 0.38;
+    const title = getReadableCoverColor({
+        background,
+        preferred: generatedPalette.ink,
+        light: homeColors.surface,
+        dark: homeColors.text,
+        minContrast: 5.8,
+    });
+    const author = getReadableCoverColor({
+        background,
+        preferred: generatedPalette.soft,
+        light: homeColors.surface,
+        dark: homeColors.text,
+        minContrast: 4.5,
+    });
+    const rule = getReadableCoverColor({
+        background,
+        preferred: generatedPalette.soft,
+        light: homeColors.surface,
+        dark: homeColors.text,
+        minContrast: 3.4,
+    });
+
+    return {
+        background,
+        spine: isLightBackground
+            ? accent
+            : darkenHex(accent, 0.32) || homeColors.accentDeep,
+        title,
+        author,
+        rule,
+    };
+};
+
+const BookCover = ({ book, width, height, style, titleStyle }) => {
     const { t } = useTranslation();
-    const [coverFailed, setCoverFailed] = useState(false);
-    const coverUri = typeof book?.cover === 'string' ? book.cover.trim() : '';
-
-    useEffect(() => {
-        setCoverFailed(false);
-    }, [coverUri]);
-
-    if (coverUri && !coverFailed) {
-        return (
-            <Image
-                source={{ uri: coverUri }}
-                style={[styles.coverImage, { width, height }, style]}
-                onError={() => setCoverFailed(true)}
-            />
-        );
-    }
-
-    const palette = getStacksCoverPalette(book);
-    const scaleX = width / STACKS_COVER_REF_WIDTH;
-    const scaleY = height / STACKS_COVER_REF_HEIGHT;
+    const { homeColors, styles } = useHomeTheme();
+    const palette = getDefaultCoverPalette(book, homeColors);
+    const scaleX = width / DEFAULT_COVER_REF_WIDTH;
+    const scaleY = height / DEFAULT_COVER_REF_HEIGHT;
     const scale = Math.min(scaleX, scaleY);
     const title = getBookTitle(book, t);
     const author = getBookAuthor(book, t);
-    const titleFontSize = getStacksCoverTitleSize(title, 26 * scale);
+    const titleFontSize = Math.max(10, getDefaultCoverTitleSize(title, 24 * scale));
+    const authorFontSize = Math.max(7, Math.round(12 * scale));
+    const ruleWidth = Math.max(18, Math.round(30 * scaleX));
+    const ruleGap = Math.max(5, Math.round(12 * scaleY));
 
     return (
         <View style={[
-            styles.stacksCover,
+            styles.defaultCover,
+            style,
             {
                 width,
                 height,
-                backgroundColor: palette.bg,
+                backgroundColor: palette.background,
+                borderLeftColor: palette.spine,
+                borderLeftWidth: Math.max(2, Math.round(Layout.bookGridCoverSpineWidth * scaleX)),
+                gap: ruleGap,
+                paddingHorizontal: Math.max(8, Math.round(20 * scaleX)),
+                paddingVertical: Math.max(10, Math.round(20 * scaleY)),
             },
-            style,
         ]}>
-            <View style={[
-                styles.stacksCoverSpine,
-                { width: Math.max(3, 7 * scaleX) },
-            ]} />
-            <View style={[
-                styles.stacksCoverCopy,
-                {
-                    top: 24 * scaleY,
-                    left: 20 * scaleX,
-                    right: 20 * scaleX,
-                },
-            ]}>
-                <Text
-                    numberOfLines={3}
-                    style={[
-                        styles.stacksCoverTitle,
-                        getSerifFontForText(title),
-                        titleStyle,
-                        {
-                            color: palette.ink,
-                            fontSize: titleFontSize,
-                            lineHeight: Math.round(titleFontSize * 1.28),
-                        },
-                    ]}
-                >
-                    {title}
-                </Text>
-                <Text
-                    numberOfLines={2}
-                    style={[
-                        styles.stacksCoverAuthor,
-                        {
-                            color: palette.ink,
-                            fontSize: Math.max(8, Math.round(12 * scale)),
-                            lineHeight: Math.max(11, Math.round(16 * scale)),
-                            marginTop: Math.max(3, Math.round(7 * scaleY)),
-                        },
-                    ]}
-                >
-                    {author}
-                </Text>
-            </View>
-            {showBars ? (
-                <View style={[
-                    styles.stacksCoverBars,
+            <View
+                style={[
+                    styles.defaultCoverRule,
                     {
-                        left: 20 * scaleX,
-                        bottom: 26 * scaleY,
-                        gap: Math.max(3, Math.round(7 * scaleY)),
+                        width: ruleWidth,
+                        backgroundColor: palette.rule,
                     },
-                ]}>
-                    {STACKS_COVER_BAR_WIDTHS.map((barWidth, barIndex) => (
-                        <View
-                            key={`${book?.uri || book?.id || 'book'}-bar-${barIndex}`}
-                            style={{
-                                width: Math.max(14, barWidth * scaleX),
-                                height: Math.max(3, 7 * scaleY),
-                                borderRadius: Math.max(2, 4 * scale),
-                                backgroundColor: palette.accent,
-                                opacity: 0.55 + (barIndex * 0.1),
-                            }}
-                        />
-                    ))}
-                </View>
-            ) : null}
+                ]}
+            />
+            <Text
+                numberOfLines={3}
+                adjustsFontSizeToFit
+                minimumFontScale={0.72}
+                style={[
+                    styles.defaultCoverTitle,
+                    hasKoreanText(title) ? styles.defaultCoverTitleKorean : styles.defaultCoverTitleDisplay,
+                    titleStyle,
+                    {
+                        color: palette.title,
+                        fontSize: titleFontSize,
+                        lineHeight: Math.round(titleFontSize * 1.45),
+                    },
+                ]}
+            >
+                {title}
+            </Text>
+            <Text
+                numberOfLines={2}
+                adjustsFontSizeToFit
+                minimumFontScale={0.78}
+                style={[
+                    styles.defaultCoverAuthor,
+                    hasKoreanText(author) && styles.koreanInlineText,
+                    {
+                        color: palette.author,
+                        fontSize: authorFontSize,
+                        lineHeight: Math.max(10, Math.round(authorFontSize * 1.42)),
+                        letterSpacing: Math.max(1.2, 3 * scale),
+                    },
+                ]}
+            >
+                {author}
+            </Text>
+            <View
+                style={[
+                    styles.defaultCoverRule,
+                    {
+                        width: ruleWidth,
+                        backgroundColor: palette.rule,
+                    },
+                ]}
+            />
         </View>
     );
 };
 
 const PreviewBookSpine = ({ book, height }) => {
     const { t } = useTranslation();
+    const { styles } = useHomeTheme();
     const width = getPreviewSpineWidth(book);
     const spineColors = getPreviewSpineColors(book);
     const panelInsetX = Math.max(2, Math.round(width * (7 / 48)));
@@ -748,21 +874,13 @@ const PreviewBookSpine = ({ book, height }) => {
 };
 
 const EditCoverPreview = ({ book, cover }) => {
-    if (cover) {
-        return (
-            <Image
-                source={{ uri: cover }}
-                style={styles.coverPreview}
-            />
-        );
-    }
+    const { styles } = useHomeTheme();
 
     return (
         <BookCover
-            book={book}
+            book={{ ...book, cover }}
             width={72}
             height={108}
-            index={0}
             style={styles.coverPreview}
         />
     );
@@ -852,96 +970,157 @@ const getBookFormatLabel = (book, t = null) => {
 };
 
 const PreviewActionButton = ({
-    icon,
     active = false,
-    danger = false,
+    iconName,
     label,
-    description,
     onPress,
-}) => (
-    <TouchableOpacity
-        accessibilityRole="button"
-        accessibilityLabel={label}
-        activeOpacity={0.82}
-        onPress={onPress}
-        onLongPress={() => {
-            Alert.alert(label, description || label);
-        }}
-        style={[
-            styles.previewActionButton,
-            active && styles.previewActionButtonActive,
-            danger && styles.previewActionButtonDanger,
-        ]}
-    >
-        {icon}
-    </TouchableOpacity>
-);
+    disabled = false,
+}) => {
+    const { homeColors: HOME_COLORS, styles } = useHomeTheme();
+
+    return (
+        <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel={label}
+            activeOpacity={0.82}
+            disabled={disabled}
+            onPress={onPress}
+            style={styles.previewActionButton}
+        >
+            <MaterialIcons
+                name={iconName}
+                size={22}
+                color={active ? HOME_COLORS.accent : HOME_COLORS.textSecondary}
+            />
+            <Text numberOfLines={1} style={styles.previewActionLabel}>{label}</Text>
+        </TouchableOpacity>
+    );
+};
+
+const PreviewBookCover = ({ book }) => {
+    const { styles } = useHomeTheme();
+
+    return (
+        <BookCover
+            book={book}
+            width={Layout.bookPreviewCoverWidth}
+            height={Layout.bookPreviewCoverHeight}
+            style={styles.previewCover}
+        />
+    );
+};
+
+const PreviewMetadataItem = ({ label, value }) => {
+    const { styles } = useHomeTheme();
+
+    return (
+        <View style={styles.previewMetaItem}>
+            <Text style={styles.previewMetaLabel}>{label}</Text>
+            <Text numberOfLines={2} style={styles.previewMetaValue}>{value}</Text>
+        </View>
+    );
+};
+
+const PreviewNoSnippet = () => {
+    const { homeColors: HOME_COLORS, styles } = useHomeTheme();
+
+    return (
+        <View style={styles.previewNoSnippet}>
+            <MaterialIcons name="format-quote" size={24} color={HOME_COLORS.frame} />
+            <Text style={styles.previewNoSnippetText}>
+                No excerpt yet - open the book to capture your first passage.
+            </Text>
+        </View>
+    );
+};
 
 const BookPreview = ({
     book,
-    index = 0,
-    contentWidth,
     actionBusy = false,
-    isInLibrary = true,
+    downloadProgress = null,
     onBack,
     onRead,
     onAddToLibrary,
     onToggleFavorite,
-    onToggleCompleted,
     onDelete,
     onEdit,
 }) => {
     const { t } = useTranslation();
-    const progressPercent = Math.round(getBookProgress(book) * 100);
+    const { homeColors: HOME_COLORS, styles } = useHomeTheme();
     const isPublicDomain = !!book?.publicDomain;
     const wordCount = getBookWordCount(book);
-    const coverWidth = Math.min(156, Math.max(122, Math.round(contentWidth * 0.4)));
-    const coverHeight = Math.round(coverWidth * 1.34);
     const attributionNote = [
         book?.previewSource,
         book?.attributionCategory,
     ].filter(Boolean).join(' · ');
     const canReadBook = isBookDownloaded(book);
-    const readIconName = canReadBook ? 'book-outline' : 'download-outline';
-    const readActionLabel = actionBusy
-        ? t('home.preparing')
-        : canReadBook
-            ? t('home.read')
-            : t('home.download');
+    const isDownloadingBook = !canReadBook && actionBusy;
+    const bookState = isDownloadingBook
+        ? 'downloading'
+        : isPublicDomain && canReadBook
+            ? 'public'
+            : !canReadBook
+                ? 'notdl'
+                : 'default';
     const favorite = isBookFavorite(book);
-    const completed = isBookCompleted(book);
+    const showTag = bookState !== 'default';
+    const tagText = bookState === 'public'
+        ? 'PUBLIC DOMAIN'
+        : bookState === 'downloading'
+            ? 'DOWNLOADING…'
+            : 'NOT ON DEVICE';
+    const showDownloadCta = bookState === 'notdl';
+    const showDownloadingCta = bookState === 'downloading';
+    const showSnippet = canReadBook && !!String(book?.snippet || '').trim();
+    const genreValue = book?.genre || (isPublicDomain ? t('common.unknown') : t('home.autoDetectionSoon'));
+    const hasKnownDownloadSize = Number(book?.size) > 0;
+    const downloadNote = hasKnownDownloadSize
+        ? `${formatFileSize(book?.size, t)} · Available offline once downloaded`
+        : 'Available offline once downloaded';
+    const normalizedDownloadProgress = clamp(
+        typeof downloadProgress === 'number' ? downloadProgress : 0.4,
+        0.08,
+        1
+    );
+    const downloadFillWidth = `${Math.round(normalizedDownloadProgress * 100)}%`;
+    const handleDownloadPress = () => {
+        if (showDownloadingCta) {
+            return;
+        }
+
+        if (isPublicDomain) {
+            onAddToLibrary?.();
+            return;
+        }
+
+        onRead?.();
+    };
 
     return (
-        <Screen contentContainerStyle={styles.previewScreenContent}>
+        <Screen backgroundColor={HOME_COLORS.bg} contentContainerStyle={styles.previewScreenContent}>
             <View style={styles.previewTopBar}>
                 <TouchableOpacity
                     activeOpacity={0.82}
                     onPress={onBack}
                     style={styles.previewBackButton}
                 >
-                    <Feather name="arrow-left" size={22} color={colors.text} />
+                    <MaterialIcons name="arrow-back" size={26} color={HOME_COLORS.text} />
                 </TouchableOpacity>
-                <Text style={styles.previewTopTitle}>{t('home.book')}</Text>
+                <Text style={styles.previewTopTitle}>BOOK</Text>
                 <TouchableOpacity
                     activeOpacity={0.88}
-                    disabled={actionBusy}
+                    disabled={!canReadBook || actionBusy}
                     onPress={onRead}
                     style={[
                         styles.previewTopReadButton,
-                        actionBusy && styles.previewTopReadButtonDisabled,
+                        (!canReadBook || actionBusy) && styles.previewTopReadButtonDisabled,
                     ]}
                 >
-                    {actionBusy ? (
-                        <ActivityIndicator size="small" color={colors.white} />
-                    ) : (
-                        <Ionicons
-                            name={readIconName}
-                            size={16}
-                            color={colors.white}
-                        />
-                    )}
-                    <Text style={styles.previewTopReadButtonText}>
-                        {readActionLabel}
+                    <Text style={[
+                        styles.previewTopReadButtonText,
+                        (!canReadBook || actionBusy) && styles.previewTopReadButtonTextDisabled,
+                    ]}>
+                        READ
                     </Text>
                 </TouchableOpacity>
             </View>
@@ -954,27 +1133,14 @@ const BookPreview = ({
                 <View style={styles.previewStack}>
                     <View style={styles.previewHero}>
                         <View style={styles.previewBookVisualColumn}>
-                            <View style={styles.previewBookVisual}>
-                                <BookCover
-                                    book={book}
-                                    width={coverWidth}
-                                    height={coverHeight}
-                                    index={index}
-                                    style={styles.previewCover}
-                                    titleStyle={styles.previewCoverText}
-                                />
-                                <PreviewBookSpine book={book} height={coverHeight} />
-                            </View>
+                            <PreviewBookCover book={book} />
                         </View>
 
                         <View style={styles.previewHeroCopy}>
-                            <Text style={styles.previewEyebrow}>
-                                {getBookFormatLabel(book, t)}
-                            </Text>
                             <Text
                                 style={[
                                     styles.previewTitle,
-                                    getSerifFontForText(getBookTitle(book, t)),
+                                    hasKoreanText(getBookTitle(book, t)) && styles.previewTitleKorean,
                                 ]}
                             >
                                 {getBookTitle(book, t)}
@@ -987,173 +1153,106 @@ const BookPreview = ({
                             >
                                 {getBookAuthor(book, t)}
                             </Text>
+                            {showTag ? (
+                                <View style={styles.previewTagWrap}>
+                                    <Text style={styles.previewTagText}>{tagText}</Text>
+                                </View>
+                            ) : null}
                         </View>
                     </View>
-
-                    <View style={styles.previewProgressBlock}>
-                        <View style={styles.previewProgressHeader}>
-                            <Text style={styles.previewProgressLabel}>{getBookStatusLabel(book, t)}</Text>
-                            <Text style={styles.previewProgressValue}>{progressPercent}%</Text>
-                        </View>
-                        <View style={styles.previewProgressRail}>
-                            <View style={[
-                                styles.previewProgressFill,
-                                { width: `${progressPercent}%` },
-                            ]} />
-                        </View>
-                    </View>
-
-                    {isPublicDomain && !isInLibrary ? (
-                        <TouchableOpacity
-                            accessibilityRole="button"
-                            accessibilityLabel={t('home.addToLibrary')}
-                            activeOpacity={0.86}
-                            onPress={onAddToLibrary}
-                            style={styles.previewAddLibraryButton}
-                        >
-                            <Ionicons name="add-circle-outline" size={18} color={colors.white} />
-                            <Text style={styles.previewAddLibraryButtonText}>
-                                {t('home.addToLibrary')}
-                            </Text>
-                        </TouchableOpacity>
-                    ) : null}
 
                     <View style={styles.previewActionRow}>
                         <PreviewActionButton
-                            label={favorite ? t('home.removeFavorite') : t('home.favoriteBook')}
-                            description={favorite ? t('home.removeFavoriteDescription') : t('home.favoriteBookDescription')}
+                            label={favorite ? 'FAVORITED' : 'FAVORITE'}
                             active={favorite}
+                            iconName={favorite ? 'star' : 'star-border'}
                             onPress={onToggleFavorite}
-                            icon={(
-                                <Ionicons
-                                    name={favorite ? 'star' : 'star-outline'}
-                                    size={22}
-                                    color={favorite ? colors.warning : colors.textMuted}
-                                />
-                            )}
                         />
-                        <PreviewActionButton
-                            label={completed ? t('home.markUnfinished') : t('home.markCompleted')}
-                            description={completed ? t('home.markUnfinishedDescription') : t('home.markCompletedDescription')}
-                            active={completed}
-                            onPress={onToggleCompleted}
-                            icon={(
-                                <Ionicons
-                                    name={completed ? 'checkmark-done-circle' : 'checkmark-done-circle-outline'}
-                                    size={23}
-                                    color={completed ? colors.success : colors.textMuted}
-                                />
-                            )}
-                        />
-                        <PreviewActionButton
-                            label={t('home.deleteBook')}
-                            description={t('home.deleteBookDescription')}
-                            danger
-                            onPress={onDelete}
-                            icon={<Ionicons name="trash-outline" size={22} color={colors.danger} />}
-                        />
-                        <PreviewActionButton
-                            label={t('home.editBook')}
-                            description={t('home.editBookDescription')}
-                            onPress={onEdit}
-                            icon={<Ionicons name="create-outline" size={22} color={colors.textMuted} />}
-                        />
+                        {bookState === 'default' ? (
+                            <PreviewActionButton
+                                label="EDIT"
+                                iconName="edit"
+                                onPress={onEdit}
+                            />
+                        ) : null}
+                        {bookState === 'public' ? (
+                            <PreviewActionButton
+                                label="REMOVE"
+                                iconName="bookmark-remove"
+                                onPress={onDelete}
+                            />
+                        ) : (
+                            <PreviewActionButton
+                                label="DELETE"
+                                iconName="delete-outline"
+                                onPress={onDelete}
+                            />
+                        )}
                     </View>
 
-                    <View style={styles.previewMetaList}>
-                        <View style={styles.previewMetaRow}>
-                            <Text style={styles.previewMetaLabel}>{t('common.title')}</Text>
-                            <View style={styles.previewMetaValueGroup}>
-                                <Text
-                                    style={[
-                                        styles.previewMetaValue,
-                                        getSerifFontForText(getBookTitle(book, t)),
-                                    ]}
-                                >
-                                    {getBookTitle(book, t)}
-                                </Text>
-                                {book?.titleTranslation ? (
-                                    <Text style={styles.previewMetaTranslation}>
-                                        {book.titleTranslation}
-                                    </Text>
-                                ) : null}
-                            </View>
-                        </View>
-                        <View style={styles.previewMetaRow}>
-                            <Text style={styles.previewMetaLabel}>{t('common.author')}</Text>
-                            <View style={styles.previewMetaValueGroup}>
-                                <Text
-                                    style={[
-                                        styles.previewMetaValue,
-                                        hasKoreanText(getBookAuthor(book, t)) && styles.koreanInlineText,
-                                    ]}
-                                >
-                                    {getBookAuthor(book, t)}
-                                </Text>
-                                {book?.authorTranslation ? (
-                                    <Text style={styles.previewMetaTranslation}>
-                                        {book.authorTranslation}
-                                    </Text>
-                                ) : null}
-                            </View>
-                        </View>
-                        <View style={styles.previewMetaRow}>
-                            <Text style={styles.previewMetaLabel}>{t('home.language')}</Text>
-                            <Text style={styles.previewMetaValue}>
-                                {formatBookLanguage(book?.language, t)}
+                    {showDownloadCta ? (
+                        <View style={styles.previewDownloadBlock}>
+                            <TouchableOpacity
+                                accessibilityRole="button"
+                                accessibilityLabel="Download to device"
+                                activeOpacity={0.86}
+                                onPress={handleDownloadPress}
+                                style={styles.previewDownloadButton}
+                            >
+                                <MaterialIcons name="download" size={20} color={HOME_COLORS.onAccent} />
+                                <Text style={styles.previewDownloadButtonText}>DOWNLOAD TO DEVICE</Text>
+                            </TouchableOpacity>
+                            <Text style={styles.previewDownloadNote}>
+                                {downloadNote}
                             </Text>
-                        </View>
-                        <View style={styles.previewMetaRow}>
-                            <Text style={styles.previewMetaLabel}>{t('home.lastOpened')}</Text>
-                            <Text style={styles.previewMetaValue}>
-                                {formatPreviewDateTime(book?.lastOpenedAt, t)}
-                            </Text>
-                        </View>
-                        <View style={styles.previewMetaRow}>
-                            <Text style={styles.previewMetaLabel}>{t('home.wordCount')}</Text>
-                            <Text style={styles.previewMetaValue}>
-                                {formatWordCount(wordCount, t)}
-                            </Text>
-                        </View>
-                        {(!isPublicDomain || isPublicLibraryBook(book)) ? (
-                            <View style={styles.previewMetaRow}>
-                                <Text style={styles.previewMetaLabel}>{t('home.fileSize')}</Text>
-                                <Text style={styles.previewMetaValue}>
-                                    {formatFileSize(book?.size, t)}
-                                </Text>
-                            </View>
-                        ) : null}
-                        {book?.difficulty ? (
-                            <View style={styles.previewMetaRow}>
-                                <Text style={styles.previewMetaLabel}>{t('home.difficulty')}</Text>
-                                <Text style={styles.previewMetaValue}>
-                                    {book.difficulty}
-                                </Text>
-                            </View>
-                        ) : null}
-                        {(isPublicDomain && book?.genre) || !isPublicDomain ? (
-                            <View style={styles.previewMetaRow}>
-                                <Text style={styles.previewMetaLabel}>{t('home.genre')}</Text>
-                                <Text style={styles.previewMetaValue}>
-                                    {isPublicDomain ? book.genre : t('home.autoDetectionSoon')}
-                                </Text>
-                            </View>
-                        ) : null}
-                    </View>
-
-                    {(isPublicDomain && book?.snippet) || !isPublicDomain ? (
-                        <View style={styles.previewSnippetSection}>
-                            <Text style={styles.previewSectionLabel}>{t('home.snippet')}</Text>
-                            <Text style={styles.previewSnippetText}>
-                                {isPublicDomain ? book.snippet : t('home.autoDetectionSoon')}
-                            </Text>
-                            {attributionNote ? (
-                                <Text style={styles.previewAttributionText}>
-                                    {attributionNote}
-                                </Text>
-                            ) : null}
                         </View>
                     ) : null}
+
+                    {showDownloadingCta ? (
+                        <View style={styles.previewDownloadBlock}>
+                            <View style={styles.previewDownloadingButton}>
+                                <MaterialIcons name="downloading" size={22} color={HOME_COLORS.accent} />
+                                <Text style={styles.previewDownloadingButtonText}>DOWNLOADING…</Text>
+                            </View>
+                            <View style={styles.previewDownloadProgressRail}>
+                                <View style={[
+                                    styles.previewDownloadProgressFill,
+                                    { width: downloadFillWidth },
+                                ]} />
+                            </View>
+                        </View>
+                    ) : null}
+
+                    <View style={styles.previewMetadataBlock}>
+                        <Text style={styles.previewSectionLabel}>METADATA</Text>
+                        <View style={styles.previewMetaGrid}>
+                            <PreviewMetadataItem label="WORD COUNT" value={formatWordCount(wordCount, t)} />
+                            <PreviewMetadataItem label="GENRE" value={genreValue} />
+                            <PreviewMetadataItem label="LANGUAGE" value={formatBookLanguage(book?.language, t)} />
+                            <PreviewMetadataItem label="LAST OPENED" value={formatPreviewDateTime(book?.lastOpenedAt, t)} />
+                        </View>
+
+                        <View style={styles.previewSnippetSection}>
+                            <Text style={styles.previewSectionLabel}>SNIPPET</Text>
+                            {showSnippet ? (
+                                <View style={styles.previewSnippetCard}>
+                                    <Text style={[
+                                        styles.previewSnippetText,
+                                        hasKoreanText(book.snippet) && styles.previewSnippetTextKorean,
+                                    ]}>
+                                        {book.snippet}
+                                    </Text>
+                                    {attributionNote ? (
+                                        <Text style={styles.previewAttributionText}>
+                                            {attributionNote}
+                                        </Text>
+                                    ) : null}
+                                </View>
+                            ) : (
+                                <PreviewNoSnippet />
+                            )}
+                        </View>
+                    </View>
                 </View>
             </ScrollView>
         </Screen>
@@ -1162,12 +1261,24 @@ const BookPreview = ({
 
 const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpen, navigation, user }) => {
     const { t } = useTranslation();
-    const { languageSettingsReady, targetLanguage } = useAppContext();
+    const { languageSettingsReady, targetLanguage, switchProfile } = useAppContext();
     const { activeOwnerId, syncPaused, syncGeneration } = useLocalOwner();
+    const { colors: themeColors } = useTheme();
+    const colors = themeColors;
+    const HOME_COLORS = useMemo(() => createHomeColors(colors), [colors]);
+    const styles = useMemo(() => createStyles(HOME_COLORS, colors), [HOME_COLORS, colors]);
+    const themedTabBarStyle = useMemo(() => createTabBarBaseStyle(colors), [colors]);
+    const homeThemeValue = useMemo(() => ({
+        homeColors: HOME_COLORS,
+        styles,
+    }), [HOME_COLORS, styles]);
     const [editBook, setEditBook] = useState(null);
     const [editDraft, setEditDraft] = useState({ title: '', author: '', cover: '' });
     const [activeLibraryTab, setActiveLibraryTab] = useState('Books');
+    const [profileMenuOpen, setProfileMenuOpen] = useState(false);
     const [activeBookFilter, setActiveBookFilter] = useState('all');
+    const [collectionViewMode, setCollectionViewMode] = useState('grid');
+    const [fabMenuOpen, setFabMenuOpen] = useState(false);
     const [activePublicDomainSort, setActivePublicDomainSort] = useState('title');
     const [publicDomainSortDirection, setPublicDomainSortDirection] = useState('asc');
     const [publicLibraryBooks, setPublicLibraryBooks] = useState([]);
@@ -1196,6 +1307,12 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const ocrSettingsCloudUserRef = useRef(null);
     const publicDomainBookPressRef = useRef(null);
     const { width } = useWindowDimensions();
+    const activeProfileOption = PROFILE_LANGUAGE_OPTIONS.find((option) => option.code === targetLanguage)
+        ?? PROFILE_LANGUAGE_OPTIONS[0];
+    const selectableProfileOptions = useMemo(
+        () => PROFILE_LANGUAGE_OPTIONS.filter((option) => option.code !== activeProfileOption.code),
+        [activeProfileOption.code]
+    );
     const {
         isImporting,
         openingBookUri,
@@ -1247,21 +1364,27 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         setShowAddSongModal(false);
     }, [targetLanguage]);
 
+    const inProgressBooks = useMemo(() => (
+        languageFilteredBooks.filter((book) => {
+            const progress = getBookProgress(book);
+            return progress > 0 && progress < 1 && !isBookCompleted(book);
+        })
+    ), [languageFilteredBooks]);
+    const completedBooks = useMemo(() => (
+        languageFilteredBooks.filter(isBookCompleted)
+    ), [languageFilteredBooks]);
     const currentReadingBook = useMemo(() => (
-        languageFilteredBooks.find((book) => book.uri && book.uri === currentBook)
-        ?? languageFilteredBooks.find(isBookDownloaded)
-        ?? languageFilteredBooks[0]
+        inProgressBooks.find((book) => book.uri && book.uri === currentBook)
+        ?? inProgressBooks[0]
+        ?? completedBooks[0]
         ?? null
-    ), [currentBook, languageFilteredBooks]);
+    ), [completedBooks, currentBook, inProgressBooks]);
+    const currentReadingCompleted = !!currentReadingBook && isBookCompleted(currentReadingBook);
     const currentProgressPercent = Math.round(getBookProgress(currentReadingBook) * 100);
 
-    const contentWidth = Math.min(
-        Math.max(width - (insets.screenHorizontal * 2), 288),
-        layout.screenMaxWidth - (insets.screenHorizontal * 2)
-    );
     const homeGridContentWidth = Math.max(width - (HOME_CONTENT_HORIZONTAL_PADDING * 2), 0);
-    const bookTileWidth = Math.max(Math.floor((homeGridContentWidth - (BOOK_GRID_GAP * 2)) / 3), 0);
-    const bookCoverHeight = Math.round(bookTileWidth * 1.34);
+    const bookTileWidth = Math.max(Math.floor((homeGridContentWidth - BOOK_GRID_GAP) / 2), 0);
+    const bookCoverHeight = Math.round(bookTileWidth * 1.5);
     const useRemotePublicLibrary = targetLanguage === 'en';
     const bundledPublicDomainBooks = useMemo(() => getPublicDomainBooks(targetLanguage), [targetLanguage]);
     const publicDomainBooks = useMemo(() => (
@@ -1545,6 +1668,16 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         return recentBooks;
     }, [activeBookFilter, favoriteBooks, recentBooks]);
     const showingPublicDomainBooks = activeLibraryTab === 'Books' && activeBookFilter === 'public-domain';
+    const showingEmptyMyBooks = activeLibraryTab === 'Books'
+        && !showingPublicDomainBooks
+        && filteredLibraryBooks.length === 0;
+    const showingEmptyPublicDomain = showingPublicDomainBooks
+        && !publicLibraryLoading
+        && !publicLibraryError
+        && sortedPublicDomainBookRows.length === 0;
+    const showingEmptySongs = activeLibraryTab === 'Songs' && songsLoaded && songs.length === 0;
+    const shouldShowFab = true;
+    const effectiveCollectionViewMode = activeLibraryTab === 'Songs' ? 'grid' : collectionViewMode;
     const bookSectionLabel = showingPublicDomainBooks
         ? t('home.publicDomainCount', {
             count: sortedPublicDomainBookRows.length,
@@ -1565,6 +1698,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const selectedSong = useMemo(() => (
         songs.find((song) => song.id === selectedSongId) ?? null
     ), [selectedSongId, songs]);
+    const shouldShowHomeIntro = currentReadingBook || languageFilteredBooks.length > 0;
     const selectedPreviewBook = useMemo(() => {
         const previewBook = selectedBookPreview?.book;
         if (!previewBook) {
@@ -1572,7 +1706,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         }
 
         if (previewBook.publicDomain || previewBook.uri?.startsWith('public-domain:')) {
-            return publicDomainBookRows.find((book) => book.uri === previewBook.uri) ?? previewBook;
+            return publicDomainBookRows.find((book) => isSamePublicDomainBook(book, previewBook)) ?? previewBook;
         }
 
         return languageFilteredBooks.find((book) => (
@@ -2037,15 +2171,15 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         const shouldHideTabBar = !!selectedSong || !!selectedPreviewBook;
 
         navigation?.setOptions({
-            tabBarStyle: shouldHideTabBar ? { display: 'none' } : tabBarBaseStyle,
+            tabBarStyle: shouldHideTabBar ? { display: 'none' } : themedTabBarStyle,
         });
 
         return () => {
             navigation?.setOptions({
-                tabBarStyle: tabBarBaseStyle,
+                tabBarStyle: themedTabBarStyle,
             });
         };
-    }, [navigation, selectedPreviewBook, selectedSong]);
+    }, [navigation, selectedPreviewBook, selectedSong, themedTabBarStyle]);
 
     const handleFloatingOcrToggle = useCallback(async () => {
         if (ocrBusy || ocrActionInFlightRef.current) {
@@ -2188,7 +2322,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     : [...nextBooks, { ...localBook, ...downloadedCoverColors, lastOpenedAt: openedAt }];
             });
             setCurrentBook(localBook.uri);
-            navigation.navigate('Read');
+            navigation.navigate('Read', { returnTo: 'Home' });
         } catch (error) {
             console.warn('[Home] Failed to download cloud book:', error);
             Alert.alert(t('home.downloadFailedTitle'), error?.message || t('home.downloadFailedBody'));
@@ -2221,6 +2355,21 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         updateBookRecord(book, { lastOpenedAt: openedAt });
         handlePress(book.uri);
     }, [activeBookMenuKey, handleDownloadBook, handlePress, updateBookRecord]);
+
+    const handleProfileSwitch = useCallback((nextLanguage) => {
+        setProfileMenuOpen(false);
+        setActiveBookMenuKey(null);
+
+        if (nextLanguage === targetLanguage) {
+            return;
+        }
+
+        setActiveLibraryTab('Books');
+        setSelectedBookPreview(null);
+        setSelectedSongId(null);
+        switchProfile(getDefaultProfileIdForLanguage(nextLanguage), nextLanguage);
+        navigation.navigate('Home');
+    }, [navigation, switchProfile, targetLanguage]);
 
     const upsertPublicDomainBookInLibrary = useCallback((localBook) => {
         if (!localBook?.uri) {
@@ -2355,7 +2504,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         upsertPublicDomainBookInLibrary(localBook);
         setCurrentBook(localBook.uri);
         setPreprocessOnOpen(isPublicLibraryBook(localBook));
-        navigation.navigate('Read');
+        navigation.navigate('Read', { returnTo: 'Home' });
     }, [
         downloadPublicLibraryBookToLocal,
         navigation,
@@ -2475,19 +2624,6 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         upsertPreviewBookPatch(selectedPreviewBook, {
             isFavorite: nextFavorite,
             favorite: nextFavorite,
-        });
-    }, [selectedPreviewBook, upsertPreviewBookPatch]);
-
-    const handleTogglePreviewCompleted = useCallback(() => {
-        if (!selectedPreviewBook) {
-            return;
-        }
-
-        const nextCompleted = !isBookCompleted(selectedPreviewBook);
-        upsertPreviewBookPatch(selectedPreviewBook, {
-            completed: nextCompleted,
-            completedAt: nextCompleted ? new Date().toISOString() : null,
-            progress: nextCompleted ? 1 : selectedPreviewBook.progress ?? 0,
         });
     }, [selectedPreviewBook, upsertPreviewBookPatch]);
 
@@ -2919,198 +3055,517 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         setSongs(nextSongs);
     }, [selectedSong, songs, t]);
 
+    const getCollectionBookMeta = useCallback((book, sourceLabel) => {
+        const parts = [
+            formatBookLanguage(book?.language || targetLanguage, t),
+            book?.difficulty,
+            formatWordCount(getBookWordCount(book), t),
+            sourceLabel,
+        ];
+
+        return parts.filter(Boolean).join(' · ');
+    }, [targetLanguage, t]);
+
+    const renderCollectionEmptyState = ({
+        icon,
+        title,
+        body,
+        primaryLabel,
+        primaryIcon,
+        onPrimaryPress,
+        secondaryLabel,
+        onSecondaryPress,
+    }) => (
+        <View style={styles.collectionEmptyState}>
+            <View style={styles.collectionEmptyIcon}>
+                <Feather name={icon} size={IconDefaults.size} color={HOME_COLORS.tertiary} />
+            </View>
+            <Text style={styles.collectionEmptyTitle}>{title}</Text>
+            <Text style={styles.collectionEmptyCopy}>{body}</Text>
+            <View style={styles.collectionEmptyActions}>
+                {primaryLabel ? (
+                    <TouchableOpacity
+                        activeOpacity={Motion.pressedOpacity}
+                        onPress={onPrimaryPress}
+                        style={styles.collectionEmptyPrimary}
+                    >
+                        {primaryIcon ? <Feather name={primaryIcon} size={IconDefaults.size - Spacing.sm} color={HOME_COLORS.onAccent} /> : null}
+                        <Text style={styles.collectionEmptyPrimaryText}>{primaryLabel}</Text>
+                    </TouchableOpacity>
+                ) : null}
+                {secondaryLabel ? (
+                    <TouchableOpacity
+                        activeOpacity={Motion.pressedOpacity}
+                        onPress={onSecondaryPress}
+                        style={styles.collectionEmptySecondary}
+                    >
+                        <Text style={styles.collectionEmptySecondaryText}>{secondaryLabel}</Text>
+                    </TouchableOpacity>
+                ) : null}
+            </View>
+        </View>
+    );
+
+    const renderBookGrid = (items) => (
+        <View style={styles.bookGrid}>
+            {items.map((book, index) => {
+                const bookKey = getBookKey(book, `${index}`);
+                const isDownloadingBook = downloadingBookId === bookKey;
+
+                return (
+                    <Pressable
+                        key={book.uri || book.id || book.publicLibraryId || `${book.title}-${index}`}
+                        onPress={() => handleBookPreviewPress(book, index)}
+                        style={({ pressed }) => [
+                            styles.bookTile,
+                            { width: bookTileWidth },
+                            pressed && styles.pressed,
+                        ]}
+                    >
+                        <View style={styles.bookCoverContainer}>
+                            <BookCover
+                                book={book}
+                                width={bookTileWidth}
+                                height={bookCoverHeight}
+                                style={styles.bookCover}
+                                titleStyle={styles.bookCoverText}
+                            />
+                            {isPdfBook(book) ? (
+                                <View style={styles.bookFormatBadge}>
+                                    <Text style={styles.bookFormatBadgeText}>PDF</Text>
+                                </View>
+                            ) : null}
+                            {!isBookDownloaded(book) || isDownloadingBook ? (
+                                <View style={styles.bookDownloadBadge}>
+                                    {isDownloadingBook ? (
+                                        <ActivityIndicator size="small" color={HOME_COLORS.accent} />
+                                    ) : (
+                                        <Feather name="download" size={IconDefaults.size - Spacing.lg} color={HOME_COLORS.accent} />
+                                    )}
+                                </View>
+                            ) : null}
+                        </View>
+                        <View style={styles.bookTileMeta}>
+                            <Text style={styles.bookTitle} numberOfLines={1}>
+                                {getBookTitle(book, t)}
+                            </Text>
+                            <Text style={styles.bookTileAuthor} numberOfLines={1}>
+                                {getBookAuthor(book, t)}
+                            </Text>
+                        </View>
+                    </Pressable>
+                );
+            })}
+        </View>
+    );
+
+    const renderBookRows = (items, sourceLabel) => (
+        <View style={styles.bookRows}>
+            {items.map((book, index) => {
+                const bookKey = getBookKey(book, `${index}`);
+                const isDownloadingBook = downloadingBookId === bookKey;
+
+                return (
+                    <Pressable
+                        key={book.uri || book.id || book.publicLibraryId || `${book.title}-${index}`}
+                        onPress={() => handleBookPreviewPress(book, index)}
+                        style={({ pressed }) => [
+                            styles.bookRow,
+                            index === items.length - 1 && styles.bookRowLast,
+                            pressed && styles.pressed,
+                        ]}
+                    >
+                        <BookCover
+                            book={book}
+                            width={Spacing.xl8 * 3}
+                            height={Spacing.xl8 * 4 + Spacing.lg}
+                            style={styles.bookRowCover}
+                            titleStyle={styles.bookRowCoverText}
+                        />
+                        <View style={styles.bookRowCopy}>
+                            <View style={styles.bookRowTitleLine}>
+                                <Text
+                                    style={[
+                                        styles.bookRowTitle,
+                                        getSerifFontForText(getBookTitle(book, t)),
+                                    ]}
+                                    numberOfLines={1}
+                                >
+                                    {getBookTitle(book, t)}
+                                </Text>
+                                {isPdfBook(book) ? (
+                                    <View style={styles.inlineBadge}>
+                                        <Text style={styles.inlineBadgeText}>PDF</Text>
+                                    </View>
+                                ) : null}
+                            </View>
+                            <Text style={styles.bookRowAuthor} numberOfLines={1}>
+                                {getBookAuthor(book, t)}
+                            </Text>
+                            <Text style={styles.bookRowMeta} numberOfLines={1}>
+                                {isDownloadingBook ? t('home.downloading') : getCollectionBookMeta(book, sourceLabel)}
+                            </Text>
+                        </View>
+                        <Feather name="chevron-right" size={IconDefaults.size} color={HOME_COLORS.frame} />
+                    </Pressable>
+                );
+            })}
+        </View>
+    );
+
     if (selectedSong) {
         return (
-            <SongReader
-                song={selectedSong}
-                onClose={() => setSelectedSongId(null)}
-                onSongUpdate={(patch) => handleUpdateSong(selectedSong.id, patch)}
-                onSongDelete={() => handleDeleteSong(selectedSong.id)}
-                onSavedTermsChange={handleSelectedSongSavedTermsChange}
-            />
+            <HomeThemeContext.Provider value={homeThemeValue}>
+                <SongReader
+                    song={selectedSong}
+                    onClose={() => setSelectedSongId(null)}
+                    onSongUpdate={(patch) => handleUpdateSong(selectedSong.id, patch)}
+                    onSongDelete={() => handleDeleteSong(selectedSong.id)}
+                    onSavedTermsChange={handleSelectedSongSavedTermsChange}
+                />
+            </HomeThemeContext.Provider>
         );
     }
 
     if (selectedPreviewBook) {
         const previewKey = getBookKey(selectedPreviewBook, `${selectedBookPreview?.index ?? 0}`);
         const previewUri = selectedPreviewBook.uri;
-        const previewBookInLibrary = selectedPreviewBook.publicDomain
-            ? books.some((book) => isSamePublicDomainBook(book, selectedPreviewBook))
-            : true;
+        const previewPublicDownloadState = selectedPreviewBook.publicLibraryId
+            ? publicLibraryDownloadStates[selectedPreviewBook.publicLibraryId]
+            : null;
+        const previewDownloadInProgress = previewPublicDownloadState === 'downloading'
+            || typeof previewPublicDownloadState === 'number';
         const previewActionBusy = (
             (!isBookDownloaded(selectedPreviewBook) && downloadingBookId === previewKey)
+            || previewDownloadInProgress
             || (!!previewUri && openingBookUri === previewUri)
         );
 
         return (
-            <BookPreview
-                book={selectedPreviewBook}
-                index={selectedBookPreview?.index ?? 0}
-                contentWidth={contentWidth}
-                actionBusy={previewActionBusy}
-                isInLibrary={previewBookInLibrary}
-                onBack={() => setSelectedBookPreview(null)}
-                onRead={handleReadPreviewBook}
-                onAddToLibrary={handleAddPreviewBookToLibrary}
-                onToggleFavorite={handleTogglePreviewFavorite}
-                onToggleCompleted={handleTogglePreviewCompleted}
-                onDelete={handleDeletePreviewBook}
-                onEdit={handleEditPreviewBook}
-            />
+            <HomeThemeContext.Provider value={homeThemeValue}>
+                <BookPreview
+                    book={selectedPreviewBook}
+                    actionBusy={previewActionBusy}
+                    downloadProgress={typeof previewPublicDownloadState === 'number' ? previewPublicDownloadState : null}
+                    onBack={() => setSelectedBookPreview(null)}
+                    onRead={handleReadPreviewBook}
+                    onAddToLibrary={handleAddPreviewBookToLibrary}
+                    onToggleFavorite={handleTogglePreviewFavorite}
+                    onDelete={handleDeletePreviewBook}
+                    onEdit={handleEditPreviewBook}
+                />
+            </HomeThemeContext.Provider>
         );
     }
 
     return (
-        <Screen scroll backgroundColor={HOME_COLORS.bg} contentContainerStyle={styles.screenContent}>
+        <HomeThemeContext.Provider value={homeThemeValue}>
+        <Screen backgroundColor={HOME_COLORS.bg} contentContainerStyle={styles.screenFrame}>
+            <ScrollView
+                contentContainerStyle={styles.screenContent}
+                showsVerticalScrollIndicator={false}
+            >
             <Pressable
                 accessible={false}
-                disabled={!activeBookMenuKey}
-                onPress={() => setActiveBookMenuKey(null)}
+                disabled={!activeBookMenuKey && !profileMenuOpen}
+                onPress={() => {
+                    setActiveBookMenuKey(null);
+                    setProfileMenuOpen(false);
+                }}
                 style={styles.stack}
             >
-                <View style={styles.homeHeroHeader}>
-                    <Text style={styles.homeHeroEyebrow}>{t('home.title')}</Text>
-                    <Text style={styles.homeHeroTitle}>
-                        {t('home.heroTitle')}
-                    </Text>
-                    <Text style={styles.homeHeroSubtitle}>
-                        {t('home.heroSubtitle')}
-                    </Text>
+                <View style={styles.appTopBar}>
+                    <View style={styles.languageSelectorWrap}>
+                        <TouchableOpacity
+                            activeOpacity={0.82}
+                            onPress={() => {
+                                setActiveBookMenuKey(null);
+                                setProfileMenuOpen((current) => !current);
+                            }}
+                            style={styles.appTopSide}
+                        >
+                            <Text style={styles.languageSelectorText}>{activeProfileOption.label}</Text>
+                            <Feather
+                                name={profileMenuOpen ? 'chevron-up' : 'chevron-down'}
+                                size={17}
+                                color={HOME_COLORS.text}
+                            />
+                        </TouchableOpacity>
+
+                        {profileMenuOpen ? (
+                            <View style={styles.profileDropdown}>
+                                <View style={styles.profileDropdownRail} />
+                                {selectableProfileOptions.map((option, index) => (
+                                    <TouchableOpacity
+                                        key={option.code}
+                                        activeOpacity={0.82}
+                                        onPress={() => handleProfileSwitch(option.code)}
+                                        style={[
+                                            styles.profileDropdownOption,
+                                            index === selectableProfileOptions.length - 1 && styles.profileDropdownOptionLast,
+                                        ]}
+                                    >
+                                        <Text style={styles.profileDropdownOptionText}>{option.label}</Text>
+                                    </TouchableOpacity>
+                                ))}
+                            </View>
+                        ) : null}
+                    </View>
+                    <Text style={styles.appTopTitle}>FLUENT FABLE</Text>
+                    <TouchableOpacity
+                        activeOpacity={0.84}
+                        accessibilityRole="switch"
+                        accessibilityLabel={isFloatingOcrVisible ? t('home.turnOcrOff') : t('home.turnOcrOn')}
+                        accessibilityState={{ checked: isFloatingOcrVisible, busy: ocrBusy }}
+                        disabled={ocrBusy}
+                        onPress={handleFloatingOcrToggle}
+                        style={styles.appTopSideRight}
+                    >
+                        {ocrBusy ? (
+                            <ActivityIndicator size={Spacing.xl4} color={HOME_COLORS.accent} />
+                        ) : (
+                            <Image
+                                source={OCR_ICON_SOURCE}
+                                style={styles.ocrIconImage}
+                                resizeMode="contain"
+                            />
+                        )}
+                    </TouchableOpacity>
                 </View>
 
-                {currentReadingBook ? (
-                    <Pressable
-                        onPress={() => handleBookPress(currentReadingBook)}
-                        style={({ pressed }) => [pressed && styles.pressed]}
-                    >
-                        <View style={styles.continueCard}>
-                            <BookCover
-                                book={currentReadingBook}
-                                width={46}
-                                height={62}
-                                index={0}
-                                style={styles.continueCover}
-                                titleStyle={styles.continueCoverText}
-                                showBars={false}
-                            />
+                {shouldShowHomeIntro ? (
+                    <>
+                        <View style={styles.homeHeroHeader}>
+                            <Text style={styles.homeHeroEyebrow}>LIBRARY</Text>
+                            <Text style={styles.homeHeroTitle}>
+                                Welcome back.
+                            </Text>
+                            <Text style={styles.homeHeroSubtitle}>
+                                14 new words discovered in your last session. Your desk is ready.
+                            </Text>
+                        </View>
 
-                            <View style={styles.continueCopy}>
-                                <Text style={styles.continueEyebrow}>
-                                    {isBookDownloaded(currentReadingBook)
-                                        ? t('home.continue', { percent: currentProgressPercent })
-                                        : t('home.cloudBook')}
+                        <Text style={styles.continueSectionLabel}>CURRENT READING</Text>
+
+                        {currentReadingBook ? (
+                            <Pressable
+                                onPress={() => handleBookPress(currentReadingBook)}
+                                style={({ pressed }) => [pressed && styles.pressed]}
+                            >
+                                <View style={styles.continueCard}>
+                                    <View style={styles.continueCoverWrap}>
+                                        <BookCover
+                                            book={currentReadingBook}
+                                            width={86}
+                                            height={122}
+                                            style={styles.continueCover}
+                                            titleStyle={styles.continueCoverText}
+                                        />
+                                    </View>
+
+                                    <View style={styles.continueCopy}>
+                                        <View style={styles.continueMetaRow}>
+                                            <Text
+                                                style={[
+                                                    styles.continueTitle,
+                                                    getSerifFontForText(getBookTitle(currentReadingBook, t)),
+                                                ]}
+                                                numberOfLines={1}
+                                            >
+                                                {getBookTitle(currentReadingBook, t)}
+                                            </Text>
+                                            {currentReadingCompleted ? (
+                                                <View style={styles.continueFinishedBadge}>
+                                                    <Text style={styles.continueFinishedBadgeText}>FINISHED</Text>
+                                                </View>
+                                            ) : (
+                                                <View style={styles.continueBadge}>
+                                                    <Text style={styles.continueBadgeText}>
+                                                        {String(currentReadingBook?.language || targetLanguage).toUpperCase()} · {currentReadingBook?.difficulty || 'B1'}
+                                                    </Text>
+                                                </View>
+                                            )}
+                                        </View>
+                                        <Text
+                                            style={[
+                                                styles.continueAuthor,
+                                                hasKoreanText(getBookAuthor(currentReadingBook, t)) && styles.koreanInlineText,
+                                            ]}
+                                            numberOfLines={1}
+                                        >
+                                            {getBookAuthor(currentReadingBook, t)}
+                                        </Text>
+                                        <View style={styles.continueBottomBlock}>
+                                            <View style={styles.continueProgressHeader}>
+                                                <Text style={styles.continueProgressLabel}>
+                                                    {currentReadingCompleted ? '100% Complete' : `${currentProgressPercent}% Progress`}
+                                                </Text>
+                                                <Text style={styles.continueProgressMeta}>
+                                                    {currentReadingCompleted
+                                                        ? `Finished ${formatShortDate(currentReadingBook?.completedAt || currentReadingBook?.updatedAt || currentReadingBook?.lastOpenedAt) || ''}`
+                                                        : currentReadingBook?.chapterLabel || 'Ch. 4 of 27'}
+                                                </Text>
+                                            </View>
+                                            <View style={styles.continueProgressRail}>
+                                                <View
+                                                    style={[
+                                                        styles.continueProgressFill,
+                                                        { width: `${currentReadingCompleted ? 100 : currentProgressPercent}%` },
+                                                    ]}
+                                                />
+                                            </View>
+                                            <View style={[
+                                                styles.continueResumeButton,
+                                                currentReadingCompleted && styles.continueReadAgainButton,
+                                            ]}>
+                                                {currentReadingCompleted ? (
+                                                    <Feather name="rotate-ccw" size={IconDefaults.size - Spacing.lg} color={HOME_COLORS.accent} />
+                                                ) : null}
+                                                <Text style={[
+                                                    styles.continueResumeText,
+                                                    currentReadingCompleted && styles.continueReadAgainText,
+                                                ]}>
+                                                    {currentReadingCompleted ? 'READ AGAIN' : 'RESUME'}
+                                                </Text>
+                                                {!currentReadingCompleted ? (
+                                                    <Feather
+                                                        name={isBookDownloaded(currentReadingBook) ? 'arrow-right' : 'download'}
+                                                        size={IconDefaults.size - Spacing.lg}
+                                                        color={HOME_COLORS.onAccent}
+                                                    />
+                                                ) : null}
+                                            </View>
+                                        </View>
+                                    </View>
+                                </View>
+                            </Pressable>
+                        ) : (
+                            <View style={styles.emptyContinueCard}>
+                                <View style={styles.emptyContinueIcon}>
+                                    <Feather name="book-open" size={22} color={HOME_COLORS.tertiary} />
+                                </View>
+                                <Text style={styles.emptyContinueTitle}>Nothing in progress</Text>
+                                <Text style={styles.emptyContinueCopy}>
+                                    Pick up where you left off — open a book to begin your next session.
                                 </Text>
-                                <View style={styles.continueMetaRow}>
-                                    <Text
-                                        style={[
-                                            styles.continueTitle,
-                                            getSerifFontForText(getBookTitle(currentReadingBook, t)),
-                                        ]}
-                                        numberOfLines={1}
+                                <View style={styles.emptyContinueActions}>
+                                    <TouchableOpacity
+                                        activeOpacity={Motion.pressedOpacity}
+                                        onPress={() => {
+                                            setActiveLibraryTab('Books');
+                                            setActiveBookFilter('public-domain');
+                                        }}
+                                        style={styles.emptyContinuePrimary}
                                     >
-                                        {getBookTitle(currentReadingBook, t)}
-                                    </Text>
-                                    <Text style={styles.continueDivider}>·</Text>
-                                    <Text
-                                        style={[
-                                            styles.continueAuthor,
-                                            hasKoreanText(getBookAuthor(currentReadingBook, t)) && styles.koreanInlineText,
-                                        ]}
-                                        numberOfLines={1}
+                                        <Feather name="map" size={IconDefaults.size - Spacing.sm} color={HOME_COLORS.onAccent} />
+                                        <Text style={styles.emptyContinuePrimaryText}>BROWSE LIBRARY</Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        activeOpacity={Motion.pressedOpacity}
+                                        onPress={confirmAddBook}
+                                        style={styles.emptyContinueSecondary}
                                     >
-                                        {getBookAuthor(currentReadingBook, t)}
-                                    </Text>
+                                        <Feather name="file-plus" size={IconDefaults.size - Spacing.sm} color={HOME_COLORS.text} />
+                                        <Text style={styles.emptyContinueSecondaryText}>IMPORT BOOK</Text>
+                                    </TouchableOpacity>
                                 </View>
                             </View>
-
-                            <View style={styles.continuePlayButton}>
-                                <Ionicons
-                                    name={isBookDownloaded(currentReadingBook) ? 'play' : 'download-outline'}
-                                    size={18}
-                                    color={HOME_COLORS.onAccent}
-                                />
-                            </View>
-                        </View>
-                    </Pressable>
-                ) : (
-                    <View style={styles.emptyContinueCard}>
-                        <Feather name="book-open" size={24} color={HOME_COLORS.accent} />
-                        <Text style={styles.emptyContinueTitle}>
-                            {t('home.chooseBook')}
-                        </Text>
-                    </View>
-                )}
+                        )}
+                    </>
+                ) : null}
 
                 <View style={styles.libraryControls}>
                     <View style={styles.libraryHeader}>
-                        <View style={styles.libraryTabs}>
+                        <Text style={styles.collectionEyebrow}>COLLECTION</Text>
+                        <View style={styles.collectionViewIcons}>
                             <TouchableOpacity
-                                activeOpacity={0.82}
-                                onPress={() => {
-                                    setActiveBookMenuKey(null);
-                                    setActiveLibraryTab('Books');
-                                }}
-                                style={styles.libraryTab}
+                                accessibilityRole="button"
+                                accessibilityState={{ selected: effectiveCollectionViewMode === 'grid' }}
+                                activeOpacity={Motion.pressedOpacity}
+                                onPress={() => setCollectionViewMode('grid')}
+                                style={styles.collectionViewButton}
                             >
-                                <View style={styles.libraryTabLabelRow}>
-                                    <Text style={[
-                                        styles.libraryTabText,
-                                        activeLibraryTab === 'Books' && styles.libraryTabTextActive,
-                                    ]}>
-                                        {t('home.books')}
-                                    </Text>
-                                </View>
-                                {activeLibraryTab === 'Books' ? <View style={styles.libraryTabUnderline} /> : null}
+                                <Feather
+                                    name="grid"
+                                    size={IconDefaults.size - Spacing.sm}
+                                    color={effectiveCollectionViewMode === 'grid' ? HOME_COLORS.text : HOME_COLORS.frame}
+                                />
                             </TouchableOpacity>
-
                             <TouchableOpacity
-                                activeOpacity={0.82}
-                                onPress={() => {
-                                    setActiveBookMenuKey(null);
-                                    setActiveLibraryTab('Songs');
+                                accessibilityRole="button"
+                                accessibilityState={{
+                                    selected: activeLibraryTab !== 'Songs' && effectiveCollectionViewMode === 'list',
+                                    disabled: activeLibraryTab === 'Songs',
                                 }}
-                                style={styles.libraryTab}
+                                disabled={activeLibraryTab === 'Songs'}
+                                activeOpacity={Motion.pressedOpacity}
+                                onPress={() => setCollectionViewMode('list')}
+                                style={[
+                                    styles.collectionViewButton,
+                                    activeLibraryTab === 'Songs' && styles.collectionViewButtonDisabled,
+                                ]}
                             >
-                                <View style={styles.libraryTabLabelRow}>
-                                    <Text style={[
-                                        styles.libraryTabText,
-                                        activeLibraryTab === 'Songs' && styles.libraryTabTextActive,
-                                    ]}>
-                                        {t('home.songs')}
-                                    </Text>
-                                </View>
-                                {activeLibraryTab === 'Songs' ? <View style={styles.libraryTabUnderline} /> : null}
+                                <Feather
+                                    name="list"
+                                    size={IconDefaults.size - Spacing.sm}
+                                    color={activeLibraryTab !== 'Songs' && effectiveCollectionViewMode === 'list' ? HOME_COLORS.text : HOME_COLORS.frame}
+                                />
                             </TouchableOpacity>
                         </View>
+                    </View>
+                    <View style={styles.libraryTabs}>
+                        <TouchableOpacity
+                            activeOpacity={0.82}
+                            onPress={() => {
+                                setActiveBookMenuKey(null);
+                                setActiveLibraryTab('Books');
+                                setActiveBookFilter('all');
+                            }}
+                            style={styles.libraryTab}
+                        >
+                            <Text style={[
+                                styles.libraryTabText,
+                                activeLibraryTab === 'Books' && activeBookFilter !== 'public-domain' && styles.libraryTabTextActive,
+                            ]}>
+                                MY BOOKS
+                            </Text>
+                            {activeLibraryTab === 'Books' && activeBookFilter !== 'public-domain' ? <View style={styles.libraryTabUnderline} /> : null}
+                        </TouchableOpacity>
 
                         <TouchableOpacity
-                            activeOpacity={0.84}
-                            accessibilityRole="switch"
-                            accessibilityLabel={isFloatingOcrVisible ? t('home.turnOcrOff') : t('home.turnOcrOn')}
-                            accessibilityState={{ checked: isFloatingOcrVisible, busy: ocrBusy }}
-                            disabled={ocrBusy}
-                            onPress={handleFloatingOcrToggle}
-                            style={[
-                                styles.ocrTabToggle,
-                                isFloatingOcrVisible && styles.ocrTabToggleActive,
-                                ocrBusy && styles.ocrTabToggleBusy,
-                            ]}
+                            activeOpacity={0.82}
+                            onPress={() => {
+                                setActiveBookMenuKey(null);
+                                setActiveLibraryTab('Books');
+                                setActiveBookFilter('public-domain');
+                            }}
+                            style={styles.libraryTab}
                         >
-                            {ocrBusy ? (
-                                <ActivityIndicator size="small" color={HOME_COLORS.accent} />
-                            ) : (
-                                <Ionicons
-                                    name="scan-outline"
-                                    size={15}
-                                    color={isFloatingOcrVisible ? HOME_COLORS.onAccent : HOME_COLORS.accent}
-                                />
-                            )}
                             <Text style={[
-                                styles.ocrTabToggleText,
-                                isFloatingOcrVisible && styles.ocrTabToggleTextActive,
+                                styles.libraryTabText,
+                                activeLibraryTab === 'Books' && activeBookFilter === 'public-domain' && styles.libraryTabTextActive,
                             ]}>
-                                {t('home.ocr')}
+                                PUBLIC DOMAIN
                             </Text>
+                            {activeLibraryTab === 'Books' && activeBookFilter === 'public-domain' ? <View style={styles.libraryTabUnderline} /> : null}
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                            activeOpacity={0.82}
+                            onPress={() => {
+                                setActiveBookMenuKey(null);
+                                setActiveLibraryTab('Songs');
+                                setCollectionViewMode('grid');
+                            }}
+                            style={styles.libraryTab}
+                        >
+                            <Text style={[
+                                styles.libraryTabText,
+                                activeLibraryTab === 'Songs' && styles.libraryTabTextActive,
+                            ]}>
+                                SONGS
+                            </Text>
+                            {activeLibraryTab === 'Songs' ? <View style={styles.libraryTabUnderline} /> : null}
                         </TouchableOpacity>
                     </View>
                     <View style={styles.libraryDivider} />
@@ -3118,6 +3573,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
             {activeLibraryTab === 'Books' ? (
                 <View style={styles.booksSection}>
+                    <View style={styles.bookFilterRowHidden}>
                     <ScrollView
                         horizontal
                         showsHorizontalScrollIndicator={false}
@@ -3166,231 +3622,34 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                             );
                         })}
                     </ScrollView>
+                    </View>
 
                     {!showingPublicDomainBooks ? (
                         <>
-                            <View style={styles.bookSectionHeader}>
-                                <View style={styles.bookSectionCopy}>
-                                    <Text style={styles.bookSectionCount}>
-                                        {bookSectionLabel}
-                                    </Text>
-                                </View>
-                                {activeBookFilter === 'all' ? (
-                                    <View style={styles.bookSectionActions}>
-                                        <TouchableOpacity
-                                            activeOpacity={0.84}
-                                            onPress={confirmAddBook}
-                                            style={styles.importInlineButton}
-                                        >
-                                            {isImporting ? (
-                                                <ActivityIndicator size="small" color={HOME_COLORS.accent} />
-                                            ) : (
-                                                <Text style={styles.importInlineText}>{t('home.importBook')}</Text>
-                                            )}
-                                        </TouchableOpacity>
-                                    </View>
-                                ) : null}
-                            </View>
-
                             {filteredLibraryBooks.length === 0 ? (
-                                <View style={styles.emptyBooksPanel}>
-                                    <Text style={styles.emptyBooksTitle}>
-                                        {activeBookFilter === 'favorites' ? t('home.noFavoritesTitle') : t('home.noBooksTitle')}
-                                    </Text>
-                                    <Text style={styles.emptyBooksCopy}>
-                                        {activeBookFilter === 'favorites'
-                                            ? t('home.noFavoritesBody')
-                                            : t('home.noBooksBody')}
-                                    </Text>
-                                </View>
+                                renderCollectionEmptyState({
+                                    icon: activeBookFilter === 'favorites' ? 'star' : 'book-open',
+                                    title: activeBookFilter === 'favorites' ? t('home.noFavoritesTitle') : 'Your shelf is empty',
+                                    body: activeBookFilter === 'favorites'
+                                        ? t('home.noFavoritesBody')
+                                        : 'Import an EPUB from Files, or browse the public domain to start building your library.',
+                                    primaryLabel: activeBookFilter === 'favorites' ? null : 'IMPORT EPUB',
+                                    primaryIcon: activeBookFilter === 'favorites' ? null : 'file-plus',
+                                    onPrimaryPress: confirmAddBook,
+                                    secondaryLabel: activeBookFilter === 'favorites' ? null : 'BROWSE',
+                                    onSecondaryPress: () => {
+                                        setActiveLibraryTab('Books');
+                                        setActiveBookFilter('public-domain');
+                                    },
+                                })
                             ) : (
-                                <View style={styles.bookGrid}>
-                                    {filteredLibraryBooks.map((book, index) => {
-                                        const bookKey = getBookKey(book, `${index}`);
-                                        const isBookMenuOpen = activeBookMenuKey === bookKey;
-                                        const shouldAlignMenuLeft = index % 3 === 0;
-
-                                    return (
-                                        <Pressable
-                                            key={book.uri || book.id || `${book.title}-${index}`}
-                                            onPress={() => handleBookPreviewPress(book, index)}
-                                            style={({ pressed }) => [
-                                                styles.bookTile,
-                                                { width: bookTileWidth },
-                                                isBookMenuOpen && styles.bookTileMenuOpen,
-                                                pressed && styles.pressed,
-                                            ]}
-                                        >
-                                            <BookCover
-                                                book={book}
-                                                width={bookTileWidth}
-                                                height={bookCoverHeight}
-                                                index={index}
-                                                style={styles.bookCover}
-                                                titleStyle={styles.bookCoverText}
-                                            />
-                                            {!isBookDownloaded(book) ? (
-                                                <View style={styles.bookDownloadBadge}>
-                                                    {downloadingBookId === bookKey ? (
-                                                        <ActivityIndicator size="small" color={HOME_COLORS.onAccent} />
-                                                    ) : (
-                                                        <Feather name="download" size={14} color={HOME_COLORS.onAccent} />
-                                                    )}
-                                                </View>
-                                            ) : null}
-                                            <TouchableOpacity
-                                                accessibilityRole="button"
-                                                accessibilityLabel={t('home.bookOptions', { title: getBookTitle(book, t) })}
-                                                activeOpacity={0.84}
-                                                onPress={(event) => {
-                                                    event?.stopPropagation?.();
-                                                    setActiveBookMenuKey((currentKey) => (
-                                                        currentKey === bookKey ? null : bookKey
-                                                    ));
-                                                }}
-                                                style={styles.bookMenuButton}
-                                            >
-                                                <Feather name="more-vertical" size={16} color={HOME_COLORS.onAccent} />
-                                            </TouchableOpacity>
-                                            {isBookMenuOpen ? (
-                                                <View style={[
-                                                    styles.bookMenu,
-                                                    shouldAlignMenuLeft ? styles.bookMenuLeft : styles.bookMenuRight,
-                                                ]}>
-                                                    <TouchableOpacity
-                                                        activeOpacity={0.78}
-                                                        onPress={(event) => {
-                                                            event?.stopPropagation?.();
-                                                            handleEditBook(book);
-                                                        }}
-                                                        style={styles.bookMenuItem}
-                                                    >
-                                                        <Feather name="edit-2" size={14} color={colors.text} />
-                                                        <Text style={styles.bookMenuItemText}>{t('common.edit')}</Text>
-                                                    </TouchableOpacity>
-                                                    <TouchableOpacity
-                                                        activeOpacity={0.78}
-                                                        onPress={(event) => {
-                                                            event?.stopPropagation?.();
-                                                            handleResetBookToOriginal(book);
-                                                        }}
-                                                        style={[styles.bookMenuItem, styles.bookMenuSeparatedItem]}
-                                                    >
-                                                        <Feather name="rotate-ccw" size={14} color={colors.text} />
-                                                        <Text style={styles.bookMenuItemText}>{t('home.resetOriginal')}</Text>
-                                                    </TouchableOpacity>
-                                                    <TouchableOpacity
-                                                        activeOpacity={0.78}
-                                                        onPress={(event) => {
-                                                            event?.stopPropagation?.();
-                                                            setActiveBookMenuKey(null);
-                                                            handleDeleteBook(book);
-                                                        }}
-                                                        style={[styles.bookMenuItem, styles.bookMenuDangerItem]}
-                                                    >
-                                                        <Feather name="trash-2" size={14} color={colors.danger} />
-                                                        <Text style={[styles.bookMenuItemText, styles.bookMenuDangerText]}>
-                                                            {t('common.delete')}
-                                                        </Text>
-                                                    </TouchableOpacity>
-                                                </View>
-                                            ) : null}
-                                            <Text
-                                                style={[
-                                                    styles.bookTitle,
-                                                    getSerifFontForText(getBookTitle(book, t)),
-                                                ]}
-                                                numberOfLines={1}
-                                            >
-                                                {getBookTitle(book, t)}
-                                            </Text>
-                                            <View style={styles.bookProgressRail}>
-                                                <View style={[
-                                                    styles.bookProgressFill,
-                                                    getBookProgress(book) > 0.75 && styles.bookProgressFillSuccess,
-                                                    { width: `${Math.round(getBookProgress(book) * 100)}%` },
-                                                ]} />
-                                            </View>
-                                            {!isBookDownloaded(book) ? (
-                                                <Text style={styles.bookCloudMeta} numberOfLines={1}>
-                                                    {downloadingBookId === bookKey
-                                                        ? t('home.downloading')
-                                                        : t('home.availableToDownload')}
-                                                </Text>
-                                            ) : null}
-                                        </Pressable>
-                                    );
-                                })}
-                                </View>
+                                effectiveCollectionViewMode === 'grid'
+                                    ? renderBookGrid(filteredLibraryBooks)
+                                    : renderBookRows(filteredLibraryBooks, 'On device')
                             )}
                         </>
                     ) : showingPublicDomainBooks ? (
                         <>
-                            <View style={styles.bookSectionHeader}>
-                                <View style={styles.bookSectionCopy}>
-                                    <Text style={styles.bookSectionCount}>
-                                        {bookSectionLabel}
-                                    </Text>
-                                    {bookSectionHint ? (
-                                        <Text style={styles.bookSectionHint}>{bookSectionHint}</Text>
-                                    ) : null}
-                                </View>
-                            </View>
-
-                            <ScrollView
-                                horizontal
-                                showsHorizontalScrollIndicator={false}
-                                contentContainerStyle={styles.publicDomainSortRow}
-                            >
-                                {PUBLIC_DOMAIN_SORTS.map((sort) => {
-                                    const isActive = activePublicDomainSort === sort.id;
-
-                                    return (
-                                        <TouchableOpacity
-                                            key={sort.id}
-                                            activeOpacity={0.84}
-                                            onPress={() => {
-                                                setActiveBookMenuKey(null);
-                                                if (isActive) {
-                                                    setPublicDomainSortDirection((currentDirection) => (
-                                                        currentDirection === 'asc' ? 'desc' : 'asc'
-                                                    ));
-                                                    return;
-                                                }
-
-                                                setActivePublicDomainSort(sort.id);
-                                                setPublicDomainSortDirection('asc');
-                                            }}
-                                            accessibilityRole="button"
-                                            accessibilityLabel={t('home.sortPublicDomain', {
-                                                label: t(sort.labelKey),
-                                                direction: isActive && publicDomainSortDirection === 'desc'
-                                                    ? t('home.descending')
-                                                    : t('home.ascending'),
-                                            })}
-                                            style={[
-                                                styles.publicDomainSortChip,
-                                                isActive && styles.publicDomainSortChipActive,
-                                            ]}
-                                        >
-                                            <Text style={[
-                                                styles.publicDomainSortChipText,
-                                                isActive && styles.publicDomainSortChipTextActive,
-                                            ]}>
-                                                {t(sort.labelKey)}
-                                            </Text>
-                                            {isActive ? (
-                                                <Feather
-                                                    name={publicDomainSortDirection === 'asc' ? 'arrow-up' : 'arrow-down'}
-                                                    size={12}
-                                                    color={HOME_COLORS.accentDeep}
-                                                />
-                                            ) : null}
-                                        </TouchableOpacity>
-                                    );
-                                })}
-                            </ScrollView>
-
                             {publicLibraryLoading ? (
                                 <View style={styles.emptyBooksPanel}>
                                     <ActivityIndicator size="small" color={HOME_COLORS.accent} />
@@ -3416,141 +3675,36 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                     </View>
                                 </View>
                             ) : sortedPublicDomainBookRows.length === 0 ? (
-                                <View style={styles.emptyBooksPanel}>
-                                    <Text style={styles.emptyBooksTitle}>{t('home.publicLibraryEmptyTitle')}</Text>
-                                    <Text style={styles.emptyBooksCopy}>{t('home.publicLibraryEmptyBody')}</Text>
-                                    <View style={styles.publicLibraryDiagnostics}>
-                                        {getPublicLibraryDiagnosticLines(publicLibraryDiagnostics).map((line) => (
-                                            <Text key={line} style={styles.publicLibraryDiagnosticText}>
-                                                {line}
-                                            </Text>
-                                        ))}
-                                    </View>
-                                </View>
+                                renderCollectionEmptyState({
+                                    icon: 'search',
+                                    title: 'No matches',
+                                    body: 'No public-domain titles match these filters. Try widening the level or genre.',
+                                    primaryLabel: 'CLEAR FILTERS',
+                                    primaryIcon: 'rotate-ccw',
+                                    onPrimaryPress: () => {
+                                        setActivePublicDomainSort('title');
+                                        setPublicDomainSortDirection('asc');
+                                    },
+                                })
                             ) : (
-                                <View style={styles.bookGrid}>
-                                    {sortedPublicDomainBookRows.map((book, index) => {
-                                        const bookKey = getBookKey(book, `${index}`);
-                                        const downloadState = publicLibraryDownloadStates[book.publicLibraryId];
-                                        const isDownloadingPublicBook = downloadingBookId === bookKey
-                                            || downloadState === 'downloading'
-                                            || typeof downloadState === 'number';
-                                        const metaBadge = book?.difficulty || book?.genre;
-                                        const secondaryMeta = book?.size
-                                            ? formatFileSize(book.size, t)
-                                            : formatWordCount(getBookWordCount(book), t);
-
-                                        return (
-                                            <Pressable
-                                                key={book.uri || book.id || book.publicLibraryId || `${book.title}-${index}`}
-                                                onPress={() => handleBookPreviewPress(book, index)}
-                                                style={({ pressed }) => [
-                                                    styles.bookTile,
-                                                    { width: bookTileWidth },
-                                                    pressed && styles.pressed,
-                                                ]}
-                                            >
-                                                <BookCover
-                                                    book={book}
-                                                    width={bookTileWidth}
-                                                    height={bookCoverHeight}
-                                                    index={index}
-                                                    style={styles.bookCover}
-                                                    titleStyle={styles.bookCoverText}
-                                                />
-                                                <Text
-                                                    style={[
-                                                        styles.bookTitle,
-                                                        getSerifFontForText(getBookTitle(book, t)),
-                                                    ]}
-                                                    numberOfLines={1}
-                                                >
-                                                    {getBookTitle(book, t)}
-                                                </Text>
-                                                <Text style={styles.publicDomainAuthor} numberOfLines={1}>
-                                                    {getBookAuthor(book, t)}
-                                                </Text>
-                                                <View style={styles.publicDomainMetaRow}>
-                                                    {metaBadge ? (
-                                                        <View style={styles.publicDomainGenreTag}>
-                                                            <Text style={styles.publicDomainGenreText} numberOfLines={1}>
-                                                                {metaBadge}
-                                                            </Text>
-                                                        </View>
-                                                    ) : null}
-                                                    <Text style={styles.publicDomainWordCount} numberOfLines={1}>
-                                                        {secondaryMeta}
-                                                    </Text>
-                                                </View>
-                                                {isPublicLibraryBook(book) ? (
-                                                    <TouchableOpacity
-                                                        accessibilityRole="button"
-                                                        activeOpacity={0.84}
-                                                        disabled={isDownloadingPublicBook}
-                                                        onPress={(event) => {
-                                                            event?.stopPropagation?.();
-                                                            if (isBookDownloaded(book)) {
-                                                                handlePublicDomainBookPress(book);
-                                                                return;
-                                                            }
-
-                                                            addPublicDomainBookToLibrary(book);
-                                                        }}
-                                                        style={[
-                                                            styles.publicDomainActionButton,
-                                                            isBookDownloaded(book) && styles.publicDomainActionButtonReady,
-                                                            isDownloadingPublicBook && styles.publicDomainActionButtonDisabled,
-                                                        ]}
-                                                    >
-                                                        {isDownloadingPublicBook ? (
-                                                            <ActivityIndicator size="small" color={HOME_COLORS.onAccent} />
-                                                        ) : (
-                                                            <>
-                                                                <Feather
-                                                                    name={isBookDownloaded(book) ? 'book-open' : 'download'}
-                                                                    size={12}
-                                                                    color={isBookDownloaded(book) ? HOME_COLORS.accentDeep : HOME_COLORS.onAccent}
-                                                                />
-                                                                <Text
-                                                                    style={[
-                                                                        styles.publicDomainActionText,
-                                                                        isBookDownloaded(book) && styles.publicDomainActionTextReady,
-                                                                    ]}
-                                                                    numberOfLines={1}
-                                                                >
-                                                                    {isBookDownloaded(book) ? t('home.read') : t('home.download')}
-                                                                </Text>
-                                                            </>
-                                                        )}
-                                                    </TouchableOpacity>
-                                                ) : null}
-                                            </Pressable>
-                                        );
-                                    })}
-                                </View>
+                                effectiveCollectionViewMode === 'grid'
+                                    ? renderBookGrid(sortedPublicDomainBookRows)
+                                    : renderBookRows(sortedPublicDomainBookRows, 'Public domain')
                             )}
                         </>
                     ) : null}
                 </View>
             ) : (
                 <View style={styles.songsPanel}>
-                    <View style={styles.songsActionRow}>
-                        <TouchableOpacity
-                            activeOpacity={0.88}
-                            onPress={handleAddSong}
-                            style={styles.songTextAction}
-                        >
-                            <Text style={styles.songTextActionLabel}>{t('home.addSong')}</Text>
-                        </TouchableOpacity>
-                    </View>
                     {songsLoaded && songs.length === 0 ? (
-                        <View style={styles.emptySongsPanel}>
-                            <Feather name="music" size={24} color={HOME_COLORS.accent} />
-                            <Text style={styles.emptySongsTitle}>{t('home.emptySongsTitle')}</Text>
-                            <Text style={styles.emptySongsCopy}>
-                                {t('home.emptySongsBody')}
-                            </Text>
-                        </View>
+                        renderCollectionEmptyState({
+                            icon: 'music',
+                            title: 'No songs yet',
+                            body: 'Add lyrics you want to study - look up words as you read and sing along.',
+                            primaryLabel: 'WRITE A SONG',
+                            primaryIcon: 'edit-2',
+                            onPrimaryPress: handleAddSong,
+                        })
                     ) : (
                         <View style={styles.songList}>
                             {!songsLoaded ? (
@@ -3580,7 +3734,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                                 {song.title}
                                             </Text>
                                             <Text style={styles.songMeta} numberOfLines={1}>
-                                                {song.artist}
+                                                {[song.artist, `${formatSongWordCount(song)} words`].filter(Boolean).join(' · ')}
                                             </Text>
                                         </View>
                                         <Feather name="chevron-right" size={23} color={HOME_COLORS.faint} />
@@ -3591,7 +3745,6 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     )}
                 </View>
             )}
-
                 {!!openingBookUri && (
                     <View style={styles.loadingOverlay}>
                         <ActivityIndicator size="small" color={HOME_COLORS.accent} />
@@ -3599,6 +3752,106 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     </View>
                 )}
             </Pressable>
+            </ScrollView>
+
+            {shouldShowFab ? (
+                <>
+                    {fabMenuOpen ? (
+                        <Modal
+                            visible
+                            transparent
+                            animationType="fade"
+                            statusBarTranslucent
+                            onRequestClose={() => setFabMenuOpen(false)}
+                        >
+                            <Pressable
+                                accessible={false}
+                                onPress={() => setFabMenuOpen(false)}
+                                style={styles.fabScrim}
+                            >
+                                <BlurView
+                                    intensity={18}
+                                    tint="default"
+                                    experimentalBlurMethod="dimezisBlurView"
+                                    style={styles.fabScrimBackdrop}
+                                >
+                                    <View style={styles.fabScrimTint} />
+                                </BlurView>
+                                <View style={styles.fabMenu}>
+                                    <TouchableOpacity
+                                        activeOpacity={Motion.pressedOpacity}
+                                        onPress={() => {
+                                            setFabMenuOpen(false);
+                                            confirmAddBook();
+                                        }}
+                                        style={styles.fabMenuItem}
+                                    >
+                                        <Text style={styles.fabMenuText}>IMPORT BOOK</Text>
+                                        <View style={styles.fabMenuIcon}>
+                                            <MaterialIcons name="upload-file" size={22} color={HOME_COLORS.accent} />
+                                        </View>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        activeOpacity={Motion.pressedOpacity}
+                                        onPress={() => {
+                                            setFabMenuOpen(false);
+                                            setActiveLibraryTab('Books');
+                                            setActiveBookFilter('public-domain');
+                                        }}
+                                        style={styles.fabMenuItem}
+                                    >
+                                        <Text style={styles.fabMenuText}>PUBLIC DOMAIN</Text>
+                                        <View style={styles.fabMenuIcon}>
+                                            <MaterialIcons name="travel-explore" size={22} color={HOME_COLORS.accent} />
+                                        </View>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        activeOpacity={Motion.pressedOpacity}
+                                        onPress={() => {
+                                            setFabMenuOpen(false);
+                                            handleAddSong();
+                                        }}
+                                        style={styles.fabMenuItem}
+                                    >
+                                        <Text style={styles.fabMenuText}>NEW SONG</Text>
+                                        <View style={styles.fabMenuIcon}>
+                                            <MaterialIcons name="lyrics" size={22} color={HOME_COLORS.accent} />
+                                        </View>
+                                    </TouchableOpacity>
+                                </View>
+                            </Pressable>
+                            <TouchableOpacity
+                                accessibilityRole="button"
+                                accessibilityLabel="Close actions"
+                                activeOpacity={Motion.pressedOpacity}
+                                onPress={() => setFabMenuOpen(false)}
+                                style={[styles.fab, styles.fabModalAnchor]}
+                            >
+                                <MaterialIcons
+                                    name="close"
+                                    size={IconDefaults.size}
+                                    color={HOME_COLORS.onAccent}
+                                />
+                            </TouchableOpacity>
+                        </Modal>
+                    ) : null}
+                    {!fabMenuOpen ? (
+                        <TouchableOpacity
+                            accessibilityRole="button"
+                            accessibilityLabel="Open actions"
+                            activeOpacity={Motion.pressedOpacity}
+                            onPress={() => setFabMenuOpen(true)}
+                            style={[styles.fab, styles.fabScreenAnchor]}
+                        >
+                            <MaterialIcons
+                                name="add"
+                                size={IconDefaults.size}
+                                color={HOME_COLORS.onAccent}
+                            />
+                        </TouchableOpacity>
+                    ) : null}
+                </>
+            ) : null}
 
             <Modal visible={!!pdfCoverPrompt} animationType="fade" transparent onRequestClose={choosePdfCoverDefault}>
                 <View style={styles.modalBackdrop}>
@@ -3785,134 +4038,225 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 </View>
             </Modal>
         </Screen>
+        </HomeThemeContext.Provider>
     );
 };
 
-const styles = StyleSheet.create({
+const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
+    screenFrame: {
+        flex: 1,
+        paddingHorizontal: 0,
+        paddingTop: 0,
+        paddingBottom: 0,
+        position: 'relative',
+    },
     screenContent: {
         paddingHorizontal: 0,
         paddingTop: 0,
-        paddingBottom: spacing.xl * 2,
+        paddingBottom: Layout.tabBarHeight + Spacing.xl5,
     },
     stack: {
         gap: 0,
     },
+    appTopBar: {
+        height: Layout.appBarHeight,
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: Spacing.screenHorizontalDense,
+        borderBottomWidth: Layout.tabBarBorderWidth,
+        borderBottomColor: HOME_COLORS.divider,
+        backgroundColor: HOME_COLORS.bg,
+        zIndex: Layout.tabBarHeight / Layout.tabActiveUnderlineHeight,
+        elevation: 0,
+        overflow: 'visible',
+    },
+    languageSelectorWrap: {
+        width: 70,
+        height: 52,
+        justifyContent: 'center',
+        position: 'relative',
+        zIndex: 40,
+        elevation: 40,
+    },
+    appTopSide: {
+        width: 70,
+        minHeight: 52,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 2,
+    },
+    appTopSideRight: {
+        width: 70,
+        alignItems: 'flex-end',
+        justifyContent: 'center',
+    },
+    profileDropdown: {
+        position: 'absolute',
+        top: 52,
+        left: -Spacing.screenHorizontalDense,
+        width: 92,
+        borderTopRightRadius: Radii.card,
+        borderBottomRightRadius: Radii.card,
+        backgroundColor: HOME_COLORS.surface,
+        borderWidth: Layout.tabBarBorderWidth,
+        borderLeftWidth: 0,
+        borderColor: HOME_COLORS.divider,
+        overflow: 'hidden',
+        shadowColor: HOME_COLORS.text,
+        shadowOpacity: 0,
+        shadowRadius: 0,
+        shadowOffset: { width: 0, height: 0 },
+        elevation: 0,
+    },
+    profileDropdownRail: {
+        position: 'absolute',
+        top: 0,
+        bottom: 0,
+        left: 0,
+        width: 3,
+        backgroundColor: HOME_COLORS.accent,
+        zIndex: 2,
+    },
+    profileDropdownOption: {
+        minHeight: 40,
+        justifyContent: 'center',
+        paddingLeft: 24,
+        paddingRight: 12,
+        borderBottomWidth: 1,
+        borderBottomColor: HOME_COLORS.divider,
+        backgroundColor: HOME_COLORS.surface,
+    },
+    profileDropdownOptionLast: {
+        borderBottomWidth: 0,
+    },
+    profileDropdownOptionText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 13,
+        lineHeight: 16,
+        letterSpacing: 2,
+        color: HOME_COLORS.text,
+    },
+    ocrIconImage: {
+        width: Spacing.xl8,
+        height: Spacing.xl8,
+    },
+    languageSelectorText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 12,
+        lineHeight: 16,
+        letterSpacing: 1.5,
+        color: HOME_COLORS.accent,
+    },
+    appTopTitle: {
+        flex: 1,
+        textAlign: 'center',
+        ...textStyles.appTitle,
+    },
     homeHeroHeader: {
         paddingHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
-        paddingTop: 26,
-        paddingBottom: 2,
+        paddingTop: 22,
+        paddingBottom: 0,
+        alignItems: 'center',
     },
     homeHeroEyebrow: {
         fontFamily: fontFamilies.sansBold,
-        fontSize: 11,
-        lineHeight: 14.5,
+        fontSize: 10,
+        lineHeight: 13,
         textTransform: 'uppercase',
-        letterSpacing: 1.32,
-        color: HOME_COLORS.sub,
+        letterSpacing: 2.6,
+        color: HOME_COLORS.tertiary,
     },
     homeHeroTitle: {
-        fontFamily: fontFamilies.serifBold,
+        fontFamily: fontFamilies.sansSemiBold,
         marginTop: 8,
-        fontSize: 27,
-        lineHeight: 32,
-        letterSpacing: -0.4,
+        fontSize: 28,
+        lineHeight: 33,
+        letterSpacing: -0.56,
         color: HOME_COLORS.text,
+        textAlign: 'center',
     },
     homeHeroSubtitle: {
         fontFamily: fontFamilies.sansRegular,
-        marginTop: 10,
-        maxWidth: 346,
-        fontSize: 14,
-        lineHeight: 21,
+        marginTop: 8,
+        maxWidth: 280,
+        fontSize: 13,
+        lineHeight: 20,
         color: HOME_COLORS.sub,
+        textAlign: 'center',
     },
     previewScreenContent: {
         paddingHorizontal: 0,
+        paddingTop: 0,
         paddingBottom: 0,
     },
     previewScrollContent: {
-        paddingHorizontal: insets.screenHorizontal,
-        paddingTop: spacing.lg,
-        paddingBottom: spacing.xl * 2,
+        paddingHorizontal: 0,
+        paddingTop: 0,
+        paddingBottom: 32,
     },
     previewScroll: {
         flex: 1,
     },
     previewStack: {
-        gap: spacing.lg,
+        gap: 0,
     },
     previewTopBar: {
-        minHeight: 56,
+        height: 52,
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        paddingHorizontal: insets.screenHorizontal,
-        paddingBottom: spacing.sm,
+        paddingHorizontal: 20,
         borderBottomWidth: 1,
-        borderBottomColor: '#e6d7bf',
+        borderBottomColor: HOME_COLORS.divider,
+        backgroundColor: HOME_COLORS.bg,
     },
     previewBackButton: {
-        width: 42,
-        height: 42,
+        width: 70,
+        height: 52,
         alignItems: 'center',
         justifyContent: 'center',
     },
     previewTopTitle: {
-        ...textStyles.sectionTitle,
-        fontSize: 16,
-        lineHeight: 21,
-        color: colors.textMuted,
-        letterSpacing: 0,
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 12,
+        lineHeight: 15,
+        color: HOME_COLORS.text,
+        letterSpacing: 3.2,
     },
     previewTopReadButton: {
-        minWidth: 84,
-        height: 38,
-        flexDirection: 'row',
-        alignItems: 'center',
+        width: 70,
+        height: 52,
+        alignItems: 'flex-end',
         justifyContent: 'center',
-        gap: 5,
-        paddingHorizontal: spacing.sm,
-        borderRadius: 999,
-        backgroundColor: colors.accentStrong,
     },
     previewTopReadButtonDisabled: {
-        opacity: 0.74,
+        opacity: 1,
     },
     previewTopReadButtonText: {
-        ...textStyles.sectionTitle,
-        fontSize: 14,
-        lineHeight: 18,
-        color: colors.white,
-        letterSpacing: 0,
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 13,
+        lineHeight: 17,
+        letterSpacing: 1.5,
+        color: HOME_COLORS.text,
+    },
+    previewTopReadButtonTextDisabled: {
+        color: HOME_COLORS.borderStrong,
     },
     previewHero: {
-        flexDirection: 'row',
-        alignItems: 'flex-start',
-        justifyContent: 'space-between',
-        flexWrap: 'wrap',
-        gap: spacing.md,
+        alignItems: 'center',
     },
     previewBookVisualColumn: {
-        flexShrink: 0,
-        gap: spacing.sm,
-    },
-    previewBookVisual: {
-        flexDirection: 'row',
-        alignItems: 'flex-end',
-        gap: 10,
+        width: '100%',
+        alignItems: 'center',
+        paddingTop: 30,
+        paddingBottom: 34,
+        backgroundColor: HOME_COLORS.surface2,
     },
     previewCover: {
-        borderRadius: 8,
-    },
-    previewCoverText: {
-        fontSize: 13,
-        lineHeight: 18,
+        ...Shadows.coverLift,
     },
     previewBookSpine: {
-        position: 'relative',
-        borderTopLeftRadius: 1,
-        borderTopRightRadius: 1,
-        overflow: 'hidden',
+        display: 'none',
     },
     previewSpinePanel: {
         position: 'absolute',
@@ -3929,7 +4273,7 @@ const styles = StyleSheet.create({
         right: 0,
         bottom: 0,
         width: 1,
-        backgroundColor: 'rgba(255,255,255,0.1)',
+        backgroundColor: HOME_COLORS.divider,
     },
     previewSpineTitleBand: {
         position: 'absolute',
@@ -3947,220 +4291,300 @@ const styles = StyleSheet.create({
         letterSpacing: 0,
     },
     previewHeroCopy: {
-        flex: 1,
-        minWidth: 118,
-        alignItems: 'flex-end',
-        gap: spacing.xs,
-        paddingTop: spacing.sm,
-    },
-    previewAddLibraryButton: {
-        minHeight: 44,
-        flexDirection: 'row',
+        width: '100%',
         alignItems: 'center',
-        justifyContent: 'center',
-        gap: spacing.xs,
-        paddingHorizontal: spacing.md,
-        borderRadius: radii.xs,
-        backgroundColor: colors.accentStrong,
-    },
-    previewAddLibraryButtonText: {
-        ...textStyles.sectionTitle,
-        fontSize: 14,
-        lineHeight: 18,
-        color: colors.white,
-        letterSpacing: 0,
+        paddingTop: 22,
+        paddingHorizontal: 24,
     },
     previewActionRow: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        gap: spacing.sm,
+        marginHorizontal: 24,
+        marginTop: 22,
+        paddingVertical: 14,
+        borderTopWidth: 1,
+        borderBottomWidth: 1,
+        borderColor: HOME_COLORS.divider,
     },
     previewActionButton: {
         flex: 1,
-        height: 44,
+        minHeight: 44,
         alignItems: 'center',
         justifyContent: 'center',
-        borderRadius: radii.xs,
-        borderWidth: 1,
-        borderColor: '#e6d7bf',
-        backgroundColor: colors.surface,
+        gap: 7,
     },
-    previewActionButtonActive: {
-        borderColor: '#ddb76d',
-        backgroundColor: '#fff4d8',
-    },
-    previewActionButtonDanger: {
-        borderColor: '#ecd0cb',
-        backgroundColor: '#fff7f5',
-    },
-    previewEyebrow: {
-        ...textStyles.eyebrow,
-        width: '100%',
-        textAlign: 'right',
-        color: colors.accent,
+    previewActionLabel: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 9,
+        lineHeight: 12,
         letterSpacing: 1.4,
+        color: HOME_COLORS.sub,
+        textTransform: 'uppercase',
     },
     previewTitle: {
-        fontFamily: fontFamilies.serifBold,
+        fontFamily: fontFamilies.displaySemiBold,
         width: '100%',
-        fontSize: 26,
-        lineHeight: 33,
-        textAlign: 'right',
+        fontSize: 22,
+        lineHeight: 29,
+        textAlign: 'center',
         color: colors.text,
         letterSpacing: 0,
+    },
+    previewTitleKorean: {
+        fontFamily: fontFamilies.krSerifSemiBold,
     },
     previewAuthor: {
-        ...textStyles.body,
+        fontFamily: fontFamilies.displayItalic,
         width: '100%',
-        fontSize: 16,
-        lineHeight: 22,
-        textAlign: 'right',
+        fontSize: 15,
+        lineHeight: 20,
+        marginTop: 5,
+        textAlign: 'center',
         color: colors.textMuted,
     },
-    previewProgressBlock: {
-        gap: spacing.xs,
+    previewTagWrap: {
+        marginTop: 11,
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderWidth: 1,
+        borderColor: HOME_COLORS.borderStrong,
+        borderRadius: Radii.pill,
+        paddingHorizontal: 12,
+        paddingVertical: 4,
     },
-    previewProgressHeader: {
+    previewTagText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 9,
+        lineHeight: 12,
+        letterSpacing: 1.6,
+        color: HOME_COLORS.sub,
+    },
+    previewDownloadBlock: {
+        paddingTop: 20,
+        paddingHorizontal: 24,
+    },
+    previewDownloadButton: {
+        minHeight: 50,
         flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: spacing.sm,
+        justifyContent: 'center',
+        gap: 9,
+        borderRadius: 4,
+        backgroundColor: HOME_COLORS.accent,
     },
-    previewProgressLabel: {
-        ...textStyles.caption,
-        color: colors.textMuted,
-        letterSpacing: 0,
+    previewDownloadButtonText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 12,
+        lineHeight: 15,
+        letterSpacing: 1.8,
+        color: HOME_COLORS.onAccent,
     },
-    previewProgressValue: {
-        ...textStyles.caption,
-        color: colors.accentStrong,
-        letterSpacing: 0,
+    previewDownloadNote: {
+        marginTop: 8,
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 11,
+        lineHeight: 15,
+        color: HOME_COLORS.faint,
+        textAlign: 'center',
     },
-    previewProgressRail: {
-        height: 5,
-        borderRadius: 999,
-        backgroundColor: '#e5dac7',
+    previewDownloadingButton: {
+        minHeight: 50,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 9,
+        borderWidth: 1,
+        borderColor: HOME_COLORS.borderStrong,
+        borderRadius: 4,
+        backgroundColor: HOME_COLORS.bg,
+    },
+    previewDownloadingButtonText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 12,
+        lineHeight: 15,
+        letterSpacing: 1.8,
+        color: HOME_COLORS.sub,
+    },
+    previewDownloadProgressRail: {
+        height: 3,
+        marginTop: 10,
+        borderRadius: 2,
+        backgroundColor: HOME_COLORS.divider,
         overflow: 'hidden',
     },
-    previewProgressFill: {
+    previewDownloadProgressFill: {
         height: '100%',
-        borderRadius: 999,
-        backgroundColor: colors.accent,
+        borderRadius: 2,
+        backgroundColor: HOME_COLORS.accent,
     },
-    previewMetaList: {
-        borderTopWidth: 1,
-        borderBottomWidth: 1,
-        borderColor: '#e6d7bf',
+    previewMetadataBlock: {
+        paddingTop: 24,
+        paddingHorizontal: 24,
     },
-    previewMetaRow: {
-        minHeight: 48,
+    previewMetaGrid: {
+        marginTop: 14,
         flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: spacing.md,
-        paddingVertical: spacing.sm,
-        borderBottomWidth: 1,
-        borderBottomColor: '#eadfcb',
+        flexWrap: 'wrap',
+        rowGap: 16,
+        columnGap: 0,
+    },
+    previewMetaItem: {
+        width: '50%',
+        minHeight: 40,
+        alignItems: 'flex-start',
+        gap: 4,
+        paddingRight: 12,
     },
     previewMetaLabel: {
-        ...textStyles.caption,
-        flexShrink: 0,
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 9,
+        lineHeight: 12,
+        letterSpacing: 1.4,
         color: colors.textSubtle,
-        letterSpacing: 0,
+        textTransform: 'uppercase',
     },
     previewMetaValue: {
-        ...textStyles.body,
-        flex: 1,
-        minWidth: 0,
-        textAlign: 'right',
-        fontSize: 14,
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 15,
         lineHeight: 20,
-        color: colors.textMuted,
-    },
-    previewMetaValueGroup: {
-        flex: 1,
-        minWidth: 0,
-        alignItems: 'flex-end',
-        gap: 2,
-    },
-    previewMetaTranslation: {
-        ...textStyles.caption,
-        textAlign: 'right',
-        color: colors.textSubtle,
-        letterSpacing: 0,
+        color: colors.text,
+        width: '100%',
     },
     previewSnippetSection: {
-        gap: spacing.sm,
-        paddingTop: spacing.xs,
+        marginTop: 26,
     },
     previewSectionLabel: {
-        ...textStyles.eyebrow,
-        color: colors.textSubtle,
-        letterSpacing: 1.4,
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 10,
+        lineHeight: 13,
+        letterSpacing: 2.2,
+        color: colors.textTertiary,
+        textTransform: 'uppercase',
+    },
+    previewSnippetCard: {
+        marginTop: 12,
+        borderTopWidth: 1,
+        borderTopColor: HOME_COLORS.divider,
+        paddingTop: 16,
     },
     previewSnippetText: {
-        ...textStyles.body,
-        fontSize: 15,
-        lineHeight: 22,
+        fontFamily: fontFamilies.displayRegular,
+        fontSize: 16,
+        lineHeight: 31,
         color: colors.text,
     },
+    previewSnippetTextKorean: {
+        fontFamily: fontFamilies.krSerifRegular,
+    },
     previewAttributionText: {
-        ...textStyles.caption,
-        marginTop: spacing.xs,
+        fontFamily: fontFamilies.displayItalic,
+        marginTop: 12,
         color: colors.textSubtle,
-        letterSpacing: 0,
+        fontSize: 12,
+        lineHeight: 16,
+        textAlign: 'right',
+    },
+    previewNoSnippet: {
+        marginTop: 12,
+        borderTopWidth: 1,
+        borderTopColor: HOME_COLORS.divider,
+        paddingTop: 22,
+        paddingBottom: 8,
+        alignItems: 'center',
+        gap: 9,
+    },
+    previewNoSnippetText: {
+        maxWidth: 230,
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 13,
+        lineHeight: 20,
+        color: HOME_COLORS.tertiary,
+        textAlign: 'center',
     },
     continueCard: {
-        minHeight: 92,
+        minHeight: 156,
         flexDirection: 'row',
-        alignItems: 'center',
-        gap: 14,
-        marginHorizontal: 22,
-        marginTop: 28,
-        paddingVertical: 14,
+        alignItems: 'stretch',
+        gap: 16,
+        marginHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
+        marginTop: 8,
+        paddingVertical: 16,
         paddingLeft: 16,
         paddingRight: 16,
-        borderRadius: radii.md,
+        borderRadius: 4,
         borderWidth: 1,
         borderColor: HOME_COLORS.continueBorder,
-        backgroundColor: HOME_COLORS.paper,
+        backgroundColor: HOME_COLORS.surface,
         overflow: 'hidden',
         ...HOME_SHADOWS.card,
     },
+    continueCoverWrap: {
+        alignSelf: 'stretch',
+        justifyContent: 'flex-end',
+    },
     continueCover: {
-        borderRadius: 4,
+        borderRadius: 2,
     },
     continueCoverText: {
-        fontSize: 10,
-        lineHeight: 14,
+        fontSize: 17,
+        lineHeight: 23,
     },
     continueCopy: {
         flex: 1,
         minWidth: 0,
-        gap: 3,
+        gap: 4,
     },
-    continueEyebrow: {
+    continueSectionLabel: {
+        marginHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
+        marginTop: 24,
         ...textStyles.eyebrow,
-        fontSize: 11,
-        lineHeight: 14,
-        color: HOME_COLORS.accent,
-        letterSpacing: 0.66,
+        fontSize: TextStyles.eyebrow.fontSize + Layout.tabBarBorderWidth,
+        lineHeight: TextStyles.eyebrow.fontSize + Spacing.xs,
+        color: HOME_COLORS.tertiary,
     },
     continueMetaRow: {
         flexDirection: 'row',
         alignItems: 'baseline',
         minWidth: 0,
-        gap: spacing.xs,
+        gap: 8,
     },
     continueTitle: {
-        fontFamily: fontFamilies.serifBold,
+        fontFamily: fontFamilies.krSerifSemiBold,
         flexShrink: 1,
-        maxWidth: '54%',
-        fontSize: 16,
-        lineHeight: 22,
+        maxWidth: '68%',
+        fontSize: 19,
+        lineHeight: 25,
         color: HOME_COLORS.text,
         letterSpacing: 0,
+    },
+    continueBadge: {
+        borderWidth: 1,
+        borderColor: HOME_COLORS.border,
+        borderRadius: 2,
+        paddingHorizontal: 7,
+        paddingVertical: 3,
+    },
+    continueBadgeText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 9,
+        lineHeight: 12,
+        letterSpacing: 1.2,
+        color: HOME_COLORS.sub,
+    },
+    continueFinishedBadge: {
+        borderRadius: Radii.badge,
+        paddingHorizontal: Spacing.xl,
+        paddingVertical: Spacing.sm,
+        backgroundColor: HOME_COLORS.accent,
+    },
+    continueFinishedBadgeText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: TextStyles.label.fontSize,
+        lineHeight: TextStyles.label.fontSize + Spacing.xs,
+        letterSpacing: TextStyles.label.letterSpacing,
+        color: HOME_COLORS.onAccent,
+        textTransform: 'uppercase',
     },
     continueDivider: {
         ...textStyles.body,
@@ -4172,9 +4596,10 @@ const styles = StyleSheet.create({
         ...textStyles.body,
         flex: 1,
         minWidth: 0,
-        fontSize: 16,
-        lineHeight: 22,
-        color: HOME_COLORS.faint,
+        fontSize: 13,
+        lineHeight: 18,
+        color: HOME_COLORS.sub,
+        fontFamily: fontFamilies.displayItalic,
     },
     koreanInlineText: {
         fontFamily: fontFamilies.krSerifMedium,
@@ -4188,47 +4613,191 @@ const styles = StyleSheet.create({
         backgroundColor: HOME_COLORS.accent,
         ...HOME_SHADOWS.cta,
     },
-    emptyContinueCard: {
-        minHeight: 82,
+    continueBottomBlock: {
+        marginTop: 'auto',
+        gap: 6,
+    },
+    continueProgressHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 8,
+    },
+    continueProgressLabel: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 11,
+        lineHeight: 14,
+        color: HOME_COLORS.text,
+    },
+    continueProgressMeta: {
+        flexShrink: 1,
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 11,
+        lineHeight: 14,
+        color: HOME_COLORS.tertiary,
+        textAlign: 'right',
+    },
+    continueProgressRail: {
+        height: 3,
+        borderRadius: 2,
+        backgroundColor: HOME_COLORS.track,
+        overflow: 'hidden',
+    },
+    continueProgressFill: {
+        height: '100%',
+        borderRadius: 2,
+        backgroundColor: HOME_COLORS.accent,
+    },
+    continueResumeButton: {
+        marginTop: 6,
+        minHeight: 36,
+        flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
-        gap: spacing.xs,
-        marginHorizontal: 22,
-        marginTop: 16,
-        borderRadius: radii.md,
-        borderWidth: 1,
+        gap: 8,
+        borderRadius: 3,
+        backgroundColor: HOME_COLORS.accent,
+    },
+    continueResumeText: {
+        ...textStyles.buttonLabel,
+    },
+    continueReadAgainButton: {
+        borderWidth: Layout.tabActiveUnderlineHeight,
+        borderColor: HOME_COLORS.accent,
+        backgroundColor: HOME_COLORS.surface,
+    },
+    continueReadAgainText: {
+        color: HOME_COLORS.accent,
+    },
+    emptyContinueCard: {
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
+        marginTop: 10,
+        paddingHorizontal: 22,
+        paddingVertical: Spacing.xl8,
+        borderRadius: Radii.card,
+        borderWidth: Layout.tabBarBorderWidth,
         borderStyle: 'dashed',
-        borderColor: HOME_COLORS.border,
+        borderColor: HOME_COLORS.strongBorder,
         backgroundColor: HOME_COLORS.paper,
+        gap: 11,
+    },
+    emptyContinueIcon: {
+        width: 46,
+        height: 46,
+        borderRadius: Radii.pill,
+        borderWidth: Layout.tabBarBorderWidth,
+        borderColor: HOME_COLORS.border,
+        backgroundColor: HOME_COLORS.surface,
+        alignItems: 'center',
+        justifyContent: 'center',
     },
     emptyContinueTitle: {
-        ...textStyles.sectionTitle,
-        fontSize: 16,
-        color: HOME_COLORS.accent,
-        letterSpacing: 0,
+        fontFamily: fontFamilies.displaySemiBold,
+        fontSize: 17,
+        lineHeight: 22,
+        color: HOME_COLORS.text,
+        textAlign: 'center',
+    },
+    emptyContinueCopy: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 12,
+        lineHeight: 19,
+        color: HOME_COLORS.sub,
+        maxWidth: 240,
+        textAlign: 'center',
+    },
+    emptyContinueActions: {
+        flexDirection: 'row',
+        justifyContent: 'center',
+        flexWrap: 'wrap',
+        gap: 10,
+        marginTop: 6,
+    },
+    emptyContinuePrimary: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 7,
+        paddingVertical: 11,
+        paddingHorizontal: 16,
+        borderRadius: 3,
+        backgroundColor: HOME_COLORS.accent,
+    },
+    emptyContinueSecondary: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 7,
+        paddingVertical: 11,
+        paddingHorizontal: 16,
+        borderRadius: 3,
+        borderWidth: Layout.tabBarBorderWidth,
+        borderColor: HOME_COLORS.strongBorder,
+        backgroundColor: HOME_COLORS.surface,
+    },
+    emptyContinuePrimaryText: {
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 11,
+        lineHeight: 14,
+        letterSpacing: 1.6,
+        textTransform: 'uppercase',
+        color: HOME_COLORS.onAccent,
+    },
+    emptyContinueSecondaryText: {
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 11,
+        lineHeight: 14,
+        letterSpacing: 1.6,
+        textTransform: 'uppercase',
+        color: HOME_COLORS.text,
     },
     libraryControls: {
         gap: 0,
-        marginTop: 22,
+        marginTop: 26,
         overflow: 'visible',
     },
     libraryHeader: {
         flexDirection: 'row',
-        alignItems: 'flex-end',
+        alignItems: 'center',
         justifyContent: 'space-between',
-        gap: 16,
         paddingHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
+        paddingBottom: 8,
+        borderBottomWidth: 1,
+        borderBottomColor: HOME_COLORS.divider,
         overflow: 'visible',
     },
+    collectionEyebrow: {
+        ...textStyles.eyebrow,
+        fontSize: 10,
+        lineHeight: 13,
+        color: HOME_COLORS.tertiary,
+    },
+    collectionViewIcons: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: Spacing.lg,
+    },
+    collectionViewButton: {
+        width: IconDefaults.size,
+        height: IconDefaults.size,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    collectionViewButtonDisabled: {
+        opacity: Motion.disabledOpacity,
+    },
     libraryTabs: {
-        flex: 1,
         flexDirection: 'row',
         alignItems: 'flex-end',
         gap: 22,
+        paddingHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
+        paddingTop: 14,
         overflow: 'visible',
     },
     libraryTab: {
-        minHeight: 35,
+        minHeight: 26,
         justifyContent: 'flex-start',
         overflow: 'visible',
     },
@@ -4239,21 +4808,23 @@ const styles = StyleSheet.create({
         overflow: 'visible',
     },
     libraryTabText: {
-        fontFamily: fontFamilies.serifBold,
-        fontSize: 21,
-        lineHeight: 27,
+        fontFamily: fontFamilies.sansMedium,
+        fontSize: 10,
+        lineHeight: 13,
+        letterSpacing: 1.8,
+        textTransform: 'uppercase',
         color: HOME_COLORS.faint,
         includeFontPadding: true,
-        letterSpacing: -0.2,
     },
     libraryTabTextActive: {
+        fontFamily: fontFamilies.sansBold,
         color: HOME_COLORS.text,
     },
     libraryTabUnderline: {
         width: '100%',
-        height: 3,
-        borderRadius: 2,
-        backgroundColor: HOME_COLORS.accent,
+        height: Layout.tabActiveUnderlineHeight,
+        marginTop: Spacing.sm,
+        backgroundColor: HOME_COLORS.text,
     },
     ocrTabToggle: {
         minHeight: 34,
@@ -4285,9 +4856,7 @@ const styles = StyleSheet.create({
         color: HOME_COLORS.onAccent,
     },
     libraryDivider: {
-        height: 1,
-        marginHorizontal: 22,
-        backgroundColor: HOME_COLORS.border,
+        height: 0,
     },
     booksSection: {
         gap: 0,
@@ -4296,9 +4865,12 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         gap: 8,
-        paddingHorizontal: 22,
+        paddingHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
         paddingTop: 14,
         paddingBottom: 14,
+    },
+    bookFilterRowHidden: {
+        display: 'none',
     },
     bookFilterChip: {
         minHeight: 33,
@@ -4308,10 +4880,10 @@ const styles = StyleSheet.create({
         gap: 7,
         paddingHorizontal: 15,
         paddingVertical: 7,
-        borderRadius: 22,
+        borderRadius: 0,
         borderWidth: 1,
         borderColor: HOME_COLORS.border,
-        backgroundColor: 'transparent',
+        backgroundColor: HOME_COLORS.bg,
     },
     bookFilterIconChip: {
         minWidth: 48,
@@ -4349,9 +4921,9 @@ const styles = StyleSheet.create({
         justifyContent: 'space-between',
         flexWrap: 'wrap',
         gap: 14,
-        paddingHorizontal: 22,
-        paddingTop: 0,
-        paddingBottom: 14,
+        paddingHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
+        paddingTop: 14,
+        paddingBottom: 12,
     },
     bookSectionCopy: {
         flex: 1,
@@ -4360,9 +4932,12 @@ const styles = StyleSheet.create({
     },
     bookSectionCount: {
         ...textStyles.body,
-        fontSize: 13,
-        lineHeight: 18,
-        color: HOME_COLORS.sub,
+        fontSize: 10,
+        lineHeight: 13,
+        color: HOME_COLORS.tertiary,
+        fontFamily: fontFamilies.sansBold,
+        letterSpacing: 1.8,
+        textTransform: 'uppercase',
     },
     bookSectionHint: {
         ...textStyles.caption,
@@ -4385,11 +4960,11 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
     },
     importInlineText: {
-        ...textStyles.sectionTitle,
-        fontSize: 14,
-        lineHeight: 20,
+        ...textStyles.label,
+        fontSize: 10,
+        lineHeight: 13,
         color: HOME_COLORS.accent,
-        letterSpacing: 0,
+        letterSpacing: 1.6,
     },
     publicDomainSortRow: {
         flexDirection: 'row',
@@ -4407,14 +4982,14 @@ const styles = StyleSheet.create({
         gap: 5,
         paddingHorizontal: 12,
         paddingVertical: 6,
-        borderRadius: 16,
+        borderRadius: 3,
         borderWidth: 1,
         borderColor: HOME_COLORS.border,
-        backgroundColor: 'rgba(250, 246, 238, 0.48)',
+        backgroundColor: HOME_COLORS.bg,
     },
     publicDomainSortChipActive: {
         borderColor: HOME_COLORS.accent,
-        backgroundColor: HOME_COLORS.accentBg,
+        backgroundColor: HOME_COLORS.accent,
     },
     publicDomainSortChipText: {
         fontFamily: fontFamilies.sansBold,
@@ -4424,19 +4999,19 @@ const styles = StyleSheet.create({
         letterSpacing: 0,
     },
     publicDomainSortChipTextActive: {
-        color: HOME_COLORS.accentDeep,
+        color: HOME_COLORS.onAccent,
     },
     emptyBooksPanel: {
         minHeight: 132,
         justifyContent: 'center',
         gap: spacing.xs,
-        marginHorizontal: 22,
+        marginHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
         marginTop: 8,
         paddingHorizontal: spacing.lg,
         paddingVertical: spacing.lg,
         borderWidth: 1,
         borderColor: HOME_COLORS.border,
-        borderRadius: 16,
+        borderRadius: 4,
         backgroundColor: HOME_COLORS.paper,
     },
     emptyBooksTitle: {
@@ -4453,17 +5028,168 @@ const styles = StyleSheet.create({
         lineHeight: 20,
         color: HOME_COLORS.sub,
     },
+    collectionEmptyState: {
+        minHeight: Layout.tabBarHeight * 7,
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: Spacing.screenHorizontal,
+        paddingBottom: Spacing.xl8,
+    },
+    collectionEmptyIcon: {
+        width: Layout.fabSize + Spacing.xl3,
+        height: Layout.fabSize + Spacing.xl3,
+        borderRadius: Radii.pill,
+        borderWidth: Layout.tabBarBorderWidth,
+        borderColor: HOME_COLORS.border,
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginBottom: Spacing.xl8,
+    },
+    collectionEmptyTitle: {
+        fontFamily: fontFamilies.displaySemiBold,
+        fontSize: TextStyles.screenHeadingSerif.fontSize,
+        lineHeight: TextStyles.screenHeadingSerif.fontSize + Spacing.sm,
+        textAlign: 'center',
+        color: HOME_COLORS.text,
+    },
+    collectionEmptyCopy: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: TextStyles.bodyUILarge.fontSize,
+        lineHeight: TextStyles.bodyUILarge.lineHeight,
+        maxWidth: (Layout.fabSize + Spacing.xs) * Spacing.sm,
+        marginTop: Spacing.xl3,
+        textAlign: 'center',
+        color: HOME_COLORS.sub,
+    },
+    collectionEmptyActions: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexWrap: 'wrap',
+        gap: Spacing.lg,
+        marginTop: Spacing.xl8,
+    },
+    collectionEmptyPrimary: {
+        minHeight: Layout.lookupButtonHeight,
+        minWidth: Layout.tabBarHeight * 3 + Spacing.sm,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: Spacing.lg,
+        paddingHorizontal: Spacing.xl6,
+        borderRadius: Radii.card,
+        backgroundColor: HOME_COLORS.accent,
+    },
+    collectionEmptySecondary: {
+        minHeight: Layout.lookupButtonHeight,
+        minWidth: Layout.tabBarHeight * 2 + Spacing.xl3,
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: Spacing.xl6,
+        borderRadius: Radii.card,
+        borderWidth: Layout.tabBarBorderWidth,
+        borderColor: HOME_COLORS.strongBorder,
+        backgroundColor: HOME_COLORS.bg,
+    },
+    collectionEmptyPrimaryText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: TextStyles.label.fontSize,
+        lineHeight: TextStyles.label.fontSize + Spacing.xs,
+        letterSpacing: TextStyles.label.letterSpacing,
+        textTransform: 'uppercase',
+        color: HOME_COLORS.onAccent,
+    },
+    collectionEmptySecondaryText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: TextStyles.label.fontSize,
+        lineHeight: TextStyles.label.fontSize + Spacing.xs,
+        letterSpacing: TextStyles.label.letterSpacing,
+        textTransform: 'uppercase',
+        color: HOME_COLORS.text,
+    },
     bookGrid: {
         flexDirection: 'row',
         flexWrap: 'wrap',
         gap: BOOK_GRID_GAP,
         paddingHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
-        paddingTop: 0,
+        paddingTop: 16,
         paddingBottom: 28,
     },
     bookTile: {
         gap: 0,
+    },
+    bookCoverContainer: {
         position: 'relative',
+    },
+    bookTileMeta: {
+        marginTop: 8,
+    },
+    bookRows: {
+        paddingHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
+        paddingBottom: Spacing.xl8,
+    },
+    bookRow: {
+        minHeight: Layout.tabBarHeight + Spacing.xl8,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: Spacing.xl3,
+        paddingVertical: Spacing.xl3,
+        borderBottomWidth: Layout.tabBarBorderWidth,
+        borderBottomColor: HOME_COLORS.divider,
+    },
+    bookRowLast: {
+        borderBottomWidth: 0,
+    },
+    bookRowCover: {
+        borderRadius: Radii.cover,
+    },
+    bookRowCoverText: {
+        fontSize: TextStyles.koreanTitle.fontSize,
+        lineHeight: TextStyles.koreanTitle.fontSize + Spacing.sm,
+    },
+    bookRowCopy: {
+        flex: 1,
+        minWidth: 0,
+    },
+    bookRowTitleLine: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: Spacing.md,
+    },
+    bookRowTitle: {
+        flexShrink: 1,
+        fontFamily: fontFamilies.krSerifSemiBold,
+        fontSize: TextStyles.koreanCurrentReading.fontSize,
+        lineHeight: TextStyles.koreanCurrentReading.fontSize + Spacing.sm,
+        color: HOME_COLORS.text,
+    },
+    bookRowAuthor: {
+        fontFamily: fontFamilies.displayItalic,
+        fontSize: TextStyles.romanization.fontSize,
+        lineHeight: TextStyles.romanization.fontSize + Spacing.xs,
+        color: HOME_COLORS.sub,
+        marginTop: Spacing.xs,
+    },
+    bookRowMeta: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: TextStyles.bodyUISmall.fontSize,
+        lineHeight: TextStyles.bodyUISmall.lineHeight,
+        color: HOME_COLORS.faint,
+        marginTop: Spacing.xs,
+    },
+    inlineBadge: {
+        borderWidth: Layout.tabBarBorderWidth,
+        borderColor: HOME_COLORS.border,
+        borderRadius: Radii.badge,
+        paddingHorizontal: Spacing.sm,
+        paddingVertical: Spacing.xs,
+    },
+    inlineBadgeText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: TextStyles.labelSmall.fontSize,
+        lineHeight: TextStyles.labelSmall.fontSize + Spacing.xs,
+        letterSpacing: TextStyles.labelSmall.letterSpacing,
+        color: HOME_COLORS.sub,
     },
     bookTileMenuOpen: {
         zIndex: 20,
@@ -4472,53 +5198,55 @@ const styles = StyleSheet.create({
         resizeMode: 'cover',
         backgroundColor: HOME_COLORS.surface2,
     },
-    stacksCover: {
+    defaultCover: {
         overflow: 'hidden',
-        position: 'relative',
-        shadowColor: '#000',
-        shadowOpacity: 0.12,
-        shadowRadius: 2,
-        shadowOffset: { width: 0, height: 1 },
-        elevation: 1,
+        borderWidth: 1,
+        borderColor: HOME_COLORS.border,
+        borderRadius: 2,
+        alignItems: 'center',
+        justifyContent: 'center',
     },
-    stacksCoverSpine: {
-        position: 'absolute',
-        top: 0,
-        bottom: 0,
-        left: 0,
-        zIndex: 5,
-        backgroundColor: 'rgba(0, 0, 0, 0.08)',
+    defaultCoverRule: {
+        height: 1,
+        borderRadius: 1,
     },
-    stacksCoverCopy: {
-        position: 'absolute',
-    },
-    stacksCoverTitle: {
-        fontFamily: fontFamilies.krSerifBold,
-        fontWeight: '600',
+    defaultCoverTitle: {
+        width: '100%',
         letterSpacing: 0,
+        textAlign: 'center',
     },
-    stacksCoverAuthor: {
-        fontFamily: fontFamilies.sansRegular,
-        letterSpacing: 0,
-        opacity: 0.7,
+    defaultCoverTitleKorean: {
+        fontFamily: fontFamilies.krSerifSemiBold,
     },
-    stacksCoverBars: {
-        position: 'absolute',
+    defaultCoverTitleDisplay: {
+        fontFamily: fontFamilies.displaySemiBold,
+    },
+    defaultCoverAuthor: {
+        width: '100%',
+        fontFamily: fontFamilies.krSerifRegular,
+        opacity: 1,
+        textAlign: 'center',
     },
     bookCover: {
-        borderRadius: 5,
+        borderRadius: 2,
     },
     bookCoverText: {
-        fontSize: 13,
-        lineHeight: 18,
+        fontSize: 21,
+        lineHeight: 29,
     },
     bookTitle: {
-        ...textStyles.sectionTitle,
-        marginTop: 8,
-        fontSize: 13,
-        lineHeight: 17,
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 12,
+        lineHeight: 16,
         color: HOME_COLORS.text,
         letterSpacing: 0,
+    },
+    bookTileAuthor: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 11,
+        lineHeight: 15,
+        color: HOME_COLORS.tertiary,
+        marginTop: 2,
     },
     bookProgressRail: {
         height: 3,
@@ -4529,7 +5257,7 @@ const styles = StyleSheet.create({
     },
     bookProgressFill: {
         height: '100%',
-        borderRadius: 999,
+        borderRadius: 2,
         backgroundColor: HOME_COLORS.accent,
     },
     bookProgressFillSuccess: {
@@ -4614,28 +5342,49 @@ const styles = StyleSheet.create({
     publicDomainActionTextReady: {
         color: HOME_COLORS.accentDeep,
     },
+    bookFormatBadge: {
+        position: 'absolute',
+        top: Spacing.md,
+        right: Spacing.md,
+        minHeight: Spacing.xl8,
+        justifyContent: 'center',
+        paddingHorizontal: Spacing.sm,
+        borderRadius: Radii.badge,
+        borderWidth: Layout.tabBarBorderWidth,
+        borderColor: HOME_COLORS.border,
+        backgroundColor: HOME_COLORS.bg,
+    },
+    bookFormatBadgeText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: TextStyles.labelSmall.fontSize,
+        lineHeight: TextStyles.labelSmall.fontSize + Spacing.xs,
+        letterSpacing: TextStyles.labelSmall.letterSpacing,
+        color: HOME_COLORS.text,
+    },
     bookDownloadBadge: {
         position: 'absolute',
-        top: 8,
-        left: 8,
-        width: 28,
-        height: 28,
-        borderRadius: 14,
+        left: Spacing.md,
+        bottom: Spacing.md,
+        width: Layout.lookupButtonHeightCompact,
+        height: Spacing.xl8,
+        borderRadius: Radii.badge,
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: HOME_COLORS.accent,
+        backgroundColor: HOME_COLORS.bg,
+        borderWidth: 1,
+        borderColor: HOME_COLORS.border,
     },
     bookMenuButton: {
         position: 'absolute',
         top: 8,
         right: 8,
         zIndex: 3,
-        width: 28,
-        height: 28,
-        borderRadius: 14,
+        width: 30,
+        height: 30,
+        borderRadius: 15,
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: 'rgba(44, 38, 32, 0.74)',
+        backgroundColor: HOME_COLORS.accent,
     },
     bookMenu: {
         position: 'absolute',
@@ -4643,15 +5392,15 @@ const styles = StyleSheet.create({
         zIndex: 4,
         minWidth: 160,
         overflow: 'hidden',
-        borderRadius: 8,
+        borderRadius: 4,
         borderWidth: 1,
         borderColor: HOME_COLORS.border,
         backgroundColor: HOME_COLORS.surface,
         shadowColor: HOME_COLORS.text,
-        shadowOpacity: 0.16,
-        shadowRadius: 12,
-        shadowOffset: { width: 0, height: 6 },
-        elevation: 7,
+        shadowOpacity: 0,
+        shadowRadius: 0,
+        shadowOffset: { width: 0, height: 0 },
+        elevation: 0,
     },
     bookMenuLeft: {
         left: 0,
@@ -4693,7 +5442,7 @@ const styles = StyleSheet.create({
     },
     songsPanel: {
         gap: 12,
-        paddingHorizontal: 22,
+        paddingHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
         paddingTop: 14,
         paddingBottom: 28,
     },
@@ -4709,14 +5458,17 @@ const styles = StyleSheet.create({
     },
     songTextActionLabel: {
         fontFamily: fontFamilies.sansBold,
-        fontSize: 14,
-        lineHeight: 18,
+        fontSize: 10,
+        lineHeight: 13,
+        letterSpacing: 1.8,
+        textTransform: 'uppercase',
         color: HOME_COLORS.accent,
     },
     songList: {
-        borderWidth: 1,
+        borderWidth: 0,
+        borderTopWidth: 1,
+        borderBottomWidth: 1,
         borderColor: HOME_COLORS.border,
-        borderRadius: 16,
         backgroundColor: HOME_COLORS.surface,
         overflow: 'hidden',
     },
@@ -4726,13 +5478,13 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         paddingHorizontal: spacing.md,
         borderBottomWidth: 1,
-        borderBottomColor: HOME_COLORS.border,
+        borderBottomColor: HOME_COLORS.divider,
     },
     songRowLast: {
         borderBottomWidth: 0,
     },
     songRowPressed: {
-        backgroundColor: HOME_COLORS.paper,
+        backgroundColor: HOME_COLORS.surface2,
     },
     songCopy: {
         flex: 1,
@@ -4740,7 +5492,7 @@ const styles = StyleSheet.create({
         paddingRight: spacing.sm,
     },
     songTitle: {
-        fontFamily: fontFamilies.serifBold,
+        fontFamily: fontFamilies.krSerifSemiBold,
         fontSize: 17,
         lineHeight: 22,
         color: HOME_COLORS.text,
@@ -4768,8 +5520,8 @@ const styles = StyleSheet.create({
         gap: spacing.sm,
         paddingHorizontal: spacing.xl,
         paddingVertical: spacing.xl,
-        borderRadius: radii.md,
-        borderWidth: 1.5,
+        borderRadius: 4,
+        borderWidth: 1,
         borderStyle: 'dashed',
         borderColor: HOME_COLORS.border,
         backgroundColor: HOME_COLORS.paper,
@@ -4790,6 +5542,88 @@ const styles = StyleSheet.create({
         lineHeight: 22,
         color: HOME_COLORS.sub,
     },
+    fabScrim: {
+        ...StyleSheet.absoluteFillObject,
+        justifyContent: 'flex-end',
+        alignItems: 'flex-end',
+        zIndex: 20,
+    },
+    fabScrimBackdrop: {
+        ...StyleSheet.absoluteFillObject,
+        overflow: 'hidden',
+    },
+    fabScrimTint: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: 'rgba(27,28,28,0.34)',
+    },
+    fabMenu: {
+        position: 'absolute',
+        right: FAB_EDGE_OFFSET,
+        bottom: FAB_WINDOW_BOTTOM_OFFSET + Layout.fabSize + FAB_MENU_GAP,
+        alignItems: 'flex-end',
+        gap: 14,
+        zIndex: 22,
+    },
+    fabMenuItem: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'flex-end',
+        gap: 12,
+    },
+    fabMenuText: {
+        minHeight: 32,
+        paddingHorizontal: 13,
+        paddingVertical: 9,
+        borderRadius: Radii.input,
+        borderWidth: Layout.tabBarBorderWidth,
+        borderColor: HOME_COLORS.border,
+        backgroundColor: HOME_COLORS.bg,
+        color: HOME_COLORS.text,
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 10,
+        lineHeight: 12,
+        letterSpacing: 1.8,
+        textTransform: 'uppercase',
+        overflow: 'hidden',
+        shadowColor: 'rgba(27,28,28,0.16)',
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 1,
+        shadowRadius: 16,
+        elevation: 6,
+    },
+    fabMenuIcon: {
+        width: 48,
+        height: 48,
+        borderRadius: Radii.pill,
+        borderWidth: Layout.tabBarBorderWidth,
+        borderColor: HOME_COLORS.border,
+        backgroundColor: HOME_COLORS.bg,
+        alignItems: 'center',
+        justifyContent: 'center',
+        shadowColor: 'rgba(27,28,28,0.16)',
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 1,
+        shadowRadius: 16,
+        elevation: 6,
+    },
+    fab: {
+        position: 'absolute',
+        right: FAB_EDGE_OFFSET,
+        width: Layout.fabSize,
+        height: Layout.fabSize,
+        borderRadius: Radii.pill,
+        backgroundColor: HOME_COLORS.accent,
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 23,
+        ...HOME_SHADOWS.cta,
+    },
+    fabScreenAnchor: {
+        bottom: FAB_EDGE_OFFSET,
+    },
+    fabModalAnchor: {
+        bottom: FAB_WINDOW_BOTTOM_OFFSET,
+    },
     loadingOverlay: {
         position: 'absolute',
         top: spacing.xl,
@@ -4799,7 +5633,7 @@ const styles = StyleSheet.create({
         gap: spacing.sm,
         paddingHorizontal: spacing.md,
         paddingVertical: spacing.sm,
-        borderRadius: 999,
+        borderRadius: 4,
         borderWidth: 1,
         borderColor: HOME_COLORS.border,
         backgroundColor: HOME_COLORS.surface,
@@ -4935,5 +5769,7 @@ const styles = StyleSheet.create({
         opacity: 0.78,
     },
 });
+
+const defaultHomeStyles = createStyles(HOME_COLORS, colors);
 
 export default Home;

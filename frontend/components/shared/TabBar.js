@@ -1,72 +1,66 @@
-import {
-    Feather,
-    Ionicons,
-    MaterialCommunityIcons,
-} from '@expo/vector-icons';
 import { StyleSheet, Text, View } from 'react-native';
-import { useTranslation } from '../../hooks/useTranslation';
-import { fontFamilies } from '../../theme';
+import { colors, fontFamilies } from '../../theme';
 
-const TAB_COLORS = {
-    surface: '#faf6ee',
-    border: '#e4dac6',
-    active: '#b8552e',
-    idle: '#b3a892',
+const tabLabels = {
+    Home: 'HOME',
+    Read: 'READ',
+    Learn: 'VOCAB',
+    Write: 'WRITE',
+    Profile: 'PROFILE',
 };
 
-const tabIcons = {
-    Home: { Component: Ionicons, name: 'home-outline', labelKey: 'tabs.home' },
-    Read: { Component: Ionicons, name: 'book-outline', labelKey: 'tabs.read' },
-    Learn: { Component: Ionicons, name: 'sparkles-outline', labelKey: 'tabs.learn' },
-    ScreenshotOcr: { Component: Ionicons, name: 'scan-outline', labelKey: 'tabs.ocr' },
-    Write: { Component: Feather, name: 'edit-3', labelKey: 'tabs.write' },
-    Profile: { Component: MaterialCommunityIcons, name: 'account-circle-outline', labelKey: 'tabs.profile' },
-};
-
-const TabIcon = ({ routeName, focused, color }) => {
-    const { t } = useTranslation();
-    const { Component, name, labelKey } = tabIcons[routeName] ?? tabIcons.Home;
+const TabIcon = ({ routeName, focused, color, activeBorderColor }) => {
+    const label = tabLabels[routeName] ?? String(routeName || '').toUpperCase();
 
     return (
         <View style={styles.tabContent}>
-            <Component
-                name={name}
-                color={color}
-                size={24}
-            />
             <Text style={[
                 styles.tabLabel,
-                focused && styles.tabLabelActive,
+                focused && [
+                    styles.tabLabelActive,
+                    { borderBottomColor: activeBorderColor },
+                ],
                 { color },
             ]}>
-                {t(labelKey)}
+                {label}
             </Text>
         </View>
     );
 };
 
-export const tabScreenOptions = ({ route }, { hideTabChrome = false } = {}) => ({
+export const createTabBarBaseStyle = (themeColors = colors) => ({
+    ...styles.tabBar,
+    backgroundColor: themeColors.bgPage,
+    borderTopColor: themeColors.border,
+});
+
+export const tabScreenOptions = ({ route }, { hideTabChrome = false, themeColors = colors } = {}) => ({
     headerShown: false,
     tabBarHideOnKeyboard: true,
-    tabBarActiveTintColor: TAB_COLORS.active,
-    tabBarInactiveTintColor: TAB_COLORS.idle,
-    tabBarStyle: hideTabChrome ? styles.tabBarHidden : tabBarBaseStyle,
+    tabBarActiveTintColor: themeColors.text,
+    tabBarInactiveTintColor: themeColors.textSubtle,
+    tabBarStyle: hideTabChrome ? styles.tabBarHidden : createTabBarBaseStyle(themeColors),
     tabBarItemStyle: styles.tabBarItem,
     tabBarIconStyle: styles.iconSlot,
     tabBarIcon: ({ focused, color }) => (
-        <TabIcon routeName={route.name} focused={focused} color={color} />
+        <TabIcon
+            routeName={route.name}
+            focused={focused}
+            color={color}
+            activeBorderColor={themeColors.text}
+        />
     ),
     tabBarShowLabel: false,
 });
 
 const styles = StyleSheet.create({
     tabBar: {
-        height: 72,
-        paddingTop: 9,
-        paddingBottom: 12,
-        backgroundColor: TAB_COLORS.surface,
+        height: 64,
+        paddingTop: 0,
+        paddingBottom: 0,
+        backgroundColor: colors.bgPage,
         borderTopWidth: 1,
-        borderTopColor: TAB_COLORS.border,
+        borderTopColor: colors.border,
         elevation: 0,
         shadowOpacity: 0,
     },
@@ -83,22 +77,34 @@ const styles = StyleSheet.create({
         flex: 1,
         width: '100%',
         alignItems: 'center',
-        justifyContent: 'center',
-        gap: 4,
-        paddingVertical: 2,
+        justifyContent: 'flex-end',
+        paddingBottom: 18,
     },
     tabLabel: {
         fontFamily: fontFamilies.sansMedium,
         fontSize: 10,
-        lineHeight: 12,
-        letterSpacing: 0,
+        lineHeight: 13,
+        letterSpacing: 1.8,
+        paddingBottom: 7,
+        textTransform: 'uppercase',
     },
     tabLabelActive: {
-        fontFamily: fontFamilies.sansSemiBold,
+        fontFamily: fontFamilies.sansBold,
+        paddingBottom: 5,
+        borderBottomWidth: 2,
     },
     tabBarHidden: {
-        display: 'none',
+        height: 0,
+        minHeight: 0,
+        maxHeight: 0,
+        paddingTop: 0,
+        paddingBottom: 0,
+        borderTopWidth: 0,
+        elevation: 0,
+        shadowOpacity: 0,
+        opacity: 0,
+        overflow: 'hidden',
     },
 });
 
-export const tabBarBaseStyle = styles.tabBar;
+export const tabBarBaseStyle = createTabBarBaseStyle(colors);

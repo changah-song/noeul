@@ -20,7 +20,7 @@ import { useAppContext } from '../../contexts/AppContext';
 import { useLocalOwner } from '../../contexts/LocalOwnerContext';
 import { useTranslation } from '../../hooks/useTranslation';
 import { getSavedWords } from '../../services/Database';
-import { colors, fontFamilies, spacing, textStyles } from '../../theme';
+import { createNativeReaderThemeTokens, fontFamilies, spacing, textStyles, useTheme } from '../../theme';
 
 const WORD_EDGE_PATTERN = /^[^\u3131-\u318e\uac00-\ud7a3a-zA-Z0-9]+|[^\u3131-\u318e\uac00-\ud7a3a-zA-Z0-9]+$/g;
 const DEFAULT_LYRIC_FONT_SIZE = 28;
@@ -89,7 +89,9 @@ const buildNativeLyricBlocks = (lyricLines) => lyricLines.map((line, index) => {
 
 const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsChange }) => {
     const { t } = useTranslation();
-    const { targetLanguage } = useAppContext();
+    const { colors } = useTheme();
+    const styles = useMemo(() => createStyles(colors), [colors]);
+    const { targetLanguage, isDarkMode } = useAppContext();
     const { activeOwnerId } = useLocalOwner();
     const insets = useSafeAreaInsets();
     const { height: viewportHeight } = useWindowDimensions();
@@ -165,8 +167,13 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         currentSpineHref: 'lyrics',
         currentSpinePath: 'lyrics',
         renderMode: 'continuous',
+        readerEdgeStateEnabled: false,
     }), [song?.id]);
     const nativeLyricBlocks = useMemo(() => buildNativeLyricBlocks(lyricLines), [lyricLines]);
+    const nativeReaderThemeTokens = useMemo(
+        () => createNativeReaderThemeTokens(colors),
+        [colors]
+    );
 
     const savedLyricsCount = useMemo(() => {
         const lyricTokens = new Set(
@@ -420,9 +427,11 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                         chapterWindow={[]}
                         restorePosition={{ spineIndex: 0, pageIndex: 0 }}
                         renderMode="continuous"
+                        readerEdgeStateEnabled={false}
                         fontSize={lyricFontSize}
                         lineHeight={SONG_READER_LINE_HEIGHT}
-                        theme="light"
+                        theme={isDarkMode ? 'dark' : 'light'}
+                        themeTokens={nativeReaderThemeTokens}
                         highlightTerms={songHighlightTerms}
                         clearSelectionToken={clearSelectionToken}
                         onWordSelected={handleNativeWordSelected}
@@ -499,7 +508,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                     highlightedWord={highlightedWord}
                     sourceSentence={highlightedWordContext?.sentence ?? ''}
                     isNativeSelection={isNativeSelection}
-                    isDarkMode={false}
+                    isDarkMode={isDarkMode}
                     onClose={closeLookup}
                     onWordSave={handleWordSave}
                     onWordUnsave={handleWordUnsave}
@@ -573,25 +582,27 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     );
 };
 
-const styles = StyleSheet.create({
+const createStyles = (colors) => StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: '#f6f1e9',
+        backgroundColor: colors.bgPage,
     },
     topBar: {
         minHeight: 56,
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        paddingHorizontal: spacing.md,
-        backgroundColor: colors.surfaceElevated,
+        paddingHorizontal: 20,
+        backgroundColor: colors.bgPage,
+        borderBottomWidth: 1,
+        borderBottomColor: colors.divider,
     },
     iconButton: {
         width: 42,
         height: 42,
         alignItems: 'center',
         justifyContent: 'center',
-        borderRadius: 21,
+        borderRadius: 0,
     },
     disabledControl: {
         opacity: 0.36,
@@ -599,11 +610,12 @@ const styles = StyleSheet.create({
     topSongTitle: {
         flex: 1,
         minWidth: 0,
-        fontFamily: fontFamilies.serifBold,
-        fontSize: 20,
-        lineHeight: 25,
+        fontFamily: fontFamilies.krSerifSemiBold,
+        fontSize: 16,
+        lineHeight: 22,
         color: colors.text,
         letterSpacing: 0,
+        textAlign: 'center',
     },
     koreanTitle: {
         fontFamily: fontFamilies.krSerifBold,
@@ -614,18 +626,20 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'space-between',
         gap: spacing.md,
-        paddingHorizontal: spacing.xl,
+        paddingHorizontal: 24,
         paddingBottom: spacing.sm,
-        backgroundColor: colors.surfaceElevated,
+        backgroundColor: colors.bgPage,
     },
     songArtist: {
         flex: 1,
         minWidth: 0,
         fontFamily: fontFamilies.sansBold,
-        fontSize: 14,
-        lineHeight: 18,
-        color: colors.textMuted,
-        letterSpacing: 0,
+        fontSize: 10,
+        lineHeight: 13,
+        color: colors.textTertiary,
+        letterSpacing: 1.8,
+        textTransform: 'uppercase',
+        textAlign: 'center',
     },
     savedMeta: {
         fontFamily: fontFamilies.sansRegular,
@@ -641,23 +655,23 @@ const styles = StyleSheet.create({
         position: 'absolute',
         right: spacing.md,
         width: 236,
-        borderRadius: 18,
+        borderRadius: 4,
         borderWidth: 1,
-        borderColor: '#e4d8c8',
+        borderColor: colors.border,
         backgroundColor: colors.surfaceElevated,
         paddingVertical: spacing.xs,
-        shadowColor: 'rgba(37, 32, 24, 0.2)',
-        shadowOffset: { width: 0, height: 10 },
-        shadowOpacity: 0.18,
-        shadowRadius: 22,
-        elevation: 8,
+        shadowColor: colors.transparent,
+        shadowOffset: { width: 0, height: 0 },
+        shadowOpacity: 0,
+        shadowRadius: 0,
+        elevation: 0,
     },
     menuFontRow: {
         paddingHorizontal: spacing.md,
         paddingVertical: spacing.sm,
         gap: spacing.xs,
         borderBottomWidth: 1,
-        borderBottomColor: '#eee4d7',
+        borderBottomColor: colors.divider,
     },
     menuLabel: {
         fontFamily: fontFamilies.sansBold,
@@ -676,8 +690,8 @@ const styles = StyleSheet.create({
         height: 34,
         alignItems: 'center',
         justifyContent: 'center',
-        borderRadius: 17,
-        backgroundColor: '#f4ede2',
+        borderRadius: 3,
+        backgroundColor: colors.surfaceMuted,
     },
     menuFontButtonText: {
         fontFamily: fontFamilies.sansBold,
@@ -715,19 +729,19 @@ const styles = StyleSheet.create({
     },
     divider: {
         height: 1,
-        backgroundColor: '#e2d7c8',
+        backgroundColor: colors.divider,
     },
     readerSurface: {
         flex: 1,
-        backgroundColor: '#f6f1e9',
+        backgroundColor: colors.bgPage,
     },
     nativeLyricReader: {
         flex: 1,
-        backgroundColor: '#f6f1e9',
+        backgroundColor: colors.bgPage,
     },
     lyricsScroll: {
         flex: 1,
-        backgroundColor: '#f6f1e9',
+        backgroundColor: colors.bgPage,
     },
     lyricsContent: {
         paddingTop: spacing.xl,
@@ -749,12 +763,15 @@ const styles = StyleSheet.create({
         color: colors.text,
     },
     savedLyricWord: {
-        color: colors.accentStrong,
-        backgroundColor: 'rgba(184, 85, 46, 0.13)',
+        color: colors.text,
+        backgroundColor: colors.transparent,
+        textDecorationLine: 'underline',
+        textDecorationStyle: 'dotted',
+        textDecorationColor: colors.textTertiary,
     },
     activeLyricWord: {
-        color: colors.accentStrong,
-        backgroundColor: 'rgba(252, 213, 180, 0.55)',
+        color: colors.bgPage,
+        backgroundColor: colors.accent,
     },
     lookupLayer: {
         ...StyleSheet.absoluteFillObject,
@@ -770,12 +787,12 @@ const styles = StyleSheet.create({
         flex: 1,
         justifyContent: 'center',
         paddingHorizontal: spacing.lg,
-        backgroundColor: 'rgba(37, 32, 24, 0.38)',
+        backgroundColor: colors.overlay,
     },
     editModal: {
         maxHeight: '84%',
         backgroundColor: colors.surfaceElevated,
-        borderRadius: 28,
+        borderRadius: 4,
         padding: spacing.xl,
         gap: spacing.md,
     },
@@ -796,7 +813,7 @@ const styles = StyleSheet.create({
     editInput: {
         borderWidth: 1,
         borderColor: colors.border,
-        borderRadius: 16,
+        borderRadius: 3,
         paddingHorizontal: spacing.md,
         paddingVertical: spacing.sm,
         color: colors.text,
@@ -817,7 +834,7 @@ const styles = StyleSheet.create({
         height: 44,
         alignItems: 'center',
         justifyContent: 'center',
-        borderRadius: 999,
+        borderRadius: 4,
         paddingHorizontal: spacing.lg,
     },
     modalButtonSecondary: {

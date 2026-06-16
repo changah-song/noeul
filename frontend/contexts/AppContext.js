@@ -42,6 +42,7 @@ import {
   upsertUserPreferences,
 } from '../services/preferencesCloudSync';
 import { upsertUserProfile } from '../services/profilesCloudSync';
+import { ThemeProvider } from '../theme/tokens';
 
 const AppContext = createContext({
   dictMode: true,
@@ -53,6 +54,9 @@ const AppContext = createContext({
   activeProfileId: DEFAULT_ACTIVE_PROFILE_ID,
   setActiveProfileId: () => {},
   switchProfile: () => {},
+  isDarkMode: false,
+  setIsDarkMode: () => {},
+  toggleDarkMode: () => {},
   languageSettingsReady: false,
   updateLanguageSettings: () => {},
   syncLanguagePreferences: () => Promise.resolve(),
@@ -67,6 +71,26 @@ const normalizeProfileId = (profileId, targetLanguage) => {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const isUuid = (value) => typeof value === 'string' && UUID_RE.test(value);
+
+const normalizeBoolean = (value, fallback = false) => {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', '1', 'yes', 'dark'].includes(normalized)) {
+      return true;
+    }
+    if (['false', '0', 'no', 'light'].includes(normalized)) {
+      return false;
+    }
+  }
+  if (typeof value === 'number') {
+    return value !== 0;
+  }
+
+  return fallback;
+};
 
 const normalizeLanguageSettings = (settings = {}) => {
   const targetLanguage = normalizeLanguageCode(
@@ -89,6 +113,13 @@ const normalizeLanguageSettings = (settings = {}) => {
       settings.activeProfileId ?? settings.active_profile_id,
       targetLanguage
     ),
+    isDarkMode: normalizeBoolean(
+      settings.isDarkMode
+        ?? settings.is_dark_mode
+        ?? settings.darkMode
+        ?? settings.dark_mode,
+      false
+    ),
     updatedAt: settings.updatedAt
       ?? settings.updated_at
       ?? null,
@@ -99,6 +130,9 @@ const settingsFromCloudPreferences = (preferences = {}) => normalizeLanguageSett
   target_language: preferences.target_language,
   native_language: preferences.native_language,
   active_profile_id: preferences.active_profile_id,
+  is_dark_mode: preferences.reader_settings?.isDarkMode
+    ?? preferences.reader_settings?.is_dark_mode
+    ?? preferences.reader_settings?.darkMode,
   updated_at: preferences.updated_at,
 });
 
@@ -145,6 +179,7 @@ export const AppProvider = ({ children, user }) => {
   const [languageSettings, setLanguageSettings] = useState({
     ...DEFAULT_LANGUAGE_SETTINGS,
     activeProfileId: DEFAULT_ACTIVE_PROFILE_ID,
+    isDarkMode: false,
     updatedAt: null,
   });
   const [languageSettingsReady, setLanguageSettingsReady] = useState(false);
@@ -228,6 +263,7 @@ export const AppProvider = ({ children, user }) => {
       ownerId,
       generation,
       targetLanguage: settings.targetLanguage,
+      script: settings.targetLanguage === 'zh' ? 'zh-Hans' : undefined,
       displayName: getLanguageLabel(settings.targetLanguage),
     });
 
@@ -336,6 +372,9 @@ export const AppProvider = ({ children, user }) => {
       activeProfileId: cloudPreferences
         ? cloudPreferenceSettings.activeProfileId
         : localSettings.activeProfileId,
+      isDarkMode: cloudPreferences
+        ? cloudPreferenceSettings.isDarkMode
+        : localSettings.isDarkMode,
       updatedAt: cloudTimestamp,
     });
     cloudSettings = await ensureCloudProfileForSettings(
@@ -482,6 +521,9 @@ export const AppProvider = ({ children, user }) => {
       activeProfileId: profileId,
       targetLanguage,
     }),
+    isDarkMode: languageSettings.isDarkMode,
+    setIsDarkMode: (isDarkMode) => saveLanguageSettings({ isDarkMode }),
+    toggleDarkMode: () => saveLanguageSettings({ isDarkMode: !languageSettings.isDarkMode }),
     languageSettingsReady,
     updateLanguageSettings: saveLanguageSettings,
     syncLanguagePreferences,
@@ -490,6 +532,7 @@ export const AppProvider = ({ children, user }) => {
     languageSettings.interfaceLanguage,
     languageSettings.nativeLanguage,
     languageSettings.activeProfileId,
+    languageSettings.isDarkMode,
     languageSettings.targetLanguage,
     languageSettingsReady,
     saveLanguageSettings,
@@ -498,7 +541,9 @@ export const AppProvider = ({ children, user }) => {
 
   return (
     <AppContext.Provider value={value}>
-      {children}
+      <ThemeProvider isDarkMode={languageSettings.isDarkMode}>
+        {children}
+      </ThemeProvider>
     </AppContext.Provider>
   );
 };

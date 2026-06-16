@@ -9,6 +9,7 @@ import {
     TextInput,
     TouchableOpacity,
     TouchableWithoutFeedback,
+    Switch,
     useWindowDimensions,
     View,
 } from 'react-native';
@@ -23,16 +24,11 @@ import {
     getLanguageLabel,
     KRDICT_INTERFACE_LANGUAGE_OPTIONS,
     normalizeBookLanguage,
+    normalizeChineseScript,
     normalizeInterfaceLanguageCode,
     TARGET_LANGUAGE_OPTIONS,
 } from '../constants/languages';
-import { colors, fontFamilies, radii, spacing, textStyles } from '../theme';
-import {
-    darkenHex,
-    getGeneratedBookCoverPalette,
-    getStoredBookCoverColors,
-    lightenHex,
-} from '../services/bookCoverColors';
+import { colors, fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
 import { getDefaultProfileIdForLanguage } from '../services/profileScope';
 import { fetchUserProfiles, upsertUserProfile } from '../services/profilesCloudSync';
 
@@ -40,10 +36,10 @@ const WORDS_PER_PAGE = 250;
 const SHELF_WIDTH = 346;
 const SHELF_GAP = 2;
 const MIN_EMPTY_SLOT_WIDTH = 52;
-const SHELF_ROW_HEIGHT = 140;
-const SHELF_BASE_HEIGHT = 4;
+const SHELF_ROW_HEIGHT = 166;
+const SHELF_BASE_HEIGHT = 6;
 const SHELF_ROW_SPACING = 16;
-const SHELF_VIEWPORT_ROW_COUNT = 2;
+const SHELF_VIEWPORT_ROW_COUNT = 1;
 const SHELF_EXPANSION_ROW_COUNT = 2;
 const SHELF_ROW_STRIDE = SHELF_ROW_HEIGHT + SHELF_BASE_HEIGHT + SHELF_ROW_SPACING;
 const SHELF_VIEWPORT_HEIGHT = (
@@ -71,24 +67,35 @@ const SPINE_PAGE_BUCKETS = [
     { minPages: 420, maxPages: 640, width: 47 },
 ];
 
-const PROFILE_COLORS = {
-    bg: '#ece4d6',
-    surface: '#faf6ee',
-    ink: '#2c2620',
-    sub: '#766a59',
-    faint: '#a89b86',
-    border: '#e4dac6',
-    shelf: '#d8c6a6',
-    accent: '#b8552e',
-    danger: '#c0492f',
-    tooltip: '#2c2620',
-    white: '#ffffff',
-};
+const getProfileColors = (themeColors) => ({
+    bg: themeColors.bgPage,
+    surface: themeColors.surface,
+    muted: themeColors.surfaceMuted,
+    surfaceMuted: themeColors.surfaceMuted,
+    ink: themeColors.text,
+    sub: themeColors.textTertiary,
+    faint: themeColors.textSubtle,
+    border: themeColors.divider,
+    strongBorder: themeColors.borderStrong,
+    shelf: themeColors.textSubtle,
+    shelfBase: themeColors.border,
+    accent: themeColors.accent,
+    danger: themeColors.danger,
+    tooltip: themeColors.inkSlate,
+    white: themeColors.white,
+});
 
 const preferenceRows = [
     { key: 'notifications', labelKey: 'profile.notifications', valueKey: 'profile.notificationsOn' },
     { key: 'readingLevel', labelKey: 'profile.readingLevel', valueKey: 'profile.beginner' },
-    { key: 'appearance', labelKey: 'profile.appearance', valueKey: 'profile.light' },
+];
+
+const PROFILE_SPINE_PALETTES = [
+    { field: colors.inkSlate, panel: colors.inkSlate, rule: colors.borderStrong, title: colors.borderStrong },
+    { field: colors.coverMid, panel: colors.coverMid, rule: colors.surfaceMuted, title: colors.surfaceMuted },
+    { field: colors.border, panel: colors.border, rule: colors.textSecondary, title: colors.textSecondary },
+    { field: colors.coverSlate, panel: colors.coverSlate, rule: colors.borderStrong, title: colors.borderStrong },
+    { field: colors.textMuted, panel: colors.textMuted, rule: colors.surfaceMuted, title: colors.surfaceMuted },
 ];
 
 const clampProgress = (value) => {
@@ -118,23 +125,9 @@ const getBookKey = (book, fallback = '') => (
 );
 
 const spinePaletteForBook = (book) => {
-    const generatedPalette = getGeneratedBookCoverPalette(book);
-    const useGeneratedDefaultCover = !!book?.publicDomain && !book?.cover;
-    const storedColors = useGeneratedDefaultCover ? {} : getStoredBookCoverColors(book);
-    const accent = storedColors.coverAccentColor || generatedPalette.accent;
-    const fieldSource = storedColors.coverBackgroundColor || generatedPalette.bg;
-    const panel = darkenHex(accent, 0.46) || darkenHex(generatedPalette.accent, 0.46);
-
-    return {
-        field: panel,
-        panel,
-        rule: useGeneratedDefaultCover
-            ? generatedPalette.soft
-            : lightenHex(fieldSource, 0.78) || generatedPalette.soft,
-        title: useGeneratedDefaultCover
-            ? generatedPalette.soft
-            : lightenHex(fieldSource, 0.82) || generatedPalette.soft,
-    };
+    const key = `${getBookTitle(book)}-${getBookAuthor(book)}`;
+    const hash = key.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0);
+    return PROFILE_SPINE_PALETTES[Math.abs(hash) % PROFILE_SPINE_PALETTES.length];
 };
 
 const getSpineTitleGlyphs = (title, spine) => {
@@ -341,7 +334,7 @@ const getRenderedShelfRowCount = (actualRowCount) => {
     );
 };
 
-const BookSpine = ({ item, index, activeBookKey, shelfWidth, onShow }) => {
+const BookSpine = ({ item, index, activeBookKey, shelfWidth, onShow, styles }) => {
     const { book, spine } = item;
     const bookKey = getBookKey(book, String(index));
     const title = getBookTitle(book);
@@ -445,7 +438,7 @@ const BookSpine = ({ item, index, activeBookKey, shelfWidth, onShow }) => {
     );
 };
 
-const ShelfRow = ({ row, rowIndex, isLast, activeBookKey, shelfWidth, onShowBook }) => (
+const ShelfRow = ({ row, rowIndex, isLast, activeBookKey, shelfWidth, onShowBook, styles }) => (
     <View style={[styles.shelfBlock, isLast && styles.shelfBlockLast]}>
         <View style={styles.shelfBookRow}>
             {row.map((item, index) => (
@@ -456,6 +449,7 @@ const ShelfRow = ({ row, rowIndex, isLast, activeBookKey, shelfWidth, onShowBook
                     activeBookKey={activeBookKey}
                     shelfWidth={shelfWidth}
                     onShow={onShowBook}
+                    styles={styles}
                 />
             ))}
             <View style={styles.emptyShelfSlot}>
@@ -466,25 +460,36 @@ const ShelfRow = ({ row, rowIndex, isLast, activeBookKey, shelfWidth, onShowBook
     </View>
 );
 
-const PreferenceRow = ({ label, value, accent = false, isLast = false, onPress }) => (
+const PreferenceRow = ({
+    label,
+    value,
+    accent = false,
+    isLast = false,
+    onPress,
+    rightAccessory,
+    styles,
+}) => (
     <TouchableOpacity
         activeOpacity={0.82}
         onPress={onPress}
         style={[styles.preferenceRow, isLast && styles.preferenceRowLast]}
     >
         <Text style={styles.preferenceLabel}>{label}</Text>
-        <View style={styles.preferenceValueWrap}>
-            <Text style={[styles.preferenceValue, accent && styles.preferenceValueAccent]}>
-                {value}
-            </Text>
-            <Text style={styles.preferenceChevron}>›</Text>
-        </View>
+        {rightAccessory ? rightAccessory : (
+            <View style={styles.preferenceValueWrap}>
+                <Text style={[styles.preferenceValue, accent && styles.preferenceValueAccent]}>
+                    {value}
+                </Text>
+                <Text style={styles.preferenceChevron}>›</Text>
+            </View>
+        )}
     </TouchableOpacity>
 );
 
 const LANGUAGE_FLAGS = {
     en: '🇺🇸',
     ko: '🇰🇷',
+    zh: '🇨🇳',
 };
 
 const getLanguageFlag = (language) => LANGUAGE_FLAGS[language] ?? '🌐';
@@ -494,6 +499,9 @@ const normalizeProfileRow = (profile, fallbackLanguage = 'ko') => {
     return {
         id: profile?.id || getDefaultProfileIdForLanguage(targetLanguage),
         target_language: targetLanguage,
+        script: targetLanguage === 'zh'
+            ? normalizeChineseScript(profile?.script ?? profile?.chinese_script)
+            : null,
         display_name: profile?.display_name || profile?.displayName || getLanguageLabel(targetLanguage),
     };
 };
@@ -531,7 +539,12 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
         activeProfileId,
         switchProfile,
         updateLanguageSettings,
+        isDarkMode,
+        setIsDarkMode,
     } = useAppContext();
+    const theme = useTheme();
+    const profileColors = useMemo(() => getProfileColors(theme.colors), [theme.colors]);
+    const styles = useMemo(() => createStyles(profileColors, theme.colors), [profileColors, theme.colors]);
     const { activeOwnerId, syncGeneration } = useLocalOwner();
     const { t } = useTranslation();
     const { width: viewportWidth } = useWindowDimensions();
@@ -735,6 +748,11 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
             return;
         }
 
+        if (row.key === 'appearance') {
+            setIsDarkMode(!isDarkMode);
+            return;
+        }
+
         Alert.alert(t(row.labelKey), t('profile.preferenceSoon'));
     };
 
@@ -771,6 +789,7 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
             let nextProfile = normalizeProfileRow({
                 id: getDefaultProfileIdForLanguage(option.code),
                 target_language: option.code,
+                script: option.code === 'zh' ? 'zh-Hans' : null,
                 display_name: option.label,
             }, option.code);
 
@@ -780,6 +799,7 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                     ownerId: activeOwnerId,
                     generation: syncGeneration,
                     targetLanguage: option.code,
+                    script: option.code === 'zh' ? 'zh-Hans' : undefined,
                     displayName: option.label,
                 });
             }
@@ -840,7 +860,7 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
 
     return (
         <Screen
-            backgroundColor={PROFILE_COLORS.bg}
+            backgroundColor={profileColors.bg}
             contentContainerStyle={styles.screenContent}
         >
             <Pressable
@@ -855,6 +875,13 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                     keyboardShouldPersistTaps="handled"
                     nestedScrollEnabled
                 >
+                <View style={styles.appTopBar}>
+                    <View style={styles.appTopSide}>
+                        <Feather name="menu" size={18} color={profileColors.ink} />
+                    </View>
+                    <Text style={styles.appTopTitle}>FLUENT FABLE</Text>
+                    <View style={styles.appTopSide} />
+                </View>
                 <View style={styles.profileHeader}>
                     <View style={styles.profileHeaderTopRow}>
                         <View style={styles.profileIdentity}>
@@ -873,7 +900,7 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                                 onPress={openNameEditor}
                                 style={styles.editUsernameButton}
                             >
-                                <Feather name="edit-2" size={16} color={PROFILE_COLORS.sub} />
+                                <Feather name="edit-2" size={16} color={profileColors.sub} />
                             </TouchableOpacity>
                         ) : null}
                     </View>
@@ -914,6 +941,7 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                                     activeBookKey={activeBookKey}
                                     shelfWidth={shelfWidth}
                                     onShowBook={setActiveBookKey}
+                                    styles={styles}
                                 />
                             ))}
                         </ScrollView>
@@ -927,6 +955,7 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                                 activeBookKey={activeBookKey}
                                 shelfWidth={shelfWidth}
                                 onShowBook={setActiveBookKey}
+                                styles={styles}
                             />
                         ))
                     )}
@@ -942,6 +971,7 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                             value={`${getLanguageFlag(targetLanguage)} ${currentProfileLabel}`}
                             accent
                             onPress={() => handlePreferencePress({ key: 'profile', labelKey: 'profile.languageProfile' })}
+                            styles={styles}
                         />
                         <PreferenceRow
                             label={t('profile.interfaceLanguage')}
@@ -949,16 +979,38 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                             accent
                             isLast={preferenceRows.length === 0}
                             onPress={() => handlePreferencePress({ key: 'interfaceLanguage', labelKey: 'profile.interfaceLanguage' })}
+                            styles={styles}
                         />
                         {preferenceRows.map((row, index) => (
                             <PreferenceRow
                                 key={row.key}
                                 label={t(row.labelKey)}
                                 value={t(row.valueKey)}
-                                isLast={index === preferenceRows.length - 1}
+                                isLast={false}
                                 onPress={() => handlePreferencePress(row)}
+                                styles={styles}
                             />
                         ))}
+                        <PreferenceRow
+                            label={t('profile.appearance')}
+                            value={isDarkMode ? t('profile.dark') : t('profile.light')}
+                            isLast
+                            onPress={() => handlePreferencePress({ key: 'appearance', labelKey: 'profile.appearance' })}
+                            styles={styles}
+                            rightAccessory={(
+                                <View style={styles.preferenceValueWrap}>
+                                    <Text style={styles.preferenceValue}>
+                                        {isDarkMode ? t('profile.dark') : t('profile.light')}
+                                    </Text>
+                                    <Switch
+                                        value={isDarkMode}
+                                        onValueChange={setIsDarkMode}
+                                        trackColor={{ false: theme.colors.border, true: theme.colors.accentMuted }}
+                                        thumbColor={isDarkMode ? theme.colors.readerTappedWordBg : theme.colors.surface}
+                                    />
+                                </View>
+                            )}
+                        />
                     </View>
                     {isGuest ? (
                         <View style={styles.guestAccountSection}>
@@ -1034,7 +1086,7 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                                                 <Feather
                                                     name={selected ? 'check-circle' : 'circle'}
                                                     size={18}
-                                                    color={selected && !disabled ? PROFILE_COLORS.accent : PROFILE_COLORS.faint}
+                                                    color={selected && !disabled ? profileColors.accent : profileColors.faint}
                                                 />
                                                 <Text
                                                     style={[
@@ -1095,7 +1147,7 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                                                 <Feather
                                                     name={selected ? 'check-circle' : 'circle'}
                                                     size={18}
-                                                    color={selected ? PROFILE_COLORS.accent : PROFILE_COLORS.faint}
+                                                    color={selected ? profileColors.accent : profileColors.faint}
                                                 />
                                                 <Text style={styles.languageOptionFlag}>
                                                     {getLanguageFlag(profile.target_language)}
@@ -1134,7 +1186,7 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                                             <Feather
                                                 name="plus-circle"
                                                 size={18}
-                                                color={PROFILE_COLORS.accent}
+                                                color={profileColors.accent}
                                             />
                                             <Text style={styles.languageOptionFlag}>
                                                 {getLanguageFlag(option.code)}
@@ -1221,7 +1273,7 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                                     autoCorrect={false}
                                     editable={!isSavingName}
                                     placeholder={t('profile.usernamePlaceholder')}
-                                    placeholderTextColor={PROFILE_COLORS.faint}
+                                    placeholderTextColor={profileColors.faint}
                                     style={styles.usernameInput}
                                 />
                                 <View style={styles.modalActions}>
@@ -1291,13 +1343,13 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
     );
 };
 
-const styles = StyleSheet.create({
+const createStyles = (profileColors, themeColors) => StyleSheet.create({
     screenContent: {
         flex: 1,
         paddingHorizontal: 0,
         paddingTop: 0,
         paddingBottom: 0,
-        backgroundColor: PROFILE_COLORS.bg,
+        backgroundColor: profileColors.bg,
     },
     screenTapArea: {
         flex: 1,
@@ -1311,14 +1363,32 @@ const styles = StyleSheet.create({
         flexGrow: 1,
         paddingBottom: 18,
     },
-    profileHeader: {
-        minHeight: 85,
-        paddingTop: 22,
-        paddingBottom: 18,
-        paddingHorizontal: 22,
-        backgroundColor: PROFILE_COLORS.surface,
+    appTopBar: {
+        height: 52,
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 20,
         borderBottomWidth: 1,
-        borderBottomColor: PROFILE_COLORS.border,
+        borderBottomColor: profileColors.border,
+        backgroundColor: profileColors.bg,
+    },
+    appTopSide: {
+        width: 70,
+        alignItems: 'flex-start',
+    },
+    appTopTitle: {
+        flex: 1,
+        textAlign: 'center',
+        ...textStyles.appTitle,
+        color: profileColors.ink,
+    },
+    profileHeader: {
+        minHeight: 92,
+        paddingTop: 26,
+        paddingBottom: 12,
+        paddingHorizontal: 24,
+        backgroundColor: profileColors.bg,
+        borderBottomWidth: 0,
     },
     profileHeaderTopRow: {
         flexDirection: 'row',
@@ -1332,18 +1402,18 @@ const styles = StyleSheet.create({
     },
     profileName: {
         width: '100%',
-        fontFamily: fontFamilies.serifBold,
-        fontSize: 24,
-        lineHeight: 28,
-        letterSpacing: -0.4,
-        color: PROFILE_COLORS.ink,
+        fontFamily: fontFamilies.displaySemiBold,
+        fontSize: 32,
+        lineHeight: 38,
+        letterSpacing: 0,
+        color: profileColors.ink,
     },
     profileSubtitle: {
         marginTop: 3,
         fontFamily: fontFamilies.sansRegular,
         fontSize: 13,
         lineHeight: 17,
-        color: PROFILE_COLORS.sub,
+        color: profileColors.sub,
     },
     editUsernameButton: {
         width: 38,
@@ -1352,12 +1422,12 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'center',
         borderWidth: 1,
-        borderColor: PROFILE_COLORS.border,
-        backgroundColor: '#f5ead9',
+        borderColor: profileColors.border,
+        backgroundColor: profileColors.bg,
     },
     bookshelfSection: {
-        paddingTop: 18,
-        paddingHorizontal: BOOKSHELF_HORIZONTAL_PADDING,
+        paddingTop: 4,
+        paddingHorizontal: 24,
     },
     sectionLabelRow: {
         width: '100%',
@@ -1368,12 +1438,11 @@ const styles = StyleSheet.create({
         justifyContent: 'space-between',
     },
     sectionEyebrow: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 11,
-        lineHeight: 14.5,
-        textTransform: 'uppercase',
-        letterSpacing: 0.66,
-        color: PROFILE_COLORS.sub,
+        fontFamily: fontFamilies.displayMedium,
+        fontSize: 19,
+        lineHeight: 24,
+        letterSpacing: 0,
+        color: profileColors.ink,
     },
     bookshelfMeta: {
         flexDirection: 'row',
@@ -1384,7 +1453,7 @@ const styles = StyleSheet.create({
         fontFamily: fontFamilies.sansRegular,
         fontSize: 12,
         lineHeight: 15.5,
-        color: PROFILE_COLORS.sub,
+        color: profileColors.sub,
     },
     shelfPosition: {
         minWidth: 34,
@@ -1392,12 +1461,12 @@ const styles = StyleSheet.create({
         paddingVertical: 3,
         borderRadius: radii.pill,
         overflow: 'hidden',
-        backgroundColor: '#efe3d0',
+        backgroundColor: profileColors.muted,
         fontFamily: fontFamilies.sansBold,
         fontSize: 11,
         lineHeight: 14,
         textAlign: 'center',
-        color: PROFILE_COLORS.accent,
+        color: profileColors.accent,
         fontVariant: ['tabular-nums'],
     },
     bookshelfScroller: {
@@ -1409,7 +1478,7 @@ const styles = StyleSheet.create({
     },
     shelfBlock: {
         width: '100%',
-        height: SHELF_ROW_HEIGHT + SHELF_BASE_HEIGHT,
+        height: SHELF_ROW_HEIGHT + SHELF_BASE_HEIGHT + 10,
         marginBottom: SHELF_ROW_SPACING,
         overflow: 'visible',
     },
@@ -1453,7 +1522,7 @@ const styles = StyleSheet.create({
         right: 0,
         bottom: 0,
         width: 1,
-        backgroundColor: 'rgba(255,255,255,0.1)',
+        backgroundColor: themeColors.accentSoft,
     },
     spineTitleBand: {
         position: 'absolute',
@@ -1478,19 +1547,20 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
         borderWidth: 1.5,
         borderStyle: 'dashed',
-        borderColor: PROFILE_COLORS.border,
+        borderColor: profileColors.border,
     },
     emptyShelfText: {
         fontFamily: fontFamilies.sansRegular,
         fontSize: 11,
         lineHeight: 15.4,
         textAlign: 'center',
-        color: PROFILE_COLORS.faint,
+        color: profileColors.faint,
     },
     shelfBase: {
         width: '100%',
         height: SHELF_BASE_HEIGHT,
-        backgroundColor: PROFILE_COLORS.shelf,
+        backgroundColor: profileColors.shelf,
+        borderRadius: 1,
     },
     bookTooltip: {
         position: 'absolute',
@@ -1499,7 +1569,7 @@ const styles = StyleSheet.create({
         paddingHorizontal: 10,
         paddingVertical: 8,
         borderRadius: 8,
-        backgroundColor: PROFILE_COLORS.tooltip,
+        backgroundColor: profileColors.tooltip,
         zIndex: 30,
         overflow: 'visible',
     },
@@ -1511,46 +1581,46 @@ const styles = StyleSheet.create({
         borderLeftWidth: TOOLTIP_TAIL_SIZE,
         borderRightWidth: TOOLTIP_TAIL_SIZE,
         borderTopWidth: TOOLTIP_TAIL_SIZE,
-        borderLeftColor: 'transparent',
-        borderRightColor: 'transparent',
-        borderTopColor: PROFILE_COLORS.tooltip,
+        borderLeftColor: themeColors.transparent,
+        borderRightColor: themeColors.transparent,
+        borderTopColor: profileColors.tooltip,
     },
     tooltipTitle: {
         fontFamily: fontFamilies.sansBold,
         fontSize: 11.5,
         lineHeight: 15,
-        color: PROFILE_COLORS.white,
+        color: profileColors.white,
     },
     tooltipMeta: {
         marginTop: 2,
         fontFamily: fontFamilies.sansRegular,
         fontSize: 10.5,
         lineHeight: 13,
-        color: 'rgba(255,255,255,0.72)',
+        color: profileColors.faint,
     },
     preferencesSection: {
-        paddingTop: 8,
-        paddingHorizontal: 22,
+        paddingTop: 22,
+        paddingHorizontal: 24,
     },
     preferencesCard: {
         width: '100%',
         borderRadius: 0,
-        backgroundColor: PROFILE_COLORS.surface,
-        shadowColor: 'rgba(70,48,20,0.36)',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.06,
-        shadowRadius: 14,
-        elevation: 2,
+        backgroundColor: profileColors.bg,
+        shadowColor: themeColors.transparent,
+        shadowOffset: { width: 0, height: 0 },
+        shadowOpacity: 0,
+        shadowRadius: 0,
+        elevation: 0,
         overflow: 'hidden',
     },
     preferenceRow: {
         minHeight: 52.5,
         paddingVertical: 14,
-        paddingHorizontal: 18,
+        paddingHorizontal: 0,
         flexDirection: 'row',
         alignItems: 'center',
         borderBottomWidth: 1,
-        borderBottomColor: PROFILE_COLORS.border,
+        borderBottomColor: profileColors.border,
     },
     preferenceRowLast: {
         borderBottomWidth: 0,
@@ -1558,10 +1628,10 @@ const styles = StyleSheet.create({
     preferenceLabel: {
         flex: 1,
         minWidth: 0,
-        fontFamily: fontFamilies.sansRegular,
+        fontFamily: fontFamilies.sansSemiBold,
         fontSize: 15,
         lineHeight: 19.5,
-        color: PROFILE_COLORS.ink,
+        color: profileColors.ink,
     },
     preferenceValueWrap: {
         flexDirection: 'row',
@@ -1572,18 +1642,18 @@ const styles = StyleSheet.create({
         fontFamily: fontFamilies.sansRegular,
         fontSize: 13,
         lineHeight: 17,
-        color: PROFILE_COLORS.sub,
+        color: profileColors.sub,
     },
     preferenceValueAccent: {
         fontSize: 14,
         lineHeight: 18.5,
-        color: PROFILE_COLORS.accent,
+        color: profileColors.accent,
     },
     preferenceChevron: {
         fontFamily: fontFamilies.sansRegular,
         fontSize: 18,
         lineHeight: 23.5,
-        color: PROFILE_COLORS.faint,
+        color: profileColors.faint,
     },
     languageModalCard: {
         gap: 14,
@@ -1599,12 +1669,12 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         gap: 10,
         borderWidth: 1,
-        borderColor: PROFILE_COLORS.border,
-        backgroundColor: PROFILE_COLORS.surface,
+        borderColor: profileColors.border,
+        backgroundColor: profileColors.surface,
     },
     languageOptionRowSelected: {
-        borderColor: 'rgba(184,85,46,0.45)',
-        backgroundColor: '#f5ead9',
+        borderColor: profileColors.strongBorder,
+        backgroundColor: profileColors.surfaceMuted,
     },
     languageOptionRowDisabled: {
         opacity: 0.56,
@@ -1625,21 +1695,21 @@ const styles = StyleSheet.create({
         fontFamily: fontFamilies.sansRegular,
         fontSize: 14,
         lineHeight: 18,
-        color: PROFILE_COLORS.ink,
+        color: profileColors.ink,
     },
     languageOptionTextSelected: {
         fontFamily: fontFamilies.sansBold,
-        color: PROFILE_COLORS.accent,
+        color: profileColors.accent,
     },
     languageOptionTextDisabled: {
-        color: PROFILE_COLORS.faint,
+        color: profileColors.faint,
     },
     languageOptionMeta: {
         marginTop: 2,
         fontFamily: fontFamilies.sansRegular,
         fontSize: 11.5,
         lineHeight: 15,
-        color: PROFILE_COLORS.sub,
+        color: profileColors.sub,
     },
     languageSectionTitle: {
         marginTop: 6,
@@ -1647,7 +1717,7 @@ const styles = StyleSheet.create({
         fontSize: 11.5,
         lineHeight: 15,
         textTransform: 'uppercase',
-        color: PROFILE_COLORS.faint,
+        color: profileColors.faint,
     },
     logoutSection: {
         marginTop: 'auto',
@@ -1662,13 +1732,13 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'center',
         borderWidth: 1,
-        borderColor: 'rgba(192,73,47,0.267)',
-        backgroundColor: PROFILE_COLORS.surface,
-        shadowColor: 'rgba(70,48,20,0.36)',
+        borderColor: profileColors.strongBorder,
+        backgroundColor: profileColors.surface,
+        shadowColor: themeColors.transparent,
         shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.06,
-        shadowRadius: 14,
-        elevation: 2,
+        shadowOpacity: 0,
+        shadowRadius: 0,
+        elevation: 0,
     },
     logoutButtonDisabled: {
         opacity: 0.62,
@@ -1677,7 +1747,7 @@ const styles = StyleSheet.create({
         fontFamily: fontFamilies.sansMedium,
         fontSize: 15,
         lineHeight: 19,
-        color: PROFILE_COLORS.danger,
+        color: profileColors.danger,
     },
     guestAccountSection: {
         paddingTop: 12,
@@ -1698,45 +1768,45 @@ const styles = StyleSheet.create({
     },
     guestAuthButtonSecondary: {
         borderWidth: 1,
-        borderColor: PROFILE_COLORS.border,
-        backgroundColor: PROFILE_COLORS.surface,
+        borderColor: profileColors.border,
+        backgroundColor: profileColors.surface,
     },
     guestAuthButtonPrimary: {
-        backgroundColor: PROFILE_COLORS.ink,
+        backgroundColor: profileColors.ink,
     },
     guestAuthButtonSecondaryText: {
         fontFamily: fontFamilies.sansBold,
         fontSize: 14,
         lineHeight: 18,
-        color: PROFILE_COLORS.ink,
+        color: profileColors.ink,
     },
     guestAuthButtonPrimaryText: {
         fontFamily: fontFamilies.sansBold,
         fontSize: 14,
         lineHeight: 18,
-        color: PROFILE_COLORS.surface,
+        color: profileColors.surface,
     },
     authModalBackdrop: {
         flex: 1,
         justifyContent: 'center',
         paddingHorizontal: 18,
-        backgroundColor: 'rgba(44,38,32,0.35)',
+        backgroundColor: themeColors.overlay,
     },
     authModalScrim: {
         ...StyleSheet.absoluteFillObject,
     },
     authModalCard: {
         maxHeight: '88%',
-        borderRadius: 24,
+        borderRadius: radii.xl,
         borderWidth: 1,
-        borderColor: PROFILE_COLORS.border,
-        backgroundColor: PROFILE_COLORS.surface,
+        borderColor: profileColors.border,
+        backgroundColor: profileColors.surface,
         padding: 18,
-        shadowColor: 'rgba(70,48,20,0.36)',
-        shadowOffset: { width: 0, height: 12 },
-        shadowOpacity: 0.18,
-        shadowRadius: 24,
-        elevation: 8,
+        shadowColor: themeColors.transparent,
+        shadowOffset: { width: 0, height: 0 },
+        shadowOpacity: 0,
+        shadowRadius: 0,
+        elevation: 0,
     },
     authModalHeader: {
         flexDirection: 'row',
@@ -1753,13 +1823,13 @@ const styles = StyleSheet.create({
         fontFamily: fontFamilies.serifBold,
         fontSize: 23,
         lineHeight: 28,
-        color: PROFILE_COLORS.ink,
+        color: profileColors.ink,
     },
     authModalHelper: {
         fontFamily: fontFamilies.sansRegular,
         fontSize: 12.5,
         lineHeight: 17,
-        color: PROFILE_COLORS.sub,
+        color: profileColors.sub,
     },
     authModalCloseButton: {
         width: 34,
@@ -1767,34 +1837,36 @@ const styles = StyleSheet.create({
         borderRadius: radii.pill,
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: '#efe3d0',
+        backgroundColor: profileColors.muted,
     },
     authModalCloseText: {
         fontFamily: fontFamilies.sansRegular,
         fontSize: 24,
         lineHeight: 28,
-        color: PROFILE_COLORS.sub,
+        color: profileColors.sub,
     },
     modalBackdrop: {
         flex: 1,
-        backgroundColor: 'rgba(0,0,0,0.26)',
+        backgroundColor: themeColors.overlay,
         justifyContent: 'center',
         paddingHorizontal: spacing.lg,
     },
     modalCard: {
-        backgroundColor: colors.surfaceElevated,
+        backgroundColor: themeColors.surfaceElevated,
         borderRadius: radii.lg,
         padding: spacing.lg,
         borderWidth: 1,
-        borderColor: colors.border,
+        borderColor: themeColors.border,
         gap: spacing.md,
     },
     modalTitle: {
         ...textStyles.sectionTitle,
+        color: profileColors.ink,
     },
     modalHelper: {
         ...textStyles.bodyMuted,
         lineHeight: 20,
+        color: profileColors.sub,
     },
     modalActions: {
         flexDirection: 'row',
@@ -1808,10 +1880,10 @@ const styles = StyleSheet.create({
         paddingHorizontal: spacing.md,
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: colors.surfaceMuted,
+        backgroundColor: themeColors.surfaceMuted,
     },
     modalPrimaryButton: {
-        backgroundColor: colors.accentSoft,
+        backgroundColor: themeColors.accentSoft,
     },
     modalButtonDisabled: {
         opacity: 0.62,
@@ -1819,22 +1891,22 @@ const styles = StyleSheet.create({
     usernameInput: {
         minHeight: 46,
         borderWidth: 1,
-        borderColor: PROFILE_COLORS.border,
+        borderColor: profileColors.border,
         borderRadius: radii.md,
         paddingHorizontal: spacing.md,
         paddingVertical: spacing.sm,
-        backgroundColor: PROFILE_COLORS.surface,
-        color: PROFILE_COLORS.ink,
+        backgroundColor: profileColors.surface,
+        color: profileColors.ink,
         fontFamily: fontFamilies.sansRegular,
         fontSize: 15,
         lineHeight: 20,
     },
     modalButtonText: {
         ...textStyles.label,
-        color: colors.text,
+        color: themeColors.text,
     },
     modalPrimaryButtonText: {
-        color: colors.accentStrong,
+        color: themeColors.accentStrong,
     },
 });
 

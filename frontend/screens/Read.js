@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, Pressable, Switch } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Feather } from '@expo/vector-icons';
+import { Feather, MaterialIcons } from '@expo/vector-icons';
 import { Slider } from 'react-native-elements';
 
 import TopSection from '../components/Read/TopSection/TopSection';
@@ -40,7 +40,7 @@ import {
 import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
 import { upsertUserVocabContext } from '../services/supabase';
 import { normalizeBookLanguage, normalizeInterfaceLanguageCode } from '../constants/languages';
-import { colors, radii, spacing, textStyles } from '../theme';
+import { createNativeReaderThemeTokens, radii, spacing, textStyles, useTheme } from '../theme';
 
 const LOOKUP_HINT_DISMISSED_KEY = 'lookupHintDismissed';
 const READER_SETTINGS_KEY = 'readerSettings';
@@ -48,15 +48,107 @@ const READER_SETTINGS_UPDATED_AT_KEY = 'readerSettingsUpdatedAt';
 const DEFAULT_READER_SETTINGS = {
     fontSize: 18,
     isDarkMode: false,
-    lineSpacing: 1.5,
+    lineSpacing: 2.05,
 };
-const READ_SCREEN_BACKGROUND = '#faf6ee';
 
 const uniqTerms = (values) => [...new Set(
     (values || [])
         .map((value) => (typeof value === 'string' ? value.trim() : ''))
         .filter(Boolean)
 )];
+
+const clampProgress = (value) => {
+    const progress = Number(value);
+    if (!Number.isFinite(progress)) {
+        return 0;
+    }
+
+    return Math.min(Math.max(progress, 0), 1);
+};
+
+const progressForBookPosition = (spineIndex, totalSpineItems, pageIndex = null, pagesInChapter = null) => {
+    if (!Number.isInteger(spineIndex) || totalSpineItems <= 0) {
+        return null;
+    }
+
+    const chapterProgress = (
+        Number.isInteger(pageIndex)
+        && Number.isInteger(pagesInChapter)
+        && pagesInChapter > 0
+    )
+        ? Math.min(Math.max((pageIndex + 1) / pagesInChapter, 0), 1)
+        : 0;
+
+    return clampProgress((spineIndex + chapterProgress) / totalSpineItems);
+};
+
+const progressForChapterPosition = ({
+    pageInChapter = null,
+    pagesInChapter = null,
+    activeSpineIndex = null,
+    nativePosition = null,
+    bookProgress = null,
+    totalSpineItems = null,
+}) => {
+    if (
+        Number.isInteger(pageInChapter)
+        && Number.isInteger(pagesInChapter)
+        && pagesInChapter > 0
+    ) {
+        return clampProgress(pageInChapter / pagesInChapter);
+    }
+
+    if (
+        Number.isInteger(nativePosition?.pageIndex)
+        && Number.isInteger(nativePosition?.pagesInChapter)
+        && nativePosition.pagesInChapter > 0
+        && (
+            !Number.isInteger(nativePosition?.spineIndex)
+            || !Number.isInteger(activeSpineIndex)
+            || nativePosition.spineIndex === activeSpineIndex
+        )
+    ) {
+        return clampProgress((nativePosition.pageIndex + 1) / nativePosition.pagesInChapter);
+    }
+
+    if (
+        Number.isInteger(activeSpineIndex)
+        && totalSpineItems > 0
+        && typeof bookProgress === 'number'
+    ) {
+        const inferredChapterProgress = (bookProgress * totalSpineItems) - activeSpineIndex;
+        if (inferredChapterProgress >= 0 && inferredChapterProgress <= 1) {
+            return clampProgress(inferredChapterProgress);
+        }
+    }
+
+    return 0;
+};
+
+const flattenTocItems = (items, depth = 0) => {
+    if (!Array.isArray(items)) {
+        return [];
+    }
+
+    return items.flatMap((item) => {
+        const itemDepth = Number.isFinite(Number(item?.depth))
+            ? Math.max(0, Number(item.depth))
+            : depth;
+
+        return [
+            { ...item, depth: itemDepth },
+            ...flattenTocItems(item?.subitems, itemDepth + 1),
+        ];
+    });
+};
+
+const titleForTocItem = (item) => (
+    String(item?.title || item?.label || '').trim()
+);
+
+const titleForSpineItem = (item) => (
+    String(item?.title || item?.label || '').trim()
+);
 
 const spineIndexForReaderPackage = (readerPackage) => {
     const spineIndex = readerPackage?.loadedSpineItem?.index
@@ -121,22 +213,44 @@ const chapterWindowEntryForPackage = (readerPackage, role) => {
         spineIndex,
         href: loadedSpineItem.href || readerPackage?.bookManifest?.currentSpineHref || '',
         path: loadedSpineItem.path || readerPackage?.bookManifest?.currentSpinePath || '',
+        title: titleForSpineItem(loadedSpineItem),
         blocks,
         resources: chapterResourcesForReaderPackage(readerPackage),
     };
 };
 
-const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessComplete, setIsReaderFocusMode, user }) => {
+const Read = ({
+    books,
+    setBooks,
+    currentBook: selectedCurrentBook,
+    onPreprocessComplete,
+    setIsReaderFocusMode,
+    user,
+    navigation,
+    route,
+}) => {
     const { t, language: interfaceLanguage } = useTranslation();
-    const { targetLanguage } = useAppContext();
+    const { targetLanguage, isDarkMode, setIsDarkMode } = useAppContext();
+    const { colors: themeColors } = useTheme();
+    const styles = useMemo(() => createStyles(themeColors), [themeColors]);
+    const nativeReaderThemeTokens = useMemo(
+        () => createNativeReaderThemeTokens(themeColors),
+        [themeColors]
+    );
     const { activeOwnerId, syncPaused, syncGeneration } = useLocalOwner();
     const [highlightedWord, setHighlightedWord] = useState('');
     const [highlightedWordContext, setHighlightedWordContext] = useState(null);
     const [isNativeSelection, setIsNativeSelection] = useState(false);
     const [lookupPlacement, setLookupPlacement] = useState('bottom');
     const [clearSelectionToken, setClearSelectionToken] = useState(0);
+    // Temporary handoff QA toggles for the long-press translation banner.
+    const [translationBannerLoadingPreview] = useState(false);
+    const [translationBannerErrorPreview] = useState(false);
+    const [translationBannerCopiedPreview] = useState(false);
+    const [translationBannerTextPreview] = useState('');
     const [showLookupHint, setShowLookupHint] = useState(true);
     const [showSettings, setShowSettings] = useState(false);
+    const [showMenu, setShowMenu] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [savedWords, setSavedWords] = useState(null); // null = not yet loaded
     const [highlightTerms, setHighlightTerms] = useState(null);
@@ -173,7 +287,9 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
     const readingSessionOwnerIdRef = useRef(activeOwnerId);
     const chapterLoadTokenRef = useRef(0);
     const nativeReaderPackageRef = useRef(null);
+    const nativeRestorePositionRef = useRef(null);
     const currentSpineIndexRef = useRef(null);
+    const bookCompletionInProgressRef = useRef(false);
     const parsedChapterCacheRef = useRef(new Map());
     const parsedChapterInflightRef = useRef(new Map());
     const chapterPrefetchTokenRef = useRef(0);
@@ -183,12 +299,29 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
     const readerSettingsUpdatedAtRef = useRef(null);
     const readerSettingsRef = useRef(DEFAULT_READER_SETTINGS);
     const loadNativeReaderPackageRef = useRef(null);
+    const updateNativeRestorePosition = useCallback((position) => {
+        nativeRestorePositionRef.current = position;
+        setNativeRestorePosition(position);
+    }, []);
     const selectedBook = books.find(book => book.uri === selectedCurrentBook) ?? null;
     const selectedBookLanguage = normalizeBookLanguage(selectedBook?.language ?? 'ko');
     const activeBook = selectedBook && selectedBookLanguage === targetLanguage ? selectedBook : null;
     const currentBook = activeBook?.uri ?? null;
     const activeBookLanguage = activeBook ? selectedBookLanguage : targetLanguage;
     const shouldUseHeuristicHighlights = !activeBook?.preprocessed;
+    const translationBannerVisualState = useMemo(() => ({
+        loading: translationBannerLoadingPreview,
+        error: translationBannerErrorPreview,
+        copied: translationBannerCopiedPreview,
+        translatedText: translationBannerTextPreview,
+        errorMessage: t('lookup.noTranslation'),
+    }), [
+        t,
+        translationBannerCopiedPreview,
+        translationBannerErrorPreview,
+        translationBannerLoadingPreview,
+        translationBannerTextPreview,
+    ]);
 
     // Load saved words for highlighting on mount
     useEffect(() => {
@@ -282,12 +415,14 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
         setBookLoadState(currentBook ? 'loading' : 'idle');
         setBookLoadError('');
         setShowSettings(false);
+        setShowMenu(false);
         setIsFullscreen(false);
         setReaderRetryKey(0);
         setNativeReaderPackage(null);
         setNativeChapterWindow([]);
-        setNativeRestorePosition(null);
+        updateNativeRestorePosition(null);
         nativeReaderPackageRef.current = null;
+        bookCompletionInProgressRef.current = false;
         setCurrentSpineIndex(null);
         currentSpineIndexRef.current = null;
         setChapterTransitionDirection('none:0');
@@ -298,7 +433,7 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
         parsedChapterInflightRef.current = new Map();
         setToc([]);
         setShowToc(false);
-    }, [activeOwnerId, currentBook]);
+    }, [activeOwnerId, currentBook, updateNativeRestorePosition]);
 
     useEffect(() => {
         return () => {
@@ -425,7 +560,7 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
         setIsNativeSelection(true);
         setHighlightedWord(text);
         setHighlightedWordContext(null);
-        setLookupPlacement(event.placement === 'top' ? 'top' : 'bottom');
+        setLookupPlacement('bottom');
     }, []);
 
     // ── Book text extraction callback ────────────────────────────────────────
@@ -522,7 +657,17 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
                 AsyncStorage.getItem(READER_SETTINGS_UPDATED_AT_KEY),
             ]);
             if (savedSettings) {
-                const nextSettings = { ...DEFAULT_READER_SETTINGS, ...JSON.parse(savedSettings) };
+                const parsedSettings = JSON.parse(savedSettings);
+                if (typeof parsedSettings?.isDarkMode === 'boolean') {
+                    setIsDarkMode(parsedSettings.isDarkMode);
+                }
+                const nextSettings = {
+                    ...DEFAULT_READER_SETTINGS,
+                    ...parsedSettings,
+                    isDarkMode: typeof parsedSettings?.isDarkMode === 'boolean'
+                        ? parsedSettings.isDarkMode
+                        : isDarkMode,
+                };
                 readerSettingsRef.current = nextSettings;
                 setSettings(nextSettings);
             }
@@ -603,6 +748,11 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
                     };
                     delete nextSettings.updatedAt;
                     delete nextSettings.updated_at;
+                    if (typeof nextSettings.isDarkMode === 'boolean') {
+                        setIsDarkMode(nextSettings.isDarkMode);
+                    } else {
+                        nextSettings.isDarkMode = isDarkMode;
+                    }
 
                     if (!isMounted) {
                         return;
@@ -638,10 +788,17 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
         return () => {
             isMounted = false;
         };
-    }, [activeOwnerId, readerSettingsLoaded, saveSettings, syncGeneration, syncPaused, user]);
+    }, [activeOwnerId, isDarkMode, readerSettingsLoaded, saveSettings, setIsDarkMode, syncGeneration, syncPaused, user]);
 
     const handleSettingChange = (key, value) => {
-        const newSettings = { ...settings, [key]: value };
+        if (key === 'isDarkMode') {
+            setIsDarkMode(value);
+        }
+        const newSettings = {
+            ...settings,
+            isDarkMode,
+            [key]: value,
+        };
         setHighlightedWord('');
         setHighlightedWordContext(null);
         setIsNativeSelection(false);
@@ -650,6 +807,20 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
         readerSettingsRef.current = newSettings;
         saveSettings(newSettings);
     };
+
+    useEffect(() => {
+        setSettings((current) => {
+            if (current.isDarkMode === isDarkMode) {
+                return current;
+            }
+            const nextSettings = {
+                ...current,
+                isDarkMode,
+            };
+            readerSettingsRef.current = nextSettings;
+            return nextSettings;
+        });
+    }, [isDarkMode]);
 
     const dismissLookupHint = useCallback(async () => {
         setShowLookupHint(false);
@@ -674,27 +845,91 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
     const nativeChapterBlocks = chapterBlocksForReaderPackage(nativeReaderPackage);
     const nativeChapterResources = chapterResourcesForReaderPackage(nativeReaderPackage);
     const nativeChapterTotal = nativeReaderPackage?.spine?.length ?? 0;
-    const progressLabel = (() => {
-        if (readerLocationInfo?.pageInChapter && readerLocationInfo?.pagesInChapter) {
-            const chapterLabel = readerLocationInfo?.page && readerLocationInfo?.total
-                ? `${readerLocationInfo.page}/${readerLocationInfo.total}`
-                : t('read.chapter');
-            return `${chapterLabel} · ${readerLocationInfo.pageInChapter}/${readerLocationInfo.pagesInChapter}`;
+    const flattenedToc = useMemo(() => flattenTocItems(toc), [toc]);
+    const activeSpineIndex = Number.isInteger(currentSpineIndex)
+        ? currentSpineIndex
+        : spineIndexForReaderPackage(nativeReaderPackage);
+    const activeChapterTitle = useMemo(() => {
+        const fallbackTitle = Number.isInteger(activeSpineIndex)
+            ? `${t('read.chapter')} ${activeSpineIndex + 1}`
+            : t('read.defaultTitle');
+
+        if (Number.isInteger(activeSpineIndex) && flattenedToc.length > 0) {
+            const tocItem = flattenedToc.reduce((activeItem, item) => {
+                if (
+                    item?.disabled
+                    || !Number.isInteger(item?.spineIndex)
+                    || item.spineIndex > activeSpineIndex
+                ) {
+                    return activeItem;
+                }
+
+                return item;
+            }, null);
+            const tocTitle = titleForTocItem(tocItem);
+            if (tocTitle) {
+                return tocTitle;
+            }
         }
-        if (readerLocationInfo?.page && readerLocationInfo?.total) {
-            return `${readerLocationInfo.page}/${readerLocationInfo.total}`;
-        }
-        if (typeof readerLocationInfo?.percentage === 'number') {
-            return `${Math.round(readerLocationInfo.percentage * 100)}%`;
-        }
-        return t('read.start');
-    })();
+
+        return titleForSpineItem(nativeReaderPackage?.loadedSpineItem) || fallbackTitle;
+    }, [activeSpineIndex, flattenedToc, nativeReaderPackage?.loadedSpineItem, t]);
+    const headerBookTitle = (
+        activeBook?.title
+        || nativeReaderPackage?.metadata?.title
+        || nativeReaderPackage?.bookManifest?.title
+        || t('read.defaultTitle')
+    );
+    const bookProgress = clampProgress(
+        typeof readerLocationInfo?.percentage === 'number'
+            ? readerLocationInfo.percentage
+            : activeBook?.progress
+    );
+    const chapterProgress = progressForChapterPosition({
+        pageInChapter: readerLocationInfo?.pageInChapter,
+        pagesInChapter: readerLocationInfo?.pagesInChapter,
+        activeSpineIndex,
+        nativePosition: nativeRestorePosition || activeBook?.nativePosition,
+        bookProgress,
+        totalSpineItems: nativeChapterTotal,
+    });
+    const progressPercent = Math.round(chapterProgress * 100);
+    const progressLabel = `${progressPercent}%`;
+    const progressFillWidth = `${progressPercent}%`;
+    const chapterIndexLabel = Number.isInteger(activeSpineIndex)
+        ? `${t('read.chapter')} ${activeSpineIndex + 1}`
+        : t('read.defaultTitle');
+    const hasNamedChapterTitle = activeChapterTitle && activeChapterTitle !== chapterIndexLabel;
+    const headerLine1 = hasNamedChapterTitle ? chapterIndexLabel : activeChapterTitle;
+    const headerLine2 = hasNamedChapterTitle ? activeChapterTitle : null;
+    const returnToScreen = route?.params?.returnTo === 'Learn' ? 'Learn' : 'Home';
+    const handleHeaderBack = useCallback(() => {
+        setShowSettings(false);
+        setShowMenu(false);
+        setShowToc(false);
+        navigation?.navigate?.(returnToScreen);
+    }, [navigation, returnToScreen]);
+
     useEffect(() => {
-        setIsReaderFocusMode?.(isFullscreen);
+        const unsubscribeFocus = navigation?.addListener?.('focus', () => {
+            bookCompletionInProgressRef.current = false;
+            setIsReaderFocusMode?.(true);
+        });
+        const unsubscribeBlur = navigation?.addListener?.('blur', () => {
+            setIsReaderFocusMode?.(false);
+        });
+
+        if (navigation?.isFocused?.()) {
+            bookCompletionInProgressRef.current = false;
+            setIsReaderFocusMode?.(true);
+        }
+
         return () => {
+            unsubscribeFocus?.();
+            unsubscribeBlur?.();
             setIsReaderFocusMode?.(false);
         };
-    }, [isFullscreen, setIsReaderFocusMode]);
+    }, [navigation, setIsReaderFocusMode]);
 
     const handleBookLoadError = useCallback((reason) => {
         const lowerReason = String(reason || '').toLowerCase();
@@ -873,7 +1108,8 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
         surfaceIndex = [],
         language = 'ko',
     }) => {
-        const cacheScope = { language, interfaceLanguage };
+        const normalizedLanguage = normalizeBookLanguage(language);
+        const cacheScope = { language: normalizedLanguage, interfaceLanguage };
         const normalizedInterfaceLanguage = normalizeInterfaceLanguageCode(interfaceLanguage);
         const cacheEntries = (results || [])
             .filter((entry) => entry?.stem)
@@ -882,7 +1118,11 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
                     entry.interfaceLanguage ?? entry.interface_language ?? normalizedInterfaceLanguage
                 );
 
-                if (language === 'en' && normalizedInterfaceLanguage !== 'en' && entryInterfaceLanguage !== normalizedInterfaceLanguage) {
+                if (
+                    ['en', 'zh'].includes(normalizedLanguage)
+                    && normalizedInterfaceLanguage !== 'en'
+                    && entryInterfaceLanguage !== normalizedInterfaceLanguage
+                ) {
                     return { ...entry, definition: null };
                 }
 
@@ -1182,7 +1422,7 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
         if (!currentBook) {
             setNativeReaderPackage(null);
             setNativeChapterWindow([]);
-            setNativeRestorePosition(null);
+        updateNativeRestorePosition(null);
             nativeReaderPackageRef.current = null;
             setBookLoadState('idle');
             setBookLoadError('');
@@ -1224,7 +1464,7 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
 
         setBookLoadError('');
         if (!requestedRestorePosition) {
-            setNativeRestorePosition(null);
+            updateNativeRestorePosition(null);
         }
         if (!canKeepCurrentReader) {
             setBookLoadState('loading');
@@ -1260,7 +1500,7 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
             setCurrentSpineIndex(loadedSpineIndex);
             currentSpineIndexRef.current = loadedSpineIndex;
             nativeReaderPackageRef.current = parsedPackage;
-            setNativeRestorePosition(nextRestorePosition);
+            updateNativeRestorePosition(nextRestorePosition);
             setToc(Array.isArray(parsedPackage.toc) ? parsedPackage.toc : []);
             setChapterTransitionDirection((prev) => {
                 const previousToken = Number(String(prev).split(':')[1]) || 0;
@@ -1270,13 +1510,25 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
             setNativeReaderPackage(parsedPackage);
             updateNativeChapterWindowForSpine(loadedSpineIndex, parsedPackage);
             prefetchAdjacentChapters(loadedSpineIndex, totalSpineItems);
+            const restorePageIndex = Number.isInteger(nextRestorePosition?.pageIndex)
+                ? nextRestorePosition.pageIndex
+                : null;
+            const restorePagesInChapter = Number.isInteger(nextRestorePosition?.pagesInChapter)
+                ? nextRestorePosition.pagesInChapter
+                : null;
+
             setReaderLocationInfo({
                 page: totalSpineItems > 0 ? loadedSpineIndex + 1 : null,
                 total: totalSpineItems || null,
-                percentage: totalSpineItems > 0 ? loadedSpineIndex / totalSpineItems : null,
+                percentage: progressForBookPosition(
+                    loadedSpineIndex,
+                    totalSpineItems,
+                    restorePageIndex,
+                    restorePagesInChapter
+                ),
                 href: parsedPackage.loadedSpineItem?.path || '',
-                pageInChapter: null,
-                pagesInChapter: null,
+                pageInChapter: Number.isInteger(restorePageIndex) ? restorePageIndex + 1 : null,
+                pagesInChapter: restorePagesInChapter,
             });
             startChapterPreprocessing(loadedSpineIndex, totalSpineItems, parsedPackage);
             setBookLoadState('ready');
@@ -1328,6 +1580,10 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
     }, [activeBook?.uri, currentBook, readerRetryKey]);
 
     const handleNativePageChange = useCallback(({ page, total, spineIndex, href, firstBlockId, savedHighlights } = {}) => {
+        if (bookCompletionInProgressRef.current) {
+            return;
+        }
+
         const pageIndex = Number.isInteger(page) ? page : null;
         const eventSpineIndex = Number.isInteger(spineIndex) ? spineIndex : null;
         const currentLoadedSpineIndex = currentSpineIndexRef.current;
@@ -1335,6 +1591,7 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
             ? eventSpineIndex
             : currentLoadedSpineIndex;
         const totalSpineItems = nativeReaderPackageRef.current?.spine?.length ?? nativeChapterTotal;
+        const nextProgress = progressForBookPosition(resolvedSpineIndex, totalSpineItems, pageIndex, total);
 
         setReaderLocationInfo((prev) => ({
             ...(prev || {}),
@@ -1344,11 +1601,7 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
                     : (prev?.page ?? null)
             ),
             total: totalSpineItems || prev?.total || null,
-            percentage: (
-                Number.isInteger(resolvedSpineIndex) && totalSpineItems > 0
-                    ? resolvedSpineIndex / totalSpineItems
-                    : (prev?.percentage ?? null)
-            ),
+            percentage: nextProgress ?? prev?.percentage ?? null,
             href: typeof href === 'string' && href.length > 0 ? href : (prev?.href || ''),
             pageInChapter: Number.isInteger(page) ? page + 1 : null,
             pagesInChapter: Number.isInteger(total) ? total : null,
@@ -1404,18 +1657,10 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
                     : null
             ),
         };
-        const chapterPageProgress = (
-            Number.isInteger(pageIndex) && Number.isInteger(total) && total > 0
-                ? pageIndex / total
-                : 0
-        );
-        const nextProgress = totalSpineItems > 0
-            ? Math.min(Math.max((resolvedSpineIndex + chapterPageProgress) / totalSpineItems, 0), 1)
-            : (activeBook?.progress ?? 0);
         const nextBookPatch = {
             nativePosition: nextPosition,
             location: nextPosition.href || null,
-            progress: nextProgress,
+            progress: nextProgress ?? clampProgress(activeBook?.progress ?? 0),
         };
 
         if (activeBook?.cloudId) {
@@ -1425,7 +1670,7 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
             });
         }
 
-        setNativeRestorePosition(nextPosition);
+        updateNativeRestorePosition(nextPosition);
         setBooks((prevBooks) => prevBooks.map((book) => {
             if (book.uri !== currentBook) {
                 return book;
@@ -1452,6 +1697,7 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
         nativeChapterTotal,
         scheduleCloudProgressSync,
         setBooks,
+        updateNativeRestorePosition,
         user?.id,
     ]);
 
@@ -1463,6 +1709,10 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
         pagesInChapter,
         firstBlockId,
     } = {}) => {
+        if (bookCompletionInProgressRef.current) {
+            return;
+        }
+
         const committedSpineIndex = Number.isInteger(spineIndex) ? spineIndex : null;
         if (!Number.isInteger(committedSpineIndex)) {
             return;
@@ -1498,12 +1748,12 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
         };
         const committedPageIndex = Number.isInteger(pageIndex) ? pageIndex : 0;
         const committedPageCount = Number.isInteger(pagesInChapter) ? pagesInChapter : null;
-        const chapterPageProgress = committedPageCount && committedPageCount > 0
-            ? committedPageIndex / committedPageCount
-            : 0;
-        const nextProgress = totalSpineItems > 0
-            ? Math.min(Math.max((committedSpineIndex + chapterPageProgress) / totalSpineItems, 0), 1)
-            : (activeBook?.progress ?? 0);
+        const nextProgress = progressForBookPosition(
+            committedSpineIndex,
+            totalSpineItems,
+            committedPageIndex,
+            committedPageCount
+        ) ?? clampProgress(activeBook?.progress ?? 0);
         const nextBookPatch = {
             nativePosition: nextPosition,
             location: nextPosition.href || null,
@@ -1515,7 +1765,7 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
         currentSpineIndexRef.current = committedSpineIndex;
         nativeReaderPackageRef.current = committedPackage;
         setNativeReaderPackage(committedPackage);
-        setNativeRestorePosition(nextPosition);
+        updateNativeRestorePosition(nextPosition);
         if (currentBook) {
             setBooks((prevBooks) => prevBooks.map((book) => (
                 book.uri === currentBook
@@ -1537,7 +1787,7 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
         setReaderLocationInfo({
             page: totalSpineItems > 0 ? committedSpineIndex + 1 : null,
             total: totalSpineItems || null,
-            percentage: totalSpineItems > 0 ? committedSpineIndex / totalSpineItems : null,
+            percentage: nextProgress,
             href: nextPosition.href,
             pageInChapter: Number.isInteger(pageIndex) ? pageIndex + 1 : null,
             pagesInChapter: Number.isInteger(pagesInChapter) ? pagesInChapter : null,
@@ -1555,10 +1805,15 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
         scheduleCloudProgressSync,
         setBooks,
         startChapterPreprocessing,
+        updateNativeRestorePosition,
         updateNativeChapterWindowForSpine,
     ]);
 
     const handleNativeChapterEnd = useCallback(() => {
+        if (bookCompletionInProgressRef.current) {
+            return;
+        }
+
         const loadedSpineIndex = currentSpineIndexRef.current;
         if (!Number.isInteger(loadedSpineIndex) || nativeChapterTotal <= 0) {
             return;
@@ -1567,10 +1822,70 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
         const nextSpineIndex = loadedSpineIndex + 1;
         if (nextSpineIndex < nativeChapterTotal) {
             loadNativeReaderPackage(nextSpineIndex, { animateChapterTransition: true });
+            return;
         }
-    }, [loadNativeReaderPackage, nativeChapterTotal]);
+
+        bookCompletionInProgressRef.current = true;
+
+        if (currentBook) {
+            const previousPosition = nativeRestorePositionRef.current || activeBook?.nativePosition || {};
+            const loadedSpineItem = nativeReaderPackageRef.current?.spine
+                ?.find((item) => item?.index === loadedSpineIndex)
+                || nativeReaderPackageRef.current?.loadedSpineItem;
+            const finalPageCount = Number.isInteger(previousPosition?.pagesInChapter)
+                ? previousPosition.pagesInChapter
+                : null;
+            const finalPageIndex = Number.isInteger(previousPosition?.pageIndex)
+                ? previousPosition.pageIndex
+                : (Number.isInteger(finalPageCount) ? Math.max(0, finalPageCount - 1) : 0);
+            const finalPosition = {
+                spineIndex: loadedSpineIndex,
+                pageIndex: finalPageIndex,
+                pagesInChapter: finalPageCount,
+                href: previousPosition?.href || loadedSpineItem?.path || loadedSpineItem?.href || '',
+                firstBlockId: previousPosition?.firstBlockId || null,
+            };
+            const nextBookPatch = {
+                nativePosition: finalPosition,
+                location: finalPosition.href || null,
+                progress: 1,
+            };
+
+            updateNativeRestorePosition(null);
+            setBooks((prevBooks) => prevBooks.map((book) => (
+                book.uri === currentBook
+                    ? { ...book, ...nextBookPatch }
+                    : book
+            )));
+
+            if (activeBook?.cloudId) {
+                scheduleCloudProgressSync({
+                    ...activeBook,
+                    ...nextBookPatch,
+                });
+            }
+        }
+
+        setShowSettings(false);
+        setShowMenu(false);
+        setShowToc(false);
+        navigation?.navigate?.('Home');
+    }, [
+        activeBook,
+        currentBook,
+        loadNativeReaderPackage,
+        nativeChapterTotal,
+        navigation,
+        scheduleCloudProgressSync,
+        setBooks,
+        updateNativeRestorePosition,
+    ]);
 
     const handleNativeChapterStart = useCallback(() => {
+        if (bookCompletionInProgressRef.current) {
+            return;
+        }
+
         const loadedSpineIndex = currentSpineIndexRef.current;
         if (!Number.isInteger(loadedSpineIndex) || loadedSpineIndex <= 0) {
             return;
@@ -1579,65 +1894,65 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
         loadNativeReaderPackage(loadedSpineIndex - 1, { animateChapterTransition: true });
     }, [loadNativeReaderPackage]);
 
-    const fullscreenReaderChromeColor = settings.isDarkMode ? '#1f2937' : READ_SCREEN_BACKGROUND;
+    const shouldPlaceLookupAtTop = !isNativeSelection && lookupPlacement === 'top';
+    const canShowFullscreenToggle = (
+        bookLoadState === 'ready'
+        && !!nativeReaderPackage
+        && !highlightedWord
+        && !showMenu
+        && !showSettings
+        && !showToc
+    );
 
     return (
         <View style={styles.container}>
-            {isFullscreen ? (
-                <View
-                    style={[
-                        styles.fullscreenExitBar,
-                        {
-                            paddingTop: insets.top + 4,
-                            backgroundColor: fullscreenReaderChromeColor,
-                        },
-                    ]}
-                >
-                    <TouchableOpacity
-                        style={styles.fullscreenExitButton}
-                        onPress={() => setIsFullscreen(false)}
-                    >
-                        <Feather name="minimize-2" size={16} color={settings.isDarkMode ? '#d1d5db' : colors.text} />
-                    </TouchableOpacity>
-                </View>
-            ) : (
+            {!isFullscreen ? (
                 <View style={[styles.headerBar, { paddingTop: insets.top + spacing.xs }]}>
-                    <View style={styles.headerLeft}>
-                        <Text numberOfLines={1} style={styles.headerBookTitle}>
-                            {activeBook?.title || t('read.defaultTitle')}
+                    <TouchableOpacity
+                        style={styles.headerBackButton}
+                        onPress={handleHeaderBack}
+                        accessibilityRole="button"
+                    >
+                        <MaterialIcons name="arrow-back-ios" size={22} color={themeColors.text} />
+                    </TouchableOpacity>
+
+                    <View style={styles.headerTitleStack}>
+                        <Text numberOfLines={1} style={styles.headerChapterTitle}>
+                            {headerLine1}
                         </Text>
-                        <Text numberOfLines={1} style={styles.headerBookMeta}>
-                            {activeBook?.author || t('read.defaultMeta')}
-                        </Text>
+                        {headerLine2 ? (
+                            <Text numberOfLines={1} style={styles.headerBookSubtitle}>
+                                {headerLine2}
+                            </Text>
+                        ) : null}
                     </View>
 
                     <View style={styles.headerControls}>
-                        <View style={styles.controlPill}>
-                            <Text style={styles.controlLabel}>{progressLabel}</Text>
-                        </View>
-                        {toc.length > 0 ? (
-                            <TouchableOpacity
-                                style={styles.settingsButton}
-                                onPress={() => setShowToc(true)}
-                            >
-                                <Feather name="list" size={18} color={colors.text} />
-                            </TouchableOpacity>
-                        ) : null}
+                        <Pressable
+                            disabled={toc.length === 0}
+                            onPress={() => setShowToc(true)}
+                            accessibilityRole="button"
+                            style={({ pressed }) => ([
+                                styles.progressCluster,
+                                toc.length === 0 && styles.progressClusterDisabled,
+                                pressed && toc.length > 0 && styles.progressClusterPressed,
+                            ])}
+                        >
+                            <View style={styles.progressTrack}>
+                                <View style={[styles.progressFill, { width: progressFillWidth }]} />
+                            </View>
+                            <Text numberOfLines={1} style={styles.controlLabel}>{progressLabel}</Text>
+                        </Pressable>
                         <TouchableOpacity
                             style={styles.settingsButton}
-                            onPress={() => setIsFullscreen(true)}
+                            onPress={() => setShowMenu((prev) => !prev)}
+                            accessibilityRole="button"
                         >
-                            <Feather name="maximize-2" size={17} color={colors.text} />
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={styles.settingsButton}
-                            onPress={() => setShowSettings((prev) => !prev)}
-                        >
-                            <Feather name="more-vertical" size={18} color={colors.text} />
+                            <MaterialIcons name="more-horiz" size={20} color={showMenu ? themeColors.inkSlate : themeColors.textSecondary} />
                         </TouchableOpacity>
                     </View>
                 </View>
-            )}
+            ) : null}
 
             <View style={styles.reader}>
                 {bookLoadState === 'error' ? (
@@ -1659,7 +1974,7 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
                     </View>
                 ) : isReaderWaitingForHighlights ? (
                     <View style={styles.readerLoadingState}>
-                        <ActivityIndicator size="small" color={colors.accentStrong} />
+                        <ActivityIndicator size="small" color={themeColors.accentStrong} />
                         <Text style={styles.readerLoadingTitle}>{t('read.preparingHighlights')}</Text>
                         <Text style={styles.readerLoadingBody}>
                             {t('read.preparingHighlightsBody')}
@@ -1667,7 +1982,7 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
                     </View>
                 ) : bookLoadState === 'loading' || !nativeReaderPackage ? (
                     <View style={styles.readerLoadingState}>
-                        <ActivityIndicator size="small" color={colors.accentStrong} />
+                        <ActivityIndicator size="small" color={themeColors.accentStrong} />
                         <Text style={styles.readerLoadingTitle}>{t('read.openingReader')}</Text>
                         <Text style={styles.readerLoadingBody}>
                             {t('read.openingReaderBody')}
@@ -1680,6 +1995,9 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
                         bookManifest={{
                             ...nativeReaderPackage.bookManifest,
                             chapterTransitionDirection,
+                            currentChapterTitle: activeChapterTitle,
+                            currentSpineTitle: activeChapterTitle,
+                            currentBookTitle: headerBookTitle,
                         }}
                         chapterBlocks={nativeChapterBlocks}
                         chapterResources={nativeChapterResources}
@@ -1688,7 +2006,8 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
                         chapterTransitionDirection={chapterTransitionDirection}
                         fontSize={settings.fontSize}
                         lineHeight={settings.lineSpacing}
-                        theme={settings.isDarkMode ? 'dark' : 'light'}
+                        theme={isDarkMode ? 'dark' : 'light'}
+                        themeTokens={nativeReaderThemeTokens}
                         highlightTerms={readerHighlightTerms}
                         clearSelectionToken={clearSelectionToken}
                         onPageChange={handleNativePageChange}
@@ -1705,9 +2024,10 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
             <TocDrawer
                 visible={showToc}
                 toc={toc}
-                currentSpineIndex={currentSpineIndex}
+                currentSpineIndex={activeSpineIndex}
                 totalSpineItems={nativeChapterTotal}
-                isDarkMode={settings.isDarkMode}
+                bookProgress={bookProgress}
+                isDarkMode={isDarkMode}
                 onClose={() => setShowToc(false)}
                 onSelect={(item) => {
                     if (!Number.isInteger(item?.spineIndex)) {
@@ -1723,13 +2043,13 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
                         firstBlockId: null,
                     };
 
-                    if (item.spineIndex !== currentSpineIndex) {
+                    if (item.spineIndex !== activeSpineIndex) {
                         loadNativeReaderPackage(item.spineIndex, {
                             restorePosition: firstPagePosition,
                             animateChapterTransition: false,
                         });
                     } else {
-                        setNativeRestorePosition(firstPagePosition);
+                        updateNativeRestorePosition(firstPagePosition);
                     }
                 }}
             />
@@ -1737,30 +2057,18 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
             <View
                 style={[
                     styles.lookupLayer,
-                    isFullscreen || lookupPlacement === 'top' ? styles.lookupLayerTop : styles.lookupLayerBottom,
-                    isFullscreen || lookupPlacement === 'top'
+                    shouldPlaceLookupAtTop ? styles.lookupLayerTop : styles.lookupLayerBottom,
+                    shouldPlaceLookupAtTop
                         ? { paddingTop: isFullscreen ? insets.top + 18 : insets.top + 80 }
                         : { paddingBottom: insets.bottom + 6 },
                 ]}
                 pointerEvents="box-none"
             >
-                {highlightedWord ? (
-                    <Pressable
-                        style={styles.lookupDismissZone}
-                        onPress={() => {
-                            setHighlightedWord('');
-                            setHighlightedWordContext(null);
-                            setIsNativeSelection(false);
-                            setClearSelectionToken((value) => value + 1);
-                        }}
-                    />
-                ) : null}
-
                 <TopSection
                     highlightedWord={highlightedWord}
                     sourceSentence={highlightedWordContext?.sentence ?? ''}
                     isNativeSelection={isNativeSelection}
-                    isDarkMode={settings.isDarkMode}
+                    isDarkMode={isDarkMode}
                     onClose={() => {
                         setHighlightedWord('');
                         setHighlightedWordContext(null);
@@ -1772,6 +2080,7 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
                     currentBook={currentBook}
                     sourceBook={activeBook}
                     savedWords={savedWords ?? []}
+                    translationVisualState={translationBannerVisualState}
                 />
             </View>
 
@@ -1782,7 +2091,7 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
                 >
                     <View style={styles.hintCard}>
                         <View style={styles.hintCopy}>
-                            <Feather name="corner-down-left" size={16} color={colors.textSubtle} />
+                            <Feather name="corner-down-left" size={16} color={themeColors.textSubtle} />
                             <View style={styles.hintTextStack}>
                                 <Text style={styles.hintText}>
                                     {t('read.tapHint')}
@@ -1793,7 +2102,75 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
                             </View>
                         </View>
                         <TouchableOpacity onPress={dismissLookupHint} style={styles.hintCloseButton}>
-                            <Feather name="x" size={14} color={colors.textSubtle} />
+                            <Feather name="x" size={14} color={themeColors.textSubtle} />
+                        </TouchableOpacity>
+                    </View>
+                </View>
+            ) : null}
+
+            {canShowFullscreenToggle ? (
+                <View
+                    pointerEvents="box-none"
+                    style={[
+                        styles.fullscreenToggleLayer,
+                        { bottom: insets.bottom + 18 },
+                    ]}
+                >
+                    <TouchableOpacity
+                        style={styles.fullscreenToggleButton}
+                        onPress={() => setIsFullscreen((current) => !current)}
+                        activeOpacity={0.72}
+                        accessibilityRole="button"
+                        accessibilityLabel={isFullscreen ? 'Exit full screen' : 'Enter full screen'}
+                    >
+                        <Feather
+                            name={isFullscreen ? 'minimize-2' : 'maximize-2'}
+                            size={17}
+                            color={themeColors.readerBodyInk}
+                        />
+                    </TouchableOpacity>
+                </View>
+            ) : null}
+
+            {showMenu && !isFullscreen ? (
+                <View pointerEvents="box-none" style={styles.settingsOverlay}>
+                    <Pressable style={styles.settingsBackdrop} onPress={() => setShowMenu(false)} />
+                    <View style={[styles.menuDropdown, { top: insets.top + 50, right: 14 }]}>
+                        <TouchableOpacity
+                            style={[styles.menuItem, styles.menuItemBorder]}
+                            onPress={() => setShowMenu(false)}
+                            activeOpacity={0.7}
+                            accessibilityRole="button"
+                        >
+                            <MaterialIcons name="bookmark-border" size={19} color={themeColors.textSecondary} />
+                            <Text style={styles.menuItemLabel}>Bookmarks</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            style={[styles.menuItem, styles.menuItemBorder]}
+                            onPress={() => setShowMenu(false)}
+                            activeOpacity={0.7}
+                            accessibilityRole="button"
+                        >
+                            <MaterialIcons name="sticky-note-2" size={19} color={themeColors.textSecondary} />
+                            <Text style={styles.menuItemLabel}>Notes</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            style={[styles.menuItem, styles.menuItemBorder]}
+                            onPress={() => { setShowMenu(false); setShowSettings(true); }}
+                            activeOpacity={0.7}
+                            accessibilityRole="button"
+                        >
+                            <MaterialIcons name="text-fields" size={19} color={themeColors.textSecondary} />
+                            <Text style={styles.menuItemLabel}>Font settings</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            style={styles.menuItem}
+                            onPress={() => setShowMenu(false)}
+                            activeOpacity={0.7}
+                            accessibilityRole="button"
+                        >
+                            <MaterialIcons name="ios-share" size={19} color={themeColors.textSecondary} />
+                            <Text style={styles.menuItemLabel}>Share</Text>
                         </TouchableOpacity>
                     </View>
                 </View>
@@ -1803,7 +2180,19 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
                 <View pointerEvents="box-none" style={styles.settingsOverlay}>
                     <Pressable style={styles.settingsBackdrop} onPress={() => setShowSettings(false)} />
                     <View style={[styles.settingsDropdown, { top: insets.top + 56, right: spacing.lg }]}>
-                        <Text style={styles.settingsHeading}>{t('read.settings')}</Text>
+                        <View style={styles.settingsHeader}>
+                            <Text style={styles.settingsHeading}>{t('read.settings')}</Text>
+                            <TouchableOpacity
+                                style={styles.settingsHeaderAction}
+                                onPress={() => {
+                                    setShowSettings(false);
+                                    setIsFullscreen(true);
+                                }}
+                                accessibilityRole="button"
+                            >
+                                <Feather name="maximize-2" size={15} color={themeColors.text} />
+                            </TouchableOpacity>
+                        </View>
 
                         <View style={styles.settingsSection}>
                             <View style={styles.settingsRow}>
@@ -1817,9 +2206,9 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
                                 maximumValue={30}
                                 step={1}
                                 allowTouchTrack
-                                thumbTintColor={colors.accentStrong}
-                                minimumTrackTintColor={colors.accentStrong}
-                                maximumTrackTintColor={colors.border}
+                                thumbTintColor={themeColors.accentStrong}
+                                minimumTrackTintColor={themeColors.accentStrong}
+                                maximumTrackTintColor={themeColors.border}
                                 trackStyle={styles.dropdownSliderTrack}
                                 thumbStyle={styles.dropdownSliderThumb}
                             />
@@ -1835,14 +2224,14 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
                                     style={styles.stepperButton}
                                     onPress={() => handleSettingChange('lineSpacing', Math.max(1, Number((settings.lineSpacing - 0.1).toFixed(1))))}
                                 >
-                                    <Feather name="minus" size={16} color={colors.text} />
+                                    <Feather name="minus" size={16} color={themeColors.text} />
                                 </TouchableOpacity>
                                 <Text style={styles.stepperValue}>{settings.lineSpacing.toFixed(1)}</Text>
                                 <TouchableOpacity
                                     style={styles.stepperButton}
                                     onPress={() => handleSettingChange('lineSpacing', Math.min(2.6, Number((settings.lineSpacing + 0.1).toFixed(1))))}
                                 >
-                                    <Feather name="plus" size={16} color={colors.text} />
+                                    <Feather name="plus" size={16} color={themeColors.text} />
                                 </TouchableOpacity>
                             </View>
                         </View>
@@ -1851,10 +2240,10 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
                             <View style={styles.settingsRow}>
                                 <Text style={styles.settingsLabel}>{t('read.darkMode')}</Text>
                                 <Switch
-                                    value={settings.isDarkMode}
+                                    value={isDarkMode}
                                     onValueChange={(value) => handleSettingChange('isDarkMode', value)}
-                                    trackColor={{ false: colors.border, true: colors.accentMuted }}
-                                    thumbColor={settings.isDarkMode ? '#4f4031' : '#fffdf8'}
+                                    trackColor={{ false: themeColors.border, true: themeColors.accentMuted }}
+                                    thumbColor={isDarkMode ? themeColors.readerTappedWordBg : themeColors.surface}
                                 />
                             </View>
                         </View>
@@ -1865,69 +2254,106 @@ const Read = ({ books, setBooks, currentBook: selectedCurrentBook, onPreprocessC
     );
 };
 
-const styles = StyleSheet.create({
+const createStyles = (themeColors) => StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: READ_SCREEN_BACKGROUND,
+        backgroundColor: themeColors.readerPaper,
     },
     headerBar: {
         flexDirection: 'row',
-        alignItems: 'flex-start',
-        justifyContent: 'space-between',
-        gap: spacing.md,
-        paddingHorizontal: spacing.lg,
-        paddingBottom: spacing.md,
-        backgroundColor: colors.surface,
-        borderBottomWidth: 1,
-        borderBottomColor: colors.border,
-    },
-    headerLeft: {
-        flex: 1,
-        minWidth: 0,
-    },
-    headerBookTitle: {
-        ...textStyles.sectionTitle,
-        fontSize: 18,
-    },
-    headerBookMeta: {
-        ...textStyles.caption,
-        marginTop: 2,
-    },
-    headerControls: {
-        flexDirection: 'row',
         alignItems: 'center',
-        gap: spacing.xs,
+        gap: 10,
+        paddingHorizontal: 16,
+        paddingBottom: 10,
+        backgroundColor: themeColors.readerPaper,
+        borderBottomWidth: 1,
+        borderBottomColor: themeColors.readerHairline,
     },
-    fullscreenExitBar: {
-        minHeight: 42,
-        paddingHorizontal: spacing.sm,
-        paddingBottom: 4,
-        alignItems: 'flex-end',
-        justifyContent: 'flex-end',
-    },
-    fullscreenExitButton: {
-        width: 36,
-        height: 32,
+    headerBackButton: {
+        width: 38,
+        height: 42,
         alignItems: 'center',
         justifyContent: 'center',
         borderRadius: radii.pill,
     },
-    controlPill: {
-        paddingHorizontal: spacing.sm,
-        paddingVertical: 8,
+    headerTitleStack: {
+        flex: 1,
+        minWidth: 0,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    headerChapterTitle: {
+        fontFamily: 'FFSans-SemiBold',
+        fontSize: 15,
+        lineHeight: 20,
+        color: themeColors.readerBodyInk,
+        textAlign: 'center',
+    },
+    headerBookSubtitle: {
+        fontFamily: 'FFSans-Regular',
+        fontSize: 13,
+        lineHeight: 17,
+        color: themeColors.readerMutedInk,
+        marginTop: 1,
+        textAlign: 'center',
+    },
+    headerControls: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
+    progressCluster: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        minHeight: 42,
         borderRadius: radii.pill,
-        backgroundColor: colors.surfaceMuted,
+    },
+    progressClusterPressed: {
+        opacity: 0.7,
+    },
+    progressClusterDisabled: {
+        opacity: 1,
+    },
+    fullscreenToggleLayer: {
+        position: 'absolute',
+        right: spacing.lg,
+    },
+    fullscreenToggleButton: {
+        width: 44,
+        height: 44,
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: 22,
+        backgroundColor: themeColors.transparent,
+    },
+    progressTrack: {
+        width: 60,
+        height: 3,
+        borderRadius: 2,
+        backgroundColor: themeColors.readerProgressTrack,
+        overflow: 'hidden',
+    },
+    progressFill: {
+        height: '100%',
+        borderRadius: 2,
+        backgroundColor: themeColors.readerProgressFill,
     },
     controlLabel: {
-        ...textStyles.caption,
-        color: colors.text,
+        fontFamily: 'FFSans-Medium',
+        fontSize: 13,
+        lineHeight: 17,
+        color: themeColors.readerMutedInk,
+        minWidth: 33,
+        textAlign: 'right',
+        fontVariant: ['tabular-nums'],
     },
     reader: {
         flex: 1,
     },
     nativeReaderView: {
         flex: 1,
-        backgroundColor: READ_SCREEN_BACKGROUND,
+        backgroundColor: themeColors.readerPaper,
     },
     readerErrorState: {
         flex: 1,
@@ -1938,15 +2364,17 @@ const styles = StyleSheet.create({
     },
     readerErrorTitle: {
         ...textStyles.title,
+        color: themeColors.readerBodyInk,
         textAlign: 'center',
     },
     readerErrorBody: {
         ...textStyles.bodyMuted,
+        color: themeColors.readerMutedInk,
         textAlign: 'center',
     },
     readerErrorMeta: {
         ...textStyles.caption,
-        color: colors.textSubtle,
+        color: themeColors.readerSubtleInk,
         textAlign: 'center',
     },
     readerLoadingState: {
@@ -1959,29 +2387,29 @@ const styles = StyleSheet.create({
     readerLoadingTitle: {
         ...textStyles.label,
         textAlign: 'center',
-        color: colors.text,
+        color: themeColors.readerBodyInk,
     },
     readerLoadingBody: {
         ...textStyles.caption,
         textAlign: 'center',
-        color: colors.textMuted,
+        color: themeColors.readerMutedInk,
         maxWidth: 280,
     },
     retryButton: {
         minWidth: 132,
         minHeight: 44,
         borderRadius: radii.pill,
-        backgroundColor: colors.accentSoft,
+        backgroundColor: themeColors.readerSavedChipBg,
         paddingHorizontal: spacing.lg,
         alignItems: 'center',
         justifyContent: 'center',
         borderWidth: 1,
-        borderColor: colors.border,
+        borderColor: themeColors.readerBorder,
         marginTop: spacing.sm,
     },
     retryButtonText: {
         ...textStyles.body,
-        color: colors.accentStrong,
+        color: themeColors.readerSavedChipText,
     },
     lookupLayer: {
         position: 'absolute',
@@ -2008,9 +2436,9 @@ const styles = StyleSheet.create({
     },
     hintCard: {
         borderRadius: radii.pill,
-        backgroundColor: colors.surfaceElevated,
+        backgroundColor: themeColors.surfaceElevated,
         borderWidth: 1,
-        borderColor: colors.border,
+        borderColor: themeColors.border,
         paddingLeft: spacing.md,
         paddingRight: spacing.sm,
         paddingVertical: spacing.sm,
@@ -2028,7 +2456,7 @@ const styles = StyleSheet.create({
     },
     hintText: {
         ...textStyles.caption,
-        color: colors.textSubtle,
+        color: themeColors.textSubtle,
         flexShrink: 1,
     },
     hintTextStack: {
@@ -2038,7 +2466,7 @@ const styles = StyleSheet.create({
     },
     hintSubtext: {
         ...textStyles.caption,
-        color: colors.textSubtle,
+        color: themeColors.textSubtle,
         flexShrink: 1,
     },
     hintCloseButton: {
@@ -2049,12 +2477,37 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
     },
     settingsButton: {
-        width: 38,
-        height: 38,
-        borderRadius: 19,
-        backgroundColor: colors.surfaceMuted,
+        width: 20,
+        height: 42,
+        borderRadius: 0,
+        backgroundColor: themeColors.transparent,
         justifyContent: 'center',
         alignItems: 'center',
+    },
+    menuDropdown: {
+        position: 'absolute',
+        width: 184,
+        backgroundColor: themeColors.surface,
+        borderWidth: 1,
+        borderColor: themeColors.border,
+        borderRadius: 4,
+        overflow: 'hidden',
+    },
+    menuItem: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 11,
+        paddingVertical: 13,
+        paddingHorizontal: 16,
+    },
+    menuItemBorder: {
+        borderBottomWidth: 1,
+        borderBottomColor: themeColors.divider,
+    },
+    menuItemLabel: {
+        fontFamily: textStyles.body.fontFamily,
+        fontSize: 14,
+        color: themeColors.text,
     },
     settingsOverlay: {
         ...StyleSheet.absoluteFillObject,
@@ -2066,24 +2519,38 @@ const styles = StyleSheet.create({
     settingsDropdown: {
         position: 'absolute',
         width: 260,
-        borderRadius: radii.lg,
-        backgroundColor: 'rgba(255, 252, 246, 0.98)',
+        borderRadius: 4,
+        backgroundColor: themeColors.surface,
         borderWidth: 1,
-        borderColor: colors.border,
+        borderColor: themeColors.border,
         padding: spacing.md,
         gap: spacing.md,
-        shadowColor: '#000',
-        shadowOpacity: 0.08,
-        shadowRadius: 12,
-        shadowOffset: { width: 0, height: 6 },
-        elevation: 8,
+        shadowColor: themeColors.transparent,
+        shadowOpacity: 0,
+        shadowRadius: 0,
+        shadowOffset: { width: 0, height: 0 },
+        elevation: 0,
+    },
+    settingsHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: spacing.sm,
     },
     settingsHeading: {
         ...textStyles.label,
         fontSize: 12,
         textTransform: 'uppercase',
         letterSpacing: 1.2,
-        color: colors.textSubtle,
+        color: themeColors.textSubtle,
+    },
+    settingsHeaderAction: {
+        width: 28,
+        height: 28,
+        borderRadius: 14,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: themeColors.surfaceMuted,
     },
     settingsSection: {
         gap: spacing.sm,
@@ -2099,11 +2566,11 @@ const styles = StyleSheet.create({
     },
     settingsLabel: {
         ...textStyles.body,
-        color: colors.text,
+        color: themeColors.text,
     },
     settingsValue: {
         ...textStyles.caption,
-        color: colors.textSubtle,
+        color: themeColors.textSubtle,
     },
     dropdownSliderTrack: {
         height: 4,
@@ -2113,7 +2580,7 @@ const styles = StyleSheet.create({
         width: 18,
         height: 18,
         borderRadius: 9,
-        backgroundColor: colors.accentStrong,
+        backgroundColor: themeColors.accentStrong,
     },
     stepperRow: {
         flexDirection: 'row',
@@ -2126,14 +2593,14 @@ const styles = StyleSheet.create({
         height: 38,
         borderRadius: 19,
         borderWidth: 1,
-        borderColor: colors.border,
-        backgroundColor: colors.surface,
+        borderColor: themeColors.border,
+        backgroundColor: themeColors.surface,
         justifyContent: 'center',
         alignItems: 'center',
     },
     stepperValue: {
         ...textStyles.body,
-        color: colors.text,
+        color: themeColors.text,
         minWidth: 36,
         textAlign: 'center',
     },

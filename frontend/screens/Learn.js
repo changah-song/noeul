@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Modal,
   Pressable,
@@ -14,90 +15,156 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Feather, MaterialIcons } from '@expo/vector-icons';
 
 import Flashcard from '../components/Learn/Flashcard';
-import HanjaDetails from '../components/Read/TopSection/HanjaDetails';
 import { Screen } from '../components/ui';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
+import { fetchHanjaRelated } from '../services/api/hanjaRelated';
 import {
+  addRelatedKnownWord,
   getVocabContexts,
+  getRelatedKnownWords,
   recordReviewOutcome,
   removeData,
+  removeRelatedKnownWord,
   updateFavorite,
   viewData,
 } from '../services/Database';
 import { incrementWordsStudied } from '../services/dailyProgress';
 import {
+  softDeleteUserRelatedKnownWord,
   softDeleteUserVocabContextsForWord,
   softDeleteRelatedKnownWordsForMainWord,
   softDeleteUserVocabEntry,
   supabase,
+  upsertUserRelatedKnownWord,
+  upsertUserVocabEntry,
   updateUserVocabFields,
 } from '../services/supabase';
 import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
 import { normalizeBookLanguage } from '../constants/languages';
-import { colors, fontFamilies, radii, spacing, textStyles } from '../theme';
+import { colors, fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
 
 const FILTERS = [
-  { key: 'starred', labelKey: 'learn.filters.starred', icon: 'star' },
   { key: 'recent', labelKey: 'learn.filters.recent' },
+  { key: 'starred', labelKey: 'learn.filters.starred' },
   { key: 'maturity', labelKey: 'learn.filters.maturity' },
   { key: 'not-seen', labelKey: 'learn.filters.notSeen' },
-  { key: 'most-seen', labelKey: 'learn.filters.mostSeen' },
 ];
 
-const PROFICIENCY_LEVELS = [
+const createProficiencyLevels = (themeColors) => [
   {
     key: 'new',
     labelKey: 'learn.proficiency.new',
     rank: 1,
-    color: '#3f79aa',
-    soft: '#e7f1fa',
+    color: themeColors.textSubtle,
+    soft: themeColors.surfaceMuted,
     descriptionKey: 'learn.proficiency.newDescription',
   },
   {
     key: 'growing',
     labelKey: 'learn.proficiency.growing',
     rank: 2,
-    color: '#c58b28',
-    soft: '#fff1d5',
+    color: themeColors.textTertiary,
+    soft: themeColors.surfaceMuted,
     descriptionKey: 'learn.proficiency.growingDescription',
   },
   {
     key: 'familiar',
     labelKey: 'learn.proficiency.familiar',
     rank: 3,
-    color: '#b47b2a',
-    soft: '#f8ead1',
+    color: themeColors.textMuted,
+    soft: themeColors.surfaceMuted,
     descriptionKey: 'learn.proficiency.familiarDescription',
   },
   {
     key: 'mature',
     labelKey: 'learn.proficiency.mature',
     rank: 4,
-    color: '#5c9856',
-    soft: '#e7f1dd',
+    color: themeColors.accent,
+    soft: themeColors.surfaceMuted,
     descriptionKey: 'learn.proficiency.matureDescription',
   },
   {
     key: 'graduated',
     labelKey: 'learn.proficiency.graduated',
     rank: 5,
-    color: '#8f897d',
-    soft: '#ece8df',
+    color: themeColors.accent,
+    soft: themeColors.surfaceMuted,
     descriptionKey: 'learn.proficiency.graduatedDescription',
   },
 ];
 
-const proficiencyByKey = PROFICIENCY_LEVELS.reduce((acc, level) => {
+const PROFICIENCY_LEVELS = createProficiencyLevels(colors);
+const createProficiencyByKey = (levels) => levels.reduce((acc, level) => {
   acc[level.key] = level;
   return acc;
 }, {});
+const proficiencyByKey = createProficiencyByKey(PROFICIENCY_LEVELS);
+
+const LearnThemeContext = createContext(null);
+const useLearnTheme = () => (
+  useContext(LearnThemeContext) ?? { colors, styles: defaultLearnStyles, proficiencyByKey }
+);
 
 const HANJA_RE = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/;
 const LEARN_SIDE_PADDING = 16;
+const ENCOUNTER_DOT_COUNT = 4;
+const DETAIL_CONTEXT_LIMIT = 2;
+const DETAIL_HANJA_RELATED_LIMIT = 4;
+const MONTH_SHORT_LABELS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+const MONTH_LONG_LABELS = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+const EMPTY_HANJA_LOOKUP = {
+  firstTableData: [],
+  similarWordsTableData: [],
+};
+
 const cleanText = (value) => (typeof value === 'string' ? value.trim() : '');
 const getHanjaCharacters = (value) => cleanText(value).split('').filter((char) => HANJA_RE.test(char));
+const relatedWordKey = (entry) => `${entry?.korean ?? ''}|${entry?.hanja ?? ''}`;
+
+const uniqueValues = (values) => [...new Set(values.map(cleanText).filter(Boolean))];
+
+const normalizeReadingEntries = (entries = []) => {
+  const seen = new Set();
+  const normalized = [];
+
+  entries.forEach((entry) => {
+    const reading = cleanText(entry?.reading);
+    const koreanMeaning = cleanText(entry?.hun_korean);
+    const englishMeaning = cleanText(entry?.hun_display) || cleanText(entry?.meaning);
+    const fallbackMeaning = cleanText(entry?.meaning);
+    const key = `${reading}|${koreanMeaning}|${englishMeaning || fallbackMeaning}`;
+
+    if ((!reading && !koreanMeaning && !englishMeaning && !fallbackMeaning) || seen.has(key)) {
+      return;
+    }
+
+    seen.add(key);
+    normalized.push({
+      hanja: cleanText(entry?.hanja),
+      reading,
+      koreanMeaning,
+      englishMeaning,
+      fallbackMeaning,
+    });
+  });
+
+  return normalized;
+};
 
 const parseRelatedKnownWords = (value) => {
   if (Array.isArray(value)) {
@@ -172,31 +239,57 @@ const getLastSawDate = (word) => (
   || null
 );
 
-const formatRelativeDate = (value, t = null) => {
-  const label = (key, params) => (t ? t(key, params) : null);
-
-  if (!value) {
-    return label('learn.notSeenDate') ?? 'not seen';
-  }
-
+const formatShortDate = (value, fallback = 'NOT SEEN') => {
   const timestamp = new Date(value).getTime();
   if (!Number.isFinite(timestamp)) {
-    return label('learn.notSeenDate') ?? 'not seen';
+    return fallback;
   }
 
-  const now = Date.now();
-  const diffDays = Math.max(0, Math.floor((now - timestamp) / (1000 * 60 * 60 * 24)));
-
-  if (diffDays === 0) return label('learn.today') ?? 'today';
-  if (diffDays === 1) return label('learn.yesterday') ?? 'yesterday';
-  if (diffDays < 30) return label('learn.daysAgo', { count: diffDays }) ?? `${diffDays}d ago`;
-  if (diffDays < 365) {
-    const months = Math.floor(diffDays / 30);
-    return label('learn.monthsAgo', { count: months }) ?? `${months}mo ago`;
-  }
-  const years = Math.floor(diffDays / 365);
-  return label('learn.yearsAgo', { count: years }) ?? `${years}y ago`;
+  const date = new Date(timestamp);
+  return `${MONTH_SHORT_LABELS[date.getMonth()] ?? ''} ${date.getDate()}`.trim() || fallback;
 };
+
+const formatLongDate = (value, fallback = '') => {
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) {
+    return fallback;
+  }
+
+  const date = new Date(timestamp);
+  return `${MONTH_LONG_LABELS[date.getMonth()] ?? ''} ${date.getDate()}`.trim() || fallback;
+};
+
+const getExposureDotCount = (seenCount) => {
+  const count = Number(seenCount) || 0;
+  if (count >= 8) return 4;
+  if (count >= 5) return 3;
+  if (count >= 3) return 2;
+  if (count >= 2) return 1;
+  return 0;
+};
+
+const getPronunciation = (word) => (
+  cleanText(word?.romanization)
+  || cleanText(word?.pronunciation)
+  || cleanText(word?.pinyin)
+  || cleanText(word?.ipa)
+);
+
+const getContextTranslation = (context) => (
+  cleanText(context?.translation)
+  || cleanText(context?.translatedSentence)
+  || cleanText(context?.translated_text)
+  || cleanText(context?.translationText)
+);
+
+const getContextSource = (context, fallbackSource) => (
+  cleanText(context?.sourceBookTitle)
+  || cleanText(context?.source_book_title)
+  || cleanText(context?.sourceTitle)
+  || cleanText(context?.sourceBookUri)
+  || cleanText(context?.source_book_uri)
+  || fallbackSource
+);
 
 const getDistinctDays = (word) => {
   const dates = [word?.created_at, word?.last_reviewed_at]
@@ -213,9 +306,7 @@ const getDistinctDays = (word) => {
   return Math.max(1, new Set(dates).size);
 };
 
-const getSourceCount = (word) => (cleanText(word?.source_book_title) || cleanText(word?.source_book_uri) ? 1 : 0);
-
-const getProficiency = (word) => {
+const getProficiency = (word, levelsByKey = proficiencyByKey) => {
   const seen = getSeenCount(word);
   let key = 'new';
 
@@ -235,7 +326,7 @@ const getProficiency = (word) => {
     key = 'growing';
   }
 
-  return proficiencyByKey[key] ?? proficiencyByKey.new;
+  return levelsByKey[key] ?? levelsByKey.new;
 };
 
 const isNotSeenLately = (word) => {
@@ -312,7 +403,7 @@ const sortRecent = (rows) =>
     return (a.word ?? '').localeCompare(b.word ?? '');
   });
 
-const getFilteredWords = (rows, filter) => {
+const getFilteredWords = (rows, filter, levelsByKey = proficiencyByKey) => {
   if (filter === 'starred') {
     return sortRecent(rows.filter((word) => word.is_favorite));
   }
@@ -327,7 +418,7 @@ const getFilteredWords = (rows, filter) => {
 
   if (filter === 'maturity') {
     return [...rows].sort((a, b) => {
-      const rankDiff = getProficiency(a).rank - getProficiency(b).rank;
+      const rankDiff = getProficiency(a, levelsByKey).rank - getProficiency(b, levelsByKey).rank;
       if (rankDiff !== 0) {
         return rankDiff;
       }
@@ -339,43 +430,49 @@ const getFilteredWords = (rows, filter) => {
   return sortRecent(rows);
 };
 
-const ProficiencyDots = ({ level, size = 7 }) => (
-  <View style={styles.dotRow}>
-    {PROFICIENCY_LEVELS.map((item) => (
-      <View
-        key={item.key}
-        style={[
-          styles.proficiencyDot,
-          {
-            width: size,
-            height: size,
-            borderRadius: size / 2,
-            backgroundColor: item.rank <= level.rank ? level.color : '#ded8c9',
-          },
-        ]}
-      />
-    ))}
-  </View>
-);
-
-const StatusBadge = ({ label, tone = 'blue' }) => {
-  const toneStyle = tone === 'amber'
-    ? { backgroundColor: '#f7e6bf', color: '#bd8427' }
-    : { backgroundColor: '#e3eef7', color: '#3f79aa' };
+const EncounterDots = ({ seenCount, size = 6 }) => {
+  const { styles } = useLearnTheme();
+  const filledCount = getExposureDotCount(seenCount);
 
   return (
-    <View style={[styles.badge, { backgroundColor: toneStyle.backgroundColor }]}>
-      <Text style={[styles.badgeText, { color: toneStyle.color }]}>{label}</Text>
+    <View style={styles.dotRow}>
+      {Array.from({ length: ENCOUNTER_DOT_COUNT }).map((_, index) => {
+        const filled = index < filledCount;
+        return (
+          <View
+            key={`encounter-dot-${index}`}
+            style={[
+              styles.encounterDot,
+              filled ? styles.encounterDotFilled : styles.encounterDotEmpty,
+              {
+                width: size,
+                height: size,
+                borderRadius: size / 2,
+              },
+            ]}
+          />
+        );
+      })}
+    </View>
+  );
+};
+
+const StatusBadge = ({ label }) => {
+  const { styles } = useLearnTheme();
+
+  return (
+    <View style={styles.badge}>
+      <Text style={styles.badgeText}>{label}</Text>
     </View>
   );
 };
 
 const VocabularyRow = ({ word, onPress, onLongPress, selectionMode = false, selected = false }) => {
   const { t } = useTranslation();
-  const proficiency = getProficiency(word);
+  const { colors, styles } = useLearnTheme();
   const seenCount = getSeenCount(word);
   const source = getSourceLabel(word, t);
-  const lastSaw = formatRelativeDate(getLastSawDate(word), t);
+  const lastSaw = formatShortDate(getLastSawDate(word), t('learn.notSeenDate').toUpperCase());
   const showNewBadge = isRecentlySaved(word);
   const showNotSeenBadge = !showNewBadge && isNotSeenLately(word);
 
@@ -392,7 +489,7 @@ const VocabularyRow = ({ word, onPress, onLongPress, selectionMode = false, sele
     >
       {selectionMode ? (
         <View style={[styles.selectionCircle, selected && styles.selectionCircleSelected]}>
-          {selected ? <Feather name="check" size={14} color="#fffaf3" /> : null}
+          {selected ? <Feather name="check" size={14} color={colors.white} /> : null}
         </View>
       ) : null}
       <View style={styles.wordCopy}>
@@ -401,227 +498,477 @@ const VocabularyRow = ({ word, onPress, onLongPress, selectionMode = false, sele
           {word.hanja ? <Text numberOfLines={1} style={styles.wordHanja}>{word.hanja}</Text> : null}
           {showNewBadge ? <StatusBadge label={t('learn.newBadge')} /> : null}
           {showNotSeenBadge ? <StatusBadge label={t('learn.notSeenBadge')} tone="amber" /> : null}
-          {word.is_favorite ? <MaterialIcons name="star" size={16} color="#a7997e" /> : null}
+          {word.is_favorite ? <MaterialIcons name="star" size={16} color={colors.inkSlate} /> : null}
         </View>
         <Text numberOfLines={1} style={styles.wordDefinition}>{word.def || t('learn.noDefinition')}</Text>
         <View style={styles.wordMetaLine}>
-          <Feather name="eye" size={13} color="#a99e8c" />
           <Text numberOfLines={1} style={styles.wordMetaText}>
-            {t('learn.seenMeta', { count: seenCount, source, date: lastSaw })}
+            {source} · ×{seenCount} · {lastSaw}
           </Text>
         </View>
       </View>
 
-      <View style={styles.proficiencySummary}>
-        <ProficiencyDots level={proficiency} />
-        <Text style={[styles.proficiencyLabel, { color: proficiency.color }]}>{t(proficiency.labelKey)}</Text>
+      <View style={styles.encounterSummary}>
+        <EncounterDots seenCount={seenCount} />
       </View>
     </Pressable>
   );
 };
 
-const HighlightPreview = ({ word, sentence, proficiency }) => {
+const DetailHanjaPanel = ({ word, onKnownWordsChange }) => {
+  const { interfaceLanguage } = useAppContext();
+  const { activeOwnerId, syncGeneration } = useLocalOwner();
   const { t } = useTranslation();
-  const cleanSentence = cleanText(sentence);
-  const cleanWord = cleanText(word?.word);
+  const { colors, styles } = useLearnTheme();
+  const characters = useMemo(() => getHanjaCharacters(word?.hanja), [word?.hanja]);
+  const charactersKey = characters.join('|');
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [lookupByCharacter, setLookupByCharacter] = useState({});
+  const [isLoadingLookup, setIsLoadingLookup] = useState(false);
+  const [knownKeys, setKnownKeys] = useState(new Set());
+  const sourceWord = cleanText(word?.word);
+  const language = word?.language ?? 'ko';
 
-  if (!cleanSentence || !cleanWord || !cleanSentence.includes(cleanWord)) {
-    return (
-      <Text style={styles.highlightSentence}>
-        <Text style={[styles.highlightedWord, { backgroundColor: proficiency.soft }]}>
-          {cleanWord || t('learn.word')}
-        </Text>
-        {cleanText(word?.def) ? ` - ${word.def}` : ''}
-      </Text>
-    );
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [charactersKey]);
+
+  useEffect(() => {
+    let isCancelled = false;
+    const uniqueCharacters = [...new Set(characters)];
+
+    setLookupByCharacter({});
+
+    if (uniqueCharacters.length === 0) {
+      setIsLoadingLookup(false);
+      return () => {
+        isCancelled = true;
+      };
+    }
+
+    setIsLoadingLookup(true);
+    Promise.all(
+      uniqueCharacters.map(async (character) => {
+        try {
+          const lookup = await fetchHanjaRelated(character, { interfaceLanguage });
+          return [character, lookup ?? EMPTY_HANJA_LOOKUP];
+        } catch (error) {
+          console.warn(`[Learn] Hanja lookup failed for "${character}":`, error?.message ?? error);
+          return [character, EMPTY_HANJA_LOOKUP];
+        }
+      })
+    ).then((pairs) => {
+      if (isCancelled) {
+        return;
+      }
+
+      setLookupByCharacter(Object.fromEntries(pairs));
+      setIsLoadingLookup(false);
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [characters, charactersKey, interfaceLanguage]);
+
+  useEffect(() => {
+    let isCancelled = false;
+    setKnownKeys(new Set());
+
+    if (!sourceWord) {
+      return () => {
+        isCancelled = true;
+      };
+    }
+
+    getRelatedKnownWords(sourceWord, language, { ownerId: activeOwnerId })
+      .then((knownWords) => {
+        if (!isCancelled) {
+          setKnownKeys(new Set(knownWords.map(relatedWordKey)));
+        }
+      })
+      .catch((error) => {
+        console.warn(`[Learn] related known words load failed for "${sourceWord}":`, error?.message ?? error);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [activeOwnerId, language, sourceWord]);
+
+  if (!word || characters.length === 0) {
+    return null;
   }
 
-  const index = cleanSentence.indexOf(cleanWord);
-  const before = cleanSentence.slice(0, index);
-  const after = cleanSentence.slice(index + cleanWord.length);
+  const safeActiveIndex = Math.max(0, Math.min(activeIndex, characters.length - 1));
+  const activeHanja = characters[safeActiveIndex] ?? characters[0];
+  const activeLookup = lookupByCharacter[activeHanja] ?? null;
+  const isLoading = isLoadingLookup && !activeLookup;
+  const titleRows = isLoading ? [] : activeLookup?.firstTableData ?? [];
+  const relatedWords = isLoading ? [] : activeLookup?.similarWordsTableData ?? [];
+  const visibleRelatedWords = relatedWords.slice(0, DETAIL_HANJA_RELATED_LIMIT);
+  const readingEntries = normalizeReadingEntries(titleRows);
+  const readingLabel = readingEntries
+    .map((entry) => [entry.koreanMeaning, entry.reading].filter(Boolean).join(' '))
+    .filter(Boolean)
+    .join(' / ');
+  const meaningLabel = uniqueValues(readingEntries.map((entry) => (
+    entry.englishMeaning || entry.fallbackMeaning
+  ))).join(', ');
+  const canGoPrevious = safeActiveIndex > 0;
+  const canGoNext = safeActiveIndex < characters.length - 1;
+
+  const sourceWordDetails = {
+    hanja: word.hanja ?? null,
+    definition: word.def ?? null,
+    level: word.level ?? 'unorganized',
+    sourceBookUri: word.source_book_uri ?? null,
+    sourceBookTitle: word.source_book_title ?? null,
+    contextSentence: word.context_sentence ?? null,
+    isFavorite: word.is_favorite,
+    priority: word.priority ?? 'normal',
+    createdAt: word.created_at ?? new Date().toISOString(),
+    updatedAt: word.updated_at ?? new Date().toISOString(),
+    lastReviewedAt: word.last_reviewed_at ?? null,
+    nextReviewAt: word.next_review_at ?? null,
+    correctCount: word.correct_count ?? 0,
+    wrongCount: word.wrong_count ?? 0,
+    stability: word.stability ?? 1,
+    difficulty: word.difficulty ?? 5,
+    language,
+  };
+
+  const goToPrevious = () => {
+    if (canGoPrevious) {
+      setActiveIndex(safeActiveIndex - 1);
+    }
+  };
+
+  const goToNext = () => {
+    if (canGoNext) {
+      setActiveIndex(safeActiveIndex + 1);
+    }
+  };
+
+  const handleKnownPress = async (entry) => {
+    const key = relatedWordKey(entry);
+    const known = knownKeys.has(key);
+    const markedAt = new Date().toISOString();
+    const knownEntry = {
+      korean: entry.korean,
+      hanja: entry.hanja,
+      meaning: entry.meaning,
+      sourceHanja: activeHanja,
+      markedAt,
+      updatedAt: markedAt,
+    };
+    const relation = {
+      language,
+      mainWord: sourceWord,
+      mainHanja: sourceWordDetails.hanja,
+      mainDefinition: sourceWordDetails.definition,
+      relatedWord: knownEntry.korean,
+      relatedHanja: knownEntry.hanja,
+      relatedDefinition: knownEntry.meaning,
+      sourceHanja: knownEntry.sourceHanja,
+      markedAt,
+      updatedAt: markedAt,
+    };
+
+    setKnownKeys((previous) => {
+      const next = new Set(previous);
+      if (known) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+
+    try {
+      const nextKnownWords = known
+        ? await removeRelatedKnownWord(sourceWord, knownEntry, language, {
+          ownerId: activeOwnerId,
+          mainHanja: sourceWordDetails.hanja,
+          mainDefinition: sourceWordDetails.definition,
+        })
+        : await addRelatedKnownWord(sourceWord, knownEntry, {
+          ownerId: activeOwnerId,
+          createIfMissing: true,
+          mainWord: sourceWordDetails,
+          language,
+        });
+
+      setKnownKeys(new Set(nextKnownWords.map(relatedWordKey)));
+      onKnownWordsChange?.();
+
+      const ownerId = activeOwnerId;
+      const generation = syncGeneration;
+      supabase.auth.getUser()
+        .then(({ data: { user } }) => {
+          if (!user || ownerId !== user.id || !isCurrentSyncGeneration(generation)) {
+            return null;
+          }
+
+          if (known) {
+            return softDeleteUserRelatedKnownWord({
+              user,
+              ownerId,
+              generation,
+              relation,
+            });
+          }
+
+          return Promise.all([
+            upsertUserVocabEntry({
+              user,
+              ownerId,
+              generation,
+              entry: {
+                word: sourceWord,
+                hanja: sourceWordDetails.hanja,
+                definition: sourceWordDetails.definition,
+                level: sourceWordDetails.level,
+                status: sourceWordDetails.level,
+                sourceBookUri: sourceWordDetails.sourceBookUri,
+                sourceBookTitle: sourceWordDetails.sourceBookTitle,
+                contextSentence: sourceWordDetails.contextSentence,
+                isFavorite: sourceWordDetails.isFavorite,
+                priority: sourceWordDetails.priority,
+                createdAt: sourceWordDetails.createdAt,
+                updatedAt: markedAt,
+                lastReviewedAt: sourceWordDetails.lastReviewedAt,
+                nextReviewAt: sourceWordDetails.nextReviewAt,
+                correctCount: sourceWordDetails.correctCount,
+                wrongCount: sourceWordDetails.wrongCount,
+                stability: sourceWordDetails.stability,
+                difficulty: sourceWordDetails.difficulty,
+                language,
+              },
+            }),
+            upsertUserRelatedKnownWord({
+              user,
+              ownerId,
+              generation,
+              relation,
+            }),
+          ]);
+        })
+        .catch((syncError) => {
+          console.warn(`[Learn] related known word cloud sync failed for "${sourceWord}":`, syncError?.message ?? syncError);
+        });
+    } catch (error) {
+      console.warn(`[Learn] related known word toggle failed for "${sourceWord}":`, error?.message ?? error);
+    }
+  };
 
   return (
-    <Text style={styles.highlightSentence}>
-      {before}
-      <Text style={[styles.highlightedWord, { backgroundColor: proficiency.soft }]}>
-        {cleanWord}
-      </Text>
-      {after}
-    </Text>
+    <View style={styles.detailHanjaPanel}>
+      <View style={styles.detailHanjaPanelHeader}>
+        <Text selectable style={styles.detailHanjaPanelCharacter}>{activeHanja}</Text>
+        <View style={styles.detailHanjaPanelCopy}>
+          <Text style={styles.detailHanjaPanelEyebrow}>{t('learn.hanjaCharacter')}</Text>
+          <Text selectable numberOfLines={2} style={styles.detailHanjaPanelMeaning}>
+            {readingLabel || (isLoading ? t('common.loading') : t('hanja.meaningUnavailable'))}
+            {meaningLabel ? ` · ${meaningLabel}` : ''}
+          </Text>
+        </View>
+        <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel={canGoNext ? t('hanja.next') : t('hanja.previous')}
+          disabled={!canGoNext && !canGoPrevious}
+          onPress={canGoNext ? goToNext : goToPrevious}
+          style={styles.detailHanjaPanelNav}
+        >
+          <Text style={styles.detailHanjaPanelCount}>
+            {t('learn.hanjaCount', { current: safeActiveIndex + 1, total: characters.length })}
+          </Text>
+          <Feather
+            name={canGoNext ? 'chevron-right' : 'chevron-left'}
+            size={16}
+            color={colors.textTertiary}
+          />
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.detailHanjaDivider} />
+
+      {isLoading ? (
+        <View style={styles.hanjaPanelEmpty}>
+          <ActivityIndicator size="small" color={colors.accent} />
+          <Text style={styles.hanjaPanelEmptyText}>{t('hanja.loading')}</Text>
+        </View>
+      ) : visibleRelatedWords.length > 0 ? (
+        visibleRelatedWords.map((relatedWord, index) => {
+          const known = knownKeys.has(relatedWordKey(relatedWord));
+          return (
+            <View
+              key={`${relatedWord.korean}-${relatedWord.hanja}-${index}`}
+              style={[
+                styles.detailHanjaRelatedRow,
+                index === visibleRelatedWords.length - 1 && styles.detailHanjaRelatedRowLast,
+              ]}
+            >
+              <View style={styles.detailHanjaRelatedCopy}>
+                <Text selectable style={styles.detailHanjaRelatedWord}>{relatedWord.korean}</Text>
+                <Text selectable numberOfLines={1} style={styles.detailHanjaRelatedMeaning}>
+                  {relatedWord.meaning || t('hanja.meaningUnavailable')}
+                </Text>
+              </View>
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel={known
+                  ? t('hanja.markedKnown', { word: relatedWord.korean })
+                  : t('hanja.markKnown', { word: relatedWord.korean })}
+                onPress={() => handleKnownPress(relatedWord)}
+                style={styles.detailHanjaKnownButton}
+              >
+                {known ? <Feather name="check" size={14} color={colors.text} /> : null}
+                <Text style={[
+                  styles.detailHanjaKnownButtonText,
+                  !known && styles.detailHanjaKnownButtonTextAction,
+                ]}>
+                  {known ? t('learn.known') : t('learn.markKnown')}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          );
+        })
+      ) : (
+        <View style={styles.hanjaPanelEmpty}>
+          <Text style={styles.hanjaPanelEmptyText}>{t('hanja.none')}</Text>
+        </View>
+      )}
+    </View>
   );
 };
 
 const WordDetailModal = ({
   word,
   contexts = [],
-  visible,
   onClose,
   onToggleFavorite,
-  onRemove,
+  onKnownWordsChange,
 }) => {
   const { t } = useTranslation();
-  const [currentHanja, setCurrentHanja] = useState(null);
-
-  useEffect(() => {
-    setCurrentHanja(null);
-  }, [word?.word, word?.hanja, word?.def]);
+  const { colors, styles, proficiencyByKey } = useLearnTheme();
 
   if (!word) {
     return null;
   }
 
-  const proficiency = getProficiency(word);
+  const proficiency = getProficiency(word, proficiencyByKey);
   const seenCount = getSeenCount(word);
   const source = getSourceLabel(word, t);
-  const lastSaw = formatRelativeDate(getLastSawDate(word), t);
   const isKoreanWord = normalizeBookLanguage(word.language ?? 'ko') === 'ko';
   const hanjaCharacters = getHanjaCharacters(word.hanja);
-
-  const handleHanjaPress = (hanja, sourceWord = null, options = {}) => {
-    if (!hanja) {
-      setCurrentHanja(null);
-      return;
-    }
-
-    const optionCharacters = Array.isArray(options.characters)
-      ? options.characters.map(cleanText).filter((char) => HANJA_RE.test(char))
-      : [];
-    const characters = optionCharacters.length > 0 ? optionCharacters : hanjaCharacters;
-    const fallbackCharacters = characters.length > 0 ? characters : getHanjaCharacters(hanja);
-    const requestedIndex = Number.isInteger(options.index)
-      ? options.index
-      : fallbackCharacters.indexOf(cleanText(hanja));
-    const activeIndex = requestedIndex >= 0
-      ? Math.min(requestedIndex, fallbackCharacters.length - 1)
-      : 0;
-
-    if (fallbackCharacters.length === 0) {
-      setCurrentHanja(null);
-      return;
-    }
-
-    setCurrentHanja({
-      character: fallbackCharacters[activeIndex],
-      characters: fallbackCharacters,
-      activeIndex,
-      sourceWord: cleanText(sourceWord) || word.word,
-      sourceWordDetails: {
-        hanja: word.hanja ?? null,
-        definition: word.def ?? null,
-        level: word.level ?? 'unorganized',
-        sourceBookUri: word.source_book_uri ?? null,
-        sourceBookTitle: word.source_book_title ?? null,
-        contextSentence: word.context_sentence ?? null,
-        isFavorite: word.is_favorite,
-        language: word.language ?? 'ko',
-      },
-    });
-  };
+  const pronunciation = getPronunciation(word);
+  const detailStatus = proficiency.rank >= proficiencyByKey.mature.rank
+    ? t('learn.detailStatus.mature')
+    : (proficiency.rank === proficiencyByKey.new.rank
+      ? t('learn.detailStatus.new')
+      : t('learn.detailStatus.waiting'));
+  const contextRows = contexts.length > 0
+    ? contexts
+    : (cleanText(word.context_sentence)
+      ? [{
+        sentence: word.context_sentence,
+        sourceBookTitle: word.source_book_title,
+        sourceBookUri: word.source_book_uri,
+        seenAt: getLastSawDate(word),
+      }]
+      : []);
+  const visibleContexts = contextRows.slice(0, DETAIL_CONTEXT_LIMIT);
+  const partOfSpeech = cleanText(word.part_of_speech ?? word.pos).toUpperCase();
 
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <SafeAreaView edges={['top', 'bottom']} style={styles.detailScreen}>
-        <View style={styles.detailHeader}>
-          <TouchableOpacity onPress={onClose} style={styles.detailHeaderButton}>
-            <Feather name="chevron-left" size={28} color="#2d2923" />
-          </TouchableOpacity>
-          <Text style={styles.detailHeaderTitle}>{t('learn.word')}</Text>
-          <TouchableOpacity onPress={onToggleFavorite} style={styles.detailHeaderButton}>
-            <MaterialIcons
-              name={word.is_favorite ? 'star' : 'star-outline'}
-              size={28}
-              color={word.is_favorite ? '#a99672' : '#b3aa99'}
-            />
-          </TouchableOpacity>
+    <SafeAreaView edges={['top']} style={styles.detailScreen}>
+      <View style={styles.detailHeader}>
+        <TouchableOpacity onPress={onClose} style={styles.detailHeaderButton}>
+          <Feather name="arrow-left" size={28} color={colors.text} />
+        </TouchableOpacity>
+        <Text style={styles.detailHeaderTitle}>VOCABULARY</Text>
+        <TouchableOpacity onPress={onToggleFavorite} style={styles.detailHeaderButton}>
+          <MaterialIcons
+            name={word.is_favorite ? 'star' : 'star-outline'}
+            size={28}
+            color={word.is_favorite ? colors.accent : colors.textSubtle}
+          />
+        </TouchableOpacity>
+      </View>
+
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.detailContent}>
+        <View style={styles.detailHero}>
+          <View style={styles.detailWordLine}>
+            <Text selectable style={styles.detailWord}>{word.word}</Text>
+            {isKoreanWord && hanjaCharacters.length > 0 ? (
+              <Text selectable style={styles.detailHanja}>{word.hanja}</Text>
+            ) : null}
+            {pronunciation ? <Text selectable style={styles.detailPronunciation}>{pronunciation}</Text> : null}
+          </View>
+          <View style={styles.detailMetaLine}>
+            <View style={styles.detailStatusPill}>
+              <Text style={styles.detailStatusText}>{detailStatus}</Text>
+            </View>
+            <Text style={styles.detailEncounterMeta}>×{seenCount} {t('learn.encounters')}</Text>
+          </View>
+          <View style={styles.definitionBlock}>
+            {partOfSpeech ? <Text style={styles.definitionPartOfSpeech}>{partOfSpeech}</Text> : null}
+            <Text selectable style={styles.detailDefinition}>{word.def || t('learn.noDefinition')}</Text>
+          </View>
         </View>
 
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.detailContent}>
-          <View style={styles.detailHero}>
-            <View style={styles.detailWordLine}>
-              <Text style={styles.detailWord}>{word.word}</Text>
-              {isKoreanWord && hanjaCharacters.length > 0 ? (
-                <TouchableOpacity
-                  activeOpacity={0.75}
-                  onPress={() => handleHanjaPress(hanjaCharacters[0], word.word)}
-                  style={styles.detailHanjaButton}
-                >
-                  <Text style={styles.detailHanja}>{word.hanja}</Text>
-                </TouchableOpacity>
-              ) : null}
-            </View>
-            <Text style={styles.detailMeta}>{source} · {lastSaw}</Text>
-            <Text style={styles.detailDefinition}>{word.def || t('learn.noDefinition')}</Text>
-          </View>
-
-          <View style={[styles.maturityCard, { backgroundColor: proficiency.soft }]}>
-            <View style={styles.maturityTopRow}>
-              <View style={styles.maturityCopy}>
-                <Text style={[styles.maturityTitle, { color: proficiency.color }]}>{t(proficiency.labelKey)}</Text>
-                <Text style={styles.maturityDescription}>{t(proficiency.descriptionKey)}</Text>
-              </View>
-              <ProficiencyDots level={proficiency} size={9} />
-            </View>
-
-            <View style={styles.detailStatsRow}>
-              <View style={styles.detailStat}>
-                <Text style={styles.detailStatValue}>{seenCount}</Text>
-                <Text style={styles.detailStatLabel}>{t('learn.encounters')}</Text>
-              </View>
-              <View style={styles.detailStat}>
-                <Text style={styles.detailStatValue}>{getDistinctDays(word)}</Text>
-                <Text style={styles.detailStatLabel}>{t('learn.distinctDays')}</Text>
-              </View>
-              <View style={styles.detailStat}>
-                <Text style={styles.detailStatValue}>{getSourceCount(word)}</Text>
-                <Text style={styles.detailStatLabel}>{t('learn.sources')}</Text>
-              </View>
-            </View>
-          </View>
-
-          <View style={styles.contextSection}>
-            <Text style={styles.detailSectionTitle}>{t('learn.seenContext')}</Text>
-            {contexts.length > 0 ? (
-              contexts.map((context, index) => (
+        <View style={styles.contextSection}>
+          <Text style={styles.detailSectionTitle}>{t('learn.seenIn')}</Text>
+          {visibleContexts.length > 0 ? (
+            visibleContexts.map((context, index) => {
+              const sourceLabel = getContextSource(context, source);
+              const dateLabel = formatLongDate(context.seenAt ?? context.seen_at ?? getLastSawDate(word));
+              const translation = getContextTranslation(context);
+              return (
                 <View
-                  key={`${context.sentence}-${context.seenAt ?? ''}-${index}`}
-                  style={styles.contextRow}
+                  key={`${context.sentence}-${context.seenAt ?? context.seen_at ?? ''}-${index}`}
+                  style={styles.contextQuoteRow}
                 >
-                  <View style={styles.contextRowHeader}>
-                    <Text numberOfLines={1} style={styles.contextSource}>
-                      {cleanText(context.sourceBookTitle) || cleanText(context.sourceBookUri) || source}
+                  <Text style={styles.contextQuoteMark}>“</Text>
+                  <View style={styles.contextQuoteCopy}>
+                    <Text selectable style={styles.contextSentence}>{cleanText(context.sentence)}</Text>
+                    {translation ? (
+                      <Text selectable style={styles.contextTranslation}>{translation}</Text>
+                    ) : null}
+                    <Text style={styles.contextAttribution}>
+                      — {sourceLabel}{dateLabel ? ` · ${dateLabel}` : ''}
                     </Text>
-                    <Text style={styles.contextDate}>{formatRelativeDate(context.seenAt, t)}</Text>
                   </View>
-                  <HighlightPreview word={word} sentence={context.sentence} proficiency={proficiency} />
                 </View>
-              ))
-            ) : (
-              <View style={styles.contextRow}>
+              );
+            })
+          ) : (
+            <View style={styles.contextQuoteRow}>
+              <Text style={styles.contextQuoteMark}>“</Text>
+              <View style={styles.contextQuoteCopy}>
                 <Text style={styles.emptyContext}>{t('learn.noContext')}</Text>
               </View>
-            )}
-          </View>
-        </ScrollView>
+            </View>
+          )}
+        </View>
 
-        <View style={styles.detailActions}>
-          <TouchableOpacity onPress={onRemove} style={styles.deleteWordButton}>
-            <Text style={styles.deleteWordText}>{t('common.delete')}</Text>
-          </TouchableOpacity>
+        <View style={styles.detailStatsGrid}>
+          <View style={styles.detailStatCard}>
+            <Text style={styles.detailStatLabel}>{t('learn.encounters')}</Text>
+            <Text style={styles.detailStatValue}>{seenCount}</Text>
+          </View>
+          <View style={styles.detailStatCard}>
+            <Text style={styles.detailStatLabel}>{t('learn.daysTracked')}</Text>
+            <Text style={styles.detailStatValue}>{getDistinctDays(word)}</Text>
+          </View>
         </View>
 
         {isKoreanWord ? (
-          <HanjaDetails
-            hanja={currentHanja?.character ?? null}
-            hanjaCharacters={currentHanja?.characters ?? []}
-            initialHanjaIndex={currentHanja?.activeIndex ?? 0}
-            sourceWord={currentHanja?.sourceWord ?? word.word}
-            sourceWordDetails={currentHanja?.sourceWordDetails ?? {}}
-            handleHanjaPress={handleHanjaPress}
-            isDarkMode={false}
-          />
+          <DetailHanjaPanel word={word} onKnownWordsChange={onKnownWordsChange} />
         ) : null}
-      </SafeAreaView>
-    </Modal>
+      </ScrollView>
+    </SafeAreaView>
   );
 };
 
@@ -629,6 +976,15 @@ const Learn = ({ navigation, user }) => {
   const { t } = useTranslation();
   const { targetLanguage } = useAppContext();
   const { activeOwnerId, syncGeneration } = useLocalOwner();
+  const { colors } = useTheme();
+  const styles = useMemo(() => createStyles(colors), [colors]);
+  const proficiencyLevels = useMemo(() => createProficiencyLevels(colors), [colors]);
+  const proficiencyByKey = useMemo(() => createProficiencyByKey(proficiencyLevels), [proficiencyLevels]);
+  const learnThemeValue = useMemo(() => ({
+    colors,
+    styles,
+    proficiencyByKey,
+  }), [colors, proficiencyByKey, styles]);
   const [words, setWords] = useState([]);
   const [activeFilter, setActiveFilter] = useState('recent');
   const [practiceDeck, setPracticeDeck] = useState(null);
@@ -709,7 +1065,10 @@ const Learn = ({ navigation, user }) => {
     };
   }, [activeOwnerId, selectedWord?.word, selectedWord?.hanja, selectedWord?.def, selectedWord?.language]);
 
-  const visibleWords = useMemo(() => getFilteredWords(words, activeFilter), [activeFilter, words]);
+  const visibleWords = useMemo(
+    () => getFilteredWords(words, activeFilter, proficiencyByKey),
+    [activeFilter, proficiencyByKey, words]
+  );
   const selectedWords = useMemo(
     () => words.filter((word) => selectedWordKeys.has(getWordKey(word))),
     [selectedWordKeys, words]
@@ -727,15 +1086,15 @@ const Learn = ({ navigation, user }) => {
     });
   }, [selectedWordKeys.size, words]);
   const maturedCount = useMemo(
-    () => words.filter((word) => getProficiency(word).rank >= proficiencyByKey.mature.rank).length,
-    [words]
+    () => words.filter((word) => getProficiency(word, proficiencyByKey).rank >= proficiencyByKey.mature.rank).length,
+    [proficiencyByKey, words]
   );
   const waitingCount = useMemo(
     () => words.filter((word) => {
-      const rank = getProficiency(word).rank;
+      const rank = getProficiency(word, proficiencyByKey).rank;
       return rank > proficiencyByKey.new.rank && rank < proficiencyByKey.mature.rank;
     }).length,
-    [words]
+    [proficiencyByKey, words]
   );
   const notSeenCount = useMemo(() => words.filter(isNotSeenLately).length, [words]);
   const dueWords = useMemo(
@@ -828,42 +1187,6 @@ const Learn = ({ navigation, user }) => {
     });
     await fetchWords();
   }, [activeOwnerId, fetchWords, syncFieldsToCloud]);
-
-  const handleRemoveWord = useCallback((word, options = {}) => {
-    if (!word) {
-      return;
-    }
-
-    const remove = async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      try {
-        await deleteSavedWord(word, user);
-      } catch (error) {
-        console.warn('[Learn] remove failed:', error.message);
-      }
-
-      if (options.closeDetail) {
-        setSelectedWord(null);
-      }
-      await fetchWords();
-    };
-
-    Alert.alert(
-      t('learn.deleteSavedWordTitle'),
-      t('learn.deleteWordBody', { word: word.word }),
-      [
-        { text: t('common.cancel'), style: 'cancel' },
-        {
-          text: t('common.delete'),
-          style: 'destructive',
-          onPress: remove,
-        },
-      ]
-    );
-  }, [deleteSavedWord, fetchWords, t]);
 
   const toggleWordSelection = useCallback((word) => {
     const key = getWordKey(word);
@@ -996,11 +1319,27 @@ const Learn = ({ navigation, user }) => {
     setPracticeIndex((prev) => prev + 1);
   }, [activeOwnerId, closePractice, fetchWords, practiceDeck, practiceIndex, syncFieldsToCloud]);
 
+  if (selectedWord) {
+    return (
+      <LearnThemeContext.Provider value={learnThemeValue}>
+        <WordDetailModal
+          word={selectedWord}
+          contexts={selectedWordContexts}
+          onClose={() => setSelectedWord(null)}
+          onToggleFavorite={() => handleToggleFavorite(selectedWord)}
+          onKnownWordsChange={fetchWords}
+        />
+      </LearnThemeContext.Provider>
+    );
+  }
+
   return (
-    <Screen scroll backgroundColor="#eee6d8" contentContainerStyle={styles.content}>
-      <View style={styles.header}>
-        <Text style={styles.title}>{t('learn.title')}</Text>
-        <Text style={styles.subtitle}>{t('learn.subtitle', { count: words.length })}</Text>
+    <LearnThemeContext.Provider value={learnThemeValue}>
+    <Screen scroll backgroundColor={colors.bgPage} contentContainerStyle={styles.content}>
+      <View style={styles.appTopBar}>
+        <View style={styles.appTopSide} />
+        <Text style={styles.appTopTitle}>VOCABULARY</Text>
+        <View style={styles.appTopSide} />
       </View>
 
       <View style={styles.summaryCard}>
@@ -1009,56 +1348,43 @@ const Learn = ({ navigation, user }) => {
             <Text style={[styles.summaryValue, styles.summaryValueGreen]}>{maturedCount}</Text>
             <Text style={styles.summaryLabel}>{t('learn.matured')}</Text>
           </View>
+          <View style={styles.summaryStatDivider} />
           <View style={styles.summaryStat}>
             <Text style={[styles.summaryValue, styles.summaryValueAmber]}>{waitingCount}</Text>
             <Text style={styles.summaryLabel}>{t('learn.waiting')}</Text>
           </View>
+          <View style={styles.summaryStatDivider} />
           <View style={styles.summaryStat}>
             <Text style={styles.summaryValue}>{notSeenCount}</Text>
             <Text style={styles.summaryLabel}>{t('learn.notSeen')}</Text>
           </View>
         </View>
 
-        <View style={styles.readingGuidance}>
-          <Feather name="book-open" size={16} color="#8a6f42" />
-          <Text style={styles.readingGuidanceText}>
-            {t('learn.guidance')}
-          </Text>
-        </View>
-
         <View style={styles.summaryActions}>
           <TouchableOpacity
-            onPress={() => navigation?.navigate?.('Read')}
-            style={[styles.keepReadingButton, words.length === 0 && styles.keepReadingButtonFull]}
+            disabled={reviewDeck.length === 0}
+            onPress={() => startPractice(reviewDeck, reviewDeckTitle)}
+            style={[styles.reviewButton, reviewDeck.length === 0 && styles.reviewButtonDisabled]}
           >
-            <Feather name="book-open" size={18} color="#fffaf3" />
-            <Text style={styles.keepReadingText}>{t('learn.keepReading')}</Text>
+            <Text style={[
+              styles.reviewButtonText,
+              reviewDeck.length === 0 && styles.reviewButtonTextDisabled,
+            ]}>
+              {reviewDeck.length > 0 ? `REVIEW ${reviewDeck.length} DUE` : t('learn.noReviews')}
+            </Text>
           </TouchableOpacity>
           {words.length > 0 ? (
             <TouchableOpacity
-              disabled={reviewDeck.length === 0}
-              onPress={() => startPractice(reviewDeck, reviewDeckTitle)}
-              style={[
-                styles.reviewButton,
-                reviewDeck.length === 0 && styles.reviewButtonDisabled,
-              ]}
+              onPress={() => navigation?.navigate?.('Read', { returnTo: 'Learn' })}
+              style={[styles.keepReadingButton, words.length === 0 && styles.keepReadingButtonFull]}
             >
-              <Text style={[
-                styles.reviewButtonText,
-                reviewDeck.length === 0 && styles.reviewButtonTextDisabled,
-              ]}>
-                {reviewDeck.length > 0 ? t('learn.reviewCount', { count: reviewDeck.length }) : t('learn.noReviews')}
-              </Text>
+              <Text style={styles.keepReadingText}>{t('learn.keepReading')}</Text>
             </TouchableOpacity>
           ) : null}
         </View>
       </View>
 
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.filters}
-      >
+      <View style={styles.filters}>
         {FILTERS.map((filter) => {
           const active = activeFilter === filter.key;
           return (
@@ -1080,7 +1406,7 @@ const Learn = ({ navigation, user }) => {
                 <MaterialIcons
                   name={active ? filter.icon : `${filter.icon}-border`}
                   size={17}
-                  color={active ? '#fffaf3' : '#8d806e'}
+                  color={active ? colors.white : colors.textSubtle}
                 />
               ) : (
                 <Text style={[styles.filterText, active && styles.filterTextActive]}>{t(filter.labelKey)}</Text>
@@ -1088,17 +1414,12 @@ const Learn = ({ navigation, user }) => {
             </TouchableOpacity>
           );
         })}
-      </ScrollView>
-
-      <View style={styles.listHeader}>
-        <Text style={styles.listEyebrow}>{t('learn.vocabulary')}</Text>
-        <Text style={styles.listCount}>{visibleWords.length}</Text>
       </View>
 
       {isSelectionMode ? (
         <View style={styles.selectionBar}>
           <TouchableOpacity onPress={clearWordSelection} style={styles.selectionBarButton}>
-            <Feather name="x" size={17} color="#756b5f" />
+            <Feather name="x" size={17} color={colors.textMuted} />
             <Text style={styles.selectionBarButtonText}>{t('common.cancel')}</Text>
           </TouchableOpacity>
 
@@ -1107,7 +1428,7 @@ const Learn = ({ navigation, user }) => {
           </Text>
 
           <TouchableOpacity onPress={handleBulkDelete} style={[styles.selectionBarButton, styles.selectionDeleteButton]}>
-            <Feather name="trash-2" size={17} color="#fffaf3" />
+            <Feather name="trash-2" size={17} color={colors.white} />
             <Text style={styles.selectionDeleteText}>{t('common.delete')}</Text>
           </TouchableOpacity>
         </View>
@@ -1122,9 +1443,9 @@ const Learn = ({ navigation, user }) => {
             </Text>
           </View>
         ) : (
-          visibleWords.map((word) => (
+          visibleWords.map((word, index) => (
             <VocabularyRow
-              key={getWordKey(word)}
+              key={`${getWordKey(word)}::${index}`}
               word={word}
               selectionMode={isSelectionMode}
               selected={selectedWordKeys.has(getWordKey(word))}
@@ -1141,125 +1462,103 @@ const Learn = ({ navigation, user }) => {
         )}
       </View>
 
-      <WordDetailModal
-        word={selectedWord}
-        contexts={selectedWordContexts}
-        visible={!!selectedWord}
-        onClose={() => setSelectedWord(null)}
-        onToggleFavorite={() => handleToggleFavorite(selectedWord)}
-        onRemove={() => handleRemoveWord(selectedWord, { closeDetail: true })}
-      />
-
-      <Modal animationType="fade" transparent visible={!!practiceDeck} onRequestClose={closePractice}>
-        <View style={styles.modalRoot}>
-          <Pressable style={styles.modalBackdrop} onPress={closePractice} />
-
-          <View style={styles.modalCardWrap}>
-            <Flashcard
-              vocab={practiceDeck?.words?.[practiceIndex]}
-              title={practiceDeck?.title ?? t('learn.practice')}
-              index={practiceIndex}
-              total={practiceDeck?.words?.length ?? 0}
-              onClose={closePractice}
-              onMark={handlePracticeMark}
-              user={user}
-              ownerId={activeOwnerId}
-              syncGeneration={syncGeneration}
-            />
-          </View>
-        </View>
+      <Modal animationType="slide" visible={!!practiceDeck} onRequestClose={closePractice}>
+        <Flashcard
+          vocab={practiceDeck?.words?.[practiceIndex]}
+          title={practiceDeck?.title ?? t('learn.practice')}
+          index={practiceIndex}
+          total={practiceDeck?.words?.length ?? 0}
+          onClose={closePractice}
+          onMark={handlePracticeMark}
+          user={user}
+          ownerId={activeOwnerId}
+          syncGeneration={syncGeneration}
+        />
       </Modal>
     </Screen>
+    </LearnThemeContext.Provider>
   );
 };
 
-const styles = StyleSheet.create({
+const createStyles = (colors) => StyleSheet.create({
   content: {
     paddingHorizontal: 0,
-    paddingBottom: spacing.lg,
-    gap: 12,
+    paddingTop: 0,
+    paddingBottom: 0,
+    gap: 0,
   },
-  header: {
-    paddingHorizontal: LEARN_SIDE_PADDING,
-    paddingTop: 2,
-    gap: 2,
+  appTopBar: {
+    height: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.divider,
+    backgroundColor: colors.bgPage,
   },
-  title: {
-    fontFamily: fontFamilies.displayBold,
-    fontSize: 27,
-    lineHeight: 32,
-    color: '#2b2721',
+  appTopSide: {
+    width: 70,
   },
-  subtitle: {
-    fontFamily: fontFamilies.sansRegular,
-    fontSize: 13,
-    lineHeight: 17,
-    color: '#807566',
+  appTopTitle: {
+    flex: 1,
+    textAlign: 'center',
+    ...textStyles.appTitle,
   },
   summaryCard: {
-    marginHorizontal: LEARN_SIDE_PADDING,
-    borderRadius: 16,
-    backgroundColor: '#fffaf3',
-    padding: 12,
-    gap: 12,
-    shadowColor: 'rgba(70, 49, 24, 0.08)',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 1,
-    shadowRadius: 18,
-    elevation: 3,
+    marginHorizontal: 24,
+    marginTop: 22,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    padding: 18,
+    gap: 18,
   },
   summaryStats: {
     flexDirection: 'row',
-    gap: 10,
+    gap: 0,
   },
   summaryStat: {
     flex: 1,
+    alignItems: 'center',
     gap: 4,
   },
+  summaryStatDivider: {
+    width: 1,
+    backgroundColor: colors.divider,
+    marginVertical: 0,
+  },
   summaryValue: {
-    fontFamily: fontFamilies.displayBold,
-    fontSize: 25,
-    lineHeight: 29,
-    color: '#a99f8f',
+    fontFamily: fontFamilies.displayMedium,
+    fontSize: 26,
+    lineHeight: 31,
+    color: colors.text,
   },
   summaryValueGreen: {
-    color: '#5c9856',
+    color: colors.text,
   },
   summaryValueAmber: {
-    color: '#c58b28',
+    color: colors.text,
   },
   summaryLabel: {
-    fontFamily: fontFamilies.sansRegular,
-    fontSize: 10.5,
-    lineHeight: 14,
-    color: '#817568',
-  },
-  readingGuidance: {
-    minHeight: 46,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 12,
-    backgroundColor: '#f6ebd8',
-  },
-  readingGuidanceText: {
-    flex: 1,
-    fontFamily: fontFamilies.sansRegular,
-    fontSize: 12,
-    lineHeight: 16,
-    color: '#6f5f4b',
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 9,
+    lineHeight: 12,
+    color: colors.textTertiary,
+    letterSpacing: 1.6,
+    textTransform: 'uppercase',
   },
   summaryActions: {
     flexDirection: 'row',
-    gap: 8,
+    gap: 10,
   },
   keepReadingButton: {
     flex: 1,
     minHeight: 40,
-    borderRadius: 13,
-    backgroundColor: '#bf5630',
+    borderRadius: 3,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1270,60 +1569,74 @@ const styles = StyleSheet.create({
   },
   keepReadingText: {
     fontFamily: fontFamilies.sansBold,
-    fontSize: 13.5,
-    color: '#fffaf3',
+    fontSize: 11,
+    letterSpacing: 1.8,
+    color: colors.text,
+    textTransform: 'uppercase',
   },
   reviewButton: {
-    minWidth: 96,
+    flex: 1,
     minHeight: 40,
-    borderRadius: 13,
+    borderRadius: 3,
     borderWidth: 1,
-    borderColor: '#eadcc4',
+    borderColor: colors.accent,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 12,
+    backgroundColor: colors.accent,
   },
   reviewButtonDisabled: {
     opacity: 0.48,
   },
   reviewButtonText: {
     fontFamily: fontFamilies.sansBold,
-    fontSize: 13,
-    color: '#756b5f',
+    fontSize: 11,
+    letterSpacing: 1.8,
+    color: colors.white,
+    textTransform: 'uppercase',
   },
   reviewButtonTextDisabled: {
-    color: '#9b9185',
+    color: colors.white,
   },
   filters: {
-    paddingHorizontal: LEARN_SIDE_PADDING,
-    gap: 6,
+    marginHorizontal: 24,
+    marginTop: 24,
+    flexDirection: 'row',
+    gap: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.divider,
   },
   filterChip: {
-    borderRadius: radii.pill,
-    borderWidth: 1,
-    borderColor: '#e4d8c4',
-    minHeight: 30,
+    borderRadius: 0,
+    borderWidth: 0,
+    minHeight: 26,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 13,
-    paddingVertical: 6,
-    backgroundColor: 'rgba(255, 250, 243, 0.5)',
+    paddingHorizontal: 0,
+    paddingTop: 0,
+    paddingBottom: 10,
+    backgroundColor: colors.transparent,
   },
   filterIconChip: {
     width: 36,
     paddingHorizontal: 0,
   },
   filterChipActive: {
-    backgroundColor: '#2b2721',
-    borderColor: '#2b2721',
+    backgroundColor: colors.transparent,
+    borderBottomWidth: 2,
+    borderBottomColor: colors.accent,
+    paddingBottom: 8,
   },
   filterText: {
     fontFamily: fontFamilies.sansBold,
-    fontSize: 12,
-    color: '#7c7163',
+    fontSize: 10,
+    lineHeight: 13,
+    letterSpacing: 1.8,
+    color: colors.textSubtle,
+    textTransform: 'uppercase',
   },
   filterTextActive: {
-    color: '#fffaf3',
+    color: colors.text,
   },
   listHeader: {
     paddingHorizontal: LEARN_SIDE_PADDING,
@@ -1333,21 +1646,21 @@ const styles = StyleSheet.create({
   },
   listEyebrow: {
     ...textStyles.eyebrow,
-    color: '#7e7468',
-    fontSize: 11,
-    letterSpacing: 0.9,
+    color: colors.textTertiary,
+    fontSize: 10,
+    letterSpacing: 2,
   },
   listCount: {
     ...textStyles.caption,
-    color: '#a99e8c',
+    color: colors.textSubtle,
   },
   selectionBar: {
     marginHorizontal: LEARN_SIDE_PADDING,
     minHeight: 42,
-    borderRadius: 14,
+    borderRadius: 4,
     borderWidth: 1,
-    borderColor: '#e4d8c4',
-    backgroundColor: '#fffaf3',
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
     paddingHorizontal: spacing.sm,
     flexDirection: 'row',
     alignItems: 'center',
@@ -1362,103 +1675,104 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
     paddingHorizontal: 10,
     borderRadius: radii.pill,
-    backgroundColor: '#f4eadc',
+    backgroundColor: colors.surfaceMuted,
   },
   selectionBarButtonText: {
     fontFamily: fontFamilies.sansBold,
     fontSize: 12,
-    color: '#756b5f',
+    color: colors.textMuted,
   },
   selectionCount: {
     flex: 1,
     textAlign: 'center',
     fontFamily: fontFamilies.sansBold,
     fontSize: 13,
-    color: '#2b2721',
+    color: colors.text,
   },
   selectionDeleteButton: {
-    backgroundColor: '#b64f44',
+    backgroundColor: colors.accent,
   },
   selectionDeleteText: {
     fontFamily: fontFamilies.sansBold,
     fontSize: 12,
-    color: '#fffaf3',
+    color: colors.white,
   },
   list: {
-    backgroundColor: '#fffaf3',
-    borderTopWidth: 1,
-    borderBottomWidth: 1,
-    borderColor: '#e4d8c4',
+    marginHorizontal: 24,
+    backgroundColor: colors.bgPage,
   },
   wordRow: {
-    minHeight: 70,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: LEARN_SIDE_PADDING,
-    paddingVertical: 8,
+    paddingHorizontal: 0,
+    paddingVertical: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#e9dece',
+    borderBottomColor: colors.divider,
     gap: 12,
   },
   wordRowPressed: {
-    backgroundColor: '#f7f0e5',
+    backgroundColor: colors.surfaceMuted,
   },
   wordRowSelected: {
-    backgroundColor: '#f3eadf',
+    backgroundColor: colors.surfaceMuted,
   },
   selectionCircle: {
     width: 22,
     height: 22,
     borderRadius: 11,
     borderWidth: 2,
-    borderColor: '#cfc1ae',
+    borderColor: colors.borderStrong,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#fffaf3',
+    backgroundColor: colors.surface,
   },
   selectionCircleSelected: {
-    borderColor: '#bf5630',
-    backgroundColor: '#bf5630',
+    borderColor: colors.accent,
+    backgroundColor: colors.accent,
   },
   wordCopy: {
     flex: 1,
     minWidth: 0,
-    gap: 3,
+    gap: 4,
   },
   wordTitleLine: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
     minWidth: 0,
     flexWrap: 'wrap',
   },
   wordText: {
-    fontFamily: fontFamilies.krSerifBold,
-    fontSize: 19,
+    fontFamily: fontFamilies.krSerifSemiBold,
+    fontSize: 17,
     lineHeight: 24,
-    color: '#29251f',
+    color: colors.text,
   },
   wordHanja: {
     fontFamily: fontFamilies.krSerifMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    color: '#a79a87',
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.textSubtle,
   },
   badge: {
-    borderRadius: radii.pill,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
+    borderRadius: 2,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
   },
   badgeText: {
     fontFamily: fontFamilies.sansBold,
-    fontSize: 9,
-    lineHeight: 12,
+    fontSize: 8,
+    lineHeight: 10,
+    letterSpacing: 1,
+    color: colors.textMuted,
   },
   wordDefinition: {
-    fontFamily: fontFamilies.sansMedium,
+    fontFamily: fontFamilies.sansRegular,
     fontSize: 13,
-    lineHeight: 17,
-    color: '#756b5f',
+    lineHeight: 18,
+    color: colors.textMuted,
   },
   wordMetaLine: {
     flexDirection: 'row',
@@ -1468,28 +1782,32 @@ const styles = StyleSheet.create({
   },
   wordMetaText: {
     flex: 1,
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 11,
-    lineHeight: 14,
-    color: '#a99e8c',
+    fontFamily: fontFamilies.sansMedium,
+    fontSize: 10,
+    lineHeight: 13,
+    color: colors.textSubtle,
+    letterSpacing: 0.5,
   },
-  proficiencySummary: {
-    width: 66,
+  encounterSummary: {
+    width: 76,
     alignItems: 'flex-end',
-    gap: 4,
+    justifyContent: 'center',
   },
   dotRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
   },
-  proficiencyDot: {
-    backgroundColor: '#ded8c9',
+  encounterDot: {
+    borderWidth: 1,
   },
-  proficiencyLabel: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 10.5,
-    lineHeight: 14,
+  encounterDotFilled: {
+    backgroundColor: colors.accent,
+    borderColor: colors.accent,
+  },
+  encounterDotEmpty: {
+    backgroundColor: colors.transparent,
+    borderColor: colors.borderStrong,
   },
   emptyState: {
     paddingHorizontal: spacing.lg,
@@ -1504,199 +1822,362 @@ const styles = StyleSheet.create({
   },
   detailScreen: {
     flex: 1,
-    backgroundColor: '#eee6d8',
+    backgroundColor: colors.bgPage,
   },
   detailHeader: {
-    height: 48,
+    height: 52,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    backgroundColor: '#fffaf3',
+    paddingHorizontal: 20,
+    backgroundColor: colors.bgPage,
     borderBottomWidth: 1,
-    borderBottomColor: '#e4d8c4',
+    borderBottomColor: colors.divider,
+    gap: 12,
   },
   detailHeaderButton: {
-    width: 34,
-    height: 34,
+    width: 42,
+    height: 40,
     alignItems: 'center',
     justifyContent: 'center',
   },
   detailHeaderTitle: {
     fontFamily: fontFamilies.sansBold,
-    fontSize: 14,
-    color: '#776d60',
+    fontSize: 11,
+    lineHeight: 14,
+    color: colors.textMuted,
+    letterSpacing: 2.4,
+    flex: 1,
   },
   detailContent: {
-    paddingBottom: spacing.xl,
+    paddingHorizontal: 24,
+    paddingTop: 26,
+    paddingBottom: 0,
   },
   detailHero: {
-    backgroundColor: '#fffaf3',
-    paddingHorizontal: LEARN_SIDE_PADDING,
-    paddingTop: 16,
-    paddingBottom: 16,
-    gap: spacing.xs,
+    backgroundColor: colors.bgPage,
+    paddingHorizontal: 0,
+    paddingTop: 0,
+    paddingBottom: 0,
+    gap: 0,
   },
   detailWordLine: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
+    alignItems: 'baseline',
+    gap: 14,
     flexWrap: 'wrap',
   },
   detailWord: {
     fontFamily: fontFamilies.krSerifBold,
-    fontSize: 32,
-    lineHeight: 40,
-    color: '#2b2721',
-  },
-  detailHanjaButton: {
-    paddingHorizontal: 3,
-    paddingVertical: 2,
+    fontSize: 36,
+    lineHeight: 48,
+    color: colors.text,
   },
   detailHanja: {
     fontFamily: fontFamilies.krSerifMedium,
-    fontSize: 14,
-    lineHeight: 19,
-    color: '#a79a87',
+    fontSize: 22,
+    lineHeight: 30,
+    color: colors.textMuted,
   },
-  detailMeta: {
-    fontFamily: fontFamilies.sansBold,
+  detailPronunciation: {
+    fontFamily: fontFamilies.displayItalic,
+    fontSize: 16,
+    lineHeight: 22,
+    color: colors.textTertiary,
+  },
+  detailMetaLine: {
+    marginTop: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  detailStatusPill: {
+    minHeight: 24,
+    borderRadius: radii.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surfaceMuted,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+  },
+  detailStatusText: {
+    fontFamily: fontFamilies.sansMedium,
+    fontSize: 11,
+    lineHeight: 14,
+    color: colors.textSecondary,
+  },
+  detailEncounterMeta: {
+    fontFamily: fontFamilies.sansMedium,
     fontSize: 12,
     lineHeight: 16,
-    color: '#817568',
+    color: colors.textTertiary,
+  },
+  definitionBlock: {
+    marginTop: 20,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    paddingTop: 0,
+  },
+  definitionPartOfSpeech: {
+    width: 80,
+    paddingTop: 9,
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 9,
+    lineHeight: 12,
+    letterSpacing: 1.6,
+    color: colors.textSubtle,
   },
   detailDefinition: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 17,
-    lineHeight: 23,
-    color: '#29251f',
+    flex: 1,
+    fontFamily: fontFamilies.displayMedium,
+    fontSize: 22,
+    lineHeight: 30,
+    color: colors.text,
   },
-  maturityCard: {
-    margin: LEARN_SIDE_PADDING,
-    borderRadius: 14,
-    padding: 12,
+  detailSectionTitle: {
+    fontFamily: fontFamilies.sansBold,
+    color: colors.textTertiary,
+    fontSize: 10,
+    lineHeight: 13,
+    letterSpacing: 2.2,
+    textTransform: 'uppercase',
+  },
+  contextSection: {
+    paddingHorizontal: 0,
+    paddingTop: 26,
+    gap: 14,
+  },
+  contextQuoteRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
     gap: 12,
   },
-  maturityTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    gap: spacing.md,
+  contextQuoteMark: {
+    width: 30,
+    fontFamily: fontFamilies.displayMedium,
+    fontSize: 20,
+    lineHeight: 22,
+    color: colors.textSubtle,
   },
-  maturityCopy: {
+  contextQuoteCopy: {
     flex: 1,
-    gap: 4,
+    gap: 5,
   },
-  maturityTitle: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 15,
-    lineHeight: 20,
+  contextSentence: {
+    fontFamily: fontFamilies.krSerifRegular,
+    fontSize: 16,
+    lineHeight: 29,
+    color: colors.text,
   },
-  maturityDescription: {
-    fontFamily: fontFamilies.sansBold,
+  contextTranslation: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 13,
+    lineHeight: 19,
+    color: colors.textMuted,
+  },
+  contextAttribution: {
+    fontFamily: fontFamilies.sansMedium,
     fontSize: 11,
-    lineHeight: 15,
-    color: '#807566',
+    lineHeight: 16,
+    color: colors.textSubtle,
   },
-  detailStatsRow: {
+  emptyContext: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 13,
+    lineHeight: 19,
+    color: colors.textMuted,
+  },
+  detailStatsGrid: {
+    marginTop: 24,
     flexDirection: 'row',
-    gap: 16,
+    gap: 12,
+    paddingHorizontal: 0,
+    paddingTop: 0,
   },
-  detailStat: {
-    gap: 2,
-  },
-  detailStatValue: {
-    fontFamily: fontFamilies.displayBold,
-    fontSize: 21,
-    lineHeight: 26,
-    color: '#2b2721',
+  detailStatCard: {
+    flex: 1,
+    minHeight: 74,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    padding: 14,
   },
   detailStatLabel: {
     fontFamily: fontFamilies.sansBold,
-    fontSize: 10.5,
-    lineHeight: 14,
-    color: '#817568',
+    fontSize: 9,
+    lineHeight: 12,
+    color: colors.textSubtle,
+    letterSpacing: 1.6,
+    textTransform: 'uppercase',
+    textAlign: 'center',
   },
-  detailSectionTitle: {
-    ...textStyles.eyebrow,
-    color: '#817568',
-    fontSize: 11,
-    letterSpacing: 0.9,
-    marginHorizontal: LEARN_SIDE_PADDING,
+  detailStatValue: {
+    fontFamily: fontFamilies.displayMedium,
+    fontSize: 24,
+    lineHeight: 30,
+    color: colors.text,
   },
-  highlightSentence: {
-    flex: 1,
-    fontFamily: fontFamilies.krSerifRegular,
-    fontSize: 15,
-    lineHeight: 21,
-    color: '#2b2721',
-  },
-  highlightedWord: {
+  detailHanjaPanel: {
+    marginHorizontal: 0,
+    marginTop: 20,
     borderRadius: 6,
-    overflow: 'hidden',
-    paddingHorizontal: 3,
+    backgroundColor: colors.surfaceMuted,
+    padding: 18,
   },
-  contextSection: {
-    marginTop: spacing.md,
-    gap: spacing.xs,
-  },
-  contextRow: {
-    backgroundColor: '#fffaf3',
-    borderTopWidth: 1,
-    borderColor: '#e4d8c4',
-    paddingHorizontal: LEARN_SIDE_PADDING,
-    paddingVertical: 8,
-    gap: spacing.xs,
-  },
-  contextRowHeader: {
+  detailHanjaPanelHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: spacing.md,
+    gap: 14,
   },
-  contextSource: {
+  detailHanjaPanelCharacter: {
+    fontFamily: fontFamilies.krSerifBold,
+    fontSize: 38,
+    lineHeight: 44,
+    color: colors.text,
+  },
+  detailHanjaPanelCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 5,
+  },
+  detailHanjaPanelEyebrow: {
     fontFamily: fontFamilies.sansBold,
-    fontSize: 12,
+    fontSize: 9,
+    lineHeight: 12,
+    color: colors.textTertiary,
+    letterSpacing: 1.8,
+    textTransform: 'uppercase',
+  },
+  detailHanjaPanelMeaning: {
+    fontFamily: fontFamilies.displayRegular,
+    fontSize: 15,
+    lineHeight: 22,
+    color: colors.text,
+  },
+  detailHanjaPanelNav: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    minHeight: 32,
+  },
+  detailHanjaPanelCount: {
+    fontFamily: fontFamilies.sansMedium,
+    fontSize: 11,
     lineHeight: 16,
-    color: '#d77d4b',
+    color: colors.textTertiary,
   },
-  contextDate: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 12,
-    color: '#a99e8c',
-  },
-  emptyContext: {
-    ...textStyles.bodyMuted,
-  },
-  detailActions: {
-    borderTopWidth: 1,
-    borderTopColor: '#e1d5c5',
-    backgroundColor: '#e8dfd0',
-    paddingHorizontal: LEARN_SIDE_PADDING,
-    paddingVertical: 8,
-  },
-  deleteWordButton: {
+  hanjaPanelArrow: {
+    width: 24,
+    height: 28,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: spacing.xs,
   },
-  deleteWordText: {
-    fontFamily: fontFamilies.sansBold,
+  hanjaPanelArrowDisabled: {
+    opacity: 0.28,
+  },
+  hanjaCharacterRail: {
+    paddingTop: 14,
+    gap: 8,
+  },
+  hanjaCharacterChip: {
+    minWidth: 34,
+    minHeight: 34,
+    borderRadius: 17,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surface,
+  },
+  hanjaCharacterChipActive: {
+    borderColor: colors.accent,
+    backgroundColor: colors.accent,
+  },
+  hanjaCharacterChipText: {
+    fontFamily: fontFamilies.krSerifMedium,
+    fontSize: 19,
+    lineHeight: 24,
+    color: colors.textMuted,
+  },
+  hanjaCharacterChipTextActive: {
+    color: colors.white,
+  },
+  detailHanjaDivider: {
+    height: 1,
+    backgroundColor: colors.divider,
+    marginTop: 14,
+  },
+  hanjaPanelEmpty: {
+    minHeight: 58,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  hanjaPanelEmptyText: {
+    fontFamily: fontFamilies.sansRegular,
     fontSize: 13,
-    color: '#d9857b',
+    lineHeight: 18,
+    color: colors.textMuted,
+    textAlign: 'center',
   },
-  modalRoot: {
+  detailHanjaRelatedRow: {
+    minHeight: 46,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: colors.divider,
+    gap: 12,
+  },
+  detailHanjaRelatedRowLast: {
+    borderBottomWidth: 0,
+  },
+  detailHanjaRelatedCopy: {
     flex: 1,
-    justifyContent: 'center',
-    padding: LEARN_SIDE_PADDING,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 12,
   },
-  modalBackdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: colors.overlay,
+  detailHanjaRelatedWord: {
+    fontFamily: fontFamilies.krSerifSemiBold,
+    fontSize: 16,
+    lineHeight: 22,
+    color: colors.text,
   },
-  modalCardWrap: {
-    justifyContent: 'center',
+  detailHanjaRelatedMeaning: {
+    flex: 1,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.textMuted,
+  },
+  detailHanjaKnownButton: {
+    minHeight: 32,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 4,
+  },
+  detailHanjaKnownButtonText: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 10,
+    lineHeight: 13,
+    letterSpacing: 1.2,
+    color: colors.text,
+    textTransform: 'uppercase',
+  },
+  detailHanjaKnownButtonTextAction: {
+    color: colors.textTertiary,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.frame,
+    paddingBottom: 1,
   },
 });
+
+const defaultLearnStyles = createStyles(colors);
 
 export default Learn;

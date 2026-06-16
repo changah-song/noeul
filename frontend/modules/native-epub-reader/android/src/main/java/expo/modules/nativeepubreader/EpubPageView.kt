@@ -5,17 +5,24 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.text.StaticLayout
+import android.text.TextUtils
+import android.text.TextPaint
 import android.util.Log
+import android.util.TypedValue
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import java.text.BreakIterator
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -53,22 +60,49 @@ private data class SelectionAnchor(
   val sourceEndOffset: Int
 )
 
+private enum class SelectionHandle {
+  START,
+  END
+}
+
+private data class SelectionHandleGeometry(
+  val handle: SelectionHandle,
+  val x: Float,
+  val lineTop: Float,
+  val lineBottom: Float,
+  val knobCenterY: Float
+)
+
+private data class SelectionHandleLineMetrics(
+  val x: Float,
+  val stemTop: Float,
+  val stemBottom: Float,
+  val knobCenterY: Float
+)
+
+private data class SelectionHighlightVerticalMetrics(
+  val top: Float,
+  val bottom: Float
+)
+
 class EpubPageView(context: Context) : View(context) {
   private var page: ReaderPage? = null
   private var paddingH = 0
   private var paddingV = 0
   private var lineHeightMult = 1.5f
   private var pageBackgroundColor = Color.WHITE
+  private var themePalette = readerThemePaletteForMode(false)
   private var activeSelectionRanges: List<TextRange> = emptyList()
   private var activeSelectionKind: ActiveSelectionKind? = null
   private var savedHighlightRanges: List<TextRange> = emptyList()
-  private var activeHighlightColor = Color.argb(0x55, 0xfc, 0xd5, 0xb4)
-  private var textSelectionHighlightColor = Color.argb(0x66, 0x7a, 0xb3, 0xff)
-  private var savedHighlightColor = Color.rgb(0xf7, 0xd4, 0x88)
+  private var activeHighlightColor = themePalette.activeHighlightColor
+  private var textSelectionHighlightColor = themePalette.textSelectionHighlightColor
+  private var savedHighlightColor = themePalette.savedHighlightColor
   private var onWordSelected: ((WordHit) -> Unit)? = null
   private var onTextSelected: ((TextSelectionHit) -> Unit)? = null
   private var onSelectionCleared: (() -> Unit)? = null
   private var onSelectionDragStateChanged: ((Boolean) -> Unit)? = null
+  private var onEdgeAction: ((ReaderEdgeKind) -> Unit)? = null
   private var renderedTextBlocks = emptyList<RenderedTextBlock>()
   private var geometryDirty = true
   private val bitmapCache = mutableMapOf<String, Bitmap?>()
@@ -80,19 +114,48 @@ class EpubPageView(context: Context) : View(context) {
   private var tapStartY = 0f
   private var isTapCandidate = false
   private var isSelectionMode = false
+  private var activeSelectionHandle: SelectionHandle? = null
+  private var handleDragStartRanges: List<TextRange> = emptyList()
   private var selectionAnchor: SelectionAnchor? = null
   private val highlightPath = Path()
   private val highlightBounds = RectF()
   private val savedHighlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
     color = savedHighlightColor
-    style = Paint.Style.FILL
+    style = Paint.Style.STROKE
+    strokeWidth = dp(1.5f).toFloat()
+    pathEffect = DashPathEffect(floatArrayOf(dp(2f).toFloat(), dp(3f).toFloat()), 0f)
   }
   private val activeHighlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
     color = activeHighlightColor
     style = Paint.Style.FILL
   }
+  private val selectionHandlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    color = themePalette.selectionHandleColor
+    style = Paint.Style.STROKE
+    strokeWidth = dp(2f).toFloat()
+    strokeCap = Paint.Cap.ROUND
+  }
+  private val selectionHandleKnobPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    color = themePalette.selectionHandleColor
+    style = Paint.Style.FILL
+  }
+  private val selectionLineRect = RectF()
+  private val edgeButtonRect = RectF()
+  private val edgeIconPath = Path()
+  private val bookFinishedIconRect = RectF()
+  private val bookFinishedIconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    isFilterBitmap = true
+    isDither = true
+  }
+  private val bookFinishedIconBitmap by lazy {
+    BitmapFactory.decodeResource(resources, R.drawable.book_over_icon)
+  }
+  private val edgeSansRegularTypeface by lazy { loadReaderSansTypeface(context, "regular") }
+  private val edgeSansMediumTypeface by lazy { loadReaderSansTypeface(context, "medium") }
+  private val edgeSansBoldTypeface by lazy { loadReaderSansTypeface(context, "bold") }
+  private val edgeDisplayTypeface by lazy { loadReaderDisplayTypeface(context, "medium") }
   private val placeholderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.rgb(180, 174, 166)
+    color = themePalette.placeholderColor
     style = Paint.Style.FILL
   }
 
@@ -102,6 +165,7 @@ class EpubPageView(context: Context) : View(context) {
     paddingV: Int,
     lineHeightMult: Float,
     backgroundColor: Int,
+    themePalette: ReaderThemePalette,
     activeSelectionRanges: List<TextRange>,
     activeSelectionKind: ActiveSelectionKind?,
     savedHighlightRanges: List<TextRange>,
@@ -111,17 +175,23 @@ class EpubPageView(context: Context) : View(context) {
     onWordSelected: ((WordHit) -> Unit)?,
     onTextSelected: ((TextSelectionHit) -> Unit)?,
     onSelectionCleared: (() -> Unit)?,
-    onSelectionDragStateChanged: ((Boolean) -> Unit)?
+    onSelectionDragStateChanged: ((Boolean) -> Unit)?,
+    onEdgeAction: ((ReaderEdgeKind) -> Unit)?
   ) {
     this.page = page
     this.paddingH = paddingH
     this.paddingV = paddingV
     this.lineHeightMult = lineHeightMult
     this.pageBackgroundColor = backgroundColor
+    this.themePalette = themePalette
+    selectionHandlePaint.color = themePalette.selectionHandleColor
+    selectionHandleKnobPaint.color = themePalette.selectionHandleColor
+    placeholderPaint.color = themePalette.placeholderColor
     this.onWordSelected = onWordSelected
     this.onTextSelected = onTextSelected
     this.onSelectionCleared = onSelectionCleared
     this.onSelectionDragStateChanged = onSelectionDragStateChanged
+    this.onEdgeAction = onEdgeAction
     updateHighlights(
       activeSelectionRanges = activeSelectionRanges,
       activeSelectionKind = activeSelectionKind,
@@ -177,6 +247,7 @@ class EpubPageView(context: Context) : View(context) {
         activeHighlightPaint.color = activePaintColor()
         drawTextHighlights(canvas, block, layout, activeSelectionRanges, activeHighlightPaint)
         layout.draw(canvas)
+        drawSelectionHandles(canvas, block, layout)
         canvas.restore()
 
         yOffset += layout.height
@@ -184,6 +255,8 @@ class EpubPageView(context: Context) : View(context) {
 
       yOffset += block.marginBottom
     }
+
+    drawReaderEdgeState(canvas)
   }
 
   override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -191,11 +264,26 @@ class EpubPageView(context: Context) : View(context) {
       MotionEvent.ACTION_DOWN -> {
         tapStartX = event.x
         tapStartY = event.y
+        hitTestSelectionHandle(event.x, event.y)?.let { handle ->
+          activeSelectionHandle = handle
+          handleDragStartRanges = activeSelectionRanges
+          isTapCandidate = false
+          cancelPendingLongPress()
+          parent?.requestDisallowInterceptTouchEvent(true)
+          onSelectionDragStateChanged?.invoke(true)
+          return true
+        }
+
         isTapCandidate = true
         scheduleLongPress()
         return true
       }
       MotionEvent.ACTION_MOVE -> {
+        activeSelectionHandle?.let { handle ->
+          updateHandleSelection(handle, event.x, event.y)
+          return true
+        }
+
         if (isSelectionMode) {
           updateDragSelection(event.x, event.y)
           return true
@@ -218,6 +306,11 @@ class EpubPageView(context: Context) : View(context) {
       }
       MotionEvent.ACTION_UP -> {
         cancelPendingLongPress()
+        if (activeSelectionHandle != null) {
+          finishHandleSelection(cancelled = false)
+          return true
+        }
+
         if (isSelectionMode) {
           finishDragSelection(cancelled = false)
           return true
@@ -225,6 +318,22 @@ class EpubPageView(context: Context) : View(context) {
 
         if (isTapCandidate) {
           performClick()
+          page?.edgeState?.let { edgeState ->
+            if (edgeActionBoundsForKind(edgeState.kind).contains(event.x, event.y)) {
+              onEdgeAction?.invoke(edgeState.kind)
+              isTapCandidate = false
+              return true
+            }
+          }
+
+          if (activeSelectionKind != null && activeSelectionRanges.isNotEmpty()) {
+            if (!hitTestActiveSelectionHighlight(event.x, event.y)) {
+              clearSelectionFromTap()
+            }
+            isTapCandidate = false
+            return true
+          }
+
           val hit = hitTestText(event.x, event.y)
           if (hit != null) {
             onWordSelected?.invoke(hit)
@@ -236,6 +345,9 @@ class EpubPageView(context: Context) : View(context) {
       }
       MotionEvent.ACTION_CANCEL -> {
         cancelPendingLongPress()
+        if (activeSelectionHandle != null) {
+          finishHandleSelection(cancelled = true)
+        }
         if (isSelectionMode) {
           finishDragSelection(cancelled = true)
         }
@@ -246,9 +358,394 @@ class EpubPageView(context: Context) : View(context) {
     return true
   }
 
+  private fun clearSelectionFromTap() {
+    activeSelectionRanges = emptyList()
+    activeSelectionKind = null
+    activeHighlightPaint.color = activePaintColor()
+    invalidate()
+    postInvalidateOnAnimation()
+    onSelectionCleared?.invoke()
+  }
+
   override fun performClick(): Boolean {
     super.performClick()
     return true
+  }
+
+  private fun drawReaderEdgeState(canvas: Canvas) {
+    val edgeState = page?.edgeState ?: return
+    if (width <= 0 || height <= 0) return
+
+    when (edgeState.kind) {
+      ReaderEdgeKind.CHAPTER_COMPLETE -> drawChapterCompleteState(canvas, edgeState)
+      ReaderEdgeKind.BOOK_FINISHED -> drawBookFinishedState(canvas, edgeState)
+    }
+  }
+
+  private fun drawChapterCompleteState(canvas: Canvas, edgeState: ReaderEdgeState) {
+    val buttonRect = edgeActionBoundsForKind(edgeState.kind)
+    drawSlateButton(canvas, buttonRect)
+
+    val buttonLabelPaint = edgeTextPaint(
+      sizeSp = 11f,
+      color = readerEdgeButtonTextColor(),
+      typeface = edgeSansBoldTypeface,
+      letterSpacingEm = 0.16f
+    )
+    drawCenteredButtonTextWithArrow(canvas, "NEXT CHAPTER", buttonRect, buttonLabelPaint)
+
+    val metaPaint = edgeTextPaint(
+      sizeSp = 13f,
+      color = readerEdgeMutedTextColor(),
+      typeface = edgeSansRegularTypeface
+    )
+    val titlePaint = edgeTextPaint(
+      sizeSp = 26f,
+      color = readerEdgeTextColor(),
+      typeface = edgeDisplayTypeface
+    )
+    val labelPaint = edgeTextPaint(
+      sizeSp = 10f,
+      color = readerEdgeSubtleTextColor(),
+      typeface = edgeSansMediumTypeface,
+      letterSpacingEm = 0.26f
+    )
+    val rulePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+      color = readerEdgeRuleColor()
+      strokeWidth = dp(1f).toFloat()
+      style = Paint.Style.STROKE
+    }
+
+    val buttonTop = buttonRect.top
+    val metaCenterY = buttonTop - dp(31f)
+    val titleCenterY = metaCenterY - dp(43f)
+    val labelCenterY = titleCenterY - dp(42f)
+    val ruleY = labelCenterY - dp(32f)
+    val centerX = width / 2f
+
+    canvas.drawLine(centerX - dp(20f), ruleY, centerX + dp(20f), ruleY, rulePaint)
+    drawCenteredText(canvas, "CHAPTER COMPLETE", labelCenterY, labelPaint, width - dp(48f))
+    drawCenteredText(canvas, edgeState.chapterTitle.ifBlank { "Chapter Complete" }, titleCenterY, titlePaint, width - dp(64f))
+    drawCenteredText(canvas, chapterCompleteMeta(edgeState.savedWordCount, edgeState.readMinutes), metaCenterY, metaPaint, width - dp(64f))
+  }
+
+  private fun drawBookFinishedState(canvas: Canvas, edgeState: ReaderEdgeState) {
+    val buttonRect = edgeActionBoundsForKind(edgeState.kind)
+    drawSlateButton(canvas, buttonRect)
+
+    val buttonLabelPaint = edgeTextPaint(
+      sizeSp = 11f,
+      color = readerEdgeButtonTextColor(),
+      typeface = edgeSansBoldTypeface,
+      letterSpacingEm = 0.16f
+    )
+    drawCenteredButtonTextWithBookIcon(canvas, "BACK TO LIBRARY", buttonRect, buttonLabelPaint)
+
+    val metaPaint = edgeTextPaint(
+      sizeSp = 13f,
+      color = readerEdgeMutedTextColor(),
+      typeface = edgeSansRegularTypeface
+    )
+    val titlePaint = edgeTextPaint(
+      sizeSp = 28f,
+      color = readerEdgeTextColor(),
+      typeface = edgeDisplayTypeface
+    )
+    val labelPaint = edgeTextPaint(
+      sizeSp = 10f,
+      color = readerEdgeSubtleTextColor(),
+      typeface = edgeSansMediumTypeface,
+      letterSpacingEm = 0.26f
+    )
+    val buttonTop = buttonRect.top
+    val metaCenterY = buttonTop - dp(31f)
+    val titleCenterY = metaCenterY - dp(44f)
+    val labelCenterY = titleCenterY - dp(45f)
+    val iconCenterY = labelCenterY - dp(43f)
+    val centerX = width / 2f
+
+    drawBookFinishedIcon(canvas, centerX, iconCenterY, dp(54f).toFloat())
+    drawCenteredText(canvas, "BOOK FINISHED", labelCenterY, labelPaint, width - dp(48f))
+    drawCenteredText(canvas, edgeState.bookTitle.ifBlank { edgeState.chapterTitle }, titleCenterY, titlePaint, width - dp(64f))
+    drawCenteredText(
+      canvas,
+      bookFinishedMeta(edgeState.chapterCount, edgeState.savedWordCount),
+      metaCenterY,
+      metaPaint,
+      width - dp(64f)
+    )
+
+    val reviewPaint = edgeTextPaint(
+      sizeSp = 12f,
+      color = readerEdgeReviewTextColor(),
+      typeface = edgeSansMediumTypeface,
+      letterSpacingEm = 0.12f
+    )
+    drawCenteredText(
+      canvas,
+      bookReviewLabel(edgeState.savedWordCount),
+      buttonRect.bottom + dp(34f),
+      reviewPaint,
+      width - dp(64f)
+    )
+  }
+
+  private fun drawSlateButton(canvas: Canvas, rect: RectF) {
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+      color = readerEdgeButtonColor()
+      style = Paint.Style.FILL
+    }
+    val radius = dp(4f).toFloat()
+    canvas.drawRoundRect(rect, radius, radius, paint)
+  }
+
+  private fun drawCenteredButtonTextWithArrow(
+    canvas: Canvas,
+    label: String,
+    rect: RectF,
+    paint: TextPaint
+  ) {
+    val labelPaint = TextPaint(paint).apply {
+      textAlign = Paint.Align.LEFT
+    }
+    val arrowPaint = TextPaint(paint).apply {
+      textAlign = Paint.Align.LEFT
+      letterSpacing = 0f
+      textSize = sp(18f)
+    }
+    val labelWidth = labelPaint.measureText(label)
+    val gap = dp(18f).toFloat()
+    val arrow = "→"
+    val arrowWidth = arrowPaint.measureText(arrow)
+    val totalWidth = labelWidth + gap + arrowWidth
+    val baseline = baselineForCenter(rect.centerY(), labelPaint)
+    var x = rect.centerX() - (totalWidth / 2f)
+
+    canvas.drawText(label, x, baseline, labelPaint)
+    x += labelWidth + gap
+    canvas.drawText(arrow, x, baselineForCenter(rect.centerY(), arrowPaint), arrowPaint)
+  }
+
+  private fun drawCenteredButtonTextWithBookIcon(
+    canvas: Canvas,
+    label: String,
+    rect: RectF,
+    paint: TextPaint
+  ) {
+    val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+      color = readerEdgeButtonTextColor()
+      style = Paint.Style.STROKE
+      strokeWidth = dp(1.7f).toFloat()
+      strokeCap = Paint.Cap.ROUND
+      strokeJoin = Paint.Join.ROUND
+    }
+    val iconSize = dp(20f).toFloat()
+    val gap = dp(14f).toFloat()
+    val labelPaint = TextPaint(paint).apply {
+      textAlign = Paint.Align.LEFT
+    }
+    val labelWidth = labelPaint.measureText(label)
+    val totalWidth = iconSize + gap + labelWidth
+    val iconCenterX = rect.centerX() - (totalWidth / 2f) + (iconSize / 2f)
+    val baseline = baselineForCenter(rect.centerY(), labelPaint)
+    val labelX = iconCenterX + (iconSize / 2f) + gap
+
+    drawOpenBookIcon(canvas, iconCenterX, rect.centerY(), iconSize, iconPaint)
+    canvas.drawText(label, labelX, baseline, labelPaint)
+  }
+
+  private fun drawBookFinishedIcon(
+    canvas: Canvas,
+    centerX: Float,
+    centerY: Float,
+    targetWidth: Float
+  ) {
+    val bitmap = bookFinishedIconBitmap
+    if (bitmap == null || bitmap.width <= 0 || bitmap.height <= 0) {
+      val fallbackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = readerEdgeTextColor()
+        style = Paint.Style.STROKE
+        strokeWidth = dp(2.1f).toFloat()
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+      }
+      drawOpenBookIcon(canvas, centerX, centerY, dp(38f).toFloat(), fallbackPaint)
+      return
+    }
+
+    val targetHeight = targetWidth * (bitmap.height.toFloat() / bitmap.width.toFloat())
+    bookFinishedIconRect.set(
+      centerX - (targetWidth / 2f),
+      centerY - (targetHeight / 2f),
+      centerX + (targetWidth / 2f),
+      centerY + (targetHeight / 2f)
+    )
+    canvas.drawBitmap(bitmap, null, bookFinishedIconRect, bookFinishedIconPaint)
+  }
+
+  private fun drawOpenBookIcon(
+    canvas: Canvas,
+    centerX: Float,
+    centerY: Float,
+    size: Float,
+    paint: Paint
+  ) {
+    val half = size / 2f
+    val top = centerY - (size * 0.38f)
+    val bottom = centerY + (size * 0.38f)
+    val centerTop = top + (size * 0.17f)
+    val centerBottom = bottom - (size * 0.08f)
+    val outerLeft = centerX - half
+    val outerRight = centerX + half
+    val innerGap = size * 0.12f
+
+    edgeIconPath.reset()
+    edgeIconPath.moveTo(centerX - innerGap, centerTop)
+    edgeIconPath.cubicTo(
+      centerX - (size * 0.28f),
+      top,
+      outerLeft,
+      top + (size * 0.04f),
+      outerLeft,
+      top + (size * 0.24f)
+    )
+    edgeIconPath.lineTo(outerLeft, bottom)
+    edgeIconPath.cubicTo(
+      outerLeft + (size * 0.24f),
+      bottom - (size * 0.09f),
+      centerX - (size * 0.18f),
+      bottom,
+      centerX - innerGap,
+      centerBottom
+    )
+
+    edgeIconPath.moveTo(centerX + innerGap, centerTop)
+    edgeIconPath.cubicTo(
+      centerX + (size * 0.28f),
+      top,
+      outerRight,
+      top + (size * 0.04f),
+      outerRight,
+      top + (size * 0.24f)
+    )
+    edgeIconPath.lineTo(outerRight, bottom)
+    edgeIconPath.cubicTo(
+      outerRight - (size * 0.24f),
+      bottom - (size * 0.09f),
+      centerX + (size * 0.18f),
+      bottom,
+      centerX + innerGap,
+      centerBottom
+    )
+
+    edgeIconPath.moveTo(centerX, top - (size * 0.06f))
+    edgeIconPath.lineTo(centerX, bottom + (size * 0.06f))
+    canvas.drawPath(edgeIconPath, paint)
+  }
+
+  private fun drawCenteredText(
+    canvas: Canvas,
+    text: String,
+    centerY: Float,
+    paint: TextPaint,
+    maxWidth: Int
+  ) {
+    val displayText = TextUtils
+      .ellipsize(text, paint, maxWidth.toFloat().coerceAtLeast(1f), TextUtils.TruncateAt.END)
+      .toString()
+    canvas.drawText(displayText, width / 2f, baselineForCenter(centerY, paint), paint)
+  }
+
+  private fun baselineForCenter(centerY: Float, paint: Paint): Float {
+    val metrics = paint.fontMetrics
+    return centerY - ((metrics.ascent + metrics.descent) / 2f)
+  }
+
+  private fun edgeActionBoundsForKind(kind: ReaderEdgeKind): RectF {
+    return edgeActionBounds(
+      bottomInsetDp = if (kind == ReaderEdgeKind.BOOK_FINISHED) 48f else 28f
+    )
+  }
+
+  private fun edgeActionBounds(bottomInsetDp: Float): RectF {
+    val horizontalInset = dp(24f).toFloat()
+    val buttonBottom = height - dp(bottomInsetDp).toFloat()
+    val buttonHeight = dp(60f).toFloat()
+    edgeButtonRect.set(
+      horizontalInset,
+      buttonBottom - buttonHeight,
+      width - horizontalInset,
+      buttonBottom
+    )
+    return edgeButtonRect
+  }
+
+  private fun edgeTextPaint(
+    sizeSp: Float,
+    color: Int,
+    typeface: Typeface,
+    letterSpacingEm: Float = 0f
+  ): TextPaint {
+    return TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+      this.color = color
+      textSize = sp(sizeSp)
+      this.typeface = typeface
+      textAlign = Paint.Align.CENTER
+      letterSpacing = letterSpacingEm
+    }
+  }
+
+  private fun chapterCompleteMeta(count: Int, readMinutes: Int): String {
+    val safeCount = count.coerceAtLeast(0)
+    val noun = if (safeCount == 1) "word" else "words"
+    val safeReadMinutes = readMinutes.coerceAtLeast(1)
+    return "$safeCount new $noun · $safeReadMinutes min read"
+  }
+
+  private fun bookFinishedMeta(chapterCount: Int, savedWordCount: Int): String {
+    val safeChapterCount = chapterCount.coerceAtLeast(0)
+    val safeSavedWordCount = savedWordCount.coerceAtLeast(0)
+    val chapterNoun = if (safeChapterCount == 1) "chapter" else "chapters"
+    val wordNoun = if (safeSavedWordCount == 1) "word" else "words"
+    return "$safeChapterCount $chapterNoun · $safeSavedWordCount $wordNoun saved"
+  }
+
+  private fun bookReviewLabel(savedWordCount: Int): String {
+    val safeSavedWordCount = savedWordCount.coerceAtLeast(0)
+    val wordNoun = if (safeSavedWordCount == 1) "WORD" else "WORDS"
+    return "REVIEW $safeSavedWordCount $wordNoun"
+  }
+
+  private fun readerEdgeTextColor(): Int {
+    return themePalette.bodyTextColor
+  }
+
+  private fun readerEdgeMutedTextColor(): Int {
+    return themePalette.mutedTextColor
+  }
+
+  private fun readerEdgeSubtleTextColor(): Int {
+    return themePalette.subtleTextColor
+  }
+
+  private fun readerEdgeRuleColor(): Int {
+    return themePalette.ruleColor
+  }
+
+  private fun readerEdgeButtonColor(): Int {
+    return themePalette.edgeButtonColor
+  }
+
+  private fun readerEdgeButtonTextColor(): Int {
+    return themePalette.edgeButtonTextColor
+  }
+
+  private fun readerEdgeReviewTextColor(): Int {
+    return if (themePalette.backgroundColor == Color.rgb(0x11, 0x15, 0x1c)) {
+      themePalette.mutedTextColor
+    } else {
+      Color.rgb(0x5c, 0x5e, 0x63)
+    }
   }
 
   private fun scheduleLongPress() {
@@ -314,6 +811,23 @@ class EpubPageView(context: Context) : View(context) {
     }
   }
 
+  private fun updateHandleSelection(handle: SelectionHandle, x: Float, y: Float) {
+    val endpoints = activeTextSelectionEndpoints() ?: return
+    val focus = hitTestTextPosition(x, y, allowClosest = true) ?: return
+    val ranges = when (handle) {
+      SelectionHandle.START -> buildSelectionRangesBetween(focus, endpoints.second)
+      SelectionHandle.END -> buildSelectionRangesBetween(endpoints.first, focus)
+    }
+
+    if (ranges.isNotEmpty()) {
+      activeSelectionRanges = ranges
+      activeSelectionKind = ActiveSelectionKind.TEXT
+      activeHighlightPaint.color = activePaintColor()
+      invalidate()
+      postInvalidateOnAnimation()
+    }
+  }
+
   private fun finishDragSelection(cancelled: Boolean) {
     parent?.requestDisallowInterceptTouchEvent(false)
     onSelectionDragStateChanged?.invoke(false)
@@ -342,6 +856,37 @@ class EpubPageView(context: Context) : View(context) {
 
     isSelectionMode = false
     selectionAnchor = null
+    isTapCandidate = false
+  }
+
+  private fun finishHandleSelection(cancelled: Boolean) {
+    parent?.requestDisallowInterceptTouchEvent(false)
+    onSelectionDragStateChanged?.invoke(false)
+
+    if (cancelled) {
+      activeSelectionRanges = handleDragStartRanges
+      activeSelectionKind = if (activeSelectionRanges.isNotEmpty()) ActiveSelectionKind.TEXT else null
+      invalidate()
+      postInvalidateOnAnimation()
+    } else {
+      val selectedText = selectedTextForRanges(activeSelectionRanges)
+      if (selectedText.isNotBlank() && activeSelectionRanges.isNotEmpty()) {
+        onTextSelected?.invoke(
+          TextSelectionHit(
+            text = selectedText,
+            placement = placementForRanges(activeSelectionRanges),
+            ranges = activeSelectionRanges
+          )
+        )
+      } else {
+        activeSelectionRanges = emptyList()
+        activeSelectionKind = null
+        onSelectionCleared?.invoke()
+      }
+    }
+
+    activeSelectionHandle = null
+    handleDragStartRanges = emptyList()
     isTapCandidate = false
   }
 
@@ -558,6 +1103,53 @@ class EpubPageView(context: Context) : View(context) {
     return ranges
   }
 
+  private fun buildSelectionRangesBetween(
+    firstPosition: TextPosition,
+    secondPosition: TextPosition
+  ): List<TextRange> {
+    val currentPage = page ?: return emptyList()
+    val orderedPositions = if (compareTextPositions(firstPosition, secondPosition) <= 0) {
+      firstPosition to secondPosition
+    } else {
+      secondPosition to firstPosition
+    }
+    val startPosition = orderedPositions.first
+    val endPosition = orderedPositions.second
+    val ranges = mutableListOf<TextRange>()
+
+    for (index in startPosition.renderedIndex..endPosition.renderedIndex) {
+      val block = renderedTextBlocks.getOrNull(index)?.block ?: continue
+      val blockText = blockTextForSelection(block)
+      val blockLength = blockText.length
+      if (blockLength <= 0) continue
+
+      val localStart = if (index == startPosition.renderedIndex) {
+        startPosition.localOffset.coerceIn(0, blockLength)
+      } else {
+        0
+      }
+      val localEnd = if (index == endPosition.renderedIndex) {
+        endPosition.localOffset.coerceIn(localStart, blockLength)
+      } else {
+        blockLength
+      }
+
+      if (localStart < localEnd) {
+        ranges.add(
+          TextRange(
+            pageIndex = currentPage.pageIndex,
+            spineIndex = currentPage.spineIndex,
+            blockId = block.blockId,
+            sourceStartOffset = block.sourceStartOffset + localStart,
+            sourceEndOffset = block.sourceStartOffset + localEnd
+          )
+        )
+      }
+    }
+
+    return ranges
+  }
+
   private fun selectedTextForRanges(ranges: List<TextRange>): String {
     val builder = StringBuilder()
 
@@ -582,6 +1174,98 @@ class EpubPageView(context: Context) : View(context) {
     }
 
     return builder.toString()
+  }
+
+  private fun activeTextSelectionEndpoints(): Pair<TextPosition, TextPosition>? {
+    if (geometryDirty) {
+      rebuildGeometry()
+    }
+
+    val ranges = sortedActiveTextSelectionRanges()
+    val first = ranges.firstOrNull() ?: return null
+    val last = ranges.lastOrNull() ?: return null
+    val start = textPositionForRangeEndpoint(first, isStart = true) ?: return null
+    val end = textPositionForRangeEndpoint(last, isStart = false) ?: return null
+
+    return start to end
+  }
+
+  private fun sortedActiveTextSelectionRanges(): List<TextRange> {
+    val currentPage = page ?: return emptyList()
+
+    return activeSelectionRanges
+      .filter { range ->
+        range.pageIndex == currentPage.pageIndex &&
+          range.spineIndex == currentPage.spineIndex
+      }
+      .sortedWith(
+        compareBy<TextRange> { range -> renderedIndexForRange(range) }
+          .thenBy { range -> range.sourceStartOffset }
+          .thenBy { range -> range.sourceEndOffset }
+      )
+      .filter { range -> renderedIndexForRange(range) != Int.MAX_VALUE }
+  }
+
+  private fun renderedIndexForRange(range: TextRange): Int {
+    return renderedTextBlocks.indexOfFirst { rendered ->
+      rendered.block.blockId == range.blockId
+    }.takeIf { it >= 0 } ?: Int.MAX_VALUE
+  }
+
+  private fun textPositionForRangeEndpoint(range: TextRange, isStart: Boolean): TextPosition? {
+    val renderedIndex = renderedIndexForRange(range).takeIf { it != Int.MAX_VALUE } ?: return null
+    val rendered = renderedTextBlocks.getOrNull(renderedIndex) ?: return null
+    val block = rendered.block
+    val blockText = blockTextForSelection(block)
+    val sourceOffset = if (isStart) range.sourceStartOffset else range.sourceEndOffset
+    val localOffset = (sourceOffset - block.sourceStartOffset).coerceIn(0, blockText.length)
+
+    return TextPosition(
+      renderedIndex = renderedIndex,
+      block = block,
+      localOffset = localOffset,
+      sourceOffset = block.sourceStartOffset + localOffset
+    )
+  }
+
+  private fun compareTextPositions(first: TextPosition, second: TextPosition): Int {
+    return when {
+      first.renderedIndex != second.renderedIndex -> first.renderedIndex.compareTo(second.renderedIndex)
+      first.sourceOffset != second.sourceOffset -> first.sourceOffset.compareTo(second.sourceOffset)
+      else -> first.localOffset.compareTo(second.localOffset)
+    }
+  }
+
+  private fun snapFocusForAnchor(position: TextPosition, anchor: SelectionAnchor): TextPosition {
+    val isForward = position.renderedIndex > anchor.renderedIndex ||
+      (position.renderedIndex == anchor.renderedIndex && position.sourceOffset >= anchor.sourceStartOffset)
+
+    return snappedPositionForHandle(
+      position = position,
+      handle = if (isForward) SelectionHandle.END else SelectionHandle.START
+    )
+  }
+
+  private fun snappedPositionForHandle(position: TextPosition, handle: SelectionHandle): TextPosition {
+    val text = blockTextForSelection(position.block)
+    if (text.isEmpty()) {
+      return position
+    }
+
+    val probeOffset = when (handle) {
+      SelectionHandle.START -> position.localOffset
+      SelectionHandle.END -> max(0, position.localOffset - 1)
+    }.coerceIn(0, text.length)
+    val tokenRange = tokenRangeAtOffset(text, probeOffset) ?: return position
+    val snappedLocalOffset = when (handle) {
+      SelectionHandle.START -> tokenRange.start
+      SelectionHandle.END -> tokenRange.end
+    }.coerceIn(0, text.length)
+
+    return position.copy(
+      localOffset = snappedLocalOffset,
+      sourceOffset = position.block.sourceStartOffset + snappedLocalOffset
+    )
   }
 
   private fun placementForRanges(ranges: List<TextRange>): String {
@@ -693,13 +1377,214 @@ class EpubPageView(context: Context) : View(context) {
         return@forEach
       }
 
-      highlightPath.reset()
-      layout.getSelectionPath(
-        localStart.coerceIn(0, blockTextLength),
-        localEnd.coerceIn(0, blockTextLength),
-        highlightPath
-      )
-      canvas.drawPath(highlightPath, paint)
+      if (paint === savedHighlightPaint) {
+        drawSavedUnderline(canvas, layout, localStart, localEnd, blockTextLength, paint)
+        return@forEach
+      }
+
+      if (
+        paint === activeHighlightPaint &&
+        (activeSelectionKind == ActiveSelectionKind.TEXT || activeSelectionKind == ActiveSelectionKind.WORD)
+      ) {
+        drawTextSelectionHighlight(
+          canvas = canvas,
+          block = block,
+          layout = layout,
+          localStart = localStart,
+          localEnd = localEnd,
+          textLength = blockTextLength,
+          paint = paint
+        )
+      } else {
+        highlightPath.reset()
+        layout.getSelectionPath(
+          localStart.coerceIn(0, blockTextLength),
+          localEnd.coerceIn(0, blockTextLength),
+          highlightPath
+        )
+        canvas.drawPath(highlightPath, paint)
+      }
+    }
+  }
+
+  private fun drawTextSelectionHighlight(
+    canvas: Canvas,
+    block: PageBlock,
+    layout: StaticLayout,
+    localStart: Int,
+    localEnd: Int,
+    textLength: Int,
+    paint: Paint
+  ) {
+    val text = blockTextForSelection(block)
+    val safeStart = localStart.coerceIn(0, textLength)
+    val safeEnd = localEnd.coerceIn(safeStart, textLength)
+    if (safeStart >= safeEnd || layout.lineCount <= 0) return
+
+    val startLine = layout.getLineForOffset(safeStart)
+    val endLine = layout.getLineForOffset(max(safeStart, safeEnd - 1))
+    val horizontalPad = dp(1f).toFloat()
+    val topPad = dp(12f).toFloat()
+    val bottomPad = dp(5f).toFloat()
+    val cornerRadius = dp(2f).toFloat()
+
+    for (line in startLine..endLine) {
+      val rawLineStart = layout.getLineStart(line).coerceIn(0, textLength)
+      val rawLineEnd = layout.getLineEnd(line).coerceIn(rawLineStart, textLength)
+      var lineStart = max(safeStart, rawLineStart)
+      var lineEnd = min(safeEnd, rawLineEnd)
+
+      while (lineStart < lineEnd && text[lineStart].isWhitespace()) {
+        lineStart += 1
+      }
+      while (lineEnd > lineStart && text[lineEnd - 1].isWhitespace()) {
+        lineEnd -= 1
+      }
+      if (lineStart >= lineEnd) continue
+
+      val selectedThroughLineStart = safeStart <= rawLineStart
+      val selectedThroughLineEnd = safeEnd >= rawLineEnd
+      val startX = if (selectedThroughLineStart) {
+        layout.getLineLeft(line)
+      } else {
+        layout.getPrimaryHorizontal(lineStart)
+      }
+      val endX = if (selectedThroughLineEnd) {
+        layout.getLineRight(line)
+      } else {
+        layout.getPrimaryHorizontal(lineEnd)
+      }
+      val left = min(startX, endX) - horizontalPad
+      val right = max(startX, endX) + horizontalPad
+      if (right <= left) continue
+
+      val verticalMetrics = selectionHighlightVerticalMetrics(
+        layout = layout,
+        line = line,
+        textPaint = block.textPaint,
+        topPad = topPad,
+        bottomPad = bottomPad
+      ) ?: continue
+      val top = verticalMetrics.top
+      val bottom = verticalMetrics.bottom
+      if (bottom <= top) continue
+
+      selectionLineRect.set(left, top, right, bottom)
+      canvas.drawRoundRect(selectionLineRect, cornerRadius, cornerRadius, paint)
+    }
+  }
+
+  private fun hitTestActiveSelectionHighlight(tapX: Float, tapY: Float): Boolean {
+    if (
+      activeSelectionRanges.isEmpty() ||
+      (activeSelectionKind != ActiveSelectionKind.TEXT && activeSelectionKind != ActiveSelectionKind.WORD)
+    ) {
+      return false
+    }
+
+    if (geometryDirty) {
+      rebuildGeometry()
+    }
+
+    val currentPage = page ?: return false
+    val horizontalPad = dp(1f).toFloat()
+    val topPad = dp(12f).toFloat()
+    val bottomPad = dp(5f).toFloat()
+
+    activeSelectionRanges.forEach { range ->
+      if (range.pageIndex != currentPage.pageIndex || range.spineIndex != currentPage.spineIndex) {
+        return@forEach
+      }
+
+      val rendered = renderedTextBlocks.firstOrNull { item -> item.block.blockId == range.blockId }
+        ?: return@forEach
+      val layout = rendered.layout
+      val text = blockTextForSelection(rendered.block)
+      val textLength = text.length
+      if (textLength <= 0 || layout.lineCount <= 0) return@forEach
+
+      val safeStart = (range.sourceStartOffset - rendered.block.sourceStartOffset)
+        .coerceIn(0, textLength)
+      val safeEnd = (range.sourceEndOffset - rendered.block.sourceStartOffset)
+        .coerceIn(safeStart, textLength)
+      if (safeStart >= safeEnd) return@forEach
+
+      val localX = tapX - rendered.x
+      val localY = tapY - rendered.y
+      val startLine = layout.getLineForOffset(safeStart)
+      val endLine = layout.getLineForOffset(max(safeStart, safeEnd - 1))
+
+      for (line in startLine..endLine) {
+        val rawLineStart = layout.getLineStart(line).coerceIn(0, textLength)
+        val rawLineEnd = layout.getLineEnd(line).coerceIn(rawLineStart, textLength)
+        var lineStart = max(safeStart, rawLineStart)
+        var lineEnd = min(safeEnd, rawLineEnd)
+
+        while (lineStart < lineEnd && text[lineStart].isWhitespace()) {
+          lineStart += 1
+        }
+        while (lineEnd > lineStart && text[lineEnd - 1].isWhitespace()) {
+          lineEnd -= 1
+        }
+        if (lineStart >= lineEnd) continue
+
+        val selectedThroughLineStart = safeStart <= rawLineStart
+        val selectedThroughLineEnd = safeEnd >= rawLineEnd
+        val startX = if (selectedThroughLineStart) {
+          layout.getLineLeft(line)
+        } else {
+          layout.getPrimaryHorizontal(lineStart)
+        }
+        val endX = if (selectedThroughLineEnd) {
+          layout.getLineRight(line)
+        } else {
+          layout.getPrimaryHorizontal(lineEnd)
+        }
+        val left = min(startX, endX) - horizontalPad
+        val right = max(startX, endX) + horizontalPad
+        val verticalMetrics = selectionHighlightVerticalMetrics(
+          layout = layout,
+          line = line,
+          textPaint = rendered.block.textPaint,
+          topPad = topPad,
+          bottomPad = bottomPad
+        ) ?: continue
+
+        if (localX in left..right && localY in verticalMetrics.top..verticalMetrics.bottom) {
+          return true
+        }
+      }
+    }
+
+    return false
+  }
+
+  private fun drawSavedUnderline(
+    canvas: Canvas,
+    layout: StaticLayout,
+    localStart: Int,
+    localEnd: Int,
+    textLength: Int,
+    paint: Paint
+  ) {
+    val safeStart = localStart.coerceIn(0, textLength)
+    val safeEnd = localEnd.coerceIn(safeStart, textLength)
+    if (safeStart >= safeEnd) return
+
+    val startLine = layout.getLineForOffset(safeStart)
+    val endLine = layout.getLineForOffset(max(safeStart, safeEnd - 1))
+
+    for (line in startLine..endLine) {
+      val lineStart = max(safeStart, layout.getLineStart(line))
+      val lineEnd = min(safeEnd, layout.getLineEnd(line))
+      if (lineStart >= lineEnd) continue
+
+      val startX = layout.getPrimaryHorizontal(lineStart)
+      val endX = layout.getPrimaryHorizontal(lineEnd)
+      val left = min(startX, endX)
+      val right = max(startX, endX)
+      val underlineY = layout.getLineBaseline(line).toFloat() + dp(3f)
+      canvas.drawLine(left, underlineY, right, underlineY, paint)
     }
   }
 
@@ -734,6 +1619,10 @@ class EpubPageView(context: Context) : View(context) {
       probe -= 1
     }
 
+    if (isCjkIdeograph(text[probe])) {
+      cjkTokenRangeAtOffset(text, probe)?.let { return it }
+    }
+
     if (!isReaderTokenChar(text[probe])) {
       probe = when {
         probe > 0 && isReaderTokenChar(text[probe - 1]) -> probe - 1
@@ -753,6 +1642,44 @@ class EpubPageView(context: Context) : View(context) {
     }
 
     return if (start < end) LocalTokenRange(start, end) else null
+  }
+
+  private fun cjkTokenRangeAtOffset(text: String, offset: Int): LocalTokenRange? {
+    val probe = offset.coerceIn(0, text.length - 1)
+    if (!isCjkIdeograph(text[probe])) {
+      return null
+    }
+
+    var runStart = probe
+    while (runStart > 0 && isCjkIdeograph(text[runStart - 1])) {
+      runStart -= 1
+    }
+
+    var runEnd = probe + 1
+    while (runEnd < text.length && isCjkIdeograph(text[runEnd])) {
+      runEnd += 1
+    }
+
+    val runText = text.substring(runStart, runEnd)
+    val relativeProbe = probe - runStart
+    val iterator = BreakIterator.getWordInstance(Locale.CHINESE)
+    iterator.setText(runText)
+
+    val segmentStart = iterator.preceding(relativeProbe + 1)
+    val segmentEnd = iterator.following(relativeProbe)
+
+    if (
+      segmentStart != BreakIterator.DONE &&
+      segmentEnd != BreakIterator.DONE &&
+      segmentStart < segmentEnd
+    ) {
+      val candidate = runText.substring(segmentStart, segmentEnd).trim()
+      if (candidate.any { isCjkIdeograph(it) }) {
+        return LocalTokenRange(runStart + segmentStart, runStart + segmentEnd)
+      }
+    }
+
+    return LocalTokenRange(probe, probe + 1)
   }
 
   private fun sentenceForToken(text: String, tokenRange: LocalTokenRange): String {
@@ -815,6 +1742,179 @@ class EpubPageView(context: Context) : View(context) {
     return "outside text"
   }
 
+  private fun drawSelectionHandles(
+    canvas: Canvas,
+    block: PageBlock,
+    layout: StaticLayout
+  ) {
+    if (activeSelectionKind != ActiveSelectionKind.TEXT || activeSelectionRanges.isEmpty()) {
+      return
+    }
+
+    val ranges = sortedActiveTextSelectionRanges()
+    val startRange = ranges.firstOrNull()
+    val endRange = ranges.lastOrNull()
+    val blockTextLength = blockTextForSelection(block).length
+    if (blockTextLength <= 0) return
+
+    if (startRange?.blockId == block.blockId) {
+      val localStart = (startRange.sourceStartOffset - block.sourceStartOffset)
+        .coerceIn(0, blockTextLength)
+      drawSelectionHandle(canvas, block, layout, localStart, SelectionHandle.START)
+    }
+
+    if (endRange?.blockId == block.blockId) {
+      val localEnd = (endRange.sourceEndOffset - block.sourceStartOffset)
+        .coerceIn(0, blockTextLength)
+      drawSelectionHandle(canvas, block, layout, localEnd, SelectionHandle.END)
+    }
+  }
+
+  private fun drawSelectionHandle(
+    canvas: Canvas,
+    block: PageBlock,
+    layout: StaticLayout,
+    localOffset: Int,
+    handle: SelectionHandle
+  ) {
+    val metrics = selectionHandleLineMetrics(layout, localOffset, handle, block.textPaint) ?: return
+
+    canvas.drawLine(metrics.x, metrics.stemTop, metrics.x, metrics.stemBottom, selectionHandlePaint)
+    canvas.drawCircle(metrics.x, metrics.knobCenterY, dp(5f).toFloat(), selectionHandleKnobPaint)
+  }
+
+  private fun hitTestSelectionHandle(tapX: Float, tapY: Float): SelectionHandle? {
+    if (activeSelectionKind != ActiveSelectionKind.TEXT || activeSelectionRanges.isEmpty()) {
+      return null
+    }
+
+    if (geometryDirty) {
+      rebuildGeometry()
+    }
+
+    val hitSlop = dp(24f).toFloat()
+    return selectionHandleGeometries()
+      .filter { geometry ->
+        val top = min(geometry.lineTop, geometry.knobCenterY) - hitSlop
+        val bottom = max(geometry.lineBottom, geometry.knobCenterY) + hitSlop
+        abs(tapX - geometry.x) <= hitSlop && tapY in top..bottom
+      }
+      .minByOrNull { geometry ->
+        abs(tapX - geometry.x) + abs(tapY - geometry.knobCenterY)
+      }
+      ?.handle
+  }
+
+  private fun selectionHandleGeometries(): List<SelectionHandleGeometry> {
+    val endpoints = activeTextSelectionEndpoints() ?: return emptyList()
+
+    return listOfNotNull(
+      selectionHandleGeometry(endpoints.first, SelectionHandle.START),
+      selectionHandleGeometry(endpoints.second, SelectionHandle.END)
+    )
+  }
+
+  private fun selectionHandleGeometry(
+    position: TextPosition,
+    handle: SelectionHandle
+  ): SelectionHandleGeometry? {
+    val rendered = renderedTextBlocks.getOrNull(position.renderedIndex) ?: return null
+    val layout = rendered.layout
+    val metrics = selectionHandleLineMetrics(layout, position.localOffset, handle, rendered.block.textPaint)
+      ?: return null
+
+    val x = rendered.x + metrics.x
+    val lineTop = rendered.y + metrics.stemTop
+    val lineBottom = rendered.y + metrics.stemBottom
+    val knobCenterY = rendered.y + metrics.knobCenterY
+
+    return SelectionHandleGeometry(
+      handle = handle,
+      x = x,
+      lineTop = lineTop,
+      lineBottom = lineBottom,
+      knobCenterY = knobCenterY
+    )
+  }
+
+  private fun selectionHandleLineMetrics(
+    layout: StaticLayout,
+    localOffset: Int,
+    handle: SelectionHandle,
+    textPaint: TextPaint?
+  ): SelectionHandleLineMetrics? {
+    if (layout.lineCount <= 0) return null
+
+    val textLength = layout.text.length
+    val safeOffset = localOffset.coerceIn(0, textLength)
+    val lineOffset = when (handle) {
+      SelectionHandle.START -> safeOffset
+      SelectionHandle.END -> max(0, safeOffset - 1)
+    }.coerceIn(0, textLength)
+    val line = layout.getLineForOffset(lineOffset).coerceIn(0, layout.lineCount - 1)
+    val verticalMetrics = selectionHighlightVerticalMetrics(
+      layout = layout,
+      line = line,
+      textPaint = textPaint,
+      topPad = dp(12f).toFloat(),
+      bottomPad = dp(5f).toFloat()
+    ) ?: return null
+    val stemTop = verticalMetrics.top
+    val stemBottom = verticalMetrics.bottom
+    val knobCenterY = when (handle) {
+      SelectionHandle.START -> stemTop - dp(2f)
+      SelectionHandle.END -> stemBottom + dp(2f)
+    }
+
+    return SelectionHandleLineMetrics(
+      x = selectionHandleHorizontal(layout, safeOffset, line, handle),
+      stemTop = stemTop,
+      stemBottom = stemBottom,
+      knobCenterY = knobCenterY
+    )
+  }
+
+  private fun selectionHandleHorizontal(
+    layout: StaticLayout,
+    safeOffset: Int,
+    selectedLine: Int,
+    handle: SelectionHandle
+  ): Float {
+    if (handle == SelectionHandle.END && safeOffset > 0 && safeOffset < layout.text.length) {
+      val safeOffsetLine = layout.getLineForOffset(safeOffset).coerceIn(0, layout.lineCount - 1)
+      if (safeOffsetLine != selectedLine) {
+        return layout.getLineRight(selectedLine)
+      }
+    }
+
+    return layout.getPrimaryHorizontal(safeOffset)
+  }
+
+  private fun selectionHighlightVerticalMetrics(
+    layout: StaticLayout,
+    line: Int,
+    textPaint: TextPaint?,
+    topPad: Float,
+    bottomPad: Float
+  ): SelectionHighlightVerticalMetrics? {
+    if (line !in 0 until layout.lineCount) return null
+
+    val lineTop = layout.getLineTop(line).toFloat()
+    val lineBottom = layout.getLineBottom(line).toFloat()
+    val baseline = layout.getLineBaseline(line).toFloat()
+    val fontMetrics = textPaint?.fontMetrics
+    val contentTop = fontMetrics?.let { baseline + it.ascent } ?: lineTop
+    val contentBottom = fontMetrics?.let { baseline + it.descent } ?: lineBottom
+    val top = max(lineTop - dp(6f), contentTop - topPad)
+    val bottom = min(lineBottom - dp(1f), contentBottom + bottomPad)
+
+    return if (bottom > top) {
+      SelectionHighlightVerticalMetrics(top = top, bottom = bottom)
+    } else {
+      null
+    }
+  }
+
   private fun buildFallbackTextLayout(block: PageBlock, pageContentWidth: Int): StaticLayout? {
     val text = block.styledText ?: return null
     val textPaint = block.textPaint ?: return null
@@ -845,6 +1945,8 @@ class EpubPageView(context: Context) : View(context) {
 
   override fun onDetachedFromWindow() {
     cancelPendingLongPress()
+    activeSelectionHandle = null
+    handleDragStartRanges = emptyList()
     if (isSelectionMode) {
       finishDragSelection(cancelled = true)
     }
@@ -912,4 +2014,76 @@ class EpubPageView(context: Context) : View(context) {
   private fun dp(value: Float): Int {
     return (value * resources.displayMetrics.density).toInt()
   }
+
+  private fun sp(value: Float): Float {
+    return TypedValue.applyDimension(
+      TypedValue.COMPLEX_UNIT_SP,
+      value,
+      resources.displayMetrics
+    )
+  }
+}
+
+private fun loadReaderSansTypeface(context: Context, weight: String): Typeface {
+  val assetNames = when (weight) {
+    "bold" -> listOf(
+      "Inter_700Bold.ttf",
+      "fonts/Inter_700Bold.ttf",
+      "node_modules/@expo-google-fonts/inter/700Bold/Inter_700Bold.ttf"
+    )
+    "medium" -> listOf(
+      "Inter_600SemiBold.ttf",
+      "Inter_500Medium.ttf",
+      "fonts/Inter_600SemiBold.ttf",
+      "fonts/Inter_500Medium.ttf",
+      "node_modules/@expo-google-fonts/inter/600SemiBold/Inter_600SemiBold.ttf",
+      "node_modules/@expo-google-fonts/inter/500Medium/Inter_500Medium.ttf"
+    )
+    else -> listOf(
+      "Inter_400Regular.ttf",
+      "fonts/Inter_400Regular.ttf",
+      "node_modules/@expo-google-fonts/inter/400Regular/Inter_400Regular.ttf"
+    )
+  }
+
+  assetNames.forEach { assetName ->
+    runCatching {
+      return Typeface.createFromAsset(context.assets, assetName)
+    }
+  }
+
+  return when (weight) {
+    "bold" -> Typeface.create("sans-serif", Typeface.BOLD)
+    "medium" -> Typeface.create("sans-serif-medium", Typeface.NORMAL)
+    else -> Typeface.create("sans-serif", Typeface.NORMAL)
+  }
+}
+
+private fun loadReaderDisplayTypeface(context: Context, weight: String): Typeface {
+  val assetNames = when (weight) {
+    "bold" -> listOf(
+      "Fraunces_600SemiBold.ttf",
+      "Fraunces_700Bold.ttf",
+      "fonts/Fraunces_600SemiBold.ttf",
+      "fonts/Fraunces_700Bold.ttf",
+      "node_modules/@expo-google-fonts/fraunces/600SemiBold/Fraunces_600SemiBold.ttf",
+      "node_modules/@expo-google-fonts/fraunces/700Bold/Fraunces_700Bold.ttf"
+    )
+    else -> listOf(
+      "Fraunces_500Medium.ttf",
+      "Fraunces_400Regular.ttf",
+      "fonts/Fraunces_500Medium.ttf",
+      "fonts/Fraunces_400Regular.ttf",
+      "node_modules/@expo-google-fonts/fraunces/500Medium/Fraunces_500Medium.ttf",
+      "node_modules/@expo-google-fonts/fraunces/400Regular/Fraunces_400Regular.ttf"
+    )
+  }
+
+  assetNames.forEach { assetName ->
+    runCatching {
+      return Typeface.createFromAsset(context.assets, assetName)
+    }
+  }
+
+  return Typeface.create("serif", if (weight == "bold") Typeface.BOLD else Typeface.NORMAL)
 }

@@ -1,21 +1,24 @@
 import React from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { colors } from '../../theme/tokens';
+import { useTheme } from '../../theme/tokens';
 import { insets } from '../../theme/spacing';
 
 const Screen = ({
   children,
   scroll = false,
-  backgroundColor = colors.backgroundWarm,
+  backgroundColor,
   style,
   contentContainerStyle,
   scrollViewProps,
   edges = ['top', 'left', 'right'],
 }) => {
+  const { colors } = useTheme();
+  const resolvedBackground = backgroundColor ?? colors.bgPage;
+
   if (scroll) {
     return (
-      <SafeAreaView edges={edges} style={[styles.safeArea, { backgroundColor }, style]}>
+      <SafeAreaView edges={edges} style={[styles.safeArea, { backgroundColor: resolvedBackground }, style]}>
         <ScrollView
           contentContainerStyle={[styles.scrollContent, contentContainerStyle]}
           showsVerticalScrollIndicator={false}
@@ -28,7 +31,7 @@ const Screen = ({
   }
 
   return (
-    <SafeAreaView edges={edges} style={[styles.safeArea, { backgroundColor }, style]}>
+    <SafeAreaView edges={edges} style={[styles.safeArea, { backgroundColor: resolvedBackground }, style]}>
       <View style={[styles.content, contentContainerStyle]}>{children}</View>
     </SafeAreaView>
   );

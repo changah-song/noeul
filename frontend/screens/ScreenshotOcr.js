@@ -1315,8 +1315,8 @@ const styles = StyleSheet.create({
         backgroundColor: colors.surfaceMuted,
     },
     statusChipActive: {
-        borderColor: colors.success,
-        backgroundColor: 'rgba(47, 125, 76, 0.12)',
+        borderColor: colors.inkSlate,
+        backgroundColor: colors.surfaceMuted,
     },
     statusChipText: {
         ...textStyles.caption,
@@ -1327,7 +1327,7 @@ const styles = StyleSheet.create({
         letterSpacing: 0,
     },
     statusChipTextActive: {
-        color: colors.success,
+        color: colors.inkSlate,
     },
     floatingActions: {
         gap: spacing.xs,
@@ -1391,22 +1391,25 @@ const styles = StyleSheet.create({
     ocrBox: {
         position: 'absolute',
         borderWidth: 1.5,
-        borderColor: 'rgba(200, 125, 0, 0.78)',
-        backgroundColor: 'rgba(200, 125, 0, 0.12)',
+        borderColor: colors.ocrNavy,
+        borderRadius: 2,
+        backgroundColor: colors.ocrDetectionFill,
     },
     ocrBoxSelected: {
-        borderColor: colors.success,
-        backgroundColor: 'rgba(47, 125, 76, 0.18)',
+        borderColor: colors.ocrNavy,
+        borderRadius: 2,
+        backgroundColor: colors.ocrNavy,
     },
     ocrBoxPressed: {
-        backgroundColor: 'rgba(47, 125, 76, 0.28)',
+        borderRadius: 2,
+        backgroundColor: colors.ocrNavy,
     },
     recognitionOverlay: {
         ...StyleSheet.absoluteFillObject,
         alignItems: 'center',
         justifyContent: 'center',
         gap: spacing.sm,
-        backgroundColor: 'rgba(26, 26, 26, 0.42)',
+        backgroundColor: colors.ocrScrim,
     },
     recognitionText: {
         ...textStyles.body,

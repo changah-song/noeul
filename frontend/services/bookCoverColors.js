@@ -1,15 +1,20 @@
-const FALLBACK_COVER_COLOR = '#8a6741';
+import { colors } from '../theme';
+
+const FALLBACK_COVER_COLOR = colors.coverSlate;
 let missingNativeModuleWarned = false;
 
 const GENERATED_COVER_PALETTES = [
-  { bg: '#e7ddc8', accent: '#bf5b3e', ink: '#2f2820', soft: '#f3ecdc' },
-  { bg: '#dde4d6', accent: '#5f7a4a', ink: '#27331f', soft: '#eef2e8' },
-  { bg: '#d7dfe7', accent: '#3f6184', ink: '#1f2a35', soft: '#eaeff4' },
-  { bg: '#ece1c8', accent: '#c0902f', ink: '#3a2f17', soft: '#f6efda' },
-  { bg: '#e9d9d6', accent: '#9c4a52', ink: '#3a1f22', soft: '#f5e8e6' },
-  { bg: '#dcd6e2', accent: '#6a5495', ink: '#2a2235', soft: '#efebf4' },
-  { bg: '#d9e1dd', accent: '#2f7d6b', ink: '#16332c', soft: '#e9f1ee' },
-  { bg: '#e7ded2', accent: '#8a6741', ink: '#322517', soft: '#f4ecdf' },
+  { bg: colors.surfaceMuted, accent: colors.inkSlate, ink: colors.text, soft: colors.textTertiary },
+  { bg: colors.surfaceAssist, accent: colors.coverSlate, ink: colors.textSecondary, soft: colors.borderStrong },
+  { bg: colors.surfaceStrong, accent: colors.inkSlate, ink: colors.text, soft: colors.textTertiary },
+  { bg: colors.border, accent: colors.coverSlate, ink: colors.textSecondary, soft: colors.textTertiary },
+  { bg: colors.borderStrong, accent: colors.inkSlateDeep, ink: colors.text, soft: colors.surfaceMuted },
+  { bg: colors.coverMid, accent: colors.inkSlate, ink: colors.surfaceMuted, soft: colors.surfaceMuted },
+  { bg: colors.textTertiary, accent: colors.inkSlateDeep, ink: colors.surface, soft: colors.border },
+  { bg: colors.textMuted, accent: colors.inkSlateDeep, ink: colors.surface, soft: colors.border },
+  { bg: colors.coverSlate, accent: colors.inkSlateDeep, ink: colors.border, soft: colors.surfaceMuted },
+  { bg: colors.inkSlate, accent: colors.inkSlateDeep, ink: colors.surfaceMuted, soft: colors.surfaceMuted },
+  { bg: colors.inkSlateDeep, accent: colors.black, ink: colors.surface, soft: colors.borderStrong },
 ];
 
 export const normalizeHexColor = (value) => {

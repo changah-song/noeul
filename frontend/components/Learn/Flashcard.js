@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather } from '@expo/vector-icons';
-import { Card } from '../ui';
 import { useTranslation } from '../../hooks/useTranslation';
 import {
   fetchUserPreferences,
@@ -10,7 +10,7 @@ import {
   updateUserPreferenceFields,
 } from '../../services/preferencesCloudSync';
 import { isCurrentSyncGeneration } from '../../services/localOwnerCoordinator';
-import { colors, fontFamilies, radii, spacing, textStyles } from '../../theme';
+import { colors, fontFamilies, spacing, textStyles, useTheme } from '../../theme';
 
 const STATUS_ACTIONS = [
   { key: 'bad', labelKey: 'learn.hard', tone: 'danger' },
@@ -18,20 +18,20 @@ const STATUS_ACTIONS = [
   { key: 'good', labelKey: 'learn.easy', tone: 'success' },
 ];
 
-const toneStyles = {
+const createToneStyles = (themeColors) => ({
   danger: {
-    backgroundColor: 'rgba(182, 79, 68, 0.12)',
-    color: colors.danger,
+    backgroundColor: themeColors.surface,
+    color: themeColors.text,
   },
   warning: {
-    backgroundColor: 'rgba(181, 118, 24, 0.12)',
-    color: colors.warning,
+    backgroundColor: themeColors.surface,
+    color: themeColors.text,
   },
   success: {
-    backgroundColor: 'rgba(47, 125, 76, 0.12)',
-    color: colors.success,
+    backgroundColor: themeColors.surface,
+    color: themeColors.text,
   },
-};
+});
 
 const FRONT_SETTINGS_KEY = 'flashcardFrontSettings';
 const FRONT_SETTINGS_UPDATED_AT_KEY = 'flashcardFrontSettingsUpdatedAt';
@@ -41,10 +41,13 @@ const DEFAULT_FRONT_SETTINGS = {
   showRelated: false,
 };
 
-const Flashcard = ({ vocab, title, index, total, onClose, onMark, user, ownerId, syncGeneration }) => {
+const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGeneration }) => {
   const { t } = useTranslation();
+  const { colors } = useTheme();
+  const styles = useMemo(() => createStyles(colors), [colors]);
+  const toneStyles = useMemo(() => createToneStyles(colors), [colors]);
   const [isFlipped, setIsFlipped] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
+  const showSettings = false;
   const [frontSettings, setFrontSettings] = useState(DEFAULT_FRONT_SETTINGS);
   const [frontSettingsLoaded, setFrontSettingsLoaded] = useState(false);
   const frontSettingsRef = useRef(DEFAULT_FRONT_SETTINGS);
@@ -54,6 +57,16 @@ const Flashcard = ({ vocab, title, index, total, onClose, onMark, user, ownerId,
   const hanjaText = useMemo(
     () => (vocab?.hanja && vocab.hanja !== 'N/A' ? vocab.hanja : null),
     [vocab?.hanja]
+  );
+  const pronunciation = useMemo(
+    () => (
+      vocab?.romanization
+      || vocab?.pronunciation
+      || vocab?.pinyin
+      || vocab?.ipa
+      || null
+    ),
+    [vocab?.ipa, vocab?.pinyin, vocab?.pronunciation, vocab?.romanization]
   );
   const relatedKnownWords = useMemo(() => {
     const normalizeEntry = (entry) => ({
@@ -266,25 +279,13 @@ const Flashcard = ({ vocab, title, index, total, onClose, onMark, user, ownerId,
   }
 
   return (
-    <Card style={styles.shell} contentStyle={styles.shellContent}>
+    <SafeAreaView edges={['top', 'bottom']} style={styles.shell}>
       <View style={styles.header}>
-        <View style={styles.headerCopy}>
-          <Text style={styles.kicker}>{t('learn.practice')}</Text>
-          <Text style={styles.deckTitle}>{title}</Text>
-          <Text style={styles.progress}>{t('learn.progress', { current: index + 1, total })}</Text>
-        </View>
-
-        <View style={styles.headerActions}>
-          <TouchableOpacity
-            onPress={() => setShowSettings((visible) => !visible)}
-            style={styles.closeButton}
-          >
-            <Feather name="settings" size={18} color={colors.text} />
-          </TouchableOpacity>
-          <TouchableOpacity onPress={onClose} style={styles.closeButton}>
-            <Feather name="x" size={18} color={colors.text} />
-          </TouchableOpacity>
-        </View>
+        <TouchableOpacity onPress={onClose} style={styles.closeButton}>
+          <Feather name="x" size={28} color={colors.text} />
+        </TouchableOpacity>
+        <Text style={styles.deckTitle}>FLASHCARD</Text>
+        <Text style={styles.progress}>{index + 1} / {total}</Text>
       </View>
 
       {showSettings ? (
@@ -324,17 +325,20 @@ const Flashcard = ({ vocab, title, index, total, onClose, onMark, user, ownerId,
         <View style={styles.cardFace}>
           {!isFlipped ? (
             <>
-              <Text style={styles.word}>{vocab.word}</Text>
-              {frontSettings.showHanja && hanjaText ? <Text style={styles.hanja}>{hanjaText}</Text> : null}
-              {frontSettings.showDefinition ? <Text style={styles.definition}>{vocab.def}</Text> : null}
-              {frontSettings.showRelated ? renderRelatedWords() : null}
+              <View style={styles.frontCenter}>
+                <Text style={styles.word}>{vocab.word}</Text>
+                {pronunciation ? <Text style={styles.pronunciation}>{pronunciation}</Text> : null}
+              </View>
+              <Text style={styles.flipHint}>TAP TO FLIP</Text>
             </>
           ) : (
             <>
-              <Text style={styles.wordSmall}>{vocab.word}</Text>
-              {hanjaText ? <Text style={styles.hanja}>{hanjaText}</Text> : null}
-              <Text style={styles.definition}>{vocab.def}</Text>
-              {renderRelatedWords()}
+              <View style={styles.backContent}>
+                <Text style={styles.wordSmall}>{vocab.word}</Text>
+                {hanjaText ? <Text style={styles.hanja}>{hanjaText}</Text> : null}
+                <Text style={styles.definition}>{vocab.def}</Text>
+                {frontSettings.showRelated ? renderRelatedWords() : null}
+              </View>
               <Text style={styles.flipHint}>{t('learn.tapAgainHide')}</Text>
             </>
           )}
@@ -342,7 +346,11 @@ const Flashcard = ({ vocab, title, index, total, onClose, onMark, user, ownerId,
       </Pressable>
 
       <View style={styles.actions}>
-        {STATUS_ACTIONS.map((action) => (
+        {!isFlipped ? (
+          <TouchableOpacity onPress={() => setIsFlipped(true)} style={styles.showAnswerButton}>
+            <Text style={styles.showAnswerText}>SHOW ANSWER</Text>
+          </TouchableOpacity>
+        ) : STATUS_ACTIONS.map((action) => (
           <TouchableOpacity
             key={action.key}
             onPress={() => {
@@ -360,24 +368,29 @@ const Flashcard = ({ vocab, title, index, total, onClose, onMark, user, ownerId,
           </TouchableOpacity>
         ))}
       </View>
-    </Card>
+      <View style={styles.homeIndicator} />
+    </SafeAreaView>
   );
 };
 
-const styles = StyleSheet.create({
+const createStyles = (colors) => StyleSheet.create({
   shell: {
-    borderRadius: 22,
+    flex: 1,
+    backgroundColor: colors.bgPage,
   },
   shellContent: {
     position: 'relative',
-    padding: 16,
-    gap: 14,
+    padding: 0,
+    gap: 18,
   },
   header: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 12,
+    height: 52,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.divider,
+    paddingHorizontal: 20,
   },
   headerCopy: {
     flex: 1,
@@ -387,20 +400,30 @@ const styles = StyleSheet.create({
     ...textStyles.eyebrow,
   },
   deckTitle: {
-    ...textStyles.sectionTitle,
-    fontSize: 18,
-    lineHeight: 23,
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 12,
+    lineHeight: 15,
+    letterSpacing: 3.2,
+    color: colors.textSecondary,
+    textTransform: 'uppercase',
+    flex: 1,
+    textAlign: 'center',
   },
   progress: {
-    ...textStyles.caption,
+    width: 70,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 12,
+    lineHeight: 16,
+    color: colors.textTertiary,
+    textAlign: 'right',
   },
   closeButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 70,
+    height: 40,
+    borderRadius: 0,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: colors.surfaceMuted,
+    backgroundColor: colors.transparent,
   },
   headerActions: {
     flexDirection: 'row',
@@ -440,9 +463,11 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
   },
   cardArea: {
-    minHeight: 230,
-    borderRadius: 16,
-    backgroundColor: colors.surfaceMuted,
+    flex: 1,
+    marginHorizontal: 24,
+    marginTop: 28,
+    borderRadius: 10,
+    backgroundColor: colors.surfaceCard,
     borderWidth: 1,
     borderColor: colors.border,
     overflow: 'hidden',
@@ -450,29 +475,46 @@ const styles = StyleSheet.create({
   cardFace: {
     flex: 1,
     alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 32,
+  },
+  frontCenter: {
+    flex: 1,
+    width: '100%',
+    alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 22,
-    paddingVertical: 22,
-    gap: 8,
+    gap: 16,
+  },
+  backContent: {
+    flex: 1,
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
   },
   word: {
-    ...textStyles.hero,
     width: '100%',
-    paddingHorizontal: spacing.xs,
     fontFamily: fontFamilies.krSerifBold,
-    fontSize: 28,
-    lineHeight: 36,
+    fontSize: 60,
+    lineHeight: 76,
     letterSpacing: 0,
     textAlign: 'center',
+    color: colors.accent,
     includeFontPadding: true,
   },
+  pronunciation: {
+    fontFamily: fontFamilies.displayItalic,
+    fontSize: 17,
+    lineHeight: 22,
+    letterSpacing: 3,
+    color: colors.textTertiary,
+    textAlign: 'center',
+  },
   wordSmall: {
-    ...textStyles.title,
     width: '100%',
-    paddingHorizontal: spacing.xs,
     fontFamily: fontFamilies.krSerifMedium,
-    fontSize: 22,
-    lineHeight: 29,
+    fontSize: 36,
+    lineHeight: 46,
     letterSpacing: 0,
     textAlign: 'center',
     includeFontPadding: true,
@@ -483,7 +525,10 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   definition: {
-    ...textStyles.body,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 15,
+    lineHeight: 22,
+    color: colors.textMuted,
     textAlign: 'center',
   },
   relatedSection: {
@@ -507,23 +552,55 @@ const styles = StyleSheet.create({
     lineHeight: 15,
   },
   flipHint: {
-    ...textStyles.caption,
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 10,
+    lineHeight: 13,
+    letterSpacing: 2.6,
+    color: colors.frame,
     textAlign: 'center',
   },
   actions: {
     flexDirection: 'row',
     gap: 8,
+    paddingHorizontal: 24,
+    paddingTop: 22,
+    paddingBottom: 14,
   },
   actionButton: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: radii.pill,
-    paddingVertical: 9,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    paddingVertical: 13,
   },
   actionLabel: {
     ...textStyles.label,
   },
+  showAnswerButton: {
+    flex: 1,
+    minHeight: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 4,
+    backgroundColor: colors.accent,
+  },
+  showAnswerText: {
+    ...textStyles.buttonLabel,
+    fontSize: 12,
+    letterSpacing: 2,
+  },
+  homeIndicator: {
+    alignSelf: 'center',
+    width: 110,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.border,
+    marginBottom: 10,
+  },
 });
+
+const styles = createStyles(colors);
 
 export default Flashcard;

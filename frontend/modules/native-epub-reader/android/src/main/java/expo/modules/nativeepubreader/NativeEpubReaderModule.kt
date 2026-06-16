@@ -22,10 +22,13 @@ import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.roundToInt
 import java.util.concurrent.CancellationException
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
+
+private val READABLE_TOKEN_REGEX = Regex("""[A-Za-z0-9]+(?:'[A-Za-z0-9]+)?|[가-힣]+|[\u3400-\u4DBF\u4E00-\u9FFF]+""")
 
 class NativeEpubReaderModule : Module() {
   override fun definition() = ModuleDefinition {
@@ -78,8 +81,16 @@ class NativeEpubReaderModule : Module() {
         view.setReaderTheme(theme)
       }
 
+      Prop("themeTokens") { view: NativeEpubReaderView, tokens: Map<String, Any?> ->
+        view.setThemeTokens(tokens)
+      }
+
       Prop("renderMode") { view: NativeEpubReaderView, mode: String ->
         view.setReaderRenderMode(mode)
+      }
+
+      Prop("readerEdgeStateEnabled") { view: NativeEpubReaderView, enabled: Boolean ->
+        view.setReaderEdgeStateEnabled(enabled)
       }
 
       Prop("highlightTerms") { view: NativeEpubReaderView, terms: List<Any?> ->
@@ -105,11 +116,88 @@ class NativeEpubReaderModule : Module() {
 
 private const val TAG = "NativeEpubReader"
 
+data class ReaderThemePalette(
+  val backgroundColor: Int,
+  val bodyTextColor: Int,
+  val mutedTextColor: Int,
+  val subtleTextColor: Int,
+  val ruleColor: Int,
+  val edgeButtonColor: Int,
+  val edgeButtonTextColor: Int,
+  val activeHighlightColor: Int,
+  val textSelectionHighlightColor: Int,
+  val savedHighlightColor: Int,
+  val selectionHandleColor: Int,
+  val placeholderColor: Int
+)
+
+fun readerThemePaletteForMode(isDark: Boolean): ReaderThemePalette {
+  return if (isDark) {
+    ReaderThemePalette(
+      backgroundColor = Color.rgb(0x11, 0x15, 0x1c),
+      bodyTextColor = Color.rgb(0xf0, 0xed, 0xed),
+      mutedTextColor = Color.rgb(0x9a, 0x9c, 0x9f),
+      subtleTextColor = Color.rgb(0x5c, 0x5e, 0x63),
+      ruleColor = Color.rgb(0x35, 0x3c, 0x47),
+      edgeButtonColor = Color.rgb(0xf0, 0xed, 0xed),
+      edgeButtonTextColor = Color.rgb(0x1b, 0x1c, 0x1c),
+      activeHighlightColor = Color.argb(0x40, 0xf0, 0xed, 0xed),
+      textSelectionHighlightColor = Color.argb(0x2e, 0xf0, 0xed, 0xed),
+      savedHighlightColor = Color.rgb(0x5c, 0x5e, 0x63),
+      selectionHandleColor = Color.rgb(0xf0, 0xed, 0xed),
+      placeholderColor = Color.rgb(0x44, 0x47, 0x4b)
+    )
+  } else {
+    ReaderThemePalette(
+      backgroundColor = Color.rgb(0xfb, 0xf9, 0xf8),
+      bodyTextColor = Color.rgb(0x1b, 0x1c, 0x1c),
+      mutedTextColor = Color.rgb(0x75, 0x77, 0x7b),
+      subtleTextColor = Color.rgb(0x9a, 0x9c, 0x9f),
+      ruleColor = Color.rgb(0xc5, 0xc6, 0xcb),
+      edgeButtonColor = Color.rgb(0x20, 0x26, 0x31),
+      edgeButtonTextColor = Color.WHITE,
+      activeHighlightColor = Color.argb(0x40, 0x20, 0x26, 0x31),
+      textSelectionHighlightColor = Color.argb(0x2e, 0x20, 0x26, 0x31),
+      savedHighlightColor = Color.rgb(0x75, 0x77, 0x7b),
+      selectionHandleColor = Color.rgb(0x20, 0x26, 0x31),
+      placeholderColor = Color.rgb(180, 174, 166)
+    )
+  }
+}
+
+private fun colorFromThemeToken(tokens: Map<String, Any?>, key: String, fallback: Int): Int {
+  val raw = tokens[key] as? String ?: return fallback
+  return try {
+    Color.parseColor(raw)
+  } catch (_: IllegalArgumentException) {
+    fallback
+  }
+}
+
+private fun readerThemePaletteFromTokens(tokens: Map<String, Any?>, isDark: Boolean): ReaderThemePalette {
+  val fallback = readerThemePaletteForMode(isDark)
+  return ReaderThemePalette(
+    backgroundColor = colorFromThemeToken(tokens, "background", fallback.backgroundColor),
+    bodyTextColor = colorFromThemeToken(tokens, "bodyText", fallback.bodyTextColor),
+    mutedTextColor = colorFromThemeToken(tokens, "mutedText", fallback.mutedTextColor),
+    subtleTextColor = colorFromThemeToken(tokens, "subtleText", fallback.subtleTextColor),
+    ruleColor = colorFromThemeToken(tokens, "rule", fallback.ruleColor),
+    edgeButtonColor = colorFromThemeToken(tokens, "edgeButton", fallback.edgeButtonColor),
+    edgeButtonTextColor = colorFromThemeToken(tokens, "edgeButtonText", fallback.edgeButtonTextColor),
+    activeHighlightColor = colorFromThemeToken(tokens, "activeHighlight", fallback.activeHighlightColor),
+    textSelectionHighlightColor = colorFromThemeToken(tokens, "textSelectionHighlight", fallback.textSelectionHighlightColor),
+    savedHighlightColor = colorFromThemeToken(tokens, "savedHighlight", fallback.savedHighlightColor),
+    selectionHandleColor = colorFromThemeToken(tokens, "selectionHandle", fallback.selectionHandleColor),
+    placeholderColor = colorFromThemeToken(tokens, "placeholder", fallback.placeholderColor)
+  )
+}
+
 private data class ChapterWindowItem(
   val role: String,
   val spineIndex: Int,
   val href: String,
   val path: String,
+  val title: String,
   val blocks: List<Any?>,
   val resources: List<Any?>,
   val signature: String
@@ -196,27 +284,31 @@ class NativeEpubReaderView(
   private var chapterResources: List<Any?> = emptyList()
   private var chapterWindow: List<ChapterWindowItem> = emptyList()
   private var restorePosition: Map<String, Any?> = emptyMap()
+  private var restorePositionSignature = ""
   private var chapterBlocksSignature = ""
   private var chapterWindowSignature = ""
   private var pageRanges: List<ChapterPageRange> = emptyList()
   private var committedSpineIndex: Int? = null
   private var layoutWidth = 0
   private var layoutHeight = 0
-  private val pagePaddingH = dp(20f)
-  private val pagePaddingV = dp(24f)
+  private val pagePaddingH = dp(24f)
+  private val pagePaddingV = dp(30f)
   private var readerFontSizeSp = 18f
   private var readerLineHeightMultiplier = 1.5f
   private var readerTheme = "light"
+  private var readerThemeTokens: Map<String, Any?> = emptyMap()
+  private var themePalette = readerThemePaletteForMode(false)
   private var readerRenderMode = "paged"
+  private var readerEdgeStateEnabled = true
   private var continuousPageIndex = 0
   private var highlightTerms: List<String> = emptyList()
   private var savedHighlightRangesByPage: Map<Int, List<TextRange>> = emptyMap()
   private var activeSelectionRanges: List<TextRange> = emptyList()
   private var activeSelectionKind: ActiveSelectionKind? = null
   private var lastClearSelectionToken: Int? = null
-  private var activeHighlightColor = Color.argb(0x55, 0xfc, 0xd5, 0xb4)
-  private var textSelectionHighlightColor = Color.argb(0x66, 0x7a, 0xb3, 0xff)
-  private var savedHighlightColor = Color.rgb(0xf7, 0xd4, 0x88)
+  private var activeHighlightColor = themePalette.activeHighlightColor
+  private var textSelectionHighlightColor = themePalette.textSelectionHighlightColor
+  private var savedHighlightColor = themePalette.savedHighlightColor
   private var userDraggedPager = false
   private var previousPageIndex = 0
   private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
@@ -335,6 +427,10 @@ class NativeEpubReaderView(
   }
 
   fun setBookManifest(manifest: Map<String, Any?>) {
+    val previousEdgeStateEnabled = readerEdgeStateEnabled
+    manifest.booleanValue("readerEdgeStateEnabled")?.let { enabled ->
+      readerEdgeStateEnabled = enabled
+    }
     manifest.stringValue("renderMode")?.let { mode ->
       setReaderRenderMode(mode)
     }
@@ -344,6 +440,10 @@ class NativeEpubReaderView(
     bookManifest = manifest
     manifest.intValue("currentSpineIndex")?.let { spineIndex ->
       committedSpineIndex = spineIndex
+    }
+    if (previousEdgeStateEnabled != readerEdgeStateEnabled && pages.isNotEmpty()) {
+      chapterTransitionDirection = "none"
+      repaginate(resetToFirstPage = false)
     }
   }
 
@@ -382,6 +482,9 @@ class NativeEpubReaderView(
         spineIndex = spineIndex,
         href = chapter.stringValue("href") ?: "",
         path = chapter.stringValue("path") ?: "",
+        title = chapter.stringValue("title")
+          ?: chapter.stringValue("label")
+          ?: "",
         blocks = blocks,
         resources = chapter.listValue("resources"),
         signature = signatureForBlocks(blocks)
@@ -389,7 +492,7 @@ class NativeEpubReaderView(
     }.sortedBy { it.spineIndex }
 
     val nextSignature = nextWindow.joinToString("|") { chapter ->
-      "${chapter.role}:${chapter.spineIndex}:${chapter.href}:${chapter.path}:${chapter.signature}"
+      "${chapter.role}:${chapter.spineIndex}:${chapter.href}:${chapter.path}:${chapter.title}:${chapter.signature}"
     }
 
     if (chapterWindowSignature == nextSignature) {
@@ -418,7 +521,14 @@ class NativeEpubReaderView(
   }
 
   fun setRestorePosition(position: Map<String, Any?>) {
+    val nextSignature = signatureForRestorePosition(position)
+    if (restorePositionSignature == nextSignature) {
+      restorePosition = position
+      return
+    }
+
     restorePosition = position
+    restorePositionSignature = nextSignature
 
     if (pages.isNotEmpty()) {
       post {
@@ -464,6 +574,21 @@ class NativeEpubReaderView(
     }
 
     readerTheme = nextTheme
+    themePalette = readerThemePaletteFromTokens(readerThemeTokens, readerTheme == "dark")
+    setReaderBackgroundColors()
+    updateHighlightColorsForTheme()
+    chapterTransitionDirection = "none"
+    repaginate(resetToFirstPage = false)
+  }
+
+  fun setThemeTokens(tokens: Map<String, Any?>) {
+    readerThemeTokens = tokens
+    val nextPalette = readerThemePaletteFromTokens(tokens, readerTheme == "dark")
+    if (themePalette == nextPalette) {
+      return
+    }
+
+    themePalette = nextPalette
     setReaderBackgroundColors()
     updateHighlightColorsForTheme()
     chapterTransitionDirection = "none"
@@ -486,6 +611,18 @@ class NativeEpubReaderView(
     repaginate(resetToFirstPage = pageAdapter == null)
   }
 
+  fun setReaderEdgeStateEnabled(enabled: Boolean) {
+    if (readerEdgeStateEnabled == enabled) {
+      return
+    }
+
+    readerEdgeStateEnabled = enabled
+    chapterTransitionDirection = "none"
+    if (pages.isNotEmpty()) {
+      repaginate(resetToFirstPage = false)
+    }
+  }
+
   fun setHighlightTerms(terms: List<Any?>) {
     val nextTerms = normalizeHighlightTerms(terms)
     if (highlightTerms == nextTerms) {
@@ -494,6 +631,7 @@ class NativeEpubReaderView(
 
     highlightTerms = nextTerms
     rebuildSavedHighlightRanges()
+    refreshEdgeStatesForCurrentPages()
   }
 
   fun setClearSelectionToken(token: Int) {
@@ -528,6 +666,7 @@ class NativeEpubReaderView(
     val previousLogicalPage = logicalPageForDisplayPosition(viewPager.currentItem)
     val transitionDirection = chapterTransitionDirection
     val backgroundColor = readerBackgroundColor()
+    val themePaletteSnapshot = themePalette
     val renderModeSnapshot = readerRenderMode
     chapterTransitionDirection = "none"
 
@@ -542,6 +681,7 @@ class NativeEpubReaderView(
           fontSizeSp = fontSizeSnapshot,
           lineHeightMult = lineHeightSnapshot,
           isDark = isDarkSnapshot,
+          readerTextColor = themePaletteSnapshot.bodyTextColor,
           context = appContext
         )
         if (renderModeSnapshot == "continuous") {
@@ -571,7 +711,8 @@ class NativeEpubReaderView(
           previousLogicalPage = previousLogicalPage,
           resetToFirstPage = resetToFirstPage,
           transitionDirection = transitionDirection,
-          backgroundColor = backgroundColor
+          backgroundColor = backgroundColor,
+          themePaletteSnapshot = themePaletteSnapshot
         )
       }
     }
@@ -583,9 +724,14 @@ class NativeEpubReaderView(
   ): PaginationResult {
     val nextPages = mutableListOf<ReaderPage>()
     val ranges = mutableListOf<ChapterPageRange>()
+    val totalSpineItems = bookManifest.intValue("totalSpineItems")
+      ?: (chapters.maxOfOrNull { chapter -> chapter.spineIndex }?.plus(1) ?: 0)
 
     chapters.forEach { chapter ->
-      val chapterPages = paginator.paginate(chapter.blocks)
+      val chapterPages = attachEdgeStateToChapterPages(
+        pages = paginator.paginate(chapter.blocks),
+        edgeState = edgeStateForChapter(chapter, totalSpineItems)
+      )
       val pageCount = chapterPages.size
       val startIndex = nextPages.size
 
@@ -626,9 +772,13 @@ class NativeEpubReaderView(
   ): PaginationResult {
     val nextPages = mutableListOf<ReaderPage>()
     val ranges = mutableListOf<ChapterPageRange>()
+    val totalSpineItems = bookManifest.intValue("totalSpineItems")
+      ?: (chapters.maxOfOrNull { chapter -> chapter.spineIndex }?.plus(1) ?: 0)
 
     chapters.forEach { chapter ->
-      val continuousPage = paginator.buildContinuousPage(chapter.blocks)
+      val continuousPage = paginator
+        .buildContinuousPage(chapter.blocks)
+        .copy(edgeState = edgeStateForChapter(chapter, totalSpineItems))
       val startIndex = nextPages.size
 
       nextPages.add(
@@ -660,6 +810,139 @@ class NativeEpubReaderView(
     )
   }
 
+  private fun attachEdgeStateToChapterPages(
+    pages: List<ReaderPage>,
+    edgeState: ReaderEdgeState?
+  ): List<ReaderPage> {
+    if (edgeState == null || pages.isEmpty()) {
+      return pages
+    }
+
+    val lastPage = pages.last()
+    val shouldUseSeparateEdgePage = (
+      lastPage.blocks.isNotEmpty() &&
+        renderedContentBottom(lastPage) > edgeContentTopLimit()
+      )
+
+    return if (shouldUseSeparateEdgePage) {
+      pages + ReaderPage(
+        pageIndex = pages.size,
+        blocks = emptyList(),
+        edgeState = edgeState
+      )
+    } else {
+      pages.dropLast(1) + lastPage.copy(edgeState = edgeState)
+    }
+  }
+
+  private fun edgeStateForChapter(
+    chapter: ChapterWindowItem,
+    totalSpineItems: Int
+  ): ReaderEdgeState? {
+    if (!readerEdgeStateEnabled) {
+      return null
+    }
+
+    if (totalSpineItems <= 0) {
+      return null
+    }
+
+    val chapterTitle = chapter.title.ifBlank { "Chapter ${chapter.spineIndex + 1}" }
+    val bookTitle = bookManifest.stringValue("title")
+      ?: bookManifest.stringValue("currentBookTitle")
+      ?: ""
+    val isLastChapter = chapter.spineIndex >= totalSpineItems - 1
+
+    return ReaderEdgeState(
+      kind = if (isLastChapter) ReaderEdgeKind.BOOK_FINISHED else ReaderEdgeKind.CHAPTER_COMPLETE,
+      chapterTitle = chapterTitle,
+      bookTitle = bookTitle.ifBlank { chapterTitle },
+      chapterCount = totalSpineItems,
+      savedWordCount = if (isLastChapter) {
+        highlightTerms.size
+      } else {
+        savedTermCountForRawBlocks(chapter.blocks, highlightTerms)
+      },
+      readMinutes = estimatedReadMinutesForRawBlocks(chapter.blocks)
+    )
+  }
+
+  private fun estimatedReadMinutesForRawBlocks(rawBlocks: List<Any?>): Int {
+    val readableTokenCount = rawBlocks.sumOf { raw ->
+      val block = raw.asMap() ?: return@sumOf 0
+      val text = block.stringValue("text") ?: return@sumOf 0
+      READABLE_TOKEN_REGEX.findAll(text).count()
+    }
+
+    if (readableTokenCount <= 0) {
+      return 0
+    }
+
+    return ceil(readableTokenCount / 220.0).toInt().coerceAtLeast(1)
+  }
+
+  private fun renderedContentBottom(page: ReaderPage): Int {
+    var yOffset = pagePaddingV
+
+    page.blocks.forEach { block ->
+      yOffset += block.marginTop
+      yOffset += if (block.type == "image") {
+        block.imageHeight
+      } else {
+        block.textLayout?.height ?: 0
+      }
+      yOffset += block.marginBottom
+    }
+
+    return yOffset
+  }
+
+  private fun edgeContentTopLimit(): Int {
+    return (layoutHeight - dp(300f)).coerceAtLeast(pagePaddingV + dp(160f))
+  }
+
+  private fun savedTermCountForRawBlocks(
+    rawBlocks: List<Any?>,
+    terms: List<String>
+  ): Int {
+    if (rawBlocks.isEmpty() || terms.isEmpty()) {
+      return 0
+    }
+
+    val seenTerms = mutableSetOf<String>()
+    rawBlocks.forEach blockLoop@{ raw ->
+      val block = raw.asMap() ?: return@blockLoop
+      val text = block.stringValue("text") ?: return@blockLoop
+      if (text.isEmpty()) {
+        return@blockLoop
+      }
+
+      terms.forEach { term ->
+        if (term.isBlank() || seenTerms.contains(term)) {
+          return@forEach
+        }
+
+        var searchStart = 0
+        while (searchStart <= text.length - term.length) {
+          val matchStart = text.indexOf(term, startIndex = searchStart)
+          if (matchStart < 0) {
+            break
+          }
+
+          val matchEnd = matchStart + term.length
+          if (hasTokenBoundary(text, term, matchStart, matchEnd)) {
+            seenTerms.add(term)
+            break
+          }
+
+          searchStart = matchStart + 1
+        }
+      }
+    }
+
+    return seenTerms.size
+  }
+
   private fun currentChapterWindowFromBlocks(): List<ChapterWindowItem> {
     if (chapterBlocks.isEmpty()) {
       return emptyList()
@@ -672,6 +955,9 @@ class NativeEpubReaderView(
         spineIndex = spineIndex,
         href = bookManifest.stringValue("currentSpineHref") ?: "",
         path = bookManifest.stringValue("currentSpinePath") ?: "",
+        title = bookManifest.stringValue("currentChapterTitle")
+          ?: bookManifest.stringValue("currentSpineTitle")
+          ?: "",
         blocks = chapterBlocks.toList(),
         resources = chapterResources.toList(),
         signature = chapterBlocksSignature.ifBlank { signatureForBlocks(chapterBlocks) }
@@ -688,7 +974,7 @@ class NativeEpubReaderView(
 
   private fun currentWindowItemSignature(chapters: List<ChapterWindowItem>): String {
     val current = currentWindowItem(chapters) ?: return ""
-    return "${current.spineIndex}:${current.href}:${current.path}:${current.signature}"
+    return "${current.spineIndex}:${current.href}:${current.path}:${current.title}:${current.signature}"
   }
 
   private fun firstDisplayIndexForCurrentChapter(candidatePages: List<ReaderPage>): Int? {
@@ -754,7 +1040,8 @@ class NativeEpubReaderView(
     previousLogicalPage: Int,
     resetToFirstPage: Boolean,
     transitionDirection: String,
-    backgroundColor: Int
+    backgroundColor: Int,
+    themePaletteSnapshot: ReaderThemePalette
   ) {
     val nextPages = paginationResult.pages
     val restorePage = pageIndexForRestorePosition(nextPages)
@@ -797,6 +1084,7 @@ class NativeEpubReaderView(
         pagePaddingV,
         readerLineHeightMultiplier,
         backgroundColor,
+        themePaletteSnapshot,
         activeSelectionRanges,
         activeSelectionKind,
         savedHighlightRangesByPage,
@@ -806,7 +1094,8 @@ class NativeEpubReaderView(
         ::handlePageWordSelected,
         ::handlePageTextSelected,
         ::handlePageSelectionCleared,
-        ::handlePageSelectionDragStateChanged
+        ::handlePageSelectionDragStateChanged,
+        ::handlePageEdgeAction
       )
       viewPager.adapter = pageAdapter
     } else {
@@ -822,6 +1111,7 @@ class NativeEpubReaderView(
         pages = nextPages
         adapter.updateActiveSelectionRanges(activeSelectionRanges, activeSelectionKind)
         adapter.updateSavedHighlightRanges(savedHighlightRangesByPage)
+        adapter.updateThemePalette(themePaletteSnapshot)
         adapter.updateHighlightColors(activeHighlightColor, textSelectionHighlightColor, savedHighlightColor)
         animateChapterTransition(
           adapter,
@@ -840,6 +1130,7 @@ class NativeEpubReaderView(
       pagePositionOffset = 0
       adapter.updateActiveSelectionRanges(activeSelectionRanges, activeSelectionKind)
       adapter.updateSavedHighlightRanges(savedHighlightRangesByPage)
+      adapter.updateThemePalette(themePaletteSnapshot)
       adapter.updateHighlightColors(activeHighlightColor, textSelectionHighlightColor, savedHighlightColor)
       adapter.updateRenderConfig(readerLineHeightMultiplier, backgroundColor)
       adapter.updatePages(pages)
@@ -952,6 +1243,7 @@ class NativeEpubReaderView(
       paddingV = pagePaddingV,
       lineHeightMult = readerLineHeightMultiplier,
       backgroundColor = backgroundColor,
+      themePalette = themePalette,
       activeSelectionRanges = activeSelectionRanges,
       activeSelectionKind = activeSelectionKind,
       savedHighlightRanges = savedHighlightRangesByPage[page.pageIndex].orEmpty(),
@@ -961,7 +1253,8 @@ class NativeEpubReaderView(
       onWordSelected = ::handlePageWordSelected,
       onTextSelected = ::handlePageTextSelected,
       onSelectionCleared = ::handlePageSelectionCleared,
-      onSelectionDragStateChanged = ::handlePageSelectionDragStateChanged
+      onSelectionDragStateChanged = ::handlePageSelectionDragStateChanged,
+      onEdgeAction = ::handlePageEdgeAction
     )
     if (resetScroll) {
       continuousScrollView.post {
@@ -981,6 +1274,10 @@ class NativeEpubReaderView(
         block.textLayout?.height ?: 0
       }
       contentHeight += block.marginBottom
+    }
+
+    if (page.edgeState != null) {
+      contentHeight = contentHeight.coerceAtLeast(layoutHeight + dp(220f))
     }
 
     return contentHeight
@@ -1043,6 +1340,14 @@ class NativeEpubReaderView(
     continuousScrollView.requestDisallowInterceptTouchEvent(isDraggingSelection)
   }
 
+  private fun handlePageEdgeAction(kind: ReaderEdgeKind) {
+    clearActiveSelection(dispatchEvent = true)
+    when (kind) {
+      ReaderEdgeKind.CHAPTER_COMPLETE,
+      ReaderEdgeKind.BOOK_FINISHED -> onChapterEnd(mapOf<String, Any>())
+    }
+  }
+
   private fun clearActiveSelection(dispatchEvent: Boolean, forceEvent: Boolean = false) {
     val hadSelection = activeSelectionRanges.isNotEmpty()
     activeSelectionRanges = emptyList()
@@ -1093,6 +1398,54 @@ class NativeEpubReaderView(
     savedHighlightRangesByPage = buildSavedHighlightRanges(pages, highlightTerms)
     pageAdapter?.updateSavedHighlightRanges(savedHighlightRangesByPage)
     invalidateVisiblePageHighlights()
+  }
+
+  private fun refreshEdgeStatesForCurrentPages() {
+    if (pages.isEmpty() || pages.none { page -> page.edgeState != null }) {
+      return
+    }
+
+    val windowSnapshot = chapterWindow.takeIf { it.isNotEmpty() }
+      ?: currentChapterWindowFromBlocks()
+    if (windowSnapshot.isEmpty()) {
+      return
+    }
+
+    val totalSpineItems = bookManifest.intValue("totalSpineItems")
+      ?: (windowSnapshot.maxOfOrNull { chapter -> chapter.spineIndex }?.plus(1) ?: 0)
+    val edgeStateBySpine = windowSnapshot
+      .mapNotNull { chapter ->
+        edgeStateForChapter(chapter, totalSpineItems)?.let { edgeState ->
+          chapter.spineIndex to edgeState
+        }
+      }
+      .toMap()
+
+    var changed = false
+    val nextPages = pages.map { page ->
+      if (page.edgeState == null) {
+        return@map page
+      }
+
+      val nextEdgeState = page.spineIndex?.let { spineIndex -> edgeStateBySpine[spineIndex] }
+        ?: return@map page
+      if (nextEdgeState == page.edgeState) {
+        page
+      } else {
+        changed = true
+        page.copy(edgeState = nextEdgeState)
+      }
+    }
+
+    if (!changed) {
+      return
+    }
+
+    pages = nextPages
+    pageAdapter?.updatePages(pages)
+    if (readerRenderMode == "continuous") {
+      bindContinuousPage(continuousPageIndex, readerBackgroundColor(), resetScroll = false)
+    }
   }
 
   private fun buildSavedHighlightRanges(
@@ -1276,12 +1629,14 @@ class NativeEpubReaderView(
   ): Boolean {
     val startsWithToken = term.firstOrNull()?.let { isReaderTokenChar(it) } == true
     val endsWithToken = term.lastOrNull()?.let { isReaderTokenChar(it) } == true
+    val startsWithCjk = term.firstOrNull()?.let { isCjkIdeograph(it) } == true
+    val endsWithCjk = term.lastOrNull()?.let { isCjkIdeograph(it) } == true
 
-    if (startsWithToken && start > 0 && isReaderTokenChar(text[start - 1])) {
+    if (startsWithToken && !startsWithCjk && start > 0 && isReaderTokenChar(text[start - 1])) {
       return false
     }
 
-    if (endsWithToken && end < text.length && isReaderTokenChar(text[end])) {
+    if (endsWithToken && !endsWithCjk && end < text.length && isReaderTokenChar(text[end])) {
       return false
     }
 
@@ -1330,10 +1685,11 @@ class NativeEpubReaderView(
   }
 
   private fun updateHighlightColorsForTheme() {
-    activeHighlightColor = Color.argb(0x55, 0xfc, 0xd5, 0xb4)
-    textSelectionHighlightColor = Color.argb(0x66, 0x7a, 0xb3, 0xff)
-    savedHighlightColor = Color.rgb(0xf7, 0xd4, 0x88)
+    activeHighlightColor = themePalette.activeHighlightColor
+    textSelectionHighlightColor = themePalette.textSelectionHighlightColor
+    savedHighlightColor = themePalette.savedHighlightColor
 
+    pageAdapter?.updateThemePalette(themePalette)
     pageAdapter?.updateHighlightColors(activeHighlightColor, textSelectionHighlightColor, savedHighlightColor)
     invalidateVisiblePageHighlights()
   }
@@ -1524,6 +1880,12 @@ class NativeEpubReaderView(
       ?.let { matchingChapterPages[it].first }
   }
 
+  private fun signatureForRestorePosition(position: Map<String, Any?>): String {
+    position["spineIndex"] ?: return ""
+    return listOf("spineIndex", "pageIndex", "pagesInChapter", "href", "firstBlockId")
+      .joinToString("|") { key -> "$key=${position[key] ?: ""}" }
+  }
+
   private fun dispatchPageChange(pageIndex: Int, total: Int) {
     val page = pages.getOrNull(pageIndex)
     val href = page?.href?.takeIf { it.isNotBlank() }
@@ -1591,7 +1953,7 @@ class NativeEpubReaderView(
   }
 
   private fun readerBackgroundColor(): Int {
-    return if (readerTheme == "dark") Color.rgb(31, 41, 55) else Color.rgb(249, 247, 242)
+    return themePalette.backgroundColor
   }
 
   private fun dp(value: Float): Int {
@@ -1613,5 +1975,9 @@ class NativeEpubReaderView(
       is Number -> value.toInt()
       else -> null
     }
+  }
+
+  private fun Map<*, *>.booleanValue(key: String): Boolean? {
+    return this[key] as? Boolean
   }
 }

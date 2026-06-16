@@ -3,7 +3,7 @@ import { useAppContext } from '../../contexts/AppContext';
 import { normalizeBookLanguage, normalizeInterfaceLanguageCode } from '../../constants/languages';
 import { api } from './client';
 
-const koreanDictionary = ({ query, language = 'ko' }) => {
+const koreanDictionary = ({ query, language = 'ko', script = 'zh-Hans' }) => {
     const { interfaceLanguage } = useAppContext();
     const normalizedInterfaceLanguage = normalizeInterfaceLanguageCode(interfaceLanguage);
     const targetLanguage = normalizeBookLanguage(language);
@@ -23,6 +23,22 @@ const koreanDictionary = ({ query, language = 'ko' }) => {
                             params: { stem, interface_language: normalizedInterfaceLanguage },
                             timeout: 10000,
                         });
+                        const result = response.data?.result;
+                        return result ? [result] : [];
+                    })
+                );
+                setDictionaryData(results);
+            } else if (targetLanguage === 'zh') {
+                const results = await Promise.all(
+                    query.map(async (stem) => {
+                        const response = await api.get('/zh_dict_search/', {
+                            params: { stem, interface_language: normalizedInterfaceLanguage, script },
+                            timeout: 10000,
+                        });
+                        const resultList = response.data?.results;
+                        if (Array.isArray(resultList)) {
+                            return resultList;
+                        }
                         const result = response.data?.result;
                         return result ? [result] : [];
                     })
@@ -50,7 +66,7 @@ const koreanDictionary = ({ query, language = 'ko' }) => {
         } else {
             setDictionaryData([]);
         }
-    }, [JSON.stringify(query), normalizedInterfaceLanguage, targetLanguage]);
+    }, [JSON.stringify(query), normalizedInterfaceLanguage, script, targetLanguage]);
 
     return { dictionaryData, isLoading, error };
 };
