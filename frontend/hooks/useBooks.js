@@ -261,7 +261,7 @@ const useBooks = ({
                 }
                 setCurrentBook(existingBook.uri);
                 setIsImporting(false);
-                navigation.navigate('Read');
+                navigation.navigate('Read', { returnTo: 'Home' });
                 return;
             }
 
@@ -298,7 +298,7 @@ const useBooks = ({
             setCurrentBook(uri);
             onBookImported?.(newBook);
             setIsImporting(false);
-            navigation.navigate('Read');
+            navigation.navigate('Read', { returnTo: 'Home' });
 
             if (user?.id && ownerId === user.id && isCurrentSyncGeneration(syncGeneration)) {
                 uploadUserBook({
@@ -355,7 +355,7 @@ const useBooks = ({
         try {
             setOpeningBookUri(uri);
             setCurrentBook(uri);
-            navigation.navigate('Read');
+            navigation.navigate('Read', { returnTo: 'Home' });
         } catch (error) {
             console.error("[useBooks] Error handling book press:", error);
         } finally {

@@ -1,7 +1,17 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { View, StyleSheet } from 'react-native';
+import { colors, radii, spacing, useTheme } from '../../theme';
 
 const ActivityChecker = () => {
+  const { colors } = useTheme();
+  const styles = useMemo(() => createStyles(colors), [colors]);
+  const activityColors = useMemo(() => [
+    colors.surfaceMuted,
+    colors.divider,
+    colors.textSubtle,
+    colors.textTertiary,
+    colors.accent,
+  ], [colors]);
   // Dummy data for activity level (0-4, where 0 is least active and 4 is most active)
   const activityData = [
     [0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2],
@@ -19,7 +29,7 @@ const ActivityChecker = () => {
               key={columnIndex}
               style={[
                 styles.square,
-                { backgroundColor: `rgba(64, 196, 99, ${0.2 + activityLevel * 0.2})` }
+                { backgroundColor: activityColors[activityLevel] ?? colors.surfaceMuted }
               ]}
             />
           ))}
@@ -29,13 +39,13 @@ const ActivityChecker = () => {
   );
 };
 
-const styles = StyleSheet.create({
+const createStyles = (colors) => StyleSheet.create({
   container: {
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
     flexWrap: 'wrap',
-    padding: 10,
+    padding: spacing.sm,
   },
   row: {
     flexDirection: 'row',
@@ -44,10 +54,12 @@ const styles = StyleSheet.create({
     width: 18,
     height: 18,
     margin: 2,
-    borderRadius: 1,
-    borderColor: 'black',
+    borderRadius: radii.xs,
+    borderColor: colors.border,
     borderWidth: 1
   },
 });
+
+const styles = createStyles(colors);
 
 export default ActivityChecker;

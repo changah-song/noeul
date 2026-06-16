@@ -9,6 +9,7 @@ class EpubPageAdapter(
   private val paddingV: Int,
   private var lineHeightMult: Float,
   private var backgroundColor: Int,
+  private var themePalette: ReaderThemePalette,
   private var activeSelectionRanges: List<TextRange>,
   private var activeSelectionKind: ActiveSelectionKind?,
   private var savedHighlightRangesByPage: Map<Int, List<TextRange>>,
@@ -18,7 +19,8 @@ class EpubPageAdapter(
   private val onWordSelected: (WordHit) -> Unit,
   private val onTextSelected: (TextSelectionHit) -> Unit,
   private val onSelectionCleared: () -> Unit,
-  private val onSelectionDragStateChanged: (Boolean) -> Unit
+  private val onSelectionDragStateChanged: (Boolean) -> Unit,
+  private val onEdgeAction: (ReaderEdgeKind) -> Unit
 ) : RecyclerView.Adapter<EpubPageAdapter.PageHolder>() {
 
   class PageHolder(val view: EpubPageView) : RecyclerView.ViewHolder(view)
@@ -48,6 +50,10 @@ class EpubPageAdapter(
     this.lineHeightMult = lineHeightMult
     this.backgroundColor = backgroundColor
     notifyDataSetChanged()
+  }
+
+  fun updateThemePalette(nextPalette: ReaderThemePalette) {
+    themePalette = nextPalette
   }
 
   fun updateActiveSelectionRanges(
@@ -116,6 +122,7 @@ class EpubPageAdapter(
       paddingV = paddingV,
       lineHeightMult = lineHeightMult,
       backgroundColor = backgroundColor,
+      themePalette = themePalette,
       activeSelectionRanges = activeSelectionRanges,
       activeSelectionKind = activeSelectionKind,
       savedHighlightRanges = savedHighlightRangesByPage[page.pageIndex].orEmpty(),
@@ -125,7 +132,8 @@ class EpubPageAdapter(
       onWordSelected = onWordSelected,
       onTextSelected = onTextSelected,
       onSelectionCleared = onSelectionCleared,
-      onSelectionDragStateChanged = onSelectionDragStateChanged
+      onSelectionDragStateChanged = onSelectionDragStateChanged,
+      onEdgeAction = onEdgeAction
     )
   }
 

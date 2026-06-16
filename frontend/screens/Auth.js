@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -13,7 +13,7 @@ import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import { useTranslation } from '../hooks/useTranslation';
 import { supabase } from '../services/supabase';
-import { colors, radii, spacing, textStyles } from '../theme';
+import { colors, radii, spacing, textStyles, useTheme } from '../theme';
 
 const FILE_TAG = '[Auth]';
 const GOOGLE_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;
@@ -45,6 +45,8 @@ const Auth = ({
   onAuthenticated,
 }) => {
   const { t } = useTranslation();
+  const { colors } = useTheme();
+  const styles = useMemo(() => createStyles(colors), [colors]);
   const [mode, setMode] = useState(initialMode === 'signup' ? 'signup' : 'signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -224,7 +226,7 @@ const Auth = ({
             autoComplete="email"
             keyboardType="email-address"
             placeholder={t('auth.emailPlaceholder')}
-            placeholderTextColor="#7b8794"
+            placeholderTextColor={colors.textSubtle}
             style={styles.input}
             value={email}
             onChangeText={setEmail}
@@ -232,7 +234,7 @@ const Auth = ({
           <TextInput
             autoCapitalize="none"
             placeholder={t('auth.passwordPlaceholder')}
-            placeholderTextColor="#7b8794"
+            placeholderTextColor={colors.textSubtle}
             secureTextEntry
             style={styles.input}
             value={password}
@@ -298,7 +300,7 @@ GoogleSignin.configure({
   webClientId: GOOGLE_WEB_CLIENT_ID || undefined,
 });
 
-const styles = StyleSheet.create({
+const createStyles = (colors) => StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.backgroundWarm,
@@ -308,7 +310,7 @@ const styles = StyleSheet.create({
   embeddedContainer: {
     flex: 0,
     justifyContent: 'flex-start',
-    backgroundColor: 'transparent',
+    backgroundColor: colors.transparent,
     paddingHorizontal: 0,
   },
   card: {
@@ -372,7 +374,7 @@ const styles = StyleSheet.create({
     paddingVertical: 13,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(200, 125, 0, 0.12)',
+    borderColor: colors.border,
   },
   primaryButtonText: {
     ...textStyles.label,
@@ -397,5 +399,7 @@ const styles = StyleSheet.create({
     height: 48,
   },
 });
+
+const styles = createStyles(colors);
 
 export default Auth;

@@ -29,6 +29,7 @@ class EpubPaginator(
   private val fontSizeSp: Float,
   private val lineHeightMult: Float,
   private val isDark: Boolean,
+  private val readerTextColor: Int,
   private val context: Context
 ) {
   private val contentWidth = (pageWidth - (paddingH * 2)).coerceAtLeast(1)
@@ -53,7 +54,7 @@ class EpubPaginator(
       val blockTotal = pageBlock.marginTop + blockContentHeight(pageBlock) + pageBlock.marginBottom
 
       when {
-        blockTotal > contentHeight && pageBlock.type == "text" -> {
+        shouldSplitTextBlock(pageBlock, blockTotal, usedHeight) -> {
           usedHeight = splitTextBlock(pageBlock, usedHeight, currentPageBlocks, pages)
         }
         blockTotal > contentHeight -> {
@@ -86,6 +87,32 @@ class EpubPaginator(
     }
 
     return pages.ifEmpty { listOf(ReaderPage(0, emptyList())) }
+  }
+
+  private fun shouldSplitTextBlock(
+    block: PageBlock,
+    blockTotal: Int,
+    usedHeight: Int
+  ): Boolean {
+    if (block.type != "text") {
+      return false
+    }
+
+    if (blockTotal > contentHeight) {
+      return true
+    }
+
+    if (usedHeight <= 0 || usedHeight + blockTotal <= contentHeight) {
+      return false
+    }
+
+    return canSplitBodyText(block)
+  }
+
+  private fun canSplitBodyText(block: PageBlock): Boolean {
+    val tag = block.tag.lowercase()
+
+    return !tag.startsWith("h") && tag != "figcaption"
   }
 
   fun buildContinuousPage(rawBlocks: List<Any?>): ReaderPage {
@@ -703,7 +730,7 @@ class EpubPaginator(
   }
 
   private fun textColorForToken(value: Any?): Int {
-    return if (isDark) Color.rgb(243, 244, 246) else colorFromToken(value) ?: Color.rgb(34, 29, 24)
+    return if (isDark) readerTextColor else colorFromToken(value) ?: readerTextColor
   }
 
   private fun spacingFromToken(

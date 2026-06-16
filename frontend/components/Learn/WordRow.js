@@ -1,26 +1,33 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
-import { colors, radii, spacing, textStyles } from '../../theme';
+import { colors, radii, spacing, textStyles, useTheme } from '../../theme';
 
-const STATUS_META = {
+const createStatusMeta = (colors) => ({
   unorganized: { labelKey: 'learn.proficiency.new', backgroundColor: colors.surfaceMuted, color: colors.textMuted },
-  bad: { labelKey: 'learn.hard', backgroundColor: 'rgba(182, 79, 68, 0.12)', color: colors.danger },
-  mid: { labelKey: 'learn.review', backgroundColor: 'rgba(181, 118, 24, 0.14)', color: colors.warning },
-  good: { labelKey: 'learn.mastered', backgroundColor: 'rgba(47, 125, 76, 0.12)', color: colors.success },
-};
+  bad: { labelKey: 'learn.hard', backgroundColor: colors.surfaceMuted, color: colors.textTertiary },
+  mid: { labelKey: 'learn.review', backgroundColor: colors.surfaceMuted, color: colors.textMuted },
+  good: { labelKey: 'learn.mastered', backgroundColor: colors.surfaceMuted, color: colors.accent },
+});
 
-const PRIORITY_META = {
+const createPriorityMeta = (colors) => ({
   low: { labelKey: 'learn.lowPriority', backgroundColor: colors.surfaceMuted, color: colors.textMuted },
-  normal: { labelKey: 'learn.normalPriority', backgroundColor: 'rgba(181, 118, 24, 0.12)', color: colors.warning },
-  high: { labelKey: 'learn.highPriority', backgroundColor: 'rgba(182, 79, 68, 0.12)', color: colors.danger },
-};
+  normal: { labelKey: 'learn.normalPriority', backgroundColor: colors.surfaceMuted, color: colors.textMuted },
+  high: { labelKey: 'learn.highPriority', backgroundColor: colors.surfaceMuted, color: colors.accent },
+});
+
+const STATUS_META = createStatusMeta(colors);
+const PRIORITY_META = createPriorityMeta(colors);
 
 const WordRow = ({ vocab, onToggleFavorite, onCycleStatus, onCyclePriority, onRemove }) => {
   const { t } = useTranslation();
-  const status = STATUS_META[vocab.level] ?? STATUS_META.unorganized;
-  const priority = PRIORITY_META[vocab.priority] ?? PRIORITY_META.normal;
+  const { colors } = useTheme();
+  const styles = useMemo(() => createStyles(colors), [colors]);
+  const statusMeta = useMemo(() => createStatusMeta(colors), [colors]);
+  const priorityMeta = useMemo(() => createPriorityMeta(colors), [colors]);
+  const status = statusMeta[vocab.level] ?? statusMeta.unorganized;
+  const priority = priorityMeta[vocab.priority] ?? priorityMeta.normal;
 
   return (
     <View style={styles.row}>
@@ -65,7 +72,7 @@ const WordRow = ({ vocab, onToggleFavorite, onCycleStatus, onCyclePriority, onRe
   );
 };
 
-const styles = StyleSheet.create({
+const createStyles = (colors) => StyleSheet.create({
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -122,5 +129,7 @@ const styles = StyleSheet.create({
     ...textStyles.caption,
   },
 });
+
+const styles = createStyles(colors);
 
 export default WordRow;

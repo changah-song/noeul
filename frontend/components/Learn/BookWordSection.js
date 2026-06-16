@@ -1,9 +1,9 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { Card } from '../ui';
 import { useTranslation } from '../../hooks/useTranslation';
-import { colors, radii, spacing, textStyles } from '../../theme';
+import { colors, radii, spacing, textStyles, useTheme } from '../../theme';
 import WordRow from './WordRow';
 
 const BookWordSection = ({
@@ -17,6 +17,8 @@ const BookWordSection = ({
   onRemoveWord,
 }) => {
   const { t } = useTranslation();
+  const { colors } = useTheme();
+  const styles = useMemo(() => createStyles(colors), [colors]);
   const masteredCount = section.words.filter((word) => word.level === 'good').length;
   const favoriteCount = section.words.filter((word) => word.is_favorite).length;
   const progress = typeof section.progress === 'number'
@@ -79,7 +81,7 @@ const BookWordSection = ({
   );
 };
 
-const styles = StyleSheet.create({
+const createStyles = (colors) => StyleSheet.create({
   card: {
     borderRadius: radii.xl,
   },
@@ -146,5 +148,7 @@ const styles = StyleSheet.create({
     gap: 0,
   },
 });
+
+const styles = createStyles(colors);
 
 export default BookWordSection;

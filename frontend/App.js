@@ -1,19 +1,23 @@
-import { NavigationContainer } from '@react-navigation/native';
+import { DefaultTheme, NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { TranslatorProvider } from 'react-native-translator';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Alert } from 'react-native';
 import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen';
+import { StatusBar } from 'expo-status-bar';
+import * as SystemUI from 'expo-system-ui';
 import {
-    DMSans_400Regular,
-    DMSans_500Medium,
-    DMSans_600SemiBold,
-    DMSans_700Bold,
-} from '@expo-google-fonts/dm-sans';
+    Inter_400Regular,
+    Inter_500Medium,
+    Inter_600SemiBold,
+    Inter_700Bold,
+} from '@expo-google-fonts/inter';
 import {
     Fraunces_400Regular,
     Fraunces_500Medium,
+    Fraunces_400Regular_Italic,
+    Fraunces_500Medium_Italic,
     Fraunces_600SemiBold,
     Fraunces_700Bold,
 } from '@expo-google-fonts/fraunces';
@@ -46,8 +50,10 @@ import { hasLocalUserData } from './services/localUserData';
 import { loadRuntimeInterfaceLanguage } from './services/interfaceLanguage';
 import { initializeOverlayLookupBridge } from './services/overlayLookup';
 import { syncUserDataFromCloud } from './services/userDataSync';
+import { colors, useTheme } from './theme';
 
 const Tab = createBottomTabNavigator();
+const APP_BACKGROUND = colors.bgPage;
 const isStaleSyncGenerationError = (error) => (
     String(error?.message || error || '').includes('stale sync generation')
 );
@@ -80,12 +86,14 @@ function AppContent() {
     });
     const [isReaderFocusMode, setIsReaderFocusMode] = useState(false);
     const [fontsLoaded] = useFonts({
-        'FFSans-Regular': DMSans_400Regular,
-        'FFSans-Medium': DMSans_500Medium,
-        'FFSans-SemiBold': DMSans_600SemiBold,
-        'FFSans-Bold': DMSans_700Bold,
+        'FFSans-Regular': Inter_400Regular,
+        'FFSans-Medium': Inter_500Medium,
+        'FFSans-SemiBold': Inter_600SemiBold,
+        'FFSans-Bold': Inter_700Bold,
         'FFDisplay-Regular': Fraunces_400Regular,
         'FFDisplay-Medium': Fraunces_500Medium,
+        'FFDisplay-Italic': Fraunces_400Regular_Italic,
+        'FFDisplay-MediumItalic': Fraunces_500Medium_Italic,
         'FFDisplay-SemiBold': Fraunces_600SemiBold,
         'FFDisplay-Bold': Fraunces_700Bold,
         'FFSerif-Regular': NotoSerifKR_400Regular,
@@ -96,6 +104,10 @@ function AppContent() {
 
     const appOwnerStateReady = !appSetupLoading && appSetupOwnerId === activeOwnerId;
     const appReady = !loading && ownerMigrationReady && appOwnerStateReady && fontsLoaded;
+
+    useEffect(() => {
+        SystemUI.setBackgroundColorAsync(APP_BACKGROUND).catch(() => {});
+    }, []);
 
     useEffect(() => {
         if (appReady) {
@@ -363,9 +375,83 @@ function AppContent() {
 
     return (
         <AppProvider user={user}>
-            <TranslatorProvider>
-                <NavigationContainer>
-                    <Tab.Navigator screenOptions={(props) => tabScreenOptions(props, { hideTabChrome: isReaderFocusMode })}>
+            <ThemedAppShell
+                books={books}
+                setBooks={setBooks}
+                currentBook={currentBook}
+                setCurrentBook={setCurrentBook}
+                setPreprocessOnOpen={setPreprocessOnOpen}
+                preprocessOnOpen={preprocessOnOpen}
+                user={user}
+                signOut={signOut}
+                updateUsername={updateUsername}
+                updateProfile={updateProfile}
+                updateBookPreprocessed={updateBookPreprocessed}
+                isReaderFocusMode={isReaderFocusMode}
+                setIsReaderFocusMode={setIsReaderFocusMode}
+                pendingOwnershipDecision={pendingOwnershipDecision}
+                localDataDecisionBusy={localDataDecisionBusy}
+                onOwnershipDecision={handleOwnershipDecision}
+            />
+        </AppProvider>
+    );
+}
+
+function ThemedAppShell({
+    books,
+    setBooks,
+    currentBook,
+    setCurrentBook,
+    setPreprocessOnOpen,
+    preprocessOnOpen,
+    user,
+    signOut,
+    updateUsername,
+    updateProfile,
+    updateBookPreprocessed,
+    isReaderFocusMode,
+    setIsReaderFocusMode,
+    pendingOwnershipDecision,
+    localDataDecisionBusy,
+    onOwnershipDecision,
+}) {
+    const { colors: themeColors, isDarkMode } = useTheme();
+    const appBackground = themeColors.bgPage;
+    const navigationTheme = useMemo(() => ({
+        ...DefaultTheme,
+        colors: {
+            ...DefaultTheme.colors,
+            primary: themeColors.inkSlate,
+            background: appBackground,
+            card: appBackground,
+            text: themeColors.text,
+            border: themeColors.border,
+            notification: themeColors.inkSlate,
+        },
+    }), [appBackground, themeColors]);
+    const sceneContainerStyle = useMemo(() => ({
+        backgroundColor: appBackground,
+    }), [appBackground]);
+
+    useEffect(() => {
+        SystemUI.setBackgroundColorAsync(appBackground).catch(() => {});
+    }, [appBackground]);
+
+    return (
+        <TranslatorProvider>
+            <StatusBar
+                style={isDarkMode ? 'light' : 'dark'}
+                backgroundColor={appBackground}
+                translucent={false}
+            />
+            <NavigationContainer theme={navigationTheme}>
+                <Tab.Navigator
+                    sceneContainerStyle={sceneContainerStyle}
+                    screenOptions={(props) => tabScreenOptions(props, {
+                        hideTabChrome: isReaderFocusMode,
+                        themeColors,
+                    })}
+                >
                     <Tab.Screen name="Home">
                         {props => (
                             <Home
@@ -425,15 +511,14 @@ function AppContent() {
                             />
                         )}
                     </Tab.Screen>
-                    </Tab.Navigator>
-                </NavigationContainer>
-                <LocalDataDecisionModal
-                    decision={pendingOwnershipDecision}
-                    user={user}
-                    busy={localDataDecisionBusy}
-                    onResolve={handleOwnershipDecision}
-                />
-            </TranslatorProvider>
-        </AppProvider>
+                </Tab.Navigator>
+            </NavigationContainer>
+            <LocalDataDecisionModal
+                decision={pendingOwnershipDecision}
+                user={user}
+                busy={localDataDecisionBusy}
+                onResolve={onOwnershipDecision}
+            />
+        </TranslatorProvider>
     );
 }

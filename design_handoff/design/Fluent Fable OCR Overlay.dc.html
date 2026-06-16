@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500&amp;family=Noto+Serif+KR:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&amp;display=swap" rel="stylesheet">
+  <style>
+    html, body { margin: 0; padding: 0; background: #dcd9d9; }
+    * { box-sizing: border-box; -webkit-font-smoothing: antialiased; }
+    @keyframes ffShimmer { 0% { background-position: 200px 0; } 100% { background-position: -200px 0; } }
+    @keyframes ffPulse { 0%,100% { transform: translateX(-50%) scale(1); } 50% { transform: translateX(-50%) scale(1.04); } }
+    .ff-swipe { scrollbar-width: none; -ms-overflow-style: none; }
+    .ff-swipe::-webkit-scrollbar { display: none; }
+    /* OCR detection word styles — every detected word gets a box; gaps are the spaces between */
+    .ff-w { background: rgba(61,79,114,0.13); box-shadow: inset 0 0 0 1.5px #3d4f72; border-radius: 2px; padding: 1px 3px; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+    .ff-wp { background: #3d4f72; box-shadow: inset 0 0 0 1.5px #3d4f72; border-radius: 2px; padding: 1px 3px; color: #ffffff; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+    .ff-wr { background: rgba(61,79,114,0.24); box-shadow: inset 0 0 0 1.5px #3d4f72; border-radius: 4px; padding: 2px 4px; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+  </style>
+</helmet>
+
+<svg width="0" height="0" style="position: absolute;" aria-hidden="true">
+  <defs>
+    <g id="ff-glyph" fill="none" stroke="#FAF8F5" stroke-width="64" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M 252 296 C 348 258 462 272 532 330"></path>
+      <path d="M 532 330 C 602 272 716 258 812 296"></path>
+      <path d="M 252 296 L 252 700"></path>
+      <path d="M 812 296 L 812 700"></path>
+      <path d="M 532 330 L 532 734"></path>
+      <path d="M 252 700 C 348 662 462 676 532 734"></path>
+      <path d="M 532 734 C 602 676 716 662 812 700"></path>
+      <path d="M 252 452 L 396 452"></path>
+      <path d="M 532 462 L 676 462"></path>
+    </g>
+  </defs>
+</svg>
+
+<div style="min-height: 100vh; background: #dcd9d9; padding: 72px 48px 120px; display: flex; flex-direction: column; align-items: center; gap: 64px; font-family: 'Inter', system-ui, sans-serif; color: #1b1c1c;">
+
+  <!-- ============ TITLE ============ -->
+  <div style="display: flex; flex-direction: column; align-items: center; text-align: center; gap: 16px; max-width: 680px;">
+    <span style="width: 220px; height: 1px; background: #b0b2b6;"></span>
+    <span style="font-size: 11px; font-weight: 700; letter-spacing: 2.6px; color: #75777b;">FLUENT FABLE · SCREEN OCR OVERLAY</span>
+    <h1 style="margin: 4px 0 0; font: 500 50px/1.1 'Fraunces', Georgia, serif; color: #1b1c1c; letter-spacing: -0.01em;">Read Anything on Screen</h1>
+    <p style="margin: 0; font-size: 15px; line-height: 1.7; color: #5c5e63; text-wrap: pretty;">A floating overlay that reads Korean text rendered by <em>any</em> app behind it — a webpage, a PDF, a message — and boxes <span style="font-weight: 600; color: #3d4f72;">every word</span> it detects. Tap a word for a definition; drag across a region for a translation, and the gaps between those words fall away into one selection.</p>
+    <span style="font-size: 12px; font-weight: 500; letter-spacing: 0.5px; color: #75777b;">Noto Serif KR for the text · Inter for the chrome · Fraunces for romanizations</span>
+    <span style="width: 220px; height: 1px; background: #b0b2b6;"></span>
+  </div>
+
+  <!-- ============ SECTION 01 — DETECTION LAYER ============ -->
+  <div style="display: flex; flex-direction: column; align-items: center; gap: 6px;">
+    <span style="font-size: 11px; font-weight: 700; letter-spacing: 2.6px; color: #75777b;">SECTION 01</span>
+    <span style="font: 500 26px 'Fraunces', Georgia, serif; color: #1b1c1c;">Detection Layer</span>
+    <span style="font-size: 12px; color: #75777b;">Every word boxed · light navy #3d4f72 · 1.5px outline · pressed fills solid</span>
+  </div>
+
+  <div style="display: flex; gap: 30px; flex-wrap: wrap; justify-content: center; align-items: flex-start;">
+
+    <div style="display: flex; flex-direction: column; gap: 14px; align-items: center;">
+      <span style="font-size: 11px; font-weight: 700; letter-spacing: 2px; color: #5c5e63;">1 · DETECTED</span>
+      <div style="width: 290px; height: 150px; background: #ffffff; border: 1px solid #e4e2e2; border-radius: 10px; padding: 22px; font: 400 17px/2.2 'Noto Serif KR', serif; color: #2a2c2e;">
+        <p style="margin: 0; text-wrap: pretty;"><span class="ff-w">강가에는</span> <span class="ff-w">깊은</span> <span class="ff-w">정적만이</span> <span class="ff-w">남아</span> <span class="ff-w">있었다.</span></p>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 14px; align-items: center;">
+      <span style="font-size: 11px; font-weight: 700; letter-spacing: 2px; color: #5c5e63;">2 · PRESSED</span>
+      <div style="width: 290px; height: 150px; background: #ffffff; border: 1px solid #e4e2e2; border-radius: 10px; padding: 22px; font: 400 17px/2.2 'Noto Serif KR', serif; color: #2a2c2e;">
+        <p style="margin: 0; text-wrap: pretty;"><span class="ff-w">강가에는</span> <span class="ff-w">깊은</span> <span class="ff-wp">정적</span><span class="ff-w">만이</span> <span class="ff-w">남아</span> <span class="ff-w">있었다.</span></p>
+        <div style="margin-top: 6px; font: 500 10px 'SF Mono', Menlo, monospace; letter-spacing: 0.5px; color: #9a9c9f;">→ opens definition</div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 14px; align-items: center;">
+      <span style="font-size: 11px; font-weight: 700; letter-spacing: 2px; color: #5c5e63;">3 · REGION SELECTED</span>
+      <div style="width: 290px; height: 150px; background: #ffffff; border: 1px solid #e4e2e2; border-radius: 10px; padding: 22px; font: 400 17px/2.2 'Noto Serif KR', serif; color: #2a2c2e;">
+        <p style="margin: 0; text-wrap: pretty;"><span class="ff-wr">강가에는 깊은 정적만이 남아 있었다</span>.</p>
+        <div style="margin-top: 6px; font: 500 10px 'SF Mono', Menlo, monospace; letter-spacing: 0.5px; color: #9a9c9f;">→ gaps merge · opens translation</div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 14px; align-items: center;">
+      <span style="font-size: 11px; font-weight: 700; letter-spacing: 2px; color: #5c5e63;">4 · NO TEXT FOUND</span>
+      <div style="width: 290px; height: 150px; background: #ffffff; border: 1px solid #e4e2e2; border-radius: 10px; display: flex; align-items: center; justify-content: center;">
+        <span style="font: 400 13px 'Inter', sans-serif; color: #75777b;">텍스트를 찾을 수 없습니다</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============ SECTION 02 — FLOATING CIRCLE & CLOSE TARGET ============ -->
+  <div style="display: flex; flex-direction: column; align-items: center; gap: 6px;">
+    <span style="font-size: 11px; font-weight: 700; letter-spacing: 2.6px; color: #75777b;">SECTION 02</span>
+    <span style="font: 500 26px 'Fraunces', Georgia, serif; color: #1b1c1c;">Floating Circle &amp; Close Target</span>
+    <span style="font-size: 12px; color: #75777b;">The only dark chrome · 56px circle #202631 · drag anywhere, drop on the pill to dismiss</span>
+  </div>
+
+  <div style="display: flex; gap: 44px; flex-wrap: wrap; justify-content: center; align-items: flex-start;">
+
+    <!-- circle states -->
+    <div style="display: flex; flex-direction: column; gap: 16px; align-items: center;">
+      <span style="font-size: 11px; font-weight: 700; letter-spacing: 2px; color: #5c5e63;">FLOATING CIRCLE — THREE STATES</span>
+      <div style="display: flex; gap: 26px; align-items: flex-end;">
+
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
+          <div style="width: 56px; height: 56px; border-radius: 999px; background: rgba(32,38,49,0.9); border: 1px solid #353c47; box-shadow: 0 4px 16px rgba(0,0,0,0.32); display: flex; align-items: center; justify-content: center;">
+            <svg width="30" height="30" viewBox="0 0 1024 1024"><use href="#ff-glyph"></use></svg>
+          </div>
+          <span style="font-size: 10px; font-weight: 600; letter-spacing: 1.4px; color: #9a9c9f;">DEFAULT</span>
+        </div>
+
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
+          <div style="width: 56px; height: 56px; border-radius: 999px; background: rgba(32,38,49,0.85); border: 1px solid #353c47; box-shadow: 0 10px 28px rgba(0,0,0,0.42); transform: scale(1.08); display: flex; align-items: center; justify-content: center;">
+            <svg width="30" height="30" viewBox="0 0 1024 1024"><use href="#ff-glyph"></use></svg>
+          </div>
+          <span style="font-size: 10px; font-weight: 600; letter-spacing: 1.4px; color: #9a9c9f;">DRAGGING · 1.08×</span>
+        </div>
+
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
+          <div style="width: 56px; height: 56px; border-radius: 999px; background: #2d1a1a; border: 1px solid #C0392B; box-shadow: 0 6px 18px rgba(0,0,0,0.36); display: flex; align-items: center; justify-content: center;">
+            <svg width="30" height="30" viewBox="0 0 1024 1024"><use href="#ff-glyph"></use></svg>
+          </div>
+          <span style="font-size: 10px; font-weight: 600; letter-spacing: 1.4px; color: #9a9c9f;">OVER CLOSE</span>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- close target states -->
+    <div style="display: flex; flex-direction: column; gap: 16px; align-items: center;">
+      <span style="font-size: 11px; font-weight: 700; letter-spacing: 2px; color: #5c5e63;">CLOSE TARGET — TWO STATES</span>
+      <div style="display: flex; gap: 26px; align-items: center; min-height: 64px;">
+
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
+          <div style="width: 160px; height: 48px; border-radius: 999px; background: rgba(27,28,28,0.82); border: 1px solid #353c47; display: flex; align-items: center; justify-content: center; gap: 8px;">
+            <span style="font: 600 11px 'Inter', sans-serif; letter-spacing: 1.6px; color: #9a9c9f;">✕ CLOSE</span>
+          </div>
+          <span style="font-size: 10px; font-weight: 600; letter-spacing: 1.4px; color: #9a9c9f;">DEFAULT</span>
+        </div>
+
+        <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
+          <div style="width: 200px; height: 56px; border-radius: 999px; background: rgba(192,57,43,0.92); border: 1px solid #e05a4a; display: flex; align-items: center; justify-content: center; gap: 9px;">
+            <span style="font: 600 11px 'Inter', sans-serif; letter-spacing: 1.6px; color: #ffffff;">✕ CLOSE</span>
+          </div>
+          <span style="font-size: 10px; font-weight: 600; letter-spacing: 1.4px; color: #9a9c9f;">ACTIVATED · PULSES</span>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ============ SECTION 03 — THE NINE STATES ============ -->
+  <div style="display: flex; flex-direction: column; align-items: center; gap: 6px;">
+    <span style="font-size: 11px; font-weight: 700; letter-spacing: 2.6px; color: #75777b;">SECTION 03</span>
+    <span style="font: 500 26px 'Fraunces', Georgia, serif; color: #1b1c1c;">The Nine States</span>
+    <span style="font-size: 12px; color: #75777b;">Overlay riding on top of a Korean web article · 390 × 844</span>
+  </div>
+
+  <div style="display: flex; gap: 40px; flex-wrap: wrap; justify-content: center; align-items: flex-start; max-width: 1380px;">
+
+    <!-- ======== FRAME 1 — OVERLAY ACTIVE ======== -->
+    <div style="display: flex; flex-direction: column; gap: 16px; align-items: center;">
+      <span style="font-size: 11px; font-weight: 700; letter-spacing: 1.6px; color: #5c5e63;">FRAME 1 · OVERLAY ACTIVE</span>
+      <div data-screen-label="OCR 1 - Overlay active" style="position: relative; width: 390px; height: 844px; background: #ffffff; border: 1px solid #b0b2b6; border-radius: 40px; overflow: hidden; box-shadow: 0 24px 48px rgba(27,28,28,0.10);">
+        <!-- KOREAN ARTICLE (background app) -->
+        <div style="position: absolute; inset: 0; background: #ffffff;">
+          <div style="height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 14px 26px 0;">
+            <span style="font-size: 13px; font-weight: 600; color: #1b1c1c;">9:41</span>
+            <span style="width: 18px; height: 9px; border: 1px solid #5c5e63; border-radius: 3px; position: relative;"><span style="position: absolute; inset: 1.5px 4px 1.5px 1.5px; background: #5c5e63; border-radius: 1px;"></span></span>
+          </div>
+          <div style="padding: 8px 22px 0; display: flex; align-items: center; justify-content: space-between;">
+            <span style="font: 700 12px 'Inter', sans-serif; letter-spacing: 2.4px; color: #9a9c9f; white-space: nowrap;">오늘의 문학</span>
+            <span style="font-family: 'Material Symbols Outlined'; font-variation-settings: 'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 20; font-size: 19px; color: #9a9c9f;">more_horiz</span>
+          </div>
+          <div style="margin: 12px 22px 0; height: 1px; background: #eceaea;"></div>
+          <div style="padding: 18px 22px 0;">
+            <h1 style="margin: 0; font: 600 27px/1.35 'Noto Serif KR', serif; color: #1b1c1c;">달과 강</h1>
+            <div style="margin-top: 8px; font: italic 400 13px 'Fraunces', Georgia, serif; color: #75777b;">서윤 산문 · 2026년 봄</div>
+            <div style="margin: 16px 0; height: 116px; border-radius: 6px; background: repeating-linear-gradient(135deg, #eef0f3 0 11px, #f6f7f9 11px 22px); border: 1px solid #e7e9ec; display: flex; align-items: center; justify-content: center;">
+              <span style="font: 500 10px 'SF Mono', Menlo, monospace; letter-spacing: 1px; color: #aab0b8;">이미지 · IMAGE</span>
+            </div>
+            <p style="margin: 0; font: 400 17px/2.2 'Noto Serif KR', serif; color: #2a2c2e; text-wrap: pretty;"><span class="ff-w">강가에는</span> <span class="ff-w">깊은</span> <span class="ff-w">정적만이</span> <span class="ff-w">남아</span> <span class="ff-w">있었다.</span> <span class="ff-w">달빛이</span> <span class="ff-w">검은</span> <span class="ff-w">물</span> <span class="ff-w">위에</span> <span class="ff-w">길게</span> <span class="ff-w">드리워졌고,</span> <span class="ff-w">바람은</span> <span class="ff-w">갈대</span> <span class="ff-w">사이를</span> <span class="ff-w">천천히</span> <span class="ff-w">지나갔다.</span></p>
+            <p style="margin: 16px 0 0; font: 400 17px/2.2 'Noto Serif KR', serif; color: #2a2c2e; text-wrap: pretty;"><span class="ff-w">서윤은</span> <span class="ff-w">강둑에</span> <span class="ff-w">앉아</span> <span class="ff-w">멀리서</span> <span class="ff-w">들려올</span> <span class="ff-w">메아리를</span> <span class="ff-w">기다렸다.</span></p>
+          </div>
+        </div>
+        <!-- FLOATING CIRCLE (rest) -->
+        <div style="position: absolute; right: 24px; bottom: 48px; width: 56px; height: 56px; border-radius: 999px; background: rgba(32,38,49,0.9); border: 1px solid #353c47; box-shadow: 0 4px 16px rgba(0,0,0,0.32); display: flex; align-items: center; justify-content: center;">
+          <svg width="30" height="30" viewBox="0 0 1024 1024"><use href="#ff-glyph"></use></svg>
+        </div>
+        <!-- HOME INDICATOR -->
+        <div style="position: absolute; left: 50%; transform: translateX(-50%); bottom: 9px; width: 134px; height: 5px; border-radius: 3px; background: rgba(27,28,28,0.32);"></div>
+      </div>
+    </div>
+
+    <!-- ======== FRAME 2 — DEFINITION OPEN ======== -->
+    <div style="display: flex; flex-direction: column; gap: 16px; align-items: center;">
+      <span style="font-size: 11px; font-weight: 700; letter-spacing: 1.6px; color: #5c5e63;">FRAME 2 · DEFINITION OPEN</span>
+      <div data-screen-label="OCR 2 - Definition panel" style="position: relative; width: 390px; height: 844px; background: #ffffff; border: 1px solid #b0b2b6; border-radius: 40px; overflow: hidden; box-shadow: 0 24px 48px rgba(27,28,28,0.10);">
+        <div style="position: absolute; inset: 0; background: #ffffff;">
+          <div style="height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 14px 26px 0;">
+            <span style="font-size: 13px; font-weight: 600; color: #1b1c1c;">9:41</span>
+            <span style="width: 18px; height: 9px; border: 1px solid #5c5e63; border-radius: 3px; position: relative;"><span style="position: absolute; inset: 1.5px 4px 1.5px 1.5px; background: #5c5e63; border-radius: 1px;"></span></span>
+          </div>
+          <div style="padding: 8px 22px 0; display: flex; align-items: center; justify-content: space-between;">
+            <span style="font: 700 12px 'Inter', sans-serif; letter-spacing: 2.4px; color: #9a9c9f; white-space: nowrap;">오늘의 문학</span>
+            <span style="font-family: 'Material Symbols Outlined'; font-variation-settings: 'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 20; font-size: 19px; color: #9a9c9f;">more_horiz</span>
+          </div>
+          <div style="margin: 12px 22px 0; height: 1px; background: #eceaea;"></div>
+          <div style="padding: 18px 22px 0;">
+            <h1 style="margin: 0; font: 600 27px/1.35 'Noto Serif KR', serif; color: #1b1c1c;">달과 강</h1>
+            <div style="margin-top: 8px; font: italic 400 13px 'Fraunces', Georgia, serif; color: #75777b;">서윤 산문 · 2026년 봄</div>
+            <p style="margin: 18px 0 0; font: 400 17px/2.2 'Noto Serif KR', serif; color: #2a2c2e; text-wrap: pretty;"><span class="ff-w">강가에는</span> <span class="ff-w">깊은</span> <span class="ff-wp">정적</span><span class="ff-w">만이</span> <span class="ff-w">남아</span> <span class="ff-w">있었다.</span> <span class="ff-w">달빛이</span> <span class="ff-w">검은</span> <span class="ff-w">물</span> <span class="ff-w">위에</span> <span class="ff-w">길게</span> <span class="ff-w">드리워졌다.</span></p>
+          </div>
+        </div>
+        <!-- DEFINITION PANEL -->
+        <div style="position: absolute; left: 0; right: 0; bottom: 0; background: #ffffff; border-top: 1px solid #e4e2e2; border-radius: 16px 16px 0 0; box-shadow: 0 -10px 30px rgba(27,28,28,0.08); padding: 12px 20px 22px;">
+          <div style="display: flex; justify-content: center;"><span style="width: 36px; height: 4px; background: #e4e2e2; border-radius: 2px;"></span></div>
+          <div style="margin-top: 16px; display: flex; align-items: center; gap: 8px;">
+            <span style="font-family: 'Material Symbols Outlined'; font-variation-settings: 'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 24; font-size: 22px; color: #d2d0d0;">chevron_left</span>
+            <div style="flex: 1; display: flex; align-items: baseline; gap: 9px; justify-content: center; flex-wrap: wrap;">
+              <span style="font: 600 24px 'Noto Serif KR', serif; color: #1b1c1c;">정적</span>
+              <span style="font: 400 16px 'Noto Serif KR', serif; color: #44474b;">靜寂</span>
+              <span style="font: italic 400 13px 'Fraunces', Georgia, serif; color: #75777b;">jeong-jeok</span>
+            </div>
+            <span style="font-family: 'Material Symbols Outlined'; font-variation-settings: 'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 24; font-size: 22px; color: #9a9c9f;">chevron_right</span>
+          </div>
+          <div style="margin-top: 14px; display: flex; align-items: baseline; gap: 9px; justify-content: center;">
+            <span style="flex-shrink: 0; border: 1px solid #c5c6cb; border-radius: 3px; padding: 3px 6px; font-size: 9px; font-weight: 600; letter-spacing: 1.4px; color: #5c5e63;">NOUN</span>
+            <span style="font-size: 14px; color: #44474b; line-height: 1.5;">silence; stillness; a deep hush</span>
+          </div>
+          <div style="margin-top: 8px; display: flex; gap: 8px; justify-content: center;">
+            <span style="font-size: 13px; font-weight: 600; color: #9a9c9f;">2</span>
+            <span style="font-size: 13px; color: #5c5e63; line-height: 1.4;">a moment of calm; tranquility of mind</span>
+          </div>
+          <!-- root characters carousel -->
+          <div style="margin-top: 16px; display: flex; align-items: center; justify-content: space-between;">
+            <span style="font-size: 10px; font-weight: 600; letter-spacing: 2.2px; color: #75777b;">ROOT CHARACTERS</span>
+            <span style="display: inline-flex; gap: 5px; align-items: center;"><span style="width: 5px; height: 5px; border-radius: 999px; background: #202631;"></span><span style="width: 5px; height: 5px; border-radius: 999px; background: #d2d0d0;"></span></span>
+          </div>
+          <div class="ff-swipe" style="margin: 12px -20px 0; padding: 0 20px; display: flex; gap: 10px; overflow-x: auto; scroll-snap-type: x mandatory;">
+            <div style="flex: 0 0 86%; scroll-snap-align: start; border: 1px solid #e4e2e2; border-radius: 4px; background: #fefdfc; padding: 12px;">
+              <div style="display: flex; align-items: center; gap: 12px;">
+                <span style="width: 44px; height: 44px; flex-shrink: 0; border-radius: 3px; background: #f0eded; display: flex; align-items: center; justify-content: center; font: 500 28px 'Noto Serif KR', serif; color: #202631;">靜</span>
+                <div style="flex: 1; min-width: 0;">
+                  <div style="font-size: 9px; font-weight: 600; letter-spacing: 1.8px; color: #9a9c9f;">MEANING</div>
+                  <div style="margin-top: 2px; font-size: 14px; font-weight: 600; color: #1b1c1c;">Quiet · Calm</div>
+                </div>
+              </div>
+              <div style="margin-top: 12px; border-top: 1px solid #eceaea; padding-top: 11px;">
+                <div style="font-size: 9px; font-weight: 600; letter-spacing: 1.8px; color: #9a9c9f;">RELATED WORDS</div>
+                <div style="margin-top: 10px; display: flex; align-items: center; gap: 10px;">
+                  <div style="flex: 1; min-width: 0;"><div><span style="font: 400 13px 'Noto Serif KR', serif; color: #1b1c1c;">정숙</span> <span style="font: 400 12px 'Noto Serif KR', serif; color: #75777b;">靜肅</span></div><div style="margin-top: 1px; font-size: 12px; color: #9a9c9f;">quietness</div></div>
+                  <span style="flex-shrink: 0; width: 26px; height: 26px; border-radius: 999px; background: #202631; display: flex; align-items: center; justify-content: center;"><span style="font-family: 'Material Symbols Outlined'; font-variation-settings: 'FILL' 0,'wght' 500,'GRAD' 0,'opsz' 24; font-size: 15px; color: #ffffff;">check</span></span>
+                </div>
+                <div style="margin-top: 10px; display: flex; align-items: center; gap: 10px;">
+                  <div style="flex: 1; min-width: 0;"><div><span style="font: 400 13px 'Noto Serif KR', serif; color: #1b1c1c;">평정</span> <span style="font: 400 12px 'Noto Serif KR', serif; color: #75777b;">平靜</span></div><div style="margin-top: 1px; font-size: 12px; color: #9a9c9f;">composure</div></div>
+                  <span style="flex-shrink: 0; width: 26px; height: 26px; border-radius: 999px; border: 1.5px solid #c5c6cb;"></span>
+                </div>
+                <div style="margin-top: 11px; text-align: right;"><span style="font-size: 12px; font-weight: 600; color: #5c5e63;">See more ∨</span></div>
+              </div>
+            </div>
+            <div style="flex: 0 0 86%; scroll-snap-align: start; border: 1px solid #e4e2e2; border-radius: 4px; background: #fefdfc; padding: 12px;">
+              <div style="display: flex; align-items: center; gap: 12px;">
+                <span style="width: 44px; height: 44px; flex-shrink: 0; border-radius: 3px; background: #f0eded; display: flex; align-items: center; justify-content: center; font: 500 28px 'Noto Serif KR', serif; color: #202631;">寂</span>
+                <div style="flex: 1; min-width: 0;">
+                  <div style="font-size: 9px; font-weight: 600; letter-spacing: 1.8px; color: #9a9c9f;">MEANING</div>
+                  <div style="margin-top: 2px; font-size: 14px; font-weight: 600; color: #1b1c1c;">Still · Lonely</div>
+                </div>
+              </div>
+              <div style="margin-top: 12px; border-top: 1px solid #eceaea; padding-top: 11px;">
+                <div style="font-size: 9px; font-weight: 600; letter-spacing: 1.8px; color: #9a9c9f;">RELATED WORDS</div>
+                <div style="margin-top: 10px; display: flex; align-items: center; gap: 10px;">
+                  <div style="flex: 1; min-width: 0;"><div><span style="font: 400 13px 'Noto Serif KR', serif; color: #1b1c1c;">적막</span> <span style="font: 400 12px 'Noto Serif KR', serif; color: #75777b;">寂寞</span></div><div style="margin-top: 1px; font-size: 12px; color: #9a9c9f;">solitude</div></div>
+                  <span style="flex-shrink: 0; width: 26px; height: 26px; border-radius: 999px; border: 1.5px solid #c5c6cb;"></span>
+                </div>
+                <div style="margin-top: 11px; text-align: right;"><span style="font-size: 12px; font-weight: 600; color: #5c5e63;">See more ∨</span></div>
+              </div>
+            </div>
+          </div>
+          <!-- action buttons -->
+          <div style="margin-top: 16px; display: flex; border: 1px solid #e4e2e2; border-radius: 4px; overflow: hidden; height: 44px;">
+            <span style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px; background: #ffffff; color: #202631; font-size: 10px; font-weight: 700; letter-spacing: 1.8px;"><span style="font-family: 'Material Symbols Outlined'; font-variation-settings: 'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 24; font-size: 16px;">bookmark</span>SAVE</span>
+            <span style="flex: 1; border-left: 1px solid #eceaea; display: flex; align-items: center; justify-content: center; background: #ffffff; color: #202631; font-size: 10px; font-weight: 700; letter-spacing: 1.8px;">TRANSLATE</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======== FRAME 3 — DEFINITION · TRANSLATE ACTIVE ======== -->
+    <div style="display: flex; flex-direction: column; gap: 16px; align-items: center;">
+      <span style="font-size: 11px; font-weight: 700; letter-spacing: 1.6px; color: #5c5e63;">FRAME 3 · TRANSLATE ACTIVE</span>
+      <div data-screen-label="OCR 3 - Definition translate" style="position: relative; width: 390px; height: 844px; background: #ffffff; border: 1px solid #b0b2b6; border-radius: 40px; overflow: hidden; box-shadow: 0 24px 48px rgba(27,28,28,0.10);">
+        <div style="position: absolute; inset: 0; background: #ffffff;">
+          <div style="height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 14px 26px 0;">
+            <span style="font-size: 13px; font-weight: 600; color: #1b1c1c;">9:41</span>
+            <span style="width: 18px; height: 9px; border: 1px solid #5c5e63; border-radius: 3px; position: relative;"><span style="position: absolute; inset: 1.5px 4px 1.5px 1.5px; background: #5c5e63; border-radius: 1px;"></span></span>
+          </div>
+          <div style="padding: 8px 22px 0; display: flex; align-items: center; justify-content: space-between;">
+            <span style="font: 700 12px 'Inter', sans-serif; letter-spacing: 2.4px; color: #9a9c9f; white-space: nowrap;">오늘의 문학</span>
+            <span style="font-family: 'Material Symbols Outlined'; font-variation-settings: 'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 20; font-size: 19px; color: #9a9c9f;">more_horiz</span>
+          </div>
+          <div style="margin: 12px 22px 0; height: 1px; background: #eceaea;"></div>
+          <div style="padding: 18px 22px 0;">
+            <h1 style="margin: 0; font: 600 27px/1.35 'Noto Serif KR', serif; color: #1b1c1c;">달과 강</h1>
+            <div style="margin-top: 8px; font: italic 400 13px 'Fraunces', Georgia, serif; color: #75777b;">서윤 산문 · 2026년 봄</div>
+            <p style="margin: 18px 0 0; font: 400 17px/2.2 'Noto Serif KR', serif; color: #2a2c2e; text-wrap: pretty;"><span class="ff-w">강가에는</span> <span class="ff-w">깊은</span> <span class="ff-wp">정적</span><span class="ff-w">만이</span> <span class="ff-w">남아</span> <span class="ff-w">있었다.</span> <span class="ff-w">달빛이</span> <span class="ff-w">검은</span> <span class="ff-w">물</span> <span class="ff-w">위에</span> <span class="ff-w">길게</span> <span class="ff-w">드리워졌다.</span></p>
+          </div>
+        </div>
+        <!-- DEFINITION PANEL · translate swapped -->
+        <div style="position: absolute; left: 0; right: 0; bottom: 0; background: #ffffff; border-top: 1px solid #e4e2e2; border-radius: 16px 16px 0 0; box-shadow: 0 -10px 30px rgba(27,28,28,0.08); padding: 12px 20px 22px;">
+          <div style="display: flex; justify-content: center;"><span style="width: 36px; height: 4px; background: #e4e2e2; border-radius: 2px;"></span></div>
+          <div style="margin-top: 16px; display: flex; align-items: center; gap: 8px;">
+            <span style="font-family: 'Material Symbols Outlined'; font-variation-settings: 'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 24; font-size: 22px; color: #d2d0d0;">chevron_left</span>
+            <div style="flex: 1; display: flex; align-items: baseline; gap: 9px; justify-content: center; flex-wrap: wrap;">
+              <span style="font: 600 24px 'Noto Serif KR', serif; color: #1b1c1c;">정적</span>
+              <span style="font: 400 16px 'Noto Serif KR', serif; color: #44474b;">靜寂</span>
+              <span style="font: italic 400 13px 'Fraunces', Georgia, serif; color: #75777b;">jeong-jeok</span>
+            </div>
+            <span style="font-family: 'Material Symbols Outlined'; font-variation-settings: 'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 24; font-size: 22px; color: #9a9c9f;">chevron_right</span>
+          </div>
+          <div style="margin-top: 16px;">
+            <div style="font-size: 9px; font-weight: 600; letter-spacing: 1.8px; color: #9a9c9f;">TRANSLATION</div>
+            <p style="margin: 10px 0 0; font-size: 14px; line-height: 1.6; color: #44474b;">A deep stillness — the hush that settles over a place when every sound has gone.</p>
+          </div>
+          <div style="margin-top: 18px; display: flex; border: 1px solid #e4e2e2; border-radius: 4px; overflow: hidden; height: 44px;">
+            <span style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px; background: #ffffff; color: #202631; font-size: 10px; font-weight: 700; letter-spacing: 1.8px;"><span style="font-family: 'Material Symbols Outlined'; font-variation-settings: 'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 24; font-size: 16px;">bookmark</span>SAVE</span>
+            <span style="flex: 1; border-left: 1px solid #eceaea; display: flex; align-items: center; justify-content: center; background: #f0eded; color: #202631; font-size: 10px; font-weight: 700; letter-spacing: 1.8px;">TRANSLATE</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======== FRAME 4 — TRANSLATION OPEN ======== -->
+    <div style="display: flex; flex-direction: column; gap: 16px; align-items: center;">
+      <span style="font-size: 11px; font-weight: 700; letter-spacing: 1.6px; color: #5c5e63;">FRAME 4 · TRANSLATION OPEN</span>
+      <div data-screen-label="OCR 4 - Translation panel" style="position: relative; width: 390px; height: 844px; background: #ffffff; border: 1px solid #b0b2b6; border-radius: 40px; overflow: hidden; box-shadow: 0 24px 48px rgba(27,28,28,0.10);">
+        <div style="position: absolute; inset: 0; background: #ffffff;">
+          <div style="height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 14px 26px 0;">
+            <span style="font-size: 13px; font-weight: 600; color: #1b1c1c;">9:41</span>
+            <span style="width: 18px; height: 9px; border: 1px solid #5c5e63; border-radius: 3px; position: relative;"><span style="position: absolute; inset: 1.5px 4px 1.5px 1.5px; background: #5c5e63; border-radius: 1px;"></span></span>
+          </div>
+          <div style="padding: 8px 22px 0; display: flex; align-items: center; justify-content: space-between;">
+            <span style="font: 700 12px 'Inter', sans-serif; letter-spacing: 2.4px; color: #9a9c9f; white-space: nowrap;">오늘의 문학</span>
+            <span style="font-family: 'Material Symbols Outlined'; font-variation-settings: 'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 20; font-size: 19px; color: #9a9c9f;">more_horiz</span>
+          </div>
+          <div style="margin: 12px 22px 0; height: 1px; background: #eceaea;"></div>
+          <div style="padding: 18px 22px 0;">
+            <h1 style="margin: 0; font: 600 27px/1.35 'Noto Serif KR', serif; color: #1b1c1c;">달과 강</h1>
+            <div style="margin-top: 8px; font: italic 400 13px 'Fraunces', Georgia, serif; color: #75777b;">서윤 산문 · 2026년 봄</div>
+            <p style="margin: 18px 0 0; font: 400 17px/2.2 'Noto Serif KR', serif; color: #2a2c2e; text-wrap: pretty;"><span class="ff-wr">강가에는 깊은 정적만이 남아 있었다</span>. <span class="ff-w">달빛이</span> <span class="ff-w">검은</span> <span class="ff-w">물</span> <span class="ff-w">위에</span> <span class="ff-w">길게</span> <span class="ff-w">드리워졌고,</span> <span class="ff-w">바람은</span> <span class="ff-w">갈대</span> <span class="ff-w">사이를</span> <span class="ff-w">지나갔다.</span></p>
+          </div>
+        </div>
+        <!-- TRANSLATION PANEL -->
+        <div style="position: absolute; left: 0; right: 0; bottom: 0; background: #ffffff; border-top: 1px solid #e4e2e2; border-radius: 16px 16px 0 0; box-shadow: 0 -10px 30px rgba(27,28,28,0.08); padding: 12px 20px 24px;">
+          <div style="display: flex; justify-content: center;"><span style="width: 36px; height: 4px; background: #e4e2e2; border-radius: 2px;"></span></div>
+          <div style="margin-top: 18px; display: flex; align-items: center; gap: 8px;">
+            <span style="font-family: 'Material Symbols Outlined'; font-variation-settings: 'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 20; font-size: 16px; color: #9a9c9f;">translate</span>
+            <span style="flex: 1; font: 400 11px 'Inter', sans-serif; letter-spacing: 0.8px; color: #75777b;">한국어 → English</span>
+            <span style="font-size: 10px; font-weight: 600; letter-spacing: 1.8px; color: #9a9c9f;">COPY</span>
+          </div>
+          <p style="margin: 14px 0 0; font-size: 15px; line-height: 1.6; color: #1b1c1c;">Only a deep silence remained by the riverbank.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======== FRAME 5 — TRANSLATION LOADING ======== -->
+    <div style="display: flex; flex-direction: column; gap: 16px; align-items: center;">
+      <span style="font-size: 11px; font-weight: 700; letter-spacing: 1.6px; color: #5c5e63;">FRAME 5 · TRANSLATION LOADING</span>
+      <div data-screen-label="OCR 5 - Translation loading" style="position: relative; width: 390px; height: 844px; background: #ffffff; border: 1px solid #b0b2b6; border-radius: 40px; overflow: hidden; box-shadow: 0 24px 48px rgba(27,28,28,0.10);">
+        <div style="position: absolute; inset: 0; background: #ffffff;">
+          <div style="height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 14px 26px 0;">
+            <span style="font-size: 13px; font-weight: 600; color: #1b1c1c;">9:41</span>
+            <span style="width: 18px; height: 9px; border: 1px solid #5c5e63; border-radius: 3px; position: relative;"><span style="position: absolute; inset: 1.5px 4px 1.5px 1.5px; background: #5c5e63; border-radius: 1px;"></span></span>
+          </div>
+          <div style="padding: 8px 22px 0; display: flex; align-items: center; justify-content: space-between;">
+            <span style="font: 700 12px 'Inter', sans-serif; letter-spacing: 2.4px; color: #9a9c9f; white-space: nowrap;">오늘의 문학</span>
+            <span style="font-family: 'Material Symbols Outlined'; font-variation-settings: 'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 20; font-size: 19px; color: #9a9c9f;">more_horiz</span>
+          </div>
+          <div style="margin: 12px 22px 0; height: 1px; background: #eceaea;"></div>
+          <div style="padding: 18px 22px 0;">
+            <h1 style="margin: 0; font: 600 27px/1.35 'Noto Serif KR', serif; color: #1b1c1c;">달과 강</h1>
+            <div style="margin-top: 8px; font: italic 400 13px 'Fraunces', Georgia, serif; color: #75777b;">서윤 산문 · 2026년 봄</div>
+            <p style="margin: 18px 0 0; font: 400 17px/2.2 'Noto Serif KR', serif; color: #2a2c2e; text-wrap: pretty;"><span class="ff-wr">강가에는 깊은 정적만이 남아 있었다</span>. <span class="ff-w">달빛이</span> <span class="ff-w">검은</span> <span class="ff-w">물</span> <span class="ff-w">위에</span> <span class="ff-w">길게</span> <span class="ff-w">드리워졌고,</span> <span class="ff-w">바람은</span> <span class="ff-w">갈대</span> <span class="ff-w">사이를</span> <span class="ff-w">지나갔다.</span></p>
+          </div>
+        </div>
+        <!-- TRANSLATION PANEL · loading -->
+        <div style="position: absolute; left: 0; right: 0; bottom: 0; background: #ffffff; border-top: 1px solid #e4e2e2; border-radius: 16px 16px 0 0; box-shadow: 0 -10px 30px rgba(27,28,28,0.08); padding: 12px 20px 24px;">
+          <div style="display: flex; justify-content: center;"><span style="width: 36px; height: 4px; background: #e4e2e2; border-radius: 2px;"></span></div>
+          <div style="margin-top: 18px; display: flex; align-items: center; gap: 8px;">
+            <span style="font-family: 'Material Symbols Outlined'; font-variation-settings: 'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 20; font-size: 16px; color: #9a9c9f;">translate</span>
+            <span style="flex: 1; font: 400 11px 'Inter', sans-serif; letter-spacing: 0.8px; color: #75777b;">한국어 → English</span>
+          </div>
+          <div style="margin-top: 16px; height: 13px; border-radius: 2px; background: linear-gradient(90deg, #f0eded 25%, #e6e3e3 37%, #f0eded 63%); background-size: 400px 100%; animation: ffShimmer 1.4s ease infinite;"></div>
+          <div style="margin-top: 10px; height: 13px; width: 64%; border-radius: 2px; background: linear-gradient(90deg, #f0eded 25%, #e6e3e3 37%, #f0eded 63%); background-size: 400px 100%; animation: ffShimmer 1.4s ease infinite;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======== FRAME 6 — DRAGGING TO CLOSE ======== -->
+    <div style="display: flex; flex-direction: column; gap: 16px; align-items: center;">
+      <span style="font-size: 11px; font-weight: 700; letter-spacing: 1.6px; color: #5c5e63;">FRAME 6 · DRAGGING TO CLOSE</span>
+      <div data-screen-label="OCR 6 - Dragging" style="position: relative; width: 390px; height: 844px; background: #ffffff; border: 1px solid #b0b2b6; border-radius: 40px; overflow: hidden; box-shadow: 0 24px 48px rgba(27,28,28,0.10);">
+        <div style="position: absolute; inset: 0; background: #ffffff;">
+          <div style="height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 14px 26px 0;">
+            <span style="font-size: 13px; font-weight: 600; color: #1b1c1c;">9:41</span>
+            <span style="width: 18px; height: 9px; border: 1px solid #5c5e63; border-radius: 3px; position: relative;"><span style="position: absolute; inset: 1.5px 4px 1.5px 1.5px; background: #5c5e63; border-radius: 1px;"></span></span>
+          </div>
+          <div style="padding: 8px 22px 0; display: flex; align-items: center; justify-content: space-between;">
+            <span style="font: 700 12px 'Inter', sans-serif; letter-spacing: 2.4px; color: #9a9c9f; white-space: nowrap;">오늘의 문학</span>
+            <span style="font-family: 'Material Symbols Outlined'; font-variation-settings: 'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 20; font-size: 19px; color: #9a9c9f;">more_horiz</span>
+          </div>
+          <div style="margin: 12px 22px 0; height: 1px; background: #eceaea;"></div>
+          <div style="padding: 18px 22px 0;">
+            <h1 style="margin: 0; font: 600 27px/1.35 'Noto Serif KR', serif; color: #1b1c1c;">달과 강</h1>
+            <div style="margin-top: 8px; font: italic 400 13px 'Fraunces', Georgia, serif; color: #75777b;">서윤 산문 · 2026년 봄</div>
+            <div style="margin: 16px 0; height: 116px; border-radius: 6px; background: repeating-linear-gradient(135deg, #eef0f3 0 11px, #f6f7f9 11px 22px); border: 1px solid #e7e9ec; display: flex; align-items: center; justify-content: center;">
+              <span style="font: 500 10px 'SF Mono', Menlo, monospace; letter-spacing: 1px; color: #aab0b8;">이미지 · IMAGE</span>
+            </div>
+            <p style="margin: 0; font: 400 17px/2.2 'Noto Serif KR', serif; color: #2a2c2e; text-wrap: pretty;"><span class="ff-w">강가에는</span> <span class="ff-w">깊은</span> <span class="ff-w">정적만이</span> <span class="ff-w">남아</span> <span class="ff-w">있었다.</span> <span class="ff-w">달빛이</span> <span class="ff-w">검은</span> <span class="ff-w">물</span> <span class="ff-w">위에</span> <span class="ff-w">길게</span> <span class="ff-w">드리워졌다.</span></p>
+          </div>
+        </div>
+        <!-- dimmed scrim while dragging -->
+        <div style="position: absolute; inset: 0; background: rgba(27,28,28,0.04);"></div>
+        <!-- FLOATING CIRCLE · mid-drag -->
+        <div style="position: absolute; left: 150px; bottom: 250px; width: 56px; height: 56px; border-radius: 999px; background: rgba(32,38,49,0.85); border: 1px solid #353c47; box-shadow: 0 12px 30px rgba(0,0,0,0.42); transform: scale(1.08); display: flex; align-items: center; justify-content: center;">
+          <svg width="30" height="30" viewBox="0 0 1024 1024"><use href="#ff-glyph"></use></svg>
+        </div>
+        <!-- CLOSE TARGET · default -->
+        <div style="position: absolute; left: 50%; transform: translateX(-50%); bottom: 32px; width: 160px; height: 48px; border-radius: 999px; background: rgba(27,28,28,0.82); border: 1px solid #353c47; display: flex; align-items: center; justify-content: center; gap: 8px;">
+          <span style="font: 600 11px 'Inter', sans-serif; letter-spacing: 1.6px; color: #9a9c9f;">✕ CLOSE</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======== FRAME 7 — OVER CLOSE TARGET ======== -->
+    <div style="display: flex; flex-direction: column; gap: 16px; align-items: center;">
+      <span style="font-size: 11px; font-weight: 700; letter-spacing: 1.6px; color: #5c5e63;">FRAME 7 · OVER CLOSE TARGET</span>
+      <div data-screen-label="OCR 7 - Over close" style="position: relative; width: 390px; height: 844px; background: #ffffff; border: 1px solid #b0b2b6; border-radius: 40px; overflow: hidden; box-shadow: 0 24px 48px rgba(27,28,28,0.10);">
+        <div style="position: absolute; inset: 0; background: #ffffff;">
+          <div style="height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 14px 26px 0;">
+            <span style="font-size: 13px; font-weight: 600; color: #1b1c1c;">9:41</span>
+            <span style="width: 18px; height: 9px; border: 1px solid #5c5e63; border-radius: 3px; position: relative;"><span style="position: absolute; inset: 1.5px 4px 1.5px 1.5px; background: #5c5e63; border-radius: 1px;"></span></span>
+          </div>
+          <div style="padding: 8px 22px 0; display: flex; align-items: center; justify-content: space-between;">
+            <span style="font: 700 12px 'Inter', sans-serif; letter-spacing: 2.4px; color: #9a9c9f; white-space: nowrap;">오늘의 문학</span>
+            <span style="font-family: 'Material Symbols Outlined'; font-variation-settings: 'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 20; font-size: 19px; color: #9a9c9f;">more_horiz</span>
+          </div>
+          <div style="margin: 12px 22px 0; height: 1px; background: #eceaea;"></div>
+          <div style="padding: 18px 22px 0;">
+            <h1 style="margin: 0; font: 600 27px/1.35 'Noto Serif KR', serif; color: #1b1c1c;">달과 강</h1>
+            <div style="margin-top: 8px; font: italic 400 13px 'Fraunces', Georgia, serif; color: #75777b;">서윤 산문 · 2026년 봄</div>
+            <div style="margin: 16px 0; height: 116px; border-radius: 6px; background: repeating-linear-gradient(135deg, #eef0f3 0 11px, #f6f7f9 11px 22px); border: 1px solid #e7e9ec; display: flex; align-items: center; justify-content: center;">
+              <span style="font: 500 10px 'SF Mono', Menlo, monospace; letter-spacing: 1px; color: #aab0b8;">이미지 · IMAGE</span>
+            </div>
+            <p style="margin: 0; font: 400 17px/2.2 'Noto Serif KR', serif; color: #2a2c2e; text-wrap: pretty;"><span class="ff-w">강가에는</span> <span class="ff-w">깊은</span> <span class="ff-w">정적만이</span> <span class="ff-w">남아</span> <span class="ff-w">있었다.</span> <span class="ff-w">달빛이</span> <span class="ff-w">검은</span> <span class="ff-w">물</span> <span class="ff-w">위에</span> <span class="ff-w">길게</span> <span class="ff-w">드리워졌다.</span></p>
+          </div>
+        </div>
+        <div style="position: absolute; inset: 0; background: rgba(27,28,28,0.04);"></div>
+        <!-- CLOSE TARGET · activated, pulsing -->
+        <div style="position: absolute; left: 50%; bottom: 28px; width: 200px; height: 56px; border-radius: 999px; background: rgba(192,57,43,0.92); border: 1px solid #e05a4a; display: flex; align-items: center; justify-content: center; gap: 9px; animation: ffPulse 0.4s ease-in-out infinite; transform: translateX(-50%);">
+          <span style="font: 600 11px 'Inter', sans-serif; letter-spacing: 1.6px; color: #ffffff;">✕ CLOSE</span>
+        </div>
+        <!-- FLOATING CIRCLE · over close -->
+        <div style="position: absolute; left: 50%; bottom: 40px; margin-left: -28px; width: 56px; height: 56px; border-radius: 999px; background: #2d1a1a; border: 1px solid #C0392B; box-shadow: 0 8px 22px rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center;">
+          <svg width="30" height="30" viewBox="0 0 1024 1024"><use href="#ff-glyph"></use></svg>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======== FRAME 8 — NO TEXT DETECTED ======== -->
+    <div style="display: flex; flex-direction: column; gap: 16px; align-items: center;">
+      <span style="font-size: 11px; font-weight: 700; letter-spacing: 1.6px; color: #5c5e63;">FRAME 8 · NO TEXT DETECTED</span>
+      <div data-screen-label="OCR 8 - No text" style="position: relative; width: 390px; height: 844px; background: #ffffff; border: 1px solid #b0b2b6; border-radius: 40px; overflow: hidden; box-shadow: 0 24px 48px rgba(27,28,28,0.10);">
+        <div style="position: absolute; inset: 0; background: #ffffff;">
+          <div style="height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 14px 26px 0;">
+            <span style="font-size: 13px; font-weight: 600; color: #1b1c1c;">9:41</span>
+            <span style="width: 18px; height: 9px; border: 1px solid #5c5e63; border-radius: 3px; position: relative;"><span style="position: absolute; inset: 1.5px 4px 1.5px 1.5px; background: #5c5e63; border-radius: 1px;"></span></span>
+          </div>
+          <div style="padding: 8px 22px 0; display: flex; align-items: center; justify-content: space-between;">
+            <span style="font: 700 12px 'Inter', sans-serif; letter-spacing: 2.4px; color: #9a9c9f; white-space: nowrap;">갤러리</span>
+            <span style="font-family: 'Material Symbols Outlined'; font-variation-settings: 'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 20; font-size: 19px; color: #9a9c9f;">more_horiz</span>
+          </div>
+          <div style="margin: 12px 22px 0; height: 1px; background: #eceaea;"></div>
+          <!-- image-only surface, no detectable text -->
+          <div style="padding: 16px 22px 0;">
+            <div style="height: 620px; border-radius: 8px; background: repeating-linear-gradient(135deg, #eef0f3 0 13px, #f6f7f9 13px 26px); border: 1px solid #e7e9ec; display: flex; align-items: center; justify-content: center;">
+              <span style="font: 500 10px 'SF Mono', Menlo, monospace; letter-spacing: 1px; color: #c2c7ce;">사진 · PHOTO</span>
+            </div>
+          </div>
+        </div>
+        <!-- NO TEXT label -->
+        <div style="position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); padding: 10px 18px; border-radius: 999px; background: rgba(27,28,28,0.78); display: flex; align-items: center; gap: 8px;">
+          <span style="font-family: 'Material Symbols Outlined'; font-variation-settings: 'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 20; font-size: 16px; color: #d8d9db;">search_off</span>
+          <span style="font: 400 13px 'Inter', sans-serif; color: #d8d9db;">텍스트를 찾을 수 없습니다</span>
+        </div>
+        <!-- FLOATING CIRCLE · rest -->
+        <div style="position: absolute; right: 24px; bottom: 48px; width: 56px; height: 56px; border-radius: 999px; background: rgba(32,38,49,0.9); border: 1px solid #353c47; box-shadow: 0 4px 16px rgba(0,0,0,0.32); display: flex; align-items: center; justify-content: center;">
+          <svg width="30" height="30" viewBox="0 0 1024 1024"><use href="#ff-glyph"></use></svg>
+        </div>
+        <div style="position: absolute; left: 50%; transform: translateX(-50%); bottom: 9px; width: 134px; height: 5px; border-radius: 3px; background: rgba(27,28,28,0.32);"></div>
+      </div>
+    </div>
+
+    <!-- ======== FRAME 9 — WORD NOT FOUND ======== -->
+    <div style="display: flex; flex-direction: column; gap: 16px; align-items: center;">
+      <span style="font-size: 11px; font-weight: 700; letter-spacing: 1.6px; color: #5c5e63;">FRAME 9 · WORD NOT FOUND</span>
+      <div data-screen-label="OCR 9 - Word not found" style="position: relative; width: 390px; height: 844px; background: #ffffff; border: 1px solid #b0b2b6; border-radius: 40px; overflow: hidden; box-shadow: 0 24px 48px rgba(27,28,28,0.10);">
+        <div style="position: absolute; inset: 0; background: #ffffff;">
+          <div style="height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 14px 26px 0;">
+            <span style="font-size: 13px; font-weight: 600; color: #1b1c1c;">9:41</span>
+            <span style="width: 18px; height: 9px; border: 1px solid #5c5e63; border-radius: 3px; position: relative;"><span style="position: absolute; inset: 1.5px 4px 1.5px 1.5px; background: #5c5e63; border-radius: 1px;"></span></span>
+          </div>
+          <div style="padding: 8px 22px 0; display: flex; align-items: center; justify-content: space-between;">
+            <span style="font: 700 12px 'Inter', sans-serif; letter-spacing: 2.4px; color: #9a9c9f; white-space: nowrap;">오늘의 문학</span>
+            <span style="font-family: 'Material Symbols Outlined'; font-variation-settings: 'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 20; font-size: 19px; color: #9a9c9f;">more_horiz</span>
+          </div>
+          <div style="margin: 12px 22px 0; height: 1px; background: #eceaea;"></div>
+          <div style="padding: 18px 22px 0;">
+            <h1 style="margin: 0; font: 600 27px/1.35 'Noto Serif KR', serif; color: #1b1c1c;">달과 강</h1>
+            <div style="margin-top: 8px; font: italic 400 13px 'Fraunces', Georgia, serif; color: #75777b;">서윤 산문 · 2026년 봄</div>
+            <p style="margin: 18px 0 0; font: 400 17px/2.2 'Noto Serif KR', serif; color: #2a2c2e; text-wrap: pretty;"><span class="ff-w">서윤은</span> <span class="ff-w">강둑에</span> <span class="ff-w">앉아</span> <span class="ff-w">멀리서</span> <span class="ff-w">들려올</span> <span class="ff-wp">메아리</span><span class="ff-w">를</span> <span class="ff-w">기다렸다.</span></p>
+          </div>
+        </div>
+        <!-- DEFINITION PANEL · not found -->
+        <div style="position: absolute; left: 0; right: 0; bottom: 0; background: #ffffff; border-top: 1px solid #e4e2e2; border-radius: 16px 16px 0 0; box-shadow: 0 -10px 30px rgba(27,28,28,0.08); padding: 12px 20px 22px;">
+          <div style="display: flex; justify-content: center;"><span style="width: 36px; height: 4px; background: #e4e2e2; border-radius: 2px;"></span></div>
+          <div style="margin-top: 18px; display: flex; flex-direction: column; align-items: center; gap: 7px;">
+            <span style="font: 600 24px 'Noto Serif KR', serif; color: #1b1c1c;">메아리</span>
+            <span style="font: italic 400 13px 'Fraunces', Georgia, serif; color: #75777b;">me-a-ri</span>
+          </div>
+          <div style="margin-top: 14px; text-align: center; font-size: 13px; color: #9a9c9f;">No definition found</div>
+          <div style="margin-top: 18px; display: flex; border: 1px solid #e4e2e2; border-radius: 4px; overflow: hidden; height: 44px;">
+            <span style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px; background: #ffffff; color: #202631; font-size: 10px; font-weight: 700; letter-spacing: 1.8px;"><span style="font-family: 'Material Symbols Outlined'; font-variation-settings: 'FILL' 0,'wght' 300,'GRAD' 0,'opsz' 24; font-size: 16px;">bookmark</span>SAVE</span>
+            <span style="flex: 1; border-left: 1px solid #eceaea; display: flex; align-items: center; justify-content: center; background: #ffffff; color: #202631; font-size: 10px; font-weight: 700; letter-spacing: 1.8px;">TRANSLATE</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Text, View, StyleSheet, TouchableOpacity, Modal, ScrollView } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useAppContext } from '../../../contexts/AppContext';
 import { useTranslation } from '../../../hooks/useTranslation';
@@ -13,13 +13,13 @@ import {
     upsertUserVocabEntry,
 } from '../../../services/supabase';
 import { isCurrentSyncGeneration } from '../../../services/localOwnerCoordinator';
-import { colors, fontFamilies, spacing, textStyles } from '../../../theme';
+import { fontFamilies, useTheme } from '../../../theme';
 
 const relatedWordKey = (entry) => `${entry?.korean ?? ''}|${entry?.hanja ?? ''}`;
-const HANJA_RE = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/;
-const RELATED_WORD_PAGE_SIZE = 10;
-const RELATED_WORD_LOAD_DELAY_MS = 650;
-const SIDE_NAV_HIT_SLOP = { top: 22, right: 22, bottom: 22, left: 22 };
+const HANJA_RE = /[㐀-䶿一-鿿豈-﫿]/;
+const CARD_GAP = 12;
+const INITIAL_VISIBLE_COUNT = 2;
+const RELATED_PAGE_SIZE = 3;
 const EMPTY_HANJA_LOOKUP = {
     firstTableData: [],
     similarWordsTableData: [],
@@ -73,111 +73,55 @@ const normalizeHanjaCharacters = (characters, fallback) => {
 const HanjaDetails = ({
     hanja,
     hanjaCharacters = [],
-    initialHanjaIndex = 0,
     sourceWord,
     sourceWordDetails = {},
-    handleHanjaPress,
     onKnownWordMarked,
     onKnownWordRemoved,
     onSourceWordAutoSaved,
-    isDarkMode,
+    onCarouselIndexChange,
 }) => {
     const { interfaceLanguage } = useAppContext();
     const { t } = useTranslation();
+    const { colors } = useTheme();
+    const styles = useMemo(() => createStyles(colors), [colors]);
     const { activeOwnerId, syncGeneration } = useLocalOwner();
     const characters = normalizeHanjaCharacters(hanjaCharacters, hanja);
     const charactersKey = characters.join('|');
-    const fallbackIndex = characters.indexOf(cleanValue(hanja));
-    const initialIndex = Math.max(
-        0,
-        Math.min(
-            Number.isInteger(initialHanjaIndex)
-                ? initialHanjaIndex
-                : fallbackIndex,
-            Math.max(characters.length - 1, 0)
-        )
-    );
-    const [activeHanjaIndex, setActiveHanjaIndex] = useState(initialIndex);
+
     const [knownKeys, setKnownKeys] = useState(new Set());
     const [hanjaLookupByCharacter, setHanjaLookupByCharacter] = useState({});
     const [isPreloadingHanja, setIsPreloadingHanja] = useState(false);
-    const [visibleRelatedCount, setVisibleRelatedCount] = useState(RELATED_WORD_PAGE_SIZE);
-    const [isLoadingMoreRelated, setIsLoadingMoreRelated] = useState(false);
-    const lastRelatedLoadCountRef = useRef(0);
-    const relatedLoadTimerRef = useRef(null);
-    const activeHanja = characters[activeHanjaIndex] ?? characters[0] ?? null;
-    const activeLookup = activeHanja ? hanjaLookupByCharacter[activeHanja] : null;
-    const title = activeLookup?.firstTableData ?? [];
-    const result = activeLookup?.similarWordsTableData ?? [];
-    const isLoading = Boolean(activeHanja && isPreloadingHanja && !activeLookup);
+    const [visibleCountByChar, setVisibleCountByChar] = useState({});
+    const [activeDotIndex, setActiveDotIndex] = useState(0);
+    const [containerWidth, setContainerWidth] = useState(0);
+    const lastReportedIndexRef = useRef(0);
 
-    const palette = isDarkMode
-        ? {
-            overlay: 'rgba(0, 0, 0, 0.38)',
-            card: '#1d1915',
-            header: '#2b2419',
-            row: '#1d1915',
-            border: 'rgba(239, 225, 203, 0.18)',
-            text: '#f7efe5',
-            muted: '#c1b4a2',
-            accent: colors.accent,
-            accentSoft: colors.accentSoft,
-            knownBg: 'rgba(99, 173, 150, 0.18)',
-            knownText: '#8ad0bd',
-        }
-        : {
-            overlay: 'rgba(53, 46, 37, 0.22)',
-            card: '#ffffff',
-            header: '#fff4dc',
-            row: '#ffffff',
-            border: '#eadcc5',
-            text: colors.text,
-            muted: colors.textMuted,
-            accent: colors.accentStrong,
-            accentSoft: colors.accentSoft,
-            knownBg: colors.accentStrong,
-            knownText: '#ffffff',
-        };
-
-    const readingEntries = isLoading || !Array.isArray(title)
-        ? []
-        : normalizeReadingEntries(title);
-    const headerEntry = isLoading ? {} : title?.[0] ?? {};
-    const headerReadingParts = readingEntries
-        .map((entry) => ({
-            koreanMeaning: entry.koreanMeaning,
-            reading: entry.reading,
-        }))
-        .filter((entry) => entry.koreanMeaning || entry.reading);
-    const meaningLabels = uniqueValues(readingEntries.map((entry) => (
-        entry.englishMeaning || entry.fallbackMeaning
-    )));
-    const headerMeaning = meaningLabels.length > 0
-        ? meaningLabels.join(' / ')
-        : headerEntry.meaning;
-    const relatedWords = !isLoading && Array.isArray(result) ? result : [];
-    const visibleRelatedWords = relatedWords.slice(0, visibleRelatedCount);
-    const hasMoreRelatedWords = visibleRelatedCount < relatedWords.length;
-    const canGoPrevious = activeHanjaIndex > 0;
-    const canGoNext = activeHanjaIndex < characters.length - 1;
-    const linkedWord = sourceWord || 'this word';
+    const cardWidth = containerWidth > 0 ? containerWidth * 0.86 : 0;
     const language = sourceWordDetails?.language ?? 'ko';
 
-    useEffect(() => {
-        setActiveHanjaIndex(initialIndex);
-    }, [charactersKey, initialIndex]);
+    const palette = useMemo(() => ({
+        cardBg: colors.readerSurface,
+        tileBg: colors.surfaceMuted,
+        border: colors.readerBorder,
+        divider: colors.readerHairline,
+        text: colors.readerBodyInk,
+        muted: colors.readerMutedInk,
+        secondaryText: colors.textSecondary,
+        accent: colors.readerProgressFill,
+    }), [colors]);
 
     useEffect(() => {
         let isCancelled = false;
         const uniqueCharacters = [...new Set(charactersKey.split('|').filter(Boolean))];
 
         setHanjaLookupByCharacter({});
+        setVisibleCountByChar({});
+        setActiveDotIndex(0);
+        lastReportedIndexRef.current = 0;
 
         if (uniqueCharacters.length === 0) {
             setIsPreloadingHanja(false);
-            return () => {
-                isCancelled = true;
-            };
+            return () => { isCancelled = true; };
         }
 
         setIsPreloadingHanja(true);
@@ -192,9 +136,7 @@ const HanjaDetails = ({
                 console.warn(`[HanjaDetails] preload failed for "${character}":`, error.message);
             }
 
-            if (isCancelled) {
-                return;
-            }
+            if (isCancelled) { return; }
 
             setHanjaLookupByCharacter((previous) => ({
                 ...previous,
@@ -207,30 +149,15 @@ const HanjaDetails = ({
             }
         });
 
-        return () => {
-            isCancelled = true;
-        };
+        return () => { isCancelled = true; };
     }, [charactersKey, interfaceLanguage]);
-
-    useEffect(() => {
-        setVisibleRelatedCount(RELATED_WORD_PAGE_SIZE);
-        setIsLoadingMoreRelated(false);
-        lastRelatedLoadCountRef.current = 0;
-
-        if (relatedLoadTimerRef.current) {
-            clearTimeout(relatedLoadTimerRef.current);
-            relatedLoadTimerRef.current = null;
-        }
-    }, [activeHanja]);
 
     useEffect(() => {
         let isCancelled = false;
         setKnownKeys(new Set());
 
-        if (!activeHanja || !sourceWord) {
-            return () => {
-                isCancelled = true;
-            };
+        if (!sourceWord) {
+            return () => { isCancelled = true; };
         }
 
         getRelatedKnownWords(sourceWord, language, { ownerId: activeOwnerId })
@@ -243,66 +170,20 @@ const HanjaDetails = ({
                 console.warn(`[HanjaDetails] related known words load failed for "${sourceWord}":`, error.message);
             });
 
-        return () => {
-            isCancelled = true;
-        };
-    }, [activeHanja, activeOwnerId, language, sourceWord]);
+        return () => { isCancelled = true; };
+    }, [activeOwnerId, language, sourceWord]);
 
-    useEffect(() => {
-        return () => {
-            if (relatedLoadTimerRef.current) {
-                clearTimeout(relatedLoadTimerRef.current);
-            }
-        };
-    }, []);
-
-    const close = () => handleHanjaPress(null);
-
-    const goToPreviousHanja = () => {
-        if (!canGoPrevious) {
-            return;
-        }
-
-        setActiveHanjaIndex((currentIndex) => currentIndex - 1);
+    const showMoreRelatedWords = (char, totalCount) => {
+        setVisibleCountByChar((prev) => {
+            const currentCount = prev[char] ?? INITIAL_VISIBLE_COUNT;
+            return {
+                ...prev,
+                [char]: Math.min(totalCount, currentCount + RELATED_PAGE_SIZE),
+            };
+        });
     };
 
-    const goToNextHanja = () => {
-        if (!canGoNext) {
-            return;
-        }
-
-        setActiveHanjaIndex((currentIndex) => currentIndex + 1);
-    };
-
-    const handleRelatedScroll = ({ nativeEvent }) => {
-        if (!nativeEvent || !hasMoreRelatedWords || isLoadingMoreRelated) {
-            return;
-        }
-
-        const { contentOffset, contentSize, layoutMeasurement } = nativeEvent;
-        const distanceFromBottom = contentSize.height - (layoutMeasurement.height + contentOffset.y);
-
-        if (distanceFromBottom > 24) {
-            return;
-        }
-
-        if (lastRelatedLoadCountRef.current === visibleRelatedCount) {
-            return;
-        }
-
-        lastRelatedLoadCountRef.current = visibleRelatedCount;
-        setIsLoadingMoreRelated(true);
-
-        relatedLoadTimerRef.current = setTimeout(() => {
-            setVisibleRelatedCount((currentCount) => (
-                Math.min(currentCount + RELATED_WORD_PAGE_SIZE, relatedWords.length)
-            ));
-            setIsLoadingMoreRelated(false);
-            relatedLoadTimerRef.current = null;
-        }, RELATED_WORD_LOAD_DELAY_MS);
-    };
-
-    const handleKnownPress = async (entry) => {
+    const handleKnownPress = async (entry, sourceHanjaChar = null) => {
         const key = relatedWordKey(entry);
         const known = knownKeys.has(key);
         const markedAt = new Date().toISOString();
@@ -310,7 +191,7 @@ const HanjaDetails = ({
             korean: entry.korean,
             hanja: entry.hanja,
             meaning: entry.meaning,
-            sourceHanja: activeHanja,
+            sourceHanja: sourceHanjaChar,
             markedAt,
             updatedAt: markedAt,
         };
@@ -329,11 +210,7 @@ const HanjaDetails = ({
 
         setKnownKeys((previous) => {
             const next = new Set(previous);
-            if (known) {
-                next.delete(key);
-            } else {
-                next.add(key);
-            }
+            if (known) { next.delete(key); } else { next.add(key); }
             return next;
         });
 
@@ -343,9 +220,7 @@ const HanjaDetails = ({
             onKnownWordMarked?.(sourceWord, knownEntry);
         }
 
-        if (!sourceWord) {
-            return;
-        }
+        if (!sourceWord) { return; }
 
         try {
             const nextKnownWords = known
@@ -379,19 +254,12 @@ const HanjaDetails = ({
                     }
 
                     if (known) {
-                        return softDeleteUserRelatedKnownWord({
-                            user,
-                            ownerId,
-                            generation,
-                            relation,
-                        });
+                        return softDeleteUserRelatedKnownWord({ user, ownerId, generation, relation });
                     }
 
                     return Promise.all([
                         upsertUserVocabEntry({
-                            user,
-                            ownerId,
-                            generation,
+                            user, ownerId, generation,
                             entry: {
                                 word: sourceWord,
                                 hanja: sourceWordDetails?.hanja ?? null,
@@ -408,377 +276,389 @@ const HanjaDetails = ({
                                 language,
                             },
                         }),
-                        upsertUserRelatedKnownWord({
-                            user,
-                            ownerId,
-                            generation,
-                            relation,
-                        }),
+                        upsertUserRelatedKnownWord({ user, ownerId, generation, relation }),
                     ]);
                 })
                 .catch((syncError) => {
-                    console.warn(`[HanjaDetails] related known word cloud sync failed for "${sourceWord}":`, syncError.message);
+                    console.warn(`[HanjaDetails] cloud sync failed for "${sourceWord}":`, syncError.message);
                 });
         } catch (error) {
-            console.warn(`[HanjaDetails] related known word toggle failed for "${sourceWord}":`, error.message);
+            console.warn(`[HanjaDetails] known word toggle failed for "${sourceWord}":`, error.message);
         }
     };
 
+    if (characters.length === 0) {
+        return null;
+    }
+
     return (
-        <Modal visible={activeHanja !== null} animationType="fade" transparent onRequestClose={close}>
-            <View style={styles.modalRoot}>
-                <TouchableOpacity
-                    accessibilityRole="button"
-                    accessibilityLabel={t('hanja.close')}
-                    activeOpacity={1}
-                    style={[styles.backdrop, { backgroundColor: palette.overlay }]}
-                    onPress={close}
-                />
+        <View
+            style={styles.section}
+            onLayout={(e) => setContainerWidth(e.nativeEvent.layout.width)}
+        >
+            {/* Section header: eyebrow + pagination dots */}
+            <View style={styles.sectionHeader}>
+                <Text style={styles.sectionEyebrow}>ROOT CHARACTERS</Text>
+                {characters.length > 1 ? (
+                    <View style={styles.dots}>
+                        {characters.map((char, i) => (
+                            <View
+                                key={`${char}-${i}-dot`}
+                                style={[styles.dot, i === activeDotIndex && styles.dotActive]}
+                            />
+                        ))}
+                    </View>
+                ) : null}
+            </View>
 
-                <View style={[styles.card, { backgroundColor: palette.card, borderColor: palette.border }]}>
-                    <View style={styles.cardContent}>
-                        <View style={[styles.header, { backgroundColor: palette.header, borderBottomColor: palette.border }]}>
-                            <View style={[styles.hanjaTile, { backgroundColor: palette.card, borderColor: palette.border }]}>
-                                <Text selectable style={[styles.hanjaCharacter, { color: palette.text }]}>{activeHanja}</Text>
-                            </View>
+            {/* Horizontal carousel — only render once we have a measured width */}
+            {containerWidth > 0 ? (
+                <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    style={styles.carousel}
+                    contentContainerStyle={[
+                        styles.carouselContent,
+                        { paddingRight: containerWidth - cardWidth },
+                    ]}
+                    decelerationRate="fast"
+                    snapToInterval={cardWidth + CARD_GAP}
+                    snapToAlignment="start"
+                    onMomentumScrollEnd={(e) => {
+                        const scrollX = e.nativeEvent.contentOffset.x;
+                        const newIndex = Math.round(scrollX / (cardWidth + CARD_GAP));
+                        const boundedIndex = Math.min(Math.max(newIndex, 0), characters.length - 1);
+                        setActiveDotIndex(boundedIndex);
+                        if (boundedIndex !== lastReportedIndexRef.current) {
+                            lastReportedIndexRef.current = boundedIndex;
+                            onCarouselIndexChange?.(boundedIndex);
+                        }
+                    }}
+                >
+                    {characters.map((char, charIndex) => {
+                        const lookup = hanjaLookupByCharacter[char];
+                        const charTitle = lookup?.firstTableData ?? [];
+                        const charResult = lookup?.similarWordsTableData ?? [];
+                        const charIsLoading = isPreloadingHanja && !lookup;
 
-                            <View style={styles.headerCopy}>
-                                <Text selectable numberOfLines={2} style={[styles.readingText, { color: palette.text }]}>
-                                    {headerReadingParts.length > 0 ? headerReadingParts.map((entry, index) => (
-                                        <Text key={`${entry.koreanMeaning}-${entry.reading}-${index}`}>
-                                            {index > 0 ? ' / ' : ''}
-                                            {entry.koreanMeaning ? (
-                                                <Text style={styles.headerKoreanDefinition}>
-                                                    {entry.koreanMeaning}
-                                                </Text>
-                                            ) : null}
-                                            {entry.koreanMeaning && entry.reading ? ' ' : ''}
-                                            {entry.reading ? (
-                                                <Text style={styles.headerReadingSound}>
-                                                    {entry.reading}
-                                                </Text>
-                                            ) : null}
+                        const readingEntries = charIsLoading ? [] : normalizeReadingEntries(charTitle);
+                        const headerEntry = charIsLoading ? {} : (charTitle?.[0] ?? {});
+                        const meaningLabels = uniqueValues(
+                            readingEntries.map((e) => e.englishMeaning || e.fallbackMeaning)
+                        );
+                        const meaningText = meaningLabels.length > 0
+                            ? meaningLabels.join(' · ')
+                            : cleanValue(headerEntry.meaning);
+                        const readingParts = readingEntries
+                            .map((e) => [e.koreanMeaning, e.reading].filter(Boolean).join(' '))
+                            .filter(Boolean);
+                        const titleDisplay = readingParts.length > 0
+                            ? readingParts.join(' / ')
+                            : char;
+                        const primaryMeaning = meaningText || titleDisplay;
+
+                        const relatedWords = !charIsLoading && Array.isArray(charResult) ? charResult : [];
+                        const visibleCount = visibleCountByChar[char] ?? INITIAL_VISIBLE_COUNT;
+                        const visibleWords = relatedWords.slice(0, visibleCount);
+                        const hasMore = relatedWords.length > visibleCount;
+
+                        return (
+                            <View
+                                key={`${char}-${charIndex}`}
+                                style={[
+                                    styles.card,
+                                    {
+                                        width: cardWidth,
+                                        borderColor: palette.border,
+                                        backgroundColor: palette.cardBg,
+                                    },
+                                ]}
+                            >
+                                {/* Character tile + meaning */}
+                                <View style={styles.cardHeader}>
+                                    <View style={[styles.hanjaTile, { backgroundColor: palette.tileBg }]}>
+                                        <Text style={[styles.hanjaChar, { color: palette.accent }]}>
+                                            {char}
                                         </Text>
-                                    )) : (headerEntry.reading || (isLoading ? t('common.loading') : 'Hanja'))}
-                                </Text>
-                                <Text selectable numberOfLines={2} style={[styles.meaningText, { color: palette.muted }]}>
-                                    {headerMeaning || (isLoading ? t('hanja.fetchingDetails') : t('hanja.meaningUnavailable'))}
-                                </Text>
-                            </View>
-                        </View>
-
-                        <View style={[styles.noteRow, { backgroundColor: palette.card, borderBottomColor: palette.border }]}>
-                            <MaterialIcons name="link" size={18} color={palette.accent} />
-                            <Text style={[styles.noteText, { color: palette.muted }]}>
-                                {t('hanja.markKnownNote', { word: linkedWord })}
-                            </Text>
-                        </View>
-
-                        <ScrollView
-                            style={styles.relatedList}
-                            showsVerticalScrollIndicator={false}
-                            onScroll={handleRelatedScroll}
-                            scrollEventThrottle={16}
-                        >
-                            {isLoading ? (
-                                <View style={styles.emptyState}>
-                                    <ActivityIndicator size="small" color={palette.accent} />
-                                    <Text style={[styles.emptyText, { color: palette.muted }]}>{t('hanja.loading')}</Text>
-                                </View>
-                            ) : relatedWords.length > 0 ? (
-                                <>
-                                    {visibleRelatedWords.map((word, index) => {
-                                        const known = knownKeys.has(relatedWordKey(word));
-
-                                        return (
-                                            <View
-                                                key={`${word.korean}-${word.hanja}-${index}`}
-                                                style={[
-                                                    styles.relatedRow,
-                                                    { backgroundColor: palette.row, borderBottomColor: palette.border },
-                                                ]}
+                                    </View>
+                                    <View style={styles.cardCopy}>
+                                        <Text style={styles.cardEyebrow}>MEANING</Text>
+                                        {charIsLoading ? (
+                                            <View style={styles.shimmerLine} />
+                                        ) : (
+                                            <Text
+                                                style={[styles.cardTitle, { color: palette.text }]}
+                                                numberOfLines={1}
                                             >
-                                                <View style={styles.relatedCopy}>
-                                                    <View style={styles.relatedTitleRow}>
-                                                        <Text selectable style={[styles.relatedKorean, { color: palette.text }]}>
-                                                            {word.korean}
+                                                {primaryMeaning}
+                                            </Text>
+                                        )}
+                                    </View>
+                                </View>
+
+                                {/* Divider */}
+                                <View style={[styles.cardDivider, { borderColor: palette.divider }]} />
+
+                                {/* Related words section */}
+                                <Text style={styles.relatedEyebrow}>RELATED WORDS</Text>
+
+                                {charIsLoading ? (
+                                    <View style={styles.loadingRow}>
+                                        <ActivityIndicator size="small" color={palette.muted} />
+                                    </View>
+                                ) : relatedWords.length === 0 ? (
+                                    <Text style={[styles.emptyText, { color: palette.muted }]}>
+                                        {t('hanja.none')}
+                                    </Text>
+                                ) : (
+                                    <>
+                                        {visibleWords.map((word, idx) => {
+                                            const wKey = relatedWordKey(word);
+                                            const known = knownKeys.has(wKey);
+
+                                            return (
+                                                <View key={`${wKey}-${idx}`} style={styles.relatedRow}>
+                                                    <View style={styles.relatedInfo}>
+                                                        <Text>
+                                                            <Text style={[styles.relatedKorean, { color: palette.text }]}>
+                                                                {word.korean}
+                                                            </Text>
+                                                            {word.hanja ? (
+                                                                <Text style={[styles.relatedHanja, { color: palette.secondaryText }]}>
+                                                                    {' '}{word.hanja}
+                                                                </Text>
+                                                            ) : null}
                                                         </Text>
-                                                        <Text selectable style={[styles.relatedHanja, { color: palette.muted }]}>
-                                                            {word.hanja}
+                                                        <Text
+                                                            style={[styles.relatedMeaning, { color: palette.muted }]}
+                                                            numberOfLines={1}
+                                                        >
+                                                            {word.meaning || t('hanja.meaningUnavailable')}
                                                         </Text>
                                                     </View>
-                                                    <Text selectable numberOfLines={2} style={[styles.relatedMeaning, { color: palette.muted }]}>
-                                                        {word.meaning || t('hanja.meaningUnavailable')}
-                                                    </Text>
-                                                </View>
 
-                                                <TouchableOpacity
-                                                    accessibilityRole="button"
-                                                    accessibilityLabel={known
-                                                        ? t('hanja.markedKnown', { word: word.korean })
-                                                        : t('hanja.markKnown', { word: word.korean })}
-                                                    activeOpacity={0.82}
-                                                    onPress={() => handleKnownPress(word)}
-                                                    style={[
-                                                        styles.knownButton,
-                                                        {
-                                                            backgroundColor: known ? palette.knownBg : palette.card,
-                                                            borderColor: known ? palette.knownBg : palette.border,
-                                                        },
-                                                    ]}
-                                                >
-                                                    {known ? (
-                                                        <MaterialIcons
-                                                            name="check"
-                                                            size={17}
-                                                            color={palette.knownText}
-                                                        />
-                                                    ) : null}
-                                                    <Text
-                                                        numberOfLines={1}
-                                                        adjustsFontSizeToFit
-                                                        minimumFontScale={0.86}
+                                                    <TouchableOpacity
+                                                        accessibilityRole="button"
+                                                        accessibilityLabel={known
+                                                            ? t('hanja.markedKnown', { word: word.korean })
+                                                            : t('hanja.markKnown', { word: word.korean })}
+                                                        activeOpacity={0.82}
+                                                        onPress={() => handleKnownPress(word, char)}
                                                         style={[
-                                                            styles.knownButtonText,
-                                                            { color: known ? palette.knownText : palette.muted },
+                                                            styles.circle,
+                                                            known ? styles.circleFilled : styles.circleEmpty,
                                                         ]}
                                                     >
-                                                        {t('hanja.known')}
-                                                    </Text>
-                                                </TouchableOpacity>
-                                            </View>
-                                        );
-                                    })}
-                                </>
-                            ) : (
-                                <View style={styles.emptyState}>
-                                    <Text style={[styles.emptyText, { color: palette.muted }]}>{t('hanja.none')}</Text>
-                                </View>
-                            )}
-                        </ScrollView>
-                    </View>
+                                                        {known ? (
+                                                            <MaterialIcons
+                                                                name="check"
+                                                                size={17}
+                                                                color={colors.readerTappedWordText}
+                                                            />
+                                                        ) : null}
+                                                    </TouchableOpacity>
+                                                </View>
+                                            );
+                                        })}
 
-                    {canGoPrevious ? (
-                        <TouchableOpacity
-                            accessibilityRole="button"
-                            accessibilityLabel={t('hanja.previous')}
-                            activeOpacity={0.72}
-                            onPress={goToPreviousHanja}
-                            style={[
-                                styles.sideNavButton,
-                                styles.sideNavLeft,
-                            ]}
-                            hitSlop={SIDE_NAV_HIT_SLOP}
-                        >
-                            <MaterialIcons name="chevron-left" size={22} color={palette.muted} />
-                        </TouchableOpacity>
-                    ) : null}
-                    {canGoNext ? (
-                        <TouchableOpacity
-                            accessibilityRole="button"
-                            accessibilityLabel={t('hanja.next')}
-                            activeOpacity={0.72}
-                            onPress={goToNextHanja}
-                            style={[
-                                styles.sideNavButton,
-                                styles.sideNavRight,
-                            ]}
-                            hitSlop={SIDE_NAV_HIT_SLOP}
-                        >
-                            <MaterialIcons name="chevron-right" size={22} color={palette.muted} />
-                        </TouchableOpacity>
-                    ) : null}
-                    {isLoadingMoreRelated ? (
-                        <View pointerEvents="none" style={styles.loadMoreSpinner}>
-                            <ActivityIndicator size="small" color={palette.accent} />
-                        </View>
-                    ) : null}
-                </View>
-            </View>
-        </Modal>
+                                        {hasMore ? (
+                                            <TouchableOpacity
+                                                activeOpacity={0.82}
+                                                onPress={() => showMoreRelatedWords(char, relatedWords.length)}
+                                                style={styles.seeMoreRow}
+                                                accessibilityRole="button"
+                                                accessibilityLabel="See more related words"
+                                            >
+                                                <Text style={[styles.seeMoreText, { color: palette.secondaryText }]}>
+                                                    See more
+                                                </Text>
+                                                <MaterialIcons
+                                                    name="keyboard-arrow-down"
+                                                    size={15}
+                                                    color={palette.secondaryText}
+                                                />
+                                            </TouchableOpacity>
+                                        ) : null}
+                                    </>
+                                )}
+                            </View>
+                        );
+                    })}
+                </ScrollView>
+            ) : null}
+        </View>
     );
 };
 
-const styles = StyleSheet.create({
-    modalRoot: {
-        flex: 1,
-        alignItems: 'center',
-        justifyContent: 'center',
-        paddingHorizontal: spacing.xl,
-        paddingVertical: spacing.xl,
+const createStyles = (colors) => StyleSheet.create({
+    section: {
+        marginTop: 18,
+        gap: 12,
+        paddingHorizontal: 24,
     },
-    backdrop: {
-        ...StyleSheet.absoluteFillObject,
+    sectionHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+    },
+    sectionEyebrow: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 10,
+        lineHeight: 13,
+        letterSpacing: 2.2,
+        textTransform: 'uppercase',
+        color: colors.textTertiary,
+    },
+    dots: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+    },
+    dot: {
+        width: 6,
+        height: 6,
+        borderRadius: 3,
+        backgroundColor: colors.dotInactive,
+    },
+    dotActive: {
+        backgroundColor: colors.readerTappedWordBg,
+    },
+    carousel: {
+        marginHorizontal: -24,
+    },
+    carouselContent: {
+        gap: CARD_GAP,
+        paddingHorizontal: 24,
+        paddingBottom: 2,
     },
     card: {
-        width: '100%',
-        maxHeight: '82%',
-        borderRadius: 18,
         borderWidth: 1,
-        overflow: 'hidden',
-        position: 'relative',
-        shadowColor: 'rgba(45, 37, 27, 0.24)',
-        shadowOffset: { width: 0, height: 10 },
-        shadowOpacity: 1,
-        shadowRadius: 18,
-        elevation: 12,
+        borderRadius: 4,
+        padding: 16,
     },
-    cardContent: {
-        width: '100%',
-    },
-    header: {
-        minHeight: 104,
+    cardHeader: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 16,
-        paddingHorizontal: 36,
-        paddingVertical: 18,
-        borderBottomWidth: StyleSheet.hairlineWidth,
+        gap: 14,
     },
     hanjaTile: {
-        width: 64,
-        height: 64,
-        borderRadius: 14,
+        width: 54,
+        height: 54,
+        flexShrink: 0,
         borderWidth: 1,
+        borderColor: colors.border,
+        borderRadius: 3,
         alignItems: 'center',
         justifyContent: 'center',
     },
-    hanjaCharacter: {
-        fontFamily: fontFamilies.krSerifBold,
-        fontSize: 39,
-        lineHeight: 48,
+    hanjaChar: {
+        fontFamily: fontFamilies.krSerifMedium,
+        fontSize: 32,
+        lineHeight: 39,
     },
-    headerCopy: {
+    cardCopy: {
         flex: 1,
         minWidth: 0,
-        gap: 2,
     },
-    readingText: {
-        fontFamily: fontFamilies.krSerifRegular,
-        fontSize: 18,
-        lineHeight: 24,
+    cardEyebrow: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 9,
+        lineHeight: 12,
+        letterSpacing: 1.8,
+        textTransform: 'uppercase',
+        color: colors.textSubtle,
     },
-    headerKoreanDefinition: {
-        fontFamily: fontFamilies.krSerifRegular,
+    cardTitle: {
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 17,
+        lineHeight: 22,
+        marginTop: 3,
     },
-    headerReadingSound: {
-        fontFamily: fontFamilies.krSerifBold,
+    shimmerLine: {
+        height: 16,
+        width: '58%',
+        borderRadius: 2,
+        backgroundColor: colors.surfaceMuted,
+        marginTop: 5,
     },
-    meaningText: {
-        ...textStyles.body,
-        fontSize: 15,
-        lineHeight: 21,
+    cardDivider: {
+        borderTopWidth: 1,
+        marginTop: 14,
+        marginBottom: 13,
     },
-    sideNavButton: {
-        position: 'absolute',
-        top: '50%',
-        width: 34,
-        height: 64,
-        marginTop: -32,
+    relatedEyebrow: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 9,
+        lineHeight: 12,
+        letterSpacing: 1.8,
+        textTransform: 'uppercase',
+        color: colors.textSubtle,
+        marginBottom: 2,
+    },
+    loadingRow: {
+        paddingVertical: 14,
         alignItems: 'center',
-        justifyContent: 'center',
-        opacity: 0.52,
-        zIndex: 4,
     },
-    sideNavLeft: {
-        left: 3,
-    },
-    sideNavRight: {
-        right: 3,
-    },
-    noteRow: {
-        flexDirection: 'row',
-        alignItems: 'flex-start',
-        gap: spacing.xs,
-        paddingHorizontal: 36,
-        paddingVertical: spacing.sm,
-        borderBottomWidth: StyleSheet.hairlineWidth,
-    },
-    noteText: {
-        ...textStyles.body,
-        flex: 1,
+    emptyText: {
+        fontFamily: fontFamilies.sansRegular,
         fontSize: 13,
         lineHeight: 18,
-    },
-    noteStrong: {
-        fontFamily: fontFamilies.sansBold,
-    },
-    relatedList: {
-        flexGrow: 0,
+        fontStyle: 'italic',
+        marginTop: 10,
     },
     relatedRow: {
-        minHeight: 74,
         flexDirection: 'row',
         alignItems: 'center',
-        gap: spacing.md,
-        paddingHorizontal: 36,
-        paddingVertical: 10,
-        borderBottomWidth: StyleSheet.hairlineWidth,
+        gap: 10,
+        marginTop: 12,
     },
-    relatedCopy: {
+    relatedInfo: {
         flex: 1,
         minWidth: 0,
-        gap: 3,
-    },
-    relatedTitleRow: {
-        flexDirection: 'row',
-        alignItems: 'baseline',
-        flexWrap: 'wrap',
-        columnGap: spacing.xs,
+        gap: 1,
     },
     relatedKorean: {
-        fontFamily: fontFamilies.krSerifBold,
-        fontSize: 19,
-        lineHeight: 24,
+        fontFamily: fontFamilies.krSerifRegular,
+        fontSize: 16,
+        lineHeight: 21,
     },
     relatedHanja: {
-        fontFamily: fontFamilies.krSerifMedium,
+        fontFamily: fontFamilies.krSerifRegular,
         fontSize: 14,
         lineHeight: 19,
     },
     relatedMeaning: {
-        ...textStyles.body,
-        fontSize: 16,
-        lineHeight: 21,
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 13,
+        lineHeight: 17,
     },
-    knownButton: {
-        width: 128,
-        minWidth: 112,
-        height: 36,
-        borderRadius: 18,
-        borderWidth: 1,
+    // Circle toggle: two states only — filled (known) and empty (unknown)
+    circle: {
+        width: 30,
+        height: 30,
+        borderRadius: 15,
+        flexShrink: 0,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    circleFilled: {
+        backgroundColor: colors.readerTappedWordBg,
+    },
+    circleEmpty: {
+        borderWidth: 1.5,
+        borderColor: colors.readerBorder,
+    },
+    seeMoreRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'center',
-        gap: 4,
-        paddingHorizontal: 10,
-        flexShrink: 0,
+        justifyContent: 'flex-end',
+        gap: 2,
+        marginTop: 13,
     },
-    knownButtonText: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 12,
-        lineHeight: 15,
-        letterSpacing: 0,
-    },
-    emptyState: {
-        minHeight: 96,
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: spacing.lg,
-    },
-    emptyText: {
-        ...textStyles.body,
-        fontStyle: 'italic',
-    },
-    loadMoreSpinner: {
-        position: 'absolute',
-        left: 0,
-        right: 0,
-        bottom: 14,
-        height: 28,
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 5,
+    seeMoreText: {
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 13,
+        lineHeight: 17,
     },
 });
 

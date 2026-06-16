@@ -3,6 +3,7 @@ import { View, Text, StyleSheet } from 'react-native';
 import { Reader, useReader } from '@epubjs-react-native/core';
 import { useFileSystem } from '@epubjs-react-native/expo-file-system';
 import { useTranslation } from '../../hooks/useTranslation';
+import { useTheme } from '../../theme';
 
 const BottomSection = ({
     books,
@@ -26,6 +27,7 @@ const BottomSection = ({
     navigationRef,
 }) => {
     const { t } = useTranslation();
+    const { colors } = useTheme();
     const { getCurrentLocation, goToLocation, injectJavascript } = useReader();
     const currentLocationRef = useRef(null);
     const pendingLocationRestoreRef = useRef('');
@@ -262,8 +264,8 @@ const BottomSection = ({
 
     const theme = useMemo(() => ({
         body: {
-            background: settings.isDarkMode ? '#1f2937' : '#ffffff',
-            color: settings.isDarkMode ? '#f3f4f6' : '#1f2937',
+            background: colors.readerPaper,
+            color: colors.readerBodyInk,
             'font-size': `${settings.fontSize}px !important`,
         },
         p: {
@@ -276,7 +278,7 @@ const BottomSection = ({
         span: {
             'font-size': `${settings.fontSize}px !important`,
         }
-    }), [settings.isDarkMode, settings.fontSize, settings.lineSpacing]);
+    }), [colors.readerBodyInk, colors.readerPaper, settings.fontSize, settings.lineSpacing]);
 
     if (!currentBook || savedWords === null) {
         return (
@@ -478,13 +480,11 @@ const BottomSection = ({
 
                         var span = doc.createElement('span');
                         span.dataset.activeTapHighlight = 'true';
-                        span.style.backgroundColor = useDarkHighlightTheme
-                            ? 'rgba(117, 138, 170, 0.24)'
-                            : 'rgba(188, 204, 194, 0.32)';
-                        span.style.borderRadius = '3px';
-                        span.style.boxShadow = useDarkHighlightTheme
-                            ? 'inset 0 -1px 0 rgba(166, 188, 214, 0.18)'
-                            : 'inset 0 -1px 0 rgba(134, 154, 142, 0.18)';
+                        span.style.backgroundColor = '${colors.readerTappedWordBg}';
+                        span.style.color = '${colors.readerTappedWordText}';
+                        span.style.borderRadius = '2px';
+                        span.style.padding = '1px 4px';
+                        span.style.boxShadow = 'none';
                         range.surroundContents(span);
                         return true;
                     } catch (e) {
@@ -571,14 +571,11 @@ const BottomSection = ({
                             if (part.trim() && tokenMatchesSaved(part)) {
                                 var span = doc.createElement('span');
                                 span.dataset.savedHighlight = 'true';
-                                span.style.backgroundColor = useDarkHighlightTheme
-                                    ? 'rgba(198, 160, 100, 0.34)'
-                                    : 'rgba(214, 190, 148, 0.42)';
-                                span.style.color = useDarkHighlightTheme ? '#f6ead7' : '#4f4031';
-                                span.style.borderRadius = '3px';
-                                span.style.boxShadow = useDarkHighlightTheme
-                                    ? 'inset 0 -1px 0 rgba(242, 219, 176, 0.24)'
-                                    : 'inset 0 -1px 0 rgba(110, 98, 85, 0.28)';
+                                span.style.backgroundColor = '${colors.transparent}';
+                                span.style.color = '${colors.readerBodyInk}';
+                                span.style.borderRadius = '0';
+                                span.style.borderBottom = '2px dotted ${colors.readerSavedUnderline}';
+                                span.style.boxShadow = 'none';
                                 span.textContent = part;
                                 fragment.appendChild(span);
                             } else {
@@ -864,7 +861,7 @@ const styles = StyleSheet.create({
     },
     noBookText: {
         fontSize: 18,
-        color: '#6e7b8b',
+        color: colors.textSubtle,
     }
 });
 

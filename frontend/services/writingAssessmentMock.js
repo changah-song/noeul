@@ -1,3 +1,5 @@
+import { colors } from '../theme';
+
 export const MOCK_WRITING_ENTRY_ID = 'mock-writing-entry-today-concerns';
 
 export const MOCK_WRITING_ENTRY_BODY =
@@ -137,10 +139,10 @@ export const MOCK_WRITING_ASSESSMENT = {
 };
 
 export const ANNOTATION_LEGEND = [
-  { type: 'GRAMMAR', label: 'Grammar', color: '#FF4444' },
-  { type: 'DICTION', label: 'Word choice', color: '#F5A623' },
-  { type: 'NATIVE_INSERT', label: 'Translation', color: '#4CAF50' },
-  { type: 'UNNATURAL', label: 'Unnatural', color: '#2196F3' },
+  { type: 'GRAMMAR', label: 'Grammar', color: colors.inkSlate },
+  { type: 'DICTION', label: 'Word choice', color: colors.textMuted },
+  { type: 'NATIVE_INSERT', label: 'Translation', color: colors.textTertiary },
+  { type: 'UNNATURAL', label: 'Unnatural', color: colors.textSubtle },
 ];
 
 export const ANNOTATION_COLORS = ANNOTATION_LEGEND.reduce((acc, item) => {

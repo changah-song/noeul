@@ -40,75 +40,114 @@ class OcrResultOverlayView(
   private val bookmarkPath = Path()
   private val panelClipPath = Path()
   private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.argb(58, 47, 125, 76)
+    color = Color.argb(33, 61, 79, 114)
     style = Paint.Style.FILL
   }
   private val boxStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.argb(220, 47, 125, 76)
+    color = Color.rgb(61, 79, 114)
     strokeWidth = dp(1.5f)
     style = Paint.Style.STROKE
   }
   private val selectedBoxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.argb(90, 47, 125, 76)
+    color = Color.rgb(61, 79, 114)
+    style = Paint.Style.FILL
+  }
+  private val regionBoxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    color = Color.argb(61, 61, 79, 114)
     style = Paint.Style.FILL
   }
   private val dimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.argb(35, 0, 0, 0)
+    color = Color.TRANSPARENT
     style = Paint.Style.FILL
   }
   private val closePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.argb(220, 24, 24, 24)
+    color = Color.argb(230, 32, 38, 49)
     style = Paint.Style.FILL
   }
   private val closeIconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.WHITE
+    color = Color.rgb(250, 248, 245)
     strokeCap = Paint.Cap.ROUND
-    strokeWidth = dp(2.4f)
+    strokeJoin = Paint.Join.ROUND
+    strokeWidth = 64f
+    style = Paint.Style.STROKE
+  }
+  private val closeBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    color = Color.rgb(53, 60, 71)
+    strokeWidth = dp(1f)
+    style = Paint.Style.STROKE
+  }
+  private val glyphPath = Path()
+  private val emptyPillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    color = Color.argb(199, 27, 28, 28)
+    style = Paint.Style.FILL
+  }
+  private val emptyIconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    color = Color.rgb(216, 217, 219)
+    strokeWidth = dp(1.8f)
+    strokeCap = Paint.Cap.ROUND
     style = Paint.Style.STROKE
   }
   private val emptyTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.WHITE
+    color = Color.rgb(216, 217, 219)
     textAlign = Paint.Align.CENTER
-    textSize = dp(14f)
+    textSize = dp(13f)
+    typeface = englishRegularTypeface
   }
   private val cardPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
     color = Color.WHITE
     style = Paint.Style.FILL
   }
   private val cardStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.rgb(232, 223, 201)
+    color = Color.rgb(228, 226, 226)
     strokeWidth = dp(1f)
     style = Paint.Style.STROKE
   }
   private val panelShadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
     color = Color.WHITE
     style = Paint.Style.FILL
-    setShadowLayer(dp(18f), 0f, dp(10f), Color.argb(58, 0, 0, 0))
+    setShadowLayer(dp(30f), 0f, -dp(10f), Color.argb(20, 27, 28, 28))
   }
   private val cardTitlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.rgb(26, 26, 26)
-    textSize = dp(15.5f)
+    color = Color.rgb(27, 28, 28)
+    textSize = dp(24f)
     typeface = koreanBoldTypeface
     isFakeBoldText = true
   }
+  private val headingHanjaPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+    color = Color.rgb(68, 71, 75)
+    textSize = dp(16f)
+    typeface = koreanRegularTypeface
+  }
+  private val romanizationPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+    color = Color.rgb(117, 119, 123)
+    textSize = dp(13f)
+    typeface = Typeface.create(Typeface.SERIF, Typeface.ITALIC)
+  }
+  private val eyebrowPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+    color = Color.rgb(154, 156, 159)
+    textSize = dp(9f)
+    typeface = englishBoldTypeface
+    isFakeBoldText = true
+    letterSpacing = 0.2f
+  }
   private val cardMetaPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.rgb(155, 142, 118)
-    textSize = dp(11.5f)
+    color = Color.rgb(117, 119, 123)
+    textSize = dp(13f)
     typeface = englishRegularTypeface
   }
   private val cardBodyPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.rgb(26, 26, 26)
+    color = Color.rgb(68, 71, 75)
     textSize = dp(14f)
     typeface = englishRegularTypeface
     isFakeBoldText = false
   }
   private val cardErrorPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.rgb(160, 62, 54)
+    color = Color.rgb(117, 119, 123)
     textSize = dp(14f)
-    typeface = englishMediumTypeface
+    typeface = Typeface.create(Typeface.SERIF, Typeface.ITALIC)
   }
   private val buttonPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.rgb(200, 125, 0)
+    color = Color.rgb(32, 38, 49)
     style = Paint.Style.FILL
   }
   private val secondaryButtonPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -116,65 +155,68 @@ class OcrResultOverlayView(
     style = Paint.Style.FILL
   }
   private val buttonStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.rgb(232, 223, 201)
-    strokeWidth = dp(1.5f)
+    color = Color.rgb(228, 226, 226)
+    strokeWidth = dp(1f)
     style = Paint.Style.STROKE
   }
   private val buttonTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
     color = Color.WHITE
     textAlign = Paint.Align.CENTER
-    textSize = dp(13f)
+    textSize = dp(10f)
     typeface = englishBoldTypeface
     isFakeBoldText = true
+    letterSpacing = 0.18f
   }
   private val secondaryButtonTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.rgb(155, 142, 118)
+    color = Color.rgb(32, 38, 49)
     textAlign = Paint.Align.CENTER
-    textSize = dp(13f)
+    textSize = dp(10f)
     typeface = englishBoldTypeface
     isFakeBoldText = true
+    letterSpacing = 0.18f
   }
   private val wordNavCountPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.rgb(155, 142, 118)
+    color = Color.rgb(154, 156, 159)
     textAlign = Paint.Align.CENTER
     textSize = dp(10.5f)
     typeface = englishBoldTypeface
     isFakeBoldText = true
   }
   private val hanjaPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.rgb(155, 142, 118)
-    textSize = dp(14f)
+    color = Color.rgb(68, 71, 75)
+    textSize = dp(16f)
     typeface = koreanRegularTypeface
   }
   private val hanjaActivePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.rgb(200, 125, 0)
-    textSize = dp(14f)
+    color = Color.rgb(32, 38, 49)
+    textSize = dp(16f)
     typeface = koreanRegularTypeface
   }
   private val hanjaParenPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.rgb(111, 101, 82)
-    textSize = dp(14f)
+    color = Color.rgb(68, 71, 75)
+    textSize = dp(16f)
     typeface = koreanRegularTypeface
   }
   private val hanjaUnderlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.rgb(155, 142, 118)
+    color = Color.rgb(197, 198, 203)
     strokeWidth = dp(1.5f)
     style = Paint.Style.STROKE
     pathEffect = DashPathEffect(floatArrayOf(dp(1.25f), dp(2f)), 0f)
   }
   private val badgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.rgb(241, 236, 224)
+    color = Color.TRANSPARENT
     style = Paint.Style.FILL
   }
   private val badgeTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.rgb(111, 101, 82)
+    color = Color.rgb(92, 94, 99)
     textAlign = Paint.Align.CENTER
-    textSize = dp(9.5f)
+    textSize = dp(9f)
     typeface = englishBoldTypeface
     isFakeBoldText = true
+    letterSpacing = 0.155f
   }
   private val dividerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.rgb(239, 231, 212)
+    color = Color.rgb(236, 234, 234)
     strokeWidth = dp(1f)
     style = Paint.Style.STROKE
   }
@@ -653,7 +695,6 @@ class OcrResultOverlayView(
     super.onDraw(canvas)
 
     val currentResult = ocrResult ?: return
-    canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), dimPaint)
     drawBoxes(canvas, currentResult)
     drawCloseButton(canvas)
     drawEmptyState(canvas, currentResult)
@@ -770,7 +811,7 @@ class OcrResultOverlayView(
         return true
       }
       if (translationButtonRect.contains(event.x, event.y) && card.state == LookupCardState.LOADED) {
-        lookupCard = card.copy(showingTranslation = true, expandedAlternatives = false)
+        lookupCard = card.copy(showingTranslation = !card.showingTranslation, expandedAlternatives = false)
         hanjaPopup = null
         invalidate()
         return true
@@ -808,47 +849,89 @@ class OcrResultOverlayView(
     val transform = currentTransform(result)
     logOverlayGeometry(result, transform)
     val selectedBox = lookupCard?.selection?.box
+    val selectedIsRegion = lookupCard?.let(::isRegionSelection) == true
 
     visibleTargets(result).forEach { target ->
       val rect = transform.mapRect(target.box)
       if (selectedBox == target.box) {
-        canvas.drawRoundRect(rect, dp(3f), dp(3f), selectedBoxPaint)
+        val pressedRect = RectF(rect).apply {
+          inset(-dp(if (selectedIsRegion) 4f else 3f), -dp(if (selectedIsRegion) 2f else 1f))
+        }
+        val radius = dp(if (selectedIsRegion) 4f else 2f)
+        canvas.drawRoundRect(pressedRect, radius, radius, if (selectedIsRegion) regionBoxPaint else selectedBoxPaint)
+        canvas.drawRoundRect(pressedRect, radius, radius, boxStrokePaint)
       } else {
-        canvas.drawRoundRect(rect, dp(3f), dp(3f), boxPaint)
+        val targetRect = RectF(rect).apply {
+          inset(-dp(3f), -dp(1f))
+        }
+        canvas.drawRoundRect(targetRect, dp(2f), dp(2f), boxPaint)
+        canvas.drawRoundRect(targetRect, dp(2f), dp(2f), boxStrokePaint)
       }
-      canvas.drawRoundRect(rect, dp(3f), dp(3f), boxStrokePaint)
     }
   }
 
   private fun drawCloseButton(canvas: Canvas) {
-    val size = dp(44f)
+    if (lookupCard != null) {
+      overlayCloseRect.setEmpty()
+      return
+    }
+
+    val size = dp(56f)
     closeAnchorRect(size)?.let(overlayCloseRect::set) ?: run {
-      val margin = dp(16f)
+      val rightMargin = dp(24f)
+      val bottomMargin = dp(48f)
       overlayCloseRect.set(
-        width - margin - size,
-        margin,
-        width - margin,
-        margin + size
+        width - rightMargin - size,
+        height - bottomMargin - size,
+        width - rightMargin,
+        height - bottomMargin
       )
     }
 
+    closePaint.setShadowLayer(dp(16f), 0f, dp(4f), Color.argb(82, 0, 0, 0))
     canvas.drawOval(overlayCloseRect, closePaint)
+    closePaint.clearShadowLayer()
+    canvas.drawOval(overlayCloseRect, closeBorderPaint)
+    drawFfGlyph(canvas, overlayCloseRect.centerX(), overlayCloseRect.centerY(), dp(30f))
+  }
 
-    val inset = dp(14f)
-    canvas.drawLine(
-      overlayCloseRect.left + inset,
-      overlayCloseRect.top + inset,
-      overlayCloseRect.right - inset,
-      overlayCloseRect.bottom - inset,
-      closeIconPaint
-    )
-    canvas.drawLine(
-      overlayCloseRect.right - inset,
-      overlayCloseRect.top + inset,
-      overlayCloseRect.left + inset,
-      overlayCloseRect.bottom - inset,
-      closeIconPaint
-    )
+  private fun drawFfGlyph(canvas: Canvas, centerX: Float, centerY: Float, size: Float) {
+    val scale = size / 1024f
+    canvas.save()
+    canvas.translate(centerX - size / 2f, centerY - size / 2f)
+    canvas.scale(scale, scale)
+
+    glyphPath.reset()
+    glyphPath.moveTo(252f, 296f)
+    glyphPath.cubicTo(348f, 258f, 462f, 272f, 532f, 330f)
+    canvas.drawPath(glyphPath, closeIconPaint)
+
+    glyphPath.reset()
+    glyphPath.moveTo(532f, 330f)
+    glyphPath.cubicTo(602f, 272f, 716f, 258f, 812f, 296f)
+    canvas.drawPath(glyphPath, closeIconPaint)
+
+    drawGlyphLine(canvas, 252f, 296f, 252f, 700f)
+    drawGlyphLine(canvas, 812f, 296f, 812f, 700f)
+    drawGlyphLine(canvas, 532f, 330f, 532f, 734f)
+
+    glyphPath.reset()
+    glyphPath.moveTo(252f, 700f)
+    glyphPath.cubicTo(348f, 662f, 462f, 676f, 532f, 734f)
+    canvas.drawPath(glyphPath, closeIconPaint)
+
+    glyphPath.reset()
+    glyphPath.moveTo(532f, 734f)
+    glyphPath.cubicTo(602f, 676f, 716f, 662f, 812f, 700f)
+    canvas.drawPath(glyphPath, closeIconPaint)
+
+    drawGlyphLine(canvas, 252f, 452f, 396f, 452f)
+    drawGlyphLine(canvas, 532f, 462f, 676f, 462f)
+    canvas.restore()
+  }
+
+  private fun drawGlyphLine(canvas: Canvas, startX: Float, startY: Float, endX: Float, endY: Float) {
+    canvas.drawLine(startX, startY, endX, endY, closeIconPaint)
   }
 
   private fun closeAnchorRect(size: Float): RectF? {
@@ -873,11 +956,47 @@ class OcrResultOverlayView(
       return
     }
 
-    canvas.drawText(
-      "No OCR boxes found",
-      width / 2f,
-      max(dp(96f), height / 2f),
-      emptyTextPaint
+    val label = "텍스트를 찾을 수 없습니다"
+    val iconSize = dp(16f)
+    val gap = dp(8f)
+    val horizontalPadding = dp(18f)
+    val pillHeight = dp(40f)
+    val textWidth = emptyTextPaint.measureText(label)
+    val pillWidth = iconSize + gap + textWidth + horizontalPadding * 2f
+    val centerX = width / 2f
+    val centerY = max(dp(96f), height / 2f)
+    val rect = RectF(
+      centerX - pillWidth / 2f,
+      centerY - pillHeight / 2f,
+      centerX + pillWidth / 2f,
+      centerY + pillHeight / 2f
+    )
+    canvas.drawRoundRect(rect, pillHeight / 2f, pillHeight / 2f, emptyPillPaint)
+
+    val iconLeft = rect.left + horizontalPadding
+    val iconCenterY = rect.centerY()
+    drawSearchOffIcon(canvas, iconLeft + iconSize / 2f, iconCenterY, iconSize)
+    emptyTextPaint.textAlign = Paint.Align.LEFT
+    canvas.drawText(label, iconLeft + iconSize + gap, iconCenterY - (emptyTextPaint.ascent() + emptyTextPaint.descent()) / 2f, emptyTextPaint)
+    emptyTextPaint.textAlign = Paint.Align.CENTER
+  }
+
+  private fun drawSearchOffIcon(canvas: Canvas, centerX: Float, centerY: Float, size: Float) {
+    val radius = size * 0.28f
+    canvas.drawCircle(centerX - size * 0.07f, centerY - size * 0.07f, radius, emptyIconPaint)
+    canvas.drawLine(
+      centerX + radius * 0.45f,
+      centerY + radius * 0.45f,
+      centerX + size * 0.35f,
+      centerY + size * 0.35f,
+      emptyIconPaint
+    )
+    canvas.drawLine(
+      centerX - size * 0.38f,
+      centerY - size * 0.38f,
+      centerX + size * 0.38f,
+      centerY + size * 0.38f,
+      emptyIconPaint
     )
   }
 
@@ -893,58 +1012,47 @@ class OcrResultOverlayView(
     val cardWidth = lookupCardWidth()
     val cardHeight = computeCardHeight(card)
     val left = lookupCardLeft(cardWidth)
-    val top = (height - cardHeight - dp(22f)).coerceAtLeast(dp(72f))
+    val top = (height - cardHeight).coerceAtLeast(dp(72f))
 
     cardRect.set(left, top, left + cardWidth, top + cardHeight)
     drawPanelSurface(canvas, cardRect)
 
-    val padding = dp(15f)
-    val sideNavInset = if (card.wordOptions.size > 1 && card.state != LookupCardState.SAVING) dp(18f) else 0f
-    val contentLeft = cardRect.left + padding + sideNavInset
-    val contentRight = cardRect.right - padding - sideNavInset
+    val contentLeft = cardRect.left + dp(20f)
+    val contentRight = cardRect.right - dp(20f)
+    drawSheetHandle(canvas)
 
-    drawHeaderButtons(canvas, card)
-    val actionLeft = listOf(translationButtonRect, saveButtonRect)
-      .filter { !it.isEmpty }
-      .minOfOrNull { it.left }
-    val titleRight = actionLeft?.let { it - dp(8f) } ?: contentRight
-    drawCardTitleLine(canvas, card, contentLeft, titleRight.coerceAtLeast(contentLeft + dp(62f)), cardRect.top + dp(25f))
-
-    if (card.showingTranslation) {
-      drawTranslationOnlyCard(canvas, card, contentLeft, contentRight)
-      drawWordSideNavigator(canvas, card)
+    if (card.showingTranslation && isRegionSelection(card)) {
+      drawRegionTranslationSheet(canvas, card, contentLeft, contentRight)
       return
     }
 
-    val metaBaseline = cardRect.top + dp(43f)
-    val metaBottom = drawCardMetaLine(canvas, card, contentLeft, contentRight, metaBaseline)
-    var y = max(metaBaseline + dp(17f), metaBottom + dp(8f))
-
-    val bodyPaint = if (card.state == LookupCardState.ERROR || card.state == LookupCardState.FALLBACK) {
-      cardErrorPaint
-    } else {
-      cardBodyPaint
+    val headingBottom = drawLookupHeading(canvas, card, contentLeft, contentRight)
+    if (card.showingTranslation) {
+      drawDictionaryTranslationSheet(canvas, card, contentLeft, contentRight, headingBottom + dp(14f))
+      drawSheetActionRow(canvas, card, activeTranslation = true)
+      return
     }
-    val body = card.displayBody
-    val lines = wrapText(body, bodyPaint, contentRight - contentLeft, maxLines = if (card.expandedAlternatives) 1 else 2)
-    lines.forEach { line ->
-      canvas.drawText(line, contentLeft, y, bodyPaint)
-      y += dp(19f)
+
+    var y = if (card.state == LookupCardState.LOADING || card.state == LookupCardState.SAVING) {
+      drawCenteredStateText(canvas, card.displayBody, contentLeft, contentRight, headingBottom + dp(22f))
+    } else {
+      drawDefinitionBody(canvas, card, contentLeft, contentRight, headingBottom + dp(14f))
     }
 
     if (card.expandedAlternatives) {
-      drawAlternatives(canvas, card, contentLeft, contentRight, y + dp(3f))
+      drawAlternatives(canvas, card, contentLeft, contentRight, y + dp(8f))
+    } else if (card.hasRootCharacters) {
+      drawRootCharacters(canvas, card, contentLeft, contentRight, y + dp(10f))
     }
 
-    drawMoreButton(canvas, card)
-    drawWordSideNavigator(canvas, card)
+    drawSheetActionRow(canvas, card, activeTranslation = false)
   }
 
   private fun lookupCardWidth(): Float =
-    min(width - dp(24f), dp(390f)).coerceAtLeast(dp(260f))
+    width.toFloat().coerceAtLeast(dp(260f))
 
   private fun lookupCardLeft(cardWidth: Float): Float =
-    ((width - cardWidth) / 2f).coerceAtLeast(dp(12f))
+    ((width - cardWidth) / 2f).coerceAtLeast(0f)
 
   private fun computeCardHeight(card: LookupCard): Float {
     val alternativeCount = if (card.expandedAlternatives) {
@@ -952,16 +1060,437 @@ class OcrResultOverlayView(
     } else {
       0
     }
-    if (card.showingTranslation) {
-      return dp(126f).coerceAtMost(height - dp(96f)).coerceAtLeast(dp(100f))
+    val desired = when {
+      card.showingTranslation && isRegionSelection(card) -> dp(136f)
+      card.showingTranslation -> dp(224f)
+      card.state == LookupCardState.LOADING || card.state == LookupCardState.SAVING -> dp(178f)
+      card.definition.isNullOrBlank() -> dp(204f)
+      card.expandedAlternatives -> dp(236f) + alternativeCount * alternativeRowHeight()
+      card.hasRootCharacters -> dp(362f)
+      else -> dp(218f)
     }
-    val moreHeight = if (card.alternatives.isNotEmpty()) dp(22f) else 0f
-    val alternativeHeight = alternativeCount * alternativeRowHeight()
-    val baseHeight = if (card.expandedAlternatives) dp(82f) else dp(74f)
-    return (baseHeight + alternativeHeight + moreHeight)
-      .coerceAtMost(height - dp(96f))
-      .coerceAtLeast(dp(86f))
+
+    return desired.coerceAtMost(height - dp(72f)).coerceAtLeast(dp(132f))
   }
+
+  private fun drawSheetHandle(canvas: Canvas) {
+    val handleWidth = dp(36f)
+    val handleHeight = dp(4f)
+    val top = cardRect.top + dp(12f)
+    val rect = RectF(
+      cardRect.centerX() - handleWidth / 2f,
+      top,
+      cardRect.centerX() + handleWidth / 2f,
+      top + handleHeight
+    )
+    val handlePaint = secondaryButtonPaint
+    handlePaint.color = Color.rgb(228, 226, 226)
+    canvas.drawRoundRect(rect, handleHeight / 2f, handleHeight / 2f, handlePaint)
+    handlePaint.color = Color.WHITE
+  }
+
+  private fun drawLookupHeading(
+    canvas: Canvas,
+    card: LookupCard,
+    contentLeft: Float,
+    contentRight: Float
+  ): Float {
+    val baseline = cardRect.top + dp(if (card.definition.isNullOrBlank()) 58f else 56f)
+    val hasNavigation = card.wordOptions.size > 1 && card.state != LookupCardState.SAVING
+    val chevronWidth = dp(24f)
+
+    if (hasNavigation) {
+      wordNavPreviousRect.set(contentLeft - dp(4f), baseline - dp(25f), contentLeft + chevronWidth, baseline + dp(9f))
+      wordNavNextRect.set(contentRight - chevronWidth, baseline - dp(25f), contentRight + dp(4f), baseline + dp(9f))
+      drawHeadwordChevron(canvas, wordNavPreviousRect, leftDirection = true, active = card.activeWordIndex > 0)
+      drawHeadwordChevron(canvas, wordNavNextRect, leftDirection = false, active = card.activeWordIndex < card.wordOptions.lastIndex)
+    }
+
+    val availableLeft = if (hasNavigation) wordNavPreviousRect.right + dp(6f) else contentLeft
+    val availableRight = if (hasNavigation) wordNavNextRect.left - dp(6f) else contentRight
+    val title = card.stem.ifBlank { card.surface.ifBlank { card.selection.selectedText } }
+    val hanja = card.hanja?.trim().orEmpty()
+    val romanization = card.romanization?.trim().orEmpty()
+    val gap = dp(9f)
+    val hanjaWidth = if (hanja.isNotEmpty()) headingHanjaPaint.measureText(hanja) else 0f
+    val romanWidth = if (romanization.isNotEmpty()) romanizationPaint.measureText(romanization) else 0f
+    val reserved = (if (hanjaWidth > 0f) hanjaWidth + gap else 0f) +
+      (if (romanWidth > 0f) romanWidth + gap else 0f)
+    val maxTitleWidth = (availableRight - availableLeft - reserved).coerceAtLeast(dp(72f))
+    val titleText = ellipsize(title, cardTitlePaint, maxTitleWidth)
+    val titleWidth = cardTitlePaint.measureText(titleText)
+    val totalWidth = titleWidth +
+      (if (hanjaWidth > 0f) gap + hanjaWidth else 0f) +
+      (if (romanWidth > 0f) gap + romanWidth else 0f)
+    var cursor = ((availableLeft + availableRight - totalWidth) / 2f).coerceAtLeast(availableLeft)
+
+    canvas.drawText(titleText, cursor, baseline, cardTitlePaint)
+    cursor += titleWidth
+    if (hanja.isNotEmpty()) {
+      cursor += gap
+      drawHeadingHanja(canvas, hanja, cursor, baseline, availableRight, title)
+      cursor += hanjaWidth
+    }
+    if (romanization.isNotEmpty() && cursor + gap < availableRight) {
+      cursor += gap
+      canvas.drawText(ellipsize(romanization, romanizationPaint, availableRight - cursor), cursor, baseline, romanizationPaint)
+    }
+
+    return baseline + dp(13f)
+  }
+
+  private fun drawHeadingHanja(
+    canvas: Canvas,
+    hanja: String,
+    x: Float,
+    baseline: Float,
+    maxRight: Float,
+    sourceWord: String
+  ) {
+    var cursor = x
+    hanja.forEach { char ->
+      val charText = char.toString()
+      val width = headingHanjaPaint.measureText(charText)
+      if (cursor + width > maxRight) {
+        return
+      }
+      canvas.drawText(charText, cursor, baseline, headingHanjaPaint)
+      if (isHanja(char)) {
+        hanjaTouchRects.add(
+          HanjaTouchRect(
+            character = charText,
+            sourceWord = sourceWord,
+            rect = RectF(cursor - dp(4f), baseline - dp(22f), cursor + width + dp(4f), baseline + dp(6f))
+          )
+        )
+      }
+      cursor += width + dp(2f)
+    }
+  }
+
+  private fun drawDefinitionBody(
+    canvas: Canvas,
+    card: LookupCard,
+    contentLeft: Float,
+    contentRight: Float,
+    top: Float
+  ): Float {
+    val posLabel = formatPos(card.pos)
+    val bodyPaint = if (card.state == LookupCardState.ERROR || card.state == LookupCardState.FALLBACK) {
+      cardErrorPaint
+    } else {
+      cardBodyPaint
+    }
+    val body = if (card.state == LookupCardState.LOADED && card.definition.isNullOrBlank()) {
+      "No definition found"
+    } else {
+      card.displayBody
+    }
+    val availableWidth = contentRight - contentLeft
+    val posWidth = if (posLabel.isNotEmpty()) {
+      badgeTextPaint.measureText(posLabel) + dp(12f)
+    } else {
+      0f
+    }
+    val gap = if (posWidth > 0f) dp(9f) else 0f
+    val textWidth = (availableWidth - posWidth - gap).coerceAtLeast(dp(120f))
+    val lines = wrapText(body, bodyPaint, textWidth, maxLines = if (card.definition.isNullOrBlank()) 1 else 2)
+    val firstLineWidth = lines.firstOrNull()?.let { bodyPaint.measureText(it) } ?: 0f
+    val groupWidth = (posWidth + gap + firstLineWidth).coerceAtMost(availableWidth)
+    var cursor = contentLeft + (availableWidth - groupWidth) / 2f
+    val rowTop = top
+    val baseline = rowTop + dp(17f)
+
+    if (posLabel.isNotEmpty()) {
+      val badgeRect = RectF(cursor, rowTop, cursor + posWidth, rowTop + dp(22f))
+      canvas.drawRoundRect(badgeRect, dp(3f), dp(3f), badgePaint)
+      canvas.drawRoundRect(badgeRect, dp(3f), dp(3f), buttonStrokePaint.apply { color = Color.rgb(197, 198, 203) })
+      canvas.drawText(posLabel, badgeRect.centerX(), badgeRect.centerY() - (badgeTextPaint.ascent() + badgeTextPaint.descent()) / 2f, badgeTextPaint)
+      buttonStrokePaint.color = Color.rgb(228, 226, 226)
+      cursor = badgeRect.right + gap
+    }
+
+    var y = baseline
+    lines.forEachIndexed { index, line ->
+      canvas.drawText(line, if (index == 0) cursor else contentLeft + (availableWidth - bodyPaint.measureText(line)) / 2f, y, bodyPaint)
+      y += dp(21f)
+    }
+
+    val secondDefinition = card.alternatives.firstOrNull { !it.definition.isNullOrBlank() && it.word != card.stem }
+    if (secondDefinition != null && !card.expandedAlternatives && !card.hasRootCharacters) {
+      val numberY = y + dp(2f)
+      wordNavCountPaint.color = Color.rgb(154, 156, 159)
+      wordNavCountPaint.textAlign = Paint.Align.LEFT
+      canvas.drawText("2", contentLeft + dp(36f), numberY, wordNavCountPaint)
+      val altText = ellipsize(secondDefinition.definition.orEmpty(), cardBodyPaint, availableWidth - dp(72f))
+      canvas.drawText(altText, contentLeft + dp(55f), numberY, cardBodyPaint)
+      wordNavCountPaint.textAlign = Paint.Align.CENTER
+      y += dp(24f)
+    }
+
+    return max(y, top + dp(30f))
+  }
+
+  private fun drawCenteredStateText(
+    canvas: Canvas,
+    text: String,
+    contentLeft: Float,
+    contentRight: Float,
+    baseline: Float
+  ): Float {
+    val line = ellipsize(text, cardBodyPaint, contentRight - contentLeft)
+    canvas.drawText(line, (contentLeft + contentRight - cardBodyPaint.measureText(line)) / 2f, baseline, cardBodyPaint)
+    return baseline + dp(24f)
+  }
+
+  private fun drawDictionaryTranslationSheet(
+    canvas: Canvas,
+    card: LookupCard,
+    contentLeft: Float,
+    contentRight: Float,
+    top: Float
+  ) {
+    canvas.drawText("TRANSLATION", contentLeft, top + dp(10f), eyebrowPaint)
+    val translation = card.translation?.trim().orEmpty()
+    val body = when {
+      translation.isNotBlank() -> translation
+      card.state == LookupCardState.LOADED -> "Translating..."
+      else -> card.displayBody
+    }
+    var y = top + dp(36f)
+    wrapText(body, cardBodyPaint, contentRight - contentLeft, maxLines = 4).forEach { line ->
+      canvas.drawText(line, contentLeft, y, cardBodyPaint)
+      y += dp(22f)
+    }
+  }
+
+  private fun drawRegionTranslationSheet(
+    canvas: Canvas,
+    card: LookupCard,
+    contentLeft: Float,
+    contentRight: Float
+  ) {
+    val headerBaseline = cardRect.top + dp(56f)
+    val iconRect = RectF(contentLeft, headerBaseline - dp(14f), contentLeft + dp(16f), headerBaseline + dp(2f))
+    drawTranslateGlyph(canvas, iconRect, Color.rgb(154, 156, 159))
+    canvas.drawText(translationHeaderLabel(card), iconRect.right + dp(8f), headerBaseline, cardMetaPaint)
+    if (!card.translation.isNullOrBlank()) {
+      val copyLabel = "COPY"
+      secondaryButtonTextPaint.color = Color.rgb(154, 156, 159)
+      canvas.drawText(copyLabel, contentRight - secondaryButtonTextPaint.measureText(copyLabel) / 2f, headerBaseline, secondaryButtonTextPaint)
+      secondaryButtonTextPaint.color = Color.rgb(32, 38, 49)
+    }
+
+    val body = card.translation?.trim().orEmpty().ifBlank { "Translating..." }
+    var y = headerBaseline + dp(36f)
+    wrapText(body, cardBodyPaint.apply { textSize = dp(15f) }, contentRight - contentLeft, maxLines = 4).forEach { line ->
+      canvas.drawText(line, contentLeft, y, cardBodyPaint)
+      y += dp(24f)
+    }
+    cardBodyPaint.textSize = dp(14f)
+  }
+
+  private fun drawRootCharacters(
+    canvas: Canvas,
+    card: LookupCard,
+    contentLeft: Float,
+    contentRight: Float,
+    top: Float
+  ): Float {
+    val characters = extractHanjaCharacters(card.hanja)
+    if (characters.isEmpty()) {
+      return top
+    }
+
+    val headerBaseline = top + dp(12f)
+    canvas.drawText("ROOT CHARACTERS", contentLeft, headerBaseline, eyebrowPaint)
+    val dotY = headerBaseline - dp(3f)
+    characters.take(2).forEachIndexed { index, _ ->
+      val dotPaint = secondaryButtonPaint
+      dotPaint.color = if (index == 0) Color.rgb(32, 38, 49) else Color.rgb(210, 208, 208)
+      canvas.drawCircle(contentRight - dp(13f) + index * dp(10f), dotY, dp(2.5f), dotPaint)
+      dotPaint.color = Color.WHITE
+    }
+
+    val cardTop = top + dp(24f)
+    val rootCardWidth = (contentRight - contentLeft) * 0.86f
+    val rootCardHeight = dp(136f)
+    canvas.save()
+    canvas.clipRect(cardRect.left, cardTop - dp(2f), cardRect.right, cardTop + rootCardHeight + dp(2f))
+    characters.take(2).forEachIndexed { index, character ->
+      val left = contentLeft + index * (rootCardWidth + dp(10f))
+      val rect = RectF(left, cardTop, left + rootCardWidth, cardTop + rootCardHeight)
+      drawRootCharacterCard(canvas, card, character, rect)
+    }
+    canvas.restore()
+
+    return cardTop + rootCardHeight
+  }
+
+  private fun drawRootCharacterCard(canvas: Canvas, card: LookupCard, character: String, rect: RectF) {
+    val preload = card.hanjaPreloads.firstOrNull { preload ->
+      preload.character == character || preload.character.contains(character)
+    }
+    val surfacePaint = popupTilePaint
+    surfacePaint.color = Color.rgb(254, 253, 252)
+    canvas.drawRoundRect(rect, dp(4f), dp(4f), surfacePaint)
+    canvas.drawRoundRect(rect, dp(4f), dp(4f), cardStrokePaint)
+    surfacePaint.color = Color.WHITE
+
+    val tileRect = RectF(rect.left + dp(12f), rect.top + dp(12f), rect.left + dp(56f), rect.top + dp(56f))
+    val tilePaint = popupHeaderPaint
+    tilePaint.color = Color.rgb(240, 237, 237)
+    canvas.drawRoundRect(tileRect, dp(3f), dp(3f), tilePaint)
+    tilePaint.color = Color.rgb(253, 243, 220)
+    popupTitlePaint.color = Color.rgb(32, 38, 49)
+    popupTitlePaint.textSize = dp(28f)
+    canvas.drawText(character, tileRect.centerX() - popupTitlePaint.measureText(character) / 2f, tileRect.centerY() - (popupTitlePaint.ascent() + popupTitlePaint.descent()) / 2f, popupTitlePaint)
+
+    hanjaTouchRects.add(
+      HanjaTouchRect(
+        character = character,
+        sourceWord = card.stem.ifBlank { card.surface },
+        rect = RectF(tileRect)
+      )
+    )
+
+    val textLeft = tileRect.right + dp(12f)
+    canvas.drawText("MEANING", textLeft, rect.top + dp(25f), eyebrowPaint)
+    val meaning = preload?.meaning?.trim().orEmpty().ifBlank { "Hanja details" }
+    val meaningPaint = relatedKoreanPaint
+    meaningPaint.typeface = englishBoldTypeface
+    meaningPaint.textSize = dp(14f)
+    meaningPaint.color = Color.rgb(27, 28, 28)
+    canvas.drawText(ellipsize(meaning, meaningPaint, rect.right - textLeft - dp(12f)), textLeft, rect.top + dp(45f), meaningPaint)
+    meaningPaint.typeface = koreanRegularTypeface
+    meaningPaint.textSize = dp(15f)
+
+    val dividerY = rect.top + dp(68f)
+    canvas.drawLine(rect.left + dp(12f), dividerY, rect.right - dp(12f), dividerY, dividerPaint)
+    canvas.drawText("RELATED WORDS", rect.left + dp(12f), dividerY + dp(22f), eyebrowPaint)
+
+    val related = preload?.relatedWords.orEmpty().take(2)
+    if (related.isEmpty()) {
+      canvas.drawText("No related words available", rect.left + dp(12f), dividerY + dp(48f), popupMeaningPaint)
+      return
+    }
+
+    related.forEachIndexed { index, entry ->
+      val rowTop = dividerY + dp(31f) + index * dp(32f)
+      val toggleSize = dp(26f)
+      val toggleRect = RectF(rect.right - dp(12f) - toggleSize, rowTop - dp(14f), rect.right - dp(12f), rowTop - dp(14f) + toggleSize)
+      drawKnownToggle(canvas, toggleRect, entry.known)
+
+      val word = ellipsize(entry.korean.trim(), relatedKoreanPaint, (toggleRect.left - rect.left - dp(34f)) * 0.52f)
+      canvas.drawText(word, rect.left + dp(12f), rowTop, relatedKoreanPaint)
+      val hanja = entry.hanja.trim()
+      if (hanja.isNotEmpty()) {
+        canvas.drawText(
+          ellipsize(hanja, relatedHanjaPaint, toggleRect.left - rect.left - dp(24f) - relatedKoreanPaint.measureText(word)),
+          rect.left + dp(12f) + relatedKoreanPaint.measureText(word) + dp(6f),
+          rowTop,
+          relatedHanjaPaint
+        )
+      }
+      val gloss = entry.meaning.trim()
+      if (gloss.isNotEmpty()) {
+        canvas.drawText(ellipsize(gloss, popupMeaningPaint, toggleRect.left - rect.left - dp(24f)), rect.left + dp(12f), rowTop + dp(16f), popupMeaningPaint)
+      }
+    }
+  }
+
+  private fun drawSheetActionRow(canvas: Canvas, card: LookupCard, activeTranslation: Boolean) {
+    val contentLeft = cardRect.left + dp(20f)
+    val contentRight = cardRect.right - dp(20f)
+    val height = dp(44f)
+    val top = cardRect.bottom - dp(22f) - height
+    val mid = (contentLeft + contentRight) / 2f
+    val groupRect = RectF(contentLeft, top, contentRight, top + height)
+    saveButtonRect.set(contentLeft, top, mid, top + height)
+    translationButtonRect.set(mid, top, contentRight, top + height)
+
+    panelClipPath.reset()
+    panelClipPath.addRoundRect(groupRect, dp(4f), dp(4f), Path.Direction.CW)
+    canvas.save()
+    canvas.clipPath(panelClipPath)
+
+    val saved = card.saved && card.definition?.isNotBlank() == true
+    if (saved) {
+      buttonPaint.color = Color.rgb(32, 38, 49)
+      canvas.drawRect(saveButtonRect, buttonPaint)
+    } else {
+      secondaryButtonPaint.color = Color.WHITE
+      canvas.drawRect(saveButtonRect, secondaryButtonPaint)
+    }
+    secondaryButtonPaint.color = if (activeTranslation) Color.rgb(240, 237, 237) else Color.WHITE
+    canvas.drawRect(translationButtonRect, secondaryButtonPaint)
+    secondaryButtonPaint.color = Color.WHITE
+    canvas.drawLine(mid, top, mid, top + height, dividerPaint)
+    canvas.restore()
+
+    canvas.drawRoundRect(groupRect, dp(4f), dp(4f), buttonStrokePaint)
+
+    val saveTextColor = if (saved) Color.WHITE else Color.rgb(32, 38, 49)
+    val saveLabel = if (saved) "SAVED" else "SAVE"
+    drawActionBookmark(canvas, saveButtonRect.left + saveButtonRect.width() / 2f - dp(28f), saveButtonRect.centerY(), saved, saveTextColor)
+    drawActionLabel(canvas, saveLabel, saveButtonRect.centerX() + dp(8f), saveButtonRect.centerY(), saveTextColor)
+    drawActionLabel(canvas, if (activeTranslation) "DICTIONARY" else "TRANSLATE", translationButtonRect.centerX(), translationButtonRect.centerY(), Color.rgb(32, 38, 49))
+  }
+
+  private fun drawActionLabel(canvas: Canvas, label: String, centerX: Float, centerY: Float, color: Int) {
+    secondaryButtonTextPaint.color = color
+    canvas.drawText(label, centerX, centerY - (secondaryButtonTextPaint.ascent() + secondaryButtonTextPaint.descent()) / 2f, secondaryButtonTextPaint)
+    secondaryButtonTextPaint.color = Color.rgb(32, 38, 49)
+  }
+
+  private fun drawActionBookmark(canvas: Canvas, centerX: Float, centerY: Float, filled: Boolean, color: Int) {
+    val width = dp(10f)
+    val height = dp(15f)
+    bookmarkPath.reset()
+    bookmarkPath.moveTo(centerX - width / 2f, centerY - height / 2f)
+    bookmarkPath.lineTo(centerX + width / 2f, centerY - height / 2f)
+    bookmarkPath.lineTo(centerX + width / 2f, centerY + height / 2f)
+    bookmarkPath.lineTo(centerX, centerY + height / 2f - dp(4f))
+    bookmarkPath.lineTo(centerX - width / 2f, centerY + height / 2f)
+    bookmarkPath.close()
+    bookmarkPaint.color = color
+    bookmarkPaint.strokeWidth = dp(1.6f)
+    bookmarkPaint.style = if (filled) Paint.Style.FILL else Paint.Style.STROKE
+    canvas.drawPath(bookmarkPath, bookmarkPaint)
+  }
+
+  private fun drawHeadwordChevron(canvas: Canvas, rect: RectF, leftDirection: Boolean, active: Boolean) {
+    iconPaint.color = if (active) Color.rgb(154, 156, 159) else Color.rgb(210, 208, 208)
+    iconPaint.strokeWidth = dp(2f)
+    val centerX = rect.centerX()
+    val centerY = rect.centerY()
+    if (leftDirection) {
+      canvas.drawLine(centerX + dp(4f), centerY - dp(6f), centerX - dp(3f), centerY, iconPaint)
+      canvas.drawLine(centerX - dp(3f), centerY, centerX + dp(4f), centerY + dp(6f), iconPaint)
+    } else {
+      canvas.drawLine(centerX - dp(4f), centerY - dp(6f), centerX + dp(3f), centerY, iconPaint)
+      canvas.drawLine(centerX + dp(3f), centerY, centerX - dp(4f), centerY + dp(6f), iconPaint)
+    }
+  }
+
+  private fun drawTranslateGlyph(canvas: Canvas, rect: RectF, color: Int) {
+    iconPaint.color = color
+    iconPaint.strokeWidth = dp(1.6f)
+    val top = rect.top + dp(3f)
+    val left = rect.left + dp(2f)
+    canvas.drawLine(left, top, rect.right - dp(2f), top, iconPaint)
+    canvas.drawLine(rect.centerX(), top - dp(2f), rect.centerX(), rect.bottom - dp(4f), iconPaint)
+    canvas.drawLine(left + dp(2f), rect.bottom - dp(3f), rect.right - dp(1f), rect.bottom - dp(3f), iconPaint)
+  }
+
+  private fun extractHanjaCharacters(value: String?): List<String> =
+    value?.trim().orEmpty()
+      .map(Char::toString)
+      .filter { token -> token.length == 1 && isHanja(token.first()) }
+      .distinct()
+
+  private fun isRegionSelection(card: LookupCard): Boolean =
+    card.selection.kind == "line" || card.selection.selectedText.trim().contains(Regex("\\s+"))
 
   private fun drawCardTitleLine(canvas: Canvas, card: LookupCard, left: Float, right: Float, baseline: Float) {
     val title = card.stem.ifBlank { card.surface }
@@ -1070,9 +1599,21 @@ class OcrResultOverlayView(
     val source = card.translationSourceLanguage?.trim().orEmpty()
     val target = card.translationTargetLanguage?.trim().orEmpty()
     return if (source.isNotBlank() && target.isNotBlank()) {
-      "TRANSLATION · $source → $target"
+      "${displayLanguageName(source)} → ${displayLanguageName(target)}"
     } else {
-      "TRANSLATION"
+      "한국어 → English"
+    }
+  }
+
+  private fun displayLanguageName(code: String): String {
+    return when (code.trim().lowercase()) {
+      "ko", "kor", "kr", "korean" -> "한국어"
+      "en", "eng", "english" -> "English"
+      "zh", "zho", "chi", "chinese" -> "中文"
+      "ja", "jpn", "japanese" -> "日本語"
+      "es", "spa", "spanish" -> "Español"
+      "fr", "fra", "fre", "french" -> "Français"
+      else -> code
     }
   }
 
@@ -1230,9 +1771,17 @@ class OcrResultOverlayView(
 
   private fun drawPanelSurface(canvas: Canvas, rect: RectF) {
     val radius = dp(16f)
-    canvas.drawRoundRect(rect, radius, radius, panelShadowPaint)
-    canvas.drawRoundRect(rect, radius, radius, cardPaint)
-    canvas.drawRoundRect(rect, radius, radius, cardStrokePaint)
+    val radii = floatArrayOf(
+      radius, radius,
+      radius, radius,
+      0f, 0f,
+      0f, 0f
+    )
+    panelClipPath.reset()
+    panelClipPath.addRoundRect(rect, radii, Path.Direction.CW)
+    canvas.drawPath(panelClipPath, panelShadowPaint)
+    canvas.drawPath(panelClipPath, cardPaint)
+    canvas.drawPath(panelClipPath, cardStrokePaint)
   }
 
   private fun measureHanjaGroup(hanja: String?): Float {
@@ -1744,6 +2293,13 @@ private data class LookupCard(
   val canToggleSave: Boolean
     get() = state == LookupCardState.LOADED && !definition.isNullOrBlank()
 
+  val hasRootCharacters: Boolean
+    get() = hanja?.any { char ->
+      char in '\u3400'..'\u4DBF' ||
+        char in '\u4E00'..'\u9FFF' ||
+        char in '\uF900'..'\uFAFF'
+    } == true
+
 }
 
 private fun loadReaderSerifTypeface(context: Context, bold: Boolean): Typeface {
@@ -1776,19 +2332,19 @@ private fun loadReaderSerifTypeface(context: Context, bold: Boolean): Typeface {
 private fun loadReaderSansTypeface(context: Context, weight: String): Typeface {
   val assetNames = when (weight) {
     "bold" -> listOf(
-      "DMSans_700Bold.ttf",
-      "fonts/DMSans_700Bold.ttf",
-      "node_modules/@expo-google-fonts/dm-sans/700Bold/DMSans_700Bold.ttf"
+      "Inter_700Bold.ttf",
+      "fonts/Inter_700Bold.ttf",
+      "node_modules/@expo-google-fonts/inter/700Bold/Inter_700Bold.ttf"
     )
     "medium" -> listOf(
-      "DMSans_500Medium.ttf",
-      "fonts/DMSans_500Medium.ttf",
-      "node_modules/@expo-google-fonts/dm-sans/500Medium/DMSans_500Medium.ttf"
+      "Inter_500Medium.ttf",
+      "fonts/Inter_500Medium.ttf",
+      "node_modules/@expo-google-fonts/inter/500Medium/Inter_500Medium.ttf"
     )
     else -> listOf(
-      "DMSans_400Regular.ttf",
-      "fonts/DMSans_400Regular.ttf",
-      "node_modules/@expo-google-fonts/dm-sans/400Regular/DMSans_400Regular.ttf"
+      "Inter_400Regular.ttf",
+      "fonts/Inter_400Regular.ttf",
+      "node_modules/@expo-google-fonts/inter/400Regular/Inter_400Regular.ttf"
     )
   }
 

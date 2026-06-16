@@ -3,6 +3,7 @@ from konlpy.tag import Okt
 from fastapi.middleware.cors import CORSMiddleware
 import jwt
 from jwt import PyJWKClient
+import json
 import sqlite3
 import ssl
 import httpx
@@ -137,8 +138,11 @@ def create_dictionary_cache_table(conn: sqlite3.Connection, table_name: str = "d
             domain             TEXT,
             ipa                TEXT,
             etymology          TEXT,
+            audio_us           TEXT,
+            audio_uk           TEXT,
             derived            TEXT,
             related            TEXT,
+            word_parts         TEXT,
             last_updated       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(stem, language, interface_language)
         )
@@ -205,8 +209,11 @@ def migrate_cache_db():
             "domain",
             "ipa",
             "etymology",
+            "audio_us",
+            "audio_uk",
             "derived",
             "related",
+            "word_parts",
             "last_updated",
         }
         needs_rebuild = (
@@ -237,14 +244,17 @@ def migrate_cache_db():
             select_domain = _sql_column_or_default(existing_columns, "domain", "NULL")
             select_ipa = _sql_column_or_default(existing_columns, "ipa", "NULL")
             select_etymology = _sql_column_or_default(existing_columns, "etymology", "NULL")
+            select_audio_us = _sql_column_or_default(existing_columns, "audio_us", "NULL")
+            select_audio_uk = _sql_column_or_default(existing_columns, "audio_uk", "NULL")
             select_derived = _sql_column_or_default(existing_columns, "derived", "NULL")
             select_related = _sql_column_or_default(existing_columns, "related", "NULL")
+            select_word_parts = _sql_column_or_default(existing_columns, "word_parts", "NULL")
             select_last_updated = _sql_column_or_default(existing_columns, "last_updated", "CURRENT_TIMESTAMP")
 
             conn.execute(f"""
                 INSERT OR IGNORE INTO dictionary_cache_new
                     (stem, language, interface_language, definition, gloss, hanja, pos, domain,
-                     ipa, etymology, derived, related, last_updated)
+                     ipa, etymology, audio_us, audio_uk, derived, related, word_parts, last_updated)
                 SELECT
                     {select_stem},
                     {select_language},
@@ -256,8 +266,11 @@ def migrate_cache_db():
                     {select_domain},
                     {select_ipa},
                     {select_etymology},
+                    {select_audio_us},
+                    {select_audio_uk},
                     {select_derived},
                     {select_related},
+                    {select_word_parts},
                     {select_last_updated}
                 FROM dictionary_cache
                 WHERE stem IS NOT NULL AND TRIM(stem) != ''
@@ -897,8 +910,11 @@ def en_dictionary_no_entry(stem: str) -> dict:
         "domain": None,
         "ipa": None,
         "etymology": None,
+        "audio_us": None,
+        "audio_uk": None,
         "derived": "[]",
         "related": "[]",
+        "word_parts": None,
         "language": "en",
         "interface_language": "en",
     }
@@ -913,10 +929,286 @@ def build_en_definition_gloss(definition: str | None) -> str | None:
     return short if short and len(short) <= 40 else None
 
 
+EN_DISPLAY_WORD_PART_ALLOWED_TYPES = {
+    "base",
+    "blend_component",
+    "bound_root",
+    "combining_form",
+    "compound_component",
+    "prefix",
+    "suffix",
+}
+EN_DISPLAY_WORD_PART_TYPES_REQUIRING_MEANING = {
+    "bound_root",
+    "combining_form",
+    "prefix",
+    "suffix",
+}
+EN_DISPLAY_HIDDEN_WORD_PART_CONFIDENCE = {"low"}
+EN_DISPLAY_OPAQUE_BREAKDOWN_WORDS = {
+    "because",
+    "understand",
+}
+EN_DISPLAY_MAX_WORD_PARTS = 4
+EN_DISPLAY_MAX_PART_TEXT_LENGTH = 36
+EN_DISPLAY_MAX_PART_MEANING_LENGTH = 48
+EN_DISPLAY_MAX_ORIGIN_LENGTH = 130
+EN_DISPLAY_ORIGIN_BLOCKLIST_RE = re.compile(
+    r"Etymology tree|PIE word|Proto-|possibly|unknown|uncertain",
+    re.IGNORECASE,
+)
+EN_DISPLAY_ORIGIN_START_RE = re.compile(
+    r"^(?:From|Borrowed from|Inherited from|Equivalent to|By surface analysis|Compound of)\b",
+    re.IGNORECASE,
+)
+EN_DISPLAY_SHORT_PART_MEANINGS = {
+    "a-": "not; without",
+    "ab-": "away from",
+    "ad-": "to; toward",
+    "after-": "after",
+    "anti-": "against",
+    "auto-": "self",
+    "be-": "make; cause",
+    "bio-": "life",
+    "co-": "together",
+    "com-": "together",
+    "con-": "together",
+    "contra-": "against",
+    "counter-": "opposite",
+    "de-": "down; away",
+    "dis-": "apart; not",
+    "en-": "make; put in",
+    "em-": "make; put in",
+    "ex-": "out; former",
+    "fore-": "before",
+    "geo-": "earth",
+    "hyper-": "over; excessive",
+    "in-": "in; into",
+    "im-": "in; into",
+    "inter-": "between",
+    "intra-": "within",
+    "ir-": "not",
+    "il-": "not",
+    "mal-": "bad; wrong",
+    "micro-": "small",
+    "mid-": "middle",
+    "mis-": "wrongly",
+    "multi-": "many",
+    "neo-": "new",
+    "non-": "not",
+    "out-": "beyond; more",
+    "over-": "too much; above",
+    "post-": "after",
+    "pre-": "before",
+    "pro-": "for; forward",
+    "re-": "again; back",
+    "semi-": "half",
+    "sub-": "under",
+    "super-": "above",
+    "tele-": "distant",
+    "trans-": "across",
+    "tri-": "three",
+    "un-": "not; reverse",
+    "under-": "under; too little",
+    "up-": "up; higher",
+    "-ability": "ability",
+    "-able": "able to be",
+    "-age": "act; result",
+    "-al": "relating to",
+    "-ation": "action; process",
+    "-dom": "state; realm",
+    "-ed": "past; having",
+    "-ee": "person affected",
+    "-er": "person; thing",
+    "-ess": "female person",
+    "-ful": "full of",
+    "-hood": "state; group",
+    "-ial": "relating to",
+    "-ibility": "ability",
+    "-ible": "able to be",
+    "-ical": "relating to",
+    "-ing": "ongoing action",
+    "-ion": "action; result",
+    "-ish": "somewhat like",
+    "-ism": "belief; system",
+    "-ist": "person",
+    "-ity": "state; quality",
+    "-ive": "tending to",
+    "-ize": "make; become",
+    "-ization": "process",
+    "-less": "without",
+    "-like": "similar to",
+    "-ly": "in a way",
+    "-ment": "result; process",
+    "-ness": "state; quality",
+    "-ology": "study of",
+    "-ous": "full of",
+    "-phone": "sound; voice",
+    "-ren": "plural",
+    "-ship": "state; skill",
+    "-ward": "toward",
+    "-wards": "toward",
+    "-wise": "in the manner of",
+}
+
+
+def clean_en_display_text(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def compact_en_part_meaning(value: Any) -> str | None:
+    cleaned = clean_en_display_text(value)
+    if not cleaned:
+        return None
+
+    cleaned = re.sub(r"\([^()]*\)", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = re.split(
+        r";|\.|,|:|\s+-\s+|\bespecially\b|\busually\b|\bparticularly\b",
+        cleaned,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    cleaned = re.sub(r"^(?:a|an|the)\s+", "", cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.strip(" .;,:")
+    if not cleaned:
+        return None
+
+    if (
+        len(cleaned) > EN_DISPLAY_MAX_PART_MEANING_LENGTH
+        or len(cleaned.split()) > 8
+    ):
+        return None
+    return cleaned
+
+
+def compact_en_word_part(part: Any) -> dict | None:
+    if not isinstance(part, dict):
+        return None
+
+    part_type = clean_en_display_text(part.get("type"))
+    if part_type not in EN_DISPLAY_WORD_PART_ALLOWED_TYPES:
+        return None
+
+    text = clean_en_display_text(part.get("text"))
+    display = clean_en_display_text(part.get("display")) or text
+    if not text or len(display) > EN_DISPLAY_MAX_PART_TEXT_LENGTH:
+        return None
+
+    compact_part = {
+        "text": text,
+        "display": display,
+        "type": part_type,
+    }
+
+    glossary_key = text.lower()
+    meaning = EN_DISPLAY_SHORT_PART_MEANINGS.get(glossary_key)
+    if not meaning:
+        meaning = compact_en_part_meaning(part.get("meaning"))
+
+    if meaning:
+        compact_part["meaning"] = meaning
+    elif part_type in EN_DISPLAY_WORD_PART_TYPES_REQUIRING_MEANING:
+        return None
+
+    return compact_part
+
+
+def sanitize_en_word_parts(
+    raw_word_parts: Any,
+    word: str | None = None,
+    etymology: str | None = None,
+) -> str | None:
+    if not raw_word_parts:
+        return None
+
+    try:
+        parsed = json.loads(raw_word_parts) if isinstance(raw_word_parts, str) else raw_word_parts
+    except (TypeError, json.JSONDecodeError):
+        return None
+
+    if not isinstance(parsed, dict):
+        return None
+
+    normalized_word = clean_en_display_text(word).lower()
+    if normalized_word in EN_DISPLAY_OPAQUE_BREAKDOWN_WORDS:
+        return None
+
+    confidence = clean_en_display_text(parsed.get("confidence")).lower()
+    source = clean_en_display_text(parsed.get("source"))
+    if confidence in EN_DISPLAY_HIDDEN_WORD_PART_CONFIDENCE or source == "affix_strip":
+        return None
+
+    parts = parsed.get("parts")
+    if not isinstance(parts, list) or not (2 <= len(parts) <= EN_DISPLAY_MAX_WORD_PARTS):
+        return None
+
+    compact_parts = []
+    for part in parts:
+        compact_part = compact_en_word_part(part)
+        if not compact_part:
+            return None
+        compact_parts.append(compact_part)
+
+    if not any(part["type"] != "base" for part in compact_parts):
+        return None
+
+    compact = {
+        "parts": compact_parts,
+        "confidence": confidence or "medium",
+        "source": source or "sanitized",
+        "meta": {
+            "display_sanitized": True,
+        },
+    }
+    source_text = clean_en_display_text(parsed.get("source_text"))
+    if source_text and len(source_text) <= 80:
+        compact["source_text"] = source_text
+
+    return json.dumps(compact, ensure_ascii=False)
+
+
+def clean_en_origin_for_display(etymology: str | None) -> str | None:
+    origin = clean_en_display_text(etymology)
+    if not origin:
+        return None
+    if "\n" in etymology:
+        return None
+    if len(origin) > EN_DISPLAY_MAX_ORIGIN_LENGTH:
+        return None
+    if EN_DISPLAY_ORIGIN_BLOCKLIST_RE.search(origin):
+        return None
+    if not EN_DISPLAY_ORIGIN_START_RE.match(origin):
+        return None
+    return origin
+
+
+def sanitize_en_dictionary_result(entry: dict) -> dict:
+    raw_etymology = entry.get("etymology")
+    word = entry.get("word") or entry.get("stem")
+    normalized_word = clean_en_display_text(word).lower()
+    word_parts = sanitize_en_word_parts(
+        entry.get("word_parts"),
+        word=word,
+        etymology=raw_etymology,
+    )
+    return {
+        **entry,
+        "etymology": (
+            None
+            if word_parts or normalized_word in EN_DISPLAY_OPAQUE_BREAKDOWN_WORDS
+            else clean_en_origin_for_display(raw_etymology)
+        ),
+        "word_parts": word_parts,
+    }
+
+
 def en_dictionary_row_to_result(row: sqlite3.Row) -> dict:
     data = dict(row)
     word = (data.get("word") or "").strip().lower()
-    return {
+    return sanitize_en_dictionary_result({
         "stem": word,
         "word": word,
         "definition": data.get("definition"),
@@ -926,11 +1218,24 @@ def en_dictionary_row_to_result(row: sqlite3.Row) -> dict:
         "domain": None,
         "ipa": data.get("ipa"),
         "etymology": data.get("etymology"),
+        "audio_us": data.get("audio_us"),
+        "audio_uk": data.get("audio_uk"),
         "derived": data.get("derived") or "[]",
         "related": data.get("related") or "[]",
+        "word_parts": data.get("word_parts"),
         "language": "en",
         "interface_language": "en",
-    }
+    })
+
+
+def en_word_parts_table_exists(conn: sqlite3.Connection) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'en_word_parts' LIMIT 1"
+    ).fetchone() is not None
+
+
+def en_dictionary_columns(conn: sqlite3.Connection) -> set[str]:
+    return {row[1] for row in conn.execute("PRAGMA table_info(en_dictionary)").fetchall()}
 
 
 def is_likely_untranslated_english_definition(definition: str | None, interface_language: str) -> bool:
@@ -972,14 +1277,34 @@ def lookup_en_dictionary_entries(stems: list[str]) -> tuple[list[dict], int]:
 
     conn = get_kaikki_db_connection()
     placeholders = ",".join(["?"] * len(normalized_stems))
-    rows = conn.execute(
-        f"""
-        SELECT word, pos, ipa, definition, etymology, derived, related
-        FROM en_dictionary
-        WHERE word IN ({placeholders})
-        """,
-        normalized_stems,
-    ).fetchall()
+    dictionary_columns = en_dictionary_columns(conn)
+    select_audio_us = "d.audio_us" if "audio_us" in dictionary_columns else "NULL"
+    select_audio_uk = "d.audio_uk" if "audio_uk" in dictionary_columns else "NULL"
+    if en_word_parts_table_exists(conn):
+        rows = conn.execute(
+            f"""
+            SELECT d.word, d.pos, d.ipa, d.definition, d.etymology, d.derived, d.related,
+                   {select_audio_us} AS audio_us,
+                   {select_audio_uk} AS audio_uk,
+                   wp.parts_json AS word_parts
+            FROM en_dictionary d
+            LEFT JOIN en_word_parts wp ON wp.word = d.word
+            WHERE d.word IN ({placeholders})
+            """,
+            normalized_stems,
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"""
+            SELECT word, pos, ipa, definition, etymology, derived, related,
+                   {'audio_us' if 'audio_us' in dictionary_columns else 'NULL'} AS audio_us,
+                   {'audio_uk' if 'audio_uk' in dictionary_columns else 'NULL'} AS audio_uk,
+                   NULL AS word_parts
+            FROM en_dictionary
+            WHERE word IN ({placeholders})
+            """,
+            normalized_stems,
+        ).fetchall()
     conn.close()
 
     rows_by_word = {
@@ -2087,7 +2412,7 @@ async def en_dict_search(
     cached = conn.execute(
         """
         SELECT id, stem, language, interface_language, definition, gloss, hanja, pos, domain,
-               ipa, etymology, derived, related, last_updated
+               ipa, etymology, audio_us, audio_uk, derived, related, word_parts, last_updated
         FROM dictionary_cache
         WHERE stem = ?
           AND language = 'en'
@@ -2124,7 +2449,7 @@ async def en_dict_search(
                     conn.commit()
                     conn.close()
             cached_result["word"] = cached_result.get("stem")
-            return {"result": cached_result}
+            return {"result": sanitize_en_dictionary_result(cached_result)}
 
     results, _found_count = lookup_en_dictionary_entries([normalized_stem])
     entry = dict(results[0]) if results else None
@@ -2155,8 +2480,8 @@ async def en_dict_search(
             """
             INSERT INTO dictionary_cache
                 (stem, language, interface_language, definition, gloss, hanja, pos, domain,
-                 ipa, etymology, derived, related)
-            VALUES (?, 'en', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ipa, etymology, audio_us, audio_uk, derived, related, word_parts)
+            VALUES (?, 'en', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(stem, language, interface_language) DO UPDATE SET
                 definition = excluded.definition,
                 gloss = excluded.gloss,
@@ -2165,8 +2490,11 @@ async def en_dict_search(
                 domain = excluded.domain,
                 ipa = excluded.ipa,
                 etymology = excluded.etymology,
+                audio_us = excluded.audio_us,
+                audio_uk = excluded.audio_uk,
                 derived = excluded.derived,
                 related = excluded.related,
+                word_parts = excluded.word_parts,
                 last_updated = CURRENT_TIMESTAMP
             """,
             (
@@ -2179,8 +2507,11 @@ async def en_dict_search(
                 entry.get("domain"),
                 entry.get("ipa"),
                 entry.get("etymology"),
+                entry.get("audio_us"),
+                entry.get("audio_uk"),
                 entry.get("derived"),
                 entry.get("related"),
+                entry.get("word_parts"),
             ),
         )
         conn.commit()

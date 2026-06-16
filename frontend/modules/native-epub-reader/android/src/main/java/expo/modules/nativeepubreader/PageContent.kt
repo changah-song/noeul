@@ -33,7 +33,22 @@ data class ReaderPage(
   val href: String = "",
   val path: String = "",
   val chapterPageIndex: Int = pageIndex,
-  val chapterPageCount: Int = 0
+  val chapterPageCount: Int = 0,
+  val edgeState: ReaderEdgeState? = null
+)
+
+enum class ReaderEdgeKind {
+  CHAPTER_COMPLETE,
+  BOOK_FINISHED
+}
+
+data class ReaderEdgeState(
+  val kind: ReaderEdgeKind,
+  val chapterTitle: String,
+  val bookTitle: String,
+  val chapterCount: Int,
+  val savedWordCount: Int,
+  val readMinutes: Int = 0
 )
 
 data class TextRange(

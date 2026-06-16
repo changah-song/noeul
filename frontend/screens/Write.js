@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Modal,
@@ -24,7 +24,6 @@ import {
   upsertUserWritingEntries,
 } from '../services/writingCloudSync';
 import {
-  ANNOTATION_COLORS,
   ANNOTATION_LEGEND,
   MOCK_WRITING_ENTRY_ID,
   buildAnnotatedSpans,
@@ -35,11 +34,10 @@ import {
   assertCanUploadForOwner,
   isCurrentSyncGeneration,
 } from '../services/localOwnerCoordinator';
-import { colors, fontFamilies, radii, spacing, textStyles } from '../theme';
+import { colors, fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
 
 const LEGACY_STORAGE_KEY = 'writing_entries_v1';
 const getWritingStorageKey = (ownerId) => makeScopedStorageKey(ownerId, 'writing-entries-v1');
-const WRITE_SCREEN_BACKGROUND = '#ece4d6';
 const WRITE_SIDE_PADDING = 18;
 const WRITING_FILTERS = [
   { key: 'all', labelKey: 'write.filters.all' },
@@ -58,6 +56,35 @@ const FORMAT_BUTTONS = [
   { key: 'italic', label: 'I', textStyle: 'editorToolbarTextItalic' },
   { key: 'underline', label: 'U', textStyle: 'editorToolbarTextUnderline' },
 ];
+
+const createAnnotationLegend = (themeColors) => (
+  ANNOTATION_LEGEND.map((item) => ({
+    ...item,
+    color: {
+      GRAMMAR: themeColors.accent,
+      DICTION: themeColors.textMuted,
+      NATIVE_INSERT: themeColors.textTertiary,
+      UNNATURAL: themeColors.textSubtle,
+    }[item.type] ?? themeColors.textMuted,
+  }))
+);
+
+const createAnnotationColors = (legend) => legend.reduce((acc, item) => {
+  acc[item.type] = item.color;
+  return acc;
+}, {});
+
+const defaultAnnotationLegend = createAnnotationLegend(colors);
+const defaultAnnotationColors = createAnnotationColors(defaultAnnotationLegend);
+const WriteThemeContext = createContext(null);
+const useWriteTheme = () => (
+  useContext(WriteThemeContext) ?? {
+    colors,
+    styles: defaultWriteStyles,
+    annotationLegend: defaultAnnotationLegend,
+    annotationColors: defaultAnnotationColors,
+  }
+);
 
 const PROMPT_CATEGORIES = [
   {
@@ -200,25 +227,25 @@ const getEntryFilterKey = (entry = {}) => {
   return 'essay';
 };
 
-const getEntryStatusTone = (status) => {
+const getEntryStatusTone = (status, themeColors = colors) => {
   const normalizedStatus = String(status || '').toLowerCase();
   if (normalizedStatus === 'reviewed') {
     return {
-      backgroundColor: '#e7f0e2',
-      color: '#5c8754',
+      backgroundColor: themeColors.accent,
+      color: themeColors.readerTappedWordText,
     };
   }
 
   if (normalizedStatus === 'submitted') {
     return {
-      backgroundColor: '#f6ecd6',
-      color: '#a9782c',
+      backgroundColor: themeColors.surfaceMuted,
+      color: themeColors.textSecondary,
     };
   }
 
   return {
-    backgroundColor: '#f0ece2',
-    color: '#8c8172',
+    backgroundColor: themeColors.surface,
+    color: themeColors.textMuted,
   };
 };
 
@@ -260,8 +287,9 @@ const isMockWritingEntry = (entryOrId) => (
 
 const WritingEntryRow = ({ entry, onPress }) => {
   const { t, language } = useTranslation();
+  const { colors, styles } = useWriteTheme();
   const dateParts = getEntryDateParts(entry.date ?? entry.createdAt ?? entry.updatedAt, language);
-  const statusTone = getEntryStatusTone(entry.status);
+  const statusTone = getEntryStatusTone(entry.status, colors);
   const statusLabel = formatStatusLabel(entry.status, t);
   const filter = WRITING_FILTERS.find((item) => item.key === getEntryFilterKey(entry));
 
@@ -298,7 +326,7 @@ const WritingEntryRow = ({ entry, onPress }) => {
         </Text>
       </View>
 
-      <Feather name="chevron-right" size={16} color="#b3a892" />
+      <Feather name="chevron-right" size={16} color={colors.textSubtle} />
     </Pressable>
   );
 };
@@ -409,7 +437,8 @@ const getAnnotationLabel = (type) =>
   ANNOTATION_LEGEND.find((item) => item.type === type)?.label ?? type;
 
 const TypeBadge = ({ type }) => {
-  const color = ANNOTATION_COLORS[type] ?? colors.textMuted;
+  const { colors, styles, annotationColors } = useWriteTheme();
+  const color = annotationColors[type] ?? colors.textMuted;
 
   return (
     <View style={[styles.typeBadge, { borderColor: color }]}>
@@ -419,18 +448,23 @@ const TypeBadge = ({ type }) => {
   );
 };
 
-const AnnotationLegend = () => (
-  <View style={styles.legend}>
-    {ANNOTATION_LEGEND.map((item) => (
-      <View key={item.type} style={styles.legendItem}>
-        <View style={[styles.legendDot, { backgroundColor: item.color }]} />
-        <Text style={styles.legendLabel}>{item.label}</Text>
-      </View>
-    ))}
-  </View>
-);
+const AnnotationLegend = () => {
+  const { styles, annotationLegend } = useWriteTheme();
+
+  return (
+    <View style={styles.legend}>
+      {annotationLegend.map((item) => (
+        <View key={item.type} style={styles.legendItem}>
+          <View style={[styles.legendDot, { backgroundColor: item.color }]} />
+          <Text style={styles.legendLabel}>{item.label}</Text>
+        </View>
+      ))}
+    </View>
+  );
+};
 
 const AnnotatedEntry = ({ text, annotations, onAnnotationPress, style }) => {
+  const { colors, styles, annotationColors } = useWriteTheme();
   const spans = buildAnnotatedSpans(text, annotations);
 
   return (
@@ -440,7 +474,7 @@ const AnnotatedEntry = ({ text, annotations, onAnnotationPress, style }) => {
           return <Text key={`plain-${index}`}>{span.text}</Text>;
         }
 
-        const color = ANNOTATION_COLORS[span.annotation.type] ?? colors.accentStrong;
+        const color = annotationColors[span.annotation.type] ?? colors.accentStrong;
 
         return (
           <Text
@@ -463,6 +497,8 @@ const AnnotatedEntry = ({ text, annotations, onAnnotationPress, style }) => {
 };
 
 const InlineCorrectionList = ({ annotations = [], onAnnotationPress }) => {
+  const { colors, styles, annotationColors } = useWriteTheme();
+
   if (!annotations.length) {
     return null;
   }
@@ -470,7 +506,7 @@ const InlineCorrectionList = ({ annotations = [], onAnnotationPress }) => {
   return (
     <View style={styles.inlineCorrectionList}>
       {annotations.map((annotation) => {
-        const color = ANNOTATION_COLORS[annotation.type] ?? colors.accentStrong;
+        const color = annotationColors[annotation.type] ?? colors.accentStrong;
         const suggestion = annotation.suggestions?.[0] ?? '';
 
         return (
@@ -505,61 +541,66 @@ const InlineCorrectionList = ({ annotations = [], onAnnotationPress }) => {
   );
 };
 
-const AnnotationSheet = ({ annotation, onClose }) => (
-  <Modal
-    visible={Boolean(annotation)}
-    animationType="slide"
-    transparent
-    onRequestClose={onClose}
-  >
-    <View style={styles.sheetRoot}>
-      <Pressable style={styles.sheetScrim} onPress={onClose} />
-      {annotation ? (
-        <View style={styles.sheetPanel}>
-          <View style={styles.sheetHandle} />
-          <View style={styles.sheetHeader}>
-            <View style={styles.sheetHeaderCopy}>
-              <TypeBadge type={annotation.type} />
-              <Text selectable style={styles.sheetOriginal}>
-                {annotation.original}
+const AnnotationSheet = ({ annotation, onClose }) => {
+  const { colors, styles } = useWriteTheme();
+
+  return (
+    <Modal
+      visible={Boolean(annotation)}
+      animationType="slide"
+      transparent
+      onRequestClose={onClose}
+    >
+      <View style={styles.sheetRoot}>
+        <Pressable style={styles.sheetScrim} onPress={onClose} />
+        {annotation ? (
+          <View style={styles.sheetPanel}>
+            <View style={styles.sheetHandle} />
+            <View style={styles.sheetHeader}>
+              <View style={styles.sheetHeaderCopy}>
+                <TypeBadge type={annotation.type} />
+                <Text selectable style={styles.sheetOriginal}>
+                  {annotation.original}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={onClose} style={styles.sheetCloseButton}>
+                <Feather name="x" size={18} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.sheetScrollContent}
+            >
+              <Text selectable style={styles.sheetExplanation}>
+                {annotation.explanation}
               </Text>
-            </View>
-            <TouchableOpacity onPress={onClose} style={styles.sheetCloseButton}>
-              <Feather name="x" size={18} color={colors.text} />
-            </TouchableOpacity>
-          </View>
 
-          <ScrollView
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={styles.sheetScrollContent}
-          >
-            <Text selectable style={styles.sheetExplanation}>
-              {annotation.explanation}
-            </Text>
-
-            <View style={styles.suggestionList}>
-              {(annotation.suggestions ?? []).map((suggestion, index) => (
-                <View key={`${annotation.id}-suggestion-${index}`} style={styles.suggestionRow}>
-                  <Text selectable style={styles.suggestionText}>
-                    {suggestion}
-                  </Text>
-                  {annotation.suggestion_notes?.[index] ? (
-                    <Text selectable style={styles.suggestionNote}>
-                      {annotation.suggestion_notes[index]}
+              <View style={styles.suggestionList}>
+                {(annotation.suggestions ?? []).map((suggestion, index) => (
+                  <View key={`${annotation.id}-suggestion-${index}`} style={styles.suggestionRow}>
+                    <Text selectable style={styles.suggestionText}>
+                      {suggestion}
                     </Text>
-                  ) : null}
-                </View>
-              ))}
-            </View>
-          </ScrollView>
-        </View>
-      ) : null}
-    </View>
-  </Modal>
-);
+                    {annotation.suggestion_notes?.[index] ? (
+                      <Text selectable style={styles.suggestionNote}>
+                        {annotation.suggestion_notes[index]}
+                      </Text>
+                    ) : null}
+                  </View>
+                ))}
+              </View>
+            </ScrollView>
+          </View>
+        ) : null}
+      </View>
+    </Modal>
+  );
+};
 
 const FormattingToolbar = ({ formatting, onToggle }) => {
   const { t } = useTranslation();
+  const { styles } = useWriteTheme();
   const normalizedFormatting = normalizeEntryFormatting(formatting);
   const interactive = typeof onToggle === 'function';
 
@@ -617,6 +658,17 @@ const FormattingToolbar = ({ formatting, onToggle }) => {
 const Write = ({ user }) => {
   const { t, language } = useTranslation();
   const { activeOwnerId, syncPaused, syncGeneration } = useLocalOwner();
+  const { colors } = useTheme();
+  const styles = useMemo(() => createStyles(colors), [colors]);
+  const annotationLegend = useMemo(() => createAnnotationLegend(colors), [colors]);
+  const annotationColors = useMemo(() => createAnnotationColors(annotationLegend), [annotationLegend]);
+  const writeThemeValue = useMemo(() => ({
+    colors,
+    styles,
+    annotationLegend,
+    annotationColors,
+  }), [annotationColors, annotationLegend, colors, styles]);
+  const screenBackground = colors.bgPage;
   const [entries, setEntries] = useState([]);
   const [mode, setMode] = useState('list');
   const [draft, setDraft] = useState(makeEmptyDraft());
@@ -942,34 +994,40 @@ const Write = ({ user }) => {
 
   if (loading) {
     return (
-      <Screen backgroundColor={WRITE_SCREEN_BACKGROUND}>
-        <View style={styles.loadingWrap}>
-          <Text style={styles.loadingText}>{t('write.loading')}</Text>
-        </View>
-      </Screen>
+      <WriteThemeContext.Provider value={writeThemeValue}>
+        <Screen backgroundColor={screenBackground}>
+          <View style={styles.loadingWrap}>
+            <Text style={styles.loadingText}>{t('write.loading')}</Text>
+          </View>
+        </Screen>
+      </WriteThemeContext.Provider>
     );
   }
 
   return (
-    <Screen scroll backgroundColor={WRITE_SCREEN_BACKGROUND} contentContainerStyle={styles.screenContent}>
+    <WriteThemeContext.Provider value={writeThemeValue}>
+    <Screen scroll backgroundColor={screenBackground} contentContainerStyle={styles.screenContent}>
       {mode === 'list' ? (
         <View style={styles.writeHome}>
+          <View style={styles.appTopBar}>
+            <View style={styles.appTopSide} />
+            <Text style={styles.appTopTitle}>WRITE</Text>
+            <TouchableOpacity
+              activeOpacity={0.82}
+              onPress={openNewDraft}
+              style={styles.appTopSideRight}
+            >
+              <Feather name="edit-3" size={19} color={colors.textSecondary} />
+            </TouchableOpacity>
+          </View>
           <View style={styles.writeHomeHeader}>
             <View style={styles.writeHomeTitleBlock}>
-              <Text style={styles.writeHomeTitle}>{t('write.title')}</Text>
+              <Text style={styles.writeHomeTitle}>Archive</Text>
               <View style={styles.writeHomeCountRow}>
                 <Text style={styles.writeHomeCount}>{entries.length}</Text>
                 <Text style={styles.writeHomeCountLabel}>{t('write.entries')}</Text>
               </View>
             </View>
-
-            <TouchableOpacity
-              disabled
-              accessibilityState={{ disabled: true }}
-              style={[styles.writeNewButton, styles.writeNewButtonDisabled]}
-            >
-              <Text style={styles.writeNewButtonText}>{t('write.new')}</Text>
-            </TouchableOpacity>
           </View>
 
           <ScrollView
@@ -1028,7 +1086,7 @@ const Write = ({ user }) => {
               onPress={leaveDetail}
               style={styles.editorBackButton}
             >
-              <Feather name="chevron-left" size={18} color="#2c261f" />
+              <Feather name="chevron-left" size={18} color={colors.text} />
             </TouchableOpacity>
 
             {selectedEntryIsReviewed ? (
@@ -1069,7 +1127,7 @@ const Write = ({ user }) => {
               <View style={styles.editorPromptHeader}>
                 <Text style={styles.editorPromptHeaderText}>{t('write.choosePrompt')}</Text>
                 <View style={styles.editorPromptChevronIcon}>
-                  <Feather name="chevron-right" size={16} color="#776b5e" />
+                  <Feather name="chevron-right" size={16} color={colors.textSubtle} />
                 </View>
               </View>
             </View>
@@ -1176,8 +1234,11 @@ const Write = ({ user }) => {
               onPress={leaveEditor}
               style={styles.editorBackButton}
             >
-              <Feather name="chevron-left" size={18} color="#2c261f" />
+              <Feather name="x" size={18} color={colors.text} />
+              <Text style={styles.editorCancelText}>{t('common.cancel')}</Text>
             </TouchableOpacity>
+
+            <Text style={styles.editorBarTitle}>NEW ENTRY</Text>
 
             <ScrollView
               horizontal
@@ -1224,7 +1285,7 @@ const Write = ({ user }) => {
                   <Feather
                     name={promptPickerExpanded ? 'chevron-down' : 'chevron-right'}
                     size={16}
-                    color="#776b5e"
+                    color={colors.textMuted}
                   />
                 </View>
               </Pressable>
@@ -1270,7 +1331,7 @@ const Write = ({ user }) => {
               value={draft.title}
               onChangeText={(title) => updateDraft({ title })}
               placeholder={t('write.titlePlaceholder')}
-              placeholderTextColor="#b4a893"
+              placeholderTextColor={colors.textSubtle}
               style={styles.editorTitleInput}
             />
 
@@ -1278,7 +1339,7 @@ const Write = ({ user }) => {
               value={draft.body}
               onChangeText={(body) => updateDraft({ body })}
               placeholder={t('write.startKorean')}
-              placeholderTextColor="#b4a893"
+              placeholderTextColor={colors.textSubtle}
               multiline
               textAlignVertical="top"
               style={[
@@ -1322,20 +1383,44 @@ const Write = ({ user }) => {
         onClose={() => setSelectedAnnotation(null)}
       />
     </Screen>
+    </WriteThemeContext.Provider>
   );
 };
 
-const styles = StyleSheet.create({
+const createStyles = (colors) => StyleSheet.create({
   screenContent: {
     paddingHorizontal: 0,
+    paddingTop: 0,
     paddingBottom: spacing.xl * 2,
   },
   writeHome: {
-    gap: 16,
+    gap: 0,
+  },
+  appTopBar: {
+    height: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.divider,
+    backgroundColor: colors.bgPage,
+  },
+  appTopSide: {
+    width: 70,
+  },
+  appTopSideRight: {
+    width: 70,
+    alignItems: 'flex-end',
+  },
+  appTopTitle: {
+    flex: 1,
+    textAlign: 'center',
+    ...textStyles.appTitle,
   },
   writeHomeHeader: {
-    paddingHorizontal: WRITE_SIDE_PADDING,
-    paddingTop: 2,
+    paddingHorizontal: 24,
+    paddingTop: 22,
+    paddingBottom: 18,
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
@@ -1345,10 +1430,10 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   writeHomeTitle: {
-    fontFamily: fontFamilies.displaySemiBold,
-    fontSize: 26,
-    lineHeight: 31,
-    color: '#26211b',
+    fontFamily: fontFamilies.displayMedium,
+    fontSize: 30,
+    lineHeight: 38,
+    color: colors.text,
   },
   writeHomeCountRow: {
     flexDirection: 'row',
@@ -1359,13 +1444,13 @@ const styles = StyleSheet.create({
     fontFamily: fontFamilies.sansRegular,
     fontSize: 13,
     lineHeight: 17,
-    color: '#7a6f61',
+    color: colors.textTertiary,
   },
   writeHomeCountLabel: {
     fontFamily: fontFamilies.sansRegular,
     fontSize: 13,
     lineHeight: 17,
-    color: '#7a6f61',
+    color: colors.textTertiary,
   },
   writeNewButton: {
     minHeight: 31,
@@ -1373,7 +1458,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#2c261f',
+    backgroundColor: colors.accent,
   },
   writeNewButtonDisabled: {
     opacity: 0.42,
@@ -1381,57 +1466,64 @@ const styles = StyleSheet.create({
   writeNewButtonText: {
     fontFamily: fontFamilies.sansBold,
     fontSize: 14,
-    color: '#fff8ec',
+    color: colors.white,
   },
   writeFilterRow: {
-    paddingHorizontal: WRITE_SIDE_PADDING,
-    gap: 8,
+    paddingHorizontal: 24,
+    gap: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.divider,
   },
   writeFilterChip: {
-    minHeight: 26,
-    borderRadius: radii.pill,
-    borderWidth: 1,
-    borderColor: '#d9cbb6',
-    paddingHorizontal: 14,
-    paddingVertical: 4,
+    minHeight: 30,
+    borderRadius: 0,
+    borderWidth: 0,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255, 250, 243, 0.42)',
+    backgroundColor: colors.transparent,
   },
   writeFilterChipActive: {
-    backgroundColor: '#b8552e',
-    borderColor: '#b8552e',
+    backgroundColor: colors.transparent,
+    borderBottomWidth: 2,
+    borderBottomColor: colors.accent,
   },
   writeFilterText: {
     fontFamily: fontFamilies.sansMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    color: '#796d5f',
+    fontSize: 10,
+    lineHeight: 13,
+    letterSpacing: 1.8,
+    color: colors.textSubtle,
+    textTransform: 'uppercase',
   },
   writeFilterTextActive: {
-    color: '#fff8ec',
+    fontFamily: fontFamilies.sansBold,
+    color: colors.text,
   },
   writeEntryList: {
     borderTopWidth: 1,
     borderBottomWidth: 1,
-    borderColor: '#d9cbb6',
-    backgroundColor: '#fff8ec',
+    borderColor: colors.divider,
+    backgroundColor: colors.bgPage,
+    marginTop: 0,
   },
   writeEntryRow: {
-    minHeight: 70,
+    minHeight: 76,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    paddingHorizontal: WRITE_SIDE_PADDING,
-    paddingVertical: 10,
+    paddingHorizontal: 24,
+    paddingVertical: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#e4d9c8',
+    borderBottomColor: colors.divider,
   },
   writeEntryRowPressed: {
-    backgroundColor: '#f7efe2',
+    backgroundColor: colors.surfaceMuted,
   },
   writeEntryDate: {
-    width: 34,
+    width: 0,
+    display: 'none',
     alignItems: 'center',
     gap: 1,
   },
@@ -1439,13 +1531,13 @@ const styles = StyleSheet.create({
     fontFamily: fontFamilies.displayBold,
     fontSize: 16,
     lineHeight: 18,
-    color: '#302a23',
+    color: colors.text,
   },
   writeEntryMonth: {
     fontFamily: fontFamilies.sansRegular,
     fontSize: 10,
     lineHeight: 13,
-    color: '#9a8e7a',
+    color: colors.textSubtle,
   },
   writeEntryMain: {
     flex: 1,
@@ -1454,9 +1546,9 @@ const styles = StyleSheet.create({
   },
   writeEntryTitle: {
     fontFamily: fontFamilies.krSerifSemiBold,
-    fontSize: 15,
+    fontSize: 16,
     lineHeight: 22,
-    color: '#27231d',
+    color: colors.text,
   },
   writeEntryMeta: {
     flexDirection: 'row',
@@ -1468,32 +1560,36 @@ const styles = StyleSheet.create({
     fontFamily: fontFamilies.sansRegular,
     fontSize: 11,
     lineHeight: 15,
-    color: '#9a8e7a',
+    color: colors.textSubtle,
   },
   writeEntryMetaDot: {
     fontFamily: fontFamilies.sansRegular,
     fontSize: 11,
-    color: '#b7aa95',
+    color: colors.textSubtle,
   },
   writeEntryType: {
     flexShrink: 1,
     fontFamily: fontFamilies.sansRegular,
     fontSize: 11,
     lineHeight: 15,
-    color: '#9a8e7a',
+    color: colors.textSubtle,
   },
   writeEntryStatusBadge: {
-    minHeight: 21,
-    borderRadius: radii.pill,
-    paddingHorizontal: 10,
-    paddingVertical: 3,
+    minHeight: 22,
+    borderRadius: 2,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
   },
   writeEntryStatusText: {
     fontFamily: fontFamilies.sansBold,
-    fontSize: 11,
-    lineHeight: 15,
+    fontSize: 8,
+    lineHeight: 11,
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
   },
   stack: {
     gap: spacing.md,
@@ -1538,81 +1634,111 @@ const styles = StyleSheet.create({
     color: colors.text,
   },
   editorShell: {
-    gap: 14,
+    gap: 0,
   },
   editorTopBar: {
-    paddingHorizontal: WRITE_SIDE_PADDING,
+    minHeight: 52,
+    paddingHorizontal: 20,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.divider,
+    backgroundColor: colors.bgPage,
+    position: 'relative',
   },
   editorTopBarSpacer: {
     flex: 1,
   },
   editorBackButton: {
-    width: 32,
-    height: 32,
-    borderRadius: radii.pill,
+    width: 86,
+    height: 34,
+    borderRadius: 0,
+    flexDirection: 'row',
+    gap: 7,
     alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255, 250, 243, 0.48)',
-    borderWidth: 1,
-    borderColor: '#d9cbb6',
+    justifyContent: 'flex-start',
+    backgroundColor: colors.transparent,
+    borderWidth: 0,
+  },
+  editorCancelText: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 10,
+    lineHeight: 13,
+    letterSpacing: 1.6,
+    color: colors.textMuted,
+    textTransform: 'uppercase',
+  },
+  editorBarTitle: {
+    flex: 1,
+    textAlign: 'center',
+    ...textStyles.screenBarTitle,
   },
   editorTypeScroller: {
-    flex: 1,
+    position: 'absolute',
+    top: 62,
+    left: 24,
+    right: 24,
   },
   editorTypeChips: {
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
   },
   editorTypeChip: {
-    minHeight: 23,
+    minHeight: 28,
     borderRadius: radii.pill,
-    paddingHorizontal: 10,
-    paddingVertical: 3,
+    paddingHorizontal: 13,
+    paddingVertical: 6,
     borderWidth: 1,
-    borderColor: '#d8cbb8',
+    borderColor: colors.borderStrong,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255, 250, 243, 0.42)',
+    backgroundColor: colors.transparent,
   },
   editorTypeChipActive: {
-    backgroundColor: '#2c261f',
-    borderColor: '#2c261f',
+    backgroundColor: colors.accent,
+    borderColor: colors.accent,
   },
   editorTypeText: {
-    fontFamily: fontFamilies.sansMedium,
-    fontSize: 11,
-    lineHeight: 15,
-    color: '#776b5e',
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 9,
+    lineHeight: 12,
+    letterSpacing: 1.6,
+    color: colors.textMuted,
+    textTransform: 'uppercase',
   },
   editorTypeTextActive: {
-    color: '#fff8ec',
+    color: colors.white,
   },
   editorSaveButton: {
+    width: 86,
     minHeight: 32,
     justifyContent: 'center',
-    paddingHorizontal: 4,
+    alignItems: 'flex-end',
+    paddingHorizontal: 0,
   },
   editorSaveButtonDisabled: {
     opacity: 0.5,
   },
   editorSaveText: {
-    fontFamily: fontFamilies.sansRegular,
-    fontSize: 12,
-    lineHeight: 16,
-    color: '#6f6559',
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 11,
+    lineHeight: 14,
+    letterSpacing: 1.8,
+    color: colors.accent,
+    textTransform: 'uppercase',
   },
   editorSaveTextDisabled: {
-    color: '#a79b88',
+    color: colors.textSubtle,
   },
   editorPromptPanel: {
-    marginHorizontal: WRITE_SIDE_PADDING,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: '#d8cbb8',
-    backgroundColor: '#fff8ec',
+    marginHorizontal: 24,
+    marginTop: 48,
+    borderRadius: 0,
+    borderWidth: 0,
+    borderLeftWidth: 2,
+    borderLeftColor: colors.borderStrong,
+    backgroundColor: colors.transparent,
     overflow: 'hidden',
   },
   editorPromptHeader: {
@@ -1620,15 +1746,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e4d9c8',
-    paddingLeft: 18,
+    borderBottomWidth: 0,
+    paddingLeft: 14,
   },
   editorPromptHeaderText: {
-    fontFamily: fontFamilies.sansMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: '#2c261f',
+    ...textStyles.eyebrow,
+    fontSize: 9,
+    lineHeight: 12,
+    color: colors.textSubtle,
   },
   editorPromptChevronIcon: {
     width: 44,
@@ -1636,16 +1761,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   editorPromptOptions: {
-    backgroundColor: '#fff8ec',
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   editorPromptOption: {
     paddingHorizontal: 18,
     paddingVertical: 9,
     borderBottomWidth: 1,
-    borderBottomColor: '#eee3d2',
+    borderBottomColor: colors.divider,
   },
   editorPromptOptionSelected: {
-    backgroundColor: '#f6ecd6',
+    backgroundColor: colors.surfaceMuted,
   },
   editorPromptOptionLast: {
     borderBottomWidth: 0,
@@ -1654,28 +1781,29 @@ const styles = StyleSheet.create({
     fontFamily: fontFamilies.sansRegular,
     fontSize: 13,
     lineHeight: 20,
-    color: '#655a4d',
+    color: colors.textMuted,
   },
   editorPromptOptionTextSelected: {
-    color: '#2c261f',
+    color: colors.text,
     fontFamily: fontFamilies.sansMedium,
   },
   editorWritingPanel: {
-    marginHorizontal: WRITE_SIDE_PADDING,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: '#d8cbb8',
-    backgroundColor: '#fff8ec',
+    marginHorizontal: 24,
+    marginTop: 20,
+    borderRadius: 0,
+    borderWidth: 0,
+    backgroundColor: colors.bgPage,
     overflow: 'hidden',
   },
   editorToolbar: {
-    minHeight: 32,
+    minHeight: 0,
+    display: 'none',
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#eee3d2',
-    backgroundColor: '#fbf2e5',
+    borderBottomColor: colors.divider,
+    backgroundColor: colors.surfaceMuted,
   },
   editorToolbarButton: {
     width: 32,
@@ -1685,16 +1813,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   editorToolbarButtonActive: {
-    backgroundColor: '#ead8bf',
+    backgroundColor: colors.surfaceSelected,
   },
   editorToolbarText: {
     fontFamily: fontFamilies.sansRegular,
     fontSize: 14,
     lineHeight: 18,
-    color: '#5f5548',
+    color: colors.textMuted,
   },
   editorToolbarTextActive: {
-    color: '#2c261f',
+    color: colors.text,
   },
   editorToolbarTextBold: {
     fontFamily: fontFamilies.sansBold,
@@ -1706,25 +1834,25 @@ const styles = StyleSheet.create({
     textDecorationLine: 'underline',
   },
   editorTitleInput: {
-    minHeight: 49,
+    minHeight: 52,
     borderBottomWidth: 1,
-    borderBottomColor: '#eee3d2',
-    paddingHorizontal: 18,
+    borderBottomColor: colors.divider,
+    paddingHorizontal: 0,
     paddingVertical: 12,
-    color: '#26211b',
+    color: colors.text,
     fontFamily: fontFamilies.krSerifSemiBold,
-    fontSize: 18,
-    lineHeight: 25,
+    fontSize: 23,
+    lineHeight: 31,
   },
   editorBodyInput: {
-    minHeight: 285,
-    paddingHorizontal: 18,
+    minHeight: 360,
+    paddingHorizontal: 0,
     paddingTop: 14,
     paddingBottom: 18,
-    color: '#26211b',
+    color: colors.text,
     fontFamily: fontFamilies.krSerifRegular,
-    fontSize: 17,
-    lineHeight: 34,
+    fontSize: 16,
+    lineHeight: 32,
   },
   formattedBodyBold: {
     fontFamily: fontFamilies.krSerifBold,
@@ -1736,14 +1864,14 @@ const styles = StyleSheet.create({
     textDecorationLine: 'underline',
   },
   editorSubmitButton: {
-    marginHorizontal: WRITE_SIDE_PADDING,
+    marginHorizontal: 24,
     minHeight: 45,
-    borderRadius: 16,
+    borderRadius: 4,
     paddingHorizontal: 13,
     paddingVertical: 13,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#b8552e',
+    backgroundColor: colors.accent,
   },
   editorSubmitButtonDisabled: {
     opacity: 0.5,
@@ -1752,17 +1880,17 @@ const styles = StyleSheet.create({
     fontFamily: fontFamilies.sansBold,
     fontSize: 14,
     lineHeight: 18,
-    color: '#fff8ec',
+    color: colors.white,
   },
   reviewShell: {
     gap: 14,
   },
   reviewTitleBlock: {
     marginHorizontal: WRITE_SIDE_PADDING,
-    borderRadius: 22,
+    borderRadius: 4,
     borderWidth: 1,
-    borderColor: '#d8cbb8',
-    backgroundColor: '#fff8ec',
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
     gap: 10,
     paddingHorizontal: 18,
     paddingVertical: 16,
@@ -1771,7 +1899,7 @@ const styles = StyleSheet.create({
     fontFamily: fontFamilies.krSerifBold,
     fontSize: 23,
     lineHeight: 31,
-    color: '#26211b',
+    color: colors.text,
     letterSpacing: 0,
   },
   reviewTitleMetaRow: {
@@ -1782,8 +1910,8 @@ const styles = StyleSheet.create({
   },
   reviewStatusPill: {
     minHeight: 23,
-    borderRadius: radii.pill,
-    backgroundColor: '#e7f0e2',
+    borderRadius: 2,
+    backgroundColor: colors.surfaceMuted,
     paddingHorizontal: 10,
     paddingVertical: 3,
     alignItems: 'center',
@@ -1793,26 +1921,26 @@ const styles = StyleSheet.create({
     fontFamily: fontFamilies.sansBold,
     fontSize: 11,
     lineHeight: 15,
-    color: '#5c8754',
+    color: colors.textMuted,
   },
   reviewTitleMeta: {
     fontFamily: fontFamilies.sansMedium,
     fontSize: 12,
     lineHeight: 17,
-    color: '#776b5e',
+    color: colors.textMuted,
   },
   reviewTitleMetaDot: {
     fontFamily: fontFamilies.sansRegular,
     fontSize: 12,
     lineHeight: 17,
-    color: '#b7aa95',
+    color: colors.textTertiary,
   },
   reviewWritingPanel: {
     marginHorizontal: WRITE_SIDE_PADDING,
-    borderRadius: 20,
+    borderRadius: 4,
     borderWidth: 1,
-    borderColor: '#d8cbb8',
-    backgroundColor: '#fff8ec',
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
     overflow: 'hidden',
   },
   reviewEntryMetaBar: {
@@ -1822,14 +1950,14 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#eee3d2',
+    borderBottomColor: colors.divider,
     paddingHorizontal: 18,
   },
   reviewEntryMetaText: {
     fontFamily: fontFamilies.sansRegular,
     fontSize: 12,
     lineHeight: 16,
-    color: '#9a8e7a',
+    color: colors.textSubtle,
   },
   reviewTranslateBadge: {
     flexDirection: 'row',
@@ -1840,36 +1968,36 @@ const styles = StyleSheet.create({
     fontFamily: fontFamilies.sansBold,
     fontSize: 12,
     lineHeight: 16,
-    color: '#2c261f',
+    color: colors.text,
   },
   reviewTranslateLabel: {
     fontFamily: fontFamilies.sansBold,
     fontSize: 11,
     lineHeight: 15,
-    color: '#b8552e',
+    color: colors.accent,
   },
   reviewEntryBodyText: {
     paddingHorizontal: 18,
     paddingTop: 14,
     paddingBottom: 14,
-    color: '#26211b',
+    color: colors.text,
     fontFamily: fontFamilies.krSerifRegular,
     fontSize: 17,
     lineHeight: 34,
   },
   reviewEnglishWords: {
     borderTopWidth: 1,
-    borderTopColor: '#eee3d2',
+    borderTopColor: colors.divider,
     gap: 10,
     paddingHorizontal: 18,
     paddingVertical: 12,
-    backgroundColor: '#fbf2e5',
+    backgroundColor: colors.surfaceMuted,
   },
   reviewEnglishWordsLabel: {
     fontFamily: fontFamilies.sansBold,
     fontSize: 12,
     lineHeight: 16,
-    color: '#5f5548',
+    color: colors.textMuted,
   },
   reviewEnglishWordChips: {
     flexDirection: 'row',
@@ -1880,8 +2008,8 @@ const styles = StyleSheet.create({
     minHeight: 25,
     borderRadius: radii.pill,
     borderWidth: 1,
-    borderColor: '#d8cbb8',
-    backgroundColor: '#fff8ec',
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
     paddingHorizontal: 10,
     paddingVertical: 4,
   },
@@ -1889,26 +2017,26 @@ const styles = StyleSheet.create({
     fontFamily: fontFamilies.sansBold,
     fontSize: 12,
     lineHeight: 16,
-    color: '#b8552e',
+    color: colors.accent,
   },
   inlineCorrectionList: {
     borderTopWidth: 1,
-    borderTopColor: '#eee3d2',
+    borderTopColor: colors.divider,
     gap: 9,
     paddingHorizontal: 18,
     paddingVertical: 12,
-    backgroundColor: '#fff8ec',
+    backgroundColor: colors.surface,
   },
   inlineCorrectionItem: {
     borderLeftWidth: 3,
-    borderRadius: 12,
-    backgroundColor: '#fbf2e5',
+    borderRadius: 4,
+    backgroundColor: colors.surfaceMuted,
     gap: 5,
     paddingHorizontal: 11,
     paddingVertical: 9,
   },
   inlineCorrectionItemPressed: {
-    backgroundColor: '#f4e6d1',
+    backgroundColor: colors.surfaceSelected,
   },
   inlineCorrectionHeader: {
     flexDirection: 'row',
@@ -1929,33 +2057,33 @@ const styles = StyleSheet.create({
     fontFamily: fontFamilies.krSerifMedium,
     fontSize: 13,
     lineHeight: 20,
-    color: '#2c261f',
+    color: colors.text,
   },
   inlineCorrectionOriginal: {
-    color: '#2c261f',
+    color: colors.text,
   },
   inlineCorrectionArrow: {
     fontFamily: fontFamilies.sansRegular,
-    color: '#9a8e7a',
+    color: colors.textSubtle,
   },
   inlineCorrectionSuggestion: {
-    color: '#b8552e',
+    color: colors.accent,
   },
   reviewDoneButton: {
     marginHorizontal: WRITE_SIDE_PADDING,
     minHeight: 45,
-    borderRadius: 16,
+    borderRadius: 4,
     paddingHorizontal: 13,
     paddingVertical: 13,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#2c261f',
+    backgroundColor: colors.accent,
   },
   reviewDoneText: {
     fontFamily: fontFamilies.sansBold,
     fontSize: 14,
     lineHeight: 18,
-    color: '#fff8ec',
+    color: colors.white,
   },
   selectedPromptLabel: {
     ...textStyles.eyebrow,
@@ -2125,5 +2253,7 @@ const styles = StyleSheet.create({
     color: colors.danger,
   },
 });
+
+const defaultWriteStyles = createStyles(colors);
 
 export default Write;

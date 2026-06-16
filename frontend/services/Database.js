@@ -18,6 +18,8 @@ const DICTIONARY_CACHE_MIGRATION_KEY = 'dictionary_cache_migration_v1';
 const DICTIONARY_CACHE_LANGUAGE_MIGRATION_KEY = 'dictionary_cache_language_migration_v1';
 const DICTIONARY_CACHE_TARGET_LANGUAGE_MIGRATION_KEY = 'dictionary_cache_target_language_migration_v1';
 const DICTIONARY_CACHE_GLOSS_MIGRATION_KEY = 'dictionary_cache_gloss_migration_v1';
+const DICTIONARY_CACHE_WORD_PARTS_MIGRATION_KEY = 'dictionary_cache_word_parts_migration_v1';
+const DICTIONARY_CACHE_AUDIO_MIGRATION_KEY = 'dictionary_cache_audio_migration_v1';
 const LOCAL_OWNER_SQLITE_MIGRATION_KEY = 'local_owner_sqlite_migration_v1';
 const PROFILE_SQLITE_MIGRATION_KEY = 'profile_sqlite_migration_v1';
 export const PREPROCESS_VERSION = 2;
@@ -355,9 +357,12 @@ export const migrateVocabTable = async () => {
  *   pos         — part of speech (Noun, Verb, Adjective, Adverb)
  *   domain      — subject domain from KRDICT (e.g. "Law", "Science") — optional
  *   ipa         — English IPA pronunciation from Kaikki — optional
+ *   audio_us    — authentic US pronunciation audio URL from Kaikki/Wikimedia — optional
+ *   audio_uk    — authentic UK pronunciation audio URL from Kaikki/Wikimedia — optional
  *   etymology   — English etymology text from Kaikki — optional
  *   derived     — JSON array of derived English words — optional
  *   related     — JSON array of related English words — optional
+ *   word_parts   — JSON payload for structured English word anatomy — optional
  *   last_updated — auto-set on insert; helps purge stale data in the future
  */
 export const createDictionaryCacheTable = () => {
@@ -375,9 +380,12 @@ export const createDictionaryCacheTable = () => {
           pos          TEXT,
           domain       TEXT,
           ipa          TEXT,
+          audio_us     TEXT,
+          audio_uk     TEXT,
           etymology    TEXT,
           derived      TEXT,
           related      TEXT,
+          word_parts   TEXT,
           last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           UNIQUE(language, stem, interface_language)
         )`,
@@ -408,6 +416,7 @@ export const migrateDictionaryCache = async () => {
   const selectEtymology = sqlTextColumnOrNull(columns, 'etymology');
   const selectDerived = sqlTextColumnOrNull(columns, 'derived');
   const selectRelated = sqlTextColumnOrNull(columns, 'related');
+  const selectWordParts = sqlTextColumnOrNull(columns, 'word_parts');
   const selectLastUpdated = columns.includes('last_updated') ? 'last_updated' : 'CURRENT_TIMESTAMP';
 
   await new Promise((resolve, reject) => {
@@ -428,6 +437,7 @@ export const migrateDictionaryCache = async () => {
           etymology    TEXT,
           derived      TEXT,
           related      TEXT,
+          word_parts   TEXT,
           last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           UNIQUE(language, stem, interface_language)
         )`,
@@ -442,10 +452,10 @@ export const migrateDictionaryCache = async () => {
 
       tx.executeSql(
         `INSERT OR IGNORE INTO dictionary_cache_new
-           (id, stem, language, interface_language, definition, gloss, hanja, pos, domain, ipa, etymology, derived, related, last_updated)
+           (id, stem, language, interface_language, definition, gloss, hanja, pos, domain, ipa, etymology, derived, related, word_parts, last_updated)
          SELECT id, stem, ${selectLanguage}, ${selectInterfaceLanguage}, ${selectDefinition}, ${selectGloss}, ${selectHanja},
                 ${selectPos}, ${selectDomain}, ${selectIpa}, ${selectEtymology}, ${selectDerived},
-                ${selectRelated}, ${selectLastUpdated}
+                ${selectRelated}, ${selectWordParts}, ${selectLastUpdated}
          FROM dictionary_cache
          WHERE stem IS NOT NULL AND TRIM(stem) != ''
          ORDER BY id ASC`,
@@ -496,6 +506,7 @@ export const migrateDictionaryCacheInterfaceLanguage = async () => {
   const selectEtymology = sqlTextColumnOrNull(columns, 'etymology');
   const selectDerived = sqlTextColumnOrNull(columns, 'derived');
   const selectRelated = sqlTextColumnOrNull(columns, 'related');
+  const selectWordParts = sqlTextColumnOrNull(columns, 'word_parts');
   const selectLastUpdated = columns.includes('last_updated') ? 'last_updated' : 'CURRENT_TIMESTAMP';
 
   await new Promise((resolve, reject) => {
@@ -516,6 +527,7 @@ export const migrateDictionaryCacheInterfaceLanguage = async () => {
           etymology    TEXT,
           derived      TEXT,
           related      TEXT,
+          word_parts   TEXT,
           last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           UNIQUE(language, stem, interface_language)
         )`,
@@ -530,10 +542,10 @@ export const migrateDictionaryCacheInterfaceLanguage = async () => {
 
       tx.executeSql(
         `INSERT OR IGNORE INTO dictionary_cache_language_new
-           (id, stem, language, interface_language, definition, gloss, hanja, pos, domain, ipa, etymology, derived, related, last_updated)
+           (id, stem, language, interface_language, definition, gloss, hanja, pos, domain, ipa, etymology, derived, related, word_parts, last_updated)
          SELECT id, stem, ${selectLanguage}, ${selectInterfaceLanguage}, ${selectDefinition}, ${selectGloss}, ${selectHanja},
                 ${selectPos}, ${selectDomain}, ${selectIpa}, ${selectEtymology}, ${selectDerived},
-                ${selectRelated}, ${selectLastUpdated}
+                ${selectRelated}, ${selectWordParts}, ${selectLastUpdated}
          FROM dictionary_cache
          WHERE stem IS NOT NULL AND TRIM(stem) != ''
          ORDER BY id ASC`,
@@ -576,6 +588,7 @@ export const migrateDictionaryCacheTargetLanguage = async () => {
     'etymology',
     'derived',
     'related',
+    'word_parts',
   ].every((column) => columns.includes(column));
 
   if (migrationState === 'done' && hasFinalColumns) return;
@@ -591,6 +604,7 @@ export const migrateDictionaryCacheTargetLanguage = async () => {
   const selectEtymology = sqlTextColumnOrNull(columns, 'etymology');
   const selectDerived = sqlTextColumnOrNull(columns, 'derived');
   const selectRelated = sqlTextColumnOrNull(columns, 'related');
+  const selectWordParts = sqlTextColumnOrNull(columns, 'word_parts');
   const selectLastUpdated = columns.includes('last_updated') ? 'last_updated' : 'CURRENT_TIMESTAMP';
 
   await new Promise((resolve, reject) => {
@@ -611,6 +625,7 @@ export const migrateDictionaryCacheTargetLanguage = async () => {
           etymology    TEXT,
           derived      TEXT,
           related      TEXT,
+          word_parts   TEXT,
           last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           UNIQUE(language, stem, interface_language)
         )`,
@@ -625,10 +640,10 @@ export const migrateDictionaryCacheTargetLanguage = async () => {
 
       tx.executeSql(
         `INSERT OR IGNORE INTO dictionary_cache_target_language_new
-           (id, stem, language, interface_language, definition, gloss, hanja, pos, domain, ipa, etymology, derived, related, last_updated)
+           (id, stem, language, interface_language, definition, gloss, hanja, pos, domain, ipa, etymology, derived, related, word_parts, last_updated)
          SELECT id, stem, ${selectLanguage}, ${selectInterfaceLanguage}, ${selectDefinition}, ${selectGloss}, ${selectHanja},
                 ${selectPos}, ${selectDomain}, ${selectIpa}, ${selectEtymology}, ${selectDerived},
-                ${selectRelated}, ${selectLastUpdated}
+                ${selectRelated}, ${selectWordParts}, ${selectLastUpdated}
          FROM dictionary_cache
          WHERE stem IS NOT NULL AND TRIM(stem) != ''
          ORDER BY id ASC`,
@@ -682,6 +697,60 @@ export const migrateDictionaryCacheGloss = async () => {
   }
 
   await AsyncStorage.setItem(DICTIONARY_CACHE_GLOSS_MIGRATION_KEY, 'done');
+};
+
+export const migrateDictionaryCacheWordParts = async () => {
+  const migrationState = await AsyncStorage.getItem(DICTIONARY_CACHE_WORD_PARTS_MIGRATION_KEY);
+  if (migrationState === 'done') return;
+
+  const columns = await getTableColumns('dictionary_cache');
+  if (!columns.includes('word_parts')) {
+    await new Promise((resolve, reject) => {
+      db.transaction(tx => {
+        tx.executeSql(
+          'ALTER TABLE dictionary_cache ADD COLUMN word_parts TEXT',
+          [],
+          () => resolve(),
+          (_, error) => {
+            console.error('[Database] Error adding dictionary_cache.word_parts:', error);
+            reject(error);
+            return false;
+          }
+        );
+      });
+    });
+  }
+
+  await AsyncStorage.setItem(DICTIONARY_CACHE_WORD_PARTS_MIGRATION_KEY, 'done');
+};
+
+export const migrateDictionaryCacheAudio = async () => {
+  const migrationState = await AsyncStorage.getItem(DICTIONARY_CACHE_AUDIO_MIGRATION_KEY);
+  const columns = await getTableColumns('dictionary_cache');
+  const missingColumns = ['audio_us', 'audio_uk'].filter(column => !columns.includes(column));
+
+  if (migrationState === 'done' && missingColumns.length === 0) return;
+
+  if (missingColumns.length > 0) {
+    await new Promise((resolve, reject) => {
+      db.transaction(tx => {
+        missingColumns.forEach((column) => {
+          tx.executeSql(
+            `ALTER TABLE dictionary_cache ADD COLUMN ${column} TEXT`,
+            [],
+            () => {},
+            (_, error) => {
+              console.error(`[Database] Error adding dictionary_cache.${column}:`, error);
+              reject(error);
+              return false;
+            }
+          );
+        });
+      }, reject, resolve);
+    });
+  }
+
+  await AsyncStorage.setItem(DICTIONARY_CACHE_AUDIO_MIGRATION_KEY, 'done');
 };
 
 /**
@@ -1294,6 +1363,8 @@ export const initAllTables = async () => {
   await migrateDictionaryCacheInterfaceLanguage();
   await migrateDictionaryCacheTargetLanguage();
   await migrateDictionaryCacheGloss();
+  await migrateDictionaryCacheWordParts();
+  await migrateDictionaryCacheAudio();
   await migrateBookIndex();
   await createBookIndexTable();
   await createBookPreprocessTables();
@@ -2728,9 +2799,13 @@ export const insertCacheEntries = (entries, scopeOrInterfaceLanguage = 'en', opt
             pos,
             domain,
             ipa,
+            audio_us,
+            audio_uk,
             etymology,
             derived,
             related,
+            word_parts,
+            wordParts,
             interface_language,
             interfaceLanguage: entryInterfaceLanguage,
             language,
@@ -2739,10 +2814,11 @@ export const insertCacheEntries = (entries, scopeOrInterfaceLanguage = 'en', opt
           const normalizedInterfaceLanguage = normalizeInterfaceLanguageCode(
             entryInterfaceLanguage ?? interface_language ?? scope.interfaceLanguage
           );
+          const normalizedWordParts = word_parts ?? wordParts;
           tx.executeSql(
             `INSERT INTO dictionary_cache
-               (stem, language, interface_language, definition, gloss, hanja, pos, domain, ipa, etymology, derived, related)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               (stem, language, interface_language, definition, gloss, hanja, pos, domain, ipa, audio_us, audio_uk, etymology, derived, related, word_parts)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(stem, language, interface_language) DO UPDATE SET
                definition = COALESCE(excluded.definition, dictionary_cache.definition),
                gloss = COALESCE(excluded.gloss, dictionary_cache.gloss),
@@ -2750,9 +2826,12 @@ export const insertCacheEntries = (entries, scopeOrInterfaceLanguage = 'en', opt
                pos = COALESCE(excluded.pos, dictionary_cache.pos),
                domain = COALESCE(excluded.domain, dictionary_cache.domain),
                ipa = COALESCE(excluded.ipa, dictionary_cache.ipa),
+               audio_us = COALESCE(excluded.audio_us, dictionary_cache.audio_us),
+               audio_uk = COALESCE(excluded.audio_uk, dictionary_cache.audio_uk),
                etymology = COALESCE(excluded.etymology, dictionary_cache.etymology),
                derived = COALESCE(excluded.derived, dictionary_cache.derived),
                related = COALESCE(excluded.related, dictionary_cache.related),
+               word_parts = COALESCE(excluded.word_parts, dictionary_cache.word_parts),
                last_updated = CURRENT_TIMESTAMP`,
             [
               stem,
@@ -2764,9 +2843,14 @@ export const insertCacheEntries = (entries, scopeOrInterfaceLanguage = 'en', opt
               pos ?? null,
               domain ?? null,
               ipa ?? null,
+              audio_us ?? null,
+              audio_uk ?? null,
               etymology ?? null,
               Array.isArray(derived) ? JSON.stringify(derived) : (derived ?? null),
               Array.isArray(related) ? JSON.stringify(related) : (related ?? null),
+              normalizedWordParts && typeof normalizedWordParts === 'object'
+                ? JSON.stringify(normalizedWordParts)
+                : (normalizedWordParts ?? null),
             ]
           );
         });
@@ -2799,7 +2883,7 @@ export const lookupCacheByStems = (stems, scopeOrInterfaceLanguage = 'en', optio
     const scope = normalizeDictionaryCacheScope(scopeOrInterfaceLanguage, options);
     db.transaction(tx => {
       tx.executeSql(
-        `SELECT id, stem, language, interface_language, definition, gloss, hanja, pos, domain, ipa, etymology, derived, related
+        `SELECT id, stem, language, interface_language, definition, gloss, hanja, pos, domain, ipa, audio_us, audio_uk, etymology, derived, related, word_parts
          FROM dictionary_cache
          WHERE language = ? AND interface_language = ? AND stem IN (${placeholders})`,
         [scope.language, scope.interfaceLanguage, ...stems],
@@ -2846,7 +2930,7 @@ export const lookupBookIndexBySurface = (ownerId, bookUri, surface, scopeOrInter
     db.transaction(tx => {
       tx.executeSql(
         `SELECT dc.id, dc.stem, dc.language, dc.interface_language, dc.definition, dc.gloss, dc.hanja, dc.pos,
-                dc.domain, dc.ipa, dc.etymology, dc.derived, dc.related
+                dc.domain, dc.ipa, dc.audio_us, dc.audio_uk, dc.etymology, dc.derived, dc.related, dc.word_parts
          FROM book_index bi
          JOIN dictionary_cache dc ON dc.id = bi.stem_id
          WHERE bi.owner_id = ?
