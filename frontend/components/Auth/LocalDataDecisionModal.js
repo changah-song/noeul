@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
   ActivityIndicator,
   Modal,
@@ -8,7 +8,7 @@ import {
   View,
 } from 'react-native';
 
-import { colors, radii, spacing, textStyles } from '../../theme';
+import { colors, radii, spacing, textStyles, useTheme } from '../../theme';
 import { useTranslation } from '../../hooks/useTranslation';
 
 const DECISION_CONTENT = {
@@ -55,6 +55,8 @@ const LocalDataDecisionModal = ({
   busy = false,
 }) => {
   const { t } = useTranslation();
+  const { colors } = useTheme();
+  const styles = useMemo(() => createStyles(colors), [colors]);
   const visible = Boolean(decision);
   const content = getContent(decision);
   const email = user?.email || user?.user_metadata?.email || '';
@@ -116,10 +118,10 @@ const LocalDataDecisionModal = ({
   );
 };
 
-const styles = StyleSheet.create({
+const createStyles = (colors) => StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(31, 27, 22, 0.48)',
+    backgroundColor: colors.overlay,
     alignItems: 'center',
     justifyContent: 'center',
     padding: spacing.lg,
@@ -162,14 +164,14 @@ const styles = StyleSheet.create({
   },
   primaryButton: {
     backgroundColor: colors.accentSoft,
-    borderColor: 'transparent',
+    borderColor: colors.transparent,
   },
   secondaryButton: {
     backgroundColor: colors.surfaceMuted,
   },
   dangerButton: {
-    backgroundColor: '#fff1ef',
-    borderColor: '#efc0b8',
+    backgroundColor: colors.surface,
+    borderColor: colors.borderStrong,
   },
   buttonText: {
     ...textStyles.label,
@@ -179,7 +181,7 @@ const styles = StyleSheet.create({
     color: colors.accentStrong,
   },
   dangerButtonText: {
-    color: '#a64234',
+    color: colors.danger,
   },
   pressed: {
     opacity: 0.82,
@@ -198,5 +200,7 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
   },
 });
+
+const styles = createStyles(colors);
 
 export default LocalDataDecisionModal;

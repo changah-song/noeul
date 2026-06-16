@@ -119,9 +119,12 @@ const liveEntryToCacheEntry = (
     ipa: normalizeBookLanguage(targetLanguage) === 'zh'
         ? nullableValue(entry?.pinyin) || nullableValue(entry?.ipa)
         : nullableValue(entry?.ipa),
+    audio_us: normalizeBookLanguage(targetLanguage) === 'en' ? nullableValue(entry?.audio_us) : null,
+    audio_uk: normalizeBookLanguage(targetLanguage) === 'en' ? nullableValue(entry?.audio_uk) : null,
     etymology: normalizeBookLanguage(targetLanguage) === 'en' ? nullableValue(entry?.etymology) : null,
     derived: normalizeBookLanguage(targetLanguage) === 'en' ? entry?.derived : null,
     related: normalizeBookLanguage(targetLanguage) === 'en' ? entry?.related : null,
+    word_parts: normalizeBookLanguage(targetLanguage) === 'en' ? (entry?.word_parts ?? entry?.wordParts ?? null) : null,
     interfaceLanguage,
 });
 
@@ -131,6 +134,9 @@ const cacheEntryToDefinitionEntry = (entry, fallbackWord) => ({
     hanja: nullableValue(entry?.hanja),
     pos: nullableValue(entry?.pos),
     romanization: nullableValue(entry?.romanization) || nullableValue(entry?.pinyin) || nullableValue(entry?.ipa),
+    audio_us: nullableValue(entry?.audio_us),
+    audio_uk: nullableValue(entry?.audio_uk),
+    wordParts: entry?.word_parts ?? entry?.wordParts ?? null,
     saved: false,
 });
 
@@ -142,6 +148,9 @@ const liveEntryToDefinitionEntry = (entry, fallbackWord, targetLanguage = getRun
         : null,
     pos: nullableValue(entry?.pos),
     romanization: nullableValue(entry?.romanization) || nullableValue(entry?.pinyin) || nullableValue(entry?.ipa),
+    audio_us: nullableValue(entry?.audio_us),
+    audio_uk: nullableValue(entry?.audio_uk),
+    wordParts: entry?.word_parts ?? entry?.wordParts ?? null,
     saved: false,
 });
 
@@ -269,6 +278,9 @@ const hydrateDefinitionEntry = async (entry, ownerId, options = {}) => {
         pos: nullableValue(entry?.pos),
         romanization: pronunciation
             || (includeRomanization && targetLanguage === 'ko' ? await fetchRomanization(word) : null),
+        audio_us: nullableValue(entry?.audio_us),
+        audio_uk: nullableValue(entry?.audio_uk),
+        wordParts: entry?.wordParts ?? entry?.word_parts ?? null,
         saved: definition ? await vocabEntryExists(word, hanja, definition, targetLanguage, { ownerId }) : false,
     };
 };
@@ -304,6 +316,7 @@ const buildLookupResult = async ({
         hanja: hydratedPrimary.hanja,
         pos: hydratedPrimary.pos,
         romanization: hydratedPrimary.romanization,
+        wordParts: hydratedPrimary.wordParts,
         saved: hydratedPrimary.saved,
         sourceSentence: cleanValue(sourceSentence),
         alternatives: hydratedAlternatives,

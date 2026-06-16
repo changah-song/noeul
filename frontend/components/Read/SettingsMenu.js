@@ -9,6 +9,7 @@ import {
     Switch
 } from 'react-native';
 import { useTranslation } from '../../hooks/useTranslation';
+import { colors, elevation, fontFamilies, radii, spacing, textStyles } from '../../theme';
 
 const SettingsMenu = ({
     visible,
@@ -71,8 +72,8 @@ const SettingsMenu = ({
                                 <Switch
                                     value={settings.isDarkMode}
                                     onValueChange={(value) => onSettingChange('isDarkMode', value)}
-                                    trackColor={{ false: '#d1d5db', true: '#4b5563' }}
-                                    thumbColor={settings.isDarkMode ? '#1f2937' : '#f3f4f6'}
+                                    trackColor={{ false: colors.borderStrong, true: colors.inkSlate }}
+                                    thumbColor={settings.isDarkMode ? colors.surfaceMuted : colors.surface}
                                 />
                             </View>
                         </View>
@@ -110,108 +111,112 @@ const SettingsMenu = ({
 const styles = StyleSheet.create({
     modalOverlay: {
         flex: 1,
-        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        backgroundColor: colors.overlay,
         justifyContent: 'flex-end',
     },
     modalContent: {
-        backgroundColor: '#fff',
-        borderTopLeftRadius: 20,
-        borderTopRightRadius: 20,
+        backgroundColor: colors.surface,
+        borderTopLeftRadius: radii.xl,
+        borderTopRightRadius: radii.xl,
+        borderWidth: 1,
+        borderColor: colors.border,
         maxHeight: '80%',
-        paddingBottom: 20,
+        paddingBottom: spacing.xl,
+        ...elevation.sheet,
     },
     header: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        padding: 20,
+        padding: spacing.xl,
         borderBottomWidth: 1,
-        borderBottomColor: '#e5e7eb',
+        borderBottomColor: colors.divider,
     },
     title: {
-        fontSize: 20,
-        fontWeight: 'bold',
-        color: '#1f2937',
+        ...textStyles.screenBarTitle,
+        color: colors.text,
     },
     closeButton: {
-        padding: 5,
+        padding: spacing.xs,
     },
     closeButtonText: {
         fontSize: 24,
-        color: '#6b7280',
+        color: colors.textMuted,
     },
     settingsContainer: {
-        padding: 20,
+        padding: spacing.xl,
     },
     settingSection: {
-        marginBottom: 30,
+        marginBottom: spacing.xxl,
     },
     settingLabel: {
-        fontSize: 16,
-        fontWeight: '600',
-        color: '#374151',
-        marginBottom: 12,
+        ...textStyles.eyebrow,
+        color: colors.textTertiary,
+        marginBottom: spacing.sm,
     },
     optionsGrid: {
         flexDirection: 'row',
         flexWrap: 'wrap',
-        gap: 10,
+        gap: spacing.sm,
     },
     optionButton: {
-        paddingVertical: 10,
-        paddingHorizontal: 16,
-        borderRadius: 8,
+        paddingVertical: spacing.sm,
+        paddingHorizontal: spacing.lg,
+        borderRadius: radii.xs,
         borderWidth: 1,
-        borderColor: '#d1d5db',
-        backgroundColor: '#fff',
+        borderColor: colors.borderStrong,
+        backgroundColor: colors.surface,
         minWidth: 60,
         alignItems: 'center',
     },
     selectedOption: {
-        backgroundColor: '#3b82f6',
-        borderColor: '#3b82f6',
+        backgroundColor: colors.inkSlate,
+        borderColor: colors.inkSlate,
     },
     optionText: {
+        fontFamily: fontFamilies.sansMedium,
         fontSize: 14,
-        color: '#374151',
+        color: colors.text,
     },
     selectedOptionText: {
-        color: '#fff',
-        fontWeight: '600',
+        color: colors.surface,
+        fontFamily: fontFamilies.sansBold,
     },
     switchContainer: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        padding: 12,
-        backgroundColor: '#f9fafb',
-        borderRadius: 8,
+        padding: spacing.md,
+        backgroundColor: colors.surfaceMuted,
+        borderRadius: radii.sm,
     },
     switchLabel: {
+        fontFamily: fontFamilies.sansRegular,
         fontSize: 16,
-        color: '#374151',
+        color: colors.textMuted,
     },
     fontFamilyContainer: {
-        gap: 10,
+        gap: spacing.sm,
     },
     fontFamilyButton: {
-        padding: 12,
-        borderRadius: 8,
+        padding: spacing.md,
+        borderRadius: radii.xs,
         borderWidth: 1,
-        borderColor: '#d1d5db',
-        backgroundColor: '#fff',
+        borderColor: colors.borderStrong,
+        backgroundColor: colors.surface,
     },
     selectedFontFamily: {
-        backgroundColor: '#3b82f6',
-        borderColor: '#3b82f6',
+        backgroundColor: colors.inkSlate,
+        borderColor: colors.inkSlate,
     },
     fontFamilyText: {
+        fontFamily: fontFamilies.sansRegular,
         fontSize: 16,
-        color: '#374151',
+        color: colors.text,
     },
     selectedFontFamilyText: {
-        color: '#fff',
-        fontWeight: '600',
+        color: colors.surface,
+        fontFamily: fontFamilies.sansBold,
     },
 });
 

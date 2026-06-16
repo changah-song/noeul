@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Text, View, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView } from 'react-native';
 import koreanDictionary from '../../../services/api/koreanDictionary';
 import stemWord from '../../../services/api/stemWord';
@@ -25,9 +25,12 @@ import {
     upsertUserVocabEntry,
 } from '../../../services/supabase';
 import HanjaDetails from './HanjaDetails';
+import ChineseCharacterDetails from './ChineseCharacterDetails';
+import TranslationContent from './TranslationContent';
 import { isCurrentSyncGeneration } from '../../../services/localOwnerCoordinator';
-import { normalizeBookLanguage } from '../../../constants/languages';
-import { colors, fontFamilies, radii, spacing, textStyles } from '../../../theme';
+import { normalizeBookLanguage, normalizeInterfaceLanguageCode } from '../../../constants/languages';
+import { fontFamilies, radii, spacing, textStyles, useTheme } from '../../../theme';
+import { playEnglishPronunciation } from '../../../services/pronunciationAudio';
 
 const STOP_STEMS = new Set([
     '하다',
@@ -113,6 +116,99 @@ const getEntryPos = (entry) => cleanValue(entry?.pos);
 const getEntryRomanization = (entry) => cleanValue(entry?.romanization);
 const getEntryIpa = (entry) => cleanValue(entry?.ipa);
 const getEntryPinyin = (entry) => cleanValue(entry?.pinyin) || getEntryIpa(entry);
+const getEntryEtymology = (entry) => cleanValue(entry?.etymology);
+const getEntryAudioUs = (entry) => cleanValue(entry?.audio_us ?? entry?.audioUs);
+const getEntryAudioUk = (entry) => cleanValue(entry?.audio_uk ?? entry?.audioUk);
+const parseWordParts = (value) => {
+    if (!value) {
+        return null;
+    }
+
+    if (typeof value === 'string') {
+        try {
+            return parseWordParts(JSON.parse(value));
+        } catch {
+            return null;
+        }
+    }
+
+    if (Array.isArray(value)) {
+        return value.length > 0 ? { parts: value } : null;
+    }
+
+    if (typeof value === 'object' && Array.isArray(value.parts) && value.parts.length > 0) {
+        return value;
+    }
+
+    return null;
+};
+const getEntryWordParts = (entry) => parseWordParts(entry?.word_parts ?? entry?.wordParts);
+const WORD_PART_TYPES_REQUIRING_MEANING = new Set(['prefix', 'suffix', 'bound_root', 'combining_form']);
+const HIDDEN_WORD_PART_CONFIDENCE = new Set(['low']);
+const MAX_RENDERED_WORD_PARTS = 4;
+const MAX_WORD_PART_TEXT_LENGTH = 36;
+const MAX_WORD_PART_MEANING_LENGTH = 48;
+const MAX_ORIGIN_LENGTH = 130;
+const OPAQUE_WORD_PART_WORDS = new Set(['because', 'understand']);
+const ORIGIN_BLOCKLIST_RE = /Etymology tree|PIE word|Proto-|possibly|unknown|uncertain/i;
+const ORIGIN_START_RE = /^(From|Borrowed from|Inherited from|Equivalent to|By surface analysis|Compound of)\b/i;
+const getRenderableWordPartItems = (wordParts) => (
+    Array.isArray(wordParts?.parts)
+        ? wordParts.parts
+            .map((part) => ({
+                text: cleanValue(part?.display) || cleanValue(part?.text),
+                lookupText: cleanValue(part?.text) || cleanValue(part?.display),
+                type: cleanValue(part?.type),
+                meaning: cleanValue(part?.meaning),
+                note: cleanValue(part?.note),
+            }))
+            .filter(part => part.text)
+        : []
+);
+const hasExplainedRootParts = (parts) => (
+    parts.every((part) => (
+        !WORD_PART_TYPES_REQUIRING_MEANING.has(part.type) || !!part.meaning
+    ))
+);
+const hasCompactWordParts = (parts) => (
+    parts.length >= 2
+    && parts.length <= MAX_RENDERED_WORD_PARTS
+    && parts.every((part) => (
+        part.text.length <= MAX_WORD_PART_TEXT_LENGTH
+        && (!part.meaning || part.meaning.length <= MAX_WORD_PART_MEANING_LENGTH)
+        && (!part.note || part.note.length <= MAX_WORD_PART_MEANING_LENGTH)
+    ))
+);
+const isDrilldownWordPart = (part) => (
+    part?.type === 'base' && Boolean(normalizeEnglishSurfaceWord(part?.lookupText))
+);
+const hasRenderableWordParts = (wordParts, word = '') => {
+    if (OPAQUE_WORD_PART_WORDS.has(normalizeEnglishSurfaceWord(word))) {
+        return false;
+    }
+
+    if (HIDDEN_WORD_PART_CONFIDENCE.has(cleanValue(wordParts?.confidence).toLowerCase())) {
+        return false;
+    }
+
+    const parts = getRenderableWordPartItems(wordParts);
+    return hasCompactWordParts(parts) && hasExplainedRootParts(parts);
+};
+const isSafeOrigin = (etymology, word = '') => {
+    if (OPAQUE_WORD_PART_WORDS.has(normalizeEnglishSurfaceWord(word))) {
+        return false;
+    }
+
+    const rawOrigin = cleanValue(etymology);
+    const origin = rawOrigin.replace(/\s+/g, ' ');
+    return Boolean(
+        origin
+        && origin.length <= MAX_ORIGIN_LENGTH
+        && !rawOrigin.includes('\n')
+        && !ORIGIN_BLOCKLIST_RE.test(origin)
+        && ORIGIN_START_RE.test(origin)
+    );
+};
 const isLikelyUntranslatedEnglishDefinition = (definition, interfaceLanguage) => {
     const text = cleanValue(definition);
 
@@ -157,6 +253,41 @@ const formatPos = (pos) => {
     return /[\uAC00-\uD7A3]/.test(normalized) ? '' : normalized.replace(/_/g, ' ').toUpperCase();
 };
 
+const getWordPartLabelKey = (type) => {
+    switch (cleanValue(type)) {
+        case 'prefix':
+            return 'lookup.wordPart.prefix';
+        case 'suffix':
+            return 'lookup.wordPart.suffix';
+        case 'base':
+            return 'lookup.wordPart.base';
+        case 'bound_root':
+            return 'lookup.wordPart.boundRoot';
+        case 'compound_component':
+            return 'lookup.wordPart.component';
+        case 'blend_component':
+            return 'lookup.wordPart.blendComponent';
+        case 'combining_form':
+            return 'lookup.wordPart.combiningForm';
+        default:
+            return 'lookup.wordPart.part';
+    }
+};
+
+const getWordPartsTitleKey = (parts) => {
+    const types = new Set((parts || []).map(part => cleanValue(part?.type)).filter(Boolean));
+    if (types.has('blend_component')) {
+        return 'lookup.wordBlend';
+    }
+    if (types.has('compound_component')) {
+        return 'lookup.wordComponents';
+    }
+    if (types.has('combining_form')) {
+        return 'lookup.combiningForms';
+    }
+    return 'lookup.wordAnatomy';
+};
+
 const uniqueEntriesByWord = (entries, excludedWord = '') => {
     const seen = new Set(cleanValue(excludedWord) ? [cleanValue(excludedWord)] : []);
 
@@ -181,40 +312,30 @@ const DictionaryContent = ({
     onTranslatePress,
     onExpandedStateChange,
     onContentHeightChange,
+    onCanExpandChange,
+    isPanelExpanded = false,
     currentBook,
     sourceBook,
     savedWords = [],
 }) => {
     const { interfaceLanguage } = useAppContext();
     const { t } = useTranslation();
+    const { colors } = useTheme();
+    const styles = useMemo(() => createStyles(colors), [colors]);
     const { activeOwnerId, syncGeneration } = useLocalOwner();
-    const palette = isDarkMode
-        ? {
-            text: '#f7efe5',
-            mutedText: '#b9ad9d',
-            secondaryText: '#ded2c1',
-            emptyText: '#9e9183',
-            surface: '#1d1915',
-            border: 'rgba(239, 225, 203, 0.18)',
-            action: colors.accent,
-            actionText: '#fffaf2',
-            secondaryButtonBg: 'rgba(255, 250, 242, 0.04)',
-            secondaryButtonText: '#d9cbb8',
-            icon: '#fffaf2',
-        }
-        : {
-            text: colors.text,
-            mutedText: '#948875',
-            secondaryText: '#5f554a',
-            emptyText: colors.textSubtle,
-            surface: colors.surfaceElevated,
-            border: '#e5d7c2',
-            action: colors.accent,
-            actionText: '#fffdf8',
-            secondaryButtonBg: '#fffdf8',
-            secondaryButtonText: '#716657',
-            icon: '#fffdf8',
-        };
+    const palette = useMemo(() => ({
+        text: colors.readerBodyInk,
+        mutedText: colors.readerMutedInk,
+        secondaryText: colors.textSecondary,
+        emptyText: colors.readerSubtleInk,
+        surface: colors.readerSurface,
+        border: colors.readerBorder,
+        action: colors.readerTappedWordBg,
+        actionText: colors.readerTappedWordText,
+        secondaryButtonBg: colors.surfaceMuted,
+        secondaryButtonText: colors.textMuted,
+        icon: colors.readerTappedWordText,
+    }), [colors]);
 
     const targetLanguage = normalizeBookLanguage(sourceBook?.language ?? 'ko');
     const isEnglishBook = targetLanguage === 'en';
@@ -234,7 +355,14 @@ const DictionaryContent = ({
         interfaceLanguage,
     }), [interfaceLanguage, targetLanguage]);
     const contextSentence = cleanValue(sourceSentence);
-    const tappedSurface = cleanValue(normalizeSurfaceWordForLanguage(highlightedWord, targetLanguage)) || cleanValue(highlightedWord);
+    const [translationMode, setTranslationMode] = useState(false);
+    const [drilldownStack, setDrilldownStack] = useState([]);
+    const lookupWord = drilldownStack.length > 0 ? drilldownStack[drilldownStack.length - 1] : highlightedWord;
+    const rootLookupWord = cleanValue(normalizeSurfaceWordForLanguage(highlightedWord, targetLanguage)) || cleanValue(highlightedWord);
+    const parentLookupWord = drilldownStack.length > 1
+        ? drilldownStack[drilldownStack.length - 2]
+        : rootLookupWord;
+    const tappedSurface = cleanValue(normalizeSurfaceWordForLanguage(lookupWord, targetLanguage)) || cleanValue(lookupWord);
     const [expandedWords, setExpandedWords] = useState([]);
     const [stemWordList, setStemWordList] = useState([]);
     const [cachedResults, setCachedResults] = useState(null);
@@ -248,6 +376,11 @@ const DictionaryContent = ({
     const [activeWordIndex, setActiveWordIndex] = useState(0);
     const [dictionaryViewportHeight, setDictionaryViewportHeight] = useState(0);
     const [dictionaryContentHeight, setDictionaryContentHeight] = useState(0);
+    const dictionaryScrollRef = useRef(null);
+    // Temporary handoff QA toggles for dictionary translation panel states.
+    const [translationLoadingPreview] = useState(false);
+    const [translationErrorPreview] = useState(false);
+    const [translationTextPreview] = useState('');
     const handleHanjaPress = (hanja, sourceWord = null, options = {}) => {
         if (!hanja) {
             setCurrentHanja(null);
@@ -276,6 +409,11 @@ const DictionaryContent = ({
     };
 
     useEffect(() => {
+        setTranslationMode(false);
+        setDrilldownStack([]);
+    }, [highlightedWord, targetLanguage]);
+
+    useEffect(() => {
         setCachedResults(null);
         setNeedsLiveFetch(false);
         setStemWordList([]);
@@ -287,9 +425,9 @@ const DictionaryContent = ({
         setRelatedKnownByWord({});
         setActiveWordIndex(0);
 
-        if (!highlightedWord) return;
+        if (!lookupWord) return;
 
-        const normalizedSurface = normalizeSurfaceWordForLanguage(highlightedWord, targetLanguage);
+        const normalizedSurface = normalizeSurfaceWordForLanguage(lookupWord, targetLanguage);
         if (!normalizedSurface) {
             setCachedResults([]);
             onContentLoaded?.();
@@ -359,7 +497,7 @@ const DictionaryContent = ({
                 return;
             }
 
-            const result = await stemWord({ query: highlightedWord, language: targetLanguage });
+            const result = await stemWord({ query: lookupWord, language: targetLanguage });
             if (isCancelled) {
                 return;
             }
@@ -379,7 +517,7 @@ const DictionaryContent = ({
         return () => {
             isCancelled = true;
         };
-    }, [activeOwnerId, cacheScope, currentBook, highlightedWord, isChineseBook, isEnglishBook, isKoreanBook, isUsableCachedEntry, onContentLoaded, targetLanguage]);
+    }, [activeOwnerId, cacheScope, currentBook, isChineseBook, isEnglishBook, isKoreanBook, isUsableCachedEntry, lookupWord, onContentLoaded, targetLanguage]);
 
     useEffect(() => {
         if (stemWordList.length === 0) return;
@@ -420,6 +558,16 @@ const DictionaryContent = ({
     });
 
     useEffect(() => {
+        if (translationMode) {
+            onExpandedStateChange?.(-1);
+            return;
+        }
+
+        if (!isPanelExpanded) {
+            onExpandedStateChange?.(0);
+            return;
+        }
+
         const expandedCachedCount = Object.entries(expandedCached).reduce((maxCount, [stem, isExpanded]) => {
             if (!isExpanded || !Array.isArray(extraDefs[stem])) {
                 return maxCount;
@@ -440,7 +588,7 @@ const DictionaryContent = ({
         }, 0);
 
         onExpandedStateChange?.(Math.max(expandedCachedCount, expandedLiveCount));
-    }, [dictionaryData, expandedCached, expandedWords, extraDefs, onExpandedStateChange, stemWordList]);
+    }, [dictionaryData, expandedCached, expandedWords, extraDefs, isPanelExpanded, onExpandedStateChange, stemWordList, translationMode]);
 
     const fetchRomanizations = async (terms) => {
         if (!isKoreanBook) {
@@ -480,8 +628,8 @@ const DictionaryContent = ({
             return;
         }
 
-        fetchRomanizations(cachedResults.map((entry) => getEntryWord(entry, highlightedWord)));
-    }, [cachedResults]);
+        fetchRomanizations(cachedResults.map((entry) => getEntryWord(entry, lookupWord)));
+    }, [cachedResults, lookupWord]);
 
     useEffect(() => {
         if (stemWordList.length === 0) {
@@ -512,9 +660,12 @@ const DictionaryContent = ({
                     pos: first.pos ?? null,
                     domain: null,
                     ipa: isEnglishBook ? (first.ipa ?? null) : (isChineseBook ? (first.pinyin ?? first.ipa ?? null) : null),
+                    audio_us: isEnglishBook ? (first.audio_us ?? null) : null,
+                    audio_uk: isEnglishBook ? (first.audio_uk ?? null) : null,
                     etymology: isEnglishBook ? (first.etymology ?? null) : null,
                     derived: isEnglishBook ? (first.derived ?? null) : null,
                     related: isEnglishBook ? (first.related ?? null) : null,
+                    word_parts: isEnglishBook ? (first.word_parts ?? first.wordParts ?? null) : null,
                 };
             })
             .filter(Boolean);
@@ -584,7 +735,7 @@ const DictionaryContent = ({
         });
 
         (cachedResults || []).forEach((entry, index) => {
-            const stem = cleanValue(entry?.stem) || getEntryWord(entry, highlightedWord) || `cached-${index}`;
+            const stem = cleanValue(entry?.stem) || getEntryWord(entry, lookupWord) || `cached-${index}`;
             const existing = itemsByStem.get(stem) || {
                 key: `cached-${stem}-${index}`,
                 stem,
@@ -604,16 +755,28 @@ const DictionaryContent = ({
             || item.liveEntries?.[0]
             || (hasLiveSettled && cleanValue(item.stem))
         ));
-    }, [cachedResults, dictionaryData, highlightedWord, liveError, needsLiveFetch, stemWordList]);
+    }, [cachedResults, dictionaryData, liveError, lookupWord, needsLiveFetch, stemWordList]);
 
     const lookupItemCount = lookupItems.length;
     const currentLookupIndex = lookupItemCount > 0
         ? Math.min(activeWordIndex, lookupItemCount - 1)
         : 0;
     const activeLookupItem = lookupItems[currentLookupIndex] || null;
-    const hasWordNavigation = lookupItemCount > 1;
+    const hasWordNavigation = drilldownStack.length === 0 && lookupItemCount > 1;
     const isDictionaryScrollable = dictionaryViewportHeight > 0
         && dictionaryContentHeight > dictionaryViewportHeight + 2;
+    const activeLookupHanja = useMemo(() => {
+        const entry = activeLookupItem?.cachedEntry || activeLookupItem?.liveEntries?.[0] || null;
+        return getEntryHanja(entry);
+    }, [activeLookupItem]);
+    const canExpandCurrentLookup = isKoreanBook && hasHanja(activeLookupHanja);
+
+    useEffect(() => {
+        onCanExpandChange?.(canExpandCurrentLookup);
+        if (!canExpandCurrentLookup && isPanelExpanded) {
+            onExpandedStateChange?.(0);
+        }
+    }, [canExpandCurrentLookup, isPanelExpanded, onCanExpandChange, onExpandedStateChange]);
 
     useEffect(() => {
         setActiveWordIndex((currentIndex) => {
@@ -851,8 +1014,27 @@ const DictionaryContent = ({
 
     const isWordSaved = (word) => savedWords.includes(word);
 
+    const handleWordPartPress = (part) => {
+        if (!isDrilldownWordPart(part)) {
+            return;
+        }
+
+        const nextWord = normalizeEnglishSurfaceWord(part.lookupText);
+        if (!nextWord || nextWord === normalizeEnglishSurfaceWord(lookupWord)) {
+            return;
+        }
+
+        setCurrentHanja(null);
+        setDrilldownStack(prev => [...prev, nextWord]);
+    };
+
+    const goBackFromDrilldown = () => {
+        setCurrentHanja(null);
+        setDrilldownStack(prev => prev.slice(0, -1));
+    };
+
     const goToPreviousWord = () => {
-        if (lookupItemCount <= 1) {
+        if (lookupItemCount <= 1 || currentLookupIndex <= 0) {
             return;
         }
 
@@ -860,13 +1042,13 @@ const DictionaryContent = ({
         setExpandedWords([]);
         onExpandedStateChange?.(0);
         setActiveWordIndex((currentIndex) => (
-            currentIndex <= 0 ? lookupItemCount - 1 : currentIndex - 1
+            Math.max(0, currentIndex - 1)
         ));
         handleHanjaPress(null);
     };
 
     const goToNextWord = () => {
-        if (lookupItemCount <= 1) {
+        if (lookupItemCount <= 1 || currentLookupIndex >= lookupItemCount - 1) {
             return;
         }
 
@@ -874,45 +1056,40 @@ const DictionaryContent = ({
         setExpandedWords([]);
         onExpandedStateChange?.(0);
         setActiveWordIndex((currentIndex) => (
-            currentIndex >= lookupItemCount - 1 ? 0 : currentIndex + 1
+            Math.min(lookupItemCount - 1, currentIndex + 1)
         ));
         handleHanjaPress(null);
     };
 
-    const renderWordSideNavigation = () => {
-        if (!hasWordNavigation) {
+    const scrollDictionaryToTop = useCallback(() => {
+        dictionaryScrollRef.current?.scrollTo?.({ y: 0, animated: true });
+    }, []);
+
+    const renderDrilldownBackRow = () => {
+        if (drilldownStack.length === 0) {
             return null;
         }
 
         return (
-            <View pointerEvents="box-none" style={styles.wordSideNavigation}>
-                <TouchableOpacity
-                    accessibilityRole="button"
-                    accessibilityLabel={t('lookup.previousDetectedWord')}
-                    activeOpacity={0.78}
-                    onPress={goToPreviousWord}
-                    hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
-                    style={[styles.wordSideNavButton, styles.wordSideNavButtonLeft]}
-                >
-                    <MaterialIcons name="chevron-left" size={24} color={palette.secondaryButtonText} />
-                </TouchableOpacity>
-                <TouchableOpacity
-                    accessibilityRole="button"
-                    accessibilityLabel={t('lookup.nextDetectedWord')}
-                    activeOpacity={0.78}
-                    onPress={goToNextWord}
-                    hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
-                    style={[styles.wordSideNavButton, styles.wordSideNavButtonRight]}
-                >
-                    <MaterialIcons name="chevron-right" size={24} color={palette.secondaryButtonText} />
-                </TouchableOpacity>
-            </View>
+            <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel={t('lookup.backToWord', { word: parentLookupWord })}
+                activeOpacity={0.78}
+                onPress={goBackFromDrilldown}
+                style={[styles.drilldownBackRow, { borderBottomColor: palette.border }]}
+            >
+                <MaterialIcons name="chevron-left" size={18} color={palette.mutedText} />
+                <Text style={[styles.drilldownBackText, { color: palette.mutedText }]}>
+                    {parentLookupWord}
+                </Text>
+            </TouchableOpacity>
         );
     };
 
-    const renderDictionaryPanel = (children) => (
+    const renderDictionaryPanel = (children, { word, hanja, definition } = {}) => (
         <View style={[styles.panelContent, styles.dictionaryPanelContent, { backgroundColor: palette.surface }]}>
             <ScrollView
+                ref={dictionaryScrollRef}
                 style={styles.dictionaryScroll}
                 contentContainerStyle={[
                     styles.dictionaryScrollContent,
@@ -931,9 +1108,10 @@ const DictionaryContent = ({
                     onContentHeightChange?.(height);
                 }}
             >
+                {renderDrilldownBackRow()}
                 {children}
             </ScrollView>
-            {renderWordSideNavigation()}
+            {word ? renderActionRow(word, hanja, definition, false) : null}
         </View>
     );
 
@@ -945,15 +1123,14 @@ const DictionaryContent = ({
         const isEntry = variant === 'entry';
         const hanjaStyle = [
             isEntry ? styles.entryHanja : styles.extraHanja,
-            { color: isEntry ? palette.action : palette.mutedText },
+            { color: isEntry ? colors.textMuted : palette.mutedText },
         ];
-        const dotColor = isEntry ? palette.action : palette.mutedText;
         const hanjaCharacters = getHanjaCharacters(hanja);
         let hanjaTokenIndex = -1;
 
         return (
             <View style={[styles.hanjaGroup, isEntry ? styles.entryHanjaGroup : styles.extraHanjaGroup]}>
-                <Text style={hanjaStyle}>(</Text>
+                {!isEntry ? <Text style={hanjaStyle}>(</Text> : null}
                 {cleanValue(hanja).split('').map((char, index) => {
                     if (!HANJA_RE.test(char)) {
                         return <Text key={`${char}-${index}`} style={hanjaStyle}>{char}</Text>;
@@ -975,18 +1152,14 @@ const DictionaryContent = ({
                             style={styles.hanjaToken}
                         >
                             <Text style={hanjaStyle}>{char}</Text>
-                            <View pointerEvents="none" style={styles.hanjaDots}>
-                                <View style={[styles.hanjaDot, { backgroundColor: dotColor }]} />
-                                <View style={[styles.hanjaDot, { backgroundColor: dotColor }]} />
-                                <View style={[styles.hanjaDot, { backgroundColor: dotColor }]} />
-                            </View>
                         </TouchableOpacity>
                     );
                 })}
-                <Text style={hanjaStyle}>)</Text>
+                {!isEntry ? <Text style={hanjaStyle}>)</Text> : null}
             </View>
         );
     };
+
 
     const renderBookmarkButton = (word, hanja, definition) => {
         if (!hasSavableDefinition(definition)) {
@@ -1010,8 +1183,8 @@ const DictionaryContent = ({
                 style={[
                     styles.bookmarkButton,
                     {
-                        backgroundColor: 'transparent',
-                        borderColor: 'transparent',
+                        backgroundColor: colors.transparent,
+                        borderColor: colors.transparent,
                     },
                 ]}
             >
@@ -1024,12 +1197,12 @@ const DictionaryContent = ({
         );
     };
 
-    const renderTranslateButton = () => (
+    const renderTranslateButton = (word) => (
         <TouchableOpacity
             accessibilityRole="button"
-            accessibilityLabel={t('lookup.translateWord', { word: highlightedWord })}
+            accessibilityLabel={t('lookup.translateWord', { word })}
             activeOpacity={0.8}
-            onPress={() => onTranslatePress?.(cleanValue(highlightedWord) || tappedSurface)}
+            onPress={() => onTranslatePress?.(cleanValue(word) || tappedSurface)}
             style={styles.translateButton}
         >
             <MaterialIcons
@@ -1040,77 +1213,264 @@ const DictionaryContent = ({
         </TouchableOpacity>
     );
 
-    const renderEntryHeading = ({ word, hanja, definition, pos, romanization, ipa, pinyin }) => {
-        const posLabel = formatPos(pos);
+    const renderActionRow = (word, hanja, definition, inTranslationMode) => {
+        const saved = hasSavableDefinition(definition) && isWordSaved(word);
+        const canSave = hasSavableDefinition(definition);
+        const saveLabel = saved ? t('lookup.saved') : t('lookup.save');
+        const translateLabel = inTranslationMode ? t('lookup.dictionary') : t('lookup.translate');
+
+        return (
+            <View style={styles.actionRow}>
+                <View style={styles.actionButtonGroup}>
+                    <TouchableOpacity
+                        style={[
+                            styles.actionButton,
+                            saved ? styles.actionButtonSaved : null,
+                            !canSave && styles.actionButtonDisabled,
+                        ]}
+                        onPress={() => {
+                            if (!canSave) {
+                                return;
+                            }
+                            saved ? toggleUnSave(word, hanja, definition) : toggleSave(word, hanja, definition);
+                        }}
+                        activeOpacity={canSave ? 0.7 : 1}
+                        accessibilityRole="button"
+                        accessibilityLabel={saveLabel}
+                    >
+                        <MaterialIcons
+                            name={saved ? 'bookmark' : 'bookmark-border'}
+                            size={16}
+                            color={saved ? palette.actionText : palette.text}
+                            style={styles.actionButtonIcon}
+                        />
+                        <Text style={[styles.actionLabel, { color: saved ? palette.actionText : palette.text }]}>
+                            {saveLabel}
+                        </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        style={[
+                            styles.actionButton,
+                            styles.actionButtonRight,
+                            inTranslationMode && styles.actionButtonRightActive,
+                        ]}
+                        onPress={() => setTranslationMode(!inTranslationMode)}
+                        activeOpacity={0.7}
+                        accessibilityRole="button"
+                        accessibilityLabel={translateLabel}
+                    >
+                        <MaterialIcons
+                            name={inTranslationMode ? 'menu-book' : 'translate'}
+                            size={15}
+                            color={palette.text}
+                            style={styles.actionButtonIcon}
+                        />
+                        <Text style={[styles.actionLabel, { color: palette.text }]}>
+                            {translateLabel}
+                        </Text>
+                    </TouchableOpacity>
+                </View>
+            </View>
+        );
+    };
+
+    const renderNotFoundActionRow = (word) => {
+        const notFoundSaved = isWordSaved(word);
+
+        return (
+            <View style={styles.actionRow}>
+                <View style={styles.actionButtonGroup}>
+                    <TouchableOpacity
+                        style={[styles.actionButton, notFoundSaved ? styles.actionButtonSaved : null]}
+                        onPress={() => notFoundSaved ? toggleUnSave(word, '', '') : toggleSave(word, '', '')}
+                        activeOpacity={0.7}
+                        accessibilityRole="button"
+                        accessibilityLabel={notFoundSaved ? t('lookup.saved') : t('lookup.save')}
+                    >
+                        <MaterialIcons
+                            name={notFoundSaved ? 'bookmark' : 'bookmark-border'}
+                            size={16}
+                            color={notFoundSaved ? palette.actionText : palette.text}
+                            style={styles.actionButtonIcon}
+                        />
+                        <Text style={[styles.actionLabel, { color: notFoundSaved ? palette.actionText : palette.text }]}>
+                            {notFoundSaved ? t('lookup.saved') : t('lookup.save')}
+                        </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        style={[styles.actionButton, styles.actionButtonRight]}
+                        onPress={() => onTranslatePress?.(word)}
+                        activeOpacity={0.7}
+                        accessibilityRole="button"
+                        accessibilityLabel={t('lookup.translate')}
+                    >
+                        <MaterialIcons
+                            name="translate"
+                            size={15}
+                            color={palette.text}
+                            style={styles.actionButtonIcon}
+                        />
+                        <Text style={[styles.actionLabel, { color: palette.text }]}>{t('lookup.translate')}</Text>
+                    </TouchableOpacity>
+                </View>
+            </View>
+        );
+    };
+
+    const renderTranslationPanel = ({
+        word,
+        hanja,
+        definition,
+        pos,
+        romanization,
+        ipa,
+        pinyin,
+        audioUs,
+        audioUk,
+    }) => {
+        const bookLanguage = normalizeBookLanguage(sourceBook?.language ?? 'ko');
+        const interfaceLanguageCode = normalizeInterfaceLanguageCode(interfaceLanguage);
+
+        return (
+            <View style={[styles.panelContent, styles.dictionaryPanelContent, { backgroundColor: palette.surface }]}>
+                <View style={styles.translationPanelBody}>
+                    {renderEntryHeading({ word, hanja, definition, pos, romanization, ipa, pinyin, audioUs, audioUk })}
+                    <Text style={styles.translationSectionTitle}>TRANSLATION</Text>
+                    <View style={styles.translationContentWrap}>
+                        <TranslationContent
+                            highlightedWord={word}
+                            isDarkMode={isDarkMode}
+                            onContentLoaded={onContentLoaded}
+                            sourceLanguage={bookLanguage}
+                            targetLanguage={interfaceLanguageCode}
+                            compact
+                            forceLoading={translationLoadingPreview}
+                            forceError={translationErrorPreview}
+                            forceErrorMessage={t('lookup.noTranslation')}
+                            forceTranslatedText={translationTextPreview}
+                            maxScrollHeight={176}
+                            bottomPadding={0}
+                            nestedScrollEnabled
+                        />
+                    </View>
+                </View>
+                {renderActionRow(word, hanja, definition, true)}
+            </View>
+        );
+    };
+
+    const handlePronunciationPress = async ({ word, audioUs, audioUk, preferredAccent }) => {
+        try {
+            await playEnglishPronunciation({
+                word,
+                audioUs,
+                audioUk,
+                preferredAccent,
+            });
+        } catch (error) {
+            console.warn('[DictionaryContent] pronunciation playback failed:', error?.message || error);
+        }
+    };
+
+    const renderPronunciationControls = ({ word, audioUs, audioUk }) => {
+        if (!isEnglishBook || !cleanValue(word)) {
+            return null;
+        }
+
+        return (
+            <View style={styles.pronunciationControls}>
+                {[
+                    ['us', 'US', t('lookup.playUsPronunciation', { word })],
+                    ['uk', 'UK', t('lookup.playUkPronunciation', { word })],
+                ].map(([accent, label, accessibilityLabel]) => (
+                    <TouchableOpacity
+                        key={accent}
+                        accessibilityRole="button"
+                        accessibilityLabel={accessibilityLabel}
+                        activeOpacity={0.78}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        onPress={() => handlePronunciationPress({
+                            word,
+                            audioUs,
+                            audioUk,
+                            preferredAccent: accent,
+                        })}
+                        style={[
+                            styles.pronunciationAccentButton,
+                            {
+                                borderColor: palette.border,
+                                backgroundColor: palette.secondaryButtonBg,
+                            },
+                        ]}
+                    >
+                        <MaterialIcons name="volume-up" size={13} color={palette.mutedText} />
+                        <Text style={[styles.pronunciationAccentText, { color: palette.mutedText }]}>
+                            {label}
+                        </Text>
+                    </TouchableOpacity>
+                ))}
+            </View>
+        );
+    };
+
+    const renderHeadwordChevron = (direction) => {
+        const isPrevious = direction === 'previous';
+        const disabled = !hasWordNavigation
+            || (isPrevious ? currentLookupIndex <= 0 : currentLookupIndex >= lookupItemCount - 1);
+
+        return (
+            <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel={isPrevious ? t('lookup.previousDetectedWord') : t('lookup.nextDetectedWord')}
+                activeOpacity={disabled ? 1 : 0.78}
+                disabled={disabled}
+                onPress={isPrevious ? goToPreviousWord : goToNextWord}
+                hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+                style={styles.headwordChevronButton}
+            >
+                {hasWordNavigation ? (
+                    <MaterialIcons
+                        name={isPrevious ? 'chevron-left' : 'chevron-right'}
+                        size={24}
+                        color={disabled ? colors.frame : colors.textSecondary}
+                    />
+                ) : null}
+            </TouchableOpacity>
+        );
+    };
+
+    const renderEntryHeading = ({ word, hanja, definition, pos, romanization, ipa, pinyin, audioUs, audioUk }) => {
         const sourceWordDetails = buildSourceWordDetails({ hanja, definition });
         const hanjaElement = isKoreanBook ? renderHanja(hanja, 'entry', word, sourceWordDetails) : null;
         const romanizationText = cleanValue(romanization);
         const ipaText = cleanValue(ipa);
         const pinyinText = cleanValue(pinyin);
-        const bookmarkButton = renderBookmarkButton(word, hanja, definition);
-        const translateButton = renderTranslateButton();
         const pronunciationText = isEnglishBook ? ipaText : (isChineseBook ? pinyinText : romanizationText);
+        const pronunciationControls = renderPronunciationControls({ word, audioUs, audioUk });
 
         return (
             <View style={styles.entryHeading}>
-                <View style={styles.entryHeadingTopRow}>
-                    <View style={styles.entryTitleColumn}>
-                        <View style={styles.wordLine}>
-                            <Text selectable style={[styles.entryWord, { color: palette.text }]}>
-                                {word}
+                <View style={styles.headwordRow}>
+                    {renderHeadwordChevron('previous')}
+                    <View style={styles.wordLine}>
+                        <Text selectable style={[styles.entryWord, { color: palette.text }]}>
+                            {word}
+                        </Text>
+                        {hanjaElement}
+                        {pronunciationText ? (
+                            <Text selectable style={[styles.entryMeta, { color: palette.mutedText }]}>
+                                {pronunciationText}
                             </Text>
-                            {hanjaElement}
-                        </View>
+                        ) : null}
                     </View>
-                    {(translateButton || bookmarkButton || posLabel) ? (
-                        <View style={styles.headerActions}>
-                            {posLabel ? (
-                                <View style={[styles.posBadge, { backgroundColor: isDarkMode ? 'rgba(255,250,242,0.1)' : '#eee8db' }]}>
-                                    <Text style={[styles.posBadgeText, { color: palette.secondaryButtonText }]}>{posLabel}</Text>
-                                </View>
-                            ) : null}
-                            {translateButton}
-                            {bookmarkButton}
-                        </View>
-                    ) : null}
+                    {renderHeadwordChevron('next')}
                 </View>
-                {(pronunciationText || (tappedSurface && tappedSurface !== word)) ? (
-                    <Text selectable style={[styles.entryMeta, { color: palette.mutedText }]}>
-                        {pronunciationText}
-                        {pronunciationText && tappedSurface && tappedSurface !== word ? ' · ' : ''}
-                        {tappedSurface && tappedSurface !== word ? t('lookup.fromSurface', { surface: tappedSurface }) : ''}
-                    </Text>
+                {pronunciationControls ? (
+                    <View style={styles.entryMetaRow}>
+                        {pronunciationControls}
+                    </View>
                 ) : null}
             </View>
-        );
-    };
-
-    const renderMoreArrow = ({ showMore, showLess, onMore, onLess }) => {
-        if (!showMore && !showLess) {
-            return null;
-        }
-
-        return (
-            <TouchableOpacity
-                accessibilityRole="button"
-                accessibilityLabel={showLess ? t('lookup.hideAlternates') : t('lookup.showAlternates')}
-                activeOpacity={0.8}
-                onPress={showLess ? onLess : onMore}
-                style={[
-                    styles.moreArrowButton,
-                    showMore && styles.moreArrowButtonCollapsed,
-                    showLess && styles.moreArrowButtonExpanded,
-                    {
-                        backgroundColor: palette.surface,
-                    },
-                ]}
-            >
-                <MaterialIcons
-                    name={showLess ? 'keyboard-arrow-up' : 'keyboard-arrow-down'}
-                    size={23}
-                    color={palette.secondaryButtonText}
-                />
-            </TouchableOpacity>
         );
     };
 
@@ -1127,7 +1487,7 @@ const DictionaryContent = ({
                 showsVerticalScrollIndicator={false}
             >
                 {entries.map((entry, index) => {
-                    const word = cleanValue(entry.word) || highlightedWord;
+                    const word = cleanValue(entry.word) || lookupWord;
                     const hanja = getEntryHanja(entry);
                     const definition = getEntryDefinition(entry);
                     const pinyin = getEntryPinyin(entry);
@@ -1190,6 +1550,109 @@ const DictionaryContent = ({
         );
     };
 
+    const renderWordParts = (wordParts, word) => {
+        const confidence = cleanValue(wordParts?.confidence);
+        const parts = getRenderableWordPartItems(wordParts);
+
+        if (!isEnglishBook || !hasRenderableWordParts(wordParts, word)) {
+            return null;
+        }
+
+        return (
+            <View style={[styles.wordPartsSection, { borderTopColor: palette.border }]}>
+                <View style={styles.wordPartsHeader}>
+                    <Text style={[styles.wordPartsTitle, { color: palette.mutedText }]}>
+                        {t(getWordPartsTitleKey(parts))}
+                    </Text>
+                    {confidence === 'low' ? (
+                        <Text
+                            style={[
+                                styles.wordPartsConfidence,
+                                {
+                                    color: palette.mutedText,
+                                    borderColor: palette.border,
+                                    backgroundColor: palette.secondaryButtonBg,
+                                },
+                            ]}
+                        >
+                            {t('lookup.wordParts.inferred')}
+                        </Text>
+                    ) : null}
+                </View>
+                <View style={styles.wordPartsRow}>
+                    {parts.map((part, index) => {
+                        const canDrillDown = isDrilldownWordPart(part);
+                        const itemContent = (
+                            <>
+                                <View style={styles.wordPartTextRow}>
+                                    <Text selectable={!canDrillDown} style={[styles.wordPartText, { color: palette.text }]}>
+                                        {part.text}
+                                    </Text>
+                                    {canDrillDown ? (
+                                        <MaterialIcons name="chevron-right" size={14} color={palette.mutedText} />
+                                    ) : null}
+                                </View>
+                                <Text style={[styles.wordPartType, { color: palette.mutedText }]}>
+                                    {t(getWordPartLabelKey(part.type))}
+                                </Text>
+                                {part.meaning || part.note ? (
+                                    <Text selectable style={[styles.wordPartMeaning, { color: palette.secondaryText }]}>
+                                        {part.meaning || part.note}
+                                    </Text>
+                                ) : null}
+                            </>
+                        );
+
+                        return (
+                            <React.Fragment key={`${part.text}-${part.type}-${index}`}>
+                                {index > 0 ? (
+                                    <Text style={[styles.wordPartJoiner, { color: palette.mutedText }]}>+</Text>
+                                ) : null}
+                                {canDrillDown ? (
+                                    <TouchableOpacity
+                                        accessibilityRole="button"
+                                        accessibilityLabel={t('lookup.openWordPart', { word: part.lookupText })}
+                                        activeOpacity={0.82}
+                                        onPress={() => handleWordPartPress(part)}
+                                        style={[
+                                            styles.wordPartItem,
+                                            styles.wordPartItemInteractive,
+                                            { borderColor: palette.border },
+                                        ]}
+                                    >
+                                        {itemContent}
+                                    </TouchableOpacity>
+                                ) : (
+                                    <View style={[styles.wordPartItem, { borderColor: palette.border }]}>
+                                        {itemContent}
+                                    </View>
+                                )}
+                            </React.Fragment>
+                        );
+                    })}
+                </View>
+            </View>
+        );
+    };
+
+    const renderOrigin = (etymology, word) => {
+        const origin = cleanValue(etymology).replace(/\s+/g, ' ');
+        if (!isEnglishBook || !isSafeOrigin(etymology, word)) {
+            return null;
+        }
+
+        return (
+            <View style={[styles.originSection, { borderTopColor: palette.border }]}>
+                <Text style={[styles.originTitle, { color: palette.mutedText }]}>
+                    {t('lookup.origin')}
+                </Text>
+                <Text selectable style={[styles.originText, { color: palette.secondaryText }]}>
+                    {origin}
+                </Text>
+            </View>
+        );
+    };
+
     const renderPrimaryEntry = ({
         key,
         word,
@@ -1200,33 +1663,57 @@ const DictionaryContent = ({
         romanization,
         ipa,
         pinyin,
+        audioUs,
+        audioUk,
+        etymology,
+        wordParts,
         showMore,
         showLess,
         onMore,
         onLess,
         extraEntries,
         separated,
-    }) => (
-        <View key={key} style={[styles.primaryEntry, separated && { borderTopColor: palette.border, borderTopWidth: StyleSheet.hairlineWidth }]}>
-            {renderEntryHeading({ word, hanja, definition, pos, romanization, ipa, pinyin })}
-            {isEnglishBook && gloss ? (
-                <Text selectable style={[styles.glossText, { color: palette.text }]}>
-                    {gloss}
-                </Text>
-            ) : null}
-            {definition ? (
-                <Text selectable style={[styles.definitionText, { color: palette.text }]}>
-                    {definition}
-                </Text>
-            ) : (
-            <Text selectable style={[styles.emptyDefinition, { color: palette.emptyText }]}>
-                {t('lookup.noDictionaryEntry')}
-            </Text>
-        )}
-            {showLess ? renderExtraDefinitions(extraEntries) : null}
-            {renderMoreArrow({ showMore, showLess, onMore, onLess })}
-        </View>
-    );
+    }) => {
+        const posLabel = formatPos(pos);
+
+        return (
+            <View key={key} style={[styles.primaryEntry, separated && { borderTopColor: palette.border, borderTopWidth: StyleSheet.hairlineWidth }]}>
+                {renderEntryHeading({ word, hanja, definition, pos, romanization, ipa, pinyin, audioUs, audioUk })}
+                {isPanelExpanded && isEnglishBook && gloss ? (
+                    <Text selectable style={[styles.glossText, { color: palette.text }]}>
+                        {gloss}
+                    </Text>
+                ) : null}
+                <View style={[styles.definitionRow, !posLabel && styles.definitionRowSolo]}>
+                    {posLabel ? (
+                        <View style={[styles.posBadge, { borderColor: palette.border }]}>
+                            <Text style={[styles.posBadgeText, { color: palette.mutedText }]}>
+                                {posLabel}
+                            </Text>
+                        </View>
+                    ) : null}
+                    {definition ? (
+                        <Text selectable style={[styles.definitionText, { color: palette.secondaryText }]}>
+                            {definition}
+                        </Text>
+                    ) : (
+                        <Text selectable style={[styles.emptyDefinition, { color: palette.emptyText }]}>
+                            {t('lookup.noDictionaryEntry')}
+                        </Text>
+                    )}
+                </View>
+                {isPanelExpanded && isChineseBook ? (
+                    <ChineseCharacterDetails
+                        word={word}
+                        isDarkMode={isDarkMode}
+                    />
+                ) : null}
+                {isPanelExpanded ? renderWordParts(wordParts, word) : null}
+                {isPanelExpanded && !hasRenderableWordParts(wordParts, word) ? renderOrigin(etymology, word) : null}
+                {isPanelExpanded && showLess ? renderExtraDefinitions(extraEntries) : null}
+            </View>
+        );
+    };
 
     if (cachedResults === null) {
         return (
@@ -1239,8 +1726,12 @@ const DictionaryContent = ({
 
     if (cachedResults.length === 0 && !needsLiveFetch && lookupItemCount === 0) {
         return (
-            <View style={[styles.panelContent, styles.emptyState, { backgroundColor: palette.surface }]}>
-                <Text style={[styles.emptyStateText, { color: palette.emptyText }]}>{t('lookup.noLookup')}</Text>
+            <View style={[styles.panelContent, styles.notFoundState, { backgroundColor: palette.surface }]}>
+                <View style={styles.notFoundBody}>
+                    <Text style={[styles.entryWord, { color: palette.text, textAlign: 'center' }]}>{lookupWord}</Text>
+                    <Text style={[styles.notFoundSubtext, { color: colors.textSubtle }]}>{t('lookup.noDefinition')}</Text>
+                </View>
+                {renderNotFoundActionRow(lookupWord)}
             </View>
         );
     }
@@ -1256,8 +1747,12 @@ const DictionaryContent = ({
 
     if (!activeLookupItem) {
         return (
-            <View style={[styles.panelContent, styles.emptyState, { backgroundColor: palette.surface }]}>
-                <Text style={[styles.emptyStateText, { color: palette.emptyText }]}>{t('lookup.noLookup')}</Text>
+            <View style={[styles.panelContent, styles.notFoundState, { backgroundColor: palette.surface }]}>
+                <View style={styles.notFoundBody}>
+                    <Text style={[styles.entryWord, { color: palette.text, textAlign: 'center' }]}>{lookupWord}</Text>
+                    <Text style={[styles.notFoundSubtext, { color: colors.textSubtle }]}>{t('lookup.noDefinition')}</Text>
+                </View>
+                {renderNotFoundActionRow(lookupWord)}
             </View>
         );
     }
@@ -1267,12 +1762,28 @@ const DictionaryContent = ({
     const firstLiveEntry = liveEntries[0];
 
     if (cachedEntry) {
-        const stem = getEntryWord(cachedEntry, activeLookupItem.stem || highlightedWord);
+        const stem = getEntryWord(cachedEntry, activeLookupItem.stem || lookupWord);
         const liveMeta = liveEntryMeta[cachedEntry.stem] || firstLiveEntry || {};
         const extra = extraDefs[cachedEntry.stem];
         const isExpanded = !!expandedCached[cachedEntry.stem];
         const showMore = Array.isArray(extra) && extra.length > 0 && !isExpanded;
         const showLess = isExpanded && Array.isArray(extra) && extra.length > 0;
+        const cachedHanja = getEntryHanja(cachedEntry);
+        const cachedDefinition = getEntryDefinition(cachedEntry);
+
+        if (translationMode) {
+            return renderTranslationPanel({
+                word: stem,
+                hanja: cachedHanja,
+                definition: cachedDefinition,
+                pos: getEntryPos(cachedEntry) || getEntryPos(liveMeta),
+                romanization: romanizations[stem] || getEntryRomanization(liveMeta),
+                ipa: getEntryIpa(cachedEntry) || getEntryIpa(liveMeta),
+                pinyin: getEntryPinyin(cachedEntry) || getEntryPinyin(liveMeta),
+                audioUs: getEntryAudioUs(cachedEntry) || getEntryAudioUs(liveMeta),
+                audioUk: getEntryAudioUk(cachedEntry) || getEntryAudioUk(liveMeta),
+            });
+        }
 
         return (
             renderDictionaryPanel(
@@ -1280,13 +1791,17 @@ const DictionaryContent = ({
                 {renderPrimaryEntry({
                     key: `${stem}-${cachedEntry.hanja ?? ''}`,
                     word: stem,
-                    hanja: getEntryHanja(cachedEntry),
-                    definition: getEntryDefinition(cachedEntry),
+                    hanja: cachedHanja,
+                    definition: cachedDefinition,
                     gloss: getEntryGloss(cachedEntry) || getEntryGloss(liveMeta),
                     pos: getEntryPos(cachedEntry) || getEntryPos(liveMeta),
                     romanization: romanizations[stem] || getEntryRomanization(liveMeta),
                     ipa: getEntryIpa(cachedEntry) || getEntryIpa(liveMeta),
                     pinyin: getEntryPinyin(cachedEntry) || getEntryPinyin(liveMeta),
+                    audioUs: getEntryAudioUs(cachedEntry) || getEntryAudioUs(liveMeta),
+                    audioUk: getEntryAudioUk(cachedEntry) || getEntryAudioUk(liveMeta),
+                    etymology: getEntryEtymology(cachedEntry) || getEntryEtymology(liveMeta),
+                    wordParts: getEntryWordParts(cachedEntry) || getEntryWordParts(liveMeta),
                     showMore,
                     showLess,
                     onMore: () => setExpandedCached(prev => ({ ...prev, [cachedEntry.stem]: true })),
@@ -1295,29 +1810,47 @@ const DictionaryContent = ({
                     separated: false,
                 })}
 
-                {isKoreanBook ? (
+                {isKoreanBook && isPanelExpanded ? (
                 <HanjaDetails
-                    hanja={currentHanja?.character ?? null}
-                    hanjaCharacters={currentHanja?.characters ?? []}
-                    initialHanjaIndex={currentHanja?.activeIndex ?? 0}
+                    hanja={currentHanja?.character ?? getHanjaCharacters(cachedHanja)[0] ?? null}
+                    hanjaCharacters={currentHanja?.characters?.length ? currentHanja.characters : getHanjaCharacters(cachedHanja)}
                     sourceWord={currentHanja?.sourceWord ?? stem}
                     sourceWordDetails={currentHanja?.sourceWordDetails ?? {}}
-                    handleHanjaPress={handleHanjaPress}
                     onKnownWordMarked={handleRelatedKnownWordMarked}
                     onKnownWordRemoved={handleRelatedKnownWordRemoved}
                     onSourceWordAutoSaved={handleSourceWordAutoSaved}
+                    onCarouselIndexChange={scrollDictionaryToTop}
                     isDarkMode={isDarkMode}
                 />
                 ) : null}
                 </>
+                ,
+                { word: stem, hanja: cachedHanja, definition: cachedDefinition }
             )
         );
     }
 
-    const word = activeLookupItem.stem || highlightedWord;
+    const word = activeLookupItem.stem || lookupWord;
     const first = firstLiveEntry;
     const isExpanded = expandedWords.includes(word);
     const extraEntries = first ? uniqueEntriesByWord(liveEntries.slice(1), first?.word || word) : [];
+    const liveHanja = getEntryHanja(first);
+    const liveDefinition = getEntryDefinition(first);
+    const liveWord = first ? (cleanValue(first.word) || word) : word;
+
+    if (translationMode) {
+        return renderTranslationPanel({
+            word: liveWord,
+            hanja: liveHanja,
+            definition: liveDefinition,
+            pos: getEntryPos(first),
+            romanization: romanizations[word] || getEntryRomanization(first),
+            ipa: getEntryIpa(first),
+            pinyin: getEntryPinyin(first),
+            audioUs: getEntryAudioUs(first),
+            audioUk: getEntryAudioUk(first),
+        });
+    }
 
     return renderDictionaryPanel(
         <>
@@ -1331,6 +1864,10 @@ const DictionaryContent = ({
                 romanization: romanizations[word] || getEntryRomanization(first),
                 ipa: getEntryIpa(first),
                 pinyin: getEntryPinyin(first),
+                audioUs: getEntryAudioUs(first),
+                audioUk: getEntryAudioUk(first),
+                etymology: getEntryEtymology(first),
+                wordParts: getEntryWordParts(first),
                 showMore: extraEntries.length > 0 && !isExpanded,
                 showLess: extraEntries.length > 0 && isExpanded,
                 onMore: () => setExpandedWords(prev => [...prev, word]),
@@ -1347,35 +1884,40 @@ const DictionaryContent = ({
                 romanization: romanizations[word],
                 ipa: '',
                 pinyin: '',
+                audioUs: '',
+                audioUk: '',
+                etymology: '',
+                wordParts: null,
                 showMore: false,
                 showLess: false,
                 separated: false,
             })}
 
-            {isKoreanBook ? (
+            {isKoreanBook && isPanelExpanded ? (
             <HanjaDetails
-                hanja={currentHanja?.character ?? null}
-                hanjaCharacters={currentHanja?.characters ?? []}
-                initialHanjaIndex={currentHanja?.activeIndex ?? 0}
+                hanja={currentHanja?.character ?? getHanjaCharacters(liveHanja)[0] ?? null}
+                hanjaCharacters={currentHanja?.characters?.length ? currentHanja.characters : getHanjaCharacters(liveHanja)}
                 sourceWord={currentHanja?.sourceWord ?? word}
                 sourceWordDetails={currentHanja?.sourceWordDetails ?? {}}
-                handleHanjaPress={handleHanjaPress}
                 onKnownWordMarked={handleRelatedKnownWordMarked}
                 onKnownWordRemoved={handleRelatedKnownWordRemoved}
                 onSourceWordAutoSaved={handleSourceWordAutoSaved}
+                onCarouselIndexChange={scrollDictionaryToTop}
                 isDarkMode={isDarkMode}
             />
             ) : null}
         </>
+        ,
+        { word: liveWord, hanja: liveHanja, definition: liveDefinition }
     );
 };
 
-const styles = StyleSheet.create({
+const createStyles = (colors) => StyleSheet.create({
     panelContent: {
         flex: 1,
-        paddingHorizontal: 20,
-        paddingTop: 16,
-        paddingBottom: 12,
+        paddingHorizontal: 0,
+        paddingTop: 0,
+        paddingBottom: 0,
     },
     dictionaryPanelContent: {
         paddingHorizontal: 0,
@@ -1388,41 +1930,58 @@ const styles = StyleSheet.create({
         minHeight: 0,
     },
     dictionaryScrollContent: {
-        paddingHorizontal: 20,
-        paddingTop: 16,
-        paddingBottom: 7,
+        paddingHorizontal: 0,
+        paddingTop: 0,
+        paddingBottom: 0,
     },
     dictionaryScrollContentWithNav: {
-        paddingHorizontal: 30,
+        paddingHorizontal: 0,
     },
     primaryEntry: {
-        gap: 5,
+        gap: 14,
+        paddingHorizontal: 24,
         paddingBottom: 0,
     },
     entryHeading: {
-        gap: 0,
+        gap: 4,
+    },
+    headwordRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 10,
+    },
+    headwordChevronButton: {
+        width: 24,
+        height: 34,
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
     },
     entryHeadingTopRow: {
         flexDirection: 'row',
-        alignItems: 'flex-start',
-        justifyContent: 'space-between',
+        alignItems: 'center',
+        justifyContent: 'center',
         gap: spacing.sm,
     },
     entryTitleColumn: {
         flex: 1,
         minWidth: 0,
+        alignItems: 'center',
     },
     wordLine: {
+        flex: 1,
+        minWidth: 0,
         flexDirection: 'row',
-        alignItems: 'center',
+        alignItems: 'baseline',
+        justifyContent: 'center',
         flexWrap: 'wrap',
-        gap: 6,
+        gap: 12,
         paddingTop: 0,
     },
     entryWord: {
-        fontFamily: fontFamilies.krSerifBold,
-        fontSize: 21,
-        lineHeight: 28,
+        fontFamily: fontFamilies.krSerifSemiBold,
+        fontSize: 28,
+        lineHeight: 36,
         letterSpacing: 0,
         paddingTop: 0,
         includeFontPadding: true,
@@ -1430,13 +1989,45 @@ const styles = StyleSheet.create({
     entryHanja: {
         fontFamily: fontFamilies.krSerifMedium,
         fontSize: 17,
-        lineHeight: 23,
+        lineHeight: 24,
     },
     entryMeta: {
-        fontFamily: fontFamilies.sansRegular,
+        fontFamily: fontFamilies.displayItalic,
         fontSize: 14,
-        lineHeight: 17,
-        marginTop: -4,
+        lineHeight: 20,
+        marginTop: 0,
+        textAlign: 'left',
+    },
+    entryMetaRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 4,
+        marginTop: 0,
+        flexWrap: 'wrap',
+    },
+    pronunciationControls: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 4,
+    },
+    pronunciationAccentButton: {
+        minWidth: 42,
+        height: 24,
+        borderRadius: 6,
+        borderWidth: StyleSheet.hairlineWidth,
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexDirection: 'row',
+        gap: 3,
+        paddingHorizontal: 6,
+    },
+    pronunciationAccentText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 9,
+        lineHeight: 11,
+        letterSpacing: 0,
     },
     headerActions: {
         flexDirection: 'row',
@@ -1447,42 +2038,100 @@ const styles = StyleSheet.create({
         paddingTop: 0,
         marginRight: -4,
     },
+    actionRow: {
+        paddingHorizontal: 24,
+        paddingTop: 18,
+        paddingBottom: 0,
+    },
+    actionButtonGroup: {
+        flexDirection: 'row',
+        gap: 10,
+    },
+    actionButton: {
+        flex: 1,
+        height: 46,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: colors.readerSurface,
+        borderWidth: 1,
+        borderColor: colors.readerBorder,
+        borderRadius: radii.xs,
+    },
+    actionButtonSaved: {
+        backgroundColor: colors.readerTappedWordBg,
+        borderColor: colors.readerTappedWordBg,
+    },
+    actionButtonRight: {
+        borderColor: colors.readerBorder,
+    },
+    actionButtonRightActive: {
+        backgroundColor: colors.readerSavedChipBg,
+    },
+    actionButtonDisabled: {
+        opacity: 0.5,
+    },
+    actionButtonIcon: {
+        marginRight: 8,
+    },
+    actionLabel: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 11,
+        lineHeight: 14,
+        letterSpacing: 1.8,
+        textTransform: 'uppercase',
+    },
+    translationPanelBody: {
+        paddingHorizontal: 24,
+        paddingTop: 0,
+    },
+    translationSectionTitle: {
+        ...textStyles.eyebrow,
+        fontSize: 9,
+        lineHeight: 13,
+        letterSpacing: 1.8,
+        marginTop: 14,
+        marginBottom: 9,
+        color: colors.textSubtle,
+    },
+    translationContentWrap: {
+        flexGrow: 0,
+        flexShrink: 1,
+    },
     posBadge: {
-        borderRadius: 8,
-        paddingHorizontal: 6,
-        paddingVertical: 3,
+        borderRadius: 3,
+        paddingHorizontal: 14,
+        paddingVertical: 6,
+        borderWidth: 1,
+        borderColor: colors.readerBorder,
+        backgroundColor: colors.transparent,
     },
     posBadgeText: {
         ...textStyles.caption,
         fontFamily: fontFamilies.sansBold,
-        fontSize: 10,
-        lineHeight: 13,
-        letterSpacing: 0,
-    },
-    wordSideNavigation: {
-        ...StyleSheet.absoluteFillObject,
-    },
-    wordSideNavButton: {
-        position: 'absolute',
-        top: '50%',
-        width: 24,
-        height: 34,
-        marginTop: -17,
-        borderRadius: 12,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    wordSideNavButtonLeft: {
-        left: 0,
-    },
-    wordSideNavButtonRight: {
-        right: 0,
+        fontSize: 12,
+        lineHeight: 15,
+        letterSpacing: 2.2,
+        textTransform: 'uppercase',
     },
     definitionText: {
-        ...textStyles.sectionTitle,
-        fontSize: 18,
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 15,
         lineHeight: 23,
         letterSpacing: 0,
+        textAlign: 'left',
+        flexShrink: 1,
+    },
+    definitionRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 10,
+        paddingHorizontal: 0,
+        minHeight: 44,
+    },
+    definitionRowSolo: {
+        justifyContent: 'center',
     },
     glossText: {
         fontFamily: fontFamilies.sans,
@@ -1492,12 +2141,142 @@ const styles = StyleSheet.create({
         marginBottom: spacing.xs,
         letterSpacing: 0,
     },
+    originSection: {
+        gap: 6,
+        paddingTop: spacing.sm,
+        marginTop: spacing.xs,
+        borderTopWidth: StyleSheet.hairlineWidth,
+    },
+    originTitle: {
+        ...textStyles.caption,
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 10,
+        lineHeight: 13,
+        letterSpacing: 0,
+        textAlign: 'center',
+        textTransform: 'uppercase',
+    },
+    originText: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 12,
+        lineHeight: 17,
+        letterSpacing: 0,
+        textAlign: 'center',
+    },
+    wordPartsSection: {
+        gap: 8,
+        paddingTop: spacing.sm,
+        marginTop: spacing.xs,
+        borderTopWidth: StyleSheet.hairlineWidth,
+    },
+    wordPartsHeader: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 6,
+    },
+    wordPartsTitle: {
+        ...textStyles.caption,
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 10,
+        lineHeight: 13,
+        letterSpacing: 0,
+        textAlign: 'center',
+        textTransform: 'uppercase',
+    },
+    wordPartsConfidence: {
+        ...textStyles.caption,
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 9,
+        lineHeight: 12,
+        letterSpacing: 0,
+        textAlign: 'center',
+        textTransform: 'uppercase',
+        borderWidth: StyleSheet.hairlineWidth,
+        borderRadius: 5,
+        paddingHorizontal: 5,
+        paddingVertical: 2,
+        overflow: 'hidden',
+    },
+    wordPartsRow: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 6,
+    },
+    drilldownBackRow: {
+        alignSelf: 'center',
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 2,
+        paddingHorizontal: 8,
+        paddingVertical: 5,
+        marginBottom: spacing.xs,
+        borderBottomWidth: StyleSheet.hairlineWidth,
+    },
+    drilldownBackText: {
+        ...textStyles.caption,
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 11,
+        lineHeight: 14,
+        letterSpacing: 0,
+    },
+    wordPartJoiner: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 13,
+        lineHeight: 18,
+    },
+    wordPartItem: {
+        minWidth: 68,
+        maxWidth: 145,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderRadius: 6,
+        paddingHorizontal: 8,
+        paddingVertical: 6,
+        alignItems: 'center',
+        gap: 2,
+    },
+    wordPartItemInteractive: {
+        paddingRight: 5,
+    },
+    wordPartTextRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 2,
+    },
+    wordPartText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 14,
+        lineHeight: 18,
+        letterSpacing: 0,
+        textAlign: 'center',
+    },
+    wordPartType: {
+        ...textStyles.caption,
+        fontFamily: fontFamilies.sans,
+        fontSize: 10,
+        lineHeight: 12,
+        letterSpacing: 0,
+        textAlign: 'center',
+        textTransform: 'uppercase',
+    },
+    wordPartMeaning: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 11,
+        lineHeight: 14,
+        letterSpacing: 0,
+        textAlign: 'center',
+    },
     emptyDefinition: {
         ...textStyles.body,
         fontStyle: 'italic',
     },
     bookmarkButton: {
-        width: 30,
+        width: 34,
         height: 34,
         borderRadius: 17,
         borderWidth: 0,
@@ -1505,31 +2284,12 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
     },
     translateButton: {
-        width: 30,
+        width: 34,
         height: 34,
         borderRadius: 17,
         borderWidth: 0,
         alignItems: 'center',
         justifyContent: 'center',
-    },
-    moreArrowButton: {
-        width: 34,
-        height: 20,
-        borderRadius: 12,
-        borderWidth: 0,
-        alignItems: 'center',
-        justifyContent: 'center',
-        alignSelf: 'center',
-        marginTop: 0,
-        marginBottom: 1,
-    },
-    moreArrowButtonCollapsed: {
-        marginTop: -3,
-        marginBottom: 0,
-    },
-    moreArrowButtonExpanded: {
-        marginTop: 0,
-        marginBottom: 0,
     },
     extraList: {
         flexGrow: 0,
@@ -1603,16 +2363,6 @@ const styles = StyleSheet.create({
         paddingHorizontal: 1,
         marginHorizontal: 1,
     },
-    hanjaDots: {
-        flexDirection: 'row',
-        gap: 3,
-        marginTop: -1,
-    },
-    hanjaDot: {
-        width: 1.8,
-        height: 1.8,
-        borderRadius: 0.9,
-    },
     stateRow: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -1628,6 +2378,22 @@ const styles = StyleSheet.create({
     emptyStateText: {
         ...textStyles.body,
         fontStyle: 'italic',
+        textAlign: 'center',
+    },
+    notFoundState: {
+        justifyContent: 'space-between',
+    },
+    notFoundBody: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        gap: 6,
+        paddingHorizontal: 22,
+    },
+    notFoundSubtext: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 14,
+        lineHeight: 20,
         textAlign: 'center',
     },
 });

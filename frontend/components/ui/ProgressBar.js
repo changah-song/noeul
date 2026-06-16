@@ -1,6 +1,6 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
-import { colors, radii } from '../../theme/tokens';
+import { radii, useTheme } from '../../theme/tokens';
 import { spacing } from '../../theme/spacing';
 import { textStyles } from '../../theme/typography';
 
@@ -13,11 +13,14 @@ const ProgressBar = ({
   label,
   detail,
   height = 10,
-  fillColor = colors.accent,
-  trackColor = colors.surfaceStrong,
+  fillColor,
+  trackColor,
   style,
 }) => {
+  const { colors } = useTheme();
   const normalized = progress != null ? clamp(progress) : clamp((value ?? 0) / max);
+  const resolvedFillColor = fillColor ?? colors.accent;
+  const resolvedTrackColor = trackColor ?? colors.surfaceStrong;
 
   return (
     <View style={style}>
@@ -27,13 +30,13 @@ const ProgressBar = ({
           {detail ? <Text style={textStyles.caption}>{detail}</Text> : null}
         </View>
       ) : null}
-      <View style={[styles.track, { height, backgroundColor: trackColor }]}>
+      <View style={[styles.track, { height, backgroundColor: resolvedTrackColor }]}>
         <View
           style={[
             styles.fill,
             {
               width: `${normalized * 100}%`,
-              backgroundColor: fillColor,
+              backgroundColor: resolvedFillColor,
             },
           ]}
         />

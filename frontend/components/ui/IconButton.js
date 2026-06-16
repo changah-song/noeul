@@ -1,6 +1,6 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { colors, radii } from '../../theme/tokens';
+import { radii, useTheme } from '../../theme/tokens';
 import { spacing } from '../../theme/spacing';
 import { textStyles } from '../../theme/typography';
 
@@ -12,7 +12,17 @@ const IconButton = ({
   style,
   disabled = false,
 }) => {
-  const toneStyle = tone === 'accent' ? styles.accent : styles.neutral;
+  const { colors } = useTheme();
+  const isAccent = tone === 'accent';
+  const toneStyle = isAccent
+    ? {
+      backgroundColor: colors.accent,
+      borderColor: colors.accent,
+    }
+    : {
+      backgroundColor: colors.surface,
+      borderColor: colors.border,
+    };
 
   return (
     <Pressable
@@ -27,7 +37,14 @@ const IconButton = ({
       ]}
     >
       {icon ? <View style={styles.icon}>{icon}</View> : null}
-      {label ? <Text style={styles.label}>{label}</Text> : null}
+      {label ? (
+        <Text style={[
+          styles.label,
+          { color: isAccent ? colors.readerTappedWordText : colors.text },
+        ]}>
+          {label}
+        </Text>
+      ) : null}
     </Pressable>
   );
 };
@@ -38,18 +55,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: spacing.xs,
-    borderRadius: radii.pill,
+    borderRadius: radii.xs,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     borderWidth: 1,
-  },
-  neutral: {
-    backgroundColor: colors.surface,
-    borderColor: colors.border,
-  },
-  accent: {
-    backgroundColor: colors.accentSoft,
-    borderColor: 'transparent',
   },
   icon: {
     alignItems: 'center',
@@ -57,7 +66,6 @@ const styles = StyleSheet.create({
   },
   label: {
     ...textStyles.label,
-    color: colors.text,
   },
   pressed: {
     opacity: 0.82,

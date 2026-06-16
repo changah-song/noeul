@@ -1,0 +1,19 @@
+{
+  "generated_at": "2026-06-15T13:30:39Z",
+  "content_version": "68ec3d7e5ce8c4eb41d8a797db8964844b41176a0398264b20cf9b7947980ea9:1904640",
+  "database_sha256": "68ec3d7e5ce8c4eb41d8a797db8964844b41176a0398264b20cf9b7947980ea9",
+  "database_size_bytes": 1904640,
+  "inputs": {
+    "dictionary": "scripts/dictionary.txt",
+    "kangxi_radicals": "scripts/kangxi_radicals.csv",
+    "kangxi_radical_forms": "scripts/kangxi_radical_forms.csv"
+  },
+  "outputs": {
+    "database": "frontend/assets/data/zh_characters.db"
+  },
+  "counts": {
+    "characters": 9574,
+    "kangxi_radicals": 214,
+    "kangxi_radical_forms": 252
+  }
+}

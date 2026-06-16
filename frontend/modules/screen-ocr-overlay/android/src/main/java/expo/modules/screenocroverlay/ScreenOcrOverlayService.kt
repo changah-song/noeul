@@ -56,6 +56,7 @@ class ScreenOcrOverlayService : Service() {
     widgetController = FloatingWidgetController(
       context = this,
       onBubbleTap = ::analyzeCurrentScreenForOverlay,
+      onCancelRequested = ::cancelCurrentAnalysisFromBubble,
       onStopRequested = {
         stopFloatingWidget()
       },
@@ -155,6 +156,7 @@ class ScreenOcrOverlayService : Service() {
       return
     }
 
+    widgetController?.setBubbleRunning(true)
     emitStatus("ocr_started")
     runHiddenCapture(showOverlay = true, promise = null)
   }
@@ -173,11 +175,12 @@ class ScreenOcrOverlayService : Service() {
       }
 
       try {
-        controller.hideBubbleForCapture()
         controller.showResultOverlayShell()
+        controller.bringBubbleToFront()
         emitStatus("capture_overlay_shell_visible")
       } catch (error: Exception) {
         finishAnalysisRun(runId)
+        controller.setBubbleRunning(false)
         restoreBubbleSafely()
         emitError("prepare_capture_overlay_failed", error)
         promise?.reject("E_PREPARE_CAPTURE_OVERLAY_FAILED", error.message, error)
@@ -222,6 +225,7 @@ class ScreenOcrOverlayService : Service() {
         }
 
         if (showOverlay) {
+          widgetController?.setBubbleRunning(false)
           widgetController?.hideResultOverlay()
         }
         restoreBubbleSafely()
@@ -262,10 +266,13 @@ class ScreenOcrOverlayService : Service() {
 
           finishAnalysisRun(runId)
           try {
+            widgetController?.setBubbleRunning(false)
+            widgetController?.hideBubble()
             widgetController?.showResultOverlay(serialized)
             emitStatus("ocr_overlay_visible")
           } catch (error: Exception) {
             widgetController?.hideResultOverlay()
+            widgetController?.setBubbleRunning(false)
             restoreBubbleSafely()
             emitError("show_ocr_overlay_failed", error)
           }
@@ -291,6 +298,7 @@ class ScreenOcrOverlayService : Service() {
         }
 
         if (showOverlay) {
+          widgetController?.setBubbleRunning(false)
           widgetController?.hideResultOverlay()
         }
         restoreBubbleSafely()
@@ -314,6 +322,20 @@ class ScreenOcrOverlayService : Service() {
       analysisRunId += 1
       isAnalyzing = false
     }
+  }
+
+  private fun cancelCurrentAnalysisFromBubble() {
+    if (!isAnalyzing) {
+      widgetController?.setBubbleRunning(false)
+      return
+    }
+
+    cancelAnalysisRuns()
+    clearLookupState()
+    widgetController?.hideResultOverlay()
+    widgetController?.setBubbleRunning(false)
+    restoreBubbleSafely()
+    emitStatus("ocr_cancelled")
   }
 
   private fun finishAnalysisRun(runId: Int) {

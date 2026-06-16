@@ -1,30 +1,51 @@
-import React, { useState, useEffect } from 'react';
-import { ActivityIndicator, Text, View, ScrollView, StyleSheet } from 'react-native';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { ActivityIndicator, Animated, Text, View, ScrollView, StyleSheet } from 'react-native';
 import { translateText } from '../../../services/api/googleTranslate';
 import { useTranslation } from '../../../hooks/useTranslation';
-import { colors, spacing, textStyles } from '../../../theme';
+import { spacing, textStyles, useTheme } from '../../../theme';
 
 const TranslationContent = ({
     highlightedWord,
-    isDarkMode,
     onContentLoaded,
     sourceLanguage = 'ko',
     targetLanguage = 'en',
+    compact = false,
+    maxScrollHeight = null,
+    bottomPadding = spacing.md,
+    nestedScrollEnabled = false,
+    forceLoading = false,
+    forceError = false,
+    forceErrorMessage = '',
+    forceTranslatedText = '',
+    onStatusChange,
 }) => {
     const { t } = useTranslation();
+    const { colors } = useTheme();
+    const styles = useMemo(() => createStyles(colors), [colors]);
     const [translatedText, setTranslatedText] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [errorMessage, setErrorMessage] = useState('');
+    const shimmerAnim = useRef(new Animated.Value(0)).current;
 
-    const palette = isDarkMode
-        ? {
-            text: '#f3ede3',
-            muted: '#b6aa99',
+    useEffect(() => {
+        const shouldAnimateShimmer = forceLoading || (!forceError && isLoading);
+        if (!shouldAnimateShimmer) {
+            return undefined;
         }
-        : {
-            text: colors.text,
-            muted: colors.textMuted,
-        };
+        const loop = Animated.loop(
+            Animated.sequence([
+                Animated.timing(shimmerAnim, { toValue: 1, duration: 700, useNativeDriver: true }),
+                Animated.timing(shimmerAnim, { toValue: 0, duration: 700, useNativeDriver: true }),
+            ])
+        );
+        loop.start();
+        return () => loop.stop();
+    }, [forceError, forceLoading, isLoading, shimmerAnim]);
+
+    const palette = {
+        text: colors.readerBodyInk,
+        muted: colors.readerMutedInk,
+    };
 
     useEffect(() => {
         const query = typeof highlightedWord === 'string' ? highlightedWord.trim() : '';
@@ -71,6 +92,70 @@ const TranslationContent = ({
         };
     }, [highlightedWord, onContentLoaded, sourceLanguage, t, targetLanguage]);
 
+    const shimmerOpacity = shimmerAnim.interpolate({ inputRange: [0, 1], outputRange: [0.55, 1] });
+
+    const boundedScrollStyle = Number.isFinite(maxScrollHeight)
+        ? { maxHeight: maxScrollHeight }
+        : null;
+    const effectiveIsLoading = forceLoading || (!forceError && isLoading);
+    const effectiveErrorMessage = effectiveIsLoading
+        ? ''
+        : (forceError ? (forceErrorMessage || t('lookup.internetRequired')) : errorMessage);
+    const effectiveTranslatedText = effectiveIsLoading || effectiveErrorMessage
+        ? ''
+        : (forceTranslatedText || translatedText);
+
+    useEffect(() => {
+        onStatusChange?.({
+            isLoading: effectiveIsLoading,
+            hasError: Boolean(effectiveErrorMessage),
+            hasText: Boolean(effectiveTranslatedText),
+        });
+    }, [effectiveErrorMessage, effectiveIsLoading, effectiveTranslatedText, onStatusChange]);
+
+    if (compact) {
+        const compactContent = (
+            <>
+                {effectiveIsLoading ? (
+                    <View style={styles.shimmerWrap}>
+                        <Animated.View style={[styles.shimmerLine, { opacity: shimmerOpacity }]} />
+                        <Animated.View style={[styles.shimmerLineShort, { opacity: shimmerOpacity }]} />
+                    </View>
+                ) : effectiveErrorMessage ? (
+                    <Text style={[styles.translationErrorText, { color: palette.muted }]}>
+                        {effectiveErrorMessage}
+                    </Text>
+                ) : effectiveTranslatedText ? (
+                    <Text
+                        style={[styles.translationText, { color: palette.text }]}
+                        numberOfLines={boundedScrollStyle ? undefined : 4}
+                    >
+                        {effectiveTranslatedText}
+                    </Text>
+                ) : null}
+            </>
+        );
+
+        if (!boundedScrollStyle) {
+            return <View>{compactContent}</View>;
+        }
+
+        return (
+            <ScrollView
+                style={[styles.compactScroll, boundedScrollStyle]}
+                contentContainerStyle={[
+                    styles.compactScrollContent,
+                    { paddingBottom: bottomPadding },
+                ]}
+                showsVerticalScrollIndicator
+                nestedScrollEnabled={nestedScrollEnabled}
+                keyboardShouldPersistTaps="handled"
+            >
+                {compactContent}
+            </ScrollView>
+        );
+    }
+
     return (
         <View style={styles.container}>
             <ScrollView
@@ -78,22 +163,22 @@ const TranslationContent = ({
                 contentContainerStyle={styles.translationContent}
                 showsVerticalScrollIndicator={true}
             >
-                {isLoading ? (
+                {effectiveIsLoading ? (
                     <View style={styles.loadingRow}>
                         <ActivityIndicator size="small" color={palette.muted} />
                         <Text style={[styles.offlineText, { color: palette.muted }]}>{t('lookup.translating')}</Text>
                     </View>
-                ) : errorMessage ? (
-                    <Text style={[styles.offlineText, { color: palette.muted }]}>{errorMessage}</Text>
-                ) : translatedText ? (
-                    <Text style={[styles.translationText, { color: palette.text }]}>{translatedText}</Text>
+                ) : effectiveErrorMessage ? (
+                    <Text style={[styles.offlineText, { color: palette.muted }]}>{effectiveErrorMessage}</Text>
+                ) : effectiveTranslatedText ? (
+                    <Text style={[styles.translationText, { color: palette.text }]}>{effectiveTranslatedText}</Text>
                 ) : null}
-            </ScrollView>   
+            </ScrollView>
         </View>
     );
 };
 
-const styles = StyleSheet.create({
+const createStyles = (colors) => StyleSheet.create({
     container: {
         flex: 1,
         minHeight: 0,
@@ -104,8 +189,31 @@ const styles = StyleSheet.create({
     },
     translationContent: {
         flexGrow: 1,
-        paddingRight: spacing.xs,
+        paddingRight: 0,
         paddingBottom: spacing.md,
+    },
+    compactScroll: {
+        flexGrow: 0,
+        flexShrink: 1,
+    },
+    compactScrollContent: {
+        flexGrow: 0,
+        paddingRight: 0,
+    },
+    shimmerWrap: {
+        gap: 9,
+        marginTop: 4,
+    },
+    shimmerLine: {
+        height: 11,
+        borderRadius: 2,
+        backgroundColor: colors.surfaceMuted,
+    },
+    shimmerLineShort: {
+        height: 11,
+        borderRadius: 2,
+        backgroundColor: colors.surfaceMuted,
+        width: '62%',
     },
     loadingRow: {
         flexDirection: 'row',
@@ -118,10 +226,18 @@ const styles = StyleSheet.create({
         fontStyle: 'italic',
     },
     translationText: {
-        ...textStyles.body,
         flexShrink: 1,
-        color: colors.text,
+        fontFamily: textStyles.body.fontFamily,
+        fontSize: 15,
         lineHeight: 24,
+        color: colors.text,
+    },
+    translationErrorText: {
+        fontFamily: textStyles.body.fontFamily,
+        fontSize: 14,
+        lineHeight: 22,
+        fontStyle: 'italic',
+        color: colors.textTertiary,
     },
 });
 

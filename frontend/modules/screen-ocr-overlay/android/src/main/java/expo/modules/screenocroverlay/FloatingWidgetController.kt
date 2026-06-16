@@ -4,26 +4,28 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.RectF
-import android.graphics.drawable.GradientDrawable
+import android.graphics.Typeface
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
+import android.text.TextPaint
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
-import android.widget.ImageView
 import kotlin.math.abs
 import kotlin.math.max
 
 class FloatingWidgetController(
   private val context: Context,
   private val onBubbleTap: () -> Unit,
+  private val onCancelRequested: () -> Unit,
   private val onStopRequested: () -> Unit,
   private val onTargetSelected: (OcrTapSelection) -> Unit,
   private val onWordNavigationRequested: (OcrTapSelection) -> Unit,
@@ -41,10 +43,12 @@ class FloatingWidgetController(
   private var dismissTargetView: DismissTargetView? = null
   private var dismissTargetActive = false
   private var resultOverlayView: OcrResultOverlayView? = null
+  private var resultOverlayParams: WindowManager.LayoutParams? = null
   private var lastBubbleX: Int? = null
   private var lastBubbleY: Int? = null
   private var lastBubbleRect: RectF? = null
   private var restoreBubbleAfterHiddenCapture = false
+  private var bubbleRunning = false
 
   val isBubbleVisible: Boolean
     get() = bubbleView != null
@@ -63,24 +67,17 @@ class FloatingWidgetController(
       throw IllegalStateException("Overlay permission is not granted")
     }
 
-    val size = dp(58f).toInt()
-    val iconPadding = dp(5f).toInt()
-    val view = ImageView(context).apply {
-      setImageResource(context.applicationInfo.icon)
-      scaleType = ImageView.ScaleType.CENTER_CROP
-      setPadding(iconPadding, iconPadding, iconPadding, iconPadding)
-      background = GradientDrawable().apply {
-        shape = GradientDrawable.OVAL
-        setColor(Color.WHITE)
-        setStroke(dp(2f).toInt(), Color.argb(150, 255, 255, 255))
-      }
-      elevation = dp(8f)
+    val visualSize = dp(56f).toInt()
+    val viewSize = dp(72f).toInt()
+    val visualInset = (viewSize - visualSize) / 2
+    val view = OcrBubbleView(context, density).apply {
       contentDescription = "Floating OCR"
+      setRunning(bubbleRunning)
     }
     val displayMetrics = context.resources.displayMetrics
     val params = WindowManager.LayoutParams(
-      size,
-      size,
+      viewSize,
+      viewSize,
       WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
       WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
         WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
@@ -88,8 +85,8 @@ class FloatingWidgetController(
       PixelFormat.TRANSLUCENT
     ).apply {
       gravity = Gravity.TOP or Gravity.START
-      x = lastBubbleX ?: max(dp(12f).toInt(), displayMetrics.widthPixels - size - dp(18f).toInt())
-      y = lastBubbleY ?: max(dp(84f).toInt(), displayMetrics.heightPixels / 3)
+      x = lastBubbleX ?: max(dp(12f).toInt(), displayMetrics.widthPixels - visualSize - dp(24f).toInt() - visualInset)
+      y = lastBubbleY ?: max(dp(84f).toInt(), displayMetrics.heightPixels - visualSize - dp(48f).toInt() - visualInset)
     }
 
     attachDragHandler(view, params)
@@ -123,6 +120,15 @@ class FloatingWidgetController(
 
     bubbleView = null
     bubbleParams = null
+  }
+
+  fun setBubbleRunning(running: Boolean) {
+    bubbleRunning = running
+    (bubbleView as? OcrBubbleView)?.setRunning(running)
+  }
+
+  fun bringBubbleToFront() {
+    bubbleView?.bringToFront()
   }
 
   fun showResultOverlayShell(): Boolean = showOrUpdateResultOverlay(null)
@@ -179,8 +185,10 @@ class FloatingWidgetController(
     resultOverlayView?.let { view ->
       view.setCloseAnchorRect(lastBubbleRect)
       if (result == null) {
+        setResultOverlayTouchable(false)
         view.clearResult()
       } else {
+        setResultOverlayTouchable(true)
         view.setResult(result)
       }
       return true
@@ -204,13 +212,14 @@ class FloatingWidgetController(
         onResultOverlayClosed()
       }
     )
+    val baseFlags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+      WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+      WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
     val params = WindowManager.LayoutParams(
       WindowManager.LayoutParams.MATCH_PARENT,
       WindowManager.LayoutParams.MATCH_PARENT,
       WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-        WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+      baseFlags or if (result == null) WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE else 0,
       PixelFormat.TRANSLUCENT
     ).apply {
       gravity = Gravity.TOP or Gravity.START
@@ -218,6 +227,7 @@ class FloatingWidgetController(
 
     windowManager.addView(overlayView, params)
     resultOverlayView = overlayView
+    resultOverlayParams = params
 
     return true
   }
@@ -273,6 +283,26 @@ class FloatingWidgetController(
     }
 
     resultOverlayView = null
+    resultOverlayParams = null
+  }
+
+  private fun setResultOverlayTouchable(touchable: Boolean) {
+    val view = resultOverlayView ?: return
+    val params = resultOverlayParams ?: return
+    val nextFlags = if (touchable) {
+      params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+    } else {
+      params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+    }
+    if (params.flags == nextFlags) {
+      return
+    }
+
+    params.flags = nextFlags
+    try {
+      windowManager.updateViewLayout(view, params)
+    } catch (_: Exception) {
+    }
   }
 
   fun hideOverlaysForCapture(): Boolean {
@@ -299,11 +329,13 @@ class FloatingWidgetController(
 
   fun removeAll() {
     restoreBubbleAfterHiddenCapture = false
+    setBubbleRunning(false)
     hideResultOverlay()
     hideBubble()
   }
 
   private fun attachDragHandler(view: View, params: WindowManager.LayoutParams) {
+    val bubble = view as? OcrBubbleView
     var downRawX = 0f
     var downRawY = 0f
     var startX = 0
@@ -325,6 +357,7 @@ class FloatingWidgetController(
           downRawY = event.rawY
           startX = params.x
           startY = params.y
+          bubble?.setBubbleState(dragging = false, overClose = false)
           mainHandler.postDelayed(longPressRunnable, ViewConfiguration.getLongPressTimeout().toLong())
           true
         }
@@ -349,7 +382,9 @@ class FloatingWidgetController(
           }
 
           if (isDragging) {
-            showDismissTarget(isBubbleInsideDismissTarget(params, view))
+            val overClose = isBubbleInsideDismissTarget(params, view)
+            bubble?.setBubbleState(dragging = true, overClose = overClose)
+            showDismissTarget(overClose)
           }
           true
         }
@@ -358,18 +393,24 @@ class FloatingWidgetController(
           mainHandler.removeCallbacks(longPressRunnable)
           val moved = abs(event.rawX - downRawX) > touchSlop || abs(event.rawY - downRawY) > touchSlop
           val shouldDismiss = isDragging && isBubbleInsideDismissTarget(params, view)
+          bubble?.setBubbleState(dragging = false, overClose = false)
           hideDismissTarget()
 
           if (shouldDismiss) {
             onStopRequested()
           } else if (!moved && !didLongPress) {
-            onBubbleTap()
+            if (bubbleRunning) {
+              onCancelRequested()
+            } else {
+              onBubbleTap()
+            }
           }
           true
         }
 
         MotionEvent.ACTION_CANCEL -> {
           mainHandler.removeCallbacks(longPressRunnable)
+          bubble?.setBubbleState(dragging = false, overClose = false)
           hideDismissTarget()
           true
         }
@@ -380,11 +421,12 @@ class FloatingWidgetController(
   }
 
   private fun showDismissTarget(active: Boolean) {
-    val targetWidth = dismissTargetWidth()
-    val targetHeight = dismissTargetHeight()
+    val targetWidth = dismissTargetWindowWidth()
+    val targetHeight = dismissTargetWindowHeight()
     val view = dismissTargetView ?: DismissTargetView(context, density).apply {
-      elevation = dp(10f)
       contentDescription = "Dismiss floating OCR"
+      alpha = 0f
+      translationY = dp(18f)
     }.also { newView ->
       val params = WindowManager.LayoutParams(
         targetWidth,
@@ -396,38 +438,27 @@ class FloatingWidgetController(
         PixelFormat.TRANSLUCENT
       ).apply {
         gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-        y = 0
+        y = dp(24f).toInt()
       }
 
       windowManager.addView(newView, params)
       dismissTargetView = newView
+      newView.animate()
+        .alpha(1f)
+        .translationY(0f)
+        .setDuration(200L)
+        .start()
     }
 
     updateDismissTarget(view, active)
   }
 
   private fun updateDismissTarget(view: DismissTargetView, active: Boolean) {
-    if (dismissTargetActive == active && view.background != null) {
+    if (dismissTargetActive == active) {
       return
     }
-
     dismissTargetActive = active
     view.setDismissActive(active)
-    view.background = GradientDrawable().apply {
-      shape = GradientDrawable.RECTANGLE
-      cornerRadii = floatArrayOf(
-        dismissTargetHeight().toFloat(),
-        dismissTargetHeight().toFloat(),
-        dismissTargetHeight().toFloat(),
-        dismissTargetHeight().toFloat(),
-        0f,
-        0f,
-        0f,
-        0f
-      )
-      setColor(if (active) Color.rgb(191, 77, 49) else Color.argb(210, 48, 42, 35))
-      setStroke(dp(2f).toInt(), Color.argb(if (active) 235 else 120, 255, 255, 255))
-    }
   }
 
   private fun hideDismissTarget() {
@@ -450,6 +481,10 @@ class FloatingWidgetController(
   }
 
   private fun bubbleRect(params: WindowManager.LayoutParams, view: View): RectF {
+    if (view is OcrBubbleView) {
+      return view.visualRectOnScreen(params.x.toFloat(), params.y.toFloat())
+    }
+
     val bubbleWidth = view.width.takeIf { it > 0 } ?: params.width
     val bubbleHeight = view.height.takeIf { it > 0 } ?: params.height
 
@@ -463,17 +498,168 @@ class FloatingWidgetController(
 
   private fun dismissTargetRect(): RectF {
     val metrics = context.resources.displayMetrics
-    val width = dismissTargetWidth().toFloat()
-    val height = dismissTargetHeight().toFloat()
-    val left = (metrics.widthPixels - width) / 2f
-    val top = metrics.heightPixels - height
+    val targetWidth = dismissTargetVisualWidth(dismissTargetActive)
+    val targetHeight = dismissTargetVisualHeight(dismissTargetActive)
+    val left = (metrics.widthPixels - targetWidth) / 2f
+    val bottom = metrics.heightPixels - dp(32f)
+    val top = bottom - targetHeight
 
-    return RectF(left, top, left + width, metrics.heightPixels.toFloat())
+    return RectF(left, top, left + targetWidth, bottom)
   }
 
-  private fun dismissTargetWidth(): Int = dp(74f).toInt()
+  private fun dismissTargetVisualWidth(active: Boolean = dismissTargetActive): Float =
+    dp(if (active) 200f else 160f)
 
-  private fun dismissTargetHeight(): Int = dp(38f).toInt()
+  private fun dismissTargetVisualHeight(active: Boolean = dismissTargetActive): Float =
+    dp(if (active) 56f else 48f)
+
+  private fun dismissTargetWindowWidth(): Int = dp(216f).toInt()
+
+  private fun dismissTargetWindowHeight(): Int = dp(72f).toInt()
+
+  private fun dp(value: Float): Float = value * density
+}
+
+private class OcrBubbleView(
+  context: Context,
+  private val density: Float
+) : View(context) {
+  private val glyphOutlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    color = Color.argb(220, 32, 38, 49)
+    strokeCap = Paint.Cap.ROUND
+    strokeJoin = Paint.Join.ROUND
+    style = Paint.Style.STROKE
+  }
+  private val glyphPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    color = Color.rgb(250, 248, 245)
+    strokeCap = Paint.Cap.ROUND
+    strokeJoin = Paint.Join.ROUND
+    style = Paint.Style.STROKE
+  }
+  private val glyphPath = Path()
+  private var running = false
+  private var dragging = false
+  private var overClose = false
+
+  init {
+    setWillNotDraw(false)
+    setBackgroundColor(Color.TRANSPARENT)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      isForceDarkAllowed = false
+    }
+  }
+
+  fun setBubbleState(dragging: Boolean, overClose: Boolean) {
+    if (this.dragging == dragging && this.overClose == overClose) {
+      return
+    }
+    this.dragging = dragging
+    this.overClose = overClose
+    invalidate()
+  }
+
+  fun setRunning(nextRunning: Boolean) {
+    if (running == nextRunning) {
+      return
+    }
+
+    running = nextRunning
+    contentDescription = if (running) "Cancel floating OCR" else "Floating OCR"
+    invalidate()
+  }
+
+  fun visualRectOnScreen(screenLeft: Float, screenTop: Float): RectF {
+    val diameter = bubbleDiameter()
+    val measuredWidth = width.takeIf { it > 0 }?.toFloat() ?: dp(72f)
+    val measuredHeight = height.takeIf { it > 0 }?.toFloat() ?: dp(72f)
+    val left = screenLeft + measuredWidth / 2f - diameter / 2f
+    val top = screenTop + measuredHeight / 2f - diameter / 2f
+    return RectF(left, top, left + diameter, top + diameter)
+  }
+
+  override fun onDraw(canvas: Canvas) {
+    super.onDraw(canvas)
+
+    val centerX = width / 2f
+    val centerY = height / 2f
+    val scale = if (dragging || overClose) 1.08f else 1f
+
+    if (running) {
+      glyphOutlinePaint.color = Color.argb(235, 250, 248, 245)
+      glyphPaint.color = Color.rgb(192, 57, 43)
+      drawXIcon(canvas, centerX, centerY, dp(30f) * scale)
+    } else {
+      glyphOutlinePaint.color = if (overClose) Color.argb(235, 250, 248, 245) else Color.argb(220, 32, 38, 49)
+      glyphPaint.color = if (overClose) Color.rgb(192, 57, 43) else Color.rgb(250, 248, 245)
+      drawGlyph(canvas, centerX, centerY, dp(34f) * scale)
+    }
+  }
+
+  private fun bubbleDiameter(): Float =
+    dp(56f) * if (dragging || overClose) 1.08f else 1f
+
+  private fun drawGlyph(canvas: Canvas, centerX: Float, centerY: Float, size: Float) {
+    drawGlyphPath(canvas, centerX, centerY, size, glyphOutlinePaint, 92f)
+    drawGlyphPath(canvas, centerX, centerY, size, glyphPaint, 64f)
+  }
+
+  private fun drawGlyphPath(
+    canvas: Canvas,
+    centerX: Float,
+    centerY: Float,
+    size: Float,
+    paint: Paint,
+    strokeWidth: Float
+  ) {
+    val scale = size / 1024f
+    paint.strokeWidth = strokeWidth
+    canvas.save()
+    canvas.translate(centerX - size / 2f, centerY - size / 2f)
+    canvas.scale(scale, scale)
+
+    glyphPath.reset()
+    glyphPath.moveTo(252f, 296f)
+    glyphPath.cubicTo(348f, 258f, 462f, 272f, 532f, 330f)
+    canvas.drawPath(glyphPath, paint)
+
+    glyphPath.reset()
+    glyphPath.moveTo(532f, 330f)
+    glyphPath.cubicTo(602f, 272f, 716f, 258f, 812f, 296f)
+    canvas.drawPath(glyphPath, paint)
+
+    drawGlyphLine(canvas, paint, 252f, 296f, 252f, 700f)
+    drawGlyphLine(canvas, paint, 812f, 296f, 812f, 700f)
+    drawGlyphLine(canvas, paint, 532f, 330f, 532f, 734f)
+
+    glyphPath.reset()
+    glyphPath.moveTo(252f, 700f)
+    glyphPath.cubicTo(348f, 662f, 462f, 676f, 532f, 734f)
+    canvas.drawPath(glyphPath, paint)
+
+    glyphPath.reset()
+    glyphPath.moveTo(532f, 734f)
+    glyphPath.cubicTo(602f, 676f, 716f, 662f, 812f, 700f)
+    canvas.drawPath(glyphPath, paint)
+
+    drawGlyphLine(canvas, paint, 252f, 452f, 396f, 452f)
+    drawGlyphLine(canvas, paint, 532f, 462f, 676f, 462f)
+    canvas.restore()
+  }
+
+  private fun drawXIcon(canvas: Canvas, centerX: Float, centerY: Float, size: Float) {
+    val half = size / 2f
+    val strokeScale = size / dp(30f)
+    glyphOutlinePaint.strokeWidth = dp(6.8f) * strokeScale
+    canvas.drawLine(centerX - half, centerY - half, centerX + half, centerY + half, glyphOutlinePaint)
+    canvas.drawLine(centerX + half, centerY - half, centerX - half, centerY + half, glyphOutlinePaint)
+    glyphPaint.strokeWidth = dp(3.1f) * strokeScale
+    canvas.drawLine(centerX - half, centerY - half, centerX + half, centerY + half, glyphPaint)
+    canvas.drawLine(centerX + half, centerY - half, centerX - half, centerY + half, glyphPaint)
+  }
+
+  private fun drawGlyphLine(canvas: Canvas, paint: Paint, startX: Float, startY: Float, endX: Float, endY: Float) {
+    canvas.drawLine(startX, startY, endX, endY, paint)
+  }
 
   private fun dp(value: Float): Float = value * density
 }
@@ -482,16 +668,28 @@ private class DismissTargetView(
   context: Context,
   private val density: Float
 ) : View(context) {
-  private val closeIconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.WHITE
-    strokeWidth = dp(2.6f)
-    strokeCap = Paint.Cap.ROUND
+  private val pillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    style = Paint.Style.FILL
+  }
+  private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    style = Paint.Style.STROKE
+    strokeWidth = dp(1f)
+  }
+  private val labelPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+    color = Color.rgb(154, 156, 159)
+    textAlign = Paint.Align.CENTER
+    textSize = dp(11f)
+    typeface = Typeface.create("sans-serif", Typeface.BOLD)
+    letterSpacing = 0.145f
   }
 
   private var active = false
 
   init {
     setWillNotDraw(false)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      isForceDarkAllowed = false
+    }
   }
 
   fun setDismissActive(nextActive: Boolean) {
@@ -506,15 +704,24 @@ private class DismissTargetView(
   override fun onDraw(canvas: Canvas) {
     super.onDraw(canvas)
 
-    closeIconPaint.alpha = if (active) 255 else 235
-    closeIconPaint.strokeWidth = if (active) dp(2.5f) else dp(2.2f)
+    val scaledWidth = dp(if (active) 200f else 160f)
+    val scaledHeight = dp(if (active) 56f else 48f)
+    val bottom = height - dp(8f)
+    val rect = RectF(
+      width / 2f - scaledWidth / 2f,
+      bottom - scaledHeight,
+      width / 2f + scaledWidth / 2f,
+      bottom
+    )
+    val radius = scaledHeight / 2f
 
-    val centerX = width / 2f
-    val centerY = dp(15.2f)
-    val half = dp(5.2f)
+    pillPaint.color = if (active) Color.argb(235, 192, 57, 43) else Color.argb(209, 27, 28, 28)
+    borderPaint.color = if (active) Color.rgb(224, 90, 74) else Color.rgb(53, 60, 71)
+    labelPaint.color = if (active) Color.WHITE else Color.rgb(154, 156, 159)
 
-    canvas.drawLine(centerX - half, centerY - half, centerX + half, centerY + half, closeIconPaint)
-    canvas.drawLine(centerX + half, centerY - half, centerX - half, centerY + half, closeIconPaint)
+    canvas.drawRoundRect(rect, radius, radius, pillPaint)
+    canvas.drawRoundRect(rect, radius, radius, borderPaint)
+    canvas.drawText("× CLOSE", width / 2f, rect.centerY() - (labelPaint.ascent() + labelPaint.descent()) / 2f, labelPaint)
   }
 
   private fun dp(value: Float): Float = value * density

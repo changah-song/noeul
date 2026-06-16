@@ -1,5 +1,5 @@
-import { Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { colors, radii, spacing, textStyles } from '../../theme';
+import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { colors, fontFamilies, layout, radii, spacing, textStyles } from '../../theme';
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 const clampDotPosition = (value) => clamp(value, 0.035, 0.965);
@@ -18,11 +18,27 @@ const BookList = ({ books, onOpenBook }) => {
                     style={styles.item}
                     onPress={() => onOpenBook(item.uri)}
                 >
-                    <View style={styles.coverWrap}>
-                        <Image
-                            style={styles.cover}
-                            source={item.cover ? { uri: item.cover } : require('../../assets/icon.png')}
-                        />
+                    <View style={[
+                        styles.coverWrap,
+                        item.coverTone === 'dark' && styles.coverWrapDark,
+                        item.coverTone === 'mid' && styles.coverWrapMid,
+                    ]}>
+                        <View style={styles.coverRule} />
+                        <Text style={[
+                            styles.coverTitle,
+                            item.coverTone === 'dark' && styles.coverTitleDark,
+                            item.coverTone === 'mid' && styles.coverTitleDark,
+                        ]} numberOfLines={2}>
+                            {item.title || 'Untitled'}
+                        </Text>
+                        <Text style={[
+                            styles.coverAuthor,
+                            item.coverTone === 'dark' && styles.coverAuthorDark,
+                            item.coverTone === 'mid' && styles.coverAuthorDark,
+                        ]} numberOfLines={1}>
+                            {item.author || item.creator || ''}
+                        </Text>
+                        <View style={styles.coverRule} />
                     </View>
                     <Text style={styles.title} numberOfLines={2}>
                         {item.title || 'Untitled'}
@@ -52,17 +68,50 @@ const styles = StyleSheet.create({
     },
     coverWrap: {
         width: 104,
-        height: 150,
-        borderRadius: 12,
-        backgroundColor: colors.surfaceElevated,
-        overflow: 'hidden',
+        aspectRatio: layout.bookCoverAspectRatio,
+        borderRadius: radii.xs,
+        backgroundColor: colors.surfaceMuted,
+        borderLeftWidth: layout.bookGridCoverSpineWidth,
+        borderLeftColor: colors.divider,
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: spacing.sm,
         marginBottom: spacing.xs,
     },
-    cover: {
-        width: '100%',
-        height: '100%',
-        resizeMode: 'cover',
-        backgroundColor: colors.surfaceMuted,
+    coverWrapDark: {
+        backgroundColor: colors.coverSlate,
+        borderLeftColor: colors.inkSlateDeep,
+    },
+    coverWrapMid: {
+        backgroundColor: colors.coverMid,
+        borderLeftColor: colors.coverSlate,
+    },
+    coverRule: {
+        width: 30,
+        height: layout.tabBarBorderWidth,
+        backgroundColor: colors.textSubtle,
+        marginVertical: spacing.xs,
+    },
+    coverTitle: {
+        fontFamily: fontFamilies.krSerifSemiBold,
+        fontSize: 18,
+        lineHeight: 24,
+        textAlign: 'center',
+        color: colors.text,
+    },
+    coverTitleDark: {
+        color: colors.border,
+    },
+    coverAuthor: {
+        marginTop: spacing.xs,
+        fontFamily: fontFamilies.krSerifRegular,
+        fontSize: 11,
+        lineHeight: 15,
+        textAlign: 'center',
+        color: colors.textTertiary,
+    },
+    coverAuthorDark: {
+        color: colors.textSubtle,
     },
     title: {
         ...textStyles.sectionTitle,
@@ -90,8 +139,8 @@ const styles = StyleSheet.create({
         height: 8,
         marginTop: -4,
         marginLeft: -4,
-        borderRadius: 999,
-        backgroundColor: '#6e6255',
+        borderRadius: radii.pill,
+        backgroundColor: colors.inkSlate,
     },
 });
 

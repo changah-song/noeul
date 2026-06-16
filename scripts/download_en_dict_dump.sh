@@ -21,5 +21,4 @@ if [[ ! -f "$DUMP_GZ" ]]; then
   fi
 fi
 
-gunzip "$DUMP_GZ"
-echo "Downloaded and extracted: $DUMP_JSONL"
+echo "Kaikki English compressed JSONL is ready: $DUMP_GZ"
