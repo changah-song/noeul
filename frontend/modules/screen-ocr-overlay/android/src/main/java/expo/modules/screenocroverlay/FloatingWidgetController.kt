@@ -524,11 +524,9 @@ private class OcrBubbleView(
   context: Context,
   private val density: Float
 ) : View(context) {
-  private val glyphOutlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = Color.argb(220, 32, 38, 49)
-    strokeCap = Paint.Cap.ROUND
-    strokeJoin = Paint.Join.ROUND
-    style = Paint.Style.STROKE
+  private val circlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    color = Color.argb(230, 32, 38, 49)
+    style = Paint.Style.FILL
   }
   private val glyphPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
     color = Color.rgb(250, 248, 245)
@@ -583,14 +581,15 @@ private class OcrBubbleView(
     val centerX = width / 2f
     val centerY = height / 2f
     val scale = if (dragging || overClose) 1.08f else 1f
+    val diameter = bubbleDiameter()
+    val radius = diameter / 2f - dp(0.5f)
 
+    circlePaint.color = Color.argb(230, 32, 38, 49)
+    canvas.drawCircle(centerX, centerY, radius, circlePaint)
+    glyphPaint.color = Color.rgb(250, 248, 245)
     if (running) {
-      glyphOutlinePaint.color = Color.argb(235, 250, 248, 245)
-      glyphPaint.color = Color.rgb(192, 57, 43)
-      drawXIcon(canvas, centerX, centerY, dp(30f) * scale)
+      drawXIcon(canvas, centerX, centerY, dp(22f) * scale)
     } else {
-      glyphOutlinePaint.color = if (overClose) Color.argb(235, 250, 248, 245) else Color.argb(220, 32, 38, 49)
-      glyphPaint.color = if (overClose) Color.rgb(192, 57, 43) else Color.rgb(250, 248, 245)
       drawGlyph(canvas, centerX, centerY, dp(34f) * scale)
     }
   }
@@ -599,20 +598,8 @@ private class OcrBubbleView(
     dp(56f) * if (dragging || overClose) 1.08f else 1f
 
   private fun drawGlyph(canvas: Canvas, centerX: Float, centerY: Float, size: Float) {
-    drawGlyphPath(canvas, centerX, centerY, size, glyphOutlinePaint, 92f)
-    drawGlyphPath(canvas, centerX, centerY, size, glyphPaint, 64f)
-  }
-
-  private fun drawGlyphPath(
-    canvas: Canvas,
-    centerX: Float,
-    centerY: Float,
-    size: Float,
-    paint: Paint,
-    strokeWidth: Float
-  ) {
     val scale = size / 1024f
-    paint.strokeWidth = strokeWidth
+    glyphPaint.strokeWidth = 64f
     canvas.save()
     canvas.translate(centerX - size / 2f, centerY - size / 2f)
     canvas.scale(scale, scale)
@@ -620,45 +607,42 @@ private class OcrBubbleView(
     glyphPath.reset()
     glyphPath.moveTo(252f, 296f)
     glyphPath.cubicTo(348f, 258f, 462f, 272f, 532f, 330f)
-    canvas.drawPath(glyphPath, paint)
+    canvas.drawPath(glyphPath, glyphPaint)
 
     glyphPath.reset()
     glyphPath.moveTo(532f, 330f)
     glyphPath.cubicTo(602f, 272f, 716f, 258f, 812f, 296f)
-    canvas.drawPath(glyphPath, paint)
+    canvas.drawPath(glyphPath, glyphPaint)
 
-    drawGlyphLine(canvas, paint, 252f, 296f, 252f, 700f)
-    drawGlyphLine(canvas, paint, 812f, 296f, 812f, 700f)
-    drawGlyphLine(canvas, paint, 532f, 330f, 532f, 734f)
+    drawGlyphLine(canvas, 252f, 296f, 252f, 700f)
+    drawGlyphLine(canvas, 812f, 296f, 812f, 700f)
+    drawGlyphLine(canvas, 532f, 330f, 532f, 734f)
 
     glyphPath.reset()
     glyphPath.moveTo(252f, 700f)
     glyphPath.cubicTo(348f, 662f, 462f, 676f, 532f, 734f)
-    canvas.drawPath(glyphPath, paint)
+    canvas.drawPath(glyphPath, glyphPaint)
 
     glyphPath.reset()
     glyphPath.moveTo(532f, 734f)
     glyphPath.cubicTo(602f, 676f, 716f, 662f, 812f, 700f)
-    canvas.drawPath(glyphPath, paint)
+    canvas.drawPath(glyphPath, glyphPaint)
 
-    drawGlyphLine(canvas, paint, 252f, 452f, 396f, 452f)
-    drawGlyphLine(canvas, paint, 532f, 462f, 676f, 462f)
+    drawGlyphLine(canvas, 252f, 452f, 396f, 452f)
+    drawGlyphLine(canvas, 532f, 462f, 676f, 462f)
     canvas.restore()
   }
 
   private fun drawXIcon(canvas: Canvas, centerX: Float, centerY: Float, size: Float) {
     val half = size / 2f
-    val strokeScale = size / dp(30f)
-    glyphOutlinePaint.strokeWidth = dp(6.8f) * strokeScale
-    canvas.drawLine(centerX - half, centerY - half, centerX + half, centerY + half, glyphOutlinePaint)
-    canvas.drawLine(centerX + half, centerY - half, centerX - half, centerY + half, glyphOutlinePaint)
-    glyphPaint.strokeWidth = dp(3.1f) * strokeScale
+    val strokeScale = size / dp(22f)
+    glyphPaint.strokeWidth = dp(2.5f) * strokeScale
     canvas.drawLine(centerX - half, centerY - half, centerX + half, centerY + half, glyphPaint)
     canvas.drawLine(centerX + half, centerY - half, centerX - half, centerY + half, glyphPaint)
   }
 
-  private fun drawGlyphLine(canvas: Canvas, paint: Paint, startX: Float, startY: Float, endX: Float, endY: Float) {
-    canvas.drawLine(startX, startY, endX, endY, paint)
+  private fun drawGlyphLine(canvas: Canvas, startX: Float, startY: Float, endX: Float, endY: Float) {
+    canvas.drawLine(startX, startY, endX, endY, glyphPaint)
   }
 
   private fun dp(value: Float): Float = value * density

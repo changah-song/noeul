@@ -85,6 +85,57 @@ const PUBLIC_DOMAIN_AUTHOR_TRANSLATIONS = {
   'tears-of-blood': 'Yi In-jik',
 };
 
+const makePublicDomainBookLevel = (language, level, rank, system, matchedCount, coverage) => ({
+  difficulty: level,
+  bookLevel: {
+    language,
+    basis: 'vocabulary',
+    method: '80th_percentile_known_vocab',
+    note: 'Estimated from vocabulary only.',
+    sample_size: 100,
+    sample_limit: 100,
+    matched_count: matchedCount,
+    unknown_count: 100 - matchedCount,
+    coverage,
+    level_rank: rank,
+    level,
+    proficiency_system: system,
+    proficiency_level: level,
+    proficiency_rank: rank,
+  },
+});
+
+const PUBLIC_DOMAIN_LEVELS = {
+  'ah-q-true-story': makePublicDomainBookLevel('zh', 'HSK 6', 6, 'HSK', 37, 0.37),
+  'chen-lun-yu-dafu': makePublicDomainBookLevel('zh', 'HSK 7', 7, 'HSK', 41, 0.41),
+  'fang-huang-lu-xun': makePublicDomainBookLevel('zh', 'HSK 6', 6, 'HSK', 51, 0.51),
+  'kong-yiji-lu-xun': makePublicDomainBookLevel('zh', 'HSK 6', 6, 'HSK', 45, 0.45),
+  'madmans-diary-lu-xun': makePublicDomainBookLevel('zh', 'HSK 7', 7, 'HSK', 47, 0.47),
+  'na-han-lu-xun': makePublicDomainBookLevel('zh', 'HSK 6', 6, 'HSK', 51, 0.51),
+  'b-sagam-and-love-letter': makePublicDomainBookLevel('ko', '고급', 3, 'NIKL', 17, 0.17),
+  'snow-queen': makePublicDomainBookLevel('ko', '고급', 3, 'NIKL', 26, 0.26),
+  'ugly-duckling': makePublicDomainBookLevel('ko', '고급', 3, 'NIKL', 26, 0.26),
+  'little-match-girl': makePublicDomainBookLevel('ko', '고급', 3, 'NIKL', 23, 0.23),
+  thumbelina: makePublicDomainBookLevel('ko', '중급', 2, 'NIKL', 21, 0.21),
+  'little-mermaid': makePublicDomainBookLevel('ko', '고급', 3, 'NIKL', 26, 0.26),
+  'gwangyeom-sonata': makePublicDomainBookLevel('ko', '중급', 2, 'NIKL', 32, 0.32),
+  wings: makePublicDomainBookLevel('ko', '고급', 3, 'NIKL', 35, 0.35),
+  'city-and-ghost': makePublicDomainBookLevel('ko', '고급', 3, 'NIKL', 26, 0.26),
+  'camellia-flower': makePublicDomainBookLevel('ko', '고급', 3, 'NIKL', 17, 0.17),
+  'when-buckwheat-flowers-bloom': makePublicDomainBookLevel('ko', '고급', 3, 'NIKL', 20, 0.2),
+  'mister-bang': makePublicDomainBookLevel('ko', '고급', 3, 'NIKL', 25, 0.25),
+  'spring-spring': makePublicDomainBookLevel('ko', '고급', 3, 'NIKL', 22, 0.22),
+  'a-lucky-day': makePublicDomainBookLevel('ko', '고급', 3, 'NIKL', 23, 0.23),
+  'crime-and-punishment-lee-muyeong': makePublicDomainBookLevel('ko', '고급', 3, 'NIKL', 33, 0.33),
+  taepyeongcheonha: makePublicDomainBookLevel('ko', '고급', 3, 'NIKL', 27, 0.27),
+  potato: makePublicDomainBookLevel('ko', '고급', 3, 'NIKL', 36, 0.36),
+  'butterflys-dream': makePublicDomainBookLevel('ko', '고급', 3, 'NIKL', 13, 0.13),
+  'ready-made-life': makePublicDomainBookLevel('ko', '고급', 3, 'NIKL', 34, 0.34),
+  chisuk: makePublicDomainBookLevel('ko', '고급', 3, 'NIKL', 31, 0.31),
+  heosaengjeon: makePublicDomainBookLevel('ko', '고급', 3, 'NIKL', 24, 0.24),
+  'tears-of-blood': makePublicDomainBookLevel('ko', '고급', 3, 'NIKL', 15, 0.15),
+};
+
 const PUBLIC_DOMAIN_PREVIEW_METADATA = {
   'ah-q-true-story': {
     previewSource: ZH_PREVIEW_SOURCE,
@@ -594,4 +645,5 @@ export const PUBLIC_DOMAIN_TEXTS = PUBLIC_DOMAIN_TEXTS_BASE.map((book, index) =>
   authorTranslation: PUBLIC_DOMAIN_AUTHOR_TRANSLATIONS[book.id],
   coverColor: PUBLIC_DOMAIN_COVER_COLORS[index % PUBLIC_DOMAIN_COVER_COLORS.length],
   ...PUBLIC_DOMAIN_PREVIEW_METADATA[book.id],
+  ...PUBLIC_DOMAIN_LEVELS[book.id],
 }));

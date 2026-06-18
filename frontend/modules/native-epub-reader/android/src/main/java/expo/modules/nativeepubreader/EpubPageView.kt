@@ -95,9 +95,14 @@ class EpubPageView(context: Context) : View(context) {
   private var activeSelectionRanges: List<TextRange> = emptyList()
   private var activeSelectionKind: ActiveSelectionKind? = null
   private var savedHighlightRanges: List<TextRange> = emptyList()
+  private var sameLevelRanges: List<TextRange> = emptyList()
+  private var aboveLevelRanges: List<TextRange> = emptyList()
   private var activeHighlightColor = themePalette.activeHighlightColor
   private var textSelectionHighlightColor = themePalette.textSelectionHighlightColor
   private var savedHighlightColor = themePalette.savedHighlightColor
+  private var savedHighlightTextColor = themePalette.savedHighlightTextColor
+  private var sameLevelUnderlineColor = themePalette.sameLevelUnderlineColor
+  private var aboveLevelUnderlineColor = themePalette.aboveLevelUnderlineColor
   private var onWordSelected: ((WordHit) -> Unit)? = null
   private var onTextSelected: ((TextSelectionHit) -> Unit)? = null
   private var onSelectionCleared: (() -> Unit)? = null
@@ -121,9 +126,25 @@ class EpubPageView(context: Context) : View(context) {
   private val highlightBounds = RectF()
   private val savedHighlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
     color = savedHighlightColor
+    style = Paint.Style.FILL
+  }
+  private val savedHighlightTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+    color = savedHighlightTextColor
+    style = Paint.Style.FILL
+  }
+  private val sameLevelUnderlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    color = sameLevelUnderlineColor
     style = Paint.Style.STROKE
-    strokeWidth = dp(1.5f).toFloat()
-    pathEffect = DashPathEffect(floatArrayOf(dp(2f).toFloat(), dp(3f).toFloat()), 0f)
+    strokeWidth = dp(1.7f).toFloat()
+    strokeCap = Paint.Cap.ROUND
+    pathEffect = DashPathEffect(floatArrayOf(dp(1f).toFloat(), dp(3f).toFloat()), 0f)
+  }
+  private val aboveLevelUnderlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    color = aboveLevelUnderlineColor
+    style = Paint.Style.STROKE
+    strokeWidth = dp(1.7f).toFloat()
+    strokeCap = Paint.Cap.ROUND
+    pathEffect = DashPathEffect(floatArrayOf(dp(1f).toFloat(), dp(3f).toFloat()), 0f)
   }
   private val activeHighlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
     color = activeHighlightColor
@@ -169,9 +190,14 @@ class EpubPageView(context: Context) : View(context) {
     activeSelectionRanges: List<TextRange>,
     activeSelectionKind: ActiveSelectionKind?,
     savedHighlightRanges: List<TextRange>,
+    sameLevelRanges: List<TextRange>,
+    aboveLevelRanges: List<TextRange>,
     activeHighlightColor: Int,
     textSelectionHighlightColor: Int,
     savedHighlightColor: Int,
+    savedHighlightTextColor: Int,
+    sameLevelUnderlineColor: Int,
+    aboveLevelUnderlineColor: Int,
     onWordSelected: ((WordHit) -> Unit)?,
     onTextSelected: ((TextSelectionHit) -> Unit)?,
     onSelectionCleared: (() -> Unit)?,
@@ -196,9 +222,14 @@ class EpubPageView(context: Context) : View(context) {
       activeSelectionRanges = activeSelectionRanges,
       activeSelectionKind = activeSelectionKind,
       savedHighlightRanges = savedHighlightRanges,
+      sameLevelRanges = sameLevelRanges,
+      aboveLevelRanges = aboveLevelRanges,
       activeHighlightColor = activeHighlightColor,
       textSelectionHighlightColor = textSelectionHighlightColor,
-      savedHighlightColor = savedHighlightColor
+      savedHighlightColor = savedHighlightColor,
+      savedHighlightTextColor = savedHighlightTextColor,
+      sameLevelUnderlineColor = sameLevelUnderlineColor,
+      aboveLevelUnderlineColor = aboveLevelUnderlineColor
     )
     geometryDirty = true
     invalidate()
@@ -209,17 +240,30 @@ class EpubPageView(context: Context) : View(context) {
     activeSelectionRanges: List<TextRange>,
     activeSelectionKind: ActiveSelectionKind?,
     savedHighlightRanges: List<TextRange>,
+    sameLevelRanges: List<TextRange>,
+    aboveLevelRanges: List<TextRange>,
     activeHighlightColor: Int,
     textSelectionHighlightColor: Int,
-    savedHighlightColor: Int
+    savedHighlightColor: Int,
+    savedHighlightTextColor: Int,
+    sameLevelUnderlineColor: Int,
+    aboveLevelUnderlineColor: Int
   ) {
     this.activeSelectionRanges = activeSelectionRanges
     this.activeSelectionKind = activeSelectionKind
     this.savedHighlightRanges = savedHighlightRanges
+    this.sameLevelRanges = sameLevelRanges
+    this.aboveLevelRanges = aboveLevelRanges
     this.activeHighlightColor = activeHighlightColor
     this.textSelectionHighlightColor = textSelectionHighlightColor
     this.savedHighlightColor = savedHighlightColor
+    this.savedHighlightTextColor = savedHighlightTextColor
+    this.sameLevelUnderlineColor = sameLevelUnderlineColor
+    this.aboveLevelUnderlineColor = aboveLevelUnderlineColor
     savedHighlightPaint.color = savedHighlightColor
+    savedHighlightTextPaint.color = savedHighlightTextColor
+    sameLevelUnderlinePaint.color = sameLevelUnderlineColor
+    aboveLevelUnderlinePaint.color = aboveLevelUnderlineColor
     activeHighlightPaint.color = activePaintColor()
     invalidate()
     postInvalidateOnAnimation()
@@ -243,10 +287,13 @@ class EpubPageView(context: Context) : View(context) {
 
         canvas.save()
         canvas.translate((paddingH + block.marginLeft).toFloat(), yOffset)
-        drawTextHighlights(canvas, block, layout, savedHighlightRanges, savedHighlightPaint)
         activeHighlightPaint.color = activePaintColor()
         drawTextHighlights(canvas, block, layout, activeSelectionRanges, activeHighlightPaint)
+        drawTextHighlights(canvas, block, layout, sameLevelRanges, sameLevelUnderlinePaint)
+        drawTextHighlights(canvas, block, layout, aboveLevelRanges, aboveLevelUnderlinePaint)
+        drawTextHighlights(canvas, block, layout, savedHighlightRanges, savedHighlightPaint)
         layout.draw(canvas)
+        drawSavedHighlightText(canvas, block, layout, savedHighlightRanges)
         drawSelectionHandles(canvas, block, layout)
         canvas.restore()
 
@@ -377,56 +424,8 @@ class EpubPageView(context: Context) : View(context) {
     if (width <= 0 || height <= 0) return
 
     when (edgeState.kind) {
-      ReaderEdgeKind.CHAPTER_COMPLETE -> drawChapterCompleteState(canvas, edgeState)
       ReaderEdgeKind.BOOK_FINISHED -> drawBookFinishedState(canvas, edgeState)
     }
-  }
-
-  private fun drawChapterCompleteState(canvas: Canvas, edgeState: ReaderEdgeState) {
-    val buttonRect = edgeActionBoundsForKind(edgeState.kind)
-    drawSlateButton(canvas, buttonRect)
-
-    val buttonLabelPaint = edgeTextPaint(
-      sizeSp = 11f,
-      color = readerEdgeButtonTextColor(),
-      typeface = edgeSansBoldTypeface,
-      letterSpacingEm = 0.16f
-    )
-    drawCenteredButtonTextWithArrow(canvas, "NEXT CHAPTER", buttonRect, buttonLabelPaint)
-
-    val metaPaint = edgeTextPaint(
-      sizeSp = 13f,
-      color = readerEdgeMutedTextColor(),
-      typeface = edgeSansRegularTypeface
-    )
-    val titlePaint = edgeTextPaint(
-      sizeSp = 26f,
-      color = readerEdgeTextColor(),
-      typeface = edgeDisplayTypeface
-    )
-    val labelPaint = edgeTextPaint(
-      sizeSp = 10f,
-      color = readerEdgeSubtleTextColor(),
-      typeface = edgeSansMediumTypeface,
-      letterSpacingEm = 0.26f
-    )
-    val rulePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-      color = readerEdgeRuleColor()
-      strokeWidth = dp(1f).toFloat()
-      style = Paint.Style.STROKE
-    }
-
-    val buttonTop = buttonRect.top
-    val metaCenterY = buttonTop - dp(31f)
-    val titleCenterY = metaCenterY - dp(43f)
-    val labelCenterY = titleCenterY - dp(42f)
-    val ruleY = labelCenterY - dp(32f)
-    val centerX = width / 2f
-
-    canvas.drawLine(centerX - dp(20f), ruleY, centerX + dp(20f), ruleY, rulePaint)
-    drawCenteredText(canvas, "CHAPTER COMPLETE", labelCenterY, labelPaint, width - dp(48f))
-    drawCenteredText(canvas, edgeState.chapterTitle.ifBlank { "Chapter Complete" }, titleCenterY, titlePaint, width - dp(64f))
-    drawCenteredText(canvas, chapterCompleteMeta(edgeState.savedWordCount, edgeState.readMinutes), metaCenterY, metaPaint, width - dp(64f))
   }
 
   private fun drawBookFinishedState(canvas: Canvas, edgeState: ReaderEdgeState) {
@@ -497,33 +496,6 @@ class EpubPageView(context: Context) : View(context) {
     }
     val radius = dp(4f).toFloat()
     canvas.drawRoundRect(rect, radius, radius, paint)
-  }
-
-  private fun drawCenteredButtonTextWithArrow(
-    canvas: Canvas,
-    label: String,
-    rect: RectF,
-    paint: TextPaint
-  ) {
-    val labelPaint = TextPaint(paint).apply {
-      textAlign = Paint.Align.LEFT
-    }
-    val arrowPaint = TextPaint(paint).apply {
-      textAlign = Paint.Align.LEFT
-      letterSpacing = 0f
-      textSize = sp(18f)
-    }
-    val labelWidth = labelPaint.measureText(label)
-    val gap = dp(18f).toFloat()
-    val arrow = "→"
-    val arrowWidth = arrowPaint.measureText(arrow)
-    val totalWidth = labelWidth + gap + arrowWidth
-    val baseline = baselineForCenter(rect.centerY(), labelPaint)
-    var x = rect.centerX() - (totalWidth / 2f)
-
-    canvas.drawText(label, x, baseline, labelPaint)
-    x += labelWidth + gap
-    canvas.drawText(arrow, x, baselineForCenter(rect.centerY(), arrowPaint), arrowPaint)
   }
 
   private fun drawCenteredButtonTextWithBookIcon(
@@ -693,13 +665,6 @@ class EpubPageView(context: Context) : View(context) {
       textAlign = Paint.Align.CENTER
       letterSpacing = letterSpacingEm
     }
-  }
-
-  private fun chapterCompleteMeta(count: Int, readMinutes: Int): String {
-    val safeCount = count.coerceAtLeast(0)
-    val noun = if (safeCount == 1) "word" else "words"
-    val safeReadMinutes = readMinutes.coerceAtLeast(1)
-    return "$safeCount new $noun · $safeReadMinutes min read"
   }
 
   private fun bookFinishedMeta(chapterCount: Int, savedWordCount: Int): String {
@@ -956,11 +921,7 @@ class EpubPageView(context: Context) : View(context) {
       val sourceEnd = block.sourceStartOffset + tokenRange.end
       val word = blockText.substring(tokenRange.start, tokenRange.end)
       val wordCenterY = wordCenterY(rendered, layout, tokenRange, line)
-      val placement = when {
-        wordCenterY <= paddingV + dp(56f) -> "bottom"
-        wordCenterY > height / 2f -> "top"
-        else -> "bottom"
-      }
+      val placement = if (usesTopLookupPlacement(wordCenterY)) "top" else "bottom"
       val range = TextRange(
         pageIndex = currentPage.pageIndex,
         spineIndex = currentPage.spineIndex,
@@ -1300,11 +1261,11 @@ class EpubPageView(context: Context) : View(context) {
     }
 
     val centerY = if (hasBounds) bounds.centerY() else tapStartY
-    return when {
-      centerY <= paddingV + dp(56f) -> "bottom"
-      centerY > height / 2f -> "top"
-      else -> "bottom"
-    }
+    return if (usesTopLookupPlacement(centerY)) "top" else "bottom"
+  }
+
+  private fun usesTopLookupPlacement(centerY: Float): Boolean {
+    return height > 0 && centerY <= height * 0.3f
   }
 
   private fun rebuildGeometry() {
@@ -1378,7 +1339,20 @@ class EpubPageView(context: Context) : View(context) {
       }
 
       if (paint === savedHighlightPaint) {
-        drawSavedUnderline(canvas, layout, localStart, localEnd, blockTextLength, paint)
+        drawTextSelectionHighlight(
+          canvas = canvas,
+          block = block,
+          layout = layout,
+          localStart = localStart,
+          localEnd = localEnd,
+          textLength = blockTextLength,
+          paint = paint
+        )
+        return@forEach
+      }
+
+      if (paint === sameLevelUnderlinePaint || paint === aboveLevelUnderlinePaint) {
+        drawLevelUnderline(canvas, layout, localStart, localEnd, blockTextLength, paint)
         return@forEach
       }
 
@@ -1474,6 +1448,62 @@ class EpubPageView(context: Context) : View(context) {
     }
   }
 
+  private fun drawSavedHighlightText(
+    canvas: Canvas,
+    block: PageBlock,
+    layout: StaticLayout,
+    ranges: List<TextRange>
+  ) {
+    val currentPage = page ?: return
+    val text = blockTextForSelection(block)
+    val textLength = text.length
+    if (textLength <= 0 || layout.lineCount <= 0 || ranges.isEmpty()) return
+
+    val sourceStart = block.sourceStartOffset
+    val sourceEnd = sourceStart + textLength
+    val textPaint = TextPaint(block.textPaint ?: savedHighlightTextPaint).apply {
+      color = savedHighlightTextColor
+    }
+
+    ranges.forEach { range ->
+      if (
+        range.pageIndex != currentPage.pageIndex ||
+        range.spineIndex != currentPage.spineIndex ||
+        range.blockId != block.blockId
+      ) {
+        return@forEach
+      }
+
+      val safeStart = (max(range.sourceStartOffset, sourceStart) - sourceStart).coerceIn(0, textLength)
+      val safeEnd = (min(range.sourceEndOffset, sourceEnd) - sourceStart).coerceIn(safeStart, textLength)
+      if (safeStart >= safeEnd) {
+        return@forEach
+      }
+
+      val startLine = layout.getLineForOffset(safeStart)
+      val endLine = layout.getLineForOffset(max(safeStart, safeEnd - 1))
+
+      for (line in startLine..endLine) {
+        val rawLineStart = layout.getLineStart(line).coerceIn(0, textLength)
+        val rawLineEnd = layout.getLineEnd(line).coerceIn(rawLineStart, textLength)
+        var lineStart = max(safeStart, rawLineStart)
+        var lineEnd = min(safeEnd, rawLineEnd)
+
+        while (lineStart < lineEnd && text[lineStart].isWhitespace()) {
+          lineStart += 1
+        }
+        while (lineEnd > lineStart && text[lineEnd - 1].isWhitespace()) {
+          lineEnd -= 1
+        }
+        if (lineStart >= lineEnd) continue
+
+        val x = layout.getPrimaryHorizontal(lineStart)
+        val baseline = layout.getLineBaseline(line).toFloat()
+        canvas.drawText(text, lineStart, lineEnd, x, baseline, textPaint)
+      }
+    }
+  }
+
   private fun hitTestActiveSelectionHighlight(tapX: Float, tapY: Float): Boolean {
     if (
       activeSelectionRanges.isEmpty() ||
@@ -1559,7 +1589,7 @@ class EpubPageView(context: Context) : View(context) {
     return false
   }
 
-  private fun drawSavedUnderline(
+  private fun drawLevelUnderline(
     canvas: Canvas,
     layout: StaticLayout,
     localStart: Int,

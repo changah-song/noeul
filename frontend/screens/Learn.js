@@ -111,7 +111,7 @@ const HANJA_RE = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/;
 const LEARN_SIDE_PADDING = 16;
 const ENCOUNTER_DOT_COUNT = 4;
 const DETAIL_CONTEXT_LIMIT = 2;
-const DETAIL_HANJA_RELATED_LIMIT = 4;
+const DETAIL_HANJA_RELATED_PAGE_SIZE = 2;
 const MONTH_SHORT_LABELS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 const MONTH_LONG_LABELS = [
   'January',
@@ -131,10 +131,61 @@ const EMPTY_HANJA_LOOKUP = {
   firstTableData: [],
   similarWordsTableData: [],
 };
+const HANGUL_BASE_CODE = 0xAC00;
+const HANGUL_END_CODE = 0xD7A3;
+const HANGUL_INITIALS = [
+  'g', 'kk', 'n', 'd', 'tt', 'r', 'm', 'b', 'pp', 's',
+  'ss', '', 'j', 'jj', 'ch', 'k', 't', 'p', 'h',
+];
+const HANGUL_VOWELS = [
+  'a', 'ae', 'ya', 'yae', 'eo', 'e', 'yeo', 'ye', 'o', 'wa',
+  'wae', 'oe', 'yo', 'u', 'wo', 'we', 'wi', 'yu', 'eu', 'ui', 'i',
+];
+const HANGUL_FINALS = [
+  '', 'k', 'k', 'k', 'n', 'n', 'n', 't', 'l', 'k',
+  'm', 'l', 'l', 'l', 'p', 'l', 'm', 'p', 'p', 't',
+  't', 'ng', 't', 't', 'k', 't', 'p', 't',
+];
 
 const cleanText = (value) => (typeof value === 'string' ? value.trim() : '');
 const getHanjaCharacters = (value) => cleanText(value).split('').filter((char) => HANJA_RE.test(char));
 const relatedWordKey = (entry) => `${entry?.korean ?? ''}|${entry?.hanja ?? ''}`;
+
+const romanizeHangulSyllable = (character) => {
+  const code = character.codePointAt(0);
+  if (!Number.isFinite(code) || code < HANGUL_BASE_CODE || code > HANGUL_END_CODE) {
+    return null;
+  }
+
+  const offset = code - HANGUL_BASE_CODE;
+  const initialIndex = Math.floor(offset / 588);
+  const vowelIndex = Math.floor((offset % 588) / 28);
+  const finalIndex = offset % 28;
+
+  return `${HANGUL_INITIALS[initialIndex] ?? ''}${HANGUL_VOWELS[vowelIndex] ?? ''}${HANGUL_FINALS[finalIndex] ?? ''}`;
+};
+
+const romanizeKoreanText = (value) => {
+  const text = cleanText(value);
+  let hasHangul = false;
+  let previousWasHangul = false;
+  let result = '';
+
+  Array.from(text).forEach((character) => {
+    const romanized = romanizeHangulSyllable(character);
+    if (romanized) {
+      result += `${previousWasHangul ? '-' : ''}${romanized}`;
+      hasHangul = true;
+      previousWasHangul = true;
+      return;
+    }
+
+    result += character;
+    previousWasHangul = false;
+  });
+
+  return hasHangul ? result : '';
+};
 
 const uniqueValues = (values) => [...new Set(values.map(cleanText).filter(Boolean))];
 
@@ -273,7 +324,69 @@ const getPronunciation = (word) => (
   || cleanText(word?.pronunciation)
   || cleanText(word?.pinyin)
   || cleanText(word?.ipa)
+  || (normalizeBookLanguage(word?.language ?? 'ko') === 'ko' ? romanizeKoreanText(word?.word) : '')
 );
+
+const cleanPartOfSpeech = (value) => {
+  const text = cleanText(value);
+  return text && !['n/a', 'unknown'].includes(text.toLowerCase()) ? text : '';
+};
+
+const getPartOfSpeech = (word) => (
+  cleanPartOfSpeech(word?.part_of_speech)
+  || cleanPartOfSpeech(word?.partOfSpeech)
+  || cleanPartOfSpeech(word?.pos)
+  || cleanPartOfSpeech(word?.dictionary_pos)
+);
+
+const POS_TRANSLATION_KEYS = {
+  noun: 'pos.noun',
+  n: 'pos.noun',
+  'proper noun': 'pos.noun',
+  명사: 'pos.noun',
+  의존명사: 'pos.dependentNoun',
+  '의존 명사': 'pos.dependentNoun',
+  verb: 'pos.verb',
+  v: 'pos.verb',
+  동사: 'pos.verb',
+  adverb: 'pos.adverb',
+  d: 'pos.adverb',
+  부사: 'pos.adverb',
+  adjective: 'pos.adjective',
+  a: 'pos.adjective',
+  형용사: 'pos.adjective',
+  modifier: 'pos.modifier',
+  determiner: 'pos.determiner',
+  관형사: 'pos.determiner',
+  interjection: 'pos.interjection',
+  감탄사: 'pos.interjection',
+  pronoun: 'pos.pronoun',
+  대명사: 'pos.pronoun',
+  numeral: 'pos.numeral',
+  수사: 'pos.numeral',
+  particle: 'pos.particle',
+  조사: 'pos.particle',
+  affix: 'pos.affix',
+  접사: 'pos.affix',
+  ending: 'pos.ending',
+  어미: 'pos.ending',
+  'auxiliary verb': 'pos.auxiliaryVerb',
+  'adverbial verb': 'pos.auxiliaryVerb',
+  'verb noun': 'pos.auxiliaryVerb',
+  보조동사: 'pos.auxiliaryVerb',
+  '보조 동사': 'pos.auxiliaryVerb',
+  'auxiliary adjective': 'pos.auxiliaryAdjective',
+  'adverbial adjective': 'pos.auxiliaryAdjective',
+  보조형용사: 'pos.auxiliaryAdjective',
+  '보조 형용사': 'pos.auxiliaryAdjective',
+};
+
+const getPartOfSpeechLabel = (word, t) => {
+  const rawPartOfSpeech = getPartOfSpeech(word);
+  const normalized = rawPartOfSpeech.toLowerCase().replace(/\s+/g, ' ').trim();
+  const translationKey = POS_TRANSLATION_KEYS[normalized] ?? POS_TRANSLATION_KEYS[rawPartOfSpeech];
+  return translationKey ? t(translationKey) : rawPartOfSpeech;
+};
 
 const getContextTranslation = (context) => (
   cleanText(context?.translation)
@@ -526,12 +639,17 @@ const DetailHanjaPanel = ({ word, onKnownWordsChange }) => {
   const [lookupByCharacter, setLookupByCharacter] = useState({});
   const [isLoadingLookup, setIsLoadingLookup] = useState(false);
   const [knownKeys, setKnownKeys] = useState(new Set());
+  const [visibleRelatedCount, setVisibleRelatedCount] = useState(DETAIL_HANJA_RELATED_PAGE_SIZE);
   const sourceWord = cleanText(word?.word);
   const language = word?.language ?? 'ko';
 
   useEffect(() => {
     setActiveIndex(0);
   }, [charactersKey]);
+
+  useEffect(() => {
+    setVisibleRelatedCount(DETAIL_HANJA_RELATED_PAGE_SIZE);
+  }, [activeIndex, charactersKey]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -606,7 +724,8 @@ const DetailHanjaPanel = ({ word, onKnownWordsChange }) => {
   const isLoading = isLoadingLookup && !activeLookup;
   const titleRows = isLoading ? [] : activeLookup?.firstTableData ?? [];
   const relatedWords = isLoading ? [] : activeLookup?.similarWordsTableData ?? [];
-  const visibleRelatedWords = relatedWords.slice(0, DETAIL_HANJA_RELATED_LIMIT);
+  const visibleRelatedWords = relatedWords.slice(0, visibleRelatedCount);
+  const canShowMoreRelatedWords = visibleRelatedWords.length < relatedWords.length;
   const readingEntries = normalizeReadingEntries(titleRows);
   const readingLabel = readingEntries
     .map((entry) => [entry.koreanMeaning, entry.reading].filter(Boolean).join(' '))
@@ -773,22 +892,37 @@ const DetailHanjaPanel = ({ word, onKnownWordsChange }) => {
             {meaningLabel ? ` · ${meaningLabel}` : ''}
           </Text>
         </View>
-        <TouchableOpacity
-          accessibilityRole="button"
-          accessibilityLabel={canGoNext ? t('hanja.next') : t('hanja.previous')}
-          disabled={!canGoNext && !canGoPrevious}
-          onPress={canGoNext ? goToNext : goToPrevious}
-          style={styles.detailHanjaPanelNav}
-        >
+        <View style={styles.detailHanjaPanelNav}>
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel={t('hanja.previous')}
+            disabled={!canGoPrevious}
+            onPress={goToPrevious}
+            style={[styles.hanjaPanelArrow, !canGoPrevious && styles.hanjaPanelArrowDisabled]}
+          >
+            <Feather
+              name="chevron-left"
+              size={16}
+              color={canGoPrevious ? colors.textTertiary : colors.textSubtle}
+            />
+          </TouchableOpacity>
           <Text style={styles.detailHanjaPanelCount}>
             {t('learn.hanjaCount', { current: safeActiveIndex + 1, total: characters.length })}
           </Text>
-          <Feather
-            name={canGoNext ? 'chevron-right' : 'chevron-left'}
-            size={16}
-            color={colors.textTertiary}
-          />
-        </TouchableOpacity>
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel={t('hanja.next')}
+            disabled={!canGoNext}
+            onPress={goToNext}
+            style={[styles.hanjaPanelArrow, !canGoNext && styles.hanjaPanelArrowDisabled]}
+          >
+            <Feather
+              name="chevron-right"
+              size={16}
+              color={canGoNext ? colors.textTertiary : colors.textSubtle}
+            />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <View style={styles.detailHanjaDivider} />
@@ -799,41 +933,54 @@ const DetailHanjaPanel = ({ word, onKnownWordsChange }) => {
           <Text style={styles.hanjaPanelEmptyText}>{t('hanja.loading')}</Text>
         </View>
       ) : visibleRelatedWords.length > 0 ? (
-        visibleRelatedWords.map((relatedWord, index) => {
-          const known = knownKeys.has(relatedWordKey(relatedWord));
-          return (
-            <View
-              key={`${relatedWord.korean}-${relatedWord.hanja}-${index}`}
-              style={[
-                styles.detailHanjaRelatedRow,
-                index === visibleRelatedWords.length - 1 && styles.detailHanjaRelatedRowLast,
-              ]}
-            >
-              <View style={styles.detailHanjaRelatedCopy}>
-                <Text selectable style={styles.detailHanjaRelatedWord}>{relatedWord.korean}</Text>
-                <Text selectable numberOfLines={1} style={styles.detailHanjaRelatedMeaning}>
-                  {relatedWord.meaning || t('hanja.meaningUnavailable')}
-                </Text>
-              </View>
-              <TouchableOpacity
-                accessibilityRole="button"
-                accessibilityLabel={known
-                  ? t('hanja.markedKnown', { word: relatedWord.korean })
-                  : t('hanja.markKnown', { word: relatedWord.korean })}
-                onPress={() => handleKnownPress(relatedWord)}
-                style={styles.detailHanjaKnownButton}
+        <>
+          {visibleRelatedWords.map((relatedWord, index) => {
+            const known = knownKeys.has(relatedWordKey(relatedWord));
+            return (
+              <View
+                key={`${relatedWord.korean}-${relatedWord.hanja}-${index}`}
+                style={[
+                  styles.detailHanjaRelatedRow,
+                  index > 0 && styles.detailHanjaRelatedRowSeparated,
+                ]}
               >
-                {known ? <Feather name="check" size={14} color={colors.text} /> : null}
-                <Text style={[
-                  styles.detailHanjaKnownButtonText,
-                  !known && styles.detailHanjaKnownButtonTextAction,
-                ]}>
-                  {known ? t('learn.known') : t('learn.markKnown')}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          );
-        })
+                <View style={styles.detailHanjaRelatedCopy}>
+                  <Text selectable numberOfLines={1} style={styles.detailHanjaRelatedWord}>{relatedWord.korean}</Text>
+                  <Text selectable style={styles.detailHanjaRelatedMeaning}>
+                    {relatedWord.meaning || t('hanja.meaningUnavailable')}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  accessibilityLabel={known
+                    ? t('hanja.markedKnown', { word: relatedWord.korean })
+                    : t('hanja.markKnown', { word: relatedWord.korean })}
+                  onPress={() => handleKnownPress(relatedWord)}
+                  style={styles.detailHanjaKnownButton}
+                >
+                  {known ? <Feather name="check" size={14} color={colors.text} /> : null}
+                  <Text style={[
+                    styles.detailHanjaKnownButtonText,
+                    !known && styles.detailHanjaKnownButtonTextAction,
+                  ]}>
+                    {known ? t('learn.known') : t('learn.markKnown')}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            );
+          })}
+          {canShowMoreRelatedWords ? (
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel={t('common.seeMore')}
+              onPress={() => setVisibleRelatedCount((count) => count + DETAIL_HANJA_RELATED_PAGE_SIZE)}
+              style={styles.detailHanjaSeeMoreButton}
+            >
+              <Text style={styles.detailHanjaSeeMoreText}>{t('common.seeMore')}</Text>
+              <Feather name="chevron-down" size={16} color={colors.textMuted} />
+            </TouchableOpacity>
+          ) : null}
+        </>
       ) : (
         <View style={styles.hanjaPanelEmpty}>
           <Text style={styles.hanjaPanelEmptyText}>{t('hanja.none')}</Text>
@@ -879,16 +1026,16 @@ const WordDetailModal = ({
       }]
       : []);
   const visibleContexts = contextRows.slice(0, DETAIL_CONTEXT_LIMIT);
-  const partOfSpeech = cleanText(word.part_of_speech ?? word.pos).toUpperCase();
+  const partOfSpeech = getPartOfSpeechLabel(word, t);
 
   return (
     <SafeAreaView edges={['top']} style={styles.detailScreen}>
       <View style={styles.detailHeader}>
-        <TouchableOpacity onPress={onClose} style={styles.detailHeaderButton}>
-          <Feather name="arrow-left" size={28} color={colors.text} />
+        <TouchableOpacity onPress={onClose} style={styles.detailBackButton}>
+          <MaterialIcons name="arrow-back" size={28} color={colors.text} />
+          <Text style={styles.detailBackLabel}>VOCABULARY</Text>
         </TouchableOpacity>
-        <Text style={styles.detailHeaderTitle}>VOCABULARY</Text>
-        <TouchableOpacity onPress={onToggleFavorite} style={styles.detailHeaderButton}>
+        <TouchableOpacity onPress={onToggleFavorite} style={styles.detailFavoriteButton}>
           <MaterialIcons
             name={word.is_favorite ? 'star' : 'star-outline'}
             size={28}
@@ -1828,25 +1975,32 @@ const createStyles = (colors) => StyleSheet.create({
     height: 52,
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 20,
     backgroundColor: colors.bgPage,
     borderBottomWidth: 1,
     borderBottomColor: colors.divider,
-    gap: 12,
   },
-  detailHeaderButton: {
-    width: 42,
+  detailBackButton: {
     height: 40,
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 12,
+    paddingRight: 12,
   },
-  detailHeaderTitle: {
+  detailBackLabel: {
     fontFamily: fontFamilies.sansBold,
     fontSize: 11,
     lineHeight: 14,
     color: colors.textMuted,
     letterSpacing: 2.4,
-    flex: 1,
+  },
+  detailFavoriteButton: {
+    width: 42,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    flexDirection: 'row',
   },
   detailContent: {
     paddingHorizontal: 24,
@@ -1914,25 +2068,28 @@ const createStyles = (colors) => StyleSheet.create({
   definitionBlock: {
     marginTop: 20,
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'baseline',
     gap: 12,
+    flexWrap: 'wrap',
     paddingTop: 0,
+    width: '100%',
   },
   definitionPartOfSpeech: {
-    width: 80,
-    paddingTop: 9,
     fontFamily: fontFamilies.sansBold,
     fontSize: 9,
     lineHeight: 12,
     letterSpacing: 1.6,
-    color: colors.textSubtle,
+    color: '#9a9c9f',
+    textTransform: 'uppercase',
   },
   detailDefinition: {
     flex: 1,
+    minWidth: 0,
     fontFamily: fontFamilies.displayMedium,
     fontSize: 22,
     lineHeight: 30,
     color: colors.text,
+    textAlign: 'left',
   },
   detailSectionTitle: {
     fontFamily: fontFamilies.sansBold,
@@ -2069,6 +2226,8 @@ const createStyles = (colors) => StyleSheet.create({
     fontSize: 11,
     lineHeight: 16,
     color: colors.textTertiary,
+    minWidth: 38,
+    textAlign: 'center',
   },
   hanjaPanelArrow: {
     width: 24,
@@ -2108,7 +2267,7 @@ const createStyles = (colors) => StyleSheet.create({
   },
   detailHanjaDivider: {
     height: 1,
-    backgroundColor: colors.divider,
+    backgroundColor: '#ddd9d9',
     marginTop: 14,
   },
   hanjaPanelEmpty: {
@@ -2125,31 +2284,34 @@ const createStyles = (colors) => StyleSheet.create({
     textAlign: 'center',
   },
   detailHanjaRelatedRow: {
-    minHeight: 46,
+    minHeight: 68,
     flexDirection: 'row',
     alignItems: 'center',
-    borderBottomWidth: 1,
-    borderBottomColor: colors.divider,
     gap: 12,
+    paddingVertical: 12,
   },
-  detailHanjaRelatedRowLast: {
-    borderBottomWidth: 0,
+  detailHanjaRelatedRowSeparated: {
+    borderTopWidth: 1,
+    borderTopColor: '#ddd9d9',
   },
   detailHanjaRelatedCopy: {
     flex: 1,
     minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 12,
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+    gap: 4,
   },
   detailHanjaRelatedWord: {
+    width: '100%',
     fontFamily: fontFamilies.krSerifSemiBold,
     fontSize: 16,
     lineHeight: 22,
     color: colors.text,
   },
   detailHanjaRelatedMeaning: {
-    flex: 1,
+    width: '100%',
+    flexShrink: 1,
     fontFamily: fontFamilies.sansRegular,
     fontSize: 13,
     lineHeight: 18,
@@ -2175,6 +2337,17 @@ const createStyles = (colors) => StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: colors.frame,
     paddingBottom: 1,
+  },
+  detailHanjaSeeMoreButton: {
+    minHeight: 28,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  detailHanjaSeeMoreText: {
+    ...textStyles.caption,
+    color: colors.textMuted,
   },
 });
 
