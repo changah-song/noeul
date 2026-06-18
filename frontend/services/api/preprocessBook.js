@@ -19,7 +19,17 @@ import { api } from './client';
  *
  * @returns {Promise<{
  *   results: Array<{stem: string, definition: string, hanja: string, pos: string}>,
- *   stats:   {total_stems: number, cache_hits: number, new_fetched: number},
+ *   stats:   {
+ *     total_stems: number,
+ *     cache_hits: number,
+ *     new_fetched: number,
+ *     book_level?: {
+ *       level: string,
+ *       level_rank: number,
+ *       basis: 'vocabulary',
+ *       note: string
+ *     }
+ *   },
  *   surface_index: Array<{surface: string, stem: string}>,
  *   networkError: boolean,
  *   errorMessage?: string

@@ -480,8 +480,8 @@ const BottomSection = ({
 
                         var span = doc.createElement('span');
                         span.dataset.activeTapHighlight = 'true';
-                        span.style.backgroundColor = '${colors.readerTappedWordBg}';
-                        span.style.color = '${colors.readerTappedWordText}';
+                        span.style.backgroundColor = '${colors.readerTappedWordSurfaceBg}';
+                        span.style.color = '${colors.readerTappedWordSurfaceText}';
                         span.style.borderRadius = '2px';
                         span.style.padding = '1px 4px';
                         span.style.boxShadow = 'none';
@@ -571,10 +571,11 @@ const BottomSection = ({
                             if (part.trim() && tokenMatchesSaved(part)) {
                                 var span = doc.createElement('span');
                                 span.dataset.savedHighlight = 'true';
-                                span.style.backgroundColor = '${colors.transparent}';
-                                span.style.color = '${colors.readerBodyInk}';
-                                span.style.borderRadius = '0';
-                                span.style.borderBottom = '2px dotted ${colors.readerSavedUnderline}';
+                                span.style.backgroundColor = '${colors.readerSavedWordSurfaceBg}';
+                                span.style.color = '${colors.readerSavedWordSurfaceText}';
+                                span.style.borderRadius = '2px';
+                                span.style.borderBottom = 'none';
+                                span.style.padding = '1px 4px';
                                 span.style.boxShadow = 'none';
                                 span.textContent = part;
                                 fragment.appendChild(span);
@@ -726,7 +727,7 @@ const BottomSection = ({
                 function getPlacementForClientY(clientY, doc) {
                     var view = (doc && doc.defaultView) ? doc.defaultView : window;
                     var innerHeight = view && view.innerHeight ? view.innerHeight : window.innerHeight;
-                    return clientY > (innerHeight / 2) ? 'top' : 'bottom';
+                    return clientY <= (innerHeight * 0.3) ? 'top' : 'bottom';
                 }
 
                 rendition.on('click', function(e) {

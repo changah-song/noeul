@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Text, View, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView } from 'react-native';
+import { Text, View, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
 import koreanDictionary from '../../../services/api/koreanDictionary';
 import stemWord from '../../../services/api/stemWord';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -27,6 +27,7 @@ import {
 import HanjaDetails from './HanjaDetails';
 import ChineseCharacterDetails from './ChineseCharacterDetails';
 import TranslationContent from './TranslationContent';
+import LookupLoadingSkeleton from './LookupLoadingSkeleton';
 import { isCurrentSyncGeneration } from '../../../services/localOwnerCoordinator';
 import { normalizeBookLanguage, normalizeInterfaceLanguageCode } from '../../../constants/languages';
 import { fontFamilies, radii, spacing, textStyles, useTheme } from '../../../theme';
@@ -1708,20 +1709,43 @@ const DictionaryContent = ({
                         isDarkMode={isDarkMode}
                     />
                 ) : null}
-                {isPanelExpanded ? renderWordParts(wordParts, word) : null}
-                {isPanelExpanded && !hasRenderableWordParts(wordParts, word) ? renderOrigin(etymology, word) : null}
+                {isEnglishBook ? renderWordParts(wordParts, word) : null}
+                {isEnglishBook && !hasRenderableWordParts(wordParts, word) ? renderOrigin(etymology, word) : null}
                 {isPanelExpanded && showLess ? renderExtraDefinitions(extraEntries) : null}
             </View>
         );
     };
 
-    if (cachedResults === null) {
+    const renderDefinitionLoadingPanel = () => {
+        const loadingWord = cleanValue(lookupWord) || tappedSurface;
+
         return (
-            <View style={[styles.panelContent, styles.stateRow, { backgroundColor: palette.surface }]}>
-                <ActivityIndicator size="small" color={palette.mutedText} />
-                <Text style={[styles.stateText, { color: palette.mutedText }]}>{t('lookup.lookingUp')}</Text>
+            <View style={[styles.panelContent, styles.dictionaryPanelContent, { backgroundColor: palette.surface }]}>
+                <View style={styles.definitionLoadingContent}>
+                    {loadingWord ? (
+                        <View style={styles.definitionLoadingHeadword}>
+                            <Text
+                                selectable
+                                style={[styles.entryWord, styles.definitionLoadingWord, { color: palette.text }]}
+                            >
+                                {loadingWord}
+                            </Text>
+                        </View>
+                    ) : null}
+                    <View style={styles.definitionLoadingArea}>
+                        <LookupLoadingSkeleton
+                            firstLineOffset={0}
+                            secondLineOffset={10}
+                            shortLineWidth="66%"
+                        />
+                    </View>
+                </View>
             </View>
         );
+    };
+
+    if (cachedResults === null) {
+        return renderDefinitionLoadingPanel();
     }
 
     if (cachedResults.length === 0 && !needsLiveFetch && lookupItemCount === 0) {
@@ -1737,12 +1761,7 @@ const DictionaryContent = ({
     }
 
     if (needsLiveFetch && !liveError && (isLiveLoading || (dictionaryData.length === 0 && lookupItemCount === 0))) {
-        return (
-            <View style={[styles.panelContent, styles.stateRow, { backgroundColor: palette.surface }]}>
-                <ActivityIndicator size="small" color={palette.mutedText} />
-                <Text style={[styles.stateText, { color: palette.mutedText }]}>{t('lookup.fetchingDefinitions')}</Text>
-            </View>
-        );
+        return renderDefinitionLoadingPanel();
     }
 
     if (!activeLookupItem) {
@@ -2040,7 +2059,7 @@ const createStyles = (colors) => StyleSheet.create({
     },
     actionRow: {
         paddingHorizontal: 24,
-        paddingTop: 18,
+        paddingTop: 10,
         paddingBottom: 0,
     },
     actionButtonGroup: {
@@ -2097,6 +2116,21 @@ const createStyles = (colors) => StyleSheet.create({
     translationContentWrap: {
         flexGrow: 0,
         flexShrink: 1,
+    },
+    definitionLoadingContent: {
+        paddingHorizontal: 24,
+        paddingTop: 0,
+        gap: 14,
+    },
+    definitionLoadingHeadword: {
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    definitionLoadingWord: {
+        textAlign: 'center',
+    },
+    definitionLoadingArea: {
+        minHeight: 56,
     },
     posBadge: {
         borderRadius: 3,

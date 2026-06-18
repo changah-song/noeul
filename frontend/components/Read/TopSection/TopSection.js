@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Easing, PanResponder, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
+import * as Clipboard from 'expo-clipboard';
 import { useTranslation } from '../../../hooks/useTranslation';
 import { useAppContext } from '../../../contexts/AppContext';
 import {
@@ -19,11 +20,16 @@ const DICTIONARY_EXPANDED_MAX_HEIGHT = 548;
 const DICTIONARY_EXTRA_ROW_HEIGHT = 52;
 const TRANSLATION_MAX_SCROLL_HEIGHT = 150;
 const TRANSLATION_PANEL_BOTTOM_PADDING = 22;
+const TOP_PLACEMENT_DICTIONARY_TOP_PADDING = 22;
+const TOP_PLACEMENT_DICTIONARY_BOTTOM_PADDING = 8;
+const TOP_PLACEMENT_TRANSLATION_TOP_PADDING = 22;
+const TOP_PLACEMENT_TRANSLATION_BOTTOM_PADDING = 10;
 
 const TopSection = ({
     highlightedWord,
     sourceSentence = '',
     isNativeSelection,
+    placement = 'bottom',
     isDarkMode,
     onClose,
     onWordSave,
@@ -42,16 +48,19 @@ const TopSection = ({
     const [visibleWord, setVisibleWord] = useState('');
     const [translationTarget, setTranslationTarget] = useState('');
     const [isCopied, setIsCopied] = useState(false);
+    const [isCopying, setIsCopying] = useState(false);
     const [isLookupExpanded, setIsLookupExpanded] = useState(false);
     const [canExpandLookup, setCanExpandLookup] = useState(false);
     const [translationStatus, setTranslationStatus] = useState({
         isLoading: false,
         hasError: false,
         hasText: false,
+        translatedText: '',
     });
     const copyTimeoutRef = useRef(null);
     const prevWordRef = useRef('');
     const canExpandLookupRef = useRef(false);
+    const placementRef = useRef(placement);
     const translateY = useRef(new Animated.Value(24)).current;
     const opacity = useRef(new Animated.Value(0)).current;
     const panResponder = useRef(PanResponder.create({
@@ -66,16 +75,27 @@ const TopSection = ({
                 return;
             }
 
-            if (gestureState.dy < -28) {
+            const shouldExpand = placementRef.current === 'top'
+                ? gestureState.dy > 28
+                : gestureState.dy < -28;
+            const shouldCollapse = placementRef.current === 'top'
+                ? gestureState.dy < -28
+                : gestureState.dy > 28;
+
+            if (shouldExpand) {
                 setIsLookupExpanded(true);
                 return;
             }
 
-            if (gestureState.dy > 28) {
+            if (shouldCollapse) {
                 setIsLookupExpanded(false);
             }
         },
     })).current;
+
+    useEffect(() => {
+        placementRef.current = placement;
+    }, [placement]);
 
     useEffect(() => {
         if (highlightedWord && highlightedWord !== prevWordRef.current) {
@@ -85,8 +105,9 @@ const TopSection = ({
             setTranslationTarget('');
             setIsLookupExpanded(false);
             setCanExpandLookup(false);
-            setTranslationStatus({ isLoading: false, hasError: false, hasText: false });
+            setTranslationStatus({ isLoading: false, hasError: false, hasText: false, translatedText: '' });
             setIsCopied(false);
+            setIsCopying(false);
         }
     }, [highlightedWord]);
 
@@ -161,12 +182,14 @@ const TopSection = ({
                 isLoading: Boolean(nextStatus?.isLoading),
                 hasError: Boolean(nextStatus?.hasError),
                 hasText: Boolean(nextStatus?.hasText),
+                translatedText: typeof nextStatus?.translatedText === 'string' ? nextStatus.translatedText : '',
             };
 
             if (
                 previousStatus.isLoading === normalizedStatus.isLoading &&
                 previousStatus.hasError === normalizedStatus.hasError &&
-                previousStatus.hasText === normalizedStatus.hasText
+                previousStatus.hasText === normalizedStatus.hasText &&
+                previousStatus.translatedText === normalizedStatus.translatedText
             ) {
                 return previousStatus;
             }
@@ -180,6 +203,7 @@ const TopSection = ({
     }
 
     const isTranslationMode = isNativeSelection;
+    const isTopPlacement = placement === 'top';
     const panelColors = {
         background: themeColors.readerSurface,
         border: themeColors.readerBorder,
@@ -214,34 +238,50 @@ const TopSection = ({
     const sheetSizeStyle = isTranslationMode
         ? styles.sheetTranslation
         : { height: dictionaryHeight };
+    const sheetBottomPadding = isTranslationMode
+        ? (isTopPlacement ? TOP_PLACEMENT_TRANSLATION_BOTTOM_PADDING : TRANSLATION_PANEL_BOTTOM_PADDING)
+        : (isTopPlacement ? TOP_PLACEMENT_DICTIONARY_BOTTOM_PADDING : 26);
     const forceTranslationLoading = Boolean(translationVisualState.loading);
     const forceTranslationError = Boolean(translationVisualState.error);
     const forceTranslationCopied = Boolean(translationVisualState.copied);
     const isTranslationBusy = isTranslationMode && (forceTranslationLoading || translationStatus.isLoading);
     const hasTranslationError = isTranslationMode && (forceTranslationError || translationStatus.hasError);
-    const canCopyTranslation = isTranslationMode && !isTranslationBusy && !hasTranslationError;
+    const copyableTranslationText = translationStatus.translatedText.trim();
+    const canCopyTranslation = isTranslationMode && !isTranslationBusy && !hasTranslationError && Boolean(copyableTranslationText);
     const isCopyConfirmed = isCopied || forceTranslationCopied;
 
-    const handleCopy = () => {
-        if (isCopied || !canCopyTranslation) {
+    const handleCopy = async () => {
+        if (isCopied || isCopying || !canCopyTranslation) {
             return;
         }
-        setIsCopied(true);
-        if (copyTimeoutRef.current) {
-            clearTimeout(copyTimeoutRef.current);
+
+        setIsCopying(true);
+        try {
+            await Clipboard.setStringAsync(copyableTranslationText);
+            setIsCopied(true);
+            if (copyTimeoutRef.current) {
+                clearTimeout(copyTimeoutRef.current);
+            }
+            copyTimeoutRef.current = setTimeout(() => {
+                setIsCopied(false);
+            }, 1800);
+        } catch (error) {
+            console.warn('[TopSection] Failed to copy translation', error);
+        } finally {
+            setIsCopying(false);
         }
-        copyTimeoutRef.current = setTimeout(() => {
-            setIsCopied(false);
-        }, 1800);
     };
 
     return (
         <Animated.View
             style={[
                 styles.sheet,
+                isTopPlacement && styles.sheetTop,
                 !isTranslationMode ? styles.sheetDictionary : styles.sheetTranslationBase,
+                isTopPlacement && !isTranslationMode && styles.sheetDictionaryTop,
+                isTopPlacement && isTranslationMode && styles.sheetTranslationTop,
                 sheetSizeStyle,
-                { paddingBottom: isTranslationMode ? TRANSLATION_PANEL_BOTTOM_PADDING : 26 },
+                { paddingBottom: sheetBottomPadding },
                 { backgroundColor: panelColors.background, borderColor: panelColors.border },
                 {
                     opacity,
@@ -276,14 +316,16 @@ const TopSection = ({
                 </View>
             ) : null}
 
-            {!isTranslationMode && canExpandLookup ? (
+            {!isTopPlacement && !isTranslationMode && canExpandLookup ? (
                 <View style={styles.sheetHandleWrap} {...panResponder.panHandlers}>
                     <View style={styles.sheetHandle} />
                     {!isLookupExpanded ? (
                         <Text style={styles.sheetGestureHint}>⌃ SLIDE UP FOR ROOTS</Text>
                     ) : null}
                 </View>
-            ) : !isTranslationMode ? (
+            ) : null}
+
+            {!isTopPlacement && !isTranslationMode && !canExpandLookup ? (
                 <View style={styles.sheetHandleStatic}>
                     <View style={styles.sheetHandle} />
                 </View>
@@ -329,6 +371,20 @@ const TopSection = ({
                 )}
 
             </View>
+            {isTopPlacement && !isTranslationMode && canExpandLookup ? (
+                <View style={styles.sheetHandleWrapBottom} {...panResponder.panHandlers}>
+                    {!isLookupExpanded ? (
+                        <Text style={styles.sheetGestureHint}>⌄ SLIDE DOWN FOR ROOTS</Text>
+                    ) : null}
+                    <View style={styles.sheetHandle} />
+                </View>
+            ) : null}
+
+            {isTopPlacement && !isTranslationMode && !canExpandLookup ? (
+                <View style={styles.sheetHandleStaticBottom}>
+                    <View style={styles.sheetHandle} />
+                </View>
+            ) : null}
         </Animated.View>
     );
 };
@@ -354,10 +410,22 @@ const createStyles = (colors) => StyleSheet.create({
         elevation: 10,
         overflow: 'hidden',
     },
+    sheetTop: {
+        borderTopLeftRadius: 0,
+        borderTopRightRadius: 0,
+        borderBottomLeftRadius: 16,
+        borderBottomRightRadius: 16,
+        borderBottomWidth: 1,
+        shadowOffset: { width: 0, height: 10 },
+    },
     sheetDictionary: {
         paddingHorizontal: 0,
         paddingTop: 0,
         paddingBottom: 0,
+    },
+    sheetDictionaryTop: {
+        borderTopWidth: 0,
+        paddingTop: TOP_PLACEMENT_DICTIONARY_TOP_PADDING,
     },
     sheetCompact: {
         height: DICTIONARY_COMPACT_HEIGHT,
@@ -381,6 +449,16 @@ const createStyles = (colors) => StyleSheet.create({
         shadowOffset: { width: 0, height: 8 },
         shadowOpacity: 1,
         shadowRadius: 24,
+    },
+    sheetTranslationTop: {
+        marginTop: 0,
+        marginBottom: 0,
+        paddingTop: TOP_PLACEMENT_TRANSLATION_TOP_PADDING,
+        borderTopLeftRadius: 0,
+        borderTopRightRadius: 0,
+        borderBottomLeftRadius: 12,
+        borderBottomRightRadius: 12,
+        shadowOffset: { width: 0, height: 8 },
     },
     translationHeader: {
         flexDirection: 'row',
@@ -436,6 +514,17 @@ const createStyles = (colors) => StyleSheet.create({
         alignItems: 'center',
         paddingTop: 12,
         marginBottom: 16,
+    },
+    sheetHandleWrapBottom: {
+        alignItems: 'center',
+        paddingBottom: 6,
+        marginTop: 10,
+        gap: 6,
+    },
+    sheetHandleStaticBottom: {
+        alignItems: 'center',
+        paddingBottom: 6,
+        marginTop: 10,
     },
     sheetHandle: {
         width: 36,

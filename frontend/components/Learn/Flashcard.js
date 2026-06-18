@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Pressable, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
+import { getVocabContexts } from '../../services/Database';
 import {
   fetchUserPreferences,
   getTimestampMs,
@@ -33,13 +34,59 @@ const createToneStyles = (themeColors) => ({
   },
 });
 
-const FRONT_SETTINGS_KEY = 'flashcardFrontSettings';
-const FRONT_SETTINGS_UPDATED_AT_KEY = 'flashcardFrontSettingsUpdatedAt';
-const DEFAULT_FRONT_SETTINGS = {
-  showHanja: false,
-  showDefinition: false,
-  showRelated: false,
+const FLASHCARD_SETTINGS_KEY = 'flashcardFrontSettings';
+const FLASHCARD_SETTINGS_UPDATED_AT_KEY = 'flashcardFrontSettingsUpdatedAt';
+
+const createDefaultFlashcardSettings = () => ({
+  front: {
+    showPronunciation: false,
+    showContext: false,
+    showHanja: false,
+    showRelated: false,
+  },
+  back: {
+    showPronunciation: true,
+    showContext: true,
+    showHanja: true,
+    showRelated: true,
+    showDefinition: true,
+  },
+});
+
+const normalizeSideSettings = (defaults, raw = {}) => (
+  Object.keys(defaults).reduce((next, key) => {
+    next[key] = typeof raw?.[key] === 'boolean' ? raw[key] : defaults[key];
+    return next;
+  }, {})
+);
+
+const normalizeFlashcardSettings = (rawSettings) => {
+  const defaults = createDefaultFlashcardSettings();
+  const raw = rawSettings && typeof rawSettings === 'object' && !Array.isArray(rawSettings)
+    ? rawSettings
+    : {};
+  const normalized = {
+    front: normalizeSideSettings(defaults.front, raw.front),
+    back: normalizeSideSettings(defaults.back, raw.back),
+  };
+
+  if (typeof raw.showPronunciation === 'boolean') {
+    normalized.front.showPronunciation = raw.showPronunciation;
+  }
+  if (typeof raw.showContext === 'boolean') {
+    normalized.front.showContext = raw.showContext;
+  }
+  if (typeof raw.showHanja === 'boolean') {
+    normalized.front.showHanja = raw.showHanja;
+  }
+  if (typeof raw.showRelated === 'boolean') {
+    normalized.front.showRelated = raw.showRelated;
+  }
+
+  return normalized;
 };
+
+const cleanText = (value) => (typeof value === 'string' ? value.trim() : '');
 
 const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGeneration }) => {
   const { t } = useTranslation();
@@ -47,12 +94,13 @@ const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGe
   const styles = useMemo(() => createStyles(colors), [colors]);
   const toneStyles = useMemo(() => createToneStyles(colors), [colors]);
   const [isFlipped, setIsFlipped] = useState(false);
-  const showSettings = false;
-  const [frontSettings, setFrontSettings] = useState(DEFAULT_FRONT_SETTINGS);
-  const [frontSettingsLoaded, setFrontSettingsLoaded] = useState(false);
-  const frontSettingsRef = useRef(DEFAULT_FRONT_SETTINGS);
-  const frontSettingsUpdatedAtRef = useRef(null);
-  const frontSettingsCloudUserRef = useRef(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [flashcardSettings, setFlashcardSettings] = useState(() => createDefaultFlashcardSettings());
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [contextRows, setContextRows] = useState([]);
+  const flashcardSettingsRef = useRef(createDefaultFlashcardSettings());
+  const flashcardSettingsUpdatedAtRef = useRef(null);
+  const flashcardSettingsCloudUserRef = useRef(null);
 
   const hanjaText = useMemo(
     () => (vocab?.hanja && vocab.hanja !== 'N/A' ? vocab.hanja : null),
@@ -60,14 +108,27 @@ const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGe
   );
   const pronunciation = useMemo(
     () => (
-      vocab?.romanization
-      || vocab?.pronunciation
-      || vocab?.pinyin
-      || vocab?.ipa
+      cleanText(vocab?.romanization)
+      || cleanText(vocab?.pronunciation)
+      || cleanText(vocab?.pinyin)
+      || cleanText(vocab?.ipa)
       || null
     ),
     [vocab?.ipa, vocab?.pinyin, vocab?.pronunciation, vocab?.romanization]
   );
+  const contextSentence = useMemo(() => {
+    const vocabContexts = Array.isArray(vocab?.contexts)
+      ? vocab.contexts
+      : (Array.isArray(vocab?.contextRows) ? vocab.contextRows : []);
+    const firstContext = [...contextRows, ...vocabContexts].find((context) => (
+      cleanText(context?.sentence)
+    ));
+
+    return cleanText(firstContext?.sentence)
+      || cleanText(vocab?.context_sentence)
+      || cleanText(vocab?.contextSentence)
+      || null;
+  }, [contextRows, vocab?.contextRows, vocab?.contextSentence, vocab?.context_sentence, vocab?.contexts]);
   const relatedKnownWords = useMemo(() => {
     const normalizeEntry = (entry) => ({
       ...entry,
@@ -96,18 +157,19 @@ const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGe
   }, [vocab?.related_known_words]);
 
   useEffect(() => {
-    frontSettingsRef.current = frontSettings;
-  }, [frontSettings]);
+    flashcardSettingsRef.current = flashcardSettings;
+  }, [flashcardSettings]);
 
-  const persistFrontSettings = useCallback((nextSettings, updatedAt = new Date().toISOString(), options = {}) => {
+  const persistFlashcardSettings = useCallback((nextSettings, updatedAt = new Date().toISOString(), options = {}) => {
     const { syncCloud = true } = options;
+    const normalizedSettings = normalizeFlashcardSettings(nextSettings);
 
-    frontSettingsRef.current = nextSettings;
-    frontSettingsUpdatedAtRef.current = updatedAt;
+    flashcardSettingsRef.current = normalizedSettings;
+    flashcardSettingsUpdatedAtRef.current = updatedAt;
 
     Promise.all([
-      AsyncStorage.setItem(FRONT_SETTINGS_KEY, JSON.stringify(nextSettings)),
-      AsyncStorage.setItem(FRONT_SETTINGS_UPDATED_AT_KEY, updatedAt),
+      AsyncStorage.setItem(FLASHCARD_SETTINGS_KEY, JSON.stringify(normalizedSettings)),
+      AsyncStorage.setItem(FLASHCARD_SETTINGS_UPDATED_AT_KEY, updatedAt),
     ]).catch(() => {});
 
     if (syncCloud && user?.id && ownerId === user.id) {
@@ -117,13 +179,13 @@ const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGe
         generation: syncGeneration,
         patch: {
           flashcard_settings: {
-            ...nextSettings,
+            ...normalizedSettings,
             updatedAt,
           },
           updated_at: updatedAt,
         },
       }).catch((error) => {
-        console.warn('[Flashcard] Failed to sync front-card settings:', error?.message ?? error);
+        console.warn('[Flashcard] Failed to sync flashcard settings:', error?.message ?? error);
       });
     }
   }, [ownerId, syncGeneration, user]);
@@ -132,8 +194,8 @@ const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGe
     let isMounted = true;
 
     Promise.all([
-      AsyncStorage.getItem(FRONT_SETTINGS_KEY),
-      AsyncStorage.getItem(FRONT_SETTINGS_UPDATED_AT_KEY),
+      AsyncStorage.getItem(FLASHCARD_SETTINGS_KEY),
+      AsyncStorage.getItem(FLASHCARD_SETTINGS_UPDATED_AT_KEY),
     ])
       .then(([stored, storedUpdatedAt]) => {
         if (!isMounted) {
@@ -141,20 +203,16 @@ const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGe
         }
 
         if (stored) {
-          const parsed = JSON.parse(stored);
-          const nextSettings = {
-            ...DEFAULT_FRONT_SETTINGS,
-            ...parsed,
-          };
-          frontSettingsRef.current = nextSettings;
-          setFrontSettings(nextSettings);
+          const nextSettings = normalizeFlashcardSettings(JSON.parse(stored));
+          flashcardSettingsRef.current = nextSettings;
+          setFlashcardSettings(nextSettings);
         }
-        frontSettingsUpdatedAtRef.current = storedUpdatedAt ?? null;
+        flashcardSettingsUpdatedAtRef.current = storedUpdatedAt ?? null;
       })
       .catch(() => {})
       .finally(() => {
         if (isMounted) {
-          setFrontSettingsLoaded(true);
+          setSettingsLoaded(true);
         }
       });
 
@@ -164,23 +222,23 @@ const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGe
   }, []);
 
   useEffect(() => {
-    if (!frontSettingsLoaded) {
+    if (!settingsLoaded) {
       return;
     }
 
     if (!user?.id || ownerId !== user.id) {
-      frontSettingsCloudUserRef.current = null;
+      flashcardSettingsCloudUserRef.current = null;
       return;
     }
 
-    if (frontSettingsCloudUserRef.current === user.id) {
+    if (flashcardSettingsCloudUserRef.current === user.id) {
       return;
     }
 
     let isMounted = true;
-    frontSettingsCloudUserRef.current = user.id;
+    flashcardSettingsCloudUserRef.current = user.id;
 
-    const mergeCloudFrontSettings = async () => {
+    const mergeCloudFlashcardSettings = async () => {
       try {
         const cloudPreferences = await fetchUserPreferences(user.id);
         if (!isMounted || !isCurrentSyncGeneration(syncGeneration)) {
@@ -195,22 +253,17 @@ const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGe
           ?? cloudSettings?.updated_at
           ?? cloudPreferences?.updated_at
           ?? null;
-        const localUpdatedAt = frontSettingsUpdatedAtRef.current;
+        const localUpdatedAt = flashcardSettingsUpdatedAtRef.current;
 
         if (hasCloudSettings && getTimestampMs(cloudUpdatedAt) > getTimestampMs(localUpdatedAt)) {
-          const nextSettings = {
-            ...DEFAULT_FRONT_SETTINGS,
-            ...cloudSettings,
-          };
-          delete nextSettings.updatedAt;
-          delete nextSettings.updated_at;
+          const nextSettings = normalizeFlashcardSettings(cloudSettings);
 
           if (!isMounted) {
             return;
           }
 
-          setFrontSettings(nextSettings);
-          persistFrontSettings(nextSettings, cloudUpdatedAt, { syncCloud: false });
+          setFlashcardSettings(nextSettings);
+          persistFlashcardSettings(nextSettings, cloudUpdatedAt, { syncCloud: false });
           return;
         }
 
@@ -221,35 +274,94 @@ const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGe
           generation: syncGeneration,
           patch: {
             flashcard_settings: {
-              ...frontSettingsRef.current,
+              ...flashcardSettingsRef.current,
               updatedAt,
             },
             updated_at: updatedAt,
           },
         });
       } catch (error) {
-        frontSettingsCloudUserRef.current = null;
-        console.warn('[Flashcard] Failed to merge cloud front-card settings:', error?.message ?? error);
+        flashcardSettingsCloudUserRef.current = null;
+        console.warn('[Flashcard] Failed to merge cloud flashcard settings:', error?.message ?? error);
       }
     };
 
-    mergeCloudFrontSettings();
+    mergeCloudFlashcardSettings();
 
     return () => {
       isMounted = false;
     };
-  }, [frontSettingsLoaded, ownerId, persistFrontSettings, syncGeneration, user]);
+  }, [ownerId, persistFlashcardSettings, settingsLoaded, syncGeneration, user]);
 
-  const updateFrontSetting = (key, value) => {
-    setFrontSettings((current) => {
+  useEffect(() => {
+    let isActive = true;
+
+    setContextRows([]);
+
+    if (!vocab?.word) {
+      return () => {
+        isActive = false;
+      };
+    }
+
+    getVocabContexts(
+      vocab.word,
+      vocab.hanja,
+      vocab.def,
+      1,
+      vocab.language ?? 'ko',
+      { ownerId }
+    )
+      .then((contexts) => {
+        if (isActive) {
+          setContextRows(contexts);
+        }
+      })
+      .catch((error) => {
+        console.warn('[Flashcard] Failed to load context sentence:', error?.message ?? error);
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [ownerId, vocab?.word, vocab?.hanja, vocab?.def, vocab?.language]);
+
+  const updateFlashcardSetting = (side, key, value) => {
+    setFlashcardSettings((current) => {
       const next = {
         ...current,
-        [key]: value,
+        [side]: {
+          ...current[side],
+          [key]: value,
+        },
       };
-      persistFrontSettings(next);
+      persistFlashcardSettings(next);
       return next;
     });
   };
+
+  const renderSettingRow = (side, key, label) => {
+    const enabled = Boolean(flashcardSettings?.[side]?.[key]);
+
+    return (
+      <View key={`${side}-${key}`} style={styles.settingRow}>
+        <Text style={styles.settingLabel}>{label}</Text>
+        <Switch
+          value={enabled}
+          onValueChange={(value) => updateFlashcardSetting(side, key, value)}
+          trackColor={{ false: colors.surfaceStrong, true: colors.accentSoft }}
+          thumbColor={enabled ? colors.accentStrong : colors.surfaceElevated}
+        />
+      </View>
+    );
+  };
+
+  const renderSettingSection = (side, title, fields) => (
+    <View style={styles.settingSection}>
+      <Text style={styles.settingsSectionTitle}>{title}</Text>
+      {fields.map(({ key, label }) => renderSettingRow(side, key, label))}
+    </View>
+  );
 
   const renderRelatedWords = () => {
     if (relatedKnownWords.length === 0) {
@@ -266,11 +378,58 @@ const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGe
               numberOfLines={1}
               style={styles.relatedText}
             >
-              {entry.korean || t('learn.relatedWord')}{entry.meaning ? ` - ${entry.meaning}` : ''}
+              {[entry.korean || t('learn.relatedWord'), entry.hanja].filter(Boolean).join(' / ')}
+              {entry.meaning ? ` - ${entry.meaning}` : ''}
             </Text>
           ))}
         </View>
       </View>
+    );
+  };
+
+  const renderContextSentence = () => {
+    if (!contextSentence) {
+      return null;
+    }
+
+    return (
+      <View style={styles.contextSection}>
+        <Text style={styles.fieldLabel}>{t('learn.contextSentence')}</Text>
+        <Text selectable numberOfLines={4} style={styles.contextSentence}>
+          "{contextSentence}"
+        </Text>
+      </View>
+    );
+  };
+
+  const renderDefinition = () => {
+    if (!vocab?.def) {
+      return null;
+    }
+
+    return (
+      <View style={styles.definitionSection}>
+        <Text style={styles.fieldLabel}>{t('learn.definition')}</Text>
+        <Text selectable style={styles.definition}>{vocab.def}</Text>
+      </View>
+    );
+  };
+
+  const renderCardDetails = (side) => {
+    const settings = flashcardSettings[side] ?? {};
+
+    return (
+      <>
+        {settings.showPronunciation && pronunciation ? (
+          <Text selectable style={styles.pronunciation}>{pronunciation}</Text>
+        ) : null}
+        {settings.showHanja && hanjaText ? (
+          <Text selectable style={styles.hanja}>{hanjaText}</Text>
+        ) : null}
+        {settings.showDefinition ? renderDefinition() : null}
+        {settings.showContext ? renderContextSentence() : null}
+        {settings.showRelated ? renderRelatedWords() : null}
+      </>
     );
   };
 
@@ -281,43 +440,45 @@ const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGe
   return (
     <SafeAreaView edges={['top', 'bottom']} style={styles.shell}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={onClose} style={styles.closeButton}>
-          <Feather name="x" size={28} color={colors.text} />
-        </TouchableOpacity>
+        <View style={styles.headerSide}>
+          <TouchableOpacity onPress={onClose} style={styles.closeButton}>
+            <Feather name="x" size={28} color={colors.text} />
+          </TouchableOpacity>
+        </View>
         <Text style={styles.deckTitle}>FLASHCARD</Text>
-        <Text style={styles.progress}>{index + 1} / {total}</Text>
+        <View style={[styles.headerSide, styles.headerRight]}>
+          <Text style={styles.progress}>{index + 1} / {total}</Text>
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel={t('learn.flashcardSettings')}
+            onPress={() => setShowSettings((current) => !current)}
+            style={[styles.settingsButton, showSettings && styles.settingsButtonActive]}
+          >
+            <Feather
+              name="settings"
+              size={19}
+              color={showSettings ? colors.text : colors.textMuted}
+            />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {showSettings ? (
         <View style={styles.settingsMenu}>
-          <Text style={styles.settingsTitle}>{t('learn.frontCard')}</Text>
-          <View style={styles.settingRow}>
-            <Text style={styles.settingLabel}>{t('learn.showHanja')}</Text>
-            <Switch
-              value={frontSettings.showHanja}
-              onValueChange={(value) => updateFrontSetting('showHanja', value)}
-              trackColor={{ false: colors.surfaceStrong, true: colors.accentSoft }}
-              thumbColor={frontSettings.showHanja ? colors.accentStrong : colors.surfaceElevated}
-            />
-          </View>
-          <View style={styles.settingRow}>
-            <Text style={styles.settingLabel}>{t('learn.showDefinition')}</Text>
-            <Switch
-              value={frontSettings.showDefinition}
-              onValueChange={(value) => updateFrontSetting('showDefinition', value)}
-              trackColor={{ false: colors.surfaceStrong, true: colors.accentSoft }}
-              thumbColor={frontSettings.showDefinition ? colors.accentStrong : colors.surfaceElevated}
-            />
-          </View>
-          <View style={styles.settingRow}>
-            <Text style={styles.settingLabel}>{t('learn.showRelatedWords')}</Text>
-            <Switch
-              value={frontSettings.showRelated}
-              onValueChange={(value) => updateFrontSetting('showRelated', value)}
-              trackColor={{ false: colors.surfaceStrong, true: colors.accentSoft }}
-              thumbColor={frontSettings.showRelated ? colors.accentStrong : colors.surfaceElevated}
-            />
-          </View>
+          <Text style={styles.settingsTitle}>{t('learn.flashcardSettings')}</Text>
+          {renderSettingSection('front', t('learn.frontCard'), [
+            { key: 'showPronunciation', label: t('learn.showPronunciation') },
+            { key: 'showContext', label: t('learn.showContextSentence') },
+            { key: 'showHanja', label: t('learn.showHanja') },
+            { key: 'showRelated', label: t('learn.showRelatedWords') },
+          ])}
+          {renderSettingSection('back', t('learn.backCard'), [
+            { key: 'showPronunciation', label: t('learn.showPronunciation') },
+            { key: 'showContext', label: t('learn.showContextSentence') },
+            { key: 'showHanja', label: t('learn.showHanja') },
+            { key: 'showRelated', label: t('learn.showRelatedWords') },
+            { key: 'showDefinition', label: t('learn.showDefinition') },
+          ])}
         </View>
       ) : null}
 
@@ -325,20 +486,26 @@ const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGe
         <View style={styles.cardFace}>
           {!isFlipped ? (
             <>
-              <View style={styles.frontCenter}>
-                <Text style={styles.word}>{vocab.word}</Text>
-                {pronunciation ? <Text style={styles.pronunciation}>{pronunciation}</Text> : null}
-              </View>
+              <ScrollView
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={styles.frontCenter}
+                style={styles.cardScroll}
+              >
+                <Text selectable style={styles.word}>{vocab.word}</Text>
+                {renderCardDetails('front')}
+              </ScrollView>
               <Text style={styles.flipHint}>TAP TO FLIP</Text>
             </>
           ) : (
             <>
-              <View style={styles.backContent}>
-                <Text style={styles.wordSmall}>{vocab.word}</Text>
-                {hanjaText ? <Text style={styles.hanja}>{hanjaText}</Text> : null}
-                <Text style={styles.definition}>{vocab.def}</Text>
-                {frontSettings.showRelated ? renderRelatedWords() : null}
-              </View>
+              <ScrollView
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={styles.backContent}
+                style={styles.cardScroll}
+              >
+                <Text selectable style={styles.wordSmall}>{vocab.word}</Text>
+                {renderCardDetails('back')}
+              </ScrollView>
               <Text style={styles.flipHint}>{t('learn.tapAgainHide')}</Text>
             </>
           )}
@@ -392,6 +559,15 @@ const createStyles = (colors) => StyleSheet.create({
     borderBottomColor: colors.divider,
     paddingHorizontal: 20,
   },
+  headerSide: {
+    width: 96,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  headerRight: {
+    justifyContent: 'flex-end',
+    gap: 8,
+  },
   headerCopy: {
     flex: 1,
     gap: 3,
@@ -410,7 +586,6 @@ const createStyles = (colors) => StyleSheet.create({
     textAlign: 'center',
   },
   progress: {
-    width: 70,
     fontFamily: fontFamilies.sansRegular,
     fontSize: 12,
     lineHeight: 16,
@@ -418,12 +593,23 @@ const createStyles = (colors) => StyleSheet.create({
     textAlign: 'right',
   },
   closeButton: {
-    width: 70,
+    width: 40,
     height: 40,
     borderRadius: 0,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.transparent,
+  },
+  settingsButton: {
+    width: 34,
+    height: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 17,
+    backgroundColor: colors.surfaceMuted,
+  },
+  settingsButtonActive: {
+    backgroundColor: colors.surfaceStrong,
   },
   headerActions: {
     flexDirection: 'row',
@@ -434,13 +620,13 @@ const createStyles = (colors) => StyleSheet.create({
     top: 62,
     right: 16,
     zIndex: 5,
-    width: 220,
-    borderRadius: 16,
+    width: 286,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surfaceElevated,
     padding: 12,
-    gap: 10,
+    gap: 12,
     shadowColor: colors.shadow,
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 1,
@@ -450,6 +636,16 @@ const createStyles = (colors) => StyleSheet.create({
   settingsTitle: {
     ...textStyles.label,
     color: colors.text,
+  },
+  settingSection: {
+    gap: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  settingsSectionTitle: {
+    ...textStyles.eyebrow,
+    color: colors.textTertiary,
   },
   settingRow: {
     flexDirection: 'row',
@@ -477,16 +673,21 @@ const createStyles = (colors) => StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     padding: 32,
+    gap: 16,
+  },
+  cardScroll: {
+    flex: 1,
+    width: '100%',
   },
   frontCenter: {
-    flex: 1,
+    flexGrow: 1,
     width: '100%',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 16,
+    gap: 14,
   },
   backContent: {
-    flex: 1,
+    flexGrow: 1,
     width: '100%',
     alignItems: 'center',
     justifyContent: 'center',
@@ -529,6 +730,28 @@ const createStyles = (colors) => StyleSheet.create({
     fontSize: 15,
     lineHeight: 22,
     color: colors.textMuted,
+    textAlign: 'center',
+  },
+  definitionSection: {
+    width: '100%',
+    alignItems: 'center',
+    gap: 5,
+  },
+  fieldLabel: {
+    ...textStyles.eyebrow,
+    color: colors.textTertiary,
+    textAlign: 'center',
+  },
+  contextSection: {
+    width: '100%',
+    alignItems: 'center',
+    gap: 6,
+  },
+  contextSentence: {
+    fontFamily: fontFamilies.krSerifMedium,
+    fontSize: 16,
+    lineHeight: 25,
+    color: colors.text,
     textAlign: 'center',
   },
   relatedSection: {

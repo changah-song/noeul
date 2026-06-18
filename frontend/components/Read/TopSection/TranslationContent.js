@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { ActivityIndicator, Animated, Text, View, ScrollView, StyleSheet } from 'react-native';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Text, View, ScrollView, StyleSheet } from 'react-native';
 import { translateText } from '../../../services/api/googleTranslate';
 import { useTranslation } from '../../../hooks/useTranslation';
 import { spacing, textStyles, useTheme } from '../../../theme';
+import LookupLoadingSkeleton from './LookupLoadingSkeleton';
 
 const TranslationContent = ({
     highlightedWord,
@@ -25,22 +26,6 @@ const TranslationContent = ({
     const [translatedText, setTranslatedText] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [errorMessage, setErrorMessage] = useState('');
-    const shimmerAnim = useRef(new Animated.Value(0)).current;
-
-    useEffect(() => {
-        const shouldAnimateShimmer = forceLoading || (!forceError && isLoading);
-        if (!shouldAnimateShimmer) {
-            return undefined;
-        }
-        const loop = Animated.loop(
-            Animated.sequence([
-                Animated.timing(shimmerAnim, { toValue: 1, duration: 700, useNativeDriver: true }),
-                Animated.timing(shimmerAnim, { toValue: 0, duration: 700, useNativeDriver: true }),
-            ])
-        );
-        loop.start();
-        return () => loop.stop();
-    }, [forceError, forceLoading, isLoading, shimmerAnim]);
 
     const palette = {
         text: colors.readerBodyInk,
@@ -92,8 +77,6 @@ const TranslationContent = ({
         };
     }, [highlightedWord, onContentLoaded, sourceLanguage, t, targetLanguage]);
 
-    const shimmerOpacity = shimmerAnim.interpolate({ inputRange: [0, 1], outputRange: [0.55, 1] });
-
     const boundedScrollStyle = Number.isFinite(maxScrollHeight)
         ? { maxHeight: maxScrollHeight }
         : null;
@@ -110,6 +93,7 @@ const TranslationContent = ({
             isLoading: effectiveIsLoading,
             hasError: Boolean(effectiveErrorMessage),
             hasText: Boolean(effectiveTranslatedText),
+            translatedText: effectiveTranslatedText,
         });
     }, [effectiveErrorMessage, effectiveIsLoading, effectiveTranslatedText, onStatusChange]);
 
@@ -117,10 +101,11 @@ const TranslationContent = ({
         const compactContent = (
             <>
                 {effectiveIsLoading ? (
-                    <View style={styles.shimmerWrap}>
-                        <Animated.View style={[styles.shimmerLine, { opacity: shimmerOpacity }]} />
-                        <Animated.View style={[styles.shimmerLineShort, { opacity: shimmerOpacity }]} />
-                    </View>
+                    <LookupLoadingSkeleton
+                        firstLineOffset={4}
+                        secondLineOffset={11}
+                        shortLineWidth="68%"
+                    />
                 ) : effectiveErrorMessage ? (
                     <Text style={[styles.translationErrorText, { color: palette.muted }]}>
                         {effectiveErrorMessage}
@@ -164,10 +149,11 @@ const TranslationContent = ({
                 showsVerticalScrollIndicator={true}
             >
                 {effectiveIsLoading ? (
-                    <View style={styles.loadingRow}>
-                        <ActivityIndicator size="small" color={palette.muted} />
-                        <Text style={[styles.offlineText, { color: palette.muted }]}>{t('lookup.translating')}</Text>
-                    </View>
+                    <LookupLoadingSkeleton
+                        firstLineOffset={4}
+                        secondLineOffset={11}
+                        shortLineWidth="68%"
+                    />
                 ) : effectiveErrorMessage ? (
                     <Text style={[styles.offlineText, { color: palette.muted }]}>{effectiveErrorMessage}</Text>
                 ) : effectiveTranslatedText ? (
@@ -199,26 +185,6 @@ const createStyles = (colors) => StyleSheet.create({
     compactScrollContent: {
         flexGrow: 0,
         paddingRight: 0,
-    },
-    shimmerWrap: {
-        gap: 9,
-        marginTop: 4,
-    },
-    shimmerLine: {
-        height: 11,
-        borderRadius: 2,
-        backgroundColor: colors.surfaceMuted,
-    },
-    shimmerLineShort: {
-        height: 11,
-        borderRadius: 2,
-        backgroundColor: colors.surfaceMuted,
-        width: '62%',
-    },
-    loadingRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: spacing.sm,
     },
     offlineText: {
         ...textStyles.caption,

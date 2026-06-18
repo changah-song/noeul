@@ -33,6 +33,8 @@ const NativeEpubReaderView = ({
     renderMode = 'paged',
     readerEdgeStateEnabled = true,
     highlightTerms = [],
+    sameLevelTerms = [],
+    aboveLevelTerms = [],
     clearSelectionToken = 0,
     onPageChange,
     onChapterEnd,
@@ -95,6 +97,8 @@ const NativeEpubReaderView = ({
             renderMode={renderMode}
             readerEdgeStateEnabled={readerEdgeStateEnabled}
             highlightTerms={highlightTerms || []}
+            sameLevelTerms={sameLevelTerms || []}
+            aboveLevelTerms={aboveLevelTerms || []}
             clearSelectionToken={clearSelectionToken}
             onPageChange={handlePageChange}
             onChapterEnd={handleChapterEnd}

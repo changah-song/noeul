@@ -1073,6 +1073,7 @@ const BookPreview = ({
     const showDownloadingCta = bookState === 'downloading';
     const showSnippet = canReadBook && !!String(book?.snippet || '').trim();
     const genreValue = book?.genre || (isPublicDomain ? t('common.unknown') : t('home.autoDetectionSoon'));
+    const levelValue = book?.difficulty || book?.bookLevel?.level || book?.bookLevel?.proficiency_level || t('common.unknown');
     const hasKnownDownloadSize = Number(book?.size) > 0;
     const downloadNote = hasKnownDownloadSize
         ? `${formatFileSize(book?.size, t)} · Available offline once downloaded`
@@ -1227,6 +1228,7 @@ const BookPreview = ({
                         <Text style={styles.previewSectionLabel}>METADATA</Text>
                         <View style={styles.previewMetaGrid}>
                             <PreviewMetadataItem label="WORD COUNT" value={formatWordCount(wordCount, t)} />
+                            <PreviewMetadataItem label="LEVEL" value={levelValue} />
                             <PreviewMetadataItem label="GENRE" value={genreValue} />
                             <PreviewMetadataItem label="LANGUAGE" value={formatBookLanguage(book?.language, t)} />
                             <PreviewMetadataItem label="LAST OPENED" value={formatPreviewDateTime(book?.lastOpenedAt, t)} />
@@ -1588,6 +1590,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     snippet: localBook.snippet ?? book.snippet,
                     genre: localBook.genre ?? book.genre,
                     difficulty: localBook.difficulty ?? book.difficulty,
+                    bookLevel: localBook.bookLevel ?? book.bookLevel,
                     coverColor: book.coverColor,
                     coverAccentColor: hasCustomCover
                         ? localBook.coverAccentColor ?? catalogCoverColors.coverAccentColor
