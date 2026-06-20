@@ -12,10 +12,8 @@ import xml.etree.ElementTree as ET
 from typing import Any, Optional
 import os
 import re
-import time
 from datetime import datetime, timezone
 from functools import partial
-from uuid import uuid4
 import certifi
 from dotenv import load_dotenv
 
@@ -69,7 +67,6 @@ AUTHENTICATED_LIMITS = {
     "max_translate_chars_per_request": 4_000,
     "max_krdict_queries_per_request": 25,
     "max_stems_per_preprocess_job": 5_000,
-    "max_active_jobs": 3,
     "daily_quota": 1_000,
 }
 ANONYMOUS_LIMITS = {
@@ -77,13 +74,8 @@ ANONYMOUS_LIMITS = {
     "max_translate_chars_per_request": 1_500,
     "max_krdict_queries_per_request": 10,
     "max_stems_per_preprocess_job": 1_000,
-    "max_active_jobs": 1,
     "daily_quota": 300,
 }
-PREPROCESS_TERMINAL_STATUSES = {"completed", "failed"}
-PREPROCESS_JOB_TTL_SECONDS = 300
-PREPROCESS_JOB_READ_TTL_SECONDS = 60
-PREPROCESS_ACTIVE_JOB_TTL_SECONDS = 60 * 60
 
 # ─── Server-Side Cache DB ─────────────────────────────────────────────────────
 # This SQLite database lives on the backend server and persists across app restarts.
@@ -91,6 +83,41 @@ PREPROCESS_ACTIVE_JOB_TTL_SECONDS = 60 * 60
 CACHE_DB_PATH = os.path.join(os.path.dirname(__file__), "cache.db")
 EN_DICT_DB_PATH = os.path.join(os.path.dirname(__file__), "en_dict.db")
 ZH_DICT_DB_PATH = os.path.join(os.path.dirname(__file__), "zh_dict.db")
+PROFICIENCY_LEVELS_DB_PATH = os.path.join(os.path.dirname(__file__), "proficiency_levels.db")
+SQLITE_LOOKUP_BATCH_SIZE = 450
+BOOK_LEVEL_SAMPLE_SIZE = 100
+BOOK_LEVEL_PERCENTILE = 0.80
+
+BOOK_LEVEL_LABELS = {
+    "en": {
+        1: "A1",
+        2: "A2",
+        3: "B1",
+        4: "B2",
+        5: "C1",
+        6: "C2",
+    },
+    "zh": {
+        1: "HSK 1",
+        2: "HSK 2",
+        3: "HSK 3",
+        4: "HSK 4",
+        5: "HSK 5",
+        6: "HSK 6",
+        7: "HSK 7",
+    },
+    "ko": {
+        1: "초급",
+        2: "중급",
+        3: "고급",
+    },
+}
+
+BOOK_LEVEL_SYSTEMS = {
+    "en": "CEFR",
+    "zh": "HSK",
+    "ko": "NIKL",
+}
 
 
 def get_db_connection():
@@ -122,6 +149,334 @@ def get_zh_dict_db_connection():
 
 def is_zh_dict_db_installed() -> bool:
     return os.path.exists(ZH_DICT_DB_PATH)
+
+
+def is_proficiency_levels_db_installed() -> bool:
+    return os.path.exists(PROFICIENCY_LEVELS_DB_PATH)
+
+
+def get_proficiency_levels_db_connection():
+    """Open a read-only connection to the local proficiency level lookup DB."""
+    conn = sqlite3.connect(f"file:{PROFICIENCY_LEVELS_DB_PATH}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def chunked_values(values: list[str], size: int = SQLITE_LOOKUP_BATCH_SIZE):
+    for index in range(0, len(values), size):
+        yield values[index:index + size]
+
+
+def unique_nonempty_strings(values: list[Any], *, lowercase: bool = False) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+
+    for value in values:
+        if not isinstance(value, str):
+            continue
+
+        text = value.strip()
+        if lowercase:
+            text = text.lower()
+
+        if not text or text in seen:
+            continue
+
+        seen.add(text)
+        normalized.append(text)
+
+    return normalized
+
+
+def english_cefr_payload(row: sqlite3.Row | None) -> dict | None:
+    if row is None:
+        return None
+
+    cefr_level = row["cefr_level"]
+    level_rank = int(row["level_rank"])
+    return {
+        "cefr_level": cefr_level,
+        "cefr_rank": level_rank,
+        "level_rank": level_rank,
+        "level_source": "english_cefr_vocab",
+        "proficiency_system": "CEFR",
+        "proficiency_level": cefr_level,
+        "proficiency_rank": level_rank,
+    }
+
+
+def chinese_hsk_payload(row: sqlite3.Row | None) -> dict | None:
+    if row is None:
+        return None
+
+    hsk_level = int(row["hsk_level"])
+    return {
+        "hsk_level": hsk_level,
+        "hsk_system": row["hsk_system"],
+        "level_rank": int(row["level_rank"]),
+        "level_source": "hsk_new",
+        "proficiency_system": "HSK",
+        "proficiency_level": f"HSK {hsk_level}",
+        "proficiency_rank": hsk_level,
+    }
+
+
+def korean_nikl_payload(row: sqlite3.Row | None) -> dict | None:
+    if row is None:
+        return None
+
+    grade = row["nikl_grade"]
+    rank = int(row["level_rank"])
+    return {
+        "nikl_grade": grade,
+        "korean_level": grade,
+        "korean_rank": rank,
+        "level_rank": rank,
+        "level_source": "nikl_graded_vocab",
+        "proficiency_system": "NIKL",
+        "proficiency_level": grade,
+        "proficiency_rank": rank,
+    }
+
+
+def attach_proficiency_level(entry: dict, level: dict | None) -> dict:
+    return {**entry, **level} if level else entry
+
+
+def normalize_scoring_language(language: str | None) -> str:
+    normalized = str(language or "ko").strip().lower().replace("_", "-").split("-")[0]
+    return normalized if normalized in BOOK_LEVEL_LABELS else "ko"
+
+
+def int_or_none(value: Any) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def level_label_for_rank(language: str, rank: int | None) -> str | None:
+    if rank is None:
+        return None
+    return BOOK_LEVEL_LABELS.get(language, {}).get(rank) or str(rank)
+
+
+def score_vocabulary_level(
+    language: str,
+    entries: list[dict],
+    *,
+    sample_size: int = BOOK_LEVEL_SAMPLE_SIZE,
+) -> dict:
+    normalized_language = normalize_scoring_language(language)
+    sampled_entries = [
+        entry
+        for entry in entries[:sample_size]
+        if isinstance(entry, dict)
+    ]
+    ranks: list[int] = []
+    distribution: dict[int, int] = {}
+
+    for entry in sampled_entries:
+        rank = int_or_none(entry.get("proficiency_rank") or entry.get("level_rank"))
+        if rank is None:
+            continue
+
+        ranks.append(rank)
+        distribution[rank] = distribution.get(rank, 0) + 1
+
+    matched_count = len(ranks)
+    unknown_count = len(sampled_entries) - matched_count
+    estimated_rank = None
+    if ranks:
+        sorted_ranks = sorted(ranks)
+        percentile_index = max(0, min(len(sorted_ranks) - 1, int(len(sorted_ranks) * BOOK_LEVEL_PERCENTILE + 0.999999) - 1))
+        estimated_rank = sorted_ranks[percentile_index]
+
+    level = level_label_for_rank(normalized_language, estimated_rank)
+    distribution_rows = [
+        {
+            "rank": rank,
+            "level": level_label_for_rank(normalized_language, rank),
+            "count": distribution[rank],
+        }
+        for rank in sorted(distribution)
+    ]
+
+    return {
+        "language": normalized_language,
+        "basis": "vocabulary",
+        "method": "80th_percentile_known_vocab",
+        "note": "Estimated from vocabulary only.",
+        "sample_size": len(sampled_entries),
+        "sample_limit": sample_size,
+        "matched_count": matched_count,
+        "unknown_count": unknown_count,
+        "coverage": round(matched_count / len(sampled_entries), 4) if sampled_entries else 0,
+        "level_rank": estimated_rank,
+        "level": level,
+        "proficiency_system": BOOK_LEVEL_SYSTEMS.get(normalized_language),
+        "proficiency_level": level,
+        "proficiency_rank": estimated_rank,
+        "distribution": distribution_rows,
+    }
+
+
+def lookup_korean_nikl_levels(stems: list[str]) -> dict[str, dict]:
+    normalized_stems = unique_nonempty_strings(stems)
+    if not normalized_stems or not is_proficiency_levels_db_installed():
+        return {}
+
+    try:
+        conn = get_proficiency_levels_db_connection()
+    except sqlite3.Error as exc:
+        print(f"[main] Korean NIKL lookup unavailable: {exc}")
+        return {}
+
+    rows_by_term: dict[str, sqlite3.Row] = {}
+
+    try:
+        for batch in chunked_values(normalized_stems):
+            placeholders = ",".join(["?"] * len(batch))
+            for row in conn.execute(
+                f"""
+                SELECT term, nikl_grade, level_rank
+                FROM korean_nikl_vocab
+                WHERE term IN ({placeholders})
+                """,
+                batch,
+            ).fetchall():
+                rows_by_term[row["term"]] = row
+    except sqlite3.Error as exc:
+        print(f"[main] Korean NIKL lookup failed: {exc}")
+        return {}
+    finally:
+        conn.close()
+
+    return {
+        stem: payload
+        for stem in normalized_stems
+        if (payload := korean_nikl_payload(rows_by_term.get(stem)))
+    }
+
+
+def lookup_english_cefr_levels(
+    stems: list[str],
+    pos_by_stem: dict[str, str] | None = None,
+) -> dict[str, dict]:
+    normalized_stems = unique_nonempty_strings(stems, lowercase=True)
+    if not normalized_stems or not is_proficiency_levels_db_installed():
+        return {}
+
+    normalized_pos_by_stem = {
+        stem.strip().lower(): pos.strip().upper()
+        for stem, pos in (pos_by_stem or {}).items()
+        if isinstance(stem, str) and isinstance(pos, str) and stem.strip() and pos.strip()
+    }
+
+    try:
+        conn = get_proficiency_levels_db_connection()
+    except sqlite3.Error as exc:
+        print(f"[main] English CEFR lookup unavailable: {exc}")
+        return {}
+
+    rows_by_word_pos: dict[tuple[str, str], sqlite3.Row] = {}
+    fallback_by_word: dict[str, sqlite3.Row] = {}
+
+    try:
+        for batch in chunked_values(normalized_stems):
+            placeholders = ",".join(["?"] * len(batch))
+            for row in conn.execute(
+                f"""
+                SELECT word, pos, cefr_level, level_rank
+                FROM english_cefr
+                WHERE word IN ({placeholders})
+                """,
+                batch,
+            ).fetchall():
+                rows_by_word_pos[(row["word"], row["pos"])] = row
+
+            for row in conn.execute(
+                f"""
+                SELECT word, cefr_level, level_rank
+                FROM english_cefr_fallback
+                WHERE word IN ({placeholders})
+                """,
+                batch,
+            ).fetchall():
+                fallback_by_word[row["word"]] = row
+    except sqlite3.Error as exc:
+        print(f"[main] English CEFR lookup failed: {exc}")
+        return {}
+    finally:
+        conn.close()
+
+    level_by_stem: dict[str, dict] = {}
+    for stem in normalized_stems:
+        pos = normalized_pos_by_stem.get(stem)
+        row = rows_by_word_pos.get((stem, pos)) if pos else None
+        row = row or fallback_by_word.get(stem)
+        payload = english_cefr_payload(row)
+        if payload:
+            level_by_stem[stem] = payload
+
+    return level_by_stem
+
+
+def lookup_chinese_hsk_levels(terms: list[str]) -> dict[str, dict]:
+    normalized_terms = unique_nonempty_strings(terms)
+    if not normalized_terms or not is_proficiency_levels_db_installed():
+        return {}
+
+    try:
+        conn = get_proficiency_levels_db_connection()
+    except sqlite3.Error as exc:
+        print(f"[main] Chinese HSK lookup unavailable: {exc}")
+        return {}
+
+    rows_by_term: dict[str, sqlite3.Row] = {}
+
+    try:
+        for batch in chunked_values(normalized_terms):
+            placeholders = ",".join(["?"] * len(batch))
+            for row in conn.execute(
+                f"""
+                SELECT term, simplified, script, hsk_level, level_rank, hsk_system
+                FROM chinese_hsk
+                WHERE hsk_system = 'new'
+                  AND term IN ({placeholders})
+                """,
+                batch,
+            ).fetchall():
+                rows_by_term[row["term"]] = row
+    except sqlite3.Error as exc:
+        print(f"[main] Chinese HSK lookup failed: {exc}")
+        return {}
+    finally:
+        conn.close()
+
+    return {
+        term: payload
+        for term in normalized_terms
+        if (payload := chinese_hsk_payload(rows_by_term.get(term)))
+    }
+
+
+def zh_level_candidates_for_result(result: dict) -> list[str]:
+    return unique_nonempty_strings([
+        result.get("simplified"),
+        result.get("word"),
+        result.get("stem"),
+        result.get("traditional"),
+    ])
+
+
+def zh_level_for_result(result: dict, level_by_term: dict[str, dict]) -> dict | None:
+    for candidate in zh_level_candidates_for_result(result):
+        level = level_by_term.get(candidate)
+        if level:
+            return level
+    return None
 
 
 def create_dictionary_cache_table(conn: sqlite3.Connection, table_name: str = "dictionary_cache"):
@@ -319,8 +674,6 @@ supabase_jwks_client = (
     else None
 )
 
-preprocess_jobs: dict[str, dict] = {}
-preprocess_jobs_lock = asyncio.Lock()
 daily_usage: dict[tuple[str, str], int] = {}
 daily_usage_lock = asyncio.Lock()
 
@@ -457,62 +810,6 @@ def get_auth_limits(auth_or_is_anonymous) -> dict[str, int]:
     return ANONYMOUS_LIMITS if is_anonymous else AUTHENTICATED_LIMITS
 
 
-def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def cleanup_preprocess_jobs_locked(now_ts: Optional[float] = None):
-    now_ts = now_ts if now_ts is not None else time.time()
-    expired_job_ids = [
-        job_id
-        for job_id, job in preprocess_jobs.items()
-        if (
-            (
-                job.get("status") in PREPROCESS_TERMINAL_STATUSES
-                and now_ts - float(job.get("updated_at_ts", now_ts)) > PREPROCESS_JOB_TTL_SECONDS
-            )
-            or (
-                job.get("status") not in PREPROCESS_TERMINAL_STATUSES
-                and now_ts - float(job.get("created_at_ts", now_ts)) > PREPROCESS_ACTIVE_JOB_TTL_SECONDS
-            )
-        )
-    ]
-
-    for job_id in expired_job_ids:
-        del preprocess_jobs[job_id]
-
-
-async def cleanup_preprocess_job_later(job_id: str, delay_seconds: int):
-    await asyncio.sleep(delay_seconds)
-    async with preprocess_jobs_lock:
-        job = preprocess_jobs.pop(job_id, None)
-
-    if job:
-        print(f"[main] cleaned up preprocess job {job_id}")
-
-
-def schedule_preprocess_job_cleanup(job_id: str, delay_seconds: int):
-    asyncio.create_task(cleanup_preprocess_job_later(job_id, delay_seconds))
-
-
-async def schedule_preprocess_job_read_cleanup(job_id: str, user_id: str):
-    should_schedule = False
-    async with preprocess_jobs_lock:
-        job = preprocess_jobs.get(job_id)
-        if (
-            job
-            and job.get("user_id") == user_id
-            and job.get("status") in PREPROCESS_TERMINAL_STATUSES
-            and not job.get("read_cleanup_scheduled")
-        ):
-            job["read_cleanup_scheduled"] = True
-            job["read_cleanup_scheduled_at"] = utc_now_iso()
-            should_schedule = True
-
-    if should_schedule:
-        schedule_preprocess_job_cleanup(job_id, PREPROCESS_JOB_READ_TTL_SECONDS)
-
-
 def enforce_text_limit(
     text: str,
     auth: dict[str, Any],
@@ -589,62 +886,6 @@ def romanize_korean_text(text: str) -> str:
     except Exception as error:
         print(f"[main] Error romanizing {text!r}: {error}")
         return ""
-
-
-async def update_preprocess_job(job_id: str, **updates):
-    async with preprocess_jobs_lock:
-        existing = preprocess_jobs.get(job_id)
-        if not existing:
-            return
-        updates["updated_at"] = utc_now_iso()
-        updates["updated_at_ts"] = time.time()
-        existing.update(updates)
-
-
-async def create_preprocess_job(user_id: str, is_anonymous: bool):
-    job_id = str(uuid4())
-    now_ts = time.time()
-    now_iso = utc_now_iso()
-    limits = get_auth_limits(is_anonymous)
-
-    async with preprocess_jobs_lock:
-        cleanup_preprocess_jobs_locked(now_ts)
-        active_job_count = sum(
-            1
-            for job in preprocess_jobs.values()
-            if (
-                job.get("user_id") == user_id
-                and job.get("status") not in PREPROCESS_TERMINAL_STATUSES
-            )
-        )
-
-        if active_job_count >= limits["max_active_jobs"]:
-            raise HTTPException(status_code=429, detail="Too many active preprocessing jobs")
-
-        preprocess_jobs[job_id] = {
-            "job_id": job_id,
-            "user_id": user_id,
-            "is_anonymous": is_anonymous,
-            "status": "queued",
-            "stage": "queued",
-            "message": "Job queued",
-            "created_at": now_iso,
-            "updated_at": now_iso,
-            "created_at_ts": now_ts,
-            "updated_at_ts": now_ts,
-            "stats": {},
-            "results": None,
-            "surface_index": None,
-            "error": None,
-        }
-    return job_id
-
-
-async def get_preprocess_job(job_id: str):
-    async with preprocess_jobs_lock:
-        cleanup_preprocess_jobs_locked()
-        job = preprocess_jobs.get(job_id)
-        return dict(job) if job else None
 
 
 def merge_noun_hada(morphs: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -861,12 +1102,13 @@ def build_surface_index(
     return surface_index
 
 
-def extract_en_lookup_tokens(text: str) -> tuple[list[str], list[dict]]:
+def extract_en_lookup_tokens(text: str) -> tuple[list[str], list[dict], dict[str, str]]:
     doc = get_en_nlp()(text)
     seen_lemmas: set[str] = set()
     seen_surface_pairs: set[tuple[str, str]] = set()
     lemmas: list[str] = []
     surface_index: list[dict] = []
+    pos_by_lemma: dict[str, str] = {}
 
     for token in doc:
         lemma = token.lemma_.strip().lower()
@@ -885,6 +1127,7 @@ def extract_en_lookup_tokens(text: str) -> tuple[list[str], list[dict]]:
         if lemma not in seen_lemmas:
             seen_lemmas.add(lemma)
             lemmas.append(lemma)
+            pos_by_lemma[lemma] = token.pos_
 
         for surface in dict.fromkeys([raw_surface, lower_surface]):
             if len(surface) > 1:
@@ -896,7 +1139,7 @@ def extract_en_lookup_tokens(text: str) -> tuple[list[str], list[dict]]:
                         "stem": lemma,
                     })
 
-    return lemmas, surface_index
+    return lemmas, surface_index, pos_by_lemma
 
 
 def en_dictionary_no_entry(stem: str) -> dict:
@@ -1677,11 +1920,16 @@ async def _preprocess_en_core(
             await progress_callback(event, data)
 
     loop = asyncio.get_event_loop()
-    unique_stems, surface_index = await loop.run_in_executor(None, extract_en_lookup_tokens, text)
+    unique_stems, surface_index, pos_by_stem = await loop.run_in_executor(None, extract_en_lookup_tokens, text)
     if max_stems:
         processed_stems = set(unique_stems[:max_stems])
         unique_stems = unique_stems[:max_stems]
         surface_index = [entry for entry in surface_index if entry["stem"] in processed_stems]
+        pos_by_stem = {
+            stem: pos
+            for stem, pos in pos_by_stem.items()
+            if stem in processed_stems
+        }
 
     await report(
         "stemmed",
@@ -1694,10 +1942,21 @@ async def _preprocess_en_core(
         return {
             "results": [],
             "surface_index": surface_index,
-            "stats": {"total_stems": 0, "cache_hits": 0, "new_fetched": 0},
+            "stats": {
+                "total_stems": 0,
+                "cache_hits": 0,
+                "new_fetched": 0,
+                "book_level": score_vocabulary_level("en", []),
+            },
         }
 
     results, found_count = await loop.run_in_executor(None, lookup_en_dictionary_entries, unique_stems)
+    level_by_stem = await loop.run_in_executor(
+        None,
+        lookup_english_cefr_levels,
+        unique_stems,
+        pos_by_stem,
+    )
     normalized_interface_language = (
         interface_language.strip().lower().replace("_", "-").split("-")[0]
         if isinstance(interface_language, str) and interface_language.strip()
@@ -1713,6 +1972,20 @@ async def _preprocess_en_core(
             }
             for result in results
         ]
+    results = [
+        attach_proficiency_level(
+            result,
+            level_by_stem.get(((result.get("stem") or result.get("word") or "").strip().lower())),
+        )
+        for result in results
+    ]
+    surface_index = [
+        attach_proficiency_level(
+            entry,
+            level_by_stem.get((entry.get("stem") or "").strip().lower()),
+        )
+        for entry in surface_index
+    ]
     return {
         "results": results,
         "surface_index": surface_index,
@@ -1720,6 +1993,7 @@ async def _preprocess_en_core(
             "total_stems": len(unique_stems),
             "cache_hits": found_count,
             "new_fetched": 0,
+            "book_level": score_vocabulary_level("en", results),
         },
     }
 
@@ -1747,6 +2021,11 @@ async def _preprocess_zh_core(
         processed_words = set(unique_lookup_words[:max_stems])
         unique_lookup_words = unique_lookup_words[:max_stems]
         surface_index = [entry for entry in surface_index if entry["stem"] in processed_words]
+        pos_by_word = {
+            word: pos
+            for word, pos in pos_by_word.items()
+            if word in processed_words
+        }
 
     await report(
         "stemmed",
@@ -1759,7 +2038,12 @@ async def _preprocess_zh_core(
         return {
             "results": [],
             "surface_index": surface_index,
-            "stats": {"total_stems": 0, "cache_hits": 0, "new_fetched": 0},
+            "stats": {
+                "total_stems": 0,
+                "cache_hits": 0,
+                "new_fetched": 0,
+                "book_level": score_vocabulary_level("zh", []),
+            },
         }
 
     result_groups, found_count = await loop.run_in_executor(
@@ -1787,6 +2071,13 @@ async def _preprocess_zh_core(
         }
         for entry in surface_index
     ]
+    level_terms: list[str] = []
+    for result in results:
+        level_terms.extend(zh_level_candidates_for_result(result))
+    for entry in surface_index:
+        level_terms.extend([entry.get("stem"), entry.get("surface")])
+
+    level_by_term = await loop.run_in_executor(None, lookup_chinese_hsk_levels, level_terms)
 
     if normalized_interface_language != "en":
         results = [
@@ -1798,6 +2089,17 @@ async def _preprocess_zh_core(
             }
             for result in results
         ]
+    results = [
+        attach_proficiency_level(result, zh_level_for_result(result, level_by_term))
+        for result in results
+    ]
+    surface_index = [
+        attach_proficiency_level(
+            entry,
+            level_by_term.get(entry.get("stem") or "") or level_by_term.get(entry.get("surface") or ""),
+        )
+        for entry in surface_index
+    ]
 
     return {
         "results": results,
@@ -1806,6 +2108,7 @@ async def _preprocess_zh_core(
             "total_stems": len(unique_lookup_words),
             "cache_hits": found_count,
             "new_fetched": 0,
+            "book_level": score_vocabulary_level("zh", results),
         },
     }
 
@@ -1836,7 +2139,7 @@ async def get_en_morphs(text: str, auth: dict[str, Any] = Depends(verify_supabas
     await enforce_daily_quota(auth)
     print(f"[main] /en_morphs/ | text: {text!r}")
 
-    lemmas, _surface_index = extract_en_lookup_tokens(normalized_text)
+    lemmas, _surface_index, _pos_by_lemma = extract_en_lookup_tokens(normalized_text)
     print(f"[main] English lemmas (first 20): {lemmas[:20]}")
     return {"result": lemmas}
 
@@ -2135,7 +2438,12 @@ async def _preprocess_core(text: str, krdict_key: str, max_stems=None, progress_
         return {
             "results": [],
             "surface_index": surface_index,
-            "stats": {"total_stems": 0, "cache_hits": 0, "new_fetched": 0},
+            "stats": {
+                "total_stems": 0,
+                "cache_hits": 0,
+                "new_fetched": 0,
+                "book_level": score_vocabulary_level("ko", []),
+            },
         }
 
     await report("checking_cache", total_stems=len(unique_stems))
@@ -2249,7 +2557,33 @@ async def _preprocess_core(text: str, krdict_key: str, max_stems=None, progress_
             no_entry_count=len(no_entry_results),
         )
 
-    all_results = cached_results + new_results + no_entry_results
+    unordered_results = cached_results + new_results + no_entry_results
+    results_by_stem: dict[str, dict] = {}
+    for result in unordered_results:
+        stem = result.get("stem") if isinstance(result, dict) else None
+        if isinstance(stem, str) and stem and stem not in results_by_stem:
+            results_by_stem[stem] = result
+
+    all_results = [
+        results_by_stem[stem]
+        for stem in unique_stems
+        if stem in results_by_stem
+    ]
+    level_by_stem = await loop.run_in_executor(None, lookup_korean_nikl_levels, unique_stems)
+    all_results = [
+        attach_proficiency_level(
+            result,
+            level_by_stem.get((result.get("stem") or "").strip()),
+        )
+        for result in all_results
+    ]
+    surface_index = [
+        attach_proficiency_level(
+            entry,
+            level_by_stem.get((entry.get("stem") or "").strip()),
+        )
+        for entry in surface_index
+    ]
     return {
         "results": all_results,
         "surface_index": surface_index,
@@ -2257,96 +2591,13 @@ async def _preprocess_core(text: str, krdict_key: str, max_stems=None, progress_
             "total_stems": len(unique_stems),
             "cache_hits": len(cached_stems),
             "new_fetched": len(new_results),
+            "book_level": score_vocabulary_level("ko", all_results),
         },
     }
 
 
 async def preprocess_text_for_dictionary(text: str, krdict_key: str, max_stems=None) -> dict:
     return await _preprocess_core(text, krdict_key, max_stems)
-
-
-async def run_preprocess_pipeline(job_id: str, text: str, krdict_key: str, max_stems):
-    print(f"[main] preprocess job {job_id} started")
-    await update_preprocess_job(
-        job_id,
-        status="running",
-        stage="stemming",
-        message="Analyzing book text",
-    )
-
-    async def update_progress(event: str, data: dict):
-        if event == "stemmed":
-            print(
-                f"[main] Okt returned {data['raw_surface_count']} unstemmed morphs and "
-                f"{data['raw_stem_count']} stemmed morphs"
-            )
-            print(
-                f"[main] {data['candidate_stems']} unique stems found, "
-                f"processing {data['total_stems']}"
-            )
-            print(f"[main] surface_index contains {data['surface_count']} unique surface→stem pairs")
-        elif event == "checking_cache":
-            await update_preprocess_job(
-                job_id,
-                stage="checking_cache",
-                message="Checking cached dictionary entries",
-                stats={"total_stems": data["total_stems"]},
-            )
-        elif event == "cache_checked":
-            print(
-                f"[main] Cache hits: {data['cache_hits']} | "
-                f"Stems to fetch from KRDICT: {data['missing_stems']}"
-            )
-            await update_preprocess_job(
-                job_id,
-                stage="fetching_krdict" if data["missing_stems"] else "finalizing",
-                message=(
-                    "Fetching missing dictionary entries"
-                    if data["missing_stems"]
-                    else "Finalizing cached preprocessing results"
-                ),
-                stats={
-                    "total_stems": data["total_stems"],
-                    "cache_hits": data["cache_hits"],
-                    "new_fetched": 0,
-                    "missing_stems": data["missing_stems"],
-                    "fetched_stems": data["fetched_stems"],
-                },
-            )
-        elif event == "fetch_started":
-            print(
-                f"[main] Fetching {data['missing_stems']} stems from KRDICT "
-                f"({'with' if ENABLE_RATE_LIMIT_DELAY else 'without'} rate-limit delay)..."
-            )
-        elif event == "fetch_progress":
-            print(f"[main] KRDICT progress: {data['fetched_stems']}/{data['missing_stems']} stems")
-            await update_preprocess_job(
-                job_id,
-                stage="fetching_krdict",
-                message=f"Fetching dictionary entries ({data['fetched_stems']}/{data['missing_stems']})",
-                stats={
-                    "total_stems": data["total_stems"],
-                    "cache_hits": data["cache_hits"],
-                    "new_fetched": 0,
-                    "missing_stems": data["missing_stems"],
-                    "fetched_stems": data["fetched_stems"],
-                },
-            )
-        elif event == "cached_inserted":
-            print(f"[main] Cached {data['new_fetched']} found + {data['no_entry_count']} no-entry stems")
-
-    result = await _preprocess_core(text, krdict_key, max_stems, progress_callback=update_progress)
-    stats = result["stats"]
-    print(f"[main] /preprocess_book/ complete | {stats}")
-    await update_preprocess_job(
-        job_id,
-        status="completed",
-        stage="completed",
-        message="No stems found" if stats["total_stems"] == 0 else "Preprocessing complete",
-        stats=stats,
-        results=result["results"],
-        surface_index=result["surface_index"],
-    )
 
 
 # ─── Endpoint: Chapter Preprocessing ──────────────────────────────────────────
@@ -2369,7 +2620,12 @@ async def preprocess_chapter(payload: dict, auth: dict[str, Any] = Depends(verif
             "spine_index": spine_index,
             "results": [],
             "surface_index": [],
-            "stats": {"total_stems": 0, "cache_hits": 0, "new_fetched": 0},
+            "stats": {
+                "total_stems": 0,
+                "cache_hits": 0,
+                "new_fetched": 0,
+                "book_level": score_vocabulary_level("ko", []),
+            },
         }
 
     enforce_preprocess_text_limit(text)
@@ -2655,7 +2911,12 @@ async def preprocess_chapter_en(payload: dict, auth: dict[str, Any] = Depends(ve
             "spine_index": spine_index,
             "results": [],
             "surface_index": [],
-            "stats": {"total_stems": 0, "cache_hits": 0, "new_fetched": 0},
+            "stats": {
+                "total_stems": 0,
+                "cache_hits": 0,
+                "new_fetched": 0,
+                "book_level": score_vocabulary_level("en", []),
+            },
         }
 
     enforce_preprocess_text_limit(text)
@@ -2700,7 +2961,12 @@ async def preprocess_chapter_zh(payload: dict, auth: dict[str, Any] = Depends(ve
             "spine_index": spine_index,
             "results": [],
             "surface_index": [],
-            "stats": {"total_stems": 0, "cache_hits": 0, "new_fetched": 0},
+            "stats": {
+                "total_stems": 0,
+                "cache_hits": 0,
+                "new_fetched": 0,
+                "book_level": score_vocabulary_level("zh", []),
+            },
         }
 
     enforce_preprocess_text_limit(text)
@@ -2721,92 +2987,6 @@ async def preprocess_chapter_zh(payload: dict, auth: dict[str, Any] = Depends(ve
         "book_uri": book_uri,
         "spine_index": spine_index,
         **result,
-    }
-
-
-@app.post("/preprocess_book/")
-async def preprocess_book(payload: dict, auth: dict[str, Any] = Depends(verify_supabase_token)):
-    """
-    Full preprocessing pipeline for a book's raw text content.
-    Intended to be called once per book, after text is extracted on the client.
-
-    Pipeline:
-      1. Stem all text with Okt (Nouns, Verbs, Adverbs, Adjectives)
-      2. Check server-side dictionary_cache for already-known stems
-      3. Call KRDICT for stems that are missing from cache
-         (with optional 100ms rate-limit delay between calls)
-      4. INSERT OR IGNORE new results into server-side cache
-      5. Return all {stem, hanja, definition, pos} for the caller to store locally
-
-    Request body (JSON):
-        text       (str): Raw extracted text from the EPUB
-        max_stems  (int, optional): Cap on unique stems to process (default 2000)
-                   Prevents runaway processing for extremely long books.
-
-    Response:
-        job_id (str): Background preprocessing job identifier
-        status (str): Initial job status
-    """
-    text       = payload.get("text", "")
-    max_stems  = limited_preprocess_max_stems(payload.get("max_stems", MAX_STEMS_DEFAULT), auth)
-
-    if not isinstance(text, str):
-        raise HTTPException(status_code=400, detail="text must be a string")
-
-    if not text:
-        print("[main] /preprocess_book/ called with empty text")
-        return {"error": "No text provided", "job_id": None, "status": "failed"}
-    enforce_preprocess_text_limit(text)
-    await enforce_daily_quota(auth)
-
-    if not KRDICT_CLIENT_ID:
-        print("[main] /preprocess_book/ called without backend KRDICT key")
-        return {"error": "No KRDICT key configured on server", "job_id": None, "status": "failed"}
-
-    print(f"[main] /preprocess_book/ | text length: {len(text):,} chars | max_stems: {max_stems}")
-    job_id = await create_preprocess_job(auth["user_id"], auth["is_anonymous"])
-    asyncio.create_task(run_preprocess_job(job_id, text, KRDICT_CLIENT_ID, max_stems))
-    return {"job_id": job_id, "status": "queued"}
-
-
-async def run_preprocess_job(job_id: str, text: str, krdict_key: str, max_stems):
-    try:
-        await run_preprocess_pipeline(job_id, text, krdict_key, max_stems)
-    except Exception as error:
-        print(f"[main] preprocess job {job_id} failed: {error}")
-        await update_preprocess_job(
-            job_id,
-            status="failed",
-            stage="failed",
-            message="Preprocessing failed",
-            error=str(error),
-            results=[],
-            surface_index=[],
-        )
-    finally:
-        schedule_preprocess_job_cleanup(job_id, PREPROCESS_JOB_TTL_SECONDS)
-
-
-@app.get("/preprocess_status/{job_id}")
-async def preprocess_status(job_id: str, auth: dict[str, Any] = Depends(verify_supabase_token)):
-    job = await get_preprocess_job(job_id)
-    if not job or job.get("user_id") != auth["user_id"]:
-        raise HTTPException(status_code=404, detail="Unknown preprocessing job")
-
-    if job.get("status") in PREPROCESS_TERMINAL_STATUSES:
-        await schedule_preprocess_job_read_cleanup(job_id, auth["user_id"])
-
-    return {
-        key: value
-        for key, value in job.items()
-        if key not in {
-            "user_id",
-            "is_anonymous",
-            "created_at_ts",
-            "updated_at_ts",
-            "read_cleanup_scheduled",
-            "read_cleanup_scheduled_at",
-        }
     }
 
 

@@ -102,4 +102,5 @@ dependencies {
 
   implementation 'com.facebook.react:react-android'
   implementation "com.google.mlkit:text-recognition-korean:16.0.1"
+  implementation project(':screen-ocr-overlay')
 }

@@ -194,7 +194,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
 
     const lookupPlacementForEvent = useCallback((event = {}) => {
         const pageY = Number(event?.nativeEvent?.pageY);
-        return Number.isFinite(pageY) && pageY > viewportHeight * 0.56 ? 'top' : 'bottom';
+        return Number.isFinite(pageY) && pageY <= viewportHeight * 0.3 ? 'top' : 'bottom';
     }, [viewportHeight]);
 
     const handleLyricWordPress = useCallback((word, line, event = {}) => {
@@ -508,6 +508,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                     highlightedWord={highlightedWord}
                     sourceSentence={highlightedWordContext?.sentence ?? ''}
                     isNativeSelection={isNativeSelection}
+                    placement={lookupPlacement}
                     isDarkMode={isDarkMode}
                     onClose={closeLookup}
                     onWordSave={handleWordSave}

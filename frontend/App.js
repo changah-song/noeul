@@ -50,10 +50,16 @@ import { hasLocalUserData } from './services/localUserData';
 import { loadRuntimeInterfaceLanguage } from './services/interfaceLanguage';
 import { initializeOverlayLookupBridge } from './services/overlayLookup';
 import { syncUserDataFromCloud } from './services/userDataSync';
+import { subscribeUserDataSyncRequests } from './services/userDataSyncQueue';
 import { colors, useTheme } from './theme';
 
 const Tab = createBottomTabNavigator();
 const APP_BACKGROUND = colors.bgPage;
+const DEFAULT_USER_DATA_SYNC_DELAY_MS = 1500;
+const PASSIVE_CONTEXT_SYNC_DELAY_MS = 30000;
+const USER_DATA_SYNC_DELAY_BY_REASON = {
+    'reader-visible-vocab-context': PASSIVE_CONTEXT_SYNC_DELAY_MS,
+};
 const isStaleSyncGenerationError = (error) => (
     String(error?.message || error || '').includes('stale sync generation')
 );
@@ -247,6 +253,93 @@ function AppContent() {
         pendingOwnershipDecision,
         syncGeneration,
         syncPaused,
+        user?.id,
+    ]);
+
+    useEffect(() => {
+        if (
+            loading
+            || !ownerMigrationReady
+            || !appOwnerStateReady
+            || ownershipBlocked
+            || pendingOwnershipDecision
+            || syncPaused
+            || !user?.id
+            || activeOwnerId !== user.id
+        ) {
+            return undefined;
+        }
+
+        let syncTimer = null;
+        let scheduledSyncAt = null;
+        let syncInFlight = false;
+        let rerunAfterCurrentSync = false;
+        const scheduleQueuedSync = (delayMs = DEFAULT_USER_DATA_SYNC_DELAY_MS) => {
+            const nextRunAt = Date.now() + delayMs;
+            if (syncTimer && scheduledSyncAt && scheduledSyncAt <= nextRunAt) {
+                return;
+            }
+
+            if (syncTimer) {
+                clearTimeout(syncTimer);
+            }
+
+            scheduledSyncAt = nextRunAt;
+            syncTimer = setTimeout(runQueuedSync, Math.max(0, nextRunAt - Date.now()));
+        };
+
+        const runQueuedSync = () => {
+            syncTimer = null;
+            scheduledSyncAt = null;
+            if (syncInFlight) {
+                rerunAfterCurrentSync = true;
+                return;
+            }
+
+            syncInFlight = true;
+            syncUserDataFromCloud({
+                user,
+                ownerId: activeOwnerId,
+                generation: syncGeneration,
+            })
+                .catch((error) => {
+                    if (isStaleSyncGenerationError(error)) {
+                        return;
+                    }
+                    console.warn('[App] Queued user data sync failed:', error?.message ?? error);
+                })
+                .finally(() => {
+                    syncInFlight = false;
+                    if (rerunAfterCurrentSync) {
+                        rerunAfterCurrentSync = false;
+                        scheduleQueuedSync();
+                    }
+                });
+        };
+
+        const unsubscribe = subscribeUserDataSyncRequests((request) => {
+            scheduleQueuedSync(
+                USER_DATA_SYNC_DELAY_BY_REASON[request?.reason] ?? DEFAULT_USER_DATA_SYNC_DELAY_MS
+            );
+        });
+
+        return () => {
+            if (syncTimer) {
+                clearTimeout(syncTimer);
+            }
+            scheduledSyncAt = null;
+            unsubscribe();
+        };
+    }, [
+        activeOwnerId,
+        appOwnerStateReady,
+        loading,
+        ownerMigrationReady,
+        ownershipBlocked,
+        pendingOwnershipDecision,
+        syncGeneration,
+        syncPaused,
+        user,
         user?.id,
     ]);
 

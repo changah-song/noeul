@@ -129,54 +129,100 @@ object OcrSerializer {
     result: Text,
     imageWidth: Int,
     imageHeight: Int,
-    filterTopChrome: Boolean = true
+    filterTopChrome: Boolean = true,
+    includeText: Boolean = true,
+    includeBlocks: Boolean = true,
+    includeDebugBoxes: Boolean = true
   ): SerializedOcrResult {
     val targets = mutableListOf<OcrTapTarget>()
     val debugBoxes = mutableListOf<OcrDebugBox>()
-    val blocks = result.textBlocks.map { block ->
-      serializeBlock(block, imageHeight, filterTopChrome, targets, debugBoxes)
+    val blocks = if (includeBlocks) mutableListOf<Map<String, Any?>>() else null
+    result.textBlocks.forEach { block ->
+      serializeBlock(
+        block = block,
+        imageHeight = imageHeight,
+        filterTopChrome = filterTopChrome,
+        targets = targets,
+        debugBoxes = debugBoxes,
+        includeBlocks = includeBlocks,
+        includeDebugBoxes = includeDebugBoxes
+      )?.let { serializedBlock ->
+        blocks?.add(serializedBlock)
+      }
+    }
+    val resultPayload = mutableMapOf<String, Any?>(
+      "imageWidth" to imageWidth,
+      "imageHeight" to imageHeight,
+      "targets" to targets.map(::serializeTapTarget)
+    )
+    if (includeText) {
+      resultPayload["text"] = result.text
+    }
+    if (includeBlocks) {
+      resultPayload["blocks"] = blocks ?: emptyList<Map<String, Any?>>()
     }
 
     return SerializedOcrResult(
-      result = mapOf(
-        "imageWidth" to imageWidth,
-        "imageHeight" to imageHeight,
-        "text" to result.text,
-        "blocks" to blocks,
-        "targets" to targets.map(::serializeTapTarget)
-      ),
+      result = resultPayload,
       targets = targets,
       debugBoxes = debugBoxes
     )
   }
+
+  fun withTargets(
+    serialized: SerializedOcrResult,
+    targets: List<OcrTapTarget>
+  ): SerializedOcrResult =
+    serialized.copy(
+      result = serialized.result + mapOf("targets" to targets.map(::serializeTapTarget)),
+      targets = targets
+    )
 
   private fun serializeBlock(
     block: Text.TextBlock,
     imageHeight: Int,
     filterTopChrome: Boolean,
     targets: MutableList<OcrTapTarget>,
-    debugBoxes: MutableList<OcrDebugBox>
-  ): Map<String, Any?> =
-    mapOf(
+    debugBoxes: MutableList<OcrDebugBox>,
+    includeBlocks: Boolean,
+    includeDebugBoxes: Boolean
+  ): Map<String, Any?>? {
+    val lines = if (includeBlocks) mutableListOf<Map<String, Any?>>() else null
+    block.lines.forEach { line ->
+      serializeLine(
+        line = line,
+        imageHeight = imageHeight,
+        filterTopChrome = filterTopChrome,
+        targets = targets,
+        debugBoxes = debugBoxes,
+        includeBlocks = includeBlocks,
+        includeDebugBoxes = includeDebugBoxes
+      )?.let { serializedLine ->
+        lines?.add(serializedLine)
+      }
+    }
+
+    return if (includeBlocks) mapOf(
       "text" to block.text,
       "box" to serializeBox(block.boundingBox),
-      "lines" to block.lines.map { line ->
-        serializeLine(line, imageHeight, filterTopChrome, targets, debugBoxes)
-      }
-    )
+      "lines" to lines.orEmpty()
+    ) else null
+  }
 
   private fun serializeLine(
     line: Text.Line,
     imageHeight: Int,
     filterTopChrome: Boolean,
     targets: MutableList<OcrTapTarget>,
-    debugBoxes: MutableList<OcrDebugBox>
-  ): Map<String, Any?> {
+    debugBoxes: MutableList<OcrDebugBox>,
+    includeBlocks: Boolean,
+    includeDebugBoxes: Boolean
+  ): Map<String, Any?>? {
     val lineBox = line.boundingBox
     val lineText = line.text.trim()
     val accepted = shouldAcceptLine(lineText, lineBox, imageHeight, filterTopChrome)
 
-    if (lineBox != null && lineText.isNotEmpty()) {
+    if (includeDebugBoxes && lineBox != null && lineText.isNotEmpty()) {
       debugBoxes.add(
         OcrDebugBox(
           text = lineText,
@@ -187,8 +233,12 @@ object OcrSerializer {
       )
     }
 
-    val serializedElements = line.elements.map { element ->
-      serializeElement(element, debugBoxes)
+    val serializedElements = if (includeBlocks) {
+      line.elements.map { element ->
+        serializeElement(element, debugBoxes, includeDebugBoxes)
+      }
+    } else {
+      emptyList()
     }
 
     if (accepted && lineBox != null) {
@@ -203,34 +253,37 @@ object OcrSerializer {
 
       val wordTargets = createElementWordTargets(lineText, lineBox, line.elements)
         .ifEmpty { createSyntheticWordTargets(lineText, lineBox) }
-      wordTargets.forEach { target ->
-        debugBoxes.add(
-          OcrDebugBox(
-            text = target.text,
-            box = Rect(target.box),
-            kind = target.kind,
-            accepted = true
+      if (includeDebugBoxes) {
+        wordTargets.forEach { target ->
+          debugBoxes.add(
+            OcrDebugBox(
+              text = target.text,
+              box = Rect(target.box),
+              kind = target.kind,
+              accepted = true
+            )
           )
-        )
+        }
       }
       targets.addAll(wordTargets)
     }
 
-    return mapOf(
+    return if (includeBlocks) mapOf(
       "text" to line.text,
       "box" to serializeBox(line.boundingBox),
       "elements" to serializedElements
-    )
+    ) else null
   }
 
   private fun serializeElement(
     element: Text.Element,
-    debugBoxes: MutableList<OcrDebugBox>
+    debugBoxes: MutableList<OcrDebugBox>,
+    includeDebugBoxes: Boolean
   ): Map<String, Any?> {
     val elementText = element.text.trim()
     val elementBox = element.boundingBox
 
-    if (elementText.isNotEmpty() && elementBox != null) {
+    if (includeDebugBoxes && elementText.isNotEmpty() && elementBox != null) {
       debugBoxes.add(
         OcrDebugBox(
           text = elementText,

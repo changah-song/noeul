@@ -1,7 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Text, View, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView } from 'react-native';
-import koreanDictionary from '../../../services/api/koreanDictionary';
-import stemWord from '../../../services/api/stemWord';
+import { Text, View, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { api } from '../../../services/api/client';
 import { useAppContext } from '../../../contexts/AppContext';
@@ -9,43 +7,26 @@ import { useTranslation } from '../../../hooks/useTranslation';
 import { useLocalOwner } from '../../../contexts/LocalOwnerContext';
 import {
     insertData,
+    lookupCacheByStems,
     removeData,
     recordVocabContext,
+    updateCacheRomanizations,
     vocabEntryExists,
-    lookupBookIndexBySurface,
-    lookupCacheByStems,
-    insertCacheEntries,
 } from '../../../services/Database';
-import {
-    softDeleteUserVocabContextsForWord,
-    softDeleteRelatedKnownWordsForMainWord,
-    softDeleteUserVocabEntry,
-    supabase,
-    upsertUserVocabContext,
-    upsertUserVocabEntry,
-} from '../../../services/supabase';
 import HanjaDetails from './HanjaDetails';
 import ChineseCharacterDetails from './ChineseCharacterDetails';
 import TranslationContent from './TranslationContent';
-import { isCurrentSyncGeneration } from '../../../services/localOwnerCoordinator';
+import LookupLoadingSkeleton from './LookupLoadingSkeleton';
 import { normalizeBookLanguage, normalizeInterfaceLanguageCode } from '../../../constants/languages';
 import { fontFamilies, radii, spacing, textStyles, useTheme } from '../../../theme';
 import { playEnglishPronunciation } from '../../../services/pronunciationAudio';
+import { requestUserDataSync } from '../../../services/userDataSyncQueue';
+import {
+    normalizeSurfaceWordForLanguage,
+    resolveDictionaryLookup,
+} from '../../../services/dictionaryLookup';
 
-const STOP_STEMS = new Set([
-    '하다',
-    '되다',
-    '있다',
-    '없다',
-    '이다',
-    '아니다',
-    '같다',
-    '보다',
-]);
-
-const KOREAN_RE = /[^\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]/g;
 const ENGLISH_EDGE_RE = /^[^A-Za-z]+|[^A-Za-z]+$/g;
-const CHINESE_EDGE_RE = /^[^\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]+|[^\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]+$/g;
 const HANJA_RE = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/;
 const LATIN_RE = /[A-Za-z]/;
 const HANGUL_RE = /[\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]/;
@@ -86,19 +67,7 @@ const cleanValue = (value) => {
     return trimmed === 'N/A' || trimmed === 'Unknown' ? '' : trimmed;
 };
 
-const normalizeSurfaceWord = (word) => cleanValue(word).replace(KOREAN_RE, '');
 const normalizeEnglishSurfaceWord = (word) => cleanValue(word).replace(ENGLISH_EDGE_RE, '').toLowerCase();
-const normalizeChineseSurfaceWord = (word) => cleanValue(word).replace(CHINESE_EDGE_RE, '');
-const normalizeSurfaceWordForLanguage = (word, language) => {
-    const normalizedLanguage = normalizeBookLanguage(language);
-    if (normalizedLanguage === 'en') {
-        return normalizeEnglishSurfaceWord(word);
-    }
-    if (normalizedLanguage === 'zh') {
-        return normalizeChineseSurfaceWord(word);
-    }
-    return normalizeSurfaceWord(word);
-};
 
 const hasSavableDefinition = (definition) => {
     const normalized = cleanValue(definition);
@@ -322,7 +291,7 @@ const DictionaryContent = ({
     const { t } = useTranslation();
     const { colors } = useTheme();
     const styles = useMemo(() => createStyles(colors), [colors]);
-    const { activeOwnerId, syncGeneration } = useLocalOwner();
+    const { activeOwnerId } = useLocalOwner();
     const palette = useMemo(() => ({
         text: colors.readerBodyInk,
         mutedText: colors.readerMutedInk,
@@ -341,6 +310,10 @@ const DictionaryContent = ({
     const isEnglishBook = targetLanguage === 'en';
     const isChineseBook = targetLanguage === 'zh';
     const isKoreanBook = targetLanguage === 'ko';
+    const cacheScope = useMemo(() => ({
+        language: targetLanguage,
+        interfaceLanguage,
+    }), [interfaceLanguage, targetLanguage]);
     const isUsableCachedEntry = useCallback((entry) => {
         if ((!isEnglishBook && !isChineseBook) || interfaceLanguage === 'en') {
             return true;
@@ -350,10 +323,6 @@ const DictionaryContent = ({
         return Boolean(definition)
             && !isLikelyUntranslatedEnglishDefinition(definition, interfaceLanguage);
     }, [interfaceLanguage, isChineseBook, isEnglishBook]);
-    const cacheScope = useMemo(() => ({
-        language: targetLanguage,
-        interfaceLanguage,
-    }), [interfaceLanguage, targetLanguage]);
     const contextSentence = cleanValue(sourceSentence);
     const [translationMode, setTranslationMode] = useState(false);
     const [drilldownStack, setDrilldownStack] = useState([]);
@@ -367,9 +336,13 @@ const DictionaryContent = ({
     const [stemWordList, setStemWordList] = useState([]);
     const [cachedResults, setCachedResults] = useState(null);
     const [needsLiveFetch, setNeedsLiveFetch] = useState(false);
+    const [dictionaryData, setDictionaryData] = useState([]);
+    const [isLiveLoading, setIsLiveLoading] = useState(false);
+    const [liveError, setLiveError] = useState(null);
     const [extraDefs, setExtraDefs] = useState({});
     const [liveEntryMeta, setLiveEntryMeta] = useState({});
     const [romanizations, setRomanizations] = useState({});
+    const romanizationsRef = useRef({});
     const [expandedCached, setExpandedCached] = useState({});
     const [relatedKnownByWord, setRelatedKnownByWord] = useState({});
     const [currentHanja, setCurrentHanja] = useState(null);
@@ -381,6 +354,10 @@ const DictionaryContent = ({
     const [translationLoadingPreview] = useState(false);
     const [translationErrorPreview] = useState(false);
     const [translationTextPreview] = useState('');
+    useEffect(() => {
+        romanizationsRef.current = romanizations;
+    }, [romanizations]);
+
     const handleHanjaPress = (hanja, sourceWord = null, options = {}) => {
         if (!hanja) {
             setCurrentHanja(null);
@@ -417,8 +394,12 @@ const DictionaryContent = ({
         setCachedResults(null);
         setNeedsLiveFetch(false);
         setStemWordList([]);
+        setDictionaryData([]);
+        setLiveError(null);
+        setIsLiveLoading(false);
         setExtraDefs({});
         setLiveEntryMeta({});
+        romanizationsRef.current = {};
         setRomanizations({});
         setExpandedCached({});
         setExpandedWords([]);
@@ -427,88 +408,44 @@ const DictionaryContent = ({
 
         if (!lookupWord) return;
 
-        const normalizedSurface = normalizeSurfaceWordForLanguage(lookupWord, targetLanguage);
-        if (!normalizedSurface) {
-            setCachedResults([]);
-            onContentLoaded?.();
-            return;
-        }
-
         let isCancelled = false;
 
         const resolveLookup = async () => {
-            if (currentBook) {
-                const indexRows = await lookupBookIndexBySurface(
-                    activeOwnerId,
+            setIsLiveLoading(true);
+
+            try {
+                const result = await resolveDictionaryLookup({
+                    surface: lookupWord,
                     currentBook,
-                    normalizedSurface,
-                    cacheScope
-                );
+                    ownerId: activeOwnerId,
+                    interfaceLanguage,
+                    targetLanguage,
+                    usableCachedEntry: isUsableCachedEntry,
+                });
                 if (isCancelled) {
                     return;
                 }
 
-                const seen = new Set();
-                const indexHits = indexRows.filter(row => {
-                    if (seen.has(row.stem)) return false;
-                    seen.add(row.stem);
-                    return true;
-                });
-
-                if (indexHits.length > 0) {
-                    const usableHits = indexHits.filter(isUsableCachedEntry);
-                    const staleStems = indexHits
-                        .filter((entry) => !isUsableCachedEntry(entry))
-                        .map((entry) => cleanValue(entry?.stem))
-                        .filter(Boolean);
-
-                    setCachedResults(usableHits);
-                    setStemWordList(staleStems);
-                    setNeedsLiveFetch(staleStems.length > 0);
-                    if (staleStems.length === 0) {
-                        onContentLoaded?.();
-                    }
+                setCachedResults(result.cachedResults);
+                setStemWordList(result.stems);
+                setNeedsLiveFetch(result.needsLiveFetch);
+                setDictionaryData(result.dictionaryData);
+                setLiveError(result.liveError);
+            } catch (error) {
+                if (isCancelled) {
                     return;
                 }
-            }
 
-            const directCacheRows = await lookupCacheByStems([normalizedSurface], cacheScope);
-            if (isCancelled) {
-                return;
-            }
-
-            const uniqueDirectCacheRows = directCacheRows.filter((row, rowIndex, rows) =>
-                rows.findIndex((candidate) => candidate.stem === row.stem) === rowIndex
-            );
-
-            if (uniqueDirectCacheRows.length > 0) {
-                const usableRows = uniqueDirectCacheRows.filter(isUsableCachedEntry);
-                const staleStems = uniqueDirectCacheRows
-                    .filter((entry) => !isUsableCachedEntry(entry))
-                    .map((entry) => cleanValue(entry?.stem))
-                    .filter(Boolean);
-
-                setCachedResults(usableRows);
-                setStemWordList(staleStems);
-                setNeedsLiveFetch(staleStems.length > 0);
-                if (staleStems.length === 0) {
+                setCachedResults([]);
+                setStemWordList([]);
+                setNeedsLiveFetch(false);
+                setDictionaryData([]);
+                setLiveError(error?.message || 'Dictionary lookup failed.');
+            } finally {
+                if (!isCancelled) {
+                    setIsLiveLoading(false);
                     onContentLoaded?.();
                 }
-                return;
-            }
-
-            const result = await stemWord({ query: lookupWord, language: targetLanguage });
-            if (isCancelled) {
-                return;
-            }
-            let filtered = [...new Set(result.filter(stem => !isKoreanBook || !STOP_STEMS.has(stem)))];
-            if (filtered.length === 0 && (isEnglishBook || isChineseBook) && normalizedSurface) {
-                filtered = [normalizedSurface];
-            }
-            setStemWordList(filtered);
-            if (filtered.length === 0) {
-                setCachedResults([]);
-                onContentLoaded?.();
             }
         };
 
@@ -517,45 +454,7 @@ const DictionaryContent = ({
         return () => {
             isCancelled = true;
         };
-    }, [activeOwnerId, cacheScope, currentBook, isChineseBook, isEnglishBook, isKoreanBook, isUsableCachedEntry, lookupWord, onContentLoaded, targetLanguage]);
-
-    useEffect(() => {
-        if (stemWordList.length === 0) return;
-
-        const checkCache = async () => {
-            const raw = await lookupCacheByStems(stemWordList, cacheScope);
-            const seen = new Set();
-            const hits = raw.filter(row => {
-                if (seen.has(row.stem)) return false;
-                seen.add(row.stem);
-                return true;
-            });
-            const usableHits = hits.filter(isUsableCachedEntry);
-            const staleStems = hits
-                .filter((entry) => !isUsableCachedEntry(entry))
-                .map((entry) => cleanValue(entry?.stem))
-                .filter(Boolean);
-            const missingOrStaleCount = (stemWordList.length - usableHits.length) + staleStems.length;
-
-            if (usableHits.length >= stemWordList.length && staleStems.length === 0) {
-                setCachedResults(usableHits);
-                setNeedsLiveFetch(false);
-                onContentLoaded?.();
-            } else if (usableHits.length > 0 || missingOrStaleCount > 0) {
-                setCachedResults(usableHits);
-                setNeedsLiveFetch(true);
-            } else {
-                setCachedResults([]);
-                setNeedsLiveFetch(true);
-            }
-        };
-        checkCache();
-    }, [cacheScope, isUsableCachedEntry, stemWordList, onContentLoaded]);
-
-    const { dictionaryData, isLoading: isLiveLoading, error: liveError } = koreanDictionary({
-        query: needsLiveFetch ? stemWordList : [],
-        language: targetLanguage,
-    });
+    }, [activeOwnerId, currentBook, interfaceLanguage, isUsableCachedEntry, lookupWord, onContentLoaded, targetLanguage]);
 
     useEffect(() => {
         if (translationMode) {
@@ -590,19 +489,69 @@ const DictionaryContent = ({
         onExpandedStateChange?.(Math.max(expandedCachedCount, expandedLiveCount));
     }, [dictionaryData, expandedCached, expandedWords, extraDefs, isPanelExpanded, onExpandedStateChange, stemWordList, translationMode]);
 
-    const fetchRomanizations = async (terms) => {
+    const storeRomanizationPairs = useCallback((pairs) => {
+        const normalizedPairs = (pairs || [])
+            .map(([term, romanization]) => [cleanValue(term), cleanValue(romanization)])
+            .filter(([term]) => Boolean(term));
+
+        if (normalizedPairs.length === 0) {
+            return;
+        }
+
+        setRomanizations(prev => {
+            const next = { ...prev };
+            normalizedPairs.forEach(([term, romanization]) => {
+                next[term] = romanization;
+            });
+            romanizationsRef.current = next;
+            return next;
+        });
+    }, []);
+
+    const fetchRomanizations = useCallback(async (terms, seedEntries = []) => {
         if (!isKoreanBook) {
             return;
         }
 
+        const seedPairs = (seedEntries || [])
+            .map((entry) => [getEntryWord(entry, ''), getEntryRomanization(entry)])
+            .filter(([term, romanization]) => cleanValue(term) && cleanValue(romanization));
+
+        if (seedPairs.length > 0) {
+            storeRomanizationPairs(seedPairs);
+        }
+
         const missingTerms = [...new Set((terms || []).map(cleanValue).filter(Boolean))]
-            .filter((term) => romanizations[term] === undefined);
+            .filter((term) => romanizationsRef.current[term] === undefined);
 
         if (missingTerms.length === 0) {
             return;
         }
 
-        const pairs = await Promise.all(missingTerms.map(async (term) => {
+        let cachedRows = [];
+        try {
+            cachedRows = await lookupCacheByStems(missingTerms, cacheScope);
+        } catch (error) {
+            console.warn('[DictionaryContent] Failed to read cached romanizations:', error?.message ?? error);
+        }
+        const cachedPairs = cachedRows
+            .map((entry) => [getEntryWord(entry, ''), getEntryRomanization(entry)])
+            .filter(([term, romanization]) => cleanValue(term) && cleanValue(romanization));
+
+        if (cachedPairs.length > 0) {
+            storeRomanizationPairs(cachedPairs);
+        }
+
+        const cachedTermSet = new Set(cachedPairs.map(([term]) => cleanValue(term)));
+        const apiTerms = missingTerms.filter((term) => (
+            !cachedTermSet.has(term) && romanizationsRef.current[term] === undefined
+        ));
+
+        if (apiTerms.length === 0) {
+            return;
+        }
+
+        const pairs = await Promise.all(apiTerms.map(async (term) => {
             try {
                 const response = await api.get('/romanize/', {
                     params: { text: term },
@@ -614,22 +563,24 @@ const DictionaryContent = ({
             }
         }));
 
-        setRomanizations(prev => {
-            const next = { ...prev };
-            pairs.forEach(([term, romanization]) => {
-                next[term] = romanization;
-            });
-            return next;
+        storeRomanizationPairs(pairs);
+        updateCacheRomanizations(
+            pairs
+                .map(([stem, romanization]) => ({ stem, romanization: cleanValue(romanization) }))
+                .filter(({ stem, romanization }) => cleanValue(stem) && romanization),
+            cacheScope
+        ).catch((error) => {
+            console.warn('[DictionaryContent] Failed to cache romanizations:', error?.message ?? error);
         });
-    };
+    }, [cacheScope, isKoreanBook, storeRomanizationPairs]);
 
     useEffect(() => {
         if (!cachedResults || cachedResults.length === 0) {
             return;
         }
 
-        fetchRomanizations(cachedResults.map((entry) => getEntryWord(entry, lookupWord)));
-    }, [cachedResults, lookupWord]);
+        fetchRomanizations(cachedResults.map((entry) => getEntryWord(entry, lookupWord)), cachedResults);
+    }, [cachedResults, fetchRomanizations, lookupWord]);
 
     useEffect(() => {
         if (stemWordList.length === 0) {
@@ -637,45 +588,7 @@ const DictionaryContent = ({
         }
 
         fetchRomanizations(stemWordList);
-    }, [stemWordList]);
-
-    useEffect(() => {
-        if (!needsLiveFetch || !dictionaryData || dictionaryData.length === 0) return;
-
-        const entries = stemWordList
-            .map((stem, i) => {
-                const results = dictionaryData[i];
-                if (!results || results.length === 0) return null;
-                const first = results[0];
-                const isLocalDictionaryLanguage = isEnglishBook || isChineseBook;
-                return {
-                    stem,
-                    language: targetLanguage,
-                    interfaceLanguage,
-                    definition: isLocalDictionaryLanguage
-                        ? (first.definition ?? null)
-                        : (first.transWord !== 'N/A' ? first.transWord : null),
-                    gloss: isLocalDictionaryLanguage ? (first.gloss ?? null) : null,
-                    hanja: isLocalDictionaryLanguage ? null : (first.origin !== 'N/A' ? first.origin : null),
-                    pos: first.pos ?? null,
-                    domain: null,
-                    ipa: isEnglishBook ? (first.ipa ?? null) : (isChineseBook ? (first.pinyin ?? first.ipa ?? null) : null),
-                    audio_us: isEnglishBook ? (first.audio_us ?? null) : null,
-                    audio_uk: isEnglishBook ? (first.audio_uk ?? null) : null,
-                    etymology: isEnglishBook ? (first.etymology ?? null) : null,
-                    derived: isEnglishBook ? (first.derived ?? null) : null,
-                    related: isEnglishBook ? (first.related ?? null) : null,
-                    word_parts: isEnglishBook ? (first.word_parts ?? first.wordParts ?? null) : null,
-                };
-            })
-            .filter(Boolean);
-
-        if (entries.length > 0) {
-            insertCacheEntries(entries, cacheScope);
-        }
-
-        onContentLoaded?.();
-    }, [cacheScope, dictionaryData, interfaceLanguage, isChineseBook, isEnglishBook, needsLiveFetch, onContentLoaded, stemWordList, targetLanguage]);
+    }, [fetchRomanizations, stemWordList]);
 
     const prefetchExtra = async (stem) => {
         if (isEnglishBook) {
@@ -748,12 +661,12 @@ const DictionaryContent = ({
             });
         });
 
-        const hasLiveSettled = !needsLiveFetch || dictionaryData.length > 0 || liveError;
+        const isAwaitingLive = needsLiveFetch && !liveError;
 
         return [...itemsByStem.values()].filter((item) => (
             item.cachedEntry
             || item.liveEntries?.[0]
-            || (hasLiveSettled && cleanValue(item.stem))
+            || (isAwaitingLive && cleanValue(item.stem))
         ));
     }, [cachedResults, dictionaryData, liveError, lookupWord, needsLiveFetch, stemWordList]);
 
@@ -790,12 +703,13 @@ const DictionaryContent = ({
 
     useEffect(() => {
         const entry = activeLookupItem?.cachedEntry;
-        if (!entry?.definition || extraDefs[entry.stem] !== undefined) {
+        if (!isPanelExpanded || !entry?.definition || extraDefs[entry.stem] !== undefined) {
             return;
         }
 
         prefetchExtra(entry.stem);
-    }, [activeLookupItem, extraDefs]);
+        setExpandedCached(prev => ({ ...prev, [entry.stem]: true }));
+    }, [activeLookupItem, extraDefs, isPanelExpanded]);
 
     const handleRelatedKnownWordMarked = (sourceWord, relatedWord) => {
         const normalizedSource = cleanValue(sourceWord);
@@ -846,33 +760,6 @@ const DictionaryContent = ({
         language: targetLanguage,
     });
 
-    const buildCloudVocabPayload = ({
-        word,
-        hanja,
-        definition,
-        createdAt = new Date().toISOString(),
-        relatedKnownWords = [],
-    }) => ({
-        word,
-        hanja: hanja ?? null,
-        definition: definition ?? null,
-        level: 'unorganized',
-        status: 'unorganized',
-        sourceBookUri: sourceBook?.uri ?? currentBook ?? null,
-        sourceBookTitle: sourceBook?.title ?? null,
-        contextSentence: contextSentence || null,
-        isFavorite: false,
-        priority: 'normal',
-        createdAt,
-        updatedAt: createdAt,
-        lastReviewedAt: null,
-        nextReviewAt: null,
-        correctCount: 0,
-        wrongCount: 0,
-        language: targetLanguage,
-        relatedKnownWords,
-    });
-
     const handleSourceWordAutoSaved = async (word, details = {}) => {
         const normalizedWord = cleanValue(word);
         if (!normalizedWord) {
@@ -880,50 +767,13 @@ const DictionaryContent = ({
         }
 
         onWordSave?.(normalizedWord, { includeSurface: false });
-        const ownerId = activeOwnerId;
-        const generation = syncGeneration;
-
-        const {
-            data: { user },
-        } = await supabase.auth.getUser();
-
-        if (!user || ownerId !== user.id || !isCurrentSyncGeneration(generation)) {
-            return;
-        }
-
-        try {
-            await upsertUserVocabEntry({
-                user,
-                ownerId,
-                generation,
-                entry: {
-                    ...buildCloudVocabPayload({
-                        word: normalizedWord,
-                        hanja: details.hanja ?? null,
-                        definition: details.definition ?? null,
-                    }),
-                    level: details.level ?? 'unorganized',
-                    status: details.level ?? 'unorganized',
-                },
-            });
-        } catch (error) {
-            console.warn('[DictionaryContent] cloud auto-save failed:', error.message);
-        }
+        requestUserDataSync('reader-source-word-auto-save');
     };
 
     const toggleSave = async (word, origin, definition, options = {}) => {
         onWordSave?.(word, options);
         const createdAt = new Date().toISOString();
         const relatedKnownWords = relatedKnownByWord[word] ?? [];
-        const ownerId = activeOwnerId;
-        const generation = syncGeneration;
-        const cloudPayload = buildCloudVocabPayload({
-            word,
-            hanja: origin,
-            definition,
-            createdAt,
-            relatedKnownWords,
-        });
         const alreadySaved = await vocabEntryExists(word, origin, definition, targetLanguage, {
             ownerId: activeOwnerId,
         });
@@ -951,65 +801,18 @@ const DictionaryContent = ({
             language: targetLanguage,
         });
 
-        const {
-            data: { user },
-        } = await supabase.auth.getUser();
-
-        if (!user || ownerId !== user.id || !isCurrentSyncGeneration(generation)) {
-            return;
-        }
-
-        try {
-            await upsertUserVocabEntry({
-                user,
-                ownerId,
-                generation,
-                entry: cloudPayload,
-            });
-            if (recordedContext) {
-                upsertUserVocabContext({
-                    user,
-                    ownerId,
-                    generation,
-                    context: recordedContext,
-                }).catch((error) => {
-                    console.warn('[DictionaryContent] cloud context save failed:', error.message);
-                });
-            }
-        } catch (error) {
-            console.warn('[DictionaryContent] cloud save failed:', error.message);
+        if (!alreadySaved || recordedContext) {
+            requestUserDataSync('reader-vocab-save');
         }
     };
 
     const toggleUnSave = async (word, origin, definition, options = {}) => {
         onWordUnsave?.(word, options);
         const ownerId = activeOwnerId;
-        const generation = syncGeneration;
         await removeData(word, origin, definition, targetLanguage, {
             ownerId,
         });
-
-        const {
-            data: { user },
-        } = await supabase.auth.getUser();
-
-        if (!user || ownerId !== user.id || !isCurrentSyncGeneration(generation)) {
-            return;
-        }
-
-        try {
-            const cloudEntry = {
-                word,
-                hanja: origin,
-                definition,
-                language: targetLanguage,
-            };
-            await softDeleteUserVocabEntry({ user, ownerId, generation, entry: cloudEntry });
-            await softDeleteUserVocabContextsForWord({ user, ownerId, generation, entry: cloudEntry });
-            await softDeleteRelatedKnownWordsForMainWord({ user, ownerId, generation, entry: cloudEntry });
-        } catch (error) {
-            console.warn('[DictionaryContent] cloud remove failed:', error.message);
-        }
+        requestUserDataSync('reader-vocab-unsave');
     };
 
     const isWordSaved = (word) => savedWords.includes(word);
@@ -1708,20 +1511,43 @@ const DictionaryContent = ({
                         isDarkMode={isDarkMode}
                     />
                 ) : null}
-                {isPanelExpanded ? renderWordParts(wordParts, word) : null}
-                {isPanelExpanded && !hasRenderableWordParts(wordParts, word) ? renderOrigin(etymology, word) : null}
+                {isEnglishBook ? renderWordParts(wordParts, word) : null}
+                {isEnglishBook && !hasRenderableWordParts(wordParts, word) ? renderOrigin(etymology, word) : null}
                 {isPanelExpanded && showLess ? renderExtraDefinitions(extraEntries) : null}
             </View>
         );
     };
 
-    if (cachedResults === null) {
+    const renderDefinitionLoadingPanel = () => {
+        const loadingWord = cleanValue(lookupWord) || tappedSurface;
+
         return (
-            <View style={[styles.panelContent, styles.stateRow, { backgroundColor: palette.surface }]}>
-                <ActivityIndicator size="small" color={palette.mutedText} />
-                <Text style={[styles.stateText, { color: palette.mutedText }]}>{t('lookup.lookingUp')}</Text>
+            <View style={[styles.panelContent, styles.dictionaryPanelContent, { backgroundColor: palette.surface }]}>
+                <View style={styles.definitionLoadingContent}>
+                    {loadingWord ? (
+                        <View style={styles.definitionLoadingHeadword}>
+                            <Text
+                                selectable
+                                style={[styles.entryWord, styles.definitionLoadingWord, { color: palette.text }]}
+                            >
+                                {loadingWord}
+                            </Text>
+                        </View>
+                    ) : null}
+                    <View style={styles.definitionLoadingArea}>
+                        <LookupLoadingSkeleton
+                            firstLineOffset={0}
+                            secondLineOffset={10}
+                            shortLineWidth="66%"
+                        />
+                    </View>
+                </View>
             </View>
         );
+    };
+
+    if (cachedResults === null) {
+        return renderDefinitionLoadingPanel();
     }
 
     if (cachedResults.length === 0 && !needsLiveFetch && lookupItemCount === 0) {
@@ -1737,12 +1563,7 @@ const DictionaryContent = ({
     }
 
     if (needsLiveFetch && !liveError && (isLiveLoading || (dictionaryData.length === 0 && lookupItemCount === 0))) {
-        return (
-            <View style={[styles.panelContent, styles.stateRow, { backgroundColor: palette.surface }]}>
-                <ActivityIndicator size="small" color={palette.mutedText} />
-                <Text style={[styles.stateText, { color: palette.mutedText }]}>{t('lookup.fetchingDefinitions')}</Text>
-            </View>
-        );
+        return renderDefinitionLoadingPanel();
     }
 
     if (!activeLookupItem) {
@@ -2040,7 +1861,7 @@ const createStyles = (colors) => StyleSheet.create({
     },
     actionRow: {
         paddingHorizontal: 24,
-        paddingTop: 18,
+        paddingTop: 10,
         paddingBottom: 0,
     },
     actionButtonGroup: {
@@ -2097,6 +1918,21 @@ const createStyles = (colors) => StyleSheet.create({
     translationContentWrap: {
         flexGrow: 0,
         flexShrink: 1,
+    },
+    definitionLoadingContent: {
+        paddingHorizontal: 24,
+        paddingTop: 0,
+        gap: 14,
+    },
+    definitionLoadingHeadword: {
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    definitionLoadingWord: {
+        textAlign: 'center',
+    },
+    definitionLoadingArea: {
+        minHeight: 56,
     },
     posBadge: {
         borderRadius: 3,

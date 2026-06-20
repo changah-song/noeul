@@ -15,6 +15,12 @@ import {
   normalizeLanguageCode,
   normalizeInterfaceLanguageForTarget,
 } from '../constants/languages';
+import {
+  DEFAULT_PROFICIENCY_LEVELS_BY_LANGUAGE,
+  getProficiencyLevelForLanguage,
+  normalizeProficiencyLevelsByLanguage,
+  normalizeProficiencyRank,
+} from '../constants/proficiencyLevels';
 import { useLocalOwner } from './LocalOwnerContext';
 import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
 import {
@@ -51,6 +57,13 @@ const AppContext = createContext({
   setTargetLanguage: () => {},
   setNativeLanguage: () => {},
   setInterfaceLanguage: () => {},
+  levelsByLanguage: DEFAULT_PROFICIENCY_LEVELS_BY_LANGUAGE,
+  targetLanguageLevel: getProficiencyLevelForLanguage(
+    DEFAULT_LANGUAGE_SETTINGS.targetLanguage,
+    DEFAULT_PROFICIENCY_LEVELS_BY_LANGUAGE
+  ),
+  setLanguageLevel: () => {},
+  setTargetLanguageLevel: () => {},
   activeProfileId: DEFAULT_ACTIVE_PROFILE_ID,
   setActiveProfileId: () => {},
   switchProfile: () => {},
@@ -112,6 +125,14 @@ const normalizeLanguageSettings = (settings = {}) => {
     activeProfileId: normalizeProfileId(
       settings.activeProfileId ?? settings.active_profile_id,
       targetLanguage
+    ),
+    levelsByLanguage: normalizeProficiencyLevelsByLanguage(
+      settings.levelsByLanguage
+        ?? settings.levels_by_language
+        ?? settings.proficiencyLevelsByLanguage
+        ?? settings.proficiency_levels_by_language
+        ?? settings.readingLevelsByLanguage
+        ?? settings.reading_levels_by_language
     ),
     isDarkMode: normalizeBoolean(
       settings.isDarkMode
@@ -178,6 +199,7 @@ export const AppProvider = ({ children, user }) => {
   const [dictMode, setDictMode] = useState(true);
   const [languageSettings, setLanguageSettings] = useState({
     ...DEFAULT_LANGUAGE_SETTINGS,
+    levelsByLanguage: DEFAULT_PROFICIENCY_LEVELS_BY_LANGUAGE,
     activeProfileId: DEFAULT_ACTIVE_PROFILE_ID,
     isDarkMode: false,
     updatedAt: null,
@@ -372,6 +394,7 @@ export const AppProvider = ({ children, user }) => {
       activeProfileId: cloudPreferences
         ? cloudPreferenceSettings.activeProfileId
         : localSettings.activeProfileId,
+      levelsByLanguage: localSettings.levelsByLanguage,
       isDarkMode: cloudPreferences
         ? cloudPreferenceSettings.isDarkMode
         : localSettings.isDarkMode,
@@ -515,6 +538,31 @@ export const AppProvider = ({ children, user }) => {
     setNativeLanguage: (nativeLanguage) => saveLanguageSettings({ nativeLanguage }),
     interfaceLanguage: languageSettings.interfaceLanguage,
     setInterfaceLanguage: (interfaceLanguage) => saveLanguageSettings({ interfaceLanguage }),
+    levelsByLanguage: languageSettings.levelsByLanguage,
+    targetLanguageLevel: getProficiencyLevelForLanguage(
+      languageSettings.targetLanguage,
+      languageSettings.levelsByLanguage
+    ),
+    setLanguageLevel: (language, level) => {
+      const normalizedLanguage = normalizeLanguageCode(language, languageSettings.targetLanguage);
+      const rank = normalizeProficiencyRank(normalizedLanguage, level);
+      saveLanguageSettings({
+        levelsByLanguage: {
+          ...languageSettings.levelsByLanguage,
+          [normalizedLanguage]: rank,
+        },
+      });
+    },
+    setTargetLanguageLevel: (level) => {
+      const normalizedLanguage = languageSettings.targetLanguage;
+      const rank = normalizeProficiencyRank(normalizedLanguage, level);
+      saveLanguageSettings({
+        levelsByLanguage: {
+          ...languageSettings.levelsByLanguage,
+          [normalizedLanguage]: rank,
+        },
+      });
+    },
     activeProfileId: languageSettings.activeProfileId,
     setActiveProfileId: (activeProfileId) => saveLanguageSettings({ activeProfileId }),
     switchProfile: (profileId, targetLanguage) => saveLanguageSettings({
@@ -530,6 +578,7 @@ export const AppProvider = ({ children, user }) => {
   }), [
     dictMode,
     languageSettings.interfaceLanguage,
+    languageSettings.levelsByLanguage,
     languageSettings.nativeLanguage,
     languageSettings.activeProfileId,
     languageSettings.isDarkMode,

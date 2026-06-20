@@ -28,6 +28,11 @@ import {
     normalizeInterfaceLanguageCode,
     TARGET_LANGUAGE_OPTIONS,
 } from '../constants/languages';
+import {
+    formatProficiencyLevelLabel,
+    getProficiencyLevelForLanguage,
+    getProficiencyLevelOptions,
+} from '../constants/proficiencyLevels';
 import { colors, fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
 import { getDefaultProfileIdForLanguage } from '../services/profileScope';
 import { fetchUserProfiles, upsertUserProfile } from '../services/profilesCloudSync';
@@ -87,7 +92,6 @@ const getProfileColors = (themeColors) => ({
 
 const preferenceRows = [
     { key: 'notifications', labelKey: 'profile.notifications', valueKey: 'profile.notificationsOn' },
-    { key: 'readingLevel', labelKey: 'profile.readingLevel', valueKey: 'profile.beginner' },
 ];
 
 const PROFILE_SPINE_PALETTES = [
@@ -526,6 +530,7 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
     const [authMode, setAuthMode] = useState('signin');
     const [showNameEditor, setShowNameEditor] = useState(false);
     const [showInterfaceLanguagePicker, setShowInterfaceLanguagePicker] = useState(false);
+    const [showReadingLevelPicker, setShowReadingLevelPicker] = useState(false);
     const [showProfileSwitcher, setShowProfileSwitcher] = useState(false);
     const [profiles, setProfiles] = useState([]);
     const [profilesLoading, setProfilesLoading] = useState(false);
@@ -536,6 +541,8 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
         interfaceLanguage,
         setInterfaceLanguage,
         targetLanguage,
+        levelsByLanguage,
+        setLanguageLevel,
         activeProfileId,
         switchProfile,
         updateLanguageSettings,
@@ -602,6 +609,14 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
     ), [actualShelfRows, renderedShelfRowCount]);
     const totalShelfPages = Math.max(1, Math.ceil(shelfRows.length / SHELF_VIEWPORT_ROW_COUNT));
     const interfaceLanguageOptions = KRDICT_INTERFACE_LANGUAGE_OPTIONS;
+    const readingLevelOptions = useMemo(
+        () => getProficiencyLevelOptions(targetLanguage),
+        [targetLanguage]
+    );
+    const currentReadingLevel = useMemo(
+        () => getProficiencyLevelForLanguage(targetLanguage, levelsByLanguage),
+        [levelsByLanguage, targetLanguage]
+    );
     const fallbackProfiles = useMemo(() => ([
         normalizeProfileRow({
             id: getDefaultProfileIdForLanguage(targetLanguage),
@@ -748,6 +763,11 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
             return;
         }
 
+        if (row.key === 'readingLevel') {
+            setShowReadingLevelPicker(true);
+            return;
+        }
+
         if (row.key === 'appearance') {
             setIsDarkMode(!isDarkMode);
             return;
@@ -763,6 +783,11 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
 
         setInterfaceLanguage(language);
         setShowInterfaceLanguagePicker(false);
+    };
+
+    const handleReadingLevelSelect = (level) => {
+        setLanguageLevel(targetLanguage, level.rank);
+        setShowReadingLevelPicker(false);
     };
 
     const handleProfileSelect = (profile) => {
@@ -977,11 +1002,17 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                             label={t('profile.interfaceLanguage')}
                             value={getInterfaceLanguageLabel(interfaceLanguage)}
                             accent
-                            isLast={preferenceRows.length === 0}
                             onPress={() => handlePreferencePress({ key: 'interfaceLanguage', labelKey: 'profile.interfaceLanguage' })}
                             styles={styles}
                         />
-                        {preferenceRows.map((row, index) => (
+                        <PreferenceRow
+                            label={t('profile.readingLevel')}
+                            value={formatProficiencyLevelLabel(currentReadingLevel)}
+                            accent
+                            onPress={() => handlePreferencePress({ key: 'readingLevel', labelKey: 'profile.readingLevel' })}
+                            styles={styles}
+                        />
+                        {preferenceRows.map((row) => (
                             <PreferenceRow
                                 key={row.key}
                                 label={t(row.labelKey)}
@@ -1097,6 +1128,60 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                                                 >
                                                     {option.label}
                                                 </Text>
+                                            </Pressable>
+                                        );
+                                    })}
+                                </View>
+                            </View>
+                        </TouchableWithoutFeedback>
+                    </View>
+                </TouchableWithoutFeedback>
+            </Modal>
+
+            <Modal
+                visible={showReadingLevelPicker}
+                animationType="fade"
+                transparent
+                onRequestClose={() => setShowReadingLevelPicker(false)}
+            >
+                <TouchableWithoutFeedback onPress={() => setShowReadingLevelPicker(false)}>
+                    <View style={styles.modalBackdrop}>
+                        <TouchableWithoutFeedback>
+                            <View style={[styles.modalCard, styles.languageModalCard]}>
+                                <Text style={styles.modalTitle}>{t('profile.readingLevel')}</Text>
+                                <View style={styles.languageOptions}>
+                                    {readingLevelOptions.map((option) => {
+                                        const selected = option.rank === currentReadingLevel?.rank;
+
+                                        return (
+                                            <Pressable
+                                                key={`${targetLanguage}-${option.rank}`}
+                                                accessibilityRole="radio"
+                                                accessibilityState={{ selected }}
+                                                onPress={() => handleReadingLevelSelect(option)}
+                                                style={[
+                                                    styles.languageOptionRow,
+                                                    selected && styles.languageOptionRowSelected,
+                                                ]}
+                                            >
+                                                <Feather
+                                                    name={selected ? 'check-circle' : 'circle'}
+                                                    size={18}
+                                                    color={selected ? profileColors.accent : profileColors.faint}
+                                                />
+                                                <View style={styles.languageOptionContent}>
+                                                    <Text
+                                                        style={[
+                                                            styles.languageOptionText,
+                                                            selected && styles.languageOptionTextSelected,
+                                                        ]}
+                                                    >
+                                                        {option.label}
+                                                    </Text>
+                                                    <Text style={styles.languageOptionMeta}>
+                                                        {option.description}
+                                                    </Text>
+                                                </View>
                                             </Pressable>
                                         );
                                     })}
@@ -1636,12 +1721,17 @@ const createStyles = (profileColors, themeColors) => StyleSheet.create({
     preferenceValueWrap: {
         flexDirection: 'row',
         alignItems: 'center',
+        justifyContent: 'flex-end',
+        flexShrink: 1,
+        maxWidth: '64%',
         gap: 12,
     },
     preferenceValue: {
+        flexShrink: 1,
         fontFamily: fontFamilies.sansRegular,
         fontSize: 13,
         lineHeight: 17,
+        textAlign: 'right',
         color: profileColors.sub,
     },
     preferenceValueAccent: {

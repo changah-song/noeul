@@ -1,81 +1,123 @@
 package expo.modules.screenocr
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.Rect
 import android.net.Uri
+import android.os.SystemClock
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.TextRecognizer
 import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
+import expo.modules.screenocroverlay.OcrBoxRefiner
+import expo.modules.screenocroverlay.OcrSerializer
 import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
 class ScreenOcrModule : Module() {
+  private var recognizer: TextRecognizer? = null
+
   override fun definition() = ModuleDefinition {
     Name("ScreenOcr")
+
+    OnDestroy {
+      recognizer?.close()
+      recognizer = null
+    }
 
     AsyncFunction("recognizeImage") { uriString: String ->
       if (uriString.isBlank()) {
         throw IllegalArgumentException("Image uri is required")
       }
 
+      val totalStartNs = SystemClock.elapsedRealtimeNanos()
       val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
       val uri = Uri.parse(uriString)
       val image = InputImage.fromFilePath(context, uri)
       val dimensions = resolveImageDimensions(context, uri, image.width, image.height)
-      val recognizer = TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
+      val decodeEndNs = SystemClock.elapsedRealtimeNanos()
+      val currentRecognizer = getRecognizer()
 
-      try {
-        val result = Tasks.await(recognizer.process(image))
+      val recognizeStartNs = SystemClock.elapsedRealtimeNanos()
+      val result = Tasks.await(currentRecognizer.process(image))
+      val recognizeEndNs = SystemClock.elapsedRealtimeNanos()
+      val serializeStartNs = SystemClock.elapsedRealtimeNanos()
 
-        mapOf(
+      val serialized = OcrSerializer.serialize(
+        result = result,
+        imageWidth = dimensions.first,
+        imageHeight = dimensions.second,
+        filterTopChrome = false,
+        includeText = true,
+        includeBlocks = true,
+        includeDebugBoxes = false
+      )
+      val refineStartNs = SystemClock.elapsedRealtimeNanos()
+      val refinedSerialized = decodeBitmapForRefinement(context, uri, dimensions.first, dimensions.second)?.let { bitmap ->
+        try {
+          OcrBoxRefiner.refine(serialized, bitmap)
+        } finally {
+          bitmap.recycle()
+        }
+      } ?: serialized
+      val refineEndNs = SystemClock.elapsedRealtimeNanos()
+
+      refinedSerialized.result + mapOf(
+        "timing" to mapOf(
+          "decodeMs" to elapsedMs(totalStartNs, decodeEndNs),
+          "recognizeMs" to elapsedMs(recognizeStartNs, recognizeEndNs),
+          "serializeMs" to elapsedMs(serializeStartNs, refineStartNs),
+          "refineMs" to elapsedMs(refineStartNs, refineEndNs),
+          "totalMs" to elapsedMs(totalStartNs, refineEndNs),
+          "targetCount" to refinedSerialized.targets.size,
           "imageWidth" to dimensions.first,
-          "imageHeight" to dimensions.second,
-          "text" to result.text,
-          "blocks" to result.textBlocks.map(::serializeBlock)
+          "imageHeight" to dimensions.second
         )
-      } finally {
-        recognizer.close()
-      }
+      )
+    }
+  }
+
+  private fun getRecognizer(): TextRecognizer {
+    val current = recognizer
+    if (current != null) {
+      return current
+    }
+
+    return TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build()).also {
+      recognizer = it
     }
   }
 }
 
-private fun serializeBlock(block: Text.TextBlock): Map<String, Any?> =
-  mapOf(
-    "text" to block.text,
-    "box" to serializeBox(block.boundingBox),
-    "lines" to block.lines.map(::serializeLine)
-  )
-
-private fun serializeLine(line: Text.Line): Map<String, Any?> =
-  mapOf(
-    "text" to line.text,
-    "box" to serializeBox(line.boundingBox),
-    "elements" to line.elements.map(::serializeElement)
-  )
-
-private fun serializeElement(element: Text.Element): Map<String, Any?> =
-  mapOf(
-    "text" to element.text,
-    "box" to serializeBox(element.boundingBox)
-  )
-
-private fun serializeBox(rect: Rect?): Map<String, Int>? {
-  if (rect == null) {
+private fun decodeBitmapForRefinement(
+  context: Context,
+  uri: Uri,
+  expectedWidth: Int,
+  expectedHeight: Int
+): Bitmap? {
+  if (expectedWidth <= 0 || expectedHeight <= 0) {
     return null
   }
 
-  return mapOf(
-    "x" to rect.left,
-    "y" to rect.top,
-    "width" to rect.width(),
-    "height" to rect.height()
-  )
+  return try {
+    context.contentResolver.openInputStream(uri)?.use { stream ->
+      val bitmap = BitmapFactory.decodeStream(stream) ?: return@use null
+      if (bitmap.width == expectedWidth && bitmap.height == expectedHeight) {
+        bitmap
+      } else {
+        bitmap.recycle()
+        null
+      }
+    }
+  } catch (_: Exception) {
+    null
+  }
 }
+
+private fun elapsedMs(startNs: Long, endNs: Long): Double =
+  (endNs - startNs).coerceAtLeast(0L).toDouble() / 1_000_000.0
 
 private fun resolveImageDimensions(
   context: Context,

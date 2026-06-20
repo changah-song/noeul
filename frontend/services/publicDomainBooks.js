@@ -39,6 +39,8 @@ export const getPublicDomainBooks = (targetLanguage = null) => PUBLIC_DOMAIN_TEX
   attribution: book.attribution,
   snippet: book.snippet,
   genre: book.genre,
+  difficulty: book.difficulty ?? null,
+  bookLevel: book.bookLevel ?? null,
   coverColor: book.coverColor,
   language: book.language ?? 'ko',
   script: book.script ?? null,
@@ -69,6 +71,8 @@ export const getPublicDomainBookByUri = (uri) => {
     language: catalogBook.language ?? 'ko',
     script: catalogBook.script ?? null,
     wordCount: catalogBook.wordCount ?? null,
+    difficulty: catalogBook.difficulty ?? null,
+    bookLevel: catalogBook.bookLevel ?? null,
   };
 };
 
@@ -208,6 +212,8 @@ export const readPublicDomainTextPackage = async (uri, options = {}) => {
     attribution: book.attribution,
     snippet: book.snippet,
     genre: book.genre,
+    difficulty: book.difficulty ?? null,
+    bookLevel: book.bookLevel ?? null,
     coverColor: book.coverColor,
     wordCount: book.wordCount ?? null,
     format: 'txt',
@@ -225,6 +231,8 @@ export const readPublicDomainTextPackage = async (uri, options = {}) => {
       language: book.language,
       script: book.script ?? null,
       wordCount: book.wordCount ?? null,
+      difficulty: book.difficulty ?? null,
+      bookLevel: book.bookLevel ?? null,
     },
     spine,
     toc: spine.map((item) => ({

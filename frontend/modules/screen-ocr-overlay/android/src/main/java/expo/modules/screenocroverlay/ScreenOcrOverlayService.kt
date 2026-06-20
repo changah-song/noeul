@@ -13,18 +13,15 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.provider.Settings
-import android.util.Log
 import expo.modules.kotlin.Promise
 import java.util.UUID
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 private const val CAPTURE_HIDE_DELAY_MS = 180L
-private const val OVERLAY_BOUNDS_TIMEOUT_MS = 600L
 private const val OVERLAY_LOOKUP_TIMEOUT_MS = 9000L
 private const val OVERLAY_SAVE_TIMEOUT_MS = 3500L
 private const val OVERLAY_HANJA_TIMEOUT_MS = 9000L
-private const val TAG = "ScreenOcrOverlayService"
 
 class ScreenOcrOverlayService : Service() {
   private val mainHandler = Handler(Looper.getMainLooper())
@@ -62,6 +59,7 @@ class ScreenOcrOverlayService : Service() {
       },
       onTargetSelected = ::handleTargetSelected,
       onWordNavigationRequested = ::handleTargetSelected,
+      onTranslationRequested = ::handleTranslationRequested,
       onSaveRequested = ::handleSaveRequested,
       onHanjaRequested = ::handleHanjaRequested,
       onRelatedKnownToggleRequested = ::handleRelatedKnownToggleRequested,
@@ -102,6 +100,8 @@ class ScreenOcrOverlayService : Service() {
   }
 
   fun isScreenCaptureActive(): Boolean = captureSession != null
+
+  fun isAnalysisActive(): Boolean = isAnalyzing
 
   fun isFloatingWidgetVisible(): Boolean = widgetController?.isBubbleVisible == true
 
@@ -175,25 +175,20 @@ class ScreenOcrOverlayService : Service() {
       }
 
       try {
-        controller.showResultOverlayShell()
-        controller.bringBubbleToFront()
-        emitStatus("capture_overlay_shell_visible")
+        controller.hideOverlaysForCapture()
+        emitStatus("capture_overlays_hidden")
       } catch (error: Exception) {
         finishAnalysisRun(runId)
         controller.setBubbleRunning(false)
         restoreBubbleSafely()
-        emitError("prepare_capture_overlay_failed", error)
-        promise?.reject("E_PREPARE_CAPTURE_OVERLAY_FAILED", error.message, error)
+        emitError("hide_capture_overlays_failed", error)
+        promise?.reject("E_HIDE_CAPTURE_OVERLAYS_FAILED", error.message, error)
         return
       }
 
-      controller.waitForResultOverlayBounds(OVERLAY_BOUNDS_TIMEOUT_MS) { bounds ->
-        Log.d(TAG, "result overlay bounds=${bounds?.toLogString() ?: "none"}")
-        emitStatus("capture_overlay_measured")
-        mainHandler.postDelayed({
-          startAnalysisWithBounds(showOverlay, promise, bounds, runId)
-        }, CAPTURE_HIDE_DELAY_MS)
-      }
+      mainHandler.postDelayed({
+        startAnalysisWithBounds(showOverlay, promise, null, runId)
+      }, CAPTURE_HIDE_DELAY_MS)
       return
     }
 
@@ -645,6 +640,31 @@ class ScreenOcrOverlayService : Service() {
     mainHandler.postDelayed(timeoutRunnable, OVERLAY_LOOKUP_TIMEOUT_MS)
   }
 
+  private fun handleTranslationRequested(requestId: String, query: String) {
+    val lookupResult = currentLookupResult?.takeIf { it.requestId == requestId } ?: return
+    val cleanedQuery = query.trim().ifBlank {
+      if (lookupResult.sourceSentence.isNotBlank()) {
+        lookupResult.sourceSentence
+      } else {
+        lookupResult.stem.ifBlank { lookupResult.surface }
+      }
+    }
+    if (cleanedQuery.isBlank()) {
+      return
+    }
+
+    ScreenOcrOverlayModule.emitOverlayTranslationRequested(
+      mapOf(
+        EXTRA_REQUEST_ID to requestId,
+        "query" to cleanedQuery,
+        "surface" to lookupResult.surface,
+        "stem" to lookupResult.stem,
+        "sourceSentence" to lookupResult.sourceSentence
+      )
+    )
+    emitStatus("overlay_translation_requested")
+  }
+
   fun resolveOverlayLookup(requestId: String, result: Map<String, Any?>): Boolean {
     val lookupResult = parseLookupResult(requestId, result) ?: return false
     mainHandler.post {
@@ -822,9 +842,9 @@ class ScreenOcrOverlayService : Service() {
     return true
   }
 
-  private fun handleHanjaRequested(character: String, sourceWord: String) {
+  private fun handleHanjaRequested(character: String, sourceWord: String): String? {
     if (character.isBlank()) {
-      return
+      return null
     }
 
     val requestId = UUID.randomUUID().toString()
@@ -852,6 +872,7 @@ class ScreenOcrOverlayService : Service() {
     }
     pendingHanjaTimeoutRunnable = timeoutRunnable
     mainHandler.postDelayed(timeoutRunnable, OVERLAY_HANJA_TIMEOUT_MS)
+    return requestId
   }
 
   private fun handleRelatedKnownToggleRequested(
@@ -962,6 +983,7 @@ class ScreenOcrOverlayService : Service() {
         "status" to status,
         "overlayPermissionGranted" to Settings.canDrawOverlays(this),
         "screenCaptureActive" to (captureSession != null),
+        "analysisActive" to isAnalyzing,
         "floatingVisible" to (widgetController?.isBubbleVisible == true),
         "resultOverlayVisible" to (widgetController?.isResultOverlayVisible == true)
       )

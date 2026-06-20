@@ -38,7 +38,6 @@ data class ReaderPage(
 )
 
 enum class ReaderEdgeKind {
-  CHAPTER_COMPLETE,
   BOOK_FINISHED
 }
 
@@ -47,8 +46,7 @@ data class ReaderEdgeState(
   val chapterTitle: String,
   val bookTitle: String,
   val chapterCount: Int,
-  val savedWordCount: Int,
-  val readMinutes: Int = 0
+  val savedWordCount: Int
 )
 
 data class TextRange(

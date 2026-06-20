@@ -257,8 +257,30 @@ const normalizeOcrResult = (result) => {
         text: String(result?.text || ''),
         blocks: Array.isArray(result?.blocks) ? result.blocks : [],
         targets: Array.isArray(result?.targets) ? result.targets : [],
+        timing: result?.timing && typeof result.timing === 'object' ? result.timing : null,
     };
 };
+
+const buildNativeTargets = (ocrResult, kind) => (
+    (ocrResult?.targets || [])
+        .filter((target) => target?.kind === kind)
+        .map((target, targetIndex) => {
+            const text = normalizeOcrWhitespace(target?.text);
+            const contextSentence = normalizeOcrWhitespace(target?.lineText) || text;
+
+            if (!text || !hasValidBox(target?.box)) {
+                return null;
+            }
+
+            return {
+                key: `native-${kind}-${targetIndex}`,
+                text,
+                contextSentence,
+                box: normalizeBox(target.box),
+            };
+        })
+        .filter(Boolean)
+);
 
 const buildLineTargets = (ocrResult) => (
     (ocrResult?.blocks || []).flatMap((block, blockIndex) => (
@@ -478,6 +500,16 @@ const buildWordTargets = (ocrResult) => (
     ))
 );
 
+const buildLineTargetsForResult = (ocrResult) => {
+    const nativeTargets = buildNativeTargets(ocrResult, 'line');
+    return nativeTargets.length > 0 ? nativeTargets : buildLineTargets(ocrResult);
+};
+
+const buildWordTargetsForResult = (ocrResult) => {
+    const nativeTargets = buildNativeTargets(ocrResult, 'word');
+    return nativeTargets.length > 0 ? nativeTargets : buildWordTargets(ocrResult);
+};
+
 const ScreenshotOcr = ({ navigation, route }) => {
     const { t } = useTranslation();
     const { activeOwnerId } = useLocalOwner();
@@ -545,8 +577,8 @@ const ScreenshotOcr = ({ navigation, route }) => {
                 ? addOcrResultListener((result) => {
                     const normalizedResult = normalizeOcrResult(result);
                     const targetCount = normalizedResult.targets.length
-                        || buildWordTargets(normalizedResult).length
-                        || buildLineTargets(normalizedResult).length;
+                        || buildWordTargetsForResult(normalizedResult).length
+                        || buildLineTargetsForResult(normalizedResult).length;
                     setFloatingMessage(t('ocr.foundItems', {
                         count: targetCount,
                         noun: targetCount === 1 ? t('ocr.itemSingular') : t('ocr.itemPlural'),
@@ -632,8 +664,8 @@ const ScreenshotOcr = ({ navigation, route }) => {
         layout.screenMaxWidth - (insets.screenHorizontal * 2)
     );
     const imageFrameHeight = imageFrameWidth / aspectRatio;
-    const lineTargets = useMemo(() => buildLineTargets(ocrResult), [ocrResult]);
-    const wordTargets = useMemo(() => buildWordTargets(ocrResult), [ocrResult]);
+    const lineTargets = useMemo(() => buildLineTargetsForResult(ocrResult), [ocrResult]);
+    const wordTargets = useMemo(() => buildWordTargetsForResult(ocrResult), [ocrResult]);
     const activeTargets = mode === 'words' ? wordTargets : lineTargets;
     const hasRecognizedText = !!ocrResult && (lineTargets.length > 0 || wordTargets.length > 0);
     const canRunOcr = !!imageUri && !isRecognizing;
@@ -826,8 +858,8 @@ const ScreenshotOcr = ({ navigation, route }) => {
         if (result) {
             const normalizedResult = normalizeOcrResult(result);
             const targetCount = normalizedResult.targets.length
-                || buildWordTargets(normalizedResult).length
-                || buildLineTargets(normalizedResult).length;
+                || buildWordTargetsForResult(normalizedResult).length
+                || buildLineTargetsForResult(normalizedResult).length;
             setFloatingMessage(t('ocr.testFoundItems', {
                 count: targetCount,
                 noun: targetCount === 1 ? t('ocr.itemSingular') : t('ocr.itemPlural'),

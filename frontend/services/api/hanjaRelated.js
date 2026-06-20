@@ -66,7 +66,7 @@ export const fetchHanjaRelated = async (query, options = {}) => {
     }
 
     const meanings = await lookupHanjaCharacter(cleanedQuery, {
-        limit: 'all',
+        limit: options.limit ?? 'all',
         interfaceLanguage: options.interfaceLanguage,
     });
 

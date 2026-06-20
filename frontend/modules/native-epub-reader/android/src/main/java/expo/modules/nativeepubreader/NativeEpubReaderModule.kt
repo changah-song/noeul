@@ -22,13 +22,113 @@ import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
 import kotlin.math.abs
-import kotlin.math.ceil
 import kotlin.math.roundToInt
+import java.util.ArrayDeque
 import java.util.concurrent.CancellationException
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 
-private val READABLE_TOKEN_REGEX = Regex("""[A-Za-z0-9]+(?:'[A-Za-z0-9]+)?|[가-힣]+|[\u3400-\u4DBF\u4E00-\u9FFF]+""")
+private data class HighlightTerm(
+  val text: String,
+  val priority: Int
+)
+
+private data class HighlightMatch(
+  val term: String,
+  val start: Int,
+  val end: Int,
+  val priority: Int
+)
+
+private class HighlightTrieNode {
+  val children = mutableMapOf<Char, Int>()
+  val outputs = mutableListOf<HighlightTerm>()
+  var fail = 0
+}
+
+private class HighlightMatcher(terms: List<String>) {
+  private val nodes = mutableListOf(HighlightTrieNode())
+  val termCount = terms.size
+
+  init {
+    terms.forEachIndexed { priority, term ->
+      var nodeIndex = 0
+      term.forEach { char ->
+        nodeIndex = nodes[nodeIndex].children.getOrPut(char) {
+          nodes.add(HighlightTrieNode())
+          nodes.lastIndex
+        }
+      }
+      nodes[nodeIndex].outputs.add(HighlightTerm(term, priority))
+    }
+    buildFailureLinks()
+  }
+
+  fun find(text: String): List<HighlightMatch> {
+    if (termCount == 0 || text.isEmpty()) {
+      return emptyList()
+    }
+
+    val matches = mutableListOf<HighlightMatch>()
+    var nodeIndex = 0
+
+    text.forEachIndexed { index, char ->
+      while (nodeIndex != 0 && !nodes[nodeIndex].children.containsKey(char)) {
+        nodeIndex = nodes[nodeIndex].fail
+      }
+
+      nodeIndex = nodes[nodeIndex].children[char] ?: 0
+
+      nodes[nodeIndex].outputs.forEach { term ->
+        val end = index + 1
+        matches.add(
+          HighlightMatch(
+            term = term.text,
+            start = end - term.text.length,
+            end = end,
+            priority = term.priority
+          )
+        )
+      }
+    }
+
+    return matches.sortedWith(
+      compareBy<HighlightMatch> { it.priority }
+        .thenBy { it.start }
+        .thenBy { it.end }
+    )
+  }
+
+  private fun buildFailureLinks() {
+    val queue = ArrayDeque<Int>()
+
+    nodes[0].children.values.forEach { childIndex ->
+      nodes[childIndex].fail = 0
+      queue.add(childIndex)
+    }
+
+    while (!queue.isEmpty()) {
+      val currentIndex = queue.removeFirst()
+      nodes[currentIndex].children.forEach { (char, childIndex) ->
+        var fallbackIndex = nodes[currentIndex].fail
+
+        while (fallbackIndex != 0 && !nodes[fallbackIndex].children.containsKey(char)) {
+          fallbackIndex = nodes[fallbackIndex].fail
+        }
+
+        val failIndex = nodes[fallbackIndex].children[char] ?: 0
+        nodes[childIndex].fail = failIndex
+        nodes[childIndex].outputs.addAll(nodes[failIndex].outputs)
+        queue.add(childIndex)
+      }
+    }
+  }
+}
+
+private data class HighlightBuildResult(
+  val rangesByPage: Map<Int, List<TextRange>>,
+  val contextsByPage: Map<Int, List<Map<String, Any>>> = emptyMap()
+)
 
 class NativeEpubReaderModule : Module() {
   override fun definition() = ModuleDefinition {
@@ -97,6 +197,14 @@ class NativeEpubReaderModule : Module() {
         view.setHighlightTerms(terms)
       }
 
+      Prop("sameLevelTerms") { view: NativeEpubReaderView, terms: List<Any?> ->
+        view.setSameLevelTerms(terms)
+      }
+
+      Prop("aboveLevelTerms") { view: NativeEpubReaderView, terms: List<Any?> ->
+        view.setAboveLevelTerms(terms)
+      }
+
       Prop("clearSelectionToken") { view: NativeEpubReaderView, token: Double ->
         view.setClearSelectionToken(token.toInt())
       }
@@ -127,6 +235,9 @@ data class ReaderThemePalette(
   val activeHighlightColor: Int,
   val textSelectionHighlightColor: Int,
   val savedHighlightColor: Int,
+  val savedHighlightTextColor: Int,
+  val sameLevelUnderlineColor: Int,
+  val aboveLevelUnderlineColor: Int,
   val selectionHandleColor: Int,
   val placeholderColor: Int
 )
@@ -141,9 +252,12 @@ fun readerThemePaletteForMode(isDark: Boolean): ReaderThemePalette {
       ruleColor = Color.rgb(0x35, 0x3c, 0x47),
       edgeButtonColor = Color.rgb(0xf0, 0xed, 0xed),
       edgeButtonTextColor = Color.rgb(0x1b, 0x1c, 0x1c),
-      activeHighlightColor = Color.argb(0x40, 0xf0, 0xed, 0xed),
+      activeHighlightColor = Color.rgb(0x35, 0x3c, 0x47),
       textSelectionHighlightColor = Color.argb(0x2e, 0xf0, 0xed, 0xed),
-      savedHighlightColor = Color.rgb(0x5c, 0x5e, 0x63),
+      savedHighlightColor = Color.rgb(0x20, 0x26, 0x31),
+      savedHighlightTextColor = Color.WHITE,
+      sameLevelUnderlineColor = Color.rgb(0x74, 0xc4, 0x76),
+      aboveLevelUnderlineColor = Color.rgb(0xf5, 0x9e, 0x0b),
       selectionHandleColor = Color.rgb(0xf0, 0xed, 0xed),
       placeholderColor = Color.rgb(0x44, 0x47, 0x4b)
     )
@@ -156,9 +270,12 @@ fun readerThemePaletteForMode(isDark: Boolean): ReaderThemePalette {
       ruleColor = Color.rgb(0xc5, 0xc6, 0xcb),
       edgeButtonColor = Color.rgb(0x20, 0x26, 0x31),
       edgeButtonTextColor = Color.WHITE,
-      activeHighlightColor = Color.argb(0x40, 0x20, 0x26, 0x31),
+      activeHighlightColor = Color.rgb(0xe4, 0xe2, 0xe2),
       textSelectionHighlightColor = Color.argb(0x2e, 0x20, 0x26, 0x31),
-      savedHighlightColor = Color.rgb(0x75, 0x77, 0x7b),
+      savedHighlightColor = Color.rgb(0x20, 0x26, 0x31),
+      savedHighlightTextColor = Color.WHITE,
+      sameLevelUnderlineColor = Color.rgb(0x2f, 0x8f, 0x46),
+      aboveLevelUnderlineColor = Color.rgb(0xc4, 0x66, 0x1f),
       selectionHandleColor = Color.rgb(0x20, 0x26, 0x31),
       placeholderColor = Color.rgb(180, 174, 166)
     )
@@ -187,6 +304,9 @@ private fun readerThemePaletteFromTokens(tokens: Map<String, Any?>, isDark: Bool
     activeHighlightColor = colorFromThemeToken(tokens, "activeHighlight", fallback.activeHighlightColor),
     textSelectionHighlightColor = colorFromThemeToken(tokens, "textSelectionHighlight", fallback.textSelectionHighlightColor),
     savedHighlightColor = colorFromThemeToken(tokens, "savedHighlight", fallback.savedHighlightColor),
+    savedHighlightTextColor = colorFromThemeToken(tokens, "savedHighlightText", fallback.savedHighlightTextColor),
+    sameLevelUnderlineColor = colorFromThemeToken(tokens, "levelSameUnderline", fallback.sameLevelUnderlineColor),
+    aboveLevelUnderlineColor = colorFromThemeToken(tokens, "levelAboveUnderline", fallback.aboveLevelUnderlineColor),
     selectionHandleColor = colorFromThemeToken(tokens, "selectionHandle", fallback.selectionHandleColor),
     placeholderColor = colorFromThemeToken(tokens, "placeholder", fallback.placeholderColor)
   )
@@ -302,13 +422,24 @@ class NativeEpubReaderView(
   private var readerEdgeStateEnabled = true
   private var continuousPageIndex = 0
   private var highlightTerms: List<String> = emptyList()
+  private var sameLevelTerms: List<String> = emptyList()
+  private var aboveLevelTerms: List<String> = emptyList()
+  private var highlightMatcher = HighlightMatcher(emptyList())
+  private var sameLevelMatcher = HighlightMatcher(emptyList())
+  private var aboveLevelMatcher = HighlightMatcher(emptyList())
   private var savedHighlightRangesByPage: Map<Int, List<TextRange>> = emptyMap()
+  private var savedHighlightContextsByPage: Map<Int, List<Map<String, Any>>> = emptyMap()
+  private var sameLevelRangesByPage: Map<Int, List<TextRange>> = emptyMap()
+  private var aboveLevelRangesByPage: Map<Int, List<TextRange>> = emptyMap()
   private var activeSelectionRanges: List<TextRange> = emptyList()
   private var activeSelectionKind: ActiveSelectionKind? = null
   private var lastClearSelectionToken: Int? = null
   private var activeHighlightColor = themePalette.activeHighlightColor
   private var textSelectionHighlightColor = themePalette.textSelectionHighlightColor
   private var savedHighlightColor = themePalette.savedHighlightColor
+  private var savedHighlightTextColor = themePalette.savedHighlightTextColor
+  private var sameLevelUnderlineColor = themePalette.sameLevelUnderlineColor
+  private var aboveLevelUnderlineColor = themePalette.aboveLevelUnderlineColor
   private var userDraggedPager = false
   private var previousPageIndex = 0
   private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
@@ -630,8 +761,31 @@ class NativeEpubReaderView(
     }
 
     highlightTerms = nextTerms
+    highlightMatcher = HighlightMatcher(nextTerms)
     rebuildSavedHighlightRanges()
     refreshEdgeStatesForCurrentPages()
+  }
+
+  fun setSameLevelTerms(terms: List<Any?>) {
+    val nextTerms = normalizeHighlightTerms(terms)
+    if (sameLevelTerms == nextTerms) {
+      return
+    }
+
+    sameLevelTerms = nextTerms
+    sameLevelMatcher = HighlightMatcher(nextTerms)
+    rebuildLevelUnderlineRanges()
+  }
+
+  fun setAboveLevelTerms(terms: List<Any?>) {
+    val nextTerms = normalizeHighlightTerms(terms)
+    if (aboveLevelTerms == nextTerms) {
+      return
+    }
+
+    aboveLevelTerms = nextTerms
+    aboveLevelMatcher = HighlightMatcher(nextTerms)
+    rebuildLevelUnderlineRanges()
   }
 
   fun setClearSelectionToken(token: Int) {
@@ -847,38 +1001,23 @@ class NativeEpubReaderView(
       return null
     }
 
+    val isLastChapter = chapter.spineIndex >= totalSpineItems - 1
+    if (!isLastChapter) {
+      return null
+    }
+
     val chapterTitle = chapter.title.ifBlank { "Chapter ${chapter.spineIndex + 1}" }
     val bookTitle = bookManifest.stringValue("title")
       ?: bookManifest.stringValue("currentBookTitle")
       ?: ""
-    val isLastChapter = chapter.spineIndex >= totalSpineItems - 1
 
     return ReaderEdgeState(
-      kind = if (isLastChapter) ReaderEdgeKind.BOOK_FINISHED else ReaderEdgeKind.CHAPTER_COMPLETE,
+      kind = ReaderEdgeKind.BOOK_FINISHED,
       chapterTitle = chapterTitle,
       bookTitle = bookTitle.ifBlank { chapterTitle },
       chapterCount = totalSpineItems,
-      savedWordCount = if (isLastChapter) {
-        highlightTerms.size
-      } else {
-        savedTermCountForRawBlocks(chapter.blocks, highlightTerms)
-      },
-      readMinutes = estimatedReadMinutesForRawBlocks(chapter.blocks)
+      savedWordCount = highlightTerms.size
     )
-  }
-
-  private fun estimatedReadMinutesForRawBlocks(rawBlocks: List<Any?>): Int {
-    val readableTokenCount = rawBlocks.sumOf { raw ->
-      val block = raw.asMap() ?: return@sumOf 0
-      val text = block.stringValue("text") ?: return@sumOf 0
-      READABLE_TOKEN_REGEX.findAll(text).count()
-    }
-
-    if (readableTokenCount <= 0) {
-      return 0
-    }
-
-    return ceil(readableTokenCount / 220.0).toInt().coerceAtLeast(1)
   }
 
   private fun renderedContentBottom(page: ReaderPage): Int {
@@ -899,48 +1038,6 @@ class NativeEpubReaderView(
 
   private fun edgeContentTopLimit(): Int {
     return (layoutHeight - dp(300f)).coerceAtLeast(pagePaddingV + dp(160f))
-  }
-
-  private fun savedTermCountForRawBlocks(
-    rawBlocks: List<Any?>,
-    terms: List<String>
-  ): Int {
-    if (rawBlocks.isEmpty() || terms.isEmpty()) {
-      return 0
-    }
-
-    val seenTerms = mutableSetOf<String>()
-    rawBlocks.forEach blockLoop@{ raw ->
-      val block = raw.asMap() ?: return@blockLoop
-      val text = block.stringValue("text") ?: return@blockLoop
-      if (text.isEmpty()) {
-        return@blockLoop
-      }
-
-      terms.forEach { term ->
-        if (term.isBlank() || seenTerms.contains(term)) {
-          return@forEach
-        }
-
-        var searchStart = 0
-        while (searchStart <= text.length - term.length) {
-          val matchStart = text.indexOf(term, startIndex = searchStart)
-          if (matchStart < 0) {
-            break
-          }
-
-          val matchEnd = matchStart + term.length
-          if (hasTokenBoundary(text, term, matchStart, matchEnd)) {
-            seenTerms.add(term)
-            break
-          }
-
-          searchStart = matchStart + 1
-        }
-      }
-    }
-
-    return seenTerms.size
   }
 
   private fun currentChapterWindowFromBlocks(): List<ChapterWindowItem> {
@@ -1060,7 +1157,16 @@ class NativeEpubReaderView(
       activeSelectionKind = null
     }
     val didDropActiveSelection = previousActiveSelectionRanges.isNotEmpty() && activeSelectionRanges.isEmpty()
-    savedHighlightRangesByPage = buildSavedHighlightRanges(nextPages, highlightTerms)
+    val savedHighlights = buildHighlightRanges(
+      sourcePages = nextPages,
+      matcher = highlightMatcher,
+      label = "saved",
+      collectContexts = true
+    )
+    savedHighlightRangesByPage = savedHighlights.rangesByPage
+    savedHighlightContextsByPage = savedHighlights.contextsByPage
+    sameLevelRangesByPage = buildHighlightRanges(nextPages, sameLevelMatcher, "same-level").rangesByPage
+    aboveLevelRangesByPage = buildHighlightRanges(nextPages, aboveLevelMatcher, "above-level").rangesByPage
 
     if (readerRenderMode == "continuous") {
       pages = nextPages
@@ -1088,9 +1194,14 @@ class NativeEpubReaderView(
         activeSelectionRanges,
         activeSelectionKind,
         savedHighlightRangesByPage,
+        sameLevelRangesByPage,
+        aboveLevelRangesByPage,
         activeHighlightColor,
         textSelectionHighlightColor,
         savedHighlightColor,
+        savedHighlightTextColor,
+        sameLevelUnderlineColor,
+        aboveLevelUnderlineColor,
         ::handlePageWordSelected,
         ::handlePageTextSelected,
         ::handlePageSelectionCleared,
@@ -1111,8 +1222,16 @@ class NativeEpubReaderView(
         pages = nextPages
         adapter.updateActiveSelectionRanges(activeSelectionRanges, activeSelectionKind)
         adapter.updateSavedHighlightRanges(savedHighlightRangesByPage)
+        adapter.updateLevelUnderlineRanges(sameLevelRangesByPage, aboveLevelRangesByPage)
         adapter.updateThemePalette(themePaletteSnapshot)
-        adapter.updateHighlightColors(activeHighlightColor, textSelectionHighlightColor, savedHighlightColor)
+        adapter.updateHighlightColors(
+          activeHighlightColor,
+          textSelectionHighlightColor,
+          savedHighlightColor,
+          savedHighlightTextColor,
+          sameLevelUnderlineColor,
+          aboveLevelUnderlineColor
+        )
         animateChapterTransition(
           adapter,
           previousPages,
@@ -1130,8 +1249,16 @@ class NativeEpubReaderView(
       pagePositionOffset = 0
       adapter.updateActiveSelectionRanges(activeSelectionRanges, activeSelectionKind)
       adapter.updateSavedHighlightRanges(savedHighlightRangesByPage)
+      adapter.updateLevelUnderlineRanges(sameLevelRangesByPage, aboveLevelRangesByPage)
       adapter.updateThemePalette(themePaletteSnapshot)
-      adapter.updateHighlightColors(activeHighlightColor, textSelectionHighlightColor, savedHighlightColor)
+      adapter.updateHighlightColors(
+        activeHighlightColor,
+        textSelectionHighlightColor,
+        savedHighlightColor,
+        savedHighlightTextColor,
+        sameLevelUnderlineColor,
+        aboveLevelUnderlineColor
+      )
       adapter.updateRenderConfig(readerLineHeightMultiplier, backgroundColor)
       adapter.updatePages(pages)
     }
@@ -1247,9 +1374,14 @@ class NativeEpubReaderView(
       activeSelectionRanges = activeSelectionRanges,
       activeSelectionKind = activeSelectionKind,
       savedHighlightRanges = savedHighlightRangesByPage[page.pageIndex].orEmpty(),
+      sameLevelRanges = sameLevelRangesByPage[page.pageIndex].orEmpty(),
+      aboveLevelRanges = aboveLevelRangesByPage[page.pageIndex].orEmpty(),
       activeHighlightColor = activeHighlightColor,
       textSelectionHighlightColor = textSelectionHighlightColor,
       savedHighlightColor = savedHighlightColor,
+      savedHighlightTextColor = savedHighlightTextColor,
+      sameLevelUnderlineColor = sameLevelUnderlineColor,
+      aboveLevelUnderlineColor = aboveLevelUnderlineColor,
       onWordSelected = ::handlePageWordSelected,
       onTextSelected = ::handlePageTextSelected,
       onSelectionCleared = ::handlePageSelectionCleared,
@@ -1343,7 +1475,6 @@ class NativeEpubReaderView(
   private fun handlePageEdgeAction(kind: ReaderEdgeKind) {
     clearActiveSelection(dispatchEvent = true)
     when (kind) {
-      ReaderEdgeKind.CHAPTER_COMPLETE,
       ReaderEdgeKind.BOOK_FINISHED -> onChapterEnd(mapOf<String, Any>())
     }
   }
@@ -1383,9 +1514,14 @@ class NativeEpubReaderView(
         activeSelectionRanges = activeSelectionRanges,
         activeSelectionKind = activeSelectionKind,
         savedHighlightRanges = savedHighlightRangesByPage[page.pageIndex].orEmpty(),
+        sameLevelRanges = sameLevelRangesByPage[page.pageIndex].orEmpty(),
+        aboveLevelRanges = aboveLevelRangesByPage[page.pageIndex].orEmpty(),
         activeHighlightColor = activeHighlightColor,
         textSelectionHighlightColor = textSelectionHighlightColor,
-        savedHighlightColor = savedHighlightColor
+        savedHighlightColor = savedHighlightColor,
+        savedHighlightTextColor = savedHighlightTextColor,
+        sameLevelUnderlineColor = sameLevelUnderlineColor,
+        aboveLevelUnderlineColor = aboveLevelUnderlineColor
       )
     }
   }
@@ -1395,8 +1531,22 @@ class NativeEpubReaderView(
   }
 
   private fun rebuildSavedHighlightRanges() {
-    savedHighlightRangesByPage = buildSavedHighlightRanges(pages, highlightTerms)
+    val savedHighlights = buildHighlightRanges(
+      sourcePages = pages,
+      matcher = highlightMatcher,
+      label = "saved",
+      collectContexts = true
+    )
+    savedHighlightRangesByPage = savedHighlights.rangesByPage
+    savedHighlightContextsByPage = savedHighlights.contextsByPage
     pageAdapter?.updateSavedHighlightRanges(savedHighlightRangesByPage)
+    invalidateVisiblePageHighlights()
+  }
+
+  private fun rebuildLevelUnderlineRanges() {
+    sameLevelRangesByPage = buildHighlightRanges(pages, sameLevelMatcher, "same-level").rangesByPage
+    aboveLevelRangesByPage = buildHighlightRanges(pages, aboveLevelMatcher, "above-level").rangesByPage
+    pageAdapter?.updateLevelUnderlineRanges(sameLevelRangesByPage, aboveLevelRangesByPage)
     invalidateVisiblePageHighlights()
   }
 
@@ -1448,22 +1598,27 @@ class NativeEpubReaderView(
     }
   }
 
-  private fun buildSavedHighlightRanges(
+  private fun buildHighlightRanges(
     sourcePages: List<ReaderPage>,
-    terms: List<String>
-  ): Map<Int, List<TextRange>> {
-    if (sourcePages.isEmpty() || terms.isEmpty()) {
+    matcher: HighlightMatcher,
+    label: String,
+    collectContexts: Boolean = false
+  ): HighlightBuildResult {
+    if (sourcePages.isEmpty() || matcher.termCount == 0) {
       Log.d(
         TAG,
-        "saved highlight ranges built: terms=${terms.size} pages=${sourcePages.size} matches=0"
+        "$label highlight ranges built: terms=${matcher.termCount} pages=${sourcePages.size} matches=0"
       )
-      return emptyMap()
+      return HighlightBuildResult(emptyMap())
     }
 
     val rangesByPage = mutableMapOf<Int, MutableList<TextRange>>()
+    val contextsByPage = mutableMapOf<Int, MutableList<Map<String, Any>>>()
 
     sourcePages.forEach { page ->
       val pageRanges = mutableListOf<TextRange>()
+      val pageContexts = mutableListOf<Map<String, Any>>()
+      val seenContextKeys = mutableSetOf<String>()
 
       page.blocks.forEach blockLoop@{ block ->
         if (block.type != "text") {
@@ -1477,32 +1632,36 @@ class NativeEpubReaderView(
 
         val occupiedLocalRanges = mutableListOf<Pair<Int, Int>>()
 
-        terms.forEach { term ->
-          var searchStart = 0
-          while (searchStart <= text.length - term.length) {
-            val matchStart = text.indexOf(term, startIndex = searchStart)
-            if (matchStart < 0) {
-              break
-            }
-
-            val matchEnd = matchStart + term.length
-            if (
-              hasTokenBoundary(text, term, matchStart, matchEnd) &&
-              !overlapsAny(occupiedLocalRanges, matchStart, matchEnd)
-            ) {
-              occupiedLocalRanges.add(matchStart to matchEnd)
-              pageRanges.add(
-                TextRange(
-                  pageIndex = page.pageIndex,
-                  spineIndex = page.spineIndex,
-                  blockId = block.blockId,
-                  sourceStartOffset = block.sourceStartOffset + matchStart,
-                  sourceEndOffset = block.sourceStartOffset + matchEnd
-                )
+        matcher.find(text).forEach { match ->
+          if (
+            hasTokenBoundary(text, match.term, match.start, match.end) &&
+            !overlapsAny(occupiedLocalRanges, match.start, match.end)
+          ) {
+            occupiedLocalRanges.add(match.start to match.end)
+            pageRanges.add(
+              TextRange(
+                pageIndex = page.pageIndex,
+                spineIndex = page.spineIndex,
+                blockId = block.blockId,
+                sourceStartOffset = block.sourceStartOffset + match.start,
+                sourceEndOffset = block.sourceStartOffset + match.end
               )
-            }
+            )
 
-            searchStart = matchStart + 1
+            if (collectContexts) {
+              val sentence = sentenceForOffsets(text, match.start, match.end)
+              val key = "${match.term}|${sentence}|${block.blockId}"
+              if (!seenContextKeys.contains(key)) {
+                seenContextKeys.add(key)
+                pageContexts.add(
+                  mapOf(
+                    "text" to match.term,
+                    "sentence" to sentence,
+                    "blockId" to block.blockId
+                  )
+                )
+              }
+            }
           }
         }
       }
@@ -1511,18 +1670,22 @@ class NativeEpubReaderView(
         rangesByPage[page.pageIndex] = pageRanges
           .sortedWith(compareBy<TextRange> { it.blockId }
             .thenBy { it.sourceStartOffset }
-            .thenBy { it.sourceEndOffset })
+          .thenBy { it.sourceEndOffset })
           .toMutableList()
+      }
+
+      if (pageContexts.isNotEmpty()) {
+        contextsByPage[page.pageIndex] = pageContexts
       }
     }
 
     val matchCount = rangesByPage.values.sumOf { ranges -> ranges.size }
     Log.d(
       TAG,
-      "saved highlight ranges built: terms=${terms.size} pages=${sourcePages.size} matches=$matchCount"
+      "$label highlight ranges built: terms=${matcher.termCount} pages=${sourcePages.size} matches=$matchCount"
     )
 
-    return rangesByPage
+    return HighlightBuildResult(rangesByPage, contextsByPage)
   }
 
   private fun sentenceForOffsets(text: String, startOffset: Int, endOffset: Int): String {
@@ -1549,69 +1712,6 @@ class NativeEpubReaderView(
     }
 
     return text.substring(start, end).trim().ifBlank { text.trim() }
-  }
-
-  private fun savedHighlightContextsForPage(
-    page: ReaderPage?,
-    terms: List<String>
-  ): List<Map<String, Any>> {
-    if (page == null || terms.isEmpty()) {
-      return emptyList()
-    }
-
-    val contexts = mutableListOf<Map<String, Any>>()
-    val seenKeys = mutableSetOf<String>()
-
-    page.blocks.forEach blockLoop@{ block ->
-      if (block.type != "text") {
-        return@blockLoop
-      }
-
-      val text = block.plainText.ifEmpty { block.styledText?.toString() ?: "" }
-      if (text.isEmpty()) {
-        return@blockLoop
-      }
-
-      val occupiedLocalRanges = mutableListOf<Pair<Int, Int>>()
-
-      terms.forEach { term ->
-        if (term.isBlank()) {
-          return@forEach
-        }
-
-        var searchStart = 0
-        while (searchStart <= text.length - term.length) {
-          val matchStart = text.indexOf(term, startIndex = searchStart)
-          if (matchStart < 0) {
-            break
-          }
-
-          val matchEnd = matchStart + term.length
-          if (
-            hasTokenBoundary(text, term, matchStart, matchEnd) &&
-            !overlapsAny(occupiedLocalRanges, matchStart, matchEnd)
-          ) {
-            val sentence = sentenceForOffsets(text, matchStart, matchEnd)
-            val key = "${term}|${sentence}|${block.blockId}"
-            if (!seenKeys.contains(key)) {
-              seenKeys.add(key)
-              occupiedLocalRanges.add(matchStart to matchEnd)
-              contexts.add(
-                mapOf(
-                  "text" to term,
-                  "sentence" to sentence,
-                  "blockId" to block.blockId
-                )
-              )
-            }
-          }
-
-          searchStart = matchStart + 1
-        }
-      }
-    }
-
-    return contexts
   }
 
   private fun normalizeHighlightTerms(terms: List<Any?>): List<String> {
@@ -1688,9 +1788,19 @@ class NativeEpubReaderView(
     activeHighlightColor = themePalette.activeHighlightColor
     textSelectionHighlightColor = themePalette.textSelectionHighlightColor
     savedHighlightColor = themePalette.savedHighlightColor
+    savedHighlightTextColor = themePalette.savedHighlightTextColor
+    sameLevelUnderlineColor = themePalette.sameLevelUnderlineColor
+    aboveLevelUnderlineColor = themePalette.aboveLevelUnderlineColor
 
     pageAdapter?.updateThemePalette(themePalette)
-    pageAdapter?.updateHighlightColors(activeHighlightColor, textSelectionHighlightColor, savedHighlightColor)
+    pageAdapter?.updateHighlightColors(
+      activeHighlightColor,
+      textSelectionHighlightColor,
+      savedHighlightColor,
+      savedHighlightTextColor,
+      sameLevelUnderlineColor,
+      aboveLevelUnderlineColor
+    )
     invalidateVisiblePageHighlights()
   }
 
@@ -1903,7 +2013,7 @@ class NativeEpubReaderView(
       "globalTotal" to total,
       "href" to href,
       "firstBlockId" to (page?.blocks?.firstOrNull()?.blockId ?: ""),
-      "savedHighlights" to savedHighlightContextsForPage(page, highlightTerms)
+      "savedHighlights" to (page?.pageIndex?.let { savedHighlightContextsByPage[it] }.orEmpty())
     )
 
     (page?.spineIndex ?: bookManifest.intValue("currentSpineIndex"))?.let { spineIndex ->
