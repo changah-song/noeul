@@ -5,6 +5,7 @@ import {
     addOverlayLookupRequestedListener,
     addOverlayRelatedKnownToggleRequestedListener,
     addOverlaySaveRequestedListener,
+    addOverlayTranslationRequestedListener,
     addOcrResultListener,
     rejectOverlayLookup,
     rejectOverlaySave,
@@ -25,10 +26,27 @@ let subscriptions = [];
 let isInitialized = false;
 
 const HANJA_CHARACTER_PATTERN = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/u;
+const HANGUL_PATTERN = /[\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]/u;
+const OCR_PREFETCH_SKIP_TOKENS = new Set([
+    '은',
+    '는',
+    '이',
+    '가',
+    '을',
+    '를',
+    '에',
+    '의',
+    '와',
+    '과',
+    '도',
+    '로',
+    '으로',
+]);
 const MAX_HANJA_LOOKUP_CACHE_SIZE = 160;
 const MAX_OVERLAY_LOOKUP_CACHE_SIZE = 240;
-const MAX_OCR_PREFETCH_TARGETS = 120;
-const OCR_PREFETCH_CONCURRENCY = 4;
+const MAX_OCR_PREFETCH_TARGETS = 32;
+const OCR_PREFETCH_CONCURRENCY = 2;
+const OVERLAY_HANJA_PRELOAD_LIMIT = 8;
 const hanjaLookupCache = new Map();
 const overlayLookupCache = new Map();
 const overlayLookupEnrichmentCache = new Map();
@@ -50,6 +68,14 @@ const formatTranslationLanguageCode = (language) => String(language || '')
 const extractHanjaCharacters = (value) => uniqueCleanValues(
     Array.from(cleanValue(value)).filter(char => HANJA_CHARACTER_PATTERN.test(char))
 );
+const normalizeHanjaLookupLimit = (limit) => {
+    if (limit === undefined || limit === null || limit === 'all') {
+        return 'all';
+    }
+
+    const numericLimit = Number(limit);
+    return Number.isFinite(numericLimit) && numericLimit > 0 ? String(Math.floor(numericLimit)) : 'all';
+};
 const gradeRank = (grade) => {
     switch (cleanValue(grade)) {
         case '초급':
@@ -63,10 +89,11 @@ const gradeRank = (grade) => {
     }
 };
 
-const getCachedHanjaRelated = (character) => {
+const getCachedHanjaRelated = (character, options = {}) => {
     const interfaceLanguage = getRuntimeInterfaceLanguage();
     const cleanedCharacter = cleanValue(character);
-    const cacheKey = [interfaceLanguage, cleanedCharacter].join('|');
+    const limit = normalizeHanjaLookupLimit(options.limit);
+    const cacheKey = [interfaceLanguage, limit, cleanedCharacter].join('|');
 
     if (!cleanedCharacter) {
         return Promise.resolve({
@@ -80,7 +107,7 @@ const getCachedHanjaRelated = (character) => {
         return cachedLookup;
     }
 
-    const lookupPromise = fetchHanjaRelated(cleanedCharacter, { interfaceLanguage }).catch((error) => {
+    const lookupPromise = fetchHanjaRelated(cleanedCharacter, { interfaceLanguage, limit }).catch((error) => {
         hanjaLookupCache.delete(cacheKey);
         throw error;
     });
@@ -95,14 +122,14 @@ const getCachedHanjaRelated = (character) => {
     return lookupPromise;
 };
 
-const preloadHanjaCharacters = async (characters = []) => {
+const preloadHanjaCharacters = async (characters = [], options = {}) => {
     const uniqueCharacters = uniqueCleanValues(characters);
 
     if (uniqueCharacters.length === 0) {
         return;
     }
 
-    await Promise.allSettled(uniqueCharacters.map(getCachedHanjaRelated));
+    await Promise.allSettled(uniqueCharacters.map(character => getCachedHanjaRelated(character, options)));
 };
 
 const getLookupHanjaPreloadTargets = (result, fallbackSourceWord) => {
@@ -143,14 +170,18 @@ const preloadOverlayHanjaForLookupResult = async (result, fallbackSourceWord = '
         return [];
     }
 
-    await preloadHanjaCharacters(characters);
+    const preloadOptions = { limit: OVERLAY_HANJA_PRELOAD_LIMIT };
+    const knownWordCache = new Map();
+
+    await preloadHanjaCharacters(characters, preloadOptions);
     const preloadResults = await Promise.allSettled(targets.map(async (target) => {
-        const cachedResult = await getCachedHanjaRelated(target.character);
+        const cachedResult = await getCachedHanjaRelated(target.character, preloadOptions);
         const normalized = await normalizeOverlayHanjaResult({
             requestId: '',
             character: target.character,
             sourceWord: target.sourceWord,
             result: cachedResult,
+            knownWordCache,
         });
 
         return {
@@ -178,11 +209,18 @@ const trimOverlayLookupCache = () => {
     }
 };
 
-const buildOverlayLookupPayload = async ({ selectedText, selectedLineText }) => {
+const buildOverlayLookupPayload = async ({
+    selectedText,
+    selectedLineText,
+    fetchLive = true,
+    allowRemoteStemming = true,
+}) => {
     const result = await lookupWordForOverlay({
         surface: selectedText,
         sourceSentence: selectedLineText,
         includeEnrichment: false,
+        fetchLive,
+        allowRemoteStemming,
     });
 
     return {
@@ -193,29 +231,35 @@ const buildOverlayLookupPayload = async ({ selectedText, selectedLineText }) => 
 };
 
 const buildOverlayLookupEnrichmentPayload = async ({ selectedText, selectedLineText }) => {
-    const targetLanguage = getRuntimeTargetLanguage();
-    const interfaceLanguage = getRuntimeInterfaceLanguage();
     const result = await lookupWordForOverlay({
         surface: selectedText,
         sourceSentence: selectedLineText,
         includeEnrichment: true,
     });
-    const [hanjaPreloads, translationResult] = await Promise.allSettled([
-        preloadOverlayHanjaForLookupResult(result, selectedText),
-        translateText({
-            query: cleanValue(result?.stem) || selectedText,
-            source: targetLanguage,
-            target: interfaceLanguage,
-        }),
-    ]);
+    const hanjaPreloads = await preloadOverlayHanjaForLookupResult(result, selectedText)
+        .catch(() => []);
 
     return {
         ...result,
         sourceSentence: cleanValue(selectedLineText),
-        translation: translationResult.status === 'fulfilled' ? cleanValue(translationResult.value) : null,
+        hanjaPreloads,
+    };
+};
+
+const buildOverlayTranslationPayload = async ({ requestId, query }) => {
+    const targetLanguage = getRuntimeTargetLanguage();
+    const interfaceLanguage = getRuntimeInterfaceLanguage();
+    const translatedText = await translateText({
+        query,
+        source: targetLanguage,
+        target: interfaceLanguage,
+    });
+
+    return {
+        requestId,
+        translation: cleanValue(translatedText),
         translationSourceLanguage: formatTranslationLanguageCode(targetLanguage),
         translationTargetLanguage: formatTranslationLanguageCode(interfaceLanguage),
-        hanjaPreloads: hanjaPreloads.status === 'fulfilled' ? hanjaPreloads.value : [],
     };
 };
 
@@ -267,6 +311,28 @@ const getCachedOverlayLookupEnrichment = ({ selectedText, selectedLineText }) =>
     return lookupPromise;
 };
 
+const warmCachedOverlayLookup = async ({ selectedText, selectedLineText }) => {
+    const cacheKey = lookupCacheKey({ selectedText, selectedLineText });
+
+    if (!cleanValue(selectedText) || overlayLookupCache.has(cacheKey)) {
+        return;
+    }
+
+    const result = await buildOverlayLookupPayload({
+        selectedText,
+        selectedLineText,
+        fetchLive: false,
+        allowRemoteStemming: false,
+    });
+
+    if (!cleanValue(result?.definition)) {
+        return;
+    }
+
+    overlayLookupCache.set(cacheKey, Promise.resolve(result));
+    trimOverlayLookupCache();
+};
+
 const enrichOverlayLookupInBackground = ({ requestId, selectedText, selectedLineText }) => {
     getCachedOverlayLookupEnrichment({ selectedText, selectedLineText })
         .then(async (result) => {
@@ -293,7 +359,7 @@ const extractOcrPrefetchTargets = (ocrResult = {}) => {
             const selectedLineText = cleanValue(target?.lineText) || selectedText;
             const key = lookupCacheKey({ selectedText, selectedLineText });
 
-            if (!selectedText || seen.has(key)) {
+            if (!isUsefulOcrPrefetchTarget(target) || seen.has(key)) {
                 return;
             }
 
@@ -302,6 +368,31 @@ const extractOcrPrefetchTargets = (ocrResult = {}) => {
         });
 
     return prefetchTargets.slice(0, MAX_OCR_PREFETCH_TARGETS);
+};
+
+const isUsefulOcrPrefetchTarget = (target = {}) => {
+    const selectedText = cleanValue(target?.text);
+    const lookupChars = Array.from(selectedText).filter(char => (
+        /[0-9A-Za-z\u1100-\u11FF\u3130-\u318F\uAC00-\uD7A3\u4E00-\u9FFF]/.test(char)
+    ));
+    const box = target?.box ?? {};
+    const boxWidth = Number(box.width) || 0;
+    const boxHeight = Number(box.height) || 0;
+
+    if (!selectedText || !HANGUL_PATTERN.test(selectedText)) {
+        return false;
+    }
+    if (OCR_PREFETCH_SKIP_TOKENS.has(selectedText)) {
+        return false;
+    }
+    if (lookupChars.length < 2 || /^\d+$/.test(selectedText)) {
+        return false;
+    }
+    if (boxWidth > 0 && boxHeight > 0 && (boxWidth < 8 || boxHeight < 8)) {
+        return false;
+    }
+
+    return true;
 };
 
 const prefetchOcrLookups = async (ocrResult = {}) => {
@@ -321,9 +412,9 @@ const prefetchOcrLookups = async (ocrResult = {}) => {
             nextIndex += 1;
 
             try {
-                await getCachedOverlayLookup(target);
+                await warmCachedOverlayLookup(target);
             } catch (_error) {
-                // Failed entries are removed from the cache and can retry on tap.
+                // Cache-only prefetch misses retry normally on tap.
             }
         }
     });
@@ -331,17 +422,31 @@ const prefetchOcrLookups = async (ocrResult = {}) => {
     await Promise.allSettled(workers);
 };
 
-const normalizeOverlayHanjaResult = async ({ requestId, character, sourceWord, result }) => {
+const getKnownRelatedWordKeys = async (sourceWord, knownWordCache = null) => {
+    const cleanedSourceWord = cleanValue(sourceWord);
+    if (!cleanedSourceWord) {
+        return new Set();
+    }
+
+    const ownerId = getActiveOwnerId();
+    const cacheKey = [ownerId, cleanedSourceWord].join('|');
+    if (knownWordCache?.has(cacheKey)) {
+        return knownWordCache.get(cacheKey);
+    }
+
+    const knownWords = await getRelatedKnownWords(cleanedSourceWord, 'ko', { ownerId }).catch(() => []);
+    const knownKeys = new Set(knownWords.map(relatedWordKey));
+    knownWordCache?.set(cacheKey, knownKeys);
+    return knownKeys;
+};
+
+const normalizeOverlayHanjaResult = async ({ requestId, character, sourceWord, result, knownWordCache = null }) => {
     const readings = uniqueCleanValues((result?.firstTableData ?? []).map(row => row?.reading));
     const meanings = uniqueCleanValues((result?.firstTableData ?? []).map(row => (
         row?.meaning || row?.hun_english || row?.hun_korean
     )));
     const characters = uniqueCleanValues((result?.firstTableData ?? []).map(row => row?.hanja));
-    const ownerId = getActiveOwnerId();
-    const knownWords = sourceWord
-        ? await getRelatedKnownWords(sourceWord, 'ko', { ownerId }).catch(() => [])
-        : [];
-    const knownKeys = new Set(knownWords.map(relatedWordKey));
+    const knownKeys = await getKnownRelatedWordKeys(sourceWord, knownWordCache);
     const relatedWords = (result?.similarWordsTableData ?? [])
         .slice()
         .sort((left, right) => (
@@ -412,6 +517,28 @@ export const initializeOverlayLookupBridge = () => {
         }
     });
 
+    const translationSubscription = addOverlayTranslationRequestedListener(async (event = {}) => {
+        const requestId = cleanValue(event.requestId);
+        const query = cleanValue(event.query);
+
+        if (!requestId || !query) {
+            return;
+        }
+
+        try {
+            const result = await buildOverlayTranslationPayload({ requestId, query });
+            await updateOverlayLookup(requestId, result);
+        } catch (error) {
+            console.warn(`[overlayLookup] translation failed for "${query}":`, error?.message ?? error);
+            await updateOverlayLookup(requestId, {
+                requestId,
+                translation: '',
+                translationSourceLanguage: formatTranslationLanguageCode(getRuntimeTargetLanguage()),
+                translationTargetLanguage: formatTranslationLanguageCode(getRuntimeInterfaceLanguage()),
+            });
+        }
+    });
+
     const saveSubscription = addOverlaySaveRequestedListener(async (event = {}) => {
         const requestId = cleanValue(event.requestId);
 
@@ -451,7 +578,7 @@ export const initializeOverlayLookupBridge = () => {
         }
 
         try {
-            const result = await getCachedHanjaRelated(character);
+            const result = await getCachedHanjaRelated(character, { limit: 'all' });
             await resolveOverlayHanja(requestId, await normalizeOverlayHanjaResult({
                 requestId,
                 character,
@@ -492,6 +619,7 @@ export const initializeOverlayLookupBridge = () => {
     subscriptions = [
         ocrResultSubscription,
         lookupSubscription,
+        translationSubscription,
         saveSubscription,
         hanjaSubscription,
         relatedKnownSubscription,

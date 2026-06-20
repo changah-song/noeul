@@ -140,6 +140,7 @@ const DEFAULT_SONG_FONT_SIZE = 28;
 const EMPTY_OCR_STATUS = {
     overlayPermissionGranted: false,
     screenCaptureActive: false,
+    analysisActive: false,
     floatingVisible: false,
     resultOverlayVisible: false,
 };
@@ -1719,6 +1720,9 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         )) ?? previewBook;
     }, [languageFilteredBooks, publicDomainBookRows, selectedBookPreview]);
     const isFloatingOcrVisible = Platform.OS === 'android' && ocrStatus.floatingVisible;
+    const isFloatingOcrActive = Platform.OS === 'android' && (
+        ocrStatus.floatingVisible || ocrStatus.resultOverlayVisible || ocrStatus.analysisActive
+    );
 
     const syncSongToCloud = useCallback((song) => {
         if (
@@ -1867,6 +1871,9 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             screenCaptureActive: typeof nextStatus.screenCaptureActive === 'boolean'
                 ? nextStatus.screenCaptureActive
                 : previous.screenCaptureActive,
+            analysisActive: typeof nextStatus.analysisActive === 'boolean'
+                ? nextStatus.analysisActive
+                : previous.analysisActive,
             floatingVisible: typeof nextStatus.floatingVisible === 'boolean'
                 ? nextStatus.floatingVisible
                 : previous.floatingVisible,
@@ -1877,7 +1884,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     }, []);
 
     const waitForScreenCapture = useCallback(async () => {
-        for (let attempt = 0; attempt < 8; attempt += 1) {
+        for (let attempt = 0; attempt < 25; attempt += 1) {
             if (isScreenCaptureActive()) {
                 mergeOcrStatus({ screenCaptureActive: true });
                 return true;
@@ -2196,12 +2203,12 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
         ocrActionInFlightRef.current = true;
         setOcrBusy(true);
-        setOcrMessage(isFloatingOcrVisible ? t('home.ocrTurningOff') : t('home.ocrStarting'));
+        setOcrMessage(isFloatingOcrActive ? t('home.ocrTurningOff') : t('home.ocrStarting'));
 
         try {
-            if (isFloatingOcrVisible) {
+            if (isFloatingOcrActive) {
                 await stopFloatingWidget();
-                mergeOcrStatus({ floatingVisible: false, resultOverlayVisible: false });
+                mergeOcrStatus({ analysisActive: false, floatingVisible: false, resultOverlayVisible: false });
                 persistOcrSettings({ floatingPreferred: false });
                 setOcrMessage(t('home.ocrOff'));
                 return;
@@ -2227,12 +2234,12 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 const captureResult = await requestScreenCapture();
                 captureActive = !!captureResult?.active || !!captureResult?.granted;
                 if (captureActive) {
-                    captureActive = await waitForScreenCapture();
+                    captureActive = await waitForScreenCapture() || !!captureResult?.granted;
                 }
             }
 
             if (!captureActive) {
-                mergeOcrStatus({ screenCaptureActive: false, floatingVisible: false });
+                mergeOcrStatus({ screenCaptureActive: false, analysisActive: false, floatingVisible: false });
                 setOcrMessage(t('home.ocrCaptureDenied'));
                 return;
             }
@@ -2251,7 +2258,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             ocrActionInFlightRef.current = false;
             setOcrBusy(false);
         }
-    }, [isFloatingOcrVisible, mergeOcrStatus, ocrBusy, persistOcrSettings, t, waitForScreenCapture]);
+    }, [isFloatingOcrActive, mergeOcrStatus, ocrBusy, persistOcrSettings, t, waitForScreenCapture]);
 
     const updateBookRecord = useCallback((bookToUpdate, patch) => {
         setBooks((prevBooks) => prevBooks.map((book) => (
@@ -3318,14 +3325,20 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     <TouchableOpacity
                         activeOpacity={0.84}
                         accessibilityRole="switch"
-                        accessibilityLabel={isFloatingOcrVisible ? t('home.turnOcrOff') : t('home.turnOcrOn')}
-                        accessibilityState={{ checked: isFloatingOcrVisible, busy: ocrBusy }}
+                        accessibilityLabel={isFloatingOcrActive ? t('home.turnOcrOff') : t('home.turnOcrOn')}
+                        accessibilityState={{ checked: isFloatingOcrActive, busy: ocrBusy }}
                         disabled={ocrBusy}
                         onPress={handleFloatingOcrToggle}
                         style={styles.appTopSideRight}
                     >
                         {ocrBusy ? (
                             <ActivityIndicator size={Spacing.xl4} color={HOME_COLORS.accent} />
+                        ) : isFloatingOcrActive ? (
+                            <Feather
+                                name="x"
+                                size={Spacing.xl7}
+                                color={HOME_COLORS.text}
+                            />
                         ) : (
                             <Image
                                 source={OCR_ICON_SOURCE}

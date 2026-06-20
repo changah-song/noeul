@@ -25,8 +25,9 @@ class OcrResultOverlayView(
   private var ocrResult: SerializedOcrResult? = null,
   private val onTargetSelected: (OcrTapSelection) -> Unit,
   private val onWordNavigationRequested: (OcrTapSelection) -> Unit,
+  private val onTranslationRequested: (String, String) -> Unit,
   private val onSaveRequested: (String, Int?) -> Unit,
-  private val onHanjaRequested: (String, String) -> Unit,
+  private val onHanjaRequested: (String, String) -> String?,
   private val onRelatedKnownToggleRequested: (String, String, OverlayHanjaRelatedWord) -> Unit,
   private var closeAnchorRectOnScreen: RectF? = null,
   private val onClose: () -> Unit
@@ -352,6 +353,7 @@ class OcrResultOverlayView(
       activeWordIndex = activeWordIndex,
       state = LookupCardState.LOADING,
       surface = selection.selectedText,
+      sourceSentence = selection.lineText,
       stem = "",
       definition = null,
       translation = null,
@@ -364,6 +366,7 @@ class OcrResultOverlayView(
       alternatives = emptyList(),
       hanjaPreloads = emptyList(),
       showingTranslation = false,
+      translationRequested = false,
       expandedAlternatives = false,
       savingAlternativeIndex = null,
       message = "Looking up..."
@@ -400,6 +403,7 @@ class OcrResultOverlayView(
       activeWordIndex = activeWordIndex,
       state = if (currentCard.state == LookupCardState.SAVING) currentCard.state else LookupCardState.LOADED,
       surface = result.surface,
+      sourceSentence = result.sourceSentence,
       stem = result.stem,
       definition = result.definition,
       translation = result.translation,
@@ -412,6 +416,7 @@ class OcrResultOverlayView(
       alternatives = result.alternatives,
       hanjaPreloads = result.hanjaPreloads,
       showingTranslation = currentCard.showingTranslation,
+      translationRequested = currentCard.translationRequested || !result.translation.isNullOrBlank(),
       expandedAlternatives = currentCard.expandedAlternatives,
       savingAlternativeIndex = currentCard.savingAlternativeIndex,
       message = if (currentCard.state == LookupCardState.SAVING) currentCard.message else null
@@ -500,10 +505,10 @@ class OcrResultOverlayView(
     invalidate()
   }
 
-  private fun showCachedHanjaResult(sourceWord: String, result: OverlayHanjaPreload) {
+  private fun showCachedHanjaResult(requestId: String, sourceWord: String, result: OverlayHanjaPreload) {
     clearHanjaLoadMore()
     hanjaPopup = HanjaPopup(
-      requestId = "${lookupCard?.requestId.orEmpty()}:${sourceWord}:${result.character}",
+      requestId = requestId,
       character = result.character,
       sourceWord = sourceWord,
       state = HanjaPopupState.LOADED,
@@ -791,7 +796,9 @@ class OcrResultOverlayView(
       hanjaTouchRects.firstOrNull { it.rect.contains(event.x, event.y) }?.let { target ->
         val cachedHanja = cachedHanjaPreload(card, target)
         if (cachedHanja != null) {
-          showCachedHanjaResult(target.sourceWord, cachedHanja)
+          onHanjaRequested(target.character, target.sourceWord)?.let { requestId ->
+            showCachedHanjaResult(requestId, target.sourceWord, cachedHanja)
+          }
         } else {
           onHanjaRequested(target.character, target.sourceWord)
         }
@@ -811,9 +818,20 @@ class OcrResultOverlayView(
         return true
       }
       if (translationButtonRect.contains(event.x, event.y) && card.state == LookupCardState.LOADED) {
-        lookupCard = card.copy(showingTranslation = !card.showingTranslation, expandedAlternatives = false)
+        val shouldShowTranslation = !card.showingTranslation
+        val shouldRequestTranslation = shouldShowTranslation &&
+          card.translation.isNullOrBlank() &&
+          !card.translationRequested
+        lookupCard = card.copy(
+          showingTranslation = shouldShowTranslation,
+          translationRequested = card.translationRequested || shouldRequestTranslation,
+          expandedAlternatives = false
+        )
         hanjaPopup = null
         invalidate()
+        if (shouldRequestTranslation) {
+          onTranslationRequested(card.requestId, translationQueryForCard(card))
+        }
         return true
       }
       if (saveButtonRect.contains(event.x, event.y) && card.canToggleSave) {
@@ -855,14 +873,14 @@ class OcrResultOverlayView(
       val rect = transform.mapRect(target.box)
       if (selectedBox == target.box) {
         val pressedRect = RectF(rect).apply {
-          inset(-dp(if (selectedIsRegion) 4f else 3f), -dp(if (selectedIsRegion) 2f else 1f))
+          inset(-dp(if (selectedIsRegion) 2f else 1f), -dp(if (selectedIsRegion) 1f else 0.5f))
         }
         val radius = dp(if (selectedIsRegion) 4f else 2f)
         canvas.drawRoundRect(pressedRect, radius, radius, if (selectedIsRegion) regionBoxPaint else selectedBoxPaint)
         canvas.drawRoundRect(pressedRect, radius, radius, boxStrokePaint)
       } else {
         val targetRect = RectF(rect).apply {
-          inset(-dp(3f), -dp(1f))
+          inset(-dp(1f), -dp(0.5f))
         }
         canvas.drawRoundRect(targetRect, dp(2f), dp(2f), boxPaint)
         canvas.drawRoundRect(targetRect, dp(2f), dp(2f), boxStrokePaint)
@@ -892,7 +910,16 @@ class OcrResultOverlayView(
     canvas.drawOval(overlayCloseRect, closePaint)
     closePaint.clearShadowLayer()
     canvas.drawOval(overlayCloseRect, closeBorderPaint)
-    drawFfGlyph(canvas, overlayCloseRect.centerX(), overlayCloseRect.centerY(), dp(30f))
+    drawCloseX(canvas, overlayCloseRect)
+  }
+
+  private fun drawCloseX(canvas: Canvas, rect: RectF) {
+    val centerX = rect.centerX()
+    val centerY = rect.centerY()
+    val half = dp(9.5f)
+    closeIconPaint.strokeWidth = dp(2.8f)
+    canvas.drawLine(centerX - half, centerY - half, centerX + half, centerY + half, closeIconPaint)
+    canvas.drawLine(centerX + half, centerY - half, centerX - half, centerY + half, closeIconPaint)
   }
 
   private fun drawFfGlyph(canvas: Canvas, centerX: Float, centerY: Float, size: Float) {
@@ -2075,6 +2102,7 @@ class OcrResultOverlayView(
       activeWordIndex = nextIndex,
       state = LookupCardState.LOADING,
       surface = options[nextIndex],
+      sourceSentence = nextSelection.lineText,
       stem = "",
       definition = null,
       translation = null,
@@ -2087,6 +2115,7 @@ class OcrResultOverlayView(
       alternatives = emptyList(),
       hanjaPreloads = emptyList(),
       showingTranslation = false,
+      translationRequested = false,
       expandedAlternatives = false,
       savingAlternativeIndex = null,
       message = "Looking up..."
@@ -2112,6 +2141,15 @@ class OcrResultOverlayView(
     return tokens.ifEmpty { listOfNotNull(selected.takeIf(String::isNotEmpty)) }
   }
 
+  private fun translationQueryForCard(card: LookupCard): String =
+    if (isRegionSelection(card)) {
+      card.sourceSentence.ifBlank {
+        card.selection.lineText.ifBlank { card.selection.selectedText }
+      }
+    } else {
+      card.stem.ifBlank { card.surface.ifBlank { card.selection.selectedText } }
+    }
+
   private fun splitLookupWords(text: String): List<String> {
     val seen = linkedSetOf<String>()
     text.split(Regex("\\s+"))
@@ -2134,12 +2172,16 @@ class OcrResultOverlayView(
     val imageHeight = (result.result["imageHeight"] as? Number)?.toFloat()?.takeIf { it > 0f } ?: height.toFloat()
     val overlayWidth = width.toFloat().takeIf { it > 0f } ?: imageWidth
     val overlayHeight = height.toFloat().takeIf { it > 0f } ?: imageHeight
+    val overlayLocation = IntArray(2)
+    getLocationOnScreen(overlayLocation)
 
     return ImageToOverlayTransform(
       imageWidth = imageWidth,
       imageHeight = imageHeight,
       overlayWidth = overlayWidth,
-      overlayHeight = overlayHeight
+      overlayHeight = overlayHeight,
+      overlayScreenLeft = overlayLocation[0].toFloat(),
+      overlayScreenTop = overlayLocation[1].toFloat()
     )
   }
 
@@ -2158,7 +2200,8 @@ class OcrResultOverlayView(
 
     Log.d(
       TAG,
-      "overlay=${width}x$height " +
+        "overlay=${width}x$height " +
+        "overlayOrigin=${transform.overlayScreenLeft},${transform.overlayScreenTop} " +
         "image=${transform.imageWidth}x${transform.imageHeight} " +
         "scaleX=${transform.scaleX} scaleY=${transform.scaleY} " +
         "targets=${result.targets.size} " +
@@ -2262,6 +2305,7 @@ private data class LookupCard(
   val activeWordIndex: Int,
   val state: LookupCardState,
   val surface: String,
+  val sourceSentence: String,
   val stem: String,
   val definition: String?,
   val translation: String?,
@@ -2274,6 +2318,7 @@ private data class LookupCard(
   val alternatives: List<OverlayDefinitionEntry>,
   val hanjaPreloads: List<OverlayHanjaPreload>,
   val showingTranslation: Boolean,
+  val translationRequested: Boolean,
   val expandedAlternatives: Boolean,
   val savingAlternativeIndex: Int?,
   val message: String?
@@ -2439,21 +2484,25 @@ private data class ImageToOverlayTransform(
   val imageWidth: Float,
   val imageHeight: Float,
   val overlayWidth: Float,
-  val overlayHeight: Float
+  val overlayHeight: Float,
+  val overlayScreenLeft: Float,
+  val overlayScreenTop: Float
 ) {
-  val scaleX: Float = overlayWidth / imageWidth
-  val scaleY: Float = overlayHeight / imageHeight
+  private val screenWidth: Float = maxOf(imageWidth, overlayScreenLeft + overlayWidth)
+  private val screenHeight: Float = maxOf(imageHeight, overlayScreenTop + overlayHeight)
+  val scaleX: Float = screenWidth / imageWidth
+  val scaleY: Float = screenHeight / imageHeight
 
   fun mapRect(rect: android.graphics.Rect): RectF =
     RectF(
-      rect.left * scaleX,
-      rect.top * scaleY,
-      rect.right * scaleX,
-      rect.bottom * scaleY
+      rect.left * scaleX - overlayScreenLeft,
+      rect.top * scaleY - overlayScreenTop,
+      rect.right * scaleX - overlayScreenLeft,
+      rect.bottom * scaleY - overlayScreenTop
     )
 
   fun overlayToImageX(x: Float): Float =
-    (x / scaleX).coerceIn(0f, imageWidth)
+    ((x + overlayScreenLeft) / scaleX).coerceIn(0f, imageWidth)
 }
 
 private const val TAG = "OcrResultOverlay"

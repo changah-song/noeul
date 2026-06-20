@@ -33,15 +33,12 @@ import {
 import { incrementWordsStudied } from '../services/dailyProgress';
 import {
   softDeleteUserRelatedKnownWord,
-  softDeleteUserVocabContextsForWord,
-  softDeleteRelatedKnownWordsForMainWord,
-  softDeleteUserVocabEntry,
   supabase,
   upsertUserRelatedKnownWord,
   upsertUserVocabEntry,
-  updateUserVocabFields,
 } from '../services/supabase';
 import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
+import { requestUserDataSync } from '../services/userDataSyncQueue';
 import { normalizeBookLanguage } from '../constants/languages';
 import { colors, fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
 
@@ -1258,65 +1255,14 @@ const Learn = ({ navigation, user }) => {
   const reviewDeck = dueWords.length > 0 ? dueWords : availableVisibleWords;
   const reviewDeckTitle = dueWords.length > 0 ? t('learn.dueReview') : t('learn.savedWords');
 
-  const syncFieldsToCloud = useCallback(async (word, patch) => {
-    const {
-      data: { user: cloudUser },
-    } = await supabase.auth.getUser();
+  const syncFieldsToCloud = useCallback(async () => {
+    requestUserDataSync('learn-vocab-fields');
+  }, []);
 
-    if (!cloudUser || activeOwnerId !== cloudUser.id || !isCurrentSyncGeneration(syncGeneration)) {
-      return;
-    }
-
-    try {
-      await updateUserVocabFields({
-        user: cloudUser,
-        ownerId: activeOwnerId,
-        generation: syncGeneration,
-        entry: {
-          word: word.word,
-          hanja: word.hanja,
-          definition: word.def,
-          language: word.language ?? 'ko',
-        },
-        patch,
-      });
-    } catch (error) {
-      console.warn('[Learn] cloud vocab field sync failed:', error.message);
-    }
-  }, [activeOwnerId, syncGeneration]);
-
-  const deleteSavedWord = useCallback(async (word, cloudUser = null) => {
+  const deleteSavedWord = useCallback(async (word) => {
     await removeData(word.word, word.hanja, word.def, word.language ?? 'ko', { ownerId: activeOwnerId });
-
-    if (!cloudUser || activeOwnerId !== cloudUser.id || !isCurrentSyncGeneration(syncGeneration)) {
-      return;
-    }
-
-    const cloudEntry = {
-      word: word.word,
-      hanja: word.hanja,
-      definition: word.def,
-      language: word.language ?? 'ko',
-    };
-    await softDeleteUserVocabEntry({
-      user: cloudUser,
-      ownerId: activeOwnerId,
-      generation: syncGeneration,
-      entry: cloudEntry,
-    });
-    await softDeleteUserVocabContextsForWord({
-      user: cloudUser,
-      ownerId: activeOwnerId,
-      generation: syncGeneration,
-      entry: cloudEntry,
-    });
-    await softDeleteRelatedKnownWordsForMainWord({
-      user: cloudUser,
-      ownerId: activeOwnerId,
-      generation: syncGeneration,
-      entry: cloudEntry,
-    });
-  }, [activeOwnerId, syncGeneration]);
+    requestUserDataSync('learn-vocab-delete');
+  }, [activeOwnerId]);
 
   const handleToggleFavorite = useCallback(async (word) => {
     if (!word) {
@@ -1373,13 +1319,9 @@ const Learn = ({ navigation, user }) => {
       : t('learn.deleteWordsBody', { count });
 
     const removeSelected = async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
       for (const word of selectedWords) {
         try {
-          await deleteSavedWord(word, user);
+          await deleteSavedWord(word);
         } catch (error) {
           console.warn('[Learn] bulk remove failed:', error.message);
         }

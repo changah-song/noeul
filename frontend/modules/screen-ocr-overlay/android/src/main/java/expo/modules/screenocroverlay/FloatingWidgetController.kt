@@ -29,8 +29,9 @@ class FloatingWidgetController(
   private val onStopRequested: () -> Unit,
   private val onTargetSelected: (OcrTapSelection) -> Unit,
   private val onWordNavigationRequested: (OcrTapSelection) -> Unit,
+  private val onTranslationRequested: (String, String) -> Unit,
   private val onSaveRequested: (String, Int?) -> Unit,
-  private val onHanjaRequested: (String, String) -> Unit,
+  private val onHanjaRequested: (String, String) -> String?,
   private val onRelatedKnownToggleRequested: (String, String, OverlayHanjaRelatedWord) -> Unit,
   private val onResultOverlayClosed: () -> Unit
 ) {
@@ -71,7 +72,7 @@ class FloatingWidgetController(
     val viewSize = dp(72f).toInt()
     val visualInset = (viewSize - visualSize) / 2
     val view = OcrBubbleView(context, density).apply {
-      contentDescription = "Floating OCR"
+      contentDescription = "Floating OCR active"
       setRunning(bubbleRunning)
     }
     val displayMetrics = context.resources.displayMetrics
@@ -199,6 +200,7 @@ class FloatingWidgetController(
       ocrResult = result,
       onTargetSelected = onTargetSelected,
       onWordNavigationRequested = onWordNavigationRequested,
+      onTranslationRequested = onTranslationRequested,
       onSaveRequested = onSaveRequested,
       onHanjaRequested = onHanjaRequested,
       onRelatedKnownToggleRequested = onRelatedKnownToggleRequested,
@@ -562,7 +564,7 @@ private class OcrBubbleView(
     }
 
     running = nextRunning
-    contentDescription = if (running) "Cancel floating OCR" else "Floating OCR"
+    contentDescription = if (running) "Cancel floating OCR scan" else "Floating OCR active"
     invalidate()
   }
 

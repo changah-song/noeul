@@ -21,9 +21,11 @@ const DICTIONARY_CACHE_GLOSS_MIGRATION_KEY = 'dictionary_cache_gloss_migration_v
 const DICTIONARY_CACHE_WORD_PARTS_MIGRATION_KEY = 'dictionary_cache_word_parts_migration_v1';
 const DICTIONARY_CACHE_AUDIO_MIGRATION_KEY = 'dictionary_cache_audio_migration_v1';
 const DICTIONARY_CACHE_PROFICIENCY_MIGRATION_KEY = 'dictionary_cache_proficiency_migration_v1';
+const DICTIONARY_CACHE_ROMANIZATION_MIGRATION_KEY = 'dictionary_cache_romanization_migration_v1';
 const LOCAL_OWNER_SQLITE_MIGRATION_KEY = 'local_owner_sqlite_migration_v1';
 const PROFILE_SQLITE_MIGRATION_KEY = 'profile_sqlite_migration_v1';
 export const PREPROCESS_VERSION = 4;
+const SQLITE_BIND_BATCH_SIZE = 450;
 const DEFAULT_STABILITY = 1.0;
 const DEFAULT_DIFFICULTY = 5.0;
 const FSRS_PARAMS = {
@@ -104,6 +106,14 @@ const sqlNormalizedColumnOrDefault = (columns, column, fallback) => (
 const sqlBookLevelColumnOrNull = (columns, column) => (
   columns.includes(column) ? column : 'NULL'
 );
+
+const chunkValues = (values, size = SQLITE_BIND_BATCH_SIZE) => {
+  const chunks = [];
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size));
+  }
+  return chunks;
+};
 
 const normalizeBookLevelForStorage = (bookLevel) => {
   if (!bookLevel || typeof bookLevel !== 'object') {
@@ -430,6 +440,7 @@ export const migrateVocabTable = async () => {
  *   hanja       — Hanja characters (e.g. "愛情"), or "N/A"
  *   pos         — part of speech (Noun, Verb, Adjective, Adverb)
  *   domain      — subject domain from KRDICT (e.g. "Law", "Science") — optional
+ *   romanization — Korean romanization cached from /romanize/ — optional
  *   ipa         — English IPA pronunciation from Kaikki — optional
  *   audio_us    — authentic US pronunciation audio URL from Kaikki/Wikimedia — optional
  *   audio_uk    — authentic UK pronunciation audio URL from Kaikki/Wikimedia — optional
@@ -453,6 +464,7 @@ export const createDictionaryCacheTable = () => {
           hanja        TEXT,
           pos          TEXT,
           domain       TEXT,
+          romanization TEXT,
           ipa          TEXT,
           audio_us     TEXT,
           audio_uk     TEXT,
@@ -490,6 +502,7 @@ export const migrateDictionaryCache = async () => {
   const selectHanja = sqlTextColumnOrNull(columns, 'hanja');
   const selectPos = sqlTextColumnOrNull(columns, 'pos');
   const selectDomain = sqlTextColumnOrNull(columns, 'domain');
+  const selectRomanization = sqlTextColumnOrNull(columns, 'romanization');
   const selectIpa = sqlTextColumnOrNull(columns, 'ipa');
   const selectEtymology = sqlTextColumnOrNull(columns, 'etymology');
   const selectDerived = sqlTextColumnOrNull(columns, 'derived');
@@ -511,6 +524,7 @@ export const migrateDictionaryCache = async () => {
           hanja        TEXT,
           pos          TEXT,
           domain       TEXT,
+          romanization TEXT,
           ipa          TEXT,
           etymology    TEXT,
           derived      TEXT,
@@ -530,9 +544,9 @@ export const migrateDictionaryCache = async () => {
 
       tx.executeSql(
         `INSERT OR IGNORE INTO dictionary_cache_new
-           (id, stem, language, interface_language, definition, gloss, hanja, pos, domain, ipa, etymology, derived, related, word_parts, last_updated)
+           (id, stem, language, interface_language, definition, gloss, hanja, pos, domain, romanization, ipa, etymology, derived, related, word_parts, last_updated)
          SELECT id, stem, ${selectLanguage}, ${selectInterfaceLanguage}, ${selectDefinition}, ${selectGloss}, ${selectHanja},
-                ${selectPos}, ${selectDomain}, ${selectIpa}, ${selectEtymology}, ${selectDerived},
+                ${selectPos}, ${selectDomain}, ${selectRomanization}, ${selectIpa}, ${selectEtymology}, ${selectDerived},
                 ${selectRelated}, ${selectWordParts}, ${selectLastUpdated}
          FROM dictionary_cache
          WHERE stem IS NOT NULL AND TRIM(stem) != ''
@@ -580,6 +594,7 @@ export const migrateDictionaryCacheInterfaceLanguage = async () => {
   const selectHanja = sqlTextColumnOrNull(columns, 'hanja');
   const selectPos = sqlTextColumnOrNull(columns, 'pos');
   const selectDomain = sqlTextColumnOrNull(columns, 'domain');
+  const selectRomanization = sqlTextColumnOrNull(columns, 'romanization');
   const selectIpa = sqlTextColumnOrNull(columns, 'ipa');
   const selectEtymology = sqlTextColumnOrNull(columns, 'etymology');
   const selectDerived = sqlTextColumnOrNull(columns, 'derived');
@@ -601,6 +616,7 @@ export const migrateDictionaryCacheInterfaceLanguage = async () => {
           hanja        TEXT,
           pos          TEXT,
           domain       TEXT,
+          romanization TEXT,
           ipa          TEXT,
           etymology    TEXT,
           derived      TEXT,
@@ -620,9 +636,9 @@ export const migrateDictionaryCacheInterfaceLanguage = async () => {
 
       tx.executeSql(
         `INSERT OR IGNORE INTO dictionary_cache_language_new
-           (id, stem, language, interface_language, definition, gloss, hanja, pos, domain, ipa, etymology, derived, related, word_parts, last_updated)
+           (id, stem, language, interface_language, definition, gloss, hanja, pos, domain, romanization, ipa, etymology, derived, related, word_parts, last_updated)
          SELECT id, stem, ${selectLanguage}, ${selectInterfaceLanguage}, ${selectDefinition}, ${selectGloss}, ${selectHanja},
-                ${selectPos}, ${selectDomain}, ${selectIpa}, ${selectEtymology}, ${selectDerived},
+                ${selectPos}, ${selectDomain}, ${selectRomanization}, ${selectIpa}, ${selectEtymology}, ${selectDerived},
                 ${selectRelated}, ${selectWordParts}, ${selectLastUpdated}
          FROM dictionary_cache
          WHERE stem IS NOT NULL AND TRIM(stem) != ''
@@ -678,6 +694,7 @@ export const migrateDictionaryCacheTargetLanguage = async () => {
   const selectHanja = sqlTextColumnOrNull(columns, 'hanja');
   const selectPos = sqlTextColumnOrNull(columns, 'pos');
   const selectDomain = sqlTextColumnOrNull(columns, 'domain');
+  const selectRomanization = sqlTextColumnOrNull(columns, 'romanization');
   const selectIpa = sqlTextColumnOrNull(columns, 'ipa');
   const selectEtymology = sqlTextColumnOrNull(columns, 'etymology');
   const selectDerived = sqlTextColumnOrNull(columns, 'derived');
@@ -699,6 +716,7 @@ export const migrateDictionaryCacheTargetLanguage = async () => {
           hanja        TEXT,
           pos          TEXT,
           domain       TEXT,
+          romanization TEXT,
           ipa          TEXT,
           etymology    TEXT,
           derived      TEXT,
@@ -718,9 +736,9 @@ export const migrateDictionaryCacheTargetLanguage = async () => {
 
       tx.executeSql(
         `INSERT OR IGNORE INTO dictionary_cache_target_language_new
-           (id, stem, language, interface_language, definition, gloss, hanja, pos, domain, ipa, etymology, derived, related, word_parts, last_updated)
+           (id, stem, language, interface_language, definition, gloss, hanja, pos, domain, romanization, ipa, etymology, derived, related, word_parts, last_updated)
          SELECT id, stem, ${selectLanguage}, ${selectInterfaceLanguage}, ${selectDefinition}, ${selectGloss}, ${selectHanja},
-                ${selectPos}, ${selectDomain}, ${selectIpa}, ${selectEtymology}, ${selectDerived},
+                ${selectPos}, ${selectDomain}, ${selectRomanization}, ${selectIpa}, ${selectEtymology}, ${selectDerived},
                 ${selectRelated}, ${selectWordParts}, ${selectLastUpdated}
          FROM dictionary_cache
          WHERE stem IS NOT NULL AND TRIM(stem) != ''
@@ -881,6 +899,32 @@ export const migrateDictionaryCacheProficiencyLevels = async () => {
   });
 
   await AsyncStorage.setItem(DICTIONARY_CACHE_PROFICIENCY_MIGRATION_KEY, 'done');
+};
+
+export const migrateDictionaryCacheRomanization = async () => {
+  const migrationState = await AsyncStorage.getItem(DICTIONARY_CACHE_ROMANIZATION_MIGRATION_KEY);
+  const columns = await getTableColumns('dictionary_cache');
+
+  if (migrationState === 'done' && columns.includes('romanization')) return;
+
+  if (!columns.includes('romanization')) {
+    await new Promise((resolve, reject) => {
+      db.transaction(tx => {
+        tx.executeSql(
+          'ALTER TABLE dictionary_cache ADD COLUMN romanization TEXT',
+          [],
+          () => resolve(),
+          (_, error) => {
+            console.error('[Database] Error adding dictionary_cache.romanization:', error);
+            reject(error);
+            return false;
+          }
+        );
+      });
+    });
+  }
+
+  await AsyncStorage.setItem(DICTIONARY_CACHE_ROMANIZATION_MIGRATION_KEY, 'done');
 };
 
 /**
@@ -1052,6 +1096,10 @@ const createOwnerIndexes = () => {
         tx.executeSql(
           `CREATE INDEX IF NOT EXISTS idx_book_index_owner_surface
            ON book_index(owner_id, profile_id, book_uri, surface)`
+        );
+        tx.executeSql(
+          `CREATE INDEX IF NOT EXISTS idx_book_index_owner_stem_surface
+           ON book_index(owner_id, profile_id, book_uri, stem_id, surface)`
         );
         tx.executeSql(
           `CREATE INDEX IF NOT EXISTS idx_book_preprocess_meta_owner_book
@@ -1359,7 +1407,7 @@ export const replaceDefaultProfileId = (profileId, language = 'ko') => {
 
     db.transaction(
       tx => {
-        SQLITE_USER_DATA_TABLES.forEach((tableName) => {
+        SQLITE_OWNER_SCOPED_TABLES.forEach((tableName) => {
           tx.executeSql(
             `UPDATE ${tableName}
              SET profile_id = ?
@@ -1380,9 +1428,17 @@ export const replaceDefaultProfileId = (profileId, language = 'ko') => {
 const SQLITE_USER_DATA_TABLES = [
   'vocab',
   'vocab_contexts',
+];
+
+const SQLITE_OWNER_CACHE_TABLES = [
   'book_index',
   'book_preprocess_meta',
   'book_preprocess_chapters',
+];
+
+const SQLITE_OWNER_SCOPED_TABLES = [
+  ...SQLITE_USER_DATA_TABLES,
+  ...SQLITE_OWNER_CACHE_TABLES,
 ];
 
 const sqliteTableHasData = (tableName, whereClause, params = [], logLabel = 'owner data') => (
@@ -1424,7 +1480,7 @@ export const clearSqliteUserData = async (ownerId = GUEST_OWNER_ID) => {
   return new Promise((resolve, reject) => {
     db.transaction(
       tx => {
-        SQLITE_USER_DATA_TABLES.forEach((tableName) => {
+        SQLITE_OWNER_SCOPED_TABLES.forEach((tableName) => {
           tx.executeSql(`DELETE FROM ${tableName} WHERE owner_id = ?`, [scopedOwnerId]);
         });
       },
@@ -1478,7 +1534,7 @@ export const clearUnscopedSqliteUserData = async () => {
   return new Promise((resolve, reject) => {
     db.transaction(
       tx => {
-        SQLITE_USER_DATA_TABLES.forEach((tableName) => {
+        SQLITE_OWNER_SCOPED_TABLES.forEach((tableName) => {
           tx.executeSql(
             `DELETE FROM ${tableName}
              WHERE owner_id IS NULL OR TRIM(owner_id) = ''`
@@ -1563,6 +1619,7 @@ export const initAllTables = async () => {
   await migrateDictionaryCacheWordParts();
   await migrateDictionaryCacheAudio();
   await migrateDictionaryCacheProficiencyLevels();
+  await migrateDictionaryCacheRomanization();
   await migrateBookIndex();
   await createBookIndexTable();
   await createBookPreprocessTables();
@@ -2998,7 +3055,7 @@ export const deleteAllDataFromTable = (options = {}) => {
 /**
  * insertCacheEntries
  * Bulk-insert an array of {stem, definition, hanja, pos, domain?} objects
- * returned by the backend /preprocess_book/ endpoint.
+ * returned by chapter preprocessing or live lookup endpoints.
  * Uses an upsert so translated live lookups can replace stale fallback rows
  * while preprocessing rows with null fields do not wipe existing data.
  *
@@ -3021,6 +3078,7 @@ export const insertCacheEntries = (entries, scopeOrInterfaceLanguage = 'en', opt
             hanja,
             pos,
             domain,
+            romanization,
             ipa,
             audio_us,
             audio_uk,
@@ -3041,15 +3099,16 @@ export const insertCacheEntries = (entries, scopeOrInterfaceLanguage = 'en', opt
           const levelMetadata = normalizeDictionaryLevelMetadata(entry);
           tx.executeSql(
             `INSERT INTO dictionary_cache
-               (stem, language, interface_language, definition, gloss, hanja, pos, domain, ipa, audio_us, audio_uk, etymology, derived, related, word_parts,
+               (stem, language, interface_language, definition, gloss, hanja, pos, domain, romanization, ipa, audio_us, audio_uk, etymology, derived, related, word_parts,
                 level_rank, level_label, level_system, level_source)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(stem, language, interface_language) DO UPDATE SET
                definition = COALESCE(excluded.definition, dictionary_cache.definition),
                gloss = COALESCE(excluded.gloss, dictionary_cache.gloss),
                hanja = COALESCE(excluded.hanja, dictionary_cache.hanja),
                pos = COALESCE(excluded.pos, dictionary_cache.pos),
                domain = COALESCE(excluded.domain, dictionary_cache.domain),
+               romanization = COALESCE(excluded.romanization, dictionary_cache.romanization),
                ipa = COALESCE(excluded.ipa, dictionary_cache.ipa),
                audio_us = COALESCE(excluded.audio_us, dictionary_cache.audio_us),
                audio_uk = COALESCE(excluded.audio_uk, dictionary_cache.audio_uk),
@@ -3071,6 +3130,7 @@ export const insertCacheEntries = (entries, scopeOrInterfaceLanguage = 'en', opt
               hanja ?? null,
               pos ?? null,
               domain ?? null,
+              romanization ?? null,
               ipa ?? null,
               audio_us ?? null,
               audio_uk ?? null,
@@ -3097,6 +3157,41 @@ export const insertCacheEntries = (entries, scopeOrInterfaceLanguage = 'en', opt
   });
 };
 
+export const updateCacheRomanizations = (entries, scopeOrInterfaceLanguage = 'en', options = {}) => {
+  const scope = normalizeDictionaryCacheScope(scopeOrInterfaceLanguage, options);
+  const normalizedEntries = (entries || [])
+    .map(({ stem, romanization }) => ({
+      stem: typeof stem === 'string' ? stem.trim() : '',
+      romanization: typeof romanization === 'string' ? romanization.trim() : '',
+    }))
+    .filter((entry) => entry.stem && entry.romanization);
+
+  return new Promise((resolve, reject) => {
+    if (normalizedEntries.length === 0) {
+      resolve();
+      return;
+    }
+
+    db.transaction(
+      tx => {
+        normalizedEntries.forEach(({ stem, romanization }) => {
+          tx.executeSql(
+            `UPDATE dictionary_cache
+             SET romanization = ?, last_updated = CURRENT_TIMESTAMP
+             WHERE language = ? AND interface_language = ? AND stem = ?`,
+            [romanization, scope.language, scope.interfaceLanguage, stem]
+          );
+        });
+      },
+      (error) => {
+        console.error('[Database] Error updating cache romanizations:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+};
+
 /**
  * lookupCacheByStems
  * Query dictionary_cache for one or more stems in a single SQL call.
@@ -3116,7 +3211,7 @@ export const lookupCacheByStems = (stems, scopeOrInterfaceLanguage = 'en', optio
     const scope = normalizeDictionaryCacheScope(scopeOrInterfaceLanguage, options);
     db.transaction(tx => {
       tx.executeSql(
-        `SELECT id, stem, language, interface_language, definition, gloss, hanja, pos, domain, ipa, audio_us, audio_uk, etymology, derived, related, word_parts,
+        `SELECT id, stem, language, interface_language, definition, gloss, hanja, pos, domain, romanization, ipa, audio_us, audio_uk, etymology, derived, related, word_parts,
                 level_rank, level_label, level_system, level_source
          FROM dictionary_cache
          WHERE language = ? AND interface_language = ? AND stem IN (${placeholders})`,
@@ -3164,7 +3259,7 @@ export const lookupBookIndexBySurface = (ownerId, bookUri, surface, scopeOrInter
     db.transaction(tx => {
       tx.executeSql(
         `SELECT dc.id, dc.stem, dc.language, dc.interface_language, dc.definition, dc.gloss, dc.hanja, dc.pos,
-                dc.domain, dc.ipa, dc.audio_us, dc.audio_uk, dc.etymology, dc.derived, dc.related, dc.word_parts,
+                dc.domain, dc.romanization, dc.ipa, dc.audio_us, dc.audio_uk, dc.etymology, dc.derived, dc.related, dc.word_parts,
                 dc.level_rank, dc.level_label, dc.level_system, dc.level_source
          FROM book_index bi
          JOIN dictionary_cache dc ON dc.id = bi.stem_id
@@ -3187,35 +3282,38 @@ export const lookupBookIndexBySurface = (ownerId, bookUri, surface, scopeOrInter
   });
 };
 
-export const lookupBookHighlightSurfaces = (ownerId, bookUri, savedStems, scopeOrInterfaceLanguage = 'en', options = {}) => {
+export const lookupBookHighlightSurfaces = async (ownerId, bookUri, savedStems, scopeOrInterfaceLanguage = 'en', options = {}) => {
   const scopedOwnerId = resolveOwnerId(ownerId);
   const scope = normalizeDictionaryCacheScope(scopeOrInterfaceLanguage, options);
   const scopedProfileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, scope.language);
 
-  return new Promise((resolve, reject) => {
-    if (!bookUri || !savedStems || savedStems.length === 0) {
-      return resolve([]);
-    }
+  if (!bookUri || !savedStems || savedStems.length === 0) {
+    return [];
+  }
 
-    const uniqueStems = [...new Set(savedStems.filter(Boolean))];
-    if (uniqueStems.length === 0) {
-      return resolve([]);
-    }
+  const uniqueStems = [...new Set(
+    savedStems
+      .map((stem) => (typeof stem === 'string' ? stem.trim() : ''))
+      .filter(Boolean)
+  )];
+  if (uniqueStems.length === 0) {
+    return [];
+  }
 
-    const placeholders = uniqueStems.map(() => '?').join(',');
-
+  const queryChunk = (stems) => new Promise((resolve, reject) => {
+    const placeholders = stems.map(() => '?').join(',');
     db.transaction(tx => {
       tx.executeSql(
         `SELECT DISTINCT bi.surface, dc.stem
-         FROM book_index bi
-         JOIN dictionary_cache dc ON dc.id = bi.stem_id
-         WHERE bi.owner_id = ?
-           AND bi.profile_id = ?
-           AND bi.book_uri = ?
-           AND dc.language = ?
+         FROM dictionary_cache dc
+         JOIN book_index bi ON bi.stem_id = dc.id
+         WHERE dc.language = ?
            AND dc.interface_language = ?
-           AND dc.stem IN (${placeholders})`,
-        [scopedOwnerId, scopedProfileId, bookUri, scope.language, scope.interfaceLanguage, ...uniqueStems],
+           AND dc.stem IN (${placeholders})
+           AND bi.owner_id = ?
+           AND bi.profile_id = ?
+           AND bi.book_uri = ?`,
+        [scope.language, scope.interfaceLanguage, ...stems, scopedOwnerId, scopedProfileId, bookUri],
         (_, result) => {
           resolve(result.rows._array);
         },
@@ -3226,6 +3324,17 @@ export const lookupBookHighlightSurfaces = (ownerId, bookUri, savedStems, scopeO
       );
     });
   });
+
+  const rowsByKey = new Map();
+  const chunkRows = await Promise.all(chunkValues(uniqueStems).map(queryChunk));
+  chunkRows.flat().forEach((row) => {
+    const key = `${row.surface}|${row.stem}`;
+    if (!rowsByKey.has(key)) {
+      rowsByKey.set(key, row);
+    }
+  });
+
+  return [...rowsByKey.values()];
 };
 
 export const lookupBookLevelSurfaces = (
@@ -3253,16 +3362,16 @@ export const lookupBookLevelSurfaces = (
                 dc.level_label,
                 dc.level_system,
                 dc.level_source
-         FROM book_index bi
-         JOIN dictionary_cache dc ON dc.id = bi.stem_id
-         WHERE bi.owner_id = ?
-           AND bi.profile_id = ?
-           AND bi.book_uri = ?
-           AND dc.language = ?
+         FROM dictionary_cache dc
+         JOIN book_index bi ON bi.stem_id = dc.id
+         WHERE dc.language = ?
            AND dc.level_rank IS NOT NULL
            AND dc.level_rank >= ?
+           AND bi.owner_id = ?
+           AND bi.profile_id = ?
+           AND bi.book_uri = ?
          ORDER BY LENGTH(bi.surface) DESC, bi.surface ASC`,
-        [scopedOwnerId, scopedProfileId, bookUri, scope.language, numericRank],
+        [scope.language, numericRank, scopedOwnerId, scopedProfileId, bookUri],
         (_, result) => {
           resolve(result.rows._array);
         },

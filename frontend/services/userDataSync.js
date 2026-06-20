@@ -15,6 +15,8 @@ import {
   makeUserVocabContextKey,
   makeUserRelatedKnownWordKey,
   makeUserVocabKey,
+  softDeleteRelatedKnownWordsForMainWord,
+  softDeleteUserVocabContextsForWord,
   softDeleteUserVocabEntry,
   upsertUserVocabContext,
   upsertUserRelatedKnownWord,
@@ -127,7 +129,7 @@ const syncVocabFromCloud = async (user, ownerId, generation) => {
 const syncVocabContextsFromCloud = async (user, ownerId, generation) => {
   const [cloudContexts, localContexts, localVocabRows] = await Promise.all([
     fetchUserVocabContexts(user.id, { includeDeleted: true }),
-    getAllVocabContexts({ ownerId }),
+    getAllVocabContexts({ ownerId, includeDeleted: true }),
     viewData({ ownerId }),
   ]);
 
@@ -164,6 +166,10 @@ const syncVocabContextsFromCloud = async (user, ownerId, generation) => {
     }
 
     if (!cloudContext && localContext) {
+      if (localContext.deleted_at || localContext.deletedAt) {
+        continue;
+      }
+
       const vocabKey = makeUserVocabKey({
         language: localContext.language ?? 'ko',
         word: localContext.word,
@@ -204,6 +210,23 @@ const syncVocabContextsFromCloud = async (user, ownerId, generation) => {
       getTimestamp(localContext, ['updated_at', 'updatedAt']),
       getTimestamp(localContext, ['seen_at', 'seenAt'])
     );
+    const localDeletedAt = getTimestamp(localContext, ['deleted_at', 'deletedAt']);
+
+    if (localDeletedAt && localDeletedAt >= cloudUpdatedAt) {
+      assertCanUploadForOwner({ ownerId, user });
+      await softDeleteUserVocabContextsForWord({
+        user,
+        ownerId,
+        generation,
+        entry: {
+          language: localContext.language ?? 'ko',
+          word: localContext.word,
+          hanja: localContext.hanja,
+          definition: localContext.def ?? localContext.definition,
+        },
+      });
+      continue;
+    }
 
     if (cloudUpdatedAt > localUpdatedAt) {
       await insertVocabContextIfMissing(cloudContext, { ownerId });
@@ -229,10 +252,11 @@ const toLocalRelatedKnownRelation = (relation) => ({
 });
 
 const syncRelatedKnownWordsFromCloud = async (user, ownerId, generation) => {
-  const [cloudRelations, localRelations, localVocabRows] = await Promise.all([
+  const [cloudRelations, localRelations, localVocabRows, allLocalVocabRows] = await Promise.all([
     fetchUserRelatedKnownWords(user.id, { includeDeleted: true }),
     getAllRelatedKnownWords({ ownerId }),
     viewData({ ownerId }),
+    viewData({ ownerId, includeDeleted: true }),
   ]);
   if (!shouldContinueSync(generation)) {
     return;
@@ -244,6 +268,16 @@ const syncRelatedKnownWordsFromCloud = async (user, ownerId, generation) => {
       hanja: row.hanja,
       definition: row.def,
     }))
+  );
+  const deletedLocalVocabByKey = new Map(
+    allLocalVocabRows
+      .filter((row) => row.deleted_at || row.deletedAt)
+      .map((row) => [makeUserVocabKey({
+        language: row.language ?? 'ko',
+        word: row.word,
+        hanja: row.hanja,
+        definition: row.def,
+      }), row])
   );
   const cloudByKey = new Map(
     cloudRelations.map((relation) => [makeUserRelatedKnownWordKey(relation), relation])
@@ -278,6 +312,35 @@ const syncRelatedKnownWordsFromCloud = async (user, ownerId, generation) => {
 
     if (cloudRelation && !localRelation) {
       if (!cloudRelation.deleted_at) {
+        const vocabKey = makeUserVocabKey({
+          language: cloudRelation.language ?? 'ko',
+          word: cloudRelation.main_word ?? cloudRelation.mainWord,
+          hanja: cloudRelation.main_hanja ?? cloudRelation.mainHanja,
+          definition: cloudRelation.main_definition ?? cloudRelation.mainDefinition,
+        });
+        const deletedLocalVocab = deletedLocalVocabByKey.get(vocabKey);
+        const localDeletedAt = getTimestamp(deletedLocalVocab, ['deleted_at', 'deletedAt']);
+        const cloudUpdatedAt = Math.max(
+          getTimestamp(cloudRelation, ['updated_at', 'updatedAt']),
+          getTimestamp(cloudRelation, ['marked_at', 'markedAt'])
+        );
+
+        if (deletedLocalVocab && localDeletedAt >= cloudUpdatedAt) {
+          assertCanUploadForOwner({ ownerId, user });
+          await softDeleteRelatedKnownWordsForMainWord({
+            user,
+            ownerId,
+            generation,
+            entry: {
+              language: cloudRelation.language ?? 'ko',
+              word: cloudRelation.main_word ?? cloudRelation.mainWord,
+              hanja: cloudRelation.main_hanja ?? cloudRelation.mainHanja,
+              definition: cloudRelation.main_definition ?? cloudRelation.mainDefinition,
+            },
+          });
+          continue;
+        }
+
         await addRelatedKnownWordForEntry({
           ...toLocalRelatedKnownRelation(cloudRelation),
           ownerId,
