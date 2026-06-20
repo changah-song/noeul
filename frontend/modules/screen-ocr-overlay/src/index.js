@@ -92,6 +92,12 @@ export const addOverlayLookupRequestedListener = (listener) => (
 
 export const onOverlayLookupRequested = addOverlayLookupRequestedListener;
 
+export const addOverlayTranslationRequestedListener = (listener) => (
+    eventEmitter?.addListener('onOverlayTranslationRequested', listener) ?? emptySubscription
+);
+
+export const onOverlayTranslationRequested = addOverlayTranslationRequestedListener;
+
 export const addOverlaySaveRequestedListener = (listener) => (
     eventEmitter?.addListener('onOverlaySaveRequested', listener) ?? emptySubscription
 );
@@ -135,6 +141,7 @@ export default {
     addOcrResultListener,
     addOcrWordSelectedListener,
     addOverlayLookupRequestedListener,
+    addOverlayTranslationRequestedListener,
     addOverlaySaveRequestedListener,
     addOverlayHanjaRequestedListener,
     addOverlayRelatedKnownToggleRequestedListener,

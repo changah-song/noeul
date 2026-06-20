@@ -16,6 +16,7 @@ import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.WindowManager
@@ -25,10 +26,13 @@ import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
 import java.io.File
 import java.io.FileOutputStream
+import java.nio.ByteBuffer
 
 private const val IMAGE_ACQUIRE_ATTEMPTS = 9
 private const val IMAGE_ACQUIRE_DELAY_MS = 80L
 private const val DEBUG_BOX_LOG_LIMIT = 10
+private const val OCR_CAPTURE_DEBUG_ENABLED = false
+private const val OCR_CAPTURE_TIMING_ENABLED = true
 private const val TAG = "ScreenOcrCapture"
 
 class ScreenCaptureSession(
@@ -92,60 +96,87 @@ class ScreenCaptureSession(
   fun analyzeLatestImage(cropBounds: OverlayCaptureBounds? = null): SerializedOcrResult {
     check(!released) { "Screen capture session is no longer active" }
 
+    val totalStartNs = SystemClock.elapsedRealtimeNanos()
     val image = acquireLatestImageWithRetry()
       ?: throw IllegalStateException("No screen image is available yet")
+    val acquireEndNs = SystemClock.elapsedRealtimeNanos()
 
     image.use { currentImage ->
-      val fullBitmap = currentImage.toBitmap()
-      var cropBitmap: Bitmap? = null
+      val bitmapStartNs = SystemClock.elapsedRealtimeNanos()
+      val capturedBitmap = currentImage.toBitmap(cropBounds)
+      val bitmapEndNs = SystemClock.elapsedRealtimeNanos()
+      val ocrBitmap = capturedBitmap.bitmap
       return try {
-        val appliedCropBounds = sanitizeCropBounds(cropBounds, fullBitmap)
-        val ocrBitmap = if (appliedCropBounds != null) {
-          Bitmap.createBitmap(
-            fullBitmap,
-            appliedCropBounds.left,
-            appliedCropBounds.top,
-            appliedCropBounds.width,
-            appliedCropBounds.height
-          ).also { cropBitmap = it }
-        } else {
-          fullBitmap
-        }
+        val appliedCropBounds = capturedBitmap.cropBounds
         val inputImage = InputImage.fromBitmap(ocrBitmap, 0)
+        val recognizeStartNs = SystemClock.elapsedRealtimeNanos()
         val ocrResult = Tasks.await(recognizer.process(inputImage))
+        val recognizeEndNs = SystemClock.elapsedRealtimeNanos()
+        val serializeStartNs = SystemClock.elapsedRealtimeNanos()
         val serialized = OcrSerializer.serialize(
           result = ocrResult,
           imageWidth = ocrBitmap.width,
           imageHeight = ocrBitmap.height,
-          filterTopChrome = appliedCropBounds == null
+          filterTopChrome = appliedCropBounds == null,
+          includeText = OCR_CAPTURE_DEBUG_ENABLED,
+          includeBlocks = OCR_CAPTURE_DEBUG_ENABLED,
+          includeDebugBoxes = OCR_CAPTURE_DEBUG_ENABLED
         )
-        val debugBitmapPath = saveDebugBitmap(ocrBitmap, serialized.debugBoxes)
-        val debugInfo = buildDebugInfo(
-          fullBitmap = fullBitmap,
-          ocrBitmap = ocrBitmap,
-          cropBounds = appliedCropBounds,
-          serialized = serialized,
-          debugBitmapPath = debugBitmapPath
-        )
-
-        logCaptureGeometry(
-          fullBitmap = fullBitmap,
-          ocrBitmap = ocrBitmap,
-          cropBounds = appliedCropBounds,
-          serialized = serialized,
-          debugBitmapPath = debugBitmapPath
-        )
-        serialized.copy(
-          result = serialized.result + mapOf(
-            "debugOverlayBitmapUri" to debugBitmapPath?.let { File(it).toURI().toString() },
-            "debug" to debugInfo
+        val serializeEndNs = SystemClock.elapsedRealtimeNanos()
+        val refineStartNs = SystemClock.elapsedRealtimeNanos()
+        val refinedSerialized = OcrBoxRefiner.refine(serialized, ocrBitmap)
+        val refineEndNs = SystemClock.elapsedRealtimeNanos()
+        val timedSerialized = withCaptureTiming(
+          serialized = refinedSerialized,
+          timing = buildCaptureTiming(
+            totalStartNs = totalStartNs,
+            acquireEndNs = acquireEndNs,
+            bitmapStartNs = bitmapStartNs,
+            bitmapEndNs = bitmapEndNs,
+            recognizeStartNs = recognizeStartNs,
+            recognizeEndNs = recognizeEndNs,
+            serializeStartNs = serializeStartNs,
+            serializeEndNs = serializeEndNs,
+            refineStartNs = refineStartNs,
+            refineEndNs = refineEndNs,
+            capturedWidth = currentImage.width,
+            capturedHeight = currentImage.height,
+            ocrBitmap = ocrBitmap,
+            cropBounds = appliedCropBounds,
+            targetCount = refinedSerialized.targets.size
           )
         )
-      } finally {
-        if (cropBitmap != null && cropBitmap !== fullBitmap) {
-          cropBitmap?.recycle()
+
+        if (!OCR_CAPTURE_DEBUG_ENABLED) {
+          timedSerialized
+        } else {
+          val debugBitmapPath = saveDebugBitmap(ocrBitmap, timedSerialized.debugBoxes)
+          val debugInfo = buildDebugInfo(
+            capturedWidth = currentImage.width,
+            capturedHeight = currentImage.height,
+            ocrBitmap = ocrBitmap,
+            cropBounds = appliedCropBounds,
+            serialized = timedSerialized,
+            debugBitmapPath = debugBitmapPath
+          )
+
+          logCaptureGeometry(
+            capturedWidth = currentImage.width,
+            capturedHeight = currentImage.height,
+            ocrBitmap = ocrBitmap,
+            cropBounds = appliedCropBounds,
+            serialized = timedSerialized,
+            debugBitmapPath = debugBitmapPath
+          )
+          timedSerialized.copy(
+            result = timedSerialized.result + mapOf(
+              "debugOverlayBitmapUri" to debugBitmapPath?.let { File(it).toURI().toString() },
+              "debug" to debugInfo
+            )
+          )
         }
-        fullBitmap.recycle()
+      } finally {
+        ocrBitmap.recycle()
       }
     }
   }
@@ -238,40 +269,108 @@ class ScreenCaptureSession(
   private fun createImageReader(width: Int, height: Int): ImageReader =
     ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
 
-  private fun Image.toBitmap(): Bitmap {
+  private fun Image.toBitmap(cropBounds: OverlayCaptureBounds? = null): CapturedBitmap {
     val plane = planes.firstOrNull()
       ?: throw IllegalStateException("Captured image has no pixel plane")
     val buffer = plane.buffer
     val pixelStride = plane.pixelStride
     val rowStride = plane.rowStride
-    val rowPadding = rowStride - pixelStride * width
-    val paddedWidth = width + (rowPadding / pixelStride).coerceAtLeast(0)
+    val appliedCropBounds = sanitizeCropBounds(cropBounds, width, height)
+    val cropLeft = appliedCropBounds?.left ?: 0
+    val cropTop = appliedCropBounds?.top ?: 0
+    val cropWidth = appliedCropBounds?.width ?: width
+    val cropHeight = appliedCropBounds?.height ?: height
+
+    if (pixelStride != 4) {
+      throw IllegalStateException("Unsupported screen capture pixel stride: $pixelStride")
+    }
 
     buffer.rewind()
-    val paddedBitmap = Bitmap.createBitmap(paddedWidth, height, Bitmap.Config.ARGB_8888)
-    paddedBitmap.copyPixelsFromBuffer(buffer)
+    val bitmap = Bitmap.createBitmap(cropWidth, cropHeight, Bitmap.Config.ARGB_8888)
+    val rowByteCount = cropWidth * pixelStride
 
-    if (paddedWidth == width) {
-      return paddedBitmap
+    if (appliedCropBounds == null && rowStride == rowByteCount && buffer.remaining() >= rowByteCount * cropHeight) {
+      bitmap.copyPixelsFromBuffer(buffer)
+      return CapturedBitmap(bitmap = bitmap, cropBounds = null)
     }
 
-    return Bitmap.createBitmap(paddedBitmap, 0, 0, width, height).also {
-      paddedBitmap.recycle()
+    val output = ByteBuffer.allocate(rowByteCount * cropHeight)
+    val rowBuffer = ByteArray(rowByteCount)
+
+    for (row in 0 until cropHeight) {
+      val rowStart = (cropTop + row) * rowStride + cropLeft * pixelStride
+      if (rowStart < 0 || rowStart + rowByteCount > buffer.capacity()) {
+        throw IllegalStateException("Captured image row is outside the pixel buffer")
+      }
+      buffer.position(rowStart)
+      buffer.get(rowBuffer, 0, rowByteCount)
+      output.put(rowBuffer)
     }
+
+    output.rewind()
+    bitmap.copyPixelsFromBuffer(output)
+    return CapturedBitmap(bitmap = bitmap, cropBounds = appliedCropBounds)
   }
+
+  private fun withCaptureTiming(
+    serialized: SerializedOcrResult,
+    timing: Map<String, Any?>
+  ): SerializedOcrResult {
+    if (!OCR_CAPTURE_TIMING_ENABLED) {
+      return serialized
+    }
+
+    return serialized.copy(result = serialized.result + mapOf("timing" to timing))
+  }
+
+  private fun buildCaptureTiming(
+    totalStartNs: Long,
+    acquireEndNs: Long,
+    bitmapStartNs: Long,
+    bitmapEndNs: Long,
+    recognizeStartNs: Long,
+    recognizeEndNs: Long,
+    serializeStartNs: Long,
+    serializeEndNs: Long,
+    refineStartNs: Long,
+    refineEndNs: Long,
+    capturedWidth: Int,
+    capturedHeight: Int,
+    ocrBitmap: Bitmap,
+    cropBounds: OverlayCaptureBounds?,
+    targetCount: Int
+  ): Map<String, Any?> =
+    mapOf(
+      "acquireMs" to elapsedMs(totalStartNs, acquireEndNs),
+      "bitmapMs" to elapsedMs(bitmapStartNs, bitmapEndNs),
+      "recognizeMs" to elapsedMs(recognizeStartNs, recognizeEndNs),
+      "serializeMs" to elapsedMs(serializeStartNs, serializeEndNs),
+      "targetRefineMs" to elapsedMs(refineStartNs, refineEndNs),
+      "totalMs" to elapsedMs(totalStartNs, refineEndNs),
+      "targetCount" to targetCount,
+      "capturedWidth" to capturedWidth,
+      "capturedHeight" to capturedHeight,
+      "ocrBitmapWidth" to ocrBitmap.width,
+      "ocrBitmapHeight" to ocrBitmap.height,
+      "cropped" to (cropBounds != null)
+    )
+
+  private fun elapsedMs(startNs: Long, endNs: Long): Double =
+    (endNs - startNs).coerceAtLeast(0L).toDouble() / 1_000_000.0
 
   private fun sanitizeCropBounds(
     cropBounds: OverlayCaptureBounds?,
-    fullBitmap: Bitmap
+    sourceWidth: Int,
+    sourceHeight: Int
   ): OverlayCaptureBounds? {
     if (cropBounds == null || cropBounds.width <= 0 || cropBounds.height <= 0) {
       return null
     }
 
-    val cropLeft = cropBounds.left.coerceIn(0, fullBitmap.width - 1)
-    val cropTop = cropBounds.top.coerceIn(0, fullBitmap.height - 1)
-    val cropWidth = cropBounds.width.coerceAtMost(fullBitmap.width - cropLeft).coerceAtLeast(1)
-    val cropHeight = cropBounds.height.coerceAtMost(fullBitmap.height - cropTop).coerceAtLeast(1)
+    val cropLeft = cropBounds.left.coerceIn(0, sourceWidth - 1)
+    val cropTop = cropBounds.top.coerceIn(0, sourceHeight - 1)
+    val cropWidth = cropBounds.width.coerceAtMost(sourceWidth - cropLeft).coerceAtLeast(1)
+    val cropHeight = cropBounds.height.coerceAtMost(sourceHeight - cropTop).coerceAtLeast(1)
 
     return OverlayCaptureBounds(
       left = cropLeft,
@@ -282,15 +381,16 @@ class ScreenCaptureSession(
   }
 
   private fun buildDebugInfo(
-    fullBitmap: Bitmap,
+    capturedWidth: Int,
+    capturedHeight: Int,
     ocrBitmap: Bitmap,
     cropBounds: OverlayCaptureBounds?,
     serialized: SerializedOcrResult,
     debugBitmapPath: String?
   ): Map<String, Any?> =
     mapOf(
-      "capturedBitmapWidth" to fullBitmap.width,
-      "capturedBitmapHeight" to fullBitmap.height,
+      "capturedBitmapWidth" to capturedWidth,
+      "capturedBitmapHeight" to capturedHeight,
       "ocrBitmapWidth" to ocrBitmap.width,
       "ocrBitmapHeight" to ocrBitmap.height,
       "overlayCaptureBounds" to cropBounds?.toMap(),
@@ -307,7 +407,8 @@ class ScreenCaptureSession(
     )
 
   private fun logCaptureGeometry(
-    fullBitmap: Bitmap,
+    capturedWidth: Int,
+    capturedHeight: Int,
     ocrBitmap: Bitmap,
     cropBounds: OverlayCaptureBounds?,
     serialized: SerializedOcrResult,
@@ -321,7 +422,7 @@ class ScreenCaptureSession(
 
     Log.d(
       TAG,
-      "fullBitmap=${fullBitmap.width}x${fullBitmap.height} " +
+      "fullBitmap=${capturedWidth}x$capturedHeight " +
         "overlayBounds=${cropBounds?.toLogString() ?: "none"} " +
         "ocrBitmap=${ocrBitmap.width}x${ocrBitmap.height} " +
         "overlayView=${cropBounds?.let { "${it.width}x${it.height}" } ?: "unknown"} " +
@@ -410,6 +511,11 @@ private data class CaptureMetrics(
   val width: Int,
   val height: Int,
   val densityDpi: Int
+)
+
+private data class CapturedBitmap(
+  val bitmap: Bitmap,
+  val cropBounds: OverlayCaptureBounds?
 )
 
 private fun resolveCaptureMetrics(context: Context): CaptureMetrics {

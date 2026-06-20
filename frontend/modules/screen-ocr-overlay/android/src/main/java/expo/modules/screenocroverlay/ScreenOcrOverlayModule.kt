@@ -15,6 +15,8 @@ import expo.modules.kotlin.modules.ModuleDefinition
 import java.lang.ref.WeakReference
 
 private const val SCREEN_CAPTURE_REQUEST_CODE = 8274
+private const val START_WIDGET_CAPTURE_WAIT_ATTEMPTS = 25
+private const val START_WIDGET_CAPTURE_WAIT_DELAY_MS = 120L
 
 class ScreenOcrOverlayModule : Module() {
   private val context: Context
@@ -34,6 +36,7 @@ class ScreenOcrOverlayModule : Module() {
       "onOcrResult",
       "onOcrWordSelected",
       "onOverlayLookupRequested",
+      "onOverlayTranslationRequested",
       "onOverlaySaveRequested",
       "onOverlayHanjaRequested",
       "onOverlayRelatedKnownToggleRequested",
@@ -104,14 +107,7 @@ class ScreenOcrOverlayModule : Module() {
         return@AsyncFunction
       }
 
-      val service = ScreenOcrOverlayService.getActiveInstance()
-      if (service == null || !service.isScreenCaptureActive()) {
-        promise.reject("E_SCREEN_CAPTURE_INACTIVE", "Request screen capture before starting the floating widget", null)
-        return@AsyncFunction
-      }
-
-      val visible = service.showFloatingWidget()
-      promise.resolve(mapOf("visible" to visible))
+      startFloatingWidgetWhenCaptureReady(promise)
     }
 
     AsyncFunction("stopFloatingWidget") { promise: Promise ->
@@ -210,6 +206,27 @@ class ScreenOcrOverlayModule : Module() {
     emitCurrentStatus(if (granted) "overlay_permission_granted" else "overlay_permission_denied")
   }
 
+  private fun startFloatingWidgetWhenCaptureReady(promise: Promise, attempt: Int = 0) {
+    val service = ScreenOcrOverlayService.getActiveInstance()
+    if (service?.isScreenCaptureActive() == true) {
+      val visible = service.showFloatingWidget()
+      promise.resolve(mapOf(
+        "visible" to visible,
+        "screenCaptureActive" to true
+      ))
+      return
+    }
+
+    if (attempt >= START_WIDGET_CAPTURE_WAIT_ATTEMPTS) {
+      promise.reject("E_SCREEN_CAPTURE_INACTIVE", "Request screen capture before starting the floating widget", null)
+      return
+    }
+
+    mainHandler.postDelayed({
+      startFloatingWidgetWhenCaptureReady(promise, attempt + 1)
+    }, START_WIDGET_CAPTURE_WAIT_DELAY_MS)
+  }
+
   private fun consumeWordSelectionIntent(intent: Intent?) {
     val selection = ScreenOcrOverlayService.selectionFromIntent(intent) ?: return
     val selectionId = selection[ScreenOcrOverlayService.EXTRA_SELECTION_ID] as? String
@@ -230,6 +247,7 @@ class ScreenOcrOverlayModule : Module() {
         "status" to status,
         "overlayPermissionGranted" to Settings.canDrawOverlays(context),
         "screenCaptureActive" to ScreenOcrOverlayService.isCaptureActive(),
+        "analysisActive" to (ScreenOcrOverlayService.getActiveInstance()?.isAnalysisActive() == true),
         "floatingVisible" to (ScreenOcrOverlayService.getActiveInstance()?.isFloatingWidgetVisible() == true),
         "resultOverlayVisible" to (ScreenOcrOverlayService.getActiveInstance()?.isResultOverlayVisible() == true)
       )
@@ -254,6 +272,10 @@ class ScreenOcrOverlayModule : Module() {
 
     fun emitOverlayLookupRequested(body: Map<String, Any?>) {
       emit("onOverlayLookupRequested", body)
+    }
+
+    fun emitOverlayTranslationRequested(body: Map<String, Any?>) {
+      emit("onOverlayTranslationRequested", body)
     }
 
     fun emitOverlaySaveRequested(body: Map<String, Any?>) {

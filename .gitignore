@@ -5,3 +5,8 @@ __pycache__/
 *.pyc
 scripts/hanja_translated.json
 scripts/hanja_translation_cache.json
+scripts/en_morpheme_review_queue.jsonl
+scripts/en_morpheme_review_retry_queue.jsonl
+scripts/en_morpheme_review_decisions.jsonl
+scripts/.en_morpheme_review_batch_ids.json
+scripts/.en_morpheme_review_results_*.json

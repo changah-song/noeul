@@ -39,7 +39,7 @@ import {
     updateUserPreferenceFields,
 } from '../services/preferencesCloudSync';
 import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
-import { upsertUserVocabContext } from '../services/supabase';
+import { requestUserDataSync } from '../services/userDataSyncQueue';
 import { normalizeBookLanguage, normalizeInterfaceLanguageCode } from '../constants/languages';
 import { getProficiencyLevelForLanguage } from '../constants/proficiencyLevels';
 import { createNativeReaderThemeTokens, radii, spacing, textStyles, useTheme } from '../theme';
@@ -399,20 +399,26 @@ const isPdfBook = (book, uri = '') => (
     || String(uri || '').toLowerCase().split('?')[0].endsWith('.pdf')
 );
 
+const CHAPTER_PREPROCESS_RADIUS = 1;
+
 const buildChapterPreprocessOrder = (centerSpineIndex, totalSpineItems) => {
     if (!Number.isInteger(centerSpineIndex) || totalSpineItems <= 0) {
         return [];
     }
 
     const order = [centerSpineIndex];
-    for (let spineIndex = centerSpineIndex + 1; spineIndex < totalSpineItems; spineIndex += 1) {
-        order.push(spineIndex);
-    }
-    for (let spineIndex = centerSpineIndex - 1; spineIndex >= 0; spineIndex -= 1) {
-        order.push(spineIndex);
+    for (let offset = 1; offset <= CHAPTER_PREPROCESS_RADIUS; offset += 1) {
+        const nextSpineIndex = centerSpineIndex + offset;
+        const previousSpineIndex = centerSpineIndex - offset;
+        if (nextSpineIndex < totalSpineItems) {
+            order.push(nextSpineIndex);
+        }
+        if (previousSpineIndex >= 0) {
+            order.push(previousSpineIndex);
+        }
     }
 
-    return [...new Set(order)];
+    return order;
 };
 
 const chapterWindowEntryForPackage = (readerPackage, role) => {
@@ -778,9 +784,6 @@ const Read = ({
         });
         setLookupPlacement(event.placement === 'top' ? 'top' : 'bottom');
 
-        const ownerId = activeOwnerId;
-        const generation = syncGeneration;
-
         recordVocabContextForSurface({
             ownerId: activeOwnerId,
             surface: text,
@@ -789,20 +792,13 @@ const Read = ({
             sourceBookTitle: activeBook?.title ?? null,
             language: activeBookLanguage,
         }).then((context) => {
-            if (user?.id && ownerId === user.id && context && isCurrentSyncGeneration(generation)) {
-                upsertUserVocabContext({
-                    user,
-                    ownerId,
-                    generation,
-                    context,
-                }).catch((error) => {
-                    console.warn('[Read] Failed to sync vocab context:', error?.message ?? error);
-                });
+            if (context) {
+                requestUserDataSync('reader-selected-vocab-context');
             }
         }).catch((error) => {
             console.warn('[Read] Failed to record vocab context:', error?.message ?? error);
         });
-    }, [activeBook?.title, activeBookLanguage, activeOwnerId, currentBook, syncGeneration, user]);
+    }, [activeBook?.title, activeBookLanguage, activeOwnerId, currentBook]);
 
     const handleNativeSelectionCleared = useCallback(() => {
         setHighlightedWord('');
@@ -1615,9 +1611,11 @@ const Read = ({
                 return;
             }
 
-            const finalStatus = failedChapters === 0
-                ? 'complete'
-                : (completedChapters > 0 ? 'partial' : 'failed');
+            const fullBookWindow = queue.length >= totalSpineItems;
+            const windowSucceeded = failedChapters === 0 && completedChapters > 0;
+            const finalStatus = !windowSucceeded
+                ? (completedChapters > 0 ? 'partial' : 'failed')
+                : (fullBookWindow ? 'complete' : 'partial');
             const completedWordCount = (
                 finalStatus === 'complete'
                 && countedWordChapters === queue.length
@@ -1640,7 +1638,7 @@ const Read = ({
                 book.uri === currentBook
                     ? {
                         ...book,
-                        preprocessed: finalStatus === 'complete',
+                        preprocessed: fullBookWindow && finalStatus === 'complete',
                         preprocessing: false,
                         ...(completedWordCount != null
                             ? { wordCount: completedWordCount }
@@ -1659,14 +1657,16 @@ const Read = ({
                     ...(completedBookLevel?.level
                         ? { difficulty: completedBookLevel.level, bookLevel: completedBookLevel }
                         : {}),
-                    preprocessed: finalStatus === 'complete',
+                    preprocessed: fullBookWindow && finalStatus === 'complete',
                     preprocessing: false,
                 });
             }
 
-            if (finalStatus === 'complete') {
+            if (windowSucceeded) {
                 setPreprocessStatus('done');
-                onPreprocessComplete?.(currentBook);
+                if (fullBookWindow) {
+                    onPreprocessComplete?.(currentBook);
+                }
             } else {
                 setPreprocessStatus('error');
             }
@@ -1886,31 +1886,24 @@ const Read = ({
         }
 
         if (Array.isArray(savedHighlights) && savedHighlights.length > 0) {
-            savedHighlights.forEach((highlight) => {
-                const ownerId = activeOwnerId;
-                const generation = syncGeneration;
+            Promise.all(savedHighlights.map((highlight) => (
                 recordVocabContextForSurface({
-                    ownerId,
+                    ownerId: activeOwnerId,
                     surface: typeof highlight?.text === 'string' ? highlight.text : '',
                     sentence: typeof highlight?.sentence === 'string' ? highlight.sentence : '',
                     sourceBookUri: currentBook,
                     sourceBookTitle: activeBook?.title ?? null,
                     language: activeBookLanguage,
-                }).then((context) => {
-                    if (user?.id && ownerId === user.id && context && isCurrentSyncGeneration(generation)) {
-                        upsertUserVocabContext({
-                            user,
-                            ownerId,
-                            generation,
-                            context,
-                        }).catch((error) => {
-                            console.warn('[Read] Failed to sync visible vocab context:', error?.message ?? error);
-                        });
-                    }
                 }).catch((error) => {
                     console.warn('[Read] Failed to record visible vocab context:', error?.message ?? error);
+                    return false;
+                })
+            )))
+                .then((contexts) => {
+                    if (contexts.some(Boolean)) {
+                        requestUserDataSync('reader-visible-vocab-context');
+                    }
                 });
-            });
         }
 
         const loadedSpineItem = nativeReaderPackageRef.current?.spine
@@ -1972,7 +1965,6 @@ const Read = ({
         scheduleCloudProgressSync,
         setBooks,
         updateNativeRestorePosition,
-        user?.id,
     ]);
 
     const handleNativeChapterCommit = useCallback(({

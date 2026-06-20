@@ -6,101 +6,54 @@ import sqlite3
 import unicodedata
 from pathlib import Path
 
+try:
+    from morpheme_seed import (
+        BOUND_ROOTS as CURATED_BOUND_ROOTS,
+        PREFIXES as CURATED_PREFIXES,
+        SUFFIXES as CURATED_SUFFIXES,
+    )
+except ModuleNotFoundError:
+    from scripts.morpheme_seed import (
+        BOUND_ROOTS as CURATED_BOUND_ROOTS,
+        PREFIXES as CURATED_PREFIXES,
+        SUFFIXES as CURATED_SUFFIXES,
+    )
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "backend" / "en_dict.db"
 JSONL_PATH = ROOT / "scripts" / "kaikki.org-dictionary-English.jsonl"
 JSONL_GZ_PATH = ROOT / "scripts" / "kaikki.org-dictionary-English.jsonl.gz"
+DEFAULT_MORPHEME_REVIEW_QUEUE_PATH = ROOT / "scripts" / "en_morpheme_review_queue.jsonl"
+DEFAULT_MORPHEME_REVIEW_DECISIONS_PATH = ROOT / "scripts" / "en_morpheme_review_decisions.jsonl"
 BATCH_SIZE = 10_000
-WORD_PARTS_PARSER_VERSION = 3
+WORD_PARTS_PARSER_VERSION = 4
 MORPHEME_GLOSS_VERSION = 1
 EN_AUDIO_TAGS = {
     "us": {"US", "General-American"},
     "uk": {"UK", "Received-Pronunciation"},
 }
-AFFIX_STRIP_MIN_PREFIX_BASE_LEN = 3
-AFFIX_STRIP_MIN_SUFFIX_BASE_LEN = 4
-AFFIX_STRIP_MIN_PREFIX_LEN = 2
-AFFIX_STRIP_MIN_SUFFIX_LEN = 3
-TIER3_MIN_PREFIX_EVIDENCE = 75
-TIER3_MIN_SUFFIX_EVIDENCE = 100
-TIER3_SHORT_PREFIX_ALLOWLIST = {"re", "un"}
-TIER3_THREE_LETTER_PREFIX_ALLOWLIST = {
-    "bio",
-    "geo",
-    "mid",
-    "mis",
-    "neo",
-    "non",
-    "out",
-    "pre",
-    "pro",
-    "sub",
-    "tri",
-}
-TIER3_SUFFIX_ALLOWLIST = {
-    "ability",
-    "able",
-    "age",
-    "al",
-    "ation",
-    "dom",
-    "ee",
-    "eer",
-    "ess",
-    "esque",
-    "ful",
-    "hood",
-    "ial",
-    "ibility",
-    "ible",
-    "ical",
-    "ing",
-    "ish",
-    "ise",
-    "ism",
-    "ist",
-    "ity",
-    "ive",
-    "ization",
-    "ize",
-    "less",
-    "like",
-    "ment",
-    "ness",
-    "oid",
-    "ology",
-    "ous",
-    "ship",
-    "some",
-    "ward",
-    "wards",
-    "wise",
-}
-TIER3_SUFFIX_BLOCKLIST = {
-    "ana",
-    "an",
-    "ant",
-    "ar",
-    "ed",
-    "en",
-    "ent",
-    "er",
-    "ers",
-    "es",
-    "ian",
-    "ic",
-    "in",
-    "ion",
-    "ling",
-    "ly",
-    "or",
-    "s",
-    "y",
-}
-TIER3_SHORT_E_RESTORED_BASE_ALLOWLIST = {"use"}
 TIER3_TARGET_POS = {"noun", "verb", "adj", "adv"}
 TIER3_BASE_POS = {"noun", "verb", "adj", "adv"}
+CURATED_WORD_PART_SOURCE = "curated_morpheme"
+CURATED_WORD_PART_REVIEWED_SOURCE = "curated_morpheme_reviewed"
+CURATED_MIN_BASE_LEN = 3
+CURATED_MAX_WORD_PARTS = 4
+CURATED_MAX_PREFIXES = 2
+CURATED_MAX_SUFFIXES = 3
+CURATED_HIGH_SCORE = 9
+CURATED_MEDIUM_SCORE = 7
+CURATED_MIN_SCORE_MARGIN = 2
+CURATED_HIGH_SCORE_MARGIN = 3
+CURATED_CONTEXTUAL_PREFIX_ALIASES = {
+    "il-": "en-",
+    "im-": "en-",
+    "in-": "en-",
+    "ir-": "en-",
+}
+CURATED_CONTEXTUAL_SUFFIX_ALIASES = {
+    "-ion": "-tion",
+}
 WORD_PART_TEMPLATE_PRIORITY = [
     "surf",
     "af",
@@ -153,6 +106,7 @@ MORPHEME_GLOSS_TYPES = {
     "suffix",
 }
 MORPHEME_GLOSS_SOURCE_PRIORITIES = {
+    "curated_seed_v1": 100,
     "builtin_classical_seed": 90,
     "kaikki_latin": 80,
     "kaikki_ancient_greek": 80,
@@ -327,6 +281,60 @@ TIER3_DEFINITION_BLOCKLIST_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+WORD_TOKEN_RE = re.compile(r"[a-z]+")
+CURATED_MEANING_STOPWORDS = {
+    "a",
+    "act",
+    "an",
+    "and",
+    "be",
+    "become",
+    "cause",
+    "certain",
+    "does",
+    "for",
+    "in",
+    "into",
+    "of",
+    "or",
+    "person",
+    "process",
+    "quality",
+    "related",
+    "relating",
+    "result",
+    "state",
+    "that",
+    "the",
+    "thing",
+    "to",
+    "who",
+    "with",
+}
+CURATED_NEGATION_CUES = {
+    "anti",
+    "cannot",
+    "fail",
+    "fails",
+    "free",
+    "lack",
+    "lacking",
+    "lacks",
+    "no",
+    "non",
+    "not",
+    "opposite",
+    "reverse",
+    "un",
+    "unable",
+    "without",
+}
+CURATED_AWAY_CUES = {"apart", "aside", "away", "back", "down", "off", "out"}
+CURATED_LOCATIVE_CUES = {"in", "inside", "into", "through", "within"}
+CURATED_OPAQUE_BREAKDOWN_WORDS = {
+    "because",
+    "understand",
+}
 
 
 def first_ipa(entry):
@@ -487,6 +495,8 @@ def normalize_language_name(value):
         return ""
 
     normalized = re.sub(r"\s+", " ", cleaned).strip().casefold()
+    if re.search(r"\blatin\s*/\s*greek\b|\bgreek\s*/\s*latin\b", normalized):
+        return "Latin/Greek"
     if "latin" in normalized:
         return "Latin"
     if "greek" in normalized:
@@ -695,6 +705,100 @@ def populate_seed_morpheme_glosses(conn):
     return changed
 
 
+def iter_curated_seed_morpheme_glosses():
+    for part_type, entries in (
+        ("prefix", CURATED_PREFIXES),
+        ("suffix", CURATED_SUFFIXES),
+        ("bound_root", CURATED_BOUND_ROOTS),
+    ):
+        for item in entries:
+            seeded_item = dict(item)
+            seeded_item.setdefault("type", part_type)
+            seeded_item.setdefault("display", seeded_item["key"])
+            seeded_item.setdefault("source", "curated_seed_v1")
+            seeded_item.setdefault("confidence", "high")
+            yield seeded_item
+
+
+def add_curated_seed_expected_keys(expected_keys, key, part_type, language):
+    normalized_type = normalize_gloss_part_type(part_type)
+    language_name = normalize_language_name(language)
+    for lookup_key in morpheme_key_candidates(key, normalized_type):
+        expected_keys.add((lookup_key, normalized_type, language_name))
+
+
+def prune_stale_curated_seed_morpheme_glosses(conn, expected_keys):
+    rows = conn.execute(
+        """
+        SELECT lookup_key, part_type, language
+        FROM en_morpheme_glosses
+        WHERE source = 'curated_seed_v1'
+        """
+    ).fetchall()
+    stale_rows = [row for row in rows if row not in expected_keys]
+    if not stale_rows:
+        return 0
+
+    conn.executemany(
+        """
+        DELETE FROM en_morpheme_glosses
+        WHERE lookup_key = ?
+          AND part_type = ?
+          AND language = ?
+          AND source = 'curated_seed_v1'
+        """,
+        stale_rows,
+    )
+    return len(stale_rows)
+
+
+def populate_curated_seed_morpheme_glosses(conn):
+    changed = 0
+    expected_keys = set()
+    for item in iter_curated_seed_morpheme_glosses():
+        add_curated_seed_expected_keys(
+            expected_keys,
+            item["key"],
+            item["type"],
+            item.get("language"),
+        )
+        changed += upsert_morpheme_gloss(
+            conn,
+            item["key"],
+            item["type"],
+            item["meaning"],
+            display=item.get("display"),
+            language=item.get("language"),
+            source=item.get("source", "curated_seed_v1"),
+            source_word=item.get("key"),
+            confidence=item.get("confidence", "high"),
+        )
+        for alias in item.get("aliases") or []:
+            add_curated_seed_expected_keys(
+                expected_keys,
+                alias,
+                item["type"],
+                item.get("language"),
+            )
+            changed += upsert_morpheme_gloss(
+                conn,
+                alias,
+                item["type"],
+                item["meaning"],
+                display=alias,
+                language=item.get("language"),
+                source=item.get("source", "curated_seed_v1"),
+                source_word=item.get("key"),
+                confidence=item.get("confidence", "high"),
+            )
+
+    stale_deleted = prune_stale_curated_seed_morpheme_glosses(conn, expected_keys)
+    if stale_deleted:
+        print(f"Removed {stale_deleted:,} stale curated morpheme gloss rows.")
+
+    return changed
+
+
 def populate_english_affix_morpheme_glosses(conn):
     changed = 0
     rows = conn.execute(
@@ -762,6 +866,12 @@ def populate_english_base_morpheme_glosses(conn, needed_keys):
 
 
 def populate_existing_word_part_morpheme_glosses(conn):
+    deleted = conn.execute(
+        "DELETE FROM en_morpheme_glosses WHERE source = 'parsed_word_parts'"
+    ).rowcount
+    if deleted:
+        print(f"Removed {deleted:,} stale parsed word-part morpheme gloss rows.")
+
     changed = 0
     rows = conn.execute(
         "SELECT word, parts_json FROM en_word_parts WHERE confidence IN ('high', 'medium')"
@@ -894,6 +1004,7 @@ def populate_source_dump_morpheme_glosses(conn, needed_keys):
 
 def populate_morpheme_glosses(conn):
     create_morpheme_gloss_schema(conn)
+    curated_seed_changed = populate_curated_seed_morpheme_glosses(conn)
     seed_changed = populate_seed_morpheme_glosses(conn)
     affix_changed = populate_english_affix_morpheme_glosses(conn)
     parsed_changed = populate_existing_word_part_morpheme_glosses(conn)
@@ -904,10 +1015,18 @@ def populate_morpheme_glosses(conn):
     conn.commit()
     source_changed = populate_source_dump_morpheme_glosses(conn, needed_keys)
     conn.commit()
-    total_changed = seed_changed + affix_changed + parsed_changed + base_changed + source_changed
+    total_changed = (
+        curated_seed_changed
+        + seed_changed
+        + affix_changed
+        + parsed_changed
+        + base_changed
+        + source_changed
+    )
     print(
         f"Morpheme gloss lookup ready. Upserted {total_changed:,} rows "
-        f"({seed_changed:,} seed, {affix_changed:,} English affix, "
+        f"({curated_seed_changed:,} curated seed, {seed_changed:,} legacy seed, "
+        f"{affix_changed:,} English affix, "
         f"{base_changed:,} English base, {parsed_changed:,} parsed roots, "
         f"{source_changed:,} source-dump)."
     )
@@ -1606,20 +1725,717 @@ def populate_tier2_word_parts(conn):
     return inserted + replaced
 
 
-def normalize_prefix_core(prefix):
-    if not isinstance(prefix, str) or not prefix.endswith("-"):
+def curated_entry_match_core(value, part_type):
+    display = normalize_affix_text(value, part_type)
+    key = normalize_morpheme_key(display, part_type)
+    if not key:
         return None
-    core = prefix[:-1].strip().lower()
-    return core if len(core) >= AFFIX_STRIP_MIN_PREFIX_LEN and core.isalpha() else None
+    if part_type == "prefix":
+        core = key[:-1] if key.endswith("-") else key
+    elif part_type == "suffix":
+        core = key[1:] if key.startswith("-") else key
+    else:
+        core = key
+    return core if core and core.isalpha() else None
 
 
-def normalize_suffix_core(suffix):
-    if not isinstance(suffix, str) or not suffix.startswith("-"):
+def curated_entry_display(value, part_type):
+    return normalize_affix_text(value, part_type)
+
+
+def build_curated_match_entry(item, surface, part_type, *, contextual_alias=False):
+    match_core = curated_entry_match_core(surface, part_type)
+    if not match_core:
         return None
-    core = suffix[1:].strip().lower()
-    if not core.isalpha():
+
+    key = item["key"]
+    display = curated_entry_display(surface, part_type)
+    canonical_display = curated_entry_display(key, part_type)
+    lookup_terms = {
+        term
+        for term in (
+            curated_entry_match_core(key, part_type),
+            match_core,
+            *(curated_entry_match_core(alias, part_type) for alias in item.get("aliases") or []),
+        )
+        if term
+    }
+    return {
+        "key": key,
+        "display": display,
+        "canonical": canonical_display,
+        "type": part_type,
+        "language": normalize_language_name(item.get("language")),
+        "meaning": clean_gloss_meaning(item.get("meaning"), max_length=80),
+        "match_core": match_core,
+        "lookup_terms": sorted(lookup_terms, key=len, reverse=True),
+        "contextual_alias": contextual_alias,
+    }
+
+
+def add_curated_match_entry(entries_by_core, entry):
+    if not entry:
+        return
+    entries = entries_by_core.setdefault(entry["match_core"], [])
+    signature = (
+        entry["key"],
+        entry["display"],
+        entry["type"],
+        entry["language"],
+        entry["meaning"],
+    )
+    if any(
+        (
+            existing["key"],
+            existing["display"],
+            existing["type"],
+            existing["language"],
+            existing["meaning"],
+        ) == signature
+        for existing in entries
+    ):
+        return
+    entries.append(entry)
+
+
+def add_contextual_curated_aliases(entries_by_core, part_type, aliases):
+    if not aliases:
+        return
+
+    entries_by_key = {
+        entry["canonical"]: entry
+        for entries in entries_by_core.values()
+        for entry in entries
+    }
+    for surface, canonical in aliases.items():
+        canonical_display = curated_entry_display(canonical, part_type)
+        canonical_entry = entries_by_key.get(canonical_display)
+        if not canonical_entry:
+            continue
+
+        alias_entry = dict(canonical_entry)
+        alias_entry["display"] = curated_entry_display(surface, part_type)
+        alias_entry["match_core"] = curated_entry_match_core(surface, part_type)
+        alias_entry["lookup_terms"] = sorted(
+            {
+                *canonical_entry.get("lookup_terms", []),
+                curated_entry_match_core(surface, part_type),
+            },
+            key=len,
+            reverse=True,
+        )
+        alias_entry["contextual_alias"] = True
+        add_curated_match_entry(entries_by_core, alias_entry)
+
+
+def load_curated_morpheme_match_sets():
+    match_sets = {
+        "prefix": {},
+        "suffix": {},
+        "bound_root": {},
+    }
+    for item in iter_curated_seed_morpheme_glosses():
+        part_type = item["type"]
+        for surface in [item["key"], *(item.get("aliases") or [])]:
+            add_curated_match_entry(
+                match_sets[part_type],
+                build_curated_match_entry(item, surface, part_type),
+            )
+
+    add_contextual_curated_aliases(
+        match_sets["prefix"],
+        "prefix",
+        CURATED_CONTEXTUAL_PREFIX_ALIASES,
+    )
+    add_contextual_curated_aliases(
+        match_sets["suffix"],
+        "suffix",
+        CURATED_CONTEXTUAL_SUFFIX_ALIASES,
+    )
+
+    return {
+        part_type: {
+            "by_core": by_core,
+            "lengths": sorted({len(core) for core in by_core}, reverse=True),
+            "overlap_lengths": sorted(
+                {len(core) - 1 for core in by_core if len(core) > 2},
+                reverse=True,
+            ),
+        }
+        for part_type, by_core in match_sets.items()
+    }
+
+
+def normalized_text_tokens(*values):
+    tokens = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        normalized = strip_diacritics(value.casefold())
+        tokens.update(WORD_TOKEN_RE.findall(normalized))
+    return tokens
+
+
+def meaning_keywords(meaning):
+    return {
+        token
+        for token in normalized_text_tokens(meaning)
+        if len(token) >= 3 and token not in CURATED_MEANING_STOPWORDS
+    }
+
+
+def token_matches_keyword(tokens, keyword):
+    if keyword in tokens:
+        return True
+    if len(keyword) >= 4 and keyword.endswith("e"):
+        keyword = keyword[:-1]
+    return any(
+        len(token) >= 4
+        and len(keyword) >= 4
+        and (token.startswith(keyword) or keyword.startswith(token))
+        for token in tokens
+    )
+
+
+def count_keyword_matches(tokens, keywords):
+    return sum(1 for keyword in keywords if token_matches_keyword(tokens, keyword))
+
+
+def normalized_evidence_text(*values):
+    return " ".join(
+        strip_diacritics(value.casefold())
+        for value in values
+        if isinstance(value, str) and value.strip()
+    )
+
+
+def evidence_mentions_term(evidence_text, term, part_type):
+    if not term:
+        return False
+    term = strip_diacritics(term.casefold())
+    if part_type == "base":
+        return bool(re.search(rf"\b{re.escape(term)}\b", evidence_text))
+    if part_type in {"prefix", "suffix"}:
+        affix = f"{term}-" if part_type == "prefix" else f"-{term}"
+        if affix in evidence_text:
+            return True
+        return bool(re.search(rf"\b{re.escape(term)}\b", evidence_text))
+    if part_type == "bound_root" and len(term) <= 3:
+        return bool(re.search(rf"\b{re.escape(term)}\b", evidence_text))
+    if len(term) <= 2:
+        return bool(re.search(rf"\b{re.escape(term)}\b", evidence_text))
+    return term in evidence_text
+
+
+def evidence_mentions_entry(evidence_text, entry):
+    return any(
+        evidence_mentions_term(evidence_text, term, entry["type"])
+        for term in entry.get("lookup_terms") or [entry.get("match_core")]
+    )
+
+
+def build_curated_word_part(entry):
+    part = {
+        "text": entry["display"],
+        "display": entry["display"],
+        "type": entry["type"],
+    }
+    if entry.get("meaning"):
+        part["meaning"] = entry["meaning"]
+        part["meaning_source"] = "curated_seed_v1"
+        part["meaning_confidence"] = "high"
+    if entry.get("language"):
+        part["note"] = entry["language"]
+    if entry.get("canonical") and entry["canonical"] != entry["display"]:
+        part["canonical"] = entry["canonical"]
+    return part
+
+
+def build_curated_base_part(base_word):
+    return {
+        "text": base_word,
+        "display": base_word,
+        "type": "base",
+    }
+
+
+def prefix_match_sequences(word, prefix_match_set):
+    by_core = prefix_match_set["by_core"]
+    lengths = prefix_match_set["lengths"]
+    results = [([], 0)]
+
+    def visit(offset, prefixes):
+        if len(prefixes) >= CURATED_MAX_PREFIXES:
+            return
+        for length in lengths:
+            if len(word) <= offset + length + 1:
+                continue
+            core = word[offset:offset + length]
+            entries = by_core.get(core)
+            if not entries:
+                continue
+            for entry in entries:
+                next_prefixes = [*prefixes, entry]
+                results.append((next_prefixes, offset + length))
+                visit(offset + length, next_prefixes)
+
+    visit(0, [])
+    return results
+
+
+def suffix_surface_matches(segment, suffix_match_set, right_suffix=None):
+    by_core = suffix_match_set["by_core"]
+    lengths = suffix_match_set["lengths"]
+    overlap_lengths = suffix_match_set["overlap_lengths"]
+
+    for length in lengths:
+        if len(segment) <= length:
+            continue
+        core = segment[-length:]
+        for entry in by_core.get(core, []):
+            yield segment[:-length], entry, "exact"
+
+    right_core = right_suffix.get("match_core") if right_suffix else ""
+    allow_dropped_e = right_core[:1] in {"a", "e", "i", "o", "u"}
+    if allow_dropped_e:
+        for core, entries in by_core.items():
+            if not core.endswith("e") or len(core) <= 2:
+                continue
+            surface = core[:-1]
+            if len(segment) <= len(surface) or not segment.endswith(surface):
+                continue
+            for entry in entries:
+                yield segment[:-len(surface)], entry, "dropped_e"
+
+    for tail_length in overlap_lengths:
+        if len(segment) <= tail_length:
+            continue
+        tail = segment[-tail_length:]
+        for core, entries in by_core.items():
+            if len(core) - 1 != tail_length or core[1:] != tail:
+                continue
+            stem = segment[:-tail_length]
+            if not stem.endswith(core[:1]):
+                continue
+            for entry in entries:
+                yield stem, entry, "overlap"
+
+
+def suffix_match_sequences(segment, suffix_match_set, max_suffixes):
+    results = [(segment, [], [])]
+
+    def visit(current, suffixes, spellings):
+        if len(suffixes) >= max_suffixes:
+            return
+        right_suffix = suffixes[0] if suffixes else None
+        for stem, entry, spelling in suffix_surface_matches(
+            current,
+            suffix_match_set,
+            right_suffix=right_suffix,
+        ):
+            if len(stem) < 2:
+                continue
+            next_suffixes = [entry, *suffixes]
+            next_spellings = [spelling, *spellings]
+            results.append((stem, next_suffixes, next_spellings))
+            visit(stem, next_suffixes, next_spellings)
+
+    visit(segment, [], [])
+    return results
+
+
+def base_spelling_variants(stem, suffixes):
+    variants = [(stem, "exact")]
+    if not suffixes:
+        return variants
+
+    first_suffix_core = suffixes[0]["match_core"]
+    if stem.endswith("i"):
+        variants.append((f"{stem[:-1]}y", "y_to_i"))
+    if len(stem) > 1 and stem[-1] == stem[-2]:
+        variants.append((stem[:-1], "doubled_consonant"))
+    if first_suffix_core[:1] in {"a", "e", "i", "o", "u"}:
+        variants.append((f"{stem}e", "dropped_e"))
+
+    deduped = []
+    seen = set()
+    for value, spelling in variants:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append((value, spelling))
+    return deduped
+
+
+def central_candidates(stem, suffixes, root_match_set, base_records):
+    candidates = []
+    for root in root_match_set["by_core"].get(stem, []):
+        candidates.append({
+            "type": "bound_root",
+            "surface": stem,
+            "entry": root,
+            "spelling": "exact",
+        })
+
+    for base, spelling in base_spelling_variants(stem, suffixes):
+        if len(base) >= CURATED_MIN_BASE_LEN and base in base_records:
+            candidates.append({
+                "type": "base",
+                "surface": stem,
+                "base": base,
+                "spelling": spelling,
+            })
+
+    return candidates
+
+
+def candidate_signature(parts):
+    return tuple(
+        (
+            part.get("type"),
+            part.get("text"),
+            part.get("canonical"),
+            part.get("meaning"),
+        )
+        for part in parts
+    )
+
+
+def semantic_candidate_signature(candidate):
+    return tuple(
+        (
+            part.get("type"),
+            part.get("canonical") or part.get("text"),
+            part.get("meaning"),
+        )
+        for part in candidate.get("parts") or []
+    )
+
+
+def candidate_source_text(parts):
+    return " + ".join(part.get("display") or part.get("text") or "" for part in parts)
+
+
+def score_curated_candidate(candidate, definition, etymology):
+    definition_tokens = normalized_text_tokens(definition)
+    evidence_text = normalized_evidence_text(etymology)
+    candidate_text = normalized_evidence_text(candidate.get("source_text"))
+    all_text_tokens = normalized_text_tokens(definition, etymology)
+    score = 2
+    score += 2 if candidate["central_type"] == "bound_root" else 1
+    score += min(2, len(candidate["prefixes"]) + len(candidate["suffixes"]))
+    if candidate["central_type"] == "bound_root":
+        score += 4
+    if candidate_text and candidate_text in evidence_text:
+        score += 4
+
+    if candidate.get("central_spelling") != "exact":
+        score -= 1
+    score -= sum(1 for spelling in candidate.get("suffix_spellings") or [] if spelling != "exact")
+    extra_suffixes = max(0, len(candidate["suffixes"]) - 1)
+    score -= extra_suffixes
+    if extra_suffixes and all(spelling == "exact" for spelling in candidate.get("suffix_spellings") or []):
+        score -= extra_suffixes
+
+    for entry in [*candidate["prefixes"], *candidate["suffixes"]]:
+        if evidence_mentions_entry(evidence_text, entry):
+            score += 2
+        overlap = count_keyword_matches(all_text_tokens, meaning_keywords(entry.get("meaning")))
+        if overlap:
+            score += min(2, overlap)
+
+        meaning = entry.get("meaning") or ""
+        meaning_tokens = meaning_keywords(meaning)
+        is_negative_meaning = bool({"not", "without", "opposite"} & meaning_tokens)
+        is_directional_meaning = bool({"apart", "away", "back", "down"} & meaning_tokens)
+        if is_negative_meaning and not is_directional_meaning:
+            if definition_tokens & CURATED_NEGATION_CUES:
+                score += 3
+            else:
+                score -= 3
+        if {"away", "apart", "down"} & meaning_tokens:
+            if all_text_tokens & CURATED_AWAY_CUES:
+                score += 2
+            elif entry["match_core"] == "a":
+                score -= 3
+        if {"into", "inside", "within"} & meaning_tokens and all_text_tokens & CURATED_LOCATIVE_CUES:
+            score += 2
+
+        if len(entry["match_core"]) == 1 and not evidence_mentions_entry(evidence_text, entry):
+            score -= 2
+
+    central_entry = candidate.get("central_entry")
+    if central_entry:
+        if evidence_mentions_entry(evidence_text, central_entry):
+            score += 4
+        overlap = count_keyword_matches(all_text_tokens, meaning_keywords(central_entry.get("meaning")))
+        if overlap:
+            score += min(3, overlap)
+        if len(central_entry["match_core"]) <= 3 and not evidence_mentions_entry(evidence_text, central_entry):
+            score -= 4
+    else:
+        base = candidate.get("central_base")
+        if base and evidence_mentions_term(evidence_text, base, "base"):
+            score += 4
+
+    return score
+
+
+def rank_curated_candidates(candidates, definition, etymology):
+    scored = []
+    for candidate in candidates:
+        candidate["score"] = score_curated_candidate(candidate, definition, etymology)
+        scored.append(candidate)
+    return sorted(scored, key=lambda item: item["score"], reverse=True)
+
+
+def confidence_for_curated_candidate(best, ranked):
+    best_signature = semantic_candidate_signature(best)
+    competitor = next(
+        (
+            candidate
+            for candidate in ranked[1:]
+            if semantic_candidate_signature(candidate) != best_signature
+        ),
+        None,
+    )
+    margin = best["score"] - (competitor["score"] if competitor else -100)
+    if best["score"] >= CURATED_HIGH_SCORE and margin >= CURATED_HIGH_SCORE_MARGIN:
+        return "high", margin
+    if best["score"] >= CURATED_MEDIUM_SCORE and margin >= CURATED_MIN_SCORE_MARGIN:
+        return "medium", margin
+    return None, margin
+
+
+def ranked_curated_morpheme_candidates(word, definition, etymology, match_sets, base_records):
+    if not isinstance(word, str) or not TIER3_WORD_RE.match(word):
+        return []
+    if word in CURATED_OPAQUE_BREAKDOWN_WORDS:
+        return []
+
+    candidates = []
+    seen = set()
+    for prefixes, prefix_len in prefix_match_sequences(word, match_sets["prefix"]):
+        segment = word[prefix_len:]
+        max_suffixes = CURATED_MAX_WORD_PARTS - 1 - len(prefixes)
+        if max_suffixes < 0:
+            continue
+        for stem, suffixes, suffix_spellings in suffix_match_sequences(
+            segment,
+            match_sets["suffix"],
+            max_suffixes,
+        ):
+            if not prefixes and not suffixes:
+                continue
+            if len(prefixes) + len(suffixes) + 1 > CURATED_MAX_WORD_PARTS:
+                continue
+            for central in central_candidates(
+                stem,
+                suffixes,
+                match_sets["bound_root"],
+                base_records,
+            ):
+                parts = [build_curated_word_part(prefix) for prefix in prefixes]
+                if central["type"] == "bound_root":
+                    parts.append(build_curated_word_part(central["entry"]))
+                    central_entry = central["entry"]
+                    central_base = None
+                else:
+                    parts.append(build_curated_base_part(central["base"]))
+                    central_entry = None
+                    central_base = central["base"]
+                parts.extend(build_curated_word_part(suffix) for suffix in suffixes)
+
+                signature = candidate_signature(parts)
+                if signature in seen:
+                    continue
+                seen.add(signature)
+
+                candidates.append({
+                    "parts": parts,
+                    "prefixes": prefixes,
+                    "suffixes": suffixes,
+                    "suffix_spellings": suffix_spellings,
+                    "central_type": central["type"],
+                    "central_entry": central_entry,
+                    "central_base": central_base,
+                    "central_spelling": central.get("spelling"),
+                    "source_text": candidate_source_text(parts),
+                })
+
+    if not candidates:
+        return []
+
+    return rank_curated_candidates(candidates, definition, etymology)
+
+
+def parse_curated_morpheme_word_parts(word, definition, etymology, match_sets, base_records):
+    ranked = ranked_curated_morpheme_candidates(
+        word,
+        definition,
+        etymology,
+        match_sets,
+        base_records,
+    )
+    if not ranked:
         return None
-    return core if len(core) >= AFFIX_STRIP_MIN_SUFFIX_LEN else None
+
+    best = ranked[0]
+    if best["score"] < CURATED_MEDIUM_SCORE:
+        return None
+
+    confidence, margin = confidence_for_curated_candidate(best, ranked)
+    if confidence != "high":
+        return None
+
+    return {
+        "parts": best["parts"],
+        "confidence": confidence,
+        "source": CURATED_WORD_PART_SOURCE,
+        "source_text": best["source_text"],
+        "meta": {
+            "parser_version": WORD_PARTS_PARSER_VERSION,
+            "candidate_score": best["score"],
+            "candidate_margin": margin,
+            "candidate_count": len(ranked),
+        },
+    }
+
+
+def trim_review_text(value, max_length=1200):
+    if not isinstance(value, str):
+        return None
+    cleaned = re.sub(r"\s+", " ", value).strip()
+    if not cleaned:
+        return None
+    if len(cleaned) <= max_length:
+        return cleaned
+    return f"{cleaned[:max_length].rsplit(' ', 1)[0].rstrip()}..."
+
+
+def serialize_review_part(part):
+    serialized = {
+        "text": part.get("text"),
+        "display": part.get("display"),
+        "type": part.get("type"),
+    }
+    for key in ("meaning", "canonical", "note"):
+        if part.get(key):
+            serialized[key] = part[key]
+    return serialized
+
+
+def serialize_review_candidate(candidate):
+    return {
+        "source_text": candidate.get("source_text"),
+        "score": candidate.get("score"),
+        "central_type": candidate.get("central_type"),
+        "central_spelling": candidate.get("central_spelling"),
+        "suffix_spellings": candidate.get("suffix_spellings") or [],
+        "parts": [
+            serialize_review_part(part)
+            for part in candidate.get("parts") or []
+        ],
+    }
+
+
+def curated_review_reason(best, confidence, margin):
+    if confidence == "medium":
+        return "medium_confidence"
+    if best["score"] >= CURATED_HIGH_SCORE:
+        return "ambiguous_high_score"
+    if best["score"] >= CURATED_MEDIUM_SCORE:
+        return "near_threshold"
+    return "low_score"
+
+
+def build_curated_morpheme_review_record(word, pos, definition, etymology, ranked):
+    if not ranked:
+        return None
+
+    best = ranked[0]
+    if best["score"] < CURATED_MEDIUM_SCORE:
+        return None
+
+    confidence, margin = confidence_for_curated_candidate(best, ranked)
+    if confidence == "high":
+        return None
+
+    return {
+        "word": word,
+        "pos": pos,
+        "reason": curated_review_reason(best, confidence, margin),
+        "suggested_confidence": confidence or "review_required",
+        "score": best["score"],
+        "margin": margin,
+        "candidate_count": len(ranked),
+        "definition": trim_review_text(definition),
+        "etymology": trim_review_text(etymology),
+        "best_candidate": serialize_review_candidate(best),
+        "competing_candidates": [
+            serialize_review_candidate(candidate)
+            for candidate in ranked[1:5]
+        ],
+    }
+
+
+def load_curated_base_records(conn):
+    records = {}
+    rows = conn.execute(
+        """
+        SELECT word, pos, definition, etymology
+        FROM en_dictionary
+        WHERE word IS NOT NULL
+        """
+    )
+    for word, pos, definition, etymology in rows:
+        if not isinstance(word, str) or not TIER3_WORD_RE.match(word):
+            continue
+        if not is_tier3_record_allowed(
+            pos,
+            definition,
+            TIER3_BASE_POS,
+            allow_named_entity=True,
+        ):
+            continue
+        records[word] = {
+            "pos": pos,
+            "definition": definition,
+            "etymology": etymology,
+        }
+    return records
+
+
+def is_refreshable_curated_word_parts(confidence, source):
+    return source == CURATED_WORD_PART_SOURCE or source == "affix_strip" or confidence == "low"
+
+
+def word_parts_has_bound_root(word_parts):
+    return any(
+        isinstance(part, dict) and part.get("type") == "bound_root"
+        for part in word_parts.get("parts") or []
+    )
+
+
+def should_replace_with_curated(existing_confidence, existing_source, existing_parts_json, word_parts):
+    if not existing_confidence:
+        return False
+    if is_refreshable_curated_word_parts(existing_confidence, existing_source):
+        return True
+    if is_incomplete_tier1_word_parts(existing_confidence, existing_source, existing_parts_json):
+        return True
+    if isinstance(existing_source, str) and existing_source.startswith("prose_"):
+        return word_parts["confidence"] in {"high", "medium"}
+    if (
+        isinstance(existing_source, str)
+        and existing_source.startswith("kaikki_template_")
+        and (
+            word_parts["confidence"] == "high"
+            or word_parts_has_bound_root(word_parts)
+        )
+    ):
+        return True
+    return False
 
 
 def is_tier3_record_allowed(pos, definition, allowed_pos, allow_named_entity=False):
@@ -1633,244 +2449,301 @@ def is_tier3_record_allowed(pos, definition, allowed_pos, allow_named_entity=Fal
     return allow_named_entity and pos == "name" and clean_definition.startswith("The ")
 
 
-def load_verified_affix_counts(conn):
-    prefix_counts = {}
-    suffix_counts = {}
-    rows = conn.execute(
-        "SELECT parts_json FROM en_word_parts WHERE confidence IN ('high', 'medium')"
-    )
-    for (parts_json,) in rows:
-        try:
-            word_parts = json.loads(parts_json)
-        except (TypeError, json.JSONDecodeError):
-            continue
-
-        for part in word_parts.get("parts") or []:
-            text = (part.get("text") or "").strip().lower()
-            part_type = part.get("type")
-            if part_type == "prefix" and text.endswith("-"):
-                core = text[:-1]
-                prefix_counts[core] = prefix_counts.get(core, 0) + 1
-            elif part_type == "suffix" and text.startswith("-"):
-                core = text[1:]
-                suffix_counts[core] = suffix_counts.get(core, 0) + 1
-
-    return prefix_counts, suffix_counts
-
-
-def tier3_prefix_allowed(core, evidence_count):
-    if core in TIER3_SHORT_PREFIX_ALLOWLIST:
-        return evidence_count >= TIER3_MIN_PREFIX_EVIDENCE
-    if len(core) == 3:
-        return core in TIER3_THREE_LETTER_PREFIX_ALLOWLIST and evidence_count >= TIER3_MIN_PREFIX_EVIDENCE
-    return len(core) >= 4 and evidence_count >= TIER3_MIN_PREFIX_EVIDENCE
-
-
-def tier3_suffix_allowed(core, evidence_count):
-    if core in TIER3_SUFFIX_BLOCKLIST:
-        return False
-    return core in TIER3_SUFFIX_ALLOWLIST and evidence_count >= TIER3_MIN_SUFFIX_EVIDENCE
-
-
-def load_affix_strip_sets(conn):
-    word_records = {}
-    for word, pos, definition in conn.execute(
-        "SELECT word, pos, definition FROM en_dictionary WHERE word IS NOT NULL"
-    ):
-        if isinstance(word, str) and TIER3_WORD_RE.match(word):
-            word_records[word] = {
-                "pos": pos,
-                "definition": definition,
-            }
-
-    base_word_set = {
-        word
-        for word, record in word_records.items()
-        if is_tier3_record_allowed(
-            record.get("pos"),
-            record.get("definition"),
-            TIER3_BASE_POS,
-            allow_named_entity=True,
-        )
-    }
-    dictionary_prefix_cores = {
-        core
-        for row in conn.execute("SELECT word FROM en_dictionary WHERE pos = 'prefix' AND word IS NOT NULL")
-        for core in [normalize_prefix_core(row[0])]
-        if core
-    }
-    dictionary_suffix_cores = {
-        core
-        for row in conn.execute("SELECT word FROM en_dictionary WHERE pos = 'suffix' AND word IS NOT NULL")
-        for core in [normalize_suffix_core(row[0])]
-        if core
-    }
-    prefix_counts, suffix_counts = load_verified_affix_counts(conn)
-    prefix_cores = {
-        core
-        for core in dictionary_prefix_cores
-        if tier3_prefix_allowed(core, prefix_counts.get(core, 0))
-    }
-    suffix_cores = {
-        core
-        for core in dictionary_suffix_cores
-        if tier3_suffix_allowed(core, suffix_counts.get(core, 0))
-    }
-    prefix_lengths = sorted({len(core) for core in prefix_cores}, reverse=True)
-    suffix_lengths = sorted({len(core) for core in suffix_cores}, reverse=True)
-    return word_records, base_word_set, prefix_cores, suffix_cores, prefix_lengths, suffix_lengths
-
-
-def best_prefix_strip(word, base_word_set, prefix_cores, prefix_lengths):
-    for length in prefix_lengths:
-        if len(word) < length + AFFIX_STRIP_MIN_PREFIX_BASE_LEN:
-            continue
-
-        core = word[:length]
-        if core not in prefix_cores:
-            continue
-
-        base = word[length:]
-        if len(base) >= AFFIX_STRIP_MIN_PREFIX_BASE_LEN and base in base_word_set:
-            return {
-                "parts": [
-                    {"text": f"{core}-", "display": f"{core}-", "type": "prefix"},
-                    {"text": base, "display": base, "type": "base"},
-                ],
-                "affix_length": length,
-                "source_text": f"{core}- + {base}",
-            }
-
-    return None
-
-
-def resolve_suffix_base(base, suffix_core, base_word_set):
-    candidates = []
-    if base.endswith("i"):
-        candidates.append((f"{base[:-1]}y", AFFIX_STRIP_MIN_SUFFIX_BASE_LEN))
-    if len(base) > 1 and base[-1] == base[-2]:
-        candidates.append((base[:-1], AFFIX_STRIP_MIN_PREFIX_BASE_LEN))
-    if suffix_core[:1] in {"a", "e", "i", "o", "u"}:
-        restored_base = f"{base}e"
-        min_len = (
-            AFFIX_STRIP_MIN_PREFIX_BASE_LEN
-            if suffix_core in {"able", "ible"} and restored_base in TIER3_SHORT_E_RESTORED_BASE_ALLOWLIST
-            else AFFIX_STRIP_MIN_SUFFIX_BASE_LEN
-        )
-        candidates.append((restored_base, min_len))
-    candidates.append((base, AFFIX_STRIP_MIN_SUFFIX_BASE_LEN))
-
-    for candidate, min_len in candidates:
-        if len(candidate) >= min_len and candidate in base_word_set:
-            return candidate
-    return None
-
-
-def best_suffix_strip(word, base_word_set, suffix_cores, suffix_lengths):
-    for length in suffix_lengths:
-        if len(word) < length + AFFIX_STRIP_MIN_PREFIX_BASE_LEN - 1:
-            continue
-
-        core = word[-length:]
-        if core not in suffix_cores:
-            continue
-
-        base = resolve_suffix_base(word[:-length], core, base_word_set)
-        if base:
-            return {
-                "parts": [
-                    {"text": base, "display": base, "type": "base"},
-                    {"text": f"-{core}", "display": f"-{core}", "type": "suffix"},
-                ],
-                "affix_length": length,
-                "source_text": f"{base} + -{core}",
-            }
-
-    return None
-
-
-def parse_affix_strip_word_parts(
-    word,
-    base_word_set,
-    prefix_cores,
-    suffix_cores,
-    prefix_lengths,
-    suffix_lengths,
-):
-    if not isinstance(word, str) or not TIER3_WORD_RE.match(word):
-        return None
-
-    prefix_candidate = best_prefix_strip(word, base_word_set, prefix_cores, prefix_lengths)
-    suffix_candidate = best_suffix_strip(word, base_word_set, suffix_cores, suffix_lengths)
-    candidates = [candidate for candidate in (prefix_candidate, suffix_candidate) if candidate]
-    if not candidates:
-        return None
-
-    # Prefer the most specific affix. On ties, suffixes usually mark the final derivation.
-    chosen = sorted(
-        candidates,
-        key=lambda candidate: (
-            candidate["affix_length"],
-            1 if candidate["parts"][-1]["type"] == "suffix" else 0,
-        ),
-        reverse=True,
-    )[0]
-
-    return {
-        "parts": chosen["parts"],
-        "confidence": "low",
-        "source": "affix_strip",
-        "source_text": chosen["source_text"],
-        "meta": {
-            "parser_version": WORD_PARTS_PARSER_VERSION,
-        },
-    }
-
-
 def populate_tier3_word_parts(conn):
     deleted = conn.execute(
-        "DELETE FROM en_word_parts WHERE confidence = 'low' AND source = 'affix_strip'"
+        """
+        DELETE FROM en_word_parts
+        WHERE source IN ('affix_strip', ?)
+           OR source LIKE 'kaikki_template_%'
+           OR source LIKE 'prose_%'
+        """,
+        (CURATED_WORD_PART_SOURCE,),
     ).rowcount
     if deleted:
         conn.commit()
-        print(f"Tier 3 refreshed by deleting {deleted:,} existing low-confidence affix-strip rows")
+        print(f"Tier 3 refreshed by deleting {deleted:,} generated word-part rows")
 
-    _, base_word_set, prefix_cores, suffix_cores, prefix_lengths, suffix_lengths = load_affix_strip_sets(conn)
+    match_sets = load_curated_morpheme_match_sets()
+    base_records = load_curated_base_records(conn)
     inserted = 0
+    replaced = 0
+    accepted_high = 0
+    accepted_medium = 0
+    rejected = 0
     scanned = 0
 
     rows = conn.execute(
         """
-        SELECT d.word, d.pos, d.definition
+        SELECT d.word, d.pos, d.definition, d.etymology,
+               wp.confidence, wp.source, wp.parts_json
         FROM en_dictionary d
         LEFT JOIN en_word_parts wp ON wp.word = d.word
-        WHERE wp.word IS NULL
-          AND d.word IS NOT NULL
+        WHERE d.word IS NOT NULL
         """
     )
-    for word, pos, definition in rows:
+    for word, pos, definition, etymology, existing_confidence, existing_source, existing_parts_json in rows:
         if not is_tier3_record_allowed(pos, definition, TIER3_TARGET_POS):
             continue
 
         scanned += 1
-        word_parts = parse_affix_strip_word_parts(
+        word_parts = parse_curated_morpheme_word_parts(
             word,
-            base_word_set,
-            prefix_cores,
-            suffix_cores,
-            prefix_lengths,
-            suffix_lengths,
+            definition,
+            etymology,
+            match_sets,
+            base_records,
         )
-        if word_parts and insert_word_parts(conn, word, word_parts):
-            inserted += 1
+        if not word_parts:
+            rejected += 1
+            continue
+
+        replace_existing = should_replace_with_curated(
+            existing_confidence,
+            existing_source,
+            existing_parts_json,
+            word_parts,
+        )
+        if existing_confidence and not replace_existing:
+            continue
+
+        if insert_word_parts(conn, word, word_parts, replace_existing=replace_existing):
+            if replace_existing:
+                replaced += 1
+            else:
+                inserted += 1
+            if word_parts["confidence"] == "high":
+                accepted_high += 1
+            else:
+                accepted_medium += 1
 
         if scanned % BATCH_SIZE == 0:
             conn.commit()
-            print(f"Tier 3 scanned {scanned:,} candidate rows; inserted {inserted:,} low-confidence rows")
+            print(
+                f"Tier 3 scanned {scanned:,} candidate rows; inserted {inserted:,}, "
+                f"replaced {replaced:,}, accepted {accepted_high:,} high/"
+                f"{accepted_medium:,} medium, rejected {rejected:,}"
+            )
 
     conn.commit()
-    print(f"Tier 3 complete. Scanned {scanned:,} candidate rows; inserted {inserted:,} low-confidence rows")
-    return inserted
+    print(
+        f"Tier 3 complete. Scanned {scanned:,} candidate rows; inserted {inserted:,}, "
+        f"replaced {replaced:,}, accepted {accepted_high:,} high/{accepted_medium:,} medium, "
+        f"rejected {rejected:,}"
+    )
+    return inserted + replaced
+
+
+def export_curated_morpheme_review_queue(
+    conn,
+    output_path=DEFAULT_MORPHEME_REVIEW_QUEUE_PATH,
+):
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    match_sets = load_curated_morpheme_match_sets()
+    base_records = load_curated_base_records(conn)
+    scanned = 0
+    queued = 0
+    skipped_existing_high = 0
+
+    rows = conn.execute(
+        """
+        SELECT d.word, d.pos, d.definition, d.etymology,
+               wp.confidence, wp.source
+        FROM en_dictionary d
+        LEFT JOIN en_word_parts wp ON wp.word = d.word
+        WHERE d.word IS NOT NULL
+        """
+    )
+    with output_path.open("w", encoding="utf-8") as handle:
+        for word, pos, definition, etymology, existing_confidence, existing_source in rows:
+            if not is_tier3_record_allowed(pos, definition, TIER3_TARGET_POS):
+                continue
+            if existing_confidence == "high" and existing_source == CURATED_WORD_PART_SOURCE:
+                skipped_existing_high += 1
+                continue
+
+            scanned += 1
+            ranked = ranked_curated_morpheme_candidates(
+                word,
+                definition,
+                etymology,
+                match_sets,
+                base_records,
+            )
+            record = build_curated_morpheme_review_record(
+                word,
+                pos,
+                definition,
+                etymology,
+                ranked,
+            )
+            if record:
+                handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True))
+                handle.write("\n")
+                queued += 1
+
+            if scanned and scanned % BATCH_SIZE == 0:
+                print(
+                    f"Review queue scanned {scanned:,} candidate rows; "
+                    f"queued {queued:,}; skipped {skipped_existing_high:,} accepted high rows"
+                )
+
+    print(
+        f"Review queue ready at {output_path}. Scanned {scanned:,} candidate rows; "
+        f"queued {queued:,}; skipped {skipped_existing_high:,} accepted high rows."
+    )
+    return queued
+
+
+def reviewed_word_parts_from_decision(record):
+    candidate = record.get("approved_candidate") or record.get("best_candidate")
+    if not isinstance(candidate, dict):
+        return None
+
+    parts = candidate.get("parts")
+    if not isinstance(parts, list) or not (2 <= len(parts) <= CURATED_MAX_WORD_PARTS):
+        return None
+
+    cleaned_parts = []
+    for part in parts:
+        if not isinstance(part, dict):
+            return None
+        part_type = normalize_gloss_part_type(part.get("type"))
+        text = normalize_morpheme_key(part.get("text") or part.get("display"), part_type)
+        display = part.get("display") or part.get("text")
+        if not part_type or not text or not display:
+            return None
+
+        cleaned = {
+            "text": normalize_affix_text(text, part_type),
+            "display": normalize_affix_text(display, part_type),
+            "type": part_type,
+        }
+        for key in ("meaning", "canonical", "note"):
+            if part.get(key):
+                cleaned[key] = part[key]
+        if cleaned.get("canonical"):
+            cleaned["canonical"] = normalize_affix_text(cleaned["canonical"], part_type)
+        cleaned_parts.append(cleaned)
+
+    return {
+        "parts": cleaned_parts,
+        "confidence": "high",
+        "source": CURATED_WORD_PART_REVIEWED_SOURCE,
+        "source_text": candidate.get("source_text") or record.get("source_text"),
+        "meta": {
+            "parser_version": WORD_PARTS_PARSER_VERSION,
+            "review_decision": "approve",
+            "review_reason": record.get("reason"),
+            "review_score": record.get("score"),
+            "review_margin": record.get("margin"),
+            "review_candidate_count": record.get("candidate_count"),
+        },
+    }
+
+
+def import_curated_morpheme_review_decisions(conn, decisions_path, dry_run=False):
+    decisions_path = Path(decisions_path)
+    if not decisions_path.exists():
+        raise FileNotFoundError(f"Review decision file not found: {decisions_path}")
+
+    approved = 0
+    rejected = 0
+    pending = 0
+    invalid = 0
+    imported = 0
+    with decisions_path.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            try:
+                record = json.loads(stripped)
+            except json.JSONDecodeError:
+                invalid += 1
+                print(f"Skipping invalid JSON decision at line {line_number}")
+                continue
+
+            decision = (record.get("decision") or "").strip().lower()
+            if decision in {"pending", ""}:
+                pending += 1
+                continue
+            if decision == "reject":
+                rejected += 1
+                continue
+            if decision != "approve":
+                invalid += 1
+                print(f"Skipping unknown review decision at line {line_number}: {decision}")
+                continue
+
+            word = normalize_morpheme_key(record.get("word"), "base")
+            word_parts = reviewed_word_parts_from_decision(record)
+            if not word or not word_parts:
+                invalid += 1
+                print(f"Skipping incomplete approval decision at line {line_number}")
+                continue
+
+            approved += 1
+            if dry_run:
+                continue
+
+            if insert_word_parts(conn, word, word_parts, replace_existing=True):
+                imported += 1
+
+            if approved and approved % BATCH_SIZE == 0:
+                conn.commit()
+                print(f"Imported {imported:,} approved review decisions so far")
+
+    if not dry_run:
+        conn.commit()
+
+    print(
+        f"Review decisions processed from {decisions_path}: "
+        f"{approved:,} approved, {rejected:,} rejected, {pending:,} pending, "
+        f"{invalid:,} invalid, {imported:,} imported"
+        f"{' (dry run)' if dry_run else ''}."
+    )
+    return imported if not dry_run else approved
+
+
+def export_curated_morpheme_review_decision_template(
+    queue_path,
+    output_path,
+    limit=100,
+):
+    queue_path = Path(queue_path)
+    output_path = Path(output_path)
+    if not queue_path.exists():
+        raise FileNotFoundError(f"Review queue file not found: {queue_path}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
+    with queue_path.open(encoding="utf-8") as source, output_path.open("w", encoding="utf-8") as target:
+        for line in source:
+            if limit and written >= limit:
+                break
+            record = json.loads(line)
+            decision_record = {
+                "decision": "pending",
+                "word": record.get("word"),
+                "pos": record.get("pos"),
+                "reason": record.get("reason"),
+                "score": record.get("score"),
+                "margin": record.get("margin"),
+                "candidate_count": record.get("candidate_count"),
+                "definition": record.get("definition"),
+                "etymology": record.get("etymology"),
+                "best_candidate": record.get("best_candidate"),
+                "competing_candidates": record.get("competing_candidates") or [],
+                "review_note": "",
+            }
+            target.write(json.dumps(decision_record, ensure_ascii=False, sort_keys=True))
+            target.write("\n")
+            written += 1
+
+    print(f"Wrote {written:,} pending review decisions to {output_path}.")
+    return written
 
 
 def finalize_database(conn, vacuum=False):
@@ -1893,12 +2766,48 @@ def main():
     parser.add_argument(
         "--tier3-only",
         action="store_true",
-        help="Populate low-confidence word parts by exact local affix stripping without reading the raw dump.",
+        help="Populate curated morpheme word parts without reading the raw dump.",
     )
     parser.add_argument(
         "--morpheme-gloss-only",
         action="store_true",
         help="Populate local morpheme glosses and enrich existing word-part rows without reading the raw dump.",
+    )
+    parser.add_argument(
+        "--morpheme-review-queue",
+        action="store_true",
+        help="Export non-high curated morpheme candidates to a review JSONL file without mutating word-part rows.",
+    )
+    parser.add_argument(
+        "--morpheme-review-template",
+        action="store_true",
+        help="Create an editable pending-decision JSONL template from the morpheme review queue.",
+    )
+    parser.add_argument(
+        "--import-morpheme-review-decisions",
+        action="store_true",
+        help="Import approved curated morpheme review decisions into en_word_parts.",
+    )
+    parser.add_argument(
+        "--review-queue-path",
+        default=str(DEFAULT_MORPHEME_REVIEW_QUEUE_PATH),
+        help="Path for --morpheme-review-queue output.",
+    )
+    parser.add_argument(
+        "--review-decisions-path",
+        default=str(DEFAULT_MORPHEME_REVIEW_DECISIONS_PATH),
+        help="Path for review decision JSONL input/output.",
+    )
+    parser.add_argument(
+        "--review-template-limit",
+        type=int,
+        default=100,
+        help="Maximum rows to write with --morpheme-review-template. Use 0 for all rows.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate an import action without mutating the database.",
     )
     parser.add_argument(
         "--audio-only",
@@ -1909,6 +2818,7 @@ def main():
 
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA busy_timeout=60000")
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS en_dictionary (
@@ -1956,6 +2866,32 @@ def main():
     if args.morpheme_gloss_only:
         populate_morpheme_glosses(conn)
         enrich_word_parts_with_morpheme_glosses(conn)
+        finalize_database(conn)
+        conn.close()
+        return
+    if args.morpheme_review_queue:
+        export_curated_morpheme_review_queue(conn, args.review_queue_path)
+        finalize_database(conn)
+        conn.close()
+        return
+    if args.morpheme_review_template:
+        export_curated_morpheme_review_decision_template(
+            args.review_queue_path,
+            args.review_decisions_path,
+            limit=args.review_template_limit,
+        )
+        finalize_database(conn)
+        conn.close()
+        return
+    if args.import_morpheme_review_decisions:
+        import_curated_morpheme_review_decisions(
+            conn,
+            args.review_decisions_path,
+            dry_run=args.dry_run,
+        )
+        if not args.dry_run:
+            populate_morpheme_glosses(conn)
+            enrich_word_parts_with_morpheme_glosses(conn)
         finalize_database(conn)
         conn.close()
         return
@@ -2067,7 +3003,7 @@ def main():
     print(
         f"Done. Inserted {inserted:,} words, {word_parts_inserted:,} high-confidence word-part rows, "
         f"{tier2_inserted:,} medium-confidence word-part rows, "
-        f"{tier3_inserted:,} low-confidence word-part rows, "
+        f"{tier3_inserted:,} curated morpheme word-part rows, "
         f"upserted {morpheme_gloss_changed:,} morpheme gloss rows, "
         f"enriched {word_parts_enriched:,} word-part rows, "
         f"and updated {audio_updated:,} audio rows. "

@@ -2,27 +2,18 @@ import { api } from './api/client';
 import {
     insertCacheEntries,
     insertData,
+    lookupBookIndexBySurface,
     lookupCacheByStems,
     recordVocabContext,
     removeData,
+    updateCacheRomanizations,
     vocabEntryExists,
 } from './Database';
 import stemWord from './api/stemWord';
-import {
-    softDeleteUserVocabContextsForWord,
-    softDeleteRelatedKnownWordsForMainWord,
-    softDeleteUserVocabEntry,
-    supabase,
-    upsertUserVocabContext,
-    upsertUserVocabEntry,
-} from './supabase';
-import {
-    getActiveOwnerId,
-    getSyncGeneration,
-    isCurrentSyncGeneration,
-} from './localOwnerCoordinator';
+import { getActiveOwnerId } from './localOwnerCoordinator';
 import { getRuntimeInterfaceLanguage, getRuntimeTargetLanguage } from './interfaceLanguage';
-import { normalizeBookLanguage } from '../constants/languages';
+import { requestUserDataSync } from './userDataSyncQueue';
+import { normalizeBookLanguage, normalizeInterfaceLanguageCode } from '../constants/languages';
 
 const STOP_STEMS = new Set([
     '하다',
@@ -54,7 +45,7 @@ const nullableValue = (value) => cleanValue(value) || null;
 export const normalizeSurfaceWord = (word) => cleanValue(word).replace(KOREAN_RE, '');
 const normalizeEnglishSurfaceWord = (word) => cleanValue(word).replace(ENGLISH_EDGE_RE, '').toLowerCase();
 const normalizeChineseSurfaceWord = (word) => cleanValue(word).replace(CHINESE_EDGE_RE, '');
-const normalizeSurfaceWordForLanguage = (word, language) => {
+export const normalizeSurfaceWordForLanguage = (word, language) => {
     const targetLanguage = normalizeBookLanguage(language);
     if (targetLanguage === 'en') {
         return normalizeEnglishSurfaceWord(word);
@@ -70,6 +61,38 @@ const uniqueValues = (values) => [...new Set(
         .map(cleanValue)
         .filter(Boolean)
 )];
+
+const uniqueCacheRowsByStem = (rows = []) => {
+    const seen = new Set();
+    return (rows || []).filter((row) => {
+        const stem = cleanValue(row?.stem);
+        if (!stem || seen.has(stem)) {
+            return false;
+        }
+
+        seen.add(stem);
+        return true;
+    });
+};
+
+const splitCacheRows = (rows = [], usableCachedEntry = () => true) => {
+    const uniqueRows = uniqueCacheRowsByStem(rows);
+    const usableRows = [];
+    const staleStems = [];
+
+    uniqueRows.forEach((row) => {
+        if (usableCachedEntry(row)) {
+            usableRows.push(row);
+        } else {
+            const stem = cleanValue(row?.stem);
+            if (stem) {
+                staleStems.push(stem);
+            }
+        }
+    });
+
+    return { uniqueRows, usableRows, staleStems };
+};
 
 const cacheEntryToLookupResult = async ({
     entry,
@@ -97,6 +120,7 @@ const cacheEntryToLookupResult = async ({
         ownerId,
         includeRomanization: includeEnrichment,
         wordOptions,
+        interfaceLanguage,
         targetLanguage,
     });
 };
@@ -116,6 +140,7 @@ const liveEntryToCacheEntry = (
     hanja: normalizeBookLanguage(targetLanguage) === 'ko' ? nullableValue(entry?.origin) : null,
     pos: nullableValue(entry?.pos),
     domain: null,
+    romanization: normalizeBookLanguage(targetLanguage) === 'ko' ? nullableValue(entry?.romanization) : null,
     ipa: normalizeBookLanguage(targetLanguage) === 'zh'
         ? nullableValue(entry?.pinyin) || nullableValue(entry?.ipa)
         : nullableValue(entry?.ipa),
@@ -183,17 +208,19 @@ const normalizeLiveAlternatives = (entries, primary, targetLanguage = getRuntime
 const fetchLiveDictionary = async (
     stems,
     interfaceLanguage = getRuntimeInterfaceLanguage(),
-    targetLanguage = getRuntimeTargetLanguage()
+    targetLanguage = getRuntimeTargetLanguage(),
+    script = 'zh-Hans'
 ) => {
     if (!stems.length) {
         return [];
     }
 
     const normalizedTargetLanguage = normalizeBookLanguage(targetLanguage);
+    const normalizedInterfaceLanguage = normalizeInterfaceLanguageCode(interfaceLanguage);
     if (normalizedTargetLanguage === 'en') {
         return Promise.all(stems.map(async (stem) => {
             const response = await api.get('/en_dict_search/', {
-                params: { stem, interface_language: interfaceLanguage },
+                params: { stem, interface_language: normalizedInterfaceLanguage },
                 timeout: 10000,
             });
             const result = response.data?.result;
@@ -204,7 +231,7 @@ const fetchLiveDictionary = async (
     if (normalizedTargetLanguage === 'zh') {
         return Promise.all(stems.map(async (stem) => {
             const response = await api.get('/zh_dict_search/', {
-                params: { stem, interface_language: interfaceLanguage },
+                params: { stem, interface_language: normalizedInterfaceLanguage, script },
                 timeout: 10000,
             });
             const resultList = response.data?.results;
@@ -218,7 +245,7 @@ const fetchLiveDictionary = async (
 
     const response = await api.post('/krdict_search/', {
         queries: stems,
-        language: interfaceLanguage,
+        language: normalizedInterfaceLanguage,
     }, {
         timeout: 10000,
     });
@@ -244,10 +271,189 @@ const fetchLiveEntriesForStem = async (
     }
 };
 
-const fetchRomanization = async (term) => {
+const fetchAndCacheLiveDictionary = async ({
+    stems,
+    cacheScope,
+    interfaceLanguage = getRuntimeInterfaceLanguage(),
+    targetLanguage = getRuntimeTargetLanguage(),
+    script = 'zh-Hans',
+}) => {
+    const uniqueStems = uniqueValues(stems);
+    if (uniqueStems.length === 0) {
+        return new Map();
+    }
+
+    const liveResults = await fetchLiveDictionary(uniqueStems, interfaceLanguage, targetLanguage, script);
+    const cacheEntries = uniqueStems
+        .map((stem, index) => {
+            const first = liveResults[index]?.[0];
+            return first ? liveEntryToCacheEntry(stem, first, interfaceLanguage, targetLanguage) : null;
+        })
+        .filter(Boolean);
+
+    if (cacheEntries.length > 0) {
+        await insertCacheEntries(cacheEntries, cacheScope);
+    }
+
+    return new Map(uniqueStems.map((stem, index) => [stem, liveResults[index] ?? []]));
+};
+
+export const resolveDictionaryLookup = async ({
+    surface,
+    currentBook = null,
+    ownerId = getActiveOwnerId(),
+    interfaceLanguage = getRuntimeInterfaceLanguage(),
+    targetLanguage = getRuntimeTargetLanguage(),
+    usableCachedEntry = () => true,
+    fetchLive = true,
+    allowRemoteStemming = true,
+    fallbackToSurfaceForKorean = false,
+    script = 'zh-Hans',
+}) => {
+    const rawSurface = cleanValue(surface);
+    const normalizedTargetLanguage = normalizeBookLanguage(targetLanguage);
+    const normalizedInterfaceLanguage = normalizeInterfaceLanguageCode(interfaceLanguage);
+    const normalizedSurface = normalizeSurfaceWordForLanguage(rawSurface, normalizedTargetLanguage) || rawSurface;
+    const cacheScope = {
+        language: normalizedTargetLanguage,
+        interfaceLanguage: normalizedInterfaceLanguage,
+    };
+
+    const baseResult = {
+        rawSurface,
+        normalizedSurface,
+        stems: [],
+        cachedResults: [],
+        dictionaryData: [],
+        needsLiveFetch: false,
+        liveError: null,
+        cacheScope,
+    };
+
+    if (!normalizedSurface) {
+        return baseResult;
+    }
+
+    const buildResolved = async (stems, cachedResults = [], liveStems = stems) => {
+        const uniqueStems = uniqueValues(stems);
+        const uniqueLiveStems = uniqueValues(liveStems);
+
+        if (!fetchLive || uniqueLiveStems.length === 0) {
+            return {
+                ...baseResult,
+                stems: uniqueStems,
+                cachedResults,
+                dictionaryData: uniqueStems.map(() => []),
+                needsLiveFetch: uniqueLiveStems.length > 0,
+            };
+        }
+
+        try {
+            const liveByStem = await fetchAndCacheLiveDictionary({
+                stems: uniqueLiveStems,
+                cacheScope,
+                interfaceLanguage: normalizedInterfaceLanguage,
+                targetLanguage: normalizedTargetLanguage,
+                script,
+            });
+
+            return {
+                ...baseResult,
+                stems: uniqueStems,
+                cachedResults,
+                dictionaryData: uniqueStems.map((stem) => liveByStem.get(stem) ?? []),
+                needsLiveFetch: false,
+            };
+        } catch (error) {
+            return {
+                ...baseResult,
+                stems: uniqueStems,
+                cachedResults,
+                dictionaryData: uniqueStems.map(() => []),
+                needsLiveFetch: false,
+                liveError: error?.message || 'Dictionary lookup failed.',
+            };
+        }
+    };
+
+    const buildCacheResolved = async (rows) => {
+        const { uniqueRows, usableRows, staleStems } = splitCacheRows(rows, usableCachedEntry);
+        if (uniqueRows.length === 0) {
+            return null;
+        }
+
+        if (staleStems.length === 0) {
+            return {
+                ...baseResult,
+                cachedResults: usableRows,
+            };
+        }
+
+        return buildResolved(staleStems, usableRows, staleStems);
+    };
+
+    if (currentBook) {
+        const indexRows = await lookupBookIndexBySurface(
+            ownerId,
+            currentBook,
+            normalizedSurface,
+            cacheScope
+        );
+        const indexedResult = await buildCacheResolved(indexRows);
+        if (indexedResult) {
+            return indexedResult;
+        }
+    }
+
+    const directCacheRows = await lookupCacheByStems([normalizedSurface], cacheScope);
+    const directResult = await buildCacheResolved(directCacheRows);
+    if (directResult) {
+        return directResult;
+    }
+
+    const stemCandidates = allowRemoteStemming
+        ? uniqueValues(await stemWord({
+            query: rawSurface || normalizedSurface,
+            language: normalizedTargetLanguage,
+        })).filter((stem) => normalizedTargetLanguage !== 'ko' || !STOP_STEMS.has(stem))
+        : [];
+    const shouldFallbackToSurface = normalizedTargetLanguage !== 'ko' || fallbackToSurfaceForKorean;
+    const stems = stemCandidates.length > 0
+        ? stemCandidates
+        : (shouldFallbackToSurface ? [normalizedSurface] : []);
+
+    if (stems.length === 0) {
+        return baseResult;
+    }
+
+    const stemCacheRows = await lookupCacheByStems(stems, cacheScope);
+    const { usableRows, staleStems } = splitCacheRows(stemCacheRows, usableCachedEntry);
+    const usableStemSet = new Set(usableRows.map((row) => cleanValue(row?.stem)).filter(Boolean));
+    const staleStemSet = new Set(staleStems);
+    const liveStems = stems.filter((stem) => staleStemSet.has(stem) || !usableStemSet.has(stem));
+
+    return buildResolved(stems, usableRows, liveStems);
+};
+
+const fetchRomanization = async (term, options = {}) => {
     const cleanedTerm = cleanValue(term);
     if (!cleanedTerm) {
         return null;
+    }
+
+    const cacheScope = {
+        language: normalizeBookLanguage(options.targetLanguage ?? getRuntimeTargetLanguage()),
+        interfaceLanguage: normalizeInterfaceLanguageCode(options.interfaceLanguage ?? getRuntimeInterfaceLanguage()),
+    };
+
+    try {
+        const cachedRows = await lookupCacheByStems([cleanedTerm], cacheScope);
+        const cachedRomanization = nullableValue(cachedRows[0]?.romanization);
+        if (cachedRomanization) {
+            return cachedRomanization;
+        }
+    } catch (error) {
+        // Local cache misses should not block the lookup panel pronunciation.
     }
 
     try {
@@ -255,7 +461,11 @@ const fetchRomanization = async (term) => {
             params: { text: cleanedTerm },
             timeout: 6000,
         });
-        return nullableValue(response.data?.romanization);
+        const romanization = nullableValue(response.data?.romanization);
+        if (romanization && cacheScope.language === 'ko') {
+            updateCacheRomanizations([{ stem: cleanedTerm, romanization }], cacheScope).catch(() => {});
+        }
+        return romanization;
     } catch (error) {
         return null;
     }
@@ -267,6 +477,7 @@ const hydrateDefinitionEntry = async (entry, ownerId, options = {}) => {
     const hanja = nullableValue(entry?.hanja);
     const includeRomanization = options.includeRomanization !== false;
     const targetLanguage = normalizeBookLanguage(options.targetLanguage ?? getRuntimeTargetLanguage());
+    const interfaceLanguage = normalizeInterfaceLanguageCode(options.interfaceLanguage ?? getRuntimeInterfaceLanguage());
     const pronunciation = nullableValue(entry?.romanization)
         || nullableValue(entry?.pinyin)
         || nullableValue(entry?.ipa);
@@ -277,7 +488,9 @@ const hydrateDefinitionEntry = async (entry, ownerId, options = {}) => {
         hanja,
         pos: nullableValue(entry?.pos),
         romanization: pronunciation
-            || (includeRomanization && targetLanguage === 'ko' ? await fetchRomanization(word) : null),
+            || (includeRomanization && targetLanguage === 'ko'
+                ? await fetchRomanization(word, { interfaceLanguage, targetLanguage })
+                : null),
         audio_us: nullableValue(entry?.audio_us),
         audio_uk: nullableValue(entry?.audio_uk),
         wordParts: entry?.wordParts ?? entry?.word_parts ?? null,
@@ -293,11 +506,13 @@ const buildLookupResult = async ({
     ownerId,
     includeRomanization = true,
     wordOptions = [],
+    interfaceLanguage = getRuntimeInterfaceLanguage(),
     targetLanguage = getRuntimeTargetLanguage(),
 }) => {
     const normalizedTargetLanguage = normalizeBookLanguage(targetLanguage);
     const hydratedPrimary = await hydrateDefinitionEntry(primary, ownerId, {
         includeRomanization,
+        interfaceLanguage,
         targetLanguage: normalizedTargetLanguage,
     });
     const hydratedAlternatives = await Promise.all(
@@ -305,6 +520,7 @@ const buildLookupResult = async ({
             .slice(0, MAX_ALTERNATIVES)
             .map((entry) => hydrateDefinitionEntry(entry, ownerId, {
                 includeRomanization,
+                interfaceLanguage,
                 targetLanguage: normalizedTargetLanguage,
             }))
     );
@@ -330,68 +546,50 @@ export const lookupWordForOverlay = async ({
     surface,
     sourceSentence = '',
     includeEnrichment = true,
+    fetchLive = true,
+    allowRemoteStemming = true,
 }) => {
     const rawSurface = cleanValue(surface);
     const targetLanguage = normalizeBookLanguage(getRuntimeTargetLanguage());
-    const normalizedSurface = normalizeSurfaceWordForLanguage(rawSurface, targetLanguage) || rawSurface;
     const ownerId = getActiveOwnerId();
     const interfaceLanguage = getRuntimeInterfaceLanguage();
-    const cacheScope = {
-        language: targetLanguage,
+    const resolved = await resolveDictionaryLookup({
+        surface: rawSurface,
+        ownerId,
         interfaceLanguage,
-    };
+        targetLanguage,
+        fetchLive,
+        allowRemoteStemming,
+        fallbackToSurfaceForKorean: true,
+    });
+    const normalizedSurface = resolved.normalizedSurface || rawSurface;
+    const stems = resolved.stems.length > 0 ? resolved.stems : [normalizedSurface].filter(Boolean);
+    const cachedRows = resolved.cachedResults;
 
     if (!normalizedSurface) {
         throw new Error('No text selected.');
     }
 
-    const directRows = await lookupCacheByStems([normalizedSurface], cacheScope);
-    if (directRows.length > 0) {
-        return cacheEntryToLookupResult({
-            entry: directRows[0],
-            surface: rawSurface || normalizedSurface,
-            sourceSentence,
-            ownerId,
-            includeEnrichment,
-            wordOptions: [directRows[0].stem],
-            interfaceLanguage,
-            targetLanguage,
-        });
-    }
-
-    const stemCandidates = uniqueValues(await stemWord({
-        query: rawSurface || normalizedSurface,
-        language: targetLanguage,
-    })).filter((stem) => targetLanguage !== 'ko' || !STOP_STEMS.has(stem));
-    const stems = stemCandidates.length > 0 ? stemCandidates : [normalizedSurface];
-    const cachedRows = await lookupCacheByStems(stems, cacheScope);
-
     if (cachedRows.length > 0) {
+        const wordOptions = stems.length > 0
+            ? stems
+            : [cachedRows[0].stem].filter(Boolean);
         return cacheEntryToLookupResult({
             entry: cachedRows[0],
             surface: rawSurface || normalizedSurface,
             sourceSentence,
             ownerId,
             includeEnrichment,
-            wordOptions: stems,
+            wordOptions,
             interfaceLanguage,
             targetLanguage,
         });
     }
 
-    const liveResults = await fetchLiveDictionary(stems, interfaceLanguage, targetLanguage);
-    const cacheEntries = stems
-        .map((stem, index) => {
-            const first = liveResults[index]?.[0];
-            return first ? liveEntryToCacheEntry(stem, first, interfaceLanguage, targetLanguage) : null;
-        })
-        .filter(Boolean);
-
-    if (cacheEntries.length > 0) {
-        await insertCacheEntries(cacheEntries, cacheScope);
-        const firstResultIndex = liveResults.findIndex(entries => entries?.[0]);
-        const primaryStem = stems[firstResultIndex] || cacheEntries[0].stem;
-        const liveEntries = liveResults[firstResultIndex] ?? [];
+    const firstResultIndex = resolved.dictionaryData.findIndex(entries => entries?.[0]);
+    if (firstResultIndex >= 0) {
+        const primaryStem = stems[firstResultIndex] || normalizedSurface;
+        const liveEntries = resolved.dictionaryData[firstResultIndex] ?? [];
         const primary = liveEntryToDefinitionEntry(liveEntries[0], primaryStem, targetLanguage);
         const alternatives = includeEnrichment
             ? normalizeLiveAlternatives(liveEntries.slice(1), primary, targetLanguage).slice(0, MAX_ALTERNATIVES)
@@ -405,8 +603,13 @@ export const lookupWordForOverlay = async ({
             ownerId,
             includeRomanization: includeEnrichment,
             wordOptions: stems,
+            interfaceLanguage,
             targetLanguage,
         });
+    }
+
+    if (resolved.liveError) {
+        throw new Error(resolved.liveError);
     }
 
     return {
@@ -430,7 +633,6 @@ export const saveOverlayLookupResult = async ({
     sourceSentence = '',
 }) => {
     const ownerId = getActiveOwnerId();
-    const generation = getSyncGeneration();
     const targetLanguage = normalizeBookLanguage(getRuntimeTargetLanguage());
     const word = cleanValue(stem);
     const cleanedDefinition = cleanValue(definition);
@@ -465,45 +667,8 @@ export const saveOverlayLookupResult = async ({
         language: targetLanguage,
     });
 
-    const {
-        data: { user },
-    } = await supabase.auth.getUser();
-
-    if (user && ownerId === user.id && isCurrentSyncGeneration(generation)) {
-        await upsertUserVocabEntry({
-            user,
-            ownerId,
-            generation,
-            entry: {
-                word,
-                hanja: cleanedHanja,
-                definition: cleanedDefinition,
-                level: 'unorganized',
-                status: 'unorganized',
-                sourceBookUri: null,
-                sourceBookTitle: 'Floating OCR',
-                contextSentence: normalizedSourceSentence,
-                isFavorite: false,
-                priority: 'normal',
-                createdAt,
-                updatedAt: createdAt,
-                lastReviewedAt: null,
-                nextReviewAt: null,
-                correctCount: 0,
-                wrongCount: 0,
-                language: targetLanguage,
-            },
-        });
-        if (recordedContext) {
-            upsertUserVocabContext({
-                user,
-                ownerId,
-                generation,
-                context: recordedContext,
-            }).catch((error) => {
-                console.warn('[overlayLookup] cloud context save failed:', error.message);
-            });
-        }
+    if (!alreadySaved || recordedContext) {
+        requestUserDataSync('overlay-vocab-save');
     }
 
     return { saved: true };
@@ -515,7 +680,6 @@ export const unsaveOverlayLookupResult = async ({
     hanja = null,
 }) => {
     const ownerId = getActiveOwnerId();
-    const generation = getSyncGeneration();
     const targetLanguage = normalizeBookLanguage(getRuntimeTargetLanguage());
     const word = cleanValue(stem);
     const cleanedDefinition = cleanValue(definition);
@@ -526,22 +690,7 @@ export const unsaveOverlayLookupResult = async ({
     }
 
     await removeData(word, cleanedHanja, cleanedDefinition, targetLanguage, { ownerId });
-
-    const {
-        data: { user },
-    } = await supabase.auth.getUser();
-
-    if (user && ownerId === user.id && isCurrentSyncGeneration(generation)) {
-        const cloudEntry = {
-            word,
-            hanja: cleanedHanja,
-            definition: cleanedDefinition,
-            language: targetLanguage,
-        };
-        await softDeleteUserVocabEntry({ user, ownerId, generation, entry: cloudEntry });
-        await softDeleteUserVocabContextsForWord({ user, ownerId, generation, entry: cloudEntry });
-        await softDeleteRelatedKnownWordsForMainWord({ user, ownerId, generation, entry: cloudEntry });
-    }
+    requestUserDataSync('overlay-vocab-unsave');
 
     return { saved: false };
 };
