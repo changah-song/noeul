@@ -48,6 +48,20 @@ const omitUndefined = (value) => Object.fromEntries(
   Object.entries(value).filter(([, fieldValue]) => fieldValue !== undefined)
 );
 
+const isMissingRpcError = (error, functionName) => {
+  const message = String(error?.message ?? error?.details ?? '').toLowerCase();
+  return error?.code === 'PGRST202'
+    || error?.code === '42883'
+    || message.includes(functionName.toLowerCase());
+};
+
+const isAmbiguousEnsureProfileRpcError = (error) => {
+  const message = String(error?.message ?? error?.details ?? '').toLowerCase();
+  return error?.code === '42702'
+    && message.includes('target_language')
+    && message.includes('ambiguous');
+};
+
 const toProfileRow = (userId, profile = {}) => {
   const targetLanguage = normalizeLanguageCode(
     profile.target_language ?? profile.targetLanguage
@@ -64,6 +78,26 @@ const toProfileRow = (userId, profile = {}) => {
       ?? getLanguageLabel(targetLanguage),
     updated_at: profile.updated_at ?? profile.updatedAt ?? new Date().toISOString(),
   });
+};
+
+const ensureUserProfileRpc = async ({
+  targetLanguage,
+  script,
+  displayName,
+  makeActive = false,
+} = {}) => {
+  const { data, error } = await supabase.rpc('ensure_user_profile', {
+    target_language: targetLanguage,
+    script: script ?? null,
+    display_name: displayName ?? null,
+    make_active: makeActive,
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  return data;
 };
 
 export const fetchUserProfiles = async (userId) => {
@@ -108,6 +142,24 @@ export const upsertUserProfile = async ({
     displayName,
   });
 
+  try {
+    assertCloudWriteAllowed({ user, ownerId, generation });
+    return await ensureUserProfileRpc({
+      targetLanguage: row.target_language,
+      script: row.script,
+      displayName: row.display_name,
+    });
+  } catch (error) {
+    if (
+      !isMissingRpcError(error, 'ensure_user_profile')
+      && !isMissingScriptColumnError(error)
+      && !isAmbiguousEnsureProfileRpcError(error)
+    ) {
+      console.warn(`${FILE_TAG} upsertUserProfile failed`, error);
+      throw error;
+    }
+  }
+
   let { data, error } = await supabase
     .from(USER_PROFILES_TABLE)
     .upsert(row, {
@@ -143,6 +195,27 @@ export const setActiveProfile = async ({
   profileId,
 } = {}) => {
   const userId = assertCloudWriteAllowed({ user, ownerId, generation });
+
+  try {
+    assertCloudWriteAllowed({ user, ownerId, generation });
+    const { data, error } = await supabase.rpc('upsert_user_preferences_patch', {
+      patch: {
+        active_profile_id: profileId,
+        updated_at: new Date().toISOString(),
+      },
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    return data;
+  } catch (error) {
+    if (!isMissingRpcError(error, 'upsert_user_preferences_patch')) {
+      console.warn(`${FILE_TAG} setActiveProfile failed`, error);
+      throw error;
+    }
+  }
 
   const { data, error } = await supabase
     .from(USER_PREFERENCES_TABLE)

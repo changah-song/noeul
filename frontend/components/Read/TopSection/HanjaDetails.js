@@ -7,10 +7,8 @@ import { useLocalOwner } from '../../../contexts/LocalOwnerContext';
 import { fetchHanjaRelated } from '../../../services/api/hanjaRelated';
 import { addRelatedKnownWord, getRelatedKnownWords, removeRelatedKnownWord } from '../../../services/Database';
 import {
-    softDeleteUserRelatedKnownWord,
     supabase,
-    upsertUserRelatedKnownWord,
-    upsertUserVocabEntry,
+    toggleCloudRelatedKnownWord,
 } from '../../../services/supabase';
 import { isCurrentSyncGeneration } from '../../../services/localOwnerCoordinator';
 import { fontFamilies, useTheme } from '../../../theme';
@@ -84,7 +82,7 @@ const HanjaDetails = ({
     const { t } = useTranslation();
     const { colors } = useTheme();
     const styles = useMemo(() => createStyles(colors), [colors]);
-    const { activeOwnerId, syncGeneration } = useLocalOwner();
+    const { activeOwnerId, syncGeneration, syncPaused } = useLocalOwner();
     const characters = normalizeHanjaCharacters(hanjaCharacters, hanja);
     const charactersKey = characters.join('|');
 
@@ -249,35 +247,32 @@ const HanjaDetails = ({
 
             supabase.auth.getUser()
                 .then(({ data: { user } }) => {
-                    if (!user || ownerId !== user.id || !isCurrentSyncGeneration(generation)) {
+                    if (!user || syncPaused || ownerId !== user.id || !isCurrentSyncGeneration(generation)) {
                         return null;
                     }
 
-                    if (known) {
-                        return softDeleteUserRelatedKnownWord({ user, ownerId, generation, relation });
-                    }
-
-                    return Promise.all([
-                        upsertUserVocabEntry({
-                            user, ownerId, generation,
-                            entry: {
-                                word: sourceWord,
-                                hanja: sourceWordDetails?.hanja ?? null,
-                                definition: sourceWordDetails?.definition ?? null,
-                                level: sourceWordDetails?.level ?? 'unorganized',
-                                status: sourceWordDetails?.level ?? 'unorganized',
-                                sourceBookUri: sourceWordDetails?.sourceBookUri ?? null,
-                                sourceBookTitle: sourceWordDetails?.sourceBookTitle ?? null,
-                                contextSentence: sourceWordDetails?.contextSentence ?? null,
-                                isFavorite: sourceWordDetails?.isFavorite ?? false,
-                                priority: sourceWordDetails?.priority ?? 'normal',
-                                createdAt: sourceWordDetails?.createdAt ?? markedAt,
-                                updatedAt: sourceWordDetails?.updatedAt ?? markedAt,
-                                language,
-                            },
-                        }),
-                        upsertUserRelatedKnownWord({ user, ownerId, generation, relation }),
-                    ]);
+                    return toggleCloudRelatedKnownWord({
+                        user,
+                        ownerId,
+                        generation,
+                        known,
+                        relation,
+                        entry: {
+                            word: sourceWord,
+                            hanja: sourceWordDetails?.hanja ?? null,
+                            definition: sourceWordDetails?.definition ?? null,
+                            level: sourceWordDetails?.level ?? 'unorganized',
+                            status: sourceWordDetails?.level ?? 'unorganized',
+                            sourceBookUri: sourceWordDetails?.sourceBookUri ?? null,
+                            sourceBookTitle: sourceWordDetails?.sourceBookTitle ?? null,
+                            contextSentence: sourceWordDetails?.contextSentence ?? null,
+                            isFavorite: sourceWordDetails?.isFavorite ?? false,
+                            priority: sourceWordDetails?.priority ?? 'normal',
+                            createdAt: sourceWordDetails?.createdAt ?? markedAt,
+                            updatedAt: sourceWordDetails?.updatedAt ?? markedAt,
+                            language,
+                        },
+                    });
                 })
                 .catch((syncError) => {
                     console.warn(`[HanjaDetails] cloud sync failed for "${sourceWord}":`, syncError.message);
@@ -298,7 +293,7 @@ const HanjaDetails = ({
         >
             {/* Section header: eyebrow + pagination dots */}
             <View style={styles.sectionHeader}>
-                <Text style={styles.sectionEyebrow}>ROOT CHARACTERS</Text>
+                <Text style={styles.sectionEyebrow}>{t('hanja.rootCharacters')}</Text>
                 {characters.length > 1 ? (
                     <View style={styles.dots}>
                         {characters.map((char, i) => (
@@ -382,7 +377,7 @@ const HanjaDetails = ({
                                         </Text>
                                     </View>
                                     <View style={styles.cardCopy}>
-                                        <Text style={styles.cardEyebrow}>MEANING</Text>
+                                        <Text style={styles.cardEyebrow}>{t('hanja.meaning')}</Text>
                                         {charIsLoading ? (
                                             <View style={styles.shimmerLine} />
                                         ) : (
@@ -400,7 +395,7 @@ const HanjaDetails = ({
                                 <View style={[styles.cardDivider, { borderColor: palette.divider }]} />
 
                                 {/* Related words section */}
-                                <Text style={styles.relatedEyebrow}>RELATED WORDS</Text>
+                                <Text style={styles.relatedEyebrow}>{t('hanja.relatedWords')}</Text>
 
                                 {charIsLoading ? (
                                     <View style={styles.loadingRow}>
@@ -467,10 +462,10 @@ const HanjaDetails = ({
                                                 onPress={() => showMoreRelatedWords(char, relatedWords.length)}
                                                 style={styles.seeMoreRow}
                                                 accessibilityRole="button"
-                                                accessibilityLabel="See more related words"
+                                                accessibilityLabel={t('hanja.seeMoreRelatedWords')}
                                             >
                                                 <Text style={[styles.seeMoreText, { color: palette.secondaryText }]}>
-                                                    See more
+                                                    {t('common.seeMore')}
                                                 </Text>
                                                 <MaterialIcons
                                                     name="keyboard-arrow-down"

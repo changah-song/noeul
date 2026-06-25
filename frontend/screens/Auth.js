@@ -115,7 +115,7 @@ const Auth = ({
     setLoading(true);
     try {
       if (!GOOGLE_IOS_CLIENT_ID && !GOOGLE_WEB_CLIENT_ID) {
-        throw new Error('Missing Google client ID. Add EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID or EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID to frontend/.env.');
+        throw new Error(t('auth.missingGoogleClientId'));
       }
 
       await GoogleSignin.hasPlayServices();
@@ -126,7 +126,7 @@ const Auth = ({
       let accessToken = signInResult?.data?.accessToken ?? signInResult?.accessToken;
 
       if (!idToken) {
-        throw new Error('No Google ID token returned');
+        throw new Error(t('auth.noGoogleIdToken'));
       }
 
       if (!accessToken) {
@@ -179,7 +179,7 @@ const Auth = ({
       });
 
       if (!credential.identityToken) {
-        throw new Error('No Apple identity token returned');
+        throw new Error(t('auth.noAppleIdentityToken'));
       }
 
       const currentSession = await getCurrentSession();

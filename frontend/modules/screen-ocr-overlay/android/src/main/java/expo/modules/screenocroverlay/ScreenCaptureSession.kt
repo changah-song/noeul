@@ -77,7 +77,7 @@ class ScreenCaptureSession(
 
     val projectionManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
     projection = projectionManager.getMediaProjection(resultCode, data)
-      ?: throw IllegalStateException("MediaProjection could not be created")
+      ?: throw IllegalStateException(OverlayText.t("mediaProjectionCreateFailed"))
 
     imageReader = createImageReader(captureWidth, captureHeight)
     projection.registerCallback(callback, mainHandler)
@@ -94,11 +94,11 @@ class ScreenCaptureSession(
   }
 
   fun analyzeLatestImage(cropBounds: OverlayCaptureBounds? = null): SerializedOcrResult {
-    check(!released) { "Screen capture session is no longer active" }
+    check(!released) { OverlayText.t("screenCaptureSessionInactive") }
 
     val totalStartNs = SystemClock.elapsedRealtimeNanos()
     val image = acquireLatestImageWithRetry()
-      ?: throw IllegalStateException("No screen image is available yet")
+      ?: throw IllegalStateException(OverlayText.t("noScreenImageAvailable"))
     val acquireEndNs = SystemClock.elapsedRealtimeNanos()
 
     image.use { currentImage ->
@@ -271,7 +271,7 @@ class ScreenCaptureSession(
 
   private fun Image.toBitmap(cropBounds: OverlayCaptureBounds? = null): CapturedBitmap {
     val plane = planes.firstOrNull()
-      ?: throw IllegalStateException("Captured image has no pixel plane")
+      ?: throw IllegalStateException(OverlayText.t("screenCaptureNoPixelPlane"))
     val buffer = plane.buffer
     val pixelStride = plane.pixelStride
     val rowStride = plane.rowStride
@@ -282,7 +282,7 @@ class ScreenCaptureSession(
     val cropHeight = appliedCropBounds?.height ?: height
 
     if (pixelStride != 4) {
-      throw IllegalStateException("Unsupported screen capture pixel stride: $pixelStride")
+      throw IllegalStateException(OverlayText.unsupportedPixelStride(pixelStride))
     }
 
     buffer.rewind()
@@ -300,7 +300,7 @@ class ScreenCaptureSession(
     for (row in 0 until cropHeight) {
       val rowStart = (cropTop + row) * rowStride + cropLeft * pixelStride
       if (rowStart < 0 || rowStart + rowByteCount > buffer.capacity()) {
-        throw IllegalStateException("Captured image row is outside the pixel buffer")
+        throw IllegalStateException(OverlayText.t("screenCaptureRowOutsideBuffer"))
       }
       buffer.position(rowStart)
       buffer.get(rowBuffer, 0, rowByteCount)

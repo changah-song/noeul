@@ -1,5 +1,7 @@
 import { Platform } from 'react-native';
 import { EventEmitter, requireNativeModule } from 'expo-modules-core';
+import { translate } from '../../../i18n/translations';
+import { getRuntimeInterfaceLanguage } from '../../../services/interfaceLanguage';
 
 const NativeScreenOcrOverlay = Platform.OS === 'android'
     ? requireNativeModule('ScreenOcrOverlay')
@@ -9,63 +11,81 @@ const eventEmitter = NativeScreenOcrOverlay
     ? new EventEmitter(NativeScreenOcrOverlay)
     : null;
 
-const androidOnly = () => Promise.reject(new Error('Floating OCR is only available on Android.'));
+const androidOnly = () => Promise.reject(new Error(
+    translate(getRuntimeInterfaceLanguage(), 'ocr.androidOnly')
+));
 const emptySubscription = { remove: () => {} };
 
+export const setOverlayInterfaceLanguage = (language = getRuntimeInterfaceLanguage()) => {
+    NativeScreenOcrOverlay?.setInterfaceLanguage?.(language);
+};
+
+const callNative = (method, ...args) => {
+    if (!NativeScreenOcrOverlay?.[method]) {
+        return androidOnly();
+    }
+    setOverlayInterfaceLanguage();
+    return NativeScreenOcrOverlay[method](...args);
+};
+
 export const requestOverlayPermission = () => (
-    NativeScreenOcrOverlay?.requestOverlayPermission() ?? androidOnly()
+    callNative('requestOverlayPermission')
 );
 
 export const isOverlayPermissionGranted = () => (
-    NativeScreenOcrOverlay?.isOverlayPermissionGranted?.() ?? false
+    NativeScreenOcrOverlay
+        ? (setOverlayInterfaceLanguage(), NativeScreenOcrOverlay.isOverlayPermissionGranted?.() ?? false)
+        : false
 );
 
 export const requestScreenCapture = () => (
-    NativeScreenOcrOverlay?.requestScreenCapture() ?? androidOnly()
+    callNative('requestScreenCapture')
 );
 
 export const isScreenCaptureActive = () => (
-    NativeScreenOcrOverlay?.isScreenCaptureActive?.() ?? false
+    NativeScreenOcrOverlay
+        ? (setOverlayInterfaceLanguage(), NativeScreenOcrOverlay.isScreenCaptureActive?.() ?? false)
+        : false
 );
 
 export const startFloatingWidget = () => (
-    NativeScreenOcrOverlay?.startFloatingWidget() ?? androidOnly()
+    callNative('startFloatingWidget')
 );
 
 export const stopFloatingWidget = () => (
-    NativeScreenOcrOverlay?.stopFloatingWidget() ?? androidOnly()
+    callNative('stopFloatingWidget')
 );
 
 export const analyzeCurrentScreen = () => (
-    NativeScreenOcrOverlay?.analyzeCurrentScreen() ?? androidOnly()
+    callNative('analyzeCurrentScreen')
 );
 
 export const resolveOverlayLookup = (requestId, result) => (
-    NativeScreenOcrOverlay?.resolveOverlayLookup(requestId, result) ?? androidOnly()
+    callNative('resolveOverlayLookup', requestId, result)
 );
 
 export const updateOverlayLookup = (requestId, result) => (
-    NativeScreenOcrOverlay?.updateOverlayLookup(requestId, result) ?? androidOnly()
+    callNative('updateOverlayLookup', requestId, result)
 );
 
 export const rejectOverlayLookup = (requestId, message) => (
-    NativeScreenOcrOverlay?.rejectOverlayLookup(requestId, message) ?? androidOnly()
+    callNative('rejectOverlayLookup', requestId, message)
 );
 
 export const resolveOverlaySave = (requestId, result) => (
-    NativeScreenOcrOverlay?.resolveOverlaySave(requestId, result) ?? androidOnly()
+    callNative('resolveOverlaySave', requestId, result)
 );
 
 export const rejectOverlaySave = (requestId, message) => (
-    NativeScreenOcrOverlay?.rejectOverlaySave(requestId, message) ?? androidOnly()
+    callNative('rejectOverlaySave', requestId, message)
 );
 
 export const resolveOverlayHanja = (requestId, result) => (
-    NativeScreenOcrOverlay?.resolveOverlayHanja(requestId, result) ?? androidOnly()
+    callNative('resolveOverlayHanja', requestId, result)
 );
 
 export const rejectOverlayHanja = (requestId, message) => (
-    NativeScreenOcrOverlay?.rejectOverlayHanja(requestId, message) ?? androidOnly()
+    callNative('rejectOverlayHanja', requestId, message)
 );
 
 export const addOverlayStatusListener = (listener) => (
@@ -137,6 +157,7 @@ export default {
     rejectOverlaySave,
     resolveOverlayHanja,
     rejectOverlayHanja,
+    setOverlayInterfaceLanguage,
     addOverlayStatusListener,
     addOcrResultListener,
     addOcrWordSelectedListener,

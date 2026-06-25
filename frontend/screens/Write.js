@@ -88,52 +88,58 @@ const useWriteTheme = () => (
 
 const PROMPT_CATEGORIES = [
   {
-    title: 'Comprehension & summary',
+    titleKey: 'write.promptCategories.comprehension',
+    filterKey: 'essay',
     prompts: [
-      'Summarize what happened in this chapter/book in your own words',
-      'Who are the main characters and what do they want?',
-      'What was the most important moment and why?',
+      { value: 'Summarize what happened in this chapter/book in your own words', labelKey: 'write.prompts.summarizeChapter' },
+      { value: 'Who are the main characters and what do they want?', labelKey: 'write.prompts.mainCharacters' },
+      { value: 'What was the most important moment and why?', labelKey: 'write.prompts.importantMoment' },
     ],
   },
   {
-    title: 'Reaction & opinion',
+    titleKey: 'write.promptCategories.reaction',
+    filterKey: 'diary',
     prompts: [
-      'What surprised you most and why?',
-      'Which character do you relate to most?',
-      'What would you have done differently if you were the main character?',
-      "Did you enjoy it? What worked and what didn't?",
+      { value: 'What surprised you most and why?', labelKey: 'write.prompts.surprised' },
+      { value: 'Which character do you relate to most?', labelKey: 'write.prompts.relateCharacter' },
+      { value: 'What would you have done differently if you were the main character?', labelKey: 'write.prompts.differentChoice' },
+      { value: "Did you enjoy it? What worked and what didn't?", labelKey: 'write.prompts.enjoyed' },
     ],
   },
   {
-    title: 'Themes & meaning',
+    titleKey: 'write.promptCategories.themes',
+    filterKey: 'essay',
     prompts: [
-      'What is the author trying to say about human nature?',
-      'What is the central conflict and how is it resolved?',
-      "What does the title mean to you now that you've read it?",
+      { value: 'What is the author trying to say about human nature?', labelKey: 'write.prompts.humanNature' },
+      { value: 'What is the central conflict and how is it resolved?', labelKey: 'write.prompts.centralConflict' },
+      { value: "What does the title mean to you now that you've read it?", labelKey: 'write.prompts.titleMeaning' },
     ],
   },
   {
-    title: 'Personal connection',
+    titleKey: 'write.promptCategories.personal',
+    filterKey: 'diary',
     prompts: [
-      'Does anything in this story remind you of your own life?',
-      'Has this changed how you think about anything?',
-      'Would you recommend this to a friend and how would you describe it?',
+      { value: 'Does anything in this story remind you of your own life?', labelKey: 'write.prompts.ownLife' },
+      { value: 'Has this changed how you think about anything?', labelKey: 'write.prompts.changedThinking' },
+      { value: 'Would you recommend this to a friend and how would you describe it?', labelKey: 'write.prompts.recommendFriend' },
     ],
   },
   {
-    title: 'Prediction & continuation',
+    titleKey: 'write.promptCategories.prediction',
+    filterKey: 'diary',
     prompts: [
-      'What do you think happens next?',
-      'If there were a sequel, what would it be about?',
-      'How do you think this will end?',
+      { value: 'What do you think happens next?', labelKey: 'write.prompts.happensNext' },
+      { value: 'If there were a sequel, what would it be about?', labelKey: 'write.prompts.sequel' },
+      { value: 'How do you think this will end?', labelKey: 'write.prompts.ending' },
     ],
   },
   {
-    title: 'Language-focused',
+    titleKey: 'write.promptCategories.language',
+    filterKey: 'essay',
     prompts: [
-      'Write about a scene using at least 3 new words you learned while reading it',
-      'Retell a key moment from the perspective of a different character',
-      "Describe the setting as if explaining it to someone who hasn't read the book",
+      { value: 'Write about a scene using at least 3 new words you learned while reading it', labelKey: 'write.prompts.newWordsScene' },
+      { value: 'Retell a key moment from the perspective of a different character', labelKey: 'write.prompts.retellPerspective' },
+      { value: "Describe the setting as if explaining it to someone who hasn't read the book", labelKey: 'write.prompts.describeSetting' },
     ],
   },
 ];
@@ -141,14 +147,14 @@ const PROMPT_CATEGORIES = [
 const EDITOR_PROMPT_OPTIONS = {
   free: [],
   diary: [
-    'Describe a moment from today that surprised you.',
-    'Write about a memory that came to mind recently.',
-    'How have your habits changed in the past year?',
+    { value: 'Describe a moment from today that surprised you.', labelKey: 'write.prompts.todayMoment' },
+    { value: 'Write about a memory that came to mind recently.', labelKey: 'write.prompts.recentMemory' },
+    { value: 'How have your habits changed in the past year?', labelKey: 'write.prompts.habitsChanged' },
   ],
   essay: [
-    'Is modern life making people more isolated?',
-    'What does it mean to belong to a place?',
-    'Compare city life and rural life in Korea.',
+    { value: 'Is modern life making people more isolated?', labelKey: 'write.prompts.modernIsolation' },
+    { value: 'What does it mean to belong to a place?', labelKey: 'write.prompts.belongPlace' },
+    { value: 'Compare city life and rural life in Korea.', labelKey: 'write.prompts.cityRural' },
     ...PROMPT_CATEGORIES[5].prompts,
   ],
 };
@@ -210,17 +216,17 @@ const getEntryFilterKey = (entry = {}) => {
   }
 
   const directType = Object.entries(EDITOR_PROMPT_OPTIONS).find(([, prompts]) =>
-    prompts.includes(entry.prompt)
+    prompts.some((prompt) => prompt.value === entry.prompt)
   )?.[0];
   if (directType) {
     return directType;
   }
 
-  const categoryTitle = PROMPT_CATEGORIES.find((category) =>
-    category.prompts.includes(entry.prompt)
-  )?.title ?? '';
+  const categoryFilterKey = PROMPT_CATEGORIES.find((category) =>
+    category.prompts.some((prompt) => prompt.value === entry.prompt)
+  )?.filterKey ?? '';
 
-  if (/personal|reaction|prediction/i.test(categoryTitle)) {
+  if (categoryFilterKey === 'diary') {
     return 'diary';
   }
 
@@ -264,7 +270,7 @@ const normalizeEntry = (entry = {}, index = 0) => {
   const date = entry.date ?? entry.createdAt ?? entry.updatedAt ?? new Date().toISOString();
   const title = typeof entry.title === 'string' && entry.title.trim()
     ? entry.title.trim()
-    : '[Untitled]';
+    : '';
   const assessment = entry.assessment ?? entry.review;
 
   return {
@@ -308,7 +314,7 @@ const WritingEntryRow = ({ entry, onPress }) => {
 
       <View style={styles.writeEntryMain}>
         <Text numberOfLines={1} style={styles.writeEntryTitle}>
-          {entry.title}
+          {entry.title || t('common.untitled')}
         </Text>
         <View style={styles.writeEntryMeta}>
           <Text style={styles.writeEntryMetaText}>{getEntryCharacterCount(entry)}</Text>
@@ -937,7 +943,7 @@ const Write = ({ user }) => {
     const fallbackTitle = draft.body.trim().replace(/\s+/g, ' ').slice(0, 24);
     const nextEntry = {
       id: draft.id ?? `entry-${Date.now()}`,
-      title: draft.title.trim() || fallbackTitle || '[Untitled]',
+      title: draft.title.trim() || fallbackTitle || t('common.untitled'),
       body: draft.body,
       prompt: draft.prompt,
       date: draft.date ?? now,
@@ -987,7 +993,7 @@ const Write = ({ user }) => {
   const selectEditorType = (type) => {
     setActiveEditorType(type);
     setPromptPickerExpanded(type !== 'free');
-    if (type === 'free' || !EDITOR_PROMPT_OPTIONS[type]?.includes(draft.prompt)) {
+    if (type === 'free' || !EDITOR_PROMPT_OPTIONS[type]?.some((prompt) => prompt.value === draft.prompt)) {
       updateDraft({ prompt: '' });
     }
   };
@@ -1011,7 +1017,7 @@ const Write = ({ user }) => {
         <View style={styles.writeHome}>
           <View style={styles.appTopBar}>
             <View style={styles.appTopSide} />
-            <Text style={styles.appTopTitle}>WRITE</Text>
+            <Text style={styles.appTopTitle}>{t('write.title')}</Text>
             <TouchableOpacity
               activeOpacity={0.82}
               onPress={openNewDraft}
@@ -1022,7 +1028,7 @@ const Write = ({ user }) => {
           </View>
           <View style={styles.writeHomeHeader}>
             <View style={styles.writeHomeTitleBlock}>
-              <Text style={styles.writeHomeTitle}>Archive</Text>
+              <Text style={styles.writeHomeTitle}>{t('write.archive')}</Text>
               <View style={styles.writeHomeCountRow}>
                 <Text style={styles.writeHomeCount}>{entries.length}</Text>
                 <Text style={styles.writeHomeCountLabel}>{t('write.entries')}</Text>
@@ -1238,7 +1244,7 @@ const Write = ({ user }) => {
               <Text style={styles.editorCancelText}>{t('common.cancel')}</Text>
             </TouchableOpacity>
 
-            <Text style={styles.editorBarTitle}>NEW ENTRY</Text>
+            <Text style={styles.editorBarTitle}>{t('write.newEntry')}</Text>
 
             <ScrollView
               horizontal
@@ -1292,14 +1298,14 @@ const Write = ({ user }) => {
               {promptPickerExpanded ? (
                 <View style={styles.editorPromptOptions}>
                   {editorPromptOptions.map((prompt, index) => {
-                    const selected = draft.prompt === prompt;
+                    const selected = draft.prompt === prompt.value;
                     const last = index === editorPromptOptions.length - 1;
 
                     return (
                       <Pressable
-                        key={prompt}
+                        key={prompt.value}
                         onPress={() => {
-                          updateDraft({ prompt });
+                          updateDraft({ prompt: prompt.value });
                           setPromptPickerExpanded(false);
                         }}
                         style={[
@@ -1314,7 +1320,7 @@ const Write = ({ user }) => {
                             selected && styles.editorPromptOptionTextSelected,
                           ]}
                         >
-                          {prompt}
+                          {t(prompt.labelKey)}
                         </Text>
                       </Pressable>
                     );

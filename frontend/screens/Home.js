@@ -169,14 +169,14 @@ const makePublicLibraryDiagnostics = (patch = {}) => ({
     ...patch,
 });
 
-const getPublicLibraryDiagnosticLines = (diagnostics = {}) => [
+const getPublicLibraryDiagnosticLines = (diagnostics = {}, t = null) => [
     diagnostics.detail,
-    diagnostics.stage ? `Stage: ${diagnostics.stage}` : null,
-    diagnostics.targetLanguage ? `Target language: ${diagnostics.targetLanguage}` : null,
-    diagnostics.rowCount != null ? `Rows: ${diagnostics.rowCount}` : null,
-    diagnostics.checkedCount != null ? `Local checks: ${diagnostics.checkedCount}` : null,
-    diagnostics.downloadedCount != null ? `Downloaded locally: ${diagnostics.downloadedCount}` : null,
-    diagnostics.errorMessage ? `Error: ${diagnostics.errorMessage}` : null,
+    diagnostics.stage ? (t ? t('home.diagnosticStage', { value: diagnostics.stage }) : `Stage: ${diagnostics.stage}`) : null,
+    diagnostics.targetLanguage ? (t ? t('home.diagnosticTargetLanguage', { value: diagnostics.targetLanguage }) : `Target language: ${diagnostics.targetLanguage}`) : null,
+    diagnostics.rowCount != null ? (t ? t('home.diagnosticRows', { count: diagnostics.rowCount }) : `Rows: ${diagnostics.rowCount}`) : null,
+    diagnostics.checkedCount != null ? (t ? t('home.diagnosticLocalChecks', { count: diagnostics.checkedCount }) : `Local checks: ${diagnostics.checkedCount}`) : null,
+    diagnostics.downloadedCount != null ? (t ? t('home.diagnosticDownloadedLocally', { count: diagnostics.downloadedCount }) : `Downloaded locally: ${diagnostics.downloadedCount}`) : null,
+    diagnostics.errorMessage ? (t ? t('home.diagnosticError', { message: diagnostics.errorMessage }) : `Error: ${diagnostics.errorMessage}`) : null,
 ].filter(Boolean);
 
 const createHomeColors = (themeColors) => ({
@@ -258,7 +258,7 @@ const normalizeStoredSong = (song, fallbackLanguage = 'ko') => {
         source: String(song.source || song.provider || '').trim() || null,
         externalId: String(song.externalId || song.external_id || song.providerId || '').trim() || null,
         title,
-        artist: String(song.artist || '').trim() || 'Unknown artist',
+        artist: String(song.artist || '').trim(),
         album: String(song.album || '').trim(),
         duration: typeof song.duration === 'number' ? song.duration : null,
         instrumental: !!song.instrumental,
@@ -573,11 +573,16 @@ const formatShortDate = (value) => {
     });
 };
 
-const formatSongWordCount = (song) => String(song?.lyrics || '')
+const getSongWordCount = (song) => String(song?.lyrics || '')
     .trim()
     .split(/\s+/)
     .filter(Boolean)
     .length;
+
+const formatSongWordCount = (song, t = null) => {
+    const count = getSongWordCount(song);
+    return t ? t('home.songWords', { count }) : `${count} words`;
+};
 
 const formatBookLanguage = (language, t = null) => {
     const raw = String(language || '').trim();
@@ -586,8 +591,8 @@ const formatBookLanguage = (language, t = null) => {
     }
 
     const shortCode = raw.toLowerCase().split(/[-_]/)[0];
-    if (shortCode === 'ko' || shortCode === 'en') {
-        return getLanguageLabel(shortCode);
+    if (shortCode === 'ko' || shortCode === 'en' || shortCode === 'zh') {
+        return t ? t(`language.${shortCode}`) : getLanguageLabel(shortCode);
     }
 
     return raw.toUpperCase();
@@ -917,7 +922,7 @@ const buildPublicDomainLocalBook = (book, patch = {}) => {
     };
 };
 
-const readPublicLibraryBookMetadataPatch = async (book, uri) => {
+const readPublicLibraryBookMetadataPatch = async (book, uri, t = null) => {
     if (!uri) {
         return {};
     }
@@ -928,7 +933,7 @@ const readPublicLibraryBookMetadataPatch = async (book, uri) => {
         || book?.storagePath?.split('/').pop()
         || book?.publicLibraryStoragePath?.split('/').pop()
         || book?.title
-        || 'Untitled';
+        || (t ? t('common.untitled') : 'Untitled');
     const metadata = format === 'pdf'
         ? await readPdfMetadata(uri, fallbackName)
         : await readEpubMetadata(uri, fallbackName);
@@ -945,8 +950,8 @@ const readPublicLibraryBookMetadataPatch = async (book, uri) => {
         cover,
         ...coverColors,
         originalCover: cover ?? book?.originalCover ?? null,
-        title: book?.title || metadata?.title || 'Untitled',
-        author: book?.author || metadata?.author || 'Unknown author',
+        title: book?.title || metadata?.title || (t ? t('common.untitled') : 'Untitled'),
+        author: book?.author || metadata?.author || (t ? t('common.unknownAuthor') : 'Unknown author'),
         wordCount: book?.wordCount ?? metadata?.wordCount ?? null,
         language: normalizeBookLanguage(metadata?.language ?? book?.language ?? book?.targetLanguage ?? 'en'),
     };
@@ -1024,12 +1029,13 @@ const PreviewMetadataItem = ({ label, value }) => {
 
 const PreviewNoSnippet = () => {
     const { homeColors: HOME_COLORS, styles } = useHomeTheme();
+    const { t } = useTranslation();
 
     return (
         <View style={styles.previewNoSnippet}>
             <MaterialIcons name="format-quote" size={24} color={HOME_COLORS.frame} />
             <Text style={styles.previewNoSnippetText}>
-                No excerpt yet - open the book to capture your first passage.
+                {t('home.previewNoSnippet')}
             </Text>
         </View>
     );
@@ -1066,10 +1072,10 @@ const BookPreview = ({
     const favorite = isBookFavorite(book);
     const showTag = bookState !== 'default';
     const tagText = bookState === 'public'
-        ? 'PUBLIC DOMAIN'
+        ? t('home.publicDomainTag')
         : bookState === 'downloading'
-            ? 'DOWNLOADING…'
-            : 'NOT ON DEVICE';
+            ? t('home.downloadingTag')
+            : t('home.notOnDeviceTag');
     const showDownloadCta = bookState === 'notdl';
     const showDownloadingCta = bookState === 'downloading';
     const showSnippet = canReadBook && !!String(book?.snippet || '').trim();
@@ -1077,8 +1083,8 @@ const BookPreview = ({
     const levelValue = book?.difficulty || book?.bookLevel?.level || book?.bookLevel?.proficiency_level || t('common.unknown');
     const hasKnownDownloadSize = Number(book?.size) > 0;
     const downloadNote = hasKnownDownloadSize
-        ? `${formatFileSize(book?.size, t)} · Available offline once downloaded`
-        : 'Available offline once downloaded';
+        ? t('home.availableOfflineWithSize', { size: formatFileSize(book?.size, t) })
+        : t('home.availableOffline');
     const normalizedDownloadProgress = clamp(
         typeof downloadProgress === 'number' ? downloadProgress : 0.4,
         0.08,
@@ -1108,7 +1114,7 @@ const BookPreview = ({
                 >
                     <MaterialIcons name="arrow-back" size={26} color={HOME_COLORS.text} />
                 </TouchableOpacity>
-                <Text style={styles.previewTopTitle}>BOOK</Text>
+                <Text style={styles.previewTopTitle}>{t('home.book')}</Text>
                 <TouchableOpacity
                     activeOpacity={0.88}
                     disabled={!canReadBook || actionBusy}
@@ -1122,7 +1128,7 @@ const BookPreview = ({
                         styles.previewTopReadButtonText,
                         (!canReadBook || actionBusy) && styles.previewTopReadButtonTextDisabled,
                     ]}>
-                        READ
+                        {t('home.read')}
                     </Text>
                 </TouchableOpacity>
             </View>
@@ -1165,27 +1171,27 @@ const BookPreview = ({
 
                     <View style={styles.previewActionRow}>
                         <PreviewActionButton
-                            label={favorite ? 'FAVORITED' : 'FAVORITE'}
+                            label={favorite ? t('home.favorited') : t('home.favoriteBook')}
                             active={favorite}
                             iconName={favorite ? 'star' : 'star-border'}
                             onPress={onToggleFavorite}
                         />
                         {bookState === 'default' ? (
                             <PreviewActionButton
-                                label="EDIT"
+                                label={t('common.edit')}
                                 iconName="edit"
                                 onPress={onEdit}
                             />
                         ) : null}
                         {bookState === 'public' ? (
                             <PreviewActionButton
-                                label="REMOVE"
+                                label={t('common.remove')}
                                 iconName="bookmark-remove"
                                 onPress={onDelete}
                             />
                         ) : (
                             <PreviewActionButton
-                                label="DELETE"
+                                label={t('common.delete')}
                                 iconName="delete-outline"
                                 onPress={onDelete}
                             />
@@ -1196,13 +1202,13 @@ const BookPreview = ({
                         <View style={styles.previewDownloadBlock}>
                             <TouchableOpacity
                                 accessibilityRole="button"
-                                accessibilityLabel="Download to device"
+                                accessibilityLabel={t('home.downloadToDevice')}
                                 activeOpacity={0.86}
                                 onPress={handleDownloadPress}
                                 style={styles.previewDownloadButton}
                             >
                                 <MaterialIcons name="download" size={20} color={HOME_COLORS.onAccent} />
-                                <Text style={styles.previewDownloadButtonText}>DOWNLOAD TO DEVICE</Text>
+                                <Text style={styles.previewDownloadButtonText}>{t('home.downloadToDevice')}</Text>
                             </TouchableOpacity>
                             <Text style={styles.previewDownloadNote}>
                                 {downloadNote}
@@ -1214,7 +1220,7 @@ const BookPreview = ({
                         <View style={styles.previewDownloadBlock}>
                             <View style={styles.previewDownloadingButton}>
                                 <MaterialIcons name="downloading" size={22} color={HOME_COLORS.accent} />
-                                <Text style={styles.previewDownloadingButtonText}>DOWNLOADING…</Text>
+                                <Text style={styles.previewDownloadingButtonText}>{t('home.downloadingTag')}</Text>
                             </View>
                             <View style={styles.previewDownloadProgressRail}>
                                 <View style={[
@@ -1226,17 +1232,17 @@ const BookPreview = ({
                     ) : null}
 
                     <View style={styles.previewMetadataBlock}>
-                        <Text style={styles.previewSectionLabel}>METADATA</Text>
+                        <Text style={styles.previewSectionLabel}>{t('home.metadata')}</Text>
                         <View style={styles.previewMetaGrid}>
-                            <PreviewMetadataItem label="WORD COUNT" value={formatWordCount(wordCount, t)} />
-                            <PreviewMetadataItem label="LEVEL" value={levelValue} />
-                            <PreviewMetadataItem label="GENRE" value={genreValue} />
-                            <PreviewMetadataItem label="LANGUAGE" value={formatBookLanguage(book?.language, t)} />
-                            <PreviewMetadataItem label="LAST OPENED" value={formatPreviewDateTime(book?.lastOpenedAt, t)} />
+                            <PreviewMetadataItem label={t('home.wordCount')} value={formatWordCount(wordCount, t)} />
+                            <PreviewMetadataItem label={t('home.level')} value={levelValue} />
+                            <PreviewMetadataItem label={t('home.genre')} value={genreValue} />
+                            <PreviewMetadataItem label={t('home.language')} value={formatBookLanguage(book?.language, t)} />
+                            <PreviewMetadataItem label={t('home.lastOpened')} value={formatPreviewDateTime(book?.lastOpenedAt, t)} />
                         </View>
 
                         <View style={styles.previewSnippetSection}>
-                            <Text style={styles.previewSectionLabel}>SNIPPET</Text>
+                            <Text style={styles.previewSectionLabel}>{t('home.snippet')}</Text>
                             {showSnippet ? (
                                 <View style={styles.previewSnippetCard}>
                                     <Text style={[
@@ -1518,7 +1524,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 ...current,
                 [book.publicLibraryId]: true,
             }));
-            readPublicLibraryBookMetadataPatch(book, book.uri)
+            readPublicLibraryBookMetadataPatch(book, book.uri, t)
                 .then((metadataPatch) => {
                     if (!isActive) {
                         return;
@@ -2451,7 +2457,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     [book.publicLibraryId]: progress,
                     }));
                 });
-            const metadataPatch = await readPublicLibraryBookMetadataPatch(book, uri).catch((error) => {
+            const metadataPatch = await readPublicLibraryBookMetadataPatch(book, uri, t).catch((error) => {
                 console.warn(
                     `[Home] Failed to read embedded cover for public book "${book.title}":`,
                     error?.message ?? error
@@ -3352,16 +3358,16 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 {shouldShowHomeIntro ? (
                     <>
                         <View style={styles.homeHeroHeader}>
-                            <Text style={styles.homeHeroEyebrow}>LIBRARY</Text>
+                            <Text style={styles.homeHeroEyebrow}>{t('home.library')}</Text>
                             <Text style={styles.homeHeroTitle}>
-                                Welcome back.
+                                {t('home.welcomeBack')}
                             </Text>
                             <Text style={styles.homeHeroSubtitle}>
-                                14 new words discovered in your last session. Your desk is ready.
+                                {t('home.lastSessionWords', { count: 14 })}
                             </Text>
                         </View>
 
-                        <Text style={styles.continueSectionLabel}>CURRENT READING</Text>
+                        <Text style={styles.continueSectionLabel}>{t('home.currentReading')}</Text>
 
                         {currentReadingBook ? (
                             <Pressable
@@ -3392,7 +3398,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                             </Text>
                                             {currentReadingCompleted ? (
                                                 <View style={styles.continueFinishedBadge}>
-                                                    <Text style={styles.continueFinishedBadgeText}>FINISHED</Text>
+                                                    <Text style={styles.continueFinishedBadgeText}>{t('home.finishedTag')}</Text>
                                                 </View>
                                             ) : (
                                                 <View style={styles.continueBadge}>
@@ -3414,12 +3420,16 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                         <View style={styles.continueBottomBlock}>
                                             <View style={styles.continueProgressHeader}>
                                                 <Text style={styles.continueProgressLabel}>
-                                                    {currentReadingCompleted ? '100% Complete' : `${currentProgressPercent}% Progress`}
+                                                    {currentReadingCompleted
+                                                        ? t('home.percentComplete', { percent: 100 })
+                                                        : t('home.percentProgress', { percent: currentProgressPercent })}
                                                 </Text>
                                                 <Text style={styles.continueProgressMeta}>
                                                     {currentReadingCompleted
-                                                        ? `Finished ${formatShortDate(currentReadingBook?.completedAt || currentReadingBook?.updatedAt || currentReadingBook?.lastOpenedAt) || ''}`
-                                                        : currentReadingBook?.chapterLabel || 'Ch. 4 of 27'}
+                                                        ? t('home.finishedDate', {
+                                                            date: formatShortDate(currentReadingBook?.completedAt || currentReadingBook?.updatedAt || currentReadingBook?.lastOpenedAt) || '',
+                                                        })
+                                                        : currentReadingBook?.chapterLabel || t('home.chapterFallback')}
                                                 </Text>
                                             </View>
                                             <View style={styles.continueProgressRail}>
@@ -3441,7 +3451,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                                     styles.continueResumeText,
                                                     currentReadingCompleted && styles.continueReadAgainText,
                                                 ]}>
-                                                    {currentReadingCompleted ? 'READ AGAIN' : 'RESUME'}
+                                                    {currentReadingCompleted ? t('home.readAgain') : t('home.resume')}
                                                 </Text>
                                                 {!currentReadingCompleted ? (
                                                     <Feather
@@ -3460,9 +3470,9 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                 <View style={styles.emptyContinueIcon}>
                                     <Feather name="book-open" size={22} color={HOME_COLORS.tertiary} />
                                 </View>
-                                <Text style={styles.emptyContinueTitle}>Nothing in progress</Text>
+                                <Text style={styles.emptyContinueTitle}>{t('home.nothingInProgress')}</Text>
                                 <Text style={styles.emptyContinueCopy}>
-                                    Pick up where you left off — open a book to begin your next session.
+                                    {t('home.nothingInProgressBody')}
                                 </Text>
                                 <View style={styles.emptyContinueActions}>
                                     <TouchableOpacity
@@ -3474,7 +3484,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                         style={styles.emptyContinuePrimary}
                                     >
                                         <Feather name="map" size={IconDefaults.size - Spacing.sm} color={HOME_COLORS.onAccent} />
-                                        <Text style={styles.emptyContinuePrimaryText}>BROWSE LIBRARY</Text>
+                                        <Text style={styles.emptyContinuePrimaryText}>{t('home.browseLibrary')}</Text>
                                     </TouchableOpacity>
                                     <TouchableOpacity
                                         activeOpacity={Motion.pressedOpacity}
@@ -3482,7 +3492,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                         style={styles.emptyContinueSecondary}
                                     >
                                         <Feather name="file-plus" size={IconDefaults.size - Spacing.sm} color={HOME_COLORS.text} />
-                                        <Text style={styles.emptyContinueSecondaryText}>IMPORT BOOK</Text>
+                                        <Text style={styles.emptyContinueSecondaryText}>{t('home.importBookAction')}</Text>
                                     </TouchableOpacity>
                                 </View>
                             </View>
@@ -3492,7 +3502,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
                 <View style={styles.libraryControls}>
                     <View style={styles.libraryHeader}>
-                        <Text style={styles.collectionEyebrow}>COLLECTION</Text>
+                        <Text style={styles.collectionEyebrow}>{t('home.collection')}</Text>
                         <View style={styles.collectionViewIcons}>
                             <TouchableOpacity
                                 accessibilityRole="button"
@@ -3543,7 +3553,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                 styles.libraryTabText,
                                 activeLibraryTab === 'Books' && activeBookFilter !== 'public-domain' && styles.libraryTabTextActive,
                             ]}>
-                                MY BOOKS
+                                {t('home.myBooks')}
                             </Text>
                             {activeLibraryTab === 'Books' && activeBookFilter !== 'public-domain' ? <View style={styles.libraryTabUnderline} /> : null}
                         </TouchableOpacity>
@@ -3561,7 +3571,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                 styles.libraryTabText,
                                 activeLibraryTab === 'Books' && activeBookFilter === 'public-domain' && styles.libraryTabTextActive,
                             ]}>
-                                PUBLIC DOMAIN
+                                {t('home.publicDomain')}
                             </Text>
                             {activeLibraryTab === 'Books' && activeBookFilter === 'public-domain' ? <View style={styles.libraryTabUnderline} /> : null}
                         </TouchableOpacity>
@@ -3579,7 +3589,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                 styles.libraryTabText,
                                 activeLibraryTab === 'Songs' && styles.libraryTabTextActive,
                             ]}>
-                                SONGS
+                                {t('home.songs')}
                             </Text>
                             {activeLibraryTab === 'Songs' ? <View style={styles.libraryTabUnderline} /> : null}
                         </TouchableOpacity>
@@ -3645,14 +3655,14 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                             {filteredLibraryBooks.length === 0 ? (
                                 renderCollectionEmptyState({
                                     icon: activeBookFilter === 'favorites' ? 'star' : 'book-open',
-                                    title: activeBookFilter === 'favorites' ? t('home.noFavoritesTitle') : 'Your shelf is empty',
+                                    title: activeBookFilter === 'favorites' ? t('home.noFavoritesTitle') : t('home.shelfEmptyTitle'),
                                     body: activeBookFilter === 'favorites'
                                         ? t('home.noFavoritesBody')
-                                        : 'Import an EPUB from Files, or browse the public domain to start building your library.',
-                                    primaryLabel: activeBookFilter === 'favorites' ? null : 'IMPORT EPUB',
+                                        : t('home.shelfEmptyBody'),
+                                    primaryLabel: activeBookFilter === 'favorites' ? null : t('home.importEpub'),
                                     primaryIcon: activeBookFilter === 'favorites' ? null : 'file-plus',
                                     onPrimaryPress: confirmAddBook,
-                                    secondaryLabel: activeBookFilter === 'favorites' ? null : 'BROWSE',
+                                    secondaryLabel: activeBookFilter === 'favorites' ? null : t('home.browse'),
                                     onSecondaryPress: () => {
                                         setActiveLibraryTab('Books');
                                         setActiveBookFilter('public-domain');
@@ -3661,7 +3671,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                             ) : (
                                 effectiveCollectionViewMode === 'grid'
                                     ? renderBookGrid(filteredLibraryBooks)
-                                    : renderBookRows(filteredLibraryBooks, 'On device')
+                                    : renderBookRows(filteredLibraryBooks, t('home.onDevice'))
                             )}
                         </>
                     ) : showingPublicDomainBooks ? (
@@ -3671,7 +3681,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                     <ActivityIndicator size="small" color={HOME_COLORS.accent} />
                                     <Text style={styles.emptyBooksCopy}>{t('home.loadingPublicLibrary')}</Text>
                                     <View style={styles.publicLibraryDiagnostics}>
-                                        {getPublicLibraryDiagnosticLines(publicLibraryDiagnostics).map((line) => (
+                                        {getPublicLibraryDiagnosticLines(publicLibraryDiagnostics, t).map((line) => (
                                             <Text key={line} style={styles.publicLibraryDiagnosticText}>
                                                 {line}
                                             </Text>
@@ -3683,7 +3693,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                     <Text style={styles.emptyBooksTitle}>{t('home.publicLibraryUnavailableTitle')}</Text>
                                     <Text style={styles.emptyBooksCopy}>{t('home.publicLibraryUnavailableBody')}</Text>
                                     <View style={styles.publicLibraryDiagnostics}>
-                                        {getPublicLibraryDiagnosticLines(publicLibraryDiagnostics).map((line) => (
+                                        {getPublicLibraryDiagnosticLines(publicLibraryDiagnostics, t).map((line) => (
                                             <Text key={line} style={styles.publicLibraryDiagnosticText}>
                                                 {line}
                                             </Text>
@@ -3693,9 +3703,9 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                             ) : sortedPublicDomainBookRows.length === 0 ? (
                                 renderCollectionEmptyState({
                                     icon: 'search',
-                                    title: 'No matches',
-                                    body: 'No public-domain titles match these filters. Try widening the level or genre.',
-                                    primaryLabel: 'CLEAR FILTERS',
+                                    title: t('home.noMatchesTitle'),
+                                    body: t('home.noMatchesBody'),
+                                    primaryLabel: t('home.clearFilters'),
                                     primaryIcon: 'rotate-ccw',
                                     onPrimaryPress: () => {
                                         setActivePublicDomainSort('title');
@@ -3705,7 +3715,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                             ) : (
                                 effectiveCollectionViewMode === 'grid'
                                     ? renderBookGrid(sortedPublicDomainBookRows)
-                                    : renderBookRows(sortedPublicDomainBookRows, 'Public domain')
+                                    : renderBookRows(sortedPublicDomainBookRows, t('home.publicDomain'))
                             )}
                         </>
                     ) : null}
@@ -3715,9 +3725,9 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     {songsLoaded && songs.length === 0 ? (
                         renderCollectionEmptyState({
                             icon: 'music',
-                            title: 'No songs yet',
-                            body: 'Add lyrics you want to study - look up words as you read and sing along.',
-                            primaryLabel: 'WRITE A SONG',
+                            title: t('home.noSongsYet'),
+                            body: t('home.noSongsBody'),
+                            primaryLabel: t('home.writeSong'),
                             primaryIcon: 'edit-2',
                             onPrimaryPress: handleAddSong,
                         })
@@ -3750,7 +3760,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                                 {song.title}
                                             </Text>
                                             <Text style={styles.songMeta} numberOfLines={1}>
-                                                {[song.artist, `${formatSongWordCount(song)} words`].filter(Boolean).join(' · ')}
+                                                {[song.artist, formatSongWordCount(song, t)].filter(Boolean).join(' · ')}
                                             </Text>
                                         </View>
                                         <Feather name="chevron-right" size={23} color={HOME_COLORS.faint} />
@@ -3802,7 +3812,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                         }}
                                         style={styles.fabMenuItem}
                                     >
-                                        <Text style={styles.fabMenuText}>IMPORT BOOK</Text>
+                                        <Text style={styles.fabMenuText}>{t('home.importBookAction')}</Text>
                                         <View style={styles.fabMenuIcon}>
                                             <MaterialIcons name="upload-file" size={22} color={HOME_COLORS.accent} />
                                         </View>
@@ -3816,7 +3826,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                         }}
                                         style={styles.fabMenuItem}
                                     >
-                                        <Text style={styles.fabMenuText}>PUBLIC DOMAIN</Text>
+                                        <Text style={styles.fabMenuText}>{t('home.publicDomain')}</Text>
                                         <View style={styles.fabMenuIcon}>
                                             <MaterialIcons name="travel-explore" size={22} color={HOME_COLORS.accent} />
                                         </View>
@@ -3829,7 +3839,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                         }}
                                         style={styles.fabMenuItem}
                                     >
-                                        <Text style={styles.fabMenuText}>NEW SONG</Text>
+                                        <Text style={styles.fabMenuText}>{t('home.newSong')}</Text>
                                         <View style={styles.fabMenuIcon}>
                                             <MaterialIcons name="lyrics" size={22} color={HOME_COLORS.accent} />
                                         </View>
@@ -3838,7 +3848,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                             </Pressable>
                             <TouchableOpacity
                                 accessibilityRole="button"
-                                accessibilityLabel="Close actions"
+                                accessibilityLabel={t('home.closeActions')}
                                 activeOpacity={Motion.pressedOpacity}
                                 onPress={() => setFabMenuOpen(false)}
                                 style={[styles.fab, styles.fabModalAnchor]}
@@ -3854,7 +3864,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     {!fabMenuOpen ? (
                         <TouchableOpacity
                             accessibilityRole="button"
-                            accessibilityLabel="Open actions"
+                            accessibilityLabel={t('home.openActions')}
                             activeOpacity={Motion.pressedOpacity}
                             onPress={() => setFabMenuOpen(true)}
                             style={[styles.fab, styles.fabScreenAnchor]}

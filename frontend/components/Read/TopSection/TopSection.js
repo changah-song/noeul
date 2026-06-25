@@ -320,7 +320,7 @@ const TopSection = ({
                 <View style={styles.sheetHandleWrap} {...panResponder.panHandlers}>
                     <View style={styles.sheetHandle} />
                     {!isLookupExpanded ? (
-                        <Text style={styles.sheetGestureHint}>⌃ SLIDE UP FOR ROOTS</Text>
+                        <Text style={styles.sheetGestureHint}>{t('read.slideUpForRoots')}</Text>
                     ) : null}
                 </View>
             ) : null}
@@ -374,7 +374,7 @@ const TopSection = ({
             {isTopPlacement && !isTranslationMode && canExpandLookup ? (
                 <View style={styles.sheetHandleWrapBottom} {...panResponder.panHandlers}>
                     {!isLookupExpanded ? (
-                        <Text style={styles.sheetGestureHint}>⌄ SLIDE DOWN FOR ROOTS</Text>
+                        <Text style={styles.sheetGestureHint}>{t('read.slideDownForRoots')}</Text>
                     ) : null}
                     <View style={styles.sheetHandle} />
                 </View>

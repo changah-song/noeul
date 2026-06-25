@@ -5,6 +5,7 @@ import {
     fetchChineseWordBreakdown,
     fetchRelatedPhoneticChinese,
 } from '../../../services/chineseCharacterDatabase';
+import { useTranslation } from '../../../hooks/useTranslation';
 import { fontFamilies, spacing, textStyles, useTheme } from '../../../theme';
 
 const parseJsonArray = (value) => {
@@ -61,6 +62,7 @@ const uniquePinyinValues = (rows = []) => {
 };
 
 const ChineseCharacterDetails = ({ word }) => {
+    const { t } = useTranslation();
     const { colors } = useTheme();
     const styles = useMemo(() => createStyles(colors), [colors]);
     const [breakdown, setBreakdown] = useState([]);
@@ -107,7 +109,7 @@ const ChineseCharacterDetails = ({ word }) => {
             .catch((error) => {
                 if (!isCancelled) {
                     console.warn(`[ChineseCharacterDetails] lookup failed for "${normalizedWord}":`, error.message);
-                    setErrorMessage('Character breakdown is unavailable.');
+                    setErrorMessage(t('chinese.breakdownUnavailable'));
                 }
             })
             .finally(() => {
@@ -119,7 +121,7 @@ const ChineseCharacterDetails = ({ word }) => {
         return () => {
             isCancelled = true;
         };
-    }, [word]);
+    }, [t, word]);
 
     const activeCharacter = breakdown[activeIndex] ?? null;
     const pinyin = useMemo(
@@ -167,7 +169,7 @@ const ChineseCharacterDetails = ({ word }) => {
         return (
             <View style={[styles.section, { borderTopColor: palette.border }]}>
                 <ActivityIndicator size="small" color={palette.mutedText} />
-                <Text style={[styles.loadingText, { color: palette.mutedText }]}>Loading character breakdown</Text>
+                <Text style={[styles.loadingText, { color: palette.mutedText }]}>{t('chinese.loadingBreakdown')}</Text>
             </View>
         );
     }
@@ -176,7 +178,7 @@ const ChineseCharacterDetails = ({ word }) => {
         return (
             <View style={[styles.section, { borderTopColor: palette.border }]}>
                 <Text style={[styles.emptyText, { color: palette.emptyText }]}>
-                    {errorMessage || 'No Chinese character breakdown is available.'}
+                    {errorMessage || t('chinese.noBreakdown')}
                 </Text>
             </View>
         );
@@ -212,7 +214,7 @@ const ChineseCharacterDetails = ({ word }) => {
     return (
         <View style={[styles.section, { borderTopColor: palette.border }]}>
             <View style={styles.headerRow}>
-                <Text style={[styles.sectionTitle, { color: palette.mutedText }]}>Character Breakdown</Text>
+                <Text style={[styles.sectionTitle, { color: palette.mutedText }]}>{t('chinese.characterBreakdown')}</Text>
                 <View style={styles.characterDots}>
                     {breakdown.map((item, index) => (
                         <View
@@ -240,7 +242,7 @@ const ChineseCharacterDetails = ({ word }) => {
                         <TouchableOpacity
                             key={`${item.character}-${index}`}
                             accessibilityRole="button"
-                            accessibilityLabel={`Show breakdown for ${item.character}`}
+                            accessibilityLabel={t('chinese.showBreakdown', { character: item.character })}
                             activeOpacity={0.82}
                             onPress={() => setActiveIndex(index)}
                             style={[
@@ -259,7 +261,7 @@ const ChineseCharacterDetails = ({ word }) => {
 
             {activeCharacter?.missingEtymology ? (
                 <Text style={[styles.emptyText, { color: palette.emptyText }]}>
-                    No decomposition data is available for this character.
+                    {t('chinese.noDecomposition')}
                 </Text>
             ) : (
                 <View style={styles.content}>
@@ -283,37 +285,39 @@ const ChineseCharacterDetails = ({ word }) => {
 
                     <View style={[styles.detailBlock, { backgroundColor: palette.sectionBg, borderColor: palette.border }]}>
                         <DetailRow
-                            label="Decomposition"
+                            label={t('chinese.decomposition')}
                             value={safeDecomposition}
                             palette={palette}
                         />
                         <DetailRow
-                            label="Formation"
+                            label={t('chinese.formation')}
                             value={activeCharacter.etymology_type}
                             palette={palette}
                         />
                         <DetailRow
-                            label="Primary radical"
+                            label={t('chinese.primaryRadical')}
                             value={primaryRadicalLabel}
                             palette={palette}
                         />
                         <DetailRow
-                            label="Semantic component"
+                            label={t('chinese.semanticComponent')}
                             value={semanticRadicalLabel || activeCharacter.semantic}
                             palette={palette}
+                            showComponentIcon
                         />
                         <DetailRow
-                            label="Phonetic component"
+                            label={t('chinese.phoneticComponent')}
                             value={phoneticLabel}
                             palette={palette}
+                            showComponentIcon
                         />
                         <DetailRow
-                            label="Example readings"
+                            label={t('chinese.exampleReadings')}
                             value={relatedReadings.join(', ')}
                             palette={palette}
                         />
                         <DetailRow
-                            label="Hint"
+                            label={t('chinese.hint')}
                             value={activeCharacter.hint}
                             palette={palette}
                         />
@@ -323,7 +327,7 @@ const ChineseCharacterDetails = ({ word }) => {
                         <View style={styles.relatedSection}>
                             <View style={styles.relatedHeader}>
                                 <Text style={[styles.relatedTitle, { color: palette.mutedText }]}>
-                                    Same Phonetic Component
+                                    {t('chinese.samePhoneticComponent')}
                                 </Text>
                                 {isRelatedLoading ? (
                                     <ActivityIndicator size="small" color={palette.mutedText} />
@@ -356,7 +360,7 @@ const ChineseCharacterDetails = ({ word }) => {
                                 </ScrollView>
                             ) : !isRelatedLoading ? (
                                 <Text style={[styles.emptyText, { color: palette.emptyText }]}>
-                                    No related phonetic examples found.
+                                    {t('chinese.noRelatedPhonetic')}
                                 </Text>
                             ) : null}
                         </View>
@@ -367,7 +371,7 @@ const ChineseCharacterDetails = ({ word }) => {
     );
 };
 
-const DetailRow = ({ label, value, palette }) => {
+const DetailRow = ({ label, value, palette, showComponentIcon = false }) => {
     const cleaned = cleanValue(value);
     if (!cleaned) {
         return null;
@@ -378,7 +382,7 @@ const DetailRow = ({ label, value, palette }) => {
             <Text style={[styles.detailLabel, { color: palette.mutedText }]}>{label}</Text>
             <View style={styles.detailValueRow}>
                 <Text selectable style={[styles.detailValue, { color: palette.text }]}>{cleaned}</Text>
-                {label.includes('component') ? (
+                {showComponentIcon ? (
                     <MaterialIcons name="account-tree" size={14} color={palette.mutedText} />
                 ) : null}
             </View>

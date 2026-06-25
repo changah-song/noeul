@@ -53,6 +53,12 @@ class ScreenOcrOverlayModule : Module() {
       }
     }
 
+    Function("setInterfaceLanguage") { language: String ->
+      OverlayText.setLanguage(language)
+      ScreenOcrOverlayService.getActiveInstance()?.handleInterfaceLanguageChanged()
+      OverlayText.currentLanguage()
+    }
+
     AsyncFunction("requestOverlayPermission") { promise: Promise ->
       if (Settings.canDrawOverlays(context)) {
         promise.resolve(mapOf("granted" to true))
@@ -61,7 +67,7 @@ class ScreenOcrOverlayModule : Module() {
       }
 
       if (pendingOverlayPermissionPromise != null) {
-        promise.reject("E_OVERLAY_PERMISSION_IN_PROGRESS", "Overlay permission request is already in progress", null)
+        promise.reject("E_OVERLAY_PERMISSION_IN_PROGRESS", OverlayText.t("overlayPermissionInProgress"), null)
         return@AsyncFunction
       }
 
@@ -79,7 +85,7 @@ class ScreenOcrOverlayModule : Module() {
 
     AsyncFunction("requestScreenCapture") { promise: Promise ->
       if (pendingScreenCapturePromise != null) {
-        promise.reject("E_SCREEN_CAPTURE_IN_PROGRESS", "Screen capture request is already in progress", null)
+        promise.reject("E_SCREEN_CAPTURE_IN_PROGRESS", OverlayText.t("screenCaptureInProgress"), null)
         return@AsyncFunction
       }
 
@@ -97,11 +103,12 @@ class ScreenOcrOverlayModule : Module() {
 
     AsyncFunction("startFloatingWidget") { promise: Promise ->
       if (!Settings.canDrawOverlays(context)) {
-        promise.reject("E_OVERLAY_PERMISSION_DENIED", "Grant overlay permission before starting the floating widget", null)
+        val message = OverlayText.t("grantOverlayPermissionBeforeFloatingWidget")
+        promise.reject("E_OVERLAY_PERMISSION_DENIED", message, null)
         emitOverlayError(
           mapOf(
             "code" to "overlay_permission_denied",
-            "message" to "Grant overlay permission before starting the floating widget"
+            "message" to message
           )
         )
         return@AsyncFunction
@@ -118,7 +125,7 @@ class ScreenOcrOverlayModule : Module() {
     AsyncFunction("analyzeCurrentScreen") { promise: Promise ->
       val service = ScreenOcrOverlayService.getActiveInstance()
       if (service == null || !service.isScreenCaptureActive()) {
-        promise.reject("E_SCREEN_CAPTURE_INACTIVE", "Request screen capture before analyzing the current screen", null)
+        promise.reject("E_SCREEN_CAPTURE_INACTIVE", OverlayText.t("requestScreenCaptureBeforeAnalyzing"), null)
         return@AsyncFunction
       }
 
@@ -178,7 +185,7 @@ class ScreenOcrOverlayModule : Module() {
           emitOverlayError(
             mapOf(
               "code" to "screen_capture_start_failed",
-              "message" to (error.message ?: "Screen capture could not be started")
+              "message" to (error.message ?: OverlayText.t("screenCaptureCouldNotStart"))
             )
           )
         }
@@ -218,7 +225,7 @@ class ScreenOcrOverlayModule : Module() {
     }
 
     if (attempt >= START_WIDGET_CAPTURE_WAIT_ATTEMPTS) {
-      promise.reject("E_SCREEN_CAPTURE_INACTIVE", "Request screen capture before starting the floating widget", null)
+      promise.reject("E_SCREEN_CAPTURE_INACTIVE", OverlayText.t("requestScreenCaptureBeforeFloatingWidget"), null)
       return
     }
 

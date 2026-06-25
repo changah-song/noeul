@@ -25,6 +25,13 @@ const omitUndefined = (value) => Object.fromEntries(
   Object.entries(value).filter(([, fieldValue]) => fieldValue !== undefined)
 );
 
+const isMissingRpcError = (error, functionName) => {
+  const message = String(error?.message ?? error?.details ?? '').toLowerCase();
+  return error?.code === 'PGRST202'
+    || error?.code === '42883'
+    || message.includes(functionName.toLowerCase());
+};
+
 const toAccountRow = (userId, account = {}) => omitUndefined({
   id: userId,
   interface_language: normalizeInterfaceLanguageCode(
@@ -32,6 +39,16 @@ const toAccountRow = (userId, account = {}) => omitUndefined({
   ),
   updated_at: account.updated_at ?? account.updatedAt ?? new Date().toISOString(),
 });
+
+const upsertUserAccountPatchRpc = async (patch) => {
+  const { data, error } = await supabase.rpc('upsert_user_account_settings_patch', { patch });
+
+  if (error) {
+    throw error;
+  }
+
+  return data;
+};
 
 export const fetchUserAccountSettings = async (userId) => {
   if (!userId) {
@@ -59,10 +76,21 @@ export const upsertUserAccountSettings = async ({
   account = {},
 } = {}) => {
   const userId = assertCloudWriteAllowed({ user, ownerId, generation });
+  const row = toAccountRow(userId, account);
+
+  try {
+    assertCloudWriteAllowed({ user, ownerId, generation });
+    return await upsertUserAccountPatchRpc(row);
+  } catch (error) {
+    if (!isMissingRpcError(error, 'upsert_user_account_settings_patch')) {
+      console.warn(`${FILE_TAG} upsertUserAccountSettings failed`, error);
+      throw error;
+    }
+  }
 
   const { data, error } = await supabase
     .from(USER_ACCOUNT_TABLE)
-    .upsert(toAccountRow(userId, account), {
+    .upsert(row, {
       onConflict: 'id',
     })
     .select(USER_ACCOUNT_SELECT)
@@ -83,13 +111,6 @@ export const updateUserAccountSettingsFields = async ({
   patch = {},
 } = {}) => {
   const userId = assertCloudWriteAllowed({ user, ownerId, generation });
-  const existing = await fetchUserAccountSettings(userId);
-
-  if (!existing) {
-    return upsertUserAccountSettings({ user, ownerId, generation, account: patch });
-  }
-
-  assertCloudWriteAllowed({ user, ownerId, generation });
   const rowPatch = omitUndefined({
     interface_language: patch.interface_language !== undefined || patch.interfaceLanguage !== undefined
       ? normalizeInterfaceLanguageCode(patch.interface_language ?? patch.interfaceLanguage)
@@ -97,6 +118,23 @@ export const updateUserAccountSettingsFields = async ({
     updated_at: patch.updated_at ?? patch.updatedAt ?? new Date().toISOString(),
   });
 
+  try {
+    assertCloudWriteAllowed({ user, ownerId, generation });
+    return await upsertUserAccountPatchRpc(rowPatch);
+  } catch (error) {
+    if (!isMissingRpcError(error, 'upsert_user_account_settings_patch')) {
+      console.warn(`${FILE_TAG} updateUserAccountSettingsFields failed`, error);
+      throw error;
+    }
+  }
+
+  const existing = await fetchUserAccountSettings(userId);
+
+  if (!existing) {
+    return upsertUserAccountSettings({ user, ownerId, generation, account: patch });
+  }
+
+  assertCloudWriteAllowed({ user, ownerId, generation });
   const { data, error } = await supabase
     .from(USER_ACCOUNT_TABLE)
     .update(rowPatch)

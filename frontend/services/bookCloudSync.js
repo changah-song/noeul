@@ -53,6 +53,17 @@ const assertCloudWriteAllowed = ({ user, ownerId, generation }) => {
   return user.id;
 };
 
+const isMissingRpcError = (error, functionName) => {
+  const message = String(error?.message ?? error?.details ?? '').toLowerCase();
+  return error?.code === 'PGRST202'
+    || error?.code === '42883'
+    || message.includes(functionName.toLowerCase());
+};
+
+const sortBookRows = (rows) => [...(rows ?? [])].sort((a, b) => (
+  new Date(b.updated_at ?? b.uploaded_at ?? 0) - new Date(a.updated_at ?? a.uploaded_at ?? 0)
+));
+
 const ensureBooksDirectory = async (ownerId) => {
   const booksDirectory = getBooksDirectory(ownerId);
 
@@ -331,6 +342,23 @@ export const uploadUserBook = async ({ user, ownerId, generation, localBook, pic
   });
 
   assertCloudWriteAllowed({ user, ownerId, generation });
+  try {
+    const { data, error } = await supabase.rpc('upsert_user_book_metadata', {
+      book: row,
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    return data;
+  } catch (error) {
+    if (!isMissingRpcError(error, 'upsert_user_book_metadata')) {
+      console.warn(`${FILE_TAG} uploadUserBook metadata upsert failed`, error);
+      throw error;
+    }
+  }
+
   const { data, error } = await supabase
     .from('user_books')
     .upsert(row, { onConflict: 'user_id,file_path' })
@@ -378,6 +406,27 @@ export const updateUserBookMetadata = async ({ user, ownerId, generation, book }
     patch.language = book.language;
   }
 
+  try {
+    assertCloudWriteAllowed({ user, ownerId, generation });
+    const { data, error } = await supabase.rpc('upsert_user_book_metadata', {
+      book: {
+        id: book.cloudId,
+        ...patch,
+      },
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    return data;
+  } catch (error) {
+    if (!isMissingRpcError(error, 'upsert_user_book_metadata')) {
+      console.warn(`${FILE_TAG} updateUserBookMetadata failed`, error);
+      throw error;
+    }
+  }
+
   const { data, error } = await supabase
     .from('user_books')
     .update(patch)
@@ -400,14 +449,38 @@ export const fetchUserBooks = async (userId, options = {}) => {
   }
 
   const targetLanguage = options?.targetLanguage ?? options?.language ?? null;
+  const normalizedLanguage = targetLanguage != null ? normalizeBookLanguage(targetLanguage) : null;
+
+  try {
+    const { data, error } = await supabase.rpc('sync_user_books_pull', {
+      target_language: normalizedLanguage,
+      include_deleted: Boolean(options?.includeDeleted),
+      updated_after: options?.updatedAfter ?? null,
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    return sortBookRows(Array.isArray(data?.books) ? data.books : []);
+  } catch (error) {
+    if (!isMissingRpcError(error, 'sync_user_books_pull')) {
+      console.warn(`${FILE_TAG} fetchUserBooks failed`, error);
+      throw error;
+    }
+  }
+
   let query = supabase
     .from('user_books')
     .select(USER_BOOK_SELECT)
-    .eq('user_id', userId)
-    .is('deleted_at', null);
+    .eq('user_id', userId);
 
-  if (targetLanguage != null) {
-    query = query.eq('language', normalizeBookLanguage(targetLanguage));
+  if (!options?.includeDeleted) {
+    query = query.is('deleted_at', null);
+  }
+
+  if (normalizedLanguage != null) {
+    query = query.eq('language', normalizedLanguage);
   }
 
   const { data, error } = await query.order('updated_at', { ascending: false });
@@ -544,6 +617,28 @@ export const updateUserBookProgress = async ({ user, ownerId, generation, book }
     patch.word_count = wordCount;
   }
 
+  try {
+    assertCloudWriteAllowed({ user, ownerId, generation });
+    const { error } = await supabase.rpc('update_user_book_progress', {
+      book_id: book.cloudId,
+      progress_value: patch.progress,
+      location_value: patch.location,
+      native_position_value: patch.native_position,
+      word_count_value: wordCount,
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    return;
+  } catch (error) {
+    if (!isMissingRpcError(error, 'update_user_book_progress')) {
+      console.warn(`${FILE_TAG} updateUserBookProgress failed`, error);
+      throw error;
+    }
+  }
+
   const { error } = await supabase
     .from('user_books')
     .update(patch)
@@ -562,6 +657,24 @@ export const softDeleteUserBook = async ({ user, ownerId, generation, cloudBookI
   }
 
   const userId = assertCloudWriteAllowed({ user, ownerId, generation });
+  try {
+    assertCloudWriteAllowed({ user, ownerId, generation });
+    const { error } = await supabase.rpc('soft_delete_user_book', {
+      book_id: cloudBookId,
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    return;
+  } catch (error) {
+    if (!isMissingRpcError(error, 'soft_delete_user_book')) {
+      console.warn(`${FILE_TAG} softDeleteUserBook failed`, error);
+      throw error;
+    }
+  }
+
   const { error } = await supabase
     .from('user_books')
     .update({

@@ -46,6 +46,23 @@ const omitUndefined = (value) => Object.fromEntries(
   Object.entries(value).filter(([, fieldValue]) => fieldValue !== undefined)
 );
 
+const isMissingRpcError = (error, functionName) => {
+  const message = String(error?.message ?? error?.details ?? '').toLowerCase();
+  return error?.code === 'PGRST202'
+    || error?.code === '42883'
+    || message.includes(functionName.toLowerCase());
+};
+
+const upsertUserPreferencesPatchRpc = async (patch) => {
+  const { data, error } = await supabase.rpc('upsert_user_preferences_patch', { patch });
+
+  if (error) {
+    throw error;
+  }
+
+  return data;
+};
+
 export const getTimestampMs = (value) => {
   if (!value) {
     return 0;
@@ -76,10 +93,21 @@ export const fetchUserPreferences = async (userId) => {
 
 export const upsertUserPreferences = async ({ user, ownerId, generation, preferences = {} } = {}) => {
   const userId = assertCloudWriteAllowed({ user, ownerId, generation });
+  const row = omitUndefined(toPreferencesRow(userId, preferences));
+
+  try {
+    assertCloudWriteAllowed({ user, ownerId, generation });
+    return await upsertUserPreferencesPatchRpc(row);
+  } catch (error) {
+    if (!isMissingRpcError(error, 'upsert_user_preferences_patch')) {
+      console.warn(`${FILE_TAG} upsertUserPreferences failed`, error);
+      throw error;
+    }
+  }
 
   const { data, error } = await supabase
     .from(USER_PREFERENCES_TABLE)
-    .upsert(omitUndefined(toPreferencesRow(userId, preferences)), {
+    .upsert(row, {
       onConflict: 'user_id',
     })
     .select(USER_PREFERENCES_SELECT)
@@ -101,6 +129,16 @@ export const updateUserPreferenceFields = async ({ user, ownerId, generation, pa
     user_id: undefined,
     updated_at: patch.updated_at ?? patch.updatedAt ?? new Date().toISOString(),
   });
+
+  try {
+    assertCloudWriteAllowed({ user, ownerId, generation });
+    return await upsertUserPreferencesPatchRpc(rowPatch);
+  } catch (error) {
+    if (!isMissingRpcError(error, 'upsert_user_preferences_patch')) {
+      console.warn(`${FILE_TAG} updateUserPreferenceFields failed`, error);
+      throw error;
+    }
+  }
 
   const existing = await fetchUserPreferences(userId);
   if (!existing) {

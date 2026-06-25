@@ -14,7 +14,6 @@ import {
     vocabEntryExists,
 } from '../../../services/Database';
 import HanjaDetails from './HanjaDetails';
-import ChineseCharacterDetails from './ChineseCharacterDetails';
 import TranslationContent from './TranslationContent';
 import LookupLoadingSkeleton from './LookupLoadingSkeleton';
 import { normalizeBookLanguage, normalizeInterfaceLanguageCode } from '../../../constants/languages';
@@ -112,11 +111,34 @@ const parseWordParts = (value) => {
     return null;
 };
 const getEntryWordParts = (entry) => parseWordParts(entry?.word_parts ?? entry?.wordParts);
+const mergeWordParts = (...values) => {
+    const parsedValues = values.map(parseWordParts).filter(Boolean);
+    if (parsedValues.length === 0) {
+        return null;
+    }
+
+    return parsedValues.slice(1).reduce((merged, current) => {
+        if (!merged.related_roots && current.related_roots) {
+            return { ...merged, related_roots: current.related_roots };
+        }
+        if (!merged.relatedRoots && current.relatedRoots) {
+            return { ...merged, relatedRoots: current.relatedRoots };
+        }
+        return merged;
+    }, parsedValues[0]);
+};
+const getMergedEntryWordParts = (...entries) => mergeWordParts(
+    ...entries.map((entry) => entry?.word_parts ?? entry?.wordParts)
+);
 const WORD_PART_TYPES_REQUIRING_MEANING = new Set(['prefix', 'suffix', 'bound_root', 'combining_form']);
 const HIDDEN_WORD_PART_CONFIDENCE = new Set(['low']);
+const VISIBLE_WORD_PART_CONFIDENCE = 'high';
+const VISIBLE_WORD_PART_SOURCE = 'curated_morpheme';
 const MAX_RENDERED_WORD_PARTS = 4;
 const MAX_WORD_PART_TEXT_LENGTH = 36;
 const MAX_WORD_PART_MEANING_LENGTH = 48;
+const MAX_RELATED_ROOT_GROUPS = 2;
+const MAX_RELATED_WORDS_PER_ROOT = 6;
 const MAX_ORIGIN_LENGTH = 130;
 const OPAQUE_WORD_PART_WORDS = new Set(['because', 'understand']);
 const ORIGIN_BLOCKLIST_RE = /Etymology tree|PIE word|Proto-|possibly|unknown|uncertain/i;
@@ -160,8 +182,45 @@ const hasRenderableWordParts = (wordParts, word = '') => {
         return false;
     }
 
+    if (
+        cleanValue(wordParts?.confidence).toLowerCase() !== VISIBLE_WORD_PART_CONFIDENCE
+        || cleanValue(wordParts?.source) !== VISIBLE_WORD_PART_SOURCE
+    ) {
+        return false;
+    }
+
     const parts = getRenderableWordPartItems(wordParts);
     return hasCompactWordParts(parts) && hasExplainedRootParts(parts);
+};
+const getRenderableRelatedRootGroups = (wordParts, currentWord = '') => {
+    if (!hasRenderableWordParts(wordParts, currentWord)) {
+        return [];
+    }
+
+    const current = normalizeEnglishSurfaceWord(currentWord);
+    const groups = Array.isArray(wordParts?.related_roots)
+        ? wordParts.related_roots
+        : (Array.isArray(wordParts?.relatedRoots) ? wordParts.relatedRoots : []);
+
+    return groups
+        .map((group) => {
+            const root = cleanValue(group?.display) || cleanValue(group?.text);
+            const words = (Array.isArray(group?.words) ? group.words : [])
+                .map((entry) => ({
+                    word: normalizeEnglishSurfaceWord(entry?.word),
+                    definition: cleanValue(entry?.definition),
+                }))
+                .filter((entry) => entry.word && entry.word !== current)
+                .slice(0, MAX_RELATED_WORDS_PER_ROOT);
+
+            return {
+                root,
+                meaning: cleanValue(group?.meaning),
+                words,
+            };
+        })
+        .filter((group) => group.root && group.words.length > 0)
+        .slice(0, MAX_RELATED_ROOT_GROUPS);
 };
 const isSafeOrigin = (etymology, word = '') => {
     if (OPAQUE_WORD_PART_WORDS.has(normalizeEnglishSurfaceWord(word))) {
@@ -440,7 +499,7 @@ const DictionaryContent = ({
                 setStemWordList([]);
                 setNeedsLiveFetch(false);
                 setDictionaryData([]);
-                setLiveError(error?.message || 'Dictionary lookup failed.');
+                setLiveError(error?.message || t('lookup.dictionaryFailed'));
             } finally {
                 if (!isCancelled) {
                     setIsLiveLoading(false);
@@ -592,7 +651,21 @@ const DictionaryContent = ({
 
     const prefetchExtra = async (stem) => {
         if (isEnglishBook) {
-            setExtraDefs(prev => ({ ...prev, [stem]: [] }));
+            setExtraDefs(prev => ({ ...prev, [stem]: 'prefetching' }));
+            try {
+                const response = await api.get('/en_dict_search/', {
+                    params: { stem, interface_language: interfaceLanguage },
+                    timeout: 10000,
+                });
+                const entry = response.data?.result;
+                if (entry) {
+                    setLiveEntryMeta(prev => ({ ...prev, [stem]: entry }));
+                }
+            } catch {
+                // Root-related links are optional; keep the expanded panel usable if enrichment fails.
+            } finally {
+                setExtraDefs(prev => ({ ...prev, [stem]: [] }));
+            }
             return;
         }
 
@@ -678,11 +751,28 @@ const DictionaryContent = ({
     const hasWordNavigation = drilldownStack.length === 0 && lookupItemCount > 1;
     const isDictionaryScrollable = dictionaryViewportHeight > 0
         && dictionaryContentHeight > dictionaryViewportHeight + 2;
-    const activeLookupHanja = useMemo(() => {
-        const entry = activeLookupItem?.cachedEntry || activeLookupItem?.liveEntries?.[0] || null;
-        return getEntryHanja(entry);
-    }, [activeLookupItem]);
-    const canExpandCurrentLookup = isKoreanBook && hasHanja(activeLookupHanja);
+    const activeLookupDetails = useMemo(() => {
+        const cachedEntry = activeLookupItem?.cachedEntry || null;
+        const firstLiveEntry = activeLookupItem?.liveEntries?.[0] || null;
+        const entry = cachedEntry || firstLiveEntry;
+        const stem = cleanValue(activeLookupItem?.stem) || getEntryWord(entry, lookupWord);
+        const liveMeta = cachedEntry
+            ? (liveEntryMeta[cachedEntry.stem] || firstLiveEntry || {})
+            : {};
+        const word = getEntryWord(entry, stem || lookupWord);
+        const wordParts = getMergedEntryWordParts(cachedEntry, liveMeta, firstLiveEntry);
+
+        return {
+            hanja: getEntryHanja(entry),
+            word,
+            wordParts,
+        };
+    }, [activeLookupItem, liveEntryMeta, lookupWord]);
+    const activeLookupHanja = activeLookupDetails.hanja;
+    const canExpandCurrentLookup = (
+        (isKoreanBook && hasHanja(activeLookupHanja))
+        || (isEnglishBook && hasRenderableWordParts(activeLookupDetails.wordParts, activeLookupDetails.word))
+    );
 
     useEffect(() => {
         onCanExpandChange?.(canExpandCurrentLookup);
@@ -823,6 +913,16 @@ const DictionaryContent = ({
         }
 
         const nextWord = normalizeEnglishSurfaceWord(part.lookupText);
+        if (!nextWord || nextWord === normalizeEnglishSurfaceWord(lookupWord)) {
+            return;
+        }
+
+        setCurrentHanja(null);
+        setDrilldownStack(prev => [...prev, nextWord]);
+    };
+
+    const handleRelatedRootWordPress = (word) => {
+        const nextWord = normalizeEnglishSurfaceWord(word);
         if (!nextWord || nextWord === normalizeEnglishSurfaceWord(lookupWord)) {
             return;
         }
@@ -1138,7 +1238,7 @@ const DictionaryContent = ({
             <View style={[styles.panelContent, styles.dictionaryPanelContent, { backgroundColor: palette.surface }]}>
                 <View style={styles.translationPanelBody}>
                     {renderEntryHeading({ word, hanja, definition, pos, romanization, ipa, pinyin, audioUs, audioUk })}
-                    <Text style={styles.translationSectionTitle}>TRANSLATION</Text>
+                    <Text style={styles.translationSectionTitle}>{t('lookup.translate')}</Text>
                     <View style={styles.translationContentWrap}>
                         <TranslationContent
                             highlightedWord={word}
@@ -1356,6 +1456,7 @@ const DictionaryContent = ({
     const renderWordParts = (wordParts, word) => {
         const confidence = cleanValue(wordParts?.confidence);
         const parts = getRenderableWordPartItems(wordParts);
+        const relatedRootGroups = getRenderableRelatedRootGroups(wordParts, word);
 
         if (!isEnglishBook || !hasRenderableWordParts(wordParts, word)) {
             return null;
@@ -1434,6 +1535,55 @@ const DictionaryContent = ({
                         );
                     })}
                 </View>
+                {relatedRootGroups.length > 0 ? (
+                    <View style={[styles.relatedRootsSection, { borderTopColor: palette.border }]}>
+                        <Text style={[styles.relatedRootsTitle, { color: palette.mutedText }]}>
+                            {t('lookup.relatedRoots')}
+                        </Text>
+                        {relatedRootGroups.map((group) => (
+                            <View key={group.root} style={styles.relatedRootGroup}>
+                                <View style={styles.relatedRootHeader}>
+                                    <Text selectable style={[styles.relatedRootName, { color: palette.text }]}>
+                                        {group.root}
+                                    </Text>
+                                    {group.meaning ? (
+                                        <Text
+                                            selectable
+                                            style={[styles.relatedRootMeaning, { color: palette.secondaryText }]}
+                                            numberOfLines={1}
+                                        >
+                                            {group.meaning}
+                                        </Text>
+                                    ) : null}
+                                </View>
+                                <View style={styles.relatedWordRow}>
+                                    {group.words.map((entry) => (
+                                        <TouchableOpacity
+                                            key={`${group.root}-${entry.word}`}
+                                            accessibilityRole="button"
+                                            accessibilityLabel={t('lookup.openRelatedWord', { word: entry.word })}
+                                            activeOpacity={0.82}
+                                            onPress={() => handleRelatedRootWordPress(entry.word)}
+                                            style={[styles.relatedWordChip, { borderColor: palette.border }]}
+                                        >
+                                            <Text style={[styles.relatedWordText, { color: palette.text }]}>
+                                                {entry.word}
+                                            </Text>
+                                            {entry.definition ? (
+                                                <Text
+                                                    style={[styles.relatedWordDefinition, { color: palette.secondaryText }]}
+                                                    numberOfLines={1}
+                                                >
+                                                    {entry.definition}
+                                                </Text>
+                                            ) : null}
+                                        </TouchableOpacity>
+                                    ))}
+                                </View>
+                            </View>
+                        ))}
+                    </View>
+                ) : null}
             </View>
         );
     };
@@ -1505,14 +1655,8 @@ const DictionaryContent = ({
                         </Text>
                     )}
                 </View>
-                {isPanelExpanded && isChineseBook ? (
-                    <ChineseCharacterDetails
-                        word={word}
-                        isDarkMode={isDarkMode}
-                    />
-                ) : null}
-                {isEnglishBook ? renderWordParts(wordParts, word) : null}
-                {isEnglishBook && !hasRenderableWordParts(wordParts, word) ? renderOrigin(etymology, word) : null}
+                {isPanelExpanded && isEnglishBook ? renderWordParts(wordParts, word) : null}
+                {isPanelExpanded && isEnglishBook && !hasRenderableWordParts(wordParts, word) ? renderOrigin(etymology, word) : null}
                 {isPanelExpanded && showLess ? renderExtraDefinitions(extraEntries) : null}
             </View>
         );
@@ -1622,7 +1766,7 @@ const DictionaryContent = ({
                     audioUs: getEntryAudioUs(cachedEntry) || getEntryAudioUs(liveMeta),
                     audioUk: getEntryAudioUk(cachedEntry) || getEntryAudioUk(liveMeta),
                     etymology: getEntryEtymology(cachedEntry) || getEntryEtymology(liveMeta),
-                    wordParts: getEntryWordParts(cachedEntry) || getEntryWordParts(liveMeta),
+                    wordParts: getMergedEntryWordParts(cachedEntry, liveMeta),
                     showMore,
                     showLess,
                     onMore: () => setExpandedCached(prev => ({ ...prev, [cachedEntry.stem]: true })),
@@ -2041,6 +2185,73 @@ const createStyles = (colors) => StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'center',
         gap: 6,
+    },
+    relatedRootsSection: {
+        gap: 8,
+        paddingTop: spacing.sm,
+        marginTop: spacing.xs,
+        borderTopWidth: StyleSheet.hairlineWidth,
+    },
+    relatedRootsTitle: {
+        ...textStyles.caption,
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 10,
+        lineHeight: 13,
+        letterSpacing: 0,
+        textAlign: 'center',
+        textTransform: 'uppercase',
+    },
+    relatedRootGroup: {
+        gap: 6,
+    },
+    relatedRootHeader: {
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 2,
+    },
+    relatedRootName: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 13,
+        lineHeight: 17,
+        letterSpacing: 0,
+    },
+    relatedRootMeaning: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 11,
+        lineHeight: 14,
+        letterSpacing: 0,
+        textAlign: 'center',
+        maxWidth: 220,
+    },
+    relatedWordRow: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        justifyContent: 'center',
+        gap: 6,
+    },
+    relatedWordChip: {
+        minWidth: 82,
+        maxWidth: 146,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderRadius: 6,
+        paddingHorizontal: 8,
+        paddingVertical: 6,
+        gap: 2,
+        alignItems: 'center',
+    },
+    relatedWordText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 12,
+        lineHeight: 16,
+        letterSpacing: 0,
+        textAlign: 'center',
+    },
+    relatedWordDefinition: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 10,
+        lineHeight: 13,
+        letterSpacing: 0,
+        textAlign: 'center',
     },
     drilldownBackRow: {
         alignSelf: 'center',

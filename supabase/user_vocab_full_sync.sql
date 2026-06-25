@@ -1,3 +1,11 @@
+create or replace function public.ff_vocab_definition_key(value text)
+returns text
+language sql
+immutable
+as $$
+  select nullif(regexp_replace(lower(btrim(coalesce(value, ''))), '[[:space:]]+', ' ', 'g'), '');
+$$;
+
 alter table public.user_vocab
 add column if not exists source_book_uri text,
 add column if not exists source_book_title text,
@@ -51,16 +59,20 @@ alter table public.user_vocab
 drop constraint if exists user_vocab_user_word_definition_idx;
 
 drop index if exists public.user_vocab_user_word_definition_idx;
+drop index if exists public.user_vocab_unique_entry;
 
-create unique index if not exists user_vocab_unique_entry
+create unique index user_vocab_unique_entry
 on public.user_vocab (
   user_id,
   language,
   word,
   coalesce(hanja, ''),
-  coalesce(definition, '')
+  coalesce(public.ff_vocab_definition_key(definition), '')
 )
 where deleted_at is null;
+
+create index if not exists user_vocab_user_updated_idx
+on public.user_vocab(user_id, updated_at desc);
 
 do $$
 begin

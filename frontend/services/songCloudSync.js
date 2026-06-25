@@ -52,6 +52,17 @@ const normalizeInteger = (value, fallback = null) => {
   return Number.isFinite(number) ? Math.round(number) : fallback;
 };
 
+const isMissingRpcError = (error, functionName) => {
+  const message = String(error?.message ?? error?.details ?? '').toLowerCase();
+  return error?.code === 'PGRST202'
+    || error?.code === '42883'
+    || message.includes(functionName.toLowerCase());
+};
+
+const sortSongRows = (rows) => [...(rows ?? [])].sort((a, b) => (
+  new Date(b.updated_at ?? b.created_at ?? 0) - new Date(a.updated_at ?? a.created_at ?? 0)
+));
+
 const toUserSongRow = (userId, song) => {
   const now = new Date().toISOString();
 
@@ -101,14 +112,34 @@ export const fetchUserSongs = async (userId, {
     return [];
   }
 
+  const normalizedLanguage = language != null ? normalizeBookLanguage(language) : null;
+  try {
+    const { data, error } = await supabase.rpc('sync_user_songs_pull', {
+      target_language: normalizedLanguage,
+      updated_after: null,
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    const rows = Array.isArray(data?.songs) ? data.songs : [];
+    return sortSongRows(includeDeleted ? rows : rows.filter((row) => !row.deleted_at));
+  } catch (error) {
+    if (!isMissingRpcError(error, 'sync_user_songs_pull')) {
+      console.warn(`${FILE_TAG} fetchUserSongs failed`, error);
+      throw error;
+    }
+  }
+
   let query = supabase
     .from(USER_SONGS_TABLE)
     .select(USER_SONG_SELECT)
     .eq('user_id', userId)
     .order('updated_at', { ascending: false });
 
-  if (language != null) {
-    query = query.eq('language', normalizeBookLanguage(language));
+  if (normalizedLanguage != null) {
+    query = query.eq('language', normalizedLanguage);
   }
 
   if (!includeDeleted) {
@@ -131,9 +162,29 @@ export const upsertUserSong = async ({ user, ownerId, generation, song } = {}) =
   }
 
   const userId = assertCloudWriteAllowed({ user, ownerId, generation });
+  const row = toUserSongRow(userId, song);
+
+  try {
+    assertCloudWriteAllowed({ user, ownerId, generation });
+    const { error } = await supabase.rpc('sync_user_songs_push', {
+      songs: [row],
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    return row;
+  } catch (error) {
+    if (!isMissingRpcError(error, 'sync_user_songs_push')) {
+      console.warn(`${FILE_TAG} upsertUserSong failed`, error);
+      throw error;
+    }
+  }
+
   const { data, error } = await supabase
     .from(USER_SONGS_TABLE)
-    .upsert(toUserSongRow(userId, song), {
+    .upsert(row, {
       onConflict: 'user_id,client_id',
     })
     .select(USER_SONG_SELECT)
@@ -154,9 +205,29 @@ export const upsertUserSongs = async ({ user, ownerId, generation, songs } = {})
   }
 
   const userId = assertCloudWriteAllowed({ user, ownerId, generation });
+  const rows = validSongs.map((song) => toUserSongRow(userId, song));
+
+  try {
+    assertCloudWriteAllowed({ user, ownerId, generation });
+    const { error } = await supabase.rpc('sync_user_songs_push', {
+      songs: rows,
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    return rows;
+  } catch (error) {
+    if (!isMissingRpcError(error, 'sync_user_songs_push')) {
+      console.warn(`${FILE_TAG} upsertUserSongs failed`, error);
+      throw error;
+    }
+  }
+
   const { data, error } = await supabase
     .from(USER_SONGS_TABLE)
-    .upsert(validSongs.map((song) => toUserSongRow(userId, song)), {
+    .upsert(rows, {
       onConflict: 'user_id,client_id',
     })
     .select(USER_SONG_SELECT);
@@ -182,6 +253,26 @@ export const softDeleteUserSong = async ({
   }
 
   const userId = assertCloudWriteAllowed({ user, ownerId, generation });
+  const normalizedLanguage = language != null ? normalizeBookLanguage(language) : null;
+  try {
+    assertCloudWriteAllowed({ user, ownerId, generation });
+    const { error } = await supabase.rpc('soft_delete_user_song', {
+      client_id_value: songId,
+      target_language: normalizedLanguage,
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    return;
+  } catch (error) {
+    if (!isMissingRpcError(error, 'soft_delete_user_song')) {
+      console.warn(`${FILE_TAG} softDeleteUserSong failed`, error);
+      throw error;
+    }
+  }
+
   let query = supabase
     .from(USER_SONGS_TABLE)
     .update({
@@ -191,8 +282,8 @@ export const softDeleteUserSong = async ({
     .eq('user_id', userId)
     .eq('client_id', songId);
 
-  if (language != null) {
-    query = query.eq('language', normalizeBookLanguage(language));
+  if (normalizedLanguage != null) {
+    query = query.eq('language', normalizedLanguage);
   }
 
   const { error } = await query;

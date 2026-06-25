@@ -1,10 +1,13 @@
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useTranslation } from '../../hooks/useTranslation';
 import { colors, fontFamilies, layout, radii, spacing, textStyles } from '../../theme';
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 const clampDotPosition = (value) => clamp(value, 0.035, 0.965);
 
 const BookList = ({ books, onOpenBook }) => {
+    const { t } = useTranslation();
+
     return (
         <ScrollView
             horizontal
@@ -29,7 +32,7 @@ const BookList = ({ books, onOpenBook }) => {
                             item.coverTone === 'dark' && styles.coverTitleDark,
                             item.coverTone === 'mid' && styles.coverTitleDark,
                         ]} numberOfLines={2}>
-                            {item.title || 'Untitled'}
+                            {item.title || t('common.untitled')}
                         </Text>
                         <Text style={[
                             styles.coverAuthor,
@@ -41,7 +44,7 @@ const BookList = ({ books, onOpenBook }) => {
                         <View style={styles.coverRule} />
                     </View>
                     <Text style={styles.title} numberOfLines={2}>
-                        {item.title || 'Untitled'}
+                        {item.title || t('common.untitled')}
                     </Text>
                     <View style={styles.progressRail}>
                         <View style={styles.progressTrack} />

@@ -34,7 +34,7 @@ const cleanFallbackTitle = (rawName = '') => {
         .replace(/\s*--+\s*/g, ' - ')
         .replace(/\s{2,}/g, ' ')
         .replace(/^[\s-]+|[\s-]+$/g, '')
-        .trim() || 'Untitled';
+        .trim();
 };
 
 const sanitizePathSegment = (value = '') => (
@@ -259,7 +259,7 @@ const normalizeExtraction = (extraction = {}, uri, fallbackName = '') => {
         ? extraction.pages.map(normalizePage)
         : [];
     const title = cleanDocumentTitle(extraction.title, fallbackName);
-    const author = String(extraction.author || '').trim() || 'Unknown author';
+    const author = String(extraction.author || '').trim();
     const wordCount = pages.reduce((total, page) => total + countReadableTextWords(page.text), 0);
 
     return {
@@ -1272,7 +1272,7 @@ export const readPdfPackageXml = async (uri, fallbackName = '', options = {}) =>
         .join('\n');
 
     return {
-        fileName: fallbackName || 'Untitled',
+        fileName: fallbackName || '',
         bookManifest,
         extractedRootUri: extraction.rootUri,
         extractedFileCount: 0,

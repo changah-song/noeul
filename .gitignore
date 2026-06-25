@@ -8,5 +8,6 @@ scripts/hanja_translation_cache.json
 scripts/en_morpheme_review_queue.jsonl
 scripts/en_morpheme_review_retry_queue.jsonl
 scripts/en_morpheme_review_decisions.jsonl
+scripts/en_morpheme_reviewed_audit_*.tsv
 scripts/.en_morpheme_review_batch_ids.json
 scripts/.en_morpheme_review_results_*.json

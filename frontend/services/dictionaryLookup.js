@@ -14,6 +14,7 @@ import { getActiveOwnerId } from './localOwnerCoordinator';
 import { getRuntimeInterfaceLanguage, getRuntimeTargetLanguage } from './interfaceLanguage';
 import { requestUserDataSync } from './userDataSyncQueue';
 import { normalizeBookLanguage, normalizeInterfaceLanguageCode } from '../constants/languages';
+import { translate } from '../i18n/translations';
 
 const STOP_STEMS = new Set([
     '하다',
@@ -25,6 +26,8 @@ const STOP_STEMS = new Set([
     '같다',
     '보다',
 ]);
+
+const tRuntime = (key, params = {}) => translate(getRuntimeInterfaceLanguage(), key, params);
 
 const KOREAN_RE = /[^\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]/g;
 const ENGLISH_EDGE_RE = /^[^A-Za-z]+|[^A-Za-z]+$/g;
@@ -371,7 +374,7 @@ export const resolveDictionaryLookup = async ({
                 cachedResults,
                 dictionaryData: uniqueStems.map(() => []),
                 needsLiveFetch: false,
-                liveError: error?.message || 'Dictionary lookup failed.',
+                liveError: error?.message || tRuntime('lookup.dictionaryFailed'),
             };
         }
     };
@@ -641,7 +644,7 @@ export const saveOverlayLookupResult = async ({
     const normalizedSourceSentence = cleanValue(sourceSentence) || null;
 
     if (!word || !cleanedDefinition) {
-        throw new Error('No definition to save.');
+        throw new Error(tRuntime('lookup.noDefinitionToSave'));
     }
 
     const alreadySaved = await vocabEntryExists(word, cleanedHanja, cleanedDefinition, targetLanguage, { ownerId });
@@ -650,7 +653,7 @@ export const saveOverlayLookupResult = async ({
             ownerId,
             level: 'unorganized',
             sourceBookUri: null,
-            sourceBookTitle: 'Floating OCR',
+            sourceBookTitle: tRuntime('ocr.floatingTitle'),
             contextSentence: normalizedSourceSentence,
             createdAt,
             updatedAt: createdAt,
@@ -663,7 +666,7 @@ export const saveOverlayLookupResult = async ({
         hanja: cleanedHanja,
         definition: cleanedDefinition,
         sentence: sourceSentence,
-        sourceBookTitle: 'Floating OCR',
+        sourceBookTitle: tRuntime('ocr.floatingTitle'),
         language: targetLanguage,
     });
 
@@ -686,7 +689,7 @@ export const unsaveOverlayLookupResult = async ({
     const cleanedHanja = nullableValue(hanja);
 
     if (!word || !cleanedDefinition) {
-        throw new Error('No definition to unsave.');
+        throw new Error(tRuntime('lookup.noDefinitionToUnsave'));
     }
 
     await removeData(word, cleanedHanja, cleanedDefinition, targetLanguage, { ownerId });

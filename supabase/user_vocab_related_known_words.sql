@@ -1,3 +1,11 @@
+create or replace function public.ff_vocab_definition_key(value text)
+returns text
+language sql
+immutable
+as $$
+  select nullif(regexp_replace(lower(btrim(coalesce(value, ''))), '[[:space:]]+', ' ', 'g'), '');
+$$;
+
 create table if not exists public.user_vocab_related_known_words (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
@@ -43,17 +51,22 @@ update public.user_vocab_related_known_words
 set updated_at = coalesce(marked_at, now())
 where updated_at is null;
 
-create unique index if not exists user_vocab_related_known_unique
+drop index if exists public.user_vocab_related_known_unique;
+
+create unique index user_vocab_related_known_unique
 on public.user_vocab_related_known_words (
   user_id,
   language,
   main_word,
   coalesce(main_hanja, ''),
-  coalesce(main_definition, ''),
+  coalesce(public.ff_vocab_definition_key(main_definition), ''),
   related_word,
   coalesce(related_hanja, '')
 )
 where deleted_at is null;
+
+create index if not exists user_vocab_related_known_user_updated_idx
+on public.user_vocab_related_known_words(user_id, updated_at desc);
 
 alter table public.user_vocab_related_known_words enable row level security;
 

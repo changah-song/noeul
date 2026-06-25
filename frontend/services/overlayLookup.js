@@ -21,9 +21,12 @@ import { addRelatedKnownWord, getRelatedKnownWords, removeRelatedKnownWord } fro
 import { lookupWordForOverlay, saveOverlayLookupResult, unsaveOverlayLookupResult } from './dictionaryLookup';
 import { getRuntimeInterfaceLanguage, getRuntimeTargetLanguage } from './interfaceLanguage';
 import { getActiveOwnerId } from './localOwnerCoordinator';
+import { translate } from '../i18n/translations';
 
 let subscriptions = [];
 let isInitialized = false;
+
+const tRuntime = (key, params = {}) => translate(getRuntimeInterfaceLanguage(), key, params);
 
 const HANJA_CHARACTER_PATTERN = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/u;
 const HANGUL_PATTERN = /[\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]/u;
@@ -513,7 +516,7 @@ export const initializeOverlayLookupBridge = () => {
                 selectedLineText,
             });
         } catch (error) {
-            await rejectOverlayLookup(requestId, error?.message || 'Lookup failed.');
+            await rejectOverlayLookup(requestId, error?.message || tRuntime('lookup.lookupFailed'));
         }
     });
 
@@ -564,7 +567,7 @@ export const initializeOverlayLookupBridge = () => {
                 ...result,
             });
         } catch (error) {
-            await rejectOverlaySave(requestId, error?.message || 'Save failed.');
+            await rejectOverlaySave(requestId, error?.message || tRuntime('lookup.saveFailed'));
         }
     });
 
@@ -586,7 +589,7 @@ export const initializeOverlayLookupBridge = () => {
                 result,
             }));
         } catch (error) {
-            await rejectOverlayHanja(requestId, error?.message || 'Hanja lookup failed.');
+            await rejectOverlayHanja(requestId, error?.message || tRuntime('hanja.lookupFailed'));
         }
     });
 
