@@ -1,6 +1,9 @@
 import React from 'react';
 import { Platform, Text, View } from 'react-native';
 import { requireNativeModule, requireNativeViewManager } from 'expo-modules-core';
+import { useTranslation } from '../../../hooks/useTranslation';
+import { translate } from '../../../i18n/translations';
+import { getRuntimeInterfaceLanguage } from '../../../services/interfaceLanguage';
 
 const NativeView = Platform.OS === 'android'
     ? requireNativeViewManager('NativeEpubReader')
@@ -9,7 +12,9 @@ const NativeModule = Platform.OS === 'android'
     ? requireNativeModule('NativeEpubReader')
     : null;
 
-const androidOnly = () => Promise.reject(new Error('Native PDF extraction is only available on Android.'));
+const translateRuntime = (key, params) => translate(getRuntimeInterfaceLanguage(), key, params);
+
+const androidOnly = () => Promise.reject(new Error(translateRuntime('read.nativePdfAndroidOnly')));
 
 export const extractPdfDocument = (options) => (
     NativeModule?.extractPdfDocument(options) ?? androidOnly()
@@ -45,10 +50,12 @@ const NativeEpubReaderView = ({
     onSelectionCleared,
     style,
 }) => {
+    const { t } = useTranslation();
+
     if (!NativeView) {
         return (
             <View style={style}>
-                <Text>Native book rendering is only enabled on Android for now.</Text>
+                <Text>{t('read.nativeReaderAndroidOnly')}</Text>
             </View>
         );
     }

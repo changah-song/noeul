@@ -300,10 +300,10 @@ def resolve_batch_ids(batch_ids: list[str] | None, batch_id_file: Path) -> list[
     return ids
 
 
-def request_chunks(requests: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+def request_chunks(requests: list[dict[str, Any]], chunk_size: int = MAX_BATCH_REQUESTS) -> list[list[dict[str, Any]]]:
     return [
-        requests[index:index + MAX_BATCH_REQUESTS]
-        for index in range(0, len(requests), MAX_BATCH_REQUESTS)
+        requests[index:index + chunk_size]
+        for index in range(0, len(requests), chunk_size)
     ]
 
 
@@ -319,7 +319,7 @@ def submit(args: argparse.Namespace) -> None:
         print("No review queue rows selected.")
         return
 
-    chunks = request_chunks(requests)
+    chunks = request_chunks(requests, args.chunk_size)
     print(f"Selected {len(records):,} review rows.")
     print(f"Built {len(requests):,} batch requests in {len(chunks):,} batch(es).")
     print(f"Model: {args.model}")
@@ -759,6 +759,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default=DEFAULT_MODEL, help="Anthropic model for review requests.")
     parser.add_argument("--limit", type=int, default=0, help="Limit selected queue rows. Use 0 for all.")
     parser.add_argument("--start-line", type=int, default=1, help="Start at this 1-based queue file line.")
+    parser.add_argument("--chunk-size", type=int, default=MAX_BATCH_REQUESTS, help="Maximum requests per submitted batch.")
     parser.add_argument("--reason", action="append", help="Only select queue rows with this reason. Can repeat.")
     parser.add_argument("--dry-run", action="store_true", help="With --submit, build requests but do not submit.")
     parser.add_argument("--accept-medium", action="store_true", help="Convert medium-confidence model approvals to approve rows.")
@@ -772,6 +773,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--limit must be >= 0")
     if args.start_line < 1:
         parser.error("--start-line must be >= 1")
+    if args.chunk_size < 1 or args.chunk_size > MAX_BATCH_REQUESTS:
+        parser.error(f"--chunk-size must be between 1 and {MAX_BATCH_REQUESTS}")
     if args.append and args.overwrite:
         parser.error("--append and --overwrite cannot be used together")
     if args.dry_run and not args.submit:

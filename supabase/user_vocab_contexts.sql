@@ -1,3 +1,11 @@
+create or replace function public.ff_vocab_definition_key(value text)
+returns text
+language sql
+immutable
+as $$
+  select nullif(regexp_replace(lower(btrim(coalesce(value, ''))), '[[:space:]]+', ' ', 'g'), '');
+$$;
+
 create table if not exists public.user_vocab_contexts (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
@@ -40,17 +48,22 @@ update public.user_vocab_contexts
 set updated_at = coalesce(seen_at, now())
 where updated_at is null;
 
-create unique index if not exists user_vocab_contexts_unique_context
+drop index if exists public.user_vocab_contexts_unique_context;
+
+create unique index user_vocab_contexts_unique_context
 on public.user_vocab_contexts (
   user_id,
   language,
   word,
   coalesce(hanja, ''),
-  coalesce(definition, ''),
+  coalesce(public.ff_vocab_definition_key(definition), ''),
   coalesce(source_book_uri, ''),
   sentence
 )
 where deleted_at is null;
+
+create index if not exists user_vocab_contexts_user_updated_idx
+on public.user_vocab_contexts(user_id, updated_at desc);
 
 alter table public.user_vocab_contexts enable row level security;
 

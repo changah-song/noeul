@@ -28,6 +28,13 @@ const cleanString = (value, fallback = '') => {
   return text || fallback;
 };
 
+const isMissingRpcError = (error, functionName) => {
+  const message = String(error?.message ?? error?.details ?? '').toLowerCase();
+  return error?.code === 'PGRST202'
+    || error?.code === '42883'
+    || message.includes(functionName.toLowerCase());
+};
+
 const cleanNullableString = (value) => {
   const text = String(value ?? '').trim();
   return text || null;
@@ -244,6 +251,28 @@ export const publicLibraryRowToBook = (row = {}, overrides = {}) => {
 
 export const fetchPublicLibrary = async (targetLanguage) => {
   const normalizedLanguage = normalizeBookLanguage(targetLanguage, 'en');
+  try {
+    const { data, error } = await withTimeout(
+      supabase.rpc('get_public_library', {
+        target_language_value: normalizedLanguage,
+      }),
+      PUBLIC_LIBRARY_QUERY_TIMEOUT_MS,
+      `Timed out loading public library rows for target_language=${normalizedLanguage}`
+    );
+
+    if (error) {
+      throw error;
+    }
+
+    return (Array.isArray(data) ? data : []).map((row) => publicLibraryRowToBook(row, {
+      language: normalizedLanguage,
+    }));
+  } catch (error) {
+    if (!isMissingRpcError(error, 'get_public_library')) {
+      throw error;
+    }
+  }
+
   const { data, error } = await withTimeout(
     supabase
       .from('public_library')
@@ -444,19 +473,43 @@ export const downloadPublicBook = async (book, onProgress) => {
 
 export const downloadFeaturedBooks = async (targetLanguage, onBookDownloaded) => {
   const normalizedLanguage = normalizeBookLanguage(targetLanguage, 'en');
-  const { data, error } = await withTimeout(
-    supabase
-      .from('public_library')
-      .select(PUBLIC_LIBRARY_SELECT)
-      .eq('target_language', normalizedLanguage)
-      .eq('is_featured', true)
-      .order('title', { ascending: true }),
-    PUBLIC_LIBRARY_QUERY_TIMEOUT_MS,
-    `Timed out loading featured public_library rows for target_language=${normalizedLanguage}`
-  );
+  let data = null;
 
-  if (error) {
-    throw error;
+  try {
+    const result = await withTimeout(
+      supabase.rpc('get_featured_public_library', {
+        target_language_value: normalizedLanguage,
+      }),
+      PUBLIC_LIBRARY_QUERY_TIMEOUT_MS,
+      `Timed out loading featured public library rows for target_language=${normalizedLanguage}`
+    );
+
+    if (result.error) {
+      throw result.error;
+    }
+
+    data = Array.isArray(result.data) ? result.data : [];
+  } catch (error) {
+    if (!isMissingRpcError(error, 'get_featured_public_library')) {
+      throw error;
+    }
+
+    const fallback = await withTimeout(
+      supabase
+        .from('public_library')
+        .select(PUBLIC_LIBRARY_SELECT)
+        .eq('target_language', normalizedLanguage)
+        .eq('is_featured', true)
+        .order('title', { ascending: true }),
+      PUBLIC_LIBRARY_QUERY_TIMEOUT_MS,
+      `Timed out loading featured public_library rows for target_language=${normalizedLanguage}`
+    );
+
+    if (fallback.error) {
+      throw fallback.error;
+    }
+
+    data = fallback.data ?? [];
   }
 
   const downloadedBooks = [];

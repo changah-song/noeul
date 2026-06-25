@@ -1187,6 +1187,8 @@ EN_DISPLAY_WORD_PART_TYPES_REQUIRING_MEANING = {
     "prefix",
     "suffix",
 }
+EN_DISPLAY_VISIBLE_WORD_PART_CONFIDENCE = "high"
+EN_DISPLAY_VISIBLE_WORD_PART_SOURCE = "curated_morpheme"
 EN_DISPLAY_HIDDEN_WORD_PART_CONFIDENCE = {"low"}
 EN_DISPLAY_OPAQUE_BREAKDOWN_WORDS = {
     "because",
@@ -1196,6 +1198,10 @@ EN_DISPLAY_MAX_WORD_PARTS = 4
 EN_DISPLAY_MAX_PART_TEXT_LENGTH = 36
 EN_DISPLAY_MAX_PART_MEANING_LENGTH = 48
 EN_DISPLAY_MAX_ORIGIN_LENGTH = 130
+EN_DISPLAY_RELATED_ROOT_LIMIT = 2
+EN_DISPLAY_RELATED_WORDS_PER_ROOT = 6
+EN_DISPLAY_RELATED_QUERY_LIMIT = 200
+EN_DISPLAY_RELATED_DEFINITION_LENGTH = 72
 EN_DISPLAY_ORIGIN_BLOCKLIST_RE = re.compile(
     r"Etymology tree|PIE word|Proto-|possibly|unknown|uncertain",
     re.IGNORECASE,
@@ -1381,7 +1387,11 @@ def sanitize_en_word_parts(
 
     confidence = clean_en_display_text(parsed.get("confidence")).lower()
     source = clean_en_display_text(parsed.get("source"))
-    if confidence in EN_DISPLAY_HIDDEN_WORD_PART_CONFIDENCE or source == "affix_strip":
+    if (
+        confidence != EN_DISPLAY_VISIBLE_WORD_PART_CONFIDENCE
+        or source != EN_DISPLAY_VISIBLE_WORD_PART_SOURCE
+        or confidence in EN_DISPLAY_HIDDEN_WORD_PART_CONFIDENCE
+    ):
         return None
 
     parts = parsed.get("parts")
@@ -1411,6 +1421,192 @@ def sanitize_en_word_parts(
         compact["source_text"] = source_text
 
     return json.dumps(compact, ensure_ascii=False)
+
+
+def parse_sanitized_en_word_parts(value: Any) -> dict | None:
+    if not value:
+        return None
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def compact_en_related_definition(definition: str | None) -> str | None:
+    text = clean_en_display_text(definition)
+    if not text:
+        return None
+    first = text.split(";")[0].split(".")[0].split(",")[0].strip()
+    if not first:
+        return None
+    if len(first) <= EN_DISPLAY_RELATED_DEFINITION_LENGTH:
+        return first
+    return f"{first[:EN_DISPLAY_RELATED_DEFINITION_LENGTH].rsplit(' ', 1)[0].rstrip()}..."
+
+
+def en_word_part_bound_roots(word_parts: dict | None) -> list[dict]:
+    if not isinstance(word_parts, dict) or not isinstance(word_parts.get("parts"), list):
+        return []
+
+    roots = []
+    seen = set()
+    for part in word_parts["parts"]:
+        if not isinstance(part, dict) or part.get("type") != "bound_root":
+            continue
+        text = clean_en_display_text(part.get("text")).lower()
+        display = clean_en_display_text(part.get("display")) or text
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        roots.append({
+            "text": text,
+            "display": display,
+            "meaning": compact_en_part_meaning(part.get("meaning")),
+        })
+        if len(roots) >= EN_DISPLAY_RELATED_ROOT_LIMIT:
+            break
+    return roots
+
+
+def english_cefr_fallback_levels(words: list[str]) -> dict[str, dict]:
+    normalized_words = [
+        word.strip().lower()
+        for word in words
+        if isinstance(word, str) and word.strip()
+    ]
+    if not normalized_words or not is_proficiency_levels_db_installed():
+        return {}
+
+    try:
+        conn = get_proficiency_levels_db_connection()
+    except sqlite3.Error:
+        return {}
+
+    levels: dict[str, dict] = {}
+    try:
+        for batch in chunked_values(sorted(set(normalized_words))):
+            placeholders = ",".join(["?"] * len(batch))
+            rows = conn.execute(
+                f"""
+                SELECT word, cefr_level, level_rank
+                FROM english_cefr_fallback
+                WHERE word IN ({placeholders})
+                """,
+                batch,
+            ).fetchall()
+            for row in rows:
+                levels[row["word"]] = {
+                    "cefr_level": row["cefr_level"],
+                    "level_rank": int(row["level_rank"]),
+                }
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+
+    return levels
+
+
+def strict_en_related_words_for_root(conn: sqlite3.Connection, root_text: str) -> list[dict]:
+    root = clean_en_display_text(root_text).lower()
+    if not root:
+        return []
+
+    rows = conn.execute(
+        """
+        SELECT wp.word, d.pos, d.definition
+        FROM en_word_parts wp
+        JOIN en_dictionary d ON d.word = wp.word
+        JOIN json_each(wp.parts_json, '$.parts') part
+        WHERE wp.confidence = ?
+          AND wp.source = ?
+          AND json_extract(part.value, '$.type') = 'bound_root'
+          AND lower(json_extract(part.value, '$.text')) = ?
+          AND d.definition IS NOT NULL
+          AND trim(d.definition) != ''
+          AND d.pos IN ('noun', 'verb', 'adj', 'adv')
+        ORDER BY length(wp.word), wp.word
+        LIMIT ?
+        """,
+        (
+            EN_DISPLAY_VISIBLE_WORD_PART_CONFIDENCE,
+            EN_DISPLAY_VISIBLE_WORD_PART_SOURCE,
+            root,
+            EN_DISPLAY_RELATED_QUERY_LIMIT,
+        ),
+    ).fetchall()
+
+    candidates = []
+    seen = set()
+    for row in rows:
+        word = clean_en_display_text(row["word"]).lower()
+        if not word or word in seen:
+            continue
+        seen.add(word)
+        candidates.append({
+            "word": word,
+            "pos": row["pos"],
+            "definition": compact_en_related_definition(row["definition"]),
+        })
+
+    levels_by_word = english_cefr_fallback_levels([candidate["word"] for candidate in candidates])
+    cefr_candidates = [
+        {
+            **candidate,
+            **levels_by_word[candidate["word"]],
+        }
+        for candidate in candidates
+        if candidate["word"] in levels_by_word
+    ]
+    ranked = cefr_candidates or candidates
+    ranked.sort(key=lambda candidate: (
+        candidate.get("level_rank", 99),
+        len(candidate["word"]),
+        candidate["word"],
+    ))
+    return ranked
+
+
+def attach_en_word_part_related_words(conn: sqlite3.Connection, entries: list[dict]) -> None:
+    root_cache: dict[str, list[dict]] = {}
+    for entry in entries:
+        word_parts = parse_sanitized_en_word_parts(entry.get("word_parts"))
+        roots = en_word_part_bound_roots(word_parts)
+        if not word_parts or not roots:
+            continue
+
+        current_word = clean_en_display_text(entry.get("word") or entry.get("stem")).lower()
+        related_roots = []
+        for root in roots:
+            root_text = root["text"]
+            if root_text not in root_cache:
+                root_cache[root_text] = strict_en_related_words_for_root(conn, root_text)
+
+            words = [
+                related
+                for related in root_cache[root_text]
+                if related.get("word") and related["word"] != current_word
+            ][:EN_DISPLAY_RELATED_WORDS_PER_ROOT]
+            if not words:
+                continue
+
+            related_root = {
+                "text": root_text,
+                "display": root.get("display") or root_text,
+                "words": words,
+            }
+            if root.get("meaning"):
+                related_root["meaning"] = root["meaning"]
+            related_roots.append(related_root)
+
+        if related_roots:
+            word_parts["related_roots"] = related_roots
+            entry["word_parts"] = json.dumps(word_parts, ensure_ascii=False)
 
 
 def clean_en_origin_for_display(etymology: str | None) -> str | None:
@@ -1509,7 +1705,10 @@ def is_likely_untranslated_english_definition(definition: str | None, interface_
     return False
 
 
-def lookup_en_dictionary_entries(stems: list[str]) -> tuple[list[dict], int]:
+def lookup_en_dictionary_entries(
+    stems: list[str],
+    include_word_part_related: bool = False,
+) -> tuple[list[dict], int]:
     normalized_stems = [
         stem.strip().lower()
         for stem in stems
@@ -1532,6 +1731,8 @@ def lookup_en_dictionary_entries(stems: list[str]) -> tuple[list[dict], int]:
                    wp.parts_json AS word_parts
             FROM en_dictionary d
             LEFT JOIN en_word_parts wp ON wp.word = d.word
+              AND wp.confidence = 'high'
+              AND wp.source = 'curated_morpheme'
             WHERE d.word IN ({placeholders})
             """,
             normalized_stems,
@@ -1548,12 +1749,19 @@ def lookup_en_dictionary_entries(stems: list[str]) -> tuple[list[dict], int]:
             """,
             normalized_stems,
         ).fetchall()
+    row_results = [
+        en_dictionary_row_to_result(row)
+        for row in rows
+        if row["word"]
+    ]
+    if include_word_part_related:
+        attach_en_word_part_related_words(conn, row_results)
     conn.close()
 
     rows_by_word = {
-        row["word"].strip().lower(): en_dictionary_row_to_result(row)
-        for row in rows
-        if row["word"]
+        result["word"].strip().lower(): result
+        for result in row_results
+        if result.get("word")
     }
 
     results = [
@@ -2705,9 +2913,18 @@ async def en_dict_search(
                     conn.commit()
                     conn.close()
             cached_result["word"] = cached_result.get("stem")
-            return {"result": sanitize_en_dictionary_result(cached_result)}
+            result = sanitize_en_dictionary_result(cached_result)
+            kaikki_conn = get_kaikki_db_connection()
+            try:
+                attach_en_word_part_related_words(kaikki_conn, [result])
+            finally:
+                kaikki_conn.close()
+            return {"result": result}
 
-    results, _found_count = lookup_en_dictionary_entries([normalized_stem])
+    results, _found_count = lookup_en_dictionary_entries(
+        [normalized_stem],
+        include_word_part_related=True,
+    )
     entry = dict(results[0]) if results else None
 
     if not entry or not entry.get("definition"):

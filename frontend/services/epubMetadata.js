@@ -301,7 +301,7 @@ const toExtractedFileUri = (rootUri, path) => {
 
 const cleanFallbackTitle = (rawName = '') => {
     if (!rawName) {
-        return 'Untitled';
+        return '';
     }
 
     return rawName
@@ -313,7 +313,7 @@ const cleanFallbackTitle = (rawName = '') => {
         .replace(/\s*--+\s*/g, ' — ')
         .replace(/\s{2,}/g, ' ')
         .replace(/^[\s—-]+|[\s—-]+$/g, '')
-        .trim() || 'Untitled';
+        .trim();
 };
 
 const findPackagePath = (containerXml) => {
@@ -1077,7 +1077,7 @@ const parsePackageDocument = (opfXml, packagePath, fallbackName = '', extractedR
     return {
         metadata: {
             title: textOf(titleNode) || cleanFallbackTitle(fallbackName),
-            author: textOf(creatorNode) || 'Unknown author',
+            author: textOf(creatorNode),
             language: normalizeBookLanguage(textOf(languageNode), null),
             identifier: textOf(firstDescendant(metadataNode, (node) => localNameOf(node) === 'identifier')) || null,
         },
@@ -3145,7 +3145,7 @@ export const readEpubPackageXml = async (uri, fallbackName = '', options = {}) =
     });
 
     return {
-        fileName: fallbackName || 'Untitled',
+        fileName: fallbackName || '',
         bookManifest,
         extractedRootUri: extractedBook.rootUri,
         extractedFileCount: extractedBook.fileCount,

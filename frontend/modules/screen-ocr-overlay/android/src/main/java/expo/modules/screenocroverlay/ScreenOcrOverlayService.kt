@@ -107,13 +107,23 @@ class ScreenOcrOverlayService : Service() {
 
   fun isResultOverlayVisible(): Boolean = widgetController?.isResultOverlayVisible == true
 
+  fun handleInterfaceLanguageChanged() {
+    mainHandler.post {
+      widgetController?.handleInterfaceLanguageChanged()
+      if (isForeground) {
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.notify(NOTIFICATION_ID, buildNotification())
+      }
+    }
+  }
+
   fun showFloatingWidget(): Boolean {
     return try {
       if (!Settings.canDrawOverlays(this)) {
-        throw IllegalStateException("Overlay permission is not granted")
+        throw IllegalStateException(OverlayText.t("overlayPermissionNotGranted"))
       }
       if (captureSession == null) {
-        throw IllegalStateException("Screen capture permission is not active")
+        throw IllegalStateException(OverlayText.t("screenCaptureInactive"))
       }
 
       val visible = widgetController?.showBubble() == true
@@ -135,11 +145,11 @@ class ScreenOcrOverlayService : Service() {
 
   fun analyzeCurrentScreenForPromise(promise: Promise) {
     if (captureSession == null) {
-      promise.reject("E_SCREEN_CAPTURE_INACTIVE", "Screen capture permission is not active", null)
+      promise.reject("E_SCREEN_CAPTURE_INACTIVE", OverlayText.t("screenCaptureInactive"), null)
       return
     }
     if (isAnalyzing) {
-      promise.reject("E_ANALYZE_IN_PROGRESS", "Floating OCR is already analyzing the current screen", null)
+      promise.reject("E_ANALYZE_IN_PROGRESS", OverlayText.t("analyzeInProgress"), null)
       return
     }
 
@@ -148,11 +158,11 @@ class ScreenOcrOverlayService : Service() {
 
   private fun analyzeCurrentScreenForOverlay() {
     if (captureSession == null) {
-      emitError("screen_capture_inactive", IllegalStateException("Screen capture permission is not active"))
+      emitError("screen_capture_inactive", IllegalStateException(OverlayText.t("screenCaptureInactive")))
       return
     }
     if (isAnalyzing) {
-      emitError("analyze_in_progress", IllegalStateException("Floating OCR is already analyzing the current screen"))
+      emitError("analyze_in_progress", IllegalStateException(OverlayText.t("analyzeInProgress")))
       return
     }
 
@@ -168,7 +178,7 @@ class ScreenOcrOverlayService : Service() {
       val controller = widgetController
       if (controller == null) {
         finishAnalysisRun(runId)
-        val error = IllegalStateException("Floating OCR controller is not available")
+        val error = IllegalStateException(OverlayText.t("floatingControllerUnavailable"))
         emitError("floating_controller_unavailable", error)
         promise?.reject("E_FLOATING_CONTROLLER_UNAVAILABLE", error.message, error)
         return
@@ -207,7 +217,7 @@ class ScreenOcrOverlayService : Service() {
     runId: Int
   ) {
     if (!isCurrentAnalysisRun(runId)) {
-      promise?.reject("E_ANALYZE_CANCELLED", "Floating OCR analysis was cancelled", null)
+      promise?.reject("E_ANALYZE_CANCELLED", OverlayText.t("analysisCancelled"), null)
       return
     }
 
@@ -225,7 +235,7 @@ class ScreenOcrOverlayService : Service() {
         }
         restoreBubbleSafely()
       }
-      val error = IllegalStateException("Screen capture permission is not active")
+      val error = IllegalStateException(OverlayText.t("screenCaptureInactive"))
       emitError("screen_capture_inactive", error)
       promise?.reject("E_SCREEN_CAPTURE_INACTIVE", error.message, error)
       return
@@ -247,7 +257,7 @@ class ScreenOcrOverlayService : Service() {
       val serialized = session.analyzeLatestImage(cropBounds)
 
       if (!isCurrentAnalysisRun(runId)) {
-        promise?.reject("E_ANALYZE_CANCELLED", "Floating OCR analysis was cancelled", null)
+        promise?.reject("E_ANALYZE_CANCELLED", OverlayText.t("analysisCancelled"), null)
         return
       }
 
@@ -545,7 +555,7 @@ class ScreenOcrOverlayService : Service() {
     val data = getParcelableIntentExtra(intent, EXTRA_DATA)
 
     if (resultCode == 0 || data == null) {
-      emitError("screen_capture_missing_result", IllegalArgumentException("Missing screen capture result"))
+      emitError("screen_capture_missing_result", IllegalArgumentException(OverlayText.t("screenCaptureMissingResult")))
       stopSelf()
       return
     }
@@ -631,7 +641,7 @@ class ScreenOcrOverlayService : Service() {
       pendingLookupTimeoutRunnable = null
       widgetController?.showLookupError(
         requestId = requestId,
-        message = "Open FluentFable to look this up.",
+        message = OverlayText.t("openAppToLookup"),
         fallback = true
       )
       emitStatus("overlay_lookup_timeout")
@@ -641,7 +651,11 @@ class ScreenOcrOverlayService : Service() {
   }
 
   private fun handleTranslationRequested(requestId: String, query: String) {
-    val lookupResult = currentLookupResult?.takeIf { it.requestId == requestId } ?: return
+    val lookupResult = currentLookupResult?.takeIf { it.requestId == requestId }
+      ?: sentenceLookupResult(requestId, query)
+      ?: return
+    currentLookupResult = lookupResult
+
     val cleanedQuery = query.trim().ifBlank {
       if (lookupResult.sourceSentence.isNotBlank()) {
         lookupResult.sourceSentence
@@ -663,6 +677,31 @@ class ScreenOcrOverlayService : Service() {
       )
     )
     emitStatus("overlay_translation_requested")
+  }
+
+  private fun sentenceLookupResult(requestId: String, query: String): OverlayLookupResult? {
+    val sentence = query.trim()
+    if (sentence.isBlank() || widgetController?.hasLookupCard(requestId) != true) {
+      return null
+    }
+
+    return OverlayLookupResult(
+      requestId = requestId,
+      surface = sentence,
+      stem = sentence,
+      definition = null,
+      translation = null,
+      translationSourceLanguage = null,
+      translationTargetLanguage = null,
+      hanja = null,
+      pos = null,
+      romanization = null,
+      saved = false,
+      sourceSentence = sentence,
+      alternatives = emptyList(),
+      hanjaPreloads = emptyList(),
+      wordOptions = emptyList()
+    )
   }
 
   fun resolveOverlayLookup(requestId: String, result: Map<String, Any?>): Boolean {
@@ -711,7 +750,7 @@ class ScreenOcrOverlayService : Service() {
       }
       widgetController?.showLookupError(
         requestId = requestId,
-        message = message.ifBlank { "Lookup failed." },
+        message = message.ifBlank { OverlayText.t("lookupFailed") },
         fallback = false
       )
       emitStatus("overlay_lookup_rejected")
@@ -722,7 +761,7 @@ class ScreenOcrOverlayService : Service() {
   private fun handleSaveRequested(requestId: String, alternativeIndex: Int?) {
     val lookupResult = currentLookupResult?.takeIf { it.requestId == requestId }
     if (lookupResult == null) {
-      widgetController?.showSaveError(requestId, "Lookup result is no longer available.")
+      widgetController?.showSaveError(requestId, OverlayText.t("lookupResultUnavailable"))
       return
     }
     val saveWord = if (alternativeIndex == null) {
@@ -757,7 +796,7 @@ class ScreenOcrOverlayService : Service() {
     }
 
     if (saveWord.isBlank() || saveDefinition.isNullOrBlank()) {
-      widgetController?.showSaveError(requestId, "No definition to save.")
+      widgetController?.showSaveError(requestId, OverlayText.t("noDefinitionToSave"))
       return
     }
 
@@ -788,7 +827,7 @@ class ScreenOcrOverlayService : Service() {
 
       pendingSaveRequestId = null
       pendingSaveAlternativeIndex = null
-      widgetController?.showSaveError(requestId, "Save timed out. Open the app to try again.")
+      widgetController?.showSaveError(requestId, OverlayText.t("saveTimedOut"))
       emitStatus("overlay_save_timeout")
     }
     pendingSaveTimeoutRunnable = timeoutRunnable
@@ -836,7 +875,7 @@ class ScreenOcrOverlayService : Service() {
       clearPendingSaveTimeout()
       pendingSaveRequestId = null
       pendingSaveAlternativeIndex = null
-      widgetController?.showSaveError(requestId, message.ifBlank { "Save failed." })
+      widgetController?.showSaveError(requestId, message.ifBlank { OverlayText.t("saveFailed") })
       emitStatus("overlay_save_rejected")
     }
     return true
@@ -867,7 +906,7 @@ class ScreenOcrOverlayService : Service() {
 
       pendingHanjaRequestId = null
       pendingHanjaTimeoutRunnable = null
-      widgetController?.showHanjaError(requestId, "Hanja lookup timed out.")
+      widgetController?.showHanjaError(requestId, OverlayText.t("hanjaLookupTimedOut"))
       emitStatus("overlay_hanja_timeout")
     }
     pendingHanjaTimeoutRunnable = timeoutRunnable
@@ -927,7 +966,7 @@ class ScreenOcrOverlayService : Service() {
         clearPendingHanjaTimeout()
         pendingHanjaRequestId = null
       }
-      widgetController?.showHanjaError(requestId, message.ifBlank { "Hanja lookup failed." })
+      widgetController?.showHanjaError(requestId, message.ifBlank { OverlayText.t("hanjaLookupFailed") })
       emitStatus("overlay_hanja_rejected")
     }
     return true
@@ -935,12 +974,13 @@ class ScreenOcrOverlayService : Service() {
 
   private fun openSelectionInApp(selectionTarget: OcrTapSelection) {
     clearLookupState()
+    val sourceBookTitle = OverlayText.t("floatingOcr")
     val selection = mapOf(
       EXTRA_SELECTION_ID to UUID.randomUUID().toString(),
       EXTRA_SELECTED_TEXT to selectionTarget.selectedText,
       EXTRA_SELECTED_LINE_TEXT to selectionTarget.lineText,
       EXTRA_SELECTED_KIND to selectionTarget.kind,
-      EXTRA_SOURCE_BOOK_TITLE to SOURCE_BOOK_TITLE,
+      EXTRA_SOURCE_BOOK_TITLE to sourceBookTitle,
       EXTRA_SELECTED_BOX to OcrSerializer.serializeBox(selectionTarget.box)
     )
 
@@ -961,7 +1001,7 @@ class ScreenOcrOverlayService : Service() {
       putExtra(EXTRA_SELECTED_TEXT, selection[EXTRA_SELECTED_TEXT] as? String)
       putExtra(EXTRA_SELECTED_LINE_TEXT, selection[EXTRA_SELECTED_LINE_TEXT] as? String)
       putExtra(EXTRA_SELECTED_KIND, selection[EXTRA_SELECTED_KIND] as? String)
-      putExtra(EXTRA_SOURCE_BOOK_TITLE, SOURCE_BOOK_TITLE)
+      putExtra(EXTRA_SOURCE_BOOK_TITLE, selection[EXTRA_SOURCE_BOOK_TITLE] as? String ?: OverlayText.t("floatingOcr"))
       (selection[EXTRA_SELECTED_BOX] as? Map<*, *>)?.let { selectedBox ->
         putExtra(EXTRA_SELECTED_BOX_X, selectedBox["x"] as? Int ?: 0)
         putExtra(EXTRA_SELECTED_BOX_Y, selectedBox["y"] as? Int ?: 0)
@@ -1015,10 +1055,10 @@ class ScreenOcrOverlayService : Service() {
     val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     val channel = NotificationChannel(
       NOTIFICATION_CHANNEL_ID,
-      "Floating OCR",
+      OverlayText.t("floatingOcr"),
       NotificationManager.IMPORTANCE_LOW
     ).apply {
-      description = "Keeps screen OCR capture active"
+      description = OverlayText.t("floatingOcrNotificationDescription")
       setShowBadge(false)
     }
     notificationManager.createNotificationChannel(channel)
@@ -1033,8 +1073,8 @@ class ScreenOcrOverlayService : Service() {
 
     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
-        .setContentTitle("Floating OCR is active")
-        .setContentText("Tap the floating bubble to OCR the current screen.")
+        .setContentTitle(OverlayText.t("floatingOcrNotificationTitle"))
+        .setContentText(OverlayText.t("floatingOcrNotificationBody"))
         .setSmallIcon(icon)
         .setContentIntent(pendingIntent)
         .setOngoing(true)
@@ -1042,8 +1082,8 @@ class ScreenOcrOverlayService : Service() {
     } else {
       @Suppress("DEPRECATION")
       Notification.Builder(this)
-        .setContentTitle("Floating OCR is active")
-        .setContentText("Tap the floating bubble to OCR the current screen.")
+        .setContentTitle(OverlayText.t("floatingOcrNotificationTitle"))
+        .setContentText(OverlayText.t("floatingOcrNotificationBody"))
         .setSmallIcon(icon)
         .setContentIntent(pendingIntent)
         .setOngoing(true)
@@ -1074,8 +1114,6 @@ class ScreenOcrOverlayService : Service() {
 
     private const val NOTIFICATION_CHANNEL_ID = "screen_ocr_overlay"
     private const val NOTIFICATION_ID = 8742
-    private const val SOURCE_BOOK_TITLE = "Floating OCR"
-
     @Volatile
     private var activeInstance: ScreenOcrOverlayService? = null
 
@@ -1113,7 +1151,7 @@ class ScreenOcrOverlayService : Service() {
         EXTRA_SELECTED_LINE_TEXT to intent.getStringExtra(EXTRA_SELECTED_LINE_TEXT).orEmpty(),
         EXTRA_SELECTED_KIND to intent.getStringExtra(EXTRA_SELECTED_KIND).orEmpty(),
         EXTRA_SELECTED_BOX to selectedBoxFromIntent(intent),
-        EXTRA_SOURCE_BOOK_TITLE to intent.getStringExtra(EXTRA_SOURCE_BOOK_TITLE).orEmpty().ifEmpty { SOURCE_BOOK_TITLE }
+        EXTRA_SOURCE_BOOK_TITLE to intent.getStringExtra(EXTRA_SOURCE_BOOK_TITLE).orEmpty().ifEmpty { OverlayText.t("floatingOcr") }
       )
     }
 

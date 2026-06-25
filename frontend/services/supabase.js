@@ -143,7 +143,8 @@ const USER_VOCAB_SELECT = `
   difficulty,
   updated_at,
   deleted_at,
-  language
+  language,
+  server_updated_at
 `;
 
 const USER_VOCAB_CONTEXT_SELECT = `
@@ -156,7 +157,8 @@ const USER_VOCAB_CONTEXT_SELECT = `
   sentence,
   seen_at,
   updated_at,
-  deleted_at
+  deleted_at,
+  server_updated_at
 `;
 
 const USER_VOCAB_RELATED_KNOWN_SELECT = `
@@ -170,23 +172,32 @@ const USER_VOCAB_RELATED_KNOWN_SELECT = `
   source_hanja,
   marked_at,
   updated_at,
-  deleted_at
+  deleted_at,
+  server_updated_at
 `;
 
-const normalizeVocabIdentityValue = (value) => (value == null ? '' : String(value).trim());
+const withoutServerUpdatedAt = (select) => select.replace(/,\s*\n\s*server_updated_at/g, '');
+const USER_VOCAB_SELECT_LEGACY = withoutServerUpdatedAt(USER_VOCAB_SELECT);
+const USER_VOCAB_CONTEXT_SELECT_LEGACY = withoutServerUpdatedAt(USER_VOCAB_CONTEXT_SELECT);
+const USER_VOCAB_RELATED_KNOWN_SELECT_LEGACY = withoutServerUpdatedAt(USER_VOCAB_RELATED_KNOWN_SELECT);
+
+const normalizeVocabIdentityValue = (value) => (
+  value == null ? '' : String(value).normalize('NFKC').replace(/\s+/g, ' ').trim()
+);
+const normalizeVocabDefinitionIdentityValue = (value) => normalizeVocabIdentityValue(value).toLowerCase();
 
 export const makeUserVocabKey = (entry) => [
   entry.language ?? 'ko',
   normalizeVocabIdentityValue(entry.word),
   normalizeVocabIdentityValue(entry.hanja),
-  normalizeVocabIdentityValue(entry.definition ?? entry.def),
+  normalizeVocabDefinitionIdentityValue(entry.definition ?? entry.def),
 ].join('::');
 
 export const makeUserVocabContextKey = (context) => [
   context.language ?? 'ko',
   normalizeVocabIdentityValue(context.word),
   normalizeVocabIdentityValue(context.hanja),
-  normalizeVocabIdentityValue(context.definition ?? context.def),
+  normalizeVocabDefinitionIdentityValue(context.definition ?? context.def),
   normalizeVocabIdentityValue(context.source_book_uri ?? context.sourceBookUri),
   normalizeVocabIdentityValue(context.sentence),
 ].join('::');
@@ -195,7 +206,7 @@ export const makeUserRelatedKnownWordKey = (relation) => [
   relation.language ?? 'ko',
   normalizeVocabIdentityValue(relation.main_word ?? relation.mainWord),
   normalizeVocabIdentityValue(relation.main_hanja ?? relation.mainHanja),
-  normalizeVocabIdentityValue(relation.main_definition ?? relation.mainDefinition),
+  normalizeVocabDefinitionIdentityValue(relation.main_definition ?? relation.mainDefinition),
   normalizeVocabIdentityValue(relation.related_word ?? relation.relatedWord ?? relation.korean),
   normalizeVocabIdentityValue(relation.related_hanja ?? relation.relatedHanja ?? relation.hanja),
 ].join('::');
@@ -233,6 +244,18 @@ const normalizeTimestamp = (value, fallback = null) => {
   return Number.isNaN(date.getTime()) ? fallback : date.toISOString();
 };
 const isDuplicateKeyError = (error) => error?.code === '23505';
+const isMissingRpcError = (error, functionName) => {
+  const message = String(error?.message ?? error?.details ?? '').toLowerCase();
+  return error?.code === 'PGRST202'
+    || error?.code === '42883'
+    || message.includes(functionName.toLowerCase());
+};
+const isMissingServerUpdatedAtError = (error) => {
+  const message = String(error?.message ?? error?.details ?? '').toLowerCase();
+  return error?.code === '42703'
+    || error?.code === 'PGRST204'
+    || message.includes('server_updated_at');
+};
 
 const toUserVocabRow = (userId, entry) => {
   const now = new Date().toISOString();
@@ -296,13 +319,98 @@ const fetchExistingUserVocabEntry = async (userId, entry) => {
   ).limit(1);
 
   if (error) {
+    if (isMissingServerUpdatedAtError(error)) {
+      const fallback = await applyVocabIdentityFilters(
+        supabase
+          .from(USER_VOCAB_TABLE)
+          .select(USER_VOCAB_SELECT_LEGACY)
+          .eq('user_id', userId),
+        entry
+      ).limit(1);
+
+      if (!fallback.error) {
+        return Array.isArray(fallback.data) ? fallback.data[0] ?? null : fallback.data ?? null;
+      }
+    }
+
     throw error;
   }
 
   return Array.isArray(data) ? data[0] ?? null : data ?? null;
 };
 
-export const fetchUserVocab = async (userId, { includeDeleted = true } = {}) => {
+const normalizeRpcArray = (value) => (Array.isArray(value) ? value : []);
+
+export const pullUserLearningSync = async ({
+  vocabUpdatedAfter = null,
+  contextsUpdatedAfter = null,
+  relatedUpdatedAfter = null,
+} = {}) => {
+  const { data, error } = await supabase.rpc('sync_user_learning_pull', {
+    vocab_updated_after: normalizeTimestamp(vocabUpdatedAfter),
+    contexts_updated_after: normalizeTimestamp(contextsUpdatedAfter),
+    related_updated_after: normalizeTimestamp(relatedUpdatedAfter),
+  });
+
+  if (error) {
+    if (!isMissingRpcError(error, 'sync_user_learning_pull')) {
+      console.warn(`${FILE_TAG} pullUserLearningSync failed`, error);
+    }
+    throw error;
+  }
+
+  return {
+    vocab: normalizeRpcArray(data?.vocab),
+    contexts: normalizeRpcArray(data?.contexts),
+    relatedKnownWords: normalizeRpcArray(data?.relatedKnownWords),
+    cursors: data?.cursors ?? {},
+  };
+};
+
+export const pushUserLearningSync = async ({
+  vocabEntries = [],
+  contexts = [],
+  relatedKnownWords = [],
+} = {}) => {
+  if (vocabEntries.length === 0 && contexts.length === 0 && relatedKnownWords.length === 0) {
+    return { vocab: 0, contexts: 0, relatedKnownWords: 0 };
+  }
+
+  const { data, error } = await supabase.rpc('sync_user_learning_push', {
+    vocab_entries: vocabEntries,
+    contexts,
+    related_known_words: relatedKnownWords,
+  });
+
+  if (error) {
+    if (!isMissingRpcError(error, 'sync_user_learning_push')) {
+      console.warn(`${FILE_TAG} pushUserLearningSync failed`, error);
+    }
+    throw error;
+  }
+
+  return data ?? { vocab: 0, contexts: 0, relatedKnownWords: 0 };
+};
+
+export const fetchUserVocab = async (userId, { includeDeleted = true, updatedAfter = null } = {}) => {
+  const buildQuery = ({ select, cursorColumn }) => {
+    let query = supabase
+      .from(USER_VOCAB_TABLE)
+      .select(select)
+      .eq('user_id', userId);
+
+    if (!includeDeleted) {
+      query = query.is('deleted_at', null);
+    }
+
+    const normalizedUpdatedAfter = normalizeTimestamp(updatedAfter);
+    if (normalizedUpdatedAfter) {
+      query = query.gt(cursorColumn, normalizedUpdatedAfter);
+    }
+
+    return query.order(cursorColumn, { ascending: true });
+  };
+
   let query = supabase
     .from(USER_VOCAB_TABLE)
     .select(USER_VOCAB_SELECT)
@@ -312,9 +420,27 @@ export const fetchUserVocab = async (userId, { includeDeleted = true } = {}) => 
     query = query.is('deleted_at', null);
   }
 
+  const normalizedUpdatedAfter = normalizeTimestamp(updatedAfter);
+  if (normalizedUpdatedAfter) {
+    query = query.gt('server_updated_at', normalizedUpdatedAfter);
+  }
+
+  query = query.order('server_updated_at', { ascending: true });
+
   const { data, error } = await query;
 
   if (error) {
+    if (isMissingServerUpdatedAtError(error)) {
+      const fallback = await buildQuery({
+        select: USER_VOCAB_SELECT_LEGACY,
+        cursorColumn: 'updated_at',
+      });
+
+      if (!fallback.error) {
+        return fallback.data ?? [];
+      }
+    }
+
     console.warn(`${FILE_TAG} fetchUserVocab failed`, error);
     throw error;
   }
@@ -322,39 +448,46 @@ export const fetchUserVocab = async (userId, { includeDeleted = true } = {}) => 
   return data ?? [];
 };
 
-export const upsertUserVocabEntry = async ({ user, ownerId, generation, entry } = {}) => {
-  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
-  const row = toUserVocabRow(userId, entry);
+const upsertUserVocabRowDirect = async ({ user, ownerId, generation, userId, row }) => {
+  const updateExistingEntry = async () => {
+    assertCloudWriteAllowed({ user, ownerId, generation });
+    const { error } = await applyVocabIdentityFilters(
+      supabase
+        .from(USER_VOCAB_TABLE)
+        .update(row)
+        .eq('user_id', userId),
+      row
+    );
+
+    if (error) {
+      throw error;
+    }
+  };
+
   const existing = await fetchExistingUserVocabEntry(userId, row);
-  const query = supabase.from(USER_VOCAB_TABLE);
-  assertCloudWriteAllowed({ user, ownerId, generation });
-  const { error } = existing
-    ? await applyVocabIdentityFilters(
-        query
-          .update(row)
-          .eq('user_id', userId),
-        row
-      )
-    : await query.insert(row);
-
-  if (error) {
-    console.warn(`${FILE_TAG} upsertUserVocabEntry failed`, error);
-    throw error;
-  }
-};
-
-export const upsertUserVocabEntries = async ({ user, ownerId, generation, entries } = {}) => {
-  if (!entries || entries.length === 0) {
+  if (existing) {
+    await updateExistingEntry();
     return;
   }
 
-  for (const entry of entries) {
-    await upsertUserVocabEntry({ user, ownerId, generation, entry });
+  assertCloudWriteAllowed({ user, ownerId, generation });
+  const { error } = await supabase
+    .from(USER_VOCAB_TABLE)
+    .insert(row);
+
+  if (!error) {
+    return;
   }
+
+  if (isDuplicateKeyError(error)) {
+    await updateExistingEntry();
+    return;
+  }
+
+  throw error;
 };
 
-export const softDeleteUserVocabEntry = async ({ user, ownerId, generation, entry } = {}) => {
-  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
+const softDeleteUserVocabEntryDirect = async ({ user, ownerId, generation, userId, entry }) => {
   const deletedAt = new Date().toISOString();
   assertCloudWriteAllowed({ user, ownerId, generation });
   const { error } = await applyVocabIdentityFilters(
@@ -364,13 +497,70 @@ export const softDeleteUserVocabEntry = async ({ user, ownerId, generation, entr
         deleted_at: deletedAt,
         updated_at: deletedAt,
       })
-      .eq('user_id', userId),
+      .eq('user_id', userId)
+      .is('deleted_at', null),
     entry
   );
 
   if (error) {
-    console.warn(`${FILE_TAG} softDeleteUserVocabEntry failed`, error);
     throw error;
+  }
+};
+
+export const upsertUserVocabEntry = async ({ user, ownerId, generation, entry } = {}) => {
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
+  const row = toUserVocabRow(userId, entry);
+  assertCloudWriteAllowed({ user, ownerId, generation });
+  try {
+    await pushUserLearningSync({ vocabEntries: [row] });
+  } catch (error) {
+    if (!isMissingRpcError(error, 'sync_user_learning_push')) {
+      throw error;
+    }
+
+    await upsertUserVocabRowDirect({ user, ownerId, generation, userId, row });
+  }
+};
+
+export const upsertUserVocabEntries = async ({ user, ownerId, generation, entries } = {}) => {
+  if (!entries || entries.length === 0) {
+    return;
+  }
+
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
+  const rows = entries.map((entry) => toUserVocabRow(userId, entry));
+  assertCloudWriteAllowed({ user, ownerId, generation });
+  try {
+    await pushUserLearningSync({ vocabEntries: rows });
+  } catch (error) {
+    if (!isMissingRpcError(error, 'sync_user_learning_push')) {
+      throw error;
+    }
+
+    for (const row of rows) {
+      await upsertUserVocabRowDirect({ user, ownerId, generation, userId, row });
+    }
+  }
+};
+
+export const softDeleteUserVocabEntry = async ({ user, ownerId, generation, entry } = {}) => {
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
+  const deletedAt = new Date().toISOString();
+  assertCloudWriteAllowed({ user, ownerId, generation });
+  try {
+    await pushUserLearningSync({
+      vocabEntries: [{
+        ...toUserVocabRow(userId, entry),
+        deleted_at: deletedAt,
+        updated_at: deletedAt,
+      }],
+    });
+  } catch (error) {
+    if (!isMissingRpcError(error, 'sync_user_learning_push')) {
+      throw error;
+    }
+
+    await softDeleteUserVocabEntryDirect({ user, ownerId, generation, userId, entry });
   }
 };
 
@@ -407,6 +597,60 @@ export const updateUserVocabStatus = async ({ user, ownerId, generation, entry, 
     generation,
     entry,
     patch: { status },
+  });
+};
+
+export const recordCloudVocabReview = async ({
+  user,
+  ownerId,
+  generation,
+  entry,
+  review = {},
+} = {}) => {
+  assertCloudWriteAllowed({ user, ownerId, generation });
+  const payload = {
+    language: entry?.language ?? review.language ?? 'ko',
+    word: entry?.word ?? review.word,
+    hanja: entry?.hanja ?? review.hanja ?? null,
+    definition: entry?.definition ?? entry?.def ?? review.definition ?? review.def ?? null,
+    ...review,
+  };
+
+  try {
+    assertCloudWriteAllowed({ user, ownerId, generation });
+    const { data, error } = await supabase.rpc('record_vocab_review', {
+      review: payload,
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    return data;
+  } catch (error) {
+    if (!isMissingRpcError(error, 'record_vocab_review')) {
+      console.warn(`${FILE_TAG} recordCloudVocabReview failed`, error);
+      throw error;
+    }
+  }
+
+  const fallbackPatch = Object.fromEntries(Object.entries({
+    status: payload.next_status ?? payload.status,
+    last_reviewed_at: payload.last_reviewed_at ?? payload.lastReviewedAt,
+    next_review_at: payload.next_review_at ?? payload.nextReviewAt,
+    stability: payload.stability,
+    difficulty: payload.difficulty,
+    correct_count: payload.correct_count ?? payload.correctCount,
+    wrong_count: payload.wrong_count ?? payload.wrongCount,
+    updated_at: payload.updated_at ?? payload.updatedAt ?? payload.reviewed_at ?? payload.reviewedAt,
+  }).filter(([, value]) => value !== undefined));
+
+  return updateUserVocabFields({
+    user,
+    ownerId,
+    generation,
+    entry,
+    patch: fallbackPatch,
   });
 };
 
@@ -464,25 +708,64 @@ const fetchExistingUserVocabContext = async (userId, context) => {
   ).limit(1);
 
   if (error) {
+    if (isMissingServerUpdatedAtError(error)) {
+      const fallback = await applyVocabContextIdentityFilters(
+        supabase
+          .from(USER_VOCAB_CONTEXTS_TABLE)
+          .select(USER_VOCAB_CONTEXT_SELECT_LEGACY)
+          .eq('user_id', userId)
+          .is('deleted_at', null),
+        context
+      ).limit(1);
+
+      if (!fallback.error) {
+        return Array.isArray(fallback.data) ? fallback.data[0] ?? null : fallback.data ?? null;
+      }
+    }
+
     throw error;
   }
 
   return Array.isArray(data) ? data[0] ?? null : data ?? null;
 };
 
-export const fetchUserVocabContexts = async (userId, { includeDeleted = true } = {}) => {
-  let query = supabase
-    .from(USER_VOCAB_CONTEXTS_TABLE)
-    .select(USER_VOCAB_CONTEXT_SELECT)
-    .eq('user_id', userId);
+export const fetchUserVocabContexts = async (userId, { includeDeleted = true, updatedAfter = null } = {}) => {
+  const buildQuery = ({ select, cursorColumn }) => {
+    let query = supabase
+      .from(USER_VOCAB_CONTEXTS_TABLE)
+      .select(select)
+      .eq('user_id', userId);
 
-  if (!includeDeleted) {
-    query = query.is('deleted_at', null);
-  }
+    if (!includeDeleted) {
+      query = query.is('deleted_at', null);
+    }
 
+    const normalizedUpdatedAfter = normalizeTimestamp(updatedAfter);
+    if (normalizedUpdatedAfter) {
+      query = query.gt(cursorColumn, normalizedUpdatedAfter);
+    }
+
+    return query.order(cursorColumn, { ascending: true });
+  };
+
+  const query = buildQuery({
+    select: USER_VOCAB_CONTEXT_SELECT,
+    cursorColumn: 'server_updated_at',
+  });
   const { data, error } = await query;
 
   if (error) {
+    if (isMissingServerUpdatedAtError(error)) {
+      const fallback = await buildQuery({
+        select: USER_VOCAB_CONTEXT_SELECT_LEGACY,
+        cursorColumn: 'updated_at',
+      });
+
+      if (!fallback.error) {
+        return fallback.data ?? [];
+      }
+    }
+
     console.warn(`${FILE_TAG} fetchUserVocabContexts failed`, error);
     throw error;
   }
@@ -491,6 +774,25 @@ export const fetchUserVocabContexts = async (userId, { includeDeleted = true } =
 };
 
 export const upsertUserVocabContext = async ({ user, ownerId, generation, context } = {}) => {
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
+  const row = toUserVocabContextRow(userId, context);
+  if (!row.word || !row.sentence) {
+    return;
+  }
+
+  assertCloudWriteAllowed({ user, ownerId, generation });
+  try {
+    await pushUserLearningSync({ contexts: [row] });
+  } catch (error) {
+    if (!isMissingRpcError(error, 'sync_user_learning_push')) {
+      throw error;
+    }
+
+    await upsertUserVocabContextDirect({ user, ownerId, generation, context });
+  }
+};
+
+export const upsertUserVocabContextDirect = async ({ user, ownerId, generation, context } = {}) => {
   const userId = assertCloudWriteAllowed({ user, ownerId, generation });
   const row = toUserVocabContextRow(userId, context);
   if (!row.word || !row.sentence) {
@@ -558,8 +860,21 @@ export const upsertUserVocabContexts = async ({ user, ownerId, generation, conte
     return;
   }
 
-  for (const context of contexts) {
-    await upsertUserVocabContext({ user, ownerId, generation, context });
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
+  const rows = contexts
+    .map((context) => toUserVocabContextRow(userId, context))
+    .filter((row) => row.word && row.sentence);
+  assertCloudWriteAllowed({ user, ownerId, generation });
+  try {
+    await pushUserLearningSync({ contexts: rows });
+  } catch (error) {
+    if (!isMissingRpcError(error, 'sync_user_learning_push')) {
+      throw error;
+    }
+
+    for (const context of contexts) {
+      await upsertUserVocabContextDirect({ user, ownerId, generation, context });
+    }
   }
 };
 
@@ -669,25 +984,64 @@ const fetchExistingUserRelatedKnownWord = async (userId, relation) => {
   ).limit(1);
 
   if (error) {
+    if (isMissingServerUpdatedAtError(error)) {
+      const fallback = await applyRelatedKnownIdentityFilters(
+        supabase
+          .from(USER_VOCAB_RELATED_KNOWN_TABLE)
+          .select(USER_VOCAB_RELATED_KNOWN_SELECT_LEGACY)
+          .eq('user_id', userId)
+          .is('deleted_at', null),
+        relation
+      ).limit(1);
+
+      if (!fallback.error) {
+        return Array.isArray(fallback.data) ? fallback.data[0] ?? null : fallback.data ?? null;
+      }
+    }
+
     throw error;
   }
 
   return Array.isArray(data) ? data[0] ?? null : data ?? null;
 };
 
-export const fetchUserRelatedKnownWords = async (userId, { includeDeleted = true } = {}) => {
-  let query = supabase
-    .from(USER_VOCAB_RELATED_KNOWN_TABLE)
-    .select(USER_VOCAB_RELATED_KNOWN_SELECT)
-    .eq('user_id', userId);
+export const fetchUserRelatedKnownWords = async (userId, { includeDeleted = true, updatedAfter = null } = {}) => {
+  const buildQuery = ({ select, cursorColumn }) => {
+    let query = supabase
+      .from(USER_VOCAB_RELATED_KNOWN_TABLE)
+      .select(select)
+      .eq('user_id', userId);
 
-  if (!includeDeleted) {
-    query = query.is('deleted_at', null);
-  }
+    if (!includeDeleted) {
+      query = query.is('deleted_at', null);
+    }
 
+    const normalizedUpdatedAfter = normalizeTimestamp(updatedAfter);
+    if (normalizedUpdatedAfter) {
+      query = query.gt(cursorColumn, normalizedUpdatedAfter);
+    }
+
+    return query.order(cursorColumn, { ascending: true });
+  };
+
+  const query = buildQuery({
+    select: USER_VOCAB_RELATED_KNOWN_SELECT,
+    cursorColumn: 'server_updated_at',
+  });
   const { data, error } = await query;
 
   if (error) {
+    if (isMissingServerUpdatedAtError(error)) {
+      const fallback = await buildQuery({
+        select: USER_VOCAB_RELATED_KNOWN_SELECT_LEGACY,
+        cursorColumn: 'updated_at',
+      });
+
+      if (!fallback.error) {
+        return fallback.data ?? [];
+      }
+    }
+
     console.warn(`${FILE_TAG} fetchUserRelatedKnownWords failed`, error);
     throw error;
   }
@@ -695,44 +1049,46 @@ export const fetchUserRelatedKnownWords = async (userId, { includeDeleted = true
   return data ?? [];
 };
 
-export const upsertUserRelatedKnownWord = async ({ user, ownerId, generation, relation } = {}) => {
-  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
-  const row = toUserRelatedKnownWordRow(userId, relation);
-  if (!row.main_word || !row.related_word) {
-    return;
-  }
+const upsertUserRelatedKnownWordRowDirect = async ({ user, ownerId, generation, userId, row }) => {
+  const updateExistingRelation = async () => {
+    assertCloudWriteAllowed({ user, ownerId, generation });
+    const { error } = await applyRelatedKnownIdentityFilters(
+      supabase
+        .from(USER_VOCAB_RELATED_KNOWN_TABLE)
+        .update(row)
+        .eq('user_id', userId),
+      row
+    );
+
+    if (error) {
+      throw error;
+    }
+  };
 
   const existing = await fetchExistingUserRelatedKnownWord(userId, row);
-  const query = supabase.from(USER_VOCAB_RELATED_KNOWN_TABLE);
-  assertCloudWriteAllowed({ user, ownerId, generation });
-  const { error } = existing
-    ? await applyRelatedKnownIdentityFilters(
-        query
-          .update(row)
-          .eq('user_id', userId)
-          .is('deleted_at', null),
-        row
-      )
-    : await query.insert(row);
-
-  if (error) {
-    console.warn(`${FILE_TAG} upsertUserRelatedKnownWord failed`, error);
-    throw error;
-  }
-};
-
-export const upsertUserRelatedKnownWords = async ({ user, ownerId, generation, relations } = {}) => {
-  if (!relations || relations.length === 0) {
+  if (existing) {
+    await updateExistingRelation();
     return;
   }
 
-  for (const relation of relations) {
-    await upsertUserRelatedKnownWord({ user, ownerId, generation, relation });
+  assertCloudWriteAllowed({ user, ownerId, generation });
+  const { error } = await supabase
+    .from(USER_VOCAB_RELATED_KNOWN_TABLE)
+    .insert(row);
+
+  if (!error) {
+    return;
   }
+
+  if (isDuplicateKeyError(error)) {
+    await updateExistingRelation();
+    return;
+  }
+
+  throw error;
 };
 
-export const softDeleteUserRelatedKnownWord = async ({ user, ownerId, generation, relation } = {}) => {
-  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
+const softDeleteUserRelatedKnownWordDirect = async ({ user, ownerId, generation, userId, relation }) => {
   const deletedAt = new Date().toISOString();
   assertCloudWriteAllowed({ user, ownerId, generation });
   const { error } = await applyRelatedKnownIdentityFilters(
@@ -748,8 +1104,70 @@ export const softDeleteUserRelatedKnownWord = async ({ user, ownerId, generation
   );
 
   if (error) {
-    console.warn(`${FILE_TAG} softDeleteUserRelatedKnownWord failed`, error);
     throw error;
+  }
+};
+
+export const upsertUserRelatedKnownWord = async ({ user, ownerId, generation, relation } = {}) => {
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
+  const row = toUserRelatedKnownWordRow(userId, relation);
+  if (!row.main_word || !row.related_word) {
+    return;
+  }
+
+  assertCloudWriteAllowed({ user, ownerId, generation });
+  try {
+    await pushUserLearningSync({ relatedKnownWords: [row] });
+  } catch (error) {
+    if (!isMissingRpcError(error, 'sync_user_learning_push')) {
+      throw error;
+    }
+
+    await upsertUserRelatedKnownWordRowDirect({ user, ownerId, generation, userId, row });
+  }
+};
+
+export const upsertUserRelatedKnownWords = async ({ user, ownerId, generation, relations } = {}) => {
+  if (!relations || relations.length === 0) {
+    return;
+  }
+
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
+  const rows = relations
+    .map((relation) => toUserRelatedKnownWordRow(userId, relation))
+    .filter((row) => row.main_word && row.related_word);
+  assertCloudWriteAllowed({ user, ownerId, generation });
+  try {
+    await pushUserLearningSync({ relatedKnownWords: rows });
+  } catch (error) {
+    if (!isMissingRpcError(error, 'sync_user_learning_push')) {
+      throw error;
+    }
+
+    for (const row of rows) {
+      await upsertUserRelatedKnownWordRowDirect({ user, ownerId, generation, userId, row });
+    }
+  }
+};
+
+export const softDeleteUserRelatedKnownWord = async ({ user, ownerId, generation, relation } = {}) => {
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
+  const deletedAt = new Date().toISOString();
+  assertCloudWriteAllowed({ user, ownerId, generation });
+  try {
+    await pushUserLearningSync({
+      relatedKnownWords: [{
+        ...toUserRelatedKnownWordRow(userId, relation),
+        deleted_at: deletedAt,
+        updated_at: deletedAt,
+      }],
+    });
+  } catch (error) {
+    if (!isMissingRpcError(error, 'sync_user_learning_push')) {
+      throw error;
+    }
+
+    await softDeleteUserRelatedKnownWordDirect({ user, ownerId, generation, userId, relation });
   }
 };
 
@@ -773,6 +1191,46 @@ export const softDeleteRelatedKnownWordsForMainWord = async ({ user, ownerId, ge
     console.warn(`${FILE_TAG} softDeleteRelatedKnownWordsForMainWord failed`, error);
     throw error;
   }
+};
+
+export const toggleCloudRelatedKnownWord = async ({
+  user,
+  ownerId,
+  generation,
+  entry,
+  relation,
+  known = false,
+} = {}) => {
+  const userId = assertCloudWriteAllowed({ user, ownerId, generation });
+  const entryRow = toUserVocabRow(userId, entry ?? {});
+  const relationRow = toUserRelatedKnownWordRow(userId, relation ?? {});
+
+  try {
+    assertCloudWriteAllowed({ user, ownerId, generation });
+    const { data, error } = await supabase.rpc('toggle_related_known_word', {
+      entry: entryRow,
+      relation: relationRow,
+      known,
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    return data;
+  } catch (error) {
+    if (!isMissingRpcError(error, 'toggle_related_known_word')) {
+      console.warn(`${FILE_TAG} toggleCloudRelatedKnownWord failed`, error);
+      throw error;
+    }
+  }
+
+  if (known) {
+    return softDeleteUserRelatedKnownWord({ user, ownerId, generation, relation });
+  }
+
+  await upsertUserVocabEntry({ user, ownerId, generation, entry });
+  return upsertUserRelatedKnownWord({ user, ownerId, generation, relation });
 };
 
 export default supabase;

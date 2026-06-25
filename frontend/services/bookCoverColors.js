@@ -104,11 +104,11 @@ const firstHex = (values) => {
 };
 
 const getBookTitle = (book) => (
-  String(book?.title || book?.originalTitle || book?.name || 'Untitled').trim()
+  String(book?.title || book?.originalTitle || book?.name || '').trim()
 );
 
 const getBookAuthor = (book) => (
-  String(book?.author || book?.originalAuthor || 'Unknown author').trim()
+  String(book?.author || book?.originalAuthor || '').trim()
 );
 
 const hashBookIdentity = (book) => {

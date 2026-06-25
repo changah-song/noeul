@@ -33,6 +33,19 @@ const FSRS_PARAMS = {
   maximumInterval: 365,
 };
 
+const normalizeIdentityText = (value) => {
+  if (value == null) {
+    return '';
+  }
+
+  return String(value).normalize('NFKC').replace(/\s+/g, ' ').trim();
+};
+
+const makeVocabDefinitionKey = (value) => {
+  const normalized = normalizeIdentityText(value).toLowerCase();
+  return normalized || null;
+};
+
 const resolveOwnerId = (value) => {
   if (typeof value === 'string') {
     const ownerId = value.trim();
@@ -203,6 +216,7 @@ export const createTable = () => {
           word  TEXT,
           hanja TEXT,
           def   TEXT,
+          def_key TEXT,
           level TEXT,
           related_known_words TEXT DEFAULT '[]',
           stability REAL DEFAULT 1.0,
@@ -234,6 +248,7 @@ export const createVocabContextTable = () => {
           word              TEXT NOT NULL,
           hanja             TEXT,
           def               TEXT,
+          def_key           TEXT,
           source_book_uri   TEXT,
           source_book_title TEXT,
           sentence          TEXT NOT NULL,
@@ -287,6 +302,10 @@ export const migrateVocabContextTable = async () => {
     alterations.push('ALTER TABLE vocab_contexts ADD COLUMN deleted_at TEXT');
   }
 
+  if (!columns.includes('def_key')) {
+    alterations.push('ALTER TABLE vocab_contexts ADD COLUMN def_key TEXT');
+  }
+
   await new Promise((resolve, reject) => {
     db.transaction(
       tx => {
@@ -297,8 +316,8 @@ export const migrateVocabContextTable = async () => {
         tx.executeSql(`UPDATE vocab_contexts SET seen_at = COALESCE(seen_at, CURRENT_TIMESTAMP)`);
         tx.executeSql(`UPDATE vocab_contexts SET updated_at = COALESCE(updated_at, seen_at, CURRENT_TIMESTAMP)`);
         tx.executeSql(
-          `CREATE INDEX IF NOT EXISTS idx_vocab_contexts_identity
-           ON vocab_contexts(language, word, hanja, def, source_book_uri, sentence)`
+          `CREATE INDEX IF NOT EXISTS idx_vocab_contexts_identity_key
+           ON vocab_contexts(language, word, hanja, def_key, source_book_uri, sentence)`
         );
       },
       (error) => {
@@ -398,6 +417,10 @@ export const migrateVocabTable = async () => {
     alterations.push(`ALTER TABLE vocab ADD COLUMN language TEXT DEFAULT 'ko'`);
   }
 
+  if (!columns.includes('def_key')) {
+    alterations.push('ALTER TABLE vocab ADD COLUMN def_key TEXT');
+  }
+
   await new Promise((resolve, reject) => {
     db.transaction(
       tx => {
@@ -416,6 +439,210 @@ export const migrateVocabTable = async () => {
       },
       (error) => {
         console.error('[Database] Error migrating vocab table:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+};
+
+const backfillVocabDefinitionKeys = async () => {
+  await new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        tx.executeSql(
+          'SELECT id, def FROM vocab WHERE def IS NOT NULL',
+          [],
+          (_, result) => {
+            const rows = result.rows._array ?? [];
+            rows.forEach((row) => {
+              tx.executeSql(
+                'UPDATE vocab SET def_key = ? WHERE id = ?',
+                [makeVocabDefinitionKey(row.def), row.id]
+              );
+            });
+          }
+        );
+      },
+      (error) => {
+        console.error('[Database] Error backfilling vocab definition keys:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+
+  await new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        tx.executeSql(
+          'SELECT id, def FROM vocab_contexts WHERE def IS NOT NULL',
+          [],
+          (_, result) => {
+            const rows = result.rows._array ?? [];
+            rows.forEach((row) => {
+              tx.executeSql(
+                'UPDATE vocab_contexts SET def_key = ? WHERE id = ?',
+                [makeVocabDefinitionKey(row.def), row.id]
+              );
+            });
+          }
+        );
+      },
+      (error) => {
+        console.error('[Database] Error backfilling vocab context definition keys:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+};
+
+const timestampValue = (value) => {
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? time : 0;
+};
+
+const earliestTimestamp = (values) => {
+  const sorted = values.filter(Boolean).sort((a, b) => timestampValue(a) - timestampValue(b));
+  return sorted[0] ?? null;
+};
+
+const latestTimestamp = (values) => {
+  const sorted = values.filter(Boolean).sort((a, b) => timestampValue(b) - timestampValue(a));
+  return sorted[0] ?? null;
+};
+
+const dedupeVocabDefinitionKeyRows = async () => {
+  await new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        tx.executeSql(
+          'SELECT * FROM vocab WHERE deleted_at IS NULL',
+          [],
+          (_, result) => {
+            const groups = new Map();
+            (result.rows._array ?? []).forEach((row) => {
+              const key = [
+                row.owner_id,
+                row.profile_id,
+                row.language,
+                normalizeIdentityText(row.word),
+                normalizeIdentityText(row.hanja),
+                row.def_key ?? makeVocabDefinitionKey(row.def) ?? '',
+              ].join('::');
+              const rows = groups.get(key) ?? [];
+              rows.push(row);
+              groups.set(key, rows);
+            });
+
+            const deletedAt = new Date().toISOString();
+            groups.forEach((rows) => {
+              if (rows.length < 2) {
+                return;
+              }
+
+              const sorted = [...rows].sort((a, b) => (
+                timestampValue(b.updated_at) - timestampValue(a.updated_at)
+                || timestampValue(b.created_at) - timestampValue(a.created_at)
+                || Number(b.id) - Number(a.id)
+              ));
+              const keeper = sorted[0];
+              const duplicates = sorted.slice(1);
+              const correctCount = rows.reduce((sum, row) => sum + (Number(row.correct_count) || 0), 0);
+              const wrongCount = rows.reduce((sum, row) => sum + (Number(row.wrong_count) || 0), 0);
+
+              tx.executeSql(
+                `UPDATE vocab
+                 SET correct_count = ?,
+                     wrong_count = ?,
+                     created_at = COALESCE(?, created_at),
+                     last_reviewed_at = COALESCE(?, last_reviewed_at),
+                     updated_at = ?
+                 WHERE id = ?`,
+                [
+                  Math.max(Number(keeper.correct_count) || 0, correctCount),
+                  Math.max(Number(keeper.wrong_count) || 0, wrongCount),
+                  earliestTimestamp(rows.map((row) => row.created_at)),
+                  latestTimestamp(rows.map((row) => row.last_reviewed_at)),
+                  deletedAt,
+                  keeper.id,
+                ]
+              );
+
+              duplicates.forEach((row) => {
+                tx.executeSql(
+                  'UPDATE vocab SET deleted_at = ?, updated_at = ? WHERE id = ?',
+                  [deletedAt, deletedAt, row.id]
+                );
+              });
+            });
+          }
+        );
+      },
+      (error) => {
+        console.error('[Database] Error deduping vocab definition keys:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+
+  await new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        tx.executeSql(
+          'SELECT * FROM vocab_contexts WHERE deleted_at IS NULL',
+          [],
+          (_, result) => {
+            const groups = new Map();
+            (result.rows._array ?? []).forEach((row) => {
+              const key = [
+                row.owner_id,
+                row.profile_id,
+                row.language,
+                normalizeIdentityText(row.word),
+                normalizeIdentityText(row.hanja),
+                row.def_key ?? makeVocabDefinitionKey(row.def) ?? '',
+                normalizeIdentityText(row.source_book_uri),
+                normalizeIdentityText(row.sentence),
+              ].join('::');
+              const rows = groups.get(key) ?? [];
+              rows.push(row);
+              groups.set(key, rows);
+            });
+
+            const deletedAt = new Date().toISOString();
+            groups.forEach((rows) => {
+              if (rows.length < 2) {
+                return;
+              }
+
+              const sorted = [...rows].sort((a, b) => (
+                timestampValue(b.updated_at) - timestampValue(a.updated_at)
+                || timestampValue(b.seen_at) - timestampValue(a.seen_at)
+                || Number(b.id) - Number(a.id)
+              ));
+              const keeper = sorted[0];
+              const latestSeenAt = latestTimestamp(rows.map((row) => row.seen_at));
+
+              tx.executeSql(
+                'UPDATE vocab_contexts SET seen_at = COALESCE(?, seen_at), updated_at = ? WHERE id = ?',
+                [latestSeenAt, deletedAt, keeper.id]
+              );
+
+              sorted.slice(1).forEach((row) => {
+                tx.executeSql(
+                  'UPDATE vocab_contexts SET deleted_at = ?, updated_at = ? WHERE id = ?',
+                  [deletedAt, deletedAt, row.id]
+                );
+              });
+            });
+          }
+        );
+      },
+      (error) => {
+        console.error('[Database] Error deduping vocab context definition keys:', error);
         reject(error);
       },
       () => resolve()
@@ -1082,12 +1309,20 @@ const createOwnerIndexes = () => {
     db.transaction(
       tx => {
         tx.executeSql(
-          `CREATE INDEX IF NOT EXISTS idx_vocab_owner_identity
-           ON vocab(owner_id, profile_id, language, word, hanja, def)`
+          `CREATE INDEX IF NOT EXISTS idx_vocab_owner_identity_key
+           ON vocab(owner_id, profile_id, language, word, hanja, def_key)`
         );
         tx.executeSql(
-          `CREATE INDEX IF NOT EXISTS idx_vocab_contexts_owner_identity
-           ON vocab_contexts(owner_id, profile_id, language, word, hanja, def, source_book_uri, sentence)`
+          `CREATE INDEX IF NOT EXISTS idx_vocab_owner_updated
+           ON vocab(owner_id, profile_id, updated_at)`
+        );
+        tx.executeSql(
+          `CREATE INDEX IF NOT EXISTS idx_vocab_contexts_owner_identity_key
+           ON vocab_contexts(owner_id, profile_id, language, word, hanja, def_key, source_book_uri, sentence)`
+        );
+        tx.executeSql(
+          `CREATE INDEX IF NOT EXISTS idx_vocab_contexts_owner_updated
+           ON vocab_contexts(owner_id, profile_id, updated_at)`
         );
         tx.executeSql(
           `CREATE INDEX IF NOT EXISTS idx_vocab_contexts_owner_vocab_seen
@@ -1611,6 +1846,8 @@ export const initAllTables = async () => {
   await migrateVocabTable();
   await createVocabContextTable();
   await migrateVocabContextTable();
+  await backfillVocabDefinitionKeys();
+  await dedupeVocabDefinitionKeyRows();
   await createDictionaryCacheTable();
   await migrateDictionaryCache();
   await migrateDictionaryCacheInterfaceLanguage();
@@ -1662,22 +1899,24 @@ export const insertData = (word, hanja, definition, levelOrOptions) => {
   const scopedOwnerId = resolveOwnerId(ownerId);
   const scopedProfileId = resolveProfileId(profileId ?? options.profile_id ?? options, language);
   const relatedKnownWordsJson = JSON.stringify(Array.isArray(relatedKnownWords) ? relatedKnownWords : []);
+  const definitionKey = makeVocabDefinitionKey(definition);
 
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
       tx.executeSql(
         `INSERT INTO vocab (
-          owner_id, profile_id, word, hanja, def, level, source_book_uri, source_book_title, is_favorite,
+          owner_id, profile_id, word, hanja, def, def_key, level, source_book_uri, source_book_title, is_favorite,
           priority, created_at, last_reviewed_at, next_review_at, correct_count, wrong_count,
           stability, difficulty, related_known_words, updated_at, deleted_at, language
         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           scopedOwnerId,
           scopedProfileId,
           word,
           hanja,
           definition,
+          definitionKey,
           level,
           sourceBookUri,
           sourceBookTitle,
@@ -1708,14 +1947,15 @@ export const insertData = (word, hanja, definition, levelOrOptions) => {
 export const vocabEntryExists = (word, hanja, definition, language = 'ko', options = {}) => {
   const ownerId = resolveOwnerId(options);
   const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, language);
+  const definitionKey = makeVocabDefinitionKey(definition);
 
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
       tx.executeSql(
         `SELECT COUNT(*) AS count
          FROM vocab
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
-        [ownerId, profileId, word, hanja ?? null, definition ?? null, language],
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
+        [ownerId, profileId, word, hanja ?? null, definitionKey, language],
         (_, result) => {
           const { count } = result.rows.item(0);
           resolve(count > 0);
@@ -1749,6 +1989,7 @@ export const upsertVocabEntryFromCloud = (entry, options = {}) => {
   const word = entry.word;
   const hanja = entry.hanja ?? null;
   const definition = entry.definition ?? entry.def ?? null;
+  const definitionKey = makeVocabDefinitionKey(definition);
   const level = entry.status ?? entry.level ?? 'unorganized';
   const language = entry.language ?? 'ko';
   const createdAt = entry.created_at ?? entry.createdAt ?? now;
@@ -1768,10 +2009,10 @@ export const upsertVocabEntryFromCloud = (entry, options = {}) => {
       tx.executeSql(
         `SELECT id
          FROM vocab
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ?
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ?
          ORDER BY id ASC
          LIMIT 1`,
-        [ownerId, profileId, word, hanja, definition, language],
+        [ownerId, profileId, word, hanja, definitionKey, language],
         (_, result) => {
           const params = [
             ownerId,
@@ -1779,6 +2020,7 @@ export const upsertVocabEntryFromCloud = (entry, options = {}) => {
             word,
             hanja,
             definition,
+            definitionKey,
             level,
             entry.source_book_uri ?? entry.sourceBookUri ?? null,
             entry.source_book_title ?? entry.sourceBookTitle ?? null,
@@ -1802,11 +2044,11 @@ export const upsertVocabEntryFromCloud = (entry, options = {}) => {
           if (result.rows.length === 0) {
             tx.executeSql(
               `INSERT INTO vocab (
-                owner_id, profile_id, word, hanja, def, level, source_book_uri, source_book_title, is_favorite,
+                owner_id, profile_id, word, hanja, def, def_key, level, source_book_uri, source_book_title, is_favorite,
                 priority, created_at, last_reviewed_at, next_review_at,
                 correct_count, wrong_count, stability, difficulty, related_known_words, updated_at, deleted_at, language
               )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               params,
               () => resolve(true),
               (_, insertError) => {
@@ -1825,6 +2067,7 @@ export const upsertVocabEntryFromCloud = (entry, options = {}) => {
                  profile_id = ?,
                  hanja = ?,
                  def = ?,
+                 def_key = ?,
                  level = ?,
                  source_book_uri = ?,
                  source_book_title = ?,
@@ -1848,6 +2091,7 @@ export const upsertVocabEntryFromCloud = (entry, options = {}) => {
               profileId,
               hanja,
               definition,
+              definitionKey,
               level,
               entry.source_book_uri ?? entry.sourceBookUri ?? null,
               entry.source_book_title ?? entry.sourceBookTitle ?? null,
@@ -1931,6 +2175,7 @@ const upsertContextForVocabRow = (tx, row, {
   const normalizedLanguage = language || row?.language || 'ko';
   const scopedOwnerId = resolveOwnerId(ownerId);
   const scopedProfileId = resolveProfileId(profileId ?? row?.profile_id ?? row, normalizedLanguage);
+  const definitionKey = row.def_key ?? makeVocabDefinitionKey(row.def);
   const buildContextRow = (id) => ({
     id,
     owner_id: scopedOwnerId,
@@ -1942,6 +2187,7 @@ const upsertContextForVocabRow = (tx, row, {
     hanja: row.hanja ?? null,
     def: row.def ?? null,
     definition: row.def ?? null,
+    def_key: definitionKey,
     source_book_uri: normalizedSourceUri,
     source_book_title: normalizedSourceTitle,
     sentence: cleanedSentence,
@@ -1959,7 +2205,7 @@ const upsertContextForVocabRow = (tx, row, {
        AND language = ?
        AND word = ?
        AND hanja IS ?
-       AND def IS ?
+       AND def_key IS ?
        AND sentence = ?
        AND COALESCE(source_book_uri, '') = COALESCE(?, '')
        AND deleted_at IS NULL
@@ -1971,7 +2217,7 @@ const upsertContextForVocabRow = (tx, row, {
       normalizedLanguage,
       row.word,
       row.hanja ?? null,
-      row.def ?? null,
+      definitionKey,
       cleanedSentence,
       normalizedSourceUri,
     ],
@@ -1984,10 +2230,11 @@ const upsertContextForVocabRow = (tx, row, {
                profile_id = ?,
                seen_at = ?,
                updated_at = ?,
+               def_key = ?,
                source_book_title = COALESCE(?, source_book_title),
                language = ?
            WHERE id = ?`,
-          [row.id, scopedProfileId, seenAt, updatedAt, normalizedSourceTitle, normalizedLanguage, contextId],
+          [row.id, scopedProfileId, seenAt, updatedAt, definitionKey, normalizedSourceTitle, normalizedLanguage, contextId],
           () => resolve(buildContextRow(contextId)),
           (_, updateError) => {
             console.error('[Database] Error updating vocab context:', updateError);
@@ -2000,10 +2247,10 @@ const upsertContextForVocabRow = (tx, row, {
 
       tx.executeSql(
         `INSERT INTO vocab_contexts (
-          owner_id, profile_id, vocab_id, word, hanja, def, source_book_uri, source_book_title, sentence,
+          owner_id, profile_id, vocab_id, word, hanja, def, def_key, source_book_uri, source_book_title, sentence,
           seen_at, language, updated_at, deleted_at
         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           scopedOwnerId,
           scopedProfileId,
@@ -2011,6 +2258,7 @@ const upsertContextForVocabRow = (tx, row, {
           row.word,
           row.hanja ?? null,
           row.def ?? null,
+          definitionKey,
           normalizedSourceUri,
           normalizedSourceTitle,
           cleanedSentence,
@@ -2052,6 +2300,7 @@ export const recordVocabContext = ({
   const cleanedSentence = cleanValue(sentence);
   const scopedOwnerId = resolveOwnerId(ownerId);
   const scopedProfileId = resolveProfileId(profileId, language);
+  const definitionKey = makeVocabDefinitionKey(definition);
 
   return new Promise((resolve, reject) => {
     if (!cleanedWord || !cleanedSentence) {
@@ -2061,12 +2310,12 @@ export const recordVocabContext = ({
 
     db.transaction(tx => {
       tx.executeSql(
-        `SELECT id, owner_id, profile_id, word, hanja, def, level, language
+        `SELECT id, owner_id, profile_id, word, hanja, def, def_key, level, language
          FROM vocab
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL
          ORDER BY id ASC
          LIMIT 1`,
-        [scopedOwnerId, scopedProfileId, cleanedWord, hanja ?? null, definition ?? null, language],
+        [scopedOwnerId, scopedProfileId, cleanedWord, hanja ?? null, definitionKey, language],
         (_, result) => {
           if (result.rows.length === 0) {
             resolve(false);
@@ -2137,7 +2386,7 @@ export const recordVocabContextForSurface = ({
       };
 
       tx.executeSql(
-        `SELECT id, owner_id, profile_id, word, hanja, def, level, language
+        `SELECT id, owner_id, profile_id, word, hanja, def, def_key, level, language
          FROM vocab
          WHERE owner_id = ? AND profile_id = ? AND word = ? AND language = ? AND deleted_at IS NULL
          ORDER BY id ASC`,
@@ -2194,6 +2443,7 @@ export const getVocabContexts = (word, hanja, definition, limit = 12, language =
   const cleanedWord = cleanValue(word);
   const ownerId = resolveOwnerId(options);
   const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, language);
+  const definitionKey = makeVocabDefinitionKey(definition);
 
   return new Promise((resolve, reject) => {
     if (!cleanedWord) {
@@ -2205,10 +2455,10 @@ export const getVocabContexts = (word, hanja, definition, limit = 12, language =
       tx.executeSql(
         `SELECT id
          FROM vocab
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL
          ORDER BY id ASC
          LIMIT 1`,
-        [ownerId, profileId, cleanedWord, hanja ?? null, definition ?? null, language],
+        [ownerId, profileId, cleanedWord, hanja ?? null, definitionKey, language],
         (_, vocabResult) => {
           if (vocabResult.rows.length === 0) {
             resolve([]);
@@ -2252,19 +2502,31 @@ export const getVocabContexts = (word, hanja, definition, limit = 12, language =
 };
 
 export const getAllVocabContexts = (options = {}) => {
-  const { includeDeleted = false } = options;
+  const { includeDeleted = false, updatedAfter = null } = options;
   const ownerId = resolveOwnerId(options);
   const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, options.language ?? 'ko');
 
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
+      const whereClauses = ['owner_id = ?', 'profile_id = ?'];
+      const params = [ownerId, profileId];
+
+      if (!includeDeleted) {
+        whereClauses.push('deleted_at IS NULL');
+      }
+
+      if (updatedAfter) {
+        whereClauses.push('updated_at IS NOT NULL AND julianday(updated_at) > julianday(?)');
+        params.push(updatedAfter);
+      }
+
       tx.executeSql(
         `SELECT id, vocab_id, word, hanja, def, source_book_uri, source_book_title,
                 sentence, seen_at, language, updated_at, deleted_at
          FROM vocab_contexts
-         WHERE owner_id = ? AND profile_id = ?${includeDeleted ? '' : ' AND deleted_at IS NULL'}
+         WHERE ${whereClauses.join(' AND ')}
          ORDER BY datetime(seen_at) DESC, id DESC`,
-        [ownerId, profileId],
+        params,
         (_, result) => resolve(result.rows._array ?? []),
         (_, error) => {
           console.error('[Database] Error reading all vocab contexts:', error);
@@ -2281,6 +2543,7 @@ export const insertVocabContextIfMissing = (context, options = {}) => {
   const cleanedSentence = cleanValue(context?.sentence);
   const language = context?.language ?? 'ko';
   const definition = context?.def ?? context?.definition ?? null;
+  const definitionKey = makeVocabDefinitionKey(definition);
   const hanja = context?.hanja ?? null;
   const seenAt = context?.seen_at ?? context?.seenAt ?? new Date().toISOString();
   const updatedAt = context?.updated_at ?? context?.updatedAt ?? seenAt;
@@ -2295,12 +2558,12 @@ export const insertVocabContextIfMissing = (context, options = {}) => {
 
     db.transaction(tx => {
       tx.executeSql(
-        `SELECT id, owner_id, profile_id, word, hanja, def, level, language
+        `SELECT id, owner_id, profile_id, word, hanja, def, def_key, level, language
          FROM vocab
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL
          ORDER BY id ASC
          LIMIT 1`,
-        [ownerId, profileId, cleanedWord, hanja, definition, language],
+        [ownerId, profileId, cleanedWord, hanja, definitionKey, language],
         (_, result) => {
           if (result.rows.length === 0) {
             resolve(false);
@@ -2332,14 +2595,15 @@ export const softDeleteVocabContextsForWord = (word, hanja, definition, language
   const deletedAt = nowIso();
   const ownerId = resolveOwnerId(options);
   const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, language);
+  const definitionKey = makeVocabDefinitionKey(definition);
 
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
       tx.executeSql(
         `UPDATE vocab_contexts
          SET deleted_at = ?, updated_at = ?
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
-        [deletedAt, deletedAt, ownerId, profileId, word, hanja ?? null, definition ?? null, language],
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
+        [deletedAt, deletedAt, ownerId, profileId, word, hanja ?? null, definitionKey, language],
         (_, result) => resolve(result.rowsAffected ?? 0),
         (_, error) => {
           console.error(`[Database] Error soft-deleting vocab contexts for "${word}":`, error);
@@ -2402,6 +2666,7 @@ export const addRelatedKnownWord = (word, relatedWord, options = {}) => {
   );
   const mainHanja = options.mainHanja ?? mainWord.hanja ?? null;
   const mainDefinition = options.mainDefinition ?? mainWord.definition ?? null;
+  const mainDefinitionKey = makeVocabDefinitionKey(mainDefinition);
   const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, language);
 
   return new Promise((resolve, reject) => {
@@ -2410,10 +2675,10 @@ export const addRelatedKnownWord = (word, relatedWord, options = {}) => {
         shouldScopeToEntry
           ? `SELECT id, related_known_words
              FROM vocab
-             WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`
+             WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL`
           : 'SELECT id, related_known_words FROM vocab WHERE owner_id = ? AND profile_id = ? AND word = ? AND language = ? AND deleted_at IS NULL',
         shouldScopeToEntry
-          ? [scopedOwnerId, profileId, word, mainHanja, mainDefinition, language]
+          ? [scopedOwnerId, profileId, word, mainHanja, mainDefinitionKey, language]
           : [scopedOwnerId, profileId, word, language],
         (_, result) => {
           if (result.rows.length === 0) {
@@ -2425,17 +2690,18 @@ export const addRelatedKnownWord = (word, relatedWord, options = {}) => {
             const relatedKnownWordsJson = JSON.stringify([normalizedEntry]);
             tx.executeSql(
               `INSERT INTO vocab (
-                owner_id, profile_id, word, hanja, def, level, source_book_uri, source_book_title, is_favorite,
+                owner_id, profile_id, word, hanja, def, def_key, level, source_book_uri, source_book_title, is_favorite,
                 priority, created_at, last_reviewed_at, next_review_at, correct_count, wrong_count,
                 stability, difficulty, related_known_words, updated_at, deleted_at, language
               )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
               [
                 scopedOwnerId,
                 profileId,
                 word,
                 mainWord.hanja ?? null,
                 mainWord.definition ?? null,
+                makeVocabDefinitionKey(mainWord.definition),
                 mainWord.level ?? 'unorganized',
                 mainWord.sourceBookUri ?? null,
                 mainWord.sourceBookTitle ?? null,
@@ -2501,6 +2767,7 @@ export const removeRelatedKnownWord = (word, relatedWord, language = 'ko', optio
   );
   const mainHanja = options.mainHanja ?? null;
   const mainDefinition = options.mainDefinition ?? null;
+  const mainDefinitionKey = makeVocabDefinitionKey(mainDefinition);
 
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
@@ -2508,10 +2775,10 @@ export const removeRelatedKnownWord = (word, relatedWord, language = 'ko', optio
         shouldScopeToEntry
           ? `SELECT id, related_known_words
              FROM vocab
-             WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`
+             WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL`
           : 'SELECT id, related_known_words FROM vocab WHERE owner_id = ? AND profile_id = ? AND word = ? AND language = ? AND deleted_at IS NULL',
         shouldScopeToEntry
-          ? [ownerId, profileId, word, mainHanja, mainDefinition, language]
+          ? [ownerId, profileId, word, mainHanja, mainDefinitionKey, language]
           : [ownerId, profileId, word, language],
         (_, result) => {
           if (result.rows.length === 0) {
@@ -2544,21 +2811,32 @@ export const removeRelatedKnownWord = (word, relatedWord, language = 'ko', optio
 };
 
 export const getAllRelatedKnownWords = (options = {}) => {
+  const { updatedAfter = null } = options;
   const ownerId = resolveOwnerId(options);
   const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, options.language ?? 'ko');
 
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
+      const whereClauses = [
+        'owner_id = ?',
+        'profile_id = ?',
+        'related_known_words IS NOT NULL',
+        "related_known_words != ''",
+        "related_known_words != '[]'",
+        'deleted_at IS NULL',
+      ];
+      const params = [ownerId, profileId];
+
+      if (updatedAfter) {
+        whereClauses.push('updated_at IS NOT NULL AND julianday(updated_at) > julianday(?)');
+        params.push(updatedAfter);
+      }
+
       tx.executeSql(
         `SELECT word, hanja, def, related_known_words, language, updated_at
          FROM vocab
-         WHERE owner_id = ?
-           AND profile_id = ?
-           AND related_known_words IS NOT NULL
-           AND related_known_words != ''
-           AND related_known_words != '[]'
-           AND deleted_at IS NULL`,
-        [ownerId, profileId],
+         WHERE ${whereClauses.join(' AND ')}`,
+        params,
         (_, result) => {
           const relations = [];
           const rows = result.rows._array ?? [];
@@ -2672,6 +2950,7 @@ export const removeRelatedKnownWordForEntry = ({
 export const updateLevel = (word, hanja, definition, newLevel, language = 'ko', options = {}) => {
   const ownerId = resolveOwnerId(options);
   const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, language);
+  const definitionKey = makeVocabDefinitionKey(definition);
 
   return new Promise((resolve, reject) => {
     const updatedAt = nowIso();
@@ -2679,8 +2958,8 @@ export const updateLevel = (word, hanja, definition, newLevel, language = 'ko', 
       tx.executeSql(
         `UPDATE vocab
          SET level = ?, updated_at = ?
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
-        [newLevel, updatedAt, ownerId, profileId, word, hanja, definition, language],
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
+        [newLevel, updatedAt, ownerId, profileId, word, hanja, definitionKey, language],
         () => resolve(),
         (_, error) => {
           console.error(`[Database] Error updating level for "${word}":`, error);
@@ -2694,6 +2973,7 @@ export const updateLevel = (word, hanja, definition, newLevel, language = 'ko', 
 export const updateFavorite = (word, hanja, definition, isFavorite, language = 'ko', options = {}) => {
   const ownerId = resolveOwnerId(options);
   const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, language);
+  const definitionKey = makeVocabDefinitionKey(definition);
 
   return new Promise((resolve, reject) => {
     const updatedAt = nowIso();
@@ -2701,8 +2981,8 @@ export const updateFavorite = (word, hanja, definition, isFavorite, language = '
       tx.executeSql(
         `UPDATE vocab
          SET is_favorite = ?, updated_at = ?
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
-        [isFavorite ? 1 : 0, updatedAt, ownerId, profileId, word, hanja, definition, language],
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
+        [isFavorite ? 1 : 0, updatedAt, ownerId, profileId, word, hanja, definitionKey, language],
         () => resolve(),
         (_, error) => {
           console.error(`[Database] Error updating favorite for "${word}":`, error);
@@ -2716,6 +2996,7 @@ export const updateFavorite = (word, hanja, definition, isFavorite, language = '
 export const updatePriority = (word, hanja, definition, priority, language = 'ko', options = {}) => {
   const ownerId = resolveOwnerId(options);
   const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, language);
+  const definitionKey = makeVocabDefinitionKey(definition);
 
   return new Promise((resolve, reject) => {
     const updatedAt = nowIso();
@@ -2723,8 +3004,8 @@ export const updatePriority = (word, hanja, definition, priority, language = 'ko
       tx.executeSql(
         `UPDATE vocab
          SET priority = ?, updated_at = ?
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
-        [priority, updatedAt, ownerId, profileId, word, hanja, definition, language],
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
+        [priority, updatedAt, ownerId, profileId, word, hanja, definitionKey, language],
         () => resolve(),
         (_, error) => {
           console.error(`[Database] Error updating priority for "${word}":`, error);
@@ -2807,6 +3088,7 @@ export const fsrsSchedule = (wordData = {}, outcome, daysSinceLastReview) => {
 export const recordReviewOutcome = (word, hanja, definition, _currentLevel, outcome, language = 'ko', options = {}) => {
   const ownerId = resolveOwnerId(options);
   const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, language);
+  const definitionKey = makeVocabDefinitionKey(definition);
   const wordData = options.wordData ?? {};
   const lastReviewedAt = wordData.last_reviewed_at ?? wordData.lastReviewedAt;
   const lastReviewedTimestamp = new Date(lastReviewedAt).getTime();
@@ -2837,7 +3119,7 @@ export const recordReviewOutcome = (word, hanja, definition, _currentLevel, outc
              correct_count = COALESCE(correct_count, 0) + ?,
              wrong_count = COALESCE(wrong_count, 0) + ?,
              updated_at = ?
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
         [
           levelMap[outcome],
           reviewedAt,
@@ -2851,7 +3133,7 @@ export const recordReviewOutcome = (word, hanja, definition, _currentLevel, outc
           profileId,
           word,
           hanja,
-          definition,
+          definitionKey,
           language,
         ],
         () => resolve({
@@ -2871,6 +3153,7 @@ export const recordReviewOutcome = (word, hanja, definition, _currentLevel, outc
 export const removeData = (word, hanja, definition, language = 'ko', options = {}) => {
   const ownerId = resolveOwnerId(options);
   const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, language);
+  const definitionKey = makeVocabDefinitionKey(definition);
 
   return new Promise((resolve, reject) => {
     const deletedAt = nowIso();
@@ -2878,8 +3161,8 @@ export const removeData = (word, hanja, definition, language = 'ko', options = {
       tx.executeSql(
         `UPDATE vocab_contexts
          SET deleted_at = ?, updated_at = ?
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
-        [deletedAt, deletedAt, ownerId, profileId, word, hanja, definition, language],
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
+        [deletedAt, deletedAt, ownerId, profileId, word, hanja, definitionKey, language],
         () => {},
         (_, error) => {
           console.error(`[Database] Error soft-deleting vocab contexts for "${word}":`, error);
@@ -2890,8 +3173,8 @@ export const removeData = (word, hanja, definition, language = 'ko', options = {
       tx.executeSql(
         `UPDATE vocab
          SET deleted_at = ?, updated_at = ?
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def IS ? AND language = ? AND deleted_at IS NULL`,
-        [deletedAt, deletedAt, ownerId, profileId, word, hanja, definition, language],
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
+        [deletedAt, deletedAt, ownerId, profileId, word, hanja, definitionKey, language],
         (_, result) => resolve(result),
         (_, error) => {
           console.error(`[Database] Error removing vocab word "${word}":`, error);
@@ -2937,7 +3220,7 @@ export const viewData = (options = {}) => {
   const normalizedOptions = typeof options === 'string' || options === null
     ? { language: options }
     : options;
-  const { includeDeleted = false, language = null } = normalizedOptions;
+  const { includeDeleted = false, language = null, updatedAfter = null } = normalizedOptions;
   const ownerId = resolveOwnerId(normalizedOptions);
   const profileId = resolveProfileId(normalizedOptions, language ?? 'ko');
 
@@ -2953,6 +3236,11 @@ export const viewData = (options = {}) => {
       if (language != null) {
         whereClauses.push('language = ?');
         params.push(language);
+      }
+
+      if (updatedAfter) {
+        whereClauses.push('updated_at IS NOT NULL AND julianday(updated_at) > julianday(?)');
+        params.push(updatedAfter);
       }
 
       tx.executeSql(

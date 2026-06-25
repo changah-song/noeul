@@ -445,7 +445,7 @@ const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGe
             <Feather name="x" size={28} color={colors.text} />
           </TouchableOpacity>
         </View>
-        <Text style={styles.deckTitle}>FLASHCARD</Text>
+        <Text style={styles.deckTitle}>{t('learn.flashcard')}</Text>
         <View style={[styles.headerSide, styles.headerRight]}>
           <Text style={styles.progress}>{index + 1} / {total}</Text>
           <TouchableOpacity
@@ -494,7 +494,7 @@ const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGe
                 <Text selectable style={styles.word}>{vocab.word}</Text>
                 {renderCardDetails('front')}
               </ScrollView>
-              <Text style={styles.flipHint}>TAP TO FLIP</Text>
+              <Text style={styles.flipHint}>{t('learn.tapToFlip')}</Text>
             </>
           ) : (
             <>
@@ -515,7 +515,7 @@ const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGe
       <View style={styles.actions}>
         {!isFlipped ? (
           <TouchableOpacity onPress={() => setIsFlipped(true)} style={styles.showAnswerButton}>
-            <Text style={styles.showAnswerText}>SHOW ANSWER</Text>
+            <Text style={styles.showAnswerText}>{t('learn.showAnswer')}</Text>
           </TouchableOpacity>
         ) : STATUS_ACTIONS.map((action) => (
           <TouchableOpacity

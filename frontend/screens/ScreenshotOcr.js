@@ -40,6 +40,25 @@ const OCR_MODES = [
     { id: 'words', labelKey: 'ocr.words' },
 ];
 
+const OVERLAY_STATUS_LABEL_KEYS = {
+    overlay_permission_granted: 'ocr.status.overlayPermissionGranted',
+    overlay_permission_denied: 'ocr.status.overlayPermissionDenied',
+    screen_capture_requested: 'ocr.status.screenCaptureRequested',
+    screen_capture_denied: 'ocr.status.screenCaptureDenied',
+    screen_capture_start_failed: 'ocr.status.screenCaptureStartFailed',
+    ocr_cancelled: 'ocr.status.ocrCancelled',
+};
+
+const formatOverlayStatus = (status, t) => {
+    const normalized = String(status || '').trim();
+    if (!normalized) {
+        return '';
+    }
+
+    const labelKey = OVERLAY_STATUS_LABEL_KEYS[normalized];
+    return labelKey ? t(labelKey) : normalized.replace(/_/g, ' ');
+};
+
 const OCR_SOURCE_BOOK = {
     uri: null,
     title: 'Screenshot OCR',
@@ -564,7 +583,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
                 ? addOverlayStatusListener((status) => {
                     mergeFloatingStatus(status);
                     if (status?.status) {
-                        setFloatingMessage(String(status.status).replace(/_/g, ' '));
+                        setFloatingMessage(formatOverlayStatus(status.status, t));
                     }
                 })
                 : null;

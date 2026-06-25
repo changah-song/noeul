@@ -1,5 +1,7 @@
 import { Platform } from 'react-native';
 import { requireNativeModule } from 'expo-modules-core';
+import { translate } from '../../../i18n/translations';
+import { getRuntimeInterfaceLanguage } from '../../../services/interfaceLanguage';
 
 const NativeScreenOcr = Platform.OS === 'android'
     ? requireNativeModule('ScreenOcr')
@@ -7,7 +9,9 @@ const NativeScreenOcr = Platform.OS === 'android'
 
 export const recognizeImage = (uri) => {
     if (!NativeScreenOcr) {
-        return Promise.reject(new Error('Screenshot OCR is only available on Android.'));
+        return Promise.reject(new Error(
+            translate(getRuntimeInterfaceLanguage(), 'ocr.screenshotAndroidOnly')
+        ));
     }
 
     return NativeScreenOcr.recognizeImage(uri);

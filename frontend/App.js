@@ -47,7 +47,8 @@ import {
 import { getLegacyMigrationStatus } from './services/localOwnerMigration';
 import { applyOwnershipDecision } from './services/localOwnershipDecisions';
 import { hasLocalUserData } from './services/localUserData';
-import { loadRuntimeInterfaceLanguage } from './services/interfaceLanguage';
+import { getRuntimeInterfaceLanguage, loadRuntimeInterfaceLanguage } from './services/interfaceLanguage';
+import { translate } from './i18n/translations';
 import { initializeOverlayLookupBridge } from './services/overlayLookup';
 import { syncUserDataFromCloud } from './services/userDataSync';
 import { subscribeUserDataSyncRequests } from './services/userDataSyncQueue';
@@ -364,8 +365,8 @@ function AppContent() {
             });
         } catch (error) {
             Alert.alert(
-                'Local data decision failed',
-                error?.message || 'Could not resolve local data ownership. Cloud sync remains paused.'
+                translate(getRuntimeInterfaceLanguage(), 'localData.decisionFailedTitle'),
+                error?.message || translate(getRuntimeInterfaceLanguage(), 'localData.decisionFailedBody')
             );
         } finally {
             setLocalDataDecisionBusy(false);

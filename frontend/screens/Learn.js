@@ -32,10 +32,9 @@ import {
 } from '../services/Database';
 import { incrementWordsStudied } from '../services/dailyProgress';
 import {
-  softDeleteUserRelatedKnownWord,
+  recordCloudVocabReview,
   supabase,
-  upsertUserRelatedKnownWord,
-  upsertUserVocabEntry,
+  toggleCloudRelatedKnownWord,
 } from '../services/supabase';
 import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
 import { requestUserDataSync } from '../services/userDataSyncQueue';
@@ -627,7 +626,7 @@ const VocabularyRow = ({ word, onPress, onLongPress, selectionMode = false, sele
 
 const DetailHanjaPanel = ({ word, onKnownWordsChange }) => {
   const { interfaceLanguage } = useAppContext();
-  const { activeOwnerId, syncGeneration } = useLocalOwner();
+  const { activeOwnerId, syncGeneration, syncPaused } = useLocalOwner();
   const { t } = useTranslation();
   const { colors, styles } = useLearnTheme();
   const characters = useMemo(() => getHanjaCharacters(word?.hanja), [word?.hanja]);
@@ -822,53 +821,38 @@ const DetailHanjaPanel = ({ word, onKnownWordsChange }) => {
       const generation = syncGeneration;
       supabase.auth.getUser()
         .then(({ data: { user } }) => {
-          if (!user || ownerId !== user.id || !isCurrentSyncGeneration(generation)) {
+          if (!user || syncPaused || ownerId !== user.id || !isCurrentSyncGeneration(generation)) {
             return null;
           }
 
-          if (known) {
-            return softDeleteUserRelatedKnownWord({
-              user,
-              ownerId,
-              generation,
-              relation,
-            });
-          }
-
-          return Promise.all([
-            upsertUserVocabEntry({
-              user,
-              ownerId,
-              generation,
-              entry: {
-                word: sourceWord,
-                hanja: sourceWordDetails.hanja,
-                definition: sourceWordDetails.definition,
-                level: sourceWordDetails.level,
-                status: sourceWordDetails.level,
-                sourceBookUri: sourceWordDetails.sourceBookUri,
-                sourceBookTitle: sourceWordDetails.sourceBookTitle,
-                contextSentence: sourceWordDetails.contextSentence,
-                isFavorite: sourceWordDetails.isFavorite,
-                priority: sourceWordDetails.priority,
-                createdAt: sourceWordDetails.createdAt,
-                updatedAt: markedAt,
-                lastReviewedAt: sourceWordDetails.lastReviewedAt,
-                nextReviewAt: sourceWordDetails.nextReviewAt,
-                correctCount: sourceWordDetails.correctCount,
-                wrongCount: sourceWordDetails.wrongCount,
-                stability: sourceWordDetails.stability,
-                difficulty: sourceWordDetails.difficulty,
-                language,
-              },
-            }),
-            upsertUserRelatedKnownWord({
-              user,
-              ownerId,
-              generation,
-              relation,
-            }),
-          ]);
+          return toggleCloudRelatedKnownWord({
+            user,
+            ownerId,
+            generation,
+            known,
+            relation,
+            entry: {
+              word: sourceWord,
+              hanja: sourceWordDetails.hanja,
+              definition: sourceWordDetails.definition,
+              level: sourceWordDetails.level,
+              status: sourceWordDetails.level,
+              sourceBookUri: sourceWordDetails.sourceBookUri,
+              sourceBookTitle: sourceWordDetails.sourceBookTitle,
+              contextSentence: sourceWordDetails.contextSentence,
+              isFavorite: sourceWordDetails.isFavorite,
+              priority: sourceWordDetails.priority,
+              createdAt: sourceWordDetails.createdAt,
+              updatedAt: markedAt,
+              lastReviewedAt: sourceWordDetails.lastReviewedAt,
+              nextReviewAt: sourceWordDetails.nextReviewAt,
+              correctCount: sourceWordDetails.correctCount,
+              wrongCount: sourceWordDetails.wrongCount,
+              stability: sourceWordDetails.stability,
+              difficulty: sourceWordDetails.difficulty,
+              language,
+            },
+          });
         })
         .catch((syncError) => {
           console.warn(`[Learn] related known word cloud sync failed for "${sourceWord}":`, syncError?.message ?? syncError);
@@ -1030,7 +1014,7 @@ const WordDetailModal = ({
       <View style={styles.detailHeader}>
         <TouchableOpacity onPress={onClose} style={styles.detailBackButton}>
           <MaterialIcons name="arrow-back" size={28} color={colors.text} />
-          <Text style={styles.detailBackLabel}>VOCABULARY</Text>
+          <Text style={styles.detailBackLabel}>{t('learn.vocabulary')}</Text>
         </TouchableOpacity>
         <TouchableOpacity onPress={onToggleFavorite} style={styles.detailFavoriteButton}>
           <MaterialIcons
@@ -1119,7 +1103,7 @@ const WordDetailModal = ({
 const Learn = ({ navigation, user }) => {
   const { t } = useTranslation();
   const { targetLanguage } = useAppContext();
-  const { activeOwnerId, syncGeneration } = useLocalOwner();
+  const { activeOwnerId, syncGeneration, syncPaused } = useLocalOwner();
   const { colors } = useTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const proficiencyLevels = useMemo(() => createProficiencyLevels(colors), [colors]);
@@ -1388,16 +1372,43 @@ const Learn = ({ navigation, user }) => {
     const updatedWords = await fetchWords();
     const updatedWord = updatedWords.find((candidate) => sameWord(candidate, currentWord));
     if (updatedWord) {
-      await syncFieldsToCloud(updatedWord, {
-        status: updatedWord.level,
-        last_reviewed_at: updatedWord.last_reviewed_at,
-        next_review_at: updatedWord.next_review_at,
-        stability: updatedWord.stability,
-        difficulty: updatedWord.difficulty,
-        correct_count: updatedWord.correct_count,
-        wrong_count: updatedWord.wrong_count,
-        updated_at: updatedWord.updated_at ?? new Date().toISOString(),
-      });
+      const reviewedAt = updatedWord.last_reviewed_at ?? updatedWord.updated_at ?? new Date().toISOString();
+      let syncedReview = false;
+
+      if (
+        user?.id
+        && !syncPaused
+        && activeOwnerId === user.id
+        && isCurrentSyncGeneration(syncGeneration)
+      ) {
+        try {
+          await recordCloudVocabReview({
+            user,
+            ownerId: activeOwnerId,
+            generation: syncGeneration,
+            entry: updatedWord,
+            review: {
+              outcome: status,
+              next_status: updatedWord.level,
+              reviewed_at: reviewedAt,
+              last_reviewed_at: reviewedAt,
+              next_review_at: updatedWord.next_review_at,
+              stability: updatedWord.stability,
+              difficulty: updatedWord.difficulty,
+              correct_count: updatedWord.correct_count,
+              wrong_count: updatedWord.wrong_count,
+              updated_at: updatedWord.updated_at ?? reviewedAt,
+            },
+          });
+          syncedReview = true;
+        } catch (error) {
+          console.warn('[Learn] Cloud review sync failed; queueing full vocab sync:', error?.message ?? error);
+        }
+      }
+
+      if (!syncedReview) {
+        await syncFieldsToCloud(updatedWord);
+      }
     }
 
     if (practiceIndex >= practiceDeck.words.length - 1) {
@@ -1406,7 +1417,17 @@ const Learn = ({ navigation, user }) => {
     }
 
     setPracticeIndex((prev) => prev + 1);
-  }, [activeOwnerId, closePractice, fetchWords, practiceDeck, practiceIndex, syncFieldsToCloud]);
+  }, [
+    activeOwnerId,
+    closePractice,
+    fetchWords,
+    practiceDeck,
+    practiceIndex,
+    syncFieldsToCloud,
+    syncGeneration,
+    syncPaused,
+    user,
+  ]);
 
   if (selectedWord) {
     return (
@@ -1427,7 +1448,7 @@ const Learn = ({ navigation, user }) => {
     <Screen scroll backgroundColor={colors.bgPage} contentContainerStyle={styles.content}>
       <View style={styles.appTopBar}>
         <View style={styles.appTopSide} />
-        <Text style={styles.appTopTitle}>VOCABULARY</Text>
+        <Text style={styles.appTopTitle}>{t('learn.vocabulary')}</Text>
         <View style={styles.appTopSide} />
       </View>
 
@@ -1459,7 +1480,7 @@ const Learn = ({ navigation, user }) => {
               styles.reviewButtonText,
               reviewDeck.length === 0 && styles.reviewButtonTextDisabled,
             ]}>
-              {reviewDeck.length > 0 ? `REVIEW ${reviewDeck.length} DUE` : t('learn.noReviews')}
+              {reviewDeck.length > 0 ? t('learn.reviewDueCount', { count: reviewDeck.length }) : t('learn.noReviews')}
             </Text>
           </TouchableOpacity>
           {words.length > 0 ? (

@@ -62,17 +62,17 @@ class FloatingWidgetController(
       return true
     }
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-      throw IllegalStateException("Floating OCR requires Android 8 or newer")
+      throw IllegalStateException(OverlayText.t("floatingOcrRequiresAndroid8"))
     }
     if (!Settings.canDrawOverlays(context)) {
-      throw IllegalStateException("Overlay permission is not granted")
+      throw IllegalStateException(OverlayText.t("overlayPermissionNotGranted"))
     }
 
     val visualSize = dp(56f).toInt()
     val viewSize = dp(72f).toInt()
     val visualInset = (viewSize - visualSize) / 2
     val view = OcrBubbleView(context, density).apply {
-      contentDescription = "Floating OCR active"
+      contentDescription = OverlayText.t("floatingOcrActive")
       setRunning(bubbleRunning)
     }
     val displayMetrics = context.resources.displayMetrics
@@ -177,10 +177,10 @@ class FloatingWidgetController(
 
   private fun showOrUpdateResultOverlay(result: SerializedOcrResult?): Boolean {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-      throw IllegalStateException("Floating OCR requires Android 8 or newer")
+      throw IllegalStateException(OverlayText.t("floatingOcrRequiresAndroid8"))
     }
     if (!Settings.canDrawOverlays(context)) {
-      throw IllegalStateException("Overlay permission is not granted")
+      throw IllegalStateException(OverlayText.t("overlayPermissionNotGranted"))
     }
 
     resultOverlayView?.let { view ->
@@ -336,6 +336,13 @@ class FloatingWidgetController(
     hideBubble()
   }
 
+  fun handleInterfaceLanguageChanged() {
+    (bubbleView as? OcrBubbleView)?.refreshContentDescription()
+    dismissTargetView?.refreshContentDescription()
+    dismissTargetView?.invalidate()
+    resultOverlayView?.invalidate()
+  }
+
   private fun attachDragHandler(view: View, params: WindowManager.LayoutParams) {
     val bubble = view as? OcrBubbleView
     var downRawX = 0f
@@ -426,7 +433,7 @@ class FloatingWidgetController(
     val targetWidth = dismissTargetWindowWidth()
     val targetHeight = dismissTargetWindowHeight()
     val view = dismissTargetView ?: DismissTargetView(context, density).apply {
-      contentDescription = "Dismiss floating OCR"
+      refreshContentDescription()
       alpha = 0f
       translationY = dp(18f)
     }.also { newView ->
@@ -564,8 +571,16 @@ private class OcrBubbleView(
     }
 
     running = nextRunning
-    contentDescription = if (running) "Cancel floating OCR scan" else "Floating OCR active"
+    refreshContentDescription()
     invalidate()
+  }
+
+  fun refreshContentDescription() {
+    contentDescription = if (running) {
+      OverlayText.t("cancelFloatingOcrScan")
+    } else {
+      OverlayText.t("floatingOcrActive")
+    }
   }
 
   fun visualRectOnScreen(screenLeft: Float, screenTop: Float): RectF {
@@ -687,6 +702,10 @@ private class DismissTargetView(
     invalidate()
   }
 
+  fun refreshContentDescription() {
+    contentDescription = OverlayText.t("dismissFloatingOcr")
+  }
+
   override fun onDraw(canvas: Canvas) {
     super.onDraw(canvas)
 
@@ -707,7 +726,8 @@ private class DismissTargetView(
 
     canvas.drawRoundRect(rect, radius, radius, pillPaint)
     canvas.drawRoundRect(rect, radius, radius, borderPaint)
-    canvas.drawText("× CLOSE", width / 2f, rect.centerY() - (labelPaint.ascent() + labelPaint.descent()) / 2f, labelPaint)
+    val label = "× ${OverlayText.t("close").uppercase()}"
+    canvas.drawText(label, width / 2f, rect.centerY() - (labelPaint.ascent() + labelPaint.descent()) / 2f, labelPaint)
   }
 
   private fun dp(value: Float): Float = value * density

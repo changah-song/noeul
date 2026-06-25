@@ -153,7 +153,7 @@ const TocDrawer = ({
                 >
                     <View style={styles.progressHeader}>
                         <View style={styles.metaRow}>
-                            <Text style={[styles.headerTitle, { color: palette.headerText }]}>CONTENTS</Text>
+                            <Text style={[styles.headerTitle, { color: palette.headerText }]}>{t('read.contents')}</Text>
                             <Text style={[styles.chapterSummary, { color: palette.headerText }]}>
                                 {chapterSummaryLabel}
                             </Text>

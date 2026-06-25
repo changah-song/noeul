@@ -1294,7 +1294,7 @@ const Read = ({
         const fallbackName = activeBook?.originalFilename
             || activeBook?.title
             || currentBook.split('/').pop()
-            || 'Untitled';
+            || t('common.untitled');
         const packageLoader = isPublicDomainBookUri(currentBook)
             ? readPublicDomainTextPackage(currentBook, loadOptions)
             : isPdfBook(activeBook, currentBook)
@@ -2412,7 +2412,14 @@ const Read = ({
             {!highlightedWord && showLookupHint ? (
                 <View
                     pointerEvents="box-none"
-                    style={[styles.hintLayer, { paddingBottom: insets.bottom + 8 }]}
+                    style={[
+                        styles.hintLayer,
+                        {
+                            paddingTop: isFullscreen
+                                ? insets.top + 8
+                                : insets.top + spacing.xs + 60,
+                        },
+                    ]}
                 >
                     <View style={styles.hintCard}>
                         <View style={styles.hintCopy}>
@@ -2446,7 +2453,7 @@ const Read = ({
                         onPress={() => setIsFullscreen((current) => !current)}
                         activeOpacity={0.72}
                         accessibilityRole="button"
-                        accessibilityLabel={isFullscreen ? 'Exit full screen' : 'Enter full screen'}
+                        accessibilityLabel={isFullscreen ? t('read.exitFullscreen') : t('read.enterFullscreen')}
                     >
                         <Feather
                             name={isFullscreen ? 'minimize-2' : 'maximize-2'}
@@ -2468,7 +2475,7 @@ const Read = ({
                             accessibilityRole="button"
                         >
                             <MaterialIcons name="bookmark-border" size={19} color={themeColors.textSecondary} />
-                            <Text style={styles.menuItemLabel}>Bookmarks</Text>
+                            <Text style={styles.menuItemLabel}>{t('read.bookmarks')}</Text>
                         </TouchableOpacity>
                         <TouchableOpacity
                             style={[styles.menuItem, styles.menuItemBorder]}
@@ -2477,7 +2484,7 @@ const Read = ({
                             accessibilityRole="button"
                         >
                             <MaterialIcons name="sticky-note-2" size={19} color={themeColors.textSecondary} />
-                            <Text style={styles.menuItemLabel}>Notes</Text>
+                            <Text style={styles.menuItemLabel}>{t('read.notes')}</Text>
                         </TouchableOpacity>
                         <TouchableOpacity
                             style={[styles.menuItem, styles.menuItemBorder]}
@@ -2486,7 +2493,7 @@ const Read = ({
                             accessibilityRole="button"
                         >
                             <MaterialIcons name="text-fields" size={19} color={themeColors.textSecondary} />
-                            <Text style={styles.menuItemLabel}>Font settings</Text>
+                            <Text style={styles.menuItemLabel}>{t('read.fontSettings')}</Text>
                         </TouchableOpacity>
                         <TouchableOpacity
                             style={styles.menuItem}
@@ -2495,7 +2502,7 @@ const Read = ({
                             accessibilityRole="button"
                         >
                             <MaterialIcons name="ios-share" size={19} color={themeColors.textSecondary} />
-                            <Text style={styles.menuItemLabel}>Share</Text>
+                            <Text style={styles.menuItemLabel}>{t('read.share')}</Text>
                         </TouchableOpacity>
                     </View>
                 </View>
@@ -2512,18 +2519,18 @@ const Read = ({
                             <View style={styles.fontSettingsHandleWrap}>
                                 <View style={styles.fontSettingsHandle} />
                             </View>
-                            <Text style={styles.fontSettingsTitle}>FONT SETTINGS</Text>
+                            <Text style={styles.fontSettingsTitle}>{t('read.fontSettings')}</Text>
 
                             <View style={styles.fontSettingsRows}>
                                 <View style={styles.fontSettingsRow}>
-                                    <Text style={styles.fontSettingsLabel}>Font Size</Text>
+                                    <Text style={styles.fontSettingsLabel}>{t('read.fontSize')}</Text>
                                     <View style={styles.fontSettingsStepperGroup}>
                                         <TouchableOpacity
                                             style={styles.fontSettingsStepperButton}
                                             onPress={() => handleFontSizeStep(-1)}
                                             activeOpacity={0.7}
                                             accessibilityRole="button"
-                                            accessibilityLabel="Decrease font size"
+                                            accessibilityLabel={t('read.decreaseFontSize')}
                                         >
                                             <Feather name="minus" size={18} color={themeColors.textSecondary} />
                                         </TouchableOpacity>
@@ -2533,7 +2540,7 @@ const Read = ({
                                             onPress={() => handleFontSizeStep(1)}
                                             activeOpacity={0.7}
                                             accessibilityRole="button"
-                                            accessibilityLabel="Increase font size"
+                                            accessibilityLabel={t('read.increaseFontSize')}
                                         >
                                             <Feather name="plus" size={18} color={themeColors.textSecondary} />
                                         </TouchableOpacity>
@@ -2541,14 +2548,14 @@ const Read = ({
                                 </View>
 
                                 <View style={styles.fontSettingsRow}>
-                                    <Text style={styles.fontSettingsLabel}>Line Spacing</Text>
+                                    <Text style={styles.fontSettingsLabel}>{t('read.lineSpacing')}</Text>
                                     <View style={styles.fontSettingsStepperGroup}>
                                         <TouchableOpacity
                                             style={styles.fontSettingsStepperButton}
                                             onPress={() => handleLineSpacingStep(-1)}
                                             activeOpacity={0.7}
                                             accessibilityRole="button"
-                                            accessibilityLabel="Decrease line spacing"
+                                            accessibilityLabel={t('read.decreaseLineSpacing')}
                                         >
                                             <Feather name="minus" size={18} color={themeColors.textSecondary} />
                                         </TouchableOpacity>
@@ -2560,7 +2567,7 @@ const Read = ({
                                             onPress={() => handleLineSpacingStep(1)}
                                             activeOpacity={0.7}
                                             accessibilityRole="button"
-                                            accessibilityLabel="Increase line spacing"
+                                            accessibilityLabel={t('read.increaseLineSpacing')}
                                         >
                                             <Feather name="plus" size={18} color={themeColors.textSecondary} />
                                         </TouchableOpacity>
@@ -2568,7 +2575,7 @@ const Read = ({
                                 </View>
 
                                 <View style={[styles.fontSettingsRow, styles.fontSettingsLastRow]}>
-                                    <Text style={styles.fontSettingsLabel}>Brightness</Text>
+                                    <Text style={styles.fontSettingsLabel}>{t('read.brightness')}</Text>
                                     <View style={styles.fontSettingsBrightnessGroup}>
                                         <MaterialIcons name="light-mode" size={18} color={themeColors.readerSubtleInk} />
                                         <Slider
@@ -2584,7 +2591,7 @@ const Read = ({
                                             maximumTrackTintColor={themeColors.readerHairline}
                                             trackStyle={styles.fontSettingsSliderTrack}
                                             thumbStyle={styles.fontSettingsSliderThumb}
-                                            accessibilityLabel="Reader brightness"
+                                            accessibilityLabel={t('read.readerBrightness')}
                                         />
                                     </View>
                                 </View>
@@ -2779,7 +2786,7 @@ const createStyles = (themeColors) => StyleSheet.create({
         position: 'absolute',
         left: 0,
         right: 0,
-        bottom: 0,
+        top: 0,
         paddingHorizontal: spacing.md,
     },
     hintCard: {
