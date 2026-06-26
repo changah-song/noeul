@@ -347,10 +347,10 @@ const HanjaDetails = ({
                         const readingParts = readingEntries
                             .map((e) => [e.koreanMeaning, e.reading].filter(Boolean).join(' '))
                             .filter(Boolean);
-                        const titleDisplay = readingParts.length > 0
+                        const koreanHeader = readingParts.length > 0
                             ? readingParts.join(' / ')
                             : char;
-                        const primaryMeaning = meaningText || titleDisplay;
+                        const userLangSubheader = meaningText !== koreanHeader ? meaningText : '';
 
                         const relatedWords = !charIsLoading && Array.isArray(charResult) ? charResult : [];
                         const visibleCount = visibleCountByChar[char] ?? INITIAL_VISIBLE_COUNT;
@@ -381,12 +381,22 @@ const HanjaDetails = ({
                                         {charIsLoading ? (
                                             <View style={styles.shimmerLine} />
                                         ) : (
-                                            <Text
-                                                style={[styles.cardTitle, { color: palette.text }]}
-                                                numberOfLines={1}
-                                            >
-                                                {primaryMeaning}
-                                            </Text>
+                                            <>
+                                                <Text
+                                                    style={[styles.cardTitle, { color: palette.text }]}
+                                                    numberOfLines={1}
+                                                >
+                                                    {koreanHeader}
+                                                </Text>
+                                                {userLangSubheader ? (
+                                                    <Text
+                                                        style={[styles.cardSubheader, { color: palette.muted }]}
+                                                        numberOfLines={1}
+                                                    >
+                                                        {userLangSubheader}
+                                                    </Text>
+                                                ) : null}
+                                            </>
                                         )}
                                     </View>
                                 </View>
@@ -568,6 +578,12 @@ const createStyles = (colors) => StyleSheet.create({
         fontSize: 17,
         lineHeight: 22,
         marginTop: 3,
+    },
+    cardSubheader: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 13,
+        lineHeight: 17,
+        marginTop: 2,
     },
     shimmerLine: {
         height: 16,

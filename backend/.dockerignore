@@ -1,0 +1,15 @@
+venv/
+__pycache__/
+*.pyc
+*.bak
+.env
+.env.example
+.git
+.gitignore
+.DS_Store
+cache.db
+scripts/
+slim_en_dict.py
+requirements-dev.in
+requirements-dev.txt
+requirements.in

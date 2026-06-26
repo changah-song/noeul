@@ -652,6 +652,10 @@ app = FastAPI()
 okt = Okt()
 nlp_en = None
 
+@app.get("/")
+def health():
+    return {"status": "ok"}
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
