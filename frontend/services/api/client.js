@@ -6,12 +6,23 @@ export const api = axios.create({
   baseURL: BASE_URL,
 });
 
+let pendingRefresh = null;
+
+const refreshSessionOnce = () => {
+  if (!pendingRefresh) {
+    pendingRefresh = supabase.auth.refreshSession().finally(() => {
+      pendingRefresh = null;
+    });
+  }
+  return pendingRefresh;
+};
+
 const getAuthenticatedSession = async ({ refresh = false } = {}) => {
   if (refresh) {
     const {
       data: { session },
       error,
-    } = await supabase.auth.refreshSession();
+    } = await refreshSessionOnce();
 
     if (error || !session?.access_token) {
       throw new Error('No Supabase session');

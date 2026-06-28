@@ -29,10 +29,7 @@ yarn-error.*
 *.pem
 
 # local env files
-.env*.local
-
-# typescript
-*.tsbuildinfo
-
 .env
+.env.*
+.env*.local
 fluentfable.db

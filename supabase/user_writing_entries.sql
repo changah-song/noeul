@@ -8,6 +8,7 @@ create table if not exists public.user_writing_entries (
   title text not null,
   body text not null,
   prompt text,
+  category text,
   status text default 'draft',
 
   assessment jsonb,

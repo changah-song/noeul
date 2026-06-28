@@ -35,15 +35,19 @@ import {
   isCurrentSyncGeneration,
 } from '../services/localOwnerCoordinator';
 import { colors, fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
+import { useAppContext } from '../contexts/AppContext';
+import { useVocabWords } from '../contexts/VocabWordsContext';
+import { assessEntry } from '../services/api/assessEntry';
 
 const LEGACY_STORAGE_KEY = 'writing_entries_v1';
 const getWritingStorageKey = (ownerId) => makeScopedStorageKey(ownerId, 'writing-entries-v1');
 const WRITE_SIDE_PADDING = 18;
 const WRITING_FILTERS = [
   { key: 'all', labelKey: 'write.filters.all' },
-  { key: 'free', labelKey: 'write.filters.free' },
-  { key: 'diary', labelKey: 'write.filters.diary' },
-  { key: 'essay', labelKey: 'write.filters.essay' },
+  { key: 'reflective', labelKey: 'write.filters.reflective' },
+  { key: 'persuasive', labelKey: 'write.filters.persuasive' },
+  { key: 'creative', labelKey: 'write.filters.creative' },
+  { key: 'sandbox', labelKey: 'write.filters.sandbox' },
 ];
 const EDITOR_TYPE_FILTERS = WRITING_FILTERS.filter((filter) => filter.key !== 'all');
 const DEFAULT_ENTRY_FORMATTING = {
@@ -86,77 +90,74 @@ const useWriteTheme = () => (
   }
 );
 
-const PROMPT_CATEGORIES = [
-  {
-    titleKey: 'write.promptCategories.comprehension',
-    filterKey: 'essay',
-    prompts: [
-      { value: 'Summarize what happened in this chapter/book in your own words', labelKey: 'write.prompts.summarizeChapter' },
-      { value: 'Who are the main characters and what do they want?', labelKey: 'write.prompts.mainCharacters' },
-      { value: 'What was the most important moment and why?', labelKey: 'write.prompts.importantMoment' },
-    ],
-  },
-  {
-    titleKey: 'write.promptCategories.reaction',
-    filterKey: 'diary',
-    prompts: [
-      { value: 'What surprised you most and why?', labelKey: 'write.prompts.surprised' },
-      { value: 'Which character do you relate to most?', labelKey: 'write.prompts.relateCharacter' },
-      { value: 'What would you have done differently if you were the main character?', labelKey: 'write.prompts.differentChoice' },
-      { value: "Did you enjoy it? What worked and what didn't?", labelKey: 'write.prompts.enjoyed' },
-    ],
-  },
-  {
-    titleKey: 'write.promptCategories.themes',
-    filterKey: 'essay',
-    prompts: [
-      { value: 'What is the author trying to say about human nature?', labelKey: 'write.prompts.humanNature' },
-      { value: 'What is the central conflict and how is it resolved?', labelKey: 'write.prompts.centralConflict' },
-      { value: "What does the title mean to you now that you've read it?", labelKey: 'write.prompts.titleMeaning' },
-    ],
-  },
-  {
-    titleKey: 'write.promptCategories.personal',
-    filterKey: 'diary',
-    prompts: [
-      { value: 'Does anything in this story remind you of your own life?', labelKey: 'write.prompts.ownLife' },
-      { value: 'Has this changed how you think about anything?', labelKey: 'write.prompts.changedThinking' },
-      { value: 'Would you recommend this to a friend and how would you describe it?', labelKey: 'write.prompts.recommendFriend' },
-    ],
-  },
-  {
-    titleKey: 'write.promptCategories.prediction',
-    filterKey: 'diary',
-    prompts: [
-      { value: 'What do you think happens next?', labelKey: 'write.prompts.happensNext' },
-      { value: 'If there were a sequel, what would it be about?', labelKey: 'write.prompts.sequel' },
-      { value: 'How do you think this will end?', labelKey: 'write.prompts.ending' },
-    ],
-  },
-  {
-    titleKey: 'write.promptCategories.language',
-    filterKey: 'essay',
-    prompts: [
-      { value: 'Write about a scene using at least 3 new words you learned while reading it', labelKey: 'write.prompts.newWordsScene' },
-      { value: 'Retell a key moment from the perspective of a different character', labelKey: 'write.prompts.retellPerspective' },
-      { value: "Describe the setting as if explaining it to someone who hasn't read the book", labelKey: 'write.prompts.describeSetting' },
-    ],
-  },
-];
-
-const EDITOR_PROMPT_OPTIONS = {
-  free: [],
-  diary: [
-    { value: 'Describe a moment from today that surprised you.', labelKey: 'write.prompts.todayMoment' },
-    { value: 'Write about a memory that came to mind recently.', labelKey: 'write.prompts.recentMemory' },
-    { value: 'How have your habits changed in the past year?', labelKey: 'write.prompts.habitsChanged' },
+const EDITOR_PROMPTS = {
+  reflective: [
+    'The Daily Micro-Moment: Describe a mundane interaction you had in the last 24 hours that unexpectedly made you smile, pause, or think.',
+    'The Unsent Letter: Write a short note to someone from your past (a friend, a former teacher, an ex). What do you wish you had said?',
+    'Energy Audit: Look back at your last 7 days. What single activity or person gave you the most energy? What drained you the most?',
+    'Future Self Capsule: If you could send a 3-sentence warning or encouragement to yourself exactly one year from today, what would it say?',
+    'The Current Soundtrack: If your current mood or phase of life was an album title, what would it be called and what does the cover art look like?',
+    'Sensory Rooting: Describe the room you are sitting in right now using only sounds, textures, and smells—no visual descriptions allowed.',
+    'The Shift: What is a belief, opinion, or habit you held tightly five years ago that you have completely abandoned now? What changed your mind?',
+    'Anatomy of a Flaw: Pick a minor personal flaw or quirk you have (e.g., being chronically 5 minutes late, overthinking emails). Explore where you think it stems from.',
+    'Childhood Artifact: Think of a specific object from your childhood home that no longer exists or you haven\'t seen in years. Describe it from memory in vivid detail.',
+    'The Compliment: What is the most memorable compliment you\'ve ever received? Why did it stick with you so deeply?',
+    'Anxiety Deconstruction: Write down something that is currently making you anxious. Break it down into the absolute worst-case scenario, and then a highly realistic outcome.',
+    'The Perfect Hour: Describe what a perfect, completely stress-free hour looks like for you on a random Tuesday.',
+    'Role Reversal: If you could spend one day living as your pet, a family member, or a close friend, who would it be and what would frustrate you most about their routine?',
+    'The Unchosen Path: Think of a major crossroads in your life (a school choice, a job choice, a move). Imagine the alternate version of you who took the other path—how are they doing right now?',
+    'Guilty Pleasure Defense: Write an unironic defense of a movie, song, food, or hobby that is generally considered "lowbrow" or a guilty pleasure.',
+    'The Mentor: Write about a specific piece of advice someone gave you that you didn\'t understand or appreciate at the time, but now rely on.',
+    'Physical Geography: Focus on your body right now. Where are you holding tension? How does the chair or floor feel beneath you? Document your exact physical state.',
+    'The Friction Point: What is a small, recurring friction point in your daily routine (e.g., a bad commute, a messy desk) that you have the power to fix but haven\'t? Why are you tolerating it?',
+    'Unspoken Gratitude: Write about someone you encounter regularly (a barista, a coworker, a bus driver) who makes your life slightly better, even though you barely know their name.',
+    'The Threshold: Think about a goal or boundary you are currently hesitant to cross. What is the fear keeping you on this side of the line?',
   ],
-  essay: [
-    { value: 'Is modern life making people more isolated?', labelKey: 'write.prompts.modernIsolation' },
-    { value: 'What does it mean to belong to a place?', labelKey: 'write.prompts.belongPlace' },
-    { value: 'Compare city life and rural life in Korea.', labelKey: 'write.prompts.cityRural' },
-    ...PROMPT_CATEGORIES[5].prompts,
+  persuasive: [
+    'The Counter-Intuitive Truth: What is something you believe to be absolutely true that most people would disagree with you on? Argue your case.',
+    'The Digital Footprint: Should an individual\'s digital data history belong strictly to them, or do tech corporations have a legitimate right to trade it for optimization?',
+    'The Micro-Invention Ban: If you could erase one minor piece of modern technology from existence (e.g., read receipts, autofill, the alarm snooze button) to improve human behavior, what would it be?',
+    'Cultural Critique: Pick a recent trend in modern media, fashion, internet slang, or workplace culture that irritates you. Write an argument explaining why it\'s a step backward.',
+    'The Funding Dilemma: If you were handed a $10 million grant that must be spent entirely on improving your local neighborhood, where would you allocate it for maximum impact?',
+    'Anatomy of an Icon: Choose a book, movie, or piece of art that is universally praised. Argue why it is either perfectly rated, vastly overrated, or misunderstood.',
+    'The AI Frontier: As AI becomes more integrated into creative industries, will human art become more valuable because of its scarcity, or will it become obsolete?',
+    'The Redefinition of Success: Society traditionally measures a successful life by wealth, status, and career trajectory. Propose a new, concrete metric for evaluating a "successful" human life.',
+    'The Obligation of Wealth: Do billionaires have a moral obligation to redistribute their wealth during their lifetime, or should they have absolute autonomy over what they earned?',
+    'The Attention Economy: Is the human attention span genuinely shrinking due to short-form content, or are we just adapting to filter out low-value information faster?',
+    'Remote vs. Co-located: Make a definitive case for either 100% remote work or 100% in-office work being superior for long-term career mentorship and company health.',
+    'The Best Age: Argue for the specific age or decade of life that is the absolute pinnacle of human existence, balancing freedom, capability, and wisdom.',
+    'Mandatory National Service: Should countries implement a mandatory year of civil, environmental, or military service for citizens post-high school? Why or why not?',
+    'The Censorship Line: Where should the line be drawn between protecting free speech and banning hate speech or misinformation on public platforms? Who gets to decide?',
+    'The Price of Convenience: Modern life prioritizes speed and convenience (delivery apps, fast fashion). Argue what psychological or social traits we are losing by eliminating friction from daily life.',
+    'Space vs. Earth: Should global superpowers continue spending billions on space exploration, or should those funds be strictly frozen until major terrestrial crises (like climate change) are solved?',
+    'The Paradox of Choice: Does having endless options (in dating apps, streaming content, career paths) make modern humans happier, or does it paralyze us?',
+    'The Value of Higher Ed: Is a traditional 4-year university degree still the most viable path to socio-economic mobility, or is it becoming an outdated financial trap?',
+    'Anonymity Online: Should internet anonymity be protected as a fundamental right to privacy, or should verified real-name identification be mandatory to curb online toxicity?',
+    'The Best Teacher: Argue whether failure or success is a more effective teacher for building long-term resilience.',
   ],
+  creative: [
+    'In Media Res: Start a story with the exact sentence: "The alarm went off three hours late, but that was the least of my problems."',
+    'The Object\'s Perspective: Pick a random item on your desk right now. Write a brief narrative from its perspective about how it views your daily habits.',
+    'Subtext Dialogue: Write a scene between two people arguing about something mundane (like where to eat dinner or a missing sock), but make it clear through subtext that they are actually about to break up. No narration, just dialogue.',
+    'The Five-Senses Room: Describe a bustling location (a night market, an airport terminal, a rainy coffee shop) using vivid imagery, capturing all five senses across the narrative.',
+    'Alternate History: Imagine a world where the internet was never invented, but smartphones still existed as completely offline pocket utilities. Describe a typical morning commute.',
+    'The Unfamiliar Mirror: Write a scene where a character catches their reflection in a window, but for a split second, they don\'t recognize the person looking back. What do they see?',
+    'The Lie: Write a short narrative centered around a character telling a seemingly harmless lie that immediately snowballs out of their control.',
+    'Monologue of an Antagonist: Write a first-person justification from the perspective of a classic villain (from a fairy tale, history, or fiction) explaining why they were actually the hero of their own story.',
+    'The Weather as a Character: Describe a normal outdoor setting (a park, a city street corner) where the weather (a heatwave, a sudden blizzard, a thick fog) acts as the primary antagonist driving the action.',
+    'The Time Loop: A character realizes they have lived the last twenty minutes before. Write the scene where the realization hits, and show how they try to break the loop on the next pass.',
+    'A Stranger\'s Baggage: You are sitting across from someone on a train or subway. Based purely on their shoes, expression, and what they are holding, invent their entire backstory and destination.',
+    'The Forgotten Key: A character finds a strange, old key at the bottom of their backpack that they have absolutely no memory of acquiring. What does it open?',
+    'The Last of Its Kind: Write from the perspective of the very last working analog typewriter or retro arcade machine left in an abandoned building.',
+    'No Adjectives Allowed: Describe a high-stakes action scene (a foot chase, a narrow escape, a sports play) using only strong verbs and nouns. Zero adjectives or adverbs allowed.',
+    'The Secret Room: You discover a hidden, doorless crawl space behind a drywall panel in your closet. What is stored inside it?',
+    'The Interrogation: Write a scene consisting entirely of a conversation between an interrogator and a suspect, where the suspect answers every single question with another question.',
+    'The Flavor Profile: Describe the taste and experience of eating your favorite meal to someone who has completely lost their sense of taste. Focus on texture, heat, and memory.',
+    'The First Flight: Describe the sensations of a human who has suddenly discovered they can levitate, but they can only control it when they close their eyes.',
+    'The Lost City: Describe a fictional city that is built entirely vertically up the sides of a massive canyon, detailing how the people at the top live versus the people at the bottom.',
+    'The Final Sentence: Write a story backwards. Start with the final sentence: "And that was the last time anyone ever heard that sound." and work your way to how it began.',
+  ],
+  sandbox: [],
 };
 
 const makeEmptyDraft = () => ({
@@ -164,6 +165,7 @@ const makeEmptyDraft = () => ({
   title: '',
   body: '',
   prompt: '',
+  category: null,
   date: null,
   createdAt: null,
   updatedAt: null,
@@ -210,27 +212,35 @@ const getEntryDateParts = (value, language = 'en') => {
 
 const getEntryCharacterCount = (entry) => String(entry?.body ?? '').length;
 
+const VALID_ENTRY_CATEGORIES = new Set(['reflective', 'persuasive', 'creative', 'sandbox']);
+
+// Legacy key mapping for entries created before the category rename
+const LEGACY_CATEGORY_MAP = { free: 'sandbox', diary: 'reflective', essay: 'persuasive' };
+
 const getEntryFilterKey = (entry = {}) => {
+  if (entry.category && VALID_ENTRY_CATEGORIES.has(entry.category)) {
+    return entry.category;
+  }
+
+  // Legacy: prompt-based inference for old entries
   if (!entry.prompt) {
-    return 'free';
+    return 'sandbox';
   }
 
-  const directType = Object.entries(EDITOR_PROMPT_OPTIONS).find(([, prompts]) =>
-    prompts.some((prompt) => prompt.value === entry.prompt)
-  )?.[0];
-  if (directType) {
-    return directType;
+  for (const [key, prompts] of Object.entries(EDITOR_PROMPTS)) {
+    if (prompts.includes(entry.prompt)) {
+      return key;
+    }
   }
 
-  const categoryFilterKey = PROMPT_CATEGORIES.find((category) =>
-    category.prompts.some((prompt) => prompt.value === entry.prompt)
-  )?.filterKey ?? '';
-
-  if (categoryFilterKey === 'diary') {
-    return 'diary';
+  // Map old diary/essay prompt text to new categories
+  const legacyDiaryPhrases = ['today', 'memory', 'habits', 'surprised', 'relate', 'differently', 'enjoy', 'own life', 'thinking', 'recommend', 'happens next', 'sequel', 'end'];
+  const lowerPrompt = entry.prompt.toLowerCase();
+  if (legacyDiaryPhrases.some((phrase) => lowerPrompt.includes(phrase))) {
+    return 'reflective';
   }
 
-  return 'essay';
+  return 'persuasive';
 };
 
 const getEntryStatusTone = (status, themeColors = colors) => {
@@ -273,11 +283,15 @@ const normalizeEntry = (entry = {}, index = 0) => {
     : '';
   const assessment = entry.assessment ?? entry.review;
 
+  const rawCategory = entry.category ?? LEGACY_CATEGORY_MAP[entry.type] ?? null;
+  const category = rawCategory && VALID_ENTRY_CATEGORIES.has(rawCategory) ? rawCategory : null;
+
   return {
     id: entry.id ?? `entry-${index}-${Date.now()}`,
     title,
     body,
     prompt: entry.prompt ?? '',
+    category,
     date,
     createdAt: entry.createdAt ?? date,
     updatedAt: entry.updatedAt ?? date,
@@ -661,9 +675,13 @@ const FormattingToolbar = ({ formatting, onToggle }) => {
   );
 };
 
+const SANDBOX_WORD_PAGE_SIZE = 5;
+
 const Write = ({ user }) => {
   const { t, language } = useTranslation();
   const { activeOwnerId, syncPaused, syncGeneration } = useLocalOwner();
+  const { targetLanguage } = useAppContext();
+  const dueVocabWords = useVocabWords();
   const { colors } = useTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const annotationLegend = useMemo(() => createAnnotationLegend(colors), [colors]);
@@ -681,8 +699,10 @@ const Write = ({ user }) => {
   const [selectedEntryId, setSelectedEntryId] = useState(null);
   const [selectedAnnotation, setSelectedAnnotation] = useState(null);
   const [activeWriteFilter, setActiveWriteFilter] = useState('all');
-  const [activeEditorType, setActiveEditorType] = useState('diary');
-  const [promptPickerExpanded, setPromptPickerExpanded] = useState(false);
+  const [activeEditorType, setActiveEditorType] = useState('reflective');
+  const [promptIndex, setPromptIndex] = useState(0);
+  const [wordBankPage, setWordBankPage] = useState(0);
+  const [isAssessing, setIsAssessing] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -701,7 +721,6 @@ const Write = ({ user }) => {
       setDraft(makeEmptyDraft());
       setSelectedEntryId(null);
       setSelectedAnnotation(null);
-      setPromptPickerExpanded(false);
 
       try {
         const storageKey = getWritingStorageKey(ownerId);
@@ -880,7 +899,18 @@ const Write = ({ user }) => {
 
     return sortedEntries.filter((entry) => getEntryFilterKey(entry) === activeWriteFilter);
   }, [activeWriteFilter, sortedEntries]);
-  const editorPromptOptions = EDITOR_PROMPT_OPTIONS[activeEditorType] ?? [];
+  const currentPrompts = EDITOR_PROMPTS[activeEditorType] ?? [];
+  const currentPromptText = currentPrompts.length > 0
+    ? currentPrompts[promptIndex % currentPrompts.length]
+    : null;
+
+  const sandboxWordBank = useMemo(() => {
+    const total = dueVocabWords.length;
+    if (total === 0) return [];
+    const start = (wordBankPage * SANDBOX_WORD_PAGE_SIZE) % Math.max(total, 1);
+    return dueVocabWords.slice(start, start + SANDBOX_WORD_PAGE_SIZE);
+  }, [dueVocabWords, wordBankPage]);
+
   const selectedEntry = useMemo(
     () => entries.find((entry) => entry.id === selectedEntryId),
     [entries, selectedEntryId]
@@ -898,8 +928,9 @@ const Write = ({ user }) => {
     setDraft(makeEmptyDraft());
     setSelectedEntryId(null);
     setSelectedAnnotation(null);
-    setActiveEditorType('diary');
-    setPromptPickerExpanded(false);
+    setActiveEditorType('reflective');
+    setPromptIndex(0);
+    setWordBankPage(0);
     setMode('editor');
   };
 
@@ -907,7 +938,6 @@ const Write = ({ user }) => {
     setSelectedEntryId(entry.id);
     setSelectedAnnotation(null);
     setActiveEditorType(getEntryFilterKey(entry));
-    setPromptPickerExpanded(false);
     setMode('detail');
   };
 
@@ -915,7 +945,8 @@ const Write = ({ user }) => {
     const normalizedEntry = normalizeEntry(entry);
     setDraft(normalizedEntry);
     setActiveEditorType(getEntryFilterKey(normalizedEntry));
-    setPromptPickerExpanded(false);
+    setPromptIndex(0);
+    setWordBankPage(0);
     setSelectedAnnotation(null);
     setMode('editor');
   };
@@ -931,37 +962,97 @@ const Write = ({ user }) => {
     setMode('list');
   };
 
-  const saveEntry = async () => {
-    if (!canSave) {
-      return;
-    }
-
+  const buildNextEntry = ({ status = 'draft', assessment = null } = {}) => {
     const now = new Date().toISOString();
     const existingEntry = entries.find((entry) => entry.id === draft.id);
     const preservedAssessment =
-      draft.assessment && existingEntry?.body === draft.body ? draft.assessment : null;
+      assessment ?? (draft.assessment && existingEntry?.body === draft.body ? draft.assessment : null);
     const fallbackTitle = draft.body.trim().replace(/\s+/g, ' ').slice(0, 24);
-    const nextEntry = {
+    return {
       id: draft.id ?? `entry-${Date.now()}`,
       title: draft.title.trim() || fallbackTitle || t('common.untitled'),
       body: draft.body,
       prompt: draft.prompt,
+      category: activeEditorType,
       date: draft.date ?? now,
       createdAt: draft.createdAt ?? now,
       updatedAt: now,
-      status: preservedAssessment ? draft.status ?? 'reviewed' : 'draft',
+      status: preservedAssessment ? (status === 'draft' ? draft.status ?? 'reviewed' : status) : status,
       formatting: normalizeEntryFormatting(draft.formatting),
       ...(preservedAssessment ? { assessment: preservedAssessment } : {}),
     };
+  };
 
-    const existingIndex = entries.findIndex((entry) => entry.id === nextEntry.id);
+  const persistAndSyncEntry = async (nextEntry, currentEntries) => {
+    const existingIndex = currentEntries.findIndex((entry) => entry.id === nextEntry.id);
     const nextEntries = existingIndex >= 0
-      ? entries.map((entry, index) => (index === existingIndex ? nextEntry : entry))
-      : [nextEntry, ...entries];
-
+      ? currentEntries.map((entry, index) => (index === existingIndex ? nextEntry : entry))
+      : [nextEntry, ...currentEntries];
     await persistEntries(nextEntries);
     syncEntryToCloud(nextEntry);
+    return nextEntries;
+  };
+
+  const saveEntry = async () => {
+    if (!canSave) return;
+    const nextEntry = buildNextEntry();
+    await persistAndSyncEntry(nextEntry, entries);
     leaveEditor();
+  };
+
+  const submitForAssessment = async () => {
+    if (!user) {
+      Alert.alert('', t('write.assessSignInRequired'));
+      return;
+    }
+
+    const wordCount = draft.body.trim().split(/\s+/).filter(Boolean).length;
+    if (wordCount < 30) {
+      Alert.alert('', t('write.assessTooShort'));
+      return;
+    }
+    if (wordCount > 500) {
+      Alert.alert('', t('write.assessTooLong'));
+      return;
+    }
+
+    setIsAssessing(true);
+    const submittedEntry = buildNextEntry({ status: 'submitted' });
+    let currentEntries = await persistAndSyncEntry(submittedEntry, entries).catch(() => entries);
+
+    try {
+      const sandboxWords = activeEditorType === 'sandbox'
+        ? sandboxWordBank.map((w) => w.word ?? w.def ?? '').filter(Boolean)
+        : [];
+
+      const assessment = await assessEntry({
+        body: submittedEntry.body,
+        category: activeEditorType,
+        language: targetLanguage ?? 'ko',
+        prompt: submittedEntry.prompt,
+        sandboxWords,
+      });
+
+      const reviewedEntry = {
+        ...submittedEntry,
+        status: 'reviewed',
+        assessment,
+        updatedAt: new Date().toISOString(),
+      };
+
+      await persistAndSyncEntry(reviewedEntry, currentEntries);
+      setDraft(makeEmptyDraft());
+      setSelectedEntryId(reviewedEntry.id);
+      setSelectedAnnotation(null);
+      setMode('detail');
+    } catch (error) {
+      leaveEditor();
+      const detail = error?.response?.data?.detail ?? '';
+      const isQuota = error?.response?.status === 429;
+      Alert.alert('', isQuota ? t('write.assessLimitReached') : (detail || t('write.assessError')));
+    } finally {
+      setIsAssessing(false);
+    }
   };
 
   const deleteEntry = async (entryId) => {
@@ -992,10 +1083,9 @@ const Write = ({ user }) => {
 
   const selectEditorType = (type) => {
     setActiveEditorType(type);
-    setPromptPickerExpanded(type !== 'free');
-    if (type === 'free' || !EDITOR_PROMPT_OPTIONS[type]?.some((prompt) => prompt.value === draft.prompt)) {
-      updateDraft({ prompt: '' });
-    }
+    setPromptIndex(0);
+    setWordBankPage(0);
+    updateDraft({ prompt: '' });
   };
 
   if (loading) {
@@ -1132,9 +1222,9 @@ const Write = ({ user }) => {
             <View style={styles.editorPromptPanel}>
               <View style={styles.editorPromptHeader}>
                 <Text style={styles.editorPromptHeaderText}>{t('write.choosePrompt')}</Text>
-                <View style={styles.editorPromptChevronIcon}>
-                  <Feather name="chevron-right" size={16} color={colors.textSubtle} />
-                </View>
+              </View>
+              <View style={[styles.editorPromptOption, styles.editorPromptOptionLast, styles.editorPromptOptionSelected]}>
+                <Text style={styles.editorPromptOptionTextSelected}>{selectedEntry.prompt}</Text>
               </View>
             </View>
           ) : null}
@@ -1148,7 +1238,7 @@ const Write = ({ user }) => {
                 <Text style={styles.reviewStatusText}>{t('write.reviewed')}</Text>
               </View>
               <Text style={styles.reviewTitleMeta}>
-                {t(WRITING_FILTERS.find((filter) => filter.key === getEntryFilterKey(selectedEntry))?.labelKey ?? 'write.filters.free')}
+                {t(WRITING_FILTERS.find((filter) => filter.key === getEntryFilterKey(selectedEntry))?.labelKey ?? 'write.filters.sandbox')}
               </Text>
               <Text style={styles.reviewTitleMetaDot}>·</Text>
               <Text style={styles.reviewTitleMeta}>
@@ -1224,7 +1314,7 @@ const Write = ({ user }) => {
 
           {!selectedEntryIsReviewed ? (
             <TouchableOpacity onPress={() => openExistingDraft(selectedEntry)} style={styles.editorSubmitButton}>
-              <Text style={styles.editorSubmitText}>{t('write.submitReview')}</Text>
+              <Text style={styles.editorSubmitText}>{t('write.getAiFeedback')}</Text>
             </TouchableOpacity>
           ) : null}
 
@@ -1280,53 +1370,60 @@ const Write = ({ user }) => {
             </TouchableOpacity>
           </View>
 
-          {activeEditorType !== 'free' ? (
+          {activeEditorType === 'sandbox' ? (
             <View style={styles.editorPromptPanel}>
-              <Pressable
-                onPress={() => setPromptPickerExpanded((expanded) => !expanded)}
-                style={styles.editorPromptHeader}
-              >
+              <View style={styles.editorPromptHeader}>
+                <Text style={styles.editorPromptHeaderText}>{t('write.wordBank')}</Text>
+                {dueVocabWords.length > SANDBOX_WORD_PAGE_SIZE ? (
+                  <TouchableOpacity
+                    onPress={() => setWordBankPage((p) => p + 1)}
+                    style={styles.editorPromptReloadButton}
+                  >
+                    <Feather name="refresh-cw" size={14} color={colors.textMuted} />
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+              {sandboxWordBank.length > 0 ? (
+                <>
+                  <Text style={styles.editorPromptHint}>{t('write.wordBankOptional')}</Text>
+                  <View style={styles.sandboxWordChips}>
+                    {sandboxWordBank.map((word, idx) => (
+                      <View key={word.word ?? idx} style={styles.sandboxWordChip}>
+                        <Text style={styles.sandboxWordText}>{word.word}</Text>
+                        {word.def ? (
+                          <Text style={styles.sandboxWordDef} numberOfLines={1}>{word.def}</Text>
+                        ) : null}
+                      </View>
+                    ))}
+                  </View>
+                </>
+              ) : (
+                <Text style={styles.editorPromptHint}>{t('write.wordBankEmpty')}</Text>
+              )}
+            </View>
+          ) : currentPromptText ? (
+            <View style={styles.editorPromptPanel}>
+              <View style={styles.editorPromptHeader}>
                 <Text style={styles.editorPromptHeaderText}>{t('write.choosePrompt')}</Text>
-                <View style={styles.editorPromptChevronIcon}>
-                  <Feather
-                    name={promptPickerExpanded ? 'chevron-down' : 'chevron-right'}
-                    size={16}
-                    color={colors.textMuted}
-                  />
-                </View>
+                <TouchableOpacity
+                  onPress={() => {
+                    const next = (promptIndex + 1) % currentPrompts.length;
+                    setPromptIndex(next);
+                    updateDraft({ prompt: currentPrompts[next] });
+                  }}
+                  style={styles.editorPromptReloadButton}
+                >
+                  <Feather name="refresh-cw" size={14} color={colors.textMuted} />
+                </TouchableOpacity>
+              </View>
+              <Pressable
+                onPress={() => updateDraft({ prompt: draft.prompt === currentPromptText ? '' : currentPromptText })}
+                style={[styles.editorPromptOption, styles.editorPromptOptionLast, draft.prompt === currentPromptText && styles.editorPromptOptionSelected]}
+              >
+                <Text style={[styles.editorPromptOptionText, draft.prompt === currentPromptText && styles.editorPromptOptionTextSelected]}>
+                  {currentPromptText}
+                </Text>
               </Pressable>
-              {promptPickerExpanded ? (
-                <View style={styles.editorPromptOptions}>
-                  {editorPromptOptions.map((prompt, index) => {
-                    const selected = draft.prompt === prompt.value;
-                    const last = index === editorPromptOptions.length - 1;
-
-                    return (
-                      <Pressable
-                        key={prompt.value}
-                        onPress={() => {
-                          updateDraft({ prompt: prompt.value });
-                          setPromptPickerExpanded(false);
-                        }}
-                        style={[
-                          styles.editorPromptOption,
-                          selected && styles.editorPromptOptionSelected,
-                          last && styles.editorPromptOptionLast,
-                        ]}
-                      >
-                        <Text
-                          style={[
-                            styles.editorPromptOptionText,
-                            selected && styles.editorPromptOptionTextSelected,
-                          ]}
-                        >
-                          {t(prompt.labelKey)}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-              ) : null}
             </View>
           ) : null}
 
@@ -1358,15 +1455,28 @@ const Write = ({ user }) => {
           </View>
 
           <TouchableOpacity
-            disabled={!canSave}
-            onPress={saveEntry}
-            style={[styles.editorSubmitButton, !canSave && styles.editorSubmitButtonDisabled]}
+            disabled={!canSave || isAssessing}
+            onPress={submitForAssessment}
+            style={[styles.editorSubmitButton, (!canSave || isAssessing) && styles.editorSubmitButtonDisabled]}
           >
-            <Text style={styles.editorSubmitText}>{t('write.submitReview')}</Text>
+            <Text style={styles.editorSubmitText}>
+              {isAssessing ? t('write.assessingEntry') : t('write.getAiFeedback')}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            disabled={!canSave || isAssessing}
+            onPress={saveEntry}
+            style={[styles.reviewDoneButton, (!canSave || isAssessing) && styles.editorSaveButtonDisabled]}
+          >
+            <Text style={[styles.reviewDoneText, (!canSave || isAssessing) && styles.editorSaveTextDisabled]}>
+              {t('write.saveAsDraft')}
+            </Text>
           </TouchableOpacity>
 
           {draft.id ? (
             <TouchableOpacity
+              disabled={isAssessing}
               onPress={() =>
                 Alert.alert(
                   t('write.deleteEntryTitle'),
@@ -1765,6 +1875,46 @@ const createStyles = (colors) => StyleSheet.create({
     width: 44,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  editorPromptReloadButton: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  editorPromptHint: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 12,
+    color: colors.textSubtle,
+    paddingLeft: 14,
+    paddingBottom: 8,
+  },
+  sandboxWordChips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    paddingLeft: 14,
+    paddingBottom: 10,
+    gap: 8,
+  },
+  sandboxWordChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
+    backgroundColor: colors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: colors.border,
+    maxWidth: 160,
+  },
+  sandboxWordText: {
+    fontFamily: fontFamilies.sansMedium,
+    fontSize: 13,
+    color: colors.text,
+  },
+  sandboxWordDef: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 11,
+    color: colors.textMuted,
+    marginTop: 1,
   },
   editorPromptOptions: {
     backgroundColor: colors.surface,
