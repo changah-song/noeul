@@ -31,6 +31,7 @@ import LocalDataDecisionModal from './components/Auth/LocalDataDecisionModal';
 import { tabScreenOptions } from './components/shared/TabBar';
 import { AppProvider } from './contexts/AppContext';
 import { LocalOwnerProvider, useLocalOwner } from './contexts/LocalOwnerContext';
+import { VocabWordsProvider } from './contexts/VocabWordsContext';
 import useAppSetup from './hooks/useAppSetup';
 import useAuth from './hooks/useAuth';
 import Home from './screens/Home';
@@ -469,6 +470,7 @@ function AppContent() {
 
     return (
         <AppProvider user={user}>
+          <VocabWordsProvider>
             <ThemedAppShell
                 books={books}
                 setBooks={setBooks}
@@ -487,6 +489,7 @@ function AppContent() {
                 localDataDecisionBusy={localDataDecisionBusy}
                 onOwnershipDecision={handleOwnershipDecision}
             />
+          </VocabWordsProvider>
         </AppProvider>
     );
 }

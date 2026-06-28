@@ -32,6 +32,11 @@ try:
 except ImportError:
     zh_pseg = None
 
+try:
+    import anthropic as anthropic_sdk
+except ImportError:
+    anthropic_sdk = None
+
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 # ─── Rate Limit Config ────────────────────────────────────────────────────────
@@ -656,6 +661,11 @@ nlp_en = None
 def health():
     return {"status": "ok"}
 
+
+def count_words(text: str) -> int:
+    return len(text.split())
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -666,6 +676,7 @@ app.add_middleware(
 
 KRDICT_CLIENT_ID = os.getenv("KOREAN_DICTIONARY_CLIENT_ID", "").strip()
 GOOGLE_TRANSLATE_RAPIDAPI_KEY = os.getenv("GOOGLE_TRANSLATE_RAPIDAPI_KEY", "").strip()
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_JWT_AUDIENCE = os.getenv("SUPABASE_JWT_AUDIENCE", "").strip() or "authenticated"
 SUPABASE_ISSUER = f"{SUPABASE_URL}/auth/v1" if SUPABASE_URL else ""
@@ -680,6 +691,29 @@ supabase_jwks_client = (
 
 daily_usage: dict[tuple[str, str], int] = {}
 daily_usage_lock = asyncio.Lock()
+
+ASSESSMENT_DAILY_LIMIT = 5
+ENTRY_MIN_WORDS = 30
+ENTRY_MAX_WORDS = 500
+VALID_CATEGORIES = {"reflective", "persuasive", "creative", "sandbox"}
+VALID_TARGET_LANGUAGES = {"ko", "zh", "en", "ja", "fr", "es", "de", "ru", "ar", "id", "vi", "th", "mn"}
+LANGUAGE_DISPLAY_NAMES = {
+    "ko": "Korean",
+    "zh": "Mandarin Chinese",
+    "en": "English",
+    "ja": "Japanese",
+    "fr": "French",
+    "es": "Spanish",
+    "de": "German",
+    "ru": "Russian",
+    "ar": "Arabic",
+    "id": "Indonesian",
+    "vi": "Vietnamese",
+    "th": "Thai",
+    "mn": "Mongolian",
+}
+assessment_daily_usage: dict[tuple[str, str], int] = {}
+assessment_daily_usage_lock = asyncio.Lock()
 
 LOOKUP_ALLOWED_POS = {"Noun", "Verb", "Adverb", "Adjective"}
 EN_LOOKUP_ALLOWED_POS = {"NOUN", "PROPN", "VERB", "ADJ", "ADV", "NUM"}
@@ -3263,3 +3297,218 @@ async def krdict_search(payload: dict, auth: dict[str, Any] = Depends(verify_sup
         )
 
     return {"results": results}
+
+
+# ─── Writing Assessment ───────────────────────────────────────────────────────
+
+async def enforce_assessment_quota(user_id: str):
+    today = datetime.now(timezone.utc).date().isoformat()
+    async with assessment_daily_usage_lock:
+        stale_keys = [key for key in assessment_daily_usage if key[1] != today]
+        for key in stale_keys:
+            del assessment_daily_usage[key]
+        key = (user_id, today)
+        used = assessment_daily_usage.get(key, 0)
+        if used >= ASSESSMENT_DAILY_LIMIT:
+            raise HTTPException(
+                status_code=429,
+                detail=f"You've used all {ASSESSMENT_DAILY_LIMIT} AI assessments for today. Check back tomorrow.",
+            )
+        assessment_daily_usage[key] = used + 1
+
+
+_ASSESSMENT_SYSTEM_BASE = """You are an expert language tutor reviewing a writing entry by a foreign-language learner studying {language_name}.
+
+{category_instructions}
+
+Return ONLY a valid JSON object — no markdown, no code fences, no commentary. Use this exact schema:
+
+{{
+  "annotations": [
+    {{
+      "id": "1",
+      "type": "GRAMMAR",
+      "original": "exact substring from the entry",
+      "explanation": "clear explanation of the issue",
+      "suggestions": ["corrected version 1", "corrected version 2"],
+      "suggestion_notes": ["why suggestion 1 is better", "why suggestion 2 is better"]
+    }}
+  ],
+  "summary": {{
+    "patterns": ["recurring pattern 1", "recurring pattern 2"],
+    "strengths": ["positive observation 1", "positive observation 2"],
+    "vocab_items": [
+      {{ "word": "word or phrase", "meaning": "definition", "example": "example sentence in {language_name}" }}
+    ]
+  }}
+}}
+
+Annotation types:
+- GRAMMAR: structural or morphological error
+- DICTION: wrong word choice or unnatural collocation
+- NATIVE_INSERT: English word/phrase used instead of {language_name}
+- UNNATURAL: grammatically acceptable but sounds unnatural to a native speaker
+
+Rules:
+- "original" must be an exact copy-paste substring of the entry text. Never paraphrase it.
+- Include 3–8 annotations. Only flag real issues — do not invent problems.
+- "patterns" should be 3–5 recurring error themes, not just one-off mistakes.
+- "strengths" should be 2–3 genuine observations about what the writer did well.
+- "vocab_items" should be 3–5 high-value words or expressions to study, with example sentences written in {language_name}.
+- All explanations and notes should be written in English."""
+
+_CATEGORY_INSTRUCTIONS = {
+    "reflective": (
+        "This is a personal, reflective diary entry. The writer is sharing thoughts, memories, or feelings. "
+        "Your feedback should be warm and constructive. "
+        "Do NOT suggest making the writing more formal — diary entries should feel natural and conversational. "
+        "When suggesting alternatives, prefer the register that a native speaker would use in a personal journal. "
+        "For NATIVE_INSERT errors, suggest the most natural, everyday {language_name} equivalent."
+    ),
+    "persuasive": (
+        "This is a persuasive or critical essay. A formal, written register is expected and appropriate. "
+        "In addition to correcting clear errors, flag instances where a more formal or precise word choice would strengthen the argument — "
+        "even if the current phrasing is technically acceptable. "
+        "Note awkward argument structure, weak logical connectors, or informal vocabulary that undercuts the persuasive effect. "
+        "Suggestions should prefer academic or written-register vocabulary."
+    ),
+    "creative": (
+        "This is a creative or narrative piece — fiction, storytelling, or descriptive writing. "
+        "Focus on imagery, verb strength, and sensory language. "
+        "Flag generic or weak word choices where a more vivid alternative would improve the writing. "
+        "Be mindful that some unconventional grammar or structure may be intentional for stylistic effect — "
+        "note these as UNNATURAL only if they genuinely impede readability. "
+        "Suggestions should encourage expressive, stylistically bold {language_name}."
+    ),
+    "sandbox": (
+        "This is a free-writing sandbox entry. The writer may have been practicing specific vocabulary words. "
+        "Give general feedback covering all error types. "
+        "{sandbox_note}"
+        "Suggestions should be practical and focus on natural everyday usage."
+    ),
+}
+
+
+def build_assessment_system_prompt(category: str, language_code: str, sandbox_words: list[str]) -> str:
+    language_name = LANGUAGE_DISPLAY_NAMES.get(language_code, language_code.upper())
+    sandbox_note = ""
+    if category == "sandbox" and sandbox_words:
+        word_list = ", ".join(f'"{w}"' for w in sandbox_words[:10])
+        sandbox_note = (
+            f"The writer had these vocabulary words available to practice: {word_list}. "
+            "In the summary's 'patterns' section, note which of these words (if any) the writer used and whether they were used naturally. "
+        )
+    category_instructions = _CATEGORY_INSTRUCTIONS.get(category, _CATEGORY_INSTRUCTIONS["reflective"])
+    category_instructions = category_instructions.format(
+        language_name=language_name,
+        sandbox_note=sandbox_note,
+    )
+    return _ASSESSMENT_SYSTEM_BASE.format(
+        language_name=language_name,
+        category_instructions=category_instructions,
+    )
+
+
+@app.post("/assess_entry/")
+async def assess_entry(payload: dict, auth: dict[str, Any] = Depends(verify_supabase_token)):
+    if auth.get("is_anonymous"):
+        raise HTTPException(status_code=403, detail="Sign in to use AI writing assessment")
+
+    if not anthropic_sdk:
+        raise HTTPException(status_code=503, detail="Anthropic SDK is not installed on the backend")
+
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=500, detail="Anthropic API key is not configured")
+
+    body = payload.get("body", "")
+    category = str(payload.get("category", "reflective")).strip().lower()
+    language_code = str(payload.get("language", "ko")).strip().lower()
+    prompt_text = payload.get("prompt", "")
+    sandbox_words = payload.get("sandbox_words", [])
+
+    if not isinstance(body, str) or not body.strip():
+        raise HTTPException(status_code=400, detail="body is required")
+
+    if category not in VALID_CATEGORIES:
+        raise HTTPException(status_code=400, detail=f"category must be one of: {', '.join(sorted(VALID_CATEGORIES))}")
+
+    if language_code not in VALID_TARGET_LANGUAGES:
+        language_code = "ko"
+
+    if not isinstance(sandbox_words, list):
+        sandbox_words = []
+    sandbox_words = [str(w) for w in sandbox_words if isinstance(w, str) and w.strip()][:10]
+
+    word_count = count_words(body.strip())
+    if word_count < ENTRY_MIN_WORDS:
+        raise HTTPException(status_code=422, detail=f"Entry is too short ({word_count} words). Write at least {ENTRY_MIN_WORDS} words.")
+    if word_count > ENTRY_MAX_WORDS:
+        raise HTTPException(status_code=422, detail=f"Entry is too long ({word_count} words). Keep it under {ENTRY_MAX_WORDS} words.")
+
+    await enforce_assessment_quota(auth["user_id"])
+
+    system_prompt = build_assessment_system_prompt(category, language_code, sandbox_words)
+
+    user_message_parts = [f"Entry:\n{body.strip()}"]
+    if prompt_text and isinstance(prompt_text, str) and prompt_text.strip():
+        user_message_parts.insert(0, f"Writing prompt the learner was responding to:\n{prompt_text.strip()}\n")
+
+    user_message = "\n".join(user_message_parts)
+
+    try:
+        client = anthropic_sdk.Anthropic(api_key=ANTHROPIC_API_KEY)
+        message = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=2048,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_message}],
+        )
+    except Exception as error:
+        print(f"[assess_entry] Anthropic API error: {error.__class__.__name__}: {error}")
+        raise HTTPException(status_code=502, detail="AI assessment service is temporarily unavailable")
+
+    raw_text = message.content[0].text if message.content else ""
+
+    try:
+        assessment = json.loads(raw_text)
+    except json.JSONDecodeError:
+        json_match = re.search(r"\{[\s\S]*\}", raw_text)
+        if not json_match:
+            print(f"[assess_entry] Could not parse assessment response: {raw_text[:500]}")
+            raise HTTPException(status_code=502, detail="AI returned an unparseable response")
+        try:
+            assessment = json.loads(json_match.group(0))
+        except json.JSONDecodeError:
+            print(f"[assess_entry] Could not parse extracted JSON: {json_match.group(0)[:500]}")
+            raise HTTPException(status_code=502, detail="AI returned an unparseable response")
+
+    annotations = assessment.get("annotations", [])
+    summary = assessment.get("summary", {})
+
+    return {
+        "annotations": [
+            {
+                "id": str(a.get("id", i + 1)),
+                "type": str(a.get("type", "GRAMMAR")).upper(),
+                "original": str(a.get("original", "")),
+                "explanation": str(a.get("explanation", "")),
+                "suggestions": [str(s) for s in a.get("suggestions", [])],
+                "suggestion_notes": [str(n) for n in a.get("suggestion_notes", [])],
+            }
+            for i, a in enumerate(annotations)
+            if isinstance(a, dict) and a.get("original")
+        ],
+        "summary": {
+            "patterns": [str(p) for p in summary.get("patterns", [])],
+            "strengths": [str(s) for s in summary.get("strengths", [])],
+            "vocab_items": [
+                {
+                    "word": str(v.get("word", "")),
+                    "meaning": str(v.get("meaning", "")),
+                    "example": str(v.get("example", "")),
+                }
+                for v in summary.get("vocab_items", [])
+                if isinstance(v, dict)
+            ],
+        },
+    }
