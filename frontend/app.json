@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "FluentFable",
-    "slug": "FluentFable",
-    "scheme": "fluentfable",
+    "name": "Noeul",
+    "slug": "Noeul",
+    "scheme": "noeul",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -18,7 +18,7 @@
     "ios": {
       "supportsTablet": true,
       "icon": "./assets/icon-ios.png",
-      "bundleIdentifier": "com.anonymous.FluentFable"
+      "bundleIdentifier": "com.noeulapp.Noeul"
     },
     "android": {
       "allowBackup": true,
@@ -27,7 +27,7 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#333B46"
       },
-      "package": "com.anonymous.FluentFable"
+      "package": "com.noeulapp.Noeul"
     },
     "web": {
       "favicon": "./assets/favicon.png"

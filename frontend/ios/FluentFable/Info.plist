@@ -9,7 +9,7 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>$(DEVELOPMENT_LANGUAGE)</string>
     <key>CFBundleDisplayName</key>
-    <string>FluentFable</string>
+    <string>Noeul</string>
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIdentifier</key>
@@ -29,8 +29,8 @@
       <dict>
         <key>CFBundleURLSchemes</key>
         <array>
-          <string>fluentfable</string>
-          <string>com.anonymous.FluentFable</string>
+          <string>noeul</string>
+          <string>com.noeulapp.Noeul</string>
         </array>
       </dict>
     </array>

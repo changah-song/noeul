@@ -1,4 +1,4 @@
-rootProject.name = 'FluentFable'
+rootProject.name = 'Noeul'
 
 dependencyResolutionManagement {
   versionCatalogs {

@@ -62,13 +62,13 @@ const formatOverlayStatus = (status, t) => {
 const OCR_SOURCE_BOOK = {
     uri: null,
     title: 'Screenshot OCR',
-    author: 'FluentFable',
+    author: 'Noeul',
 };
 
 const FLOATING_OCR_SOURCE_BOOK = {
     uri: null,
     title: 'Floating OCR',
-    author: 'FluentFable',
+    author: 'Noeul',
 };
 
 const uniqueTerms = (values) => [...new Set(

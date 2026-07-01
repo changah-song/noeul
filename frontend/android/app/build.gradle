@@ -83,9 +83,9 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace 'com.anonymous.FluentFable'
+    namespace 'com.noeulapp.Noeul'
     defaultConfig {
-        applicationId 'com.anonymous.FluentFable'
+        applicationId 'com.noeulapp.Noeul'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
