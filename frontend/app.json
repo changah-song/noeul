@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Noeul",
-    "slug": "Noeul",
+    "slug": "FluentFable",
     "scheme": "noeul",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -34,12 +34,22 @@
     },
     "plugins": [
       "expo-secure-store",
-      "@react-native-google-signin/google-signin"
+      "@react-native-google-signin/google-signin",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "compileSdkVersion": 35,
+            "targetSdkVersion": 35
+          }
+        }
+      ]
     ],
     "extra": {
       "eas": {
         "projectId": "432f2363-e118-4789-8150-3b386f47cf00"
       }
-    }
+    },
+    "owner": "casong00"
   }
 }
