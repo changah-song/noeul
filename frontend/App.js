@@ -1,7 +1,7 @@
 import { DefaultTheme, NavigationContainer } from '@react-navigation/native';
-import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { TranslatorProvider } from 'react-native-translator';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert } from 'react-native';
 import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen';
@@ -12,6 +12,7 @@ import {
     Inter_500Medium,
     Inter_600SemiBold,
     Inter_700Bold,
+    Inter_800ExtraBold,
 } from '@expo-google-fonts/inter';
 import {
     Fraunces_400Regular,
@@ -28,17 +29,23 @@ import {
     NotoSerifKR_700Bold,
 } from '@expo-google-fonts/noto-serif-kr';
 import LocalDataDecisionModal from './components/Auth/LocalDataDecisionModal';
-import { tabScreenOptions } from './components/shared/TabBar';
+import { BooksProvider } from './contexts/BooksContext';
 import { AppProvider } from './contexts/AppContext';
 import { LocalOwnerProvider, useLocalOwner } from './contexts/LocalOwnerContext';
 import { VocabWordsProvider } from './contexts/VocabWordsContext';
 import useAppSetup from './hooks/useAppSetup';
 import useAuth from './hooks/useAuth';
 import Home from './screens/Home';
+import Library from './screens/Library';
 import Learn from './screens/Learn';
 import Profile from './screens/Profile';
 import Read from './screens/Read';
+import ScreenshotOcr from './screens/ScreenshotOcr';
 import Write from './screens/Write';
+import WritingCanvas from './screens/WritingCanvas';
+import VocabDetail from './screens/VocabDetail';
+import Flashcards from './screens/Flashcards';
+import { addOcrWordSelectedListener } from './modules/screen-ocr-overlay/src';
 import { GUEST_OWNER_ID, getLocalOwnerId } from './services/localDataScope';
 import {
     getActiveOwnerId,
@@ -54,8 +61,9 @@ import { initializeOverlayLookupBridge } from './services/overlayLookup';
 import { syncUserDataFromCloud } from './services/userDataSync';
 import { subscribeUserDataSyncRequests } from './services/userDataSyncQueue';
 import { colors, useTheme } from './theme';
+import { useBooks } from './contexts/BooksContext';
 
-const Tab = createBottomTabNavigator();
+const Stack = createNativeStackNavigator();
 const APP_BACKGROUND = colors.bgPage;
 const DEFAULT_USER_DATA_SYNC_DELAY_MS = 1500;
 const PASSIVE_CONTEXT_SYNC_DELAY_MS = 30000;
@@ -87,7 +95,18 @@ function AppContent() {
     } = useLocalOwner();
     const [ownerMigrationReady, setOwnerMigrationReady] = useState(false);
     const [localDataDecisionBusy, setLocalDataDecisionBusy] = useState(false);
-    const { books, setBooks, currentBook, setCurrentBook, preprocessOnOpen, setPreprocessOnOpen, updateBookPreprocessed, syncCloudBooks, loading: appSetupLoading, loadedOwnerId: appSetupOwnerId } = useAppSetup({
+    const {
+        books,
+        setBooks,
+        currentBook,
+        setCurrentBook,
+        preprocessOnOpen,
+        setPreprocessOnOpen,
+        updateBookPreprocessed,
+        syncCloudBooks,
+        loading: appSetupLoading,
+        loadedOwnerId: appSetupOwnerId,
+    } = useAppSetup({
         ownerId: activeOwnerId,
         ownerReady: !loading && ownerMigrationReady,
         user,
@@ -98,6 +117,7 @@ function AppContent() {
         'FFSans-Medium': Inter_500Medium,
         'FFSans-SemiBold': Inter_600SemiBold,
         'FFSans-Bold': Inter_700Bold,
+        'FFSans-ExtraBold': Inter_800ExtraBold,
         'FFDisplay-Regular': Fraunces_400Regular,
         'FFDisplay-Medium': Fraunces_500Medium,
         'FFDisplay-Italic': Fraunces_400Regular_Italic,
@@ -124,453 +144,241 @@ function AppContent() {
     }, [appReady]);
 
     useEffect(() => {
-        if (!appReady) {
-            return undefined;
-        }
-
+        if (!appReady) return undefined;
         let cleanup = null;
         let isActive = true;
-
         loadRuntimeInterfaceLanguage()
             .catch((error) => {
                 console.warn('[App] Failed to load interface language for overlay:', error?.message ?? error);
             })
             .finally(() => {
-                if (isActive) {
-                    cleanup = initializeOverlayLookupBridge();
-                }
+                if (isActive) cleanup = initializeOverlayLookupBridge();
             });
-
-        return () => {
-            isActive = false;
-            cleanup?.();
-        };
+        return () => { isActive = false; cleanup?.(); };
     }, [appReady]);
 
     useEffect(() => {
-        if (loading) {
-            setOwnerMigrationReady(false);
-            return undefined;
-        }
-
+        if (loading) { setOwnerMigrationReady(false); return undefined; }
         let isActive = true;
         setOwnerMigrationReady(false);
-
         const transitionOwner = async () => {
             const previousOwnerId = getActiveOwnerId();
             const nextOwnerId = getLocalOwnerId(user);
             const authEvent = user?.id ? 'SESSION_RESTORED' : 'SIGNED_OUT';
-
             try {
                 const migrationStatus = await getLegacyMigrationStatus({ user });
                 const hasGuestData = await hasLocalUserData(GUEST_OWNER_ID);
-                if (!isActive) {
-                    return;
-                }
-
+                if (!isActive) return;
                 const transitionResult = await transitionLocalOwner({
-                    previousOwnerId,
-                    nextOwnerId,
-                    authEvent,
-                    user,
-                    hasGuestData,
-                    hasRemoteData: false,
+                    previousOwnerId, nextOwnerId, authEvent, user,
+                    hasGuestData, hasRemoteData: false,
                     hasLegacyDecisionRequired: migrationStatus.requiresDecision,
                 });
-                if (!isActive) {
-                    return;
-                }
-
+                if (!isActive) return;
                 if (transitionResult.status === 'blocked') {
                     const reason = transitionResult.reason === 'guest-data'
                         ? 'Guest local data requires an explicit ownership decision before cloud sync resumes.'
                         : 'Legacy local data requires an explicit migration decision before cloud sync resumes.';
                     console.warn(`[App] ${reason}`);
                 }
-
                 setOwnerMigrationReady(true);
             } catch (error) {
-                if (!isActive) {
-                    return;
-                }
-
+                if (!isActive) return;
                 await transitionLocalOwner({
-                    previousOwnerId,
-                    nextOwnerId,
-                    authEvent: `${authEvent}:ERROR`,
-                    user,
-                    hasGuestData: false,
-                    hasRemoteData: false,
+                    previousOwnerId, nextOwnerId, authEvent: `${authEvent}:ERROR`,
+                    user, hasGuestData: false, hasRemoteData: false,
                     hasLegacyDecisionRequired: Boolean(user?.id),
                 });
-                if (!isActive) {
-                    return;
-                }
-
+                if (!isActive) return;
                 setOwnerMigrationReady(true);
-                console.warn('[App] Legacy local data migration check failed; cloud sync remains paused:', error?.message ?? error);
+                console.warn('[App] Legacy local data migration check failed:', error?.message ?? error);
             }
         };
-
         transitionOwner();
-
-        return () => {
-            isActive = false;
-        };
+        return () => { isActive = false; };
     }, [loading, user?.id]);
 
     useEffect(() => {
-        if (
-            loading
-            || !ownerMigrationReady
-            || !appOwnerStateReady
-            || ownershipBlocked
-            || pendingOwnershipDecision
-            || syncPaused
-            || !user?.id
-        ) {
-            return;
-        }
-
-        if (activeOwnerId !== user.id) {
-            return;
-        }
-
-        syncUserDataFromCloud({
-            user,
-            ownerId: activeOwnerId,
-            generation: syncGeneration,
-        }).catch((error) => {
-            if (isStaleSyncGenerationError(error)) {
-                return;
-            }
-            console.warn('[App] User data sync failed:', error?.message ?? error);
-        });
-    }, [
-        activeOwnerId,
-        appOwnerStateReady,
-        loading,
-        ownerMigrationReady,
-        ownershipBlocked,
-        pendingOwnershipDecision,
-        syncGeneration,
-        syncPaused,
-        user?.id,
-    ]);
+        if (loading || !ownerMigrationReady || !appOwnerStateReady || ownershipBlocked
+            || pendingOwnershipDecision || syncPaused || !user?.id) return;
+        if (activeOwnerId !== user.id) return;
+        syncUserDataFromCloud({ user, ownerId: activeOwnerId, generation: syncGeneration })
+            .catch((error) => {
+                if (isStaleSyncGenerationError(error)) return;
+                console.warn('[App] User data sync failed:', error?.message ?? error);
+            });
+    }, [activeOwnerId, appOwnerStateReady, loading, ownerMigrationReady,
+        ownershipBlocked, pendingOwnershipDecision, syncGeneration, syncPaused, user?.id]);
 
     useEffect(() => {
-        if (
-            loading
-            || !ownerMigrationReady
-            || !appOwnerStateReady
-            || ownershipBlocked
-            || pendingOwnershipDecision
-            || syncPaused
-            || !user?.id
-            || activeOwnerId !== user.id
-        ) {
-            return undefined;
-        }
-
-        let syncTimer = null;
-        let scheduledSyncAt = null;
-        let syncInFlight = false;
-        let rerunAfterCurrentSync = false;
+        if (loading || !ownerMigrationReady || !appOwnerStateReady || ownershipBlocked
+            || pendingOwnershipDecision || syncPaused || !user?.id || activeOwnerId !== user.id) return undefined;
+        let syncTimer = null, scheduledSyncAt = null, syncInFlight = false, rerunAfterCurrentSync = false;
         const scheduleQueuedSync = (delayMs = DEFAULT_USER_DATA_SYNC_DELAY_MS) => {
             const nextRunAt = Date.now() + delayMs;
-            if (syncTimer && scheduledSyncAt && scheduledSyncAt <= nextRunAt) {
-                return;
-            }
-
-            if (syncTimer) {
-                clearTimeout(syncTimer);
-            }
-
+            if (syncTimer && scheduledSyncAt && scheduledSyncAt <= nextRunAt) return;
+            if (syncTimer) clearTimeout(syncTimer);
             scheduledSyncAt = nextRunAt;
             syncTimer = setTimeout(runQueuedSync, Math.max(0, nextRunAt - Date.now()));
         };
-
         const runQueuedSync = () => {
-            syncTimer = null;
-            scheduledSyncAt = null;
-            if (syncInFlight) {
-                rerunAfterCurrentSync = true;
-                return;
-            }
-
+            syncTimer = null; scheduledSyncAt = null;
+            if (syncInFlight) { rerunAfterCurrentSync = true; return; }
             syncInFlight = true;
-            syncUserDataFromCloud({
-                user,
-                ownerId: activeOwnerId,
-                generation: syncGeneration,
-            })
-                .catch((error) => {
-                    if (isStaleSyncGenerationError(error)) {
-                        return;
-                    }
-                    console.warn('[App] Queued user data sync failed:', error?.message ?? error);
-                })
-                .finally(() => {
-                    syncInFlight = false;
-                    if (rerunAfterCurrentSync) {
-                        rerunAfterCurrentSync = false;
-                        scheduleQueuedSync();
-                    }
-                });
+            syncUserDataFromCloud({ user, ownerId: activeOwnerId, generation: syncGeneration })
+                .catch((error) => { if (isStaleSyncGenerationError(error)) return; console.warn('[App] Queued sync failed:', error?.message ?? error); })
+                .finally(() => { syncInFlight = false; if (rerunAfterCurrentSync) { rerunAfterCurrentSync = false; scheduleQueuedSync(); } });
         };
-
         const unsubscribe = subscribeUserDataSyncRequests((request) => {
-            scheduleQueuedSync(
-                USER_DATA_SYNC_DELAY_BY_REASON[request?.reason] ?? DEFAULT_USER_DATA_SYNC_DELAY_MS
-            );
+            scheduleQueuedSync(USER_DATA_SYNC_DELAY_BY_REASON[request?.reason] ?? DEFAULT_USER_DATA_SYNC_DELAY_MS);
         });
-
-        return () => {
-            if (syncTimer) {
-                clearTimeout(syncTimer);
-            }
-            scheduledSyncAt = null;
-            unsubscribe();
-        };
-    }, [
-        activeOwnerId,
-        appOwnerStateReady,
-        loading,
-        ownerMigrationReady,
-        ownershipBlocked,
-        pendingOwnershipDecision,
-        syncGeneration,
-        syncPaused,
-        user,
-        user?.id,
-    ]);
+        return () => { if (syncTimer) clearTimeout(syncTimer); scheduledSyncAt = null; unsubscribe(); };
+    }, [activeOwnerId, appOwnerStateReady, loading, ownerMigrationReady,
+        ownershipBlocked, pendingOwnershipDecision, syncGeneration, syncPaused, user, user?.id]);
 
     useEffect(() => {
-        if (user?.id && activeOwnerId !== user.id) {
-            setCurrentBook(null);
-            setBooks([]);
-        }
+        if (user?.id && activeOwnerId !== user.id) { setCurrentBook(null); setBooks([]); }
     }, [activeOwnerId, setBooks, setCurrentBook, user?.id]);
 
     const handleOwnershipDecision = async (action) => {
-        if (!pendingOwnershipDecision || localDataDecisionBusy) {
-            return;
-        }
-
+        if (!pendingOwnershipDecision || localDataDecisionBusy) return;
         setLocalDataDecisionBusy(true);
         try {
-            await applyOwnershipDecision({
-                decision: pendingOwnershipDecision,
-                action,
-                user,
-            });
+            await applyOwnershipDecision({ decision: pendingOwnershipDecision, action, user });
         } catch (error) {
             Alert.alert(
                 translate(getRuntimeInterfaceLanguage(), 'localData.decisionFailedTitle'),
                 error?.message || translate(getRuntimeInterfaceLanguage(), 'localData.decisionFailedBody')
             );
-        } finally {
-            setLocalDataDecisionBusy(false);
-        }
+        } finally { setLocalDataDecisionBusy(false); }
     };
 
     useEffect(() => {
-        if (
-            loading
-            || !ownerMigrationReady
-            || !appOwnerStateReady
-            || user?.id
-            || activeOwnerId !== GUEST_OWNER_ID
-            || ownershipBlocked
-            || pendingOwnershipDecision
-            || !syncPaused
-        ) {
-            return;
-        }
-
+        if (loading || !ownerMigrationReady || !appOwnerStateReady || user?.id
+            || activeOwnerId !== GUEST_OWNER_ID || ownershipBlocked || pendingOwnershipDecision || !syncPaused) return;
         resumeCloudSync();
-    }, [
-        activeOwnerId,
-        appOwnerStateReady,
-        loading,
-        ownerMigrationReady,
-        ownershipBlocked,
-        pendingOwnershipDecision,
-        syncPaused,
-        user?.id,
-    ]);
+    }, [activeOwnerId, appOwnerStateReady, loading, ownerMigrationReady,
+        ownershipBlocked, pendingOwnershipDecision, syncPaused, user?.id]);
 
     useEffect(() => {
-        if (
-            loading
-            || !ownerMigrationReady
-            || !appOwnerStateReady
-            || !user?.id
-            || activeOwnerId !== user.id
-            || ownershipBlocked
-            || pendingOwnershipDecision
-            || !syncPaused
-        ) {
-            return;
-        }
-
+        if (loading || !ownerMigrationReady || !appOwnerStateReady || !user?.id
+            || activeOwnerId !== user.id || ownershipBlocked || pendingOwnershipDecision || !syncPaused) return;
         resumeCloudSync();
-    }, [
-        activeOwnerId,
-        appOwnerStateReady,
-        loading,
-        ownerMigrationReady,
-        ownershipBlocked,
-        pendingOwnershipDecision,
-        syncPaused,
-        user?.id,
-    ]);
+    }, [activeOwnerId, appOwnerStateReady, loading, ownerMigrationReady,
+        ownershipBlocked, pendingOwnershipDecision, syncPaused, user?.id]);
 
     useEffect(() => {
-        if (
-            loading
-            || !ownerMigrationReady
-            || !appOwnerStateReady
-            || ownershipBlocked
-            || pendingOwnershipDecision
-        ) {
-            return;
-        }
+        if (loading || !ownerMigrationReady || !appOwnerStateReady || ownershipBlocked || pendingOwnershipDecision) return;
+        if (user?.id && (syncPaused || activeOwnerId !== user.id)) return;
+        syncCloudBooks({ user, ownerId: activeOwnerId, generation: syncGeneration })
+            .catch((error) => { if (isStaleSyncGenerationError(error)) return; console.warn('[App] Cloud book sync failed:', error); });
+    }, [activeOwnerId, appOwnerStateReady, loading, ownerMigrationReady, ownershipBlocked,
+        pendingOwnershipDecision, syncCloudBooks, syncGeneration, syncPaused, user?.id]);
 
-        if (user?.id && (syncPaused || activeOwnerId !== user.id)) {
-            return;
-        }
-
-        syncCloudBooks({
-            user,
-            ownerId: activeOwnerId,
-            generation: syncGeneration,
-        }).catch((error) => {
-            if (isStaleSyncGenerationError(error)) {
-                return;
-            }
-            console.warn('[App] Cloud book sync failed:', error);
-        });
-    }, [
-        activeOwnerId,
-        appOwnerStateReady,
-        loading,
-        ownerMigrationReady,
-        ownershipBlocked,
-        pendingOwnershipDecision,
-        syncCloudBooks,
-        syncGeneration,
-        syncPaused,
-        user?.id,
-    ]);
-
-    if (!appReady) {
-        return null;
-    }
+    if (!appReady) return null;
 
     return (
         <AppProvider user={user}>
           <VocabWordsProvider>
-            <ThemedAppShell
+            <BooksProvider
                 books={books}
                 setBooks={setBooks}
                 currentBook={currentBook}
                 setCurrentBook={setCurrentBook}
-                setPreprocessOnOpen={setPreprocessOnOpen}
-                preprocessOnOpen={preprocessOnOpen}
                 user={user}
                 signOut={signOut}
                 updateUsername={updateUsername}
                 updateProfile={updateProfile}
                 updateBookPreprocessed={updateBookPreprocessed}
-                isReaderFocusMode={isReaderFocusMode}
-                setIsReaderFocusMode={setIsReaderFocusMode}
-                pendingOwnershipDecision={pendingOwnershipDecision}
-                localDataDecisionBusy={localDataDecisionBusy}
-                onOwnershipDecision={handleOwnershipDecision}
-            />
+                preprocessOnOpen={preprocessOnOpen}
+                setPreprocessOnOpen={setPreprocessOnOpen}
+            >
+              <ThemedAppShell
+                  setIsReaderFocusMode={setIsReaderFocusMode}
+                  pendingOwnershipDecision={pendingOwnershipDecision}
+                  localDataDecisionBusy={localDataDecisionBusy}
+                  onOwnershipDecision={handleOwnershipDecision}
+              />
+            </BooksProvider>
           </VocabWordsProvider>
         </AppProvider>
     );
 }
 
-function ThemedAppShell({
-    books,
-    setBooks,
-    currentBook,
-    setCurrentBook,
-    setPreprocessOnOpen,
-    preprocessOnOpen,
-    user,
-    signOut,
-    updateUsername,
-    updateProfile,
-    updateBookPreprocessed,
-    isReaderFocusMode,
-    setIsReaderFocusMode,
-    pendingOwnershipDecision,
-    localDataDecisionBusy,
-    onOwnershipDecision,
-}) {
+function ThemedAppShell({ setIsReaderFocusMode, pendingOwnershipDecision, localDataDecisionBusy, onOwnershipDecision }) {
+    const navigationRef = useRef(null);
     const { colors: themeColors, isDarkMode } = useTheme();
+    const {
+        books,
+        setBooks,
+        currentBook,
+        preprocessOnOpen,
+        setPreprocessOnOpen,
+        updateBookPreprocessed,
+        user,
+    } = useBooks();
     const appBackground = themeColors.bgPage;
     const navigationTheme = useMemo(() => ({
         ...DefaultTheme,
         colors: {
             ...DefaultTheme.colors,
-            primary: themeColors.inkSlate,
-            background: appBackground,
-            card: appBackground,
+            primary: themeColors.accent,
+            background: 'transparent',
+            card: 'transparent',
             text: themeColors.text,
-            border: themeColors.border,
-            notification: themeColors.inkSlate,
+            border: 'transparent',
+            notification: themeColors.accent,
         },
-    }), [appBackground, themeColors]);
-    const sceneContainerStyle = useMemo(() => ({
-        backgroundColor: appBackground,
-    }), [appBackground]);
+    }), [themeColors]);
 
     useEffect(() => {
         SystemUI.setBackgroundColorAsync(appBackground).catch(() => {});
     }, [appBackground]);
 
+    // Floating OCR widget → tapping a word on-screen deep-links into the OCR screen
+    useEffect(() => {
+        const subscription = addOcrWordSelectedListener((event = {}) => {
+            const selectedText = String(event.selectedText || '').trim();
+            if (!selectedText) return;
+
+            navigationRef.current?.navigate?.('ScreenshotOcr', {
+                floatingSelection: {
+                    selectionId: event.selectionId,
+                    selectedText,
+                    selectedLineText: String(event.selectedLineText || '').trim(),
+                    selectedKind: event.selectedKind,
+                    selectedBox: event.selectedBox,
+                    sourceBookTitle: event.sourceBookTitle || 'Floating OCR',
+                },
+            });
+        });
+
+        return () => subscription.remove();
+    }, []);
+
     return (
         <TranslatorProvider>
-            <StatusBar
-                style={isDarkMode ? 'light' : 'dark'}
-                backgroundColor={appBackground}
-                translucent={false}
-            />
-            <NavigationContainer theme={navigationTheme}>
-                <Tab.Navigator
-                    sceneContainerStyle={sceneContainerStyle}
-                    screenOptions={(props) => tabScreenOptions(props, {
-                        hideTabChrome: isReaderFocusMode,
-                        themeColors,
-                    })}
+            <StatusBar style={isDarkMode ? 'light' : 'dark'} backgroundColor="transparent" translucent />
+            <NavigationContainer ref={navigationRef} theme={navigationTheme}>
+                <Stack.Navigator
+                    screenOptions={{
+                        headerShown: false,
+                        animation: 'slide_from_right',
+                        contentStyle: { backgroundColor: 'transparent' },
+                    }}
                 >
-                    <Tab.Screen name="Home">
-                        {props => (
-                            <Home
-                                {...props}
-                                books={books}
-                                setBooks={setBooks}
-                                currentBook={currentBook}
-                                setCurrentBook={setCurrentBook}
-                                setPreprocessOnOpen={setPreprocessOnOpen}
-                                user={user}
-                            />
-                        )}
-                    </Tab.Screen>
-                    <Tab.Screen name="Read">
-                        {props => (
+                    <Stack.Screen name="Home" component={Home} />
+                    <Stack.Screen name="Library" component={Library} />
+                    <Stack.Screen
+                        name="Reader"
+                        children={(props) => (
                             <Read
                                 {...props}
                                 books={books}
                                 setBooks={setBooks}
                                 currentBook={currentBook}
-                                preprocessOnOpen={preprocessOnOpen}
                                 user={user}
+                                preprocessOnOpen={preprocessOnOpen}
                                 setIsReaderFocusMode={setIsReaderFocusMode}
                                 onPreprocessComplete={(uri) => {
                                     setPreprocessOnOpen(false);
@@ -578,37 +386,15 @@ function ThemedAppShell({
                                 }}
                             />
                         )}
-                    </Tab.Screen>
-                    <Tab.Screen name="Learn">
-                        {props => (
-                            <Learn
-                                {...props}
-                                books={books}
-                                user={user}
-                            />
-                        )}
-                    </Tab.Screen>
-                    <Tab.Screen name="Write">
-                        {props => (
-                            <Write
-                                {...props}
-                                user={user}
-                            />
-                        )}
-                    </Tab.Screen>
-                    <Tab.Screen name="Profile">
-                        {props => (
-                            <Profile
-                                {...props}
-                                user={user}
-                                books={books}
-                                signOut={signOut}
-                                updateUsername={updateUsername}
-                                updateProfile={updateProfile}
-                            />
-                        )}
-                    </Tab.Screen>
-                </Tab.Navigator>
+                    />
+                    <Stack.Screen name="ScreenshotOcr" component={ScreenshotOcr} />
+                    <Stack.Screen name="Write" component={Write} />
+                    <Stack.Screen name="WritingCanvas" component={WritingCanvas} />
+                    <Stack.Screen name="Learn" component={Learn} />
+                    <Stack.Screen name="VocabDetail" component={VocabDetail} />
+                    <Stack.Screen name="Flashcards" component={Flashcards} />
+                    <Stack.Screen name="Profile" component={Profile} />
+                </Stack.Navigator>
             </NavigationContainer>
             <LocalDataDecisionModal
                 decision={pendingOwnershipDecision}

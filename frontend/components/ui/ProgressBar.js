@@ -1,5 +1,7 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Gradients } from '../../theme';
 import { radii, useTheme } from '../../theme/tokens';
 import { spacing } from '../../theme/spacing';
 import { textStyles } from '../../theme/typography';
@@ -12,15 +14,17 @@ const ProgressBar = ({
   max = 100,
   label,
   detail,
-  height = 10,
+  height = 3,
   fillColor,
   trackColor,
+  gradient = true,
   style,
 }) => {
-  const { colors } = useTheme();
+  const { colors, isDarkMode } = useTheme();
   const normalized = progress != null ? clamp(progress) : clamp((value ?? 0) / max);
-  const resolvedFillColor = fillColor ?? colors.accent;
-  const resolvedTrackColor = trackColor ?? colors.surfaceStrong;
+  // --reader-progress-track: rgba(154,139,143,0.24) light / rgba(255,255,255,0.14) dusk
+  const resolvedTrackColor = trackColor ?? colors.readerProgressTrack;
+  const gradientColors = isDarkMode ? Gradients.progressDusk : Gradients.progress;
 
   return (
     <View style={style}>
@@ -31,15 +35,21 @@ const ProgressBar = ({
         </View>
       ) : null}
       <View style={[styles.track, { height, backgroundColor: resolvedTrackColor }]}>
-        <View
-          style={[
-            styles.fill,
-            {
-              width: `${normalized * 100}%`,
-              backgroundColor: resolvedFillColor,
-            },
-          ]}
-        />
+        {gradient && !fillColor ? (
+          <LinearGradient
+            colors={gradientColors}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={[styles.fill, { width: `${normalized * 100}%` }]}
+          />
+        ) : (
+          <View
+            style={[
+              styles.fill,
+              { width: `${normalized * 100}%`, backgroundColor: fillColor ?? colors.accent },
+            ]}
+          />
+        )}
       </View>
     </View>
   );

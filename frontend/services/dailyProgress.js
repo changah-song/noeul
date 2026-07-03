@@ -6,13 +6,14 @@ const getDailyProgressStorageKey = (ownerId) => (
   makeScopedStorageKey(ownerId || GUEST_OWNER_ID, 'daily-progress')
 );
 
-const getTodayKey = () => {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
+const getDateKey = (date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 };
+
+const getTodayKey = () => getDateKey(new Date());
 
 export const migrateLegacyDailyProgressToGuest = async () => {
   const key = getDailyProgressStorageKey(GUEST_OWNER_ID);
@@ -86,6 +87,28 @@ export const addReadingMillis = async (ownerId, millis) => {
     readingMillis: Math.max(0, (today.readingMillis ?? 0) + millis),
   };
   await writeStore(ownerId, store);
+};
+
+// Consecutive days (ending today or yesterday) with any recorded activity.
+// A quiet day today doesn't break yesterday's streak.
+export const getDayStreak = async (ownerId) => {
+  const store = await readStore(ownerId);
+  const hasActivity = (entry) => (
+    (entry?.readingMillis ?? 0) > 0 || (entry?.wordsStudied ?? 0) > 0
+  );
+
+  const cursor = new Date();
+  if (!hasActivity(store[getDateKey(cursor)])) {
+    cursor.setDate(cursor.getDate() - 1);
+  }
+
+  let streak = 0;
+  while (hasActivity(store[getDateKey(cursor)])) {
+    streak += 1;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+
+  return streak;
 };
 
 export const incrementWordsStudied = async (ownerId, count = 1) => {

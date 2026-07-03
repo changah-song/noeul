@@ -1,0 +1,58 @@
+/* =========================================================================
+   Noeul — Spacing, radii, shadows, motion
+   Soft, generous corners (glass cards are 20px), luminous shadows tinted
+   with the sunset, and quiet, quick motion. No celebration — light, not confetti.
+   ========================================================================= */
+
+:root {
+  /* ---- Spacing scale (px) ---- */
+  --space-xxs: 4px;
+  --space-xs:  7px;
+  --space-sm:  11px;
+  --space-md:  15px;
+  --space-lg:  19px;
+  --space-xl:  24px;
+  --space-xxl: 30px;
+  --space-xxxl: 40px;
+
+  /* ---- Screen insets ---- */
+  --inset-screen-x:  20px;
+  --inset-screen-top: 18px;
+  --inset-screen-bottom: 26px;
+
+  /* ---- Radii — soft & rounded ---- */
+  --radius-xs:   8px;    /* chips, badges, small pills */
+  --radius-sm:   11px;   /* inputs, icon tiles */
+  --radius-md:   14px;   /* buttons, module blocks */
+  --radius-lg:   20px;   /* glass cards, sheets */
+  --radius-xl:   28px;   /* large sheets, hero panels */
+  --radius-frame: 50px;  /* phone frame */
+  --radius-pill: 999px;  /* progress fills, toggles, CTAs */
+
+  /* ---- Shadows — luminous, sunset-tinted ---- */
+  --shadow-none:  none;
+  --shadow-glass: 0 10px 30px rgba(80, 30, 30, 0.10);   /* frosted card lift */
+  --shadow-soft:  0 18px 44px rgba(43, 20, 26, 0.16);   /* sheets, popovers */
+  --shadow-cover: 0 18px 34px rgba(0, 0, 0, 0.34);      /* book-cover lift */
+  --shadow-accent: 0 8px 18px rgba(224, 101, 74, 0.40); /* glow under accent buttons/FABs */
+  --shadow-menu:  0 8px 18px rgba(43, 20, 26, 0.16);    /* popover menus */
+  --shadow-phone: 0 36px 80px rgba(0, 0, 0, 0.55);      /* device frame */
+
+  /* ---- Borders ---- */
+  --border-width: 1px;  /* always 1px hairlines */
+
+  /* ---- Motion ---- */
+  --ease:           cubic-bezier(0.4, 0, 0.2, 1); /* @kind other */
+  --dur-fast:       150ms; /* @kind other */
+  --dur-sheet:      275ms; /* @kind other */
+  --dur-tab:        200ms; /* @kind other */
+  --opacity-pressed: 0.82; /* @kind other */
+  --opacity-disabled: 0.5; /* @kind other */
+
+  /* ---- Layout constants (app) ---- */
+  --appbar-height: 52px;
+  --reader-header-height: 56px;
+  --fab-size: 52px;
+  --screen-maxw: 560px;
+  --cover-aspect: 0.6667; /* @kind other */
+}

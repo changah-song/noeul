@@ -1,0 +1,9 @@
+/* =========================================================================
+   FluentFable — Webfonts
+   The brand uses three Google Fonts. The app bundles them as
+   FFSans (Inter), FFDisplay (Fraunces) and FFSerif (Noto Serif KR);
+   on the web they load straight from Google Fonts. Consumers with an
+   internet connection get the real faces via this @import.
+   ========================================================================= */
+
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=Inter:wght@400;500;600;700&family=Noto+Serif+KR:wght@400;500;600;700&display=swap');

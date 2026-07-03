@@ -1,20 +1,24 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, Pressable } from 'react-native';
+import { View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, Pressable, Modal } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Feather, MaterialIcons } from '@expo/vector-icons';
-import { Slider } from 'react-native-elements';
+import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 
 import TopSection from '../components/Read/TopSection/TopSection';
 import TocDrawer from '../components/Read/TocDrawer';
+import ReturnNote from '../components/Read/ReturnNote';
+import ClosePrompt from '../components/Read/ClosePrompt';
+import NotesLog from '../components/Read/NotesLog';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
 import NativeEpubReaderView from '../modules/native-epub-reader/src/NativeEpubReaderView';
 import {
     PREPROCESS_VERSION,
+    getBookNotesForBook,
     getBookPreprocessChapter,
     getSavedWords,
+    insertBookNote,
     insertCacheEntries,
     insertBookIndexEntries,
     lookupBookHighlightSurfaces,
@@ -42,7 +46,15 @@ import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
 import { requestUserDataSync } from '../services/userDataSyncQueue';
 import { normalizeBookLanguage, normalizeInterfaceLanguageCode } from '../constants/languages';
 import { getProficiencyLevelForLanguage } from '../constants/proficiencyLevels';
-import { createNativeReaderThemeTokens, radii, spacing, textStyles, useTheme } from '../theme';
+import { createNativeReaderThemeTokens, elevation, fontFamilies, radii, spacing, textStyles } from '../theme';
+import {
+    DEFAULT_READER_THEME,
+    getReaderThemeColors,
+    isReaderThemeDark,
+    nativeReaderThemeName,
+    normalizeReaderTheme,
+} from '../theme/readerThemes';
+import { ProgressBar, Screen, Switch } from '../components/ui';
 
 const LOOKUP_HINT_DISMISSED_KEY = 'lookupHintDismissed';
 const READER_SETTINGS_KEY = 'readerSettings';
@@ -50,11 +62,24 @@ const READER_SETTINGS_UPDATED_AT_KEY = 'readerSettingsUpdatedAt';
 const DEFAULT_READER_SETTINGS = {
     fontSize: 18,
     isDarkMode: false,
+    readerTheme: DEFAULT_READER_THEME,
     lineSpacing: 2.05,
-    brightness: 0.62,
+    heatMapEnabled: true,
+    rootWordAnalysisEnabled: true,
+    scrollMode: 'paged', // 'paged' | 'vertical'
+    focusModeEnabled: false,
+    focusNavStyle: 'buttons', // 'buttons' | 'tap'
+    focusSentenceCount: 1,
 };
-const FONT_SIZE_MIN = 12;
-const FONT_SIZE_MAX = 30;
+const FOCUS_SENTENCE_MIN = 1;
+const FOCUS_SENTENCE_MAX = 5;
+const READER_THEME_OPTIONS = [
+    { value: 'paper', labelKey: 'read.themePaper' },
+    { value: 'sepia', labelKey: 'read.themeSepia' },
+    { value: 'dark', labelKey: 'read.themeDark' },
+];
+const FONT_SIZE_MIN = 15;
+const FONT_SIZE_MAX = 24;
 const LINE_SPACING_STEPS = [
     { value: 1.4, label: 'Compact' },
     { value: 1.65, label: 'Regular' },
@@ -63,8 +88,6 @@ const LINE_SPACING_STEPS = [
     { value: 2.3, label: 'Airy' },
     { value: 2.6, label: 'Wide' },
 ];
-const BRIGHTNESS_MIN = 0.2;
-const BRIGHTNESS_MAX = 1;
 const BOOK_LEVEL_LABELS = {
     en: {
         1: 'A1',
@@ -265,6 +288,38 @@ const clampNumber = (value, min, max, fallback = min) => {
     return Math.min(Math.max(numeric, min), max);
 };
 
+// Compact "time ago" label for the welcome-back meta row and notes log.
+const formatRelativeTime = (isoString) => {
+    if (!isoString) {
+        return '';
+    }
+    const then = new Date(isoString).getTime();
+    if (!Number.isFinite(then)) {
+        return '';
+    }
+    const diffMs = Date.now() - then;
+    const minute = 60 * 1000;
+    const hour = 60 * minute;
+    const day = 24 * hour;
+
+    if (diffMs < minute) {
+        return 'just now';
+    }
+    if (diffMs < hour) {
+        const minutes = Math.round(diffMs / minute);
+        return `${minutes} min ago`;
+    }
+    if (diffMs < day) {
+        const hours = Math.round(diffMs / hour);
+        return `${hours} ${hours === 1 ? 'hour' : 'hours'} ago`;
+    }
+    if (diffMs < 7 * day) {
+        const days = Math.round(diffMs / day);
+        return `${days} ${days === 1 ? 'day' : 'days'} ago`;
+    }
+    return new Date(isoString).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+};
+
 const nearestLineSpacingIndex = (value) => {
     const spacing = Number(value);
     if (!Number.isFinite(spacing)) {
@@ -453,13 +508,7 @@ const Read = ({
     route,
 }) => {
     const { t, language: interfaceLanguage } = useTranslation();
-    const { targetLanguage, levelsByLanguage, isDarkMode, setIsDarkMode } = useAppContext();
-    const { colors: themeColors } = useTheme();
-    const styles = useMemo(() => createStyles(themeColors), [themeColors]);
-    const nativeReaderThemeTokens = useMemo(
-        () => createNativeReaderThemeTokens(themeColors),
-        [themeColors]
-    );
+    const { targetLanguage, levelsByLanguage } = useAppContext();
     const { activeOwnerId, syncPaused, syncGeneration } = useLocalOwner();
     const [highlightedWord, setHighlightedWord] = useState('');
     const [highlightedWordContext, setHighlightedWordContext] = useState(null);
@@ -473,7 +522,6 @@ const Read = ({
     const [translationBannerTextPreview] = useState('');
     const [showLookupHint, setShowLookupHint] = useState(true);
     const [showSettings, setShowSettings] = useState(false);
-    const [showMenu, setShowMenu] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [savedWords, setSavedWords] = useState(null); // null = not yet loaded
     const [highlightTerms, setHighlightTerms] = useState(null);
@@ -483,6 +531,18 @@ const Read = ({
     const [readerLocationInfo, setReaderLocationInfo] = useState(null);
     const [toc, setToc] = useState([]);
     const [showToc, setShowToc] = useState(false);
+    // Reader continuity — welcome-back gate, notes log, and exit note prompt.
+    const [readerStage, setReaderStage] = useState('reading'); // 'return' | 'reading'
+    const [bookNotes, setBookNotes] = useState([]);
+    const [showNotesLog, setShowNotesLog] = useState(false);
+    const [showClosePrompt, setShowClosePrompt] = useState(false);
+    const returnGateBookRef = useRef(null);
+    // Focus mode — native drives the active sentence index; JS mirrors it for the
+    // control pill and sends prev/next intents to native via incrementing tokens.
+    const [focusIndex, setFocusIndex] = useState(0);
+    const [focusTotal, setFocusTotal] = useState(0);
+    const [focusPrevToken, setFocusPrevToken] = useState(0);
+    const [focusNextToken, setFocusNextToken] = useState(0);
     const [bookLoadState, setBookLoadState] = useState('idle');
     const [bookLoadError, setBookLoadError] = useState('');
     const [readerRetryKey, setReaderRetryKey] = useState(0);
@@ -558,6 +618,53 @@ const Read = ({
                 setSavedWords([]);
             });
     }, [activeBookLanguage, activeOwnerId]);
+
+    // Load this book's notes and decide whether to show the welcome-back gate.
+    // The gate appears only for in-progress books (existing progress or a note).
+    const reloadBookNotes = useCallback(async () => {
+        if (!currentBook) {
+            setBookNotes([]);
+            return [];
+        }
+        try {
+            const notes = await getBookNotesForBook({
+                ownerId: activeOwnerId,
+                bookUri: currentBook,
+                language: activeBookLanguage,
+            });
+            setBookNotes(notes);
+            return notes;
+        } catch (error) {
+            console.warn('[Read] Failed to load book notes:', error?.message ?? error);
+            setBookNotes([]);
+            return [];
+        }
+    }, [activeBookLanguage, activeOwnerId, currentBook]);
+
+    useEffect(() => {
+        if (!currentBook) {
+            returnGateBookRef.current = null;
+            setBookNotes([]);
+            setReaderStage('reading');
+            return;
+        }
+        if (returnGateBookRef.current === currentBook) {
+            return;
+        }
+        returnGateBookRef.current = currentBook;
+        let cancelled = false;
+
+        (async () => {
+            const notes = await reloadBookNotes();
+            if (cancelled) {
+                return;
+            }
+            const hasProgress = clampProgress(activeBook?.progress ?? 0) > 0;
+            setReaderStage(hasProgress || notes.length > 0 ? 'return' : 'reading');
+        })();
+
+        return () => { cancelled = true; };
+    }, [currentBook, activeBook?.progress, reloadBookNotes]);
 
     useEffect(() => {
         if (savedWords === null) {
@@ -680,7 +787,6 @@ const Read = ({
         setBookLoadState(currentBook ? 'loading' : 'idle');
         setBookLoadError('');
         setShowSettings(false);
-        setShowMenu(false);
         setIsFullscreen(false);
         setReaderRetryKey(0);
         setNativeReaderPackage(null);
@@ -846,6 +952,21 @@ const Read = ({
     const [readerSettingsLoaded, setReaderSettingsLoaded] = useState(false);
     const insets = useSafeAreaInsets();
 
+    // ── Reader theme (Paper / Sepia / Dark) — independent of the app theme ────
+    // Falls back to the legacy isDarkMode flag for settings saved before the
+    // three-way reader theme existed.
+    const readerTheme = normalizeReaderTheme(
+        settings.readerTheme ?? (settings.isDarkMode ? 'dark' : DEFAULT_READER_THEME)
+    );
+    const isReaderDark = isReaderThemeDark(readerTheme);
+    const nativeReaderTheme = nativeReaderThemeName(readerTheme);
+    const themeColors = useMemo(() => getReaderThemeColors(readerTheme), [readerTheme]);
+    const styles = useMemo(() => createStyles(themeColors), [themeColors]);
+    const nativeReaderThemeTokens = useMemo(
+        () => createNativeReaderThemeTokens(themeColors),
+        [themeColors]
+    );
+
     useEffect(() => {
         loadSettings();
     }, []);
@@ -913,15 +1034,14 @@ const Read = ({
             ]);
             if (savedSettings) {
                 const parsedSettings = JSON.parse(savedSettings);
-                if (typeof parsedSettings?.isDarkMode === 'boolean') {
-                    setIsDarkMode(parsedSettings.isDarkMode);
-                }
                 const nextSettings = {
                     ...DEFAULT_READER_SETTINGS,
                     ...parsedSettings,
-                    isDarkMode: typeof parsedSettings?.isDarkMode === 'boolean'
-                        ? parsedSettings.isDarkMode
-                        : isDarkMode,
+                    // Migrate the legacy dark-mode flag to the three-way reader theme.
+                    readerTheme: normalizeReaderTheme(
+                        parsedSettings?.readerTheme
+                        ?? (parsedSettings?.isDarkMode ? 'dark' : DEFAULT_READER_THEME)
+                    ),
                 };
                 readerSettingsRef.current = nextSettings;
                 setSettings(nextSettings);
@@ -1003,11 +1123,10 @@ const Read = ({
                     };
                     delete nextSettings.updatedAt;
                     delete nextSettings.updated_at;
-                    if (typeof nextSettings.isDarkMode === 'boolean') {
-                        setIsDarkMode(nextSettings.isDarkMode);
-                    } else {
-                        nextSettings.isDarkMode = isDarkMode;
-                    }
+                    nextSettings.readerTheme = normalizeReaderTheme(
+                        nextSettings.readerTheme
+                        ?? (nextSettings.isDarkMode ? 'dark' : DEFAULT_READER_THEME)
+                    );
 
                     if (!isMounted) {
                         return;
@@ -1043,16 +1162,12 @@ const Read = ({
         return () => {
             isMounted = false;
         };
-    }, [activeOwnerId, isDarkMode, readerSettingsLoaded, saveSettings, setIsDarkMode, syncGeneration, syncPaused, user]);
+    }, [activeOwnerId, readerSettingsLoaded, saveSettings, syncGeneration, syncPaused, user]);
 
-    const handleSettingChange = (key, value) => {
-        if (key === 'isDarkMode') {
-            setIsDarkMode(value);
-        }
+    const handleSettingsPatch = (patch) => {
         const newSettings = {
             ...settings,
-            isDarkMode,
-            [key]: value,
+            ...patch,
         };
         setHighlightedWord('');
         setHighlightedWordContext(null);
@@ -1063,19 +1178,9 @@ const Read = ({
         saveSettings(newSettings);
     };
 
-    useEffect(() => {
-        setSettings((current) => {
-            if (current.isDarkMode === isDarkMode) {
-                return current;
-            }
-            const nextSettings = {
-                ...current,
-                isDarkMode,
-            };
-            readerSettingsRef.current = nextSettings;
-            return nextSettings;
-        });
-    }, [isDarkMode]);
+    const handleSettingChange = (key, value) => {
+        handleSettingsPatch({ [key]: value });
+    };
 
     const dismissLookupHint = useCallback(async () => {
         setShowLookupHint(false);
@@ -1150,20 +1255,82 @@ const Read = ({
     });
     const progressPercent = Math.round(chapterProgress * 100);
     const progressLabel = `${progressPercent}%`;
-    const progressFillWidth = `${progressPercent}%`;
     const chapterIndexLabel = Number.isInteger(activeSpineIndex)
         ? `${t('read.chapter')} ${activeSpineIndex + 1}`
         : t('read.defaultTitle');
     const hasNamedChapterTitle = activeChapterTitle && activeChapterTitle !== chapterIndexLabel;
-    const headerLine1 = hasNamedChapterTitle ? chapterIndexLabel : activeChapterTitle;
-    const headerLine2 = hasNamedChapterTitle ? activeChapterTitle : null;
+    const headerTitleLine = hasNamedChapterTitle
+        ? `${chapterIndexLabel} · ${activeChapterTitle}`
+        : activeChapterTitle;
+    const headerMetaLine = [headerBookTitle, activeBook?.author].filter(Boolean).join(' · ');
+    const bookProgressPercent = Math.round(bookProgress * 100);
+    const hasFooterPageInfo = (
+        Number.isInteger(readerLocationInfo?.pageInChapter)
+        && Number.isInteger(readerLocationInfo?.pagesInChapter)
+        && readerLocationInfo.pagesInChapter > 0
+    );
+    const footerPageLabel = hasFooterPageInfo
+        ? `${t('read.pageProgress', {
+            page: readerLocationInfo.pageInChapter,
+            pages: readerLocationInfo.pagesInChapter,
+        })} · ${progressLabel}`
+        : progressLabel;
     const returnToScreen = route?.params?.returnTo === 'Learn' ? 'Learn' : 'Home';
-    const handleHeaderBack = useCallback(() => {
+
+    const navigateAway = useCallback(() => {
         setShowSettings(false);
-        setShowMenu(false);
         setShowToc(false);
+        setShowNotesLog(false);
+        setShowClosePrompt(false);
         navigation?.navigate?.(returnToScreen);
     }, [navigation, returnToScreen]);
+
+    // Leaving an actively-read book opens the "final thought" prompt first;
+    // otherwise (still on the welcome screen, or the book never loaded) leave.
+    const handleHeaderBack = useCallback(() => {
+        if (readerStage === 'reading' && bookLoadState === 'ready' && !!currentBook) {
+            setShowSettings(false);
+            setShowToc(false);
+            setShowClosePrompt(true);
+            return;
+        }
+        navigateAway();
+    }, [bookLoadState, currentBook, navigateAway, readerStage]);
+
+    const persistClosingNote = useCallback(async (text) => {
+        const trimmed = typeof text === 'string' ? text.trim() : '';
+        if (!trimmed || !currentBook) {
+            return;
+        }
+        const position = nativeRestorePositionRef.current || activeBook?.nativePosition || {};
+        try {
+            await insertBookNote({
+                ownerId: activeOwnerId,
+                bookUri: currentBook,
+                bookTitle: activeBook?.title ?? null,
+                language: activeBookLanguage,
+                text: trimmed,
+                position: {
+                    spineIndex: position.spineIndex,
+                    pageIndex: position.pageIndex,
+                    href: position.href,
+                    firstBlockId: position.firstBlockId,
+                },
+            });
+            reloadBookNotes();
+        } catch (error) {
+            console.warn('[Read] Failed to save closing note:', error?.message ?? error);
+        }
+    }, [activeBook, activeBookLanguage, activeOwnerId, currentBook, reloadBookNotes]);
+
+    const handleCloseSave = useCallback(async (text) => {
+        await persistClosingNote(text);
+        navigateAway();
+    }, [navigateAway, persistClosingNote]);
+
+    const handleCloseSkip = useCallback(() => {
+        navigateAway();
+    }, [navigateAway]);
 
     useEffect(() => {
         const unsubscribeFocus = navigation?.addListener?.('focus', () => {
@@ -2133,7 +2300,6 @@ const Read = ({
         }
 
         setShowSettings(false);
-        setShowMenu(false);
         setShowToc(false);
         navigation?.navigate?.('Home');
     }, [
@@ -2165,7 +2331,6 @@ const Read = ({
         bookLoadState === 'ready'
         && !!nativeReaderPackage
         && !highlightedWord
-        && !showMenu
         && !showSettings
         && !showToc
     );
@@ -2181,19 +2346,48 @@ const Read = ({
         LINE_SPACING_STEPS[LINE_SPACING_STEPS.length - 1].value,
         DEFAULT_READER_SETTINGS.lineSpacing
     );
-    const readerBrightness = clampNumber(
-        settings.brightness,
-        BRIGHTNESS_MIN,
-        BRIGHTNESS_MAX,
-        DEFAULT_READER_SETTINGS.brightness
-    );
-    const readerBrightnessDelta = readerBrightness - DEFAULT_READER_SETTINGS.brightness;
-    const readerBrightnessOverlayColor = readerBrightnessDelta < 0 ? '#000000' : '#ffffff';
-    const readerBrightnessOverlayOpacity = readerBrightnessDelta < 0
-        ? Math.min(0.28, (Math.abs(readerBrightnessDelta) / (DEFAULT_READER_SETTINGS.brightness - BRIGHTNESS_MIN)) * 0.28)
-        : Math.min(0.08, (readerBrightnessDelta / (BRIGHTNESS_MAX - DEFAULT_READER_SETTINGS.brightness)) * 0.08);
+    const heatMapEnabled = settings.heatMapEnabled !== false;
+    const rootWordAnalysisEnabled = settings.rootWordAnalysisEnabled !== false;
     const activeLineSpacingIndex = nearestLineSpacingIndex(readerLineSpacing);
     const activeLineSpacingLabel = lineSpacingLabel(readerLineSpacing);
+    // Focus mode and vertical scrolling are mutually exclusive layout modes.
+    const focusModeEnabled = settings.focusModeEnabled === true;
+    const verticalScrollEnabled = !focusModeEnabled && settings.scrollMode === 'vertical';
+    const focusNavStyle = settings.focusNavStyle === 'tap' ? 'tap' : 'buttons';
+    const focusSentenceCount = Math.round(clampNumber(
+        settings.focusSentenceCount,
+        FOCUS_SENTENCE_MIN,
+        FOCUS_SENTENCE_MAX,
+        DEFAULT_READER_SETTINGS.focusSentenceCount
+    ));
+    const readerRenderMode = focusModeEnabled
+        ? 'focus'
+        : (verticalScrollEnabled ? 'vertical' : 'paged');
+    const handleToggleFocusMode = (value) => {
+        const patch = { focusModeEnabled: value };
+        if (value) {
+            patch.scrollMode = 'paged';
+        }
+        handleSettingsPatch(patch);
+    };
+    const handleToggleVerticalScroll = (value) => {
+        const patch = { scrollMode: value ? 'vertical' : 'paged' };
+        if (value) {
+            patch.focusModeEnabled = false;
+        }
+        handleSettingsPatch(patch);
+    };
+    const handleFocusSentenceStep = (direction) => {
+        handleSettingChange(
+            'focusSentenceCount',
+            Math.round(clampNumber(
+                focusSentenceCount + direction,
+                FOCUS_SENTENCE_MIN,
+                FOCUS_SENTENCE_MAX,
+                DEFAULT_READER_SETTINGS.focusSentenceCount
+            ))
+        );
+    };
     const handleFontSizeStep = (direction) => {
         handleSettingChange(
             'fontSize',
@@ -2209,58 +2403,123 @@ const Read = ({
         );
         handleSettingChange('lineSpacing', LINE_SPACING_STEPS[nextIndex].value);
     };
-    const handleBrightnessChange = (value) => {
-        const nextBrightness = clampNumber(value, BRIGHTNESS_MIN, BRIGHTNESS_MAX, DEFAULT_READER_SETTINGS.brightness);
-        handleSettingChange('brightness', Number(nextBrightness.toFixed(2)));
+
+    // ── Reader continuity — welcome-back + notes log data ─────────────────────
+    const chapterTitleForSpineIndex = (spineIndex) => {
+        if (!Number.isInteger(spineIndex)) {
+            return '';
+        }
+        if (flattenedToc.length > 0) {
+            const tocItem = flattenedToc.reduce((activeItem, item) => {
+                if (
+                    item?.disabled
+                    || !Number.isInteger(item?.spineIndex)
+                    || item.spineIndex > spineIndex
+                ) {
+                    return activeItem;
+                }
+                return item;
+            }, null);
+            const tocTitle = titleForTocItem(tocItem);
+            if (tocTitle) {
+                return tocTitle;
+            }
+        }
+        return `${t('read.chapter')} ${spineIndex + 1}`;
+    };
+
+    const decoratedNotes = bookNotes.map((note) => ({
+        ...note,
+        positionLabel: chapterTitleForSpineIndex(note.spineIndex),
+        timeLabel: formatRelativeTime(note.createdAt),
+    }));
+    const latestNote = decoratedNotes[0] ?? null;
+    const returnChapterLabel = (
+        (Number.isInteger(activeBook?.nativePosition?.spineIndex)
+            ? chapterTitleForSpineIndex(activeBook.nativePosition.spineIndex)
+            : '')
+        || latestNote?.positionLabel
+        || ''
+    );
+
+    const openReaderAtPosition = (position) => {
+        setShowNotesLog(false);
+        setReaderStage('reading');
+        if (!position || !Number.isInteger(position.spineIndex)) {
+            return;
+        }
+        const restorePosition = {
+            spineIndex: position.spineIndex,
+            pageIndex: Number.isInteger(position.pageIndex) ? position.pageIndex : 0,
+            pagesInChapter: null,
+            href: position.href || '',
+            firstBlockId: position.firstBlockId || null,
+        };
+        if (position.spineIndex !== activeSpineIndex) {
+            loadNativeReaderPackage(position.spineIndex, {
+                restorePosition,
+                animateChapterTransition: false,
+            });
+        } else {
+            updateNativeRestorePosition(restorePosition);
+        }
     };
 
     return (
-        <View style={styles.container}>
+        <Screen
+            backgroundColor={themeColors.readerPaper}
+            edges={isFullscreen ? ['left', 'right'] : ['top', 'left', 'right']}
+            contentContainerStyle={styles.screenContent}
+        >
             {!isFullscreen ? (
-                <View style={[styles.headerBar, { paddingTop: insets.top + spacing.xs }]}>
+                <View style={styles.headerBar}>
                     <TouchableOpacity
                         style={styles.headerBackButton}
                         onPress={handleHeaderBack}
                         accessibilityRole="button"
                     >
-                        <MaterialIcons name="arrow-back-ios" size={22} color={themeColors.text} />
+                        <Feather name="chevron-left" size={24} color={themeColors.readerMutedInk} />
                     </TouchableOpacity>
 
-                    <View style={styles.headerTitleStack}>
-                        <Text numberOfLines={1} style={styles.headerChapterTitle}>
-                            {headerLine1}
-                        </Text>
-                        {headerLine2 ? (
-                            <Text numberOfLines={1} style={styles.headerBookSubtitle}>
-                                {headerLine2}
+                    <Pressable
+                        disabled={toc.length === 0}
+                        onPress={() => setShowToc(true)}
+                        accessibilityRole="button"
+                        style={({ pressed }) => ([
+                            styles.headerTitlePress,
+                            pressed && toc.length > 0 && styles.headerTitlePressed,
+                        ])}
+                    >
+                        <View style={styles.headerTitleStack}>
+                            <Text numberOfLines={1} style={styles.headerChapterTitle}>
+                                {headerTitleLine}
                             </Text>
-                        ) : null}
-                    </View>
+                            {headerMetaLine ? (
+                                <Text numberOfLines={1} style={styles.headerBookSubtitle}>
+                                    {headerMetaLine}
+                                </Text>
+                            ) : null}
+                        </View>
+                        <View style={styles.headerProgressCluster}>
+                            <ProgressBar
+                                progress={bookProgress}
+                                height={3}
+                                style={styles.headerProgressTrack}
+                            />
+                            <Text numberOfLines={1} style={styles.headerProgressLabel}>
+                                {`${bookProgressPercent}%`}
+                            </Text>
+                        </View>
+                    </Pressable>
 
-                    <View style={styles.headerControls}>
-                        <Pressable
-                            disabled={toc.length === 0}
-                            onPress={() => setShowToc(true)}
-                            accessibilityRole="button"
-                            style={({ pressed }) => ([
-                                styles.progressCluster,
-                                toc.length === 0 && styles.progressClusterDisabled,
-                                pressed && toc.length > 0 && styles.progressClusterPressed,
-                            ])}
-                        >
-                            <View style={styles.progressTrack}>
-                                <View style={[styles.progressFill, { width: progressFillWidth }]} />
-                            </View>
-                            <Text numberOfLines={1} style={styles.controlLabel}>{progressLabel}</Text>
-                        </Pressable>
-                        <TouchableOpacity
-                            style={styles.settingsButton}
-                            onPress={() => setShowMenu((prev) => !prev)}
-                            accessibilityRole="button"
-                        >
-                            <MaterialIcons name="more-horiz" size={20} color={showMenu ? themeColors.inkSlate : themeColors.textSecondary} />
-                        </TouchableOpacity>
-                    </View>
+                    <TouchableOpacity
+                        style={styles.settingsButton}
+                        onPress={() => setShowSettings(true)}
+                        accessibilityRole="button"
+                        accessibilityLabel={t('read.readerSettings')}
+                    >
+                        <MaterialCommunityIcons name="tune" size={19} color={themeColors.readerMutedInk} />
+                    </TouchableOpacity>
                 </View>
             ) : null}
 
@@ -2316,11 +2575,11 @@ const Read = ({
                         chapterTransitionDirection={chapterTransitionDirection}
                         fontSize={readerFontSize}
                         lineHeight={readerLineSpacing}
-                        theme={isDarkMode ? 'dark' : 'light'}
+                        theme={nativeReaderTheme}
                         themeTokens={nativeReaderThemeTokens}
                         highlightTerms={readerHighlightTerms}
-                        sameLevelTerms={levelUnderlineTerms.same}
-                        aboveLevelTerms={levelUnderlineTerms.above}
+                        sameLevelTerms={heatMapEnabled ? levelUnderlineTerms.same : []}
+                        aboveLevelTerms={heatMapEnabled ? levelUnderlineTerms.above : []}
                         clearSelectionToken={clearSelectionToken}
                         onPageChange={handleNativePageChange}
                         onChapterEnd={handleNativeChapterEnd}
@@ -2331,19 +2590,21 @@ const Read = ({
                         onSelectionCleared={handleNativeSelectionCleared}
                     />
                 )}
-                {readerBrightnessOverlayOpacity > 0 ? (
-                    <View
-                        pointerEvents="none"
-                        style={[
-                            styles.readerBrightnessOverlay,
-                            {
-                                backgroundColor: readerBrightnessOverlayColor,
-                                opacity: readerBrightnessOverlayOpacity,
-                            },
-                        ]}
-                    />
-                ) : null}
             </View>
+
+            {!isFullscreen && bookLoadState === 'ready' && nativeReaderPackage ? (
+                <View style={[styles.footerBar, { paddingBottom: insets.bottom + 12 }]}>
+                    <View style={styles.footerMetaRow}>
+                        <Text numberOfLines={1} style={styles.footerChapterLabel}>
+                            {activeChapterTitle}
+                        </Text>
+                        <Text numberOfLines={1} style={styles.footerPageLabel}>
+                            {footerPageLabel}
+                        </Text>
+                    </View>
+                    <ProgressBar progress={chapterProgress} height={3} />
+                </View>
+            ) : null}
 
             <TocDrawer
                 visible={showToc}
@@ -2351,7 +2612,7 @@ const Read = ({
                 currentSpineIndex={activeSpineIndex}
                 totalSpineItems={nativeChapterTotal}
                 bookProgress={bookProgress}
-                isDarkMode={isDarkMode}
+                isDarkMode={isReaderDark}
                 onClose={() => setShowToc(false)}
                 onSelect={(item) => {
                     if (!Number.isInteger(item?.spineIndex)) {
@@ -2383,8 +2644,8 @@ const Read = ({
                     styles.lookupLayer,
                     shouldPlaceLookupAtTop ? styles.lookupLayerTop : styles.lookupLayerBottom,
                     shouldPlaceLookupAtTop
-                        ? { paddingTop: isFullscreen ? 0 : insets.top + spacing.xs + 52 }
-                        : { paddingBottom: insets.bottom + 6 },
+                        ? { paddingTop: isFullscreen ? 0 : spacing.xs + 52 }
+                        : { paddingBottom: insets.bottom },
                 ]}
                 pointerEvents="box-none"
             >
@@ -2393,7 +2654,7 @@ const Read = ({
                     sourceSentence={highlightedWordContext?.sentence ?? ''}
                     isNativeSelection={isNativeSelection}
                     placement={shouldPlaceLookupAtTop ? 'top' : 'bottom'}
-                    isDarkMode={isDarkMode}
+                    isDarkMode={isReaderDark}
                     onClose={() => {
                         setHighlightedWord('');
                         setHighlightedWordContext(null);
@@ -2406,6 +2667,7 @@ const Read = ({
                     sourceBook={activeBook}
                     savedWords={savedWords ?? []}
                     translationVisualState={translationBannerVisualState}
+                    rootWordAnalysisEnabled={rootWordAnalysisEnabled}
                 />
             </View>
 
@@ -2417,7 +2679,7 @@ const Read = ({
                         {
                             paddingTop: isFullscreen
                                 ? insets.top + 8
-                                : insets.top + spacing.xs + 60,
+                                : spacing.xs + 60,
                         },
                     ]}
                 >
@@ -2445,7 +2707,7 @@ const Read = ({
                     pointerEvents="box-none"
                     style={[
                         styles.fullscreenToggleLayer,
-                        { bottom: insets.bottom + 18 },
+                        { bottom: insets.bottom + (isFullscreen ? 18 : 76) },
                     ]}
                 >
                     <TouchableOpacity
@@ -2464,206 +2726,238 @@ const Read = ({
                 </View>
             ) : null}
 
-            {showMenu && !isFullscreen ? (
-                <View pointerEvents="box-none" style={styles.settingsOverlay}>
-                    <Pressable style={styles.settingsBackdrop} onPress={() => setShowMenu(false)} />
-                    <View style={[styles.menuDropdown, { top: insets.top + 50, right: 14 }]}>
-                        <TouchableOpacity
-                            style={[styles.menuItem, styles.menuItemBorder]}
-                            onPress={() => setShowMenu(false)}
-                            activeOpacity={0.7}
-                            accessibilityRole="button"
-                        >
-                            <MaterialIcons name="bookmark-border" size={19} color={themeColors.textSecondary} />
-                            <Text style={styles.menuItemLabel}>{t('read.bookmarks')}</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={[styles.menuItem, styles.menuItemBorder]}
-                            onPress={() => setShowMenu(false)}
-                            activeOpacity={0.7}
-                            accessibilityRole="button"
-                        >
-                            <MaterialIcons name="sticky-note-2" size={19} color={themeColors.textSecondary} />
-                            <Text style={styles.menuItemLabel}>{t('read.notes')}</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={[styles.menuItem, styles.menuItemBorder]}
-                            onPress={() => { setShowMenu(false); setShowSettings(true); }}
-                            activeOpacity={0.7}
-                            accessibilityRole="button"
-                        >
-                            <MaterialIcons name="text-fields" size={19} color={themeColors.textSecondary} />
-                            <Text style={styles.menuItemLabel}>{t('read.fontSettings')}</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={styles.menuItem}
-                            onPress={() => setShowMenu(false)}
-                            activeOpacity={0.7}
-                            accessibilityRole="button"
-                        >
-                            <MaterialIcons name="ios-share" size={19} color={themeColors.textSecondary} />
-                            <Text style={styles.menuItemLabel}>{t('read.share')}</Text>
-                        </TouchableOpacity>
-                    </View>
-                </View>
-            ) : null}
-
-            {showSettings && !isFullscreen ? (
-                <View pointerEvents="box-none" style={styles.settingsOverlay}>
+            <Modal
+                visible={showSettings && !isFullscreen}
+                transparent
+                animationType="slide"
+                onRequestClose={() => setShowSettings(false)}
+            >
+                <View style={styles.settingsOverlay}>
                     <Pressable style={styles.settingsBackdrop} onPress={() => setShowSettings(false)} />
-                    <View
-                        pointerEvents="box-none"
-                        style={[styles.fontSettingsSheetFrame, { paddingBottom: insets.bottom + 8 }]}
-                    >
-                        <View style={styles.fontSettingsSheet}>
-                            <View style={styles.fontSettingsHandleWrap}>
-                                <View style={styles.fontSettingsHandle} />
+                    <View style={[styles.settingsSheet, { paddingBottom: insets.bottom + 30 }]}>
+                        <View style={styles.sheetGrabber} />
+                        <Text style={styles.settingsSheetTitle}>{t('read.readerSettings')}</Text>
+
+                        <View style={styles.settingsRow}>
+                            <Text style={styles.settingsRowLabel}>{t('read.fontSize')}</Text>
+                            <View style={styles.stepper}>
+                                <TouchableOpacity
+                                    style={styles.stepperButton}
+                                    onPress={() => handleFontSizeStep(-1)}
+                                    activeOpacity={0.7}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={t('read.decreaseFontSize')}
+                                >
+                                    <Feather name="minus" size={17} color={themeColors.text} />
+                                </TouchableOpacity>
+                                <Text style={styles.stepperValue}>{`${readerFontSize} px`}</Text>
+                                <TouchableOpacity
+                                    style={styles.stepperButton}
+                                    onPress={() => handleFontSizeStep(1)}
+                                    activeOpacity={0.7}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={t('read.increaseFontSize')}
+                                >
+                                    <Feather name="plus" size={17} color={themeColors.text} />
+                                </TouchableOpacity>
                             </View>
-                            <Text style={styles.fontSettingsTitle}>{t('read.fontSettings')}</Text>
+                        </View>
 
-                            <View style={styles.fontSettingsRows}>
-                                <View style={styles.fontSettingsRow}>
-                                    <Text style={styles.fontSettingsLabel}>{t('read.fontSize')}</Text>
-                                    <View style={styles.fontSettingsStepperGroup}>
-                                        <TouchableOpacity
-                                            style={styles.fontSettingsStepperButton}
-                                            onPress={() => handleFontSizeStep(-1)}
-                                            activeOpacity={0.7}
-                                            accessibilityRole="button"
-                                            accessibilityLabel={t('read.decreaseFontSize')}
-                                        >
-                                            <Feather name="minus" size={18} color={themeColors.textSecondary} />
-                                        </TouchableOpacity>
-                                        <Text style={styles.fontSettingsValue}>{readerFontSize}</Text>
-                                        <TouchableOpacity
-                                            style={styles.fontSettingsStepperButton}
-                                            onPress={() => handleFontSizeStep(1)}
-                                            activeOpacity={0.7}
-                                            accessibilityRole="button"
-                                            accessibilityLabel={t('read.increaseFontSize')}
-                                        >
-                                            <Feather name="plus" size={18} color={themeColors.textSecondary} />
-                                        </TouchableOpacity>
-                                    </View>
-                                </View>
-
-                                <View style={styles.fontSettingsRow}>
-                                    <Text style={styles.fontSettingsLabel}>{t('read.lineSpacing')}</Text>
-                                    <View style={styles.fontSettingsStepperGroup}>
-                                        <TouchableOpacity
-                                            style={styles.fontSettingsStepperButton}
-                                            onPress={() => handleLineSpacingStep(-1)}
-                                            activeOpacity={0.7}
-                                            accessibilityRole="button"
-                                            accessibilityLabel={t('read.decreaseLineSpacing')}
-                                        >
-                                            <Feather name="minus" size={18} color={themeColors.textSecondary} />
-                                        </TouchableOpacity>
-                                        <Text style={[styles.fontSettingsValue, styles.fontSettingsLineSpacingValue]}>
-                                            {activeLineSpacingLabel}
-                                        </Text>
-                                        <TouchableOpacity
-                                            style={styles.fontSettingsStepperButton}
-                                            onPress={() => handleLineSpacingStep(1)}
-                                            activeOpacity={0.7}
-                                            accessibilityRole="button"
-                                            accessibilityLabel={t('read.increaseLineSpacing')}
-                                        >
-                                            <Feather name="plus" size={18} color={themeColors.textSecondary} />
-                                        </TouchableOpacity>
-                                    </View>
-                                </View>
-
-                                <View style={[styles.fontSettingsRow, styles.fontSettingsLastRow]}>
-                                    <Text style={styles.fontSettingsLabel}>{t('read.brightness')}</Text>
-                                    <View style={styles.fontSettingsBrightnessGroup}>
-                                        <MaterialIcons name="light-mode" size={18} color={themeColors.readerSubtleInk} />
-                                        <Slider
-                                            style={styles.fontSettingsBrightnessSlider}
-                                            value={readerBrightness}
-                                            onValueChange={handleBrightnessChange}
-                                            minimumValue={BRIGHTNESS_MIN}
-                                            maximumValue={BRIGHTNESS_MAX}
-                                            step={0.01}
-                                            allowTouchTrack
-                                            thumbTintColor={themeColors.readerProgressFill}
-                                            minimumTrackTintColor={themeColors.readerProgressFill}
-                                            maximumTrackTintColor={themeColors.readerHairline}
-                                            trackStyle={styles.fontSettingsSliderTrack}
-                                            thumbStyle={styles.fontSettingsSliderThumb}
-                                            accessibilityLabel={t('read.readerBrightness')}
-                                        />
-                                    </View>
-                                </View>
+                        <View style={[styles.settingsRow, styles.settingsRowBorder]}>
+                            <Text style={styles.settingsRowLabel}>{t('read.lineSpacing')}</Text>
+                            <View style={styles.stepper}>
+                                <TouchableOpacity
+                                    style={styles.stepperButton}
+                                    onPress={() => handleLineSpacingStep(-1)}
+                                    activeOpacity={0.7}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={t('read.decreaseLineSpacing')}
+                                >
+                                    <Feather name="minus" size={17} color={themeColors.text} />
+                                </TouchableOpacity>
+                                <Text style={styles.stepperValue}>{activeLineSpacingLabel}</Text>
+                                <TouchableOpacity
+                                    style={styles.stepperButton}
+                                    onPress={() => handleLineSpacingStep(1)}
+                                    activeOpacity={0.7}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={t('read.increaseLineSpacing')}
+                                >
+                                    <Feather name="plus" size={17} color={themeColors.text} />
+                                </TouchableOpacity>
                             </View>
+                        </View>
+
+                        <View style={[styles.settingsRow, styles.settingsRowBorder]}>
+                            <Text style={styles.settingsRowLabel}>{t('read.theme')}</Text>
+                            <View style={styles.themeSegmented}>
+                                {READER_THEME_OPTIONS.map((option) => {
+                                    const active = readerTheme === option.value;
+                                    return (
+                                        <TouchableOpacity
+                                            key={option.value}
+                                            style={[styles.themeSegment, active && styles.themeSegmentActive]}
+                                            onPress={() => handleSettingChange('readerTheme', option.value)}
+                                            activeOpacity={0.8}
+                                            accessibilityRole="button"
+                                            accessibilityState={{ selected: active }}
+                                            accessibilityLabel={t(option.labelKey)}
+                                        >
+                                            <Text
+                                                style={[
+                                                    styles.themeSegmentLabel,
+                                                    active && styles.themeSegmentLabelActive,
+                                                ]}
+                                            >
+                                                {t(option.labelKey)}
+                                            </Text>
+                                        </TouchableOpacity>
+                                    );
+                                })}
+                            </View>
+                        </View>
+
+                        <View style={[styles.settingsRow, styles.settingsRowBorder]}>
+                            <View style={styles.settingsRowCopy}>
+                                <Text style={styles.settingsRowLabel}>{t('read.heatMap')}</Text>
+                                <Text style={styles.settingsRowDescription}>
+                                    {t('read.heatMapDescription')}
+                                </Text>
+                            </View>
+                            <Switch
+                                value={heatMapEnabled}
+                                onValueChange={(value) => handleSettingChange('heatMapEnabled', value)}
+                            />
+                        </View>
+
+                        <View style={[styles.settingsRow, styles.settingsRowBorder]}>
+                            <View style={styles.settingsRowCopy}>
+                                <Text style={styles.settingsRowLabel}>{t('read.rootWordAnalysis')}</Text>
+                                <Text style={styles.settingsRowDescription}>
+                                    {t('read.rootWordAnalysisDescription')}
+                                </Text>
+                            </View>
+                            <Switch
+                                value={rootWordAnalysisEnabled}
+                                onValueChange={(value) => handleSettingChange('rootWordAnalysisEnabled', value)}
+                            />
                         </View>
                     </View>
                 </View>
+            </Modal>
+
+            {readerStage === 'return' && !!currentBook ? (
+                <View style={styles.returnOverlay} pointerEvents="auto">
+                    <ReturnNote
+                        themeColors={themeColors}
+                        title={headerBookTitle}
+                        subtitle={activeBook?.author ?? ''}
+                        chapterLabel={returnChapterLabel}
+                        percent={bookProgress}
+                        lastSessionLabel={latestNote?.timeLabel ?? ''}
+                        note={latestNote?.text ?? ''}
+                        hasNote={!!latestNote}
+                        noteEmptyLabel={t('read.noNotesYet')}
+                        topInset={0}
+                        bottomInset={insets.bottom}
+                        onBack={navigateAway}
+                        onContinue={() => setReaderStage('reading')}
+                        onOpenNotes={latestNote ? () => setShowNotesLog(true) : null}
+                    />
+                </View>
             ) : null}
-        </View>
+
+            <NotesLog
+                themeColors={themeColors}
+                visible={showNotesLog}
+                notes={decoratedNotes}
+                onClose={() => setShowNotesLog(false)}
+                onSelect={openReaderAtPosition}
+            />
+
+            <ClosePrompt
+                themeColors={themeColors}
+                visible={showClosePrompt}
+                onSave={handleCloseSave}
+                onSkip={handleCloseSkip}
+            />
+        </Screen>
     );
 };
 
 const createStyles = (themeColors) => StyleSheet.create({
-    container: {
+    screenContent: {
         flex: 1,
+        paddingHorizontal: 0,
+        paddingTop: 0,
+        paddingBottom: 0,
+    },
+    returnOverlay: {
+        ...StyleSheet.absoluteFillObject,
+        zIndex: 60,
         backgroundColor: themeColors.readerPaper,
     },
     headerBar: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 10,
-        paddingHorizontal: 16,
-        paddingBottom: 10,
-        backgroundColor: themeColors.readerPaper,
+        gap: 6,
+        paddingHorizontal: 8,
+        paddingVertical: 6,
         borderBottomWidth: 1,
         borderBottomColor: themeColors.readerHairline,
+        zIndex: 20,
     },
     headerBackButton: {
         width: 38,
-        height: 42,
+        height: 38,
         alignItems: 'center',
         justifyContent: 'center',
         borderRadius: radii.pill,
+    },
+    headerTitlePress: {
+        flex: 1,
+        minWidth: 0,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 10,
+        paddingVertical: 2,
+        paddingHorizontal: 4,
+    },
+    headerTitlePressed: {
+        opacity: 0.7,
     },
     headerTitleStack: {
         flex: 1,
         minWidth: 0,
-        alignItems: 'center',
-        justifyContent: 'center',
+        alignItems: 'flex-start',
     },
     headerChapterTitle: {
-        fontFamily: 'FFSans-SemiBold',
-        fontSize: 15,
-        lineHeight: 20,
+        fontFamily: fontFamilies.krSerifSemiBold,
+        fontSize: 14,
+        lineHeight: 19,
         color: themeColors.readerBodyInk,
-        textAlign: 'center',
+        includeFontPadding: false,
     },
     headerBookSubtitle: {
-        fontFamily: 'FFSans-Regular',
-        fontSize: 13,
-        lineHeight: 17,
-        color: themeColors.readerMutedInk,
+        ...textStyles.eyebrow,
+        letterSpacing: 1.2,
+        color: themeColors.readerSubtleInk,
         marginTop: 1,
-        textAlign: 'center',
     },
-    headerControls: {
+    headerProgressCluster: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 8,
+        gap: 7,
+        flexShrink: 0,
     },
-    progressCluster: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-        minHeight: 42,
-        borderRadius: radii.pill,
+    headerProgressTrack: {
+        width: 42,
     },
-    progressClusterPressed: {
-        opacity: 0.7,
-    },
-    progressClusterDisabled: {
-        opacity: 1,
+    headerProgressLabel: {
+        ...textStyles.eyebrow,
+        letterSpacing: 1.2,
+        color: themeColors.readerSubtleInk,
+        fontVariant: ['tabular-nums'],
     },
     fullscreenToggleLayer: {
         position: 'absolute',
@@ -2677,27 +2971,6 @@ const createStyles = (themeColors) => StyleSheet.create({
         borderRadius: 22,
         backgroundColor: themeColors.transparent,
     },
-    progressTrack: {
-        width: 60,
-        height: 3,
-        borderRadius: 2,
-        backgroundColor: themeColors.readerProgressTrack,
-        overflow: 'hidden',
-    },
-    progressFill: {
-        height: '100%',
-        borderRadius: 2,
-        backgroundColor: themeColors.readerProgressFill,
-    },
-    controlLabel: {
-        fontFamily: 'FFSans-Medium',
-        fontSize: 13,
-        lineHeight: 17,
-        color: themeColors.readerMutedInk,
-        minWidth: 33,
-        textAlign: 'right',
-        fontVariant: ['tabular-nums'],
-    },
     reader: {
         flex: 1,
         position: 'relative',
@@ -2706,9 +2979,33 @@ const createStyles = (themeColors) => StyleSheet.create({
         flex: 1,
         backgroundColor: themeColors.readerPaper,
     },
-    readerBrightnessOverlay: {
-        ...StyleSheet.absoluteFillObject,
-        backgroundColor: '#000000',
+    footerBar: {
+        paddingTop: 10,
+        paddingHorizontal: 20,
+        borderTopWidth: 1,
+        borderTopColor: themeColors.readerHairline,
+        zIndex: 20,
+    },
+    footerMetaRow: {
+        flexDirection: 'row',
+        alignItems: 'baseline',
+        justifyContent: 'space-between',
+        gap: 12,
+        marginBottom: 6,
+    },
+    footerChapterLabel: {
+        ...textStyles.eyebrow,
+        letterSpacing: 1.6,
+        color: themeColors.readerSubtleInk,
+        flexShrink: 1,
+        minWidth: 0,
+    },
+    footerPageLabel: {
+        ...textStyles.eyebrow,
+        letterSpacing: 1.2,
+        color: themeColors.readerSubtleInk,
+        fontVariant: ['tabular-nums'],
+        flexShrink: 0,
     },
     readerErrorState: {
         flex: 1,
@@ -2832,163 +3129,142 @@ const createStyles = (themeColors) => StyleSheet.create({
         justifyContent: 'center',
     },
     settingsButton: {
-        width: 20,
-        height: 42,
-        borderRadius: 0,
+        width: 38,
+        height: 38,
+        borderRadius: radii.pill,
         backgroundColor: themeColors.transparent,
         justifyContent: 'center',
         alignItems: 'center',
     },
-    menuDropdown: {
-        position: 'absolute',
-        width: 184,
-        backgroundColor: themeColors.surface,
-        borderWidth: 1,
-        borderColor: themeColors.border,
-        borderRadius: 4,
-        overflow: 'hidden',
-    },
-    menuItem: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 11,
-        paddingVertical: 13,
-        paddingHorizontal: 16,
-    },
-    menuItemBorder: {
-        borderBottomWidth: 1,
-        borderBottomColor: themeColors.divider,
-    },
-    menuItemLabel: {
-        fontFamily: textStyles.body.fontFamily,
-        fontSize: 14,
-        color: themeColors.text,
-    },
     settingsOverlay: {
-        ...StyleSheet.absoluteFillObject,
-        zIndex: 25,
-        elevation: 25,
+        flex: 1,
+        justifyContent: 'flex-end',
     },
     settingsBackdrop: {
         ...StyleSheet.absoluteFillObject,
+        backgroundColor: themeColors.overlay,
     },
-    fontSettingsSheetFrame: {
+    settingsSheet: {
         position: 'absolute',
         left: 0,
         right: 0,
         bottom: 0,
-        alignItems: 'center',
-        paddingHorizontal: 14,
-    },
-    fontSettingsSheet: {
-        width: '100%',
-        maxWidth: 360,
-        backgroundColor: themeColors.readerSurface,
-        borderWidth: 1,
-        borderColor: themeColors.readerBorder,
-        borderRadius: radii.xl,
-        paddingTop: 14,
-        paddingHorizontal: 24,
-        paddingBottom: 26,
-        shadowColor: 'rgba(27, 28, 28, 0.08)',
+        backgroundColor: themeColors.popover,
+        borderTopWidth: 1,
+        borderColor: themeColors.popoverBorder,
+        borderTopLeftRadius: 26,
+        borderTopRightRadius: 26,
+        paddingTop: 10,
+        paddingHorizontal: 20,
+        shadowColor: 'rgba(43,20,26,0.16)',
         shadowOffset: { width: 0, height: -10 },
         shadowOpacity: 1,
         shadowRadius: 30,
-        elevation: 8,
+        elevation: 12,
     },
-    fontSettingsHandleWrap: {
-        alignItems: 'center',
+    sheetGrabber: {
+        width: 38,
+        height: 5,
+        borderRadius: 3,
+        backgroundColor: themeColors.textSubtle,
+        opacity: 0.4,
+        alignSelf: 'center',
+        marginTop: 6,
+        marginBottom: 12,
     },
-    fontSettingsHandle: {
-        width: 36,
-        height: 4,
-        borderRadius: 2,
-        backgroundColor: themeColors.readerBorder,
-    },
-    fontSettingsTitle: {
-        marginTop: 18,
-        fontFamily: 'FFDisplay-Regular',
-        fontSize: 13,
-        lineHeight: 17,
-        letterSpacing: 3,
-        color: themeColors.textSecondary,
+    settingsSheetTitle: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 9,
+        lineHeight: 12,
+        letterSpacing: 2,
+        textTransform: 'uppercase',
+        color: themeColors.textTertiary,
         textAlign: 'center',
+        marginBottom: 4,
     },
-    fontSettingsRows: {
-        marginTop: 16,
-    },
-    fontSettingsRow: {
-        height: 48,
-        borderTopWidth: 1,
-        borderTopColor: themeColors.readerHairline,
+    settingsRow: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        gap: 12,
+        gap: 14,
+        paddingVertical: 15,
+        paddingHorizontal: 2,
     },
-    fontSettingsLastRow: {
-        borderBottomWidth: 1,
-        borderBottomColor: themeColors.readerHairline,
+    settingsRowBorder: {
+        borderTopWidth: 1,
+        borderTopColor: themeColors.divider,
     },
-    fontSettingsLabel: {
-        fontFamily: 'FFSans-Regular',
-        fontSize: 15,
-        lineHeight: 20,
-        color: themeColors.readerBodyInk,
-        flexShrink: 0,
+    settingsRowCopy: {
+        flex: 1,
+        minWidth: 0,
+        paddingRight: 8,
     },
-    fontSettingsStepperGroup: {
+    settingsRowLabel: {
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 14,
+        lineHeight: 19,
+        color: themeColors.text,
+    },
+    settingsRowDescription: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 11,
+        lineHeight: 16,
+        color: themeColors.textMuted,
+        marginTop: 3,
+    },
+    stepper: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 12,
-    },
-    fontSettingsStepperButton: {
-        width: 30,
-        height: 30,
+        gap: 2,
+        backgroundColor: themeColors.surfaceMuted,
         borderWidth: 1,
-        borderColor: themeColors.readerBorder,
+        borderColor: themeColors.border,
         borderRadius: radii.sm,
+        padding: 3,
+    },
+    stepperButton: {
+        width: 34,
+        height: 32,
+        borderRadius: 8,
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: themeColors.readerSurface,
     },
-    fontSettingsValue: {
-        minWidth: 22,
-        fontFamily: 'FFSans-Regular',
-        fontSize: 15,
-        lineHeight: 20,
-        color: themeColors.readerBodyInk,
+    stepperValue: {
+        minWidth: 62,
         textAlign: 'center',
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 13,
+        lineHeight: 17,
+        color: themeColors.text,
     },
-    fontSettingsLineSpacingValue: {
-        minWidth: 80,
-    },
-    fontSettingsBrightnessGroup: {
-        width: 150,
+    themeSegmented: {
         flexDirection: 'row',
-        alignItems: 'center',
-        gap: 10,
+        gap: 2,
+        backgroundColor: themeColors.surfaceMuted,
+        borderRadius: radii.sm,
+        padding: 2,
     },
-    fontSettingsBrightnessSlider: {
-        flex: 1,
+    themeSegment: {
+        minWidth: 58,
         height: 30,
-    },
-    fontSettingsSliderTrack: {
-        height: 3,
-        borderRadius: 2,
-    },
-    fontSettingsSliderThumb: {
-        width: 16,
-        height: 16,
         borderRadius: 8,
-        borderWidth: 2,
-        borderColor: themeColors.readerSurface,
-        backgroundColor: themeColors.readerProgressFill,
-        shadowColor: themeColors.readerBorder,
-        shadowOffset: { width: 0, height: 0 },
-        shadowOpacity: 1,
-        shadowRadius: 1,
-        elevation: 2,
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: 10,
+    },
+    themeSegmentActive: {
+        backgroundColor: themeColors.surface,
+        ...elevation.subtle,
+    },
+    themeSegmentLabel: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 11,
+        letterSpacing: 0.6,
+        textTransform: 'uppercase',
+        color: themeColors.textTertiary,
+    },
+    themeSegmentLabelActive: {
+        color: themeColors.text,
     },
 });
 

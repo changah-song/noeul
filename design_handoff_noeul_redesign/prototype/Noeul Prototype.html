@@ -1,0 +1,1675 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dusk">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Noeul — Interactive Prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400;1,9..144,500&family=Inter:wght@400;500;600;700;800&family=Noto+Serif+KR:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          accent: '#E0654A', 'accent-2': '#D85C76', 'accent-3': '#EE9A4C',
+        },
+        fontFamily: {
+          display: ['Fraunces', 'Georgia', 'serif'],
+          ui: ['Inter', 'system-ui', 'sans-serif'],
+          kr: ['"Noto Serif KR"', 'serif'],
+        }
+      }
+    }
+  }
+</script>
+<style>
+  /* ── Noeul tokens (light canonical + dusk override) ─────────────────── */
+  :root{
+    --gradient-page: radial-gradient(120% 70% at 0% 0%, #FFE6D2 0%, transparent 50%), radial-gradient(120% 80% at 100% 8%, #FAD3D9 0%, transparent 45%), linear-gradient(180deg,#FFF3EA 0%,#FBE3D2 55%,#F6CDB6 100%);
+    --surface-glass: rgba(255,255,255,0.55);
+    --surface-glass-border: rgba(255,255,255,0.75);
+    --surface-muted: rgba(255,255,255,0.40);
+    --surface-strong: rgba(255,255,255,0.72);
+    --border: rgba(43,36,51,0.10);
+    --border-strong: rgba(43,36,51,0.18);
+    --divider: rgba(154,139,143,0.22);
+    --text:#2B2433; --text-secondary:#574C56; --text-muted:#6C5F66; --text-tertiary:#857680; --text-subtle:#9A8B8F;
+    --accent:#E0654A; --accent-2:#D85C76; --accent-3:#EE9A4C; --accent-pressed:#C9506A;
+    --accent-soft:rgba(224,101,74,0.14); --accent-muted:rgba(224,101,74,0.22);
+    --gradient-accent:linear-gradient(150deg,#E0654A,#D85C76);
+    --gradient-sunset:linear-gradient(150deg,#F4A65C 0%,#E76A4B 55%,#C9506A 100%);
+    --gradient-progress:linear-gradient(90deg,#EE9A4C,#D85C76);
+    --gradient-cover:linear-gradient(150deg,#E0654A,#7A3D5A);
+    --success:#1F8A5B; --warning:#C77A2E; --danger:#C0362C;
+    --reader-paper:rgba(255,251,248,0.74); --reader-paper-border:rgba(255,255,255,0.82);
+    --reader-hairline:rgba(154,139,143,0.18);
+    --level-same:#EE9A4C; --level-above:#E0654A; --level-unknown:#D85C76;
+    --heat-1:rgba(238,154,76,0.17); --heat-2:rgba(224,101,74,0.26); --saved-fill:rgba(224,101,74,0.15); --saved-line:var(--accent);
+    --popover:rgba(255,252,250,0.97); --popover-border:rgba(43,36,51,0.10);
+    --overlay:rgba(43,36,51,0.32);
+    --shadow-glass:0 10px 30px rgba(80,30,30,0.10);
+    --shadow-soft:0 18px 44px rgba(43,20,26,0.16);
+    --shadow-accent:0 8px 18px rgba(224,101,74,0.40);
+    --shadow-cover:0 18px 34px rgba(0,0,0,0.34);
+  }
+  [data-theme="dusk"]{
+    --gradient-page: radial-gradient(120% 70% at 8% -5%, rgba(255,138,92,0.55) 0%, transparent 48%), radial-gradient(110% 75% at 100% 10%, rgba(217,106,130,0.42) 0%, transparent 46%), linear-gradient(180deg,#241318 0%,#2C151B 45%,#1A1014 100%);
+    --surface-glass:rgba(255,255,255,0.08); --surface-glass-border:rgba(255,255,255,0.16);
+    --surface-muted:rgba(255,255,255,0.06); --surface-strong:rgba(255,255,255,0.12);
+    --border:rgba(255,255,255,0.10); --border-strong:rgba(255,255,255,0.18); --divider:rgba(255,255,255,0.10);
+    --text:#F6EAE3; --text-secondary:#D9C1B8; --text-muted:#CBB1A8; --text-tertiary:#AB9188; --text-subtle:#9B8278;
+    --accent:#FF7A52; --accent-2:#F1789A; --accent-3:#F4B25C; --accent-pressed:#F1789A;
+    --accent-soft:rgba(255,122,82,0.16); --accent-muted:rgba(255,122,82,0.24);
+    --gradient-accent:linear-gradient(150deg,#FF7A52,#F1789A);
+    --gradient-progress:linear-gradient(90deg,#F4B25C,#F1789A);
+    --gradient-cover:linear-gradient(150deg,#FF7A52,#4B3F6B);
+    --reader-paper:rgba(36,21,26,0.50); --reader-paper-border:rgba(255,255,255,0.10);
+    --reader-hairline:rgba(255,255,255,0.10);
+    --level-same:#F4B25C; --level-above:#FF7A52; --level-unknown:#F1789A;
+    --heat-1:rgba(244,178,92,0.20); --heat-2:rgba(255,122,82,0.30); --saved-fill:rgba(255,122,82,0.20); --saved-line:var(--accent);
+    --popover:rgba(46,27,33,0.96); --popover-border:rgba(255,255,255,0.13);
+    --overlay:rgba(0,0,0,0.50);
+  }
+
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;height:100%;}
+  body{
+    font-family:'Inter',system-ui,sans-serif;
+    background:#0c0a0c;
+    color:var(--text);
+    display:grid;place-items:center;min-height:100vh;
+    -webkit-font-smoothing:antialiased;
+    overflow:hidden;
+  }
+
+  /* ── device frame ─────────────────────────────────────────────────── */
+  .device{
+    width:390px;height:844px;max-height:96vh;
+    border-radius:52px;background:#0b090b;padding:12px;
+    box-shadow:0 40px 90px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.06) inset;
+    flex:none;position:relative;
+  }
+  .device::after{content:"";position:absolute;top:24px;left:50%;transform:translateX(-50%);width:118px;height:32px;background:#0b090b;border-radius:20px;z-index:60;}
+  .viewport{
+    width:100%;height:100%;border-radius:40px;overflow:hidden;position:relative;
+    background:var(--gradient-page);background-attachment:local;
+    transition:background 0.4s ease;
+  }
+  .fill{position:absolute;inset:0;background:var(--gradient-page);}
+
+  /* ── status bar / home indicator ──────────────────────────────────── */
+  .statusbar{height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 30px 0 34px;flex:none;position:relative;z-index:20;color:var(--text);}
+  .statusbar .time{font-weight:600;font-size:15px;letter-spacing:-0.2px;}
+  .homeind{position:absolute;bottom:0;left:0;right:0;height:26px;display:grid;place-items:center;z-index:40;pointer-events:none;}
+  .homeind span{width:128px;height:5px;border-radius:3px;background:var(--text);opacity:0.34;}
+
+  /* ── screens ──────────────────────────────────────────────────────── */
+  .screen{position:absolute;inset:0;display:none;flex-direction:column;z-index:1;}
+  .screen.active{display:flex;z-index:2;animation:screenIn .26s cubic-bezier(.4,0,.2,1);}
+  @keyframes screenIn{from{transform:translateY(7px);}to{transform:none;}}
+  .scroll{flex:1;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;position:relative;z-index:10;}
+  .scroll::-webkit-scrollbar{width:0;}
+  .pad{padding:6px 20px 40px;}
+
+  /* ── glass primitives ─────────────────────────────────────────────── */
+  .glass{background:var(--surface-glass);border:1px solid var(--surface-glass-border);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);}
+  .card{border-radius:20px;}
+  .eyebrow{font-size:10px;font-weight:700;letter-spacing:1.8px;text-transform:uppercase;color:var(--text-tertiary);}
+  .label{font-size:11px;font-weight:700;letter-spacing:1.6px;text-transform:uppercase;color:var(--text-muted);}
+  .serif{font-family:'Fraunces',Georgia,serif;}
+  .kr{font-family:'Noto Serif KR',serif;}
+  .btn-accent{background:var(--gradient-accent);color:#fff;box-shadow:var(--shadow-accent);border:none;}
+  .press{transition:transform .12s ease, opacity .12s ease;cursor:pointer;}
+  .press:active{transform:scale(0.97);opacity:0.9;}
+
+  .ico{width:22px;height:22px;stroke-width:1.8;}
+  .sect-label{font-size:10px;font-weight:700;letter-spacing:1.8px;text-transform:uppercase;color:var(--text-tertiary);margin:22px 4px 12px;}
+
+  /* level pills */
+  .lvl-opt{flex:1;padding:10px 0;border-radius:11px;border:1px solid var(--border-strong);background:transparent;font-size:12px;font-weight:700;color:var(--text-muted);cursor:pointer;font-family:inherit;transition:all .15s;}
+  .lvl-opt.active{background:var(--gradient-accent);border-color:transparent;color:#fff;box-shadow:var(--shadow-accent);}
+  .sup-row:active{background:var(--surface-muted);}
+
+  /* vocab navigation tabs */
+  .vtab{background:transparent;border:none;padding:0 0 11px;font-size:11px;font-weight:700;letter-spacing:1.3px;text-transform:uppercase;color:var(--text-tertiary);cursor:pointer;position:relative;transition:color .18s;font-family:inherit;}
+  .vtab.active{color:var(--text);}
+  .vtab.active::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;border-radius:2px;background:var(--accent);}
+
+  /* reader tokens */
+  .tok{cursor:pointer;border-radius:5px;transition:background .18s,box-shadow .18s,color .18s;-webkit-user-select:none;user-select:none;}
+  /* heat map — peripheral warmth signals difficulty; NO underlines */
+  .heat-on .tok.above{background:var(--heat-1);box-shadow:0 0 0 3px var(--heat-1);}
+  .heat-on .tok.unknown{background:var(--heat-2);box-shadow:0 0 0 3px var(--heat-2);}
+  .tok.saved{background:var(--saved-fill)!important;box-shadow:0 0 0 3px var(--saved-fill),inset 0 -2px 0 var(--saved-line)!important;}
+  .tok.sel{background:var(--accent-muted)!important;box-shadow:0 0 0 3px var(--accent-muted)!important;color:var(--text)!important;}
+  .tok.tapped{background:var(--accent)!important;color:#fff!important;box-shadow:0 4px 13px var(--accent-soft)!important;}
+  .dim{opacity:0.5;font-size:0.86em;}
+
+  /* reader surface — full-bleed, vertical + horizontal scroll */
+  .reader-pager{display:flex;height:100%;overflow-x:auto;overflow-y:hidden;scroll-snap-type:x mandatory;scrollbar-width:none;-webkit-overflow-scrolling:touch;}
+  .reader-pager::-webkit-scrollbar{height:0;}
+  .reader-page{flex:0 0 100%;height:100%;overflow-y:auto;scroll-snap-align:start;scrollbar-width:none;padding:26px 26px 40px;}
+  .reader-page::-webkit-scrollbar{width:0;}
+  .reader-body{word-break:keep-all;color:var(--text);}
+  .reader-body p{margin:0 0 0.85em;}
+  .heat-legend{transition:opacity .2s;}
+  .heat-off .heat-legend{opacity:0;pointer-events:none;}
+
+  /* reader settings + TOC controls */
+  .rset-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:15px 2px;}
+  .rset-row + .rset-row{border-top:1px solid var(--divider);}
+  .stepper{display:flex;align-items:center;gap:2px;background:var(--surface-muted);border:1px solid var(--border);border-radius:11px;padding:3px;}
+  .stepper button{width:34px;height:32px;border:none;background:transparent;color:var(--text);font-size:19px;line-height:1;border-radius:8px;cursor:pointer;}
+  .stepper button:active{background:var(--surface-strong);}
+  .stepper .val{min-width:62px;text-align:center;font-size:12.5px;font-weight:600;color:var(--text);}
+  .rtoggle{width:50px;height:30px;border-radius:999px;border:none;padding:3px;cursor:pointer;flex:none;display:flex;transition:background .2s;background:var(--surface-strong);}
+  .rtoggle.on{background:var(--accent);}
+  .rtoggle .knob{width:24px;height:24px;border-radius:50%;background:#fff;box-shadow:0 2px 5px rgba(0,0,0,.25);transition:transform .2s;}
+  .rtoggle.on .knob{transform:translateX(20px);}
+  .toc-row{display:flex;align-items:baseline;gap:13px;padding:12px 10px;border-radius:13px;cursor:pointer;transition:background .15s;}
+  .toc-row:active{background:var(--surface-muted);}
+  .toc-row .num{font-size:12px;font-weight:700;letter-spacing:1px;width:20px;flex:none;color:var(--text-tertiary);}
+  .toc-row .ttl{font-size:14px;color:var(--text);}
+  .toc-row .pg{font-size:11px;color:var(--text-tertiary);margin-left:auto;flex:none;}
+  .toc-row.read{opacity:.4;}
+  .toc-row.current{background:var(--accent-soft);}
+  .toc-row.current .num,.toc-row.current .ttl{color:var(--accent);font-weight:600;}
+  .hw-arrow{width:30px;height:30px;border-radius:50%;border:1px solid var(--border-strong);background:transparent;color:var(--text-muted);display:grid;place-items:center;cursor:pointer;flex:none;}
+  .hw-arrow:disabled{opacity:.32;}
+  .status-dot{width:15px;height:15px;border-radius:50%;flex:none;display:grid;place-items:center;}
+  .status-dot.saved{background:var(--accent);}
+  .status-dot.known{background:transparent;border:1.5px solid var(--accent);}
+  .status-dot.unsaved{background:transparent;border:1.5px solid var(--border-strong);}
+
+  /* lookup sheet */
+  .sheet-scrim{position:absolute;inset:0;background:var(--overlay);opacity:0;visibility:hidden;transition:opacity .28s;z-index:45;}
+  .sheet-scrim.show{opacity:1;visibility:visible;}
+  .sheet{position:absolute;left:0;right:0;bottom:0;background:var(--popover);border-top:1px solid var(--popover-border);border-radius:26px 26px 0 0;box-shadow:var(--shadow-soft);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);transform:translateY(100%);transition:transform .34s cubic-bezier(.32,.72,0,1);z-index:50;max-height:78%;overflow-y:auto;padding:10px 20px 30px;}
+  .sheet.show{transform:translateY(0);}
+  .sheet::-webkit-scrollbar{width:0;}
+  .grabber{width:38px;height:5px;border-radius:3px;background:var(--text-subtle);opacity:0.4;margin:6px auto 12px;}
+
+  /* flashcard 3D */
+  .flip-scene{perspective:1400px;}
+  .flip-card{position:relative;width:100%;height:100%;transform-style:preserve-3d;transition:transform .6s cubic-bezier(.4,0,.2,1);cursor:pointer;}
+  .flip-card.flipped{transform:rotateY(180deg);}
+  .flip-face{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden;border-radius:24px;display:flex;flex-direction:column;}
+  .flip-back{transform:rotateY(180deg);}
+
+  /* drop zone */
+  .dropzone{border:2px dashed var(--border-strong);border-radius:18px;transition:border-color .2s, background .2s;}
+  .dropzone.over{border-color:var(--accent);background:var(--accent-soft);}
+
+  /* pulsing sync dots */
+  @keyframes pulseDot{0%,100%{opacity:0.35;transform:scale(0.85);}50%{opacity:1;transform:scale(1);}}
+  .pulse-dot{animation:pulseDot 1.4s ease-in-out infinite;}
+
+  /* spinner */
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .spinner{width:34px;height:34px;border-radius:50%;border:3px solid var(--accent-soft);border-top-color:var(--accent);animation:spin .8s linear infinite;}
+
+  @keyframes fadeUp{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:none;}}
+  .fade-up{animation:fadeUp .4s ease both;}
+
+  input,textarea{font-family:inherit;}
+  textarea{resize:none;}
+  ::selection{background:var(--accent-soft);}
+</style>
+</head>
+<body>
+
+<div class="device">
+  <div class="viewport" id="viewport">
+    <div class="fill"></div>
+
+    <!-- ══════════ HOME ══════════ -->
+    <section class="screen active" id="screen-home" data-screen-label="Home">
+      <div class="statusbar"><span class="time">9:41</span><span id="sb1"></span></div>
+      <div class="scroll">
+        <div class="pad">
+          <!-- header -->
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:8px 4px 0;">
+            <div>
+              <div class="kr" style="font-size:13px;font-weight:500;color:var(--text-muted);">좋은 저녁이에요</div>
+              <div class="serif" style="font-size:26px;font-weight:500;color:var(--text);margin-top:3px;line-height:1.15;">Good evening</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:9px;flex:none;">
+              <button class="press" onclick="go('screen-profile')" title="Profile" style="width:44px;height:44px;border-radius:50%;border:none;background:var(--gradient-accent);display:grid;place-items:center;box-shadow:var(--shadow-accent);"><i data-lucide="user" style="width:22px;height:22px;color:#fff;"></i></button>
+            </div>
+          </div>
+
+          <!-- stats -->
+          <div style="display:flex;align-items:center;gap:11px;flex-wrap:wrap;margin-top:16px;padding:0 5px;font-size:13px;color:var(--text-muted);">
+            <span><b style="color:var(--text);font-weight:800;">12</b> day streak</span><span style="opacity:.35;">·</span>
+            <span><b style="color:var(--text);font-weight:800;">840</b> words</span><span style="opacity:.35;">·</span>
+            <span><b style="color:var(--text);font-weight:800;">6.4h</b> this week</span>
+          </div>
+
+          <!-- HERO — continue reading -->
+          <div class="sect-label">Continue reading</div>
+          <div class="glass card press" style="overflow:hidden;" onclick="go('screen-reader')">
+            <div style="height:168px;background:var(--gradient-cover);position:relative;display:flex;align-items:flex-end;padding:18px;">
+              <div style="position:absolute;inset:0;background:radial-gradient(130% 90% at 82% 2%,rgba(255,255,255,.3),transparent 56%);"></div>
+              <div style="position:absolute;left:0;top:0;bottom:0;width:6px;background:rgba(0,0,0,.16);"></div>
+              <span class="kr" style="font-size:32px;font-weight:600;color:rgba(255,255,255,.98);position:relative;">길 위에서</span>
+            </div>
+            <div style="padding:16px 17px 18px;">
+              <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;">
+                <div>
+                  <div class="eyebrow">한 강 · 장편소설</div>
+                  <div class="serif" style="font-style:italic;font-size:16px;color:var(--text-muted);margin-top:4px;">On the Road</div>
+                </div>
+                <span style="font-size:11px;color:var(--text-tertiary);white-space:nowrap;">ch 3 · 4 days ago</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:11px;margin-top:14px;">
+                <div style="flex:1;height:6px;border-radius:999px;background:var(--reader-progress-track,rgba(154,139,143,.24));overflow:hidden;"><div style="width:41%;height:100%;border-radius:999px;background:var(--gradient-progress);"></div></div>
+                <span style="font-size:11.5px;font-weight:600;color:var(--text-muted);">41%</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- library link -->
+          <div class="press" style="display:flex;align-items:center;justify-content:space-between;margin-top:18px;padding:2px 5px;" onclick="go('screen-library')">
+            <span style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:700;color:var(--accent);">Enter library <i data-lucide="arrow-right" style="width:16px;height:16px;"></i></span>
+            <button class="glass press" style="width:44px;height:44px;border-radius:50%;display:grid;place-items:center;color:var(--accent);" title="Scan a page"><i data-lucide="scan-line" class="ico"></i></button>
+          </div>
+
+          <!-- Practice: Writing + Vocab -->
+          <div class="sect-label">Practice</div>
+          <div style="display:flex;gap:12px;">
+            <!-- Writing -->
+            <div class="glass card press" style="flex:1;padding:16px 15px;display:flex;flex-direction:column;min-height:150px;" onclick="go('screen-write-logs')">
+              <div style="display:flex;align-items:flex-start;justify-content:space-between;">
+                <div style="width:38px;height:38px;border-radius:12px;background:var(--accent-soft);display:grid;place-items:center;color:var(--accent);"><i data-lucide="pen-line" style="width:20px;height:20px;"></i></div>
+                <button class="press" title="New entry" onclick="event.stopPropagation();go('screen-write-canvas')" style="width:34px;height:34px;border-radius:50%;border:none;background:var(--gradient-accent);display:grid;place-items:center;box-shadow:var(--shadow-accent);"><i data-lucide="plus" style="width:19px;height:19px;color:#fff;"></i></button>
+              </div>
+              <div style="font-size:15px;font-weight:700;color:var(--text);margin-top:auto;padding-top:14px;">Writing</div>
+              <div style="font-size:11px;color:var(--text-muted);margin-top:3px;line-height:1.45;">3 drafts · B1 assessment ready</div>
+            </div>
+            <!-- Vocab -->
+            <div class="glass card press" style="flex:1;padding:16px 15px;display:flex;flex-direction:column;min-height:150px;" onclick="go('screen-vocab')">
+              <div style="display:flex;align-items:flex-start;justify-content:space-between;">
+                <div style="width:38px;height:38px;border-radius:12px;background:rgba(238,154,76,0.18);display:grid;place-items:center;color:var(--accent-3);"><i data-lucide="library-big" style="width:20px;height:20px;"></i></div>
+                <button class="press" title="Start flashcards" onclick="event.stopPropagation();go('screen-flashcards')" style="width:34px;height:34px;border-radius:50%;border:none;background:var(--gradient-accent);display:grid;place-items:center;box-shadow:var(--shadow-accent);"><i data-lucide="gallery-horizontal-end" style="width:18px;height:18px;color:#fff;"></i></button>
+              </div>
+              <div style="font-size:15px;font-weight:700;color:var(--text);margin-top:auto;padding-top:14px;">Vocab</div>
+              <div style="font-size:11px;color:var(--text-muted);margin-top:3px;line-height:1.45;">512 saved · 24 cards due</div>
+              <div style="margin-top:11px;height:5px;border-radius:999px;background:rgba(154,139,143,.24);overflow:hidden;"><div style="width:68%;height:100%;background:var(--gradient-progress);border-radius:999px;"></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="homeind"><span></span></div>
+    </section>
+
+    <!-- ══════════ READER ══════════ -->
+    <section class="screen" id="screen-reader" data-screen-label="Reader">
+      <div class="statusbar"><span class="time">9:41</span><span class="sb-clone"></span></div>
+      <div style="display:flex;align-items:center;gap:6px;padding:6px 8px;flex:none;border-bottom:1px solid var(--reader-hairline);position:relative;z-index:20;">
+        <button class="press" onclick="go('screen-home')" style="width:38px;height:38px;display:grid;place-items:center;background:transparent;border:none;color:var(--text-muted);flex:none;"><i data-lucide="chevron-left" class="ico"></i></button>
+        <button class="press" onclick="openTOC()" style="flex:1;min-width:0;display:flex;align-items:center;gap:10px;background:transparent;border:none;padding:2px 4px;cursor:pointer;">
+          <div style="text-align:left;min-width:0;">
+            <div class="kr" style="font-size:14px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">제3장 · 동소문 안에서</div>
+            <div class="eyebrow" style="margin-top:1px;">운수 좋은 날 · 현진건</div>
+          </div>
+          <div style="margin-left:auto;display:flex;align-items:center;gap:7px;flex:none;">
+            <div style="width:42px;height:3px;border-radius:999px;background:rgba(154,139,143,.28);overflow:hidden;"><div style="width:38%;height:100%;background:var(--gradient-progress);"></div></div>
+            <span class="eyebrow" id="rdr-appbar-pct">38%</span>
+          </div>
+        </button>
+        <button class="press" onclick="openSettings()" style="width:38px;height:38px;display:grid;place-items:center;background:transparent;border:none;color:var(--text-muted);flex:none;"><i data-lucide="sliders-horizontal" style="width:19px;height:19px;"></i></button>
+      </div>
+      <div class="reader-pager" id="reader-pager">
+        <div class="reader-page">
+          <div class="kr reader-body heat-on" id="reader-body" style="font-size:18px;line-height:2.05;">
+              <p style="opacity:.55;">새침하게 흐린 품<span class="dim">이</span> <span class="tok same" data-word="눈">눈</span><span class="dim">이</span> 올 듯하더니 <span class="tok same" data-word="눈">눈</span><span class="dim">은</span> 아니 오고 <span class="tok above" data-word="얼다">얼다가</span> <span class="dim">만</span> 비<span class="dim">가</span> <span class="tok unknown" data-word="추적추적">추적추적</span> 내리<span class="dim">었다</span>.</p>
+              <p>이 <span class="tok same" data-word="날">날</span><span class="dim">이야말로</span> 동소문 안<span class="dim">에서</span> <span class="tok above" data-word="인력거꾼">인력거꾼</span> 노릇<span class="dim">을</span> 하는 <span class="tok" data-word="김첨지" id="tok-key">김첨지<span class="dim" style="opacity:.82;">에게는</span></span> <span class="tok" data-word="비교적">비교적</span> <span class="tok above" data-word="운수">운수</span> 좋은 <span class="tok same" data-word="날">날</span><span class="dim">이었다</span>.</p>
+              <p>그야말로 <span class="tok above" data-word="재수">재수</span><span class="dim">가</span> <span class="tok same" data-word="옴">옴</span> 붙어서 근 열흘 동안 <span class="tok unknown" data-word="돈맛">돈맛</span><span class="dim">을</span> 못 본 그<span class="dim">가</span> 이 날 <span class="tok above" data-word="새벽">새벽</span> <span class="tok same" data-word="첫">첫</span> 번<span class="dim">에</span> 손<span class="dim">을</span> 잡아 <span class="tok same" data-word="탄">탄</span> 것<span class="dim">이</span> 있었으니.</p>
+          </div>
+          <div class="heat-legend" id="heat-legend" style="display:flex;align-items:center;gap:15px;margin-top:28px;font-size:10.5px;color:var(--text-tertiary);">
+            <span style="display:flex;align-items:center;gap:6px;"><span style="width:18px;height:14px;border-radius:4px;border:1px solid var(--border-strong);"></span>known</span>
+            <span style="display:flex;align-items:center;gap:6px;"><span style="width:18px;height:14px;border-radius:4px;background:var(--heat-1);box-shadow:0 0 0 1px var(--heat-1);"></span>some unknowns</span>
+            <span style="display:flex;align-items:center;gap:6px;"><span style="width:18px;height:14px;border-radius:4px;background:var(--heat-2);box-shadow:0 0 0 1px var(--heat-2);"></span>dense cluster</span>
+          </div>
+          <p style="font-size:11px;color:var(--text-tertiary);line-height:1.55;margin-top:14px;max-width:300px;">Warmth is peripheral — you feel it at the edge of focus, not where your eye lands. Tap a word to look it up; long-press to select a phrase.</p>
+        </div>
+        <div class="reader-page">
+          <div class="kr reader-body heat-on" style="font-size:18px;line-height:2.05;">
+              <p>그<span class="dim">는</span> 오래간만<span class="dim">에</span> <span class="tok above" data-word="재수">재수</span><span class="dim">가</span> 트<span class="dim">인</span> 듯<span class="dim">이</span> 마음<span class="dim">이</span> 들뜨<span class="dim">었다</span>. 이 <span class="tok same" data-word="날">날</span> <span class="tok above" data-word="새벽">새벽</span>부터 <span class="tok unknown" data-word="돈맛">돈맛</span><span class="dim">을</span> 보<span class="dim">기</span> 시작<span class="dim">한</span> 것<span class="dim">이었다</span>.</p>
+              <p style="opacity:.55;"><span class="tok same" data-word="첫">첫</span> 번<span class="dim">에</span> <span class="tok same" data-word="탄">탄</span> 손님<span class="dim">은</span> 앞집 마마님<span class="dim">을</span> 전찻길<span class="dim">까지</span> 모셔다 드린 것<span class="dim">이었다</span>.</p>
+          </div>
+        </div>
+      </div>
+      <div style="padding:10px 20px 12px;border-top:1px solid var(--reader-hairline);flex:none;position:relative;z-index:20;">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px;">
+          <span class="eyebrow" style="letter-spacing:1.6px;">동소문 안에서</span>
+          <span class="eyebrow" style="letter-spacing:1.2px;">Page 4 / 11 · 62%</span>
+        </div>
+        <div style="height:3px;border-radius:999px;background:rgba(154,139,143,.24);overflow:hidden;"><div style="width:62%;height:100%;background:var(--gradient-progress);border-radius:999px;"></div></div>
+      </div>
+      <div class="homeind"><span></span></div>
+
+      <!-- single-word lookup sheet -->
+      <div class="sheet-scrim" id="lookup-scrim" onclick="closeLookup()"></div>
+      <div class="sheet" id="lookup-sheet">
+        <div class="grabber"></div>
+        <div id="lookup-content"></div>
+      </div>
+
+      <!-- multi-word (phrase) translation sheet -->
+      <div class="sheet-scrim" id="phrase-scrim" onclick="closePhrase()"></div>
+      <div class="sheet" id="phrase-sheet">
+        <div class="grabber"></div>
+        <div id="phrase-content"></div>
+      </div>
+
+      <!-- table of contents sheet -->
+      <div class="sheet-scrim" id="toc-scrim" onclick="closeTOC()"></div>
+      <div class="sheet" id="toc-sheet">
+        <div class="grabber"></div>
+        <div style="display:flex;align-items:baseline;justify-content:space-between;">
+          <span class="label" style="font-size:9px;letter-spacing:2px;color:var(--text-tertiary);">CONTENTS</span>
+          <span class="eyebrow" id="toc-meta">Chapter 3 of 27</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin:10px 0 6px;">
+          <div style="flex:1;height:4px;border-radius:999px;background:rgba(154,139,143,.24);overflow:hidden;"><div style="width:38%;height:100%;background:var(--gradient-progress);"></div></div>
+          <span style="font-size:14px;font-weight:700;color:var(--text);">38%</span>
+        </div>
+        <div id="toc-list" style="margin-top:6px;"></div>
+      </div>
+
+      <!-- reader settings sheet -->
+      <div class="sheet-scrim" id="rset-scrim" onclick="closeSettings()"></div>
+      <div class="sheet" id="rset-sheet">
+        <div class="grabber"></div>
+        <div class="label" style="font-size:9px;letter-spacing:2px;color:var(--text-tertiary);text-align:center;margin-bottom:4px;">READER SETTINGS</div>
+        <div class="rset-row">
+          <span style="font-size:14px;font-weight:600;color:var(--text);">Font size</span>
+          <div class="stepper">
+            <button onclick="stepFont(-1)">&minus;</button>
+            <span class="val" id="rset-font">18 px</span>
+            <button onclick="stepFont(1)">+</button>
+          </div>
+        </div>
+        <div class="rset-row">
+          <span style="font-size:14px;font-weight:600;color:var(--text);">Line spacing</span>
+          <div class="stepper">
+            <button onclick="stepSpace(-1)">&minus;</button>
+            <span class="val" id="rset-space">Relaxed</span>
+            <button onclick="stepSpace(1)">+</button>
+          </div>
+        </div>
+        <div class="rset-row">
+          <span style="font-size:14px;font-weight:600;color:var(--text);">Dark mode</span>
+          <button class="rtoggle" id="rset-dark" onclick="toggleDark()"><span class="knob"></span></button>
+        </div>
+        <div class="rset-row">
+          <div style="min-width:0;padding-right:8px;">
+            <div style="font-size:14px;font-weight:600;color:var(--text);">Heat map</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:3px;line-height:1.45;">Warm shading over words above your level.</div>
+          </div>
+          <button class="rtoggle on" id="rset-heat" onclick="toggleHeat()"><span class="knob"></span></button>
+        </div>
+        <div class="rset-row">
+          <div style="min-width:0;padding-right:8px;">
+            <div style="font-size:14px;font-weight:600;color:var(--text);">Root-word analysis</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:3px;line-height:1.45;">Pop through to hanja morphemes in lookups.</div>
+          </div>
+          <button class="rtoggle on" id="rset-morph" onclick="toggleMorph()"><span class="knob"></span></button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════ LIBRARY ══════════ -->
+    <section class="screen" id="screen-library" data-screen-label="Library">
+      <div class="statusbar"><span class="time">9:41</span><span class="sb-clone"></span></div>
+      <div class="scroll">
+        <div class="pad">
+          <div style="display:flex;align-items:center;gap:6px;padding-top:2px;">
+            <button class="press" onclick="go('screen-home')" style="width:38px;height:38px;margin-left:-8px;display:grid;place-items:center;background:transparent;border:none;color:var(--text-muted);"><i data-lucide="chevron-left" class="ico"></i></button>
+            <div class="serif" style="font-size:26px;font-weight:500;color:var(--text);">Library</div>
+          </div>
+          <p style="font-size:12.5px;color:var(--text-muted);margin:4px 4px 0;">Your books & songs · sorted by recent</p>
+
+          <!-- segmented: books / songs -->
+          <div class="glass card" style="margin-top:14px;padding:5px;display:flex;gap:5px;">
+            <button class="press lib-seg active" data-seg="books" onclick="switchLib('books')" style="flex:1;padding:9px;border-radius:12px;border:none;background:var(--surface-strong);font-size:12px;font-weight:700;color:var(--text);display:flex;align-items:center;justify-content:center;gap:6px;"><i data-lucide="book-open" style="width:15px;height:15px;"></i>Books</button>
+            <button class="press lib-seg" data-seg="songs" onclick="switchLib('songs')" style="flex:1;padding:9px;border-radius:12px;border:none;background:transparent;font-size:12px;font-weight:700;color:var(--text-muted);display:flex;align-items:center;justify-content:center;gap:6px;"><i data-lucide="music" style="width:15px;height:15px;"></i>Songs</button>
+          </div>
+
+          <!-- drop zone -->
+          <div class="dropzone" id="dropzone" style="margin-top:18px;padding:24px 18px;text-align:center;">
+            <div style="width:46px;height:46px;border-radius:14px;background:var(--accent-soft);display:grid;place-items:center;margin:0 auto 12px;color:var(--accent);"><i data-lucide="upload-cloud" style="width:24px;height:24px;"></i></div>
+            <div style="font-size:14px;font-weight:700;color:var(--text);">Import a book</div>
+            <div style="font-size:11.5px;color:var(--text-muted);margin-top:5px;line-height:1.5;max-width:250px;margin-left:auto;margin-right:auto;">Drop an EPUB or paste a text block — we'll parse & level every word for immersion reading.</div>
+            <button class="press" onclick="simulateImport()" style="margin-top:14px;padding:9px 18px;border-radius:999px;border:1px solid var(--border-strong);background:var(--surface-muted);font-size:12px;font-weight:700;color:var(--text);">Choose file</button>
+            <div id="import-status" style="display:none;margin-top:14px;"></div>
+          </div>
+
+          <div class="sect-label" id="shelf-label">On your shelf</div>
+          <div id="library-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;"></div>
+          <div id="songs-list" style="display:none;flex-direction:column;gap:12px;"></div>
+
+          <!-- public domain browse -->
+          <div style="display:flex;align-items:baseline;justify-content:space-between;margin:26px 4px 0;">
+            <div class="sect-label" style="margin:0;">Public domain · pre-installed</div>
+            <span style="font-size:10.5px;color:var(--text-tertiary);">Free forever</span>
+          </div>
+          <p style="font-size:11.5px;color:var(--text-muted);margin:8px 4px 0;line-height:1.5;">Classic Korean literature bundled with the app — already leveled and ready to read.</p>
+          <div id="pd-list" style="display:flex;gap:14px;overflow-x:auto;margin:14px -20px 0;padding:2px 20px 6px;scrollbar-width:none;"></div>
+        </div>
+      </div>
+      <div class="homeind"><span></span></div>
+    </section>
+
+    <!-- ══════════ WRITING LOGS ══════════ -->
+    <section class="screen" id="screen-write-logs" data-screen-label="Writing Logs">
+      <div class="statusbar"><span class="time">9:41</span><span class="sb-clone"></span></div>
+      <div class="scroll">
+        <div class="pad">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding-top:2px;">
+            <div style="display:flex;align-items:center;gap:6px;">
+              <button class="press" onclick="go('screen-home')" style="width:38px;height:38px;margin-left:-8px;display:grid;place-items:center;background:transparent;border:none;color:var(--text-muted);"><i data-lucide="chevron-left" class="ico"></i></button>
+              <div class="serif" style="font-size:26px;font-weight:500;color:var(--text);">Writing</div>
+            </div>
+            <button class="press btn-accent" onclick="go('screen-write-canvas')" style="display:flex;align-items:center;gap:6px;padding:9px 15px;border-radius:999px;font-size:12.5px;font-weight:700;"><i data-lucide="plus" style="width:16px;height:16px;"></i>New</button>
+          </div>
+          <p style="font-size:12.5px;color:var(--text-muted);margin:4px 4px 0;">Past entries with automated feedback scores</p>
+          <div id="logs-feed" style="margin-top:18px;display:flex;flex-direction:column;gap:14px;"></div>
+        </div>
+      </div>
+      <div class="homeind"><span></span></div>
+    </section>
+
+    <!-- ══════════ WRITING CANVAS ══════════ -->
+    <section class="screen" id="screen-write-canvas" data-screen-label="Writing Canvas">
+      <div class="statusbar"><span class="time">9:41</span><span class="sb-clone"></span></div>
+      <div style="height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 12px 0 8px;flex:none;border-bottom:1px solid var(--reader-hairline);position:relative;z-index:20;">
+        <button class="press" onclick="go('screen-write-logs')" style="display:flex;align-items:center;gap:2px;background:transparent;border:none;color:var(--text-muted);font-size:14px;font-weight:600;"><i data-lucide="chevron-left" class="ico"></i>Logs</button>
+        <div class="label" style="color:var(--text-tertiary);">New entry · 한국어</div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <button class="press" id="draft-btn" onclick="saveDraft(this)" style="display:flex;align-items:center;gap:5px;padding:8px 12px;border-radius:999px;border:1px solid var(--border-strong);background:var(--surface-muted);font-size:12px;font-weight:700;color:var(--text-muted);"><i data-lucide="save" style="width:14px;height:14px;"></i>Draft</button>
+          <button class="press btn-accent" id="assess-btn" onclick="runAssess()" style="display:flex;align-items:center;gap:6px;padding:8px 14px;border-radius:999px;font-size:12.5px;font-weight:700;"><i data-lucide="sparkles" style="width:15px;height:15px;"></i>Assess</button>
+        </div>
+      </div>
+      <div class="scroll" id="canvas-scroll">
+        <div style="padding:20px;">
+          <input id="canvas-title" type="text" placeholder="Untitled entry" class="serif" style="width:100%;border:none;background:transparent;outline:none;font-size:24px;font-weight:500;color:var(--text);padding:0;" />
+
+          <!-- inspiration prompts -->
+          <div class="glass card" style="margin-top:14px;padding:13px 15px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+              <div style="display:flex;align-items:center;gap:7px;"><i data-lucide="lightbulb" style="width:14px;height:14px;color:var(--accent-3);"></i><span class="label" style="font-size:9px;color:var(--text-tertiary);">Need inspiration?</span></div>
+              <button class="press" onclick="cyclePrompt()" title="Another prompt" style="width:30px;height:30px;border-radius:50%;border:1px solid var(--border-strong);background:var(--surface-muted);display:grid;place-items:center;color:var(--text-muted);"><i data-lucide="refresh-cw" id="prompt-refresh" style="width:15px;height:15px;transition:transform .5s;"></i></button>
+            </div>
+            <div id="prompt-kr" class="kr press" onclick="usePrompt()" style="font-size:16px;font-weight:500;color:var(--text);margin-top:10px;line-height:1.5;"></div>
+            <div id="prompt-en" style="font-size:12px;color:var(--text-muted);margin-top:4px;line-height:1.45;"></div>
+            <button class="press" onclick="usePrompt()" style="margin-top:11px;display:flex;align-items:center;gap:5px;background:transparent;border:none;padding:0;font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--accent);"><i data-lucide="corner-down-left" style="width:13px;height:13px;"></i>Start from this</button>
+          </div>
+
+          <div style="font-size:12px;color:var(--text-tertiary);margin:16px 0 4px;" id="canvas-count">0 words · draft</div>
+          <textarea id="canvas-text" class="kr" placeholder="오늘 하루를 한국어로 적어 보세요…" style="width:100%;min-height:280px;border:none;background:transparent;outline:none;font-size:17px;line-height:1.9;color:var(--text);" spellcheck="false">오늘은 비가 추적추적 내렸다. 나는 창밖을 보면서 커피를 마셨다. 마음이 조금 무거웠지만, 책을 읽으니 기분이 나아졌다. 내일은 날씨가 맑았으면 좋겠다.</textarea>
+
+          <!-- AI output pane -->
+          <div id="assess-loading" style="display:none;text-align:center;padding:34px 0;">
+            <div class="spinner" style="margin:0 auto;"></div>
+            <div class="serif" style="font-style:italic;font-size:16px;color:var(--text-muted);margin-top:16px;" id="assess-msg">AI parsing syntax constructs…</div>
+          </div>
+          <div id="assess-output" style="display:none;"></div>
+        </div>
+      </div>
+      <div class="homeind"><span></span></div>
+    </section>
+
+    <!-- ══════════ FLASHCARDS ══════════ -->
+    <section class="screen" id="screen-flashcards" data-screen-label="Flashcards">
+      <div class="statusbar"><span class="time">9:41</span><span class="sb-clone"></span></div>
+      <div style="height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 12px 0 8px;flex:none;position:relative;z-index:20;">
+        <button class="press" onclick="go('screen-vocab')" style="width:40px;height:40px;display:grid;place-items:center;background:transparent;border:none;color:var(--text-muted);"><i data-lucide="x" class="ico"></i></button>
+        <div class="label" style="color:var(--text-tertiary);" id="fc-progress">1 / 24</div>
+        <div style="width:40px;"></div>
+      </div>
+      <div style="padding:0 20px;flex:none;">
+        <div style="height:5px;border-radius:999px;background:rgba(154,139,143,.24);overflow:hidden;"><div id="fc-bar" style="width:4%;height:100%;background:var(--gradient-progress);border-radius:999px;transition:width .3s;"></div></div>
+      </div>
+      <div style="flex:1;display:flex;flex-direction:column;padding:20px;">
+        <div class="flip-scene" style="flex:1;">
+          <div class="flip-card" id="flip-card" onclick="flipCard()">
+            <!-- front -->
+            <div class="flip-face glass" style="border:1px solid var(--surface-glass-border);box-shadow:var(--shadow-glass);align-items:center;justify-content:center;text-align:center;padding:30px;">
+              <div class="eyebrow" style="position:absolute;top:20px;left:0;right:0;">Word</div>
+              <div class="kr" id="fc-front-word" style="font-size:54px;font-weight:600;color:var(--text);line-height:1.1;">추적추적</div>
+              <div class="serif" id="fc-front-rom" style="font-style:italic;font-size:16px;color:var(--text-tertiary);margin-top:12px;">chujeok-chujeok</div>
+              <div style="position:absolute;bottom:22px;left:0;right:0;display:flex;align-items:center;justify-content:center;gap:6px;font-size:11px;color:var(--text-subtle);"><i data-lucide="rotate-cw" style="width:13px;height:13px;"></i>Tap to flip</div>
+            </div>
+            <!-- back -->
+            <div class="flip-face flip-back" style="background:var(--gradient-accent);box-shadow:var(--shadow-cover);align-items:center;justify-content:center;text-align:center;padding:30px;color:#fff;">
+              <div class="eyebrow" style="position:absolute;top:20px;left:0;right:0;color:rgba(255,255,255,.75);">Meaning</div>
+              <div id="fc-back-def" style="font-size:26px;font-weight:700;line-height:1.25;">drizzling; pattering (of rain)</div>
+              <div class="kr" id="fc-back-ex" style="font-size:14px;line-height:1.6;margin-top:18px;opacity:.92;">비가 <b>추적추적</b> 내렸다.<br><span style="font-size:12px;opacity:.8;">The rain came down in a steady drizzle.</span></div>
+            </div>
+          </div>
+        </div>
+        <div style="display:flex;gap:12px;margin-top:20px;flex:none;">
+          <button class="press" onclick="nextCard('later')" style="flex:1;height:52px;border-radius:16px;border:1px solid var(--border-strong);background:var(--surface-muted);font-size:14px;font-weight:700;color:var(--text-muted);display:flex;align-items:center;justify-content:center;gap:8px;"><i data-lucide="rotate-ccw" style="width:17px;height:17px;"></i>Review later</button>
+          <button class="press" onclick="nextCard('got')" style="flex:1;height:52px;border-radius:16px;border:none;background:var(--gradient-accent);color:#fff;box-shadow:var(--shadow-accent);font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:8px;"><i data-lucide="check" style="width:17px;height:17px;"></i>Got it!</button>
+        </div>
+      </div>
+      <div class="homeind"><span></span></div>
+    </section>
+
+    <!-- ══════════ VOCAB LIST ══════════ -->
+    <section class="screen" id="screen-vocab" data-screen-label="Vocab List">
+      <div class="statusbar"><span class="time">9:41</span><span class="sb-clone"></span></div>
+      <div style="flex:none;padding:2px 20px 0;position:relative;z-index:20;">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <button class="press" onclick="go('screen-home')" style="width:38px;height:38px;margin-left:-8px;display:grid;place-items:center;background:transparent;border:none;color:var(--text-muted);"><i data-lucide="chevron-left" class="ico"></i></button>
+          <div class="serif" style="font-size:26px;font-weight:500;color:var(--text);">Vocabulary</div>
+        </div>
+
+        <!-- STATS -->
+        <div class="glass card" style="margin-top:14px;padding:16px 6px 12px;">
+          <div style="display:flex;align-items:stretch;">
+            <div style="flex:1;text-align:center;padding:0 8px;">
+              <div class="serif" id="vs-matured" style="font-size:30px;font-weight:600;color:var(--text);line-height:1;">0</div>
+              <div class="label" style="font-size:8.5px;color:var(--text-tertiary);margin-top:8px;line-height:1.4;">Matured<br>through reading</div>
+            </div>
+            <div style="width:1px;background:var(--divider);margin:2px 0;"></div>
+            <div style="flex:1;text-align:center;padding:0 8px;">
+              <div class="serif" id="vs-waiting" style="font-size:30px;font-weight:600;color:var(--text);line-height:1;">0</div>
+              <div class="label" style="font-size:8.5px;color:var(--text-tertiary);margin-top:8px;line-height:1.4;">Waiting for<br>another encounter</div>
+            </div>
+            <div style="width:1px;background:var(--divider);margin:2px 0;"></div>
+            <div style="flex:1;text-align:center;padding:0 8px;">
+              <div class="serif" id="vs-notseen" style="font-size:30px;font-weight:600;color:var(--text);line-height:1;">0</div>
+              <div class="label" style="font-size:8.5px;color:var(--text-tertiary);margin-top:8px;line-height:1.4;">Not<br>seen</div>
+            </div>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:15px;padding:0 8px;">
+            <button class="press btn-accent" id="vs-review" onclick="go('screen-flashcards')" style="flex:1.5;height:44px;border-radius:13px;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">Review due</button>
+            <button class="press" onclick="go('screen-reader')" style="flex:1;height:44px;border-radius:13px;background:transparent;border:1px solid var(--border-strong);color:var(--text-muted);font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;">Keep reading</button>
+          </div>
+        </div>
+
+        <!-- TABS -->
+        <div style="display:flex;gap:22px;margin-top:18px;border-bottom:1px solid var(--divider);">
+          <button class="vtab active" data-tab="recent" onclick="switchVocabTab('recent')">Recent</button>
+          <button class="vtab" data-tab="starred" onclick="switchVocabTab('starred')">Starred</button>
+          <button class="vtab" data-tab="maturity" onclick="switchVocabTab('maturity')">Maturity</button>
+          <button class="vtab" data-tab="notseen" onclick="switchVocabTab('notseen')">Not seen</button>
+        </div>
+      </div>
+      <div class="scroll">
+        <div style="padding:14px 20px 40px;">
+          <div id="vocab-list" style="display:flex;flex-direction:column;gap:10px;"></div>
+          <div id="vocab-empty" style="display:none;text-align:center;padding:40px 0;color:var(--text-subtle);font-size:13px;">No words in this view yet.</div>
+        </div>
+      </div>
+      <div class="homeind"><span></span></div>
+    </section>
+
+    <!-- ══════════ VOCAB DETAIL ══════════ -->
+    <section class="screen" id="screen-vocab-detail" data-screen-label="Vocab Detail">
+      <div class="statusbar"><span class="time">9:41</span><span class="sb-clone"></span></div>
+      <div style="height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 10px 0 8px;flex:none;border-bottom:1px solid var(--reader-hairline);position:relative;z-index:20;">
+        <div style="display:flex;align-items:center;gap:2px;">
+          <button class="press" onclick="go('screen-vocab')" style="width:40px;height:40px;display:grid;place-items:center;background:transparent;border:none;color:var(--text-muted);"><i data-lucide="arrow-left" class="ico"></i></button>
+          <span class="label" style="color:var(--text-tertiary);">Your vocabulary</span>
+        </div>
+        <button class="press" id="vd-star" onclick="toggleStar()" style="width:44px;height:44px;display:grid;place-items:center;background:transparent;border:none;"></button>
+      </div>
+      <div class="scroll">
+        <div style="padding:24px 22px 40px;">
+          <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;">
+            <span id="vd-word" class="kr" style="font-size:46px;font-weight:600;color:var(--text);line-height:1;"></span>
+            <span id="vd-hanja" class="kr" style="font-size:26px;font-weight:500;color:var(--text-muted);"></span>
+            <span id="vd-rom" class="serif" style="font-style:italic;font-size:19px;color:var(--text-tertiary);"></span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:15px;flex-wrap:wrap;">
+            <span id="vd-status" style="font-size:9px;font-weight:700;letter-spacing:1.3px;text-transform:uppercase;border:1px solid var(--accent-3);color:var(--accent-3);border-radius:6px;padding:3px 9px;"></span>
+            <span id="vd-pos" class="serif" style="font-size:13px;font-style:italic;color:var(--text-muted);"></span>
+            <span style="opacity:.4;color:var(--text-tertiary);">·</span>
+            <span id="vd-enc" style="font-size:12.5px;color:var(--text-muted);"></span>
+          </div>
+          <div id="vd-def" class="serif" style="font-size:30px;font-weight:500;color:var(--text);margin-top:22px;line-height:1.15;"></div>
+
+          <div class="sect-label" style="margin-top:26px;">Seen in</div>
+          <div style="display:flex;gap:12px;align-items:flex-start;">
+            <span class="serif" style="font-size:38px;line-height:0.62;color:var(--accent);opacity:.55;flex:none;">“</span>
+            <div>
+              <div id="vd-sentence-kr" class="kr" style="font-size:15px;line-height:1.7;color:var(--text-secondary);"></div>
+              <div id="vd-sentence-en" style="font-size:12.5px;color:var(--text-tertiary);margin-top:7px;line-height:1.5;"></div>
+            </div>
+          </div>
+
+          <!-- related by hanja -->
+          <div id="vd-hanja-card" class="glass card" style="margin-top:26px;padding:17px 17px 6px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+              <div style="display:flex;align-items:center;gap:14px;min-width:0;">
+                <span id="hj-char" class="kr" style="font-size:42px;font-weight:600;color:var(--text);line-height:1;"></span>
+                <div style="min-width:0;">
+                  <div class="label" style="font-size:8.5px;color:var(--text-tertiary);">Related by hanja</div>
+                  <div id="hj-read" class="kr" style="font-size:14.5px;color:var(--text);margin-top:4px;"></div>
+                </div>
+              </div>
+              <div style="display:flex;align-items:center;gap:6px;flex:none;">
+                <button class="press" onclick="hanjaNav(-1)" style="width:28px;height:28px;border-radius:50%;background:transparent;border:1px solid var(--border-strong);display:grid;place-items:center;color:var(--text-muted);"><i data-lucide="chevron-left" style="width:16px;height:16px;"></i></button>
+                <span id="hj-count" style="font-size:11px;font-weight:600;color:var(--text-muted);white-space:nowrap;">1 of 2</span>
+                <button class="press" onclick="hanjaNav(1)" style="width:28px;height:28px;border-radius:50%;background:transparent;border:1px solid var(--border-strong);display:grid;place-items:center;color:var(--text-muted);"><i data-lucide="chevron-right" style="width:16px;height:16px;"></i></button>
+              </div>
+            </div>
+            <div id="hj-related" style="margin-top:14px;"></div>
+            <button class="press" id="hj-more" onclick="toggleHanjaMore()" style="width:100%;display:flex;align-items:center;justify-content:center;gap:5px;padding:12px 0;background:transparent;border:none;border-top:1px solid var(--divider);font-size:12px;font-weight:600;color:var(--text-muted);"><span>See more</span><i data-lucide="chevron-down" style="width:15px;height:15px;"></i></button>
+          </div>
+        </div>
+      </div>
+      <div class="homeind"><span></span></div>
+    </section>
+
+    <!-- ══════════ PROFILE / CONFIG ══════════ -->
+    <section class="screen" id="screen-profile" data-screen-label="Config Center">
+      <div class="statusbar"><span class="time">9:41</span><span class="sb-clone"></span></div>
+      <div class="scroll">
+        <div class="pad">
+          <div style="display:flex;align-items:center;gap:6px;padding-top:2px;">
+            <button class="press" onclick="go('screen-home')" style="width:38px;height:38px;margin-left:-8px;display:grid;place-items:center;background:transparent;border:none;color:var(--text-muted);"><i data-lucide="chevron-left" class="ico"></i></button>
+            <div class="serif" style="font-size:26px;font-weight:500;color:var(--text);">Settings</div>
+          </div>
+
+          <!-- profile -->
+          <div class="glass card" style="margin-top:16px;padding:18px;display:flex;align-items:center;gap:15px;">
+            <div id="pf-avatar" style="width:60px;height:60px;border-radius:50%;background:var(--gradient-accent);display:grid;place-items:center;box-shadow:var(--shadow-accent);flex:none;"></div>
+            <div style="min-width:0;flex:1;">
+              <div id="pf-name" class="serif" style="font-size:20px;font-weight:500;color:var(--text);"></div>
+              <div id="pf-sub" style="font-size:12px;color:var(--text-muted);margin-top:2px;"></div>
+            </div>
+            <button id="pf-edit" class="press" onclick="editProfile()" title="Edit profile" style="flex:none;width:38px;height:38px;border-radius:50%;border:1px solid var(--border-strong);background:var(--surface-muted);display:grid;place-items:center;color:var(--text-muted);"><i data-lucide="pencil" style="width:17px;height:17px;"></i></button>
+          </div>
+
+          <!-- sign-in card (logged out) -->
+          <div id="auth-out" class="glass card" style="display:none;margin-top:16px;padding:20px 18px;">
+            <div class="serif" style="font-size:18px;color:var(--text);">Sign in to sync your progress</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:5px;line-height:1.5;">Keep your vocabulary, reading, and streaks across devices.</div>
+            <button class="press btn-accent" onclick="setAuth(true)" style="width:100%;height:46px;border-radius:14px;margin-top:16px;font-size:13px;font-weight:700;">Create account · Log in</button>
+            <div style="font-size:11px;color:var(--text-tertiary);margin-top:12px;line-height:1.6;text-align:center;">By creating an account, you agree with our <a href="#" onclick="return legalTap('Terms of Service')" style="color:var(--accent);font-weight:600;text-decoration:underline;">Terms of Service</a> &amp; <a href="#" onclick="return legalTap('Privacy Policy')" style="color:var(--accent);font-weight:600;text-decoration:underline;">Privacy Policy</a>.</div>
+          </div>
+
+          <!-- STATS -->
+          <div id="stats-block">
+            <div class="sect-label">Your stats</div>
+            <div class="glass card" style="padding:16px 6px;">
+              <div style="display:flex;align-items:stretch;">
+                <div style="flex:1;text-align:center;padding:0 6px;">
+                  <div class="serif" style="font-size:28px;font-weight:600;color:var(--text);line-height:1;">12</div>
+                  <div class="label" style="font-size:8.5px;color:var(--text-tertiary);margin-top:7px;">Day streak</div>
+                </div>
+                <div style="width:1px;background:var(--divider);margin:2px 0;"></div>
+                <div style="flex:1;text-align:center;padding:0 6px;">
+                  <div class="serif" style="font-size:28px;font-weight:600;color:var(--text);line-height:1;">37</div>
+                  <div class="label" style="font-size:8.5px;color:var(--text-tertiary);margin-top:7px;line-height:1.4;">New words<br>this week</div>
+                </div>
+                <div style="width:1px;background:var(--divider);margin:2px 0;"></div>
+                <div style="flex:1;text-align:center;padding:0 6px;">
+                  <div class="serif" style="font-size:28px;font-weight:600;color:var(--text);line-height:1;">840</div>
+                  <div class="label" style="font-size:8.5px;color:var(--text-tertiary);margin-top:7px;line-height:1.4;">Words<br>encountered</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- language level -->
+          <div class="sect-label">Language level</div>
+          <div class="glass card" style="padding:15px 16px;">
+            <div style="font-size:12.5px;color:var(--text-muted);line-height:1.5;">Set the difficulty of recommended texts. You decide your level.</div>
+            <div id="level-pills" style="display:flex;gap:7px;margin-top:13px;">
+              <button class="press lvl-opt" data-lvl="A1" onclick="setLevel('A1')">A1</button>
+              <button class="press lvl-opt" data-lvl="A2" onclick="setLevel('A2')">A2</button>
+              <button class="press lvl-opt" data-lvl="B1" onclick="setLevel('B1')">B1</button>
+              <button class="press lvl-opt" data-lvl="B2" onclick="setLevel('B2')">B2</button>
+              <button class="press lvl-opt" data-lvl="C1" onclick="setLevel('C1')">C1</button>
+              <button class="press lvl-opt" data-lvl="C2" onclick="setLevel('C2')">C2</button>
+            </div>
+          </div>
+
+          <!-- user language -->
+          <div class="sect-label">Preferences</div>
+          <div class="glass card" style="overflow:hidden;">
+            <button class="press" onclick="toggleExpand('exp-lang')" style="width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:15px 16px;background:transparent;border:none;">
+              <div style="display:flex;align-items:center;gap:12px;">
+                <div style="width:38px;height:38px;border-radius:11px;background:var(--accent-soft);display:grid;place-items:center;color:var(--accent);flex:none;"><i data-lucide="languages" style="width:19px;height:19px;"></i></div>
+                <div style="text-align:left;">
+                  <div style="font-size:13.5px;font-weight:700;color:var(--text);">App language</div>
+                  <div id="lang-current" style="font-size:11.5px;color:var(--text-muted);margin-top:1px;">English</div>
+                </div>
+              </div>
+              <i data-lucide="chevron-down" class="exp-chev" data-for="exp-lang" style="width:18px;height:18px;color:var(--text-subtle);transition:transform .25s;"></i>
+            </button>
+            <div id="exp-lang" style="display:none;padding:2px 16px 8px 66px;"></div>
+          </div>
+
+          <!-- personalization -->
+          <div class="sect-label">Personalized vocabulary modeling</div>
+          <div class="glass card" style="padding:16px 17px;">
+            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;">
+              <div style="min-width:0;">
+                <div style="font-size:14px;font-weight:700;color:var(--text);">Learn from my reading</div>
+                <div style="font-size:11.5px;color:var(--text-muted);margin-top:5px;line-height:1.55;">Allow the app to learn from your reading and interactions to better estimate which words you know and recommend texts at the right level.</div>
+              </div>
+              <button id="pers-toggle" class="press" onclick="togglePers()" role="switch" aria-checked="true" style="flex:none;width:50px;height:30px;border-radius:999px;border:none;padding:3px;display:flex;cursor:pointer;transition:background .2s;">
+                <span class="pers-knob" style="width:24px;height:24px;border-radius:50%;background:#fff;box-shadow:0 2px 5px rgba(0,0,0,.25);transition:transform .22s;"></span>
+              </button>
+            </div>
+            <div id="pers-note" style="font-size:11px;color:var(--text-tertiary);margin-top:12px;line-height:1.55;padding-top:12px;border-top:1px solid var(--divider);">When enabled, the app continuously refines your vocabulary profile based on the words you look up, skip, review, and understand. Turning this off means recommendations and difficulty estimates may be less accurate.</div>
+          </div>
+
+          <!-- appearance -->
+          <div class="sect-label">Appearance</div>
+          <div class="glass card" style="padding:6px;display:flex;gap:6px;">
+            <button class="press theme-opt" data-theme-set="light" onclick="setTheme('light')" style="flex:1;padding:13px;border-radius:15px;border:none;background:transparent;display:flex;flex-direction:column;align-items:center;gap:7px;color:var(--text-muted);font-size:12px;font-weight:700;"><i data-lucide="sun" style="width:20px;height:20px;"></i>Daylight</button>
+            <button class="press theme-opt" data-theme-set="dusk" onclick="setTheme('dusk')" style="flex:1;padding:13px;border-radius:15px;border:none;background:transparent;display:flex;flex-direction:column;align-items:center;gap:7px;color:var(--text-muted);font-size:12px;font-weight:700;"><i data-lucide="moon-star" style="width:20px;height:20px;"></i>Dusk</button>
+          </div>
+
+          <!-- support & legal (logged in) -->
+          <div id="support-block">
+            <div class="sect-label">Support &amp; legal</div>
+            <div class="glass card" style="overflow:hidden;">
+              <button class="press" onclick="toggleExpand('exp-support')" style="width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:15px 16px;background:transparent;border:none;">
+                <div style="display:flex;align-items:center;gap:12px;">
+                  <div style="width:38px;height:38px;border-radius:11px;background:var(--accent-soft);display:grid;place-items:center;color:var(--accent);flex:none;"><i data-lucide="life-buoy" style="width:19px;height:19px;"></i></div>
+                  <div style="font-size:13.5px;font-weight:700;color:var(--text);">Support &amp; legal</div>
+                </div>
+                <i data-lucide="chevron-down" class="exp-chev" data-for="exp-support" style="width:18px;height:18px;color:var(--text-subtle);transition:transform .25s;"></i>
+              </button>
+              <div id="exp-support" style="display:none;">
+                <a href="#" onclick="return legalTap('Terms of Service')" class="press sup-row" style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px 14px 66px;border-top:1px solid var(--divider);text-decoration:none;">
+                  <span style="font-size:13px;color:var(--text-secondary);">Terms of Service</span><i data-lucide="chevron-right" style="width:16px;height:16px;color:var(--text-subtle);"></i>
+                </a>
+                <a href="#" onclick="return legalTap('Privacy Policy')" class="press sup-row" style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px 14px 66px;border-top:1px solid var(--divider);text-decoration:none;">
+                  <span style="font-size:13px;color:var(--text-secondary);">Privacy Policy</span><i data-lucide="chevron-right" style="width:16px;height:16px;color:var(--text-subtle);"></i>
+                </a>
+                <a href="#" onclick="return legalTap('Contact us')" class="press sup-row" style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px 14px 66px;border-top:1px solid var(--divider);text-decoration:none;">
+                  <span style="font-size:13px;color:var(--text-secondary);">Contact us</span><i data-lucide="chevron-right" style="width:16px;height:16px;color:var(--text-subtle);"></i>
+                </a>
+              </div>
+            </div>
+          </div>
+
+          <!-- account actions -->
+          <div id="account-actions" style="margin-top:26px;display:flex;flex-direction:column;gap:10px;">
+            <button id="logout-btn" class="press" onclick="setAuth(false)" style="width:100%;height:48px;border-radius:14px;background:var(--surface-muted);border:1px solid var(--border-strong);color:var(--text);font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:8px;"><i data-lucide="log-out" style="width:17px;height:17px;"></i>Log out</button>
+            <button class="press" onclick="confirmDelete()" style="width:100%;height:48px;border-radius:14px;background:transparent;border:1px solid rgba(192,54,44,0.4);color:var(--danger);font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:8px;"><i data-lucide="trash-2" style="width:17px;height:17px;"></i>Delete account</button>
+          </div>
+
+          <div id="toast" style="opacity:0;transition:opacity .25s;position:sticky;bottom:14px;margin:16px auto 0;width:fit-content;max-width:90%;background:var(--popover);border:1px solid var(--popover-border);box-shadow:var(--shadow-soft);border-radius:12px;padding:10px 16px;font-size:12px;font-weight:600;color:var(--text);text-align:center;pointer-events:none;"></div>
+        </div>
+      </div>
+      <div class="homeind"><span></span></div>
+    </section>
+
+  </div>
+</div>
+
+<script>
+/* ═══════════════ status bar glyphs ═══════════════ */
+const SB = `<span style="display:flex;align-items:center;gap:6px;">
+  <svg width="18" height="12" viewBox="0 0 18 12" fill="currentColor"><rect x="0" y="7.5" width="3" height="4.5" rx="1"/><rect x="5" y="5" width="3" height="7" rx="1"/><rect x="10" y="2.5" width="3" height="9.5" rx="1"/><rect x="15" y="0" width="3" height="12" rx="1"/></svg>
+  <svg width="24" height="12" viewBox="0 0 24 12" fill="none"><rect x="0.5" y="0.5" width="20" height="11" rx="3" stroke="currentColor" opacity="0.5"/><rect x="2" y="2" width="15" height="8" rx="1.5" fill="currentColor"/><rect x="21.5" y="4" width="1.5" height="4" rx="0.75" fill="currentColor" opacity="0.5"/></svg>
+</span>`;
+document.getElementById('sb1').innerHTML = SB;
+document.querySelectorAll('.sb-clone').forEach(e=>e.innerHTML=SB);
+
+/* ═══════════════ view router ═══════════════ */
+function go(id){
+  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+  const t = document.getElementById(id);
+  t.classList.add('active');
+  const sc = t.querySelector('.scroll'); if(sc) sc.scrollTop = 0;
+  if(id==='screen-write-canvas') resetCanvas();
+  if(id==='screen-flashcards') resetDeck();
+  refreshIcons();
+}
+
+/* ═══════════════ theme ═══════════════ */
+function setTheme(name){
+  document.documentElement.setAttribute('data-theme', name);
+  document.querySelectorAll('.theme-opt').forEach(b=>{
+    const on = b.dataset.themeSet===name;
+    b.style.background = on ? 'var(--surface-strong)' : 'transparent';
+    b.style.color = on ? 'var(--accent)' : 'var(--text-muted)';
+  });
+  if(typeof syncDarkToggle==='function') syncDarkToggle();
+}
+
+/* ═══════════════ reader lookup ═══════════════ */
+const DICT = {
+  '김첨지':{ko:'김첨지',rom:'gimcheomji',hanja:'金僉知',tag:'NAME',pos:'proper noun',
+    kr:'surname 김 + 첨지, an archaic honorific for a low-ranking older man',
+    ctx:'첨지 is an old title once given to minor officials — here used ironically for an ordinary aging rickshaw puller, the story\'s protagonist.',
+    hanjaBreak:'성 김 · 다 첨 · 알 지', sent:'이 날이야말로 동소문 안에서 인력거꾼 노릇을 하는 김첨지에게는…'},
+  '추적추적':{ko:'추적추적',rom:'chujeok-chujeok',hanja:'',tag:'UNKNOWN',pos:'adverb (mimetic)',
+    kr:'비나 물기가 자꾸 축축하게 내리는 모양',
+    ctx:'An onomatopoeic adverb for rain falling steadily and dankly — sets the story\'s gloomy, wet atmosphere.',
+    hanjaBreak:'', sent:'눈은 아니 오고 얼다가 만 비가 추적추적 내리었다.'},
+  '인력거꾼':{ko:'인력거꾼',rom:'illyeokkeokkun',hanja:'人力車',tag:'ABOVE',pos:'noun',
+    kr:'인력거를 끄는 사람. 사람이 끄는 두 바퀴 수레의 운전자',
+    ctx:'A rickshaw puller — 人力車 (man-power-cart) + 꾼 (one who does). The protagonist\'s trade.',
+    hanjaBreak:'사람 인 · 힘 력 · 수레 거', sent:'동소문 안에서 인력거꾼 노릇을 하는 김첨지에게는…'},
+  '운수':{ko:'운수',rom:'unsu',hanja:'運數',tag:'ABOVE',pos:'noun',
+    kr:'이미 정하여져 있어 인간의 힘으로는 어쩔 수 없는 천운(天運)',
+    ctx:'Fortune, luck, fate — the title word. 運 (fortune) + 數 (number/fate). The story\'s bitter irony hinges on it.',
+    hanjaBreak:'옮길 운 · 셀 수', sent:'비교적 운수 좋은 날이었다.'},
+  '비교적':{ko:'비교적',rom:'bigyojeok',hanja:'比較的',tag:'SAME',pos:'adverb',
+    kr:'다른 것과 견주어 볼 때 어느 정도는',
+    ctx:'Comparatively, relatively. 比較 (comparison) + 的 (adjectival suffix).',
+    hanjaBreak:'견줄 비 · 견줄 교 · 과녁 적', sent:'비교적 운수 좋은 날이었다.'},
+  '눈':{ko:'눈',rom:'nun',hanja:'',tag:'SAME',pos:'noun',kr:'하늘에서 내리는 하얀 결정체',
+    ctx:'Snow (한국어 눈 is a homograph — also "eye" — but here it\'s the weather).',hanjaBreak:'',sent:'눈이 올 듯하더니 눈은 아니 오고…'},
+  '얼다':{ko:'얼다',rom:'eolda',hanja:'',tag:'ABOVE',pos:'verb',kr:'액체가 찬 기운에 굳어 고체가 되다',
+    ctx:'To freeze. Here 얼다가 만 — "half-froze and then stopped" — the sleet that never became snow.',hanjaBreak:'',sent:'얼다가 만 비가 추적추적 내리었다.'},
+  '날':{ko:'날',rom:'nal',hanja:'',tag:'SAME',pos:'noun',kr:'하루 동안. 지구가 한 번 자전하는 동안',
+    ctx:'Day. A core word — the title\'s "day" (운수 좋은 날 = a lucky day).',hanjaBreak:'',sent:'비교적 운수 좋은 날이었다.'},
+  '재수':{ko:'재수',rom:'jaesu',hanja:'財數',tag:'ABOVE',pos:'noun',kr:'재물이 생기거나 좋은 일이 있을 운수',
+    ctx:'Luck (esp. with money). 財 (wealth) + 數 (fate).',hanjaBreak:'재물 재 · 셀 수',sent:'재수가 옴 붙어서…'},
+  '옴':{ko:'옴',rom:'om',hanja:'',tag:'SAME',pos:'noun',kr:'살갗에 생기는 전염성 피부병; 여기서는 나쁜 것이 들러붙음',
+    ctx:'Idiomatic — 옴 붙다 means bad luck "stuck to him like scabies." Vivid, coarse imagery.',hanjaBreak:'',sent:'그야말로 재수가 옴 붙어서…'},
+  '돈맛':{ko:'돈맛',rom:'donmat',hanja:'',tag:'UNKNOWN',pos:'noun',kr:'돈을 벌거나 쓰는 재미',
+    ctx:'"The taste of money" — 돈 (money) + 맛 (taste). To feel the pleasure of earning.',hanjaBreak:'',sent:'근 열흘 동안 돈맛을 못 본 그가…'},
+  '새벽':{ko:'새벽',rom:'saebyeok',hanja:'',tag:'ABOVE',pos:'noun',kr:'날이 밝을 무렵. 먼동이 트기 전후',
+    ctx:'Dawn, daybreak.',hanjaBreak:'',sent:'이 날 새벽 첫 번에…'},
+  '첫':{ko:'첫',rom:'cheot',hanja:'',tag:'SAME',pos:'determiner',kr:'맨 처음의',
+    ctx:'First. 첫 번 = the first time/turn.',hanjaBreak:'',sent:'새벽 첫 번에 손을 잡아…'},
+  '탄':{ko:'타다',rom:'tada',hanja:'',tag:'SAME',pos:'verb',kr:'몫으로 주는 돈이나 물건을 받다',
+    ctx:'Here: to earn/receive (a fare). 탄 것 = "what he earned."',hanjaBreak:'',sent:'손을 잡아 탄 것이 있었으니.'},
+};
+const TAGCOLOR = {NAME:'var(--accent-2)',UNKNOWN:'var(--level-unknown)',ABOVE:'var(--level-above)',SAME:'var(--level-same)'};
+
+const WORD_ORDER = ['눈','얼다','추적추적','날','인력거꾼','김첨지','비교적','운수','재수','옴','돈맛','새벽','첫','탄'];
+const RELATED = {
+  '운수':[{ko:'운명',hanja:'運命',en:'destiny, fate',status:'saved'},{ko:'행운',hanja:'幸運',en:'good fortune',status:'known'},{ko:'운송',hanja:'運送',en:'transport',status:'unsaved'}],
+  '재수':[{ko:'재물',hanja:'財物',en:'wealth, property',status:'known'},{ko:'재산',hanja:'財産',en:'assets',status:'unsaved'}],
+  '인력거꾼':[{ko:'노동',hanja:'勞動',en:'labour',status:'known'},{ko:'역부',hanja:'役夫',en:'a laborer',status:'unsaved'}],
+  '비교적':[{ko:'비례',hanja:'比例',en:'proportion',status:'unsaved'},{ko:'목적',hanja:'目的',en:'aim, purpose',status:'known'}],
+};
+const SENT_EN = {
+  '김첨지':'For Kim Cheomji — an aging rickshaw puller working inside the Dongso Gate — this was, comparatively, a lucky day.',
+  '운수':'It was a comparatively lucky day.',
+  '인력거꾼':'…working as a rickshaw puller inside the Dongso Gate.',
+  '추적추적':'The snow never came; instead a half-frozen rain fell steadily and dank.',
+  '돈맛':'For nearly ten days he had not tasted a single coin of earnings.',
+  '재수':'As if misfortune had stuck to him like a scab, he had gone almost ten days without earning.',
+};
+const savedWords = new Set(['비교적']);   // demo: one word already saved — highlight persists
+let heatOn = true, morphOn = true, fontPx = 18, spaceIdx = 2;
+const SPACINGS = [['Tight',1.55],['Cozy',1.8],['Relaxed',2.05],['Airy',2.4]];
+
+/* ---- reflect saved words as persistent reader highlights ---- */
+function paintSaved(){
+  document.querySelectorAll('#reader-pager .tok').forEach(t=>{
+    t.classList.toggle('saved', savedWords.has(t.dataset.word));
+  });
+}
+
+/* ═══════════════ tap + long-press selection ═══════════════ */
+(function(){
+  const pager = document.getElementById('reader-pager');
+  let lpTimer=null, selecting=false, selStart=null, downX=0, downY=0, moved=false, pressTok=null;
+  function tokIn(page){ return [...page.querySelectorAll('.tok')]; }
+  function markRange(a,b){
+    const page=a.closest('.reader-page'); const list=tokIn(page);
+    let i=list.indexOf(a), j=list.indexOf(b); if(i<0||j<0) return;
+    if(i>j){const k=i;i=j;j=k;}
+    list.forEach((t,idx)=>t.classList.toggle('sel', idx>=i&&idx<=j));
+  }
+  pager.addEventListener('pointerdown', e=>{
+    const t=e.target.closest('.tok'); moved=false; downX=e.clientX; downY=e.clientY; pressTok=t||null;
+    if(!t) return;
+    lpTimer=setTimeout(()=>{ selecting=true; selStart=t;
+      document.querySelectorAll('.tok.tapped').forEach(x=>x.classList.remove('tapped'));
+      t.classList.add('sel'); if(navigator.vibrate) navigator.vibrate(12);
+    }, 320);
+  });
+  pager.addEventListener('pointermove', e=>{
+    if(!moved && (Math.abs(e.clientX-downX)>8||Math.abs(e.clientY-downY)>8)){ moved=true; if(!selecting) clearTimeout(lpTimer); }
+    if(selecting){ e.preventDefault();
+      const el=document.elementFromPoint(e.clientX,e.clientY);
+      const t=el&&el.closest?el.closest('.tok'):null;
+      if(t&&t.closest('.reader-page')===selStart.closest('.reader-page')) markRange(selStart,t);
+    }
+  });
+  window.addEventListener('pointerup', ()=>{
+    clearTimeout(lpTimer);
+    if(selecting){ selecting=false; finishSelect(); pressTok=null; return; }
+    if(pressTok && !moved){
+      document.querySelectorAll('.tok.tapped').forEach(x=>x.classList.remove('tapped'));
+      pressTok.classList.add('tapped'); openLookup(pressTok.dataset.word);
+    }
+    pressTok=null;
+  });
+})();
+
+function clearSel(){ document.querySelectorAll('.tok.sel').forEach(x=>x.classList.remove('sel')); }
+
+function finishSelect(){
+  const sel=[...document.querySelectorAll('.tok.sel')];
+  if(sel.length<=1){ // treat as a single tap
+    if(sel[0]){ const w=sel[0].dataset.word; clearSel(); document.querySelectorAll('.tok.tapped').forEach(x=>x.classList.remove('tapped')); sel[0]&&(void 0); openLookup(w); }
+    return;
+  }
+  const range=document.createRange();
+  range.setStartBefore(sel[0]); range.setEndAfter(sel[sel.length-1]);
+  const frag=range.cloneContents(); frag.querySelectorAll('rt').forEach(r=>r.remove());
+  const phrase=frag.textContent.replace(/\s+/g,' ').trim();
+  openPhrase(phrase, sel.length);
+}
+
+/* ═══════════════ single-word lookup ═══════════════ */
+function morphCards(d){
+  if(!morphOn || !d.hanja) return '';
+  const chars=d.hanja.split('');
+  const segs=(d.hanjaBreak||'').split(' · ');
+  const cards=chars.map((c,i)=>{
+    const seg=segs[i]||''; const gloss=seg.replace(/\s*\S+$/,'').trim();
+    return `<div style="flex:0 0 148px;scroll-snap-align:start;padding:13px;border:1px solid var(--border);border-radius:14px;background:var(--surface-muted);display:flex;align-items:center;gap:11px;">
+      <div class="kr" style="width:42px;height:42px;border-radius:11px;background:var(--surface-strong);display:grid;place-items:center;font-size:23px;color:var(--text);flex:none;">${c}</div>
+      <div style="min-width:0;"><div class="label" style="font-size:8px;color:var(--text-tertiary);">MEANING</div><div style="font-size:13px;font-weight:600;color:var(--text);margin-top:2px;">${gloss||'—'}</div></div>
+    </div>`;
+  }).join('');
+  return `<div style="margin-top:18px;padding-top:15px;border-top:1px solid var(--divider);">
+    <div class="label" style="font-size:9px;color:var(--text-tertiary);margin-bottom:9px;">ROOT CHARACTERS · MORPHEMES</div>
+    <div style="display:flex;gap:10px;overflow-x:auto;scroll-snap-type:x mandatory;scrollbar-width:none;margin:0 -20px;padding:0 20px 4px;">${cards}</div>
+  </div>`;
+}
+function relatedBlock(word){
+  const rel=RELATED[word]; if(!rel||!rel.length) return '';
+  const rows=rel.map(r=>`<div style="display:flex;align-items:center;gap:10px;padding:9px 0;">
+    <div style="min-width:0;flex:1;"><span class="kr" style="font-size:14px;color:var(--text);">${r.ko}</span> ${r.hanja?`<span class="kr" style="font-size:12px;color:var(--text-tertiary);">${r.hanja}</span>`:''}<div style="font-size:11px;color:var(--text-tertiary);margin-top:1px;">${r.en}</div></div>
+    <span class="status-dot ${r.status}">${r.status==='saved'?'<i data-lucide="check" style="width:9px;height:9px;color:#fff;stroke-width:3.5;"></i>':''}</span>
+  </div>`).join('');
+  return `<div style="margin-top:16px;padding-top:15px;border-top:1px solid var(--divider);">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;"><div class="label" style="font-size:9px;color:var(--text-tertiary);">RELATED BY ROOT</div>
+    <div style="display:flex;align-items:center;gap:11px;font-size:9px;color:var(--text-tertiary);"><span style="display:flex;align-items:center;gap:4px;"><span class="status-dot saved" style="width:10px;height:10px;"></span>saved</span><span style="display:flex;align-items:center;gap:4px;"><span class="status-dot known" style="width:10px;height:10px;"></span>known</span></div></div>
+    ${rows}
+  </div>`;
+}
+function openLookup(word){
+  const d=DICT[word]; if(!d){ openNotFound(word); return; }
+  window.__curWord=word;
+  const col=TAGCOLOR[d.tag]||'var(--accent)';
+  const idx=WORD_ORDER.indexOf(word);
+  const prevD=idx>0, nextD=idx>=0&&idx<WORD_ORDER.length-1;
+  const isSaved=savedWords.has(word);
+  const hanjaLine=d.hanja?`<span class="kr" style="font-size:16px;color:var(--text-muted);">${d.hanja}</span>`:'';
+  document.getElementById('lookup-content').innerHTML=`
+    <div style="display:flex;align-items:center;gap:8px;">
+      <button class="hw-arrow" ${prevD?'':'disabled'} onclick="hop(-1)"><i data-lucide="chevron-left" style="width:16px;height:16px;"></i></button>
+      <div style="flex:1;text-align:center;">
+        <div style="display:flex;align-items:baseline;justify-content:center;gap:9px;flex-wrap:wrap;">
+          <span class="kr" style="font-size:26px;font-weight:600;color:var(--text);line-height:1;">${d.ko}</span>
+          ${hanjaLine}
+          <span class="serif" style="font-style:italic;font-size:13px;color:var(--text-tertiary);">${d.rom}</span>
+        </div>
+      </div>
+      <button class="hw-arrow" ${nextD?'':'disabled'} onclick="hop(1)"><i data-lucide="chevron-right" style="width:16px;height:16px;"></i></button>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:center;gap:8px;margin-top:9px;">
+      <span style="font-size:8.5px;font-weight:700;letter-spacing:1.4px;color:${col};border:1px solid ${col};border-radius:5px;padding:2px 7px;">${d.tag}</span>
+      <span style="font-size:11px;color:var(--text-tertiary);">${d.pos}</span>
+    </div>
+    <div id="lk-def" style="margin-top:16px;">
+      <div class="kr" style="font-size:14px;line-height:1.55;color:var(--text-secondary);"><span style="font-size:8.5px;font-weight:700;color:var(--text-tertiary);border:1px solid var(--border-strong);border-radius:4px;padding:1px 5px;margin-right:7px;vertical-align:middle;">1</span>${d.kr}</div>
+      <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--divider);">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:7px;"><i data-lucide="sparkle" style="width:13px;height:13px;color:var(--accent);"></i><span class="label" style="font-size:9px;color:var(--text-tertiary);">In this sentence</span></div>
+        <div style="font-size:13px;line-height:1.55;color:var(--text-secondary);">${d.ctx}</div>
+      </div>
+      <div style="margin-top:14px;padding:12px 13px;background:var(--surface-muted);border:1px solid var(--border);border-radius:12px;">
+        <div class="label" style="font-size:8px;color:var(--text-tertiary);margin-bottom:6px;">Saves with its sentence</div>
+        <div class="kr" style="font-size:13px;line-height:1.55;color:var(--text-secondary);">${d.sent}</div>
+      </div>
+      ${morphCards(d)}
+      ${relatedBlock(word)}
+    </div>
+    <div id="lk-trans" style="display:none;margin-top:16px;">
+      <div class="label" style="font-size:9px;color:var(--text-tertiary);margin-bottom:8px;">TRANSLATION</div>
+      <div id="lk-trans-body" style="font-size:15px;line-height:1.6;color:var(--text);"></div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:17px;position:sticky;bottom:0;">
+      <button class="press" id="save-word-btn" onclick="saveWord()" style="flex:1;height:46px;border-radius:13px;font-size:11px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:7px;border:1px solid ${isSaved?'transparent':'var(--border-strong)'};background:${isSaved?'var(--accent)':'transparent'};color:${isSaved?'#fff':'var(--text)'};"><i data-lucide="${isSaved?'check':'bookmark'}" style="width:16px;height:16px;"></i>${isSaved?'Saved':'Save'}</button>
+      <button class="press" id="trans-btn" onclick="toggleTrans()" style="flex:1;height:46px;border-radius:13px;background:transparent;border:1px solid var(--border-strong);color:var(--text);font-size:11px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;">Translate</button>
+    </div>`;
+  refreshIcons();
+  document.getElementById('lookup-scrim').classList.add('show');
+  document.getElementById('lookup-sheet').classList.add('show');
+  document.getElementById('lookup-sheet').scrollTop=0;
+}
+function openNotFound(word){
+  window.__curWord=word;
+  document.getElementById('lookup-content').innerHTML=`
+    <div style="text-align:center;padding:6px 0 4px;">
+      <div class="kr" style="font-size:26px;font-weight:600;color:var(--text);">${word||'—'}</div>
+      <div style="font-size:13px;color:var(--text-tertiary);margin-top:8px;">No definition found</div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:18px;">
+      <button class="press" onclick="saveWord()" style="flex:1;height:46px;border-radius:13px;background:transparent;border:1px solid var(--border-strong);color:var(--text);font-size:11px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:7px;"><i data-lucide="bookmark" style="width:16px;height:16px;"></i>Save</button>
+      <button class="press btn-accent" onclick="closeLookup()" style="flex:1;height:46px;border-radius:13px;font-size:11px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;">Translate</button>
+    </div>`;
+  refreshIcons();
+  document.getElementById('lookup-scrim').classList.add('show');
+  document.getElementById('lookup-sheet').classList.add('show');
+}
+function hop(dir){
+  const idx=WORD_ORDER.indexOf(window.__curWord); const ni=idx+dir;
+  if(ni<0||ni>=WORD_ORDER.length) return;
+  const w=WORD_ORDER[ni];
+  document.querySelectorAll('.tok.tapped').forEach(x=>x.classList.remove('tapped'));
+  const el=[...document.querySelectorAll('.tok[data-word="'+w+'"]')][0]; if(el) el.classList.add('tapped');
+  openLookup(w);
+}
+function toggleTrans(){
+  const def=document.getElementById('lk-def'), tr=document.getElementById('lk-trans'), btn=document.getElementById('trans-btn');
+  const showing=tr.style.display!=='none';
+  if(showing){ tr.style.display='none'; def.style.display=''; btn.style.background='transparent'; btn.style.color='var(--text)'; btn.style.borderColor='var(--border-strong)'; return; }
+  def.style.display='none'; tr.style.display=''; btn.style.background='var(--accent)'; btn.style.color='#fff'; btn.style.borderColor='transparent';
+  const body=document.getElementById('lk-trans-body');
+  body.innerHTML='<div style="height:14px;border-radius:5px;background:var(--surface-strong);margin-bottom:10px;"></div><div style="height:14px;width:72%;border-radius:5px;background:var(--surface-strong);"></div>';
+  setTimeout(()=>{ const t=SENT_EN[window.__curWord]||('“'+(DICT[window.__curWord]?DICT[window.__curWord].sent:'')+'”'); body.textContent=t; }, 480);
+}
+function saveWord(){
+  const w=window.__curWord; if(!w) return;
+  const btn=document.getElementById('save-word-btn');
+  if(savedWords.has(w)){ savedWords.delete(w); }
+  else { savedWords.add(w); }
+  const on=savedWords.has(w);
+  if(btn){ btn.innerHTML=`<i data-lucide="${on?'check':'bookmark'}" style="width:16px;height:16px;"></i>${on?'Saved':'Save'}`;
+    btn.style.background=on?'var(--accent)':'transparent'; btn.style.color=on?'#fff':'var(--text)'; btn.style.borderColor=on?'transparent':'var(--border-strong)'; refreshIcons(); }
+  paintSaved();
+}
+function closeLookup(){
+  document.getElementById('lookup-scrim').classList.remove('show');
+  document.getElementById('lookup-sheet').classList.remove('show');
+  document.querySelectorAll('.tok.tapped').forEach(x=>x.classList.remove('tapped'));
+}
+
+/* ═══════════════ phrase (multi-word) translation ═══════════════ */
+function phraseTrans(p){
+  const map=[['운수 좋은 날','a comparatively lucky day'],['인력거꾼 노릇','the work of a rickshaw puller'],['돈맛','the taste of earning money'],['추적추적','falling steady and dank'],['재수가 옴','luck stuck to him like a scab']];
+  for(const [k,v] of map){ if(p.includes(k)) return 'roughly — “'+p+'” describes '+v+'.'; }
+  return 'A quiet, connective passage. Save it to keep the whole phrase with its sentence for review.';
+}
+function openPhrase(phrase, count){
+  document.getElementById('phrase-content').innerHTML=`
+    <div style="display:flex;align-items:center;gap:8px;">
+      <span style="font-size:8.5px;font-weight:700;letter-spacing:1.4px;color:var(--accent);border:1px solid var(--accent);border-radius:5px;padding:2px 7px;">PHRASE · ${count} WORDS</span>
+    </div>
+    <div class="kr" style="font-size:19px;line-height:1.5;color:var(--text);margin-top:13px;word-break:keep-all;">${phrase}</div>
+    <div style="margin-top:16px;padding-top:15px;border-top:1px solid var(--divider);">
+      <div class="label" style="font-size:9px;color:var(--text-tertiary);margin-bottom:8px;">TRANSLATION</div>
+      <div id="ph-trans" style="font-size:15px;line-height:1.6;color:var(--text);"><div style="height:14px;border-radius:5px;background:var(--surface-strong);margin-bottom:10px;"></div><div style="height:14px;width:66%;border-radius:5px;background:var(--surface-strong);"></div></div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:18px;">
+      <button class="press btn-accent" onclick="savePhrase(this)" style="flex:1;height:46px;border-radius:13px;font-size:11px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;display:flex;align-items:center;justify-content:center;gap:7px;"><i data-lucide="bookmark-plus" style="width:16px;height:16px;"></i>Save phrase</button>
+      <button class="press" onclick="closePhrase()" style="flex:1;height:46px;border-radius:13px;background:transparent;border:1px solid var(--border-strong);color:var(--text-muted);font-size:11px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;">Done</button>
+    </div>`;
+  refreshIcons();
+  document.getElementById('phrase-scrim').classList.add('show');
+  document.getElementById('phrase-sheet').classList.add('show');
+  setTimeout(()=>{ const el=document.getElementById('ph-trans'); if(el) el.textContent=phraseTrans(phrase); }, 520);
+}
+function savePhrase(btn){ btn.innerHTML='<i data-lucide="check" style="width:16px;height:16px;"></i>Saved'; btn.style.background='var(--success)'; refreshIcons(); setTimeout(closePhrase,650); }
+function closePhrase(){
+  document.getElementById('phrase-scrim').classList.remove('show');
+  document.getElementById('phrase-sheet').classList.remove('show');
+  clearSel();
+}
+
+/* ═══════════════ table of contents ═══════════════ */
+const CHAPTERS=[
+  {n:'01',t:'출발',p:1,read:true},{n:'02',t:'첫 강을 건너다',p:18,read:true},
+  {n:'03',t:'동소문 안에서',p:34,cur:true},{n:'04',t:'강가의 정적',p:52},
+  {n:'05',t:'메아리',p:69},{n:'06',t:'갈대밭에서',p:88},{n:'07',t:'새벽의 빛',p:104},
+  {n:'08',t:'돌아오지 않는 길',p:121},{n:'09',t:'비 오는 정거장',p:139},{n:'10',t:'마지막 손님',p:158},
+];
+document.getElementById('toc-list').innerHTML=CHAPTERS.map(c=>`
+  <div class="toc-row ${c.cur?'current':(c.read?'read':'')}" onclick="pickChapter('${c.n}','${c.t}')">
+    <span class="num">${c.n}</span><span class="ttl kr">${c.t}</span><span class="pg">p. ${c.p}</span>
+  </div>`).join('');
+function openTOC(){ document.getElementById('toc-scrim').classList.add('show'); document.getElementById('toc-sheet').classList.add('show'); }
+function closeTOC(){ document.getElementById('toc-scrim').classList.remove('show'); document.getElementById('toc-sheet').classList.remove('show'); }
+function pickChapter(n,t){
+  document.querySelector('#screen-reader .rdr-appbar-title, #screen-reader .kr');
+  const title=document.querySelector('#screen-reader button[onclick="openTOC()"] .kr');
+  if(title) title.textContent='제'+parseInt(n,10)+'장 · '+t;
+  document.querySelectorAll('#toc-list .toc-row').forEach(r=>r.classList.remove('current','read'));
+  closeTOC();
+}
+
+/* ═══════════════ reader settings ═══════════════ */
+function applyReaderType(){
+  document.querySelectorAll('#reader-pager .reader-body').forEach(b=>{ b.style.fontSize=fontPx+'px'; b.style.lineHeight=SPACINGS[spaceIdx][1]; });
+  document.getElementById('rset-font').textContent=fontPx+' px';
+  document.getElementById('rset-space').textContent=SPACINGS[spaceIdx][0];
+}
+function stepFont(d){ fontPx=Math.max(15,Math.min(24,fontPx+d)); applyReaderType(); }
+function stepSpace(d){ spaceIdx=Math.max(0,Math.min(SPACINGS.length-1,spaceIdx+d)); applyReaderType(); }
+function toggleDark(){ const dark=document.documentElement.getAttribute('data-theme')==='dusk'; setTheme(dark?'light':'dusk'); }
+function toggleHeat(){
+  heatOn=!heatOn;
+  document.querySelectorAll('#reader-pager .reader-body').forEach(b=>b.classList.toggle('heat-on',heatOn));
+  document.getElementById('reader-pager').classList.toggle('heat-off',!heatOn);
+  document.getElementById('rset-heat').classList.toggle('on',heatOn);
+}
+function toggleMorph(){ morphOn=!morphOn; document.getElementById('rset-morph').classList.toggle('on',morphOn); }
+function openSettings(){ document.getElementById('rset-scrim').classList.add('show'); document.getElementById('rset-sheet').classList.add('show'); syncDarkToggle(); }
+function closeSettings(){ document.getElementById('rset-scrim').classList.remove('show'); document.getElementById('rset-sheet').classList.remove('show'); }
+function syncDarkToggle(){ const t=document.getElementById('rset-dark'); if(t) t.classList.toggle('on', document.documentElement.getAttribute('data-theme')==='dusk'); }
+
+/* ═══════════════ library ═══════════════ */
+const BOOKS = [
+  {k:'노을 무렵',en:'Around Dusk',author:'박완서',pct:12,g:'linear-gradient(150deg,#EE9A4C,#C9506A)'},
+  {k:'바람의 말',en:'Words of Wind',author:'김소월',pct:78,g:'linear-gradient(150deg,#D85C76,#4B3F6B)'},
+  {k:'운수 좋은 날',en:'A Lucky Day',author:'현진건',pct:62,g:'linear-gradient(150deg,#E0654A,#7A3D5A)'},
+  {k:'소나기',en:'The Shower',author:'황순원',pct:100,g:'linear-gradient(150deg,#F4A65C,#E76A4B)'},
+  {k:'별 헤는 밤',en:'Counting Stars',author:'윤동주',pct:34,g:'linear-gradient(150deg,#C9506A,#4B3F6B)'},
+  {k:'메밀꽃 필 무렵',en:'When Buckwheat Blooms',author:'이효석',pct:0,g:'linear-gradient(150deg,#7A3D5A,#E0654A)'},
+];
+document.getElementById('library-grid').innerHTML = BOOKS.map(b=>`
+  <div class="press" onclick="go('screen-reader')">
+    <div style="border-radius:12px;overflow:hidden;box-shadow:var(--shadow-cover);aspect-ratio:0.72;background:${b.g};position:relative;display:flex;align-items:flex-end;padding:12px;">
+      <div style="position:absolute;inset:0;background:radial-gradient(120% 80% at 80% 4%,rgba(255,255,255,.28),transparent 55%);"></div>
+      <div style="position:absolute;left:0;top:0;bottom:0;width:5px;background:rgba(0,0,0,.16);"></div>
+      <span class="kr" style="font-size:16px;font-weight:600;color:#fff;position:relative;line-height:1.3;">${b.k}</span>
+      ${b.pct>0 && b.pct<100 ? `<div style="position:absolute;bottom:0;left:0;height:3px;width:${b.pct}%;background:rgba(255,255,255,.85);"></div>`:''}
+      ${b.pct===100 ? `<div style="position:absolute;top:9px;right:9px;width:22px;height:22px;border-radius:50%;background:rgba(255,255,255,.92);display:grid;place-items:center;"><i data-lucide="check" style="width:14px;height:14px;color:var(--accent);stroke-width:3;"></i></div>`:''}
+    </div>
+    <div class="serif" style="font-size:13px;color:var(--text);margin-top:8px;line-height:1.3;">${b.en}</div>
+    <div style="font-size:11px;color:var(--text-tertiary);margin-top:1px;">${b.author} · ${b.pct===0?'Not started':b.pct===100?'Finished':b.pct+'%'}</div>
+  </div>`).join('');
+
+/* songs */
+const SONGS = [
+  {k:'밄날',en:'Spring Day',artist:'방탄소년단',pct:54,g:'linear-gradient(150deg,#F1789A,#4B3F6B)'},
+  {k:'거씙말',en:'Lies',artist:'빅뱅',pct:0,g:'linear-gradient(150deg,#E0654A,#7A3D5A)'},
+  {k:'날씨',en:'Weather',artist:'이소라',pct:100,g:'linear-gradient(150deg,#F4A65C,#E76A4B)'},
+  {k:'서리바람',en:'Frost Wind',artist:'장범준',pct:22,g:'linear-gradient(150deg,#D85C76,#4B3F6B)'},
+];
+document.getElementById('songs-list').innerHTML = SONGS.map(s=>`
+  <div class="glass card press" onclick="go('screen-reader')" style="padding:12px 14px;display:flex;align-items:center;gap:14px;">
+    <div style="width:52px;height:52px;border-radius:12px;background:${s.g};position:relative;display:grid;place-items:center;flex:none;box-shadow:var(--shadow-cover);"><i data-lucide="music" style="width:20px;height:20px;color:rgba(255,255,255,.95);"></i></div>
+    <div style="min-width:0;flex:1;">
+      <div class="kr" style="font-size:16px;font-weight:600;color:var(--text);">${s.k}</div>
+      <div style="font-size:11.5px;color:var(--text-tertiary);margin-top:2px;">${s.en} · ${s.artist}</div>
+    </div>
+    <div style="flex:none;font-size:10.5px;font-weight:700;color:${s.pct===100?'var(--success)':'var(--text-muted)'};">${s.pct===0?'New':s.pct===100?'Done':s.pct+'%'}</div>
+  </div>`).join('');
+
+/* public domain, pre-installed */
+const PUBLIC_DOMAIN = [
+  {k:'님의 침묵',en:"The Silence of My Love",author:'한용운',year:'1926',g:'linear-gradient(150deg,#EE9A4C,#C9506A)'},
+  {k:'진달래꽃',en:'Azaleas',author:'김소월',year:'1922',g:'linear-gradient(150deg,#D85C76,#7A3D5A)'},
+  {k:'날개',en:'Wings',author:'이상',year:'1936',g:'linear-gradient(150deg,#E0654A,#4B3F6B)'},
+  {k:'메밀꽃 필 무렵',en:'When Buckwheat Blooms',author:'이효석',year:'1936',g:'linear-gradient(150deg,#7A3D5A,#E0654A)'},
+  {k:'불꽃',en:'Fire Flower',author:'선우휘',year:'1957',g:'linear-gradient(150deg,#F4A65C,#C9506A)'},
+];
+document.getElementById('pd-list').innerHTML = PUBLIC_DOMAIN.map(b=>`
+  <div class="press" onclick="go('screen-reader')" style="flex:none;width:118px;">
+    <div style="border-radius:12px;overflow:hidden;box-shadow:var(--shadow-cover);aspect-ratio:0.72;background:${b.g};position:relative;display:flex;align-items:flex-end;padding:11px;">
+      <div style="position:absolute;inset:0;background:radial-gradient(120% 80% at 80% 4%,rgba(255,255,255,.28),transparent 55%);"></div>
+      <div style="position:absolute;left:0;top:0;bottom:0;width:5px;background:rgba(0,0,0,.16);"></div>
+      <div style="position:absolute;top:8px;right:8px;font-size:8px;font-weight:700;letter-spacing:.6px;color:rgba(255,255,255,.9);background:rgba(0,0,0,.22);border-radius:5px;padding:2px 6px;">${b.year}</div>
+      <span class="kr" style="font-size:15px;font-weight:600;color:#fff;position:relative;line-height:1.3;">${b.k}</span>
+    </div>
+    <div class="serif" style="font-size:12.5px;color:var(--text);margin-top:7px;line-height:1.25;">${b.en}</div>
+    <div style="font-size:10.5px;color:var(--text-tertiary);margin-top:1px;">${b.author}</div>
+  </div>`).join('');
+
+function switchLib(seg){
+  document.querySelectorAll('.lib-seg').forEach(b=>{
+    const on = b.dataset.seg===seg;
+    b.style.background = on?'var(--surface-strong)':'transparent';
+    b.style.color = on?'var(--text)':'var(--text-muted)';
+  });
+  const books = seg==='books';
+  document.getElementById('library-grid').style.display = books?'grid':'none';
+  document.getElementById('songs-list').style.display = books?'none':'flex';
+  document.getElementById('shelf-label').textContent = books?'On your shelf':'Your songs';
+  refreshIcons();
+}
+
+const dz = document.getElementById('dropzone');
+['dragover','dragenter'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.add('over');}));
+['dragleave','drop'].forEach(ev=>dz.addEventListener(ev,e=>{e.preventDefault();dz.classList.remove('over');if(ev==='drop')simulateImport();}));
+function simulateImport(){
+  const s = document.getElementById('import-status');
+  s.style.display='block';
+  s.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;gap:10px;font-size:12px;color:var(--text-muted);"><div class="spinner" style="width:18px;height:18px;border-width:2px;"></div><span id="imp-msg">Parsing EPUB…</span></div>`;
+  const steps = ['Parsing EPUB…','Tokenizing 14,208 words…','Leveling vocabulary…','Building lookup index…'];
+  let i=0;
+  const iv = setInterval(()=>{
+    i++;
+    if(i<steps.length){ document.getElementById('imp-msg').textContent = steps[i]; }
+    else{
+      clearInterval(iv);
+      s.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;gap:8px;font-size:12.5px;font-weight:700;color:var(--success);"><i data-lucide="check-circle-2" style="width:18px;height:18px;"></i>Imported · 1,842 new words leveled</div>`;
+      refreshIcons();
+    }
+  }, 650);
+}
+
+/* ═══════════════ writing logs ═══════════════ */
+const LOGS = [
+  {date:'Yesterday',title:'비 오는 날의 산책',score:88,band:'B1',words:142,note:'Strong connective flow. Watch 은/는 vs 이/가 in topic shifts.'},
+  {date:'3 days ago',title:'주말 계획',score:79,band:'B1',words:96,note:'Good vocabulary reach. A few particle drops — 을/를 omitted twice.'},
+  {date:'Last week',title:'내가 좋아하는 계절',score:91,band:'B1',words:187,note:'Excellent sentence variety. Ready to attempt B2 connectors.'},
+];
+document.getElementById('logs-feed').innerHTML = LOGS.map(l=>`
+  <div class="glass card press" style="padding:16px 17px;" onclick="go('screen-write-canvas')">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+      <div style="min-width:0;">
+        <div class="eyebrow">${l.date} · ${l.words} words</div>
+        <div class="serif" style="font-size:17px;color:var(--text);margin-top:5px;">${l.title}</div>
+      </div>
+      <div style="flex:none;text-align:center;">
+        <div style="width:48px;height:48px;border-radius:14px;background:var(--accent-soft);display:flex;flex-direction:column;align-items:center;justify-content:center;">
+          <span style="font-size:18px;font-weight:800;color:var(--accent);line-height:1;">${l.score}</span>
+          <span style="font-size:7.5px;font-weight:700;letter-spacing:1px;color:var(--text-tertiary);margin-top:1px;">SCORE</span>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:12px;">
+      <span style="font-size:9px;font-weight:700;letter-spacing:1px;color:var(--accent-2);border:1px solid var(--accent-2);border-radius:5px;padding:2px 7px;">${l.band}</span>
+      <span style="font-size:11.5px;color:var(--text-muted);line-height:1.4;flex:1;">${l.note}</span>
+    </div>
+  </div>`).join('');
+
+/* ═══════════════ writing canvas + assess ═══════════════ */
+const ta = document.getElementById('canvas-text');
+function updateCount(){
+  const n = ta.value.trim() ? ta.value.trim().split(/\s+/).length : 0;
+  document.getElementById('canvas-count').textContent = `${n} words · draft`;
+}
+ta.addEventListener('input', updateCount);
+
+/* inspiration prompts */
+const PROMPTS = [
+  {kr:'오늘 하루 중 가장 기억에 남는 순간은 무엇이었나요?',en:'What was the most memorable moment of your day?'},
+  {kr:'창밖의 날씨를 묘사해 보세요.',en:'Describe the weather outside your window.'},
+  {kr:'최근에 읽은 책에서 인상 깊었던 문장은?',en:'A sentence that struck you from a book you read recently?'},
+  {kr:'어린 시절의 집을 떠올려 보세요.',en:'Recall the home of your childhood.'},
+  {kr:'내일 꼠 이뤄고 싶은 작은 소망이 있나요?',en:'Is there a small wish you hope to fulfill tomorrow?'},
+  {kr:'오늘 감사했던 세 가지를 적어 보세요.',en:'Write down three things you were grateful for today.'},
+  {kr:'계절이 바뀌는 것을 머로 느끼셨나요?',en:'How did you first notice the season changing?'},
+];
+let promptIdx = Math.floor(Math.random()*PROMPTS.length);
+function renderPrompt(){
+  const p = PROMPTS[promptIdx];
+  document.getElementById('prompt-kr').textContent = p.kr;
+  document.getElementById('prompt-en').textContent = p.en;
+}
+function cyclePrompt(){
+  promptIdx = (promptIdx+1)%PROMPTS.length;
+  const ic = document.getElementById('prompt-refresh');
+  ic.style.transform = `rotate(${(promptIdx+1)*360}deg)`;
+  renderPrompt();
+}
+function usePrompt(){
+  const p = PROMPTS[promptIdx];
+  if(!document.getElementById('canvas-title').value.trim()){
+    document.getElementById('canvas-title').value = p.en;
+  }
+  if(!ta.value.trim() || confirmReplace()){
+    ta.value = p.kr + '\n\n';
+    updateCount();
+    ta.focus();
+  }
+}
+function confirmReplace(){ return ta.value.trim().length < 3; }
+function saveDraft(btn){
+  const original = btn.innerHTML;
+  btn.innerHTML = '<i data-lucide="check" style="width:14px;height:14px;"></i>Saved';
+  btn.style.color = 'var(--success)';
+  btn.style.borderColor = 'var(--success)';
+  refreshIcons();
+  setTimeout(()=>{ btn.innerHTML = original; btn.style.color='var(--text-muted)'; btn.style.borderColor='var(--border-strong)'; refreshIcons(); }, 1400);
+}
+
+function resetCanvas(){
+  document.getElementById('assess-output').style.display='none';
+  document.getElementById('assess-loading').style.display='none';
+  ta.style.display='block';
+  const b = document.getElementById('assess-btn');
+  b.innerHTML='<i data-lucide="sparkles" style="width:15px;height:15px;"></i>Assess'; b.disabled=false; b.style.background='';
+  promptIdx = Math.floor(Math.random()*PROMPTS.length); renderPrompt();
+  updateCount(); refreshIcons();
+}
+function runAssess(){
+  const btn = document.getElementById('assess-btn'); btn.disabled=true;
+  document.getElementById('assess-loading').style.display='block';
+  document.getElementById('assess-output').style.display='none';
+  const msgs = ['AI parsing syntax constructs…','Checking particle accuracy…','Scoring composition…'];
+  let i=0; const em=document.getElementById('assess-msg');
+  const iv=setInterval(()=>{ i++; if(i<msgs.length) em.textContent=msgs[i]; }, 550);
+  document.getElementById('canvas-scroll').scrollTo({top:400,behavior:'smooth'});
+  setTimeout(()=>{
+    clearInterval(iv);
+    document.getElementById('assess-loading').style.display='none';
+    showAssessOutput();
+    btn.innerHTML='<i data-lucide="check" style="width:15px;height:15px;"></i>Assessed'; btn.style.background='var(--success)';
+  }, 1900);
+}
+function showAssessOutput(){
+  const out = document.getElementById('assess-output');
+  out.className='fade-up'; out.style.display='block';
+  out.innerHTML = `
+    <div style="margin-top:20px;padding-top:20px;border-top:1px solid var(--divider);">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;"><i data-lucide="sparkles" style="width:16px;height:16px;color:var(--accent);"></i><span class="serif" style="font-size:18px;color:var(--text);">AI Evaluation</span></div>
+      <div style="display:flex;gap:10px;">
+        ${scoreTile('Overall','86','B1')}
+        ${scoreTile('Grammar','82','')}
+        ${scoreTile('Vocab','90','')}
+      </div>
+      <div class="glass card" style="margin-top:14px;padding:15px 16px;">
+        <div class="label" style="font-size:9px;color:var(--text-tertiary);margin-bottom:8px;">Feedback</div>
+        <div style="font-size:13px;line-height:1.6;color:var(--text-secondary);">Natural, evocative writing. Your use of <span class="kr" style="font-weight:600;">추적추적</span> is idiomatic and vivid. Consider varying your sentence endings — three sentences close with <span class="kr">-었다</span>.</div>
+      </div>
+      <div class="sect-label" style="margin-top:18px;">Vocabulary suggestions</div>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        ${suggestRow('무거웠지만','마음이 무거웠지만','→','착잡했지만','more literary — "conflicted, heavy-hearted"')}
+        ${suggestRow('나아졌다','기분이 나아졌다','→','한결 나아졌다','add 한결 for "noticeably better"')}
+      </div>
+    </div>`;
+  out.scrollIntoView && out.scrollIntoView;
+  document.getElementById('canvas-scroll').scrollTo({top:1200,behavior:'smooth'});
+  refreshIcons();
+}
+function scoreTile(label,val,band){
+  return `<div class="glass card" style="flex:1;padding:14px 10px;text-align:center;">
+    <div style="font-size:24px;font-weight:800;color:var(--accent);line-height:1;">${val}</div>
+    <div class="label" style="font-size:8px;color:var(--text-tertiary);margin-top:5px;">${label}</div>
+    ${band?`<div style="margin-top:6px;font-size:9px;font-weight:700;color:var(--accent-2);border:1px solid var(--accent-2);border-radius:5px;padding:1px 0;">${band}</div>`:''}
+  </div>`;
+}
+function suggestRow(from,ctx,arrow,to,why){
+  return `<div class="glass card" style="padding:13px 15px;">
+    <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;">
+      <span class="kr" style="font-size:14px;color:var(--text-muted);text-decoration:line-through;text-decoration-color:var(--danger);">${from}</span>
+      <i data-lucide="arrow-right" style="width:15px;height:15px;color:var(--text-subtle);"></i>
+      <span class="kr" style="font-size:15px;font-weight:600;color:var(--accent);">${to}</span>
+    </div>
+    <div style="font-size:11.5px;color:var(--text-muted);margin-top:6px;line-height:1.45;">${why}</div>
+  </div>`;
+}
+
+/* ═══════════════ flashcards ═══════════════ */
+const DECK = [
+  {w:'추적추적',rom:'chujeok-chujeok',def:'drizzling; pattering (of rain)',ex:'비가 <b>추적추적</b> 내렸다.',tr:'The rain came down in a steady drizzle.'},
+  {w:'운수',rom:'unsu',def:'fortune; luck; fate',ex:'오늘은 <b>운수</b>가 좋다.',tr:'Today my luck is good.'},
+  {w:'인력거꾼',rom:'illyeokkeokkun',def:'a rickshaw puller',ex:'그는 <b>인력거꾼</b> 노릇을 했다.',tr:'He worked as a rickshaw puller.'},
+  {w:'착잡하다',rom:'chakjaphada',def:'to feel conflicted; heavy-hearted',ex:'마음이 <b>착잡했다</b>.',tr:'My heart was troubled.'},
+  {w:'새벽',rom:'saebyeok',def:'dawn; daybreak',ex:'<b>새벽</b>에 길을 나섰다.',tr:'I set out at dawn.'},
+];
+let fcIndex=0;
+function renderCard(){
+  const c = DECK[fcIndex];
+  document.getElementById('fc-front-word').textContent=c.w;
+  document.getElementById('fc-front-rom').textContent=c.rom;
+  document.getElementById('fc-back-def').textContent=c.def;
+  document.getElementById('fc-back-ex').innerHTML=`${c.ex}<br><span style="font-size:12px;opacity:.8;">${c.tr}</span>`;
+  document.getElementById('fc-progress').textContent=`${fcIndex+1} / 24`;
+  document.getElementById('fc-bar').style.width=((fcIndex+1)/24*100)+'%';
+}
+function flipCard(){ document.getElementById('flip-card').classList.toggle('flipped'); }
+function nextCard(){
+  document.getElementById('flip-card').classList.remove('flipped');
+  setTimeout(()=>{ fcIndex=(fcIndex+1)%DECK.length; renderCard(); }, 320);
+}
+function resetDeck(){ fcIndex=0; document.getElementById('flip-card').classList.remove('flipped'); renderCard(); }
+
+/* ═══════════════ vocab ═══════════════ */
+const STATUS = {
+  matured:{label:'Matured',color:'var(--success)',dots:4},
+  waiting:{label:'Waiting',color:'var(--accent-3)',dots:2},
+  notseen:{label:'Not seen',color:'var(--text-subtle)',dots:1},
+};
+const VOCAB = [
+  {w:'문학',rom:'mun-hak',def:'literature',hanja:'文學',pos:'noun',status:'waiting',starred:true,enc:2,when:'Jun 5',
+    from:'그는 한국 문학을 전공했다.',fromEn:'He majored in Korean literature.',
+    chars:[
+      {c:'文',read:'글월 문 · letter',rel:[{w:'문구',def:'stationery; writing supplies'},{w:'문서',def:'document'},{w:'작문',def:'composition; writing'},{w:'문법',def:'grammar'}]},
+      {c:'學',read:'배울 학 · to learn',rel:[{w:'학생',def:'student'},{w:'학교',def:'school'},{w:'과학',def:'science'},{w:'학문',def:'scholarship'}]},
+    ]},
+  {w:'운수',rom:'un-su',def:'fortune; fate',hanja:'運數',pos:'noun',status:'waiting',starred:false,enc:3,when:'Jun 4',
+    from:'비교적 운수 좋은 날이었다.',fromEn:'It was a comparatively lucky day.',
+    chars:[
+      {c:'運',read:'옮길 운 · to move; luck',rel:[{w:'운동',def:'exercise; movement'},{w:'운전',def:'driving'},{w:'행운',def:'good fortune'},{w:'운명',def:'destiny'}]},
+      {c:'數',read:'셀 수 · to count',rel:[{w:'숫자',def:'number; digit'},{w:'수학',def:'mathematics'},{w:'다수',def:'majority'},{w:'횟수',def:'number of times'}]},
+    ]},
+  {w:'인력거꾼',rom:'il-lyeok-geo-kkun',def:'a rickshaw puller',hanja:'人力車',pos:'noun',status:'notseen',starred:false,enc:1,when:'Jun 4',
+    from:'동소문 안에서 인력거꾼 노릇을 하는…',fromEn:'…working as a rickshaw puller inside Dongsomun.',
+    chars:[
+      {c:'人',read:'사람 인 · person',rel:[{w:'인구',def:'population'},{w:'개인',def:'individual'},{w:'인간',def:'human being'},{w:'성인',def:'adult'}]},
+      {c:'力',read:'힘 력 · power',rel:[{w:'능력',def:'ability'},{w:'노력',def:'effort'},{w:'체력',def:'stamina'},{w:'권력',def:'authority; power'}]},
+      {c:'車',read:'수레 거 · cart; vehicle',rel:[{w:'자동차',def:'automobile'},{w:'기차',def:'train'},{w:'주차',def:'parking'},{w:'차선',def:'traffic lane'}]},
+    ]},
+  {w:'착잡하다',rom:'chak-jap-ha-da',def:'to feel conflicted; heavy-hearted',hanja:'錯雜',pos:'adjective',status:'matured',starred:true,enc:5,when:'May 30',
+    from:'마음이 착잡했다.',fromEn:'My heart was troubled.',
+    chars:[
+      {c:'錯',read:'섞일 착 · mistaken; mixed',rel:[{w:'착각',def:'illusion; misperception'},{w:'교착',def:'deadlock'},{w:'착오',def:'error; mix-up'}]},
+      {c:'雜',read:'섞일 잡 · miscellaneous',rel:[{w:'잡지',def:'magazine'},{w:'복잡',def:'complicated'},{w:'잡음',def:'noise'},{w:'혼잡',def:'congestion'}]},
+    ]},
+  {w:'재수',rom:'jae-su',def:'luck (esp. with money)',hanja:'財數',pos:'noun',status:'waiting',starred:false,enc:2,when:'May 29',
+    from:'그야말로 재수가 옴 붙었다.',fromEn:'Bad luck truly clung to him.',
+    chars:[
+      {c:'財',read:'재물 재 · wealth',rel:[{w:'재산',def:'property; assets'},{w:'재물',def:'riches'},{w:'재정',def:'finance'}]},
+      {c:'數',read:'셀 수 · to count',rel:[{w:'숫자',def:'number; digit'},{w:'수학',def:'mathematics'},{w:'횟수',def:'number of times'}]},
+    ]},
+  {w:'비교적',rom:'bi-gyo-jeok',def:'comparatively; relatively',hanja:'比較的',pos:'adverb',status:'matured',starred:false,enc:3,when:'May 27',
+    from:'비교적 운수 좋은 날이었다.',fromEn:'It was a comparatively lucky day.',
+    chars:[
+      {c:'比',read:'견줄 비 · to compare',rel:[{w:'비율',def:'ratio'},{w:'대비',def:'contrast; preparation'},{w:'비교',def:'comparison'}]},
+      {c:'較',read:'견줄 교 · to compare',rel:[{w:'비교',def:'comparison'},{w:'교량',def:'bridge'}]},
+      {c:'的',read:'과녁 적 · -ive (suffix)',rel:[{w:'목적',def:'purpose; goal'},{w:'적극적',def:'active; assertive'},{w:'구체적',def:'concrete; specific'}]},
+    ]},
+  {w:'새벽',rom:'sae-byeok',def:'dawn; daybreak',hanja:'',pos:'noun',status:'matured',starred:false,enc:4,when:'May 26',
+    from:'이 날 새벽 첫 번에 손을 잡았다.',fromEn:'At the first fare at dawn that day.'},
+  {w:'그리움',rom:'geu-ri-um',def:'longing; yearning',hanja:'',pos:'noun',status:'matured',starred:true,enc:6,when:'May 22',
+    from:'별을 헤며 그리움에 잠겼다.',fromEn:'Counting stars, sunk in longing.'},
+  {w:'노을',rom:'no-eul',def:'sunset glow',hanja:'',pos:'noun',status:'notseen',starred:false,enc:1,when:'May 20',
+    from:'서쪽 하늘이 노을로 물들었다.',fromEn:'The western sky was dyed with sunset glow.'},
+  {w:'소나기',rom:'so-na-gi',def:'a sudden shower',hanja:'',pos:'noun',status:'waiting',starred:false,enc:2,when:'May 18',
+    from:'소나기가 지나가고 무지개가 떴다.',fromEn:'After the shower passed, a rainbow appeared.'},
+];
+
+let vocabTab='recent', currentVocab=null, hanjaIdx=0, hanjaMore=false;
+
+function initVocab(){ renderVocabStats(); switchVocabTab('recent'); }
+function renderVocabStats(){
+  const c=s=>VOCAB.filter(v=>v.status===s).length;
+  document.getElementById('vs-matured').textContent=c('matured');
+  document.getElementById('vs-waiting').textContent=c('waiting');
+  document.getElementById('vs-notseen').textContent=c('notseen');
+  const due=c('waiting');
+  document.getElementById('vs-review').textContent=`Review ${due} due`;
+}
+function switchVocabTab(tab){
+  vocabTab=tab;
+  document.querySelectorAll('.vtab').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
+  let list=VOCAB.slice();
+  if(tab==='starred') list=list.filter(v=>v.starred);
+  else if(tab==='notseen') list=list.filter(v=>v.status==='notseen');
+  else if(tab==='maturity') list=list.sort((a,b)=>STATUS[b.status].dots-STATUS[a.status].dots);
+  renderVocab(list);
+}
+function renderVocab(list){
+  const el = document.getElementById('vocab-list');
+  document.getElementById('vocab-empty').style.display = list.length? 'none':'block';
+  el.innerHTML = list.map(v=>{
+    const st=STATUS[v.status];
+    const dots=[0,1,2,3].map(i=>`<span style="width:6px;height:6px;border-radius:50%;background:${i<st.dots?st.color:'var(--border-strong)'};"></span>`).join('');
+    return `<div class="glass card press" onclick="openVocab('${v.w}')" style="padding:14px 16px;">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+        <div style="min-width:0;flex:1;">
+          <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;">
+            <span class="kr" style="font-size:19px;font-weight:600;color:var(--text);">${v.w}</span>
+            ${v.hanja?`<span class="kr" style="font-size:13px;color:var(--text-tertiary);">${v.hanja}</span>`:''}
+            <span style="font-size:8.5px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:${st.color};border:1px solid ${st.color};border-radius:5px;padding:2px 6px;">${st.label}</span>
+            ${v.starred?`<i data-lucide="star" style="width:13px;height:13px;color:var(--accent-3);fill:var(--accent-3);"></i>`:''}
+          </div>
+          <div style="font-size:13.5px;color:var(--text-secondary);margin-top:4px;">${v.def}</div>
+          <div style="font-size:11px;color:var(--text-tertiary);margin-top:5px;">saved word · ×${v.enc} · ${v.when}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:5px;flex:none;padding-top:5px;">${dots}</div>
+      </div>
+    </div>`;
+  }).join('');
+  refreshIcons();
+}
+
+function openVocab(word){
+  const v=VOCAB.find(x=>x.w===word); if(!v) return;
+  currentVocab=v; hanjaIdx=0; hanjaMore=false;
+  const st=STATUS[v.status];
+  document.getElementById('vd-word').textContent=v.w;
+  const hj=document.getElementById('vd-hanja'); hj.textContent=v.hanja||''; hj.style.display=v.hanja?'inline':'none';
+  document.getElementById('vd-rom').textContent=v.rom;
+  const sb=document.getElementById('vd-status');
+  sb.textContent=st.label; sb.style.color=st.color; sb.style.borderColor=st.color;
+  document.getElementById('vd-pos').textContent=v.pos;
+  document.getElementById('vd-enc').textContent=`×${v.enc} encounters`;
+  document.getElementById('vd-def').textContent=v.def;
+  document.getElementById('vd-sentence-kr').textContent=v.from;
+  document.getElementById('vd-sentence-en').textContent=v.fromEn||'';
+  setStarUI(v.starred);
+  renderHanja();
+  go('screen-vocab-detail');
+}
+function renderHanja(){
+  const card=document.getElementById('vd-hanja-card');
+  const v=currentVocab;
+  if(!v||!v.chars||!v.chars.length){ card.style.display='none'; return; }
+  card.style.display='block';
+  const ch=v.chars[hanjaIdx];
+  document.getElementById('hj-char').textContent=ch.c;
+  document.getElementById('hj-read').textContent=ch.read;
+  document.getElementById('hj-count').textContent=`${hanjaIdx+1} of ${v.chars.length}`;
+  const rel=hanjaMore?ch.rel:ch.rel.slice(0,2);
+  document.getElementById('hj-related').innerHTML=rel.map(r=>`
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 0;border-top:1px solid var(--divider);">
+      <div style="min-width:0;">
+        <div class="kr" style="font-size:16px;font-weight:600;color:var(--text);">${r.w}</div>
+        <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">${r.def}</div>
+      </div>
+      <button class="press" onclick="event.stopPropagation();markKnown(this)" style="flex:none;background:transparent;border:none;font-size:9px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--accent);border-bottom:1px solid var(--accent);padding:0 0 2px;cursor:pointer;">Mark known</button>
+    </div>`).join('');
+  const more=document.getElementById('hj-more');
+  more.style.display=ch.rel.length>2?'flex':'none';
+  more.innerHTML=`<span>${hanjaMore?'See less':'See more'}</span><i data-lucide="${hanjaMore?'chevron-up':'chevron-down'}" style="width:15px;height:15px;"></i>`;
+  refreshIcons();
+}
+function hanjaNav(dir){
+  if(!currentVocab||!currentVocab.chars) return;
+  const n=currentVocab.chars.length;
+  hanjaIdx=(hanjaIdx+dir+n)%n; hanjaMore=false; renderHanja();
+}
+function toggleHanjaMore(){ hanjaMore=!hanjaMore; renderHanja(); }
+function markKnown(btn){ btn.textContent='Known ✓'; btn.style.color='var(--success)'; btn.style.borderColor='var(--success)'; }
+function toggleStar(){ if(!currentVocab) return; currentVocab.starred=!currentVocab.starred; setStarUI(currentVocab.starred); renderVocabStats(); switchVocabTab(vocabTab); }
+function setStarUI(on){
+  document.getElementById('vd-star').innerHTML=`<i data-lucide="star" style="width:23px;height:23px;${on?'color:var(--accent-3);fill:var(--accent-3);':'color:var(--text-muted);'}"></i>`;
+  refreshIcons();
+}
+initVocab();
+
+/* ═══════════════ profile / settings ═══════════════ */
+let authed = true, persOn = true, curLevel = 'B1';
+const LANGS = ['English','한국어','日本語','Español','Français'];
+let curLang = 'English';
+
+function renderLangOptions(){
+  document.getElementById('exp-lang').innerHTML = LANGS.map(l=>`
+    <button class="press" onclick="setLang('${l}')" style="width:100%;display:flex;align-items:center;justify-content:space-between;padding:11px 0;background:transparent;border:none;border-top:1px solid var(--divider);cursor:pointer;">
+      <span style="font-size:13px;color:${l===curLang?'var(--accent)':'var(--text-secondary)'};font-weight:${l===curLang?'700':'400'};">${l}</span>
+      ${l===curLang?'<i data-lucide=\"check\" style=\"width:16px;height:16px;color:var(--accent);\"></i>':''}
+    </button>`).join('');
+  refreshIcons();
+}
+function setLang(l){ curLang=l; document.getElementById('lang-current').textContent=l; renderLangOptions(); }
+
+function setLevel(lv){
+  curLevel = lv;
+  document.querySelectorAll('.lvl-opt').forEach(b=>b.classList.toggle('active', b.dataset.lvl===lv));
+}
+
+function toggleExpand(id){
+  const el = document.getElementById(id);
+  const open = el.style.display==='none' || !el.style.display;
+  el.style.display = open ? (id==='exp-lang'?'block':'block') : 'none';
+  const chev = document.querySelector(`.exp-chev[data-for="${id}"]`);
+  if(chev) chev.style.transform = open ? 'rotate(180deg)' : 'none';
+}
+
+function togglePers(){
+  persOn = !persOn;
+  const t = document.getElementById('pers-toggle');
+  t.setAttribute('aria-checked', persOn);
+  t.style.background = persOn ? 'var(--gradient-accent)' : 'var(--border-strong)';
+  t.querySelector('.pers-knob').style.transform = persOn ? 'translateX(20px)' : 'none';
+  document.getElementById('pers-note').style.opacity = persOn ? '1' : '.7';
+}
+
+function setAuth(on){
+  authed = on;
+  document.getElementById('auth-out').style.display = on ? 'none' : 'block';
+  document.getElementById('stats-block').style.display = on ? 'block' : 'none';
+  document.getElementById('support-block').style.display = on ? 'block' : 'none';
+  document.getElementById('account-actions').style.display = on ? 'flex' : 'none';
+  document.getElementById('pf-edit').style.display = on ? 'grid' : 'none';
+  const av = document.getElementById('pf-avatar');
+  if(on){
+    av.innerHTML = '<span class="serif" style="font-size:26px;font-weight:600;color:#fff;">민</span>';
+    document.getElementById('pf-name').innerHTML = '김민 <span class="kr" style="font-size:15px;color:var(--text-muted);">노을</span>';
+    document.getElementById('pf-sub').textContent = 'min@noeul.app · Immersion since 2024';
+  }else{
+    av.style.background = 'var(--surface-strong)';
+    av.innerHTML = '<i data-lucide="user" style="width:30px;height:30px;color:var(--text-subtle);"></i>';
+    document.getElementById('pf-name').textContent = 'Guest';
+    document.getElementById('pf-sub').textContent = 'Not signed in';
+    toast('Logged out');
+  }
+  if(on){ av.style.background = 'var(--gradient-accent)'; toast('Signed in'); }
+  refreshIcons();
+}
+function editProfile(){ toast('Edit profile'); }
+function legalTap(what){ toast(what); return false; }
+function confirmDelete(){ toast('Delete account — this cannot be undone'); }
+
+let toastTimer;
+function toast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.style.opacity='1';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>{ t.style.opacity='0'; }, 1800);
+}
+
+function initProfile(){
+  setLevel(curLevel);
+  renderLangOptions();
+  const t = document.getElementById('pers-toggle');
+  t.style.background = 'var(--gradient-accent)';
+  t.querySelector('.pers-knob').style.transform = 'translateX(20px)';
+  setAuth(true);
+}
+initProfile();
+
+/* ═══════════════ init ═══════════════ */
+function refreshIcons(){ if(window.lucide) lucide.createIcons(); }
+setTheme('dusk');
+renderCard();
+updateCount();
+paintSaved();
+applyReaderType();
+refreshIcons();
+</script>
+</body>
+</html>

@@ -2,7 +2,8 @@ import React, { useMemo } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from '../../hooks/useTranslation';
-import { colors as defaultColors, elevation, fontFamilies, layout, radii, useTheme } from '../../theme';
+import { fontFamilies, useTheme } from '../../theme';
+import { ProgressBar } from '../ui';
 
 const stripHref = (href) => {
     if (!href) return '';
@@ -99,7 +100,6 @@ const TocDrawer = ({
     }, [currentSpineIndex, flatItems]);
     const activeHref = stripHref(currentSectionHref);
     const bookProgressPercent = Math.round(clampProgress(bookProgress) * 100);
-    const bookProgressFillWidth = `${bookProgressPercent}%`;
     const chapterSummaryLabel = Number.isInteger(currentSpineIndex)
         ? (
             totalSpineItems > 0
@@ -108,72 +108,48 @@ const TocDrawer = ({
         )
         : t('read.chapter');
 
-    const palette = {
-        sheet: colors.readerSurface,
-        border: colors.readerBorder,
-        headerText: colors.readerSubtleInk,
-        activeBg: colors.readerSavedChipBg,
-        numberRead: colors.readerSubtleInk,
-        numberCurrent: colors.readerProgressFill,
-        numberUnread: colors.readerMutedInk,
-        titleRead: colors.readerSubtleInk,
-        titleCurrent: colors.readerBodyInk,
-        titleUnread: colors.readerBodyInk,
-        pageRead: colors.readerSubtleInk,
-        pageCurrent: colors.readerMutedInk,
-        pageUnread: colors.readerSubtleInk,
-        disabledText: colors.readerSubtleInk,
-        pressedBg: colors.readerSavedChipBg,
-        progressTrack: colors.readerProgressTrack,
-        progressFill: colors.readerProgressFill,
-        progressText: colors.readerProgressFill,
-    };
-
     return (
         <Modal
             visible={visible}
             transparent
-            animationType="fade"
+            animationType="slide"
             onRequestClose={onClose}
         >
             <View style={styles.overlay}>
                 <Pressable
-                    style={[styles.backdrop, { backgroundColor: colors.readerTocScrim }]}
+                    style={[styles.backdrop, { backgroundColor: colors.overlay }]}
                     onPress={onClose}
                 />
                 <View
                     style={[
-                        styles.dropdown,
+                        styles.sheet,
                         {
-                            top: insets.top + layout.readerHeaderHeight - 2,
-                            backgroundColor: palette.sheet,
-                            borderColor: palette.border,
+                            backgroundColor: colors.popover,
+                            borderColor: colors.popoverBorder,
+                            paddingBottom: insets.bottom + 18,
                         },
                     ]}
                 >
-                    <View style={styles.progressHeader}>
-                        <View style={styles.metaRow}>
-                            <Text style={[styles.headerTitle, { color: palette.headerText }]}>{t('read.contents')}</Text>
-                            <Text style={[styles.chapterSummary, { color: palette.headerText }]}>
-                                {chapterSummaryLabel}
-                            </Text>
-                        </View>
-                        <View style={styles.bookProgressRow}>
-                            <View style={[styles.bookProgressTrack, { backgroundColor: palette.progressTrack }]}>
-                                <View
-                                    style={[
-                                        styles.bookProgressFill,
-                                        {
-                                            width: bookProgressFillWidth,
-                                            backgroundColor: palette.progressFill,
-                                        },
-                                    ]}
-                                />
-                            </View>
-                            <Text style={[styles.bookProgressText, { color: palette.progressText }]}>
-                                {bookProgressPercent}%
-                            </Text>
-                        </View>
+                    <View style={[styles.grabber, { backgroundColor: colors.textSubtle }]} />
+
+                    <View style={styles.metaRow}>
+                        <Text style={[styles.contentsLabel, { color: colors.textTertiary }]}>
+                            {t('read.contents')}
+                        </Text>
+                        <Text style={[styles.chapterSummary, { color: colors.textTertiary }]}>
+                            {chapterSummaryLabel}
+                        </Text>
+                    </View>
+
+                    <View style={styles.progressRow}>
+                        <ProgressBar
+                            progress={clampProgress(bookProgress)}
+                            height={4}
+                            style={styles.progressTrack}
+                        />
+                        <Text style={[styles.progressPercent, { color: colors.text }]}>
+                            {bookProgressPercent}%
+                        </Text>
                     </View>
 
                     <ScrollView
@@ -196,15 +172,8 @@ const TocDrawer = ({
                                 && Number.isInteger(item?.spineIndex)
                                 && item.spineIndex < currentSpineIndex
                             );
-                            const numberColor = isDisabled
-                                ? palette.disabledText
-                                : (isActive ? palette.numberCurrent : (isRead ? palette.numberRead : palette.numberUnread));
-                            const titleColor = isDisabled
-                                ? palette.disabledText
-                                : (isActive ? palette.titleCurrent : (isRead ? palette.titleRead : palette.titleUnread));
-                            const pageColor = isDisabled
-                                ? palette.disabledText
-                                : (isActive ? palette.pageCurrent : (isRead ? palette.pageRead : palette.pageUnread));
+                            const numberColor = isActive ? colors.accent : colors.textTertiary;
+                            const titleColor = isActive ? colors.accent : colors.text;
 
                             return (
                                 <Pressable
@@ -217,11 +186,12 @@ const TocDrawer = ({
                                     style={({ pressed }) => ([
                                         styles.row,
                                         {
-                                            paddingLeft: 16 + (normalizedDepth * 12),
+                                            paddingLeft: 10 + (normalizedDepth * 12),
                                             backgroundColor: isActive
-                                                ? palette.activeBg
-                                                : (pressed && !isDisabled ? palette.pressedBg : colors.transparent),
+                                                ? colors.accentSoft
+                                                : (pressed && !isDisabled ? colors.surfaceMuted : colors.transparent),
                                         },
+                                        (isRead || isDisabled) && styles.rowRead,
                                     ])}
                                 >
                                     {chapterNumber ? (
@@ -240,7 +210,7 @@ const TocDrawer = ({
                                         {title}
                                     </Text>
                                     {positionLabel ? (
-                                        <Text style={[styles.positionText, { color: pageColor }]}>
+                                        <Text style={[styles.positionText, { color: colors.textTertiary }]}>
                                             {positionLabel}
                                         </Text>
                                     ) : null}
@@ -257,89 +227,93 @@ const TocDrawer = ({
 const styles = StyleSheet.create({
     overlay: {
         flex: 1,
-        justifyContent: 'flex-start',
+        justifyContent: 'flex-end',
     },
     backdrop: {
         ...StyleSheet.absoluteFillObject,
-        backgroundColor: defaultColors.readerTocScrim,
     },
-    dropdown: {
-        position: 'absolute',
-        right: 12,
-        width: 272,
-        maxHeight: 600,
-        borderRadius: radii.md,
-        borderWidth: 1,
-        overflow: 'hidden',
-        ...elevation.readerToc,
+    sheet: {
+        maxHeight: '78%',
+        borderTopWidth: 1,
+        borderTopLeftRadius: 26,
+        borderTopRightRadius: 26,
+        paddingTop: 10,
+        paddingHorizontal: 20,
+        shadowColor: 'rgba(43,20,26,0.16)',
+        shadowOffset: { width: 0, height: -10 },
+        shadowOpacity: 1,
+        shadowRadius: 30,
+        elevation: 12,
     },
-    progressHeader: {
-        flexShrink: 0,
-        paddingHorizontal: 16,
-        paddingVertical: 13,
-        borderBottomWidth: 1,
-        borderBottomColor: defaultColors.divider,
+    grabber: {
+        width: 38,
+        height: 5,
+        borderRadius: 3,
+        opacity: 0.4,
+        alignSelf: 'center',
+        marginTop: 6,
+        marginBottom: 12,
     },
     metaRow: {
         flexDirection: 'row',
-        alignItems: 'center',
+        alignItems: 'baseline',
         justifyContent: 'space-between',
         gap: 12,
-        marginBottom: 9,
     },
-    headerTitle: {
+    contentsLabel: {
         fontFamily: fontFamilies.sansBold,
         fontSize: 9,
         lineHeight: 12,
         textTransform: 'uppercase',
-        letterSpacing: 2.2,
+        letterSpacing: 2,
     },
     chapterSummary: {
-        fontFamily: fontFamilies.sansRegular,
+        fontFamily: fontFamilies.sansBold,
         fontSize: 10,
-        lineHeight: 14,
+        lineHeight: 13,
+        textTransform: 'uppercase',
+        letterSpacing: 1.2,
     },
-    bookProgressRow: {
+    progressRow: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: 10,
+        marginTop: 10,
+        marginBottom: 6,
     },
-    bookProgressTrack: {
+    progressTrack: {
         flex: 1,
-        height: 4,
-        borderRadius: 2,
-        overflow: 'hidden',
     },
-    bookProgressFill: {
-        height: '100%',
-        borderRadius: 2,
-    },
-    bookProgressText: {
+    progressPercent: {
         fontFamily: fontFamilies.sansBold,
-        fontSize: 12,
-        lineHeight: 16,
-        minWidth: 34,
+        fontSize: 14,
+        lineHeight: 18,
+        minWidth: 38,
         textAlign: 'right',
         fontVariant: ['tabular-nums'],
     },
     listContent: {
-        paddingVertical: 4,
+        paddingTop: 6,
+        paddingBottom: 4,
     },
     row: {
         flexDirection: 'row',
-        alignItems: 'center',
-        gap: 11,
-        minHeight: 34,
-        paddingRight: 16,
-        paddingVertical: 7,
+        alignItems: 'baseline',
+        gap: 13,
+        borderRadius: 13,
+        paddingRight: 10,
+        paddingVertical: 12,
+    },
+    rowRead: {
+        opacity: 0.4,
     },
     chapterNumber: {
-        width: 18,
+        width: 20,
         flexShrink: 0,
-        textAlign: 'center',
-        fontFamily: fontFamilies.displayMedium,
-        fontSize: 13,
-        lineHeight: 18,
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 12,
+        lineHeight: 16,
+        letterSpacing: 1,
         includeFontPadding: false,
     },
     chapterTitle: {
@@ -351,7 +325,7 @@ const styles = StyleSheet.create({
         includeFontPadding: false,
     },
     chapterTitleActive: {
-        fontFamily: fontFamilies.krSerifMedium,
+        fontFamily: fontFamilies.krSerifSemiBold,
     },
     positionText: {
         flexShrink: 0,

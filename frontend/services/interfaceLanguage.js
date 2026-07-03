@@ -5,7 +5,6 @@ import {
   DEFAULT_INTERFACE_LANGUAGE,
   normalizeBookLanguage,
   normalizeInterfaceLanguageCode,
-  normalizeInterfaceLanguageForTarget,
 } from '../constants/languages';
 
 export const LANGUAGE_SETTINGS_KEY = '@ff/language-settings';
@@ -37,9 +36,8 @@ export const readStoredLanguageSettings = async () => {
     );
     return {
       targetLanguage,
-      interfaceLanguage: normalizeInterfaceLanguageForTarget(
-        parsed.interfaceLanguage ?? parsed.interface_language,
-        targetLanguage
+      interfaceLanguage: normalizeInterfaceLanguageCode(
+        parsed.interfaceLanguage ?? parsed.interface_language
       ),
     };
   } catch (error) {

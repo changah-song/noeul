@@ -6,6 +6,23 @@ export { colors, radii, elevation, layout, useTheme, createTheme, ThemeProvider,
 export { spacing, insets } from './spacing';
 export { fontFamilies, typeScale, lineHeights, textStyles } from './typography';
 
+// ─── Gradient definitions ──────────────────────────────────────────────────
+// React Native doesn't support CSS gradients natively. These are the color
+// stop arrays for use with expo-linear-gradient or similar.
+export const Gradients = {
+  // Coral → rose — used on buttons, CTAs, FABs
+  accent: ['#E0654A', '#D85C76'],
+  accentDusk: ['#FF7A52', '#F1789A'],
+  // Amber → rose — reading progress fill
+  progress: ['#EE9A4C', '#D85C76'],
+  progressDusk: ['#F4B25C', '#F1789A'],
+  // The brand sunset mark / hero gradient
+  sunset: ['#F4A65C', '#E76A4B', '#C9506A'],
+  // Default generated book cover
+  cover: ['#E0654A', '#7A3D5A'],
+  coverDusk: ['#FF7A52', '#4B3F6B'],
+};
+
 export const Colors = {
   inkSlate: colors.inkSlate,
   inkPressed: colors.inkPressed,
@@ -22,6 +39,8 @@ export const Colors = {
   surfaceCard: colors.surfaceCard,
   surfaceMuted: colors.surfaceMuted,
   surfaceAssist: colors.surfaceAssist,
+  surfaceGlass: colors.surfaceGlass,
+  surfaceGlassBorder: colors.surfaceGlassBorder,
   coverMid: colors.coverMid,
   divider: colors.divider,
   border: colors.border,
@@ -30,6 +49,11 @@ export const Colors = {
   dotInactive: colors.dotInactive,
   destructive: colors.destructive,
   glyphCream: colors.glyphCream,
+  accent: colors.accent,
+  accent2: colors.accent2,
+  accent3: colors.accent3,
+  accentSoft: colors.accentSoft,
+  accentMuted: colors.accentMuted,
 };
 
 export const Spacing = {
@@ -56,20 +80,22 @@ export const Spacing = {
 
 export const Radii = {
   frame: 34,
-  sheet: 16,
-  flashcard: 10,
-  ocrBanner: 10,
-  card: radii.sm,
-  input: radii.xs,
-  cover: 2,
+  sheet: radii.xl,       // 28 — large bottom sheets
+  flashcard: radii.lg,   // 20 — glass cards
+  ocrBanner: radii.sm,   // 11
+  card: radii.lg,        // 20 — default glass card radius
+  input: radii.sm,       // 11 — inputs
+  cover: 13,             // book cover rounded corners
   pill: radii.pill,
-  badge: 2,
+  badge: radii.xs,       // 8 — chips/badges
 };
 
 export const Shadows = {
   sheet: elevation.sheet,
   fab: elevation.fab,
   coverLift: elevation.coverLift,
+  glass: elevation.glass,
+  card: elevation.card,
 };
 
 export const Layout = {
@@ -111,7 +137,7 @@ export const IconDefaults = {
   size: 24,
   color: colors.textSecondary,
   fillActive: 1,
-  colorActive: colors.inkSlate,
+  colorActive: colors.accent,  // coral — active icon state
 };
 
 export const TextStyles = {
@@ -132,19 +158,19 @@ export const TextStyles = {
   bodyUISmall: {
     fontFamily: fontFamilies.sansRegular,
     fontSize: 13,
-    lineHeight: 19,
+    lineHeight: 18,
     color: colors.textMuted,
   },
   bodyUI: {
     fontFamily: fontFamilies.sansRegular,
     fontSize: 14,
-    lineHeight: 21,
+    lineHeight: 20,
     color: colors.textMuted,
   },
   bodyUILarge: {
     fontFamily: fontFamilies.sansRegular,
     fontSize: 15,
-    lineHeight: 25,
+    lineHeight: 24,
     color: colors.textMuted,
   },
   labelSmall: {

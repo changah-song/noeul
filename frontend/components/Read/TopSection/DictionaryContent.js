@@ -345,6 +345,7 @@ const DictionaryContent = ({
     currentBook,
     sourceBook,
     savedWords = [],
+    rootWordAnalysisEnabled = true,
 }) => {
     const { interfaceLanguage } = useAppContext();
     const { t } = useTranslation();
@@ -356,7 +357,7 @@ const DictionaryContent = ({
         mutedText: colors.readerMutedInk,
         secondaryText: colors.textSecondary,
         emptyText: colors.readerSubtleInk,
-        surface: colors.readerSurface,
+        surface: colors.transparent,
         border: colors.readerBorder,
         action: colors.readerTappedWordBg,
         actionText: colors.readerTappedWordText,
@@ -769,7 +770,7 @@ const DictionaryContent = ({
         };
     }, [activeLookupItem, liveEntryMeta, lookupWord]);
     const activeLookupHanja = activeLookupDetails.hanja;
-    const canExpandCurrentLookup = (
+    const canExpandCurrentLookup = rootWordAnalysisEnabled && (
         (isKoreanBook && hasHanja(activeLookupHanja))
         || (isEnglishBook && hasRenderableWordParts(activeLookupDetails.wordParts, activeLookupDetails.word))
     );
@@ -1458,7 +1459,7 @@ const DictionaryContent = ({
         const parts = getRenderableWordPartItems(wordParts);
         const relatedRootGroups = getRenderableRelatedRootGroups(wordParts, word);
 
-        if (!isEnglishBook || !hasRenderableWordParts(wordParts, word)) {
+        if (!isEnglishBook || !rootWordAnalysisEnabled || !hasRenderableWordParts(wordParts, word)) {
             return null;
         }
 
@@ -1655,6 +1656,24 @@ const DictionaryContent = ({
                         </Text>
                     )}
                 </View>
+                {contextSentence ? (
+                    <View
+                        style={[
+                            styles.sentenceBox,
+                            {
+                                backgroundColor: colors.surfaceMuted,
+                                borderColor: colors.border,
+                            },
+                        ]}
+                    >
+                        <Text style={[styles.sentenceBoxLabel, { color: colors.textTertiary }]}>
+                            {t('lookup.savesWithSentence')}
+                        </Text>
+                        <Text selectable style={[styles.sentenceBoxText, { color: palette.secondaryText }]}>
+                            {contextSentence}
+                        </Text>
+                    </View>
+                ) : null}
                 {isPanelExpanded && isEnglishBook ? renderWordParts(wordParts, word) : null}
                 {isPanelExpanded && isEnglishBook && !hasRenderableWordParts(wordParts, word) ? renderOrigin(etymology, word) : null}
                 {isPanelExpanded && showLess ? renderExtraDefinitions(extraEntries) : null}
@@ -1775,7 +1794,7 @@ const DictionaryContent = ({
                     separated: false,
                 })}
 
-                {isKoreanBook && isPanelExpanded ? (
+                {isKoreanBook && isPanelExpanded && rootWordAnalysisEnabled ? (
                 <HanjaDetails
                     hanja={currentHanja?.character ?? getHanjaCharacters(cachedHanja)[0] ?? null}
                     hanjaCharacters={currentHanja?.characters?.length ? currentHanja.characters : getHanjaCharacters(cachedHanja)}
@@ -1858,7 +1877,7 @@ const DictionaryContent = ({
                 separated: false,
             })}
 
-            {isKoreanBook && isPanelExpanded ? (
+            {isKoreanBook && isPanelExpanded && rootWordAnalysisEnabled ? (
             <HanjaDetails
                 hanja={currentHanja?.character ?? getHanjaCharacters(liveHanja)[0] ?? null}
                 hanjaCharacters={currentHanja?.characters?.length ? currentHanja.characters : getHanjaCharacters(liveHanja)}
@@ -1945,8 +1964,8 @@ const createStyles = (colors) => StyleSheet.create({
     },
     entryWord: {
         fontFamily: fontFamilies.krSerifSemiBold,
-        fontSize: 28,
-        lineHeight: 36,
+        fontSize: 26,
+        lineHeight: 34,
         letterSpacing: 0,
         paddingTop: 0,
         includeFontPadding: true,
@@ -2018,10 +2037,10 @@ const createStyles = (colors) => StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: colors.readerSurface,
+        backgroundColor: colors.transparent,
         borderWidth: 1,
-        borderColor: colors.readerBorder,
-        borderRadius: radii.xs,
+        borderColor: colors.borderStrong,
+        borderRadius: 13,
     },
     actionButtonSaved: {
         backgroundColor: colors.readerTappedWordBg,
@@ -2043,8 +2062,27 @@ const createStyles = (colors) => StyleSheet.create({
         fontFamily: fontFamilies.sansBold,
         fontSize: 11,
         lineHeight: 14,
-        letterSpacing: 1.8,
+        letterSpacing: 1.2,
         textTransform: 'uppercase',
+    },
+    sentenceBox: {
+        borderWidth: 1,
+        borderRadius: radii.sm,
+        paddingVertical: 12,
+        paddingHorizontal: 13,
+        gap: 6,
+    },
+    sentenceBoxLabel: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 8,
+        lineHeight: 11,
+        letterSpacing: 1.6,
+        textTransform: 'uppercase',
+    },
+    sentenceBoxText: {
+        fontFamily: fontFamilies.krSerifRegular,
+        fontSize: 13,
+        lineHeight: 20,
     },
     translationPanelBody: {
         paddingHorizontal: 24,

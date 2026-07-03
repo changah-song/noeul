@@ -236,6 +236,7 @@ data class ReaderThemePalette(
   val textSelectionHighlightColor: Int,
   val savedHighlightColor: Int,
   val savedHighlightTextColor: Int,
+  val savedLineColor: Int,
   val sameLevelUnderlineColor: Int,
   val aboveLevelUnderlineColor: Int,
   val selectionHandleColor: Int,
@@ -256,6 +257,7 @@ fun readerThemePaletteForMode(isDark: Boolean): ReaderThemePalette {
       textSelectionHighlightColor = Color.argb(0x2e, 0xf0, 0xed, 0xed),
       savedHighlightColor = Color.rgb(0x20, 0x26, 0x31),
       savedHighlightTextColor = Color.WHITE,
+      savedLineColor = Color.rgb(0x20, 0x26, 0x31),
       sameLevelUnderlineColor = Color.rgb(0x74, 0xc4, 0x76),
       aboveLevelUnderlineColor = Color.rgb(0xf5, 0x9e, 0x0b),
       selectionHandleColor = Color.rgb(0xf0, 0xed, 0xed),
@@ -274,6 +276,7 @@ fun readerThemePaletteForMode(isDark: Boolean): ReaderThemePalette {
       textSelectionHighlightColor = Color.argb(0x2e, 0x20, 0x26, 0x31),
       savedHighlightColor = Color.rgb(0x20, 0x26, 0x31),
       savedHighlightTextColor = Color.WHITE,
+      savedLineColor = Color.rgb(0x20, 0x26, 0x31),
       sameLevelUnderlineColor = Color.rgb(0x2f, 0x8f, 0x46),
       aboveLevelUnderlineColor = Color.rgb(0xc4, 0x66, 0x1f),
       selectionHandleColor = Color.rgb(0x20, 0x26, 0x31),
@@ -305,8 +308,17 @@ private fun readerThemePaletteFromTokens(tokens: Map<String, Any?>, isDark: Bool
     textSelectionHighlightColor = colorFromThemeToken(tokens, "textSelectionHighlight", fallback.textSelectionHighlightColor),
     savedHighlightColor = colorFromThemeToken(tokens, "savedHighlight", fallback.savedHighlightColor),
     savedHighlightTextColor = colorFromThemeToken(tokens, "savedHighlightText", fallback.savedHighlightTextColor),
-    sameLevelUnderlineColor = colorFromThemeToken(tokens, "levelSameUnderline", fallback.sameLevelUnderlineColor),
-    aboveLevelUnderlineColor = colorFromThemeToken(tokens, "levelAboveUnderline", fallback.aboveLevelUnderlineColor),
+    savedLineColor = colorFromThemeToken(tokens, "savedLine", fallback.savedLineColor),
+    sameLevelUnderlineColor = colorFromThemeToken(
+      tokens,
+      "levelSameHeat",
+      colorFromThemeToken(tokens, "levelSameUnderline", fallback.sameLevelUnderlineColor)
+    ),
+    aboveLevelUnderlineColor = colorFromThemeToken(
+      tokens,
+      "levelAboveHeat",
+      colorFromThemeToken(tokens, "levelAboveUnderline", fallback.aboveLevelUnderlineColor)
+    ),
     selectionHandleColor = colorFromThemeToken(tokens, "selectionHandle", fallback.selectionHandleColor),
     placeholderColor = colorFromThemeToken(tokens, "placeholder", fallback.placeholderColor)
   )

@@ -13,7 +13,7 @@ import {
   DEFAULT_LANGUAGE_SETTINGS,
   getLanguageLabel,
   normalizeLanguageCode,
-  normalizeInterfaceLanguageForTarget,
+  normalizeInterfaceLanguageCode,
 } from '../constants/languages';
 import {
   DEFAULT_PROFICIENCY_LEVELS_BY_LANGUAGE,
@@ -117,10 +117,9 @@ const normalizeLanguageSettings = (settings = {}) => {
       settings.nativeLanguage ?? settings.native_language,
       DEFAULT_LANGUAGE_SETTINGS.nativeLanguage
     ),
-    interfaceLanguage: normalizeInterfaceLanguageForTarget(
+    interfaceLanguage: normalizeInterfaceLanguageCode(
       settings.interfaceLanguage
-        ?? settings.interface_language,
-      targetLanguage
+        ?? settings.interface_language
     ),
     activeProfileId: normalizeProfileId(
       settings.activeProfileId ?? settings.active_profile_id,

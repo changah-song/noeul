@@ -98,8 +98,8 @@ const HanjaDetails = ({
     const language = sourceWordDetails?.language ?? 'ko';
 
     const palette = useMemo(() => ({
-        cardBg: colors.readerSurface,
-        tileBg: colors.surfaceMuted,
+        cardBg: colors.surfaceMuted,
+        tileBg: colors.surfaceStrong,
         border: colors.readerBorder,
         divider: colors.readerHairline,
         text: colors.readerBodyInk,

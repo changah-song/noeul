@@ -38,6 +38,7 @@ const TopSection = ({
     sourceBook,
     savedWords,
     translationVisualState = {},
+    rootWordAnalysisEnabled = true,
 }) => {
     const { t } = useTranslation();
     const { colors: themeColors } = useTheme();
@@ -205,12 +206,17 @@ const TopSection = ({
     const isTranslationMode = isNativeSelection;
     const isTopPlacement = placement === 'top';
     const panelColors = {
-        background: themeColors.readerSurface,
-        border: themeColors.readerBorder,
+        background: themeColors.popover,
+        border: themeColors.popoverBorder,
         text: themeColors.readerBodyInk,
         accent: themeColors.readerProgressFill,
         closeIcon: themeColors.readerSubtleInk,
     };
+    const phraseWordCount = (translationTarget || visibleWord)
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .length;
 
     const isDictionaryTranslationSheet = dictionaryExpandedRows === -1;
     const expandedFallbackHeight = DICTIONARY_COMPACT_HEIGHT + (Math.max(dictionaryExpandedRows, 0) * DICTIONARY_EXTRA_ROW_HEIGHT);
@@ -290,30 +296,46 @@ const TopSection = ({
             ]}
         >
             {isTranslationMode ? (
-                <View style={styles.translationHeader}>
-                    <View style={styles.translationHeaderLeft}>
-                        <MaterialIcons name="translate" size={16} color={themeColors.readerSubtleInk} />
-                        <Text numberOfLines={1} style={[styles.translationLangText, { color: themeColors.readerMutedInk }]}>
-                            {translationSourceLabel} → {translationTargetLabel}
-                        </Text>
-                    </View>
-                    {canCopyTranslation ? (
-                        <TouchableOpacity
-                            accessibilityRole="button"
-                            accessibilityLabel={isCopyConfirmed ? t('lookup.copied') : t('lookup.copy')}
-                            activeOpacity={0.75}
-                            onPress={handleCopy}
-                            style={styles.copyButton}
-                        >
-                            {isCopyConfirmed ? (
-                                <MaterialIcons name="check" size={13} color={panelColors.closeIcon} style={styles.copyIcon} />
-                            ) : null}
-                            <Text style={[styles.copyLabel, { color: panelColors.closeIcon }]}>
-                                {isCopyConfirmed ? t('lookup.copied') : t('lookup.copy')}
-                            </Text>
-                        </TouchableOpacity>
+                <>
+                    {!isTopPlacement ? (
+                        <View style={styles.sheetHandleStatic}>
+                            <View style={styles.sheetHandle} />
+                        </View>
                     ) : null}
-                </View>
+                    <View style={styles.phraseHeader}>
+                        <View style={[styles.phraseChip, { borderColor: themeColors.accent }]}>
+                            <Text style={[styles.phraseChipText, { color: themeColors.accent }]}>
+                                {t('lookup.phraseChip', { count: phraseWordCount })}
+                            </Text>
+                        </View>
+                        {canCopyTranslation ? (
+                            <TouchableOpacity
+                                accessibilityRole="button"
+                                accessibilityLabel={isCopyConfirmed ? t('lookup.copied') : t('lookup.copy')}
+                                activeOpacity={0.75}
+                                onPress={handleCopy}
+                                style={styles.copyButton}
+                            >
+                                {isCopyConfirmed ? (
+                                    <MaterialIcons name="check" size={13} color={panelColors.closeIcon} style={styles.copyIcon} />
+                                ) : null}
+                                <Text style={[styles.copyLabel, { color: panelColors.closeIcon }]}>
+                                    {isCopyConfirmed ? t('lookup.copied') : t('lookup.copy')}
+                                </Text>
+                            </TouchableOpacity>
+                        ) : null}
+                    </View>
+                    <Text selectable style={[styles.phraseText, { color: themeColors.text }]}>
+                        {translationText}
+                    </Text>
+                    <View style={[styles.phraseDivider, { backgroundColor: themeColors.divider }]} />
+                    <Text
+                        accessibilityLabel={`${translationSourceLabel} → ${translationTargetLabel}`}
+                        style={[styles.phraseSectionLabel, { color: themeColors.textTertiary }]}
+                    >
+                        {t('lookup.translationLabel')}
+                    </Text>
+                </>
             ) : null}
 
             {!isTopPlacement && !isTranslationMode && canExpandLookup ? (
@@ -350,6 +372,7 @@ const TopSection = ({
                         currentBook={currentBook}
                         sourceBook={sourceBook}
                         savedWords={savedWords}
+                        rootWordAnalysisEnabled={rootWordAnalysisEnabled}
                     />
                 ) : (
                     <TranslationContent
@@ -371,6 +394,20 @@ const TopSection = ({
                 )}
 
             </View>
+
+            {isTranslationMode ? (
+                <TouchableOpacity
+                    accessibilityRole="button"
+                    accessibilityLabel={t('common.done')}
+                    activeOpacity={0.75}
+                    onPress={onClose}
+                    style={[styles.phraseDoneButton, { borderColor: themeColors.borderStrong }]}
+                >
+                    <Text style={[styles.phraseDoneLabel, { color: themeColors.textMuted }]}>
+                        {t('common.done')}
+                    </Text>
+                </TouchableOpacity>
+            ) : null}
             {isTopPlacement && !isTranslationMode && canExpandLookup ? (
                 <View style={styles.sheetHandleWrapBottom} {...panResponder.panHandlers}>
                     {!isLookupExpanded ? (
@@ -395,13 +432,13 @@ const createStyles = (colors) => StyleSheet.create({
         paddingHorizontal: 24,
         paddingTop: 12,
         paddingBottom: 26,
-        borderTopLeftRadius: 16,
-        borderTopRightRadius: 16,
+        borderTopLeftRadius: 26,
+        borderTopRightRadius: 26,
         borderBottomLeftRadius: 0,
         borderBottomRightRadius: 0,
-        backgroundColor: colors.surfaceElevated,
+        backgroundColor: colors.popover,
         borderWidth: 1,
-        borderColor: colors.border,
+        borderColor: colors.popoverBorder,
         borderBottomWidth: 0,
         shadowColor: colors.shadow,
         shadowOffset: { width: 0, height: -10 },
@@ -413,8 +450,8 @@ const createStyles = (colors) => StyleSheet.create({
     sheetTop: {
         borderTopLeftRadius: 0,
         borderTopRightRadius: 0,
-        borderBottomLeftRadius: 16,
-        borderBottomRightRadius: 16,
+        borderBottomLeftRadius: 26,
+        borderBottomRightRadius: 26,
         borderBottomWidth: 1,
         shadowOffset: { width: 0, height: 10 },
     },
@@ -435,20 +472,20 @@ const createStyles = (colors) => StyleSheet.create({
     },
     sheetTranslation: {},
     sheetTranslationBase: {
-        marginHorizontal: 16,
-        marginBottom: 16,
-        paddingHorizontal: 14,
-        paddingTop: 12,
-        paddingBottom: 12,
-        borderTopLeftRadius: 12,
-        borderTopRightRadius: 12,
-        borderBottomLeftRadius: 12,
-        borderBottomRightRadius: 12,
-        borderBottomWidth: 1,
+        marginHorizontal: 0,
+        marginBottom: 0,
+        paddingHorizontal: 20,
+        paddingTop: 10,
+        paddingBottom: 14,
+        borderTopLeftRadius: 26,
+        borderTopRightRadius: 26,
+        borderBottomLeftRadius: 0,
+        borderBottomRightRadius: 0,
+        borderBottomWidth: 0,
         shadowColor: colors.shadow,
-        shadowOffset: { width: 0, height: 8 },
+        shadowOffset: { width: 0, height: -10 },
         shadowOpacity: 1,
-        shadowRadius: 24,
+        shadowRadius: 30,
     },
     sheetTranslationTop: {
         marginTop: 0,
@@ -456,28 +493,63 @@ const createStyles = (colors) => StyleSheet.create({
         paddingTop: TOP_PLACEMENT_TRANSLATION_TOP_PADDING,
         borderTopLeftRadius: 0,
         borderTopRightRadius: 0,
-        borderBottomLeftRadius: 12,
-        borderBottomRightRadius: 12,
+        borderBottomLeftRadius: 26,
+        borderBottomRightRadius: 26,
+        borderBottomWidth: 1,
         shadowOffset: { width: 0, height: 8 },
     },
-    translationHeader: {
+    phraseHeader: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
+        gap: 8,
+    },
+    phraseChip: {
+        borderWidth: 1,
+        borderRadius: 5,
+        paddingVertical: 2,
+        paddingHorizontal: 7,
+    },
+    phraseChipText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 8.5,
+        lineHeight: 12,
+        letterSpacing: 1.4,
+        textTransform: 'uppercase',
+    },
+    phraseText: {
+        fontFamily: fontFamilies.krSerifRegular,
+        fontSize: 19,
+        lineHeight: 28,
+        marginTop: 13,
+    },
+    phraseDivider: {
+        height: 1,
+        marginTop: 16,
+    },
+    phraseSectionLabel: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 9,
+        lineHeight: 12,
+        letterSpacing: 2,
+        textTransform: 'uppercase',
+        marginTop: 15,
         marginBottom: 8,
     },
-    translationHeaderLeft: {
-        flexDirection: 'row',
+    phraseDoneButton: {
+        height: 46,
+        borderRadius: 13,
+        borderWidth: 1,
         alignItems: 'center',
-        gap: 7,
-        flex: 1,
-        minWidth: 0,
+        justifyContent: 'center',
+        marginTop: 14,
     },
-    translationLangText: {
-        fontFamily: fontFamilies.sansRegular,
+    phraseDoneLabel: {
+        fontFamily: fontFamilies.sansBold,
         fontSize: 11,
-        lineHeight: 17,
-        letterSpacing: 0.8,
+        lineHeight: 14,
+        letterSpacing: 1.2,
+        textTransform: 'uppercase',
     },
     copyButton: {
         flexDirection: 'row',
@@ -527,10 +599,11 @@ const createStyles = (colors) => StyleSheet.create({
         marginTop: 10,
     },
     sheetHandle: {
-        width: 36,
-        height: 4,
-        borderRadius: 2,
-        backgroundColor: colors.borderStrong,
+        width: 38,
+        height: 5,
+        borderRadius: 3,
+        backgroundColor: colors.textSubtle,
+        opacity: 0.4,
     },
     sheetGestureHint: {
         fontFamily: fontFamilies.sansBold,

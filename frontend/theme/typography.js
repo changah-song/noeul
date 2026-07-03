@@ -7,6 +7,7 @@ export const fontFamilies = {
   sansMedium: 'FFSans-Medium',
   sansSemiBold: 'FFSans-SemiBold',
   sansBold: 'FFSans-Bold',
+  sansExtraBold: 'FFSans-ExtraBold',
   display: 'FFDisplay-Regular',
   displayRegular: 'FFDisplay-Regular',
   displayMedium: 'FFDisplay-Medium',

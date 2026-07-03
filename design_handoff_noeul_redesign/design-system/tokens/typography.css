@@ -1,0 +1,107 @@
+/* =========================================================================
+   Noeul — Typography tokens
+   Three families: a serif display (Fraunces), a UI sans (Inter), and a
+   Korean reading serif (Noto Serif KR). Warm, literary, unhurried.
+   ========================================================================= */
+
+:root {
+  /* ---- Families ---- */
+  --font-display: 'Fraunces', Georgia, 'Times New Roman', serif; /* serif display — titles, covers, quotes */
+  --font-ui:      'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif; /* UI sans — body, labels, controls */
+  --font-kr:      'Noto Serif KR', 'Fraunces', serif; /* Korean reading serif — words, target-language text */
+
+  /* ---- Weights ---- */
+  --weight-regular:  400;
+  --weight-medium:   500;
+  --weight-semibold: 600;
+  --weight-bold:     700;
+
+  /* ---- Type scale (px) — see typography card ---- */
+  --text-hero:     28px;  /* screen hero */
+  --text-title:    24px;  /* serif title */
+  --text-section:  19px;  /* section heading */
+  --text-body-lg:  17px;  /* lead / large body */
+  --text-body:     14px;  /* default UI body */
+  --text-body-sm:  13px;  /* small body */
+  --text-caption:  11px;  /* captions, labels */
+  --text-micro:    10px;  /* eyebrows, tab labels */
+
+  /* ---- Line heights (px, paired to scale) ---- */
+  --leading-hero:    34px;
+  --leading-title:   30px;
+  --leading-section: 24px;
+  --leading-body-lg: 24px;
+  --leading-body:    20px;
+  --leading-body-sm: 18px;
+  --leading-caption: 15px;
+  --leading-micro:   13px;
+
+  /* ---- Tracking — labels & eyebrows are widely spaced + uppercase ---- */
+  --tracking-hero:    -0.56px;  /* tight on the sans hero */
+  --tracking-eyebrow: 2px;      /* uppercase eyebrow */
+  --tracking-label:   1.6px;    /* uppercase label */
+  --tracking-tab:     1.8px;    /* uppercase tab / button label */
+  --tracking-appbar:  3.2px;    /* widest — app bar title */
+}
+
+/* ---- Semantic text roles (apply as classes or copy the rules) ----
+   These mirror the app's textStyles. Use them to keep type consistent. */
+
+.nl-hero {
+  font-family: var(--font-ui);
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-hero);
+  line-height: var(--leading-hero);
+  letter-spacing: var(--tracking-hero);
+  color: var(--text);
+}
+
+.nl-title {
+  font-family: var(--font-display);
+  font-weight: var(--weight-medium);
+  font-size: var(--text-title);
+  line-height: var(--leading-title);
+  color: var(--text);
+}
+
+.nl-section-title {
+  font-family: var(--font-display);
+  font-weight: var(--weight-medium);
+  font-size: var(--text-section);
+  line-height: var(--leading-section);
+  color: var(--text);
+}
+
+.nl-body {
+  font-family: var(--font-ui);
+  font-weight: var(--weight-regular);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  color: var(--text);
+}
+
+.nl-eyebrow {
+  font-family: var(--font-ui);
+  font-weight: var(--weight-bold);
+  font-size: var(--text-micro);
+  line-height: var(--leading-micro);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.nl-label {
+  font-family: var(--font-ui);
+  font-weight: var(--weight-bold);
+  font-size: var(--text-caption);
+  line-height: 14px;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.nl-kr {
+  font-family: var(--font-kr);
+  font-weight: var(--weight-medium);
+  color: var(--text);
+}

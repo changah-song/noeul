@@ -1248,6 +1248,49 @@ export const createBookPreprocessTables = () => {
   });
 };
 
+// ─── Book Notes ────────────────────────────────────────────────────────────
+// Reader "final thought" notes, keyed to a book and a reading position so the
+// notes log can navigate back to where each note was written. Owner/profile
+// scoped and soft-deletable, mirroring vocab, so a later cloud-sync pass can
+// reuse the same rows.
+export const createBookNotesTable = () => {
+  return new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        tx.executeSql(
+          `CREATE TABLE IF NOT EXISTS book_notes (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_id       TEXT NOT NULL DEFAULT 'guest',
+            profile_id     TEXT DEFAULT 'ko_default',
+            book_uri       TEXT NOT NULL,
+            book_title     TEXT,
+            language       TEXT,
+            text           TEXT NOT NULL,
+            spine_index    INTEGER,
+            page_index     INTEGER,
+            href           TEXT,
+            first_block_id TEXT,
+            created_at     TEXT NOT NULL,
+            updated_at     TEXT,
+            deleted_at     TEXT
+          )`,
+          []
+        );
+        tx.executeSql(
+          `CREATE INDEX IF NOT EXISTS idx_book_notes_owner_book_created
+           ON book_notes(owner_id, profile_id, book_uri, created_at)`,
+          []
+        );
+      },
+      (error) => {
+        console.error('[Database] Error creating book_notes table:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+};
+
 export const migrateBookPreprocessLevelColumns = async () => {
   const [metaColumns, chapterColumns] = await Promise.all([
     getTableColumns('book_preprocess_meta'),
@@ -1860,6 +1903,7 @@ export const initAllTables = async () => {
   await migrateBookIndex();
   await createBookIndexTable();
   await createBookPreprocessTables();
+  await createBookNotesTable();
   await migrateBookPreprocessLevelColumns();
   await migrateLocalOwnerSqlite();
   await migrateProfileSqlite();
@@ -2493,6 +2537,72 @@ export const getVocabContexts = (word, hanja, definition, limit = 12, language =
         },
         (_, vocabError) => {
           console.error(`[Database] Error reading vocab row for contexts "${cleanedWord}":`, vocabError);
+          reject(vocabError);
+          return false;
+        }
+      );
+    });
+  });
+};
+
+// The first sentence a word was saved from — the oldest context row for the
+// vocab entry (getVocabContexts returns newest-first).
+export const getEarliestVocabContext = (word, hanja, definition, language = 'ko', options = {}) => {
+  const cleanedWord = cleanValue(word);
+  const ownerId = resolveOwnerId(options);
+  const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, language);
+  const definitionKey = makeVocabDefinitionKey(definition);
+
+  return new Promise((resolve, reject) => {
+    if (!cleanedWord) {
+      resolve(null);
+      return;
+    }
+
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT id
+         FROM vocab
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL
+         ORDER BY id ASC
+         LIMIT 1`,
+        [ownerId, profileId, cleanedWord, hanja ?? null, definitionKey, language],
+        (_, vocabResult) => {
+          if (vocabResult.rows.length === 0) {
+            resolve(null);
+            return;
+          }
+
+          const vocabRow = vocabResult.rows.item(0);
+          tx.executeSql(
+            `SELECT sentence, source_book_uri, source_book_title, seen_at
+             FROM vocab_contexts
+             WHERE owner_id = ? AND profile_id = ? AND vocab_id = ? AND language = ? AND deleted_at IS NULL
+             ORDER BY datetime(seen_at) ASC, id ASC
+             LIMIT 1`,
+            [ownerId, profileId, vocabRow.id, language],
+            (_, contextResult) => {
+              if (contextResult.rows.length === 0) {
+                resolve(null);
+                return;
+              }
+              const row = contextResult.rows.item(0);
+              resolve({
+                sentence: row.sentence,
+                sourceBookUri: row.source_book_uri,
+                sourceBookTitle: row.source_book_title,
+                seenAt: row.seen_at,
+              });
+            },
+            (_, contextError) => {
+              console.error(`[Database] Error reading earliest context for "${cleanedWord}":`, contextError);
+              reject(contextError);
+              return false;
+            }
+          );
+        },
+        (_, vocabError) => {
+          console.error(`[Database] Error reading vocab row for earliest context "${cleanedWord}":`, vocabError);
           reject(vocabError);
           return false;
         }
@@ -3215,6 +3325,124 @@ export const getSavedWords = (options = {}) => {
     });
   });
 };
+
+// ─── Book Notes operations ─────────────────────────────────────────────────
+
+const mapBookNoteRow = (row) => ({
+  id: row.id,
+  bookUri: row.book_uri,
+  bookTitle: row.book_title ?? null,
+  language: row.language ?? null,
+  text: row.text ?? '',
+  spineIndex: Number.isFinite(row.spine_index) ? row.spine_index : (row.spine_index ?? null),
+  pageIndex: Number.isFinite(row.page_index) ? row.page_index : (row.page_index ?? null),
+  href: row.href ?? null,
+  firstBlockId: row.first_block_id ?? null,
+  createdAt: row.created_at ?? null,
+  updatedAt: row.updated_at ?? null,
+});
+
+const toNullableInt = (value) => {
+  const number = Number(value);
+  return Number.isInteger(number) ? number : null;
+};
+
+export const insertBookNote = ({
+  ownerId,
+  profileId,
+  bookUri,
+  bookTitle = null,
+  language = 'ko',
+  text,
+  position = {},
+} = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const scopedProfileId = resolveProfileId(profileId, language ?? 'ko');
+  const trimmedText = typeof text === 'string' ? text.trim() : '';
+  const uri = typeof bookUri === 'string' ? bookUri.trim() : '';
+
+  if (!trimmedText || !uri) {
+    return Promise.resolve(null);
+  }
+
+  const now = new Date().toISOString();
+
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `INSERT INTO book_notes (
+          owner_id, profile_id, book_uri, book_title, language, text,
+          spine_index, page_index, href, first_block_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          scopedOwnerId,
+          scopedProfileId,
+          uri,
+          bookTitle ?? null,
+          language ?? null,
+          trimmedText,
+          toNullableInt(position?.spineIndex),
+          toNullableInt(position?.pageIndex),
+          position?.href ?? null,
+          position?.firstBlockId ?? null,
+          now,
+          now,
+        ],
+        (_, result) => {
+          resolve({
+            id: result.insertId ?? null,
+            bookUri: uri,
+            bookTitle: bookTitle ?? null,
+            language: language ?? null,
+            text: trimmedText,
+            spineIndex: toNullableInt(position?.spineIndex),
+            pageIndex: toNullableInt(position?.pageIndex),
+            href: position?.href ?? null,
+            firstBlockId: position?.firstBlockId ?? null,
+            createdAt: now,
+            updatedAt: now,
+          });
+        },
+        (_, error) => {
+          console.error('[Database] Error inserting book note:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+export const getBookNotesForBook = ({ ownerId, profileId, bookUri, language = 'ko' } = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const scopedProfileId = resolveProfileId(profileId, language ?? 'ko');
+  const uri = typeof bookUri === 'string' ? bookUri.trim() : '';
+
+  if (!uri) {
+    return Promise.resolve([]);
+  }
+
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT * FROM book_notes
+         WHERE owner_id = ? AND profile_id = ? AND book_uri = ? AND deleted_at IS NULL
+         ORDER BY created_at DESC, id DESC`,
+        [scopedOwnerId, scopedProfileId, uri],
+        (_, result) => {
+          resolve(result.rows._array.map(mapBookNoteRow));
+        },
+        (_, error) => {
+          console.error('[Database] Error fetching book notes:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+export const getLatestBookNote = (options = {}) => (
+  getBookNotesForBook(options).then((notes) => notes[0] ?? null)
+);
 
 export const viewData = (options = {}) => {
   const normalizedOptions = typeof options === 'string' || options === null

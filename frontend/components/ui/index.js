@@ -4,3 +4,8 @@ export { default as SectionHeader } from './SectionHeader';
 export { default as ProgressBar } from './ProgressBar';
 export { default as StatChip } from './StatChip';
 export { default as IconButton } from './IconButton';
+export { default as Badge } from './Badge';
+export { default as BookCover } from './BookCover';
+export { default as GradientButton } from './GradientButton';
+export { default as Press } from './Press';
+export { default as Switch } from './Switch';

@@ -1,12 +1,13 @@
+// Noeul spacing scale — generous, soft rhythm.
 export const spacing = {
   xxs: 4,
-  xs: 6,
-  sm: 10,
-  md: 14,
-  lg: 18,
+  xs: 7,
+  sm: 11,
+  md: 15,
+  lg: 19,
   xl: 24,
-  xxl: 28,
-  xxxl: 32,
+  xxl: 30,
+  xxxl: 40,
   compact: 8,
 };
 
@@ -22,9 +23,9 @@ export const legacySpacing = {
 };
 
 export const insets = {
-  screenHorizontal: 24,
+  screenHorizontal: 20,
   screenTop: 18,
-  screenBottom: 28,
+  screenBottom: 26,
 };
 
 export default spacing;

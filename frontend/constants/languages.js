@@ -52,11 +52,6 @@ export const normalizeChineseScript = (script, fallback = DEFAULT_CHINESE_SCRIPT
   return fallback;
 };
 
-export const getInterfaceLanguageFallbackForTarget = (targetLanguage = DEFAULT_TARGET_LANGUAGE) => (
-  KRDICT_INTERFACE_LANGUAGE_OPTIONS.find((option) => option.code !== targetLanguage)?.code
-    ?? DEFAULT_INTERFACE_LANGUAGE
-);
-
 export const DEFAULT_LANGUAGE_SETTINGS = {
   targetLanguage: DEFAULT_TARGET_LANGUAGE,
   nativeLanguage: 'en',
@@ -75,19 +70,6 @@ export const normalizeInterfaceLanguageCode = (code, fallback = DEFAULT_INTERFAC
   const shortCode = raw.split(/[-_]/)[0];
 
   return SUPPORTED_INTERFACE_LANGUAGES[shortCode] ? shortCode : fallback;
-};
-
-export const normalizeInterfaceLanguageForTarget = (
-  code,
-  targetLanguage = DEFAULT_TARGET_LANGUAGE
-) => {
-  const normalizedTargetLanguage = normalizeLanguageCode(targetLanguage, DEFAULT_TARGET_LANGUAGE);
-  const fallback = getInterfaceLanguageFallbackForTarget(normalizedTargetLanguage);
-  const normalizedInterfaceLanguage = normalizeInterfaceLanguageCode(code, fallback);
-
-  return normalizedInterfaceLanguage === normalizedTargetLanguage
-    ? fallback
-    : normalizedInterfaceLanguage;
 };
 
 export const normalizeBookLanguage = (value, fallback = DEFAULT_TARGET_LANGUAGE) => {

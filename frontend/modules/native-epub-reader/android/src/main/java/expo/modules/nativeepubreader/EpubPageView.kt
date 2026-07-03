@@ -5,7 +5,6 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
@@ -132,19 +131,18 @@ class EpubPageView(context: Context) : View(context) {
     color = savedHighlightTextColor
     style = Paint.Style.FILL
   }
+  // Heat-map fills — soft warm washes over difficult words (Noeul design: no underlines)
   private val sameLevelUnderlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
     color = sameLevelUnderlineColor
-    style = Paint.Style.STROKE
-    strokeWidth = dp(1.7f).toFloat()
-    strokeCap = Paint.Cap.ROUND
-    pathEffect = DashPathEffect(floatArrayOf(dp(1f).toFloat(), dp(3f).toFloat()), 0f)
+    style = Paint.Style.FILL
   }
   private val aboveLevelUnderlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
     color = aboveLevelUnderlineColor
-    style = Paint.Style.STROKE
-    strokeWidth = dp(1.7f).toFloat()
-    strokeCap = Paint.Cap.ROUND
-    pathEffect = DashPathEffect(floatArrayOf(dp(1f).toFloat(), dp(3f).toFloat()), 0f)
+    style = Paint.Style.FILL
+  }
+  private val savedLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    color = themePalette.savedLineColor
+    style = Paint.Style.FILL
   }
   private val activeHighlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
     color = activeHighlightColor
@@ -213,6 +211,7 @@ class EpubPageView(context: Context) : View(context) {
     selectionHandlePaint.color = themePalette.selectionHandleColor
     selectionHandleKnobPaint.color = themePalette.selectionHandleColor
     placeholderPaint.color = themePalette.placeholderColor
+    savedLinePaint.color = themePalette.savedLineColor
     this.onWordSelected = onWordSelected
     this.onTextSelected = onTextSelected
     this.onSelectionCleared = onSelectionCleared
@@ -1339,7 +1338,21 @@ class EpubPageView(context: Context) : View(context) {
       }
 
       if (paint === savedHighlightPaint) {
-        drawTextSelectionHighlight(
+        drawWordWashHighlight(
+          canvas = canvas,
+          block = block,
+          layout = layout,
+          localStart = localStart,
+          localEnd = localEnd,
+          textLength = blockTextLength,
+          paint = paint,
+          baselinePaint = savedLinePaint
+        )
+        return@forEach
+      }
+
+      if (paint === sameLevelUnderlinePaint || paint === aboveLevelUnderlinePaint) {
+        drawWordWashHighlight(
           canvas = canvas,
           block = block,
           layout = layout,
@@ -1348,11 +1361,6 @@ class EpubPageView(context: Context) : View(context) {
           textLength = blockTextLength,
           paint = paint
         )
-        return@forEach
-      }
-
-      if (paint === sameLevelUnderlinePaint || paint === aboveLevelUnderlinePaint) {
-        drawLevelUnderline(canvas, layout, localStart, localEnd, blockTextLength, paint)
         return@forEach
       }
 
@@ -1589,32 +1597,68 @@ class EpubPageView(context: Context) : View(context) {
     return false
   }
 
-  private fun drawLevelUnderline(
+  // Noeul heat-map wash: a soft rounded fill hugging the word's glyphs
+  // (prototype: background + 3px spread, 5px radius — no underlines).
+  // baselinePaint, when provided, draws the saved-word 2dp baseline accent
+  // along the bottom edge of the wash (prototype: inset 0 -2px 0).
+  private fun drawWordWashHighlight(
     canvas: Canvas,
+    block: PageBlock,
     layout: StaticLayout,
     localStart: Int,
     localEnd: Int,
     textLength: Int,
-    paint: Paint
+    paint: Paint,
+    baselinePaint: Paint? = null
   ) {
+    val text = blockTextForSelection(block)
     val safeStart = localStart.coerceIn(0, textLength)
     val safeEnd = localEnd.coerceIn(safeStart, textLength)
-    if (safeStart >= safeEnd) return
+    if (safeStart >= safeEnd || layout.lineCount <= 0) return
 
     val startLine = layout.getLineForOffset(safeStart)
     val endLine = layout.getLineForOffset(max(safeStart, safeEnd - 1))
+    val horizontalPad = dp(3f).toFloat()
+    val topPad = dp(2f).toFloat()
+    val bottomPad = dp(3f).toFloat()
+    val cornerRadius = dp(5f).toFloat()
+    val baselineHeight = dp(2f).toFloat()
 
     for (line in startLine..endLine) {
-      val lineStart = max(safeStart, layout.getLineStart(line))
-      val lineEnd = min(safeEnd, layout.getLineEnd(line))
+      val rawLineStart = layout.getLineStart(line).coerceIn(0, textLength)
+      val rawLineEnd = layout.getLineEnd(line).coerceIn(rawLineStart, textLength)
+      var lineStart = max(safeStart, rawLineStart)
+      var lineEnd = min(safeEnd, rawLineEnd)
+
+      while (lineStart < lineEnd && text[lineStart].isWhitespace()) {
+        lineStart += 1
+      }
+      while (lineEnd > lineStart && text[lineEnd - 1].isWhitespace()) {
+        lineEnd -= 1
+      }
       if (lineStart >= lineEnd) continue
 
       val startX = layout.getPrimaryHorizontal(lineStart)
       val endX = layout.getPrimaryHorizontal(lineEnd)
-      val left = min(startX, endX)
-      val right = max(startX, endX)
-      val underlineY = layout.getLineBaseline(line).toFloat() + dp(3f)
-      canvas.drawLine(left, underlineY, right, underlineY, paint)
+      val left = min(startX, endX) - horizontalPad
+      val right = max(startX, endX) + horizontalPad
+      if (right <= left) continue
+
+      val baseline = layout.getLineBaseline(line).toFloat()
+      val fontMetrics = block.textPaint?.fontMetrics
+      val contentTop = fontMetrics?.let { baseline + it.ascent } ?: layout.getLineTop(line).toFloat()
+      val contentBottom = fontMetrics?.let { baseline + it.descent } ?: layout.getLineBottom(line).toFloat()
+      val top = contentTop - topPad
+      val bottom = contentBottom + bottomPad
+      if (bottom <= top) continue
+
+      selectionLineRect.set(left, top, right, bottom)
+      canvas.drawRoundRect(selectionLineRect, cornerRadius, cornerRadius, paint)
+
+      if (baselinePaint != null) {
+        selectionLineRect.set(left + cornerRadius / 2f, bottom - baselineHeight, right - cornerRadius / 2f, bottom)
+        canvas.drawRoundRect(selectionLineRect, baselineHeight / 2f, baselineHeight / 2f, baselinePaint)
+      }
     }
   }
 

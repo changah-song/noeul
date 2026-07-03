@@ -1,0 +1,157 @@
+/* =========================================================================
+   Noeul (노을) — Color tokens · "Sunset & Paper"
+   The last warm light of the day, made into a reading app. A peach-paper
+   light theme and a glowing-dusk dark theme share one sunset accent trio:
+   coral, rose, and amber. Surfaces are frosted glass over a gradient sky.
+   Light is the canonical palette; [data-theme="dusk"] overrides for night.
+   ========================================================================= */
+
+:root {
+  /* ---- The sky — page gradient (set on <body>) ---- */
+  --bg-page:   #FBE3D2;  /* solid fallback under the gradient */
+  --gradient-page:
+    radial-gradient(120% 70% at 0% 0%,   #FFE6D2 0%, transparent 50%),
+    radial-gradient(120% 80% at 100% 8%, #FAD3D9 0%, transparent 45%),
+    linear-gradient(180deg, #FFF3EA 0%, #FBE3D2 55%, #F6CDB6 100%); /* @kind color */
+
+  /* ---- Surfaces — frosted glass over the sky ---- */
+  --surface:            #ffffff;                      /* opaque sheet / solid card */
+  --surface-glass:      rgba(255, 255, 255, 0.55);    /* the default glass card fill */
+  --surface-glass-border: rgba(255, 255, 255, 0.75);  /* glass card hairline */
+  --surface-muted:      rgba(255, 255, 255, 0.40);    /* faint tinted fill */
+  --surface-strong:     rgba(255, 255, 255, 0.72);    /* pressed / selected glass */
+  --glass-blur:         18px;                          /* backdrop-filter blur radius */
+
+  /* ---- Lines — soft warm hairlines ---- */
+  --border:         rgba(43, 36, 51, 0.10);  /* default 1px hairline */
+  --border-strong:  rgba(43, 36, 51, 0.18);  /* ghost-button & emphasis borders */
+  --divider:        rgba(154, 139, 143, 0.22); /* faint internal dividers */
+
+  /* ---- Ink — warm plum-black to dusty mauve ---- */
+  --text:           #2B2433;  /* primary body ink */
+  --text-secondary: #574C56;  /* sub-headings */
+  --text-muted:     #6C5F66;  /* supporting copy */
+  --text-tertiary:  #857680;  /* captions, eyebrows */
+  --text-subtle:    #9A8B8F;  /* faint metadata, placeholders */
+  --glyph-cream:    #ffffff;  /* ink that sits ON the accent gradient */
+
+  /* ---- The sunset trio — coral / rose / amber ---- */
+  --accent:         #E0654A;  /* coral — the primary accent */
+  --accent-2:       #D85C76;  /* rose — the secondary accent */
+  --accent-3:       #EE9A4C;  /* amber — the tertiary / highlight accent */
+  --accent-pressed: #C9506A;  /* pressed / active accent */
+  --accent-soft:    rgba(224, 101, 74, 0.14);  /* coral tint fill */
+  --accent-muted:   rgba(224, 101, 74, 0.22);  /* coral tint, stronger */
+
+  /* ---- Signature gradients ---- */
+  --gradient-sunset:   linear-gradient(150deg, #F4A65C 0%, #E76A4B 55%, #C9506A 100%); /* @kind color */ /* the mark / hero field */
+  --gradient-accent:   linear-gradient(150deg, #E0654A, #D85C76);  /* @kind color */ /* buttons, CTAs, FABs */
+  --gradient-progress: linear-gradient(90deg, #EE9A4C, #D85C76);   /* @kind color */ /* amber → rose progress fills */
+  --gradient-cover:    linear-gradient(150deg, #E0654A, #7A3D5A);  /* @kind color */ /* default book cover field */
+
+  /* ---- Status — warm, restrained ---- */
+  --success: #1F8A5B;  /* "at your level" cue */
+  --warning: #C77A2E;  /* "above your level" cue */
+  --danger:  #C0362C;  /* destructive only — delete, errors */
+
+  /* ---- Reader surface system ---- */
+  --reader-paper:          rgba(255, 251, 248, 0.74);  /* frosted reading page */
+  --reader-paper-border:   rgba(255, 255, 255, 0.82);
+  --reader-body-ink:       #2B2433;
+  --reader-muted-ink:      #6C5F66;
+  --reader-subtle-ink:     #9A8B8F;
+  --reader-hairline:       rgba(154, 139, 143, 0.18);
+  --reader-level-same:     #EE9A4C;  /* underline: word at your level (amber) */
+  --reader-level-above:    #E0654A;  /* underline: word above your level (coral) */
+  --reader-unknown:        #D85C76;  /* underline: unknown word (rose, dotted) */
+  --reader-tapped-bg:      #E0654A;  /* tapped word pill */
+  --reader-tapped-text:    #ffffff;
+  --reader-saved-bg:       #E0654A;  /* saved word highlight */
+  --reader-saved-text:     #ffffff;
+  --reader-progress-track: rgba(154, 139, 143, 0.24);
+  --reader-progress-fill:  var(--gradient-progress);
+
+  /* ---- Lookup popover (tap-to-define) ---- */
+  --popover:        rgba(255, 252, 250, 0.97);
+  --popover-border: rgba(43, 36, 51, 0.10);
+
+  /* ---- Scrims & overlays ---- */
+  --overlay:    rgba(43, 36, 51, 0.32);  /* modal scrim */
+  --scrim-soft: rgba(43, 36, 51, 0.10);  /* gentle dimming */
+}
+
+/* =========================================================================
+   DUSK — the dark theme. The same room at sunset: a glowing plum-to-coral
+   sky, dark frosted glass, and a brighter accent trio for contrast.
+   ========================================================================= */
+[data-theme="dusk"] {
+  --bg-page:   #201016;
+  --gradient-page:
+    radial-gradient(120% 70% at 8% -5%,  rgba(255, 138, 92, 0.55) 0%, transparent 48%),
+    radial-gradient(110% 75% at 100% 10%, rgba(217, 106, 130, 0.42) 0%, transparent 46%),
+    linear-gradient(180deg, #241318 0%, #2C151B 45%, #1A1014 100%); /* @kind color */
+
+  --surface:            #2A1A1F;
+  --surface-glass:      rgba(255, 255, 255, 0.08);
+  --surface-glass-border: rgba(255, 255, 255, 0.16);
+  --surface-muted:      rgba(255, 255, 255, 0.06);
+  --surface-strong:     rgba(255, 255, 255, 0.12);
+
+  --border:         rgba(255, 255, 255, 0.10);
+  --border-strong:  rgba(255, 255, 255, 0.18);
+  --divider:        rgba(255, 255, 255, 0.10);
+
+  --text:           #F6EAE3;
+  --text-secondary: #D9C1B8;
+  --text-muted:     #CBB1A8;
+  --text-tertiary:  #AB9188;
+  --text-subtle:    #9B8278;
+  --glyph-cream:    #ffffff;
+
+  --accent:         #FF7A52;
+  --accent-2:       #F1789A;
+  --accent-3:       #F4B25C;
+  --accent-pressed: #F1789A;
+  --accent-soft:    rgba(255, 122, 82, 0.16);
+  --accent-muted:   rgba(255, 122, 82, 0.24);
+
+  --gradient-accent:   linear-gradient(150deg, #FF7A52, #F1789A); /* @kind color */
+  --gradient-progress: linear-gradient(90deg, #F4B25C, #F1789A); /* @kind color */
+  --gradient-cover:    linear-gradient(150deg, #FF7A52, #4B3F6B); /* @kind color */
+
+  --reader-paper:          rgba(36, 21, 26, 0.50);
+  --reader-paper-border:   rgba(255, 255, 255, 0.10);
+  --reader-body-ink:       #F6EAE3;
+  --reader-muted-ink:      #CBB1A8;
+  --reader-subtle-ink:     #9B8278;
+  --reader-hairline:       rgba(255, 255, 255, 0.10);
+  --reader-level-same:     #F4B25C;
+  --reader-level-above:    #FF7A52;
+  --reader-unknown:        #F1789A;
+  --reader-tapped-bg:      #FF7A52;
+  --reader-saved-bg:       #FF7A52;
+  --reader-progress-track: rgba(255, 255, 255, 0.14);
+
+  --popover:        rgba(46, 27, 33, 0.96);
+  --popover-border: rgba(255, 255, 255, 0.13);
+
+  --overlay:    rgba(0, 0, 0, 0.50);
+  --scrim-soft: rgba(0, 0, 0, 0.24);
+}
+
+/* =========================================================================
+   Legacy aliases — retired Slate & Stone token names remapped onto the
+   Noeul sunset palette, so older kits/pages keep working (and pick up the
+   rebrand: the old single "slate" accent now reads as coral).
+   Prefer --accent / --accent-2 / --accent-3 and the gradient tokens above.
+   ========================================================================= */
+:root {
+  --ink-slate:      var(--accent);          /* was #202631 slate → coral */
+  --ink-slate-deep: #7A3D5A;                /* deep plum for cover bases */
+  --ink-pressed:    var(--accent-pressed);
+  --cover-slate:    var(--gradient-cover);
+  --cover-mid:      var(--text-subtle);
+  --surface-card:   var(--surface-glass);
+  --surface-assist: var(--surface-muted);
+  --tabbar-height:  64px;
+}

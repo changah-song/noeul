@@ -695,7 +695,9 @@ daily_usage_lock = asyncio.Lock()
 ASSESSMENT_DAILY_LIMIT = 5
 ENTRY_MIN_WORDS = 30
 ENTRY_MAX_WORDS = 500
-VALID_CATEGORIES = {"reflective", "persuasive", "creative", "sandbox"}
+VALID_CATEGORIES = {"reflective", "persuasive", "creative", "sandbox", "book_review"}
+# Frontend key aliases → canonical category
+CATEGORY_ALIASES = {"free": "sandbox"}
 VALID_TARGET_LANGUAGES = {"ko", "zh", "en", "ja", "fr", "es", "de", "ru", "ar", "id", "vi", "th", "mn"}
 LANGUAGE_DISPLAY_NAMES = {
     "ko": "Korean",
@@ -3324,6 +3326,8 @@ _ASSESSMENT_SYSTEM_BASE = """You are an expert language tutor reviewing a writin
 Return ONLY a valid JSON object — no markdown, no code fences, no commentary. Use this exact schema:
 
 {{
+  "score": 87,
+  "band": "B1",
   "annotations": [
     {{
       "id": "1",
@@ -3350,6 +3354,8 @@ Annotation types:
 - UNNATURAL: grammatically acceptable but sounds unnatural to a native speaker
 
 Rules:
+- "score" is a holistic 0-100 quality score for the entry, weighing grammar accuracy, vocabulary range, naturalness, and structure. Score consistently: 90+ reads near-native, 75-89 fluent with minor slips, 60-74 clearly understandable with recurring errors, below 60 significant breakdowns.
+- "band" is your estimate of the writing's CEFR level: exactly one of "A1", "A2", "B1", "B2", "C1", "C2".
 - "original" must be an exact copy-paste substring of the entry text. Never paraphrase it.
 - Include 3–8 annotations. Only flag real issues — do not invent problems.
 - "patterns" should be 3–5 recurring error themes, not just one-off mistakes.
@@ -3385,6 +3391,13 @@ _CATEGORY_INSTRUCTIONS = {
         "Give general feedback covering all error types. "
         "{sandbox_note}"
         "Suggestions should be practical and focus on natural everyday usage."
+    ),
+    "book_review": (
+        "This is an essay or review about a book the writer is reading. "
+        "In addition to correcting clear errors, evaluate how well the writer summarizes plot, describes characters, and expresses opinions about the text. "
+        "Flag vague evaluative language where more precise literary vocabulary would strengthen the piece (words for theme, mood, or character motivation). "
+        "A neutral-to-formal written register is appropriate; note informal spoken forms that undercut it. "
+        "Suggestions should build the vocabulary needed to discuss books and stories in {language_name}."
     ),
 }
 
@@ -3422,6 +3435,7 @@ async def assess_entry(payload: dict, auth: dict[str, Any] = Depends(verify_supa
 
     body = payload.get("body", "")
     category = str(payload.get("category", "reflective")).strip().lower()
+    category = CATEGORY_ALIASES.get(category, category)
     language_code = str(payload.get("language", "ko")).strip().lower()
     prompt_text = payload.get("prompt", "")
     sandbox_words = payload.get("sandbox_words", [])
@@ -3485,7 +3499,18 @@ async def assess_entry(payload: dict, auth: dict[str, Any] = Depends(verify_supa
     annotations = assessment.get("annotations", [])
     summary = assessment.get("summary", {})
 
+    try:
+        score = max(0, min(100, int(round(float(assessment.get("score"))))))
+    except (TypeError, ValueError):
+        score = None
+
+    band = str(assessment.get("band", "")).strip().upper()
+    if band not in {"A1", "A2", "B1", "B2", "C1", "C2"}:
+        band = None
+
     return {
+        "score": score,
+        "band": band,
         "annotations": [
             {
                 "id": str(a.get("id", i + 1)),
