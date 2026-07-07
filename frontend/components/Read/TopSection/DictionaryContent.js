@@ -6,7 +6,9 @@ import { useAppContext } from '../../../contexts/AppContext';
 import { useTranslation } from '../../../hooks/useTranslation';
 import { useLocalOwner } from '../../../contexts/LocalOwnerContext';
 import {
+    getCachedPKnown,
     insertData,
+    logInteractionEvent,
     lookupCacheByStems,
     removeData,
     recordVocabContext,
@@ -868,6 +870,12 @@ const DictionaryContent = ({
             ownerId: activeOwnerId,
         });
         if (!alreadySaved) {
+            // Phase 4.4: seed the new card's FSRS interval from its cached P(known).
+            const pKnown = await getCachedPKnown({
+                ownerId: activeOwnerId,
+                language: targetLanguage,
+                word,
+            });
             await insertData(word, origin, definition, {
                 ownerId: activeOwnerId,
                 level: 'unorganized',
@@ -878,6 +886,7 @@ const DictionaryContent = ({
                 updatedAt: createdAt,
                 language: targetLanguage,
                 relatedKnownWords,
+                pKnown,
             });
         }
         const recordedContext = await recordVocabContext({
@@ -894,6 +903,19 @@ const DictionaryContent = ({
         if (!alreadySaved || recordedContext) {
             requestUserDataSync('reader-vocab-save');
         }
+
+        logInteractionEvent({
+            ownerId: activeOwnerId,
+            language: targetLanguage,
+            word,
+            hanja: origin,
+            def: definition,
+            eventType: 'save',
+            sourceBookUri: sourceBook?.uri ?? currentBook ?? null,
+            sentence: contextSentence || null,
+        }).catch((error) => {
+            console.warn('[DictionaryContent] Failed to log save interaction event:', error);
+        });
     };
 
     const toggleUnSave = async (word, origin, definition, options = {}) => {
@@ -903,6 +925,18 @@ const DictionaryContent = ({
             ownerId,
         });
         requestUserDataSync('reader-vocab-unsave');
+
+        logInteractionEvent({
+            ownerId,
+            language: targetLanguage,
+            word,
+            hanja: origin,
+            def: definition,
+            eventType: 'unsave',
+            sourceBookUri: sourceBook?.uri ?? currentBook ?? null,
+        }).catch((error) => {
+            console.warn('[DictionaryContent] Failed to log unsave interaction event:', error);
+        });
     };
 
     const isWordSaved = (word) => savedWords.includes(word);

@@ -7,7 +7,10 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "postinstall": "patch-package"
+    "postinstall": "patch-package",
+    "test": "jest",
+    "metric:baseline": "node scripts/baselineMetric.js",
+    "dataset:export": "node scripts/exportFeatureDataset.js"
   },
   "dependencies": {
     "@epubjs-react-native/core": "^1.4.2",
@@ -62,7 +65,11 @@
   },
   "devDependencies": {
     "@babel/core": "^7.20.0",
-    "patch-package": "^8.0.1"
+    "better-sqlite3": "^12.11.1",
+    "jest": "^29.7.0",
+    "jest-expo": "~50.0.4",
+    "patch-package": "^8.0.1",
+    "react-test-renderer": "^18.2.0"
   },
   "private": true,
   "proxy": "http://localhost:127.0.0.1:8000"

@@ -3,3 +3,4 @@
 ipython
 ipykernel
 debugpy
+pytest

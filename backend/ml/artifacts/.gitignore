@@ -1,0 +1,5 @@
+# Model artifacts are build outputs (versioned locally for rollback), not source.
+*.joblib
+*.coef.json
+model_v*.meta.json
+current.json

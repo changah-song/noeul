@@ -24,6 +24,7 @@ import {
   addRelatedKnownWord,
   getVocabContexts,
   getRelatedKnownWords,
+  logInteractionEvent,
   recordReviewOutcome,
   removeData,
   removeRelatedKnownWord,
@@ -1246,6 +1247,18 @@ const Learn = ({ navigation, user }) => {
   const deleteSavedWord = useCallback(async (word) => {
     await removeData(word.word, word.hanja, word.def, word.language ?? 'ko', { ownerId: activeOwnerId });
     requestUserDataSync('learn-vocab-delete');
+
+    logInteractionEvent({
+      ownerId: activeOwnerId,
+      language: word.language ?? 'ko',
+      word: word.word,
+      hanja: word.hanja,
+      def: word.def,
+      eventType: 'unsave',
+      vocabId: word.id ?? null,
+    }).catch((error) => {
+      console.warn('[Learn] Failed to log unsave interaction event:', error);
+    });
   }, [activeOwnerId]);
 
   const handleToggleFavorite = useCallback(async (word) => {

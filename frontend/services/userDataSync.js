@@ -30,6 +30,8 @@ import {
   isCloudSyncPaused,
   isCurrentSyncGeneration,
 } from './localOwnerCoordinator';
+import { pushInteractionEvents } from './interactionEventsCloudSync';
+import { pushProfileAbilities } from './profileAbilityCloudSync';
 import { makeScopedStorageKey } from './localDataScope';
 
 const USER_DATA_SYNC_CURSOR_KEY = 'sync/user-data-cursors-v1';
@@ -742,5 +744,25 @@ export const syncUserDataFromCloud = async ({ user, ownerId, generation }) => {
       SYNC_TABLES.relatedKnownWords,
       relatedKnownWordCursors
     );
+  }
+
+  if (isCloudSyncPaused() || !isCurrentSyncGeneration(generation)) {
+    return;
+  }
+
+  // Push-only mirror of the append-only interaction event log. Non-fatal: a
+  // failure here must not abort or roll back the vocab sync above.
+  try {
+    await pushInteractionEvents({ user, ownerId, generation });
+  } catch (error) {
+    console.warn('[userDataSync] Interaction events push failed:', error?.message ?? error);
+  }
+
+  // Push-only mirror of the per-profile ability estimate (theta). Non-fatal for
+  // the same reason.
+  try {
+    await pushProfileAbilities({ user, ownerId, generation });
+  } catch (error) {
+    console.warn('[userDataSync] Profile ability push failed:', error?.message ?? error);
   }
 };

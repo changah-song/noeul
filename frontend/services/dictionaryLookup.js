@@ -1,14 +1,18 @@
 import { api } from './api/client';
 import {
+    getCachedPKnown,
     insertCacheEntries,
     insertData,
+    logInteractionEvent,
     lookupBookIndexBySurface,
     lookupCacheByStems,
     recordVocabContext,
     removeData,
     updateCacheRomanizations,
+    updateThetaFromOutcome,
     vocabEntryExists,
 } from './Database';
+import { LOOKUP_LEARNING_RATE } from './abilityModel';
 import stemWord from './api/stemWord';
 import { getActiveOwnerId } from './localOwnerCoordinator';
 import { getRuntimeInterfaceLanguage, getRuntimeTargetLanguage } from './interfaceLanguage';
@@ -337,6 +341,35 @@ export const resolveDictionaryLookup = async ({
         return baseResult;
     }
 
+    // Log the lookup once per user query. Both lookup flows funnel through here
+    // (overlay via lookupWordForOverlay, and the reader panel directly), and every
+    // caller is user-initiated, so this is the single choke point. Fire-and-forget
+    // so dictionary resolution never waits on or fails because of logging.
+    logInteractionEvent({
+        ownerId,
+        language: normalizedTargetLanguage,
+        word: normalizedSurface,
+        stem: normalizedSurface,
+        eventType: 'lookup',
+        sourceBookUri: currentBook ?? null,
+    }).catch((error) => {
+        console.warn('[dictionaryLookup] Failed to log lookup interaction event:', error);
+    });
+
+    // Phase 3.1: a lookup is a weak "probably didn't know it" signal — nudge theta
+    // down gently (outcome 0, reduced learning rate). Fire-and-forget; profile
+    // scope resolves to the runtime-active profile inside the helper. The helper
+    // self-skips words with no graded KB rank, so this only moves on real signal.
+    updateThetaFromOutcome({
+        ownerId,
+        language: normalizedTargetLanguage,
+        stem: normalizedSurface,
+        outcome: 0,
+        learningRate: LOOKUP_LEARNING_RATE,
+    }).catch((error) => {
+        console.warn('[dictionaryLookup] Failed to update theta from lookup:', error);
+    });
+
     const buildResolved = async (stems, cachedResults = [], liveStems = stems) => {
         const uniqueStems = uniqueValues(stems);
         const uniqueLiveStems = uniqueValues(liveStems);
@@ -649,6 +682,8 @@ export const saveOverlayLookupResult = async ({
 
     const alreadySaved = await vocabEntryExists(word, cleanedHanja, cleanedDefinition, targetLanguage, { ownerId });
     if (!alreadySaved) {
+        // Phase 4.4: seed the new card's FSRS interval from its cached P(known).
+        const pKnown = await getCachedPKnown({ ownerId, language: targetLanguage, word });
         await insertData(word, cleanedHanja, cleanedDefinition, {
             ownerId,
             level: 'unorganized',
@@ -658,6 +693,7 @@ export const saveOverlayLookupResult = async ({
             createdAt,
             updatedAt: createdAt,
             language: targetLanguage,
+            pKnown,
         });
     }
     const recordedContext = await recordVocabContext({
@@ -673,6 +709,18 @@ export const saveOverlayLookupResult = async ({
     if (!alreadySaved || recordedContext) {
         requestUserDataSync('overlay-vocab-save');
     }
+
+    logInteractionEvent({
+        ownerId,
+        language: targetLanguage,
+        word,
+        hanja: cleanedHanja,
+        def: cleanedDefinition,
+        eventType: 'save',
+        sentence: normalizedSourceSentence,
+    }).catch((error) => {
+        console.warn('[dictionaryLookup] Failed to log save interaction event:', error);
+    });
 
     return { saved: true };
 };
@@ -694,6 +742,17 @@ export const unsaveOverlayLookupResult = async ({
 
     await removeData(word, cleanedHanja, cleanedDefinition, targetLanguage, { ownerId });
     requestUserDataSync('overlay-vocab-unsave');
+
+    logInteractionEvent({
+        ownerId,
+        language: targetLanguage,
+        word,
+        hanja: cleanedHanja,
+        def: cleanedDefinition,
+        eventType: 'unsave',
+    }).catch((error) => {
+        console.warn('[dictionaryLookup] Failed to log unsave interaction event:', error);
+    });
 
     return { saved: false };
 };

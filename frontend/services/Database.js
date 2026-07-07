@@ -8,6 +8,20 @@ import {
   getDefaultProfileIdForLanguage,
   getRuntimeActiveProfileId,
 } from './profileScope';
+import {
+  ABILITY_THETA_MAX,
+  ABILITY_THETA_MIN,
+  OOV_DIFFICULTY,
+  LOOKUP_LEARNING_RATE,
+  THETA_LEARNING_RATE,
+  difficultyFromLevelRank,
+  pKnown,
+  seedThetaFromRank,
+  updateThetaOnline,
+} from './abilityModel';
+import { assembleFeatures } from './featureAssembly';
+import { getActivePknownModel } from './pknownModel';
+import { initialFsrsFromPKnown, rankNominations } from './flashcardNomination';
 
 // ─── Database Setup ───────────────────────────────────────────────────────────
 // NOTE: Change the db filename here if you ever need to reset all tables by
@@ -221,6 +235,7 @@ export const createTable = () => {
           related_known_words TEXT DEFAULT '[]',
           stability REAL DEFAULT 1.0,
           difficulty REAL DEFAULT 5.0,
+          p_known REAL,
           updated_at TEXT,
           deleted_at TEXT,
           language TEXT DEFAULT 'ko'
@@ -329,6 +344,1302 @@ export const migrateVocabContextTable = async () => {
   });
 };
 
+// ─── Interaction Event Log (append-only) ──────────────────────────────────────
+// Phase 1 of the personalized vocabulary model. Unlike `vocab` (which stores only
+// *current* FSRS state and overwrites the past), this table is an append-only
+// record of every (user, word, outcome, timestamp) interaction. Nothing here is
+// ever UPDATEd except `synced_at` on push to Supabase and `deleted_at` for tombstones.
+// See "personalization model implementation plan.md" Phase 1.
+//
+// BACKFILL NOTE (plan step 1.5): vocab rows that predate this log have NO event
+// history — the old code only kept aggregate counts, which can't be reconstructed
+// into individual timestamped events. Downstream models must treat such words as
+// "warm but logless" (known to exist, but with an empty interaction history) and
+// must NOT fabricate synthetic events to fill the gap.
+
+const INTERACTION_EVENT_TYPES = new Set([
+  'review',
+  'lookup',
+  'save',
+  'unsave',
+  'dwell',
+  'reveal',
+  'hanja_confirm',
+]);
+
+// RN has no crypto.getRandomValues polyfill here, so the `uuid` package would throw.
+// This id is generated once at insert time and reused for idempotent sync, so a
+// timestamp + random suffix is collision-resistant enough for a per-device log.
+const generateClientEventId = () => {
+  const time = Date.now().toString(36);
+  const rand = Math.random().toString(36).slice(2, 12);
+  const rand2 = Math.random().toString(36).slice(2, 8);
+  return `evt_${time}_${rand}${rand2}`;
+};
+
+export const createInteractionEventsTable = () => {
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `CREATE TABLE IF NOT EXISTS interaction_events (
+          id                INTEGER PRIMARY KEY AUTOINCREMENT,
+          client_event_id   TEXT NOT NULL UNIQUE,
+          owner_id          TEXT NOT NULL DEFAULT 'guest',
+          profile_id        TEXT DEFAULT 'ko_default',
+          language          TEXT DEFAULT 'ko',
+          word              TEXT,
+          stem              TEXT,
+          def_key           TEXT,
+          hanja             TEXT,
+          event_type        TEXT NOT NULL,
+          grade             INTEGER,
+          outcome           INTEGER,
+          value_num         REAL,
+          source_book_uri   TEXT,
+          sentence          TEXT,
+          vocab_id          INTEGER,
+          created_at        TEXT DEFAULT CURRENT_TIMESTAMP,
+          synced_at         TEXT,
+          deleted_at        TEXT
+        )`,
+        [],
+        () => {
+          tx.executeSql(
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_interaction_events_client_event_id
+             ON interaction_events(client_event_id)`
+          );
+          tx.executeSql(
+            `CREATE INDEX IF NOT EXISTS idx_interaction_events_owner_word_created
+             ON interaction_events(owner_id, profile_id, language, word, created_at)`
+          );
+          // Push-only sync (1.3) scans for locally-unsynced rows.
+          tx.executeSql(
+            `CREATE INDEX IF NOT EXISTS idx_interaction_events_owner_synced
+             ON interaction_events(owner_id, synced_at)`
+          );
+          resolve();
+        },
+        (_, error) => {
+          console.error('[Database] Error creating interaction_events table:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+export const migrateInteractionEventsTable = async () => {
+  const columns = await getTableColumns('interaction_events');
+  if (columns.length === 0) {
+    // Table doesn't exist yet (createInteractionEventsTable not run); nothing to migrate.
+    return;
+  }
+
+  const alterations = [];
+  const ensureColumn = (name, ddl) => {
+    if (!columns.includes(name)) {
+      alterations.push(`ALTER TABLE interaction_events ADD COLUMN ${ddl}`);
+    }
+  };
+
+  // Future-proofing: keep every column addition idempotent, matching the vocab pattern.
+  ensureColumn('stem', 'stem TEXT');
+  ensureColumn('def_key', 'def_key TEXT');
+  ensureColumn('hanja', 'hanja TEXT');
+  ensureColumn('grade', 'grade INTEGER');
+  ensureColumn('outcome', 'outcome INTEGER');
+  ensureColumn('value_num', 'value_num REAL');
+  ensureColumn('source_book_uri', 'source_book_uri TEXT');
+  ensureColumn('sentence', 'sentence TEXT');
+  ensureColumn('vocab_id', 'vocab_id INTEGER');
+  ensureColumn('synced_at', 'synced_at TEXT');
+  ensureColumn('deleted_at', 'deleted_at TEXT');
+
+  if (alterations.length === 0) {
+    return;
+  }
+
+  await new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        alterations.forEach((statement) => tx.executeSql(statement));
+      },
+      (error) => {
+        console.error('[Database] Error migrating interaction_events table:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+};
+
+/**
+ * logInteractionEvent — pure append into the interaction_events log.
+ *
+ * NEVER updates an existing row. Idempotent: re-inserting the same
+ * `client_event_id` is a no-op (INSERT OR IGNORE + unique index), which makes the
+ * sync path safe to retry. Callers should log the event BEFORE mutating any derived
+ * state (e.g. FSRS review state) so the historical outcome is preserved.
+ *
+ * @returns {Promise<{ clientEventId: string, inserted: boolean }>}
+ */
+export const logInteractionEvent = (event = {}) => {
+  const {
+    ownerId = GUEST_OWNER_ID,
+    profileId = null,
+    language = 'ko',
+    word = null,
+    stem = null,
+    defKey = null,
+    def = null,
+    hanja = null,
+    eventType,
+    grade = null,
+    outcome = null,
+    valueNum = null,
+    sourceBookUri = null,
+    sentence = null,
+    vocabId = null,
+    createdAt = new Date().toISOString(),
+    clientEventId = generateClientEventId(),
+  } = event;
+
+  if (!eventType || !INTERACTION_EVENT_TYPES.has(eventType)) {
+    return Promise.reject(
+      new Error(`[Database] logInteractionEvent: invalid event_type "${eventType}"`)
+    );
+  }
+
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const scopedProfileId = resolveProfileId(profileId ?? event.profile_id ?? event, language);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const normalizedOutcome = outcome == null ? null : (outcome ? 1 : 0);
+  // Derive def_key from a raw definition when the caller didn't pass one, using
+  // the same normalization as vocab rows so events can be joined back to them.
+  const resolvedDefKey = defKey ?? makeVocabDefinitionKey(def);
+
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `INSERT OR IGNORE INTO interaction_events (
+          client_event_id, owner_id, profile_id, language, word, stem, def_key, hanja,
+          event_type, grade, outcome, value_num, source_book_uri, sentence, vocab_id, created_at
+        )
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          clientEventId,
+          scopedOwnerId,
+          scopedProfileId,
+          normalizedLanguage,
+          word,
+          stem,
+          resolvedDefKey,
+          hanja,
+          eventType,
+          grade == null ? null : Math.round(Number(grade)),
+          normalizedOutcome,
+          valueNum == null ? null : Number(valueNum),
+          sourceBookUri,
+          sentence,
+          vocabId == null ? null : Number(vocabId),
+          createdAt,
+        ],
+        (_, result) => resolve({ clientEventId, inserted: result.rowsAffected > 0 }),
+        (_, error) => {
+          console.error('[Database] Error logging interaction event:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+/**
+ * getUnsyncedInteractionEvents — read events not yet pushed to the cloud for an
+ * owner, oldest first. Used by the push-only sync (interactionEventsCloudSync).
+ */
+export const getUnsyncedInteractionEvents = (ownerId, { limit = 500 } = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT * FROM interaction_events
+         WHERE owner_id = ? AND synced_at IS NULL AND deleted_at IS NULL
+         ORDER BY created_at ASC, id ASC
+         LIMIT ?`,
+        [scopedOwnerId, limit],
+        (_, result) => resolve(result.rows._array ?? []),
+        (_, error) => {
+          console.error('[Database] Error reading unsynced interaction events:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+/**
+ * markInteractionEventsSynced — stamp `synced_at` on the given events after a
+ * successful cloud push. This is the ONLY column ever updated on an event row;
+ * the log otherwise stays append-only (plan invariant #5).
+ */
+export const markInteractionEventsSynced = (clientEventIds, syncedAt = new Date().toISOString()) => {
+  const ids = (Array.isArray(clientEventIds) ? clientEventIds : []).filter(Boolean);
+  if (ids.length === 0) {
+    return Promise.resolve(0);
+  }
+
+  return new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        // Chunk to stay under SQLite's bound-variable limit for large batches.
+        for (let start = 0; start < ids.length; start += SQLITE_BIND_BATCH_SIZE) {
+          const chunk = ids.slice(start, start + SQLITE_BIND_BATCH_SIZE);
+          const placeholders = chunk.map(() => '?').join(', ');
+          tx.executeSql(
+            `UPDATE interaction_events SET synced_at = ?
+             WHERE client_event_id IN (${placeholders})`,
+            [syncedAt, ...chunk]
+          );
+        }
+      },
+      (error) => {
+        console.error('[Database] Error marking interaction events synced:', error);
+        reject(error);
+      },
+      () => resolve(ids.length)
+    );
+  });
+};
+
+// ─── Profile ability (Phase 2 of the personalized vocabulary model) ───────────
+//
+// One row per (owner, profile, language) holding the user's latent ability
+// estimate `theta` — the number the baseline scorer reads as
+// `P(known) = sigmoid(theta - difficulty_word)`. This is DEVICE-AUTHORITATIVE and
+// local-first: the scorer reads it on every rendered page and Phase 3 will nudge
+// it after every graded review, so it lives in SQLite (cheap frequent writes)
+// rather than in the AsyncStorage settings blob or a remote Postgres column.
+//
+// `self_report_rank` records the onboarding seed so a re-seed after a level
+// change is possible while still cold; `event_count` tracks how many behavioral
+// events have been folded in (Phase 3 uses it to decay the self-report prior).
+// `synced_at` is cleared on every write so the (mutable) row re-pushes to cloud.
+
+export const createProfileAbilityTable = () => {
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `CREATE TABLE IF NOT EXISTS profile_ability (
+          id                INTEGER PRIMARY KEY AUTOINCREMENT,
+          owner_id          TEXT NOT NULL DEFAULT 'guest',
+          profile_id        TEXT DEFAULT 'ko_default',
+          language          TEXT DEFAULT 'ko',
+          theta             REAL,
+          self_report_rank  INTEGER,
+          event_count       INTEGER DEFAULT 0,
+          seeded_at         TEXT,
+          updated_at        TEXT DEFAULT CURRENT_TIMESTAMP,
+          synced_at         TEXT,
+          UNIQUE(owner_id, profile_id, language)
+        )`,
+        [],
+        () => {
+          tx.executeSql(
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_profile_ability_scope
+             ON profile_ability(owner_id, profile_id, language)`
+          );
+          tx.executeSql(
+            `CREATE INDEX IF NOT EXISTS idx_profile_ability_owner_synced
+             ON profile_ability(owner_id, synced_at)`
+          );
+          resolve();
+        },
+        (_, error) => {
+          console.error('[Database] Error creating profile_ability table:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+export const migrateProfileAbilityTable = async () => {
+  const columns = await getTableColumns('profile_ability');
+  if (columns.length === 0) {
+    // Table doesn't exist yet (createProfileAbilityTable not run); nothing to migrate.
+    return;
+  }
+
+  const alterations = [];
+  const ensureColumn = (name, ddl) => {
+    if (!columns.includes(name)) {
+      alterations.push(`ALTER TABLE profile_ability ADD COLUMN ${ddl}`);
+    }
+  };
+
+  ensureColumn('theta', 'theta REAL');
+  ensureColumn('self_report_rank', 'self_report_rank INTEGER');
+  ensureColumn('event_count', 'event_count INTEGER DEFAULT 0');
+  ensureColumn('seeded_at', 'seeded_at TEXT');
+  ensureColumn('updated_at', 'updated_at TEXT');
+  ensureColumn('synced_at', 'synced_at TEXT');
+
+  if (alterations.length === 0) {
+    return;
+  }
+
+  await new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        alterations.forEach((statement) => tx.executeSql(statement));
+      },
+      (error) => {
+        console.error('[Database] Error migrating profile_ability table:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+};
+
+/**
+ * getProfileAbility — read the ability row for one (owner, profile, language),
+ * or null if none exists yet.
+ */
+export const getProfileAbility = ({ ownerId, profileId, language = 'ko' } = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
+
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT * FROM profile_ability
+         WHERE owner_id = ? AND profile_id = ? AND language = ?
+         LIMIT 1`,
+        [scopedOwnerId, scopedProfileId, normalizedLanguage],
+        (_, result) => resolve(result.rows._array?.[0] ?? null),
+        (_, error) => {
+          console.error('[Database] Error reading profile ability:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+/**
+ * ensureProfileAbilitySeed — seed `theta_0` from the self-reported proficiency
+ * rank for a cold profile.
+ *
+ * Idempotent and safe to call on every app load: it only writes while the profile
+ * is still cold (`event_count = 0`). Once behavior has moved theta (Phase 3), the
+ * seed never clobbers it. Re-seeding a cold profile from the same rank is a no-op
+ * value-wise; changing the reported level before any behavior updates the seed.
+ *
+ * @returns {Promise<number>} the seeded (or existing) theta.
+ */
+export const ensureProfileAbilitySeed = ({
+  ownerId,
+  profileId,
+  language = 'ko',
+  rank,
+} = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
+  const normalizedRank = Number.isFinite(Number(rank)) ? Math.round(Number(rank)) : 1;
+  const theta = seedThetaFromRank(normalizedLanguage, normalizedRank);
+  const now = new Date().toISOString();
+
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      // INSERT the seed if absent; on an existing row only refresh the seed while
+      // the profile is still cold. `synced_at = NULL` forces a re-push after any
+      // write. Warm rows (event_count > 0) are left untouched by the DO UPDATE
+      // guard `WHERE profile_ability.event_count = 0`.
+      tx.executeSql(
+        `INSERT INTO profile_ability (
+           owner_id, profile_id, language, theta, self_report_rank,
+           event_count, seeded_at, updated_at, synced_at
+         )
+         VALUES (?, ?, ?, ?, ?, 0, ?, ?, NULL)
+         ON CONFLICT(owner_id, profile_id, language) DO UPDATE SET
+           theta = excluded.theta,
+           self_report_rank = excluded.self_report_rank,
+           seeded_at = excluded.seeded_at,
+           updated_at = excluded.updated_at,
+           synced_at = NULL
+         WHERE profile_ability.event_count = 0`,
+        [scopedOwnerId, scopedProfileId, normalizedLanguage, theta, normalizedRank, now, now],
+        () => resolve(theta),
+        (_, error) => {
+          console.error('[Database] Error seeding profile ability:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+/**
+ * getUnsyncedProfileAbilities — rows whose latest write hasn't been pushed to the
+ * cloud yet (synced_at IS NULL). Used by the push sync (profileAbilityCloudSync).
+ */
+export const getUnsyncedProfileAbilities = (ownerId) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT * FROM profile_ability
+         WHERE owner_id = ? AND synced_at IS NULL`,
+        [scopedOwnerId],
+        (_, result) => resolve(result.rows._array ?? []),
+        (_, error) => {
+          console.error('[Database] Error reading unsynced profile abilities:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+/**
+ * markProfileAbilitiesSynced — stamp `synced_at` after a successful cloud push.
+ * Guarded on `updated_at` so a write that lands between the push and this stamp
+ * isn't marked synced prematurely (it will re-push next cycle).
+ */
+export const markProfileAbilitiesSynced = (rows, syncedAt = new Date().toISOString()) => {
+  const targets = (Array.isArray(rows) ? rows : []).filter((row) => row && row.id != null);
+  if (targets.length === 0) {
+    return Promise.resolve(0);
+  }
+
+  return new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        targets.forEach((row) => {
+          tx.executeSql(
+            `UPDATE profile_ability SET synced_at = ?
+             WHERE id = ? AND updated_at = ?`,
+            [syncedAt, row.id, row.updated_at ?? null]
+          );
+        });
+      },
+      (error) => {
+        console.error('[Database] Error marking profile abilities synced:', error);
+        reject(error);
+      },
+      () => resolve(targets.length)
+    );
+  });
+};
+
+// Neutral ability for a profile with no self-report seed yet (midpoint of the
+// shared scale) — matches the fallback the scorer uses in scoreWordsForProfile.
+const NEUTRAL_THETA = (ABILITY_THETA_MIN + ABILITY_THETA_MAX) / 2;
+
+/**
+ * updateThetaFromOutcome — the Phase 3.1 online ability update (persistence half).
+ *
+ * Given one graded behavioral outcome for a word, nudge the profile's `theta`
+ * with the pure `updateThetaOnline` step and persist it: increment `event_count`
+ * (which also fades the self-report anchor) and clear `synced_at` so the mutable
+ * row re-pushes to the cloud. Fire-and-forget from the callers — a logging/scoring
+ * failure must never block or alter the review itself (plan invariant #4).
+ *
+ * Difficulty comes from the KB prior (`getWordDifficulties`, Phase 2.2) when not
+ * passed in. If the word has no graded-KB rank we SKIP the update rather than
+ * nudge on the OOV fallback: an ungradeable word carries almost no ability signal
+ * (the step would be negligible) and skipping avoids a pointless re-sync write.
+ *
+ * @returns {Promise<number|null>} the new theta, or null if the update was skipped.
+ */
+export const updateThetaFromOutcome = async ({
+  ownerId,
+  profileId,
+  language = 'ko',
+  stem,
+  difficulty,
+  outcome,
+  learningRate = THETA_LEARNING_RATE,
+} = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
+  const y = outcome === 1 || outcome === true ? 1 : (outcome === 0 || outcome === false ? 0 : null);
+  if (y == null) {
+    return null;
+  }
+
+  // Resolve the word's KB difficulty if the caller didn't supply it. A word with
+  // no graded rank (isFallback) is skipped — see the note above.
+  let wordDifficulty = Number(difficulty);
+  if (!Number.isFinite(wordDifficulty)) {
+    const cleanStem = typeof stem === 'string' ? stem.trim() : '';
+    if (!cleanStem) {
+      return null;
+    }
+    const diffs = await getWordDifficulties(normalizedLanguage, [cleanStem]);
+    const entry = diffs?.[cleanStem];
+    if (!entry || entry.isFallback || !Number.isFinite(Number(entry.difficulty))) {
+      return null;
+    }
+    wordDifficulty = Number(entry.difficulty);
+  }
+
+  const row = await getProfileAbility({
+    ownerId: scopedOwnerId,
+    profileId: scopedProfileId,
+    language: normalizedLanguage,
+  });
+  const currentTheta = Number.isFinite(Number(row?.theta)) ? Number(row.theta) : NEUTRAL_THETA;
+  const eventCount = Number.isFinite(Number(row?.event_count)) ? Number(row.event_count) : 0;
+  const theta0 = row?.self_report_rank != null
+    ? seedThetaFromRank(normalizedLanguage, row.self_report_rank)
+    : null;
+
+  const nextTheta = updateThetaOnline({
+    theta: currentTheta,
+    difficulty: wordDifficulty,
+    outcome: y,
+    eventCount,
+    theta0,
+    learningRate,
+  });
+  const now = new Date().toISOString();
+
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      // Upsert: create a behavior-only row if the profile was never seeded, else
+      // write the new theta and increment the (SQL-authoritative) event count.
+      tx.executeSql(
+        `INSERT INTO profile_ability (
+           owner_id, profile_id, language, theta, self_report_rank,
+           event_count, seeded_at, updated_at, synced_at
+         )
+         VALUES (?, ?, ?, ?, NULL, 1, NULL, ?, NULL)
+         ON CONFLICT(owner_id, profile_id, language) DO UPDATE SET
+           theta = excluded.theta,
+           event_count = profile_ability.event_count + 1,
+           updated_at = excluded.updated_at,
+           synced_at = NULL`,
+        [scopedOwnerId, scopedProfileId, normalizedLanguage, nextTheta, now],
+        () => resolve(nextTheta),
+        (_, error) => {
+          console.error('[Database] Error updating theta from outcome:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+/**
+ * getWordDifficulties — resolve the knowledge-based difficulty for a list of
+ * stems (Phase 2.2). Difficulty is the KB prior only; it is user-independent, so
+ * this reads the shared, device-global `dictionary_cache` (NOT owner-scoped) where
+ * `level_rank` is already populated by the preprocess/lookup pipeline — no extra
+ * backend round trip.
+ *
+ * Every requested stem gets an entry so callers never have to guess about gaps: a
+ * stem with no graded-KB rank comes back with `isFallback: true` and the OOV
+ * difficulty (plan §4.1 — missing features are explicit, not silently zero).
+ *
+ * @param {string} language  target language code (ko | zh | en)
+ * @param {string[]} stems   base forms to score (as stored in dictionary_cache)
+ * @returns {Promise<Object<string, { levelRank: number|null, difficulty: number, isFallback: boolean }>>}
+ */
+export const getWordDifficulties = (language, stems) => {
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const requested = Array.from(new Set(
+    (Array.isArray(stems) ? stems : [])
+      .filter((stem) => typeof stem === 'string' && stem.trim())
+      .map((stem) => stem.trim())
+  ));
+
+  if (requested.length === 0) {
+    return Promise.resolve({});
+  }
+
+  return new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        // Accumulate the best (non-null) level_rank per stem across the cache's
+        // per-interface-language rows.
+        const rankByStem = {};
+        chunkValues(requested).forEach((chunk) => {
+          const placeholders = chunk.map(() => '?').join(', ');
+          tx.executeSql(
+            `SELECT stem, level_rank FROM dictionary_cache
+             WHERE language = ? AND stem IN (${placeholders})`,
+            [normalizedLanguage, ...chunk],
+            (_, result) => {
+              (result.rows._array ?? []).forEach((row) => {
+                if (row.level_rank != null && rankByStem[row.stem] == null) {
+                  rankByStem[row.stem] = row.level_rank;
+                }
+              });
+            }
+          );
+        });
+
+        // Resolve after the reads land; build the result for EVERY requested stem.
+        tx.executeSql(
+          'SELECT 1',
+          [],
+          () => {
+            const difficulties = {};
+            requested.forEach((stem) => {
+              const levelRank = rankByStem[stem] ?? null;
+              difficulties[stem] = {
+                levelRank,
+                difficulty: difficultyFromLevelRank(normalizedLanguage, levelRank),
+                isFallback: levelRank == null,
+              };
+            });
+            resolve(difficulties);
+          }
+        );
+      },
+      (error) => {
+        console.error('[Database] Error reading word difficulties:', error);
+        reject(error);
+      }
+    );
+  });
+};
+
+// ─── Word scores cache (Phase 2.3 of the personalized vocabulary model) ───────
+//
+// The baseline scorer, P(known) = sigmoid(theta - difficulty_word), must cover
+// every word on a rendered page — including words the user has never saved. Saved
+// words cache their score on `vocab.p_known`; this table caches it for everyone
+// else, so a page read never has to recompute or round-trip per word (design doc
+// §4 serving: "precompute on write, not read").
+//
+// It is a pure DERIVED cache: fully reconstructible from `theta` (profile_ability)
+// plus `level_rank` (dictionary_cache). So it is deliberately LOCAL-ONLY — not
+// synced to the cloud and not listed in the sync table sets. `theta` and
+// `scored_at` are stored so Phase 3 can detect and refresh scores that went stale
+// when behavior moved the user's ability.
+
+export const createWordScoresTable = () => {
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `CREATE TABLE IF NOT EXISTS word_scores (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          owner_id     TEXT NOT NULL DEFAULT 'guest',
+          profile_id   TEXT DEFAULT 'ko_default',
+          language     TEXT DEFAULT 'ko',
+          stem         TEXT NOT NULL,
+          level_rank   INTEGER,
+          difficulty   REAL,
+          theta        REAL,
+          p_known      REAL,
+          is_fallback  INTEGER DEFAULT 0,
+          source_book_uri TEXT,
+          scored_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+          updated_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(owner_id, profile_id, language, stem)
+        )`,
+        [],
+        () => {
+          tx.executeSql(
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_word_scores_scope_stem
+             ON word_scores(owner_id, profile_id, language, stem)`
+          );
+          tx.executeSql(
+            `CREATE INDEX IF NOT EXISTS idx_word_scores_scope
+             ON word_scores(owner_id, profile_id, language)`
+          );
+          resolve();
+        },
+        (_, error) => {
+          console.error('[Database] Error creating word_scores table:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+export const migrateWordScoresTable = async () => {
+  const columns = await getTableColumns('word_scores');
+  if (columns.length === 0) {
+    // Table doesn't exist yet (createWordScoresTable not run); nothing to migrate.
+    return;
+  }
+
+  const alterations = [];
+  const ensureColumn = (name, ddl) => {
+    if (!columns.includes(name)) {
+      alterations.push(`ALTER TABLE word_scores ADD COLUMN ${ddl}`);
+    }
+  };
+
+  ensureColumn('level_rank', 'level_rank INTEGER');
+  ensureColumn('difficulty', 'difficulty REAL');
+  ensureColumn('theta', 'theta REAL');
+  ensureColumn('p_known', 'p_known REAL');
+  ensureColumn('is_fallback', 'is_fallback INTEGER DEFAULT 0');
+  ensureColumn('source_book_uri', 'source_book_uri TEXT');
+  ensureColumn('scored_at', 'scored_at TEXT');
+  ensureColumn('updated_at', 'updated_at TEXT');
+
+  if (alterations.length === 0) {
+    return;
+  }
+
+  await new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        alterations.forEach((statement) => tx.executeSql(statement));
+      },
+      (error) => {
+        console.error('[Database] Error migrating word_scores table:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+};
+
+/**
+ * getWordScores — read cached baseline scores for a list of stems from the
+ * unsaved-word cache. Returns a map keyed by stem (only stems with a cached row
+ * are present; callers should treat a missing stem as "not scored yet").
+ */
+export const getWordScores = (language, stems, { ownerId, profileId } = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
+  const requested = Array.from(new Set(
+    (Array.isArray(stems) ? stems : [])
+      .filter((stem) => typeof stem === 'string' && stem.trim())
+      .map((stem) => stem.trim())
+  ));
+
+  if (requested.length === 0) {
+    return Promise.resolve({});
+  }
+
+  return new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        const byStem = {};
+        chunkValues(requested).forEach((chunk) => {
+          const placeholders = chunk.map(() => '?').join(', ');
+          tx.executeSql(
+            `SELECT * FROM word_scores
+             WHERE owner_id = ? AND profile_id = ? AND language = ?
+               AND stem IN (${placeholders})`,
+            [scopedOwnerId, scopedProfileId, normalizedLanguage, ...chunk],
+            (_, result) => {
+              (result.rows._array ?? []).forEach((row) => {
+                byStem[row.stem] = row;
+              });
+            }
+          );
+        });
+        tx.executeSql('SELECT 1', [], () => resolve(byStem));
+      },
+      (error) => {
+        console.error('[Database] Error reading word scores:', error);
+        reject(error);
+      }
+    );
+  });
+};
+
+/**
+ * saveWordScores — upsert baseline scores into the unsaved-word cache. `entries`
+ * is an array of `{ stem, levelRank, difficulty, pKnown, isFallback }`; `theta`
+ * and `sourceBookUri` are shared context stored on every row for staleness
+ * detection and provenance. Idempotent per (scope, stem): re-scoring overwrites.
+ */
+export const saveWordScores = (entries, { ownerId, profileId, language, theta, sourceBookUri = null } = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
+  const thetaValue = Number.isFinite(Number(theta)) ? Number(theta) : null;
+  const rows = (Array.isArray(entries) ? entries : []).filter(
+    (entry) => entry && typeof entry.stem === 'string' && entry.stem.trim()
+  );
+
+  if (rows.length === 0) {
+    return Promise.resolve(0);
+  }
+
+  const now = new Date().toISOString();
+
+  return new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        rows.forEach((entry) => {
+          tx.executeSql(
+            `INSERT INTO word_scores (
+               owner_id, profile_id, language, stem, level_rank, difficulty,
+               theta, p_known, is_fallback, source_book_uri, scored_at, updated_at
+             )
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(owner_id, profile_id, language, stem) DO UPDATE SET
+               level_rank = excluded.level_rank,
+               difficulty = excluded.difficulty,
+               theta = excluded.theta,
+               p_known = excluded.p_known,
+               is_fallback = excluded.is_fallback,
+               source_book_uri = excluded.source_book_uri,
+               scored_at = excluded.scored_at,
+               updated_at = excluded.updated_at`,
+            [
+              scopedOwnerId,
+              scopedProfileId,
+              normalizedLanguage,
+              entry.stem.trim(),
+              entry.levelRank == null ? null : Number(entry.levelRank),
+              entry.difficulty == null ? null : Number(entry.difficulty),
+              thetaValue,
+              entry.pKnown == null ? null : Number(entry.pKnown),
+              entry.isFallback ? 1 : 0,
+              sourceBookUri,
+              now,
+              now,
+            ]
+          );
+        });
+      },
+      (error) => {
+        console.error('[Database] Error saving word scores:', error);
+        reject(error);
+      },
+      () => resolve(rows.length)
+    );
+  });
+};
+
+/**
+ * updateVocabPKnown — write the baseline P(known) onto saved `vocab` rows,
+ * matched by surface `word` within the given scope. Returns a Set of the words
+ * that were actually present in `vocab` (so the caller knows which stems it still
+ * needs to cache in `word_scores`). Only mutates `p_known` — SRS/FSRS state and
+ * `updated_at` are left untouched so this cache write never triggers a cloud
+ * re-sync of the vocab row.
+ */
+export const updateVocabPKnown = (scoresByWord, { ownerId, profileId, language } = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
+  const entries = Object.entries(scoresByWord || {}).filter(
+    ([word, value]) => typeof word === 'string' && word.trim() && Number.isFinite(Number(value))
+  );
+
+  if (entries.length === 0) {
+    return Promise.resolve(new Set());
+  }
+
+  const words = entries.map(([word]) => word.trim());
+
+  return new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        const matched = new Set();
+        // First find which words actually exist as saved vocab rows in scope.
+        chunkValues(words).forEach((chunk) => {
+          const placeholders = chunk.map(() => '?').join(', ');
+          tx.executeSql(
+            `SELECT DISTINCT word FROM vocab
+             WHERE owner_id = ? AND profile_id = ? AND language = ?
+               AND deleted_at IS NULL AND word IN (${placeholders})`,
+            [scopedOwnerId, scopedProfileId, normalizedLanguage, ...chunk],
+            (_, result) => {
+              (result.rows._array ?? []).forEach((row) => matched.add(row.word));
+            }
+          );
+        });
+        // Then write p_known for each matched word.
+        entries.forEach(([word, value]) => {
+          tx.executeSql(
+            `UPDATE vocab SET p_known = ?
+             WHERE owner_id = ? AND profile_id = ? AND language = ?
+               AND deleted_at IS NULL AND word = ?`,
+            [Number(value), scopedOwnerId, scopedProfileId, normalizedLanguage, word.trim()]
+          );
+        });
+        tx.executeSql('SELECT 1', [], () => resolve(matched));
+      },
+      (error) => {
+        console.error('[Database] Error updating vocab p_known:', error);
+        reject(error);
+      }
+    );
+  });
+};
+
+/**
+ * scoreWordsForProfile — the Phase 2.3 orchestrator. Given a set of stems (e.g.
+ * every word on a page), it:
+ *   1. reads the profile's ability `theta` (profile_ability),
+ *   2. resolves each word's KB difficulty (getWordDifficulties),
+ *   3. computes P(known) = sigmoid(theta - difficulty) (pure `pKnown`),
+ *   4. caches the result — saved words onto `vocab.p_known`, the rest into
+ *      `word_scores`,
+ * and returns the full in-memory score map keyed by stem so the caller can use it
+ * immediately without a re-read. Phase 2.4 calls this from the preprocess flow.
+ *
+ * If the profile has no seeded ability yet, theta falls back to the scale
+ * midpoint (0) so scoring still produces sane, ordered values; the fallback theta
+ * is stored on the cached rows so a later re-score can supersede it.
+ */
+export const scoreWordsForProfile = async ({
+  ownerId,
+  profileId,
+  language = 'ko',
+  stems,
+  sourceBookUri = null,
+} = {}) => {
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const requested = Array.from(new Set(
+    (Array.isArray(stems) ? stems : [])
+      .filter((stem) => typeof stem === 'string' && stem.trim())
+      .map((stem) => stem.trim())
+  ));
+
+  if (requested.length === 0) {
+    return {};
+  }
+
+  const abilityRow = await getProfileAbility({ ownerId, profileId, language: normalizedLanguage });
+  const theta = Number.isFinite(Number(abilityRow?.theta))
+    ? Number(abilityRow.theta)
+    : (ABILITY_THETA_MIN + ABILITY_THETA_MAX) / 2;
+  if (!Number.isFinite(Number(abilityRow?.theta))) {
+    console.warn('[Database] scoreWordsForProfile: no seeded theta; using neutral midpoint.');
+  }
+
+  const difficulties = await getWordDifficulties(normalizedLanguage, requested);
+
+  // Compute the IRT baseline score for every word first. This is always the
+  // fallback and still supplies the difficulty/theta the cache records.
+  const scores = {};
+  requested.forEach((stem) => {
+    const info = difficulties[stem] ?? {
+      levelRank: null,
+      difficulty: OOV_DIFFICULTY,
+      isFallback: true,
+    };
+    scores[stem] = {
+      stem,
+      levelRank: info.levelRank ?? null,
+      difficulty: info.difficulty,
+      isFallback: !!info.isFallback,
+      pKnown: pKnown(theta, info.difficulty),
+      theta,
+      source: 'baseline',
+    };
+  });
+
+  // Phase 4.3: if a full pooled model is registered, its scores REPLACE the
+  // baseline for the same words (read path unchanged — the cache columns are the
+  // same). Model-agnostic: we only call `model.score(featureRecord)`. Assemble
+  // features once for the whole batch (compute-on-write). Non-fatal: a scoring
+  // failure leaves the baseline score in place rather than breaking preprocessing.
+  const model = getActivePknownModel();
+  if (model && typeof model.score === 'function') {
+    try {
+      const features = await assembleWordFeatures({
+        ownerId,
+        profileId,
+        language: normalizedLanguage,
+        stems: requested,
+        sourceBookUri,
+      });
+      requested.forEach((stem) => {
+        const record = features[stem];
+        if (!record) return;
+        const p = model.score(record);
+        if (Number.isFinite(p)) {
+          scores[stem].pKnown = p;
+          scores[stem].source = `model:v${model.version ?? '?'}`;
+        }
+      });
+    } catch (error) {
+      console.warn('[Database] scoreWordsForProfile: full-model scoring failed; kept baseline.', error);
+    }
+  }
+
+  // Saved words get their score on vocab.p_known; the rest go to word_scores.
+  const scoresByWord = {};
+  requested.forEach((stem) => { scoresByWord[stem] = scores[stem].pKnown; });
+  const savedWords = await updateVocabPKnown(scoresByWord, {
+    ownerId,
+    profileId,
+    language: normalizedLanguage,
+  });
+
+  const unsavedEntries = requested
+    .filter((stem) => !savedWords.has(stem))
+    .map((stem) => scores[stem]);
+  await saveWordScores(unsavedEntries, {
+    ownerId,
+    profileId,
+    language: normalizedLanguage,
+    theta,
+    sourceBookUri,
+  });
+
+  return scores;
+};
+
+// ─── Feature assembly (Phase 4.1 of the personalized vocabulary model) ────────
+//
+// Gathers, for a batch of stems in one (owner, profile, language) scope, all the
+// raw rows the pure `assembleFeatures` needs — dictionary_cache (KB + item),
+// profile_ability (user), saved vocab (SRS + explicit), interaction_events
+// aggregates (explicit), in-book frequency (item), and the user's known-hanja set
+// (cross-word transfer) — then produces one feature record per stem. Batched and
+// computed-on-write, matching the §4 serving rule (precompute, don't infer at
+// read time). Every raw source is optional: a missing source becomes an explicit
+// `present: false` feature, never a silent zero.
+
+// Small promise wrapper for a read-only query (this section does several).
+const runSelect = (sql, params = []) => new Promise((resolve, reject) => {
+  db.transaction(tx => {
+    tx.executeSql(
+      sql,
+      params,
+      (_, result) => resolve(result.rows._array ?? []),
+      (_, error) => {
+        console.error('[Database] assembleWordFeatures query failed:', error);
+        reject(error);
+        return true;
+      }
+    );
+  });
+});
+
+const CJK_CHAR = /[一-鿿㐀-䶿]/g;
+
+export const assembleWordFeatures = async ({
+  ownerId,
+  profileId,
+  language = 'ko',
+  stems,
+  sourceBookUri = null,
+  l1 = null,
+  now = Date.now(),
+} = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
+  const requested = Array.from(new Set(
+    (Array.isArray(stems) ? stems : [])
+      .filter((s) => typeof s === 'string' && s.trim())
+      .map((s) => s.trim())
+  ));
+  if (requested.length === 0) {
+    return {};
+  }
+
+  // 1. dictionary_cache — coalesce the best non-null field per stem across the
+  //    per-interface-language rows (language-scoped, device-global cache).
+  const dictByStem = {};
+  await Promise.all(chunkValues(requested).map(async (chunk) => {
+    const ph = chunk.map(() => '?').join(', ');
+    const rows = await runSelect(
+      `SELECT stem, pos, hanja, level_rank, definition FROM dictionary_cache
+       WHERE language = ? AND stem IN (${ph})`,
+      [normalizedLanguage, ...chunk]
+    );
+    rows.forEach((row) => {
+      const cur = dictByStem[row.stem] ?? (dictByStem[row.stem] = {
+        pos: null, hanja: null, level_rank: null, definition: null,
+      });
+      if (cur.pos == null && row.pos) cur.pos = row.pos;
+      if (cur.hanja == null && row.hanja) cur.hanja = row.hanja;
+      if (cur.level_rank == null && row.level_rank != null) cur.level_rank = row.level_rank;
+      if (cur.definition == null && row.definition) cur.definition = row.definition;
+    });
+  }));
+
+  // 2. profile_ability — one row for the whole scope (shared across stems).
+  const ability = await getProfileAbility({
+    ownerId: scopedOwnerId, profileId: scopedProfileId, language: normalizedLanguage,
+  });
+
+  // 3. saved vocab rows (matched by surface `word`, like updateVocabPKnown).
+  const vocabByStem = {};
+  await Promise.all(chunkValues(requested).map(async (chunk) => {
+    const ph = chunk.map(() => '?').join(', ');
+    const rows = await runSelect(
+      `SELECT word, hanja, stability, difficulty, correct_count, wrong_count,
+              last_reviewed_at, next_review_at, updated_at
+       FROM vocab
+       WHERE owner_id = ? AND profile_id = ? AND language = ? AND deleted_at IS NULL
+         AND word IN (${ph})`,
+      [scopedOwnerId, scopedProfileId, normalizedLanguage, ...chunk]
+    );
+    rows.forEach((row) => { if (!vocabByStem[row.word]) vocabByStem[row.word] = row; });
+  }));
+
+  // 4. interaction_events aggregates per stem: review / lookup counts + last lookup.
+  const eventsByStem = {};
+  await Promise.all(chunkValues(requested).map(async (chunk) => {
+    const ph = chunk.map(() => '?').join(', ');
+    const rows = await runSelect(
+      `SELECT stem, event_type, COUNT(*) AS cnt, MAX(created_at) AS last_at
+       FROM interaction_events
+       WHERE owner_id = ? AND profile_id = ? AND language = ? AND deleted_at IS NULL
+         AND stem IN (${ph})
+       GROUP BY stem, event_type`,
+      [scopedOwnerId, scopedProfileId, normalizedLanguage, ...chunk]
+    );
+    rows.forEach((row) => {
+      const agg = eventsByStem[row.stem] ?? (eventsByStem[row.stem] = {
+        reviewCount: 0, lookupCount: 0, lastLookupAt: null,
+      });
+      if (row.event_type === 'review') agg.reviewCount = row.cnt;
+      if (row.event_type === 'lookup') { agg.lookupCount = row.cnt; agg.lastLookupAt = row.last_at; }
+    });
+  }));
+
+  // 5. in-book frequency proxy (distinct surfaces per stem in the current book).
+  const inBookByStem = {};
+  if (sourceBookUri) {
+    await Promise.all(chunkValues(requested).map(async (chunk) => {
+      const ph = chunk.map(() => '?').join(', ');
+      const rows = await runSelect(
+        `SELECT dc.stem AS stem, COUNT(*) AS freq
+         FROM book_index bi
+         JOIN dictionary_cache dc ON dc.id = bi.stem_id
+         WHERE bi.owner_id = ? AND bi.profile_id = ? AND bi.book_uri = ?
+           AND dc.language = ? AND dc.stem IN (${ph})
+         GROUP BY dc.stem`,
+        [scopedOwnerId, scopedProfileId, sourceBookUri, normalizedLanguage, ...chunk]
+      );
+      rows.forEach((row) => { inBookByStem[row.stem] = row.freq; });
+    }));
+  }
+
+  // 6. known-hanja set — hanja chars from the user's OTHER saved words, for the
+  //    cross-word transfer feature (capped until Tier 4).
+  const knownHanjaSet = new Set();
+  const hanjaRows = await runSelect(
+    `SELECT DISTINCT hanja FROM vocab
+     WHERE owner_id = ? AND profile_id = ? AND language = ? AND deleted_at IS NULL
+       AND hanja IS NOT NULL AND hanja != ''`,
+    [scopedOwnerId, scopedProfileId, normalizedLanguage]
+  );
+  hanjaRows.forEach((row) => {
+    (String(row.hanja).match(CJK_CHAR) ?? []).forEach((c) => knownHanjaSet.add(c));
+  });
+
+  const out = {};
+  requested.forEach((stem) => {
+    out[stem] = assembleFeatures({
+      language: normalizedLanguage,
+      stem,
+      l1,
+      dict: dictByStem[stem] ?? null,
+      ability,
+      vocab: vocabByStem[stem] ?? null,
+      inBookFreq: inBookByStem[stem],
+      events: eventsByStem[stem] ?? {},
+      knownHanjaSet,
+      now,
+    });
+  });
+  return out;
+};
+
+/**
+ * getCachedPKnown — the cached P(known) for a single word, or null if it hasn't
+ * been scored yet. Reads the unsaved-word cache (`word_scores`); used by the save
+ * flows to seed a brand-new card's FSRS state (Phase 4.4).
+ */
+export const getCachedPKnown = async ({ ownerId, profileId, language = 'ko', word } = {}) => {
+  const stem = typeof word === 'string' ? word.trim() : '';
+  if (!stem) return null;
+  const scores = await getWordScores(language, [stem], { ownerId, profileId });
+  const p = scores?.[stem]?.p_known;
+  return Number.isFinite(Number(p)) ? Number(p) : null;
+};
+
+/**
+ * nominateFlashcards — rank unsaved words in a book as flashcard candidates
+ * (Phase 4.4, design doc §5.2): nomination_score = uncertainty(P_known) ×
+ * (1 − remaining_in_book_exposure). Candidates are the words scored for the book
+ * in `word_scores` (saved words are excluded — they're already cards); remaining
+ * exposure is the in-book frequency proxy (book_index ⋈ dictionary_cache).
+ *
+ * @returns {Promise<{stem, pKnown, remainingCount, uncertainty, nominationScore}[]>}
+ */
+export const nominateFlashcards = async ({
+  ownerId,
+  profileId,
+  language = 'ko',
+  sourceBookUri,
+  limit = 20,
+} = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
+  if (!sourceBookUri) return [];
+
+  // Candidate pool: words scored for this book (word_scores holds only unsaved
+  // words, so saved cards are already excluded).
+  const scoreRows = await runSelect(
+    `SELECT stem, p_known FROM word_scores
+     WHERE owner_id = ? AND profile_id = ? AND language = ? AND source_book_uri = ?
+       AND p_known IS NOT NULL`,
+    [scopedOwnerId, scopedProfileId, normalizedLanguage, sourceBookUri]
+  );
+  if (scoreRows.length === 0) return [];
+
+  const stems = scoreRows.map((r) => r.stem);
+
+  // Defensive: drop any that have since been saved (scored before a later save).
+  const savedSet = new Set();
+  await Promise.all(chunkValues(stems).map(async (chunk) => {
+    const ph = chunk.map(() => '?').join(', ');
+    const rows = await runSelect(
+      `SELECT DISTINCT word FROM vocab
+       WHERE owner_id = ? AND profile_id = ? AND language = ? AND deleted_at IS NULL
+         AND word IN (${ph})`,
+      [scopedOwnerId, scopedProfileId, normalizedLanguage, ...chunk]
+    );
+    rows.forEach((r) => savedSet.add(r.word));
+  }));
+
+  // Remaining in-book exposure per stem (distinct-surface proxy).
+  const freqByStem = {};
+  await Promise.all(chunkValues(stems).map(async (chunk) => {
+    const ph = chunk.map(() => '?').join(', ');
+    const rows = await runSelect(
+      `SELECT dc.stem AS stem, COUNT(*) AS freq
+       FROM book_index bi
+       JOIN dictionary_cache dc ON dc.id = bi.stem_id
+       WHERE bi.owner_id = ? AND bi.profile_id = ? AND bi.book_uri = ?
+         AND dc.language = ? AND dc.stem IN (${ph})
+       GROUP BY dc.stem`,
+      [scopedOwnerId, scopedProfileId, sourceBookUri, normalizedLanguage, ...chunk]
+    );
+    rows.forEach((r) => { freqByStem[r.stem] = r.freq; });
+  }));
+
+  const candidates = scoreRows
+    .filter((r) => !savedSet.has(r.stem))
+    .map((r) => ({
+      stem: r.stem,
+      pKnown: r.p_known,
+      remainingCount: freqByStem[r.stem] ?? 0,
+    }));
+
+  return rankNominations(candidates, { limit });
+};
+
 const getTableColumns = (tableName) => {
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
@@ -419,6 +1730,13 @@ export const migrateVocabTable = async () => {
 
   if (!columns.includes('def_key')) {
     alterations.push('ALTER TABLE vocab ADD COLUMN def_key TEXT');
+  }
+
+  // Phase 2.3: baseline P(known) cache for saved words. Distinct from the FSRS
+  // `difficulty` column above (which is FSRS's 1-10 item difficulty); this holds
+  // sigmoid(theta - KB_difficulty) in (0,1). Left NULL until first scored.
+  if (!columns.includes('p_known')) {
+    alterations.push('ALTER TABLE vocab ADD COLUMN p_known REAL');
   }
 
   await new Promise((resolve, reject) => {
@@ -1846,6 +3164,12 @@ export const initAllTables = async () => {
   await migrateVocabTable();
   await createVocabContextTable();
   await migrateVocabContextTable();
+  await createInteractionEventsTable();
+  await migrateInteractionEventsTable();
+  await createProfileAbilityTable();
+  await migrateProfileAbilityTable();
+  await createWordScoresTable();
+  await migrateWordScoresTable();
   await backfillVocabDefinitionKeys();
   await dedupeVocabDefinitionKeyRows();
   await createDictionaryCacheTable();
@@ -1887,8 +3211,6 @@ export const insertData = (word, hanja, definition, levelOrOptions) => {
     nextReviewAt = null,
     correctCount = 0,
     wrongCount = 0,
-    stability = DEFAULT_STABILITY,
-    difficulty = DEFAULT_DIFFICULTY,
     relatedKnownWords = [],
     updatedAt = createdAt,
     deletedAt = null,
@@ -1896,6 +3218,20 @@ export const insertData = (word, hanja, definition, levelOrOptions) => {
     ownerId = GUEST_OWNER_ID,
     profileId = null,
   } = options;
+
+  // Phase 4.4 scheduling prior: seed a brand-new card's FSRS state from its
+  // P(known) when the caller supplies it, so a likely-known word starts with a
+  // longer interval / lower difficulty than the generic default. An explicit
+  // stability/difficulty option still wins; absent both, the defaults stand.
+  const pKnownSeed = Number.isFinite(Number(options.pKnown))
+    ? initialFsrsFromPKnown(Number(options.pKnown))
+    : null;
+  const stability = options.stability != null
+    ? options.stability
+    : (pKnownSeed ? pKnownSeed.stability : DEFAULT_STABILITY);
+  const difficulty = options.difficulty != null
+    ? options.difficulty
+    : (pKnownSeed ? pKnownSeed.difficulty : DEFAULT_DIFFICULTY);
   const scopedOwnerId = resolveOwnerId(ownerId);
   const scopedProfileId = resolveProfileId(profileId ?? options.profile_id ?? options, language);
   const relatedKnownWordsJson = JSON.stringify(Array.isArray(relatedKnownWords) ? relatedKnownWords : []);
@@ -3104,6 +4440,43 @@ export const recordReviewOutcome = (word, hanja, definition, _currentLevel, outc
   const levelMap = { bad: 'bad', mid: 'mid', good: 'good' };
   const correctInc = outcome !== 'bad' ? 1 : 0;
   const wrongInc = outcome === 'bad' ? 1 : 0;
+
+  // Append the review to the interaction log BEFORE the vocab row's FSRS state is
+  // mutated below, so the historical outcome is preserved. This is the only
+  // unconfounded label channel (plan invariant #4) — fire-and-forget so a logging
+  // failure never blocks or alters the review itself.
+  const gradeMap = { bad: 1, mid: 2, good: 3 };
+  logInteractionEvent({
+    ownerId,
+    profileId,
+    language,
+    word,
+    hanja,
+    def: definition,
+    stem: wordData.stem ?? null,
+    eventType: 'review',
+    grade: gradeMap[outcome] ?? null,
+    outcome: outcome === 'bad' ? 0 : 1,
+    vocabId: wordData.id ?? options.vocabId ?? null,
+    sourceBookUri: options.sourceBookUri ?? null,
+    sentence: options.sentence ?? null,
+  }).catch((error) => {
+    console.warn('[Database] Failed to log review interaction event:', error);
+  });
+
+  // Phase 3.1: nudge the profile's ability from this graded outcome (the clean,
+  // unconfounded channel). Fire-and-forget for the same reason as the event log —
+  // theta is a derived signal; a failed update must never break the review.
+  updateThetaFromOutcome({
+    ownerId,
+    profileId,
+    language,
+    stem: wordData.stem ?? word,
+    outcome: outcome === 'bad' ? 0 : 1,
+    learningRate: THETA_LEARNING_RATE,
+  }).catch((error) => {
+    console.warn('[Database] Failed to update theta from review:', error);
+  });
 
   return new Promise((resolve, reject) => {
     const reviewedAt = nowIso();

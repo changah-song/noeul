@@ -39,6 +39,7 @@ import {
   setRuntimeActiveProfileId,
 } from '../services/profileScope';
 import {
+  ensureProfileAbilitySeed,
   replaceDefaultProfileId,
 } from '../services/Database';
 import {
@@ -528,6 +529,38 @@ export const AppProvider = ({ children, user }) => {
       console.warn('[AppContext] Failed to merge cloud language preferences:', error?.message ?? error);
     });
   }, [activeOwnerId, languageSettingsReady, syncGeneration, syncLanguagePreferences, syncPaused, user]);
+
+  // Phase 2.1 cold start: give the active profile a non-null ability estimate
+  // (theta_0) seeded from the self-reported proficiency level. `ensureProfileAbilitySeed`
+  // is cold-only idempotent, so re-running on every level / profile / language
+  // change is safe — it seeds a fresh profile and refreshes the seed after a level
+  // change, but never clobbers a theta that behavior has already moved (Phase 3).
+  useEffect(() => {
+    if (!languageSettingsReady) {
+      return;
+    }
+
+    const language = languageSettings.targetLanguage;
+    const rank = normalizeProficiencyRank(
+      language,
+      languageSettings.levelsByLanguage?.[language]
+    );
+
+    ensureProfileAbilitySeed({
+      ownerId: activeOwnerId,
+      profileId: languageSettings.activeProfileId,
+      language,
+      rank,
+    }).catch((error) => {
+      console.warn('[AppContext] Failed to seed profile ability:', error?.message ?? error);
+    });
+  }, [
+    activeOwnerId,
+    languageSettingsReady,
+    languageSettings.activeProfileId,
+    languageSettings.targetLanguage,
+    languageSettings.levelsByLanguage,
+  ]);
 
   const value = useMemo(() => ({
     dictMode,
