@@ -107,11 +107,6 @@ const HOME_CONTENT_HORIZONTAL_PADDING = Spacing.screenHorizontal;
 const FAB_EDGE_OFFSET = Spacing.xl5;
 const FAB_MENU_GAP = Spacing.xl;
 const FAB_WINDOW_BOTTOM_OFFSET = Layout.tabBarHeight + FAB_EDGE_OFFSET;
-const PROFILE_LANGUAGE_OPTIONS = [
-    { code: 'ko', label: 'KO' },
-    { code: 'en', label: 'EN' },
-    { code: 'zh', label: 'CH' },
-];
 const WORDS_PER_PAGE = 250;
 const OCR_ICON_SOURCE = require('../assets/ocr-icon.png');
 const DEFAULT_PREVIEW_SPINE_WIDTH = 24;
@@ -1284,7 +1279,6 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const [editBook, setEditBook] = useState(null);
     const [editDraft, setEditDraft] = useState({ title: '', author: '', cover: '' });
     const [activeLibraryTab, setActiveLibraryTab] = useState('Books');
-    const [profileMenuOpen, setProfileMenuOpen] = useState(false);
     const [activeBookFilter, setActiveBookFilter] = useState('all');
     const [collectionViewMode, setCollectionViewMode] = useState('grid');
     const [fabMenuOpen, setFabMenuOpen] = useState(false);
@@ -1316,12 +1310,6 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const ocrSettingsCloudUserRef = useRef(null);
     const publicDomainBookPressRef = useRef(null);
     const { width } = useWindowDimensions();
-    const activeProfileOption = PROFILE_LANGUAGE_OPTIONS.find((option) => option.code === targetLanguage)
-        ?? PROFILE_LANGUAGE_OPTIONS[0];
-    const selectableProfileOptions = useMemo(
-        () => PROFILE_LANGUAGE_OPTIONS.filter((option) => option.code !== activeProfileOption.code),
-        [activeProfileOption.code]
-    );
     const {
         isImporting,
         openingBookUri,
@@ -2372,21 +2360,6 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         handlePress(book.uri);
     }, [activeBookMenuKey, handleDownloadBook, handlePress, updateBookRecord]);
 
-    const handleProfileSwitch = useCallback((nextLanguage) => {
-        setProfileMenuOpen(false);
-        setActiveBookMenuKey(null);
-
-        if (nextLanguage === targetLanguage) {
-            return;
-        }
-
-        setActiveLibraryTab('Books');
-        setSelectedBookPreview(null);
-        setSelectedSongId(null);
-        switchProfile(getDefaultProfileIdForLanguage(nextLanguage), nextLanguage);
-        navigation.navigate('Home');
-    }, [navigation, switchProfile, targetLanguage]);
-
     const upsertPublicDomainBookInLibrary = useCallback((localBook) => {
         if (!localBook?.uri) {
             return;
@@ -3283,50 +3256,12 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             >
             <Pressable
                 accessible={false}
-                disabled={!activeBookMenuKey && !profileMenuOpen}
-                onPress={() => {
-                    setActiveBookMenuKey(null);
-                    setProfileMenuOpen(false);
-                }}
+                disabled={!activeBookMenuKey}
+                onPress={() => setActiveBookMenuKey(null)}
                 style={styles.stack}
             >
                 <View style={styles.appTopBar}>
-                    <View style={styles.languageSelectorWrap}>
-                        <TouchableOpacity
-                            activeOpacity={0.82}
-                            onPress={() => {
-                                setActiveBookMenuKey(null);
-                                setProfileMenuOpen((current) => !current);
-                            }}
-                            style={styles.appTopSide}
-                        >
-                            <Text style={styles.languageSelectorText}>{activeProfileOption.label}</Text>
-                            <Feather
-                                name={profileMenuOpen ? 'chevron-up' : 'chevron-down'}
-                                size={17}
-                                color={HOME_COLORS.text}
-                            />
-                        </TouchableOpacity>
-
-                        {profileMenuOpen ? (
-                            <View style={styles.profileDropdown}>
-                                <View style={styles.profileDropdownRail} />
-                                {selectableProfileOptions.map((option, index) => (
-                                    <TouchableOpacity
-                                        key={option.code}
-                                        activeOpacity={0.82}
-                                        onPress={() => handleProfileSwitch(option.code)}
-                                        style={[
-                                            styles.profileDropdownOption,
-                                            index === selectableProfileOptions.length - 1 && styles.profileDropdownOptionLast,
-                                        ]}
-                                    >
-                                        <Text style={styles.profileDropdownOptionText}>{option.label}</Text>
-                                    </TouchableOpacity>
-                                ))}
-                            </View>
-                        ) : null}
-                    </View>
+                    <View style={styles.appTopSide} />
                     <Text style={styles.appTopTitle}>FLUENT FABLE</Text>
                     <TouchableOpacity
                         activeOpacity={0.84}
@@ -4096,82 +4031,17 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         elevation: 0,
         overflow: 'visible',
     },
-    languageSelectorWrap: {
-        width: 70,
-        height: 52,
-        justifyContent: 'center',
-        position: 'relative',
-        zIndex: 40,
-        elevation: 40,
-    },
     appTopSide: {
         width: 70,
-        minHeight: 52,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 2,
     },
     appTopSideRight: {
         width: 70,
         alignItems: 'flex-end',
         justifyContent: 'center',
     },
-    profileDropdown: {
-        position: 'absolute',
-        top: 52,
-        left: -Spacing.screenHorizontalDense,
-        width: 92,
-        borderTopRightRadius: Radii.card,
-        borderBottomRightRadius: Radii.card,
-        backgroundColor: HOME_COLORS.surface,
-        borderWidth: Layout.tabBarBorderWidth,
-        borderLeftWidth: 0,
-        borderColor: HOME_COLORS.divider,
-        overflow: 'hidden',
-        shadowColor: HOME_COLORS.text,
-        shadowOpacity: 0,
-        shadowRadius: 0,
-        shadowOffset: { width: 0, height: 0 },
-        elevation: 0,
-    },
-    profileDropdownRail: {
-        position: 'absolute',
-        top: 0,
-        bottom: 0,
-        left: 0,
-        width: 3,
-        backgroundColor: HOME_COLORS.accent,
-        zIndex: 2,
-    },
-    profileDropdownOption: {
-        minHeight: 40,
-        justifyContent: 'center',
-        paddingLeft: 24,
-        paddingRight: 12,
-        borderBottomWidth: 1,
-        borderBottomColor: HOME_COLORS.divider,
-        backgroundColor: HOME_COLORS.surface,
-    },
-    profileDropdownOptionLast: {
-        borderBottomWidth: 0,
-    },
-    profileDropdownOptionText: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 13,
-        lineHeight: 16,
-        letterSpacing: 2,
-        color: HOME_COLORS.text,
-    },
     ocrIconImage: {
         width: Spacing.xl8,
         height: Spacing.xl8,
-    },
-    languageSelectorText: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 12,
-        lineHeight: 16,
-        letterSpacing: 1.5,
-        color: HOME_COLORS.accent,
     },
     appTopTitle: {
         flex: 1,

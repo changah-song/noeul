@@ -1,20 +1,6 @@
 export const SUPPORTED_LANGUAGES = {
   ko: 'Korean',
-  en: 'English',
-  zh: 'Chinese',
 };
-
-export const TARGET_LANGUAGE_OPTIONS = Object.entries(SUPPORTED_LANGUAGES).map(([code, label]) => ({
-  code,
-  label,
-}));
-
-export const DEFAULT_CHINESE_SCRIPT = 'zh-Hans';
-
-export const CHINESE_SCRIPT_OPTIONS = [
-  { code: 'zh-Hans', label: 'Simplified Chinese' },
-  { code: 'zh-Hant', label: 'Traditional Chinese' },
-];
 
 export const KRDICT_INTERFACE_LANGUAGE_OPTIONS = [
   { code: 'en', label: 'English' },
@@ -41,7 +27,7 @@ export const SUPPORTED_INTERFACE_LANGUAGES = KRDICT_INTERFACE_LANGUAGE_OPTIONS.r
 export const DEFAULT_TARGET_LANGUAGE = 'ko';
 export const DEFAULT_INTERFACE_LANGUAGE = 'en';
 
-export const normalizeChineseScript = (script, fallback = DEFAULT_CHINESE_SCRIPT) => {
+export const normalizeChineseScript = (script, fallback = 'zh-Hans') => {
   const raw = String(script || '').trim().toLowerCase().replace('_', '-');
   if (['zh-hant', 'hant', 'traditional', 'trad'].includes(raw)) {
     return 'zh-Hant';
@@ -101,7 +87,6 @@ export const normalizeBookLanguage = (value, fallback = DEFAULT_TARGET_LANGUAGE)
 };
 
 export const isKoreanLanguage = (language) => normalizeBookLanguage(language) === 'ko';
-export const isChineseLanguage = (language) => normalizeBookLanguage(language) === 'zh';
 
 export const getLanguageLabel = (code) => (
   SUPPORTED_LANGUAGES[normalizeLanguageCode(code)] ?? SUPPORTED_LANGUAGES[DEFAULT_TARGET_LANGUAGE]

@@ -26,7 +26,6 @@ import {
     normalizeBookLanguage,
     normalizeChineseScript,
     normalizeInterfaceLanguageCode,
-    TARGET_LANGUAGE_OPTIONS,
 } from '../constants/languages';
 import {
     getProficiencyLevelForLanguage,
@@ -34,7 +33,7 @@ import {
 } from '../constants/proficiencyLevels';
 import { colors, fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
 import { getDefaultProfileIdForLanguage } from '../services/profileScope';
-import { fetchUserProfiles, upsertUserProfile } from '../services/profilesCloudSync';
+import { fetchUserProfiles } from '../services/profilesCloudSync';
 
 const WORDS_PER_PAGE = 250;
 const SHELF_WIDTH = 346;
@@ -566,17 +565,6 @@ const normalizeProfileRow = (profile, fallbackLanguage = 'ko') => {
     };
 };
 
-const mergeProfileRows = (profiles, nextProfile) => {
-    const normalizedNextProfile = normalizeProfileRow(nextProfile);
-    return [
-        ...profiles.filter((profile) => (
-            profile.id !== normalizedNextProfile.id
-            && profile.target_language !== normalizedNextProfile.target_language
-        )),
-        normalizedNextProfile,
-    ];
-};
-
 const Profile = ({ user, signOut, books = [], updateUsername }) => {
     const [activeBookKey, setActiveBookKey] = useState(null);
     const [visibleShelfPage, setVisibleShelfPage] = useState(1);
@@ -587,10 +575,8 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
     const [showNameEditor, setShowNameEditor] = useState(false);
     const [showInterfaceLanguagePicker, setShowInterfaceLanguagePicker] = useState(false);
     const [showReadingLevelPicker, setShowReadingLevelPicker] = useState(false);
-    const [showProfileSwitcher, setShowProfileSwitcher] = useState(false);
     const [profiles, setProfiles] = useState([]);
     const [profilesLoading, setProfilesLoading] = useState(false);
-    const [profilesBusy, setProfilesBusy] = useState(false);
     const [draftName, setDraftName] = useState('');
     const [isSavingName, setIsSavingName] = useState(false);
     const {
@@ -709,15 +695,6 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
             || availableProfiles.find((profile) => profile.target_language === targetLanguage)
             || fallbackProfiles[0]
     ), [activeProfileId, availableProfiles, fallbackProfiles, targetLanguage]);
-    const switchLanguageOptions = useMemo(() => (
-        TARGET_LANGUAGE_OPTIONS
-            .filter((option) => normalizeBookLanguage(option.code) !== normalizeBookLanguage(targetLanguage))
-            .map((option) => ({
-                ...option,
-                displayLabel: getProfileLanguageLabel(option.code, t).toUpperCase(),
-            }))
-    ), [t, targetLanguage]);
-
     useEffect(() => {
         setVisibleShelfPage((currentPage) => {
             if (!isBookshelfScrollable) {
@@ -810,11 +787,6 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
             return;
         }
 
-        if (row.key === 'profile') {
-            setShowProfileSwitcher(true);
-            return;
-        }
-
         if (row.key === 'readingLevel') {
             setShowReadingLevelPicker(true);
             return;
@@ -840,77 +812,6 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
     const handleReadingLevelSelect = (level) => {
         setLanguageLevel(targetLanguage, level.rank);
         setShowReadingLevelPicker(false);
-    };
-
-    const handleProfileSelect = (profile) => {
-        const normalizedProfile = normalizeProfileRow(profile, targetLanguage);
-        if (normalizedProfile.target_language === interfaceLanguage) {
-            updateLanguageSettings({
-                activeProfileId: normalizedProfile.id,
-                targetLanguage: normalizedProfile.target_language,
-                interfaceLanguage: targetLanguage,
-            });
-        } else {
-            switchProfile(normalizedProfile.id, normalizedProfile.target_language);
-        }
-        setShowProfileSwitcher(false);
-    };
-
-    const handleAddProfile = async (option) => {
-        if (profilesBusy) {
-            return;
-        }
-
-        setProfilesBusy(true);
-        try {
-            let nextProfile = normalizeProfileRow({
-                id: getDefaultProfileIdForLanguage(option.code),
-                target_language: option.code,
-                script: option.code === 'zh' ? 'zh-Hans' : null,
-                display_name: option.label,
-            }, option.code);
-
-            if (!isGuest) {
-                nextProfile = await upsertUserProfile({
-                    user,
-                    ownerId: activeOwnerId,
-                    generation: syncGeneration,
-                    targetLanguage: option.code,
-                    script: option.code === 'zh' ? 'zh-Hans' : undefined,
-                    displayName: option.label,
-                });
-            }
-
-            const normalizedProfile = normalizeProfileRow(nextProfile, option.code);
-            setProfiles((currentProfiles) => mergeProfileRows(currentProfiles, normalizedProfile));
-            if (normalizedProfile.target_language === interfaceLanguage) {
-                updateLanguageSettings({
-                    activeProfileId: normalizedProfile.id,
-                    targetLanguage: normalizedProfile.target_language,
-                    interfaceLanguage: targetLanguage,
-                });
-            } else {
-                switchProfile(normalizedProfile.id, normalizedProfile.target_language);
-            }
-            setShowProfileSwitcher(false);
-        } catch (error) {
-            Alert.alert(t('profile.createProfileFailed'), error?.message || t('profile.preferenceSoon'));
-        } finally {
-            setProfilesBusy(false);
-        }
-    };
-
-    const handleSwitchProfileLanguage = (option) => {
-        const existingProfile = availableProfiles.find((profile) => (
-            normalizeBookLanguage(profile.target_language) === normalizeBookLanguage(option.code)
-        ));
-
-        if (existingProfile) {
-            handleProfileSelect(existingProfile);
-            return;
-        }
-
-        handleAddProfile(option);
     };
 
     const openAuthModal = (mode) => {
@@ -1055,13 +956,6 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                     </View>
                     <View style={styles.preferencesCard}>
                         <PreferenceRow
-                            label={t('profile.languageProfile')}
-                            value={getProfileLanguageLabel(targetLanguage, t)}
-                            accent
-                            onPress={() => handlePreferencePress({ key: 'profile', labelKey: 'profile.languageProfile' })}
-                            styles={styles}
-                        />
-                        <PreferenceRow
                             label={t('profile.interfaceLanguage')}
                             value={getInterfaceLanguageLabel(interfaceLanguage)}
                             accent
@@ -1185,6 +1079,9 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                                         );
                                     })}
                                 </View>
+                                <Text style={styles.languageDisclaimerText}>
+                                    {t('profile.translationDisclaimer')}
+                                </Text>
                             </View>
                         </TouchableWithoutFeedback>
                     </View>
@@ -1243,88 +1140,6 @@ const Profile = ({ user, signOut, books = [], updateUsername }) => {
                                             </Pressable>
                                         );
                                     })}
-                                </View>
-                            </View>
-                        </TouchableWithoutFeedback>
-                    </View>
-                </TouchableWithoutFeedback>
-            </Modal>
-
-            <Modal
-                visible={showProfileSwitcher}
-                animationType="fade"
-                transparent
-                onRequestClose={() => setShowProfileSwitcher(false)}
-            >
-                <TouchableWithoutFeedback onPress={() => setShowProfileSwitcher(false)}>
-                    <View style={styles.modalBackdrop}>
-                        <TouchableWithoutFeedback>
-                            <View style={[styles.modalCard, styles.languageModalCard]}>
-                                <Text style={styles.modalTitle}>{t('profile.languageProfile')}</Text>
-                                <View style={styles.languageOptions}>
-                                    {profilesLoading ? (
-                                        <Text style={styles.modalHelper}>{t('profile.loadingProfiles')}</Text>
-                                    ) : (
-                                        <Pressable
-                                            accessibilityRole="radio"
-                                            accessibilityState={{ selected: true, disabled: true }}
-                                            disabled
-                                            style={[
-                                                styles.languageOptionRow,
-                                                styles.languageOptionRowSelected,
-                                            ]}
-                                        >
-                                            <Feather
-                                                name="check-circle"
-                                                size={18}
-                                                color={profileColors.accent}
-                                            />
-                                            <View style={styles.languageOptionContent}>
-                                                <Text
-                                                    style={[
-                                                        styles.languageOptionText,
-                                                        styles.languageOptionTextSelected,
-                                                    ]}
-                                                    numberOfLines={1}
-                                                >
-                                                    {getProfileLanguageLabel(currentProfile?.target_language || targetLanguage, t)}
-                                                </Text>
-                                            </View>
-                                        </Pressable>
-                                    )}
-
-                                    <Text style={styles.languageSectionTitle}>{t('profile.switchLanguage')}</Text>
-                                    {switchLanguageOptions.length > 0 ? switchLanguageOptions.map((option) => (
-                                        <Pressable
-                                            key={option.code}
-                                            accessibilityRole="button"
-                                            disabled={profilesBusy}
-                                            onPress={() => handleSwitchProfileLanguage(option)}
-                                            style={[
-                                                styles.languageOptionRow,
-                                                profilesBusy && styles.languageOptionRowDisabled,
-                                            ]}
-                                        >
-                                            <Feather
-                                                name="repeat"
-                                                size={18}
-                                                color={profileColors.accent}
-                                            />
-                                            <View style={styles.languageOptionContent}>
-                                                <Text
-                                                    style={[
-                                                        styles.languageOptionText,
-                                                        styles.languageOptionTextStrong,
-                                                    ]}
-                                                    numberOfLines={1}
-                                                >
-                                                    {option.displayLabel}
-                                                </Text>
-                                            </View>
-                                        </Pressable>
-                                    )) : (
-                                        <Text style={styles.modalHelper}>{t('profile.noLanguagesToAdd')}</Text>
-                                    )}
                                 </View>
                             </View>
                         </TouchableWithoutFeedback>
@@ -1832,6 +1647,13 @@ const createStyles = (profileColors, themeColors) => StyleSheet.create({
         fontFamily: fontFamilies.sansRegular,
         fontSize: 11.5,
         lineHeight: 15,
+        color: profileColors.sub,
+    },
+    languageDisclaimerText: {
+        marginTop: 4,
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 11.5,
+        lineHeight: 16,
         color: profileColors.sub,
     },
     languageSectionTitle: {
