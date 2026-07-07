@@ -1,5 +1,6 @@
 package expo.modules.nativeepubreader
 
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -21,13 +22,23 @@ import android.util.TypedValue
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.animation.PathInterpolator
 import java.text.BreakIterator
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 private const val PAGE_VIEW_TAG = "EpubPageView"
+
+// Focus (sentence beam) mode rendering constants, mirroring the design spec:
+// unfocused sentences sit at 22% opacity and focus shifts animate over 300ms.
+private const val FOCUS_DIM_ALPHA = 0.22f
+private const val FOCUS_TRANSITION_DURATION_MS = 300L
+// Slight second draw offset (dp) that emulates the focused sentence's heavier
+// font weight without re-laying out the text.
+private const val FOCUS_EMPHASIS_OFFSET_DP = 0.3f
 
 private data class RenderedTextBlock(
   val block: PageBlock,
@@ -108,6 +119,14 @@ class EpubPageView(context: Context) : View(context) {
   private var onSelectionCleared: (() -> Unit)? = null
   private var onSelectionDragStateChanged: ((Boolean) -> Unit)? = null
   private var onEdgeAction: ((ReaderEdgeKind) -> Unit)? = null
+  private var onFocusTextTapped: ((String, Int) -> Unit)? = null
+  private var focusModeEnabled = false
+  private var focusRanges: List<FocusRange> = emptyList()
+  private var previousFocusRanges: List<FocusRange> = emptyList()
+  private var focusTransition = 1f
+  private var focusAnimator: ValueAnimator? = null
+  private val focusClipPath = Path()
+  private val focusRangePath = Path()
   private var renderedTextBlocks = emptyList<RenderedTextBlock>()
   private var geometryDirty = true
   private val bitmapCache = mutableMapOf<String, Bitmap?>()
@@ -202,7 +221,9 @@ class EpubPageView(context: Context) : View(context) {
     onTextSelected: ((TextSelectionHit) -> Unit)?,
     onSelectionCleared: (() -> Unit)?,
     onSelectionDragStateChanged: ((Boolean) -> Unit)?,
-    onEdgeAction: ((ReaderEdgeKind) -> Unit)?
+    onEdgeAction: ((ReaderEdgeKind) -> Unit)?,
+    focusModeEnabled: Boolean = false,
+    onFocusTextTapped: ((String, Int) -> Unit)? = null
   ) {
     this.page = page
     this.paddingH = paddingH
@@ -218,6 +239,14 @@ class EpubPageView(context: Context) : View(context) {
     this.onSelectionCleared = onSelectionCleared
     this.onSelectionDragStateChanged = onSelectionDragStateChanged
     this.onEdgeAction = onEdgeAction
+    if (this.focusModeEnabled != focusModeEnabled) {
+      focusAnimator?.cancel()
+      focusRanges = emptyList()
+      previousFocusRanges = emptyList()
+      focusTransition = 1f
+    }
+    this.focusModeEnabled = focusModeEnabled
+    this.onFocusTextTapped = onFocusTextTapped
     updateHighlights(
       activeSelectionRanges = activeSelectionRanges,
       activeSelectionKind = activeSelectionKind,
@@ -273,6 +302,11 @@ class EpubPageView(context: Context) : View(context) {
     canvas.drawColor(pageBackgroundColor)
     val contentWidth = width - (paddingH * 2)
     if (contentWidth <= 0) return
+    drawPageBlocks(canvas, contentWidth)
+    drawReaderEdgeState(canvas)
+  }
+
+  private fun drawPageBlocks(canvas: Canvas, contentWidth: Int) {
     var yOffset = paddingV.toFloat()
 
     page?.blocks?.forEach { block ->
@@ -280,20 +314,31 @@ class EpubPageView(context: Context) : View(context) {
 
       if (block.type == "image") {
         val blockWidth = block.contentWidth.takeIf { it > 0 } ?: contentWidth
-        drawImage(canvas, block, (paddingH + block.marginLeft).toFloat(), yOffset, blockWidth)
+        val imageX = (paddingH + block.marginLeft).toFloat()
+        if (focusModeEnabled) {
+          val dimLayer = canvas.saveLayerAlpha(
+            imageX,
+            yOffset,
+            imageX + blockWidth,
+            yOffset + block.imageHeight,
+            (FOCUS_DIM_ALPHA * 255).roundToInt()
+          )
+          drawImage(canvas, block, imageX, yOffset, blockWidth)
+          canvas.restoreToCount(dimLayer)
+        } else {
+          drawImage(canvas, block, imageX, yOffset, blockWidth)
+        }
         yOffset += block.imageHeight
       } else {
         val layout = block.textLayout ?: buildFallbackTextLayout(block, contentWidth) ?: return@forEach
 
         canvas.save()
         canvas.translate((paddingH + block.marginLeft).toFloat(), yOffset)
-        activeHighlightPaint.color = activePaintColor()
-        drawTextHighlights(canvas, block, layout, activeSelectionRanges, activeHighlightPaint)
-        drawTextHighlights(canvas, block, layout, sameLevelRanges, sameLevelUnderlinePaint)
-        drawTextHighlights(canvas, block, layout, aboveLevelRanges, aboveLevelUnderlinePaint)
-        drawTextHighlights(canvas, block, layout, savedHighlightRanges, savedHighlightPaint)
-        layout.draw(canvas)
-        drawSavedHighlightText(canvas, block, layout, savedHighlightRanges)
+        if (focusModeEnabled) {
+          drawFocusModeBlock(canvas, block, layout)
+        } else {
+          drawBlockContent(canvas, block, layout)
+        }
         drawSelectionHandles(canvas, block, layout)
         canvas.restore()
 
@@ -302,8 +347,113 @@ class EpubPageView(context: Context) : View(context) {
 
       yOffset += block.marginBottom
     }
+  }
 
-    drawReaderEdgeState(canvas)
+  private fun drawBlockContent(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
+    activeHighlightPaint.color = activePaintColor()
+    drawTextHighlights(canvas, block, layout, activeSelectionRanges, activeHighlightPaint)
+    drawTextHighlights(canvas, block, layout, sameLevelRanges, sameLevelUnderlinePaint)
+    drawTextHighlights(canvas, block, layout, aboveLevelRanges, aboveLevelUnderlinePaint)
+    drawTextHighlights(canvas, block, layout, savedHighlightRanges, savedHighlightPaint)
+    layout.draw(canvas)
+    drawSavedHighlightText(canvas, block, layout, savedHighlightRanges)
+  }
+
+  // Focus mode: draw the whole block dimmed, then re-draw the focused sentence
+  // span(s) at full opacity clipped to their glyph bounds. During a focus shift
+  // the outgoing span fades down while the incoming span fades up (300ms).
+  private fun drawFocusModeBlock(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
+    val layoutWidth = layout.width.toFloat().coerceAtLeast(1f)
+    val layoutHeight = layout.height.toFloat().coerceAtLeast(1f)
+    val dimLayer = canvas.saveLayerAlpha(
+      0f,
+      0f,
+      layoutWidth,
+      layoutHeight,
+      (FOCUS_DIM_ALPHA * 255).roundToInt()
+    )
+    drawBlockContent(canvas, block, layout)
+    canvas.restoreToCount(dimLayer)
+
+    if (focusTransition < 1f) {
+      drawFocusOverlay(canvas, block, layout, previousFocusRanges, 1f - focusTransition)
+    }
+    drawFocusOverlay(canvas, block, layout, focusRanges, focusTransition)
+  }
+
+  private fun drawFocusOverlay(
+    canvas: Canvas,
+    block: PageBlock,
+    layout: StaticLayout,
+    ranges: List<FocusRange>,
+    alpha: Float
+  ) {
+    if (alpha <= 0.01f) return
+
+    val textLength = blockTextForSelection(block).length
+    if (textLength <= 0) return
+
+    focusClipPath.reset()
+    var hasClip = false
+    ranges.forEach { range ->
+      if (range.blockId != block.blockId) return@forEach
+      val localStart = range.startOffset.coerceIn(0, textLength)
+      val localEnd = range.endOffset.coerceIn(localStart, textLength)
+      if (localStart >= localEnd) return@forEach
+      focusRangePath.reset()
+      layout.getSelectionPath(localStart, localEnd, focusRangePath)
+      focusClipPath.addPath(focusRangePath)
+      hasClip = true
+    }
+    if (!hasClip || focusClipPath.isEmpty) return
+
+    val layoutWidth = layout.width.toFloat().coerceAtLeast(1f)
+    val layoutHeight = layout.height.toFloat().coerceAtLeast(1f)
+    val clipSave = canvas.save()
+    canvas.clipPath(focusClipPath)
+    val overlayLayer = canvas.saveLayerAlpha(
+      0f,
+      0f,
+      layoutWidth,
+      layoutHeight,
+      (alpha.coerceIn(0f, 1f) * 255).roundToInt()
+    )
+    drawBlockContent(canvas, block, layout)
+    // Faux medium weight: a hairline-offset second pass thickens the focused
+    // glyphs slightly, standing in for the design's 400 → 500 weight bump.
+    canvas.translate(FOCUS_EMPHASIS_OFFSET_DP * resources.displayMetrics.density, 0f)
+    layout.draw(canvas)
+    canvas.restoreToCount(overlayLayer)
+    canvas.restoreToCount(clipSave)
+  }
+
+  fun setFocusHighlight(ranges: List<FocusRange>, animate: Boolean) {
+    if (ranges == focusRanges) {
+      return
+    }
+
+    focusAnimator?.cancel()
+    if (!animate) {
+      previousFocusRanges = emptyList()
+      focusRanges = ranges
+      focusTransition = 1f
+      invalidate()
+      postInvalidateOnAnimation()
+      return
+    }
+
+    previousFocusRanges = focusRanges
+    focusRanges = ranges
+    focusTransition = 0f
+    focusAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+      duration = FOCUS_TRANSITION_DURATION_MS
+      interpolator = PathInterpolator(0.25f, 0.1f, 0.25f, 1f)
+      addUpdateListener { animator ->
+        focusTransition = animator.animatedValue as Float
+        invalidate()
+      }
+      start()
+    }
   }
 
   override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -338,6 +488,7 @@ class EpubPageView(context: Context) : View(context) {
 
         val dx = abs(event.x - tapStartX)
         val dy = abs(event.y - tapStartY)
+
         if (
           dx > touchSlop ||
           dy > touchSlop
@@ -373,7 +524,7 @@ class EpubPageView(context: Context) : View(context) {
             }
           }
 
-          if (activeSelectionKind != null && activeSelectionRanges.isNotEmpty()) {
+          if (!focusModeEnabled && activeSelectionKind != null && activeSelectionRanges.isNotEmpty()) {
             if (!hitTestActiveSelectionHighlight(event.x, event.y)) {
               clearSelectionFromTap()
             }
@@ -383,8 +534,21 @@ class EpubPageView(context: Context) : View(context) {
 
           val hit = hitTestText(event.x, event.y)
           if (hit != null) {
-            onWordSelected?.invoke(hit)
+            if (focusModeEnabled) {
+              // Word taps move the beam to the word's sentence; the lookup panel
+              // always slides up from the bottom in focus mode.
+              onFocusTextTapped?.invoke(hit.range.blockId, hit.localStartOffset)
+              onWordSelected?.invoke(hit.copy(placement = "bottom"))
+            } else {
+              onWordSelected?.invoke(hit)
+            }
           } else {
+            if (focusModeEnabled) {
+              // A tap on a sentence's blank space still moves the beam there.
+              hitTestTextPosition(event.x, event.y, allowClosest = false)?.let { position ->
+                onFocusTextTapped?.invoke(position.block.blockId, position.localOffset)
+              }
+            }
             onSelectionCleared?.invoke()
           }
         }
@@ -1265,7 +1429,7 @@ class EpubPageView(context: Context) : View(context) {
   }
 
   private fun usesTopLookupPlacement(centerY: Float): Boolean {
-    return height > 0 && centerY <= height * 0.3f
+    return height > 0 && centerY >= height * 0.5f
   }
 
   private fun rebuildGeometry() {

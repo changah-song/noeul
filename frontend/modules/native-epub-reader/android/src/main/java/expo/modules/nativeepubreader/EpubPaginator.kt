@@ -41,15 +41,14 @@ class EpubPaginator(
     val pages = mutableListOf<ReaderPage>()
     val currentPageBlocks = mutableListOf<PageBlock>()
     var usedHeight = 0
-    val pageBlocks = normalizeParagraphBoundarySpacing(
+    val builtBlocks = normalizeParagraphBoundarySpacing(
       rawBlocks.mapNotNull { raw ->
         throwIfCancelled()
         val block = raw.asMap() ?: return@mapNotNull null
         buildPageBlock(block)
       }
     )
-
-    pageBlocks.forEach { pageBlock ->
+    builtBlocks.forEach { pageBlock ->
       throwIfCancelled()
       val blockTotal = pageBlock.marginTop + blockContentHeight(pageBlock) + pageBlock.marginBottom
 
@@ -264,7 +263,8 @@ class EpubPaginator(
       marginLeft = baseIndent,
       marginTop = marginTop,
       marginBottom = marginBottom,
-      lineHeightMult = blockLineHeightMult
+      lineHeightMult = blockLineHeightMult,
+      sentenceRanges = splitSentences(styledText.toString())
     ))
   }
 

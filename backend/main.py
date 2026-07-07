@@ -37,6 +37,11 @@ try:
 except ImportError:
     anthropic_sdk = None
 
+try:
+    from kiwipiepy import Kiwi
+except ImportError:
+    Kiwi = None
+
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 # ─── Rate Limit Config ────────────────────────────────────────────────────────
@@ -656,6 +661,7 @@ migrate_cache_db()
 app = FastAPI()
 okt = Okt()
 nlp_en = None
+kiwi_instance = None
 
 @app.get("/")
 def health():
@@ -748,6 +754,22 @@ TRAILING_ENDING_FRAGMENTS = {
 
 COPULA_STEMS = {"이다"}
 
+# Kiwi (kiwipiepy) uses the Kkujeok standard tag set instead of OKT's simplified tags.
+# These mappings translate Kiwi tags → the POS labels the rest of the app expects.
+KIWI_NOUN_TAGS = frozenset({"NNG", "NNP", "NNB", "NR", "NP"})
+KIWI_VERB_TAGS = frozenset({"VV", "VV-I"})   # VV-I = irregular conjugation (ㅂ/ㄷ/ㅅ/ㅎ)
+KIWI_ADJ_TAGS = frozenset({"VA", "VA-I"})    # VA-I = irregular adjective (파랗다 etc.)
+KIWI_ADV_TAGS = frozenset({"MAG", "MAJ"})
+KIWI_HADA_SUFFIX_TAG = "XSV"  # verb-forming suffix: 공부+하다, 노력+하다
+KIWI_CONTENT_TAGS = KIWI_NOUN_TAGS | KIWI_VERB_TAGS | KIWI_ADJ_TAGS | KIWI_ADV_TAGS
+
+KIWI_TAG_TO_LOOKUP_POS: dict[str, str] = {
+    **{t: "Noun"      for t in KIWI_NOUN_TAGS},
+    **{t: "Verb"      for t in KIWI_VERB_TAGS},
+    **{t: "Adjective" for t in KIWI_ADJ_TAGS},
+    **{t: "Adverb"    for t in KIWI_ADV_TAGS},
+}
+
 
 def get_en_nlp():
     global nlp_en
@@ -769,6 +791,15 @@ def require_zh_segmenter():
         raise HTTPException(status_code=503, detail="jieba is not installed on the backend")
 
     return zh_pseg
+
+
+def get_kiwi():
+    global kiwi_instance
+    if Kiwi is None:
+        raise HTTPException(status_code=503, detail="kiwipiepy is not installed on the backend")
+    if kiwi_instance is None:
+        kiwi_instance = Kiwi()
+    return kiwi_instance
 
 
 def normalize_short_language_code(value, default=DEFAULT_INTERFACE_LANGUAGE) -> str:
@@ -994,6 +1025,120 @@ def filter_lookup_morphs(morphs: list[tuple[str, str]], text: str) -> list[tuple
 
 def filter_lookup_stems(morphs: list[tuple[str, str]], text: str) -> list[str]:
     return [word for word, _pos in filter_lookup_morphs(morphs, text)]
+
+
+# ─── Kiwi-based Korean analysis (replaces dual okt.pos() pass) ────────────────
+
+def _eojeol_spans(text: str) -> list[tuple[int, int, str]]:
+    """Return (start, end, surface) for each whitespace-delimited span in text."""
+    spans: list[tuple[int, int, str]] = []
+    i, n = 0, len(text)
+    while i < n:
+        while i < n and text[i].isspace():
+            i += 1
+        if i >= n:
+            break
+        j = i
+        while j < n and not text[j].isspace():
+            j += 1
+        spans.append((i, j, text[i:j]))
+        i = j
+    return spans
+
+
+def _find_eojeol(spans: list[tuple[int, int, str]], char_pos: int) -> str:
+    for start, end, surface in spans:
+        if start <= char_pos < end:
+            return surface
+    return ""
+
+
+def _register_surface(
+    surface_index: list[dict],
+    seen: set[tuple[str, str]],
+    surface: str,
+    stem: str,
+) -> None:
+    surface = surface.strip()
+    if not surface:
+        return
+    pair = (surface, stem)
+    if pair not in seen:
+        seen.add(pair)
+        surface_index.append({"surface": surface, "stem": stem})
+
+
+def extract_ko_lookup_tokens(text: str) -> tuple[list[str], list[dict], dict[str, str]]:
+    """
+    Single-pass Korean morphological analysis via Kiwi (kiwipiepy).
+
+    Returns (stems, surface_index, pos_by_stem) with the same contract as the
+    old dual okt.pos() + build_surface_index() + filter_lookup_morphs() pipeline,
+    but without the token-alignment bug caused by running OKT twice with different
+    stem= parameters.
+
+    Key behaviours:
+    - NNG/NNP + XSV(하) consecutive pairs are merged into compound verbs (공부하다).
+    - The surface index maps both the bare morpheme form and the full eojeol
+      (space-delimited unit) to each stem, so tapping "공부를" resolves to "공부".
+    - Kiwi's Kkujeok tags (NNG, VV, VA, MAG …) are translated to the four
+      LOOKUP_ALLOWED_POS labels the rest of the app uses (Noun/Verb/Adjective/Adverb).
+    - COPULA_STEMS and TRAILING_ENDING_FRAGMENTS are still applied as a safety net,
+      though Kiwi rarely mislabels these.
+    """
+    tokens = get_kiwi().tokenize(text, normalize_coda=True)
+    eojeols = _eojeol_spans(text)
+
+    seen_stems: set[str] = set()
+    seen_surface_pairs: set[tuple[str, str]] = set()
+    stems: list[str] = []
+    surface_index: list[dict] = []
+    pos_by_stem: dict[str, str] = {}
+
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        tag = getattr(token.tag, "name", token.tag)  # str in Kiwi>=0.17, Tag enum before
+
+        # Merge NNG/NNP + XSV(하) → compound verb, e.g. 공부 + 하 → 공부하다
+        if tag in KIWI_NOUN_TAGS and i + 1 < len(tokens):
+            nxt = tokens[i + 1]
+            if getattr(nxt.tag, "name", nxt.tag) == KIWI_HADA_SUFFIX_TAG and nxt.form == "하":
+                stem = token.form + "하다"
+                eojeol = _find_eojeol(eojeols, token.start)
+                if stem not in seen_stems:
+                    seen_stems.add(stem)
+                    stems.append(stem)
+                    pos_by_stem[stem] = "Verb"
+                _register_surface(surface_index, seen_surface_pairs, token.form, stem)
+                _register_surface(surface_index, seen_surface_pairs, eojeol, stem)
+                i += 2
+                continue
+
+        pos_label = KIWI_TAG_TO_LOOKUP_POS.get(tag)
+        if pos_label is None:
+            i += 1
+            continue
+
+        # Nouns and adverbs keep their surface form; verbs/adjectives get 다 appended.
+        stem = token.form if pos_label in {"Noun", "Adverb"} else token.form + "다"
+
+        if stem in COPULA_STEMS or stem in TRAILING_ENDING_FRAGMENTS:
+            i += 1
+            continue
+
+        eojeol = _find_eojeol(eojeols, token.start)
+        if stem not in seen_stems:
+            seen_stems.add(stem)
+            stems.append(stem)
+            pos_by_stem[stem] = pos_label
+        # Register both the bare morpheme form and the full eojeol as surface forms.
+        _register_surface(surface_index, seen_surface_pairs, token.form, stem)
+        _register_surface(surface_index, seen_surface_pairs, eojeol, stem)
+
+        i += 1
+
+    return stems, surface_index, pos_by_stem
 
 
 def should_skip_surface_index_morph(
@@ -2370,12 +2515,12 @@ async def get_okt_morphs(text: str, auth: dict[str, Any] = Depends(verify_supaba
     enforce_text_limit(normalized_text, auth)
     await enforce_daily_quota(auth)
     print(f"[main] /okt_morphs/ | text: {text!r}")
-    raw_morphs = merge_noun_hada(okt.pos(normalized_text, stem=True))
-    print(f"[main] Raw morphs ({len(raw_morphs)} total): {raw_morphs}")
-
-    filtered_stems = filter_lookup_stems(raw_morphs, normalized_text)
-    print(f"[main] Filtered stems (first 20): {filtered_stems[:20]}")
-    return {"result": filtered_stems}
+    loop = asyncio.get_event_loop()
+    stems, _surface_index, _pos_by_stem = await loop.run_in_executor(
+        None, partial(extract_ko_lookup_tokens, normalized_text)
+    )
+    print(f"[main] Kiwi stems (first 20): {stems[:20]}")
+    return {"result": stems}
 
 
 @app.get("/en_morphs/")
@@ -2651,30 +2796,17 @@ async def _preprocess_core(text: str, krdict_key: str, max_stems=None, progress_
         if progress_callback:
             await progress_callback(event, data)
 
-    allowed_pos = LOOKUP_ALLOWED_POS
     loop = asyncio.get_event_loop()
-    raw_surface_morphs, raw_stem_morphs = await asyncio.gather(
-        loop.run_in_executor(None, partial(okt.pos, text, stem=False)),
-        loop.run_in_executor(None, partial(okt.pos, text, stem=True)),
+    all_stems, surface_index, stem_pos_map = await loop.run_in_executor(
+        None, partial(extract_ko_lookup_tokens, text)
     )
 
-    merged_stem_morphs = merge_noun_hada(raw_stem_morphs)
-    surface_index = build_surface_index(raw_surface_morphs, raw_stem_morphs, allowed_pos)
-    filtered_stem_morphs = filter_lookup_morphs(merged_stem_morphs, text)
-
-    stem_pos_map: dict[str, str] = {}
-    for word, pos in filtered_stem_morphs:
-        if word not in stem_pos_map:
-            stem_pos_map[word] = pos
-
-    unique_stems = list(stem_pos_map.keys()) if not max_stems else list(stem_pos_map.keys())[:max_stems]
+    unique_stems = all_stems if not max_stems else all_stems[:max_stems]
     processed_stems = set(unique_stems)
     surface_index = [entry for entry in surface_index if entry["stem"] in processed_stems]
 
     await report(
         "stemmed",
-        raw_surface_count=len(raw_surface_morphs),
-        raw_stem_count=len(raw_stem_morphs),
         candidate_stems=len(stem_pos_map),
         total_stems=len(unique_stems),
         surface_count=len(surface_index),

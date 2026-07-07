@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, Pressable } from 'react-native';
+import { Animated, Easing, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, Pressable } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather, MaterialIcons } from '@expo/vector-icons';
@@ -23,6 +23,7 @@ import {
     markBookPreprocessChapter,
     markBookPreprocessMeta,
     recordVocabContextForSurface,
+    scoreWordsForProfile,
 } from '../services/Database';
 import preprocessChapter from '../services/api/preprocessChapter';
 import { updateUserBookProgress } from '../services/bookCloudSync';
@@ -52,9 +53,13 @@ const DEFAULT_READER_SETTINGS = {
     isDarkMode: false,
     lineSpacing: 2.05,
     brightness: 0.62,
+    focusSpan: 1,
+    focusSwipe: false,
 };
 const FONT_SIZE_MIN = 12;
 const FONT_SIZE_MAX = 30;
+const FOCUS_SPAN_MIN = 1;
+const FOCUS_SPAN_MAX = 5;
 const LINE_SPACING_STEPS = [
     { value: 1.4, label: 'Compact' },
     { value: 1.65, label: 'Regular' },
@@ -447,7 +452,6 @@ const Read = ({
     setBooks,
     currentBook: selectedCurrentBook,
     onPreprocessComplete,
-    setIsReaderFocusMode,
     user,
     navigation,
     route,
@@ -491,6 +495,15 @@ const Read = ({
     const [nativeRestorePosition, setNativeRestorePosition] = useState(null);
     const [currentSpineIndex, setCurrentSpineIndex] = useState(null);
     const [chapterTransitionDirection, setChapterTransitionDirection] = useState('none:0');
+
+    // ── Focus (sentence beam) mode ───────────────────────────────────────────
+    const [focusMode, setFocusMode] = useState(false);
+    const [focusNavToken, setFocusNavToken] = useState('none:0');
+    const [focusInfo, setFocusInfo] = useState({ index: 0, count: 1, total: 0 });
+    const [lookupPanelHeight, setLookupPanelHeight] = useState(0);
+    const focusNavCounterRef = useRef(0);
+    const focusControlsTranslate = useRef(new Animated.Value(0)).current;
+    const focusSwipeKnobAnim = useRef(new Animated.Value(0)).current;
 
     // ── Preprocessing state ──────────────────────────────────────────────────
     // 'idle'         — no preprocessing requested
@@ -698,6 +711,9 @@ const Read = ({
         parsedChapterInflightRef.current = new Map();
         setToc([]);
         setShowToc(false);
+        setFocusInfo({ index: 0, count: 1, total: 0 });
+        setFocusNavToken('none:0');
+        focusNavCounterRef.current = 0;
     }, [activeOwnerId, currentBook, updateNativeRestorePosition]);
 
     useEffect(() => {
@@ -805,6 +821,14 @@ const Read = ({
         setHighlightedWordContext(null);
         setIsNativeSelection(false);
     }, []);
+
+    const dismissPanelRef = useRef(null);
+    dismissPanelRef.current = () => {
+        setHighlightedWord('');
+        setHighlightedWordContext(null);
+        setIsNativeSelection(false);
+        setClearSelectionToken((v) => v + 1);
+    };
 
     const handleNativeTextSelected = useCallback((event = {}) => {
         const text = typeof event.text === 'string' ? event.text.trim() : '';
@@ -1168,23 +1192,16 @@ const Read = ({
     useEffect(() => {
         const unsubscribeFocus = navigation?.addListener?.('focus', () => {
             bookCompletionInProgressRef.current = false;
-            setIsReaderFocusMode?.(true);
-        });
-        const unsubscribeBlur = navigation?.addListener?.('blur', () => {
-            setIsReaderFocusMode?.(false);
         });
 
         if (navigation?.isFocused?.()) {
             bookCompletionInProgressRef.current = false;
-            setIsReaderFocusMode?.(true);
         }
 
         return () => {
             unsubscribeFocus?.();
-            unsubscribeBlur?.();
-            setIsReaderFocusMode?.(false);
         };
-    }, [navigation, setIsReaderFocusMode]);
+    }, [navigation]);
 
     const handleBookLoadError = useCallback((reason) => {
         const lowerReason = String(reason || '').toLowerCase();
@@ -1411,6 +1428,22 @@ const Read = ({
             });
 
         await insertBookIndexEntries(bookUri, bookIndexEntries, { ownerId: activeOwnerId });
+
+        // Phase 2.4: batch-score this chapter's vocabulary on write, so the reader
+        // never has to compute P(known) per word at scroll time. Compute-on-write,
+        // read-fast (design doc §4 serving). Non-fatal: a scoring failure must not
+        // break preprocessing — the score cache can be rebuilt later on next open.
+        try {
+            await scoreWordsForProfile({
+                ownerId: activeOwnerId,
+                language: normalizedLanguage,
+                stems,
+                sourceBookUri: bookUri,
+            });
+        } catch (scoreError) {
+            console.warn('[Read] Chapter baseline scoring failed (non-fatal):', scoreError);
+        }
+
         return bookIndexEntries.length;
     }, [activeOwnerId, interfaceLanguage]);
 
@@ -2160,7 +2193,9 @@ const Read = ({
         loadNativeReaderPackage(loadedSpineIndex - 1, { animateChapterTransition: true });
     }, [loadNativeReaderPackage]);
 
-    const shouldPlaceLookupAtTop = lookupPlacement === 'top';
+    // Focus mode always presents the lookup panel from the bottom so the
+    // anchored sentence can lift above it.
+    const shouldPlaceLookupAtTop = lookupPlacement === 'top' && !focusMode;
     const canShowFullscreenToggle = (
         bookLoadState === 'ready'
         && !!nativeReaderPackage
@@ -2168,6 +2203,7 @@ const Read = ({
         && !showMenu
         && !showSettings
         && !showToc
+        && !focusMode
     );
     const readerFontSize = Math.round(clampNumber(
         settings.fontSize,
@@ -2212,6 +2248,96 @@ const Read = ({
     const handleBrightnessChange = (value) => {
         const nextBrightness = clampNumber(value, BRIGHTNESS_MIN, BRIGHTNESS_MAX, DEFAULT_READER_SETTINGS.brightness);
         handleSettingChange('brightness', Number(nextBrightness.toFixed(2)));
+    };
+
+    // ── Focus (sentence beam) mode wiring ────────────────────────────────────
+    const focusSpan = Math.round(clampNumber(
+        settings.focusSpan,
+        FOCUS_SPAN_MIN,
+        FOCUS_SPAN_MAX,
+        DEFAULT_READER_SETTINGS.focusSpan
+    ));
+    const focusSwipe = !!settings.focusSwipe;
+    const focusPanelOpen = focusMode && !!highlightedWord;
+    // Total height the lookup panel occupies from the bottom of the screen;
+    // the native reading surface lifts by exactly this much.
+    const focusPanelTotalHeight = focusPanelOpen
+        ? Math.max(0, Math.round(lookupPanelHeight + insets.bottom + 6))
+        : 0;
+    const focusControlsBaseBottom = insets.bottom + 28;
+    // Controls ride 12dp above the open panel, mirroring the 28 → panel+12
+    // bottom shift in the design.
+    const focusControlsLiftTarget = focusPanelOpen
+        ? Math.max(0, focusPanelTotalHeight + 12 - focusControlsBaseBottom)
+        : 0;
+    const focusMaxIndex = Math.max(0, focusInfo.total - focusSpan);
+    const focusAtStart = focusInfo.index <= 0;
+    const focusAtEnd = focusInfo.index >= focusMaxIndex;
+    const focusFirstSentence = focusInfo.total > 0 ? Math.min(focusInfo.index + 1, focusInfo.total) : 0;
+    const focusLastSentence = Math.min(focusInfo.total, focusInfo.index + focusSpan);
+    const focusPositionLabel = focusSpan > 1
+        ? t('read.focusSentenceRangeLabel', {
+            start: focusFirstSentence,
+            end: focusLastSentence,
+            total: focusInfo.total,
+        })
+        : t('read.focusSentenceLabel', {
+            current: focusFirstSentence,
+            total: focusInfo.total,
+        });
+    const focusSwipeTrackColor = focusSwipeKnobAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: ['#d2d0d0', themeColors.inkSlate],
+    });
+    const focusSwipeKnobLeft = focusSwipeKnobAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [3, 21],
+    });
+
+    useEffect(() => {
+        Animated.timing(focusControlsTranslate, {
+            toValue: -focusControlsLiftTarget,
+            duration: 450,
+            easing: Easing.bezier(0.22, 0.61, 0.36, 1),
+            useNativeDriver: true,
+        }).start();
+    }, [focusControlsLiftTarget, focusControlsTranslate]);
+
+    useEffect(() => {
+        Animated.timing(focusSwipeKnobAnim, {
+            toValue: focusSwipe ? 1 : 0,
+            duration: 250,
+            useNativeDriver: false,
+        }).start();
+    }, [focusSwipe, focusSwipeKnobAnim]);
+
+    const handleFocusSentenceChange = useCallback((event = {}) => {
+        setFocusInfo({
+            index: Number.isInteger(event.index) ? event.index : 0,
+            count: Number.isInteger(event.count) && event.count > 0 ? event.count : 1,
+            total: Number.isInteger(event.total) ? event.total : 0,
+        });
+    }, []);
+
+    const sendFocusNav = useCallback((direction) => {
+        focusNavCounterRef.current += 1;
+        setFocusNavToken(`${direction}:${focusNavCounterRef.current}`);
+    }, []);
+
+    const toggleFocusMode = useCallback(() => {
+        setShowMenu(false);
+        setHighlightedWord('');
+        setHighlightedWordContext(null);
+        setIsNativeSelection(false);
+        setClearSelectionToken((value) => value + 1);
+        setFocusMode((current) => !current);
+    }, []);
+
+    const handleFocusSpanStep = (direction) => {
+        handleSettingChange(
+            'focusSpan',
+            Math.round(clampNumber(focusSpan + direction, FOCUS_SPAN_MIN, FOCUS_SPAN_MAX, DEFAULT_READER_SETTINGS.focusSpan))
+        );
     };
 
     return (
@@ -2318,10 +2444,15 @@ const Read = ({
                         lineHeight={readerLineSpacing}
                         theme={isDarkMode ? 'dark' : 'light'}
                         themeTokens={nativeReaderThemeTokens}
+                        renderMode={focusMode ? 'focus' : 'paged'}
                         highlightTerms={readerHighlightTerms}
                         sameLevelTerms={levelUnderlineTerms.same}
                         aboveLevelTerms={levelUnderlineTerms.above}
                         clearSelectionToken={clearSelectionToken}
+                        focusSentenceCount={focusSpan}
+                        focusSwipeEnabled={focusSwipe}
+                        focusNavToken={focusNavToken}
+                        focusPanelHeight={focusMode ? focusPanelTotalHeight : 0}
                         onPageChange={handleNativePageChange}
                         onChapterEnd={handleNativeChapterEnd}
                         onChapterStart={handleNativeChapterStart}
@@ -2329,6 +2460,7 @@ const Read = ({
                         onWordSelected={handleNativeWordSelected}
                         onTextSelected={handleNativeTextSelected}
                         onSelectionCleared={handleNativeSelectionCleared}
+                        onFocusSentenceChange={handleFocusSentenceChange}
                     />
                 )}
                 {readerBrightnessOverlayOpacity > 0 ? (
@@ -2378,6 +2510,79 @@ const Read = ({
                 }}
             />
 
+            {focusMode && bookLoadState === 'ready' && nativeReaderPackage ? (
+                <>
+                    <Animated.View
+                        pointerEvents="box-none"
+                        style={[
+                            styles.focusControlsLeft,
+                            {
+                                bottom: focusControlsBaseBottom,
+                                transform: [{ translateY: focusControlsTranslate }],
+                            },
+                        ]}
+                    >
+                        <View style={styles.focusPositionPill}>
+                            <MaterialIcons
+                                name="wb-iridescent"
+                                size={15}
+                                color={themeColors.readerSubtleInk}
+                            />
+                            <Text style={styles.focusPositionLabel}>{focusPositionLabel}</Text>
+                        </View>
+                        {focusSwipe ? (
+                            <View style={styles.focusSwipeHintPill}>
+                                <MaterialIcons
+                                    name="swap-vert"
+                                    size={14}
+                                    color={themeColors.readerPaper}
+                                />
+                                <Text style={styles.focusSwipeHintLabel}>{t('read.focusSwipeHint')}</Text>
+                            </View>
+                        ) : null}
+                    </Animated.View>
+                    {!focusSwipe ? (
+                        <Animated.View
+                            pointerEvents="box-none"
+                            style={[
+                                styles.focusArrowControls,
+                                {
+                                    bottom: focusControlsBaseBottom,
+                                    transform: [{ translateY: focusControlsTranslate }],
+                                },
+                            ]}
+                        >
+                            <TouchableOpacity
+                                style={styles.focusArrowButtonPrev}
+                                onPress={() => sendFocusNav('prev')}
+                                activeOpacity={0.72}
+                                accessibilityRole="button"
+                                accessibilityLabel={t('read.focusPreviousSentence')}
+                            >
+                                <MaterialIcons
+                                    name="keyboard-arrow-up"
+                                    size={23}
+                                    color={focusAtStart ? '#c5c6cb' : themeColors.readerBodyInk}
+                                />
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={styles.focusArrowButtonNext}
+                                onPress={() => sendFocusNav('next')}
+                                activeOpacity={0.72}
+                                accessibilityRole="button"
+                                accessibilityLabel={t('read.focusNextSentence')}
+                            >
+                                <MaterialIcons
+                                    name="keyboard-arrow-down"
+                                    size={23}
+                                    color={focusAtEnd ? '#6b7180' : themeColors.readerPaper}
+                                />
+                            </TouchableOpacity>
+                        </Animated.View>
+                    ) : null}
+                </>
+            ) : null}
+
             <View
                 style={[
                     styles.lookupLayer,
@@ -2388,25 +2593,31 @@ const Read = ({
                 ]}
                 pointerEvents="box-none"
             >
-                <TopSection
-                    highlightedWord={highlightedWord}
-                    sourceSentence={highlightedWordContext?.sentence ?? ''}
-                    isNativeSelection={isNativeSelection}
-                    placement={shouldPlaceLookupAtTop ? 'top' : 'bottom'}
-                    isDarkMode={isDarkMode}
-                    onClose={() => {
-                        setHighlightedWord('');
-                        setHighlightedWordContext(null);
-                        setIsNativeSelection(false);
-                        setClearSelectionToken((value) => value + 1);
+                <View
+                    onLayout={(event) => {
+                        setLookupPanelHeight(event?.nativeEvent?.layout?.height ?? 0);
                     }}
-                    onWordSave={handleWordSave}
-                    onWordUnsave={handleWordUnsave}
-                    currentBook={currentBook}
-                    sourceBook={activeBook}
-                    savedWords={savedWords ?? []}
-                    translationVisualState={translationBannerVisualState}
-                />
+                >
+                    <TopSection
+                        highlightedWord={highlightedWord}
+                        sourceSentence={highlightedWordContext?.sentence ?? ''}
+                        isNativeSelection={isNativeSelection}
+                        placement={shouldPlaceLookupAtTop ? 'top' : 'bottom'}
+                        isDarkMode={isDarkMode}
+                        onClose={() => {
+                            setHighlightedWord('');
+                            setHighlightedWordContext(null);
+                            setIsNativeSelection(false);
+                            setClearSelectionToken((value) => value + 1);
+                        }}
+                        onWordSave={handleWordSave}
+                        onWordUnsave={handleWordUnsave}
+                        currentBook={currentBook}
+                        sourceBook={activeBook}
+                        savedWords={savedWords ?? []}
+                        translationVisualState={translationBannerVisualState}
+                    />
+                </View>
             </View>
 
             {!highlightedWord && showLookupHint ? (
@@ -2496,6 +2707,22 @@ const Read = ({
                             <Text style={styles.menuItemLabel}>{t('read.fontSettings')}</Text>
                         </TouchableOpacity>
                         <TouchableOpacity
+                            style={[styles.menuItem, styles.menuItemBorder]}
+                            onPress={toggleFocusMode}
+                            activeOpacity={0.7}
+                            accessibilityRole="button"
+                            accessibilityState={{ selected: focusMode }}
+                        >
+                            <MaterialIcons
+                                name="wb-iridescent"
+                                size={19}
+                                color={focusMode ? themeColors.inkSlate : themeColors.textSecondary}
+                            />
+                            <Text style={[styles.menuItemLabel, focusMode && styles.menuItemLabelActive]}>
+                                {t('read.focusMode')}
+                            </Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
                             style={styles.menuItem}
                             onPress={() => setShowMenu(false)}
                             activeOpacity={0.7}
@@ -2574,7 +2801,7 @@ const Read = ({
                                     </View>
                                 </View>
 
-                                <View style={[styles.fontSettingsRow, styles.fontSettingsLastRow]}>
+                                <View style={[styles.fontSettingsRow, !focusMode && styles.fontSettingsLastRow]}>
                                     <Text style={styles.fontSettingsLabel}>{t('read.brightness')}</Text>
                                     <View style={styles.fontSettingsBrightnessGroup}>
                                         <MaterialIcons name="light-mode" size={18} color={themeColors.readerSubtleInk} />
@@ -2595,6 +2822,62 @@ const Read = ({
                                         />
                                     </View>
                                 </View>
+
+                                {focusMode ? (
+                                    <>
+                                        <View style={styles.fontSettingsRow}>
+                                            <Text style={styles.fontSettingsLabel}>{t('read.focusSwipeToMove')}</Text>
+                                            <Pressable
+                                                onPress={() => handleSettingChange('focusSwipe', !focusSwipe)}
+                                                accessibilityRole="switch"
+                                                accessibilityState={{ checked: focusSwipe }}
+                                            >
+                                                <Animated.View
+                                                    style={[
+                                                        styles.focusSwipeTrack,
+                                                        { backgroundColor: focusSwipeTrackColor },
+                                                    ]}
+                                                >
+                                                    <Animated.View
+                                                        style={[
+                                                            styles.focusSwipeKnob,
+                                                            { left: focusSwipeKnobLeft },
+                                                        ]}
+                                                    />
+                                                </Animated.View>
+                                            </Pressable>
+                                        </View>
+
+                                        <View style={[styles.fontSettingsRow, styles.fontSettingsLastRow]}>
+                                            <Text style={styles.fontSettingsLabel}>{t('read.focusSpan')}</Text>
+                                            <View style={styles.fontSettingsStepperGroup}>
+                                                <TouchableOpacity
+                                                    style={[
+                                                        styles.fontSettingsStepperButton,
+                                                        focusSpan <= FOCUS_SPAN_MIN && styles.focusStepperDisabled,
+                                                    ]}
+                                                    onPress={() => handleFocusSpanStep(-1)}
+                                                    activeOpacity={0.7}
+                                                    accessibilityRole="button"
+                                                >
+                                                    <Feather name="minus" size={18} color={themeColors.textSecondary} />
+                                                </TouchableOpacity>
+                                                <Text style={styles.fontSettingsValue}>{focusSpan}</Text>
+                                                <TouchableOpacity
+                                                    style={[
+                                                        styles.fontSettingsStepperButton,
+                                                        focusSpan >= FOCUS_SPAN_MAX && styles.focusStepperDisabled,
+                                                    ]}
+                                                    onPress={() => handleFocusSpanStep(1)}
+                                                    activeOpacity={0.7}
+                                                    accessibilityRole="button"
+                                                >
+                                                    <Feather name="plus" size={18} color={themeColors.textSecondary} />
+                                                </TouchableOpacity>
+                                            </View>
+                                        </View>
+                                    </>
+                                ) : null}
                             </View>
                         </View>
                     </View>
@@ -2863,6 +3146,106 @@ const createStyles = (themeColors) => StyleSheet.create({
         fontFamily: textStyles.body.fontFamily,
         fontSize: 14,
         color: themeColors.text,
+    },
+    menuItemLabelActive: {
+        color: themeColors.inkSlate,
+        fontFamily: 'FFSans-SemiBold',
+    },
+    focusControlsLeft: {
+        position: 'absolute',
+        left: 22,
+        zIndex: 12,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
+    focusPositionPill: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        backgroundColor: `${themeColors.readerPaper}EB`,
+        paddingVertical: 4,
+        paddingHorizontal: 10,
+        borderRadius: radii.pill,
+    },
+    focusPositionLabel: {
+        fontFamily: 'FFSans-SemiBold',
+        fontSize: 10,
+        lineHeight: 14,
+        letterSpacing: 1.4,
+        color: themeColors.readerSubtleInk,
+    },
+    focusSwipeHintPill: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 5,
+        backgroundColor: `${themeColors.inkSlate}EB`,
+        paddingVertical: 4,
+        paddingHorizontal: 10,
+        borderRadius: radii.pill,
+    },
+    focusSwipeHintLabel: {
+        fontFamily: 'FFSans-SemiBold',
+        fontSize: 9,
+        lineHeight: 13,
+        letterSpacing: 1.2,
+        color: themeColors.readerPaper,
+    },
+    focusArrowControls: {
+        position: 'absolute',
+        right: 16,
+        zIndex: 12,
+        flexDirection: 'column',
+        gap: 9,
+    },
+    focusArrowButtonPrev: {
+        width: 44,
+        height: 44,
+        borderRadius: 22,
+        backgroundColor: themeColors.readerSurface,
+        borderWidth: 1,
+        borderColor: themeColors.readerBorder,
+        alignItems: 'center',
+        justifyContent: 'center',
+        shadowColor: 'rgba(27, 28, 28, 0.12)',
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 1,
+        shadowRadius: 16,
+        elevation: 4,
+    },
+    focusArrowButtonNext: {
+        width: 44,
+        height: 44,
+        borderRadius: 22,
+        backgroundColor: themeColors.inkSlate,
+        alignItems: 'center',
+        justifyContent: 'center',
+        shadowColor: 'rgba(27, 28, 28, 0.20)',
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 1,
+        shadowRadius: 16,
+        elevation: 5,
+    },
+    focusSwipeTrack: {
+        width: 44,
+        height: 26,
+        borderRadius: radii.pill,
+    },
+    focusSwipeKnob: {
+        position: 'absolute',
+        top: 3,
+        width: 20,
+        height: 20,
+        borderRadius: 10,
+        backgroundColor: '#ffffff',
+        shadowColor: 'rgba(27, 28, 28, 0.25)',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 1,
+        shadowRadius: 3,
+        elevation: 2,
+    },
+    focusStepperDisabled: {
+        opacity: 0.35,
     },
     settingsOverlay: {
         ...StyleSheet.absoluteFillObject,

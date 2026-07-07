@@ -41,6 +41,10 @@ const NativeEpubReaderView = ({
     sameLevelTerms = [],
     aboveLevelTerms = [],
     clearSelectionToken = 0,
+    focusSentenceCount = 1,
+    focusSwipeEnabled = false,
+    focusNavToken = 'none:0',
+    focusPanelHeight = 0,
     onPageChange,
     onChapterEnd,
     onChapterStart,
@@ -48,6 +52,7 @@ const NativeEpubReaderView = ({
     onWordSelected,
     onTextSelected,
     onSelectionCleared,
+    onFocusSentenceChange,
     style,
 }) => {
     const { t } = useTranslation();
@@ -88,6 +93,10 @@ const NativeEpubReaderView = ({
         onSelectionCleared?.(event?.nativeEvent || event || {});
     };
 
+    const handleFocusSentenceChange = (event) => {
+        onFocusSentenceChange?.(event?.nativeEvent || event || {});
+    };
+
     return (
         <NativeView
             style={style}
@@ -107,6 +116,10 @@ const NativeEpubReaderView = ({
             sameLevelTerms={sameLevelTerms || []}
             aboveLevelTerms={aboveLevelTerms || []}
             clearSelectionToken={clearSelectionToken}
+            focusSentenceCount={focusSentenceCount}
+            focusSwipeEnabled={focusSwipeEnabled}
+            focusNavToken={focusNavToken}
+            focusPanelHeight={focusPanelHeight}
             onPageChange={handlePageChange}
             onChapterEnd={handleChapterEnd}
             onChapterStart={handleChapterStart}
@@ -114,6 +127,7 @@ const NativeEpubReaderView = ({
             onWordSelected={handleWordSelected}
             onTextSelected={handleTextSelected}
             onSelectionCleared={handleSelectionCleared}
+            onFocusSentenceChange={handleFocusSentenceChange}
         />
     );
 };

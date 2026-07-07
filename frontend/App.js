@@ -92,7 +92,6 @@ function AppContent() {
         ownerReady: !loading && ownerMigrationReady,
         user,
     });
-    const [isReaderFocusMode, setIsReaderFocusMode] = useState(false);
     const [fontsLoaded] = useFonts({
         'FFSans-Regular': Inter_400Regular,
         'FFSans-Medium': Inter_500Medium,
@@ -483,8 +482,6 @@ function AppContent() {
                 updateUsername={updateUsername}
                 updateProfile={updateProfile}
                 updateBookPreprocessed={updateBookPreprocessed}
-                isReaderFocusMode={isReaderFocusMode}
-                setIsReaderFocusMode={setIsReaderFocusMode}
                 pendingOwnershipDecision={pendingOwnershipDecision}
                 localDataDecisionBusy={localDataDecisionBusy}
                 onOwnershipDecision={handleOwnershipDecision}
@@ -506,8 +503,6 @@ function ThemedAppShell({
     updateUsername,
     updateProfile,
     updateBookPreprocessed,
-    isReaderFocusMode,
-    setIsReaderFocusMode,
     pendingOwnershipDecision,
     localDataDecisionBusy,
     onOwnershipDecision,
@@ -545,7 +540,6 @@ function ThemedAppShell({
                 <Tab.Navigator
                     sceneContainerStyle={sceneContainerStyle}
                     screenOptions={(props) => tabScreenOptions(props, {
-                        hideTabChrome: isReaderFocusMode,
                         themeColors,
                     })}
                 >
@@ -571,7 +565,6 @@ function ThemedAppShell({
                                 currentBook={currentBook}
                                 preprocessOnOpen={preprocessOnOpen}
                                 user={user}
-                                setIsReaderFocusMode={setIsReaderFocusMode}
                                 onPreprocessComplete={(uri) => {
                                     setPreprocessOnOpen(false);
                                     updateBookPreprocessed(uri);

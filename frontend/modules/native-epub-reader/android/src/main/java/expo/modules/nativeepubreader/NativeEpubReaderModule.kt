@@ -1,5 +1,6 @@
 package expo.modules.nativeepubreader
 
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Color
 import android.os.Handler
@@ -11,6 +12,7 @@ import android.view.View
 import android.view.View.MeasureSpec
 import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.view.animation.PathInterpolator
 import android.widget.FrameLayout
 import android.widget.ScrollView
 import androidx.recyclerview.widget.RecyclerView
@@ -209,6 +211,22 @@ class NativeEpubReaderModule : Module() {
         view.setClearSelectionToken(token.toInt())
       }
 
+      Prop("focusSentenceCount") { view: NativeEpubReaderView, count: Double ->
+        view.setFocusSentenceCount(count.toInt())
+      }
+
+      Prop("focusSwipeEnabled") { view: NativeEpubReaderView, enabled: Boolean ->
+        view.setFocusSwipeEnabled(enabled)
+      }
+
+      Prop("focusNavToken") { view: NativeEpubReaderView, token: String ->
+        view.setFocusNavToken(token)
+      }
+
+      Prop("focusPanelHeight") { view: NativeEpubReaderView, height: Double ->
+        view.setFocusPanelHeight(height)
+      }
+
       Events(
         "onPageChange",
         "onChapterEnd",
@@ -216,7 +234,8 @@ class NativeEpubReaderModule : Module() {
         "onChapterCommit",
         "onWordSelected",
         "onTextSelected",
-        "onSelectionCleared"
+        "onSelectionCleared",
+        "onFocusSentenceChange"
       )
     }
   }
@@ -337,12 +356,40 @@ private data class PaginationResult(
   val chapterCount: Int
 )
 
+// A sentence within the focus-mode chapter layout. Offsets are local to the
+// block's plain text; topY/bottomY are content coordinates including the
+// focus-mode top inset.
+private data class FocusSentenceInfo(
+  val blockId: String,
+  val startOffset: Int,
+  val endOffset: Int,
+  val topY: Int,
+  val bottomY: Int
+)
+
+// Focus (sentence beam) mode geometry and motion, mirroring the design spec:
+// the focused sentence's top is pinned at 60% of the viewport, the content
+// gets generous top/bottom insets so edge sentences can still anchor there,
+// the anchor scroll eases over 380ms, and the dictionary-panel lift matches
+// the panel's 450ms cubic-bezier(.22,.61,.36,1) slide.
+private const val FOCUS_ANCHOR_RATIO = 0.60f
+private const val FOCUS_TOP_INSET_RATIO = 0.545f
+private const val FOCUS_BOTTOM_INSET_RATIO = 0.52f
+private const val FOCUS_SCROLL_DURATION_MS = 380L
+private const val FOCUS_PANEL_LIFT_DURATION_MS = 450L
+
 private class ContinuousReaderScrollView(context: Context) : ScrollView(context) {
   private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
   private var startX = 0f
   private var startY = 0f
   var onVerticalDragIntercepted: (() -> Unit)? = null
   private var reportedVerticalDrag = false
+
+  // Focus-mode swipe navigation: vertical swipes advance the sentence beam
+  // instead of scrolling. Threshold mirrors the design spec (28dp).
+  var swipeNavigationEnabled = false
+  var onSwipeNavigate: ((Int) -> Unit)? = null
+  private val swipeNavigationThreshold = 28f * context.resources.displayMetrics.density
 
   init {
     isFillViewport = true
@@ -373,6 +420,28 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
 
     return super.onInterceptTouchEvent(event)
   }
+
+  override fun onTouchEvent(event: MotionEvent): Boolean {
+    if (!swipeNavigationEnabled) {
+      return super.onTouchEvent(event)
+    }
+
+    when (event.actionMasked) {
+      MotionEvent.ACTION_DOWN -> {
+        startX = event.x
+        startY = event.y
+      }
+      MotionEvent.ACTION_UP -> {
+        val dy = event.y - startY
+        if (abs(dy) >= swipeNavigationThreshold) {
+          onSwipeNavigate?.invoke(if (dy < 0) 1 else -1)
+        }
+      }
+    }
+
+    // Swallow the gesture entirely so the content never free-scrolls.
+    return true
+  }
 }
 
 class NativeEpubReaderView(
@@ -386,6 +455,7 @@ class NativeEpubReaderView(
   private val onWordSelected by EventDispatcher()
   private val onTextSelected by EventDispatcher()
   private val onSelectionCleared by EventDispatcher()
+  private val onFocusSentenceChange by EventDispatcher()
   private val viewPager = ViewPager2(context)
   private val continuousScrollView = ContinuousReaderScrollView(context)
   private val continuousPageView = EpubPageView(context)
@@ -451,6 +521,13 @@ class NativeEpubReaderView(
   private var isChapterTransitionAnimating = false
   private var pagePositionOffset = 0
   private var suppressPageEvents = false
+  private var focusSentences: List<FocusSentenceInfo> = emptyList()
+  private var focusIndex = 0
+  private var focusSpanCount = 1
+  private var focusSwipeEnabled = false
+  private var lastFocusNavToken: String? = null
+  private var focusPanelLiftPx = 0f
+  private var focusScrollAnimator: ValueAnimator? = null
 
   init {
     setReaderBackgroundColors()
@@ -505,6 +582,9 @@ class NativeEpubReaderView(
     continuousScrollView.onVerticalDragIntercepted = {
       clearActiveSelection(dispatchEvent = true, forceEvent = true)
     }
+    continuousScrollView.onSwipeNavigate = { direction ->
+      moveFocus(direction)
+    }
     continuousScrollView.addView(
       continuousPageView,
       FrameLayout.LayoutParams(
@@ -547,6 +627,7 @@ class NativeEpubReaderView(
   override fun onDetachedFromWindow() {
     paginationGeneration += 1
     paginationTask?.cancel(true)
+    focusScrollAnimator?.cancel()
     super.onDetachedFromWindow()
   }
 
@@ -729,6 +810,7 @@ class NativeEpubReaderView(
   fun setReaderRenderMode(mode: String) {
     val nextMode = when (mode.lowercase()) {
       "continuous", "vertical", "scroll", "scrolling" -> "continuous"
+      "focus", "beam" -> "focus"
       else -> "paged"
     }
     if (readerRenderMode == nextMode) {
@@ -739,7 +821,19 @@ class NativeEpubReaderView(
     updateRenderModeVisibility()
     chapterTransitionDirection = "none"
     clearActiveSelection(dispatchEvent = false)
+    focusScrollAnimator?.cancel()
+    continuousScrollView.swipeNavigationEnabled = isFocusMode() && focusSwipeEnabled
+    updateFocusLift(animated = false)
     repaginate(resetToFirstPage = pageAdapter == null)
+  }
+
+  private fun isFocusMode(): Boolean {
+    return readerRenderMode == "focus"
+  }
+
+  // Both continuous and focus modes lay the chapter out as one vertical scroll.
+  private fun isVerticalLayoutMode(): Boolean {
+    return readerRenderMode == "continuous" || readerRenderMode == "focus"
   }
 
   fun setReaderEdgeStateEnabled(enabled: Boolean) {
@@ -838,7 +932,7 @@ class NativeEpubReaderView(
           readerTextColor = themePaletteSnapshot.bodyTextColor,
           context = appContext
         )
-        if (renderModeSnapshot == "continuous") {
+        if (renderModeSnapshot == "continuous" || renderModeSnapshot == "focus") {
           buildContinuousChapterWindow(paginator, windowSnapshot)
         } else {
           paginateChapterWindow(paginator, windowSnapshot)
@@ -1168,12 +1262,16 @@ class NativeEpubReaderView(
     sameLevelRangesByPage = buildHighlightRanges(nextPages, sameLevelMatcher, "same-level").rangesByPage
     aboveLevelRangesByPage = buildHighlightRanges(nextPages, aboveLevelMatcher, "above-level").rangesByPage
 
-    if (readerRenderMode == "continuous") {
+    if (isVerticalLayoutMode()) {
       pages = nextPages
       pagePositionOffset = 0
       continuousPageIndex = targetPage.coerceIn(0, pages.lastIndex.coerceAtLeast(0))
       bindContinuousPage(continuousPageIndex, backgroundColor, resetScroll = resetToFirstPage)
-      dispatchPageChange(continuousPageIndex, pages.size)
+      if (isFocusMode()) {
+        dispatchFocusPageChange()
+      } else {
+        dispatchPageChange(continuousPageIndex, pages.size)
+      }
       if (didDropActiveSelection) {
         onSelectionCleared(mapOf<String, Any>())
       }
@@ -1353,7 +1451,11 @@ class NativeEpubReaderView(
   private fun bindContinuousPage(position: Int, backgroundColor: Int, resetScroll: Boolean) {
     val page = pages.getOrNull(position) ?: ReaderPage(0, emptyList())
     continuousPageIndex = position
-    val contentHeight = continuousContentHeightForPage(page).coerceAtLeast(layoutHeight)
+    val focusEnabled = isFocusMode()
+    val focusTopInset = if (focusEnabled) (layoutHeight * FOCUS_TOP_INSET_RATIO).roundToInt() else 0
+    val focusBottomInset = if (focusEnabled) (layoutHeight * FOCUS_BOTTOM_INSET_RATIO).roundToInt() else 0
+    val contentHeight = (continuousContentHeightForPage(page) + focusTopInset + focusBottomInset)
+      .coerceAtLeast(layoutHeight)
     continuousPageView.layoutParams = FrameLayout.LayoutParams(
       ViewGroup.LayoutParams.MATCH_PARENT,
       contentHeight
@@ -1362,12 +1464,12 @@ class NativeEpubReaderView(
     Log.d(
       TAG,
       "continuous render: page=$position blocks=${page.blocks.size} " +
-        "contentHeight=$contentHeight viewportHeight=$layoutHeight"
+        "contentHeight=$contentHeight viewportHeight=$layoutHeight focus=$focusEnabled"
     )
     continuousPageView.bind(
       page = page,
       paddingH = pagePaddingH,
-      paddingV = pagePaddingV,
+      paddingV = pagePaddingV + focusTopInset,
       lineHeightMult = readerLineHeightMultiplier,
       backgroundColor = backgroundColor,
       themePalette = themePalette,
@@ -1386,13 +1488,289 @@ class NativeEpubReaderView(
       onTextSelected = ::handlePageTextSelected,
       onSelectionCleared = ::handlePageSelectionCleared,
       onSelectionDragStateChanged = ::handlePageSelectionDragStateChanged,
-      onEdgeAction = ::handlePageEdgeAction
+      onEdgeAction = ::handlePageEdgeAction,
+      focusModeEnabled = focusEnabled,
+      onFocusTextTapped = ::handleFocusTextTapped
     )
+
+    if (focusEnabled) {
+      val preservedAnchor = if (resetScroll) null else focusSentences.getOrNull(focusIndex)
+      rebuildFocusSentences(page, pagePaddingV + focusTopInset)
+      focusIndex = when {
+        focusSentences.isEmpty() -> 0
+        preservedAnchor != null -> (
+          focusSentenceIndexAt(preservedAnchor.blockId, preservedAnchor.startOffset)
+            ?: focusIndex.coerceIn(0, focusSentences.lastIndex)
+        )
+        else -> initialFocusIndexFromRestorePosition()
+      }
+      continuousScrollView.swipeNavigationEnabled = focusSwipeEnabled
+      applyFocusHighlightToView(animate = false)
+      anchorScrollToFocus(animated = false)
+      dispatchFocusState()
+      return
+    }
+
+    focusSentences = emptyList()
+    continuousScrollView.swipeNavigationEnabled = false
     if (resetScroll) {
       continuousScrollView.post {
         continuousScrollView.scrollTo(0, 0)
       }
     }
+  }
+
+  // ===== Focus (sentence beam) mode =====
+
+  private fun rebuildFocusSentences(page: ReaderPage, topPadding: Int) {
+    val sentences = mutableListOf<FocusSentenceInfo>()
+    var yOffset = topPadding
+
+    page.blocks.forEach { block ->
+      yOffset += block.marginTop
+
+      if (block.type == "image") {
+        yOffset += block.imageHeight
+      } else {
+        val layout = block.textLayout
+        if (layout != null) {
+          val textLength = block.plainText.length
+          block.sentenceRanges.forEach { range ->
+            val start = range.first.coerceIn(0, textLength)
+            val endExclusive = (range.last + 1).coerceIn(start, textLength)
+            if (start < endExclusive) {
+              val startLine = layout.getLineForOffset(start)
+              val endLine = layout.getLineForOffset((endExclusive - 1).coerceAtLeast(start))
+              sentences.add(
+                FocusSentenceInfo(
+                  blockId = block.blockId,
+                  startOffset = start,
+                  endOffset = endExclusive,
+                  topY = yOffset + layout.getLineTop(startLine),
+                  bottomY = yOffset + layout.getLineBottom(endLine)
+                )
+              )
+            }
+          }
+          yOffset += layout.height
+        }
+      }
+
+      yOffset += block.marginBottom
+    }
+
+    focusSentences = sentences
+    Log.d(TAG, "focus sentences rebuilt: count=${sentences.size}")
+  }
+
+  private fun focusSentenceIndexAt(blockId: String, localOffset: Int): Int? {
+    val containing = focusSentences.indexOfFirst { sentence ->
+      sentence.blockId == blockId &&
+        localOffset >= sentence.startOffset &&
+        localOffset < sentence.endOffset
+    }
+    if (containing >= 0) {
+      return containing
+    }
+
+    return focusSentences.indexOfFirst { it.blockId == blockId }.takeIf { it >= 0 }
+  }
+
+  private fun initialFocusIndexFromRestorePosition(): Int {
+    val blockId = restorePosition.stringValue("firstBlockId")?.takeIf { it.isNotBlank() }
+      ?: return 0
+    return focusSentences.indexOfFirst { it.blockId == blockId }.takeIf { it >= 0 } ?: 0
+  }
+
+  private fun handleFocusTextTapped(blockId: String, localOffset: Int) {
+    if (!isFocusMode() || focusSentences.isEmpty()) {
+      return
+    }
+
+    val index = focusSentenceIndexAt(blockId, localOffset) ?: return
+    focusTo(index, animate = true)
+  }
+
+  private fun focusTo(index: Int, animate: Boolean) {
+    if (focusSentences.isEmpty()) {
+      return
+    }
+
+    focusIndex = index.coerceIn(0, focusSentences.lastIndex)
+    applyFocusHighlightToView(animate)
+    anchorScrollToFocus(animated = animate)
+    dispatchFocusState()
+    dispatchFocusPageChange()
+  }
+
+  private fun moveFocus(direction: Int) {
+    if (!isFocusMode() || focusSentences.isEmpty()) {
+      return
+    }
+
+    val maxIndex = (focusSentences.size - focusSpanCount).coerceAtLeast(0)
+    val next = focusIndex + direction
+    if (next < 0) {
+      onChapterStart(mapOf<String, Any>())
+      return
+    }
+    if (next > maxIndex) {
+      onChapterEnd(mapOf<String, Any>())
+      return
+    }
+
+    clearActiveSelection(dispatchEvent = true, forceEvent = true)
+    focusTo(next, animate = true)
+  }
+
+  private fun applyFocusHighlightToView(animate: Boolean) {
+    if (focusSentences.isEmpty()) {
+      continuousPageView.setFocusHighlight(emptyList(), animate = false)
+      return
+    }
+
+    val start = focusIndex.coerceIn(0, focusSentences.lastIndex)
+    val end = (start + focusSpanCount).coerceAtMost(focusSentences.size)
+    val ranges = focusSentences.subList(start, end).map { sentence ->
+      FocusRange(sentence.blockId, sentence.startOffset, sentence.endOffset)
+    }
+    continuousPageView.setFocusHighlight(ranges, animate)
+  }
+
+  private fun anchorScrollToFocus(animated: Boolean) {
+    val sentence = focusSentences.getOrNull(focusIndex) ?: return
+    val contentHeight = continuousPageView.layoutParams?.height ?: 0
+    val maxScroll = (contentHeight - layoutHeight).coerceAtLeast(0)
+    val target = (sentence.topY - (layoutHeight * FOCUS_ANCHOR_RATIO)).roundToInt()
+      .coerceIn(0, maxScroll)
+
+    focusScrollAnimator?.cancel()
+    if (!animated) {
+      continuousScrollView.post {
+        continuousScrollView.scrollTo(0, target)
+      }
+      return
+    }
+
+    val from = continuousScrollView.scrollY
+    if (abs(target - from) < 2) {
+      continuousScrollView.scrollTo(0, target)
+      return
+    }
+
+    focusScrollAnimator = ValueAnimator.ofInt(from, target).apply {
+      duration = FOCUS_SCROLL_DURATION_MS
+      interpolator = PathInterpolator(0.33f, 1f, 0.68f, 1f)
+      addUpdateListener { animator ->
+        continuousScrollView.scrollTo(0, animator.animatedValue as Int)
+      }
+      start()
+    }
+  }
+
+  private fun dispatchFocusState() {
+    onFocusSentenceChange(
+      mapOf(
+        "index" to focusIndex,
+        "count" to focusSpanCount,
+        "total" to focusSentences.size
+      )
+    )
+  }
+
+  // Reading-progress event for focus mode: sentence index stands in for the
+  // page and the focused sentence's block anchors position restore across
+  // render modes.
+  private fun dispatchFocusPageChange() {
+    val page = pages.getOrNull(continuousPageIndex)
+    val sentence = focusSentences.getOrNull(focusIndex)
+    val href = page?.href?.takeIf { it.isNotBlank() }
+      ?: page?.path?.takeIf { it.isNotBlank() }
+      ?: bookManifest.stringValue("currentSpineHref")?.takeIf { it.isNotBlank() }
+      ?: bookManifest.stringValue("currentSpinePath")
+      ?: ""
+    val event = mutableMapOf<String, Any>(
+      "page" to focusIndex,
+      "total" to focusSentences.size.coerceAtLeast(1),
+      "globalPage" to continuousPageIndex,
+      "globalTotal" to pages.size,
+      "href" to href,
+      "firstBlockId" to (sentence?.blockId ?: page?.blocks?.firstOrNull()?.blockId ?: ""),
+      "savedHighlights" to (page?.pageIndex?.let { savedHighlightContextsByPage[it] }.orEmpty())
+    )
+
+    (page?.spineIndex ?: bookManifest.intValue("currentSpineIndex"))?.let { spineIndex ->
+      event["spineIndex"] = spineIndex
+    }
+
+    onPageChange(event)
+  }
+
+  fun setFocusSentenceCount(count: Int) {
+    val next = count.coerceIn(1, 5)
+    if (focusSpanCount == next) {
+      return
+    }
+
+    focusSpanCount = next
+    if (isFocusMode() && focusSentences.isNotEmpty()) {
+      focusIndex = focusIndex.coerceAtMost((focusSentences.size - focusSpanCount).coerceAtLeast(0))
+      applyFocusHighlightToView(animate = true)
+      anchorScrollToFocus(animated = true)
+      dispatchFocusState()
+    }
+  }
+
+  fun setFocusSwipeEnabled(enabled: Boolean) {
+    focusSwipeEnabled = enabled
+    continuousScrollView.swipeNavigationEnabled = enabled && isFocusMode()
+  }
+
+  fun setFocusNavToken(token: String) {
+    if (token == lastFocusNavToken) {
+      return
+    }
+
+    // The first token delivered is the mount-time prop value; acting on it
+    // would replay a stale navigation after a view remount.
+    val isInitialToken = lastFocusNavToken == null
+    lastFocusNavToken = token
+    if (isInitialToken) {
+      return
+    }
+
+    when (token.substringBefore(":").lowercase()) {
+      "next" -> moveFocus(1)
+      "prev", "previous" -> moveFocus(-1)
+    }
+  }
+
+  fun setFocusPanelHeight(heightDp: Double) {
+    val nextLiftPx = (heightDp * resources.displayMetrics.density).toFloat().coerceAtLeast(0f)
+    if (focusPanelLiftPx == nextLiftPx) {
+      return
+    }
+
+    focusPanelLiftPx = nextLiftPx
+    updateFocusLift(animated = true)
+  }
+
+  // Lifts the reading surface so the anchored sentence clears the dictionary
+  // panel; the scroll position itself stays put, matching the design's
+  // transform-based lift.
+  private fun updateFocusLift(animated: Boolean) {
+    val target = if (isFocusMode()) -focusPanelLiftPx else 0f
+    continuousPageView.animate().cancel()
+    if (!animated) {
+      continuousPageView.translationY = target
+      return
+    }
+
+    continuousPageView.animate()
+      .translationY(target)
+      .setDuration(FOCUS_PANEL_LIFT_DURATION_MS)
+      .setInterpolator(PathInterpolator(0.22f, 0.61f, 0.36f, 1f))
+      .start()
   }
 
   private fun continuousContentHeightForPage(page: ReaderPage): Int {
@@ -1508,7 +1886,7 @@ class NativeEpubReaderView(
 
   private fun invalidateVisiblePageHighlights() {
     pageAdapter?.invalidateVisiblePages(recyclerView(), viewPager.currentItem)
-    if (readerRenderMode == "continuous") {
+    if (isVerticalLayoutMode()) {
       val page = pages.getOrNull(continuousPageIndex) ?: return
       continuousPageView.updateHighlights(
         activeSelectionRanges = activeSelectionRanges,
@@ -1593,7 +1971,7 @@ class NativeEpubReaderView(
 
     pages = nextPages
     pageAdapter?.updatePages(pages)
-    if (readerRenderMode == "continuous") {
+    if (isVerticalLayoutMode()) {
       bindContinuousPage(continuousPageIndex, readerBackgroundColor(), resetScroll = false)
     }
   }
@@ -2057,9 +2435,9 @@ class NativeEpubReaderView(
   }
 
   private fun updateRenderModeVisibility() {
-    val isContinuous = readerRenderMode == "continuous"
-    viewPager.visibility = if (isContinuous) View.GONE else View.VISIBLE
-    continuousScrollView.visibility = if (isContinuous) View.VISIBLE else View.GONE
+    val isVertical = isVerticalLayoutMode()
+    viewPager.visibility = if (isVertical) View.GONE else View.VISIBLE
+    continuousScrollView.visibility = if (isVertical) View.VISIBLE else View.GONE
   }
 
   private fun readerBackgroundColor(): Int {

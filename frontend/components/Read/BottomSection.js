@@ -11,7 +11,6 @@ const BottomSection = ({
     currentBook,
     setHighlightedWord,
     activeLookupText,
-    focusMode,
     settings,
     savedWords,
     useHeuristicHighlighting,
@@ -213,14 +212,6 @@ const BottomSection = ({
             clearActiveTapHighlight();
         }
     }, [activeLookupText, clearActiveTapHighlight]);
-
-    useEffect(() => {
-        const timeoutId = setTimeout(() => {
-            replayHighlights();
-        }, 120);
-
-        return () => clearTimeout(timeoutId);
-    }, [focusMode]);
 
     // Save and restore location when settings change (but not on first render)
     useEffect(() => {

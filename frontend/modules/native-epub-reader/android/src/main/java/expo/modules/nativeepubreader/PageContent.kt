@@ -7,6 +7,7 @@ import android.text.TextPaint
 
 // A single renderable block on a page. Text blocks may represent either a
 // complete EPUB block or a slice of a block split across a page boundary.
+// sentenceRanges: character offset ranges within plainText, first..last inclusive.
 data class PageBlock(
   val blockId: String,
   val type: String,
@@ -23,7 +24,8 @@ data class PageBlock(
   val marginLeft: Int = 0,
   val marginTop: Int = 0,
   val marginBottom: Int = 0,
-  val lineHeightMult: Float = 1.5f
+  val lineHeightMult: Float = 1.5f,
+  val sentenceRanges: List<IntRange> = emptyList()
 )
 
 data class ReaderPage(
@@ -55,6 +57,14 @@ data class TextRange(
   val blockId: String,
   val sourceStartOffset: Int,
   val sourceEndOffset: Int
+)
+
+// A focused sentence span in focus (sentence beam) mode. Offsets are local to
+// the block's plain text.
+data class FocusRange(
+  val blockId: String,
+  val startOffset: Int,
+  val endOffset: Int
 )
 
 data class WordHit(
