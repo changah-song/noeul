@@ -27,7 +27,6 @@
     "@xmldom/xmldom": "^0.9.10",
     "axios": "^1.6.8",
     "expo": "~50.0.20",
-    "expo-app-loading": "^2.1.1",
     "expo-apple-authentication": "~6.3.0",
     "expo-asset": "~9.0.2",
     "expo-av": "~13.10.6",
@@ -69,7 +68,7 @@
     "jest": "^29.7.0",
     "jest-expo": "~50.0.4",
     "patch-package": "^8.0.1",
-    "react-test-renderer": "^18.2.0"
+    "react-test-renderer": "18.2.0"
   },
   "private": true,
   "proxy": "http://localhost:127.0.0.1:8000"
