@@ -20,6 +20,7 @@ import {
   updateThetaOnline,
 } from './abilityModel';
 import { assembleFeatures } from './featureAssembly';
+import { bookEaseFromLevel } from './bookEase';
 import { getActivePknownModel } from './pknownModel';
 import { initialFsrsFromPKnown, rankNominations } from './flashcardNomination';
 
@@ -727,6 +728,46 @@ export const getProfileAbility = ({ ownerId, profileId, language = 'ko' } = {}) 
       );
     });
   });
+};
+
+/**
+ * estimateBookReadingEase — the personalized "how easy is this book for me?"
+ * number surfaced in the book preview. Reads the reader's current ability
+ * (`theta`) for the active (owner, profile, language) and maps the book's graded
+ * band onto the same scale, so the result is `P(known) = sigmoid(theta − difficulty)`
+ * — the expected fraction of the book's vocabulary the reader already knows.
+ *
+ * Because `theta` is updated by Phase 3 from every review/lookup, this estimate
+ * improves over time with no re-training. Returns `ease: null` when the book has no
+ * graded level yet (we don't guess "hard" for an unleveled book).
+ *
+ * @param {object} args
+ * @param {string} [args.ownerId]
+ * @param {string} [args.profileId]
+ * @param {string} [args.language='ko']
+ * @param {number|null} [args.levelRank]  the book's graded band (bookLevel.level_rank)
+ * @returns {Promise<{ease:number|null, theta:number|null, eventCount:number, hasAbility:boolean}>}
+ */
+export const estimateBookReadingEase = async ({
+  ownerId,
+  profileId,
+  language = 'ko',
+  levelRank,
+} = {}) => {
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const ability = await getProfileAbility({ ownerId, profileId, language: normalizedLanguage });
+  const theta = ability?.theta ?? null;
+  const eventCount = Number.isFinite(Number(ability?.event_count))
+    ? Number(ability.event_count)
+    : 0;
+
+  const ease = bookEaseFromLevel({
+    theta,
+    language: normalizedLanguage,
+    levelRank,
+  });
+
+  return { ease, theta, eventCount, hasAbility: !!ability };
 };
 
 /**
@@ -2981,6 +3022,7 @@ export const replaceDefaultProfileId = (profileId, language = 'ko') => {
 const SQLITE_USER_DATA_TABLES = [
   'vocab',
   'vocab_contexts',
+  'book_notes',
 ];
 
 const SQLITE_OWNER_CACHE_TABLES = [
@@ -3159,6 +3201,264 @@ const deduplicateCacheTable = () => {
   });
 };
 
+// ─── Book notes (reader "note to self") ───────────────────────────────────────
+//
+// A short free-text note the reader leaves for their future self when they step
+// away from a book (thoughtful close), surfaced again as a "welcome back" card on
+// re-entry and browsable as a per-book log. Real user content, so the schema is
+// sync-ready (client-generated id, updated_at/deleted_at/synced_at) even though
+// cloud sync is not wired yet — notes live on-device for now.
+
+const makeBookNoteId = () => (
+  `bn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+);
+
+export const createBookNotesTable = () => {
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `CREATE TABLE IF NOT EXISTS book_notes (
+          id            TEXT PRIMARY KEY,
+          owner_id      TEXT NOT NULL DEFAULT 'guest',
+          profile_id    TEXT DEFAULT 'ko_default',
+          book_uri      TEXT NOT NULL,
+          language      TEXT NOT NULL DEFAULT 'ko',
+          note          TEXT NOT NULL,
+          chapter_label TEXT,
+          progress      REAL,
+          created_at    TEXT NOT NULL,
+          updated_at    TEXT,
+          deleted_at    TEXT,
+          synced_at     TEXT
+        )`,
+        [],
+        () => {
+          tx.executeSql(
+            `CREATE INDEX IF NOT EXISTS idx_book_notes_owner_book_created
+             ON book_notes(owner_id, profile_id, book_uri, created_at)`,
+            [],
+            () => resolve(),
+            (_, error) => {
+              console.error('[Database] Error indexing book_notes:', error);
+              reject(error);
+              return true;
+            }
+          );
+        },
+        (_, error) => {
+          console.error('[Database] Error creating book_notes table:', error);
+          reject(error);
+          return true;
+        }
+      );
+    });
+  });
+};
+
+export const migrateBookNotesTable = async () => {
+  const columns = await getTableColumns('book_notes');
+  const alterations = [];
+
+  if (!columns.includes('note')) {
+    alterations.push("ALTER TABLE book_notes ADD COLUMN note TEXT NOT NULL DEFAULT ''");
+  }
+  if (!columns.includes('chapter_label')) {
+    alterations.push('ALTER TABLE book_notes ADD COLUMN chapter_label TEXT');
+  }
+  if (!columns.includes('progress')) {
+    alterations.push('ALTER TABLE book_notes ADD COLUMN progress REAL');
+  }
+  if (!columns.includes('synced_at')) {
+    alterations.push('ALTER TABLE book_notes ADD COLUMN synced_at TEXT');
+  }
+
+  if (alterations.length === 0) return;
+
+  await new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      alterations.reduce((chain, sql) => {
+        return chain.then(() => new Promise((res, rej) => {
+          tx.executeSql(sql, [], () => res(), (_, err) => { rej(err); return true; });
+        }));
+      }, Promise.resolve()).then(resolve).catch(reject);
+    });
+  });
+};
+
+export const insertBookNote = ({
+  ownerId,
+  profileId,
+  bookUri,
+  language = 'ko',
+  note,
+  chapterLabel = null,
+  progress = null,
+} = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
+  const trimmed = typeof note === 'string' ? note.trim() : '';
+
+  return new Promise((resolve, reject) => {
+    if (!bookUri || !trimmed) {
+      return resolve(null);
+    }
+    const id = makeBookNoteId();
+    const createdAt = new Date().toISOString();
+    db.transaction(tx => {
+      tx.executeSql(
+        `INSERT INTO book_notes
+           (id, owner_id, profile_id, book_uri, language, note, chapter_label, progress, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          scopedOwnerId,
+          scopedProfileId,
+          bookUri,
+          normalizedLanguage,
+          trimmed,
+          chapterLabel,
+          typeof progress === 'number' ? progress : null,
+          createdAt,
+          createdAt,
+        ],
+        () => resolve({
+          id,
+          bookUri,
+          language: normalizedLanguage,
+          note: trimmed,
+          chapterLabel,
+          progress: typeof progress === 'number' ? progress : null,
+          createdAt,
+        }),
+        (_, error) => {
+          console.error('[Database] Error inserting book note:', error);
+          reject(error);
+          return true;
+        }
+      );
+    });
+  });
+};
+
+export const getBookNotes = (bookUri, { ownerId, profileId, language = 'ko', limit = 100 } = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
+
+  return new Promise((resolve, reject) => {
+    if (!bookUri) {
+      return resolve([]);
+    }
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT id, note, chapter_label AS chapterLabel, progress, created_at AS createdAt
+         FROM book_notes
+         WHERE owner_id = ? AND profile_id = ? AND book_uri = ? AND language = ?
+           AND deleted_at IS NULL
+         ORDER BY created_at DESC
+         LIMIT ?`,
+        [scopedOwnerId, scopedProfileId, bookUri, normalizedLanguage, Math.max(1, Number(limit) || 100)],
+        (_, result) => resolve(result.rows._array),
+        (_, error) => {
+          console.error('[Database] Error reading book notes:', error);
+          reject(error);
+          return true;
+        }
+      );
+    });
+  });
+};
+
+export const getLatestBookNote = async (bookUri, options = {}) => {
+  const rows = await getBookNotes(bookUri, { ...options, limit: 1 });
+  return rows[0] ?? null;
+};
+
+export const deleteBookNote = (id, { ownerId } = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  return new Promise((resolve, reject) => {
+    if (!id) {
+      return resolve(false);
+    }
+    const deletedAt = new Date().toISOString();
+    db.transaction(tx => {
+      tx.executeSql(
+        `UPDATE book_notes SET deleted_at = ?, updated_at = ?, synced_at = NULL
+         WHERE id = ? AND owner_id = ?`,
+        [deletedAt, deletedAt, id, scopedOwnerId],
+        (_, result) => resolve((result.rowsAffected ?? 0) > 0),
+        (_, error) => {
+          console.error('[Database] Error deleting book note:', error);
+          reject(error);
+          return true;
+        }
+      );
+    });
+  });
+};
+
+// ─── Word candidates for the "before you go" panel ────────────────────────────
+//
+// Reuses the Phase 4.4 flashcard nominator (uncertain AND rare-in-book words the
+// reader didn't already save) and hydrates each stem with its cached dictionary
+// entry (reading, gloss, hanja, level) so the panel can render it. Pure daily
+// rotation + badge selection live in services/wordCandidates.js.
+
+export const getBookWordCandidates = async ({
+  ownerId,
+  profileId,
+  language = 'ko',
+  interfaceLanguage = 'en',
+  bookUri,
+  limit = 12,
+} = {}) => {
+  if (!bookUri) return [];
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+
+  const nominations = await nominateFlashcards({
+    ownerId,
+    profileId,
+    language: normalizedLanguage,
+    sourceBookUri: bookUri,
+    limit,
+  });
+  if (nominations.length === 0) return [];
+
+  const stems = nominations.map((n) => n.stem);
+  const cacheRows = await lookupCacheByStems(stems, {
+    language: normalizedLanguage,
+    interfaceLanguage,
+  });
+  const cacheByStem = new Map();
+  cacheRows.forEach((row) => {
+    if (!cacheByStem.has(row.stem)) {
+      cacheByStem.set(row.stem, row);
+    }
+  });
+
+  return nominations
+    .map((n) => {
+      const entry = cacheByStem.get(n.stem);
+      if (!entry) return null;
+      const gloss = (entry.gloss || entry.definition || '').trim();
+      if (!gloss) return null;
+      return {
+        stem: n.stem,
+        headword: n.stem,
+        romanization: entry.romanization || '',
+        gloss,
+        hanja: entry.hanja || '',
+        levelLabel: entry.level_label || '',
+        levelRank: entry.level_rank ?? null,
+        pKnown: n.pKnown,
+        uncertainty: n.uncertainty,
+        remainingCount: n.remainingCount,
+      };
+    })
+    .filter(Boolean);
+};
+
 export const initAllTables = async () => {
   await createTable();
   await migrateVocabTable();
@@ -3183,6 +3483,8 @@ export const initAllTables = async () => {
   await migrateDictionaryCacheRomanization();
   await migrateBookIndex();
   await createBookIndexTable();
+  await createBookNotesTable();
+  await migrateBookNotesTable();
   await createBookPreprocessTables();
   await migrateBookPreprocessLevelColumns();
   await migrateLocalOwnerSqlite();

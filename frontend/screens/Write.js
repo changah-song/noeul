@@ -1,7 +1,9 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -14,6 +16,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather } from '@expo/vector-icons';
 
 import { Card, IconButton, Screen, SectionHeader } from '../components/ui';
+import { createTabBarBaseStyle } from '../components/shared/TabBar';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
 import {
@@ -36,7 +39,6 @@ import {
 } from '../services/localOwnerCoordinator';
 import { colors, fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
 import { useAppContext } from '../contexts/AppContext';
-import { useVocabWords } from '../contexts/VocabWordsContext';
 import { assessEntry } from '../services/api/assessEntry';
 
 const LEGACY_STORAGE_KEY = 'writing_entries_v1';
@@ -44,10 +46,10 @@ const getWritingStorageKey = (ownerId) => makeScopedStorageKey(ownerId, 'writing
 const WRITE_SIDE_PADDING = 18;
 const WRITING_FILTERS = [
   { key: 'all', labelKey: 'write.filters.all' },
+  { key: 'sandbox', labelKey: 'write.filters.sandbox' },
   { key: 'reflective', labelKey: 'write.filters.reflective' },
   { key: 'persuasive', labelKey: 'write.filters.persuasive' },
   { key: 'creative', labelKey: 'write.filters.creative' },
-  { key: 'sandbox', labelKey: 'write.filters.sandbox' },
 ];
 const EDITOR_TYPE_FILTERS = WRITING_FILTERS.filter((filter) => filter.key !== 'all');
 const DEFAULT_ENTRY_FORMATTING = {
@@ -90,7 +92,13 @@ const useWriteTheme = () => (
   }
 );
 
-const EDITOR_PROMPTS = {
+// Naive title strip: drop everything up to and including the first ": "
+const stripPromptTitle = (prompt) => {
+  const idx = prompt.indexOf(': ');
+  return idx >= 0 ? prompt.slice(idx + 2) : prompt;
+};
+
+const RAW_EDITOR_PROMPTS = {
   reflective: [
     'The Daily Micro-Moment: Describe a mundane interaction you had in the last 24 hours that unexpectedly made you smile, pause, or think.',
     'The Unsent Letter: Write a short note to someone from your past (a friend, a former teacher, an ex). What do you wish you had said?',
@@ -157,8 +165,67 @@ const EDITOR_PROMPTS = {
     'The Lost City: Describe a fictional city that is built entirely vertically up the sides of a massive canyon, detailing how the people at the top live versus the people at the bottom.',
     'The Final Sentence: Write a story backwards. Start with the final sentence: "And that was the last time anyone ever heard that sound." and work your way to how it began.',
   ],
-  sandbox: [],
+  sandbox: [
+    "What is the protagonist's core desire, and what external or internal obstacle is stopping them from getting it?",
+    'Identify a moment where a character made a choice you fundamentally disagreed with. What would you have done instead?',
+    'Which character feels the most multi-dimensional (flawed, realistic), and which feels the most flat or predictable?',
+    'How do the relationships between characters drive the plot forward, rather than just filling pages?',
+    'If you could ask the main character one direct question right now, what would it be?',
+    'Track a specific change in a character\'s worldview from the beginning to where you are now. What triggered that shift?',
+    'Is there a minor character who steals the scene every time they appear? What makes them so compelling?',
+    "Do the characters' dialogues sound natural and distinct, or do they all speak with the author's voice?",
+    'Who is the real antagonist of this story? Is it a specific person, an institution, or an internal struggle?',
+    'If the protagonist were placed in a modern, everyday situation (like waiting in a long line at a grocery store), how would they react based on their personality?',
+    'At what point did the story format establish its "point of no return"—the moment the plot truly took off?',
+    'Is the pacing keeping you turning pages, or are there sections where the narrative feels bogged down?',
+    'Analyze a major plot twist: Did it feel earned through subtle foreshadowing, or did it feel like a cheap shock?',
+    'How well does the author balance action/dialogue with internal monologue and exposition?',
+    'Are the stakes high enough? What happens if the characters fail? Do you actually care about the outcome?',
+    'Identify a scene that felt completely unnecessary to the overall narrative arc. Why could it be cut?',
+    'How does the author handle transitions between scenes or time jumps? Is it seamless or jarring?',
+    'If you are mid-book: What is your current hypothesis for how this conflict resolves, and what clues point you there?',
+    'Does the resolution (or current trajectory) feel satisfying, or does it rely too heavily on convenience and coincidence?',
+    "How does the opening hook compare to the rest of the book's momentum?",
+    'How does the setting act as its own character in the story, rather than just a static backdrop?',
+    'Select a line or passage where the sensory details (sight, sound, smell, texture) completely immersed you.',
+    "How would you describe the author's prose style? Is it minimalist and punchy, or lyrical and descriptive?",
+    'Does the vocabulary choice match the tone of the story, or do certain words pull you out of the experience?',
+    'How effectively does the author build tension or mood (e.g., dread, whimsy, nostalgia) in quiet scenes?',
+    'If this book were a specific color palette or musical genre, what would it be and why?',
+    "Does the world operate on clear, consistent internal logic, or do the rules bend whenever it's convenient for the plot?",
+    'How does the physical environment mirror the emotional state of the characters?',
+    'What unique details or cultural elements make this specific setting feel distinct from similar books?',
+    'Does the narrative style feel modern, dated, timeless, or experimental?',
+    'What central question or argument is the author trying to explore through this narrative?',
+    'How do the subplots reinforce or contrast with the main theme of the book?',
+    'Identify a recurring motif or symbol. What does it seem to represent as the story progresses?',
+    'Does the book challenge any of your personal beliefs, assumptions, or moral frameworks?',
+    'Is the moral or message of the story delivered with nuance, or does it feel overly heavy-handed and preachy?',
+    'How does this book comment on real-world human nature, societal structures, or psychological truths?',
+    'What is the emotional core of the book? Is it driven by grief, ambition, love, survival, or something else?',
+    "How does the title of the book take on a deeper or different meaning now that you've read the context?",
+    'Does the author offer a hopeful view of humanity/the future, or is the perspective fundamentally cynical?',
+    'What lingering thoughts or philosophical questions did the text leave you wrestling with?',
+    'What was your exact emotional state when you closed the book (or paused)? Relieved, devastated, frustrated, energized?',
+    'Who is the absolute ideal reader for this book, and who should actively avoid it?',
+    "How does this book stack up against other titles in the same genre or the author's previous work?",
+    'Did your opinion of the book drastically change between the first half and the second half? What caused that flip?',
+    'If you could change exactly one structural choice the author made, what would it be?',
+    'What did this book teach you about writing, storytelling, or structure (either what to do, or what not to do)?',
+    'How long do you think this story will stay with you? Is it a quick escape or a permanent mental fixture?',
+    'Did the book live up to its marketing, blurb, or the general hype surrounding it?',
+    'If you had to pitch this book to a friend using only a single "This meets That" mashup sentence, how would you describe it?',
+    'What is your final, unvarnished rating (out of 5 stars or 10 points), and what is the single biggest factor behind that score?',
+  ],
 };
+
+// Runtime-stripped prompts (titles removed) used throughout the editor
+const EDITOR_PROMPTS = Object.fromEntries(
+  Object.entries(RAW_EDITOR_PROMPTS).map(([key, prompts]) => [
+    key,
+    prompts.map(stripPromptTitle),
+  ])
+);
 
 const makeEmptyDraft = () => ({
   id: null,
@@ -336,6 +403,10 @@ const WritingEntryRow = ({ entry, onPress }) => {
           <Text style={styles.writeEntryMetaDot}>·</Text>
           <Text numberOfLines={1} style={styles.writeEntryType}>
             {filter?.labelKey ? t(filter.labelKey) : t('write.free')}
+          </Text>
+          <Text style={styles.writeEntryMetaDot}>·</Text>
+          <Text numberOfLines={1} style={styles.writeEntryMetaText}>
+            {formatEntryDate(entry.date ?? entry.createdAt ?? entry.updatedAt, language)}
           </Text>
         </View>
       </View>
@@ -618,6 +689,48 @@ const AnnotationSheet = ({ annotation, onClose }) => {
   );
 };
 
+const ConfirmDialog = ({
+  visible,
+  title,
+  message,
+  confirmLabel,
+  cancelLabel,
+  destructive = false,
+  onConfirm,
+  onCancel,
+}) => {
+  const { styles } = useWriteTheme();
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onCancel}>
+      <View style={styles.confirmRoot}>
+        <Pressable style={styles.confirmScrim} onPress={onCancel} />
+        <View style={styles.confirmCard}>
+          <Text style={styles.confirmTitle}>{title}</Text>
+          {message ? <Text style={styles.confirmMessage}>{message}</Text> : null}
+          <View style={styles.confirmActions}>
+            <TouchableOpacity
+              onPress={onCancel}
+              style={[styles.confirmButton, styles.confirmButtonSecondary]}
+            >
+              <Text style={styles.confirmButtonSecondaryText}>{cancelLabel}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={onConfirm}
+              style={[
+                styles.confirmButton,
+                destructive ? styles.confirmButtonDanger : styles.confirmButtonPrimary,
+              ]}
+            >
+              <Text style={styles.confirmButtonPrimaryText}>{confirmLabel}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+};
+
 const FormattingToolbar = ({ formatting, onToggle }) => {
   const { t } = useTranslation();
   const { styles } = useWriteTheme();
@@ -675,13 +788,10 @@ const FormattingToolbar = ({ formatting, onToggle }) => {
   );
 };
 
-const SANDBOX_WORD_PAGE_SIZE = 5;
-
-const Write = ({ user }) => {
+const Write = ({ user, navigation }) => {
   const { t, language } = useTranslation();
   const { activeOwnerId, syncPaused, syncGeneration } = useLocalOwner();
   const { targetLanguage } = useAppContext();
-  const dueVocabWords = useVocabWords();
   const { colors } = useTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const annotationLegend = useMemo(() => createAnnotationLegend(colors), [colors]);
@@ -701,9 +811,23 @@ const Write = ({ user }) => {
   const [activeWriteFilter, setActiveWriteFilter] = useState('all');
   const [activeEditorType, setActiveEditorType] = useState('reflective');
   const [promptIndex, setPromptIndex] = useState(0);
-  const [wordBankPage, setWordBankPage] = useState(0);
   const [isAssessing, setIsAssessing] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [assessConfirmVisible, setAssessConfirmVisible] = useState(false);
+  const [deleteConfirmVisible, setDeleteConfirmVisible] = useState(false);
+
+  // Hide the bottom tab bar while composing a new entry
+  useEffect(() => {
+    if (!navigation?.setOptions) {
+      return;
+    }
+
+    navigation.setOptions({
+      tabBarStyle: mode === 'editor'
+        ? { display: 'none' }
+        : createTabBarBaseStyle(colors),
+    });
+  }, [mode, navigation, colors]);
 
   useEffect(() => {
     if (!activeOwnerId) {
@@ -904,13 +1028,6 @@ const Write = ({ user }) => {
     ? currentPrompts[promptIndex % currentPrompts.length]
     : null;
 
-  const sandboxWordBank = useMemo(() => {
-    const total = dueVocabWords.length;
-    if (total === 0) return [];
-    const start = (wordBankPage * SANDBOX_WORD_PAGE_SIZE) % Math.max(total, 1);
-    return dueVocabWords.slice(start, start + SANDBOX_WORD_PAGE_SIZE);
-  }, [dueVocabWords, wordBankPage]);
-
   const selectedEntry = useMemo(
     () => entries.find((entry) => entry.id === selectedEntryId),
     [entries, selectedEntryId]
@@ -925,12 +1042,11 @@ const Write = ({ user }) => {
   const canSave = draft.title.trim().length > 0 || draft.body.trim().length > 0;
 
   const openNewDraft = () => {
-    setDraft(makeEmptyDraft());
+    setDraft({ ...makeEmptyDraft(), prompt: EDITOR_PROMPTS.reflective?.[0] ?? '' });
     setSelectedEntryId(null);
     setSelectedAnnotation(null);
     setActiveEditorType('reflective');
     setPromptIndex(0);
-    setWordBankPage(0);
     setMode('editor');
   };
 
@@ -943,10 +1059,12 @@ const Write = ({ user }) => {
 
   const openExistingDraft = (entry) => {
     const normalizedEntry = normalizeEntry(entry);
+    const category = getEntryFilterKey(normalizedEntry);
+    const categoryPrompts = EDITOR_PROMPTS[category] ?? [];
+    const savedPromptIndex = categoryPrompts.indexOf(normalizedEntry.prompt);
     setDraft(normalizedEntry);
-    setActiveEditorType(getEntryFilterKey(normalizedEntry));
-    setPromptIndex(0);
-    setWordBankPage(0);
+    setActiveEditorType(category);
+    setPromptIndex(savedPromptIndex >= 0 ? savedPromptIndex : 0);
     setSelectedAnnotation(null);
     setMode('editor');
   };
@@ -954,6 +1072,24 @@ const Write = ({ user }) => {
   const leaveEditor = () => {
     setDraft(makeEmptyDraft());
     setMode('list');
+  };
+
+  // Back from the editor: auto-save as draft if there's any text, titling
+  // untitled entries "Untitled"; otherwise just discard the empty draft.
+  const handleEditorBack = async () => {
+    if (canSave) {
+      const nextEntry = buildNextEntry();
+      await persistAndSyncEntry(nextEntry, entries).catch(() => {});
+    }
+    leaveEditor();
+  };
+
+  const handleDeleteEntry = async () => {
+    if (draft.id) {
+      await deleteEntry(draft.id);
+    } else {
+      leaveEditor();
+    }
   };
 
   const leaveDetail = () => {
@@ -967,10 +1103,9 @@ const Write = ({ user }) => {
     const existingEntry = entries.find((entry) => entry.id === draft.id);
     const preservedAssessment =
       assessment ?? (draft.assessment && existingEntry?.body === draft.body ? draft.assessment : null);
-    const fallbackTitle = draft.body.trim().replace(/\s+/g, ' ').slice(0, 24);
     return {
       id: draft.id ?? `entry-${Date.now()}`,
-      title: draft.title.trim() || fallbackTitle || t('common.untitled'),
+      title: draft.title.trim() || t('common.untitled'),
       body: draft.body,
       prompt: draft.prompt,
       category: activeEditorType,
@@ -1021,16 +1156,12 @@ const Write = ({ user }) => {
     let currentEntries = await persistAndSyncEntry(submittedEntry, entries).catch(() => entries);
 
     try {
-      const sandboxWords = activeEditorType === 'sandbox'
-        ? sandboxWordBank.map((w) => w.word ?? w.def ?? '').filter(Boolean)
-        : [];
-
       const assessment = await assessEntry({
         body: submittedEntry.body,
         category: activeEditorType,
         language: targetLanguage ?? 'ko',
         prompt: submittedEntry.prompt,
-        sandboxWords,
+        sandboxWords: [],
       });
 
       const reviewedEntry = {
@@ -1084,8 +1215,7 @@ const Write = ({ user }) => {
   const selectEditorType = (type) => {
     setActiveEditorType(type);
     setPromptIndex(0);
-    setWordBankPage(0);
-    updateDraft({ prompt: '' });
+    updateDraft({ prompt: EDITOR_PROMPTS[type]?.[0] ?? '' });
   };
 
   if (loading) {
@@ -1102,19 +1232,17 @@ const Write = ({ user }) => {
 
   return (
     <WriteThemeContext.Provider value={writeThemeValue}>
-    <Screen scroll backgroundColor={screenBackground} contentContainerStyle={styles.screenContent}>
+    <Screen
+      scroll={mode !== 'editor'}
+      backgroundColor={screenBackground}
+      contentContainerStyle={mode === 'editor' ? styles.editorScreenContent : styles.screenContent}
+    >
       {mode === 'list' ? (
         <View style={styles.writeHome}>
           <View style={styles.appTopBar}>
             <View style={styles.appTopSide} />
             <Text style={styles.appTopTitle}>{t('write.title')}</Text>
-            <TouchableOpacity
-              activeOpacity={0.82}
-              onPress={openNewDraft}
-              style={styles.appTopSideRight}
-            >
-              <Feather name="edit-3" size={19} color={colors.textSecondary} />
-            </TouchableOpacity>
+            <View style={styles.appTopSide} />
           </View>
           <View style={styles.writeHomeHeader}>
             <View style={styles.writeHomeTitleBlock}>
@@ -1124,6 +1252,13 @@ const Write = ({ user }) => {
                 <Text style={styles.writeHomeCountLabel}>{t('write.entries')}</Text>
               </View>
             </View>
+            <TouchableOpacity
+              activeOpacity={0.82}
+              onPress={openNewDraft}
+              style={styles.writeHomeNewButton}
+            >
+              <Feather name="edit" size={20} color={colors.textSecondary} />
+            </TouchableOpacity>
           </View>
 
           <ScrollView
@@ -1323,25 +1458,34 @@ const Write = ({ user }) => {
           </TouchableOpacity>
         </View>
       ) : (
-        <View style={styles.editorShell}>
+        <KeyboardAvoidingView
+          style={styles.editorShell}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
           <View style={styles.editorTopBar}>
             <TouchableOpacity
               accessibilityLabel={t('write.backList')}
-              onPress={leaveEditor}
+              onPress={handleEditorBack}
               style={styles.editorBackButton}
             >
-              <Feather name="x" size={18} color={colors.text} />
-              <Text style={styles.editorCancelText}>{t('common.cancel')}</Text>
+              <Feather name="chevron-left" size={22} color={colors.text} />
             </TouchableOpacity>
 
-            <Text style={styles.editorBarTitle}>{t('write.newEntry')}</Text>
+            <View style={styles.editorTopBarSpacer} />
 
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.editorTypeChips}
-              style={styles.editorTypeScroller}
+            <TouchableOpacity
+              disabled={!canSave}
+              onPress={saveEntry}
+              style={[styles.editorSaveButton, !canSave && styles.editorSaveButtonDisabled]}
             >
+              <Text style={[styles.editorSaveText, !canSave && styles.editorSaveTextDisabled]}>
+                {t('common.save')}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.editorHeaderBlock}>
+            <View style={styles.editorTypeChipsWrap}>
               {EDITOR_TYPE_FILTERS.map((filter) => {
                 const active = activeEditorType === filter.key;
 
@@ -1357,52 +1501,11 @@ const Write = ({ user }) => {
                   </TouchableOpacity>
                 );
               })}
-            </ScrollView>
-
-            <TouchableOpacity
-              disabled={!canSave}
-              onPress={saveEntry}
-              style={[styles.editorSaveButton, !canSave && styles.editorSaveButtonDisabled]}
-            >
-              <Text style={[styles.editorSaveText, !canSave && styles.editorSaveTextDisabled]}>
-                {t('common.save')}
-              </Text>
-            </TouchableOpacity>
+            </View>
           </View>
 
-          {activeEditorType === 'sandbox' ? (
-            <View style={styles.editorPromptPanel}>
-              <View style={styles.editorPromptHeader}>
-                <Text style={styles.editorPromptHeaderText}>{t('write.wordBank')}</Text>
-                {dueVocabWords.length > SANDBOX_WORD_PAGE_SIZE ? (
-                  <TouchableOpacity
-                    onPress={() => setWordBankPage((p) => p + 1)}
-                    style={styles.editorPromptReloadButton}
-                  >
-                    <Feather name="refresh-cw" size={14} color={colors.textMuted} />
-                  </TouchableOpacity>
-                ) : null}
-              </View>
-              {sandboxWordBank.length > 0 ? (
-                <>
-                  <Text style={styles.editorPromptHint}>{t('write.wordBankOptional')}</Text>
-                  <View style={styles.sandboxWordChips}>
-                    {sandboxWordBank.map((word, idx) => (
-                      <View key={word.word ?? idx} style={styles.sandboxWordChip}>
-                        <Text style={styles.sandboxWordText}>{word.word}</Text>
-                        {word.def ? (
-                          <Text style={styles.sandboxWordDef} numberOfLines={1}>{word.def}</Text>
-                        ) : null}
-                      </View>
-                    ))}
-                  </View>
-                </>
-              ) : (
-                <Text style={styles.editorPromptHint}>{t('write.wordBankEmpty')}</Text>
-              )}
-            </View>
-          ) : currentPromptText ? (
-            <View style={styles.editorPromptPanel}>
+          {currentPrompts.length > 0 ? (
+            <View style={[styles.editorPromptPanel, styles.editorPromptPanelInEditor]}>
               <View style={styles.editorPromptHeader}>
                 <Text style={styles.editorPromptHeaderText}>{t('write.choosePrompt')}</Text>
                 <TouchableOpacity
@@ -1416,14 +1519,11 @@ const Write = ({ user }) => {
                   <Feather name="refresh-cw" size={14} color={colors.textMuted} />
                 </TouchableOpacity>
               </View>
-              <Pressable
-                onPress={() => updateDraft({ prompt: draft.prompt === currentPromptText ? '' : currentPromptText })}
-                style={[styles.editorPromptOption, styles.editorPromptOptionLast, draft.prompt === currentPromptText && styles.editorPromptOptionSelected]}
-              >
-                <Text style={[styles.editorPromptOptionText, draft.prompt === currentPromptText && styles.editorPromptOptionTextSelected]}>
-                  {currentPromptText}
+              <View style={[styles.editorPromptOption, styles.editorPromptOptionLast]}>
+                <Text style={styles.editorPromptOptionText}>
+                  {draft.prompt || currentPromptText}
                 </Text>
-              </Pressable>
+              </View>
             </View>
           ) : null}
 
@@ -1435,6 +1535,9 @@ const Write = ({ user }) => {
               onChangeText={(title) => updateDraft({ title })}
               placeholder={t('write.titlePlaceholder')}
               placeholderTextColor={colors.textSubtle}
+              multiline={false}
+              scrollEnabled={false}
+              numberOfLines={1}
               style={styles.editorTitleInput}
             />
 
@@ -1456,44 +1559,48 @@ const Write = ({ user }) => {
 
           <TouchableOpacity
             disabled={!canSave || isAssessing}
-            onPress={submitForAssessment}
+            onPress={() => setAssessConfirmVisible(true)}
             style={[styles.editorSubmitButton, (!canSave || isAssessing) && styles.editorSubmitButtonDisabled]}
           >
             <Text style={styles.editorSubmitText}>
-              {isAssessing ? t('write.assessingEntry') : t('write.getAiFeedback')}
+              {isAssessing ? t('write.assessingEntry') : t('write.submitForAssessment')}
             </Text>
           </TouchableOpacity>
 
           <TouchableOpacity
-            disabled={!canSave || isAssessing}
-            onPress={saveEntry}
-            style={[styles.reviewDoneButton, (!canSave || isAssessing) && styles.editorSaveButtonDisabled]}
+            disabled={isAssessing}
+            onPress={() => setDeleteConfirmVisible(true)}
+            style={styles.editorDeleteButton}
           >
-            <Text style={[styles.reviewDoneText, (!canSave || isAssessing) && styles.editorSaveTextDisabled]}>
-              {t('write.saveAsDraft')}
-            </Text>
+            <Text style={styles.editorDeleteText}>{t('write.deleteEntry')}</Text>
           </TouchableOpacity>
-
-          {draft.id ? (
-            <TouchableOpacity
-              disabled={isAssessing}
-              onPress={() =>
-                Alert.alert(
-                  t('write.deleteEntryTitle'),
-                  t('write.deleteEntryBody'),
-                  [
-                    { text: t('common.cancel'), style: 'cancel' },
-                    { text: t('common.delete'), style: 'destructive', onPress: () => deleteEntry(draft.id) },
-                  ]
-                )
-              }
-              style={styles.deleteLink}
-            >
-              <Text style={styles.deleteLinkText}>{t('write.deleteEntry')}</Text>
-            </TouchableOpacity>
-          ) : null}
-        </View>
+        </KeyboardAvoidingView>
       )}
+      <ConfirmDialog
+        visible={assessConfirmVisible}
+        title={t('write.assessConfirmTitle')}
+        message={t('write.assessConfirmBody')}
+        confirmLabel={t('write.assessConfirmCta')}
+        cancelLabel={t('common.cancel')}
+        onConfirm={() => {
+          setAssessConfirmVisible(false);
+          submitForAssessment();
+        }}
+        onCancel={() => setAssessConfirmVisible(false)}
+      />
+      <ConfirmDialog
+        visible={deleteConfirmVisible}
+        title={t('write.deleteEntryTitle')}
+        message={t('write.deleteEntryBody')}
+        confirmLabel={t('write.deleteEntryConfirmCta')}
+        cancelLabel={t('common.cancel')}
+        destructive
+        onConfirm={() => {
+          setDeleteConfirmVisible(false);
+          handleDeleteEntry();
+        }}
+        onCancel={() => setDeleteConfirmVisible(false)}
+      />
       <AnnotationSheet
         annotation={selectedAnnotation}
         onClose={() => setSelectedAnnotation(null)}
@@ -1508,6 +1615,12 @@ const createStyles = (colors) => StyleSheet.create({
     paddingHorizontal: 0,
     paddingTop: 0,
     paddingBottom: spacing.xl * 2,
+  },
+  editorScreenContent: {
+    flex: 1,
+    paddingHorizontal: 0,
+    paddingTop: 0,
+    paddingBottom: 16,
   },
   writeHome: {
     gap: 0,
@@ -1550,6 +1663,13 @@ const createStyles = (colors) => StyleSheet.create({
     fontSize: 30,
     lineHeight: 38,
     color: colors.text,
+    paddingRight: 6,
+  },
+  writeHomeNewButton: {
+    width: 40,
+    height: 40,
+    alignItems: 'flex-end',
+    justifyContent: 'center',
   },
   writeHomeCountRow: {
     flexDirection: 'row',
@@ -1750,6 +1870,7 @@ const createStyles = (colors) => StyleSheet.create({
     color: colors.text,
   },
   editorShell: {
+    flex: 1,
     gap: 0,
   },
   editorTopBar: {
@@ -1789,6 +1910,16 @@ const createStyles = (colors) => StyleSheet.create({
     flex: 1,
     textAlign: 'center',
     ...textStyles.screenBarTitle,
+  },
+  editorHeaderBlock: {
+    paddingHorizontal: 24,
+    paddingTop: 18,
+    paddingBottom: 14,
+  },
+  editorTypeChipsWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
   },
   editorTypeScroller: {
     position: 'absolute',
@@ -1856,6 +1987,9 @@ const createStyles = (colors) => StyleSheet.create({
     borderLeftColor: colors.borderStrong,
     backgroundColor: colors.transparent,
     overflow: 'hidden',
+  },
+  editorPromptPanelInEditor: {
+    marginTop: 4,
   },
   editorPromptHeader: {
     minHeight: 35,
@@ -1944,6 +2078,7 @@ const createStyles = (colors) => StyleSheet.create({
     fontFamily: fontFamilies.sansMedium,
   },
   editorWritingPanel: {
+    flex: 1,
     marginHorizontal: 24,
     marginTop: 20,
     borderRadius: 0,
@@ -1990,18 +2125,21 @@ const createStyles = (colors) => StyleSheet.create({
     textDecorationLine: 'underline',
   },
   editorTitleInput: {
-    minHeight: 52,
     borderBottomWidth: 1,
     borderBottomColor: colors.divider,
     paddingHorizontal: 0,
-    paddingVertical: 12,
+    paddingTop: 14,
+    paddingBottom: 14,
     color: colors.text,
     fontFamily: fontFamilies.krSerifSemiBold,
-    fontSize: 23,
-    lineHeight: 31,
+    fontSize: 22,
+    lineHeight: 26,
+    textAlignVertical: 'center',
+    includeFontPadding: false,
   },
   editorBodyInput: {
-    minHeight: 360,
+    flex: 1,
+    minHeight: 0,
     paddingHorizontal: 0,
     paddingTop: 14,
     paddingBottom: 18,
@@ -2407,6 +2545,91 @@ const createStyles = (colors) => StyleSheet.create({
   deleteLinkText: {
     ...textStyles.label,
     color: colors.danger,
+  },
+  editorDeleteButton: {
+    marginTop: 12,
+    marginHorizontal: 24,
+    minHeight: 45,
+    borderRadius: 4,
+    paddingHorizontal: 13,
+    paddingVertical: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: colors.danger,
+    backgroundColor: colors.transparent,
+  },
+  editorDeleteText: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 14,
+    lineHeight: 18,
+    color: colors.danger,
+  },
+  confirmRoot: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 32,
+  },
+  confirmScrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: colors.overlay,
+  },
+  confirmCard: {
+    width: '100%',
+    maxWidth: 340,
+    borderRadius: radii.lg,
+    backgroundColor: colors.surfaceElevated,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.lg,
+    paddingBottom: spacing.md,
+    gap: spacing.sm,
+  },
+  confirmTitle: {
+    fontFamily: fontFamilies.displayMedium,
+    fontSize: 19,
+    lineHeight: 26,
+    color: colors.text,
+  },
+  confirmMessage: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 14,
+    lineHeight: 21,
+    color: colors.textMuted,
+  },
+  confirmActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+  },
+  confirmButton: {
+    minHeight: 40,
+    borderRadius: radii.md,
+    paddingHorizontal: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  confirmButtonSecondary: {
+    backgroundColor: colors.surfaceMuted,
+  },
+  confirmButtonSecondaryText: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 13,
+    lineHeight: 17,
+    color: colors.textMuted,
+  },
+  confirmButtonPrimary: {
+    backgroundColor: colors.accent,
+  },
+  confirmButtonDanger: {
+    backgroundColor: colors.danger,
+  },
+  confirmButtonPrimaryText: {
+    fontFamily: fontFamilies.sansBold,
+    fontSize: 13,
+    lineHeight: 17,
+    color: colors.white,
   },
 });
 

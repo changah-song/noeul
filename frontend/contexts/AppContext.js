@@ -71,6 +71,10 @@ const AppContext = createContext({
   isDarkMode: false,
   setIsDarkMode: () => {},
   toggleDarkMode: () => {},
+  notificationsEnabled: true,
+  setNotificationsEnabled: () => {},
+  personalizedVocabEnabled: true,
+  setPersonalizedVocabEnabled: () => {},
   languageSettingsReady: false,
   updateLanguageSettings: () => {},
   syncLanguagePreferences: () => Promise.resolve(),
@@ -141,6 +145,16 @@ const normalizeLanguageSettings = (settings = {}) => {
         ?? settings.darkMode
         ?? settings.dark_mode,
       false
+    ),
+    notificationsEnabled: normalizeBoolean(
+      settings.notificationsEnabled
+        ?? settings.notifications_enabled,
+      true
+    ),
+    personalizedVocabEnabled: normalizeBoolean(
+      settings.personalizedVocabEnabled
+        ?? settings.personalized_vocab_enabled,
+      true
     ),
     updatedAt: settings.updatedAt
       ?? settings.updated_at
@@ -605,6 +619,10 @@ export const AppProvider = ({ children, user }) => {
     isDarkMode: languageSettings.isDarkMode,
     setIsDarkMode: (isDarkMode) => saveLanguageSettings({ isDarkMode }),
     toggleDarkMode: () => saveLanguageSettings({ isDarkMode: !languageSettings.isDarkMode }),
+    notificationsEnabled: languageSettings.notificationsEnabled ?? true,
+    setNotificationsEnabled: (notificationsEnabled) => saveLanguageSettings({ notificationsEnabled }),
+    personalizedVocabEnabled: languageSettings.personalizedVocabEnabled ?? true,
+    setPersonalizedVocabEnabled: (personalizedVocabEnabled) => saveLanguageSettings({ personalizedVocabEnabled }),
     languageSettingsReady,
     updateLanguageSettings: saveLanguageSettings,
     syncLanguagePreferences,
@@ -615,6 +633,8 @@ export const AppProvider = ({ children, user }) => {
     languageSettings.nativeLanguage,
     languageSettings.activeProfileId,
     languageSettings.isDarkMode,
+    languageSettings.notificationsEnabled,
+    languageSettings.personalizedVocabEnabled,
     languageSettings.targetLanguage,
     languageSettingsReady,
     saveLanguageSettings,

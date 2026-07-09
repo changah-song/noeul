@@ -43,8 +43,8 @@ import { normalizeBookLanguage } from '../constants/languages';
 import { colors, fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
 
 const FILTERS = [
+  { key: 'starred', labelKey: 'learn.filters.starred', icon: 'star' },
   { key: 'recent', labelKey: 'learn.filters.recent' },
-  { key: 'starred', labelKey: 'learn.filters.starred' },
   { key: 'maturity', labelKey: 'learn.filters.maturity' },
   { key: 'not-seen', labelKey: 'learn.filters.notSeen' },
 ];
@@ -1529,7 +1529,7 @@ const Learn = ({ navigation, user }) => {
                 <MaterialIcons
                   name={active ? filter.icon : `${filter.icon}-border`}
                   size={17}
-                  color={active ? colors.white : colors.textSubtle}
+                  color={active ? colors.textMuted : colors.textSubtle}
                 />
               ) : (
                 <Text style={[styles.filterText, active && styles.filterTextActive]}>{t(filter.labelKey)}</Text>

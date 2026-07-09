@@ -4,6 +4,9 @@
 #
 #    pip-compile requirements.in
 #
+# kiwipiepy manually pinned — pip-compile excluded it (no Python 3.14 wheel),
+# but the Docker build uses Python 3.12 where it installs fine.
+kiwipiepy
 annotated-doc==0.0.4
     # via
     #   fastapi

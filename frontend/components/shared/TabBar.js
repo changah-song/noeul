@@ -77,8 +77,7 @@ const styles = StyleSheet.create({
         flex: 1,
         width: '100%',
         alignItems: 'center',
-        justifyContent: 'flex-end',
-        paddingBottom: 18,
+        justifyContent: 'center',
     },
     tabLabel: {
         fontFamily: fontFamilies.sansMedium,

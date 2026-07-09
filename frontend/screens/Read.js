@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Animated, Easing, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, Pressable } from 'react-native';
+import { Animated, BackHandler, Easing, PanResponder, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, Pressable } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather, MaterialIcons } from '@expo/vector-icons';
@@ -13,18 +13,31 @@ import { useTranslation } from '../hooks/useTranslation';
 import NativeEpubReaderView from '../modules/native-epub-reader/src/NativeEpubReaderView';
 import {
     PREPROCESS_VERSION,
+    deleteBookNote,
+    getBookNotes,
     getBookPreprocessChapter,
+    getBookWordCandidates,
+    getCachedPKnown,
     getSavedWords,
+    insertBookNote,
     insertCacheEntries,
     insertBookIndexEntries,
+    insertData,
+    logInteractionEvent,
     lookupBookHighlightSurfaces,
     lookupBookLevelSurfaces,
     lookupCacheByStems,
     markBookPreprocessChapter,
     markBookPreprocessMeta,
+    recordVocabContext,
     recordVocabContextForSurface,
     scoreWordsForProfile,
+    vocabEntryExists,
 } from '../services/Database';
+import { pickExampleSentence, selectDailyCandidates } from '../services/wordCandidates';
+import BeforeYouGoSheet from '../components/Read/BeforeYouGoSheet';
+import NotesLogSheet from '../components/Read/NotesLogSheet';
+import { createTabBarBaseStyle } from '../components/shared/TabBar';
 import preprocessChapter from '../services/api/preprocessChapter';
 import { updateUserBookProgress } from '../services/bookCloudSync';
 import { addReadingMillis } from '../services/dailyProgress';
@@ -55,7 +68,9 @@ const DEFAULT_READER_SETTINGS = {
     brightness: 0.62,
     focusSpan: 1,
     focusSwipe: false,
+    readingMode: 'paged',
 };
+const READING_MODES = ['paged', 'scroll'];
 const FONT_SIZE_MIN = 12;
 const FONT_SIZE_MAX = 30;
 const FOCUS_SPAN_MIN = 1;
@@ -476,8 +491,12 @@ const Read = ({
     const [translationBannerCopiedPreview] = useState(false);
     const [translationBannerTextPreview] = useState('');
     const [showLookupHint, setShowLookupHint] = useState(true);
-    const [showSettings, setShowSettings] = useState(false);
     const [showMenu, setShowMenu] = useState(false);
+    const [showBeforeYouGo, setShowBeforeYouGo] = useState(false);
+    const [beforeYouGoCandidates, setBeforeYouGoCandidates] = useState([]);
+    const [beforeYouGoLoading, setBeforeYouGoLoading] = useState(false);
+    const [showNotesLog, setShowNotesLog] = useState(false);
+    const [bookNotes, setBookNotes] = useState([]);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [savedWords, setSavedWords] = useState(null); // null = not yet loaded
     const [highlightTerms, setHighlightTerms] = useState(null);
@@ -692,7 +711,6 @@ const Read = ({
         setHighlightTermsReady(savedWords !== null && !currentBook);
         setBookLoadState(currentBook ? 'loading' : 'idle');
         setBookLoadError('');
-        setShowSettings(false);
         setShowMenu(false);
         setIsFullscreen(false);
         setReaderRetryKey(0);
@@ -1069,14 +1087,14 @@ const Read = ({
         };
     }, [activeOwnerId, isDarkMode, readerSettingsLoaded, saveSettings, setIsDarkMode, syncGeneration, syncPaused, user]);
 
-    const handleSettingChange = (key, value) => {
-        if (key === 'isDarkMode') {
-            setIsDarkMode(value);
+    const updateSettings = (patch) => {
+        if ('isDarkMode' in patch) {
+            setIsDarkMode(patch.isDarkMode);
         }
         const newSettings = {
             ...settings,
             isDarkMode,
-            [key]: value,
+            ...patch,
         };
         setHighlightedWord('');
         setHighlightedWordContext(null);
@@ -1086,6 +1104,89 @@ const Read = ({
         readerSettingsRef.current = newSettings;
         saveSettings(newSettings);
     };
+
+    const handleSettingChange = (key, value) => {
+        updateSettings({ [key]: value });
+    };
+
+    const resetBookSettings = () => {
+        updateSettings({
+            fontSize: DEFAULT_READER_SETTINGS.fontSize,
+            lineSpacing: DEFAULT_READER_SETTINGS.lineSpacing,
+            brightness: DEFAULT_READER_SETTINGS.brightness,
+            readingMode: DEFAULT_READER_SETTINGS.readingMode,
+        });
+    };
+
+    const resetFocusSettings = () => {
+        updateSettings({
+            focusSwipe: DEFAULT_READER_SETTINGS.focusSwipe,
+            focusSpan: DEFAULT_READER_SETTINGS.focusSpan,
+        });
+    };
+
+    // Hide the bottom tab bar whenever the reader is fullscreen; restore the
+    // themed base style otherwise.
+    useEffect(() => {
+        navigation?.setOptions?.({
+            tabBarStyle: isFullscreen
+                ? { display: 'none' }
+                : createTabBarBaseStyle(themeColors),
+        });
+    }, [isFullscreen, navigation, themeColors]);
+
+    // Leaving the reader should never strand the tab bar in a hidden state.
+    useEffect(() => {
+        const unsubscribeBlur = navigation?.addListener?.('blur', () => {
+            setIsFullscreen(false);
+        });
+        return () => {
+            unsubscribeBlur?.();
+        };
+    }, [navigation]);
+
+    const dismissLookup = useCallback(() => {
+        setHighlightedWord('');
+        setHighlightedWordContext(null);
+        setIsNativeSelection(false);
+        setClearSelectionToken((value) => value + 1);
+    }, []);
+
+    // Hardware back steps out of transient reader UI before doing anything else:
+    // first the open lookup panel, then fullscreen. Only registers when one of
+    // those is active so normal back behaviour is untouched otherwise.
+    useEffect(() => {
+        if (!highlightedWord && !isFullscreen) {
+            return undefined;
+        }
+        const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+            if (highlightedWord) {
+                dismissLookup();
+                return true;
+            }
+            if (isFullscreen) {
+                setIsFullscreen(false);
+                return true;
+            }
+            return false;
+        });
+        return () => subscription.remove();
+    }, [isFullscreen, highlightedWord, dismissLookup]);
+
+    // Swipe-down anywhere on the lookup panel dismisses it (mirrors the hardware
+    // back / close-button paths). Only claims clearly downward drags so it doesn't
+    // fight scrolling inside the panel.
+    const lookupPanResponder = useMemo(() => PanResponder.create({
+        onMoveShouldSetPanResponder: (_evt, gesture) => (
+            gesture.dy > 14 && gesture.dy > Math.abs(gesture.dx)
+        ),
+        onPanResponderRelease: (_evt, gesture) => {
+            if (gesture.dy > 40) {
+                dismissLookup();
+            }
+        },
+        onPanResponderTerminationRequest: () => true,
+    }), [dismissLookup]);
 
     useEffect(() => {
         setSettings((current) => {
@@ -1183,11 +1284,146 @@ const Read = ({
     const headerLine2 = hasNamedChapterTitle ? activeChapterTitle : null;
     const returnToScreen = route?.params?.returnTo === 'Learn' ? 'Learn' : 'Home';
     const handleHeaderBack = useCallback(() => {
-        setShowSettings(false);
         setShowMenu(false);
         setShowToc(false);
         navigation?.navigate?.(returnToScreen);
     }, [navigation, returnToScreen]);
+
+    // ─── "Before you go" (opt-in thoughtful close) ────────────────────────────
+    // The plain back button stays a quick exit. This flow only runs when the
+    // reader taps "Before you go" — it offers a couple of unsaved words worth
+    // keeping (daily-rotating, saved ones drop off) and a note to their future
+    // self, then exits.
+    const openBeforeYouGo = useCallback(async () => {
+        setShowMenu(false);
+        setBeforeYouGoCandidates([]);
+        setBeforeYouGoLoading(true);
+        setShowBeforeYouGo(true);
+        try {
+            const raw = await getBookWordCandidates({
+                ownerId: activeOwnerId,
+                language: activeBookLanguage,
+                interfaceLanguage,
+                bookUri: currentBook,
+                limit: 12,
+            });
+            const chapterText = chapterTextForReaderPackage(nativeReaderPackage);
+            const daily = selectDailyCandidates(raw, { count: 3 }).map((candidate) => ({
+                ...candidate,
+                exampleSentence: pickExampleSentence(chapterText, candidate.headword),
+                exampleSurface: candidate.headword,
+            }));
+            setBeforeYouGoCandidates(daily);
+        } catch (error) {
+            console.warn('[Read] Failed to load word candidates:', error?.message ?? error);
+            setBeforeYouGoCandidates([]);
+        } finally {
+            setBeforeYouGoLoading(false);
+        }
+    }, [activeOwnerId, activeBookLanguage, interfaceLanguage, currentBook, nativeReaderPackage]);
+
+    const handleSaveCandidate = useCallback(async (candidate) => {
+        if (!candidate?.stem) return;
+        const word = candidate.stem;
+        const hanja = candidate.hanja || '';
+        const definition = candidate.gloss || '';
+        // Optimistically highlight it in the reader like an in-line save.
+        handleWordSave(word, { includeSurface: false });
+        try {
+            const createdAt = new Date().toISOString();
+            const alreadySaved = await vocabEntryExists(word, hanja, definition, activeBookLanguage, {
+                ownerId: activeOwnerId,
+            });
+            if (!alreadySaved) {
+                const pKnown = await getCachedPKnown({
+                    ownerId: activeOwnerId,
+                    language: activeBookLanguage,
+                    word,
+                });
+                await insertData(word, hanja, definition, {
+                    ownerId: activeOwnerId,
+                    level: 'unorganized',
+                    sourceBookUri: currentBook ?? null,
+                    sourceBookTitle: activeBook?.title ?? null,
+                    contextSentence: candidate.exampleSentence || null,
+                    createdAt,
+                    updatedAt: createdAt,
+                    language: activeBookLanguage,
+                    pKnown,
+                });
+            }
+            if (candidate.exampleSentence) {
+                await recordVocabContext({
+                    ownerId: activeOwnerId,
+                    word,
+                    hanja,
+                    definition,
+                    sentence: candidate.exampleSentence,
+                    sourceBookUri: currentBook ?? null,
+                    sourceBookTitle: activeBook?.title ?? null,
+                    language: activeBookLanguage,
+                });
+            }
+            requestUserDataSync('before-you-go-save');
+            logInteractionEvent({
+                ownerId: activeOwnerId,
+                language: activeBookLanguage,
+                word,
+                hanja,
+                def: definition,
+                eventType: 'save',
+                sourceBookUri: currentBook ?? null,
+                sentence: candidate.exampleSentence || null,
+            }).catch(() => {});
+        } catch (error) {
+            console.warn('[Read] Failed to save candidate word:', error?.message ?? error);
+        }
+    }, [activeOwnerId, activeBookLanguage, currentBook, activeBook]);
+
+    const handleSaveNote = useCallback(async (text) => {
+        try {
+            return await insertBookNote({
+                ownerId: activeOwnerId,
+                language: activeBookLanguage,
+                bookUri: currentBook,
+                note: text,
+                chapterLabel: activeChapterTitle || chapterIndexLabel || null,
+                progress: typeof bookProgress === 'number' ? bookProgress : null,
+            });
+        } catch (error) {
+            console.warn('[Read] Failed to save note:', error?.message ?? error);
+            return null;
+        }
+    }, [activeOwnerId, activeBookLanguage, currentBook, activeChapterTitle, chapterIndexLabel, bookProgress]);
+
+    const handleFinishBeforeYouGo = useCallback(() => {
+        setShowBeforeYouGo(false);
+        handleHeaderBack();
+    }, [handleHeaderBack]);
+
+    const openNotesLog = useCallback(async () => {
+        setShowMenu(false);
+        setShowNotesLog(true);
+        try {
+            const rows = await getBookNotes(currentBook, {
+                ownerId: activeOwnerId,
+                language: activeBookLanguage,
+            });
+            setBookNotes(rows);
+        } catch (error) {
+            console.warn('[Read] Failed to load notes:', error?.message ?? error);
+            setBookNotes([]);
+        }
+    }, [activeOwnerId, activeBookLanguage, currentBook]);
+
+    const handleDeleteNote = useCallback(async (id) => {
+        try {
+            await deleteBookNote(id, { ownerId: activeOwnerId });
+            setBookNotes((prev) => prev.filter((note) => note.id !== id));
+        } catch (error) {
+            console.warn('[Read] Failed to delete note:', error?.message ?? error);
+        }
+    }, [activeOwnerId]);
 
     useEffect(() => {
         const unsubscribeFocus = navigation?.addListener?.('focus', () => {
@@ -2165,7 +2401,6 @@ const Read = ({
             }
         }
 
-        setShowSettings(false);
         setShowMenu(false);
         setShowToc(false);
         navigation?.navigate?.('Home');
@@ -2196,15 +2431,6 @@ const Read = ({
     // Focus mode always presents the lookup panel from the bottom so the
     // anchored sentence can lift above it.
     const shouldPlaceLookupAtTop = lookupPlacement === 'top' && !focusMode;
-    const canShowFullscreenToggle = (
-        bookLoadState === 'ready'
-        && !!nativeReaderPackage
-        && !highlightedWord
-        && !showMenu
-        && !showSettings
-        && !showToc
-        && !focusMode
-    );
     const readerFontSize = Math.round(clampNumber(
         settings.fontSize,
         FONT_SIZE_MIN,
@@ -2258,6 +2484,11 @@ const Read = ({
         DEFAULT_READER_SETTINGS.focusSpan
     ));
     const focusSwipe = !!settings.focusSwipe;
+    const readingMode = READING_MODES.includes(settings.readingMode)
+        ? settings.readingMode
+        : DEFAULT_READER_SETTINGS.readingMode;
+    const isScrollMode = readingMode === 'scroll';
+    const nativeRenderMode = focusMode ? 'focus' : (isScrollMode ? 'continuous' : 'paged');
     const focusPanelOpen = focusMode && !!highlightedWord;
     // Total height the lookup panel occupies from the bottom of the screen;
     // the native reading surface lifts by exactly this much.
@@ -2344,14 +2575,6 @@ const Read = ({
         <View style={styles.container}>
             {!isFullscreen ? (
                 <View style={[styles.headerBar, { paddingTop: insets.top + spacing.xs }]}>
-                    <TouchableOpacity
-                        style={styles.headerBackButton}
-                        onPress={handleHeaderBack}
-                        accessibilityRole="button"
-                    >
-                        <MaterialIcons name="arrow-back-ios" size={22} color={themeColors.text} />
-                    </TouchableOpacity>
-
                     <View style={styles.headerTitleStack}>
                         <Text numberOfLines={1} style={styles.headerChapterTitle}>
                             {headerLine1}
@@ -2364,6 +2587,35 @@ const Read = ({
                     </View>
 
                     <View style={styles.headerControls}>
+                        <TouchableOpacity
+                            style={styles.headerIconButton}
+                            onPress={openBeforeYouGo}
+                            accessibilityRole="button"
+                            accessibilityLabel={t('read.beforeYouGo')}
+                        >
+                            <MaterialIcons name="bookmark-border" size={22} color={themeColors.textSecondary} />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            style={styles.headerIconButton}
+                            onPress={toggleFocusMode}
+                            accessibilityRole="button"
+                            accessibilityState={{ selected: focusMode }}
+                            accessibilityLabel={t('read.focusMode')}
+                        >
+                            <MaterialIcons
+                                name="wb-iridescent"
+                                size={21}
+                                color={focusMode ? themeColors.inkSlate : themeColors.textSecondary}
+                            />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            style={styles.headerIconButton}
+                            onPress={() => setIsFullscreen(true)}
+                            accessibilityRole="button"
+                            accessibilityLabel={t('read.enterFullscreen')}
+                        >
+                            <Feather name="maximize" size={19} color={themeColors.textSecondary} />
+                        </TouchableOpacity>
                         <Pressable
                             disabled={toc.length === 0}
                             onPress={() => setShowToc(true)}
@@ -2444,7 +2696,8 @@ const Read = ({
                         lineHeight={readerLineSpacing}
                         theme={isDarkMode ? 'dark' : 'light'}
                         themeTokens={nativeReaderThemeTokens}
-                        renderMode={focusMode ? 'focus' : 'paged'}
+                        renderMode={nativeRenderMode}
+                        readerEdgeStateEnabled={false}
                         highlightTerms={readerHighlightTerms}
                         sameLevelTerms={levelUnderlineTerms.same}
                         aboveLevelTerms={levelUnderlineTerms.above}
@@ -2530,16 +2783,6 @@ const Read = ({
                             />
                             <Text style={styles.focusPositionLabel}>{focusPositionLabel}</Text>
                         </View>
-                        {focusSwipe ? (
-                            <View style={styles.focusSwipeHintPill}>
-                                <MaterialIcons
-                                    name="swap-vert"
-                                    size={14}
-                                    color={themeColors.readerPaper}
-                                />
-                                <Text style={styles.focusSwipeHintLabel}>{t('read.focusSwipeHint')}</Text>
-                            </View>
-                        ) : null}
                     </Animated.View>
                     {!focusSwipe ? (
                         <Animated.View
@@ -2597,6 +2840,7 @@ const Read = ({
                     onLayout={(event) => {
                         setLookupPanelHeight(event?.nativeEvent?.layout?.height ?? 0);
                     }}
+                    {...(shouldPlaceLookupAtTop ? {} : lookupPanResponder.panHandlers)}
                 >
                     <TopSection
                         highlightedWord={highlightedWord}
@@ -2604,12 +2848,7 @@ const Read = ({
                         isNativeSelection={isNativeSelection}
                         placement={shouldPlaceLookupAtTop ? 'top' : 'bottom'}
                         isDarkMode={isDarkMode}
-                        onClose={() => {
-                            setHighlightedWord('');
-                            setHighlightedWordContext(null);
-                            setIsNativeSelection(false);
-                            setClearSelectionToken((value) => value + 1);
-                        }}
+                        onClose={dismissLookup}
                         onWordSave={handleWordSave}
                         onWordUnsave={handleWordUnsave}
                         currentBook={currentBook}
@@ -2651,102 +2890,42 @@ const Read = ({
                 </View>
             ) : null}
 
-            {canShowFullscreenToggle ? (
-                <View
-                    pointerEvents="box-none"
-                    style={[
-                        styles.fullscreenToggleLayer,
-                        { bottom: insets.bottom + 18 },
-                    ]}
-                >
-                    <TouchableOpacity
-                        style={styles.fullscreenToggleButton}
-                        onPress={() => setIsFullscreen((current) => !current)}
-                        activeOpacity={0.72}
-                        accessibilityRole="button"
-                        accessibilityLabel={isFullscreen ? t('read.exitFullscreen') : t('read.enterFullscreen')}
-                    >
-                        <Feather
-                            name={isFullscreen ? 'minimize-2' : 'maximize-2'}
-                            size={17}
-                            color={themeColors.readerBodyInk}
-                        />
-                    </TouchableOpacity>
-                </View>
-            ) : null}
-
             {showMenu && !isFullscreen ? (
                 <View pointerEvents="box-none" style={styles.settingsOverlay}>
                     <Pressable style={styles.settingsBackdrop} onPress={() => setShowMenu(false)} />
-                    <View style={[styles.menuDropdown, { top: insets.top + 50, right: 14 }]}>
-                        <TouchableOpacity
-                            style={[styles.menuItem, styles.menuItemBorder]}
-                            onPress={() => setShowMenu(false)}
-                            activeOpacity={0.7}
-                            accessibilityRole="button"
-                        >
-                            <MaterialIcons name="bookmark-border" size={19} color={themeColors.textSecondary} />
-                            <Text style={styles.menuItemLabel}>{t('read.bookmarks')}</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={[styles.menuItem, styles.menuItemBorder]}
-                            onPress={() => setShowMenu(false)}
-                            activeOpacity={0.7}
-                            accessibilityRole="button"
-                        >
-                            <MaterialIcons name="sticky-note-2" size={19} color={themeColors.textSecondary} />
-                            <Text style={styles.menuItemLabel}>{t('read.notes')}</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={[styles.menuItem, styles.menuItemBorder]}
-                            onPress={() => { setShowMenu(false); setShowSettings(true); }}
-                            activeOpacity={0.7}
-                            accessibilityRole="button"
-                        >
-                            <MaterialIcons name="text-fields" size={19} color={themeColors.textSecondary} />
-                            <Text style={styles.menuItemLabel}>{t('read.fontSettings')}</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={[styles.menuItem, styles.menuItemBorder]}
-                            onPress={toggleFocusMode}
-                            activeOpacity={0.7}
-                            accessibilityRole="button"
-                            accessibilityState={{ selected: focusMode }}
-                        >
-                            <MaterialIcons
-                                name="wb-iridescent"
-                                size={19}
-                                color={focusMode ? themeColors.inkSlate : themeColors.textSecondary}
-                            />
-                            <Text style={[styles.menuItemLabel, focusMode && styles.menuItemLabelActive]}>
-                                {t('read.focusMode')}
-                            </Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={styles.menuItem}
-                            onPress={() => setShowMenu(false)}
-                            activeOpacity={0.7}
-                            accessibilityRole="button"
-                        >
-                            <MaterialIcons name="ios-share" size={19} color={themeColors.textSecondary} />
-                            <Text style={styles.menuItemLabel}>{t('read.share')}</Text>
-                        </TouchableOpacity>
-                    </View>
-                </View>
-            ) : null}
-
-            {showSettings && !isFullscreen ? (
-                <View pointerEvents="box-none" style={styles.settingsOverlay}>
-                    <Pressable style={styles.settingsBackdrop} onPress={() => setShowSettings(false)} />
                     <View
                         pointerEvents="box-none"
                         style={[styles.fontSettingsSheetFrame, { paddingBottom: insets.bottom + 8 }]}
                     >
-                        <View style={styles.fontSettingsSheet}>
+                        <View style={styles.optionsSheet}>
                             <View style={styles.fontSettingsHandleWrap}>
                                 <View style={styles.fontSettingsHandle} />
                             </View>
-                            <Text style={styles.fontSettingsTitle}>{t('read.fontSettings')}</Text>
+
+                            <TouchableOpacity
+                                style={styles.checkpointsRow}
+                                onPress={openNotesLog}
+                                activeOpacity={0.7}
+                                accessibilityRole="button"
+                            >
+                                <View style={styles.checkpointsRowLeft}>
+                                    <MaterialIcons name="bookmark-border" size={21} color={themeColors.readerBodyInk} />
+                                    <Text style={styles.checkpointsLabel}>{t('read.checkpoints')}</Text>
+                                </View>
+                                <Feather name="chevron-right" size={20} color={themeColors.readerSubtleInk} />
+                            </TouchableOpacity>
+
+                            <View style={styles.optionsSectionHeader}>
+                                <Text style={styles.optionsSectionTitle}>{t('read.bookSettings')}</Text>
+                                <TouchableOpacity
+                                    onPress={resetBookSettings}
+                                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={t('read.resetSection')}
+                                >
+                                    <Feather name="rotate-ccw" size={15} color={themeColors.readerSubtleInk} />
+                                </TouchableOpacity>
+                            </View>
 
                             <View style={styles.fontSettingsRows}>
                                 <View style={styles.fontSettingsRow}>
@@ -2801,7 +2980,7 @@ const Read = ({
                                     </View>
                                 </View>
 
-                                <View style={[styles.fontSettingsRow, !focusMode && styles.fontSettingsLastRow]}>
+                                <View style={styles.fontSettingsRow}>
                                     <Text style={styles.fontSettingsLabel}>{t('read.brightness')}</Text>
                                     <View style={styles.fontSettingsBrightnessGroup}>
                                         <MaterialIcons name="light-mode" size={18} color={themeColors.readerSubtleInk} />
@@ -2823,66 +3002,151 @@ const Read = ({
                                     </View>
                                 </View>
 
-                                {focusMode ? (
-                                    <>
-                                        <View style={styles.fontSettingsRow}>
-                                            <Text style={styles.fontSettingsLabel}>{t('read.focusSwipeToMove')}</Text>
-                                            <Pressable
-                                                onPress={() => handleSettingChange('focusSwipe', !focusSwipe)}
-                                                accessibilityRole="switch"
-                                                accessibilityState={{ checked: focusSwipe }}
-                                            >
-                                                <Animated.View
-                                                    style={[
-                                                        styles.focusSwipeTrack,
-                                                        { backgroundColor: focusSwipeTrackColor },
-                                                    ]}
-                                                >
-                                                    <Animated.View
-                                                        style={[
-                                                            styles.focusSwipeKnob,
-                                                            { left: focusSwipeKnobLeft },
-                                                        ]}
-                                                    />
-                                                </Animated.View>
-                                            </Pressable>
-                                        </View>
+                                <View style={[styles.fontSettingsRow, styles.fontSettingsLastRow]}>
+                                    <Text style={styles.fontSettingsLabel}>{t('read.readingDirection')}</Text>
+                                    <View style={styles.segmentGroup}>
+                                        <TouchableOpacity
+                                            style={[styles.segmentButton, !isScrollMode && styles.segmentButtonActive]}
+                                            onPress={() => handleSettingChange('readingMode', 'paged')}
+                                            activeOpacity={0.7}
+                                            accessibilityRole="button"
+                                            accessibilityState={{ selected: !isScrollMode }}
+                                        >
+                                            <MaterialIcons
+                                                name="swap-horiz"
+                                                size={16}
+                                                color={!isScrollMode ? themeColors.readerPaper : themeColors.textSecondary}
+                                            />
+                                            <Text style={[styles.segmentButtonText, !isScrollMode && styles.segmentButtonTextActive]}>
+                                                {t('read.readingHorizontal')}
+                                            </Text>
+                                        </TouchableOpacity>
+                                        <TouchableOpacity
+                                            style={[styles.segmentButton, isScrollMode && styles.segmentButtonActive]}
+                                            onPress={() => handleSettingChange('readingMode', 'scroll')}
+                                            activeOpacity={0.7}
+                                            accessibilityRole="button"
+                                            accessibilityState={{ selected: isScrollMode }}
+                                        >
+                                            <MaterialIcons
+                                                name="swap-vert"
+                                                size={16}
+                                                color={isScrollMode ? themeColors.readerPaper : themeColors.textSecondary}
+                                            />
+                                            <Text style={[styles.segmentButtonText, isScrollMode && styles.segmentButtonTextActive]}>
+                                                {t('read.readingVertical')}
+                                            </Text>
+                                        </TouchableOpacity>
+                                    </View>
+                                </View>
+                            </View>
 
-                                        <View style={[styles.fontSettingsRow, styles.fontSettingsLastRow]}>
-                                            <Text style={styles.fontSettingsLabel}>{t('read.focusSpan')}</Text>
-                                            <View style={styles.fontSettingsStepperGroup}>
-                                                <TouchableOpacity
-                                                    style={[
-                                                        styles.fontSettingsStepperButton,
-                                                        focusSpan <= FOCUS_SPAN_MIN && styles.focusStepperDisabled,
-                                                    ]}
-                                                    onPress={() => handleFocusSpanStep(-1)}
-                                                    activeOpacity={0.7}
-                                                    accessibilityRole="button"
-                                                >
-                                                    <Feather name="minus" size={18} color={themeColors.textSecondary} />
-                                                </TouchableOpacity>
-                                                <Text style={styles.fontSettingsValue}>{focusSpan}</Text>
-                                                <TouchableOpacity
-                                                    style={[
-                                                        styles.fontSettingsStepperButton,
-                                                        focusSpan >= FOCUS_SPAN_MAX && styles.focusStepperDisabled,
-                                                    ]}
-                                                    onPress={() => handleFocusSpanStep(1)}
-                                                    activeOpacity={0.7}
-                                                    accessibilityRole="button"
-                                                >
-                                                    <Feather name="plus" size={18} color={themeColors.textSecondary} />
-                                                </TouchableOpacity>
-                                            </View>
-                                        </View>
-                                    </>
-                                ) : null}
+                            <View style={styles.optionsSectionHeader}>
+                                <Text style={styles.optionsSectionTitle}>{t('read.focusModeSettings')}</Text>
+                                <TouchableOpacity
+                                    onPress={resetFocusSettings}
+                                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={t('read.resetSection')}
+                                >
+                                    <Feather name="rotate-ccw" size={15} color={themeColors.readerSubtleInk} />
+                                </TouchableOpacity>
+                            </View>
+
+                            <View style={styles.fontSettingsRows}>
+                                <View style={styles.fontSettingsRow}>
+                                    <Text style={styles.fontSettingsLabel}>{t('read.focusNavigate')}</Text>
+                                    <View style={styles.segmentGroup}>
+                                        <TouchableOpacity
+                                            style={[styles.segmentButton, focusSwipe && styles.segmentButtonActive]}
+                                            onPress={() => handleSettingChange('focusSwipe', true)}
+                                            activeOpacity={0.7}
+                                            accessibilityRole="button"
+                                            accessibilityState={{ selected: focusSwipe }}
+                                        >
+                                            <MaterialIcons
+                                                name="gesture"
+                                                size={16}
+                                                color={focusSwipe ? themeColors.readerPaper : themeColors.textSecondary}
+                                            />
+                                            <Text style={[styles.segmentButtonText, focusSwipe && styles.segmentButtonTextActive]}>
+                                                {t('read.focusNavSwipe')}
+                                            </Text>
+                                        </TouchableOpacity>
+                                        <TouchableOpacity
+                                            style={[styles.segmentButton, !focusSwipe && styles.segmentButtonActive]}
+                                            onPress={() => handleSettingChange('focusSwipe', false)}
+                                            activeOpacity={0.7}
+                                            accessibilityRole="button"
+                                            accessibilityState={{ selected: !focusSwipe }}
+                                        >
+                                            <MaterialIcons
+                                                name="touch-app"
+                                                size={16}
+                                                color={!focusSwipe ? themeColors.readerPaper : themeColors.textSecondary}
+                                            />
+                                            <Text style={[styles.segmentButtonText, !focusSwipe && styles.segmentButtonTextActive]}>
+                                                {t('read.focusNavButtons')}
+                                            </Text>
+                                        </TouchableOpacity>
+                                    </View>
+                                </View>
+
+                                <View style={[styles.fontSettingsRow, styles.fontSettingsLastRow]}>
+                                    <Text style={styles.fontSettingsLabel}>{t('read.focusSpan')}</Text>
+                                    <View style={styles.fontSettingsStepperGroup}>
+                                        <TouchableOpacity
+                                            style={[
+                                                styles.fontSettingsStepperButton,
+                                                focusSpan <= FOCUS_SPAN_MIN && styles.focusStepperDisabled,
+                                            ]}
+                                            onPress={() => handleFocusSpanStep(-1)}
+                                            activeOpacity={0.7}
+                                            accessibilityRole="button"
+                                        >
+                                            <Feather name="minus" size={18} color={themeColors.textSecondary} />
+                                        </TouchableOpacity>
+                                        <Text style={styles.fontSettingsValue}>{focusSpan}</Text>
+                                        <TouchableOpacity
+                                            style={[
+                                                styles.fontSettingsStepperButton,
+                                                focusSpan >= FOCUS_SPAN_MAX && styles.focusStepperDisabled,
+                                            ]}
+                                            onPress={() => handleFocusSpanStep(1)}
+                                            activeOpacity={0.7}
+                                            accessibilityRole="button"
+                                        >
+                                            <Feather name="plus" size={18} color={themeColors.textSecondary} />
+                                        </TouchableOpacity>
+                                    </View>
+                                </View>
                             </View>
                         </View>
                     </View>
                 </View>
             ) : null}
+
+            <BeforeYouGoSheet
+                visible={showBeforeYouGo}
+                colors={themeColors}
+                insets={insets}
+                candidates={beforeYouGoCandidates}
+                loading={beforeYouGoLoading}
+                onSaveWord={handleSaveCandidate}
+                onSaveNote={handleSaveNote}
+                onExit={handleFinishBeforeYouGo}
+                onCancel={() => setShowBeforeYouGo(false)}
+            />
+
+            <NotesLogSheet
+                visible={showNotesLog}
+                colors={themeColors}
+                insets={insets}
+                notes={bookNotes}
+                onDelete={handleDeleteNote}
+                onClose={() => setShowNotesLog(false)}
+            />
+
         </View>
     );
 };
@@ -2902,17 +3166,16 @@ const createStyles = (themeColors) => StyleSheet.create({
         borderBottomWidth: 1,
         borderBottomColor: themeColors.readerHairline,
     },
-    headerBackButton: {
-        width: 38,
+    headerIconButton: {
+        width: 30,
         height: 42,
         alignItems: 'center',
         justifyContent: 'center',
-        borderRadius: radii.pill,
     },
     headerTitleStack: {
         flex: 1,
         minWidth: 0,
-        alignItems: 'center',
+        alignItems: 'flex-start',
         justifyContent: 'center',
     },
     headerChapterTitle: {
@@ -2920,7 +3183,7 @@ const createStyles = (themeColors) => StyleSheet.create({
         fontSize: 15,
         lineHeight: 20,
         color: themeColors.readerBodyInk,
-        textAlign: 'center',
+        textAlign: 'left',
     },
     headerBookSubtitle: {
         fontFamily: 'FFSans-Regular',
@@ -2928,12 +3191,12 @@ const createStyles = (themeColors) => StyleSheet.create({
         lineHeight: 17,
         color: themeColors.readerMutedInk,
         marginTop: 1,
-        textAlign: 'center',
+        textAlign: 'left',
     },
     headerControls: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 8,
+        gap: 6,
     },
     progressCluster: {
         flexDirection: 'row',
@@ -3175,22 +3438,6 @@ const createStyles = (themeColors) => StyleSheet.create({
         letterSpacing: 1.4,
         color: themeColors.readerSubtleInk,
     },
-    focusSwipeHintPill: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 5,
-        backgroundColor: `${themeColors.inkSlate}EB`,
-        paddingVertical: 4,
-        paddingHorizontal: 10,
-        borderRadius: radii.pill,
-    },
-    focusSwipeHintLabel: {
-        fontFamily: 'FFSans-SemiBold',
-        fontSize: 9,
-        lineHeight: 13,
-        letterSpacing: 1.2,
-        color: themeColors.readerPaper,
-    },
     focusArrowControls: {
         position: 'absolute',
         right: 16,
@@ -3278,6 +3525,84 @@ const createStyles = (themeColors) => StyleSheet.create({
         shadowOpacity: 1,
         shadowRadius: 30,
         elevation: 8,
+    },
+    optionsSheet: {
+        width: '100%',
+        maxWidth: 360,
+        backgroundColor: themeColors.readerSurface,
+        borderWidth: 1,
+        borderColor: themeColors.readerBorder,
+        borderRadius: radii.xl,
+        paddingTop: 14,
+        paddingHorizontal: 24,
+        paddingBottom: 24,
+        shadowColor: 'rgba(27, 28, 28, 0.08)',
+        shadowOffset: { width: 0, height: -10 },
+        shadowOpacity: 1,
+        shadowRadius: 30,
+        elevation: 8,
+    },
+    checkpointsRow: {
+        marginTop: 12,
+        height: 52,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+    },
+    checkpointsRowLeft: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+    },
+    checkpointsLabel: {
+        fontFamily: 'FFSans-SemiBold',
+        fontSize: 16,
+        lineHeight: 21,
+        color: themeColors.readerBodyInk,
+    },
+    optionsSectionHeader: {
+        marginTop: 18,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+    },
+    optionsSectionTitle: {
+        fontFamily: 'FFDisplay-Regular',
+        fontSize: 12,
+        lineHeight: 16,
+        letterSpacing: 2.4,
+        textTransform: 'uppercase',
+        color: themeColors.textSecondary,
+    },
+    segmentGroup: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
+    segmentButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        paddingVertical: 7,
+        paddingHorizontal: 12,
+        borderRadius: radii.sm,
+        borderWidth: 1,
+        borderColor: themeColors.readerBorder,
+        backgroundColor: themeColors.readerSurface,
+    },
+    segmentButtonActive: {
+        backgroundColor: themeColors.inkSlate,
+        borderColor: themeColors.inkSlate,
+    },
+    segmentButtonText: {
+        fontFamily: 'FFSans-Medium',
+        fontSize: 13,
+        lineHeight: 17,
+        color: themeColors.textSecondary,
+    },
+    segmentButtonTextActive: {
+        color: themeColors.readerPaper,
+        fontFamily: 'FFSans-SemiBold',
     },
     fontSettingsHandleWrap: {
         alignItems: 'center',

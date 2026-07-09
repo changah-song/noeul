@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   StyleSheet,
   Text,
@@ -13,7 +14,14 @@ import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import { useTranslation } from '../hooks/useTranslation';
 import { supabase } from '../services/supabase';
+import { PRIVACY_POLICY_URL, TERMS_OF_SERVICE_URL } from '../constants/links';
 import { colors, radii, spacing, textStyles, useTheme } from '../theme';
+
+const openLegalLink = (url, t) => {
+  Linking.openURL(url).catch(() => {
+    Alert.alert('', t('profile.linkUnavailable'));
+  });
+};
 
 const FILE_TAG = '[Auth]';
 const GOOGLE_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;
@@ -42,6 +50,7 @@ const Auth = ({
   showApple = true,
   showHeader = true,
   showModeToggle = true,
+  showSectionLabels = true,
   onAuthenticated,
 }) => {
   const { t } = useTranslation();
@@ -219,8 +228,8 @@ const Auth = ({
           </>
         ) : null}
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>{t('auth.email')}</Text>
+        <View style={[styles.section, !showSectionLabels && styles.sectionFlush]}>
+          {showSectionLabels ? <Text style={styles.sectionTitle}>{t('auth.email')}</Text> : null}
           <TextInput
             autoCapitalize="none"
             autoComplete="email"
@@ -258,7 +267,7 @@ const Auth = ({
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>{t('auth.google')}</Text>
+          {showSectionLabels ? <Text style={styles.sectionTitle}>{t('auth.google')}</Text> : null}
           <TouchableOpacity style={styles.secondaryButton} onPress={handleGoogleAuth} disabled={loading}>
             <Text style={styles.secondaryButtonText}>
               {mode === 'signup' ? t('auth.signUpGoogle') : t('auth.signInGoogle')}
@@ -268,7 +277,7 @@ const Auth = ({
 
         {showApple && Platform.OS === 'ios' ? (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>{t('auth.apple')}</Text>
+            {showSectionLabels ? <Text style={styles.sectionTitle}>{t('auth.apple')}</Text> : null}
             <AppleAuthentication.AppleAuthenticationButton
               buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
               buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
@@ -278,6 +287,24 @@ const Auth = ({
             />
           </View>
         ) : null}
+
+        <Text style={styles.legalText}>
+          {t('auth.legalPrefix')}{' '}
+          <Text
+            style={styles.legalLink}
+            onPress={() => openLegalLink(PRIVACY_POLICY_URL, t)}
+          >
+            {t('profile.privacyPolicy')}
+          </Text>
+          {' '}{t('auth.legalAnd')}{' '}
+          <Text
+            style={styles.legalLink}
+            onPress={() => openLegalLink(TERMS_OF_SERVICE_URL, t)}
+          >
+            {t('profile.termsOfService')}
+          </Text>
+          .
+        </Text>
       </View>
   );
 
@@ -341,6 +368,9 @@ const createStyles = (colors) => StyleSheet.create({
   section: {
     marginTop: spacing.lg,
   },
+  sectionFlush: {
+    marginTop: 0,
+  },
   sectionTitle: {
     ...textStyles.eyebrow,
     marginBottom: spacing.sm,
@@ -379,7 +409,8 @@ const createStyles = (colors) => StyleSheet.create({
   primaryButtonText: {
     ...textStyles.label,
     color: colors.accentStrong,
-    fontSize: 15,
+    fontSize: 14,
+    lineHeight: 20,
   },
   secondaryButton: {
     borderRadius: radii.md,
@@ -392,11 +423,24 @@ const createStyles = (colors) => StyleSheet.create({
   secondaryButtonText: {
     ...textStyles.label,
     color: colors.text,
-    fontSize: 15,
+    fontSize: 14,
+    lineHeight: 20,
   },
   appleButton: {
     width: '100%',
     height: 48,
+  },
+  legalText: {
+    marginTop: spacing.xs,
+    ...textStyles.bodyMuted,
+    fontSize: 12,
+    lineHeight: 17,
+    textAlign: 'center',
+    color: colors.textTertiary,
+  },
+  legalLink: {
+    color: colors.accent,
+    textDecorationLine: 'underline',
   },
 });
 

@@ -57,6 +57,12 @@ api.interceptors.request.use(async (config) => {
   return withAuthHeader(config, session.access_token);
 });
 
+const RETRYABLE_STATUSES = new Set([502, 503, 504]);
+const MAX_RETRIES = 2;
+const RETRY_DELAY_MS = 600;
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 api.interceptors.response.use(undefined, async (error) => {
   const originalRequest = error.config;
 
@@ -64,6 +70,14 @@ api.interceptors.response.use(undefined, async (error) => {
     originalRequest._authRetry = true;
     const session = await getAuthenticatedSession({ refresh: true });
     return api(withAuthHeader(originalRequest, session.access_token));
+  }
+
+  if (RETRYABLE_STATUSES.has(error.response?.status) && originalRequest) {
+    originalRequest._retryCount = (originalRequest._retryCount ?? 0) + 1;
+    if (originalRequest._retryCount <= MAX_RETRIES) {
+      await delay(RETRY_DELAY_MS * originalRequest._retryCount);
+      return api(originalRequest);
+    }
   }
 
   return Promise.reject(error);

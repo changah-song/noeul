@@ -24,6 +24,7 @@ import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.roundToInt
 import java.util.ArrayDeque
 import java.util.concurrent.CancellationException
@@ -378,6 +379,13 @@ private const val FOCUS_BOTTOM_INSET_RATIO = 0.52f
 private const val FOCUS_SCROLL_DURATION_MS = 380L
 private const val FOCUS_PANEL_LIFT_DURATION_MS = 450L
 
+// Continuous (vertical scroll) mode: scroll-progress events are debounced so a
+// fling emits one event when it settles, and a chapter transition needs a
+// deliberate pull at the chapter edge — larger than the focus swipe threshold
+// so it never fires from scroll momentum.
+private const val CONTINUOUS_SCROLL_DISPATCH_DELAY_MS = 180L
+private const val CONTINUOUS_EDGE_PULL_THRESHOLD_DP = 56f
+
 private class ContinuousReaderScrollView(context: Context) : ScrollView(context) {
   private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
   private var startX = 0f
@@ -391,9 +399,28 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
   var onSwipeNavigate: ((Int) -> Unit)? = null
   private val swipeNavigationThreshold = 28f * context.resources.displayMetrics.density
 
+  // Continuous-mode scroll progress and chapter navigation: a pull past the
+  // top/bottom edge (started and released at that edge) turns the chapter.
+  var onScrollPositionChanged: ((Int) -> Unit)? = null
+  var edgePullEnabled = false
+  var onEdgePull: ((Int) -> Unit)? = null
+  private val edgePullThreshold = CONTINUOUS_EDGE_PULL_THRESHOLD_DP * context.resources.displayMetrics.density
+  private var downAtTop = false
+  private var downAtBottom = false
+
   init {
     isFillViewport = true
     overScrollMode = OVER_SCROLL_IF_CONTENT_SCROLLS
+  }
+
+  private fun maxVerticalScroll(): Int {
+    val child = getChildAt(0) ?: return 0
+    return (child.height - height).coerceAtLeast(0)
+  }
+
+  override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
+    super.onScrollChanged(l, t, oldl, oldt)
+    onScrollPositionChanged?.invoke(t)
   }
 
   override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
@@ -402,6 +429,8 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
         startX = event.x
         startY = event.y
         reportedVerticalDrag = false
+        downAtTop = scrollY <= 0
+        downAtBottom = scrollY >= maxVerticalScroll()
         super.onInterceptTouchEvent(event)
         return false
       }
@@ -423,7 +452,30 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
 
   override fun onTouchEvent(event: MotionEvent): Boolean {
     if (!swipeNavigationEnabled) {
-      return super.onTouchEvent(event)
+      var pendingEdgePull = 0
+      if (edgePullEnabled) {
+        when (event.actionMasked) {
+          MotionEvent.ACTION_DOWN -> {
+            startY = event.y
+            downAtTop = scrollY <= 0
+            downAtBottom = scrollY >= maxVerticalScroll()
+          }
+          MotionEvent.ACTION_UP -> {
+            val dy = event.y - startY
+            if (dy <= -edgePullThreshold && downAtBottom && scrollY >= maxVerticalScroll()) {
+              pendingEdgePull = 1
+            } else if (dy >= edgePullThreshold && downAtTop && scrollY <= 0) {
+              pendingEdgePull = -1
+            }
+          }
+        }
+      }
+
+      val handled = super.onTouchEvent(event)
+      if (pendingEdgePull != 0) {
+        onEdgePull?.invoke(pendingEdgePull)
+      }
+      return handled
     }
 
     when (event.actionMasked) {
@@ -528,6 +580,10 @@ class NativeEpubReaderView(
   private var lastFocusNavToken: String? = null
   private var focusPanelLiftPx = 0f
   private var focusScrollAnimator: ValueAnimator? = null
+  private var suppressContinuousScrollEvents = false
+  private val continuousScrollDispatchRunnable = Runnable {
+    dispatchContinuousPageChange(includeSavedHighlights = false)
+  }
 
   init {
     setReaderBackgroundColors()
@@ -585,6 +641,8 @@ class NativeEpubReaderView(
     continuousScrollView.onSwipeNavigate = { direction ->
       moveFocus(direction)
     }
+    continuousScrollView.onScrollPositionChanged = { handleContinuousScrollChanged() }
+    continuousScrollView.onEdgePull = { direction -> handleContinuousEdgePull(direction) }
     continuousScrollView.addView(
       continuousPageView,
       FrameLayout.LayoutParams(
@@ -628,6 +686,7 @@ class NativeEpubReaderView(
     paginationGeneration += 1
     paginationTask?.cancel(true)
     focusScrollAnimator?.cancel()
+    mainHandler.removeCallbacks(continuousScrollDispatchRunnable)
     super.onDetachedFromWindow()
   }
 
@@ -823,8 +882,12 @@ class NativeEpubReaderView(
     clearActiveSelection(dispatchEvent = false)
     focusScrollAnimator?.cancel()
     continuousScrollView.swipeNavigationEnabled = isFocusMode() && focusSwipeEnabled
+    continuousScrollView.edgePullEnabled = readerRenderMode == "continuous"
     updateFocusLift(animated = false)
-    repaginate(resetToFirstPage = pageAdapter == null)
+    // JS refreshes restorePosition on every page event, so resetting through
+    // the restore path re-lands the reader at the current position in the new
+    // mode's geometry (page for paged, scroll offset for continuous).
+    repaginate(resetToFirstPage = true)
   }
 
   private fun isFocusMode(): Boolean {
@@ -1269,9 +1332,9 @@ class NativeEpubReaderView(
       bindContinuousPage(continuousPageIndex, backgroundColor, resetScroll = resetToFirstPage)
       if (isFocusMode()) {
         dispatchFocusPageChange()
-      } else {
-        dispatchPageChange(continuousPageIndex, pages.size)
       }
+      // Continuous mode dispatches from scrollContinuousTo once the restored
+      // scroll offset has been applied, so no page event is emitted here.
       if (didDropActiveSelection) {
         onSelectionCleared(mapOf<String, Any>())
       }
@@ -1448,7 +1511,27 @@ class NativeEpubReaderView(
     }
   }
 
-  private fun bindContinuousPage(position: Int, backgroundColor: Int, resetScroll: Boolean) {
+  // Mirrors forcePagerRefresh for the continuous/focus scroll view: measure and
+  // lay it out to the reader bounds so the ScrollView measures its content child
+  // to the full (taller-than-viewport) height, establishing a real scroll range.
+  private fun forceContinuousRefresh() {
+    if (layoutWidth <= 0 || layoutHeight <= 0) {
+      return
+    }
+    continuousScrollView.measure(
+      MeasureSpec.makeMeasureSpec(layoutWidth, MeasureSpec.EXACTLY),
+      MeasureSpec.makeMeasureSpec(layoutHeight, MeasureSpec.EXACTLY)
+    )
+    continuousScrollView.layout(0, 0, layoutWidth, layoutHeight)
+  }
+
+  private fun bindContinuousPage(
+    position: Int,
+    backgroundColor: Int,
+    resetScroll: Boolean,
+    scrollTarget: Int? = null,
+    onScrollComplete: (() -> Unit)? = null
+  ) {
     val page = pages.getOrNull(position) ?: ReaderPage(0, emptyList())
     continuousPageIndex = position
     val focusEnabled = isFocusMode()
@@ -1461,6 +1544,12 @@ class NativeEpubReaderView(
       contentHeight
     )
     continuousPageView.minimumHeight = contentHeight
+    // ExpoView doesn't lay out our children when only visibility/content changes,
+    // so the continuous scroll view can be left unmeasured — its content child
+    // never grows past the viewport and the scroll range stays 0 (up-swipes then
+    // read as an edge pull → chapter end). Force a measure+layout here so vertical
+    // scrolling and focus anchoring work without needing an external size change.
+    forceContinuousRefresh()
     Log.d(
       TAG,
       "continuous render: page=$position blocks=${page.blocks.size} " +
@@ -1513,11 +1602,85 @@ class NativeEpubReaderView(
 
     focusSentences = emptyList()
     continuousScrollView.swipeNavigationEnabled = false
-    if (resetScroll) {
-      continuousScrollView.post {
-        continuousScrollView.scrollTo(0, 0)
+    val maxScroll = (contentHeight - layoutHeight).coerceAtLeast(0)
+    val resolvedScrollTarget = when {
+      scrollTarget != null -> scrollTarget.coerceIn(0, maxScroll)
+      resetScroll -> continuousRestoreScrollTarget(page, maxScroll) ?: 0
+      else -> null
+    }
+    scrollContinuousTo(
+      target = resolvedScrollTarget,
+      // Chapter entries carry the saved-word contexts (mirrors the paged
+      // dispatch); in-chapter rebinds (font size, highlights) skip them so
+      // vocab exposure isn't recorded repeatedly.
+      includeSavedHighlightsInDispatch = resetScroll || scrollTarget != null,
+      onComplete = onScrollComplete
+    )
+  }
+
+  // Applies a continuous-mode scroll offset once the freshly bound content has
+  // been laid out (the height set in bindContinuousPage lands a layout pass
+  // later), then reports the resulting position. This is the single source of
+  // continuous-mode page events after a bind.
+  private fun scrollContinuousTo(
+    target: Int?,
+    includeSavedHighlightsInDispatch: Boolean,
+    onComplete: (() -> Unit)? = null,
+    attempt: Int = 0
+  ) {
+    continuousScrollView.post {
+      val expectedHeight = continuousPageView.layoutParams?.height ?: 0
+      val childHeight = continuousScrollView.getChildAt(0)?.height ?: 0
+      if (target != null && target > 0 && childHeight < expectedHeight && attempt < 3) {
+        scrollContinuousTo(target, includeSavedHighlightsInDispatch, onComplete, attempt + 1)
+        return@post
+      }
+
+      if (target != null) {
+        val maxScroll = (childHeight.coerceAtLeast(expectedHeight) - layoutHeight).coerceAtLeast(0)
+        suppressContinuousScrollEvents = true
+        continuousScrollView.scrollTo(0, target.coerceIn(0, maxScroll))
+        suppressContinuousScrollEvents = false
+      }
+      dispatchContinuousPageChange(includeSavedHighlightsInDispatch)
+      onComplete?.invoke()
+    }
+  }
+
+  // Maps a saved reader position onto a continuous-mode scroll offset. The
+  // block anchor is preferred (stable across font size and render mode
+  // changes); the page fraction is a coarse fallback for positions saved
+  // without one.
+  private fun continuousRestoreScrollTarget(page: ReaderPage, maxScroll: Int): Int? {
+    val restoreSpineIndex = restorePosition.intValue("spineIndex") ?: return null
+    if (restoreSpineIndex != page.spineIndex) {
+      return null
+    }
+
+    val pageIndex = restorePosition.intValue("pageIndex")
+    val pagesInChapter = restorePosition.intValue("pagesInChapter")
+    if (
+      pageIndex != null &&
+      pagesInChapter != null &&
+      pagesInChapter > 1 &&
+      pageIndex >= pagesInChapter - 1
+    ) {
+      // Saved at the very end of the chapter (e.g. a backwards chapter pull).
+      return maxScroll
+    }
+
+    restorePosition.stringValue("firstBlockId")?.takeIf { it.isNotBlank() }?.let { blockId ->
+      continuousBlockTopOffset(page, blockId)?.let { blockTop ->
+        return blockTop.coerceIn(0, maxScroll)
       }
     }
+
+    if (pageIndex != null && pagesInChapter != null && pagesInChapter > 1) {
+      val fraction = pageIndex.toFloat() / (pagesInChapter - 1)
+      return (fraction * maxScroll).roundToInt().coerceIn(0, maxScroll)
+    }
+
+    return null
   }
 
   // ===== Focus (sentence beam) mode =====
@@ -1791,6 +1954,171 @@ class NativeEpubReaderView(
     }
 
     return contentHeight
+  }
+
+  // ===== Continuous (vertical scroll) mode =====
+
+  private fun handleContinuousScrollChanged() {
+    if (readerRenderMode != "continuous" || suppressContinuousScrollEvents || pages.isEmpty()) {
+      return
+    }
+
+    mainHandler.removeCallbacks(continuousScrollDispatchRunnable)
+    mainHandler.postDelayed(continuousScrollDispatchRunnable, CONTINUOUS_SCROLL_DISPATCH_DELAY_MS)
+  }
+
+  private fun handleContinuousEdgePull(direction: Int) {
+    if (readerRenderMode != "continuous" || pages.isEmpty()) {
+      return
+    }
+
+    val targetIndex = continuousPageIndex + direction
+    val targetPage = pages.getOrNull(targetIndex)
+    if (targetPage == null) {
+      // No adjacent chapter in the window: let JS decide what comes next
+      // (load a chapter outside the window, or finish the book).
+      if (direction > 0) {
+        onChapterEnd(mapOf<String, Any>())
+      } else {
+        onChapterStart(mapOf<String, Any>())
+      }
+      return
+    }
+
+    Log.d(
+      TAG,
+      "continuous edge pull: direction=$direction targetSpine=${targetPage.spineIndex ?: -1}"
+    )
+    clearActiveSelection(dispatchEvent = true, forceEvent = true)
+    bindContinuousPage(
+      position = targetIndex,
+      backgroundColor = readerBackgroundColor(),
+      resetScroll = false,
+      // Land at the top when moving forward, at the end when moving back.
+      scrollTarget = if (direction > 0) 0 else Int.MAX_VALUE,
+      onScrollComplete = { flushContinuousChapterCommit(direction) }
+    )
+  }
+
+  private fun flushContinuousChapterCommit(direction: Int) {
+    val page = pages.getOrNull(continuousPageIndex) ?: return
+    val nextSpineIndex = page.spineIndex ?: return
+    if (committedSpineIndex == nextSpineIndex) {
+      return
+    }
+
+    committedSpineIndex = nextSpineIndex
+    Log.d(TAG, "continuous chapter commit: direction=$direction spine=$nextSpineIndex")
+    onChapterCommit(
+      mapOf(
+        "spineIndex" to nextSpineIndex,
+        "href" to page.href,
+        "path" to page.path,
+        "pageIndex" to continuousVirtualPageIndex(),
+        "pagesInChapter" to continuousVirtualPageCount(),
+        "firstBlockId" to firstVisibleBlockId(page, continuousScrollView.scrollY),
+        "direction" to if (direction > 0) "next" else "previous"
+      )
+    )
+  }
+
+  // Continuous mode has no fixed pages, so scroll progress is reported as
+  // virtual viewport-height pages. JS consumes them exactly like paged-mode
+  // page numbers for the progress bar, cloud sync, and position restore.
+  private fun continuousVirtualPageCount(): Int {
+    if (layoutHeight <= 0) {
+      return 1
+    }
+    val contentHeight = continuousPageView.layoutParams?.height ?: 0
+    return ceil(contentHeight.toDouble() / layoutHeight).toInt().coerceAtLeast(1)
+  }
+
+  private fun continuousVirtualPageIndex(): Int {
+    val contentHeight = continuousPageView.layoutParams?.height ?: 0
+    val maxScroll = (contentHeight - layoutHeight).coerceAtLeast(0)
+    val pageCount = continuousVirtualPageCount()
+    if (maxScroll <= 0 || pageCount <= 1) {
+      return 0
+    }
+
+    val fraction = continuousScrollView.scrollY.toFloat() / maxScroll
+    return (fraction * (pageCount - 1)).roundToInt().coerceIn(0, pageCount - 1)
+  }
+
+  private fun dispatchContinuousPageChange(includeSavedHighlights: Boolean) {
+    if (readerRenderMode != "continuous") {
+      return
+    }
+
+    val page = pages.getOrNull(continuousPageIndex) ?: return
+    val href = page.href.takeIf { it.isNotBlank() }
+      ?: page.path.takeIf { it.isNotBlank() }
+      ?: bookManifest.stringValue("currentSpineHref")?.takeIf { it.isNotBlank() }
+      ?: bookManifest.stringValue("currentSpinePath")
+      ?: ""
+    val savedHighlights = if (includeSavedHighlights) {
+      savedHighlightContextsByPage[page.pageIndex].orEmpty()
+    } else {
+      emptyList()
+    }
+    val event = mutableMapOf<String, Any>(
+      "page" to continuousVirtualPageIndex(),
+      "total" to continuousVirtualPageCount(),
+      "globalPage" to continuousPageIndex,
+      "globalTotal" to pages.size,
+      "href" to href,
+      "firstBlockId" to firstVisibleBlockId(page, continuousScrollView.scrollY),
+      "savedHighlights" to savedHighlights
+    )
+
+    (page.spineIndex ?: bookManifest.intValue("currentSpineIndex"))?.let { spineIndex ->
+      event["spineIndex"] = spineIndex
+    }
+
+    onPageChange(event)
+  }
+
+  // Topmost block still visible at the given scroll offset — the position
+  // anchor for continuous mode, mirroring what the first block of a paged
+  // page provides.
+  private fun firstVisibleBlockId(page: ReaderPage, scrollY: Int): String {
+    var yOffset = pagePaddingV
+    for (block in page.blocks) {
+      yOffset += block.marginTop
+      val blockHeight = if (block.type == "image") {
+        block.imageHeight
+      } else {
+        block.textLayout?.height ?: 0
+      }
+      if (yOffset + blockHeight > scrollY) {
+        return block.blockId
+      }
+      yOffset += blockHeight
+      yOffset += block.marginBottom
+    }
+
+    return page.blocks.firstOrNull()?.blockId ?: ""
+  }
+
+  // Content offset of a block's top edge. Restoring to exactly this offset
+  // makes firstVisibleBlockId report the same block back, so restore events
+  // round-trip without drifting.
+  private fun continuousBlockTopOffset(page: ReaderPage, blockId: String): Int? {
+    var yOffset = pagePaddingV
+    for (block in page.blocks) {
+      yOffset += block.marginTop
+      if (block.blockId == blockId) {
+        return yOffset
+      }
+      yOffset += if (block.type == "image") {
+        block.imageHeight
+      } else {
+        block.textLayout?.height ?: 0
+      }
+      yOffset += block.marginBottom
+    }
+
+    return null
   }
 
   private fun handlePageWordSelected(hit: WordHit) {
@@ -2294,6 +2622,21 @@ class NativeEpubReaderView(
 
   private fun applyRestorePositionToCurrentPagesIfPossible() {
     if (pages.isEmpty() || isChapterTransitionAnimating) {
+      return
+    }
+
+    if (isVerticalLayoutMode()) {
+      val targetChapterPage = pageIndexForRestorePosition(pages) ?: return
+      if (targetChapterPage == continuousPageIndex) {
+        // In-chapter restore echoes (JS refreshes the prop on every page
+        // event) must not yank the scroll position mid-read.
+        return
+      }
+
+      bindContinuousPage(targetChapterPage, readerBackgroundColor(), resetScroll = true)
+      if (isFocusMode()) {
+        dispatchFocusPageChange()
+      }
       return
     }
 
