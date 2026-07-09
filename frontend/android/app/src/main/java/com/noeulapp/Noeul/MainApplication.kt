@@ -1,6 +1,8 @@
 package com.noeulapp.Noeul
 
 import android.app.Application
+import android.content.Context
+import com.google.android.play.core.splitcompat.SplitCompat
 import android.content.res.Configuration
 import androidx.annotation.NonNull
 
@@ -41,6 +43,12 @@ class MainApplication : Application(), ReactApplication {
 
   override val reactHost: ReactHost
     get() = getDefaultReactHost(this.applicationContext, reactNativeHost)
+
+  // 2. Add this block right before onCreate() to initialize SplitCompat
+  override fun attachBaseContext(base: Context) {
+    super.attachBaseContext(base)
+    SplitCompat.installActivity(this)
+  }
 
   override fun onCreate() {
     super.onCreate()
