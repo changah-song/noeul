@@ -47,7 +47,7 @@ class MainApplication : Application(), ReactApplication {
   // 2. Add this block right before onCreate() to initialize SplitCompat
   override fun attachBaseContext(base: Context) {
     super.attachBaseContext(base)
-    SplitCompat.installActivity(this)
+    SplitCompat.install(this)
   }
 
   override fun onCreate() {
