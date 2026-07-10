@@ -9,10 +9,24 @@
       "distribution": "internal"
     },
     "preview": {
-      "distribution": "internal"
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "https://fluent-fable-production.up.railway.app",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://ougxlrkbnvjbnflszqaa.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_dv6I5gXFp_C752GrRR74PA_s1r1JEMS",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "738535121796-o3mq854ufrujemn8bqa26p72dmnl3uik.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "738535121796-vml6og560ie3cap439bhaansa214hadd.apps.googleusercontent.com"
+      }
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "https://fluent-fable-production.up.railway.app",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://ougxlrkbnvjbnflszqaa.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_dv6I5gXFp_C752GrRR74PA_s1r1JEMS",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "738535121796-o3mq854ufrujemn8bqa26p72dmnl3uik.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "738535121796-vml6og560ie3cap439bhaansa214hadd.apps.googleusercontent.com"
+      }
     }
   },
   "submit": {
