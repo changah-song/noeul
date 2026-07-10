@@ -423,6 +423,8 @@ class EpubPageView(context: Context) : View(context) {
     // glyphs slightly, standing in for the design's 400 → 500 weight bump.
     canvas.translate(FOCUS_EMPHASIS_OFFSET_DP * resources.displayMetrics.density, 0f)
     layout.draw(canvas)
+    canvas.translate(-FOCUS_EMPHASIS_OFFSET_DP * resources.displayMetrics.density, 0f)
+    drawSavedHighlightText(canvas, block, layout, savedHighlightRanges)
     canvas.restoreToCount(overlayLayer)
     canvas.restoreToCount(clipSave)
   }

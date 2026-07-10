@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Text, View, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
+import { Text, View, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { api } from '../../../services/api/client';
+import { explainInContext } from '../../../services/api/explainInContext';
 import { useAppContext } from '../../../contexts/AppContext';
 import { useTranslation } from '../../../hooks/useTranslation';
 import { useLocalOwner } from '../../../contexts/LocalOwnerContext';
@@ -386,6 +387,59 @@ const DictionaryContent = ({
     }, [interfaceLanguage, isChineseBook, isEnglishBook]);
     const contextSentence = cleanValue(sourceSentence);
     const [translationMode, setTranslationMode] = useState(false);
+    // Contextual "what it means here" explanation, keyed by the entry word. Each
+    // value: { loading, text, error }. Only fetched when the pill is pressed.
+    const [explainOpen, setExplainOpen] = useState({});
+    const [explainData, setExplainData] = useState({});
+
+    // Reset explanation state whenever a new word/sentence context is opened so we
+    // never show an explanation fetched for a different sentence.
+    useEffect(() => {
+        setExplainOpen({});
+        setExplainData({});
+    }, [highlightedWord, contextSentence]);
+
+    const handleExplainPress = useCallback(async (word) => {
+        const key = cleanValue(word);
+        if (!key || !contextSentence) {
+            return;
+        }
+
+        const willOpen = !explainOpen[key];
+        setExplainOpen((prev) => ({ ...prev, [key]: willOpen }));
+        if (!willOpen) {
+            return;
+        }
+
+        const existing = explainData[key];
+        if (existing && (existing.loading || existing.text)) {
+            return; // already fetched or in flight
+        }
+
+        setExplainData((prev) => ({ ...prev, [key]: { loading: true, text: '', error: null } }));
+
+        try {
+            const response = await explainInContext({
+                word: key,
+                sentence: contextSentence,
+                language: targetLanguage,
+                interfaceLanguage,
+            });
+            const text = cleanValue(response?.explanation);
+            setExplainData((prev) => ({
+                ...prev,
+                [key]: text
+                    ? { loading: false, text, error: null }
+                    : { loading: false, text: '', error: t('lookup.explainFailed') },
+            }));
+        } catch (error) {
+            setExplainData((prev) => ({
+                ...prev,
+                [key]: { loading: false, text: '', error: error?.message || t('lookup.explainFailed') },
+            }));
+        }
+    }, [explainOpen, explainData, contextSentence, targetLanguage, interfaceLanguage, t]);
+
     const [drilldownStack, setDrilldownStack] = useState([]);
     const lookupWord = drilldownStack.length > 0 ? drilldownStack[drilldownStack.length - 1] : highlightedWord;
     const rootLookupWord = cleanValue(normalizeSurfaceWordForLanguage(highlightedWord, targetLanguage)) || cleanValue(highlightedWord);
@@ -1640,6 +1694,74 @@ const DictionaryContent = ({
         );
     };
 
+    const renderContextExplanation = (word) => {
+        const key = cleanValue(word);
+        if (!key || !contextSentence) {
+            return null;
+        }
+
+        const isOpen = !!explainOpen[key];
+        const data = explainData[key] || {};
+
+        return (
+            <View style={styles.explainSection}>
+                <TouchableOpacity
+                    accessibilityRole="button"
+                    accessibilityState={{ expanded: isOpen }}
+                    accessibilityLabel={t('lookup.explainInContext')}
+                    activeOpacity={0.85}
+                    onPress={() => handleExplainPress(key)}
+                    style={[
+                        styles.explainPill,
+                        {
+                            backgroundColor: palette.secondaryButtonBg,
+                            borderColor: palette.border,
+                        },
+                    ]}
+                >
+                    <MaterialIcons name="auto-awesome" size={16} color={palette.action} />
+                    <Text style={[styles.explainPillLabel, { color: palette.text }]} numberOfLines={1}>
+                        {t('lookup.explainInContext')}
+                    </Text>
+                    <MaterialIcons
+                        name={isOpen ? 'expand-less' : 'subdirectory-arrow-right'}
+                        size={18}
+                        color={palette.mutedText}
+                    />
+                </TouchableOpacity>
+                {isOpen ? (
+                    <View style={styles.explainBody}>
+                        <Text style={[styles.explainBodyTitle, { color: palette.mutedText }]}>
+                            {t('lookup.explainInThisSentence')}
+                        </Text>
+                        {data.loading ? (
+                            <View style={styles.explainLoadingRow}>
+                                <ActivityIndicator size="small" color={palette.action} />
+                                <Text style={[styles.explainLoadingText, { color: palette.mutedText }]}>
+                                    {t('lookup.explainLoading')}
+                                </Text>
+                            </View>
+                        ) : data.text ? (
+                            <Text selectable style={[styles.explainBodyText, { color: palette.secondaryText }]}>
+                                {data.text}
+                            </Text>
+                        ) : (
+                            <TouchableOpacity
+                                accessibilityRole="button"
+                                activeOpacity={0.85}
+                                onPress={() => handleExplainPress(key)}
+                            >
+                                <Text style={[styles.explainErrorText, { color: palette.emptyText }]}>
+                                    {data.error || t('lookup.explainFailed')}
+                                </Text>
+                            </TouchableOpacity>
+                        )}
+                    </View>
+                ) : null}
+            </View>
+        );
+    };
+
     const renderPrimaryEntry = ({
         key,
         word,
@@ -1689,6 +1811,7 @@ const DictionaryContent = ({
                         </Text>
                     )}
                 </View>
+                {renderContextExplanation(word)}
                 {isPanelExpanded && isEnglishBook ? renderWordParts(wordParts, word) : null}
                 {isPanelExpanded && isEnglishBook && !hasRenderableWordParts(wordParts, word) ? renderOrigin(etymology, word) : null}
                 {isPanelExpanded && showLess ? renderExtraDefinitions(extraEntries) : null}
@@ -1734,6 +1857,7 @@ const DictionaryContent = ({
                 <View style={styles.notFoundBody}>
                     <Text style={[styles.entryWord, { color: palette.text, textAlign: 'center' }]}>{lookupWord}</Text>
                     <Text style={[styles.notFoundSubtext, { color: colors.textSubtle }]}>{t('lookup.noDefinition')}</Text>
+                    {renderContextExplanation(lookupWord)}
                 </View>
                 {renderNotFoundActionRow(lookupWord)}
             </View>
@@ -1750,6 +1874,7 @@ const DictionaryContent = ({
                 <View style={styles.notFoundBody}>
                     <Text style={[styles.entryWord, { color: palette.text, textAlign: 'center' }]}>{lookupWord}</Text>
                     <Text style={[styles.notFoundSubtext, { color: colors.textSubtle }]}>{t('lookup.noDefinition')}</Text>
+                    {renderContextExplanation(lookupWord)}
                 </View>
                 {renderNotFoundActionRow(lookupWord)}
             </View>
@@ -2154,6 +2279,59 @@ const createStyles = (colors) => StyleSheet.create({
         fontWeight: '600',
         marginBottom: spacing.xs,
         letterSpacing: 0,
+    },
+    explainSection: {
+        width: '100%',
+        marginTop: spacing.sm,
+    },
+    explainPill: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 10,
+        paddingHorizontal: 16,
+        paddingVertical: 12,
+        borderRadius: 12,
+        borderWidth: 1,
+    },
+    explainPillLabel: {
+        flex: 1,
+        fontFamily: fontFamilies.sans,
+        fontSize: 15,
+        fontWeight: '600',
+        letterSpacing: 0,
+    },
+    explainBody: {
+        paddingTop: spacing.sm,
+        paddingHorizontal: 2,
+        gap: 8,
+    },
+    explainBodyTitle: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 12,
+        lineHeight: 15,
+        letterSpacing: 2,
+        textTransform: 'uppercase',
+    },
+    explainBodyText: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 15,
+        lineHeight: 23,
+        letterSpacing: 0,
+    },
+    explainLoadingRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 10,
+    },
+    explainLoadingText: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 14,
+        lineHeight: 20,
+    },
+    explainErrorText: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 14,
+        lineHeight: 20,
     },
     originSection: {
         gap: 6,

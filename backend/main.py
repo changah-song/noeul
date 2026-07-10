@@ -3644,3 +3644,73 @@ async def assess_entry(payload: dict, auth: dict[str, Any] = Depends(verify_supa
             ],
         },
     }
+
+
+CONTEXT_EXPLANATION_MAX_TOKENS = 600
+
+
+def build_contextual_explanation_prompt(target_language_name: str, interface_language_name: str) -> str:
+    return f"""You are an expert {target_language_name} tutor helping a learner who is reading a text in {target_language_name}.
+
+The learner tapped a single word or phrase while reading and wants to understand what it means *in this specific sentence* — not just its dictionary definition.
+
+Explain the word as it is actually used in the given sentence. Cover:
+- What it means here, in this context (the specific sense, if the word has several).
+- If the surface form differs from the dictionary/base form (a conjugation, an inflected ending, an attached particle), briefly note the base form and what the ending or inflection adds.
+- Any nuance the word carries in this sentence.
+
+Keep it to 2-4 short sentences. Be concrete and tied to this sentence — do not give a generic dictionary entry. Write your explanation in {interface_language_name}. Return only the explanation text, with no preamble, labels, quotes, or markdown."""
+
+
+@app.post("/explain_in_context/")
+async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verify_supabase_token)):
+    if not anthropic_sdk:
+        raise HTTPException(status_code=503, detail="Anthropic SDK is not installed on the backend")
+
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=500, detail="Anthropic API key is not configured")
+
+    word = payload.get("word", "")
+    sentence = payload.get("sentence", "")
+    target_language = normalize_scoring_language(payload.get("language", "ko"))
+    interface_language = normalize_short_language_code(payload.get("interface_language"))
+
+    if not isinstance(word, str) or not word.strip():
+        raise HTTPException(status_code=400, detail="word is required")
+
+    if not isinstance(sentence, str) or not sentence.strip():
+        raise HTTPException(status_code=400, detail="sentence is required")
+
+    word = word.strip()
+    sentence = sentence.strip()
+
+    enforce_text_limit(word, auth, field_name="word")
+    enforce_text_limit(sentence, auth, field_name="sentence")
+
+    await enforce_daily_quota(auth)
+
+    target_language_name = LANGUAGE_DISPLAY_NAMES.get(target_language, target_language.upper())
+    interface_language_name = LANGUAGE_DISPLAY_NAMES.get(interface_language, "English")
+    system_prompt = build_contextual_explanation_prompt(target_language_name, interface_language_name)
+    user_message = f"Word: {word}\n\nSentence: {sentence}"
+
+    try:
+        client = anthropic_sdk.Anthropic(api_key=ANTHROPIC_API_KEY)
+        message = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=CONTEXT_EXPLANATION_MAX_TOKENS,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_message}],
+        )
+    except Exception as error:
+        print(f"[explain_in_context] Anthropic API error: {error.__class__.__name__}: {error}")
+        raise HTTPException(status_code=502, detail="AI explanation service is temporarily unavailable")
+
+    explanation = "".join(
+        block.text for block in (message.content or []) if getattr(block, "type", None) == "text"
+    ).strip()
+
+    if not explanation:
+        raise HTTPException(status_code=502, detail="AI returned an empty explanation")
+
+    return {"explanation": explanation}

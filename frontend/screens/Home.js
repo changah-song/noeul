@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import {
     ActivityIndicator,
     Alert,
+    Animated,
     Image,
     KeyboardAvoidingView,
     Modal,
@@ -22,6 +23,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
 import { Feather, Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { createTabBarBaseStyle } from '../components/shared/TabBar';
+import Book3D from '../components/Home/Book3D';
 import SongReader from '../components/Songs/SongReader';
 import { IconButton, Screen } from '../components/ui';
 import { useAppContext } from '../contexts/AppContext';
@@ -105,8 +107,14 @@ import {
 } from '../modules/screen-ocr-overlay/src';
 import { getLanguageLabel, normalizeBookLanguage } from '../constants/languages';
 
-const BOOK_GRID_GAP = Spacing.xl4;
+const BOOK_GRID_COLUMNS = 4;
+const BOOK_GRID_GAP = Spacing.lg;
 const HOME_CONTENT_HORIZONTAL_PADDING = Spacing.screenHorizontal;
+const FEATURED_BOOK_COUNT = 3;
+const HERO_COVER_WIDTH_RATIO = 0.5;
+const HERO_COVER_ASPECT_RATIO = 1.5;
+const HERO_SIDE_BOOK_SCALE = 0.78;
+const HERO_ITEM_GAP = Spacing.xl4;
 const FAB_EDGE_OFFSET = Spacing.xl5;
 const FAB_MENU_GAP = Spacing.xl;
 const FAB_WINDOW_BOTTOM_OFFSET = Layout.tabBarHeight + FAB_EDGE_OFFSET;
@@ -694,6 +702,20 @@ const getDefaultCoverPalette = (book, homeColors = HOME_COLORS) => {
 const BookCover = ({ book, width, height, style, titleStyle }) => {
     const { t } = useTranslation();
     const { homeColors, styles } = useHomeTheme();
+    const coverUri = typeof book?.cover === 'string' ? book.cover.trim() : '';
+    const [failedCoverUri, setFailedCoverUri] = useState(null);
+
+    if (coverUri && coverUri !== failedCoverUri) {
+        return (
+            <Image
+                source={{ uri: coverUri }}
+                accessibilityLabel={getBookTitle(book, t)}
+                onError={() => setFailedCoverUri(coverUri)}
+                style={[styles.coverImage, style, { width, height }]}
+            />
+        );
+    }
+
     const palette = getDefaultCoverPalette(book, homeColors);
     const scaleX = width / DEFAULT_COVER_REF_WIDTH;
     const scaleY = height / DEFAULT_COVER_REF_HEIGHT;
@@ -713,8 +735,6 @@ const BookCover = ({ book, width, height, style, titleStyle }) => {
                 width,
                 height,
                 backgroundColor: palette.background,
-                borderLeftColor: palette.spine,
-                borderLeftWidth: Math.max(2, Math.round(Layout.bookGridCoverSpineWidth * scaleX)),
                 gap: ruleGap,
                 paddingHorizontal: Math.max(8, Math.round(20 * scaleX)),
                 paddingVertical: Math.max(10, Math.round(20 * scaleY)),
@@ -995,12 +1015,18 @@ const PreviewBookCover = ({ book }) => {
     const { styles } = useHomeTheme();
 
     return (
-        <BookCover
-            book={book}
+        <Book3D
             width={Layout.bookPreviewCoverWidth}
             height={Layout.bookPreviewCoverHeight}
-            style={styles.previewCover}
-        />
+            radius={5}
+        >
+            <BookCover
+                book={book}
+                width={Layout.bookPreviewCoverWidth}
+                height={Layout.bookPreviewCoverHeight}
+                style={styles.previewCover}
+            />
+        </Book3D>
     );
 };
 
@@ -1327,6 +1353,190 @@ const BookPreview = ({
     );
 };
 
+const FeaturedBookCarousel = ({ books, screenWidth, onResumeBook, onPressBook }) => {
+    const { t } = useTranslation();
+    const { homeColors: HOME_COLORS, styles } = useHomeTheme();
+    const scrollRef = useRef(null);
+    const [activeIndex, setActiveIndex] = useState(0);
+
+    const coverWidth = Math.round(screenWidth * HERO_COVER_WIDTH_RATIO);
+    const coverHeight = Math.round(coverWidth * HERO_COVER_ASPECT_RATIO);
+    const snapInterval = coverWidth + HERO_ITEM_GAP;
+    const sidePadding = Math.max(0, Math.round((screenWidth - coverWidth) / 2));
+
+    const isLooping = books.length > 1;
+    const loopOffset = isLooping ? 1 : 0;
+    const loopedBooks = isLooping
+        ? [books[books.length - 1], ...books, books[0]]
+        : books;
+
+    const scrollX = useRef(new Animated.Value(isLooping ? snapInterval : 0)).current;
+
+    useEffect(() => {
+        if (isLooping) {
+            scrollRef.current?.scrollTo({ x: loopOffset * snapInterval, animated: false });
+        }
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+    const clampedIndex = clamp(activeIndex, 0, books.length - 1);
+    const activeBook = books[clampedIndex];
+    const progressPercent = Math.round(getBookProgress(activeBook) * 100);
+    const wordCount = getBookWordCount(activeBook);
+
+    const handleScroll = (event) => {
+        const offset = event.nativeEvent.contentOffset.x;
+        const rawIndex = Math.round(offset / snapInterval);
+        const total = loopedBooks.length;
+        let realIndex;
+        if (rawIndex <= 0) {
+            realIndex = books.length - 1;
+        } else if (rawIndex >= total - 1) {
+            realIndex = 0;
+        } else {
+            realIndex = rawIndex - loopOffset;
+        }
+        setActiveIndex((current) => (current === realIndex ? current : realIndex));
+    };
+
+    const handleMomentumScrollEnd = (event) => {
+        if (!isLooping) return;
+        const offset = event.nativeEvent.contentOffset.x;
+        const index = Math.round(offset / snapInterval);
+        const total = loopedBooks.length;
+        if (index === 0) {
+            scrollRef.current?.scrollTo({ x: books.length * snapInterval, animated: false });
+        } else if (index === total - 1) {
+            scrollRef.current?.scrollTo({ x: loopOffset * snapInterval, animated: false });
+        }
+    };
+
+    const handleItemPress = (book, loopedIndex, realIndex) => {
+        if (realIndex === clampedIndex) {
+            onPressBook(book, realIndex);
+            return;
+        }
+        scrollRef.current?.scrollTo({ x: loopedIndex * snapInterval, animated: true });
+    };
+
+    return (
+        <View style={styles.heroSection}>
+            <Text style={styles.heroEyebrow}>{t('home.continueReading')}</Text>
+            <Animated.ScrollView
+                ref={scrollRef}
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                decelerationRate="fast"
+                snapToInterval={snapInterval}
+                snapToAlignment="start"
+                contentContainerStyle={[
+                    styles.heroScrollContent,
+                    { paddingHorizontal: sidePadding },
+                ]}
+                onScroll={Animated.event(
+                    [{ nativeEvent: { contentOffset: { x: scrollX } } }],
+                    { useNativeDriver: true, listener: handleScroll }
+                )}
+                onMomentumScrollEnd={handleMomentumScrollEnd}
+                scrollEventThrottle={16}
+            >
+                {loopedBooks.map((book, index) => {
+                    const realBookIndex = (index - loopOffset + books.length) % books.length;
+                    const inputRange = [
+                        (index - 1) * snapInterval,
+                        index * snapInterval,
+                        (index + 1) * snapInterval,
+                    ];
+                    const scale = scrollX.interpolate({
+                        inputRange,
+                        outputRange: [HERO_SIDE_BOOK_SCALE, 1, HERO_SIDE_BOOK_SCALE],
+                        extrapolate: 'clamp',
+                    });
+                    const emphasis = scrollX.interpolate({
+                        inputRange,
+                        outputRange: [0, 1, 0],
+                        extrapolate: 'clamp',
+                    });
+
+                    return (
+                        <Pressable
+                            key={`looped-${index}-${getBookKey(book, index)}`}
+                            accessibilityRole="button"
+                            accessibilityLabel={getBookTitle(book, t)}
+                            onPress={() => handleItemPress(book, index, realBookIndex)}
+                            style={[
+                                styles.heroItem,
+                                {
+                                    width: coverWidth,
+                                    marginRight: index === loopedBooks.length - 1 ? 0 : HERO_ITEM_GAP,
+                                },
+                            ]}
+                        >
+                            <Animated.View style={{ transform: [{ scale }] }}>
+                                <Book3D
+                                    width={coverWidth}
+                                    height={coverHeight}
+                                    radius={6}
+                                    glossOpacity={emphasis}
+                                    shadowOpacity={emphasis}
+                                >
+                                    <BookCover
+                                        book={book}
+                                        width={coverWidth}
+                                        height={coverHeight}
+                                        style={styles.heroCover}
+                                    />
+                                </Book3D>
+                            </Animated.View>
+                        </Pressable>
+                    );
+                })}
+            </Animated.ScrollView>
+
+            <View style={styles.heroMeta}>
+                <Text
+                    numberOfLines={1}
+                    style={[
+                        styles.heroTitle,
+                        getSerifFontForText(getBookTitle(activeBook, t)),
+                    ]}
+                >
+                    {getBookTitle(activeBook, t)}
+                </Text>
+                <Text
+                    numberOfLines={1}
+                    style={[
+                        styles.heroAuthor,
+                        hasKoreanText(getBookAuthor(activeBook, t)) && styles.koreanInlineText,
+                    ]}
+                >
+                    {getBookAuthor(activeBook, t)}
+                </Text>
+                <View style={styles.heroProgressGroup}>
+                    <View style={styles.heroProgressLabels}>
+                        <Text style={styles.heroPercent}>{`${progressPercent}%`}</Text>
+                        {wordCount ? (
+                            <Text style={styles.heroWords}>{formatWordCount(wordCount, t)}</Text>
+                        ) : null}
+                    </View>
+                    <View style={styles.heroProgressRail}>
+                        <View style={[styles.heroProgressFill, { width: `${progressPercent}%` }]} />
+                    </View>
+                    <TouchableOpacity
+                        accessibilityRole="button"
+                        accessibilityLabel={t('home.resume')}
+                        activeOpacity={0.88}
+                        onPress={() => onResumeBook(activeBook)}
+                        style={styles.heroResumeButton}
+                    >
+                        <Text style={styles.heroResumeText}>{t('home.resume')}</Text>
+                        <Feather name="arrow-right" size={16} color={HOME_COLORS.onAccent} />
+                    </TouchableOpacity>
+                </View>
+            </View>
+        </View>
+    );
+};
+
 const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpen, navigation, user }) => {
     const { t } = useTranslation();
     const { languageSettingsReady, targetLanguage, switchProfile, activeProfileId } = useAppContext();
@@ -1429,7 +1639,10 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     }, [targetLanguage]);
 
     const homeGridContentWidth = Math.max(width - (HOME_CONTENT_HORIZONTAL_PADDING * 2), 0);
-    const bookTileWidth = Math.max(Math.floor((homeGridContentWidth - BOOK_GRID_GAP) / 2), 0);
+    const bookTileWidth = Math.max(
+        Math.floor((homeGridContentWidth - (BOOK_GRID_GAP * (BOOK_GRID_COLUMNS - 1))) / BOOK_GRID_COLUMNS),
+        0
+    );
     const bookCoverHeight = Math.round(bookTileWidth * 1.5);
     const useRemotePublicLibrary = targetLanguage === 'en';
     const bundledPublicDomainBooks = useMemo(() => getPublicDomainBooks(targetLanguage), [targetLanguage]);
@@ -1702,6 +1915,10 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             })
             .map(({ book }) => book)
     ), [languageFilteredBooks]);
+    const featuredBooks = useMemo(
+        () => recentBooks.slice(0, FEATURED_BOOK_COUNT),
+        [recentBooks]
+    );
     const bookFilterCounts = useMemo(() => ({
         favorites: favoriteBooks.length,
         all: languageFilteredBooks.length,
@@ -2671,6 +2888,19 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         setSelectedBookPreview({ book, index });
     }, [activeBookMenuKey]);
 
+    const handleResumeFeaturedBook = useCallback((book) => {
+        if (!book) {
+            return;
+        }
+
+        if (book.publicDomain) {
+            handlePublicDomainBookPress(book);
+            return;
+        }
+
+        handleBookPress(book);
+    }, [handleBookPress, handlePublicDomainBookPress]);
+
     const handleReadPreviewBook = useCallback(() => {
         if (!selectedPreviewBook) {
             return;
@@ -3241,6 +3471,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 return (
                     <Pressable
                         key={book.uri || book.id || book.publicLibraryId || `${book.title}-${index}`}
+                        accessibilityRole="button"
+                        accessibilityLabel={`${getBookTitle(book, t)}, ${getBookAuthor(book, t)}`}
                         onPress={() => handleBookPreviewPress(book, index)}
                         style={({ pressed }) => [
                             styles.bookTile,
@@ -3249,35 +3481,28 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                         ]}
                     >
                         <View style={styles.bookCoverContainer}>
-                            <BookCover
-                                book={book}
+                            <Book3D
                                 width={bookTileWidth}
                                 height={bookCoverHeight}
-                                style={styles.bookCover}
-                                titleStyle={styles.bookCoverText}
-                            />
-                            {isPdfBook(book) ? (
-                                <View style={styles.bookFormatBadge}>
-                                    <Text style={styles.bookFormatBadgeText}>PDF</Text>
-                                </View>
-                            ) : null}
+                                radius={2}
+                            >
+                                <BookCover
+                                    book={book}
+                                    width={bookTileWidth}
+                                    height={bookCoverHeight}
+                                    style={styles.bookCover}
+                                    titleStyle={styles.bookCoverText}
+                                />
+                            </Book3D>
                             {!isBookDownloaded(book) || isDownloadingBook ? (
-                                <View style={styles.bookDownloadBadge}>
+                                <View style={styles.bookGridDownloadBadge}>
                                     {isDownloadingBook ? (
                                         <ActivityIndicator size="small" color={HOME_COLORS.accent} />
                                     ) : (
-                                        <Feather name="download" size={IconDefaults.size - Spacing.lg} color={HOME_COLORS.accent} />
+                                        <Feather name="download" size={11} color={HOME_COLORS.accent} />
                                     )}
                                 </View>
                             ) : null}
-                        </View>
-                        <View style={styles.bookTileMeta}>
-                            <Text style={styles.bookTitle} numberOfLines={1}>
-                                {getBookTitle(book, t)}
-                            </Text>
-                            <Text style={styles.bookTileAuthor} numberOfLines={1}>
-                                {getBookAuthor(book, t)}
-                            </Text>
                         </View>
                     </Pressable>
                 );
@@ -3301,13 +3526,19 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                             pressed && styles.pressed,
                         ]}
                     >
-                        <BookCover
-                            book={book}
+                        <Book3D
                             width={Spacing.xl8 * 3}
                             height={Spacing.xl8 * 4 + Spacing.lg}
-                            style={styles.bookRowCover}
-                            titleStyle={styles.bookRowCoverText}
-                        />
+                            radius={2}
+                        >
+                            <BookCover
+                                book={book}
+                                width={Spacing.xl8 * 3}
+                                height={Spacing.xl8 * 4 + Spacing.lg}
+                                style={styles.bookRowCover}
+                                titleStyle={styles.bookRowCoverText}
+                            />
+                        </Book3D>
                         <View style={styles.bookRowCopy}>
                             <View style={styles.bookRowTitleLine}>
                                 <Text
@@ -3401,13 +3632,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 style={styles.stack}
             >
                 <View style={styles.appTopBar}>
-                    <View style={styles.appTopSide}>
-                        <Image
-                            source={APP_LOGO_SOURCE}
-                            style={styles.appTopLogo}
-                            resizeMode="contain"
-                        />
-                    </View>
+                    <View style={styles.appTopSide} />
                     <Text style={styles.appTopTitle}>NOEUL</Text>
                     <TouchableOpacity
                         activeOpacity={0.84}
@@ -3435,6 +3660,15 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                         )}
                     </TouchableOpacity>
                 </View>
+
+                {featuredBooks.length > 0 ? (
+                    <FeaturedBookCarousel
+                        books={featuredBooks}
+                        screenWidth={width}
+                        onResumeBook={handleResumeFeaturedBook}
+                        onPressBook={handleBookPreviewPress}
+                    />
+                ) : null}
 
                 <View style={styles.libraryControls}>
                     <View style={styles.libraryHeader}>
@@ -4070,6 +4304,101 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         textAlign: 'center',
         ...textStyles.appTitle,
     },
+    heroSection: {
+        paddingTop: Spacing.xl5,
+    },
+    heroEyebrow: {
+        ...textStyles.eyebrow,
+        fontSize: 10,
+        lineHeight: 13,
+        color: HOME_COLORS.tertiary,
+        textAlign: 'center',
+    },
+    heroScrollContent: {
+        paddingTop: Spacing.xl6,
+        paddingBottom: Spacing.xl8,
+        alignItems: 'center',
+    },
+    heroItem: {
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    heroCover: {
+        borderRadius: 6,
+    },
+    heroMeta: {
+        paddingHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
+        alignItems: 'center',
+    },
+    heroTitle: {
+        fontSize: 24,
+        lineHeight: 32,
+        color: HOME_COLORS.text,
+        textAlign: 'center',
+    },
+    heroAuthor: {
+        fontFamily: fontFamilies.displayMediumItalic,
+        fontSize: 14,
+        lineHeight: 20,
+        color: HOME_COLORS.secondary,
+        textAlign: 'center',
+        marginTop: Spacing.xs,
+    },
+    heroProgressGroup: {
+        width: '60%',
+        alignSelf: 'center',
+    },
+    heroProgressLabels: {
+        alignSelf: 'stretch',
+        flexDirection: 'row',
+        alignItems: 'baseline',
+        justifyContent: 'space-between',
+        marginTop: Spacing.xl4,
+    },
+    heroPercent: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 14,
+        lineHeight: 18,
+        color: HOME_COLORS.text,
+    },
+    heroWords: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 12,
+        lineHeight: 16,
+        color: HOME_COLORS.tertiary,
+    },
+    heroProgressRail: {
+        alignSelf: 'stretch',
+        height: 3,
+        marginTop: Spacing.sm,
+        borderRadius: 999,
+        backgroundColor: HOME_COLORS.track,
+        overflow: 'hidden',
+    },
+    heroProgressFill: {
+        height: '100%',
+        borderRadius: 999,
+        backgroundColor: HOME_COLORS.accentDeep,
+    },
+    heroResumeButton: {
+        alignSelf: 'stretch',
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: Spacing.lg,
+        height: 52,
+        marginTop: Spacing.xl4,
+        borderRadius: 6,
+        backgroundColor: HOME_COLORS.accentDeep,
+    },
+    heroResumeText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 13,
+        lineHeight: 17,
+        letterSpacing: 3,
+        textTransform: 'uppercase',
+        color: HOME_COLORS.onAccent,
+    },
     previewScreenContent: {
         paddingHorizontal: 0,
         paddingTop: 0,
@@ -4139,7 +4468,7 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         backgroundColor: HOME_COLORS.surface2,
     },
     previewCover: {
-        ...Shadows.coverLift,
+        borderRadius: 5,
     },
     previewBookSpine: {
         display: 'none',
@@ -4841,18 +5170,29 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         flexDirection: 'row',
         flexWrap: 'wrap',
         gap: BOOK_GRID_GAP,
+        rowGap: BOOK_GRID_GAP + Spacing.sm,
         paddingHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
         paddingTop: 16,
         paddingBottom: 28,
+    },
+    bookGridDownloadBadge: {
+        position: 'absolute',
+        left: 3,
+        bottom: 3,
+        width: 22,
+        height: 22,
+        borderRadius: 11,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: HOME_COLORS.bg,
+        borderWidth: 1,
+        borderColor: HOME_COLORS.border,
     },
     bookTile: {
         gap: 0,
     },
     bookCoverContainer: {
         position: 'relative',
-    },
-    bookTileMeta: {
-        marginTop: 8,
     },
     bookRows: {
         paddingHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
@@ -4964,20 +5304,6 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         fontSize: 21,
         lineHeight: 29,
     },
-    bookTitle: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 12,
-        lineHeight: 16,
-        color: HOME_COLORS.text,
-        letterSpacing: 0,
-    },
-    bookTileAuthor: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 11,
-        lineHeight: 15,
-        color: HOME_COLORS.tertiary,
-        marginTop: 2,
-    },
     bookProgressRail: {
         height: 3,
         marginTop: 5,
@@ -5071,38 +5397,6 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     },
     publicDomainActionTextReady: {
         color: HOME_COLORS.accentDeep,
-    },
-    bookFormatBadge: {
-        position: 'absolute',
-        top: Spacing.md,
-        right: Spacing.md,
-        minHeight: Spacing.xl8,
-        justifyContent: 'center',
-        paddingHorizontal: Spacing.sm,
-        borderRadius: Radii.badge,
-        borderWidth: Layout.tabBarBorderWidth,
-        borderColor: HOME_COLORS.border,
-        backgroundColor: HOME_COLORS.bg,
-    },
-    bookFormatBadgeText: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: TextStyles.labelSmall.fontSize,
-        lineHeight: TextStyles.labelSmall.fontSize + Spacing.xs,
-        letterSpacing: TextStyles.labelSmall.letterSpacing,
-        color: HOME_COLORS.text,
-    },
-    bookDownloadBadge: {
-        position: 'absolute',
-        left: Spacing.md,
-        bottom: Spacing.md,
-        width: Layout.lookupButtonHeightCompact,
-        height: Spacing.xl8,
-        borderRadius: Radii.badge,
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: HOME_COLORS.bg,
-        borderWidth: 1,
-        borderColor: HOME_COLORS.border,
     },
     bookMenuButton: {
         position: 'absolute',
