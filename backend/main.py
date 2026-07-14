@@ -3654,12 +3654,39 @@ def build_contextual_explanation_prompt(target_language_name: str, interface_lan
 
 The learner tapped a single word or phrase while reading and wants to understand what it means *in this specific sentence* — not just its dictionary definition.
 
-Explain the word as it is actually used in the given sentence. Cover:
-- What it means here, in this context (the specific sense, if the word has several).
-- If the surface form differs from the dictionary/base form (a conjugation, an inflected ending, an attached particle), briefly note the base form and what the ending or inflection adds.
-- Any nuance the word carries in this sentence.
+Return your response using exactly these three tags, in this order, and nothing else:
 
-Keep it to 2-4 short sentences. Be concrete and tied to this sentence — do not give a generic dictionary entry. Write your explanation in {interface_language_name}. Return only the explanation text, with no preamble, labels, quotes, or markdown."""
+<lemma>The dictionary base form of the tapped word, written in {target_language_name}. Strip conjugation, inflected endings, and attached particles to recover the form you would look up in a dictionary (e.g. a verb's plain base form). If the tapped word is already the base form, repeat it. Give only the single base form, no explanation.</lemma>
+<gloss>A very short definition — at most 5 words, no full sentence — written in {interface_language_name}. This is what gets saved as the learner's flashcard definition, so make it a clean, standalone gloss.</gloss>
+<explanation>2-4 short sentences explaining the word as it is actually used in this sentence, written in {interface_language_name}. Cover: what it means here in this context (the specific sense, if the word has several); if the surface form differs from the base form, briefly note the base form and what the ending or inflection adds; any nuance the word carries in this sentence. Be concrete and tied to this sentence — do not give a generic dictionary entry.</explanation>
+
+Output only the three tags with their content — no preamble, labels, quotes, or markdown."""
+
+
+_EXPLAIN_TAG_PATTERN = {
+    tag: re.compile(rf"<{tag}>(.*?)</{tag}>", re.DOTALL | re.IGNORECASE)
+    for tag in ("lemma", "gloss", "explanation")
+}
+
+
+def parse_contextual_explanation(raw: str) -> dict[str, str | None]:
+    """Pull the <lemma>/<gloss>/<explanation> fields out of the model output.
+
+    Falls back gracefully: if the model ignored the tag format, the whole
+    response is treated as the explanation with no lemma/gloss, preserving the
+    original single-blob contract.
+    """
+    fields = {
+        tag: (match.group(1).strip() if (match := pattern.search(raw)) else "")
+        for tag, pattern in _EXPLAIN_TAG_PATTERN.items()
+    }
+
+    explanation = fields["explanation"] or raw.strip()
+    return {
+        "explanation": explanation,
+        "gloss": fields["gloss"] or None,
+        "lemma": fields["lemma"] or None,
+    }
 
 
 @app.post("/explain_in_context/")
@@ -3706,11 +3733,16 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
         print(f"[explain_in_context] Anthropic API error: {error.__class__.__name__}: {error}")
         raise HTTPException(status_code=502, detail="AI explanation service is temporarily unavailable")
 
-    explanation = "".join(
+    raw = "".join(
         block.text for block in (message.content or []) if getattr(block, "type", None) == "text"
     ).strip()
 
-    if not explanation:
+    if not raw:
         raise HTTPException(status_code=502, detail="AI returned an empty explanation")
 
-    return {"explanation": explanation}
+    parsed = parse_contextual_explanation(raw)
+
+    if not parsed["explanation"]:
+        raise HTTPException(status_code=502, detail="AI returned an empty explanation")
+
+    return parsed

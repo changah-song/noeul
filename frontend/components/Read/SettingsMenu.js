@@ -220,4 +220,4 @@ const styles = StyleSheet.create({
     },
 });
 
-export default SettingsMenu;
+export default React.memo(SettingsMenu);

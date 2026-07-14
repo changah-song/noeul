@@ -15,6 +15,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Feather, MaterialIcons } from '@expo/vector-icons';
 
 import Flashcard from '../components/Learn/Flashcard';
+import CandidateCard from '../components/vocab/CandidateCard';
 import { Screen } from '../components/ui';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
@@ -22,15 +23,20 @@ import { useTranslation } from '../hooks/useTranslation';
 import { fetchHanjaRelated } from '../services/api/hanjaRelated';
 import {
   addRelatedKnownWord,
+  getAllBooksWordCandidates,
+  getCachedPKnown,
   getVocabContexts,
   getRelatedKnownWords,
+  insertData,
   logInteractionEvent,
   recordReviewOutcome,
   removeData,
   removeRelatedKnownWord,
   updateFavorite,
   viewData,
+  vocabEntryExists,
 } from '../services/Database';
+import { deriveCandidateReason } from '../services/wordCandidates';
 import { incrementWordsStudied } from '../services/dailyProgress';
 import {
   recordCloudVocabReview,
@@ -1103,7 +1109,7 @@ const WordDetailModal = ({
 
 const Learn = ({ navigation, user }) => {
   const { t } = useTranslation();
-  const { targetLanguage } = useAppContext();
+  const { targetLanguage, interfaceLanguage } = useAppContext();
   const { activeOwnerId, syncGeneration, syncPaused } = useLocalOwner();
   const { colors } = useTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
@@ -1115,6 +1121,11 @@ const Learn = ({ navigation, user }) => {
     proficiencyByKey,
   }), [colors, proficiencyByKey, styles]);
   const [words, setWords] = useState([]);
+  const [mainTab, setMainTab] = useState('saved');
+  const [candidateGroups, setCandidateGroups] = useState([]);
+  const [candidatesLoading, setCandidatesLoading] = useState(false);
+  const [candidatesLoaded, setCandidatesLoaded] = useState(false);
+  const [savedCandidateStems, setSavedCandidateStems] = useState(() => new Set());
   const [activeFilter, setActiveFilter] = useState('recent');
   const [practiceDeck, setPracticeDeck] = useState(null);
   const [practiceIndex, setPracticeIndex] = useState(0);
@@ -1150,8 +1161,98 @@ const Learn = ({ navigation, user }) => {
     setSelectedWord(null);
     setSelectedWordContexts([]);
     setSelectedWordKeys(new Set());
+    setCandidateGroups([]);
+    setCandidatesLoaded(false);
+    setSavedCandidateStems(new Set());
     fetchWords();
   }, [activeOwnerId, fetchWords, targetLanguage]);
+
+  // Suggested tab: unsaved candidate words grouped by book, loaded on demand the
+  // first time the reader opens the tab (and refreshable via pull/retry).
+  const loadCandidates = useCallback(async () => {
+    setCandidatesLoading(true);
+    try {
+      const groups = await getAllBooksWordCandidates({
+        ownerId: activeOwnerId,
+        language: targetLanguage,
+        interfaceLanguage,
+      });
+      const withReasons = groups.map((group) => ({
+        ...group,
+        candidates: group.candidates.map((candidate) => ({
+          ...candidate,
+          reason: deriveCandidateReason(candidate),
+          bookUri: group.bookUri,
+          bookTitle: group.bookTitle,
+        })),
+      }));
+      setCandidateGroups(withReasons);
+      setCandidatesLoaded(true);
+    } catch (error) {
+      console.warn('[Learn] Failed to load word candidates:', error?.message ?? error);
+      setCandidateGroups([]);
+      setCandidatesLoaded(true);
+    } finally {
+      setCandidatesLoading(false);
+    }
+  }, [activeOwnerId, targetLanguage, interfaceLanguage]);
+
+  useEffect(() => {
+    if (mainTab === 'suggested' && !candidatesLoaded && !candidatesLoading) {
+      loadCandidates();
+    }
+  }, [mainTab, candidatesLoaded, candidatesLoading, loadCandidates]);
+
+  const handleSaveCandidate = useCallback(async (candidate) => {
+    const word = candidate?.stem;
+    if (!word) return;
+    const hanja = candidate.hanja || '';
+    const definition = candidate.gloss || '';
+    // Reflect the save immediately, then persist.
+    setSavedCandidateStems((prev) => new Set(prev).add(word));
+    try {
+      const alreadySaved = await vocabEntryExists(word, hanja, definition, targetLanguage, {
+        ownerId: activeOwnerId,
+      });
+      if (!alreadySaved) {
+        const createdAt = new Date().toISOString();
+        const pKnown = await getCachedPKnown({
+          ownerId: activeOwnerId,
+          language: targetLanguage,
+          word,
+        });
+        await insertData(word, hanja, definition, {
+          ownerId: activeOwnerId,
+          level: 'unorganized',
+          sourceBookUri: candidate.bookUri ?? null,
+          sourceBookTitle: candidate.bookTitle ?? null,
+          createdAt,
+          updatedAt: createdAt,
+          language: targetLanguage,
+          pKnown,
+        });
+      }
+      requestUserDataSync('learn-candidate-save');
+      logInteractionEvent({
+        ownerId: activeOwnerId,
+        language: targetLanguage,
+        word,
+        hanja,
+        def: definition,
+        eventType: 'save',
+        sourceBookUri: candidate.bookUri ?? null,
+      }).catch(() => {});
+      fetchWords();
+    } catch (error) {
+      console.warn('[Learn] Failed to save candidate word:', error?.message ?? error);
+      // Roll back the optimistic mark so the reader can retry.
+      setSavedCandidateStems((prev) => {
+        const next = new Set(prev);
+        next.delete(word);
+        return next;
+      });
+    }
+  }, [activeOwnerId, targetLanguage, fetchWords]);
 
   useFocusEffect(
     useCallback(() => {
@@ -1507,6 +1608,31 @@ const Learn = ({ navigation, user }) => {
         </View>
       </View>
 
+      <View style={styles.mainTabs}>
+        <TouchableOpacity
+          onPress={() => setMainTab('saved')}
+          style={[styles.mainTab, mainTab === 'saved' && styles.mainTabActive]}
+          accessibilityRole="tab"
+          accessibilityState={{ selected: mainTab === 'saved' }}
+        >
+          <Text style={[styles.mainTabText, mainTab === 'saved' && styles.mainTabTextActive]}>
+            {t('learn.savedTab')}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => setMainTab('suggested')}
+          style={[styles.mainTab, mainTab === 'suggested' && styles.mainTabActive]}
+          accessibilityRole="tab"
+          accessibilityState={{ selected: mainTab === 'suggested' }}
+        >
+          <Text style={[styles.mainTabText, mainTab === 'suggested' && styles.mainTabTextActive]}>
+            {t('learn.suggestedTab')}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {mainTab === 'saved' ? (
+      <>
       <View style={styles.filters}>
         {FILTERS.map((filter) => {
           const active = activeFilter === filter.key;
@@ -1584,6 +1710,40 @@ const Learn = ({ navigation, user }) => {
           ))
         )}
       </View>
+      </>
+      ) : (
+        <View style={styles.suggestedWrap}>
+          {candidatesLoading && !candidatesLoaded ? (
+            <View style={styles.suggestedLoading}>
+              <ActivityIndicator color={colors.textMuted} />
+            </View>
+          ) : candidateGroups.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyTitle}>{t('learn.suggestedEmptyTitle')}</Text>
+              <Text style={styles.emptyBody}>{t('learn.suggestedEmptyBody')}</Text>
+            </View>
+          ) : (
+            candidateGroups.map((group) => (
+              <View key={group.bookUri} style={styles.candidateGroup}>
+                <Text style={styles.candidateGroupTitle} numberOfLines={1}>
+                  {group.bookTitle || t('learn.untitledBook')}
+                </Text>
+                <View style={styles.candidateGroupList}>
+                  {group.candidates.map((candidate) => (
+                    <CandidateCard
+                      key={`${group.bookUri}::${candidate.stem}`}
+                      candidate={candidate}
+                      colors={colors}
+                      saved={savedCandidateStems.has(candidate.stem)}
+                      onSave={handleSaveCandidate}
+                    />
+                  ))}
+                </View>
+              </View>
+            ))
+          )}
+        </View>
+      )}
 
       <Modal animationType="slide" visible={!!practiceDeck} onRequestClose={closePractice}>
         <Flashcard
@@ -1942,6 +2102,54 @@ const createStyles = (colors) => StyleSheet.create({
   },
   emptyBody: {
     ...textStyles.bodyMuted,
+  },
+  mainTabs: {
+    flexDirection: 'row',
+    gap: spacing.xs,
+    marginHorizontal: 24,
+    marginTop: 20,
+    backgroundColor: colors.surfaceMuted ?? colors.divider,
+    borderRadius: radii.pill,
+    padding: 4,
+  },
+  mainTab: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: spacing.sm,
+    borderRadius: radii.pill,
+  },
+  mainTabActive: {
+    backgroundColor: colors.bgPage,
+  },
+  mainTabText: {
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 14,
+    color: colors.textSubtle,
+  },
+  mainTabTextActive: {
+    color: colors.textMuted,
+  },
+  suggestedWrap: {
+    paddingHorizontal: 24,
+    paddingTop: spacing.md,
+    gap: spacing.lg,
+  },
+  suggestedLoading: {
+    paddingVertical: spacing.xxl,
+    alignItems: 'center',
+  },
+  candidateGroup: {
+    gap: spacing.sm,
+  },
+  candidateGroupTitle: {
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 12,
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+    color: colors.textSubtle,
+  },
+  candidateGroupList: {
+    gap: spacing.sm,
   },
   detailScreen: {
     flex: 1,

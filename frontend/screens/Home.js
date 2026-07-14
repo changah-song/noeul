@@ -3,6 +3,7 @@ import {
     ActivityIndicator,
     Alert,
     Animated,
+    BackHandler,
     Image,
     KeyboardAvoidingView,
     Modal,
@@ -18,7 +19,6 @@ import {
     View,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { BlurView } from 'expo-blur';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
 import { Feather, Ionicons, MaterialIcons } from '@expo/vector-icons';
@@ -1076,12 +1076,22 @@ const PreviewNoteCard = ({ note }) => {
     );
 };
 
+// Below this many behavioral events (reviews/lookups) theta is still mostly the
+// self-report seed, so the ease number is a guess — mark it as an early estimate.
+const EASE_CONFIDENT_EVENT_COUNT = 10;
+
 const PreviewReadingEase = ({ readingEase }) => {
     const { homeColors: HOME_COLORS, styles } = useHomeTheme();
     const { t } = useTranslation();
     const percent = formatEasePercent(readingEase?.ease);
     const hasEstimate = percent != null;
     const bandKey = hasEstimate ? getEaseBandKey(readingEase.ease) : null;
+    // Low confidence when the reader is still cold OR the estimate fell back to
+    // the coarse single-band formula (no distribution — 3 possible values in ko).
+    const isEarlyEstimate = hasEstimate && (
+        (readingEase?.eventCount ?? 0) < EASE_CONFIDENT_EVENT_COUNT
+        || readingEase?.easeSource === 'level'
+    );
 
     return (
         <View style={styles.previewEaseBlock}>
@@ -1089,7 +1099,7 @@ const PreviewReadingEase = ({ readingEase }) => {
             {hasEstimate ? (
                 <>
                     <View style={styles.previewEaseHeader}>
-                        <Text style={styles.previewEasePercent}>{`${percent}%`}</Text>
+                        <Text style={styles.previewEasePercent}>{`${isEarlyEstimate ? '~' : ''}${percent}%`}</Text>
                         {bandKey ? (
                             <Text style={styles.previewEaseBand}>{t(`home.readingEaseBand.${bandKey}`)}</Text>
                         ) : null}
@@ -1098,7 +1108,9 @@ const PreviewReadingEase = ({ readingEase }) => {
                         <View style={[styles.previewEaseFill, { width: `${percent}%` }]} />
                     </View>
                     <Text style={styles.previewEaseNote}>{t('home.readingEaseNote', { percent })}</Text>
-                    <Text style={styles.previewEaseDisclaimer}>{t('home.readingEaseDisclaimer')}</Text>
+                    <Text style={styles.previewEaseDisclaimer}>
+                        {isEarlyEstimate ? t('home.readingEaseEarlyHint') : t('home.readingEaseDisclaimer')}
+                    </Text>
                 </>
             ) : (
                 <View style={styles.previewEaseEmpty}>
@@ -1556,7 +1568,6 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const [activeLibraryTab, setActiveLibraryTab] = useState('Books');
     const [activeBookFilter, setActiveBookFilter] = useState('all');
     const [collectionViewMode, setCollectionViewMode] = useState('grid');
-    const [fabMenuOpen, setFabMenuOpen] = useState(false);
     const [activePublicDomainSort, setActivePublicDomainSort] = useState('title');
     const [publicDomainSortDirection, setPublicDomainSortDirection] = useState('asc');
     const [publicLibraryBooks, setPublicLibraryBooks] = useState([]);
@@ -1572,6 +1583,33 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const [selectedBookPreview, setSelectedBookPreview] = useState(null);
     const [previewReadingEase, setPreviewReadingEase] = useState(null);
     const [previewNote, setPreviewNote] = useState(null);
+
+    // Android hardware back closes the full-screen book preview instead of
+    // exiting the app (Home is the tab-navigator root, so back would otherwise
+    // fall through and quit). Only registers while a preview is open.
+    useEffect(() => {
+        if (!selectedBookPreview) {
+            return undefined;
+        }
+        const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+            setSelectedBookPreview(null);
+            return true;
+        });
+        return () => subscription.remove();
+    }, [selectedBookPreview]);
+
+    // Android hardware back closes the full-screen song reader and returns to
+    // Home instead of exiting the app. Only registers while a song is open.
+    useEffect(() => {
+        if (!selectedSongId) {
+            return undefined;
+        }
+        const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+            setSelectedSongId(null);
+            return true;
+        });
+        return () => subscription.remove();
+    }, [selectedSongId]);
     const [showAddSongModal, setShowAddSongModal] = useState(false);
     const [songDraft, setSongDraft] = useState(EMPTY_SONG_DRAFT);
     const [ocrStatus, setOcrStatus] = useState(EMPTY_OCR_STATUS);
@@ -1940,7 +1978,6 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         && !publicLibraryError
         && sortedPublicDomainBookRows.length === 0;
     const showingEmptySongs = activeLibraryTab === 'Songs' && songsLoaded && songs.length === 0;
-    const shouldShowFab = true;
     const effectiveCollectionViewMode = activeLibraryTab === 'Songs' ? 'grid' : collectionViewMode;
     const bookSectionLabel = showingPublicDomainBooks
         ? t('home.publicDomainCount', {
@@ -2013,6 +2050,10 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             profileId: activeProfileId,
             language: previewBookLanguage,
             levelRank: previewBookLevelRank,
+            // Unlocks the distribution-refined estimate when the book has one
+            // (accumulated by preprocessing, or bundled with the catalog).
+            bookLevelStats: selectedPreviewBook?.bookLevel ?? null,
+            bookUri: previewBookUri,
         })
             .then((result) => {
                 if (active) {
@@ -3673,36 +3714,60 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 <View style={styles.libraryControls}>
                     <View style={styles.libraryHeader}>
                         <Text style={styles.collectionEyebrow}>{t('home.collection')}</Text>
-                        {activeLibraryTab !== 'Songs' ? (
-                            <View style={styles.collectionViewIcons}>
+                        <View style={styles.collectionViewIcons}>
+                            {activeLibraryTab === 'Books' ? (
+                                <>
+                                    <TouchableOpacity
+                                        accessibilityRole="button"
+                                        accessibilityState={{ selected: effectiveCollectionViewMode === 'grid' }}
+                                        activeOpacity={Motion.pressedOpacity}
+                                        onPress={() => setCollectionViewMode('grid')}
+                                        style={styles.collectionViewButton}
+                                    >
+                                        <Feather
+                                            name="grid"
+                                            size={IconDefaults.size - Spacing.sm}
+                                            color={effectiveCollectionViewMode === 'grid' ? HOME_COLORS.text : HOME_COLORS.frame}
+                                        />
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        accessibilityRole="button"
+                                        accessibilityState={{ selected: effectiveCollectionViewMode === 'list' }}
+                                        activeOpacity={Motion.pressedOpacity}
+                                        onPress={() => setCollectionViewMode('list')}
+                                        style={styles.collectionViewButton}
+                                    >
+                                        <Feather
+                                            name="list"
+                                            size={IconDefaults.size - Spacing.sm}
+                                            color={effectiveCollectionViewMode === 'list' ? HOME_COLORS.text : HOME_COLORS.frame}
+                                        />
+                                    </TouchableOpacity>
+                                </>
+                            ) : null}
+                            {activeLibraryTab === 'Songs'
+                                || (activeLibraryTab === 'Books' && activeBookFilter !== 'public-domain') ? (
                                 <TouchableOpacity
                                     accessibilityRole="button"
-                                    accessibilityState={{ selected: effectiveCollectionViewMode === 'grid' }}
+                                    accessibilityLabel={activeLibraryTab === 'Songs' ? t('home.newSong') : t('home.importBookAction')}
                                     activeOpacity={Motion.pressedOpacity}
-                                    onPress={() => setCollectionViewMode('grid')}
+                                    onPress={() => {
+                                        if (activeLibraryTab === 'Songs') {
+                                            handleAddSong();
+                                        } else {
+                                            confirmAddBook();
+                                        }
+                                    }}
                                     style={styles.collectionViewButton}
                                 >
                                     <Feather
-                                        name="grid"
-                                        size={IconDefaults.size - Spacing.sm}
-                                        color={effectiveCollectionViewMode === 'grid' ? HOME_COLORS.text : HOME_COLORS.frame}
+                                        name="plus"
+                                        size={IconDefaults.size - Spacing.xs}
+                                        color={HOME_COLORS.text}
                                     />
                                 </TouchableOpacity>
-                                <TouchableOpacity
-                                    accessibilityRole="button"
-                                    accessibilityState={{ selected: effectiveCollectionViewMode === 'list' }}
-                                    activeOpacity={Motion.pressedOpacity}
-                                    onPress={() => setCollectionViewMode('list')}
-                                    style={styles.collectionViewButton}
-                                >
-                                    <Feather
-                                        name="list"
-                                        size={IconDefaults.size - Spacing.sm}
-                                        color={effectiveCollectionViewMode === 'list' ? HOME_COLORS.text : HOME_COLORS.frame}
-                                    />
-                                </TouchableOpacity>
-                            </View>
-                        ) : null}
+                            ) : null}
+                        </View>
                     </View>
                     <View style={styles.libraryTabs}>
                         <TouchableOpacity
@@ -3945,105 +4010,6 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             </Pressable>
             </ScrollView>
 
-            {shouldShowFab ? (
-                <>
-                    {fabMenuOpen ? (
-                        <Modal
-                            visible
-                            transparent
-                            animationType="fade"
-                            statusBarTranslucent
-                            onRequestClose={() => setFabMenuOpen(false)}
-                        >
-                            <Pressable
-                                accessible={false}
-                                onPress={() => setFabMenuOpen(false)}
-                                style={styles.fabScrim}
-                            >
-                                <BlurView
-                                    intensity={18}
-                                    tint="default"
-                                    experimentalBlurMethod="dimezisBlurView"
-                                    style={styles.fabScrimBackdrop}
-                                >
-                                    <View style={styles.fabScrimTint} />
-                                </BlurView>
-                                <View style={styles.fabMenu}>
-                                    <TouchableOpacity
-                                        activeOpacity={Motion.pressedOpacity}
-                                        onPress={() => {
-                                            setFabMenuOpen(false);
-                                            confirmAddBook();
-                                        }}
-                                        style={styles.fabMenuItem}
-                                    >
-                                        <Text style={styles.fabMenuText}>{t('home.importBookAction')}</Text>
-                                        <View style={styles.fabMenuIcon}>
-                                            <MaterialIcons name="upload-file" size={22} color={HOME_COLORS.accent} />
-                                        </View>
-                                    </TouchableOpacity>
-                                    <TouchableOpacity
-                                        activeOpacity={Motion.pressedOpacity}
-                                        onPress={() => {
-                                            setFabMenuOpen(false);
-                                            setActiveLibraryTab('Books');
-                                            setActiveBookFilter('public-domain');
-                                        }}
-                                        style={styles.fabMenuItem}
-                                    >
-                                        <Text style={styles.fabMenuText}>{t('home.publicDomain')}</Text>
-                                        <View style={styles.fabMenuIcon}>
-                                            <MaterialIcons name="travel-explore" size={22} color={HOME_COLORS.accent} />
-                                        </View>
-                                    </TouchableOpacity>
-                                    <TouchableOpacity
-                                        activeOpacity={Motion.pressedOpacity}
-                                        onPress={() => {
-                                            setFabMenuOpen(false);
-                                            handleAddSong();
-                                        }}
-                                        style={styles.fabMenuItem}
-                                    >
-                                        <Text style={styles.fabMenuText}>{t('home.newSong')}</Text>
-                                        <View style={styles.fabMenuIcon}>
-                                            <MaterialIcons name="lyrics" size={22} color={HOME_COLORS.accent} />
-                                        </View>
-                                    </TouchableOpacity>
-                                </View>
-                            </Pressable>
-                            <TouchableOpacity
-                                accessibilityRole="button"
-                                accessibilityLabel={t('home.closeActions')}
-                                activeOpacity={Motion.pressedOpacity}
-                                onPress={() => setFabMenuOpen(false)}
-                                style={[styles.fab, styles.fabModalAnchor]}
-                            >
-                                <MaterialIcons
-                                    name="close"
-                                    size={IconDefaults.size}
-                                    color={HOME_COLORS.onAccent}
-                                />
-                            </TouchableOpacity>
-                        </Modal>
-                    ) : null}
-                    {!fabMenuOpen ? (
-                        <TouchableOpacity
-                            accessibilityRole="button"
-                            accessibilityLabel={t('home.openActions')}
-                            activeOpacity={Motion.pressedOpacity}
-                            onPress={() => setFabMenuOpen(true)}
-                            style={[styles.fab, styles.fabScreenAnchor]}
-                        >
-                            <MaterialIcons
-                                name="add"
-                                size={IconDefaults.size}
-                                color={HOME_COLORS.onAccent}
-                            />
-                        </TouchableOpacity>
-                    ) : null}
-                </>
-            ) : null}
-
             <Modal visible={!!pdfCoverPrompt} animationType="fade" transparent onRequestClose={choosePdfCoverDefault}>
                 <View style={styles.modalBackdrop}>
                     <TouchableWithoutFeedback>
@@ -4185,8 +4151,6 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                             <Text style={styles.songEditorCancel}>{t('common.cancel')}</Text>
                         </TouchableOpacity>
 
-                        <Text style={styles.songEditorTitle}>{t('home.newSong')}</Text>
-
                         <TouchableOpacity
                             accessibilityRole="button"
                             activeOpacity={Motion.pressedOpacity}
@@ -4215,6 +4179,9 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                             style={styles.songEditorTitleInput}
                             placeholder={t('home.songTitlePlaceholder')}
                             placeholderTextColor={HOME_COLORS.faint}
+                            multiline={false}
+                            scrollEnabled={false}
+                            numberOfLines={1}
                         />
 
                         <TextInput
@@ -4223,6 +4190,9 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                             style={styles.songEditorArtistInput}
                             placeholder={t('common.artist')}
                             placeholderTextColor={HOME_COLORS.faint}
+                            multiline={false}
+                            scrollEnabled={false}
+                            numberOfLines={1}
                         />
 
                         <View style={styles.songEditorDivider} />
@@ -4345,7 +4315,7 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         marginTop: Spacing.xs,
     },
     heroProgressGroup: {
-        width: '60%',
+        width: '80%',
         alignSelf: 'center',
     },
     heroProgressLabels: {
@@ -4821,6 +4791,7 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
+        minHeight: IconDefaults.size + 8,
         paddingHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
         paddingBottom: 8,
         borderBottomWidth: 1,
@@ -5746,7 +5717,7 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     songEditorBody: {
         flex: 1,
         paddingHorizontal: spacing.xl,
-        paddingTop: spacing.xl,
+        paddingTop: spacing.sm,
     },
     songEditorTitleInput: {
         fontFamily: fontFamilies.krSerifSemiBold,
@@ -5754,13 +5725,18 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         lineHeight: 40,
         color: HOME_COLORS.text,
         paddingVertical: spacing.xs,
+        textAlignVertical: 'center',
+        includeFontPadding: false,
     },
     songEditorArtistInput: {
         fontFamily: fontFamilies.krSerifRegular,
         fontSize: 18,
+        lineHeight: 26,
         color: HOME_COLORS.secondary,
         paddingVertical: spacing.xs,
         marginTop: spacing.xs,
+        textAlignVertical: 'center',
+        includeFontPadding: false,
     },
     songEditorDivider: {
         height: StyleSheet.hairlineWidth,

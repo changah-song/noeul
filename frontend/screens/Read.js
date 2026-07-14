@@ -2,11 +2,12 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Animated, BackHandler, Easing, PanResponder, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, Pressable } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Feather, MaterialIcons } from '@expo/vector-icons';
+import { Feather, MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Slider } from 'react-native-elements';
 
 import TopSection from '../components/Read/TopSection/TopSection';
 import TocDrawer from '../components/Read/TocDrawer';
+import FocusControls from '../components/Read/FocusControls';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
@@ -16,6 +17,7 @@ import {
     deleteBookNote,
     getBookNotes,
     getBookPreprocessChapter,
+    getBookSavedWords,
     getBookWordCandidates,
     getCachedPKnown,
     getSavedWords,
@@ -34,8 +36,9 @@ import {
     scoreWordsForProfile,
     vocabEntryExists,
 } from '../services/Database';
-import { pickExampleSentence, selectDailyCandidates } from '../services/wordCandidates';
+import { deriveCandidateReason, pickExampleSentence } from '../services/wordCandidates';
 import BeforeYouGoSheet from '../components/Read/BeforeYouGoSheet';
+import SavedWordsPanel from '../components/Read/SavedWordsPanel';
 import NotesLogSheet from '../components/Read/NotesLogSheet';
 import { createTabBarBaseStyle } from '../components/shared/TabBar';
 import preprocessChapter from '../services/api/preprocessChapter';
@@ -493,8 +496,13 @@ const Read = ({
     const [showLookupHint, setShowLookupHint] = useState(true);
     const [showMenu, setShowMenu] = useState(false);
     const [showBeforeYouGo, setShowBeforeYouGo] = useState(false);
-    const [beforeYouGoCandidates, setBeforeYouGoCandidates] = useState([]);
-    const [beforeYouGoLoading, setBeforeYouGoLoading] = useState(false);
+    const [showSavedPanel, setShowSavedPanel] = useState(false);
+    const [savedPanelTab, setSavedPanelTab] = useState('saved');
+    const [bookSavedWords, setBookSavedWords] = useState([]);
+    const [panelCandidates, setPanelCandidates] = useState([]);
+    const [panelCandidatesLoading, setPanelCandidatesLoading] = useState(false);
+    const [panelSavedStems, setPanelSavedStems] = useState(() => new Set());
+    // (before-you-go is now note-only; candidates live in the saved-words panel)
     const [showNotesLog, setShowNotesLog] = useState(false);
     const [bookNotes, setBookNotes] = useState([]);
     const [isFullscreen, setIsFullscreen] = useState(false);
@@ -518,8 +526,25 @@ const Read = ({
     // ── Focus (sentence beam) mode ───────────────────────────────────────────
     const [focusMode, setFocusMode] = useState(false);
     const [focusNavToken, setFocusNavToken] = useState('none:0');
-    const [focusInfo, setFocusInfo] = useState({ index: 0, count: 1, total: 0 });
     const [lookupPanelHeight, setLookupPanelHeight] = useState(0);
+    // Focus info (sentence index/total) updates on every beam step. It is kept
+    // in a ref and pushed to a single subscriber (FocusControls) instead of
+    // screen state so beam navigation doesn't re-render the whole reader.
+    const focusInfoRef = useRef({ index: 0, count: 1, total: 0 });
+    const focusInfoListenerRef = useRef(null);
+    const publishFocusInfo = useCallback((next) => {
+        focusInfoRef.current = next;
+        focusInfoListenerRef.current?.(next);
+    }, []);
+    const subscribeFocusInfo = useCallback((listener) => {
+        focusInfoListenerRef.current = listener;
+        listener(focusInfoRef.current);
+        return () => {
+            if (focusInfoListenerRef.current === listener) {
+                focusInfoListenerRef.current = null;
+            }
+        };
+    }, []);
     const focusNavCounterRef = useRef(0);
     const focusControlsTranslate = useRef(new Animated.Value(0)).current;
     const focusSwipeKnobAnim = useRef(new Animated.Value(0)).current;
@@ -590,6 +615,29 @@ const Read = ({
                 setSavedWords([]);
             });
     }, [activeBookLanguage, activeOwnerId]);
+
+    // Words saved from *this* book — drives the top-bar count pill and the saved
+    // panel's "Saved" tab. Refreshed on mount and after every save.
+    const refreshBookSavedWords = useCallback(async () => {
+        if (!currentBook) {
+            setBookSavedWords([]);
+            return;
+        }
+        try {
+            const rows = await getBookSavedWords({
+                ownerId: activeOwnerId,
+                language: activeBookLanguage,
+                bookUri: currentBook,
+            });
+            setBookSavedWords(rows);
+        } catch (error) {
+            console.warn('[Read] Failed to load book saved words:', error?.message ?? error);
+        }
+    }, [activeOwnerId, activeBookLanguage, currentBook]);
+
+    useEffect(() => {
+        refreshBookSavedWords();
+    }, [refreshBookSavedWords]);
 
     useEffect(() => {
         if (savedWords === null) {
@@ -729,10 +777,10 @@ const Read = ({
         parsedChapterInflightRef.current = new Map();
         setToc([]);
         setShowToc(false);
-        setFocusInfo({ index: 0, count: 1, total: 0 });
+        publishFocusInfo({ index: 0, count: 1, total: 0 });
         setFocusNavToken('none:0');
         focusNavCounterRef.current = 0;
-    }, [activeOwnerId, currentBook, updateNativeRestorePosition]);
+    }, [activeOwnerId, currentBook, updateNativeRestorePosition, publishFocusInfo]);
 
     useEffect(() => {
         return () => {
@@ -783,7 +831,7 @@ const Read = ({
         }, 3000);
     }, [activeOwnerId, syncGeneration, syncPaused, user]);
 
-    const handleWordSave = (word, options = {}) => {
+    const handleWordSave = useCallback((word, options = {}) => {
         const { includeSurface = true } = options;
         const surface = includeSurface ? highlightedWord?.trim() : '';
         setSavedWords(prev => uniqTerms([...(prev ?? []), word]));
@@ -795,20 +843,42 @@ const Read = ({
             ]);
         });
         setClearSelectionToken((value) => value + 1);
-    };
+    }, [highlightedWord]);
 
-    const handleWordUnsave = (word, options = {}) => {
+    const handleWordUnsave = useCallback((word, options = {}) => {
         const { includeSurface = true } = options;
         const surface = includeSurface ? highlightedWord?.trim() : '';
         setSavedWords(prev => (prev ?? []).filter(w => w !== word));
         setOptimisticHighlightTerms(prev => prev.filter(term => term !== word && term !== surface));
-    };
+    }, [highlightedWord]);
+
+    // Refs let the native selection callbacks read the latest panel/focus state
+    // without being re-created (which would churn the native view's props).
+    const lookupOpenRef = useRef(false);
+    const focusModeRef = useRef(false);
+    useEffect(() => {
+        lookupOpenRef.current = !!highlightedWord;
+    }, [highlightedWord]);
+    useEffect(() => {
+        focusModeRef.current = focusMode;
+    }, [focusMode]);
 
     const handleNativeWordSelected = useCallback((event = {}) => {
         const text = typeof event.text === 'string' ? event.text.trim() : '';
         if (!text) {
             return;
         }
+
+        // A word tap while a lookup panel is already open should only dismiss the
+        // panel — not register the tapped word as a new selection. Tapping empty
+        // space already routes through onSelectionCleared, and native text
+        // selections clear themselves, so this closes the last remaining gap.
+        // Focus mode is excluded because word taps there also drive beam nav.
+        if (lookupOpenRef.current && !focusModeRef.current) {
+            dismissPanelRef.current?.();
+            return;
+        }
+
         const sentence = typeof event.sentence === 'string' ? event.sentence.trim() : '';
 
         setIsNativeSelection(false);
@@ -1214,13 +1284,16 @@ const Read = ({
     const activeBookSizeMb = typeof activeBook?.size === 'number'
         ? activeBook.size / (1024 * 1024)
         : null;
-    const dbReaderHighlightTerms = shouldUseHeuristicHighlights
-        ? (savedWords ?? [])
-        : (highlightTerms ?? savedWords ?? []);
-    const readerHighlightTerms = uniqTerms([
-        ...dbReaderHighlightTerms,
-        ...optimisticHighlightTerms,
-    ]);
+    const savedWordsList = useMemo(() => savedWords ?? [], [savedWords]);
+    const readerHighlightTerms = useMemo(() => {
+        const dbReaderHighlightTerms = shouldUseHeuristicHighlights
+            ? savedWordsList
+            : (highlightTerms ?? savedWordsList);
+        return uniqTerms([
+            ...dbReaderHighlightTerms,
+            ...optimisticHighlightTerms,
+        ]);
+    }, [shouldUseHeuristicHighlights, savedWordsList, highlightTerms, optimisticHighlightTerms]);
     const isReaderWaitingForHighlights = !!currentBook && !shouldUseHeuristicHighlights && !highlightTermsReady;
     const nativeChapterBlocks = chapterBlocksForReaderPackage(nativeReaderPackage);
     const nativeChapterResources = chapterResourcesForReaderPackage(nativeReaderPackage);
@@ -1260,6 +1333,15 @@ const Read = ({
         || nativeReaderPackage?.bookManifest?.title
         || t('read.defaultTitle')
     );
+    // Memoized so a new object reference isn't serialized across the native
+    // bridge on every render (e.g. every focus-mode sentence step).
+    const nativeBookManifest = useMemo(() => ({
+        ...(nativeReaderPackage?.bookManifest ?? {}),
+        chapterTransitionDirection,
+        currentChapterTitle: activeChapterTitle,
+        currentSpineTitle: activeChapterTitle,
+        currentBookTitle: headerBookTitle,
+    }), [nativeReaderPackage?.bookManifest, chapterTransitionDirection, activeChapterTitle, headerBookTitle]);
     const bookProgress = clampProgress(
         typeof readerLocationInfo?.percentage === 'number'
             ? readerLocationInfo.percentage
@@ -1279,9 +1361,6 @@ const Read = ({
     const chapterIndexLabel = Number.isInteger(activeSpineIndex)
         ? `${t('read.chapter')} ${activeSpineIndex + 1}`
         : t('read.defaultTitle');
-    const hasNamedChapterTitle = activeChapterTitle && activeChapterTitle !== chapterIndexLabel;
-    const headerLine1 = hasNamedChapterTitle ? chapterIndexLabel : activeChapterTitle;
-    const headerLine2 = hasNamedChapterTitle ? activeChapterTitle : null;
     const returnToScreen = route?.params?.returnTo === 'Learn' ? 'Learn' : 'Home';
     const handleHeaderBack = useCallback(() => {
         setShowMenu(false);
@@ -1294,33 +1373,44 @@ const Read = ({
     // reader taps "Before you go" — it offers a couple of unsaved words worth
     // keeping (daily-rotating, saved ones drop off) and a note to their future
     // self, then exits.
-    const openBeforeYouGo = useCallback(async () => {
+    const openBeforeYouGo = useCallback(() => {
         setShowMenu(false);
-        setBeforeYouGoCandidates([]);
-        setBeforeYouGoLoading(true);
         setShowBeforeYouGo(true);
+    }, []);
+
+    // Open the saved-words tracker panel. Refreshes the saved list and loads the
+    // full ranked candidate set (not the daily-rotated slice) for the Suggested
+    // tab, since this is an on-demand browse surface.
+    const openSavedPanel = useCallback(async (tab = 'saved') => {
+        setSavedPanelTab(tab);
+        setShowSavedPanel(true);
+        setPanelSavedStems(new Set());
+        refreshBookSavedWords();
+        setPanelCandidates([]);
+        setPanelCandidatesLoading(true);
         try {
             const raw = await getBookWordCandidates({
                 ownerId: activeOwnerId,
                 language: activeBookLanguage,
                 interfaceLanguage,
                 bookUri: currentBook,
-                limit: 12,
+                limit: 20,
             });
             const chapterText = chapterTextForReaderPackage(nativeReaderPackage);
-            const daily = selectDailyCandidates(raw, { count: 3 }).map((candidate) => ({
+            const withReason = raw.map((candidate) => ({
                 ...candidate,
+                reason: deriveCandidateReason(candidate),
                 exampleSentence: pickExampleSentence(chapterText, candidate.headword),
                 exampleSurface: candidate.headword,
             }));
-            setBeforeYouGoCandidates(daily);
+            setPanelCandidates(withReason);
         } catch (error) {
             console.warn('[Read] Failed to load word candidates:', error?.message ?? error);
-            setBeforeYouGoCandidates([]);
+            setPanelCandidates([]);
         } finally {
-            setBeforeYouGoLoading(false);
+            setPanelCandidatesLoading(false);
         }
-    }, [activeOwnerId, activeBookLanguage, interfaceLanguage, currentBook, nativeReaderPackage]);
+    }, [activeOwnerId, activeBookLanguage, interfaceLanguage, currentBook, nativeReaderPackage, refreshBookSavedWords]);
 
     const handleSaveCandidate = useCallback(async (candidate) => {
         if (!candidate?.stem) return;
@@ -1364,7 +1454,7 @@ const Read = ({
                     language: activeBookLanguage,
                 });
             }
-            requestUserDataSync('before-you-go-save');
+            requestUserDataSync('candidate-save');
             logInteractionEvent({
                 ownerId: activeOwnerId,
                 language: activeBookLanguage,
@@ -1375,10 +1465,12 @@ const Read = ({
                 sourceBookUri: currentBook ?? null,
                 sentence: candidate.exampleSentence || null,
             }).catch(() => {});
+            setPanelSavedStems((prev) => new Set(prev).add(word));
+            refreshBookSavedWords();
         } catch (error) {
             console.warn('[Read] Failed to save candidate word:', error?.message ?? error);
         }
-    }, [activeOwnerId, activeBookLanguage, currentBook, activeBook]);
+    }, [activeOwnerId, activeBookLanguage, currentBook, activeBook, refreshBookSavedWords]);
 
     const handleSaveNote = useCallback(async (text) => {
         try {
@@ -2501,21 +2593,6 @@ const Read = ({
     const focusControlsLiftTarget = focusPanelOpen
         ? Math.max(0, focusPanelTotalHeight + 12 - focusControlsBaseBottom)
         : 0;
-    const focusMaxIndex = Math.max(0, focusInfo.total - focusSpan);
-    const focusAtStart = focusInfo.index <= 0;
-    const focusAtEnd = focusInfo.index >= focusMaxIndex;
-    const focusFirstSentence = focusInfo.total > 0 ? Math.min(focusInfo.index + 1, focusInfo.total) : 0;
-    const focusLastSentence = Math.min(focusInfo.total, focusInfo.index + focusSpan);
-    const focusPositionLabel = focusSpan > 1
-        ? t('read.focusSentenceRangeLabel', {
-            start: focusFirstSentence,
-            end: focusLastSentence,
-            total: focusInfo.total,
-        })
-        : t('read.focusSentenceLabel', {
-            current: focusFirstSentence,
-            total: focusInfo.total,
-        });
     const focusSwipeTrackColor = focusSwipeKnobAnim.interpolate({
         inputRange: [0, 1],
         outputRange: ['#d2d0d0', themeColors.inkSlate],
@@ -2543,12 +2620,12 @@ const Read = ({
     }, [focusSwipe, focusSwipeKnobAnim]);
 
     const handleFocusSentenceChange = useCallback((event = {}) => {
-        setFocusInfo({
+        publishFocusInfo({
             index: Number.isInteger(event.index) ? event.index : 0,
             count: Number.isInteger(event.count) && event.count > 0 ? event.count : 1,
             total: Number.isInteger(event.total) ? event.total : 0,
         });
-    }, []);
+    }, [publishFocusInfo]);
 
     const sendFocusNav = useCallback((direction) => {
         focusNavCounterRef.current += 1;
@@ -2575,25 +2652,29 @@ const Read = ({
         <View style={styles.container}>
             {!isFullscreen ? (
                 <View style={[styles.headerBar, { paddingTop: insets.top + spacing.xs }]}>
-                    <View style={styles.headerTitleStack}>
-                        <Text numberOfLines={1} style={styles.headerChapterTitle}>
-                            {headerLine1}
-                        </Text>
-                        {headerLine2 ? (
-                            <Text numberOfLines={1} style={styles.headerBookSubtitle}>
-                                {headerLine2}
-                            </Text>
-                        ) : null}
-                    </View>
-
-                    <View style={styles.headerControls}>
+                    <View style={styles.headerLeft}>
                         <TouchableOpacity
                             style={styles.headerIconButton}
                             onPress={openBeforeYouGo}
                             accessibilityRole="button"
                             accessibilityLabel={t('read.beforeYouGo')}
                         >
-                            <MaterialIcons name="bookmark-border" size={22} color={themeColors.textSecondary} />
+                            <MaterialIcons name="bookmark" size={20} color={themeColors.textSecondary} />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            style={styles.savedButton}
+                            onPress={() => openSavedPanel('saved')}
+                            accessibilityRole="button"
+                            accessibilityLabel={t('read.savedTab', { count: bookSavedWords.length })}
+                        >
+                            <MaterialCommunityIcons name="cards-outline" size={22} color={themeColors.textSecondary} />
+                            {bookSavedWords.length > 0 ? (
+                                <View style={styles.savedBadge}>
+                                    <Text style={styles.savedBadgeText}>
+                                        {bookSavedWords.length > 99 ? '99+' : bookSavedWords.length}
+                                    </Text>
+                                </View>
+                            ) : null}
                         </TouchableOpacity>
                         <TouchableOpacity
                             style={styles.headerIconButton}
@@ -2603,19 +2684,16 @@ const Read = ({
                             accessibilityLabel={t('read.focusMode')}
                         >
                             <MaterialIcons
-                                name="wb-iridescent"
+                                name="visibility"
                                 size={21}
                                 color={focusMode ? themeColors.inkSlate : themeColors.textSecondary}
                             />
                         </TouchableOpacity>
-                        <TouchableOpacity
-                            style={styles.headerIconButton}
-                            onPress={() => setIsFullscreen(true)}
-                            accessibilityRole="button"
-                            accessibilityLabel={t('read.enterFullscreen')}
-                        >
-                            <Feather name="maximize" size={19} color={themeColors.textSecondary} />
-                        </TouchableOpacity>
+                    </View>
+
+                    <View style={styles.headerSpacer} />
+
+                    <View style={styles.headerControls}>
                         <Pressable
                             disabled={toc.length === 0}
                             onPress={() => setShowToc(true)}
@@ -2632,11 +2710,19 @@ const Read = ({
                             <Text numberOfLines={1} style={styles.controlLabel}>{progressLabel}</Text>
                         </Pressable>
                         <TouchableOpacity
+                            style={styles.headerIconButton}
+                            onPress={() => setIsFullscreen(true)}
+                            accessibilityRole="button"
+                            accessibilityLabel={t('read.enterFullscreen')}
+                        >
+                            <Feather name="maximize" size={19} color={themeColors.textSecondary} />
+                        </TouchableOpacity>
+                        <TouchableOpacity
                             style={styles.settingsButton}
                             onPress={() => setShowMenu((prev) => !prev)}
                             accessibilityRole="button"
                         >
-                            <MaterialIcons name="more-horiz" size={20} color={showMenu ? themeColors.inkSlate : themeColors.textSecondary} />
+                            <MaterialIcons name="menu" size={22} color={showMenu ? themeColors.inkSlate : themeColors.textSecondary} />
                         </TouchableOpacity>
                     </View>
                 </View>
@@ -2680,13 +2766,7 @@ const Read = ({
                     <NativeEpubReaderView
                         key={`${currentBook}-${readerRetryKey}`}
                         style={styles.nativeReaderView}
-                        bookManifest={{
-                            ...nativeReaderPackage.bookManifest,
-                            chapterTransitionDirection,
-                            currentChapterTitle: activeChapterTitle,
-                            currentSpineTitle: activeChapterTitle,
-                            currentBookTitle: headerBookTitle,
-                        }}
+                        bookManifest={nativeBookManifest}
                         chapterBlocks={nativeChapterBlocks}
                         chapterResources={nativeChapterResources}
                         chapterWindow={nativeChapterWindow}
@@ -2764,66 +2844,16 @@ const Read = ({
             />
 
             {focusMode && bookLoadState === 'ready' && nativeReaderPackage ? (
-                <>
-                    <Animated.View
-                        pointerEvents="box-none"
-                        style={[
-                            styles.focusControlsLeft,
-                            {
-                                bottom: focusControlsBaseBottom,
-                                transform: [{ translateY: focusControlsTranslate }],
-                            },
-                        ]}
-                    >
-                        <View style={styles.focusPositionPill}>
-                            <MaterialIcons
-                                name="wb-iridescent"
-                                size={15}
-                                color={themeColors.readerSubtleInk}
-                            />
-                            <Text style={styles.focusPositionLabel}>{focusPositionLabel}</Text>
-                        </View>
-                    </Animated.View>
-                    {!focusSwipe ? (
-                        <Animated.View
-                            pointerEvents="box-none"
-                            style={[
-                                styles.focusArrowControls,
-                                {
-                                    bottom: focusControlsBaseBottom,
-                                    transform: [{ translateY: focusControlsTranslate }],
-                                },
-                            ]}
-                        >
-                            <TouchableOpacity
-                                style={styles.focusArrowButtonPrev}
-                                onPress={() => sendFocusNav('prev')}
-                                activeOpacity={0.72}
-                                accessibilityRole="button"
-                                accessibilityLabel={t('read.focusPreviousSentence')}
-                            >
-                                <MaterialIcons
-                                    name="keyboard-arrow-up"
-                                    size={23}
-                                    color={focusAtStart ? '#c5c6cb' : themeColors.readerBodyInk}
-                                />
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                                style={styles.focusArrowButtonNext}
-                                onPress={() => sendFocusNav('next')}
-                                activeOpacity={0.72}
-                                accessibilityRole="button"
-                                accessibilityLabel={t('read.focusNextSentence')}
-                            >
-                                <MaterialIcons
-                                    name="keyboard-arrow-down"
-                                    size={23}
-                                    color={focusAtEnd ? '#6b7180' : themeColors.readerPaper}
-                                />
-                            </TouchableOpacity>
-                        </Animated.View>
-                    ) : null}
-                </>
+                <FocusControls
+                    subscribe={subscribeFocusInfo}
+                    focusSpan={focusSpan}
+                    focusSwipe={focusSwipe}
+                    sendFocusNav={sendFocusNav}
+                    focusControlsTranslate={focusControlsTranslate}
+                    focusControlsBaseBottom={focusControlsBaseBottom}
+                    styles={styles}
+                    themeColors={themeColors}
+                />
             ) : null}
 
             <View
@@ -2853,7 +2883,7 @@ const Read = ({
                         onWordUnsave={handleWordUnsave}
                         currentBook={currentBook}
                         sourceBook={activeBook}
-                        savedWords={savedWords ?? []}
+                        savedWords={savedWordsList}
                         translationVisualState={translationBannerVisualState}
                     />
                 </View>
@@ -3126,13 +3156,23 @@ const Read = ({
                 </View>
             ) : null}
 
+            <SavedWordsPanel
+                visible={showSavedPanel}
+                colors={themeColors}
+                insets={insets}
+                initialTab={savedPanelTab}
+                savedWords={bookSavedWords}
+                candidates={panelCandidates}
+                candidatesLoading={panelCandidatesLoading}
+                savedStems={panelSavedStems}
+                onSaveCandidate={handleSaveCandidate}
+                onClose={() => setShowSavedPanel(false)}
+            />
+
             <BeforeYouGoSheet
                 visible={showBeforeYouGo}
                 colors={themeColors}
                 insets={insets}
-                candidates={beforeYouGoCandidates}
-                loading={beforeYouGoLoading}
-                onSaveWord={handleSaveCandidate}
                 onSaveNote={handleSaveNote}
                 onExit={handleFinishBeforeYouGo}
                 onCancel={() => setShowBeforeYouGo(false)}
@@ -3166,32 +3206,45 @@ const createStyles = (themeColors) => StyleSheet.create({
         borderBottomWidth: 1,
         borderBottomColor: themeColors.readerHairline,
     },
+    headerLeft: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+    },
     headerIconButton: {
         width: 30,
         height: 42,
         alignItems: 'center',
         justifyContent: 'center',
     },
-    headerTitleStack: {
-        flex: 1,
-        minWidth: 0,
-        alignItems: 'flex-start',
+    savedButton: {
+        width: 34,
+        height: 42,
+        alignItems: 'center',
         justifyContent: 'center',
     },
-    headerChapterTitle: {
-        fontFamily: 'FFSans-SemiBold',
-        fontSize: 15,
-        lineHeight: 20,
-        color: themeColors.readerBodyInk,
-        textAlign: 'left',
+    savedBadge: {
+        position: 'absolute',
+        top: 3,
+        right: -1,
+        minWidth: 16,
+        height: 16,
+        borderRadius: 8,
+        paddingHorizontal: 4,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: themeColors.inkSlate,
+        borderWidth: 1.5,
+        borderColor: themeColors.readerPaper,
     },
-    headerBookSubtitle: {
-        fontFamily: 'FFSans-Regular',
-        fontSize: 13,
-        lineHeight: 17,
-        color: themeColors.readerMutedInk,
-        marginTop: 1,
-        textAlign: 'left',
+    savedBadgeText: {
+        fontFamily: 'FFSans-Bold',
+        fontSize: 10,
+        lineHeight: 12,
+        color: themeColors.readerPaper,
+    },
+    headerSpacer: {
+        flex: 1,
     },
     headerControls: {
         flexDirection: 'row',

@@ -13,6 +13,7 @@
 
 import {
   BOOK_LEVEL_COMPREHENSION_ANCHOR,
+  bookEaseFromDistribution,
   bookEaseFromLevel,
   bookEaseFromWordScores,
   formatEasePercent,
@@ -22,6 +23,7 @@ import {
   ABILITY_THETA_MAX,
   ABILITY_THETA_MIN,
   difficultyFromLevelRank,
+  sigmoid,
 } from '../abilityModel';
 
 describe('bookEaseFromLevel', () => {
@@ -70,6 +72,78 @@ describe('bookEaseFromLevel', () => {
     const neutral = bookEaseFromLevel({ theta: 0, language: 'ko', levelRank: 2 });
     expect(bookEaseFromLevel({ theta: null, language: 'ko', levelRank: 2 })).toBeCloseTo(neutral, 12);
     expect(bookEaseFromLevel({ theta: undefined, language: 'ko', levelRank: 2 })).toBeCloseTo(neutral, 12);
+  });
+});
+
+describe('bookEaseFromDistribution', () => {
+  it('is the count-weighted mean of the per-band word-level sigmoid (no anchor)', () => {
+    // ko bands 1/2/3 map to difficulties -3/0/+3. For a neutral reader (theta 0)
+    // a 40/25/35 split should give 0.4·σ(3) + 0.25·σ(0) + 0.35·σ(-3) exactly.
+    const distribution = [
+      { rank: 1, count: 40 },
+      { rank: 2, count: 25 },
+      { rank: 3, count: 35 },
+    ];
+    const expected = (40 * sigmoid(3) + 25 * sigmoid(0) + 35 * sigmoid(-3)) / 100;
+    expect(bookEaseFromDistribution({ theta: 0, language: 'ko', distribution }))
+      .toBeCloseTo(expected, 12);
+  });
+
+  it('differentiates two same-band books with different vocabulary mixes', () => {
+    // Both books level to ko band 3 under the 80th-percentile rule, but one is
+    // mostly easy words with a hard tail while the other is hard throughout.
+    // The single-band estimate collapses them to the same number; the
+    // distribution must not.
+    const easierMix = [
+      { rank: 1, count: 70 },
+      { rank: 2, count: 8 },
+      { rank: 3, count: 22 },
+    ];
+    const harderMix = [
+      { rank: 1, count: 20 },
+      { rank: 2, count: 20 },
+      { rank: 3, count: 60 },
+    ];
+    const easier = bookEaseFromDistribution({ theta: 0, language: 'ko', distribution: easierMix });
+    const harder = bookEaseFromDistribution({ theta: 0, language: 'ko', distribution: harderMix });
+    expect(easier).toBeGreaterThan(harder);
+  });
+
+  it('is monotonic in the reader: a stronger reader gets a higher ease on the same book', () => {
+    const distribution = [
+      { rank: 2, count: 50 },
+      { rank: 5, count: 50 },
+    ];
+    const weak = bookEaseFromDistribution({ theta: ABILITY_THETA_MIN, language: 'zh', distribution });
+    const strong = bookEaseFromDistribution({ theta: ABILITY_THETA_MAX, language: 'zh', distribution });
+    expect(strong).toBeGreaterThan(weak);
+  });
+
+  it('treats a missing theta as the neutral midpoint rather than flattening to 0.5', () => {
+    const distribution = [{ rank: 1, count: 10 }];
+    const neutral = bookEaseFromDistribution({ theta: 0, language: 'ko', distribution });
+    expect(bookEaseFromDistribution({ theta: null, language: 'ko', distribution }))
+      .toBeCloseTo(neutral, 12);
+    // Band 1 for a neutral reader is very likely known — NOT the 0.5 that a
+    // NaN-poisoned sigmoid would produce.
+    expect(neutral).toBeGreaterThan(0.9);
+  });
+
+  it('skips malformed bands and returns null when nothing usable remains', () => {
+    expect(bookEaseFromDistribution({ theta: 0, language: 'ko', distribution: [] })).toBeNull();
+    expect(bookEaseFromDistribution({ theta: 0, language: 'ko' })).toBeNull();
+    expect(bookEaseFromDistribution({
+      theta: 0,
+      language: 'ko',
+      distribution: [{ rank: 'x', count: 5 }, { rank: 2, count: 0 }, { rank: 3, count: -1 }],
+    })).toBeNull();
+    // One good band among junk still produces an estimate.
+    const ease = bookEaseFromDistribution({
+      theta: 0,
+      language: 'ko',
+      distribution: [{ rank: 'x', count: 5 }, { rank: 2, count: 10 }],
+    });
+    expect(ease).toBeCloseTo(sigmoid(0), 12);
   });
 });
 

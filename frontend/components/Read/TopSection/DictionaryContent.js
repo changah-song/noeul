@@ -387,35 +387,21 @@ const DictionaryContent = ({
     }, [interfaceLanguage, isChineseBook, isEnglishBook]);
     const contextSentence = cleanValue(sourceSentence);
     const [translationMode, setTranslationMode] = useState(false);
-    // Contextual "what it means here" explanation, keyed by the entry word. Each
-    // value: { loading, text, error }. Only fetched when the pill is pressed.
-    const [explainOpen, setExplainOpen] = useState({});
+    // Smart-definition ("what it means here") mode. When active, the panel is
+    // replaced by the AI explanation view (short gloss + save on top, longer
+    // explanation below) and the sheet is expanded to make room. explainData
+    // caches results keyed by tapped surface: { loading, text, gloss, lemma, error }.
+    const [explainMode, setExplainMode] = useState(false);
     const [explainData, setExplainData] = useState({});
 
-    // Reset explanation state whenever a new word/sentence context is opened so we
-    // never show an explanation fetched for a different sentence.
+    // Reset smart-definition state whenever a new word/sentence context is opened so
+    // we never show an explanation fetched for a different sentence.
     useEffect(() => {
-        setExplainOpen({});
+        setExplainMode(false);
         setExplainData({});
     }, [highlightedWord, contextSentence]);
 
-    const handleExplainPress = useCallback(async (word) => {
-        const key = cleanValue(word);
-        if (!key || !contextSentence) {
-            return;
-        }
-
-        const willOpen = !explainOpen[key];
-        setExplainOpen((prev) => ({ ...prev, [key]: willOpen }));
-        if (!willOpen) {
-            return;
-        }
-
-        const existing = explainData[key];
-        if (existing && (existing.loading || existing.text)) {
-            return; // already fetched or in flight
-        }
-
+    const fetchExplanation = useCallback(async (key) => {
         setExplainData((prev) => ({ ...prev, [key]: { loading: true, text: '', error: null } }));
 
         try {
@@ -426,11 +412,13 @@ const DictionaryContent = ({
                 interfaceLanguage,
             });
             const text = cleanValue(response?.explanation);
+            const gloss = cleanValue(response?.gloss);
+            const lemma = cleanValue(response?.lemma);
             setExplainData((prev) => ({
                 ...prev,
                 [key]: text
-                    ? { loading: false, text, error: null }
-                    : { loading: false, text: '', error: t('lookup.explainFailed') },
+                    ? { loading: false, text, gloss, lemma, error: null }
+                    : { loading: false, text: '', gloss: '', lemma: '', error: t('lookup.explainFailed') },
             }));
         } catch (error) {
             setExplainData((prev) => ({
@@ -438,7 +426,30 @@ const DictionaryContent = ({
                 [key]: { loading: false, text: '', error: error?.message || t('lookup.explainFailed') },
             }));
         }
-    }, [explainOpen, explainData, contextSentence, targetLanguage, interfaceLanguage, t]);
+    }, [contextSentence, targetLanguage, interfaceLanguage, t]);
+
+    // Toggle the smart-definition panel mode. Entering it kicks off the fetch (if
+    // not already cached/in-flight) and leaves translation mode.
+    const handleSmartDefinitionPress = useCallback((word) => {
+        const key = cleanValue(word);
+        if (!key || !contextSentence) {
+            return;
+        }
+
+        if (explainMode) {
+            setExplainMode(false);
+            return;
+        }
+
+        setTranslationMode(false);
+        setExplainMode(true);
+
+        const existing = explainData[key];
+        if (existing && (existing.loading || existing.text)) {
+            return; // already fetched or in flight
+        }
+        fetchExplanation(key);
+    }, [explainMode, explainData, contextSentence, fetchExplanation]);
 
     const [drilldownStack, setDrilldownStack] = useState([]);
     const lookupWord = drilldownStack.length > 0 ? drilldownStack[drilldownStack.length - 1] : highlightedWord;
@@ -572,6 +583,14 @@ const DictionaryContent = ({
     }, [activeOwnerId, currentBook, interfaceLanguage, isUsableCachedEntry, lookupWord, onContentLoaded, targetLanguage]);
 
     useEffect(() => {
+        // Smart-definition mode expands the sheet to full height (any positive row
+        // count makes the parent size it to DICTIONARY_EXPANDED_MAX_HEIGHT) so the
+        // gloss, save button, and longer explanation all have room.
+        if (explainMode) {
+            onExpandedStateChange?.(1);
+            return;
+        }
+
         if (translationMode) {
             onExpandedStateChange?.(-1);
             return;
@@ -602,7 +621,7 @@ const DictionaryContent = ({
         }, 0);
 
         onExpandedStateChange?.(Math.max(expandedCachedCount, expandedLiveCount));
-    }, [dictionaryData, expandedCached, expandedWords, extraDefs, isPanelExpanded, onExpandedStateChange, stemWordList, translationMode]);
+    }, [dictionaryData, expandedCached, expandedWords, explainMode, extraDefs, isPanelExpanded, onExpandedStateChange, stemWordList, translationMode]);
 
     const storeRomanizationPairs = useCallback((pairs) => {
         const normalizedPairs = (pairs || [])
@@ -993,6 +1012,24 @@ const DictionaryContent = ({
         });
     };
 
+    // Save a word using the AI's short contextual gloss as its definition. Used
+    // for OOV / force-decomposed words the dictionary can't resolve (e.g. archaic
+    // contractions like 설워하다). The base form the AI recovered becomes the saved
+    // headword so the vocab entry is properly lemmatized rather than an inflected
+    // surface form.
+    const saveWithAiDefinition = async (baseWord, gloss) => {
+        const wordToSave = cleanValue(baseWord);
+        const def = cleanValue(gloss);
+        if (!wordToSave || !def) {
+            return;
+        }
+        if (isWordSaved(wordToSave)) {
+            await toggleUnSave(wordToSave, '', def);
+        } else {
+            await toggleSave(wordToSave, '', def);
+        }
+    };
+
     const isWordSaved = (word) => savedWords.includes(word);
 
     const handleWordPartPress = (part) => {
@@ -1213,6 +1250,7 @@ const DictionaryContent = ({
         return (
             <View style={styles.actionRow}>
                 <View style={styles.actionButtonGroup}>
+                    {!explainMode ? (
                     <TouchableOpacity
                         style={[
                             styles.actionButton,
@@ -1239,13 +1277,15 @@ const DictionaryContent = ({
                             {saveLabel}
                         </Text>
                     </TouchableOpacity>
+                    ) : null}
+                    {!inTranslationMode ? renderExplainActionButton() : null}
                     <TouchableOpacity
                         style={[
                             styles.actionButton,
                             styles.actionButtonRight,
                             inTranslationMode && styles.actionButtonRightActive,
                         ]}
-                        onPress={() => setTranslationMode(!inTranslationMode)}
+                        onPress={() => { setExplainMode(false); setTranslationMode(!inTranslationMode); }}
                         activeOpacity={0.7}
                         accessibilityRole="button"
                         accessibilityLabel={translateLabel}
@@ -1256,7 +1296,7 @@ const DictionaryContent = ({
                             color={palette.text}
                             style={styles.actionButtonIcon}
                         />
-                        <Text style={[styles.actionLabel, { color: palette.text }]}>
+                        <Text style={[styles.actionLabel, { color: palette.text }]} numberOfLines={1} adjustsFontSizeToFit>
                             {translateLabel}
                         </Text>
                     </TouchableOpacity>
@@ -1271,6 +1311,7 @@ const DictionaryContent = ({
         return (
             <View style={styles.actionRow}>
                 <View style={styles.actionButtonGroup}>
+                    {!explainMode ? (
                     <TouchableOpacity
                         style={[styles.actionButton, notFoundSaved ? styles.actionButtonSaved : null]}
                         onPress={() => notFoundSaved ? toggleUnSave(word, '', '') : toggleSave(word, '', '')}
@@ -1288,9 +1329,11 @@ const DictionaryContent = ({
                             {notFoundSaved ? t('lookup.saved') : t('lookup.save')}
                         </Text>
                     </TouchableOpacity>
+                    ) : null}
+                    {renderExplainActionButton()}
                     <TouchableOpacity
                         style={[styles.actionButton, styles.actionButtonRight]}
-                        onPress={() => onTranslatePress?.(word)}
+                        onPress={() => { setExplainMode(false); onTranslatePress?.(word); }}
                         activeOpacity={0.7}
                         accessibilityRole="button"
                         accessibilityLabel={t('lookup.translate')}
@@ -1301,7 +1344,7 @@ const DictionaryContent = ({
                             color={palette.text}
                             style={styles.actionButtonIcon}
                         />
-                        <Text style={[styles.actionLabel, { color: palette.text }]}>{t('lookup.translate')}</Text>
+                        <Text style={[styles.actionLabel, { color: palette.text }]} numberOfLines={1} adjustsFontSizeToFit>{t('lookup.translate')}</Text>
                     </TouchableOpacity>
                 </View>
             </View>
@@ -1694,71 +1737,106 @@ const DictionaryContent = ({
         );
     };
 
-    const renderContextExplanation = (word) => {
-        const key = cleanValue(word);
-        if (!key || !contextSentence) {
-            return null;
-        }
+    // Smart-definition is keyed on the tapped SURFACE form (tappedSurface) rather
+    // than any single dictionary stem — so an eojeol Kiwi shattered into fragments
+    // (설워하는 → 설/워/하다) is explained and saved as one word (lemma 설워하다).
+    const explainKey = cleanValue(tappedSurface);
+    const canExplain = !!explainKey && !!contextSentence;
 
-        const isOpen = !!explainOpen[key];
-        const data = explainData[key] || {};
+    // Body-only smart-definition content: the short gloss + save button on top
+    // (immediately visible and saveable), then the longer contextual explanation
+    // underneath. It REPLACES the dictionary definition body while keeping the
+    // entry's title (word + hanja + pronunciation) rendered above it by the caller.
+    const renderExplainBodySection = () => {
+        const data = explainData[explainKey] || {};
+        const saveWord = cleanValue(data.lemma) || explainKey;
+        const glossText = cleanValue(data.gloss);
+        const hasGloss = !data.loading && !!data.text && !!glossText;
+        const aiSaved = hasGloss && isWordSaved(saveWord);
 
         return (
             <View style={styles.explainSection}>
-                <TouchableOpacity
-                    accessibilityRole="button"
-                    accessibilityState={{ expanded: isOpen }}
-                    accessibilityLabel={t('lookup.explainInContext')}
-                    activeOpacity={0.85}
-                    onPress={() => handleExplainPress(key)}
-                    style={[
-                        styles.explainPill,
-                        {
-                            backgroundColor: palette.secondaryButtonBg,
-                            borderColor: palette.border,
-                        },
-                    ]}
-                >
-                    <MaterialIcons name="auto-awesome" size={16} color={palette.action} />
-                    <Text style={[styles.explainPillLabel, { color: palette.text }]} numberOfLines={1}>
-                        {t('lookup.explainInContext')}
-                    </Text>
-                    <MaterialIcons
-                        name={isOpen ? 'expand-less' : 'subdirectory-arrow-right'}
-                        size={18}
-                        color={palette.mutedText}
-                    />
-                </TouchableOpacity>
-                {isOpen ? (
-                    <View style={styles.explainBody}>
-                        <Text style={[styles.explainBodyTitle, { color: palette.mutedText }]}>
-                            {t('lookup.explainInThisSentence')}
+                {hasGloss ? (
+                    <View style={styles.explainGlossRow}>
+                        <Text selectable style={[styles.explainGloss, { color: palette.text }]}>
+                            {glossText}
                         </Text>
-                        {data.loading ? (
-                            <View style={styles.explainLoadingRow}>
-                                <ActivityIndicator size="small" color={palette.action} />
-                                <Text style={[styles.explainLoadingText, { color: palette.mutedText }]}>
-                                    {t('lookup.explainLoading')}
-                                </Text>
-                            </View>
-                        ) : data.text ? (
-                            <Text selectable style={[styles.explainBodyText, { color: palette.secondaryText }]}>
-                                {data.text}
+                        <TouchableOpacity
+                            style={[styles.aiSaveButton, aiSaved ? styles.actionButtonSaved : null]}
+                            onPress={() => saveWithAiDefinition(saveWord, glossText)}
+                            activeOpacity={0.7}
+                            accessibilityRole="button"
+                            accessibilityLabel={aiSaved ? t('lookup.saved') : t('lookup.saveAiDefinition')}
+                        >
+                            <MaterialIcons
+                                name={aiSaved ? 'bookmark' : 'bookmark-border'}
+                                size={16}
+                                color={aiSaved ? palette.actionText : palette.text}
+                                style={styles.actionButtonIcon}
+                            />
+                            <Text style={[styles.actionLabel, { color: aiSaved ? palette.actionText : palette.text }]}>
+                                {aiSaved ? t('lookup.saved') : t('lookup.saveAiDefinition')}
                             </Text>
-                        ) : (
-                            <TouchableOpacity
-                                accessibilityRole="button"
-                                activeOpacity={0.85}
-                                onPress={() => handleExplainPress(key)}
-                            >
-                                <Text style={[styles.explainErrorText, { color: palette.emptyText }]}>
-                                    {data.error || t('lookup.explainFailed')}
-                                </Text>
-                            </TouchableOpacity>
-                        )}
+                        </TouchableOpacity>
                     </View>
                 ) : null}
+
+                <View style={[styles.explainBody, { borderTopColor: palette.border }]}>
+                    <Text style={[styles.explainBodyTitle, { color: palette.mutedText }]}>
+                        {t('lookup.explainInThisSentence')}
+                    </Text>
+                    {data.loading ? (
+                        <View style={styles.explainLoadingRow}>
+                            <ActivityIndicator size="small" color={palette.action} />
+                            <Text style={[styles.explainLoadingText, { color: palette.mutedText }]}>
+                                {t('lookup.explainLoading')}
+                            </Text>
+                        </View>
+                    ) : data.text ? (
+                        <Text selectable style={[styles.explainBodyText, { color: palette.secondaryText }]}>
+                            {data.text}
+                        </Text>
+                    ) : (
+                        <TouchableOpacity
+                            accessibilityRole="button"
+                            activeOpacity={0.85}
+                            onPress={() => fetchExplanation(explainKey)}
+                        >
+                            <Text style={[styles.explainErrorText, { color: palette.emptyText }]}>
+                                {data.error || t('lookup.explainFailed')}
+                            </Text>
+                        </TouchableOpacity>
+                    )}
+                </View>
             </View>
+        );
+    };
+
+    // The middle button in the action row that toggles smart-definition mode.
+    const renderExplainActionButton = () => {
+        if (!canExplain) {
+            return null;
+        }
+
+        return (
+            <TouchableOpacity
+                style={[styles.actionButton, explainMode ? styles.actionButtonRightActive : null]}
+                onPress={() => handleSmartDefinitionPress(explainKey)}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: explainMode }}
+                accessibilityLabel={t('lookup.explainInContext')}
+            >
+                <MaterialIcons
+                    name="auto-awesome"
+                    size={15}
+                    color={palette.action}
+                    style={styles.actionButtonIcon}
+                />
+                <Text style={[styles.actionLabel, { color: palette.text }]} numberOfLines={1} adjustsFontSizeToFit>
+                    {t('lookup.smartDefinition')}
+                </Text>
+            </TouchableOpacity>
         );
     };
 
@@ -1788,33 +1866,36 @@ const DictionaryContent = ({
         return (
             <View key={key} style={[styles.primaryEntry, separated && { borderTopColor: palette.border, borderTopWidth: StyleSheet.hairlineWidth }]}>
                 {renderEntryHeading({ word, hanja, definition, pos, romanization, ipa, pinyin, audioUs, audioUk })}
-                {isPanelExpanded && isEnglishBook && gloss ? (
-                    <Text selectable style={[styles.glossText, { color: palette.text }]}>
-                        {gloss}
-                    </Text>
-                ) : null}
-                <View style={[styles.definitionRow, !posLabel && styles.definitionRowSolo]}>
-                    {posLabel ? (
-                        <View style={[styles.posBadge, { borderColor: palette.border }]}>
-                            <Text style={[styles.posBadgeText, { color: palette.mutedText }]}>
-                                {posLabel}
+                {explainMode ? renderExplainBodySection() : (
+                    <>
+                        {isPanelExpanded && isEnglishBook && gloss ? (
+                            <Text selectable style={[styles.glossText, { color: palette.text }]}>
+                                {gloss}
                             </Text>
+                        ) : null}
+                        <View style={[styles.definitionRow, !posLabel && styles.definitionRowSolo]}>
+                            {posLabel ? (
+                                <View style={[styles.posBadge, { borderColor: palette.border }]}>
+                                    <Text style={[styles.posBadgeText, { color: palette.mutedText }]}>
+                                        {posLabel}
+                                    </Text>
+                                </View>
+                            ) : null}
+                            {definition ? (
+                                <Text selectable style={[styles.definitionText, { color: palette.secondaryText }]}>
+                                    {definition}
+                                </Text>
+                            ) : (
+                                <Text selectable style={[styles.emptyDefinition, { color: palette.emptyText }]}>
+                                    {t('lookup.noDictionaryEntry')}
+                                </Text>
+                            )}
                         </View>
-                    ) : null}
-                    {definition ? (
-                        <Text selectable style={[styles.definitionText, { color: palette.secondaryText }]}>
-                            {definition}
-                        </Text>
-                    ) : (
-                        <Text selectable style={[styles.emptyDefinition, { color: palette.emptyText }]}>
-                            {t('lookup.noDictionaryEntry')}
-                        </Text>
-                    )}
-                </View>
-                {renderContextExplanation(word)}
-                {isPanelExpanded && isEnglishBook ? renderWordParts(wordParts, word) : null}
-                {isPanelExpanded && isEnglishBook && !hasRenderableWordParts(wordParts, word) ? renderOrigin(etymology, word) : null}
-                {isPanelExpanded && showLess ? renderExtraDefinitions(extraEntries) : null}
+                        {isPanelExpanded && isEnglishBook ? renderWordParts(wordParts, word) : null}
+                        {isPanelExpanded && isEnglishBook && !hasRenderableWordParts(wordParts, word) ? renderOrigin(etymology, word) : null}
+                        {isPanelExpanded && showLess ? renderExtraDefinitions(extraEntries) : null}
+                    </>
+                )}
             </View>
         );
     };
@@ -1856,8 +1937,9 @@ const DictionaryContent = ({
             <View style={[styles.panelContent, styles.notFoundState, { backgroundColor: palette.surface }]}>
                 <View style={styles.notFoundBody}>
                     <Text style={[styles.entryWord, { color: palette.text, textAlign: 'center' }]}>{lookupWord}</Text>
-                    <Text style={[styles.notFoundSubtext, { color: colors.textSubtle }]}>{t('lookup.noDefinition')}</Text>
-                    {renderContextExplanation(lookupWord)}
+                    {explainMode ? renderExplainBodySection() : (
+                        <Text style={[styles.notFoundSubtext, { color: colors.textSubtle }]}>{t('lookup.noDefinition')}</Text>
+                    )}
                 </View>
                 {renderNotFoundActionRow(lookupWord)}
             </View>
@@ -1873,8 +1955,9 @@ const DictionaryContent = ({
             <View style={[styles.panelContent, styles.notFoundState, { backgroundColor: palette.surface }]}>
                 <View style={styles.notFoundBody}>
                     <Text style={[styles.entryWord, { color: palette.text, textAlign: 'center' }]}>{lookupWord}</Text>
-                    <Text style={[styles.notFoundSubtext, { color: colors.textSubtle }]}>{t('lookup.noDefinition')}</Text>
-                    {renderContextExplanation(lookupWord)}
+                    {explainMode ? renderExplainBodySection() : (
+                        <Text style={[styles.notFoundSubtext, { color: colors.textSubtle }]}>{t('lookup.noDefinition')}</Text>
+                    )}
                 </View>
                 {renderNotFoundActionRow(lookupWord)}
             </View>
@@ -1934,7 +2017,7 @@ const DictionaryContent = ({
                     separated: false,
                 })}
 
-                {isKoreanBook && isPanelExpanded ? (
+                {isKoreanBook && isPanelExpanded && !explainMode ? (
                 <HanjaDetails
                     hanja={currentHanja?.character ?? getHanjaCharacters(cachedHanja)[0] ?? null}
                     hanjaCharacters={currentHanja?.characters?.length ? currentHanja.characters : getHanjaCharacters(cachedHanja)}
@@ -2017,7 +2100,7 @@ const DictionaryContent = ({
                 separated: false,
             })}
 
-            {isKoreanBook && isPanelExpanded ? (
+            {isKoreanBook && isPanelExpanded && !explainMode ? (
             <HanjaDetails
                 hanja={currentHanja?.character ?? getHanjaCharacters(liveHanja)[0] ?? null}
                 hanjaCharacters={currentHanja?.characters?.length ? currentHanja.characters : getHanjaCharacters(liveHanja)}
@@ -2284,25 +2367,22 @@ const createStyles = (colors) => StyleSheet.create({
         width: '100%',
         marginTop: spacing.sm,
     },
-    explainPill: {
+    explainGlossRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 10,
-        paddingHorizontal: 16,
-        paddingVertical: 12,
-        borderRadius: 12,
-        borderWidth: 1,
+        justifyContent: 'space-between',
+        gap: 12,
     },
-    explainPillLabel: {
+    explainGloss: {
         flex: 1,
-        fontFamily: fontFamilies.sans,
-        fontSize: 15,
-        fontWeight: '600',
-        letterSpacing: 0,
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 17,
+        lineHeight: 24,
     },
     explainBody: {
-        paddingTop: spacing.sm,
-        paddingHorizontal: 2,
+        marginTop: spacing.md,
+        paddingTop: spacing.md,
+        borderTopWidth: StyleSheet.hairlineWidth,
         gap: 8,
     },
     explainBodyTitle: {
@@ -2332,6 +2412,17 @@ const createStyles = (colors) => StyleSheet.create({
         fontFamily: fontFamilies.sansRegular,
         fontSize: 14,
         lineHeight: 20,
+    },
+    aiSaveButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingVertical: 9,
+        paddingHorizontal: 14,
+        backgroundColor: colors.readerSurface,
+        borderWidth: 1,
+        borderColor: colors.readerBorder,
+        borderRadius: radii.xs,
     },
     originSection: {
         gap: 6,
@@ -2657,4 +2748,4 @@ const createStyles = (colors) => StyleSheet.create({
     },
 });
 
-export default DictionaryContent;
+export default React.memo(DictionaryContent);

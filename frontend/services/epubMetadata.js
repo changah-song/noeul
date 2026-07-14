@@ -4,6 +4,20 @@ import * as FileSystem from 'expo-file-system';
 import { normalizeBookLanguage } from '../constants/languages';
 
 const parser = new DOMParser();
+
+// Some EPUBs (often converter output) prefix their XML files with a UTF-8 BOM
+// or leading whitespace. xmldom then sees the `<?xml ...?>` declaration at a
+// non-zero position and throws "processing instruction at position N is an xml
+// declaration which is only at the start of the document", which surfaces to
+// the reader as "Couldn't open this book". Strip that prefix before parsing.
+const stripXmlPrefix = (xml = '') => (
+    String(xml).replace(/^\uFEFF/, '').replace(/^\s+(?=<\?xml)/, '')
+);
+
+const parseXml = (xml, mimeType = 'application/xml') => (
+    parser.parseFromString(stripXmlPrefix(xml), mimeType)
+);
+
 const NATIVE_EPUB_DIR = 'epub-native';
 const BOOK_COVER_DIR = 'book-covers';
 const CHAPTER_CACHE_DIR = 'epub-native-chapters';
@@ -317,7 +331,7 @@ const cleanFallbackTitle = (rawName = '') => {
 };
 
 const findPackagePath = (containerXml) => {
-    const containerDoc = parser.parseFromString(containerXml, 'application/xml');
+    const containerDoc = parseXml(containerXml, 'application/xml');
     const rootfileNode = firstDescendant(
         containerDoc,
         (node) => localNameOf(node) === 'rootfile' && node.getAttribute('full-path')
@@ -993,7 +1007,7 @@ const loadCachedEpubPackage = async (uri, fallbackName = '', options = {}) => {
 };
 
 const parsePackageDocument = (opfXml, packagePath, fallbackName = '', extractedRootUri = null) => {
-    const opfDoc = parser.parseFromString(opfXml, 'application/xml');
+    const opfDoc = parseXml(opfXml, 'application/xml');
     const packageDir = dirname(packagePath);
 
     const titleNode = firstDescendant(opfDoc, (node) => localNameOf(node) === 'title');
@@ -1164,7 +1178,7 @@ const parseNavList = (olNode, tocPath, depth = 0) => {
 };
 
 const parseNavDocumentToc = (navXml, navPath) => {
-    const navDoc = parser.parseFromString(normalizeXhtmlEntities(navXml), 'application/xml');
+    const navDoc = parseXml(normalizeXhtmlEntities(navXml), 'application/xml');
     const navNodes = descendants(navDoc, (node) => localNameOf(node).toLowerCase() === 'nav');
     const tocNavNode = navNodes.find((node) => (
         hasToken(attributeValue(node, 'epub:type', 'type'), 'toc')
@@ -1202,7 +1216,7 @@ const parseNcxNavPoint = (navPointNode, ncxPath, depth = 0) => {
 };
 
 const parseNcxDocumentToc = (ncxXml, ncxPath) => {
-    const ncxDoc = parser.parseFromString(normalizeXhtmlEntities(ncxXml), 'application/xml');
+    const ncxDoc = parseXml(normalizeXhtmlEntities(ncxXml), 'application/xml');
     const navMapNode = firstDescendant(ncxDoc, (node) => localNameOf(node).toLowerCase() === 'navmap');
 
     if (!navMapNode) {
@@ -1394,7 +1408,7 @@ const buildBookManifest = ({
 };
 
 const extractBodyText = (xhtmlXml) => {
-    const xhtmlDoc = parser.parseFromString(normalizeXhtmlEntities(xhtmlXml), 'application/xml');
+    const xhtmlDoc = parseXml(normalizeXhtmlEntities(xhtmlXml), 'application/xml');
     const bodyNode = firstDescendant(xhtmlDoc, (node) => localNameOf(node) === 'body');
     const text = textOf(bodyNode || xhtmlDoc);
 
@@ -2362,7 +2376,7 @@ const parseXhtmlRenderTree = async (
     extractedRootUri = null,
     manifestByPath = {}
 ) => {
-    const xhtmlDoc = parser.parseFromString(normalizeXhtmlEntities(xhtmlXml), 'application/xml');
+    const xhtmlDoc = parseXml(normalizeXhtmlEntities(xhtmlXml), 'application/xml');
     const bodyNode = firstDescendant(xhtmlDoc, (node) => localNameOf(node) === 'body') || xhtmlDoc;
     const chapterPath = typeof spineItemOrPath === 'string' ? spineItemOrPath : spineItemOrPath?.path;
     const chapterDir = dirname(chapterPath);
@@ -2906,7 +2920,7 @@ const parseOpfMetadata = async (zip, packagePath, fallbackName, sourceUri = '') 
 
     const opfXml = await opfFile.async('string');
     const parsedPackage = parsePackageDocument(opfXml, packagePath, fallbackName);
-    const opfDoc = parser.parseFromString(opfXml, 'application/xml');
+    const opfDoc = parseXml(opfXml, 'application/xml');
     const metadataNode = firstDescendant(
         opfDoc,
         (node) => localNameOf(node) === 'metadata'
@@ -2951,7 +2965,7 @@ const parseOpfMetadata = async (zip, packagePath, fallbackName, sourceUri = '') 
         }
 
         const documentXml = await docFile.async('string');
-        const doc = parser.parseFromString(normalizeXhtmlEntities(documentXml), 'application/xml');
+        const doc = parseXml(normalizeXhtmlEntities(documentXml), 'application/xml');
         const imageNode = firstDescendant(doc, (node) => {
             const name = localNameOf(node).toLowerCase();
             return name === 'img' || name === 'image';

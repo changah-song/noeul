@@ -364,4 +364,4 @@ const styles = StyleSheet.create({
     },
 });
 
-export default TocDrawer;
+export default React.memo(TocDrawer);

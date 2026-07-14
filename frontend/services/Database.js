@@ -20,7 +20,7 @@ import {
   updateThetaOnline,
 } from './abilityModel';
 import { assembleFeatures } from './featureAssembly';
-import { bookEaseFromLevel } from './bookEase';
+import { bookEaseFromDistribution, bookEaseFromLevel } from './bookEase';
 import { getActivePknownModel } from './pknownModel';
 import { initialFsrsFromPKnown, rankNominations } from './flashcardNomination';
 
@@ -733,9 +733,17 @@ export const getProfileAbility = ({ ownerId, profileId, language = 'ko' } = {}) 
 /**
  * estimateBookReadingEase — the personalized "how easy is this book for me?"
  * number surfaced in the book preview. Reads the reader's current ability
- * (`theta`) for the active (owner, profile, language) and maps the book's graded
- * band onto the same scale, so the result is `P(known) = sigmoid(theta − difficulty)`
- * — the expected fraction of the book's vocabulary the reader already knows.
+ * (`theta`) for the active (owner, profile, language) and estimates the expected
+ * fraction of the book's vocabulary the reader already knows.
+ *
+ * Two tiers, best available wins:
+ *   1. `bookLevelStats.distribution` (the per-band histogram the leveling
+ *      accumulator stores) → `bookEaseFromDistribution`, a count-weighted mean of
+ *      the real word-level sigmoid per band. Continuous — two same-band books
+ *      with different vocabulary mixes get different numbers.
+ *   2. The single graded band (`levelRank`) → `bookEaseFromLevel`, the coarse
+ *      anchored estimate. In a 3-band language (ko) this collapses every book to
+ *      one of three values, so it's strictly a fallback.
  *
  * Because `theta` is updated by Phase 3 from every review/lookup, this estimate
  * improves over time with no re-training. Returns `ease: null` when the book has no
@@ -746,13 +754,23 @@ export const getProfileAbility = ({ ownerId, profileId, language = 'ko' } = {}) 
  * @param {string} [args.profileId]
  * @param {string} [args.language='ko']
  * @param {number|null} [args.levelRank]  the book's graded band (bookLevel.level_rank)
- * @returns {Promise<{ease:number|null, theta:number|null, eventCount:number, hasAbility:boolean}>}
+ * @param {object|string|null} [args.bookLevelStats]  the stored book-level stats
+ *        (bookLevel object or its JSON), whose `.distribution` unlocks tier 1
+ * @param {string|null} [args.bookUri]  when given and `bookLevelStats` carries no
+ *        distribution, the stored preprocess meta (book_level_stats) is consulted
+ *        — the caller's in-memory bookLevel can be staler than the table (e.g.
+ *        hydrated from the cloud row or the bundled catalog)
+ * @returns {Promise<{ease:number|null, theta:number|null, eventCount:number,
+ *          hasAbility:boolean, easeSource:'distribution'|'level'|null,
+ *          coverage:number|null}>}
  */
 export const estimateBookReadingEase = async ({
   ownerId,
   profileId,
   language = 'ko',
   levelRank,
+  bookLevelStats = null,
+  bookUri = null,
 } = {}) => {
   const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
   const ability = await getProfileAbility({ ownerId, profileId, language: normalizedLanguage });
@@ -761,13 +779,57 @@ export const estimateBookReadingEase = async ({
     ? Number(ability.event_count)
     : 0;
 
-  const ease = bookEaseFromLevel({
+  // Stats may arrive as the stored JSON string (book_level_stats column) or the
+  // already-parsed bookLevel object. Tolerate both; a parse failure just drops
+  // us to the single-band fallback.
+  const parseStats = (value) => {
+    if (typeof value !== 'string') {
+      return value ?? null;
+    }
+    try {
+      return JSON.parse(value);
+    } catch (_error) {
+      return null;
+    }
+  };
+
+  let stats = parseStats(bookLevelStats);
+
+  // The caller's bookLevel may predate the distribution (bundled catalog, cloud
+  // row). If we know which book this is, prefer the locally-accumulated stats
+  // from preprocessing — that's the richest signal we have. Non-fatal on error.
+  if (!Array.isArray(stats?.distribution) && bookUri) {
+    try {
+      const meta = await getBookPreprocessMeta(ownerId, bookUri, PREPROCESS_VERSION, profileId);
+      const storedStats = parseStats(meta?.book_level_stats);
+      if (Array.isArray(storedStats?.distribution)) {
+        stats = storedStats;
+      }
+    } catch (_error) {
+      // keep whatever stats we already had
+    }
+  }
+
+  const distributionEase = bookEaseFromDistribution({
+    theta,
+    language: normalizedLanguage,
+    distribution: stats?.distribution,
+  });
+  const ease = distributionEase ?? bookEaseFromLevel({
     theta,
     language: normalizedLanguage,
     levelRank,
   });
 
-  return { ease, theta, eventCount, hasAbility: !!ability };
+  const rawCoverage = Number(stats?.coverage);
+  return {
+    ease,
+    theta,
+    eventCount,
+    hasAbility: !!ability,
+    easeSource: ease == null ? null : (distributionEase != null ? 'distribution' : 'level'),
+    coverage: Number.isFinite(rawCoverage) ? rawCoverage : null,
+  };
 };
 
 /**
@@ -905,6 +967,10 @@ export const updateThetaFromOutcome = async ({
   difficulty,
   outcome,
   learningRate = THETA_LEARNING_RATE,
+  // The calibration quiz passes false: a quiz tap IS the measurement the
+  // self-report anchor exists to approximate, so pulling the update back toward
+  // the old seed would only slow convergence.
+  anchor = true,
 } = {}) => {
   const scopedOwnerId = resolveOwnerId(ownerId);
   const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
@@ -937,7 +1003,7 @@ export const updateThetaFromOutcome = async ({
   });
   const currentTheta = Number.isFinite(Number(row?.theta)) ? Number(row.theta) : NEUTRAL_THETA;
   const eventCount = Number.isFinite(Number(row?.event_count)) ? Number(row.event_count) : 0;
-  const theta0 = row?.self_report_rank != null
+  const theta0 = anchor && row?.self_report_rank != null
     ? seedThetaFromRank(normalizedLanguage, row.self_report_rank)
     : null;
 
@@ -970,6 +1036,61 @@ export const updateThetaFromOutcome = async ({
         () => resolve(nextTheta),
         (_, error) => {
           console.error('[Database] Error updating theta from outcome:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+/**
+ * setProfileAbilityFromVocab — seed `theta` directly from the vocabulary-size
+ * grid pick (Profile cold start; see services/vocabSizeLevels.js).
+ *
+ * Unlike `ensureProfileAbilitySeed` (which only seeds a cold, band-selected
+ * profile), this is an explicit measurement, so it overwrites `theta`
+ * unconditionally. It also lifts `event_count` to at least 1, which flips the
+ * profile out of "cold" state — that's what protects this continuous theta from
+ * being clobbered on the next app load by `ensureProfileAbilitySeed`'s
+ * `WHERE event_count = 0` guard (exactly how a quiz tap protected its measurement).
+ * `self_report_rank` is stored so any later behavioral update still has a sane
+ * anchor to fade from.
+ *
+ * @returns {Promise<number>} the seeded theta.
+ */
+export const setProfileAbilityFromVocab = ({
+  ownerId,
+  profileId,
+  language = 'ko',
+  theta,
+  nearestRank = null,
+} = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
+  const seededTheta = Number.isFinite(Number(theta)) ? Number(theta) : NEUTRAL_THETA;
+  const rank = Number.isFinite(Number(nearestRank)) ? Math.round(Number(nearestRank)) : null;
+  const now = new Date().toISOString();
+
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `INSERT INTO profile_ability (
+           owner_id, profile_id, language, theta, self_report_rank,
+           event_count, seeded_at, updated_at, synced_at
+         )
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?, NULL)
+         ON CONFLICT(owner_id, profile_id, language) DO UPDATE SET
+           theta = excluded.theta,
+           self_report_rank = excluded.self_report_rank,
+           event_count = MAX(profile_ability.event_count, 1),
+           seeded_at = excluded.seeded_at,
+           updated_at = excluded.updated_at,
+           synced_at = NULL`,
+        [scopedOwnerId, scopedProfileId, normalizedLanguage, seededTheta, rank, now, now],
+        () => resolve(seededTheta),
+        (_, error) => {
+          console.error('[Database] Error seeding ability from vocab grid:', error);
           reject(error);
         }
       );
@@ -3457,6 +3578,102 @@ export const getBookWordCandidates = async ({
       };
     })
     .filter(Boolean);
+};
+
+// ─── Saved words scoped to a single book ──────────────────────────────────────
+//
+// Powers the reader's saved-word count pill and the panel's "Saved" tab. Unlike
+// getSavedWords (language-wide, strings only), this returns the vocab rows a
+// reader saved *while in this book*, newest first, with just enough for a list
+// row. `source_book_uri` is stamped on every save (see insertData).
+
+export const getBookSavedWords = async ({ ownerId, profileId, language = 'ko', bookUri } = {}) => {
+  if (!bookUri) return [];
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
+
+  const rows = await runSelect(
+    `SELECT id, word, hanja, def, level, source_book_title, created_at
+     FROM vocab
+     WHERE owner_id = ? AND profile_id = ? AND language = ? AND source_book_uri = ?
+       AND deleted_at IS NULL
+     ORDER BY COALESCE(created_at, updated_at) DESC, id DESC`,
+    [scopedOwnerId, scopedProfileId, normalizedLanguage, bookUri]
+  );
+
+  return rows.map((row) => ({
+    id: row.id,
+    word: row.word,
+    hanja: row.hanja || '',
+    def: row.def || '',
+    level: row.level || 'unorganized',
+    bookTitle: row.source_book_title || '',
+    createdAt: row.created_at || null,
+  }));
+};
+
+// ─── Candidates across every book, grouped by book ────────────────────────────
+//
+// The reader panel shows candidates for the current book; the vocab (Learn)
+// screen's "Suggested" tab shows them for *every* book the reader has scored,
+// grouped per book. Book identity comes from word_scores (the candidate pool);
+// titles are recovered from any vocab row the reader saved from that book, since
+// word_scores itself doesn't carry a title.
+
+export const getAllBooksWordCandidates = async ({
+  ownerId,
+  profileId,
+  language = 'ko',
+  interfaceLanguage = 'en',
+  perBookLimit = 12,
+} = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
+
+  const bookRows = await runSelect(
+    `SELECT DISTINCT source_book_uri AS uri FROM word_scores
+     WHERE owner_id = ? AND profile_id = ? AND language = ?
+       AND source_book_uri IS NOT NULL AND p_known IS NOT NULL`,
+    [scopedOwnerId, scopedProfileId, normalizedLanguage]
+  );
+  if (bookRows.length === 0) return [];
+
+  // Best-effort title per book from the reader's own saves for it.
+  const titleRows = await runSelect(
+    `SELECT source_book_uri AS uri, source_book_title AS title
+     FROM vocab
+     WHERE owner_id = ? AND profile_id = ? AND language = ?
+       AND source_book_uri IS NOT NULL AND source_book_title IS NOT NULL
+       AND deleted_at IS NULL
+     GROUP BY source_book_uri`,
+    [scopedOwnerId, scopedProfileId, normalizedLanguage]
+  );
+  const titleByUri = new Map(titleRows.map((r) => [r.uri, r.title]));
+
+  const groups = await Promise.all(
+    bookRows.map(async ({ uri }) => {
+      const candidates = await getBookWordCandidates({
+        ownerId: scopedOwnerId,
+        profileId: scopedProfileId,
+        language: normalizedLanguage,
+        interfaceLanguage,
+        bookUri: uri,
+        limit: perBookLimit,
+      });
+      return {
+        bookUri: uri,
+        bookTitle: titleByUri.get(uri) || '',
+        candidates,
+      };
+    })
+  );
+
+  // Drop books that yielded nothing; surface the fullest lists first.
+  return groups
+    .filter((group) => group.candidates.length > 0)
+    .sort((a, b) => b.candidates.length - a.candidates.length);
 };
 
 export const initAllTables = async () => {

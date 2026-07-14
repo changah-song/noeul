@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useEffect } from 'react';
+import { memo, useCallback, useMemo, useRef, useEffect } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { Reader, useReader } from '@epubjs-react-native/core';
 import { useFileSystem } from '@epubjs-react-native/expo-file-system';
@@ -857,4 +857,4 @@ const styles = StyleSheet.create({
     }
 });
 
-export default BottomSection;
+export default memo(BottomSection);

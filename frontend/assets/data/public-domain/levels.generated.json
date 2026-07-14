@@ -1,0 +1,1046 @@
+{
+  "a-lucky-day": {
+    "basis": "vocabulary",
+    "coverage": 0.2388,
+    "distribution": [
+      {
+        "count": 80,
+        "level": "초급",
+        "rank": 1
+      },
+      {
+        "count": 80,
+        "level": "중급",
+        "rank": 2
+      },
+      {
+        "count": 86,
+        "level": "고급",
+        "rank": 3
+      }
+    ],
+    "language": "ko",
+    "level": "고급",
+    "level_rank": 3,
+    "matched_count": 246,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "고급",
+    "proficiency_rank": 3,
+    "proficiency_system": "NIKL",
+    "sample_limit": 1030,
+    "sample_size": 1030,
+    "unknown_count": 784
+  },
+  "ah-q-true-story": {
+    "basis": "vocabulary",
+    "coverage": 0.3631,
+    "distribution": [
+      {
+        "count": 52,
+        "level": "HSK 1",
+        "rank": 1
+      },
+      {
+        "count": 96,
+        "level": "HSK 2",
+        "rank": 2
+      },
+      {
+        "count": 97,
+        "level": "HSK 3",
+        "rank": 3
+      },
+      {
+        "count": 66,
+        "level": "HSK 4",
+        "rank": 4
+      },
+      {
+        "count": 63,
+        "level": "HSK 5",
+        "rank": 5
+      },
+      {
+        "count": 39,
+        "level": "HSK 6",
+        "rank": 6
+      },
+      {
+        "count": 185,
+        "level": "HSK 7",
+        "rank": 7
+      }
+    ],
+    "language": "zh",
+    "level": "HSK 7",
+    "level_rank": 7,
+    "matched_count": 598,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "HSK 7",
+    "proficiency_rank": 7,
+    "proficiency_system": "HSK",
+    "sample_limit": 1647,
+    "sample_size": 1647,
+    "unknown_count": 1049
+  },
+  "b-sagam-and-love-letter": {
+    "basis": "vocabulary",
+    "coverage": 0.2666,
+    "distribution": [
+      {
+        "count": 64,
+        "level": "초급",
+        "rank": 1
+      },
+      {
+        "count": 60,
+        "level": "중급",
+        "rank": 2
+      },
+      {
+        "count": 57,
+        "level": "고급",
+        "rank": 3
+      }
+    ],
+    "language": "ko",
+    "level": "고급",
+    "level_rank": 3,
+    "matched_count": 181,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "고급",
+    "proficiency_rank": 3,
+    "proficiency_system": "NIKL",
+    "sample_limit": 679,
+    "sample_size": 679,
+    "unknown_count": 498
+  },
+  "butterflys-dream": {
+    "basis": "vocabulary",
+    "coverage": 0.1983,
+    "distribution": [
+      {
+        "count": 34,
+        "level": "초급",
+        "rank": 1
+      },
+      {
+        "count": 21,
+        "level": "중급",
+        "rank": 2
+      },
+      {
+        "count": 14,
+        "level": "고급",
+        "rank": 3
+      }
+    ],
+    "language": "ko",
+    "level": "고급",
+    "level_rank": 3,
+    "matched_count": 69,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "고급",
+    "proficiency_rank": 3,
+    "proficiency_system": "NIKL",
+    "sample_limit": 348,
+    "sample_size": 348,
+    "unknown_count": 279
+  },
+  "camellia-flower": {
+    "basis": "vocabulary",
+    "coverage": 0.1878,
+    "distribution": [
+      {
+        "count": 36,
+        "level": "초급",
+        "rank": 1
+      },
+      {
+        "count": 50,
+        "level": "중급",
+        "rank": 2
+      },
+      {
+        "count": 53,
+        "level": "고급",
+        "rank": 3
+      }
+    ],
+    "language": "ko",
+    "level": "고급",
+    "level_rank": 3,
+    "matched_count": 139,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "고급",
+    "proficiency_rank": 3,
+    "proficiency_system": "NIKL",
+    "sample_limit": 740,
+    "sample_size": 740,
+    "unknown_count": 601
+  },
+  "chen-lun-yu-dafu": {
+    "basis": "vocabulary",
+    "coverage": 0.3726,
+    "distribution": [
+      {
+        "count": 66,
+        "level": "HSK 1",
+        "rank": 1
+      },
+      {
+        "count": 95,
+        "level": "HSK 2",
+        "rank": 2
+      },
+      {
+        "count": 84,
+        "level": "HSK 3",
+        "rank": 3
+      },
+      {
+        "count": 62,
+        "level": "HSK 4",
+        "rank": 4
+      },
+      {
+        "count": 56,
+        "level": "HSK 5",
+        "rank": 5
+      },
+      {
+        "count": 48,
+        "level": "HSK 6",
+        "rank": 6
+      },
+      {
+        "count": 183,
+        "level": "HSK 7",
+        "rank": 7
+      }
+    ],
+    "language": "zh",
+    "level": "HSK 7",
+    "level_rank": 7,
+    "matched_count": 594,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "HSK 7",
+    "proficiency_rank": 7,
+    "proficiency_system": "HSK",
+    "sample_limit": 1594,
+    "sample_size": 1594,
+    "unknown_count": 1000
+  },
+  "chisuk": {
+    "basis": "vocabulary",
+    "coverage": 0.3205,
+    "distribution": [
+      {
+        "count": 103,
+        "level": "초급",
+        "rank": 1
+      },
+      {
+        "count": 120,
+        "level": "중급",
+        "rank": 2
+      },
+      {
+        "count": 127,
+        "level": "고급",
+        "rank": 3
+      }
+    ],
+    "language": "ko",
+    "level": "고급",
+    "level_rank": 3,
+    "matched_count": 350,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "고급",
+    "proficiency_rank": 3,
+    "proficiency_system": "NIKL",
+    "sample_limit": 1092,
+    "sample_size": 1092,
+    "unknown_count": 742
+  },
+  "city-and-ghost": {
+    "basis": "vocabulary",
+    "coverage": 0.2629,
+    "distribution": [
+      {
+        "count": 83,
+        "level": "초급",
+        "rank": 1
+      },
+      {
+        "count": 102,
+        "level": "중급",
+        "rank": 2
+      },
+      {
+        "count": 105,
+        "level": "고급",
+        "rank": 3
+      }
+    ],
+    "language": "ko",
+    "level": "고급",
+    "level_rank": 3,
+    "matched_count": 290,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "고급",
+    "proficiency_rank": 3,
+    "proficiency_system": "NIKL",
+    "sample_limit": 1103,
+    "sample_size": 1103,
+    "unknown_count": 813
+  },
+  "crime-and-punishment-lee-muyeong": {
+    "basis": "vocabulary",
+    "coverage": 0.4416,
+    "distribution": [
+      {
+        "count": 248,
+        "level": "초급",
+        "rank": 1
+      },
+      {
+        "count": 374,
+        "level": "중급",
+        "rank": 2
+      },
+      {
+        "count": 379,
+        "level": "고급",
+        "rank": 3
+      }
+    ],
+    "language": "ko",
+    "level": "고급",
+    "level_rank": 3,
+    "matched_count": 1001,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "고급",
+    "proficiency_rank": 3,
+    "proficiency_system": "NIKL",
+    "sample_limit": 2267,
+    "sample_size": 2267,
+    "unknown_count": 1266
+  },
+  "fang-huang-lu-xun": {
+    "basis": "vocabulary",
+    "coverage": 0.321,
+    "distribution": [
+      {
+        "count": 108,
+        "level": "HSK 1",
+        "rank": 1
+      },
+      {
+        "count": 207,
+        "level": "HSK 2",
+        "rank": 2
+      },
+      {
+        "count": 220,
+        "level": "HSK 3",
+        "rank": 3
+      },
+      {
+        "count": 195,
+        "level": "HSK 4",
+        "rank": 4
+      },
+      {
+        "count": 176,
+        "level": "HSK 5",
+        "rank": 5
+      },
+      {
+        "count": 137,
+        "level": "HSK 6",
+        "rank": 6
+      },
+      {
+        "count": 623,
+        "level": "HSK 7",
+        "rank": 7
+      }
+    ],
+    "language": "zh",
+    "level": "HSK 7",
+    "level_rank": 7,
+    "matched_count": 1666,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "HSK 7",
+    "proficiency_rank": 7,
+    "proficiency_system": "HSK",
+    "sample_limit": 5190,
+    "sample_size": 5190,
+    "unknown_count": 3524
+  },
+  "gwangyeom-sonata": {
+    "basis": "vocabulary",
+    "coverage": 0.3782,
+    "distribution": [
+      {
+        "count": 128,
+        "level": "초급",
+        "rank": 1
+      },
+      {
+        "count": 183,
+        "level": "중급",
+        "rank": 2
+      },
+      {
+        "count": 164,
+        "level": "고급",
+        "rank": 3
+      }
+    ],
+    "language": "ko",
+    "level": "고급",
+    "level_rank": 3,
+    "matched_count": 475,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "고급",
+    "proficiency_rank": 3,
+    "proficiency_system": "NIKL",
+    "sample_limit": 1256,
+    "sample_size": 1256,
+    "unknown_count": 781
+  },
+  "heosaengjeon": {
+    "basis": "vocabulary",
+    "coverage": 0.3088,
+    "distribution": [
+      {
+        "count": 177,
+        "level": "초급",
+        "rank": 1
+      },
+      {
+        "count": 293,
+        "level": "중급",
+        "rank": 2
+      },
+      {
+        "count": 438,
+        "level": "고급",
+        "rank": 3
+      }
+    ],
+    "language": "ko",
+    "level": "고급",
+    "level_rank": 3,
+    "matched_count": 908,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "고급",
+    "proficiency_rank": 3,
+    "proficiency_system": "NIKL",
+    "sample_limit": 2940,
+    "sample_size": 2940,
+    "unknown_count": 2032
+  },
+  "kong-yiji-lu-xun": {
+    "basis": "vocabulary",
+    "coverage": 0.4393,
+    "distribution": [
+      {
+        "count": 15,
+        "level": "HSK 1",
+        "rank": 1
+      },
+      {
+        "count": 21,
+        "level": "HSK 2",
+        "rank": 2
+      },
+      {
+        "count": 11,
+        "level": "HSK 3",
+        "rank": 3
+      },
+      {
+        "count": 10,
+        "level": "HSK 4",
+        "rank": 4
+      },
+      {
+        "count": 20,
+        "level": "HSK 5",
+        "rank": 5
+      },
+      {
+        "count": 14,
+        "level": "HSK 6",
+        "rank": 6
+      },
+      {
+        "count": 32,
+        "level": "HSK 7",
+        "rank": 7
+      }
+    ],
+    "language": "zh",
+    "level": "HSK 7",
+    "level_rank": 7,
+    "matched_count": 123,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "HSK 7",
+    "proficiency_rank": 7,
+    "proficiency_system": "HSK",
+    "sample_limit": 280,
+    "sample_size": 280,
+    "unknown_count": 157
+  },
+  "little-match-girl": {
+    "basis": "vocabulary",
+    "coverage": 0.2688,
+    "distribution": [
+      {
+        "count": 40,
+        "level": "초급",
+        "rank": 1
+      },
+      {
+        "count": 36,
+        "level": "중급",
+        "rank": 2
+      },
+      {
+        "count": 24,
+        "level": "고급",
+        "rank": 3
+      }
+    ],
+    "language": "ko",
+    "level": "고급",
+    "level_rank": 3,
+    "matched_count": 100,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "고급",
+    "proficiency_rank": 3,
+    "proficiency_system": "NIKL",
+    "sample_limit": 372,
+    "sample_size": 372,
+    "unknown_count": 272
+  },
+  "little-mermaid": {
+    "basis": "vocabulary",
+    "coverage": 0.2994,
+    "distribution": [
+      {
+        "count": 147,
+        "level": "초급",
+        "rank": 1
+      },
+      {
+        "count": 168,
+        "level": "중급",
+        "rank": 2
+      },
+      {
+        "count": 111,
+        "level": "고급",
+        "rank": 3
+      }
+    ],
+    "language": "ko",
+    "level": "고급",
+    "level_rank": 3,
+    "matched_count": 426,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "고급",
+    "proficiency_rank": 3,
+    "proficiency_system": "NIKL",
+    "sample_limit": 1423,
+    "sample_size": 1423,
+    "unknown_count": 997
+  },
+  "madmans-diary-lu-xun": {
+    "basis": "vocabulary",
+    "coverage": 0.4889,
+    "distribution": [
+      {
+        "count": 32,
+        "level": "HSK 1",
+        "rank": 1
+      },
+      {
+        "count": 40,
+        "level": "HSK 2",
+        "rank": 2
+      },
+      {
+        "count": 20,
+        "level": "HSK 3",
+        "rank": 3
+      },
+      {
+        "count": 22,
+        "level": "HSK 4",
+        "rank": 4
+      },
+      {
+        "count": 15,
+        "level": "HSK 5",
+        "rank": 5
+      },
+      {
+        "count": 20,
+        "level": "HSK 6",
+        "rank": 6
+      },
+      {
+        "count": 50,
+        "level": "HSK 7",
+        "rank": 7
+      }
+    ],
+    "language": "zh",
+    "level": "HSK 7",
+    "level_rank": 7,
+    "matched_count": 199,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "HSK 7",
+    "proficiency_rank": 7,
+    "proficiency_system": "HSK",
+    "sample_limit": 407,
+    "sample_size": 407,
+    "unknown_count": 208
+  },
+  "mister-bang": {
+    "basis": "vocabulary",
+    "coverage": 0.3084,
+    "distribution": [
+      {
+        "count": 115,
+        "level": "초급",
+        "rank": 1
+      },
+      {
+        "count": 113,
+        "level": "중급",
+        "rank": 2
+      },
+      {
+        "count": 156,
+        "level": "고급",
+        "rank": 3
+      }
+    ],
+    "language": "ko",
+    "level": "고급",
+    "level_rank": 3,
+    "matched_count": 384,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "고급",
+    "proficiency_rank": 3,
+    "proficiency_system": "NIKL",
+    "sample_limit": 1245,
+    "sample_size": 1245,
+    "unknown_count": 861
+  },
+  "na-han-lu-xun": {
+    "basis": "vocabulary",
+    "coverage": 0.3062,
+    "distribution": [
+      {
+        "count": 90,
+        "level": "HSK 1",
+        "rank": 1
+      },
+      {
+        "count": 181,
+        "level": "HSK 2",
+        "rank": 2
+      },
+      {
+        "count": 209,
+        "level": "HSK 3",
+        "rank": 3
+      },
+      {
+        "count": 165,
+        "level": "HSK 4",
+        "rank": 4
+      },
+      {
+        "count": 151,
+        "level": "HSK 5",
+        "rank": 5
+      },
+      {
+        "count": 116,
+        "level": "HSK 6",
+        "rank": 6
+      },
+      {
+        "count": 511,
+        "level": "HSK 7",
+        "rank": 7
+      }
+    ],
+    "language": "zh",
+    "level": "HSK 7",
+    "level_rank": 7,
+    "matched_count": 1423,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "HSK 7",
+    "proficiency_rank": 7,
+    "proficiency_system": "HSK",
+    "sample_limit": 4647,
+    "sample_size": 4647,
+    "unknown_count": 3224
+  },
+  "potato": {
+    "basis": "vocabulary",
+    "coverage": 0.3066,
+    "distribution": [
+      {
+        "count": 57,
+        "level": "초급",
+        "rank": 1
+      },
+      {
+        "count": 56,
+        "level": "중급",
+        "rank": 2
+      },
+      {
+        "count": 74,
+        "level": "고급",
+        "rank": 3
+      }
+    ],
+    "language": "ko",
+    "level": "고급",
+    "level_rank": 3,
+    "matched_count": 187,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "고급",
+    "proficiency_rank": 3,
+    "proficiency_system": "NIKL",
+    "sample_limit": 610,
+    "sample_size": 610,
+    "unknown_count": 423
+  },
+  "ready-made-life": {
+    "basis": "vocabulary",
+    "coverage": 0.3324,
+    "distribution": [
+      {
+        "count": 179,
+        "level": "초급",
+        "rank": 1
+      },
+      {
+        "count": 232,
+        "level": "중급",
+        "rank": 2
+      },
+      {
+        "count": 216,
+        "level": "고급",
+        "rank": 3
+      }
+    ],
+    "language": "ko",
+    "level": "고급",
+    "level_rank": 3,
+    "matched_count": 627,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "고급",
+    "proficiency_rank": 3,
+    "proficiency_system": "NIKL",
+    "sample_limit": 1886,
+    "sample_size": 1886,
+    "unknown_count": 1259
+  },
+  "snow-queen": {
+    "basis": "vocabulary",
+    "coverage": 0.2858,
+    "distribution": [
+      {
+        "count": 189,
+        "level": "초급",
+        "rank": 1
+      },
+      {
+        "count": 200,
+        "level": "중급",
+        "rank": 2
+      },
+      {
+        "count": 126,
+        "level": "고급",
+        "rank": 3
+      }
+    ],
+    "language": "ko",
+    "level": "고급",
+    "level_rank": 3,
+    "matched_count": 515,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "고급",
+    "proficiency_rank": 3,
+    "proficiency_system": "NIKL",
+    "sample_limit": 1802,
+    "sample_size": 1802,
+    "unknown_count": 1287
+  },
+  "spring-spring": {
+    "basis": "vocabulary",
+    "coverage": 0.2037,
+    "distribution": [
+      {
+        "count": 51,
+        "level": "초급",
+        "rank": 1
+      },
+      {
+        "count": 85,
+        "level": "중급",
+        "rank": 2
+      },
+      {
+        "count": 83,
+        "level": "고급",
+        "rank": 3
+      }
+    ],
+    "language": "ko",
+    "level": "고급",
+    "level_rank": 3,
+    "matched_count": 219,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "고급",
+    "proficiency_rank": 3,
+    "proficiency_system": "NIKL",
+    "sample_limit": 1075,
+    "sample_size": 1075,
+    "unknown_count": 856
+  },
+  "taepyeongcheonha": {
+    "basis": "vocabulary",
+    "coverage": 0.2893,
+    "distribution": [
+      {
+        "count": 339,
+        "level": "초급",
+        "rank": 1
+      },
+      {
+        "count": 615,
+        "level": "중급",
+        "rank": 2
+      },
+      {
+        "count": 885,
+        "level": "고급",
+        "rank": 3
+      }
+    ],
+    "language": "ko",
+    "level": "고급",
+    "level_rank": 3,
+    "matched_count": 1839,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "고급",
+    "proficiency_rank": 3,
+    "proficiency_system": "NIKL",
+    "sample_limit": 6356,
+    "sample_size": 6356,
+    "unknown_count": 4517
+  },
+  "tears-of-blood": {
+    "basis": "vocabulary",
+    "coverage": 0.3327,
+    "distribution": [
+      {
+        "count": 212,
+        "level": "초급",
+        "rank": 1
+      },
+      {
+        "count": 271,
+        "level": "중급",
+        "rank": 2
+      },
+      {
+        "count": 343,
+        "level": "고급",
+        "rank": 3
+      }
+    ],
+    "language": "ko",
+    "level": "고급",
+    "level_rank": 3,
+    "matched_count": 826,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "고급",
+    "proficiency_rank": 3,
+    "proficiency_system": "NIKL",
+    "sample_limit": 2483,
+    "sample_size": 2483,
+    "unknown_count": 1657
+  },
+  "thumbelina": {
+    "basis": "vocabulary",
+    "coverage": 0.2626,
+    "distribution": [
+      {
+        "count": 98,
+        "level": "초급",
+        "rank": 1
+      },
+      {
+        "count": 84,
+        "level": "중급",
+        "rank": 2
+      },
+      {
+        "count": 53,
+        "level": "고급",
+        "rank": 3
+      }
+    ],
+    "language": "ko",
+    "level": "고급",
+    "level_rank": 3,
+    "matched_count": 235,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "고급",
+    "proficiency_rank": 3,
+    "proficiency_system": "NIKL",
+    "sample_limit": 895,
+    "sample_size": 895,
+    "unknown_count": 660
+  },
+  "ugly-duckling": {
+    "basis": "vocabulary",
+    "coverage": 0.2363,
+    "distribution": [
+      {
+        "count": 92,
+        "level": "초급",
+        "rank": 1
+      },
+      {
+        "count": 71,
+        "level": "중급",
+        "rank": 2
+      },
+      {
+        "count": 44,
+        "level": "고급",
+        "rank": 3
+      }
+    ],
+    "language": "ko",
+    "level": "고급",
+    "level_rank": 3,
+    "matched_count": 207,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "고급",
+    "proficiency_rank": 3,
+    "proficiency_system": "NIKL",
+    "sample_limit": 876,
+    "sample_size": 876,
+    "unknown_count": 669
+  },
+  "when-buckwheat-flowers-bloom": {
+    "basis": "vocabulary",
+    "coverage": 0.2217,
+    "distribution": [
+      {
+        "count": 57,
+        "level": "초급",
+        "rank": 1
+      },
+      {
+        "count": 66,
+        "level": "중급",
+        "rank": 2
+      },
+      {
+        "count": 83,
+        "level": "고급",
+        "rank": 3
+      }
+    ],
+    "language": "ko",
+    "level": "고급",
+    "level_rank": 3,
+    "matched_count": 206,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "고급",
+    "proficiency_rank": 3,
+    "proficiency_system": "NIKL",
+    "sample_limit": 929,
+    "sample_size": 929,
+    "unknown_count": 723
+  },
+  "wings": {
+    "basis": "vocabulary",
+    "coverage": 0.301,
+    "distribution": [
+      {
+        "count": 137,
+        "level": "초급",
+        "rank": 1
+      },
+      {
+        "count": 179,
+        "level": "중급",
+        "rank": 2
+      },
+      {
+        "count": 159,
+        "level": "고급",
+        "rank": 3
+      }
+    ],
+    "language": "ko",
+    "level": "고급",
+    "level_rank": 3,
+    "matched_count": 475,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "고급",
+    "proficiency_rank": 3,
+    "proficiency_system": "NIKL",
+    "sample_limit": 1578,
+    "sample_size": 1578,
+    "unknown_count": 1103
+  }
+}

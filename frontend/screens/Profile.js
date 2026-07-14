@@ -17,6 +17,10 @@ import { Feather } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import Auth from './Auth';
 import { Screen } from '../components/ui';
+import CalibrationQuizModal from '../components/shared/CalibrationQuizModal';
+import VocabLevelModal from '../components/shared/VocabLevelModal';
+import { getProficiencyLevelOptions } from '../constants/proficiencyLevels';
+import { hasVocabSizeGrid } from '../services/vocabSizeLevels';
 import { useAppContext } from '../contexts/AppContext';
 import { useTranslation } from '../hooks/useTranslation';
 import {
@@ -147,10 +151,14 @@ const Profile = ({ user, signOut, updateUsername }) => {
     const [emailCopied, setEmailCopied] = useState(false);
     const [draftName, setDraftName] = useState('');
     const [isSavingName, setIsSavingName] = useState(false);
+    const [showCalibrationQuiz, setShowCalibrationQuiz] = useState(false);
+    const [showVocabModal, setShowVocabModal] = useState(false);
     const {
         interfaceLanguage,
         setInterfaceLanguage,
         targetLanguage,
+        targetLanguageLevel,
+        setTargetLanguageLevel,
         isDarkMode,
         setIsDarkMode,
         notificationsEnabled,
@@ -345,6 +353,55 @@ const Profile = ({ user, signOut, updateUsername }) => {
                 </View>
 
                 <View style={styles.section}>
+                    <Text style={styles.groupEyebrow}>{t('profile.readingLevel')}</Text>
+                    <View style={styles.card}>
+                        {hasVocabSizeGrid(targetLanguage) ? (
+                            <>
+                                <Text style={styles.levelHelperText}>{t('profile.vocabLevelDesc')}</Text>
+                                <NavRow
+                                    label={t('profile.setVocabLevel')}
+                                    onPress={() => setShowVocabModal(true)}
+                                    icon="grid"
+                                    isLast
+                                    styles={styles}
+                                    profileColors={profileColors}
+                                />
+                            </>
+                        ) : (
+                            <>
+                                <View style={styles.levelChipsRow}>
+                                    {getProficiencyLevelOptions(targetLanguage).map((option) => {
+                                        const selected = option.rank === targetLanguageLevel?.rank;
+                                        return (
+                                            <Pressable
+                                                key={option.rank}
+                                                accessibilityRole="radio"
+                                                accessibilityState={{ selected }}
+                                                onPress={() => setTargetLanguageLevel(option.rank)}
+                                                style={[styles.levelChip, selected && styles.levelChipActive]}
+                                            >
+                                                <Text style={[styles.levelChipText, selected && styles.levelChipTextActive]}>
+                                                    {option.shortLabel}
+                                                </Text>
+                                            </Pressable>
+                                        );
+                                    })}
+                                </View>
+                                <Text style={styles.levelHelperText}>{t('profile.readingLevelDesc')}</Text>
+                                <NavRow
+                                    label={t('profile.checkMyLevel')}
+                                    onPress={() => setShowCalibrationQuiz(true)}
+                                    icon="compass"
+                                    isLast
+                                    styles={styles}
+                                    profileColors={profileColors}
+                                />
+                            </>
+                        )}
+                    </View>
+                </View>
+
+                <View style={styles.section}>
                     <Text style={styles.groupEyebrow}>{t('profile.preferences')}</Text>
                     <View style={styles.card}>
                         <NavRow
@@ -433,6 +490,16 @@ const Profile = ({ user, signOut, updateUsername }) => {
                     )}
                 </View>
             </ScrollView>
+
+            <CalibrationQuizModal
+                visible={showCalibrationQuiz}
+                onClose={() => setShowCalibrationQuiz(false)}
+            />
+
+            <VocabLevelModal
+                visible={showVocabModal}
+                onClose={() => setShowVocabModal(false)}
+            />
 
             <Modal
                 visible={showInterfaceLanguagePicker}
@@ -1070,6 +1137,40 @@ const createStyles = (profileColors, themeColors) => StyleSheet.create({
     },
     modalPrimaryButtonText: {
         color: themeColors.accentStrong,
+    },
+    levelChipsRow: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: spacing.xs,
+        paddingHorizontal: spacing.md,
+        paddingTop: spacing.md,
+    },
+    levelChip: {
+        paddingHorizontal: spacing.md,
+        paddingVertical: spacing.xs,
+        borderRadius: radii.pill,
+        backgroundColor: profileColors.muted,
+    },
+    levelChipActive: {
+        backgroundColor: themeColors.inkSlate,
+    },
+    levelChipText: {
+        fontFamily: fontFamilies.medium,
+        fontSize: 13,
+        color: profileColors.sub,
+    },
+    levelChipTextActive: {
+        color: themeColors.white,
+        fontFamily: fontFamilies.semibold,
+    },
+    levelHelperText: {
+        fontFamily: fontFamilies.regular,
+        fontSize: 12,
+        lineHeight: 17,
+        color: profileColors.faint,
+        paddingHorizontal: spacing.md,
+        paddingTop: spacing.sm,
+        paddingBottom: spacing.xs,
     },
 });
 

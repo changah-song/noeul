@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Card, IconButton, Screen, SectionHeader } from '../components/ui';
 import { createTabBarBaseStyle } from '../components/shared/TabBar';
@@ -793,6 +794,7 @@ const Write = ({ user, navigation }) => {
   const { activeOwnerId, syncPaused, syncGeneration } = useLocalOwner();
   const { targetLanguage } = useAppContext();
   const { colors } = useTheme();
+  const safeAreaInsets = useSafeAreaInsets();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const annotationLegend = useMemo(() => createAnnotationLegend(colors), [colors]);
   const annotationColors = useMemo(() => createAnnotationColors(annotationLegend), [annotationLegend]);
@@ -1461,6 +1463,7 @@ const Write = ({ user, navigation }) => {
         <KeyboardAvoidingView
           style={styles.editorShell}
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          keyboardVerticalOffset={safeAreaInsets.top}
         >
           <View style={styles.editorTopBar}>
             <TouchableOpacity

@@ -24,9 +24,17 @@ import { difficultyFromLevelRank, sigmoid } from './abilityModel';
 // At theta = difficulty this is exactly the anchor (0.80); it rises toward 1 as the
 // reader out-levels the book and falls toward 0 as the book out-levels the reader.
 //
-// This is deliberately a coarse, book-level estimate (one band, one ability). A
-// per-token refinement over the book's actual words (`bookEaseFromWordScores`) needs
-// no anchor — each word uses the real word-level sigmoid — and can layer on later.
+// This is deliberately a coarse, book-level estimate (one band, one ability). Two
+// finer estimates layer on top when their inputs exist:
+//   • `bookEaseFromDistribution` — the book's per-band word counts (the same
+//     `book_level_stats.distribution` the leveling accumulator already stores).
+//     Each band uses the REAL word-level sigmoid, weighted by how many of the
+//     book's words sit in that band, so no anchor is needed and the result is
+//     continuous instead of collapsing to one number per band. This matters most
+//     for Korean, where 3 NIKL bands otherwise quantize every book to 3 values.
+//   • `bookEaseFromWordScores` — the full per-token refinement over actual scored
+//     words (needs a book_index ⋈ word_scores join; not wired into the read path
+//     yet).
 //
 // Pure by design (no SQLite, no React Native) so the math is unit-testable; the
 // Database orchestrator supplies `theta`.
@@ -75,6 +83,48 @@ export const bookEaseFromLevel = ({ theta, language, levelRank } = {}) => {
   const safeTheta = Number.isFinite(Number(theta)) ? Number(theta) : 0;
   const difficulty = difficultyFromLevelRank(language, levelRank);
   return sigmoid((safeTheta - difficulty) + BOOK_LEVEL_ANCHOR_LOGIT);
+};
+
+/**
+ * bookEaseFromDistribution — the distribution-refined estimate: a count-weighted
+ * mean of per-BAND P(known) over the book's graded vocabulary.
+ *
+ * `distribution` is the per-band histogram the leveling accumulator already
+ * produces (see screens/Read.js `finalizeBookLevelAccumulator`): an array of
+ * `{ rank, count }` where `count` is how many of the book's matched words sit in
+ * that graded band. Each band maps onto the shared difficulty scale and gets the
+ * real word-level sigmoid — no comprehension anchor, because these are word
+ * difficulties, not an 80th-percentile aggregate (see the header note).
+ *
+ * OOV words (the accumulator's `unknown_count`) are deliberately EXCLUDED, same
+ * as the percentile leveling itself: in practice they're dominated by proper
+ * nouns and tokenizer misses, and pinning them all to the max difficulty would
+ * wrongly tank every book. Coverage stays available to the caller for a
+ * confidence hint instead.
+ *
+ * @param {object} args
+ * @param {number|null} args.theta      reader ability (null/non-finite → neutral 0)
+ * @param {string} args.language        target language code (ko | zh | en)
+ * @param {Array<{rank:number, count:number}>} args.distribution
+ * @returns {number|null} expected fraction of the book's graded vocabulary known,
+ *                        or null when the distribution is empty/unusable (caller
+ *                        should fall back to `bookEaseFromLevel`).
+ */
+export const bookEaseFromDistribution = ({ theta, language, distribution } = {}) => {
+  const safeTheta = Number.isFinite(Number(theta)) ? Number(theta) : 0;
+  const entries = (Array.isArray(distribution) ? distribution : [])
+    .map((band) => {
+      const rank = Number(band?.rank);
+      const count = Number(band?.count);
+      if (!Number.isFinite(rank) || !Number.isFinite(count) || count <= 0) {
+        return null;
+      }
+      const difficulty = difficultyFromLevelRank(language, rank);
+      return { pKnown: sigmoid(safeTheta - difficulty), weight: count };
+    })
+    .filter(Boolean);
+
+  return bookEaseFromWordScores(entries);
 };
 
 /**

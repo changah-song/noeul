@@ -101,6 +101,29 @@ describe('updateThetaFromOutcome', () => {
     expect(after.event_count).toBe(1);
   });
 
+  it('ignores the self-report anchor when anchor: false (calibration-quiz path)', async () => {
+    // Seed at beginner (theta0 = -3). A correct answer on a HARD word with the
+    // anchor on gets dragged back toward the seed; with anchor: false (and an
+    // explicit difficulty, as the quiz passes) it takes the full evidence step.
+    await ensureProfileAbilitySeed({ ownerId: OWNER, profileId: PROFILE, language: 'ko', rank: 1 });
+    const before = await getProfileAbility({ ownerId: OWNER, profileId: PROFILE, language: 'ko' });
+
+    const next = await updateThetaFromOutcome({
+      ownerId: OWNER,
+      profileId: PROFILE,
+      language: 'ko',
+      stem: '결막염',
+      difficulty: 3, // ko band 3 — no dictionary_cache row needed
+      outcome: 1,
+      learningRate: 0.5,
+      anchor: false,
+    });
+
+    // Pure evidence step: theta + lr·(1 − sigmoid(theta − d)), no anchor term.
+    const expected = before.theta + 0.5 * (1 - 1 / (1 + Math.exp(-(before.theta - 3))));
+    expect(next).toBeCloseTo(expected, 10);
+  });
+
   it('skips a word with no graded KB rank (no write, no event_count bump)', async () => {
     await ensureProfileAbilitySeed({ ownerId: OWNER, profileId: PROFILE, language: 'ko', rank: 2 });
     const before = await getProfileAbility({ ownerId: OWNER, profileId: PROFILE, language: 'ko' });
