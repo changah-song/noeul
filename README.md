@@ -18,7 +18,7 @@ Reading is the fastest way to acquire a language. Noeul removes the friction tha
 
 ## What is Noeul?
 
-Noeul (formerly *Fluent Fable*) is a mobile reading app for people learning a language by **reading real books — not doing drills.** You load a novel (your own file or one from a built-in public-domain library), read it in the target language, and tap any word or sentence to understand it in place.
+Noeul is a mobile reading app for people learning a language by **reading real books — not doing drills.** You load a novel (your own file or one from a built-in public-domain library), read it in the target language, and tap any word or sentence to understand it in place.
 
 It's built for **self-studying learners** who are intrinsically motivated and read in quiet moments — the commute, the evening wind-down, the weekend study session. The design goal is a *well-lit study room*: calm, focused, literary. The text gets the screen; everything else gets out of the way.
 
