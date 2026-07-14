@@ -1,6 +1,8 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  Animated,
+  Easing,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -10,6 +12,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -633,26 +636,77 @@ const InlineCorrectionList = ({ annotations = [], onAnnotationPress }) => {
   );
 };
 
+const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
+
 const AnnotationSheet = ({ annotation, onClose }) => {
   const { colors, styles } = useWriteTheme();
+  const { height: windowHeight } = useWindowDimensions();
+
+  // Keep the modal mounted while it animates out, then unmount. The scrim fades
+  // in place while only the panel slides up — otherwise the whole scrim slides
+  // up with it (the old animationType="slide" behavior).
+  const [mounted, setMounted] = useState(Boolean(annotation));
+  // Retain the last annotation through the close animation so the panel content
+  // doesn't vanish before it has finished sliding away.
+  const [shown, setShown] = useState(annotation);
+  const progress = useRef(new Animated.Value(0)).current;
+  const sheetHeight = useRef(0);
+
+  useEffect(() => {
+    if (annotation) {
+      setShown(annotation);
+      setMounted(true);
+      Animated.timing(progress, {
+        toValue: 1,
+        duration: 260,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
+    } else if (mounted) {
+      Animated.timing(progress, {
+        toValue: 0,
+        duration: 200,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) {
+          setMounted(false);
+          setShown(null);
+        }
+      });
+    }
+  }, [annotation, mounted, progress]);
+
+  const translateY = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [sheetHeight.current || windowHeight, 0],
+  });
 
   return (
     <Modal
-      visible={Boolean(annotation)}
-      animationType="slide"
+      visible={mounted}
+      animationType="none"
       transparent
       onRequestClose={onClose}
     >
       <View style={styles.sheetRoot}>
-        <Pressable style={styles.sheetScrim} onPress={onClose} />
-        {annotation ? (
-          <View style={styles.sheetPanel}>
+        <AnimatedPressable
+          style={[styles.sheetScrim, { opacity: progress }]}
+          onPress={onClose}
+        />
+        {shown ? (
+          <Animated.View
+            style={[styles.sheetPanel, { transform: [{ translateY }] }]}
+            onLayout={(e) => {
+              sheetHeight.current = e.nativeEvent.layout.height;
+            }}
+          >
             <View style={styles.sheetHandle} />
             <View style={styles.sheetHeader}>
               <View style={styles.sheetHeaderCopy}>
-                <TypeBadge type={annotation.type} />
+                <TypeBadge type={shown.type} />
                 <Text selectable style={styles.sheetOriginal}>
-                  {annotation.original}
+                  {shown.original}
                 </Text>
               </View>
               <TouchableOpacity onPress={onClose} style={styles.sheetCloseButton}>
@@ -665,25 +719,25 @@ const AnnotationSheet = ({ annotation, onClose }) => {
               contentContainerStyle={styles.sheetScrollContent}
             >
               <Text selectable style={styles.sheetExplanation}>
-                {annotation.explanation}
+                {shown.explanation}
               </Text>
 
               <View style={styles.suggestionList}>
-                {(annotation.suggestions ?? []).map((suggestion, index) => (
-                  <View key={`${annotation.id}-suggestion-${index}`} style={styles.suggestionRow}>
+                {(shown.suggestions ?? []).map((suggestion, index) => (
+                  <View key={`${shown.id}-suggestion-${index}`} style={styles.suggestionRow}>
                     <Text selectable style={styles.suggestionText}>
                       {suggestion}
                     </Text>
-                    {annotation.suggestion_notes?.[index] ? (
+                    {shown.suggestion_notes?.[index] ? (
                       <Text selectable style={styles.suggestionNote}>
-                        {annotation.suggestion_notes[index]}
+                        {shown.suggestion_notes[index]}
                       </Text>
                     ) : null}
                   </View>
                 ))}
               </View>
             </ScrollView>
-          </View>
+          </Animated.View>
         ) : null}
       </View>
     </Modal>

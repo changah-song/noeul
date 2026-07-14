@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
     View,
     Text,
@@ -9,9 +9,14 @@ import {
     StyleSheet,
     KeyboardAvoidingView,
     Platform,
+    Animated,
+    Easing,
+    useWindowDimensions,
 } from 'react-native';
 import { useTranslation } from '../../hooks/useTranslation';
 import { fontFamilies, radii, spacing } from '../../theme';
+
+const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 /**
  * BeforeYouGoSheet — the opt-in "thoughtful close" the reader can open on the way
@@ -30,13 +35,44 @@ const BeforeYouGoSheet = ({
 }) => {
     const { t } = useTranslation();
     const styles = useMemo(() => createStyles(colors, insets), [colors, insets]);
+    const { height: windowHeight } = useWindowDimensions();
 
     const [note, setNote] = useState('');
 
-    // Reset whenever it (re)opens.
+    // Keep the modal mounted while it animates out, then unmount. The backdrop
+    // fades in place while only the sheet slides up — otherwise the whole scrim
+    // slides up with it (the old animationType="slide" behavior).
+    const [mounted, setMounted] = useState(visible);
+    const progress = useRef(new Animated.Value(0)).current;
+    const sheetHeight = useRef(0);
+
+    // Reset whenever it (re)opens, and drive the open/close animation.
     useEffect(() => {
-        if (visible) setNote('');
-    }, [visible]);
+        if (visible) {
+            setNote('');
+            setMounted(true);
+            Animated.timing(progress, {
+                toValue: 1,
+                duration: 260,
+                easing: Easing.out(Easing.cubic),
+                useNativeDriver: true,
+            }).start();
+        } else if (mounted) {
+            Animated.timing(progress, {
+                toValue: 0,
+                duration: 200,
+                easing: Easing.in(Easing.cubic),
+                useNativeDriver: true,
+            }).start(({ finished }) => {
+                if (finished) setMounted(false);
+            });
+        }
+    }, [visible, mounted, progress]);
+
+    const translateY = progress.interpolate({
+        inputRange: [0, 1],
+        outputRange: [sheetHeight.current || windowHeight, 0],
+    });
 
     const finish = async () => {
         const trimmed = note.trim();
@@ -47,14 +83,22 @@ const BeforeYouGoSheet = ({
     };
 
     return (
-        <Modal visible={visible} transparent animationType="slide" onRequestClose={onCancel}>
+        <Modal visible={mounted} transparent animationType="none" onRequestClose={onCancel}>
             <KeyboardAvoidingView
                 style={styles.flex}
                 behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             >
                 <View style={styles.overlay}>
-                    <Pressable style={styles.backdrop} onPress={onCancel} />
-                    <View style={styles.sheet}>
+                    <AnimatedPressable
+                        style={[styles.backdrop, { opacity: progress }]}
+                        onPress={onCancel}
+                    />
+                    <Animated.View
+                        style={[styles.sheet, { transform: [{ translateY }] }]}
+                        onLayout={(e) => {
+                            sheetHeight.current = e.nativeEvent.layout.height;
+                        }}
+                    >
                         <View style={styles.handleWrap}>
                             <View style={styles.handle} />
                         </View>
@@ -90,7 +134,7 @@ const BeforeYouGoSheet = ({
                                 <Text style={styles.primaryButtonText}>{t('read.saveAndClose')}</Text>
                             </TouchableOpacity>
                         </View>
-                    </View>
+                    </Animated.View>
                 </View>
             </KeyboardAvoidingView>
         </Modal>
@@ -101,10 +145,12 @@ const createStyles = (colors, insets = { bottom: 0 }) => StyleSheet.create({
     flex: { flex: 1 },
     overlay: {
         flex: 1,
-        backgroundColor: colors.overlay,
         justifyContent: 'flex-end',
     },
-    backdrop: { ...StyleSheet.absoluteFillObject },
+    backdrop: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: colors.overlay,
+    },
     sheet: {
         backgroundColor: colors.surface,
         borderTopLeftRadius: radii.xl,
