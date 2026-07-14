@@ -8,9 +8,13 @@
 
 Reading is the fastest way to acquire a language. Noeul removes the friction that normally makes foreign-language reading exhausting: instant word lookups, sentence translation, character-root exploration, and spaced-repetition flashcards — all without leaving the page.
 
+[![Website](https://img.shields.io/badge/Website-noeul.app-2d6cdf?logo=safari&logoColor=white)](https://noeul.app/)
+&nbsp;
 [![Get it on Google Play](https://img.shields.io/badge/Google_Play-Download-414141?logo=google-play&logoColor=white)](https://play.google.com/store/apps/details?id=com.noeulapp.Noeul)
 &nbsp;
 ![Built with Expo](https://img.shields.io/badge/built_with-React_Native%20%2F%20Expo-000020?logo=expo&logoColor=white)
+
+See it in action at **[noeul.app](https://noeul.app/)**.
 
 </div>
 
