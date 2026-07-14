@@ -10,8 +10,6 @@ Reading is the fastest way to acquire a language. Noeul removes the friction tha
 
 [![Get it on Google Play](https://img.shields.io/badge/Google_Play-Download-414141?logo=google-play&logoColor=white)](https://play.google.com/store/apps/details?id=com.noeulapp.Noeul)
 &nbsp;
-![Platform](https://img.shields.io/badge/platform-iOS%20%7C%20Android-informational)
-&nbsp;
 ![Built with Expo](https://img.shields.io/badge/built_with-React_Native%20%2F%20Expo-000020?logo=expo&logoColor=white)
 
 </div>
@@ -22,78 +20,39 @@ Reading is the fastest way to acquire a language. Noeul removes the friction tha
 
 Noeul (formerly *Fluent Fable*) is a mobile reading app for people learning a language by **reading real books — not doing drills.** You load a novel (your own file or one from a built-in public-domain library), read it in the target language, and tap any word or sentence to understand it in place.
 
-It's built for **self-studying adults** who are intrinsically motivated and read in quiet moments — the commute, the evening wind-down, the weekend study session. The design goal is a *well-lit study room*: calm, focused, literary. The text gets the screen; everything else gets out of the way.
+It's built for **self-studying learners** who are intrinsically motivated and read in quiet moments — the commute, the evening wind-down, the weekend study session. The design goal is a *well-lit study room*: calm, focused, literary. The text gets the screen; everything else gets out of the way.
 
 - **Primary target language:** Korean (deepest dictionary, Hanja, and leveling support). The architecture also supports **English** and **Chinese**.
 - **Interface available in 11 languages:** English, Korean, Chinese, French, Spanish, Arabic, Mongolian, Vietnamese, Thai, Indonesian, Russian.
 - **Offline-first:** your books, saved words, and progress live on-device; optional cloud sync when you sign in.
 
-> **Deliberately not** Duolingo (no mascots, no streaks, no reward loops), not Anki (no clinical flashcard grids), and not a generic Kindle-sepia reader. Noeul is for readers, not players.
-
 ---
 
 ## Features
 
-### 📖 A distraction-free reader
+### A distraction-free reader
 Import your own **EPUB / PDF**, or download from a curated **public-domain library**. Tap a word for an instant dictionary lookup; highlight a phrase for sentence translation. Paged or vertical-scroll reading, focus mode, table of contents, bookmarks, per-book notes, adjustable typography, and pronunciation audio.
 
-### 🈷️ Deep linguistic lookups
+### 🈷Deep linguistic lookups
 Every Korean/Chinese word decomposes into its **root characters** (Hanja / Hànzì) — each with meaning, reading, related words, and derived forms. One lookup becomes a small web of connected vocabulary.
 
-### 🤖 In-context AI meaning
+### In-context AI meaning
 A dictionary gives the *generic* meaning. Tap **Meaning** and Noeul sends the word plus its sentence to an AI model that explains what the word means *in this specific context* — including figurative and literary uses a dictionary would miss. Works for out-of-vocabulary and archaic words too, and you can save the result.
 
-### 🧠 Personalized spaced repetition
+### Personalized spaced repetition
 Saved words become a flashcard deck scheduled with an **FSRS** spaced-repetition model. Uniquely, each new card is *seeded from an estimate of how likely you already know the word* — so Noeul doesn't waste your time re-drilling words you clearly know, and front-loads the ones you don't.
 
-### 🎯 A personalization engine
+### A personalization engine
 Noeul models your ability as a single number on the same scale as each word's difficulty (an IRT/Rasch approach). It updates continuously as you read, look words up, take a **calibration quiz**, and review — powering **word suggestions**, per-book **reading-ease** estimates, and flashcard seeding. Books literally get easier on your shelf as you improve.
 
-### ✍️ AI writing practice
+### AI writing practice
 Write in your target language and get **categorized, inline feedback** — grammar, word choice, naturalness, and translations for words you fell back to in your native language. Those gaps become your highest-signal words to learn next.
 
-### 📸 Screenshot OCR
+### Screenshot OCR
 Point Noeul at an image of text — a webpage, a sign, a message — and it recognizes the words, overlays tappable regions, and runs the full dictionary / root / AI pipeline on anything you tap.
 
-### 🎵 Songs
+### Songs
 A lighter reading surface for lyrics, poems, and short texts, with the same lookup tools — good for a quick session when a whole chapter is too much.
-
----
-
-## Screenshots
-
-<table>
-  <tr>
-    <td><img src="showcase_assets/screenshots-2026-07-14/18-home-continue-reading.png" alt="Home — continue reading" /></td>
-    <td><img src="showcase_assets/screenshots-2026-07-14/04-reader-definition.png" alt="Reader — word lookup" /></td>
-    <td><img src="showcase_assets/screenshots-2026-07-14/10-reader-panel-roots.png" alt="Reader — root characters" /></td>
-  </tr>
-  <tr>
-    <td align="center"><em>Home library</em></td>
-    <td align="center"><em>Tap-to-define</em></td>
-    <td align="center"><em>Hanja roots</em></td>
-  </tr>
-  <tr>
-    <td><img src="showcase_assets/screenshots-2026-07-14/05-reader-ai-meaning.png" alt="Reader — in-context AI meaning" /></td>
-    <td><img src="showcase_assets/screenshots-2026-07-14/28-vocab.png" alt="Vocab dashboard" /></td>
-    <td><img src="showcase_assets/screenshots-2026-07-14/27-write-ai-feedback.png" alt="Writing — AI feedback" /></td>
-  </tr>
-  <tr>
-    <td align="center"><em>In-context AI meaning</em></td>
-    <td align="center"><em>Spaced-repetition vocab</em></td>
-    <td align="center"><em>AI writing feedback</em></td>
-  </tr>
-  <tr>
-    <td><img src="showcase_assets/screenshots-2026-07-14/24-ocr-word-result.png" alt="Screenshot OCR" /></td>
-    <td><img src="showcase_assets/screenshots-2026-07-14/35-reader-dark.png" alt="Reader — dark mode" /></td>
-    <td><img src="showcase_assets/screenshots-2026-07-14/17-reader-suggested-words.png" alt="Suggested words" /></td>
-  </tr>
-  <tr>
-    <td align="center"><em>Screenshot OCR</em></td>
-    <td align="center"><em>Dark mode</em></td>
-    <td align="center"><em>Suggested words</em></td>
-  </tr>
-</table>
 
 ---
 
@@ -112,4 +71,4 @@ A lighter reading surface for lyrics, poems, and short texts, with the same look
 
 ## Contact
 
-Built by Paul Song. Questions, comments, or suggestions welcome — reach me at **casong00@gmail.com**.
+Questions, comments, or suggestions welcome — reach me at **noeul.app@gmail.com**.
