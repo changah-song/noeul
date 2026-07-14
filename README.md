@@ -33,7 +33,7 @@ It's built for **self-studying learners** who are intrinsically motivated and re
 ### A distraction-free reader
 Import your own **EPUB / PDF**, or download from a curated **public-domain library**. Tap a word for an instant dictionary lookup; highlight a phrase for sentence translation. Paged or vertical-scroll reading, focus mode, table of contents, bookmarks, per-book notes, adjustable typography, and pronunciation audio.
 
-### 🈷Deep linguistic lookups
+### Deep linguistic lookups
 Every Korean/Chinese word decomposes into its **root characters** (Hanja / Hànzì) — each with meaning, reading, related words, and derived forms. One lookup becomes a small web of connected vocabulary.
 
 ### In-context AI meaning
