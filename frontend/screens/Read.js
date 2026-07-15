@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Animated, BackHandler, Easing, PanResponder, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, Pressable } from 'react-native';
+import { Animated, BackHandler, Easing, PanResponder, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, Pressable, findNodeHandle } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather, MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -11,7 +11,10 @@ import FocusControls from '../components/Read/FocusControls';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
-import NativeEpubReaderView from '../modules/native-epub-reader/src/NativeEpubReaderView';
+import NativeEpubReaderView, {
+    sendFocusNavCommand,
+    supportsImperativeFocusNav,
+} from '../modules/native-epub-reader/src/NativeEpubReaderView';
 import {
     PREPROCESS_VERSION,
     deleteBookNote,
@@ -78,6 +81,10 @@ const FONT_SIZE_MIN = 12;
 const FONT_SIZE_MAX = 30;
 const FOCUS_SPAN_MIN = 1;
 const FOCUS_SPAN_MAX = 5;
+// Focus mode emits a page event on every sentence step; persisting each one
+// (screen state + library patch + AsyncStorage write) is what made beam
+// navigation feel sluggish, so steps coalesce to the trailing event.
+const FOCUS_PAGE_CHANGE_DEBOUNCE_MS = 400;
 const LINE_SPACING_STEPS = [
     { value: 1.4, label: 'Compact' },
     { value: 1.65, label: 'Regular' },
@@ -546,6 +553,28 @@ const Read = ({
         };
     }, []);
     const focusNavCounterRef = useRef(0);
+    const nativeReaderViewRef = useRef(null);
+    // In focus mode, page events arrive on every sentence step; they are
+    // coalesced so only the trailing event is persisted (see
+    // handleNativePageChange). The processor is captured alongside the event
+    // so a flush that happens after a book or mode switch still patches the
+    // book the event came from.
+    const pendingFocusPageChangeRef = useRef(null);
+    const focusPageChangeTimeoutRef = useRef(null);
+    const flushPendingFocusPageChange = useCallback(() => {
+        if (focusPageChangeTimeoutRef.current) {
+            clearTimeout(focusPageChangeTimeoutRef.current);
+            focusPageChangeTimeoutRef.current = null;
+        }
+        const pending = pendingFocusPageChangeRef.current;
+        pendingFocusPageChangeRef.current = null;
+        if (pending) {
+            pending.process(pending.event);
+        }
+    }, []);
+    // Flush (don't drop) any pending step when the reader unmounts so the last
+    // position still lands in the library.
+    useEffect(() => flushPendingFocusPageChange, [flushPendingFocusPageChange]);
     const focusControlsTranslate = useRef(new Animated.Value(0)).current;
     const focusSwipeKnobAnim = useRef(new Animated.Value(0)).current;
 
@@ -743,6 +772,11 @@ const Read = ({
             addReadingMillis(sessionOwnerId, elapsed);
         }
 
+        // A coalesced focus-mode step captured its own processor (closing over
+        // the previous book), so flushing here still records the position the
+        // reader left off at before the switch resets everything below.
+        flushPendingFocusPageChange();
+
         setPreprocessStatus('idle');
         extractedTextRef.current = null;
         preprocessingInFlightRef.current = false;
@@ -780,7 +814,7 @@ const Read = ({
         publishFocusInfo({ index: 0, count: 1, total: 0 });
         setFocusNavToken('none:0');
         focusNavCounterRef.current = 0;
-    }, [activeOwnerId, currentBook, updateNativeRestorePosition, publishFocusInfo]);
+    }, [activeOwnerId, currentBook, updateNativeRestorePosition, publishFocusInfo, flushPendingFocusPageChange]);
 
     useEffect(() => {
         return () => {
@@ -873,8 +907,10 @@ const Read = ({
         // panel — not register the tapped word as a new selection. Tapping empty
         // space already routes through onSelectionCleared, and native text
         // selections clear themselves, so this closes the last remaining gap.
-        // Focus mode is excluded because word taps there also drive beam nav.
-        if (lookupOpenRef.current && !focusModeRef.current) {
+        // Focus mode normally suppresses this natively (the tap never reaches
+        // JS); this also catches a tap that lands before the native view has
+        // learned the panel opened.
+        if (lookupOpenRef.current) {
             dismissPanelRef.current?.();
             return;
         }
@@ -2214,7 +2250,7 @@ const Read = ({
         };
     }, [activeBook?.uri, currentBook, readerRetryKey]);
 
-    const handleNativePageChange = useCallback(({ page, total, spineIndex, href, firstBlockId, savedHighlights } = {}) => {
+    const processNativePageChange = useCallback(({ page, total, spineIndex, href, firstBlockId, savedHighlights } = {}) => {
         if (bookCompletionInProgressRef.current) {
             return;
         }
@@ -2327,6 +2363,23 @@ const Read = ({
         setBooks,
         updateNativeRestorePosition,
     ]);
+
+    const handleNativePageChange = useCallback((event = {}) => {
+        if (!focusModeRef.current) {
+            flushPendingFocusPageChange();
+            processNativePageChange(event);
+            return;
+        }
+
+        pendingFocusPageChangeRef.current = { event, process: processNativePageChange };
+        if (focusPageChangeTimeoutRef.current) {
+            clearTimeout(focusPageChangeTimeoutRef.current);
+        }
+        focusPageChangeTimeoutRef.current = setTimeout(() => {
+            focusPageChangeTimeoutRef.current = null;
+            flushPendingFocusPageChange();
+        }, FOCUS_PAGE_CHANGE_DEBOUNCE_MS);
+    }, [flushPendingFocusPageChange, processNativePageChange]);
 
     const handleNativeChapterCommit = useCallback(({
         spineIndex,
@@ -2628,18 +2681,34 @@ const Read = ({
     }, [publishFocusInfo]);
 
     const sendFocusNav = useCallback((direction) => {
+        // Preferred path: call straight into the native view. Routing through
+        // the focusNavToken prop re-renders the entire reader screen before
+        // the beam can move, which made arrow navigation feel sluggish.
+        if (supportsImperativeFocusNav) {
+            const viewTag = findNodeHandle(nativeReaderViewRef.current);
+            if (viewTag != null) {
+                sendFocusNavCommand(viewTag, direction).catch((error) => {
+                    console.warn('[Read] Focus nav failed:', error?.message ?? error);
+                });
+                return;
+            }
+        }
+
         focusNavCounterRef.current += 1;
         setFocusNavToken(`${direction}:${focusNavCounterRef.current}`);
     }, []);
 
     const toggleFocusMode = useCallback(() => {
+        // Persist any coalesced sentence-step position now, before the mode
+        // switch emits page events in the other mode's geometry.
+        flushPendingFocusPageChange();
         setShowMenu(false);
         setHighlightedWord('');
         setHighlightedWordContext(null);
         setIsNativeSelection(false);
         setClearSelectionToken((value) => value + 1);
         setFocusMode((current) => !current);
-    }, []);
+    }, [flushPendingFocusPageChange]);
 
     const handleFocusSpanStep = (direction) => {
         handleSettingChange(
@@ -2764,6 +2833,7 @@ const Read = ({
                     </View>
                 ) : (
                     <NativeEpubReaderView
+                        ref={nativeReaderViewRef}
                         key={`${currentBook}-${readerRetryKey}`}
                         style={styles.nativeReaderView}
                         bookManifest={nativeBookManifest}
@@ -2862,7 +2932,12 @@ const Read = ({
                     shouldPlaceLookupAtTop ? styles.lookupLayerTop : styles.lookupLayerBottom,
                     shouldPlaceLookupAtTop
                         ? { paddingTop: isFullscreen ? 0 : insets.top + spacing.xs + 52 }
-                        : { paddingBottom: insets.bottom + 6 },
+                        // When the tab bar is on screen (regular reading), the reader
+                        // content already ends at its top edge, so the panel should sit
+                        // flush against it. The safe-area gap is only needed when the tab
+                        // bar is gone: fullscreen, or focus mode (which lifts the reading
+                        // surface by focusPanelTotalHeight = panel + insets.bottom + 6).
+                        : { paddingBottom: isFullscreen || focusMode ? insets.bottom + 6 : 0 },
                 ]}
                 pointerEvents="box-none"
             >

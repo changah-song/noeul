@@ -27,6 +27,7 @@ private const val HANJA_LOAD_MORE_DELAY_MS = 650L
 private const val DICTIONARY_COMPACT_HEIGHT_DP = 252f
 private const val DICTIONARY_NO_ROOT_HEIGHT_DP = 215f
 private const val DICTIONARY_TRANSLATION_HEIGHT_DP = 332f
+private const val DICTIONARY_EXPLANATION_HEIGHT_DP = 400f
 private const val DICTIONARY_EXPANDED_MAX_HEIGHT_DP = 548f
 private const val TRANSLATION_MAX_SCROLL_HEIGHT_DP = 150f
 private const val TRANSLATION_PANEL_BOTTOM_PADDING_DP = 22f
@@ -42,6 +43,7 @@ class OcrResultOverlayView(
   private val onTargetSelected: (OcrTapSelection) -> Unit,
   private val onWordNavigationRequested: (OcrTapSelection) -> Unit,
   private val onTranslationRequested: (String, String) -> Unit,
+  private val onExplainRequested: (String, String, String) -> Unit,
   private val onSaveRequested: (String, Int?) -> Unit,
   private val onHanjaRequested: (String, String) -> String?,
   private val onRelatedKnownToggleRequested: (String, String, OverlayHanjaRelatedWord) -> Unit,
@@ -342,6 +344,7 @@ class OcrResultOverlayView(
   private val cardRect = RectF()
   private val saveButtonRect = RectF()
   private val translationButtonRect = RectF()
+  private val explainButtonRect = RectF()
   private val moreButtonRect = RectF()
   private val wordNavPreviousRect = RectF()
   private val wordNavNextRect = RectF()
@@ -466,6 +469,8 @@ class OcrResultOverlayView(
       translation = null,
       translationSourceLanguage = null,
       translationTargetLanguage = null,
+      explanation = null,
+      explanationGloss = null,
       hanja = null,
       pos = null,
       romanization = null,
@@ -474,6 +479,8 @@ class OcrResultOverlayView(
       hanjaPreloads = emptyList(),
       showingTranslation = false,
       translationRequested = false,
+      showingExplanation = false,
+      explanationRequested = false,
       expandedAlternatives = false,
       savingAlternativeIndex = null,
       message = OverlayText.t("lookingUp")
@@ -516,6 +523,8 @@ class OcrResultOverlayView(
       translation = result.translation,
       translationSourceLanguage = result.translationSourceLanguage,
       translationTargetLanguage = result.translationTargetLanguage,
+      explanation = result.explanation ?: currentCard.explanation,
+      explanationGloss = result.explanationGloss ?: currentCard.explanationGloss,
       hanja = result.hanja,
       pos = result.pos,
       romanization = result.romanization,
@@ -524,6 +533,8 @@ class OcrResultOverlayView(
       hanjaPreloads = result.hanjaPreloads,
       showingTranslation = currentCard.showingTranslation,
       translationRequested = currentCard.translationRequested || !result.translation.isNullOrBlank(),
+      showingExplanation = currentCard.showingExplanation,
+      explanationRequested = currentCard.explanationRequested || !result.explanation.isNullOrBlank(),
       expandedAlternatives = currentCard.expandedAlternatives,
       savingAlternativeIndex = currentCard.savingAlternativeIndex,
       message = if (currentCard.state == LookupCardState.SAVING) currentCard.message else null
@@ -990,6 +1001,7 @@ class OcrResultOverlayView(
         lookupCard = card.copy(
           showingTranslation = shouldShowTranslation,
           translationRequested = card.translationRequested || shouldRequestTranslation,
+          showingExplanation = false,
           expandedAlternatives = false
         )
         isLookupExpanded = false
@@ -1002,6 +1014,27 @@ class OcrResultOverlayView(
         }
         return true
       }
+      if (explainButtonRect.contains(event.x, event.y) && card.state == LookupCardState.LOADED) {
+        val shouldShowExplanation = !card.showingExplanation
+        val shouldRequestExplanation = shouldShowExplanation &&
+          card.explanation.isNullOrBlank() &&
+          !card.explanationRequested
+        lookupCard = card.copy(
+          showingExplanation = shouldShowExplanation,
+          explanationRequested = card.explanationRequested || shouldRequestExplanation,
+          showingTranslation = false,
+          expandedAlternatives = false
+        )
+        isLookupExpanded = false
+        resetLookupPanelGesture()
+        resetRootCarouselGesture()
+        hanjaPopup = null
+        invalidate()
+        if (shouldRequestExplanation) {
+          onExplainRequested(card.requestId, explainWordForCard(card), explainSentenceForCard(card))
+        }
+        return true
+      }
       if (saveButtonRect.contains(event.x, event.y) && card.canToggleSave) {
         onSaveRequested(card.requestId, null)
         return true
@@ -1009,7 +1042,7 @@ class OcrResultOverlayView(
       if (cardRect.contains(event.x, event.y)) {
         return true
       }
-      if (card.showingTranslation) {
+      if (card.showingTranslation || card.showingExplanation) {
         closeLookupPanel()
         return true
       }
@@ -1203,6 +1236,7 @@ class OcrResultOverlayView(
   private fun canExpandLookup(card: LookupCard?): Boolean =
     card != null &&
       !card.showingTranslation &&
+      !card.showingExplanation &&
       card.state == LookupCardState.LOADED &&
       card.hasRootCharacters
 
@@ -1439,6 +1473,7 @@ class OcrResultOverlayView(
     relatedKnownRects.clear()
     rootSeeMoreRects.clear()
     translationButtonRect.setEmpty()
+    explainButtonRect.setEmpty()
     moreButtonRect.setEmpty()
     wordNavPreviousRect.setEmpty()
     wordNavNextRect.setEmpty()
@@ -1474,7 +1509,16 @@ class OcrResultOverlayView(
     val headingBottom = drawLookupHeading(canvas, card, contentLeft, contentRight)
     if (card.showingTranslation) {
       drawDictionaryTranslationSheet(canvas, card, contentLeft, contentRight, headingBottom + dp(14f))
-      drawSheetActionRow(canvas, card, activeTranslation = true)
+      drawSheetActionRow(canvas, card)
+      if (topPlacement) {
+        drawSheetHandle(canvas, atBottom = true, canExpand = false)
+      }
+      return
+    }
+
+    if (card.showingExplanation) {
+      drawDictionaryExplanationSheet(canvas, card, contentLeft, contentRight, headingBottom + dp(14f))
+      drawSheetActionRow(canvas, card)
       if (topPlacement) {
         drawSheetHandle(canvas, atBottom = true, canExpand = false)
       }
@@ -1493,7 +1537,7 @@ class OcrResultOverlayView(
       drawRootCharacters(canvas, card, contentLeft, contentRight, y + dp(10f))
     }
 
-    drawSheetActionRow(canvas, card, activeTranslation = false)
+    drawSheetActionRow(canvas, card)
     if (topPlacement) {
       drawSheetHandle(canvas, atBottom = true, canExpand = canExpandLookup(card))
     }
@@ -1523,6 +1567,7 @@ class OcrResultOverlayView(
 
     val desired = when {
       card.showingTranslation -> dp(DICTIONARY_TRANSLATION_HEIGHT_DP)
+      card.showingExplanation -> dp(DICTIONARY_EXPLANATION_HEIGHT_DP)
       card.state == LookupCardState.LOADING || card.state == LookupCardState.SAVING -> dp(DICTIONARY_COMPACT_HEIGHT_DP)
       card.expandedAlternatives -> dp(236f) + alternativeCount * alternativeRowHeight()
       isLookupExpanded && canExpandLookup(card) -> dp(DICTIONARY_EXPANDED_MAX_HEIGHT_DP)
@@ -1819,6 +1864,42 @@ class OcrResultOverlayView(
     }
   }
 
+  private fun drawDictionaryExplanationSheet(
+    canvas: Canvas,
+    card: LookupCard,
+    contentLeft: Float,
+    contentRight: Float,
+    top: Float
+  ) {
+    val titleBaseline = top + dp(13f)
+    canvas.drawText(OverlayText.t("whatItMeansHere").uppercase(), contentLeft, titleBaseline, eyebrowPaint)
+    val explanation = card.explanation?.trim().orEmpty()
+    if (explanation.isBlank() && card.explanationRequested) {
+      drawTranslationLoadingBody(canvas, contentLeft, contentRight, titleBaseline + dp(14f))
+      return
+    }
+
+    var y = titleBaseline + dp(33f)
+    val gloss = card.explanationGloss?.trim().orEmpty()
+    if (gloss.isNotEmpty()) {
+      cardBodyPaint.typeface = englishMediumTypeface
+      cardBodyPaint.color = Color.rgb(27, 28, 28)
+      wrapText(gloss, cardBodyPaint, contentRight - contentLeft, maxLines = 2).forEach { line ->
+        canvas.drawText(line, contentLeft, y, cardBodyPaint)
+        y += dp(24f)
+      }
+      cardBodyPaint.typeface = englishRegularTypeface
+      cardBodyPaint.color = Color.rgb(68, 71, 75)
+      y += dp(4f)
+    }
+
+    val body = explanation.ifBlank { OverlayText.t("explainFailed") }
+    wrapText(body, cardBodyPaint, contentRight - contentLeft, maxLines = 7).forEach { line ->
+      canvas.drawText(line, contentLeft, y, cardBodyPaint)
+      y += dp(24f)
+    }
+  }
+
   private fun drawRegionTranslationSheet(
     canvas: Canvas,
     card: LookupCard,
@@ -2108,42 +2189,179 @@ class OcrResultOverlayView(
     canvas.drawLine(centerX, centerY + dp(2f), centerX + dp(4f), centerY - dp(2f), iconPaint)
   }
 
-  private fun drawSheetActionRow(canvas: Canvas, card: LookupCard, activeTranslation: Boolean) {
+  private fun drawSheetActionRow(canvas: Canvas, card: LookupCard) {
     val contentLeft = cardRect.left + dp(24f)
     val contentRight = cardRect.right - dp(24f)
     val height = dp(46f)
     val bottomPadding = if (lookupPanelPlacement == LookupPanelPlacement.TOP) dp(52f) else dp(26f)
     val top = cardRect.bottom - bottomPadding - height
     val gap = dp(10f)
-    val buttonWidth = (contentRight - contentLeft - gap) / 2f
-    saveButtonRect.set(contentLeft, top, contentLeft + buttonWidth, top + height)
-    translationButtonRect.set(saveButtonRect.right + gap, top, contentRight, top + height)
 
-    val saved = card.saved && card.definition?.isNotBlank() == true
-    if (saved) {
-      buttonPaint.color = Color.rgb(32, 38, 49)
-      canvas.drawRoundRect(saveButtonRect, dp(3f), dp(3f), buttonPaint)
-    } else {
-      secondaryButtonPaint.color = Color.WHITE
-      canvas.drawRoundRect(saveButtonRect, dp(3f), dp(3f), secondaryButtonPaint)
-      canvas.drawRoundRect(saveButtonRect, dp(3f), dp(3f), buttonStrokePaint)
+    saveButtonRect.setEmpty()
+    explainButtonRect.setEmpty()
+    translationButtonRect.setEmpty()
+
+    // Mirror the reader action row: Save | Meaning | Translate. Save hides while
+    // the explanation sheet is open, Meaning hides while the translation is open.
+    val showSave = !card.showingExplanation
+    val showExplain = !card.showingTranslation
+    val buttonCount = 1 + (if (showSave) 1 else 0) + (if (showExplain) 1 else 0)
+    val buttonWidth = (contentRight - contentLeft - gap * (buttonCount - 1)) / buttonCount
+    var cursor = contentLeft
+
+    if (showSave) {
+      saveButtonRect.set(cursor, top, cursor + buttonWidth, top + height)
+      cursor = saveButtonRect.right + gap
     }
-    secondaryButtonPaint.color = if (activeTranslation) Color.rgb(240, 237, 237) else Color.WHITE
+    if (showExplain) {
+      explainButtonRect.set(cursor, top, cursor + buttonWidth, top + height)
+      cursor = explainButtonRect.right + gap
+    }
+    translationButtonRect.set(cursor, top, contentRight, top + height)
+
+    if (showSave) {
+      val saved = card.saved && card.definition?.isNotBlank() == true
+      if (saved) {
+        buttonPaint.color = Color.rgb(32, 38, 49)
+        canvas.drawRoundRect(saveButtonRect, dp(3f), dp(3f), buttonPaint)
+      } else {
+        secondaryButtonPaint.color = Color.WHITE
+        canvas.drawRoundRect(saveButtonRect, dp(3f), dp(3f), secondaryButtonPaint)
+        canvas.drawRoundRect(saveButtonRect, dp(3f), dp(3f), buttonStrokePaint)
+      }
+      val saveTextColor = if (saved) Color.WHITE else Color.rgb(32, 38, 49)
+      val saveLabel = if (saved) OverlayText.t("saved").uppercase() else OverlayText.t("save").uppercase()
+      val saveIconSize = dp(10f)
+      val saveGroupLeft = actionGroupLeft(saveButtonRect, saveLabel, saveIconSize)
+      drawActionBookmark(canvas, saveGroupLeft + saveIconSize / 2f, saveButtonRect.centerY(), saved, saveTextColor)
+      drawActionLabel(
+        canvas,
+        saveLabel,
+        saveGroupLeft + saveIconSize + dp(6f) + secondaryButtonTextPaint.measureText(saveLabel) / 2f,
+        saveButtonRect.centerY(),
+        saveTextColor
+      )
+    }
+
+    if (showExplain) {
+      secondaryButtonPaint.color = if (card.showingExplanation) Color.rgb(240, 237, 237) else Color.WHITE
+      canvas.drawRoundRect(explainButtonRect, dp(3f), dp(3f), secondaryButtonPaint)
+      secondaryButtonPaint.color = Color.WHITE
+      canvas.drawRoundRect(explainButtonRect, dp(3f), dp(3f), buttonStrokePaint)
+      val meaningLabel = OverlayText.t("smartDefinition").uppercase()
+      val meaningIconSize = dp(13f)
+      val meaningGroupLeft = actionGroupLeft(explainButtonRect, meaningLabel, meaningIconSize)
+      drawSparkleIcon(
+        canvas,
+        meaningGroupLeft + meaningIconSize / 2f,
+        explainButtonRect.centerY(),
+        meaningIconSize,
+        Color.rgb(32, 38, 49)
+      )
+      drawActionLabel(
+        canvas,
+        meaningLabel,
+        meaningGroupLeft + meaningIconSize + dp(6f) + secondaryButtonTextPaint.measureText(meaningLabel) / 2f,
+        explainButtonRect.centerY(),
+        Color.rgb(32, 38, 49)
+      )
+    }
+
+    secondaryButtonPaint.color = if (card.showingTranslation) Color.rgb(240, 237, 237) else Color.WHITE
     canvas.drawRoundRect(translationButtonRect, dp(3f), dp(3f), secondaryButtonPaint)
     secondaryButtonPaint.color = Color.WHITE
     canvas.drawRoundRect(translationButtonRect, dp(3f), dp(3f), buttonStrokePaint)
-
-    val saveTextColor = if (saved) Color.WHITE else Color.rgb(32, 38, 49)
-    val saveLabel = if (saved) OverlayText.t("saved").uppercase() else OverlayText.t("save").uppercase()
-    drawActionBookmark(canvas, saveButtonRect.left + saveButtonRect.width() / 2f - dp(30f), saveButtonRect.centerY(), saved, saveTextColor)
-    drawActionLabel(canvas, saveLabel, saveButtonRect.centerX() + dp(8f), saveButtonRect.centerY(), saveTextColor)
+    val translateLabel = if (card.showingTranslation) {
+      OverlayText.t("dictionary").uppercase()
+    } else {
+      OverlayText.t("translate").uppercase()
+    }
+    val translateIconSize = dp(13f)
+    val translateGroupLeft = actionGroupLeft(translationButtonRect, translateLabel, translateIconSize)
+    val translateIconRect = RectF(
+      translateGroupLeft,
+      translationButtonRect.centerY() - translateIconSize / 2f,
+      translateGroupLeft + translateIconSize,
+      translationButtonRect.centerY() + translateIconSize / 2f
+    )
+    if (card.showingTranslation) {
+      drawBookGlyph(canvas, translateIconRect, Color.rgb(32, 38, 49))
+    } else {
+      drawTranslateGlyph(canvas, translateIconRect, Color.rgb(32, 38, 49))
+    }
     drawActionLabel(
       canvas,
-      if (activeTranslation) OverlayText.t("dictionary").uppercase() else OverlayText.t("translate").uppercase(),
-      translationButtonRect.centerX(),
+      translateLabel,
+      translateGroupLeft + translateIconSize + dp(6f) + secondaryButtonTextPaint.measureText(translateLabel) / 2f,
       translationButtonRect.centerY(),
       Color.rgb(32, 38, 49)
     )
+  }
+
+  private fun actionGroupLeft(rect: RectF, label: String, iconSize: Float): Float {
+    val labelWidth = secondaryButtonTextPaint.measureText(label)
+    val groupWidth = iconSize + dp(6f) + labelWidth
+    return (rect.centerX() - groupWidth / 2f).coerceAtLeast(rect.left + dp(6f))
+  }
+
+  private fun drawSparkleIcon(canvas: Canvas, centerX: Float, centerY: Float, size: Float, color: Int) {
+    // Material Icons "auto-awesome" (24x24 viewBox): large center sparkle + two small sparkles.
+    bookmarkPath.reset()
+    // Top-right sparkle
+    bookmarkPath.moveTo(19f, 9f)
+    bookmarkPath.lineTo(20.25f, 6.25f)
+    bookmarkPath.lineTo(23f, 5f)
+    bookmarkPath.lineTo(20.25f, 3.75f)
+    bookmarkPath.lineTo(19f, 1f)
+    bookmarkPath.lineTo(17.75f, 3.75f)
+    bookmarkPath.lineTo(15f, 5f)
+    bookmarkPath.lineTo(17.75f, 6.25f)
+    bookmarkPath.close()
+    // Large center sparkle
+    bookmarkPath.moveTo(11.5f, 9.5f)
+    bookmarkPath.lineTo(9f, 4f)
+    bookmarkPath.lineTo(6.5f, 9.5f)
+    bookmarkPath.lineTo(1f, 12f)
+    bookmarkPath.lineTo(6.5f, 14.5f)
+    bookmarkPath.lineTo(9f, 20f)
+    bookmarkPath.lineTo(11.5f, 14.5f)
+    bookmarkPath.lineTo(17f, 12f)
+    bookmarkPath.close()
+    // Bottom-right sparkle
+    bookmarkPath.moveTo(19f, 15f)
+    bookmarkPath.lineTo(17.75f, 17.75f)
+    bookmarkPath.lineTo(15f, 19f)
+    bookmarkPath.lineTo(17.75f, 20.25f)
+    bookmarkPath.lineTo(19f, 23f)
+    bookmarkPath.lineTo(20.25f, 20.25f)
+    bookmarkPath.lineTo(23f, 19f)
+    bookmarkPath.lineTo(20.25f, 17.75f)
+    bookmarkPath.close()
+
+    bookmarkPaint.color = color
+    bookmarkPaint.style = Paint.Style.FILL
+    val saveCount = canvas.save()
+    canvas.translate(centerX - size / 2f, centerY - size / 2f)
+    canvas.scale(size / 24f, size / 24f)
+    canvas.drawPath(bookmarkPath, bookmarkPaint)
+    canvas.restoreToCount(saveCount)
+  }
+
+  private fun drawBookGlyph(canvas: Canvas, rect: RectF, color: Int) {
+    val previousColor = iconPaint.color
+    val previousStyle = iconPaint.style
+    val previousStrokeWidth = iconPaint.strokeWidth
+    iconPaint.color = color
+    iconPaint.style = Paint.Style.STROKE
+    iconPaint.strokeWidth = dp(1.4f)
+
+    val bookRect = RectF(rect.left, rect.top + dp(1.5f), rect.right, rect.bottom - dp(1.5f))
+    canvas.drawRoundRect(bookRect, dp(1.5f), dp(1.5f), iconPaint)
+    canvas.drawLine(rect.centerX(), bookRect.top, rect.centerX(), bookRect.bottom, iconPaint)
+
+    iconPaint.color = previousColor
+    iconPaint.style = previousStyle
+    iconPaint.strokeWidth = previousStrokeWidth
   }
 
   private fun drawActionLabel(canvas: Canvas, label: String, centerX: Float, centerY: Float, color: Int) {
@@ -2946,6 +3164,8 @@ class OcrResultOverlayView(
       translation = null,
       translationSourceLanguage = null,
       translationTargetLanguage = null,
+      explanation = null,
+      explanationGloss = null,
       hanja = null,
       pos = null,
       romanization = null,
@@ -2954,6 +3174,8 @@ class OcrResultOverlayView(
       hanjaPreloads = emptyList(),
       showingTranslation = true,
       translationRequested = true,
+      showingExplanation = false,
+      explanationRequested = false,
       expandedAlternatives = false,
       savingAlternativeIndex = null,
       message = null
@@ -3118,6 +3340,8 @@ class OcrResultOverlayView(
       translation = null,
       translationSourceLanguage = null,
       translationTargetLanguage = null,
+      explanation = null,
+      explanationGloss = null,
       hanja = null,
       pos = null,
       romanization = null,
@@ -3126,6 +3350,8 @@ class OcrResultOverlayView(
       hanjaPreloads = emptyList(),
       showingTranslation = false,
       translationRequested = false,
+      showingExplanation = false,
+      explanationRequested = false,
       expandedAlternatives = false,
       savingAlternativeIndex = null,
       message = OverlayText.t("lookingUp")
@@ -3162,6 +3388,14 @@ class OcrResultOverlayView(
       }
     } else {
       card.stem.ifBlank { card.surface.ifBlank { card.selection.selectedText } }
+    }
+
+  private fun explainWordForCard(card: LookupCard): String =
+    card.stem.ifBlank { card.surface.ifBlank { card.selection.selectedText } }
+
+  private fun explainSentenceForCard(card: LookupCard): String =
+    card.sourceSentence.ifBlank {
+      card.selection.lineText.ifBlank { explainWordForCard(card) }
     }
 
   private fun splitLookupWords(text: String): List<String> {
@@ -3325,6 +3559,8 @@ private data class LookupCard(
   val translation: String?,
   val translationSourceLanguage: String?,
   val translationTargetLanguage: String?,
+  val explanation: String?,
+  val explanationGloss: String?,
   val hanja: String?,
   val pos: String?,
   val romanization: String?,
@@ -3333,6 +3569,8 @@ private data class LookupCard(
   val hanjaPreloads: List<OverlayHanjaPreload>,
   val showingTranslation: Boolean,
   val translationRequested: Boolean,
+  val showingExplanation: Boolean,
+  val explanationRequested: Boolean,
   val expandedAlternatives: Boolean,
   val savingAlternativeIndex: Int?,
   val message: String?

@@ -36,6 +36,9 @@ private const val PAGE_VIEW_TAG = "EpubPageView"
 // unfocused sentences sit at 22% opacity and focus shifts animate over 300ms.
 private const val FOCUS_DIM_ALPHA = 0.22f
 private const val FOCUS_TRANSITION_DURATION_MS = 300L
+// Shortened transition used while the reader is stepping rapidly through
+// sentences, so consecutive beam moves don't queue up behind slow animations.
+private const val FOCUS_TRANSITION_FAST_DURATION_MS = 140L
 // Slight second draw offset (dp) that emulates the focused sentence's heavier
 // font weight without re-laying out the text.
 private const val FOCUS_EMPHASIS_OFFSET_DP = 0.3f
@@ -121,6 +124,9 @@ class EpubPageView(context: Context) : View(context) {
   private var onEdgeAction: ((ReaderEdgeKind) -> Unit)? = null
   private var onFocusTextTapped: ((String, Int) -> Unit)? = null
   private var focusModeEnabled = false
+  // Set while the JS lookup panel is visible in focus mode; taps then dismiss
+  // the panel instead of moving the beam or selecting another word.
+  var focusPanelOpen = false
   private var focusRanges: List<FocusRange> = emptyList()
   private var previousFocusRanges: List<FocusRange> = emptyList()
   private var focusTransition = 1f
@@ -429,7 +435,7 @@ class EpubPageView(context: Context) : View(context) {
     canvas.restoreToCount(clipSave)
   }
 
-  fun setFocusHighlight(ranges: List<FocusRange>, animate: Boolean) {
+  fun setFocusHighlight(ranges: List<FocusRange>, animate: Boolean, fast: Boolean = false) {
     if (ranges == focusRanges) {
       return
     }
@@ -448,7 +454,7 @@ class EpubPageView(context: Context) : View(context) {
     focusRanges = ranges
     focusTransition = 0f
     focusAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-      duration = FOCUS_TRANSITION_DURATION_MS
+      duration = if (fast) FOCUS_TRANSITION_FAST_DURATION_MS else FOCUS_TRANSITION_DURATION_MS
       interpolator = PathInterpolator(0.25f, 0.1f, 0.25f, 1f)
       addUpdateListener { animator ->
         focusTransition = animator.animatedValue as Float
@@ -524,6 +530,15 @@ class EpubPageView(context: Context) : View(context) {
               isTapCandidate = false
               return true
             }
+          }
+
+          // While the lookup panel is open in focus mode, a tap anywhere on
+          // the reading surface only dismisses the panel — it must not move
+          // the beam or select a new word (mirrors paged-mode behavior).
+          if (focusModeEnabled && focusPanelOpen) {
+            clearSelectionFromTap()
+            isTapCandidate = false
+            return true
           }
 
           if (!focusModeEnabled && activeSelectionKind != null && activeSelectionRanges.isNotEmpty()) {

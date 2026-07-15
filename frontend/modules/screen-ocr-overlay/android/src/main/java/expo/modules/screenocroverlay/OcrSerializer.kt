@@ -72,6 +72,8 @@ data class OverlayLookupResult(
   val translation: String?,
   val translationSourceLanguage: String?,
   val translationTargetLanguage: String?,
+  val explanation: String?,
+  val explanationGloss: String?,
   val hanja: String?,
   val pos: String?,
   val romanization: String?,

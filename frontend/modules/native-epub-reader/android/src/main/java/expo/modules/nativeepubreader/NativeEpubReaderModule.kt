@@ -19,6 +19,7 @@ import androidx.recyclerview.widget.RecyclerView
 import androidx.viewpager2.widget.ViewPager2
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.exception.Exceptions
+import expo.modules.kotlin.functions.Queues
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.viewevent.EventDispatcher
@@ -146,6 +147,14 @@ class NativeEpubReaderModule : Module() {
       val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
       PdfDocumentExtractor(context).renderCover(options)
     }
+
+    // Imperative beam navigation for focus mode. Called directly from the JS
+    // arrow buttons so a sentence step doesn't need a React state round-trip
+    // through the focusNavToken prop (which re-renders the whole reader screen
+    // before the beam can move).
+    AsyncFunction("focusNav") { view: NativeEpubReaderView, direction: String ->
+      view.focusNav(direction)
+    }.runOnQueue(Queues.MAIN)
 
     View(NativeEpubReaderView::class) {
       Prop("bookManifest") { view: NativeEpubReaderView, manifest: Map<String, Any?> ->
@@ -378,6 +387,12 @@ private const val FOCUS_TOP_INSET_RATIO = 0.545f
 private const val FOCUS_BOTTOM_INSET_RATIO = 0.52f
 private const val FOCUS_SCROLL_DURATION_MS = 380L
 private const val FOCUS_PANEL_LIFT_DURATION_MS = 450L
+// Rapid stepping: when the next beam move arrives within this window of the
+// previous one, the scroll/highlight animations run at the fast durations so
+// navigation keeps pace with the reader's taps instead of queueing behind
+// full-length animations.
+private const val FOCUS_RAPID_NAV_WINDOW_MS = 450L
+private const val FOCUS_SCROLL_FAST_DURATION_MS = 180L
 
 // Continuous (vertical scroll) mode: scroll-progress events are debounced so a
 // fling emits one event when it settles, and a chapter transition needs a
@@ -578,6 +593,7 @@ class NativeEpubReaderView(
   private var focusSpanCount = 1
   private var focusSwipeEnabled = false
   private var lastFocusNavToken: String? = null
+  private var lastFocusMoveAtMs = 0L
   private var focusPanelLiftPx = 0f
   private var focusScrollAnimator: ValueAnimator? = null
   private var suppressContinuousScrollEvents = false
@@ -881,6 +897,7 @@ class NativeEpubReaderView(
     chapterTransitionDirection = "none"
     clearActiveSelection(dispatchEvent = false)
     focusScrollAnimator?.cancel()
+    continuousPageView.focusPanelOpen = false
     continuousScrollView.swipeNavigationEnabled = isFocusMode() && focusSwipeEnabled
     continuousScrollView.edgePullEnabled = readerRenderMode == "continuous"
     updateFocusLift(animated = false)
@@ -1754,14 +1771,14 @@ class NativeEpubReaderView(
     focusTo(index, animate = true)
   }
 
-  private fun focusTo(index: Int, animate: Boolean) {
+  private fun focusTo(index: Int, animate: Boolean, fast: Boolean = false) {
     if (focusSentences.isEmpty()) {
       return
     }
 
     focusIndex = index.coerceIn(0, focusSentences.lastIndex)
-    applyFocusHighlightToView(animate)
-    anchorScrollToFocus(animated = animate)
+    applyFocusHighlightToView(animate, fast)
+    anchorScrollToFocus(animated = animate, fast = fast)
     dispatchFocusState()
     dispatchFocusPageChange()
   }
@@ -1782,11 +1799,22 @@ class NativeEpubReaderView(
       return
     }
 
+    val now = SystemClock.uptimeMillis()
+    val rapid = now - lastFocusMoveAtMs < FOCUS_RAPID_NAV_WINDOW_MS
+    lastFocusMoveAtMs = now
+
     clearActiveSelection(dispatchEvent = true, forceEvent = true)
-    focusTo(next, animate = true)
+    focusTo(next, animate = true, fast = rapid)
   }
 
-  private fun applyFocusHighlightToView(animate: Boolean) {
+  fun focusNav(direction: String) {
+    when (direction.lowercase()) {
+      "next" -> moveFocus(1)
+      "prev", "previous" -> moveFocus(-1)
+    }
+  }
+
+  private fun applyFocusHighlightToView(animate: Boolean, fast: Boolean = false) {
     if (focusSentences.isEmpty()) {
       continuousPageView.setFocusHighlight(emptyList(), animate = false)
       return
@@ -1797,10 +1825,10 @@ class NativeEpubReaderView(
     val ranges = focusSentences.subList(start, end).map { sentence ->
       FocusRange(sentence.blockId, sentence.startOffset, sentence.endOffset)
     }
-    continuousPageView.setFocusHighlight(ranges, animate)
+    continuousPageView.setFocusHighlight(ranges, animate, fast)
   }
 
-  private fun anchorScrollToFocus(animated: Boolean) {
+  private fun anchorScrollToFocus(animated: Boolean, fast: Boolean = false) {
     val sentence = focusSentences.getOrNull(focusIndex) ?: return
     val contentHeight = continuousPageView.layoutParams?.height ?: 0
     val maxScroll = (contentHeight - layoutHeight).coerceAtLeast(0)
@@ -1822,7 +1850,7 @@ class NativeEpubReaderView(
     }
 
     focusScrollAnimator = ValueAnimator.ofInt(from, target).apply {
-      duration = FOCUS_SCROLL_DURATION_MS
+      duration = if (fast) FOCUS_SCROLL_FAST_DURATION_MS else FOCUS_SCROLL_DURATION_MS
       interpolator = PathInterpolator(0.33f, 1f, 0.68f, 1f)
       addUpdateListener { animator ->
         continuousScrollView.scrollTo(0, animator.animatedValue as Int)
@@ -1910,6 +1938,7 @@ class NativeEpubReaderView(
 
   fun setFocusPanelHeight(heightDp: Double) {
     val nextLiftPx = (heightDp * resources.displayMetrics.density).toFloat().coerceAtLeast(0f)
+    continuousPageView.focusPanelOpen = isFocusMode() && nextLiftPx > 0f
     if (focusPanelLiftPx == nextLiftPx) {
       return
     }

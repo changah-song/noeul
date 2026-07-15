@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { forwardRef } from 'react';
 import { Platform, Text, View } from 'react-native';
 import { requireNativeModule, requireNativeViewManager } from 'expo-modules-core';
 import { useTranslation } from '../../../hooks/useTranslation';
@@ -24,7 +24,17 @@ export const renderPdfCover = (options) => (
     NativeModule?.renderPdfCover(options) ?? androidOnly()
 );
 
-const NativeEpubReaderView = ({
+// Imperative focus-mode beam navigation. Stepping through the focusNavToken
+// prop re-renders the whole reader screen per step; this calls straight into
+// the native view (looked up by its tag). The flag lets callers fall back to
+// the token prop when running against an older native binary.
+export const supportsImperativeFocusNav = typeof NativeModule?.focusNav === 'function';
+
+export const sendFocusNavCommand = (viewTag, direction) => (
+    NativeModule?.focusNav?.(viewTag, direction) ?? androidOnly()
+);
+
+const NativeEpubReaderView = forwardRef(({
     bookManifest,
     chapterBlocks,
     chapterResources,
@@ -54,7 +64,7 @@ const NativeEpubReaderView = ({
     onSelectionCleared,
     onFocusSentenceChange,
     style,
-}) => {
+}, ref) => {
     const { t } = useTranslation();
 
     if (!NativeView) {
@@ -99,6 +109,7 @@ const NativeEpubReaderView = ({
 
     return (
         <NativeView
+            ref={ref}
             style={style}
             bookManifest={bookManifest || {}}
             chapterBlocks={chapterBlocks || []}
@@ -130,6 +141,8 @@ const NativeEpubReaderView = ({
             onFocusSentenceChange={handleFocusSentenceChange}
         />
     );
-};
+});
+
+NativeEpubReaderView.displayName = 'NativeEpubReaderView';
 
 export default NativeEpubReaderView;

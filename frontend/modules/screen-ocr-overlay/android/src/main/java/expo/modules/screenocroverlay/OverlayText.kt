@@ -64,6 +64,7 @@ object OverlayText {
     "copy" to "Copy",
     "dictionary" to "Dictionary",
     "dismissFloatingOcr" to "Dismiss floating OCR",
+    "explainFailed" to "Couldn't load the explanation.",
     "floatingControllerUnavailable" to "Floating OCR controller is not available",
     "floatingOcr" to "Floating OCR",
     "floatingOcrActive" to "Floating OCR active",
@@ -111,13 +112,15 @@ object OverlayText {
     "screenCaptureSessionInactive" to "Screen capture session is no longer active",
     "seeMore" to "See more",
     "sentenceSelection" to "Sentence selection",
+    "smartDefinition" to "Meaning",
     "slideDownForRoots" to "⌄ Slide down for roots",
     "slideUpForRoots" to "⌃ Slide up for roots",
     "tapToMarkKnown" to "Tap ✓ to mark known",
     "textNotFound" to "No text found",
     "translate" to "Translate",
     "translating" to "Translating...",
-    "translation" to "Translation"
+    "translation" to "Translation",
+    "whatItMeansHere" to "What it means here"
   )
 
   private val KO = mapOf(
@@ -129,6 +132,7 @@ object OverlayText {
     "copy" to "복사",
     "dictionary" to "사전",
     "dismissFloatingOcr" to "플로팅 OCR 닫기",
+    "explainFailed" to "설명을 불러오지 못했습니다.",
     "floatingControllerUnavailable" to "플로팅 OCR 컨트롤러를 사용할 수 없습니다",
     "floatingOcr" to "플로팅 OCR",
     "floatingOcrActive" to "플로팅 OCR 활성화됨",
@@ -176,13 +180,15 @@ object OverlayText {
     "screenCaptureSessionInactive" to "화면 캡처 세션이 더 이상 활성화되어 있지 않습니다",
     "seeMore" to "더 보기",
     "sentenceSelection" to "문장 선택",
+    "smartDefinition" to "의미",
     "slideDownForRoots" to "⌄ 어근을 보려면 아래로 밀기",
     "slideUpForRoots" to "⌃ 어근을 보려면 위로 밀기",
     "tapToMarkKnown" to "✓를 눌러 아는 단어로 표시",
     "textNotFound" to "텍스트를 찾을 수 없습니다",
     "translate" to "번역",
     "translating" to "번역 중...",
-    "translation" to "번역"
+    "translation" to "번역",
+    "whatItMeansHere" to "여기서의 의미"
   )
 
   private val LANGUAGE_NAMES = mapOf(

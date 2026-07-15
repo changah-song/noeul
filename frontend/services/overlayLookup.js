@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 
 import {
+    addOverlayExplainRequestedListener,
     addOverlayHanjaRequestedListener,
     addOverlayLookupRequestedListener,
     addOverlayRelatedKnownToggleRequestedListener,
@@ -15,6 +16,7 @@ import {
     resolveOverlayHanja,
     updateOverlayLookup,
 } from '../modules/screen-ocr-overlay/src';
+import { explainInContext } from './api/explainInContext';
 import { fetchHanjaRelated } from './api/hanjaRelated';
 import { translateText } from './api/googleTranslate';
 import { addRelatedKnownWord, getRelatedKnownWords, removeRelatedKnownWord } from './Database';
@@ -542,6 +544,37 @@ export const initializeOverlayLookupBridge = () => {
         }
     });
 
+    const explainSubscription = addOverlayExplainRequestedListener(async (event = {}) => {
+        const requestId = cleanValue(event.requestId);
+        const word = cleanValue(event.word);
+        const sentence = cleanValue(event.sentence);
+
+        if (!requestId || !word) {
+            return;
+        }
+
+        try {
+            const response = await explainInContext({
+                word,
+                sentence: sentence || word,
+                language: getRuntimeTargetLanguage(),
+                interfaceLanguage: getRuntimeInterfaceLanguage(),
+            });
+            const explanation = cleanValue(response?.explanation);
+            await updateOverlayLookup(requestId, {
+                requestId,
+                explanation: explanation || tRuntime('lookup.explainFailed'),
+                explanationGloss: cleanValue(response?.gloss),
+            });
+        } catch (error) {
+            console.warn(`[overlayLookup] explanation failed for "${word}":`, error?.message ?? error);
+            await updateOverlayLookup(requestId, {
+                requestId,
+                explanation: error?.message || tRuntime('lookup.explainFailed'),
+            });
+        }
+    });
+
     const saveSubscription = addOverlaySaveRequestedListener(async (event = {}) => {
         const requestId = cleanValue(event.requestId);
 
@@ -623,6 +656,7 @@ export const initializeOverlayLookupBridge = () => {
         ocrResultSubscription,
         lookupSubscription,
         translationSubscription,
+        explainSubscription,
         saveSubscription,
         hanjaSubscription,
         relatedKnownSubscription,

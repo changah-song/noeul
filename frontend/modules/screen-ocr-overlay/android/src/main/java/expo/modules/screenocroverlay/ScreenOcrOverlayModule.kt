@@ -37,6 +37,7 @@ class ScreenOcrOverlayModule : Module() {
       "onOcrWordSelected",
       "onOverlayLookupRequested",
       "onOverlayTranslationRequested",
+      "onOverlayExplainRequested",
       "onOverlaySaveRequested",
       "onOverlayHanjaRequested",
       "onOverlayRelatedKnownToggleRequested",
@@ -283,6 +284,10 @@ class ScreenOcrOverlayModule : Module() {
 
     fun emitOverlayTranslationRequested(body: Map<String, Any?>) {
       emit("onOverlayTranslationRequested", body)
+    }
+
+    fun emitOverlayExplainRequested(body: Map<String, Any?>) {
+      emit("onOverlayExplainRequested", body)
     }
 
     fun emitOverlaySaveRequested(body: Map<String, Any?>) {

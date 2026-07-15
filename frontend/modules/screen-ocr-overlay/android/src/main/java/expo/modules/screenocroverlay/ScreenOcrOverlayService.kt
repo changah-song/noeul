@@ -60,6 +60,7 @@ class ScreenOcrOverlayService : Service() {
       onTargetSelected = ::handleTargetSelected,
       onWordNavigationRequested = ::handleTargetSelected,
       onTranslationRequested = ::handleTranslationRequested,
+      onExplainRequested = ::handleExplainRequested,
       onSaveRequested = ::handleSaveRequested,
       onHanjaRequested = ::handleHanjaRequested,
       onRelatedKnownToggleRequested = ::handleRelatedKnownToggleRequested,
@@ -139,8 +140,26 @@ class ScreenOcrOverlayService : Service() {
     cancelAnalysisRuns()
     clearLookupState()
     widgetController?.removeAll()
+    stopScreenCapture()
     emitStatus("floating_widget_hidden")
     return false
+  }
+
+  private fun stopScreenCapture() {
+    captureSession?.release()
+    captureSession = null
+
+    if (isForeground) {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        stopForeground(STOP_FOREGROUND_REMOVE)
+      } else {
+        @Suppress("DEPRECATION")
+        stopForeground(true)
+      }
+      isForeground = false
+    }
+
+    stopSelf()
   }
 
   fun analyzeCurrentScreenForPromise(promise: Promise) {
@@ -423,6 +442,8 @@ class ScreenOcrOverlayService : Service() {
         ?: currentResult?.translationSourceLanguage,
       translationTargetLanguage = nullableStringValue(result["translationTargetLanguage"])
         ?: currentResult?.translationTargetLanguage,
+      explanation = nullableStringValue(result["explanation"]) ?: currentResult?.explanation,
+      explanationGloss = nullableStringValue(result["explanationGloss"]) ?: currentResult?.explanationGloss,
       hanja = nullableStringValue(result["hanja"]) ?: currentResult?.hanja,
       pos = nullableStringValue(result["pos"]) ?: currentResult?.pos,
       romanization = nullableStringValue(result["romanization"]) ?: currentResult?.romanization,
@@ -679,6 +700,22 @@ class ScreenOcrOverlayService : Service() {
     emitStatus("overlay_translation_requested")
   }
 
+  private fun handleExplainRequested(requestId: String, word: String, sentence: String) {
+    val cleanedWord = word.trim()
+    if (cleanedWord.isBlank()) {
+      return
+    }
+
+    ScreenOcrOverlayModule.emitOverlayExplainRequested(
+      mapOf(
+        EXTRA_REQUEST_ID to requestId,
+        "word" to cleanedWord,
+        "sentence" to sentence.trim()
+      )
+    )
+    emitStatus("overlay_explain_requested")
+  }
+
   private fun sentenceLookupResult(requestId: String, query: String): OverlayLookupResult? {
     val sentence = query.trim()
     if (sentence.isBlank() || widgetController?.hasLookupCard(requestId) != true) {
@@ -693,6 +730,8 @@ class ScreenOcrOverlayService : Service() {
       translation = null,
       translationSourceLanguage = null,
       translationTargetLanguage = null,
+      explanation = null,
+      explanationGloss = null,
       hanja = null,
       pos = null,
       romanization = null,

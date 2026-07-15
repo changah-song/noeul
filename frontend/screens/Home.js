@@ -2594,7 +2594,12 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         try {
             if (isFloatingOcrActive) {
                 await stopFloatingWidget();
-                mergeOcrStatus({ analysisActive: false, floatingVisible: false, resultOverlayVisible: false });
+                mergeOcrStatus({
+                    screenCaptureActive: false,
+                    analysisActive: false,
+                    floatingVisible: false,
+                    resultOverlayVisible: false,
+                });
                 persistOcrSettings({ floatingPreferred: false });
                 setOcrMessage(t('home.ocrOff'));
                 return;
