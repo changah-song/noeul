@@ -61,6 +61,7 @@ class ScreenOcrOverlayService : Service() {
       onWordNavigationRequested = ::handleTargetSelected,
       onTranslationRequested = ::handleTranslationRequested,
       onExplainRequested = ::handleExplainRequested,
+      onExplainSaveRequested = ::handleExplainSaveRequested,
       onSaveRequested = ::handleSaveRequested,
       onHanjaRequested = ::handleHanjaRequested,
       onRelatedKnownToggleRequested = ::handleRelatedKnownToggleRequested,
@@ -858,6 +859,54 @@ class ScreenOcrOverlayService : Service() {
       )
     )
     emitStatus("overlay_save_requested")
+
+    val timeoutRunnable = Runnable {
+      if (pendingSaveRequestId != requestId) {
+        return@Runnable
+      }
+
+      pendingSaveRequestId = null
+      pendingSaveAlternativeIndex = null
+      widgetController?.showSaveError(requestId, OverlayText.t("saveTimedOut"))
+      emitStatus("overlay_save_timeout")
+    }
+    pendingSaveTimeoutRunnable = timeoutRunnable
+    mainHandler.postDelayed(timeoutRunnable, OVERLAY_SAVE_TIMEOUT_MS)
+  }
+
+  private fun handleExplainSaveRequested(requestId: String) {
+    val lookupResult = currentLookupResult?.takeIf { it.requestId == requestId }
+    if (lookupResult == null) {
+      widgetController?.showSaveError(requestId, OverlayText.t("lookupResultUnavailable"))
+      return
+    }
+
+    val saveWord = lookupResult.stem.ifBlank { lookupResult.surface }
+    val saveDefinition = lookupResult.explanationGloss?.trim().orEmpty()
+    if (saveWord.isBlank() || saveDefinition.isBlank()) {
+      widgetController?.showSaveError(requestId, OverlayText.t("noDefinitionToSave"))
+      return
+    }
+
+    clearPendingSaveTimeout()
+    pendingSaveRequestId = requestId
+    pendingSaveAlternativeIndex = null
+    widgetController?.showSaving(requestId, null)
+    ScreenOcrOverlayModule.emitOverlaySaveRequested(
+      mapOf(
+        EXTRA_REQUEST_ID to requestId,
+        "surface" to lookupResult.surface,
+        "stem" to saveWord,
+        "definition" to saveDefinition,
+        "hanja" to lookupResult.hanja,
+        "pos" to lookupResult.pos,
+        "romanization" to lookupResult.romanization,
+        "sourceSentence" to lookupResult.sourceSentence,
+        "alternativeIndex" to null,
+        "action" to if (lookupResult.saved) "unsave" else "save"
+      )
+    )
+    emitStatus("overlay_explain_save_requested")
 
     val timeoutRunnable = Runnable {
       if (pendingSaveRequestId != requestId) {

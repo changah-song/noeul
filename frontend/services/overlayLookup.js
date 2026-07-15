@@ -446,9 +446,13 @@ const getKnownRelatedWordKeys = async (sourceWord, knownWordCache = null) => {
 };
 
 const normalizeOverlayHanjaResult = async ({ requestId, character, sourceWord, result, knownWordCache = null }) => {
-    const readings = uniqueCleanValues((result?.firstTableData ?? []).map(row => row?.reading));
+    // Mirror the reader's HanjaDetails header: "바를 정" (Korean hun + reading)
+    // as the title line, with the interface-language meaning underneath.
+    const readings = uniqueCleanValues((result?.firstTableData ?? []).map(row => (
+        [cleanValue(row?.hun_korean), cleanValue(row?.reading)].filter(Boolean).join(' ')
+    )));
     const meanings = uniqueCleanValues((result?.firstTableData ?? []).map(row => (
-        row?.meaning || row?.hun_english || row?.hun_korean
+        row?.hun_display || row?.meaning || row?.hun_english
     )));
     const characters = uniqueCleanValues((result?.firstTableData ?? []).map(row => row?.hanja));
     const knownKeys = await getKnownRelatedWordKeys(sourceWord, knownWordCache);
@@ -475,7 +479,7 @@ const normalizeOverlayHanjaResult = async ({ requestId, character, sourceWord, r
     return {
         requestId,
         character: characters[0] || character,
-        meaning: meanings.length > 0 ? meanings.join('; ') : null,
+        meaning: meanings.length > 0 ? meanings.join(' · ') : null,
         sound: readings.length > 0 ? readings.join(' / ') : null,
         relatedWords,
     };

@@ -342,6 +342,7 @@ const DictionaryContent = ({
     onWordUnsave,
     onTranslatePress,
     onExpandedStateChange,
+    onExplainModeChange,
     onContentHeightChange,
     onCanExpandChange,
     isPanelExpanded = false,
@@ -587,9 +588,12 @@ const DictionaryContent = ({
         // count makes the parent size it to DICTIONARY_EXPANDED_MAX_HEIGHT) so the
         // gloss, save button, and longer explanation all have room.
         if (explainMode) {
+            onExplainModeChange?.(true);
             onExpandedStateChange?.(1);
             return;
         }
+
+        onExplainModeChange?.(false);
 
         if (translationMode) {
             onExpandedStateChange?.(-1);
@@ -621,7 +625,7 @@ const DictionaryContent = ({
         }, 0);
 
         onExpandedStateChange?.(Math.max(expandedCachedCount, expandedLiveCount));
-    }, [dictionaryData, expandedCached, expandedWords, explainMode, extraDefs, isPanelExpanded, onExpandedStateChange, stemWordList, translationMode]);
+    }, [dictionaryData, expandedCached, expandedWords, explainMode, extraDefs, isPanelExpanded, onExpandedStateChange, onExplainModeChange, stemWordList, translationMode]);
 
     const storeRomanizationPairs = useCallback((pairs) => {
         const normalizedPairs = (pairs || [])

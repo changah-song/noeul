@@ -44,6 +44,7 @@ class OcrResultOverlayView(
   private val onWordNavigationRequested: (OcrTapSelection) -> Unit,
   private val onTranslationRequested: (String, String) -> Unit,
   private val onExplainRequested: (String, String, String) -> Unit,
+  private val onExplainSaveRequested: (String) -> Unit,
   private val onSaveRequested: (String, Int?) -> Unit,
   private val onHanjaRequested: (String, String) -> String?,
   private val onRelatedKnownToggleRequested: (String, String, OverlayHanjaRelatedWord) -> Unit,
@@ -345,6 +346,8 @@ class OcrResultOverlayView(
   private val saveButtonRect = RectF()
   private val translationButtonRect = RectF()
   private val explainButtonRect = RectF()
+  private val explainSaveRect = RectF()
+  private val explainBodyRect = RectF()
   private val moreButtonRect = RectF()
   private val wordNavPreviousRect = RectF()
   private val wordNavNextRect = RectF()
@@ -376,6 +379,11 @@ class OcrResultOverlayView(
   private var rootCarouselStartX = 0f
   private var rootCarouselStartY = 0f
   private var rootCarouselDragX = 0f
+  private var explanationScrollOffset = 0f
+  private var explanationMaxScroll = 0f
+  private var explanationTouchStartY = 0f
+  private var explanationTouchLastY = 0f
+  private var isDraggingExplanation = false
   private var hanjaPopup: HanjaPopup? = null
   private var hanjaPopupTouchStartY = 0f
   private var hanjaPopupTouchLastY = 0f
@@ -409,6 +417,7 @@ class OcrResultOverlayView(
     rootRelatedVisibleCounts.clear()
     resetLookupPanelGesture()
     resetRootCarouselGesture()
+    resetExplanationScroll()
     hanjaPopup = null
     lastGeometryLogKey = ""
     invalidate()
@@ -424,6 +433,7 @@ class OcrResultOverlayView(
     rootRelatedVisibleCounts.clear()
     resetLookupPanelGesture()
     resetRootCarouselGesture()
+    resetExplanationScroll()
     hanjaPopup = null
     invalidate()
   }
@@ -442,6 +452,7 @@ class OcrResultOverlayView(
     rootRelatedVisibleCounts.clear()
     resetLookupPanelGesture()
     resetRootCarouselGesture()
+    resetExplanationScroll()
     hanjaPopup = null
     invalidate()
   }
@@ -454,6 +465,7 @@ class OcrResultOverlayView(
     rootRelatedVisibleCounts.clear()
     resetLookupPanelGesture()
     resetRootCarouselGesture()
+    resetExplanationScroll()
     val wordOptions = lookupWordOptionsFor(selection)
     val activeWordIndex = wordOptions.indexOf(selection.selectedText.trim()).takeIf { it >= 0 } ?: 0
     lookupCard = LookupCard(
@@ -856,6 +868,11 @@ class OcrResultOverlayView(
           hanjaPopupTouchLastY = event.y
           isDraggingHanjaPopup = false
         }
+        if (lookupCard?.showingExplanation == true && explainBodyRect.contains(event.x, event.y)) {
+          explanationTouchStartY = event.y
+          explanationTouchLastY = event.y
+          isDraggingExplanation = false
+        }
         return true
       }
       MotionEvent.ACTION_MOVE -> {
@@ -863,6 +880,21 @@ class OcrResultOverlayView(
           return true
         }
         if (handleLookupPanelGestureMove(event)) {
+          return true
+        }
+        if (
+          lookupCard?.showingExplanation == true &&
+          explanationMaxScroll > 0f &&
+          explainBodyRect.contains(event.x, event.y)
+        ) {
+          val dy = event.y - explanationTouchLastY
+          if (abs(event.y - explanationTouchStartY) > touchSlop) {
+            isDraggingExplanation = true
+          }
+          if (dy != 0f) {
+            scrollExplanationBy(-dy)
+          }
+          explanationTouchLastY = event.y
           return true
         }
         if (
@@ -952,6 +984,14 @@ class OcrResultOverlayView(
     }
 
     lookupCard?.let { card ->
+      if (isDraggingExplanation) {
+        isDraggingExplanation = false
+        return true
+      }
+      if (!explainSaveRect.isEmpty && explainSaveRect.contains(event.x, event.y)) {
+        onExplainSaveRequested(card.requestId)
+        return true
+      }
       if (wordNavPreviousRect.contains(event.x, event.y) && card.wordOptions.size > 1) {
         navigateLookupWord(card, -1)
         return true
@@ -1028,6 +1068,7 @@ class OcrResultOverlayView(
         isLookupExpanded = false
         resetLookupPanelGesture()
         resetRootCarouselGesture()
+        resetExplanationScroll()
         hanjaPopup = null
         invalidate()
         if (shouldRequestExplanation) {
@@ -1570,7 +1611,7 @@ class OcrResultOverlayView(
       card.showingExplanation -> dp(DICTIONARY_EXPLANATION_HEIGHT_DP)
       card.state == LookupCardState.LOADING || card.state == LookupCardState.SAVING -> dp(DICTIONARY_COMPACT_HEIGHT_DP)
       card.expandedAlternatives -> dp(236f) + alternativeCount * alternativeRowHeight()
-      isLookupExpanded && canExpandLookup(card) -> dp(DICTIONARY_EXPANDED_MAX_HEIGHT_DP)
+      isLookupExpanded && canExpandLookup(card) -> dp(DICTIONARY_EXPANDED_MAX_HEIGHT_DP) + rootCardExtraHeight(card)
       canExpandLookup(card) -> dp(DICTIONARY_COMPACT_HEIGHT_DP)
       card.definition.isNullOrBlank() -> dp(DICTIONARY_NO_ROOT_HEIGHT_DP)
       else -> dp(DICTIONARY_COMPACT_HEIGHT_DP)
@@ -1872,31 +1913,132 @@ class OcrResultOverlayView(
     top: Float
   ) {
     val titleBaseline = top + dp(13f)
-    canvas.drawText(OverlayText.t("whatItMeansHere").uppercase(), contentLeft, titleBaseline, eyebrowPaint)
     val explanation = card.explanation?.trim().orEmpty()
-    if (explanation.isBlank() && card.explanationRequested) {
+    val gloss = card.explanationGloss?.trim().orEmpty()
+    val loading = explanation.isBlank() && card.explanationRequested
+
+    explainSaveRect.setEmpty()
+    var eyebrowRight = contentRight
+    if (!loading && gloss.isNotEmpty()) {
+      // Save button (top-right) saves the AI gloss as the word's definition.
+      val saved = card.saved
+      val label = if (saved) OverlayText.t("saved").uppercase() else OverlayText.t("saveThis").uppercase()
+      val iconSize = dp(11f)
+      val pillPadding = dp(9f)
+      val labelWidth = secondaryButtonTextPaint.measureText(label)
+      val pillWidth = pillPadding * 2f + iconSize + dp(5f) + labelWidth
+      val pillHeight = dp(26f)
+      val pillTop = titleBaseline - dp(15f)
+      explainSaveRect.set(contentRight - pillWidth, pillTop, contentRight, pillTop + pillHeight)
+      if (saved) {
+        buttonPaint.color = Color.rgb(32, 38, 49)
+        canvas.drawRoundRect(explainSaveRect, dp(3f), dp(3f), buttonPaint)
+      } else {
+        secondaryButtonPaint.color = Color.WHITE
+        canvas.drawRoundRect(explainSaveRect, dp(3f), dp(3f), secondaryButtonPaint)
+        canvas.drawRoundRect(explainSaveRect, dp(3f), dp(3f), buttonStrokePaint)
+      }
+      val textColor = if (saved) Color.WHITE else Color.rgb(32, 38, 49)
+      drawActionBookmark(canvas, explainSaveRect.left + pillPadding + iconSize / 2f, explainSaveRect.centerY(), saved, textColor)
+      // secondaryButtonTextPaint is center-aligned, so anchor the label at its center point.
+      drawActionLabel(
+        canvas,
+        label,
+        explainSaveRect.left + pillPadding + iconSize + dp(5f) + labelWidth / 2f,
+        explainSaveRect.centerY(),
+        textColor
+      )
+      eyebrowRight = explainSaveRect.left - dp(8f)
+    }
+
+    canvas.drawText(
+      ellipsize(OverlayText.t("whatItMeansHere").uppercase(), eyebrowPaint, (eyebrowRight - contentLeft).coerceAtLeast(dp(40f))),
+      contentLeft,
+      titleBaseline,
+      eyebrowPaint
+    )
+
+    if (loading) {
+      explanationMaxScroll = 0f
+      explainBodyRect.setEmpty()
       drawTranslationLoadingBody(canvas, contentLeft, contentRight, titleBaseline + dp(14f))
       return
     }
 
-    var y = titleBaseline + dp(33f)
-    val gloss = card.explanationGloss?.trim().orEmpty()
-    if (gloss.isNotEmpty()) {
+    val bottomPadding = if (lookupPanelPlacement == LookupPanelPlacement.TOP) dp(52f) else dp(26f)
+    val actionTop = cardRect.bottom - bottomPadding - dp(46f)
+    val bodyTop = titleBaseline + dp(16f)
+    val bodyBottom = (actionTop - dp(12f)).coerceAtLeast(bodyTop + dp(24f))
+    explainBodyRect.set(contentLeft, bodyTop, contentRight, bodyBottom)
+
+    val lineHeight = dp(24f)
+    val width = contentRight - contentLeft
+    val glossLines = if (gloss.isNotEmpty()) wrapText(gloss, cardBodyPaint, width, maxLines = 3) else emptyList()
+    val glossGap = if (glossLines.isNotEmpty()) dp(8f) else 0f
+    val bodyText = explanation.ifBlank { OverlayText.t("explainFailed") }
+    val explanationLines = wrapText(bodyText, cardBodyPaint, width, maxLines = 60)
+
+    val contentHeight = glossLines.size * lineHeight + glossGap + explanationLines.size * lineHeight
+    val viewport = bodyBottom - bodyTop
+    explanationMaxScroll = (contentHeight - viewport).coerceAtLeast(0f)
+    explanationScrollOffset = explanationScrollOffset.coerceIn(0f, explanationMaxScroll)
+
+    canvas.save()
+    canvas.clipRect(explainBodyRect)
+    var y = bodyTop - explanationScrollOffset + dp(16f)
+    if (glossLines.isNotEmpty()) {
       cardBodyPaint.typeface = englishMediumTypeface
       cardBodyPaint.color = Color.rgb(27, 28, 28)
-      wrapText(gloss, cardBodyPaint, contentRight - contentLeft, maxLines = 2).forEach { line ->
+      glossLines.forEach { line ->
         canvas.drawText(line, contentLeft, y, cardBodyPaint)
-        y += dp(24f)
+        y += lineHeight
       }
       cardBodyPaint.typeface = englishRegularTypeface
       cardBodyPaint.color = Color.rgb(68, 71, 75)
-      y += dp(4f)
+      y += glossGap
     }
-
-    val body = explanation.ifBlank { OverlayText.t("explainFailed") }
-    wrapText(body, cardBodyPaint, contentRight - contentLeft, maxLines = 7).forEach { line ->
+    explanationLines.forEach { line ->
       canvas.drawText(line, contentLeft, y, cardBodyPaint)
-      y += dp(24f)
+      y += lineHeight
+    }
+    canvas.restore()
+
+    if (explanationMaxScroll > 0f) {
+      drawScrollHint(canvas, explainBodyRect, explanationScrollOffset, explanationMaxScroll)
+    }
+  }
+
+  private fun drawScrollHint(canvas: Canvas, bounds: RectF, scrollOffset: Float, maxScroll: Float) {
+    val trackRight = bounds.right + dp(6f)
+    val trackTop = bounds.top + dp(2f)
+    val trackBottom = bounds.bottom - dp(2f)
+    val trackHeight = (trackBottom - trackTop).coerceAtLeast(dp(24f))
+    val thumbHeight = (trackHeight * 0.32f).coerceAtLeast(dp(18f))
+    val progress = (scrollOffset / maxScroll).coerceIn(0f, 1f)
+    val thumbTop = trackTop + (trackHeight - thumbHeight) * progress
+    val thumbRect = RectF(trackRight - dp(2.5f), thumbTop, trackRight, thumbTop + thumbHeight)
+    val previousColor = dividerPaint.color
+    dividerPaint.color = Color.rgb(210, 208, 208)
+    dividerPaint.style = Paint.Style.FILL
+    canvas.drawRoundRect(thumbRect, dp(1.5f), dp(1.5f), dividerPaint)
+    dividerPaint.style = Paint.Style.STROKE
+    dividerPaint.color = previousColor
+  }
+
+  private fun resetExplanationScroll() {
+    explanationScrollOffset = 0f
+    explanationMaxScroll = 0f
+    isDraggingExplanation = false
+  }
+
+  private fun scrollExplanationBy(delta: Float) {
+    if (explanationMaxScroll <= 0f) {
+      return
+    }
+    val next = (explanationScrollOffset + delta).coerceIn(0f, explanationMaxScroll)
+    if (abs(next - explanationScrollOffset) > 0.5f) {
+      explanationScrollOffset = next
+      invalidate()
     }
   }
 
@@ -2027,25 +2169,24 @@ class OcrResultOverlayView(
     canvas.drawText(character, tileRect.centerX() - popupTitlePaint.measureText(character) / 2f, tileRect.centerY() - (popupTitlePaint.ascent() + popupTitlePaint.descent()) / 2f, popupTitlePaint)
 
     val textLeft = tileRect.right + dp(12f)
-    canvas.drawText(OverlayText.t("meaning").uppercase(), textLeft, rect.top + dp(25f), eyebrowPaint)
-    val meaning = preload?.meaning?.trim().orEmpty().ifBlank { OverlayText.t("hanjaDetails") }
-    val meaningPaint = relatedKoreanPaint
-    meaningPaint.typeface = englishBoldTypeface
-    meaningPaint.textSize = dp(14f)
-    meaningPaint.color = Color.rgb(27, 28, 28)
-    canvas.drawText(ellipsize(meaning, meaningPaint, rect.right - textLeft - dp(12f)), textLeft, rect.top + dp(45f), meaningPaint)
-    meaningPaint.typeface = koreanRegularTypeface
-    meaningPaint.textSize = dp(15f)
+    val textMaxWidth = rect.right - textLeft - dp(12f)
+    // Match the reader's HanjaDetails header: MEANING eyebrow, then the Korean
+    // definition + reading ("바를 정"), then the interface-language meaning.
+    val reading = preload?.sound?.trim().orEmpty().ifBlank { OverlayText.t("hanja") }
+    val meaning = preload?.meaning?.trim().orEmpty().ifBlank { OverlayText.t("noHanjaDetailsFound") }
+    canvas.drawText(OverlayText.t("meaning").uppercase(), textLeft, rect.top + dp(23f), eyebrowPaint)
+    canvas.drawText(ellipsize(reading, popupReadingPaint, textMaxWidth), textLeft, rect.top + dp(43f), popupReadingPaint)
+    canvas.drawText(ellipsize(meaning, popupMeaningPaint, textMaxWidth), textLeft, rect.top + dp(61f), popupMeaningPaint)
 
     val dividerY = rect.top + dp(76f)
     canvas.drawLine(rect.left + dp(12f), dividerY, rect.right - dp(12f), dividerY, dividerPaint)
     canvas.drawText(OverlayText.t("relatedWords").uppercase(), rect.left + dp(12f), dividerY + dp(22f), eyebrowPaint)
 
     val relatedRowHeight = dp(45f)
-    val firstRelatedTop = dividerY + dp(37f)
+    val firstRelatedTop = dividerY + dp(48f)
     val sourceWord = preload?.sourceWord?.takeIf(String::isNotBlank) ?: rootSourceWordFor(card)
     val visibleLimit = rootVisibleRelatedCount(sourceWord, character, preload?.relatedWords?.size ?: 0)
-    val maxRelatedRows = ((rect.bottom - firstRelatedTop - dp(44f)) / relatedRowHeight).toInt().coerceAtLeast(1)
+    val maxRelatedRows = ((rect.bottom - firstRelatedTop - dp(14f)) / relatedRowHeight).toInt().coerceAtLeast(1)
     val related = preload?.relatedWords.orEmpty().take(min(visibleLimit, maxRelatedRows))
     if (related.isEmpty()) {
       canvas.drawText(OverlayText.t("noRelatedWordsAvailable"), rect.left + dp(12f), dividerY + dp(48f), popupMeaningPaint)
@@ -2068,25 +2209,28 @@ class OcrResultOverlayView(
       )
       drawKnownToggle(canvas, toggleRect, entry.known)
 
-      val word = ellipsize(entry.korean.trim(), relatedKoreanPaint, (toggleRect.left - rect.left - dp(34f)) * 0.52f)
-      canvas.drawText(word, rect.left + dp(12f), rowTop, relatedKoreanPaint)
+      val rowLeft = rect.left + dp(12f)
+      val rowContentRight = toggleRect.left - dp(10f)
+      val word = ellipsize(entry.korean.trim(), relatedKoreanPaint, (rowContentRight - rowLeft) * 0.62f)
+      canvas.drawText(word, rowLeft, rowTop, relatedKoreanPaint)
       val hanja = entry.hanja.trim()
-      if (hanja.isNotEmpty()) {
+      val hanjaLeft = rowLeft + relatedKoreanPaint.measureText(word) + dp(6f)
+      if (hanja.isNotEmpty() && hanjaLeft < rowContentRight) {
         canvas.drawText(
-          ellipsize(hanja, relatedHanjaPaint, toggleRect.left - rect.left - dp(24f) - relatedKoreanPaint.measureText(word)),
-          rect.left + dp(12f) + relatedKoreanPaint.measureText(word) + dp(6f),
+          ellipsize(hanja, relatedHanjaPaint, rowContentRight - hanjaLeft),
+          hanjaLeft,
           rowTop,
           relatedHanjaPaint
         )
       }
       val gloss = entry.meaning.trim()
       if (gloss.isNotEmpty()) {
-        canvas.drawText(ellipsize(gloss, popupMeaningPaint, toggleRect.left - rect.left - dp(24f)), rect.left + dp(12f), rowTop + dp(18f), popupMeaningPaint)
+        canvas.drawText(ellipsize(gloss, popupMeaningPaint, rowContentRight - rowLeft), rowLeft, rowTop + dp(18f), popupMeaningPaint)
       }
     }
 
     val totalRelated = preload?.relatedWords?.size ?: 0
-    if (totalRelated > visibleLimit && related.size < maxRelatedRows) {
+    if (totalRelated > related.size) {
       val seeMoreTop = firstRelatedTop + related.size * relatedRowHeight + dp(7f)
       val seeMoreRect = RectF(rect.left + dp(12f), seeMoreTop, rect.right - dp(12f), seeMoreTop + dp(28f))
       rootSeeMoreRects.add(
@@ -2106,7 +2250,7 @@ class OcrResultOverlayView(
     }
   }
 
-  private fun rootCardHeightFor(card: LookupCard, characters: List<String>, availableHeight: Float): Float {
+  private fun rootRowsInfo(card: LookupCard, characters: List<String>): Pair<Int, Boolean> {
     var maxRows = 0
     var hasMore = false
     characters.forEach { character ->
@@ -2121,15 +2265,31 @@ class OcrResultOverlayView(
         hasMore = true
       }
     }
+    return maxRows.coerceAtLeast(1) to hasMore
+  }
 
-    val rowCount = maxRows.coerceAtLeast(1)
-    val desiredHeight = dp(113f) +
-      rowCount * dp(45f) +
-      if (hasMore) dp(42f) else dp(18f)
+  // Header block (tile + divider + related eyebrow) is 124dp, each related row 45dp,
+  // then either the "See more" row or bottom padding.
+  private fun desiredRootCardHeight(card: LookupCard, characters: List<String>): Float {
+    val (rowCount, hasMore) = rootRowsInfo(card, characters)
+    return dp(124f) + rowCount * dp(45f) + if (hasMore) dp(40f) else dp(14f)
+  }
 
-    return desiredHeight
-      .coerceIn(dp(214f), dp(282f))
+  private fun rootCardHeightFor(card: LookupCard, characters: List<String>, availableHeight: Float): Float =
+    desiredRootCardHeight(card, characters)
+      .coerceAtLeast(dp(214f))
       .coerceAtMost(availableHeight.coerceAtLeast(dp(136f)))
+
+  // Grow the expanded sheet beyond its base height when "See more" reveals extra
+  // related-word rows, so the revealed rows actually have room to render.
+  private fun rootCardExtraHeight(card: LookupCard): Float {
+    val characters = extractHanjaCharacters(card.hanja)
+    if (characters.isEmpty()) {
+      return 0f
+    }
+
+    return (desiredRootCardHeight(card, characters).coerceAtLeast(dp(214f)) - dp(282f))
+      .coerceAtLeast(0f)
   }
 
   private fun rootSourceWordFor(card: LookupCard): String =

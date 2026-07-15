@@ -3,7 +3,31 @@ import { DOMParser } from '@xmldom/xmldom';
 import * as FileSystem from 'expo-file-system';
 import { normalizeBookLanguage } from '../constants/languages';
 
-const parser = new DOMParser();
+// xmldom parses in strict XML mode, so any prefixed tag/attribute (e.g.
+// `epub:type`, `xlink:href`) whose prefix isn't declared with an in-scope
+// `xmlns:` throws `NamespaceError: prefix is non-null and namespace is null`
+// and aborts the whole parse — surfacing as "Couldn't open this book". Real
+// e-readers tolerate this because they parse XHTML leniently; many converter-
+// generated EPUBs rely on that. Pre-declaring the standard EPUB namespaces
+// here lets those undeclared-but-standard prefixes resolve instead of throwing.
+// A prefix the document declares itself still wins within its own scope, so
+// well-formed books are unaffected. We intentionally omit the '' (default
+// namespace) key to leave default-namespace handling to xmldom.
+const ASSUMED_XML_NAMESPACES = {
+    epub: 'http://www.idpf.org/2007/ops',
+    xlink: 'http://www.w3.org/1999/xlink',
+    dc: 'http://purl.org/dc/elements/1.1/',
+    dcterms: 'http://purl.org/dc/terms/',
+    opf: 'http://www.idpf.org/2007/opf',
+    ncx: 'http://www.daisy.org/z3986/2005/ncx/',
+    svg: 'http://www.w3.org/2000/svg',
+    mml: 'http://www.w3.org/1998/Math/MathML',
+    m: 'http://www.w3.org/1998/Math/MathML',
+    xhtml: 'http://www.w3.org/1999/xhtml',
+    xsi: 'http://www.w3.org/2001/XMLSchema-instance',
+};
+
+const parser = new DOMParser({ xmlns: ASSUMED_XML_NAMESPACES });
 
 // Some EPUBs (often converter output) prefix their XML files with a UTF-8 BOM
 // or leading whitespace. xmldom then sees the `<?xml ...?>` declaration at a

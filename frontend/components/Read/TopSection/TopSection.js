@@ -16,6 +16,7 @@ import DictionaryContent from './DictionaryContent';
 const DICTIONARY_COMPACT_HEIGHT = 252;
 const DICTIONARY_NO_ROOT_HEIGHT = 215;
 const DICTIONARY_TRANSLATION_HEIGHT = 332;
+const DICTIONARY_EXPLAIN_HEIGHT = 360;
 const DICTIONARY_EXPANDED_MAX_HEIGHT = 548;
 const DICTIONARY_EXTRA_ROW_HEIGHT = 52;
 const TRANSLATION_MAX_SCROLL_HEIGHT = 150;
@@ -50,6 +51,7 @@ const TopSection = ({
     const [isCopied, setIsCopied] = useState(false);
     const [isCopying, setIsCopying] = useState(false);
     const [isLookupExpanded, setIsLookupExpanded] = useState(false);
+    const [isExplainMode, setIsExplainMode] = useState(false);
     const [canExpandLookup, setCanExpandLookup] = useState(false);
     const [translationStatus, setTranslationStatus] = useState({
         isLoading: false,
@@ -104,6 +106,7 @@ const TopSection = ({
             setDictionaryContentHeight(0);
             setTranslationTarget('');
             setIsLookupExpanded(false);
+            setIsExplainMode(false);
             setCanExpandLookup(false);
             setTranslationStatus({ isLoading: false, hasError: false, hasText: false, translatedText: '' });
             setIsCopied(false);
@@ -220,6 +223,10 @@ const TopSection = ({
     const isDictionarySheetTall = isLookupExpanded || dictionaryExpandedRows > 0;
     const dictionaryHeight = isDictionaryTranslationSheet
         ? DICTIONARY_TRANSLATION_HEIGHT
+        : isExplainMode
+        // Smart-definition mode uses a fixed, modest height; the body ScrollView
+        // scrolls when the explanation is long, so we never leave dead space.
+        ? DICTIONARY_EXPLAIN_HEIGHT
         : isDictionarySheetTall
         ? Math.min(
             DICTIONARY_EXPANDED_MAX_HEIGHT,
@@ -344,6 +351,7 @@ const TopSection = ({
                             setTranslationTarget(target);
                         }}
                         onExpandedStateChange={handleDictionaryExpandedStateChange}
+                        onExplainModeChange={setIsExplainMode}
                         onContentHeightChange={setDictionaryContentHeight}
                         onCanExpandChange={setCanExpandLookup}
                         isPanelExpanded={isLookupExpanded}

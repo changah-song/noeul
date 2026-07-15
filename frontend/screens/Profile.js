@@ -16,6 +16,7 @@ import {
 import { Feather } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import Auth from './Auth';
+import { deleteCurrentUserProfile } from '../services/accountDeletion';
 import { Screen } from '../components/ui';
 import CalibrationQuizModal from '../components/shared/CalibrationQuizModal';
 import VocabLevelModal from '../components/shared/VocabLevelModal';
@@ -143,6 +144,8 @@ const NavRow = ({ label, onPress, icon = 'chevron-right', isLast, styles, profil
 const Profile = ({ user, signOut, updateUsername }) => {
     const [isSigningOut, setIsSigningOut] = useState(false);
     const [showSignOutModal, setShowSignOutModal] = useState(false);
+    const [showDeleteModal, setShowDeleteModal] = useState(false);
+    const [isDeletingAccount, setIsDeletingAccount] = useState(false);
     const [showAuthModal, setShowAuthModal] = useState(false);
     const [authMode, setAuthMode] = useState('signin');
     const [showNameEditor, setShowNameEditor] = useState(false);
@@ -221,6 +224,23 @@ const Profile = ({ user, signOut, updateUsername }) => {
         } finally {
             setIsSigningOut(false);
             setShowSignOutModal(false);
+        }
+    };
+
+    const performDeleteAccount = async () => {
+        if (isDeletingAccount) {
+            return;
+        }
+
+        setIsDeletingAccount(true);
+        try {
+            await deleteCurrentUserProfile();
+            setShowDeleteModal(false);
+            await signOut?.();
+        } catch (error) {
+            Alert.alert(t('profile.deleteAccountFailed'), error?.message || t('profile.preferenceSoon'));
+        } finally {
+            setIsDeletingAccount(false);
         }
     };
 
@@ -489,6 +509,22 @@ const Profile = ({ user, signOut, updateUsername }) => {
                         </TouchableOpacity>
                     )}
                 </View>
+
+                {!isGuest ? (
+                    <View style={styles.section}>
+                        <TouchableOpacity
+                            accessibilityRole="button"
+                            activeOpacity={0.86}
+                            onPress={() => setShowDeleteModal(true)}
+                            disabled={isDeletingAccount}
+                            style={[styles.deleteAccountButton, isDeletingAccount && styles.deleteAccountButtonDisabled]}
+                        >
+                            <Text style={styles.deleteAccountText}>
+                                {isDeletingAccount ? t('profile.deletingAccount') : t('profile.deleteAccount')}
+                            </Text>
+                        </TouchableOpacity>
+                    </View>
+                ) : null}
             </ScrollView>
 
             <CalibrationQuizModal
@@ -727,6 +763,48 @@ const Profile = ({ user, signOut, updateUsername }) => {
                     </View>
                 </TouchableWithoutFeedback>
             </Modal>
+
+            <Modal
+                visible={showDeleteModal}
+                animationType="fade"
+                transparent
+                onRequestClose={() => (isDeletingAccount ? null : setShowDeleteModal(false))}
+            >
+                <TouchableWithoutFeedback onPress={() => (isDeletingAccount ? null : setShowDeleteModal(false))}>
+                    <View style={styles.modalBackdrop}>
+                        <TouchableWithoutFeedback>
+                            <View style={styles.modalCard}>
+                                <Text style={styles.modalTitle}>{t('profile.deleteAccountTitle')}</Text>
+                                <Text style={styles.modalHelper}>
+                                    {t('profile.deleteAccountBody')}
+                                </Text>
+                                <View style={styles.modalActions}>
+                                    <Pressable
+                                        onPress={() => setShowDeleteModal(false)}
+                                        style={styles.modalButton}
+                                        disabled={isDeletingAccount}
+                                    >
+                                        <Text style={styles.modalButtonText}>{t('common.cancel')}</Text>
+                                    </Pressable>
+                                    <Pressable
+                                        onPress={() => performDeleteAccount()}
+                                        style={[
+                                            styles.modalButton,
+                                            styles.modalDangerButton,
+                                            isDeletingAccount && styles.modalButtonDisabled,
+                                        ]}
+                                        disabled={isDeletingAccount}
+                                    >
+                                        <Text style={[styles.modalButtonText, styles.modalDangerButtonText]}>
+                                            {isDeletingAccount ? t('profile.deletingAccount') : t('profile.deleteAccountConfirm')}
+                                        </Text>
+                                    </Pressable>
+                                </View>
+                            </View>
+                        </TouchableWithoutFeedback>
+                    </View>
+                </TouchableWithoutFeedback>
+            </Modal>
         </Screen>
     );
 };
@@ -954,6 +1032,24 @@ const createStyles = (profileColors, themeColors) => StyleSheet.create({
         lineHeight: 20,
         color: profileColors.danger,
     },
+    deleteAccountButton: {
+        minHeight: 52,
+        paddingVertical: 14,
+        paddingHorizontal: 14,
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: radii.md,
+        backgroundColor: profileColors.danger,
+    },
+    deleteAccountButtonDisabled: {
+        opacity: 0.62,
+    },
+    deleteAccountText: {
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 16,
+        lineHeight: 20,
+        color: profileColors.white,
+    },
     languageModalCard: {
         gap: 14,
     },
@@ -1115,6 +1211,9 @@ const createStyles = (profileColors, themeColors) => StyleSheet.create({
     modalPrimaryButton: {
         backgroundColor: themeColors.accentSoft,
     },
+    modalDangerButton: {
+        backgroundColor: profileColors.danger,
+    },
     modalButtonDisabled: {
         opacity: 0.62,
     },
@@ -1137,6 +1236,9 @@ const createStyles = (profileColors, themeColors) => StyleSheet.create({
     },
     modalPrimaryButtonText: {
         color: themeColors.accentStrong,
+    },
+    modalDangerButtonText: {
+        color: profileColors.white,
     },
     levelChipsRow: {
         flexDirection: 'row',
