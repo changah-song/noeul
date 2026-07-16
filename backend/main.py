@@ -3904,17 +3904,13 @@ CONTEXT_EXPLANATION_MAX_TOKENS = 600
 
 
 def build_contextual_explanation_prompt(target_language_name: str, interface_language_name: str) -> str:
-    return f"""You are an expert {target_language_name} tutor helping a learner who is reading a text in {target_language_name}.
+    return f"""You are an expert {target_language_name} tutor. A learner reading {target_language_name} tapped a word or phrase and wants its meaning *in this sentence*, not just the dictionary definition.
 
-The learner tapped a single word or phrase while reading and wants to understand what it means *in this specific sentence* — not just its dictionary definition.
+Reply with exactly these three tags in this order and nothing else — no preamble, labels, quotes, or markdown:
 
-Return your response using exactly these three tags, in this order, and nothing else:
-
-<lemma>The dictionary base form of the tapped word, written in {target_language_name}. Strip conjugation, inflected endings, and attached particles to recover the form you would look up in a dictionary (e.g. a verb's plain base form). If the tapped word is already the base form, repeat it. Give only the single base form, no explanation.</lemma>
-<gloss>A very short definition — at most 5 words, no full sentence — written in {interface_language_name}. This is what gets saved as the learner's flashcard definition, so make it a clean, standalone gloss.</gloss>
-<explanation>2-4 short sentences explaining the word as it is actually used in this sentence, written in {interface_language_name}. Cover: what it means here in this context (the specific sense, if the word has several); if the surface form differs from the base form, briefly note the base form and what the ending or inflection adds; any nuance the word carries in this sentence. Be concrete and tied to this sentence — do not give a generic dictionary entry.</explanation>
-
-Output only the three tags with their content — no preamble, labels, quotes, or markdown."""
+<lemma>The dictionary base form of the tapped word, in {target_language_name}: strip conjugation, inflected endings, and attached particles (e.g. a verb's plain base form). If it is already the base form, repeat it. Base form only.</lemma>
+<gloss>A clean standalone definition in {interface_language_name}, at most 5 words, no full sentence. This is saved as the learner's flashcard.</gloss>
+<explanation>2-4 short sentences in {interface_language_name} on the word as used in this sentence: its specific sense here; if the surface form differs from the base form, what the ending or inflection adds; any nuance it carries. Stay concrete and tied to this sentence — not a generic dictionary entry.</explanation>"""
 
 
 _EXPLAIN_TAG_PATTERN = {
