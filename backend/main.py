@@ -5,6 +5,8 @@ import jwt
 from jwt import PyJWKClient
 import json
 import sqlite3
+import hashlib
+import unicodedata
 import ssl
 import httpx
 import asyncio
@@ -547,6 +549,7 @@ def init_cache_db():
     print("[main] Initializing server-side cache database at:", CACHE_DB_PATH)
     conn = get_db_connection()
     create_dictionary_cache_table(conn)
+    create_ops_tables(conn)
     conn.commit()
     conn.close()
     print("[main] Server-side cache database initialized.")
@@ -656,6 +659,7 @@ def migrate_cache_db():
 # Run on module load (executes when uvicorn starts the server)
 init_cache_db()
 migrate_cache_db()
+prune_old_usage_rows()
 
 # ─── App + NLP Setup ──────────────────────────────────────────────────────────
 app = FastAPI()
@@ -695,9 +699,6 @@ supabase_jwks_client = (
     else None
 )
 
-daily_usage: dict[tuple[str, str], int] = {}
-daily_usage_lock = asyncio.Lock()
-
 ASSESSMENT_DAILY_LIMIT = 5
 ENTRY_MIN_WORDS = 30
 ENTRY_MAX_WORDS = 500
@@ -718,9 +719,6 @@ LANGUAGE_DISPLAY_NAMES = {
     "th": "Thai",
     "mn": "Mongolian",
 }
-assessment_daily_usage: dict[tuple[str, str], int] = {}
-assessment_daily_usage_lock = asyncio.Lock()
-
 LOOKUP_ALLOWED_POS = {"Noun", "Verb", "Adverb", "Adjective"}
 EN_LOOKUP_ALLOWED_POS = {"NOUN", "PROPN", "VERB", "ADJ", "ADV", "NUM"}
 ZH_LOOKUP_ALLOWED_POS_PREFIXES = ("n", "v", "a", "d")
@@ -879,6 +877,254 @@ def get_auth_limits(auth_or_is_anonymous) -> dict[str, int]:
     return ANONYMOUS_LIMITS if is_anonymous else AUTHENTICATED_LIMITS
 
 
+# ---------------------------------------------------------------------------
+# Durable usage / spend / response-cache storage (SQLite-backed, in cache.db)
+#
+# These replace the former in-memory dicts so per-user quotas survive restarts
+# and stay consistent within a backend instance. NOTE: cache.db is a local
+# file, so counters are shared across restarts but NOT across multiple
+# replicas. The daily spend circuit breaker + the Anthropic Console spend cap
+# are the backstop that holds regardless of instance count.
+# ---------------------------------------------------------------------------
+
+# Hard daily ceiling on estimated Anthropic spend (USD). Above this, AI
+# endpoints degrade gracefully instead of calling the model. Override via env.
+DAILY_AI_BUDGET_USD = float(os.getenv("DAILY_AI_BUDGET_USD", "25") or "25")
+
+# Model IDs used by the AI endpoints, and their price per 1M tokens (USD).
+# Keep in sync with the models passed to client.messages.create below.
+LOOKUP_MODEL = "claude-haiku-4-5"
+ASSESSMENT_MODEL = "claude-sonnet-4-6"
+MODEL_PRICING_PER_MTOK = {
+    "claude-haiku-4-5": {"input": 1.0, "output": 5.0},
+    "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
+}
+
+LOOKUP_CACHE_MAX_ROWS = 100_000
+
+
+def create_ops_tables(conn: sqlite3.Connection):
+    """Create the durable quota / spend / lookup-cache tables if absent."""
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS daily_usage (
+            user_id TEXT NOT NULL,
+            day TEXT NOT NULL,
+            bucket TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (user_id, day, bucket)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS daily_spend (
+            day TEXT PRIMARY KEY,
+            micro_usd INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lookup_cache (
+            key_hash TEXT PRIMARY KEY,
+            lemma TEXT,
+            gloss TEXT,
+            explanation TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            hit_count INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+
+
+def _utc_today() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _usage_check_and_increment(user_id: str, bucket: str, limit: int, amount: int = 1) -> bool:
+    """Atomically check a daily counter and increment it if it stays within
+    `limit`. Returns True if allowed (counter incremented), False if the call
+    would exceed the limit. Uses BEGIN IMMEDIATE so concurrent callers can't
+    race past the check."""
+    today = _utc_today()
+    conn = get_db_connection()
+    try:
+        conn.execute("PRAGMA busy_timeout=3000")
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT count FROM daily_usage WHERE user_id=? AND day=? AND bucket=?",
+            (user_id, today, bucket),
+        ).fetchone()
+        used = row["count"] if row else 0
+        if used + amount > limit:
+            conn.rollback()
+            return False
+        conn.execute(
+            """
+            INSERT INTO daily_usage (user_id, day, bucket, count)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id, day, bucket) DO UPDATE SET count = count + ?
+            """,
+            (user_id, today, bucket, amount, amount),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def prune_old_usage_rows() -> None:
+    """Drop counter/spend rows from previous days so the tables stay small."""
+    today = _utc_today()
+    conn = get_db_connection()
+    try:
+        conn.execute("PRAGMA busy_timeout=3000")
+        conn.execute("DELETE FROM daily_usage WHERE day < ?", (today,))
+        conn.execute("DELETE FROM daily_spend WHERE day < ?", (today,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# --- Daily spend circuit breaker -------------------------------------------
+
+def _get_daily_spend_usd() -> float:
+    conn = get_db_connection()
+    try:
+        row = conn.execute(
+            "SELECT micro_usd FROM daily_spend WHERE day=?", (_utc_today(),)
+        ).fetchone()
+        return (row["micro_usd"] if row else 0) / 1_000_000
+    finally:
+        conn.close()
+
+
+def _add_daily_spend(cost_usd: float) -> None:
+    micro = max(0, round(cost_usd * 1_000_000))
+    if micro == 0:
+        return
+    today = _utc_today()
+    conn = get_db_connection()
+    try:
+        conn.execute("PRAGMA busy_timeout=3000")
+        conn.execute(
+            """
+            INSERT INTO daily_spend (day, micro_usd) VALUES (?, ?)
+            ON CONFLICT(day) DO UPDATE SET micro_usd = micro_usd + ?
+            """,
+            (today, micro, micro),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _estimate_cost_usd(model: str, usage) -> float:
+    pricing = MODEL_PRICING_PER_MTOK.get(model)
+    if not pricing or usage is None:
+        return 0.0
+    input_tokens = getattr(usage, "input_tokens", 0) or 0
+    output_tokens = getattr(usage, "output_tokens", 0) or 0
+    return (input_tokens * pricing["input"] + output_tokens * pricing["output"]) / 1_000_000
+
+
+async def enforce_ai_budget():
+    """Reject AI calls once today's estimated spend hits the daily budget."""
+    spent = await asyncio.to_thread(_get_daily_spend_usd)
+    if spent >= DAILY_AI_BUDGET_USD:
+        raise HTTPException(
+            status_code=503,
+            detail="AI features are resting for today. Please try again tomorrow.",
+        )
+
+
+async def record_ai_spend(model: str, usage) -> None:
+    """Add the actual token cost of a completed Anthropic call to today's total."""
+    cost = _estimate_cost_usd(model, usage)
+    if cost > 0:
+        await asyncio.to_thread(_add_daily_spend, cost)
+
+
+# --- Contextual-lookup response cache --------------------------------------
+
+def _normalize_for_cache(text: str) -> str:
+    return unicodedata.normalize("NFC", " ".join((text or "").split()))
+
+
+def lookup_cache_key(word: str, sentence: str, target_language: str, interface_language: str) -> str:
+    parts = "\x1f".join(
+        [
+            _normalize_for_cache(word),
+            _normalize_for_cache(sentence),
+            (target_language or "").strip().lower(),
+            (interface_language or "").strip().lower(),
+        ]
+    )
+    return hashlib.sha256(parts.encode("utf-8")).hexdigest()
+
+
+def _lookup_cache_get(key_hash: str) -> dict[str, str | None] | None:
+    conn = get_db_connection()
+    try:
+        conn.execute("PRAGMA busy_timeout=3000")
+        row = conn.execute(
+            "SELECT lemma, gloss, explanation FROM lookup_cache WHERE key_hash=?",
+            (key_hash,),
+        ).fetchone()
+        if not row:
+            return None
+        conn.execute(
+            "UPDATE lookup_cache SET hit_count = hit_count + 1 WHERE key_hash=?",
+            (key_hash,),
+        )
+        conn.commit()
+        return {
+            "explanation": row["explanation"],
+            "gloss": row["gloss"],
+            "lemma": row["lemma"],
+        }
+    finally:
+        conn.close()
+
+
+def _lookup_cache_put(key_hash: str, parsed: dict[str, str | None]) -> None:
+    explanation = parsed.get("explanation")
+    if not explanation:
+        return
+    conn = get_db_connection()
+    try:
+        conn.execute("PRAGMA busy_timeout=3000")
+        conn.execute(
+            """
+            INSERT INTO lookup_cache (key_hash, lemma, gloss, explanation, created_at, hit_count)
+            VALUES (?, ?, ?, ?, ?, 0)
+            ON CONFLICT(key_hash) DO NOTHING
+            """,
+            (
+                key_hash,
+                parsed.get("lemma"),
+                parsed.get("gloss"),
+                explanation,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        count = conn.execute("SELECT COUNT(*) AS c FROM lookup_cache").fetchone()["c"]
+        if count > LOOKUP_CACHE_MAX_ROWS:
+            conn.execute(
+                """
+                DELETE FROM lookup_cache WHERE key_hash IN (
+                    SELECT key_hash FROM lookup_cache ORDER BY created_at ASC LIMIT ?
+                )
+                """,
+                (count - LOOKUP_CACHE_MAX_ROWS,),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def enforce_text_limit(
     text: str,
     auth: dict[str, Any],
@@ -922,19 +1168,11 @@ async def enforce_daily_quota(auth: dict[str, Any], amount: int = 1):
     normalized_amount = max(1, int(amount or 1))
     limit = get_auth_limits(auth)["daily_quota"]
     user_id = auth["user_id"]
-    today = datetime.now(timezone.utc).date().isoformat()
-
-    async with daily_usage_lock:
-        stale_keys = [key for key in daily_usage if key[1] != today]
-        for key in stale_keys:
-            del daily_usage[key]
-
-        key = (user_id, today)
-        used = daily_usage.get(key, 0)
-        if used + normalized_amount > limit:
-            raise HTTPException(status_code=429, detail="Daily backend quota exceeded")
-
-        daily_usage[key] = used + normalized_amount
+    allowed = await asyncio.to_thread(
+        _usage_check_and_increment, user_id, "general", limit, normalized_amount
+    )
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Daily backend quota exceeded")
 
 
 def romanize_korean_text(text: str) -> str:
@@ -3434,19 +3672,14 @@ async def krdict_search(payload: dict, auth: dict[str, Any] = Depends(verify_sup
 # ─── Writing Assessment ───────────────────────────────────────────────────────
 
 async def enforce_assessment_quota(user_id: str):
-    today = datetime.now(timezone.utc).date().isoformat()
-    async with assessment_daily_usage_lock:
-        stale_keys = [key for key in assessment_daily_usage if key[1] != today]
-        for key in stale_keys:
-            del assessment_daily_usage[key]
-        key = (user_id, today)
-        used = assessment_daily_usage.get(key, 0)
-        if used >= ASSESSMENT_DAILY_LIMIT:
-            raise HTTPException(
-                status_code=429,
-                detail=f"You've used all {ASSESSMENT_DAILY_LIMIT} AI assessments for today. Check back tomorrow.",
-            )
-        assessment_daily_usage[key] = used + 1
+    allowed = await asyncio.to_thread(
+        _usage_check_and_increment, user_id, "assessment", ASSESSMENT_DAILY_LIMIT, 1
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"You've used all {ASSESSMENT_DAILY_LIMIT} AI assessments for today. Check back tomorrow.",
+        )
 
 
 _ASSESSMENT_SYSTEM_BASE = """You are an expert language tutor reviewing a writing entry by a foreign-language learner studying {language_name}.
@@ -3588,6 +3821,7 @@ async def assess_entry(payload: dict, auth: dict[str, Any] = Depends(verify_supa
         raise HTTPException(status_code=422, detail=f"Entry is too long ({word_count} words). Keep it under {ENTRY_MAX_WORDS} words.")
 
     await enforce_assessment_quota(auth["user_id"])
+    await enforce_ai_budget()
 
     system_prompt = build_assessment_system_prompt(category, language_code, sandbox_words)
 
@@ -3608,7 +3842,7 @@ async def assess_entry(payload: dict, auth: dict[str, Any] = Depends(verify_supa
     try:
         client = anthropic_sdk.Anthropic(api_key=ANTHROPIC_API_KEY)
         message = client.messages.create(
-            model="claude-sonnet-4-6",
+            model=ASSESSMENT_MODEL,
             max_tokens=2048,
             system=system_prompt,
             messages=[{"role": "user", "content": user_message}],
@@ -3616,6 +3850,8 @@ async def assess_entry(payload: dict, auth: dict[str, Any] = Depends(verify_supa
     except Exception as error:
         print(f"[assess_entry] Anthropic API error: {error.__class__.__name__}: {error}")
         raise HTTPException(status_code=502, detail="AI assessment service is temporarily unavailable")
+
+    await record_ai_spend(ASSESSMENT_MODEL, getattr(message, "usage", None))
 
     raw_text = message.content[0].text if message.content else ""
 
@@ -3668,17 +3904,13 @@ CONTEXT_EXPLANATION_MAX_TOKENS = 600
 
 
 def build_contextual_explanation_prompt(target_language_name: str, interface_language_name: str) -> str:
-    return f"""You are an expert {target_language_name} tutor helping a learner who is reading a text in {target_language_name}.
+    return f"""You are an expert {target_language_name} tutor. A learner reading {target_language_name} tapped a word or phrase and wants its meaning *in this sentence*, not just the dictionary definition.
 
-The learner tapped a single word or phrase while reading and wants to understand what it means *in this specific sentence* — not just its dictionary definition.
+Reply with exactly these three tags in this order and nothing else — no preamble, labels, quotes, or markdown:
 
-Return your response using exactly these three tags, in this order, and nothing else:
-
-<lemma>The dictionary base form of the tapped word, written in {target_language_name}. Strip conjugation, inflected endings, and attached particles to recover the form you would look up in a dictionary (e.g. a verb's plain base form). If the tapped word is already the base form, repeat it. Give only the single base form, no explanation.</lemma>
-<gloss>A very short definition — at most 5 words, no full sentence — written in {interface_language_name}. This is what gets saved as the learner's flashcard definition, so make it a clean, standalone gloss.</gloss>
-<explanation>2-4 short sentences explaining the word as it is actually used in this sentence, written in {interface_language_name}. Cover: what it means here in this context (the specific sense, if the word has several); if the surface form differs from the base form, briefly note the base form and what the ending or inflection adds; any nuance the word carries in this sentence. Be concrete and tied to this sentence — do not give a generic dictionary entry.</explanation>
-
-Output only the three tags with their content — no preamble, labels, quotes, or markdown."""
+<lemma>The dictionary base form of the tapped word, in {target_language_name}: strip conjugation, inflected endings, and attached particles (e.g. a verb's plain base form). If it is already the base form, repeat it. Base form only.</lemma>
+<gloss>A clean standalone definition in {interface_language_name}, at most 5 words, no full sentence. This is saved as the learner's flashcard.</gloss>
+<explanation>2-4 short sentences in {interface_language_name} on the word as used in this sentence: its specific sense here; if the surface form differs from the base form, what the ending or inflection adds; any nuance it carries. Stay concrete and tied to this sentence — not a generic dictionary entry.</explanation>"""
 
 
 _EXPLAIN_TAG_PATTERN = {
@@ -3734,6 +3966,17 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
 
     await enforce_daily_quota(auth)
 
+    # Serve identical (word, sentence, language-pair) lookups from cache without
+    # calling the model — kills repeated-input abuse and cheap re-reads. The
+    # explanation is context-specific, so a different sentence is a cache miss.
+    cache_key = lookup_cache_key(word, sentence, target_language, interface_language)
+    cached = await asyncio.to_thread(_lookup_cache_get, cache_key)
+    if cached is not None:
+        return cached
+
+    # Only reached on a cache miss — i.e. we're about to spend on the model.
+    await enforce_ai_budget()
+
     target_language_name = LANGUAGE_DISPLAY_NAMES.get(target_language, target_language.upper())
     interface_language_name = LANGUAGE_DISPLAY_NAMES.get(interface_language, "English")
     system_prompt = build_contextual_explanation_prompt(target_language_name, interface_language_name)
@@ -3742,7 +3985,7 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
     try:
         client = anthropic_sdk.Anthropic(api_key=ANTHROPIC_API_KEY)
         message = client.messages.create(
-            model="claude-haiku-4-5",
+            model=LOOKUP_MODEL,
             max_tokens=CONTEXT_EXPLANATION_MAX_TOKENS,
             system=system_prompt,
             messages=[{"role": "user", "content": user_message}],
@@ -3750,6 +3993,8 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
     except Exception as error:
         print(f"[explain_in_context] Anthropic API error: {error.__class__.__name__}: {error}")
         raise HTTPException(status_code=502, detail="AI explanation service is temporarily unavailable")
+
+    await record_ai_spend(LOOKUP_MODEL, getattr(message, "usage", None))
 
     raw = "".join(
         block.text for block in (message.content or []) if getattr(block, "type", None) == "text"
@@ -3762,5 +4007,7 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
 
     if not parsed["explanation"]:
         raise HTTPException(status_code=502, detail="AI returned an empty explanation")
+
+    await asyncio.to_thread(_lookup_cache_put, cache_key, parsed)
 
     return parsed
