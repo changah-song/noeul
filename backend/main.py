@@ -656,11 +656,6 @@ def migrate_cache_db():
         conn.close()
 
 
-# Run on module load (executes when uvicorn starts the server)
-init_cache_db()
-migrate_cache_db()
-prune_old_usage_rows()
-
 # ─── App + NLP Setup ──────────────────────────────────────────────────────────
 app = FastAPI()
 okt = Okt()
@@ -4011,3 +4006,11 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
     await asyncio.to_thread(_lookup_cache_put, cache_key, parsed)
 
     return parsed
+
+
+# ─── Run on module load (executes when uvicorn starts the server) ──────────────
+# Defined at the bottom so every helper it calls (create_ops_tables,
+# prune_old_usage_rows, …) is already bound by the time these run.
+init_cache_db()
+migrate_cache_db()
+prune_old_usage_rows()
