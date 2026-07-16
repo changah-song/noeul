@@ -3821,6 +3821,7 @@ async def assess_entry(payload: dict, auth: dict[str, Any] = Depends(verify_supa
         raise HTTPException(status_code=422, detail=f"Entry is too long ({word_count} words). Keep it under {ENTRY_MAX_WORDS} words.")
 
     await enforce_assessment_quota(auth["user_id"])
+    await enforce_ai_budget()
 
     system_prompt = build_assessment_system_prompt(category, language_code, sandbox_words)
 
@@ -3841,7 +3842,7 @@ async def assess_entry(payload: dict, auth: dict[str, Any] = Depends(verify_supa
     try:
         client = anthropic_sdk.Anthropic(api_key=ANTHROPIC_API_KEY)
         message = client.messages.create(
-            model="claude-sonnet-4-6",
+            model=ASSESSMENT_MODEL,
             max_tokens=2048,
             system=system_prompt,
             messages=[{"role": "user", "content": user_message}],
@@ -3849,6 +3850,8 @@ async def assess_entry(payload: dict, auth: dict[str, Any] = Depends(verify_supa
     except Exception as error:
         print(f"[assess_entry] Anthropic API error: {error.__class__.__name__}: {error}")
         raise HTTPException(status_code=502, detail="AI assessment service is temporarily unavailable")
+
+    await record_ai_spend(ASSESSMENT_MODEL, getattr(message, "usage", None))
 
     raw_text = message.content[0].text if message.content else ""
 
@@ -3967,6 +3970,17 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
 
     await enforce_daily_quota(auth)
 
+    # Serve identical (word, sentence, language-pair) lookups from cache without
+    # calling the model — kills repeated-input abuse and cheap re-reads. The
+    # explanation is context-specific, so a different sentence is a cache miss.
+    cache_key = lookup_cache_key(word, sentence, target_language, interface_language)
+    cached = await asyncio.to_thread(_lookup_cache_get, cache_key)
+    if cached is not None:
+        return cached
+
+    # Only reached on a cache miss — i.e. we're about to spend on the model.
+    await enforce_ai_budget()
+
     target_language_name = LANGUAGE_DISPLAY_NAMES.get(target_language, target_language.upper())
     interface_language_name = LANGUAGE_DISPLAY_NAMES.get(interface_language, "English")
     system_prompt = build_contextual_explanation_prompt(target_language_name, interface_language_name)
@@ -3975,7 +3989,7 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
     try:
         client = anthropic_sdk.Anthropic(api_key=ANTHROPIC_API_KEY)
         message = client.messages.create(
-            model="claude-haiku-4-5",
+            model=LOOKUP_MODEL,
             max_tokens=CONTEXT_EXPLANATION_MAX_TOKENS,
             system=system_prompt,
             messages=[{"role": "user", "content": user_message}],
@@ -3983,6 +3997,8 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
     except Exception as error:
         print(f"[explain_in_context] Anthropic API error: {error.__class__.__name__}: {error}")
         raise HTTPException(status_code=502, detail="AI explanation service is temporarily unavailable")
+
+    await record_ai_spend(LOOKUP_MODEL, getattr(message, "usage", None))
 
     raw = "".join(
         block.text for block in (message.content or []) if getattr(block, "type", None) == "text"
@@ -3995,5 +4011,7 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
 
     if not parsed["explanation"]:
         raise HTTPException(status_code=502, detail="AI returned an empty explanation")
+
+    await asyncio.to_thread(_lookup_cache_put, cache_key, parsed)
 
     return parsed
