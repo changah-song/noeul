@@ -340,6 +340,7 @@ const DictionaryContent = ({
     onContentLoaded,
     onWordSave,
     onWordUnsave,
+    onSavedWordsChanged,
     onTranslatePress,
     onExpandedStateChange,
     onExplainModeChange,
@@ -940,6 +941,7 @@ const DictionaryContent = ({
     };
 
     const toggleSave = async (word, origin, definition, options = {}) => {
+        const { source = null } = options;
         onWordSave?.(word, options);
         const createdAt = new Date().toISOString();
         const relatedKnownWords = relatedKnownByWord[word] ?? [];
@@ -964,6 +966,7 @@ const DictionaryContent = ({
                 language: targetLanguage,
                 relatedKnownWords,
                 pKnown,
+                source,
             });
         }
         const recordedContext = await recordVocabContext({
@@ -980,6 +983,11 @@ const DictionaryContent = ({
         if (!alreadySaved || recordedContext) {
             requestUserDataSync('reader-vocab-save');
         }
+
+        // The DB write has committed — let the parent re-read its book-scoped
+        // saved list so the top-bar badge count reflects this save immediately
+        // rather than only on the next time the saved panel is opened.
+        onSavedWordsChanged?.();
 
         logInteractionEvent({
             ownerId: activeOwnerId,
@@ -1003,6 +1011,9 @@ const DictionaryContent = ({
         });
         requestUserDataSync('reader-vocab-unsave');
 
+        // Commit landed — refresh the parent's badge count for this book.
+        onSavedWordsChanged?.();
+
         logInteractionEvent({
             ownerId,
             language: targetLanguage,
@@ -1018,11 +1029,12 @@ const DictionaryContent = ({
 
     // Save a word using the AI's short contextual gloss as its definition. Used
     // for OOV / force-decomposed words the dictionary can't resolve (e.g. archaic
-    // contractions like 설워하다). The base form the AI recovered becomes the saved
-    // headword so the vocab entry is properly lemmatized rather than an inflected
-    // surface form.
-    const saveWithAiDefinition = async (baseWord, gloss) => {
-        const wordToSave = cleanValue(baseWord);
+    // contractions like 설워하다). Reaching smart-definition means the dictionary
+    // entry was missing or stemming failed, so we save the tapped SURFACE form
+    // verbatim (not a stem/lemma) and tag it `source: 'ai'` so the saved-words list
+    // can badge it as AI-explained.
+    const saveWithAiDefinition = async (surfaceWord, gloss) => {
+        const wordToSave = cleanValue(surfaceWord);
         const def = cleanValue(gloss);
         if (!wordToSave || !def) {
             return;
@@ -1030,7 +1042,7 @@ const DictionaryContent = ({
         if (isWordSaved(wordToSave)) {
             await toggleUnSave(wordToSave, '', def);
         } else {
-            await toggleSave(wordToSave, '', def);
+            await toggleSave(wordToSave, '', def, { source: 'ai' });
         }
     };
 
@@ -1753,7 +1765,10 @@ const DictionaryContent = ({
     // entry's title (word + hanja + pronunciation) rendered above it by the caller.
     const renderExplainBodySection = () => {
         const data = explainData[explainKey] || {};
-        const saveWord = cleanValue(data.lemma) || explainKey;
+        // Save the tapped surface form verbatim (not the AI lemma): reaching
+        // smart-definition implies the dictionary/stemming couldn't resolve it,
+        // so the highlighted text itself is the headword we keep.
+        const saveWord = explainKey;
         const glossText = cleanValue(data.gloss);
         const hasGloss = !data.loading && !!data.text && !!glossText;
         const aiSaved = hasGloss && isWordSaved(saveWord);
@@ -1867,9 +1882,14 @@ const DictionaryContent = ({
     }) => {
         const posLabel = formatPos(pos);
 
+        // In smart-definition mode the title reflects the entire highlighted text
+        // (the tapped surface), not the resolved dictionary stem — so what the user
+        // reads and saves matches the word they tapped.
+        const headingWord = explainMode ? explainKey : word;
+
         return (
             <View key={key} style={[styles.primaryEntry, separated && { borderTopColor: palette.border, borderTopWidth: StyleSheet.hairlineWidth }]}>
-                {renderEntryHeading({ word, hanja, definition, pos, romanization, ipa, pinyin, audioUs, audioUk })}
+                {renderEntryHeading({ word: headingWord, hanja, definition, pos, romanization, ipa, pinyin, audioUs, audioUk })}
                 {explainMode ? renderExplainBodySection() : (
                     <>
                         {isPanelExpanded && isEnglishBook && gloss ? (
@@ -1932,22 +1952,47 @@ const DictionaryContent = ({
         );
     };
 
+    // Not-found panel. Mirrors renderDictionaryPanel's structure so the header +
+    // (in smart-definition mode) the explanation live inside a ScrollView while the
+    // action row stays pinned below. Without this the content overflowed the fixed
+    // sheet height, clipping the word header at the top with no way to scroll.
+    const renderNotFoundPanel = () => (
+        <View style={[styles.panelContent, styles.dictionaryPanelContent, { backgroundColor: palette.surface }]}>
+            <ScrollView
+                ref={dictionaryScrollRef}
+                style={styles.dictionaryScroll}
+                contentContainerStyle={[
+                    styles.notFoundScrollContent,
+                    explainMode ? styles.notFoundScrollContentExplain : styles.notFoundScrollContentCentered,
+                ]}
+                keyboardShouldPersistTaps="handled"
+                nestedScrollEnabled={isDictionaryScrollable}
+                scrollEnabled={isDictionaryScrollable}
+                showsVerticalScrollIndicator={isDictionaryScrollable}
+                bounces={isDictionaryScrollable}
+                onLayout={(event) => {
+                    setDictionaryViewportHeight(event.nativeEvent.layout.height);
+                }}
+                onContentSizeChange={(_, height) => {
+                    setDictionaryContentHeight(height);
+                    onContentHeightChange?.(height);
+                }}
+            >
+                <Text style={[styles.entryWord, styles.notFoundWord, { color: palette.text }]}>{explainMode ? explainKey : lookupWord}</Text>
+                {explainMode ? renderExplainBodySection() : (
+                    <Text style={[styles.notFoundSubtext, { color: colors.textSubtle }]}>{t('lookup.noDefinition')}</Text>
+                )}
+            </ScrollView>
+            {renderNotFoundActionRow(lookupWord)}
+        </View>
+    );
+
     if (cachedResults === null) {
         return renderDefinitionLoadingPanel();
     }
 
     if (cachedResults.length === 0 && !needsLiveFetch && lookupItemCount === 0) {
-        return (
-            <View style={[styles.panelContent, styles.notFoundState, { backgroundColor: palette.surface }]}>
-                <View style={styles.notFoundBody}>
-                    <Text style={[styles.entryWord, { color: palette.text, textAlign: 'center' }]}>{lookupWord}</Text>
-                    {explainMode ? renderExplainBodySection() : (
-                        <Text style={[styles.notFoundSubtext, { color: colors.textSubtle }]}>{t('lookup.noDefinition')}</Text>
-                    )}
-                </View>
-                {renderNotFoundActionRow(lookupWord)}
-            </View>
-        );
+        return renderNotFoundPanel();
     }
 
     if (needsLiveFetch && !liveError && (isLiveLoading || (dictionaryData.length === 0 && lookupItemCount === 0))) {
@@ -1955,17 +2000,7 @@ const DictionaryContent = ({
     }
 
     if (!activeLookupItem) {
-        return (
-            <View style={[styles.panelContent, styles.notFoundState, { backgroundColor: palette.surface }]}>
-                <View style={styles.notFoundBody}>
-                    <Text style={[styles.entryWord, { color: palette.text, textAlign: 'center' }]}>{lookupWord}</Text>
-                    {explainMode ? renderExplainBodySection() : (
-                        <Text style={[styles.notFoundSubtext, { color: colors.textSubtle }]}>{t('lookup.noDefinition')}</Text>
-                    )}
-                </View>
-                {renderNotFoundActionRow(lookupWord)}
-            </View>
-        );
+        return renderNotFoundPanel();
     }
 
     const cachedEntry = activeLookupItem.cachedEntry;
@@ -2734,15 +2769,23 @@ const createStyles = (colors) => StyleSheet.create({
         fontStyle: 'italic',
         textAlign: 'center',
     },
-    notFoundState: {
-        justifyContent: 'space-between',
+    notFoundScrollContent: {
+        flexGrow: 1,
+        paddingHorizontal: 24,
+        gap: 6,
     },
-    notFoundBody: {
-        flex: 1,
+    notFoundScrollContentCentered: {
         justifyContent: 'center',
         alignItems: 'center',
-        gap: 6,
-        paddingHorizontal: 22,
+    },
+    notFoundScrollContentExplain: {
+        justifyContent: 'flex-start',
+        paddingTop: spacing.sm,
+        paddingBottom: spacing.sm,
+    },
+    notFoundWord: {
+        textAlign: 'center',
+        alignSelf: 'stretch',
     },
     notFoundSubtext: {
         fontFamily: fontFamilies.sansRegular,

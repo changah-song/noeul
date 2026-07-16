@@ -35,6 +35,7 @@ const TopSection = ({
     onClose,
     onWordSave,
     onWordUnsave,
+    onSavedWordsChanged,
     currentBook,
     sourceBook,
     savedWords,
@@ -346,6 +347,7 @@ const TopSection = ({
                         isDarkMode={isDarkMode}
                         onWordSave={onWordSave}
                         onWordUnsave={onWordUnsave}
+                        onSavedWordsChanged={onSavedWordsChanged}
                         onTranslatePress={(text) => {
                             const target = typeof text === 'string' && text.trim() ? text.trim() : visibleWord;
                             setTranslationTarget(target);

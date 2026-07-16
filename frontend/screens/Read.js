@@ -2956,6 +2956,7 @@ const Read = ({
                         onClose={dismissLookup}
                         onWordSave={handleWordSave}
                         onWordUnsave={handleWordUnsave}
+                        onSavedWordsChanged={refreshBookSavedWords}
                         currentBook={currentBook}
                         sourceBook={activeBook}
                         savedWords={savedWordsList}

@@ -622,13 +622,12 @@ const createStyles = (colors) => StyleSheet.create({
         fontFamily: fontFamilies.krSerifBold,
     },
     songMetaRow: {
-        minHeight: 36,
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
         gap: spacing.md,
         paddingHorizontal: 24,
-        paddingBottom: spacing.sm,
+        paddingVertical: spacing.sm,
         backgroundColor: colors.bgPage,
     },
     songArtist: {
@@ -640,7 +639,7 @@ const createStyles = (colors) => StyleSheet.create({
         color: colors.textTertiary,
         letterSpacing: 1.8,
         textTransform: 'uppercase',
-        textAlign: 'center',
+        textAlign: 'left',
     },
     savedMeta: {
         fontFamily: fontFamilies.sansRegular,

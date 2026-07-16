@@ -237,6 +237,7 @@ export const createTable = () => {
           stability REAL DEFAULT 1.0,
           difficulty REAL DEFAULT 5.0,
           p_known REAL,
+          source TEXT,
           updated_at TEXT,
           deleted_at TEXT,
           language TEXT DEFAULT 'ko'
@@ -1899,6 +1900,12 @@ export const migrateVocabTable = async () => {
   // sigmoid(theta - KB_difficulty) in (0,1). Left NULL until first scored.
   if (!columns.includes('p_known')) {
     alterations.push('ALTER TABLE vocab ADD COLUMN p_known REAL');
+  }
+
+  // Provenance for a saved card. Currently 'ai' marks words saved from the
+  // smart-definition (AI-explained) flow; NULL for ordinary dictionary saves.
+  if (!columns.includes('source')) {
+    alterations.push('ALTER TABLE vocab ADD COLUMN source TEXT');
   }
 
   await new Promise((resolve, reject) => {
@@ -3594,7 +3601,7 @@ export const getBookSavedWords = async ({ ownerId, profileId, language = 'ko', b
   const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
 
   const rows = await runSelect(
-    `SELECT id, word, hanja, def, level, source_book_title, created_at
+    `SELECT id, word, hanja, def, level, source, source_book_title, created_at
      FROM vocab
      WHERE owner_id = ? AND profile_id = ? AND language = ? AND source_book_uri = ?
        AND deleted_at IS NULL
@@ -3608,6 +3615,7 @@ export const getBookSavedWords = async ({ ownerId, profileId, language = 'ko', b
     hanja: row.hanja || '',
     def: row.def || '',
     level: row.level || 'unorganized',
+    source: row.source || null,
     bookTitle: row.source_book_title || '',
     createdAt: row.created_at || null,
   }));
@@ -3734,6 +3742,7 @@ export const insertData = (word, hanja, definition, levelOrOptions) => {
     updatedAt = createdAt,
     deletedAt = null,
     language = 'ko',
+    source = null,
     ownerId = GUEST_OWNER_ID,
     profileId = null,
   } = options;
@@ -3762,9 +3771,9 @@ export const insertData = (word, hanja, definition, levelOrOptions) => {
         `INSERT INTO vocab (
           owner_id, profile_id, word, hanja, def, def_key, level, source_book_uri, source_book_title, is_favorite,
           priority, created_at, last_reviewed_at, next_review_at, correct_count, wrong_count,
-          stability, difficulty, related_known_words, updated_at, deleted_at, language
+          stability, difficulty, related_known_words, updated_at, deleted_at, language, source
         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           scopedOwnerId,
           scopedProfileId,
@@ -3788,6 +3797,7 @@ export const insertData = (word, hanja, definition, levelOrOptions) => {
           updatedAt ?? createdAt,
           deletedAt,
           language || 'ko',
+          source ?? null,
         ],
         () => resolve(),
         (_, error) => {

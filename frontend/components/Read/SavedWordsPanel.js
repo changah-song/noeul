@@ -141,6 +141,13 @@ const SavedWordsPanel = ({
                                             {entry.hanja ? (
                                                 <Text style={styles.savedHanja}>{entry.hanja}</Text>
                                             ) : null}
+                                            {entry.source === 'ai' ? (
+                                                <View style={styles.savedSourceTag}>
+                                                    <Text style={styles.savedSourceTagText}>
+                                                        {t('read.aiExplainedTag')}
+                                                    </Text>
+                                                </View>
+                                            ) : null}
                                         </View>
                                         {entry.def ? (
                                             <Text style={styles.savedDef} numberOfLines={2}>{entry.def}</Text>
@@ -260,6 +267,19 @@ const createStyles = (colors, insets = { bottom: 0 }) => StyleSheet.create({
     savedHanja: {
         fontFamily: fontFamilies.sansRegular,
         fontSize: 14,
+        color: colors.textSubtle,
+    },
+    savedSourceTag: {
+        paddingHorizontal: 6,
+        paddingVertical: 1,
+        borderRadius: radii.sm,
+        backgroundColor: colors.surfaceMuted,
+        alignSelf: 'center',
+    },
+    savedSourceTagText: {
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 10,
+        letterSpacing: 0.4,
         color: colors.textSubtle,
     },
     savedDef: {
