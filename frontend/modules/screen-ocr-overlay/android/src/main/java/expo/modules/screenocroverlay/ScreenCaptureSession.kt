@@ -90,7 +90,7 @@ class ScreenCaptureSession(
       imageReader.surface,
       null,
       mainHandler
-    )
+    ) ?: throw IllegalStateException(OverlayText.t("virtualDisplayCreateFailed"))
   }
 
   fun analyzeLatestImage(cropBounds: OverlayCaptureBounds? = null): SerializedOcrResult {

@@ -3506,7 +3506,7 @@ const Read = ({
                                                 size={16}
                                                 color={!isScrollMode ? themeColors.readerPaper : themeColors.textSecondary}
                                             />
-                                            <Text style={[styles.segmentButtonText, !isScrollMode && styles.segmentButtonTextActive]}>
+                                            <Text style={[styles.segmentButtonText, !isScrollMode && styles.segmentButtonTextActive]} numberOfLines={1}>
                                                 {t('read.readingHorizontal')}
                                             </Text>
                                         </TouchableOpacity>
@@ -3522,7 +3522,7 @@ const Read = ({
                                                 size={16}
                                                 color={isScrollMode ? themeColors.readerPaper : themeColors.textSecondary}
                                             />
-                                            <Text style={[styles.segmentButtonText, isScrollMode && styles.segmentButtonTextActive]}>
+                                            <Text style={[styles.segmentButtonText, isScrollMode && styles.segmentButtonTextActive]} numberOfLines={1}>
                                                 {t('read.readingVertical')}
                                             </Text>
                                         </TouchableOpacity>
@@ -3558,7 +3558,7 @@ const Read = ({
                                                 size={16}
                                                 color={focusSwipe ? themeColors.readerPaper : themeColors.textSecondary}
                                             />
-                                            <Text style={[styles.segmentButtonText, focusSwipe && styles.segmentButtonTextActive]}>
+                                            <Text style={[styles.segmentButtonText, focusSwipe && styles.segmentButtonTextActive]} numberOfLines={1}>
                                                 {t('read.focusNavSwipe')}
                                             </Text>
                                         </TouchableOpacity>
@@ -3574,7 +3574,7 @@ const Read = ({
                                                 size={16}
                                                 color={!focusSwipe ? themeColors.readerPaper : themeColors.textSecondary}
                                             />
-                                            <Text style={[styles.segmentButtonText, !focusSwipe && styles.segmentButtonTextActive]}>
+                                            <Text style={[styles.segmentButtonText, !focusSwipe && styles.segmentButtonTextActive]} numberOfLines={1}>
                                                 {t('read.focusNavButtons')}
                                             </Text>
                                         </TouchableOpacity>
@@ -4091,24 +4091,29 @@ const createStyles = (themeColors) => StyleSheet.create({
         justifyContent: 'space-between',
     },
     optionsSectionTitle: {
-        fontFamily: 'FFDisplay-Regular',
+        fontFamily: 'FFSans-SemiBold',
         fontSize: 12,
         lineHeight: 16,
-        letterSpacing: 2.4,
+        letterSpacing: 1.1,
         textTransform: 'uppercase',
         color: themeColors.textSecondary,
     },
     segmentGroup: {
+        flex: 1,
         flexDirection: 'row',
         alignItems: 'center',
+        justifyContent: 'flex-end',
         gap: 8,
     },
     segmentButton: {
+        flex: 1,
+        minWidth: 0,
         flexDirection: 'row',
         alignItems: 'center',
+        justifyContent: 'center',
         gap: 6,
         paddingVertical: 7,
-        paddingHorizontal: 12,
+        paddingHorizontal: 10,
         borderRadius: radii.sm,
         borderWidth: 1,
         borderColor: themeColors.readerBorder,

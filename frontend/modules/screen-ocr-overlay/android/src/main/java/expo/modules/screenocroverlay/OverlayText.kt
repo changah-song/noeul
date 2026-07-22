@@ -150,6 +150,7 @@ object OverlayText {
     "translate" to "Translate",
     "translating" to "Translating...",
     "translation" to "Translation",
+    "virtualDisplayCreateFailed" to "Screen capture display could not be created",
     "whatItMeansHere" to "What it means here",
     "fromSurface" to "from {{surface}}",
     "unsupportedPixelStride" to "Unsupported screen capture pixel stride: {{value}}"
