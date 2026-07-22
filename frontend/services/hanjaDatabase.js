@@ -20,7 +20,10 @@ let initializationPromise = null;
 const normalizeString = (value) => (value == null ? '' : String(value).trim());
 
 const getHanjaDisplayLanguage = (interfaceLanguage = 'en') => {
-  const language = normalizeInterfaceLanguageCode(interfaceLanguage);
+  const normalized = normalizeInterfaceLanguageCode(interfaceLanguage);
+  // The hanja DB has per-language columns keyed by short code only;
+  // Traditional Chinese reads the zh (Simplified) columns.
+  const language = normalized === 'zh-Hant' ? 'zh' : normalized;
   return MULTILINGUAL_HANJA_LANGUAGES.has(language) ? language : 'en';
 };
 

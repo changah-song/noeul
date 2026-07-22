@@ -54,8 +54,14 @@ class ScreenOcrOverlayModule : Module() {
       }
     }
 
-    Function("setInterfaceLanguage") { language: String ->
+    // `strings` carries the active interface language's overlay strings, built
+    // from the JS i18n tables (see modules/screen-ocr-overlay/src/index.js).
+    // It's optional so an older/failed bundle just falls back to English.
+    Function("setInterfaceLanguage") { language: String, strings: Map<String, String>? ->
       OverlayText.setLanguage(language)
+      if (strings != null) {
+        OverlayText.setStrings(strings)
+      }
       ScreenOcrOverlayService.getActiveInstance()?.handleInterfaceLanguageChanged()
       OverlayText.currentLanguage()
     }

@@ -33,30 +33,32 @@ const HANJA_RE = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/;
 const LATIN_RE = /[A-Za-z]/;
 const HANGUL_RE = /[\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]/;
 const CJK_RE = /[\u4E00-\u9FFF]/;
-const POS_LABELS = {
-    Noun: 'NOUN',
-    Verb: 'VERB',
-    Adverb: 'ADVERB',
-    Adjective: 'ADJECTIVE',
-    Modifier: 'MODIFIER',
-    Determiner: 'DETERMINER',
-    명사: 'NOUN',
-    동사: 'VERB',
-    형용사: 'ADJECTIVE',
-    부사: 'ADVERB',
-    관형사: 'DETERMINER',
-    감탄사: 'INTERJECTION',
-    대명사: 'PRONOUN',
-    수사: 'NUMERAL',
-    조사: 'PARTICLE',
-    접사: 'AFFIX',
-    어미: 'ENDING',
-    '보조 동사': 'AUXILIARY VERB',
-    보조동사: 'AUXILIARY VERB',
-    '보조 형용사': 'AUXILIARY ADJECTIVE',
-    보조형용사: 'AUXILIARY ADJECTIVE',
-    의존명사: 'DEPENDENT NOUN',
-    '의존 명사': 'DEPENDENT NOUN',
+// Maps raw POS strings (English or Korean, as the dictionaries emit them) to
+// pos.* translation keys. Empty string = deliberately show no badge.
+const POS_KEYS = {
+    Noun: 'pos.noun',
+    Verb: 'pos.verb',
+    Adverb: 'pos.adverb',
+    Adjective: 'pos.adjective',
+    Modifier: 'pos.modifier',
+    Determiner: 'pos.determiner',
+    명사: 'pos.noun',
+    동사: 'pos.verb',
+    형용사: 'pos.adjective',
+    부사: 'pos.adverb',
+    관형사: 'pos.determiner',
+    감탄사: 'pos.interjection',
+    대명사: 'pos.pronoun',
+    수사: 'pos.numeral',
+    조사: 'pos.particle',
+    접사: 'pos.affix',
+    어미: 'pos.ending',
+    '보조 동사': 'pos.auxiliaryVerb',
+    보조동사: 'pos.auxiliaryVerb',
+    '보조 형용사': 'pos.auxiliaryAdjective',
+    보조형용사: 'pos.auxiliaryAdjective',
+    의존명사: 'pos.dependentNoun',
+    '의존 명사': 'pos.dependentNoun',
     품사없음: '',
     '품사 없음': '',
 };
@@ -251,7 +253,7 @@ const isLikelyUntranslatedEnglishDefinition = (definition, interfaceLanguage) =>
         return !HANGUL_RE.test(text);
     }
 
-    if (interfaceLanguage === 'zh') {
+    if (String(interfaceLanguage || '').startsWith('zh')) {
         return !CJK_RE.test(text);
     }
 
@@ -259,26 +261,28 @@ const isLikelyUntranslatedEnglishDefinition = (definition, interfaceLanguage) =>
 };
 const getRelatedKnownWordKey = (entry) => `${entry?.korean ?? ''}|${entry?.hanja ?? ''}`;
 
-const formatPos = (pos) => {
+const formatPos = (pos, t) => {
     const normalized = cleanValue(pos).replace(/\s+/g, ' ');
     if (!normalized) {
         return '';
     }
 
+    const toLabel = (key) => (key === '' ? '' : t(key));
+
     const compact = normalized.replace(/\s+/g, '');
-    if (POS_LABELS[normalized] !== undefined) {
-        return POS_LABELS[normalized];
+    if (POS_KEYS[normalized] !== undefined) {
+        return toLabel(POS_KEYS[normalized]);
     }
-    if (POS_LABELS[compact] !== undefined) {
-        return POS_LABELS[compact];
+    if (POS_KEYS[compact] !== undefined) {
+        return toLabel(POS_KEYS[compact]);
     }
 
-    const koreanLabel = Object.keys(POS_LABELS)
+    const koreanLabel = Object.keys(POS_KEYS)
         .filter((label) => /[\uAC00-\uD7A3]/.test(label))
         .sort((a, b) => b.length - a.length)
         .find((label) => normalized.includes(label));
     if (koreanLabel) {
-        return POS_LABELS[koreanLabel];
+        return toLabel(POS_KEYS[koreanLabel]);
     }
 
     return /[\uAC00-\uD7A3]/.test(normalized) ? '' : normalized.replace(/_/g, ' ').toUpperCase();
@@ -1029,12 +1033,11 @@ const DictionaryContent = ({
 
     // Save a word using the AI's short contextual gloss as its definition. Used
     // for OOV / force-decomposed words the dictionary can't resolve (e.g. archaic
-    // contractions like 설워하다). Reaching smart-definition means the dictionary
-    // entry was missing or stemming failed, so we save the tapped SURFACE form
-    // verbatim (not a stem/lemma) and tag it `source: 'ai'` so the saved-words list
-    // can badge it as AI-explained.
-    const saveWithAiDefinition = async (surfaceWord, gloss) => {
-        const wordToSave = cleanValue(surfaceWord);
+    // contractions like 설워하다). The caller passes the AI-stemmed base form (with a
+    // surface fallback) as the headword, and we tag it `source: 'ai'` so the
+    // saved-words list can badge it as AI-explained.
+    const saveWithAiDefinition = async (headword, gloss) => {
+        const wordToSave = cleanValue(headword);
         const def = cleanValue(gloss);
         if (!wordToSave || !def) {
             return;
@@ -1758,6 +1761,12 @@ const DictionaryContent = ({
     // (설워하는 → 설/워/하다) is explained and saved as one word (lemma 설워하다).
     const explainKey = cleanValue(tappedSurface);
     const canExplain = !!explainKey && !!contextSentence;
+    // The AI returns a stemmed base form (lemma) for the tapped surface — Kiwi
+    // often can't lemmatize the words that land here (archaic/dialectal). Once the
+    // fetch resolves we show and save that base form; until then (or if the model
+    // returns none) we fall back to the tapped surface itself.
+    const explainLemma = cleanValue(explainData[explainKey]?.lemma);
+    const explainHeadword = explainLemma || explainKey;
 
     // Body-only smart-definition content: the short gloss + save button on top
     // (immediately visible and saveable), then the longer contextual explanation
@@ -1765,10 +1774,9 @@ const DictionaryContent = ({
     // entry's title (word + hanja + pronunciation) rendered above it by the caller.
     const renderExplainBodySection = () => {
         const data = explainData[explainKey] || {};
-        // Save the tapped surface form verbatim (not the AI lemma): reaching
-        // smart-definition implies the dictionary/stemming couldn't resolve it,
-        // so the highlighted text itself is the headword we keep.
-        const saveWord = explainKey;
+        // Save the AI-stemmed base form (falling back to the tapped surface when the
+        // model returns none), so title and flashcard both show a clean headword.
+        const saveWord = explainHeadword;
         const glossText = cleanValue(data.gloss);
         const hasGloss = !data.loading && !!data.text && !!glossText;
         const aiSaved = hasGloss && isWordSaved(saveWord);
@@ -1880,12 +1888,12 @@ const DictionaryContent = ({
         extraEntries,
         separated,
     }) => {
-        const posLabel = formatPos(pos);
+        const posLabel = formatPos(pos, t);
 
-        // In smart-definition mode the title reflects the entire highlighted text
-        // (the tapped surface), not the resolved dictionary stem — so what the user
-        // reads and saves matches the word they tapped.
-        const headingWord = explainMode ? explainKey : word;
+        // In smart-definition mode the title shows the AI-stemmed base form of the
+        // tapped word (surface fallback until the fetch resolves), matching what
+        // "Save this" keeps.
+        const headingWord = explainMode ? explainHeadword : word;
 
         return (
             <View key={key} style={[styles.primaryEntry, separated && { borderTopColor: palette.border, borderTopWidth: StyleSheet.hairlineWidth }]}>
@@ -1978,7 +1986,7 @@ const DictionaryContent = ({
                     onContentHeightChange?.(height);
                 }}
             >
-                <Text style={[styles.entryWord, styles.notFoundWord, { color: palette.text }]}>{explainMode ? explainKey : lookupWord}</Text>
+                <Text style={[styles.entryWord, styles.notFoundWord, { color: palette.text }]}>{explainMode ? explainHeadword : lookupWord}</Text>
                 {explainMode ? renderExplainBodySection() : (
                     <Text style={[styles.notFoundSubtext, { color: colors.textSubtle }]}>{t('lookup.noDefinition')}</Text>
                 )}

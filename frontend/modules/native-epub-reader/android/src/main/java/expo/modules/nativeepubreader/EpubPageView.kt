@@ -109,14 +109,14 @@ class EpubPageView(context: Context) : View(context) {
   private var activeSelectionRanges: List<TextRange> = emptyList()
   private var activeSelectionKind: ActiveSelectionKind? = null
   private var savedHighlightRanges: List<TextRange> = emptyList()
-  private var sameLevelRanges: List<TextRange> = emptyList()
-  private var aboveLevelRanges: List<TextRange> = emptyList()
+  private var levelRanges: List<TextRange> = emptyList()
   private var activeHighlightColor = themePalette.activeHighlightColor
   private var textSelectionHighlightColor = themePalette.textSelectionHighlightColor
   private var savedHighlightColor = themePalette.savedHighlightColor
   private var savedHighlightTextColor = themePalette.savedHighlightTextColor
-  private var sameLevelUnderlineColor = themePalette.sameLevelUnderlineColor
-  private var aboveLevelUnderlineColor = themePalette.aboveLevelUnderlineColor
+  private var levelUnderlineEasyColor = themePalette.levelUnderlineEasyColor
+  private var levelUnderlineMidColor = themePalette.levelUnderlineMidColor
+  private var levelUnderlineHardColor = themePalette.levelUnderlineHardColor
   private var onWordSelected: ((WordHit) -> Unit)? = null
   private var onTextSelected: ((TextSelectionHit) -> Unit)? = null
   private var onSelectionCleared: (() -> Unit)? = null
@@ -157,15 +157,10 @@ class EpubPageView(context: Context) : View(context) {
     color = savedHighlightTextColor
     style = Paint.Style.FILL
   }
-  private val sameLevelUnderlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = sameLevelUnderlineColor
-    style = Paint.Style.STROKE
-    strokeWidth = dp(1.7f).toFloat()
-    strokeCap = Paint.Cap.ROUND
-    pathEffect = DashPathEffect(floatArrayOf(dp(1f).toFloat(), dp(3f).toFloat()), 0f)
-  }
-  private val aboveLevelUnderlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-    color = aboveLevelUnderlineColor
+  // One paint for every level underline; its color and stroke width are set per
+  // range from that word's gradient weight just before it is drawn.
+  private val levelUnderlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    color = levelUnderlineEasyColor
     style = Paint.Style.STROKE
     strokeWidth = dp(1.7f).toFloat()
     strokeCap = Paint.Cap.ROUND
@@ -215,14 +210,14 @@ class EpubPageView(context: Context) : View(context) {
     activeSelectionRanges: List<TextRange>,
     activeSelectionKind: ActiveSelectionKind?,
     savedHighlightRanges: List<TextRange>,
-    sameLevelRanges: List<TextRange>,
-    aboveLevelRanges: List<TextRange>,
+    levelRanges: List<TextRange>,
     activeHighlightColor: Int,
     textSelectionHighlightColor: Int,
     savedHighlightColor: Int,
     savedHighlightTextColor: Int,
-    sameLevelUnderlineColor: Int,
-    aboveLevelUnderlineColor: Int,
+    levelUnderlineEasyColor: Int,
+    levelUnderlineMidColor: Int,
+    levelUnderlineHardColor: Int,
     onWordSelected: ((WordHit) -> Unit)?,
     onTextSelected: ((TextSelectionHit) -> Unit)?,
     onSelectionCleared: (() -> Unit)?,
@@ -257,14 +252,14 @@ class EpubPageView(context: Context) : View(context) {
       activeSelectionRanges = activeSelectionRanges,
       activeSelectionKind = activeSelectionKind,
       savedHighlightRanges = savedHighlightRanges,
-      sameLevelRanges = sameLevelRanges,
-      aboveLevelRanges = aboveLevelRanges,
+      levelRanges = levelRanges,
       activeHighlightColor = activeHighlightColor,
       textSelectionHighlightColor = textSelectionHighlightColor,
       savedHighlightColor = savedHighlightColor,
       savedHighlightTextColor = savedHighlightTextColor,
-      sameLevelUnderlineColor = sameLevelUnderlineColor,
-      aboveLevelUnderlineColor = aboveLevelUnderlineColor
+      levelUnderlineEasyColor = levelUnderlineEasyColor,
+      levelUnderlineMidColor = levelUnderlineMidColor,
+      levelUnderlineHardColor = levelUnderlineHardColor
     )
     geometryDirty = true
     invalidate()
@@ -275,30 +270,28 @@ class EpubPageView(context: Context) : View(context) {
     activeSelectionRanges: List<TextRange>,
     activeSelectionKind: ActiveSelectionKind?,
     savedHighlightRanges: List<TextRange>,
-    sameLevelRanges: List<TextRange>,
-    aboveLevelRanges: List<TextRange>,
+    levelRanges: List<TextRange>,
     activeHighlightColor: Int,
     textSelectionHighlightColor: Int,
     savedHighlightColor: Int,
     savedHighlightTextColor: Int,
-    sameLevelUnderlineColor: Int,
-    aboveLevelUnderlineColor: Int
+    levelUnderlineEasyColor: Int,
+    levelUnderlineMidColor: Int,
+    levelUnderlineHardColor: Int
   ) {
     this.activeSelectionRanges = activeSelectionRanges
     this.activeSelectionKind = activeSelectionKind
     this.savedHighlightRanges = savedHighlightRanges
-    this.sameLevelRanges = sameLevelRanges
-    this.aboveLevelRanges = aboveLevelRanges
+    this.levelRanges = levelRanges
     this.activeHighlightColor = activeHighlightColor
     this.textSelectionHighlightColor = textSelectionHighlightColor
     this.savedHighlightColor = savedHighlightColor
     this.savedHighlightTextColor = savedHighlightTextColor
-    this.sameLevelUnderlineColor = sameLevelUnderlineColor
-    this.aboveLevelUnderlineColor = aboveLevelUnderlineColor
+    this.levelUnderlineEasyColor = levelUnderlineEasyColor
+    this.levelUnderlineMidColor = levelUnderlineMidColor
+    this.levelUnderlineHardColor = levelUnderlineHardColor
     savedHighlightPaint.color = savedHighlightColor
     savedHighlightTextPaint.color = savedHighlightTextColor
-    sameLevelUnderlinePaint.color = sameLevelUnderlineColor
-    aboveLevelUnderlinePaint.color = aboveLevelUnderlineColor
     activeHighlightPaint.color = activePaintColor()
     invalidate()
     postInvalidateOnAnimation()
@@ -358,8 +351,7 @@ class EpubPageView(context: Context) : View(context) {
   private fun drawBlockContent(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
     activeHighlightPaint.color = activePaintColor()
     drawTextHighlights(canvas, block, layout, activeSelectionRanges, activeHighlightPaint)
-    drawTextHighlights(canvas, block, layout, sameLevelRanges, sameLevelUnderlinePaint)
-    drawTextHighlights(canvas, block, layout, aboveLevelRanges, aboveLevelUnderlinePaint)
+    drawTextHighlights(canvas, block, layout, levelRanges, levelUnderlinePaint)
     drawTextHighlights(canvas, block, layout, savedHighlightRanges, savedHighlightPaint)
     layout.draw(canvas)
     drawSavedHighlightText(canvas, block, layout, savedHighlightRanges)
@@ -1532,7 +1524,8 @@ class EpubPageView(context: Context) : View(context) {
         return@forEach
       }
 
-      if (paint === sameLevelUnderlinePaint || paint === aboveLevelUnderlinePaint) {
+      if (paint === levelUnderlinePaint) {
+        applyLevelUnderlineShade(paint, range.levelWeight)
         drawLevelUnderline(canvas, layout, localStart, localEnd, blockTextLength, paint)
         return@forEach
       }
@@ -1768,6 +1761,37 @@ class EpubPageView(context: Context) : View(context) {
     }
 
     return false
+  }
+
+  /**
+   * Shade one level underline from its gradient weight: 0 = "you very nearly know
+   * this" (easy/green), 1 = "well above you" (hard/red), interpolated through the
+   * mid stop at 0.5.
+   *
+   * The stroke thickens slightly with weight as well. That's deliberate: a
+   * green→red ramp is the classic red-green colorblindness trap, so weight is
+   * carried by a second, non-chromatic channel too. It is a mitigation, not a
+   * substitute for a proper accessible mode.
+   */
+  private fun applyLevelUnderlineShade(paint: Paint, weight: Float?) {
+    val w = (weight ?: 1f).coerceIn(0f, 1f)
+    paint.color = if (w <= 0.5f) {
+      lerpColor(levelUnderlineEasyColor, levelUnderlineMidColor, w / 0.5f)
+    } else {
+      lerpColor(levelUnderlineMidColor, levelUnderlineHardColor, (w - 0.5f) / 0.5f)
+    }
+    paint.strokeWidth = dp(1.4f + (0.8f * w)).toFloat()
+  }
+
+  // Component-wise RGB interpolation. Deliberately not going through a perceptual
+  // space: the three stops are close enough in luminance that the simple lerp
+  // reads smoothly, and this runs per range per draw.
+  private fun lerpColor(from: Int, to: Int, t: Float): Int {
+    val amount = t.coerceIn(0f, 1f)
+    val r = Color.red(from) + ((Color.red(to) - Color.red(from)) * amount)
+    val g = Color.green(from) + ((Color.green(to) - Color.green(from)) * amount)
+    val b = Color.blue(from) + ((Color.blue(to) - Color.blue(from)) * amount)
+    return Color.rgb(r.toInt(), g.toInt(), b.toInt())
   }
 
   private fun drawLevelUnderline(

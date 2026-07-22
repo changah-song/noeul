@@ -1,6 +1,8 @@
 import * as FileSystem from 'expo-file-system';
 
 import { normalizeBookLanguage } from '../constants/languages';
+import { translate } from '../i18n/translations';
+import { getRuntimeInterfaceLanguage } from './interfaceLanguage';
 import { supabase } from './supabase';
 
 export const PUBLIC_LIBRARY_BUCKET = 'public-library';
@@ -234,7 +236,9 @@ export const publicLibraryRowToBook = (row = {}, overrides = {}) => {
     genre: cleanNullableString(row.genre ?? row.category),
     difficulty: cleanDifficulty(row.difficulty ?? row.level),
     snippet: cleanNullableString(row.description ?? row.summary ?? row.snippet),
-    source: cleanNullableString(row.source ?? row.publisher ?? 'Public library'),
+    source: cleanNullableString(
+        row.source ?? row.publisher ?? translate(getRuntimeInterfaceLanguage(), 'home.publicLibrarySource')
+    ),
     previewSource: cleanNullableString(row.preview_source ?? row.source),
     attributionCategory: cleanNullableString(row.attribution_category),
     attribution: cleanNullableString(row.attribution),

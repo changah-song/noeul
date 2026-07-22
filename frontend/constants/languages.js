@@ -4,8 +4,8 @@ export const SUPPORTED_LANGUAGES = {
 
 export const KRDICT_INTERFACE_LANGUAGE_OPTIONS = [
   { code: 'en', label: 'English' },
-  { code: 'ko', label: '한국어' },
-  { code: 'zh', label: '中文' },
+  { code: 'zh', label: '简体中文' },
+  { code: 'zh-Hant', label: '繁體中文' },
   { code: 'fr', label: 'Français' },
   { code: 'es', label: 'Español' },
   { code: 'ar', label: 'العربية' },
@@ -57,7 +57,14 @@ export const normalizeLanguageCode = (code, fallback = DEFAULT_TARGET_LANGUAGE) 
 };
 
 export const normalizeInterfaceLanguageCode = (code, fallback = DEFAULT_INTERFACE_LANGUAGE) => {
-  const raw = String(code || '').trim().toLowerCase();
+  const raw = String(code || '').trim().toLowerCase().replace('_', '-');
+
+  // Traditional Chinese keeps its script tag — plain short-code stripping below
+  // would collapse it into Simplified 'zh'.
+  if (['zh-hant', 'zh-tw', 'zh-hk', 'zh-mo'].includes(raw)) {
+    return 'zh-Hant';
+  }
+
   const shortCode = raw.split(/[-_]/)[0];
 
   return SUPPORTED_INTERFACE_LANGUAGES[shortCode] ? shortCode : fallback;

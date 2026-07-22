@@ -551,7 +551,7 @@ const compareSortText = (a, b) => (
     })
 );
 
-const formatPreviewDateTime = (value, t = null) => {
+const formatPreviewDateTime = (value, t = null, language = null) => {
     if (!value) {
         return t ? t('home.notOpened') : 'Not opened yet';
     }
@@ -561,7 +561,7 @@ const formatPreviewDateTime = (value, t = null) => {
         return t ? t('home.notOpened') : 'Not opened yet';
     }
 
-    return date.toLocaleDateString(undefined, {
+    return date.toLocaleDateString(language ?? undefined, {
         year: 'numeric',
         month: 'short',
         day: 'numeric',
@@ -1136,7 +1136,7 @@ const BookPreview = ({
     onDelete,
     onEdit,
 }) => {
-    const { t } = useTranslation();
+    const { t, language } = useTranslation();
     const { homeColors: HOME_COLORS, styles } = useHomeTheme();
     const isPublicDomain = !!book?.publicDomain;
     const wordCount = getBookWordCount(book);
@@ -1196,7 +1196,7 @@ const BookPreview = ({
                     onPress={onBack}
                     style={styles.previewBackButton}
                 >
-                    <MaterialIcons name="arrow-back" size={26} color={HOME_COLORS.text} />
+                    <Feather name="chevron-left" size={28} color={HOME_COLORS.text} />
                 </TouchableOpacity>
                 <Text style={styles.previewTopTitle}>{t('home.book')}</Text>
                 <TouchableOpacity
@@ -1335,7 +1335,7 @@ const BookPreview = ({
                             <PreviewMetadataItem label={t('home.level')} value={levelValue} />
                             <PreviewMetadataItem label={t('home.genre')} value={genreValue} />
                             <PreviewMetadataItem label={t('home.language')} value={formatBookLanguage(book?.language, t)} />
-                            <PreviewMetadataItem label={t('home.lastOpened')} value={formatPreviewDateTime(book?.lastOpenedAt, t)} />
+                            <PreviewMetadataItem label={t('home.lastOpened')} value={formatPreviewDateTime(book?.lastOpenedAt, t, language)} />
                         </View>
 
                         <View style={styles.previewSnippetSection}>
@@ -1699,8 +1699,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             setPublicLibraryDiagnostics(makePublicLibraryDiagnostics({
                 stage: languageSettingsReady ? 'inactive' : 'waiting-language-settings',
                 detail: languageSettingsReady
-                    ? 'Remote public library is only used for English target language.'
-                    : 'Waiting for language settings before loading public library.',
+                    ? t('home.libraryOnlyEnglishDetail')
+                    : t('home.libraryWaitingLanguageDetail'),
                 targetLanguage,
             }));
             return () => {
@@ -1713,7 +1713,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             setPublicLibraryError(null);
             setPublicLibraryDiagnostics(makePublicLibraryDiagnostics({
                 stage: 'fetching-rows',
-                detail: 'Querying Supabase table public_library...',
+                detail: t('home.libraryQueryingDetail'),
                 targetLanguage,
             }));
 
@@ -1725,7 +1725,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 if (isActive) {
                     setPublicLibraryDiagnostics(makePublicLibraryDiagnostics({
                         stage: 'checking-local-files',
-                        detail: `Supabase returned ${libraryBooks.length} rows. Checking downloaded files on this device...`,
+                        detail: t('home.libraryRowsCheckingDetail', { count: libraryBooks.length }),
                         targetLanguage,
                         rowCount: libraryBooks.length,
                         checkedCount,
@@ -1742,7 +1742,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     if (isActive) {
                         setPublicLibraryDiagnostics(makePublicLibraryDiagnostics({
                             stage: 'checking-local-files',
-                            detail: `Checked local file state for ${checkedCount}/${libraryBooks.length} public books.`,
+                            detail: t('home.libraryCheckedDetail', { checked: checkedCount, total: libraryBooks.length }),
                             targetLanguage,
                             rowCount: libraryBooks.length,
                             checkedCount,
@@ -1762,7 +1762,10 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 }));
                 setPublicLibraryDiagnostics(makePublicLibraryDiagnostics({
                     stage: 'ready',
-                    detail: `Loaded ${libraryBooks.length} public library rows. ${Object.values(downloadStates).filter(Boolean).length} are already local.`,
+                    detail: t('home.libraryLoadedDetail', {
+                        total: libraryBooks.length,
+                        local: Object.values(downloadStates).filter(Boolean).length,
+                    }),
                     targetLanguage,
                     rowCount: libraryBooks.length,
                     checkedCount,
@@ -1779,7 +1782,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 setPublicLibraryError(error);
                 setPublicLibraryDiagnostics(makePublicLibraryDiagnostics({
                     stage: 'error',
-                    detail: 'Public library load failed.',
+                    detail: t('home.libraryLoadFailedDetail'),
                     targetLanguage,
                     errorMessage: error?.message || String(error),
                 }));
@@ -4403,8 +4406,9 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     previewBackButton: {
         width: 70,
         height: 52,
-        alignItems: 'center',
+        alignItems: 'flex-start',
         justifyContent: 'center',
+        marginLeft: -6,
     },
     previewTopTitle: {
         fontFamily: fontFamilies.sansBold,

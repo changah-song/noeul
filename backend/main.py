@@ -89,6 +89,33 @@ ANONYMOUS_LIMITS = {
     "daily_quota": 300,
 }
 
+# ─── Subscription tiers ───────────────────────────────────────────────────────
+# Two independent axes gate requests, and they exist for different reasons:
+#
+#   anonymous vs authenticated (above)  → infrastructure protection. Caps request
+#       size, stem counts, and total backend calls per day so one client can't
+#       flatten the server. Unrelated to what anyone paid.
+#   free vs pro (below)                 → monetization. Caps only the two endpoints
+#       that spend money at Anthropic.
+#
+# A request passes through both. Keeping them separate means pricing changes never
+# touch the abuse limits, and vice versa.
+TIER_FREE = "free"
+TIER_PRO = "pro"
+
+# Per-day allowances for the paid AI features, by tier.
+#
+# "lookup" counts only calls that actually reach Anthropic — a cache hit in
+# lookup_cache is served before this is consulted and costs the user nothing.
+#
+# The pro lookup number is not a product limit; it is an abuse ceiling well past
+# what a human reader can reach (marketed and experienced as unlimited). It caps
+# a scripted account's damage at roughly $10/month instead of unbounded.
+AI_TIER_LIMITS = {
+    TIER_FREE: {"lookup": 50, "assessment": 1},
+    TIER_PRO: {"lookup": 300, "assessment": 5},
+}
+
 # ─── Server-Side Cache DB ─────────────────────────────────────────────────────
 # This SQLite database lives on the backend server and persists across app restarts.
 # It prevents re-calling KRDICT for words that have already been looked up in any book.
@@ -701,7 +728,8 @@ VALID_CATEGORIES = {"reflective", "persuasive", "creative", "sandbox"}
 VALID_TARGET_LANGUAGES = {"ko", "zh", "en", "ja", "fr", "es", "de", "ru", "ar", "id", "vi", "th", "mn"}
 LANGUAGE_DISPLAY_NAMES = {
     "ko": "Korean",
-    "zh": "Mandarin Chinese",
+    "zh": "Mandarin Chinese (Simplified script)",
+    "zh-Hant": "Mandarin Chinese (Traditional script, Taiwan usage)",
     "en": "English",
     "ja": "Japanese",
     "fr": "French",
@@ -804,6 +832,19 @@ def normalize_short_language_code(value, default=DEFAULT_INTERFACE_LANGUAGE) -> 
         .split("-")[0]
     )
     return normalized or default
+
+
+def normalize_interface_language_code(value, default=DEFAULT_INTERFACE_LANGUAGE) -> str:
+    """Like normalize_short_language_code, but keeps Traditional Chinese distinct.
+
+    Dictionary paths (krdict trans_lang, cached rows) only know short codes, so
+    they should keep using normalize_short_language_code; this variant is for
+    paths that generate text, where Simplified vs Traditional output differs.
+    """
+    raw = str(value or "").strip().lower().replace("_", "-")
+    if raw in {"zh-hant", "zh-tw", "zh-hk", "zh-mo"}:
+        return "zh-Hant"
+    return normalize_short_language_code(value, default)
 
 
 def normalize_chinese_script(value=DEFAULT_CHINESE_SCRIPT) -> str:
@@ -3945,7 +3986,7 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
     word = payload.get("word", "")
     sentence = payload.get("sentence", "")
     target_language = normalize_scoring_language(payload.get("language", "ko"))
-    interface_language = normalize_short_language_code(payload.get("interface_language"))
+    interface_language = normalize_interface_language_code(payload.get("interface_language"))
 
     if not isinstance(word, str) or not word.strip():
         raise HTTPException(status_code=400, detail="word is required")

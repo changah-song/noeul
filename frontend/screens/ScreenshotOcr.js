@@ -19,6 +19,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import TopSection from '../components/Read/TopSection/TopSection';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
+import { translate } from '../i18n/translations';
+import { getRuntimeInterfaceLanguage } from '../services/interfaceLanguage';
 import { recognizeImage } from '../modules/screen-ocr/src';
 import {
     addOcrResultListener,
@@ -59,17 +61,19 @@ const formatOverlayStatus = (status, t) => {
     return labelKey ? t(labelKey) : normalized.replace(/_/g, ' ');
 };
 
-const OCR_SOURCE_BOOK = {
+// Synthetic "source book" shown as the origin of words saved from OCR.
+// Built per call so the title follows the current interface language.
+const getOcrSourceBook = () => ({
     uri: null,
-    title: 'Screenshot OCR',
+    title: translate(getRuntimeInterfaceLanguage(), 'ocr.screenshotSourceTitle'),
     author: 'Noeul',
-};
+});
 
-const FLOATING_OCR_SOURCE_BOOK = {
+const getFloatingOcrSourceBook = () => ({
     uri: null,
-    title: 'Floating OCR',
+    title: translate(getRuntimeInterfaceLanguage(), 'ocr.floatingSourceTitle'),
     author: 'Noeul',
-};
+});
 
 const uniqueTerms = (values) => [...new Set(
     (values || [])
@@ -542,7 +546,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
     const [selectedText, setSelectedText] = useState('');
     const [selectedSentence, setSelectedSentence] = useState('');
     const [selectedBox, setSelectedBox] = useState(null);
-    const [selectedSourceBook, setSelectedSourceBook] = useState(OCR_SOURCE_BOOK);
+    const [selectedSourceBook, setSelectedSourceBook] = useState(getOcrSourceBook);
     const [renderedImageLayout, setRenderedImageLayout] = useState(null);
     const [mode, setMode] = useState('lines');
     const [isRecognizing, setIsRecognizing] = useState(false);
@@ -655,9 +659,10 @@ const ScreenshotOcr = ({ navigation, route }) => {
         setSelectedText(selectedFloatingText);
         setSelectedSentence(String(selection?.selectedLineText || selectedFloatingText).trim());
         setSelectedBox(selection?.selectedBox || null);
+        const floatingSourceBook = getFloatingOcrSourceBook();
         setSelectedSourceBook({
-            ...FLOATING_OCR_SOURCE_BOOK,
-            title: selection?.sourceBookTitle || FLOATING_OCR_SOURCE_BOOK.title,
+            ...floatingSourceBook,
+            title: selection?.sourceBookTitle || floatingSourceBook.title,
         });
         setFloatingMessage(t('ocr.selectedFloating'));
         navigation?.setParams?.({ floatingSelection: undefined });
@@ -701,7 +706,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
         setSelectedText('');
         setSelectedSentence('');
         setSelectedBox(null);
-        setSelectedSourceBook(OCR_SOURCE_BOOK);
+        setSelectedSourceBook(getOcrSourceBook());
 
         try {
             const result = normalizeOcrResult(await recognizeImage(uri));
@@ -749,7 +754,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
             setSelectedText('');
             setSelectedSentence('');
             setSelectedBox(null);
-            setSelectedSourceBook(OCR_SOURCE_BOOK);
+            setSelectedSourceBook(getOcrSourceBook());
 
             const pickedImageSize = await getImageSize(asset.uri);
             if (pickedImageSize) {
@@ -777,7 +782,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
         setSelectedText('');
         setSelectedSentence('');
         setSelectedBox(null);
-        setSelectedSourceBook(OCR_SOURCE_BOOK);
+        setSelectedSourceBook(getOcrSourceBook());
         setRenderedImageLayout(null);
         setIsRecognizing(false);
         setError('');
@@ -789,14 +794,14 @@ const ScreenshotOcr = ({ navigation, route }) => {
         setSelectedText(target.text);
         setSelectedSentence(target.contextSentence || target.text);
         setSelectedBox(target);
-        setSelectedSourceBook(OCR_SOURCE_BOOK);
+        setSelectedSourceBook(getOcrSourceBook());
     }, []);
 
     const closeLookup = useCallback(() => {
         setSelectedText('');
         setSelectedSentence('');
         setSelectedBox(null);
-        setSelectedSourceBook(OCR_SOURCE_BOOK);
+        setSelectedSourceBook(getOcrSourceBook());
     }, []);
 
     const handleWordSave = useCallback((word, options = {}) => {

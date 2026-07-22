@@ -26,6 +26,7 @@ import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
 import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.min
 import kotlin.math.roundToInt
 import java.util.ArrayDeque
 import java.util.concurrent.CancellationException
@@ -35,6 +36,14 @@ import java.util.concurrent.Future
 private data class HighlightTerm(
   val text: String,
   val priority: Int
+)
+
+// A level-underline term plus its gradient position in [0, 1]. JS computes the
+// weight from P(known); the shade it maps to is chosen here so the gradient can
+// follow the reader theme without JS recomputing anything.
+private data class LevelTerm(
+  val text: String,
+  val weight: Float
 )
 
 private data class HighlightMatch(
@@ -131,7 +140,11 @@ private class HighlightMatcher(terms: List<String>) {
 
 private data class HighlightBuildResult(
   val rangesByPage: Map<Int, List<TextRange>>,
-  val contextsByPage: Map<Int, List<Map<String, Any>>> = emptyMap()
+  val contextsByPage: Map<Int, List<Map<String, Any>>> = emptyMap(),
+  // Distinct matched terms per page, in first-appearance order. For level
+  // underlines this is the set of graded words the reader was actually SHOWN on
+  // that page — the exposure signal JS credits when a page is left unread.
+  val termsByPage: Map<Int, List<String>> = emptyMap()
 )
 
 class NativeEpubReaderModule : Module() {
@@ -154,6 +167,15 @@ class NativeEpubReaderModule : Module() {
     // before the beam can move).
     AsyncFunction("focusNav") { view: NativeEpubReaderView, direction: String ->
       view.focusNav(direction)
+    }.runOnQueue(Queues.MAIN)
+
+    // Imperative jump to a saved checkpoint. The restorePosition prop cannot do
+    // this reliably: it carries the passive position echo JS pushes on every
+    // page event as well as deliberate jumps, and by the time a jump reaches the
+    // view it has passed prop diffing, signature dedup and the mid-read guards —
+    // any of which can drop it as a no-op. A command has no such ambiguity.
+    AsyncFunction("seekToPosition") { view: NativeEpubReaderView, position: Map<String, Any?> ->
+      view.seekToPosition(position)
     }.runOnQueue(Queues.MAIN)
 
     View(NativeEpubReaderView::class) {
@@ -209,12 +231,8 @@ class NativeEpubReaderModule : Module() {
         view.setHighlightTerms(terms)
       }
 
-      Prop("sameLevelTerms") { view: NativeEpubReaderView, terms: List<Any?> ->
-        view.setSameLevelTerms(terms)
-      }
-
-      Prop("aboveLevelTerms") { view: NativeEpubReaderView, terms: List<Any?> ->
-        view.setAboveLevelTerms(terms)
+      Prop("levelTerms") { view: NativeEpubReaderView, terms: List<Any?> ->
+        view.setLevelTerms(terms)
       }
 
       Prop("clearSelectionToken") { view: NativeEpubReaderView, token: Double ->
@@ -265,8 +283,13 @@ data class ReaderThemePalette(
   val textSelectionHighlightColor: Int,
   val savedHighlightColor: Int,
   val savedHighlightTextColor: Int,
-  val sameLevelUnderlineColor: Int,
-  val aboveLevelUnderlineColor: Int,
+  // Three stops of the level-underline gradient. A word's shade is interpolated
+  // between them by its P(known)-derived weight: easy (nearly known) → mid
+  // (genuinely uncertain) → hard (well above the reader). Amber sits in the
+  // middle deliberately — a straight green→red lerp passes through mud.
+  val levelUnderlineEasyColor: Int,
+  val levelUnderlineMidColor: Int,
+  val levelUnderlineHardColor: Int,
   val selectionHandleColor: Int,
   val placeholderColor: Int
 )
@@ -285,8 +308,9 @@ fun readerThemePaletteForMode(isDark: Boolean): ReaderThemePalette {
       textSelectionHighlightColor = Color.argb(0x2e, 0xf0, 0xed, 0xed),
       savedHighlightColor = Color.rgb(0xf0, 0xed, 0xed),
       savedHighlightTextColor = Color.rgb(0x1b, 0x1c, 0x1c),
-      sameLevelUnderlineColor = Color.rgb(0x74, 0xc4, 0x76),
-      aboveLevelUnderlineColor = Color.rgb(0xf5, 0x9e, 0x0b),
+      levelUnderlineEasyColor = Color.rgb(0x74, 0xc4, 0x76),
+      levelUnderlineMidColor = Color.rgb(0xf5, 0x9e, 0x0b),
+      levelUnderlineHardColor = Color.rgb(0xe5, 0x68, 0x6a),
       selectionHandleColor = Color.rgb(0xf0, 0xed, 0xed),
       placeholderColor = Color.rgb(0x44, 0x47, 0x4b)
     )
@@ -303,8 +327,9 @@ fun readerThemePaletteForMode(isDark: Boolean): ReaderThemePalette {
       textSelectionHighlightColor = Color.argb(0x2e, 0x20, 0x26, 0x31),
       savedHighlightColor = Color.rgb(0x20, 0x26, 0x31),
       savedHighlightTextColor = Color.WHITE,
-      sameLevelUnderlineColor = Color.rgb(0x2f, 0x8f, 0x46),
-      aboveLevelUnderlineColor = Color.rgb(0xc4, 0x66, 0x1f),
+      levelUnderlineEasyColor = Color.rgb(0x2f, 0x8f, 0x46),
+      levelUnderlineMidColor = Color.rgb(0xc4, 0x66, 0x1f),
+      levelUnderlineHardColor = Color.rgb(0xb3, 0x2d, 0x2d),
       selectionHandleColor = Color.rgb(0x20, 0x26, 0x31),
       placeholderColor = Color.rgb(180, 174, 166)
     )
@@ -334,8 +359,9 @@ private fun readerThemePaletteFromTokens(tokens: Map<String, Any?>, isDark: Bool
     textSelectionHighlightColor = colorFromThemeToken(tokens, "textSelectionHighlight", fallback.textSelectionHighlightColor),
     savedHighlightColor = colorFromThemeToken(tokens, "savedHighlight", fallback.savedHighlightColor),
     savedHighlightTextColor = colorFromThemeToken(tokens, "savedHighlightText", fallback.savedHighlightTextColor),
-    sameLevelUnderlineColor = colorFromThemeToken(tokens, "levelSameUnderline", fallback.sameLevelUnderlineColor),
-    aboveLevelUnderlineColor = colorFromThemeToken(tokens, "levelAboveUnderline", fallback.aboveLevelUnderlineColor),
+    levelUnderlineEasyColor = colorFromThemeToken(tokens, "levelUnderlineEasy", fallback.levelUnderlineEasyColor),
+    levelUnderlineMidColor = colorFromThemeToken(tokens, "levelUnderlineMid", fallback.levelUnderlineMidColor),
+    levelUnderlineHardColor = colorFromThemeToken(tokens, "levelUnderlineHard", fallback.levelUnderlineHardColor),
     selectionHandleColor = colorFromThemeToken(tokens, "selectionHandle", fallback.selectionHandleColor),
     placeholderColor = colorFromThemeToken(tokens, "placeholder", fallback.placeholderColor)
   )
@@ -378,13 +404,21 @@ private data class FocusSentenceInfo(
 )
 
 // Focus (sentence beam) mode geometry and motion, mirroring the design spec:
-// the focused sentence's top is pinned at 60% of the viewport, the content
-// gets generous top/bottom insets so edge sentences can still anchor there,
+// the focused sentence's top is pinned at 60% of the viewport (higher when the
+// span is too tall to fit below that line — see focusAnchorRatioFor), the
+// content gets generous top/bottom insets so edge sentences can still anchor there,
 // the anchor scroll eases over 380ms, and the dictionary-panel lift matches
 // the panel's 450ms cubic-bezier(.22,.61,.36,1) slide.
 private const val FOCUS_ANCHOR_RATIO = 0.60f
 private const val FOCUS_TOP_INSET_RATIO = 0.545f
 private const val FOCUS_BOTTOM_INSET_RATIO = 0.52f
+// Breathing room kept between a span and the edge it is aligned against, so an
+// overlong sentence never sits flush against the panel or runs up under the
+// controls. The top margin is the larger of the two because the focus-mode
+// position pill sits there (12dp down from the top of the reading surface, and
+// about 22dp tall — see focusPillTop in Read.js).
+private const val FOCUS_SPAN_TOP_MARGIN_DP = 44f
+private const val FOCUS_SPAN_BOTTOM_MARGIN_DP = 12f
 private const val FOCUS_SCROLL_DURATION_MS = 380L
 private const val FOCUS_PANEL_LIFT_DURATION_MS = 450L
 // Rapid stepping: when the next beam move arrives within this window of the
@@ -414,6 +448,15 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
   var onSwipeNavigate: ((Int) -> Unit)? = null
   private val swipeNavigationThreshold = 28f * context.resources.displayMetrics.density
 
+  // Set only when the lit span is too tall to show at once: the scroll range
+  // between "span top against the top edge" and "span bottom against the
+  // bottom edge", which the reader can drag within. Null for a span that
+  // fits — the common case, where every swipe navigates as before.
+  var focusScrollBounds: IntRange? = null
+  private var lastDragY = 0f
+  private var downAtSpanTop = false
+  private var downAtSpanBottom = false
+
   // Continuous-mode scroll progress and chapter navigation: a pull past the
   // top/bottom edge (started and released at that edge) turns the chapter.
   var onScrollPositionChanged: ((Int) -> Unit)? = null
@@ -426,6 +469,17 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
   init {
     isFillViewport = true
     overScrollMode = OVER_SCROLL_IF_CONTENT_SCROLLS
+  }
+
+  // Records where an overlong span sat when the finger landed. Navigation
+  // requires the gesture to both start and end at that edge, mirroring the
+  // edge-pull rule below, so the drag that scrolls to the end of a long
+  // sentence does not also step past it.
+  private fun beginFocusDrag(y: Float) {
+    val bounds = focusScrollBounds
+    lastDragY = y
+    downAtSpanTop = bounds == null || scrollY <= bounds.first
+    downAtSpanBottom = bounds == null || scrollY >= bounds.last
   }
 
   private fun maxVerticalScroll(): Int {
@@ -446,6 +500,11 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
         reportedVerticalDrag = false
         downAtTop = scrollY <= 0
         downAtBottom = scrollY >= maxVerticalScroll()
+        // A child (the page view, handling word taps) may consume this DOWN, in
+        // which case onTouchEvent only starts seeing the gesture once the drag
+        // is intercepted at ACTION_MOVE. Seed the focus-drag state here too so
+        // it is never left over from the previous gesture.
+        beginFocusDrag(event.y)
         super.onInterceptTouchEvent(event)
         return false
       }
@@ -493,20 +552,40 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
       return handled
     }
 
+    val bounds = focusScrollBounds
     when (event.actionMasked) {
       MotionEvent.ACTION_DOWN -> {
         startX = event.x
         startY = event.y
+        beginFocusDrag(event.y)
+      }
+      MotionEvent.ACTION_MOVE -> {
+        if (bounds != null) {
+          val delta = (lastDragY - event.y).roundToInt()
+          lastDragY = event.y
+          if (delta != 0) {
+            scrollTo(0, (scrollY + delta).coerceIn(bounds.first, bounds.last))
+          }
+        }
       }
       MotionEvent.ACTION_UP -> {
         val dy = event.y - startY
         if (abs(dy) >= swipeNavigationThreshold) {
-          onSwipeNavigate?.invoke(if (dy < 0) 1 else -1)
+          val direction = if (dy < 0) 1 else -1
+          val atEdge = if (direction == 1) {
+            downAtSpanBottom && (bounds == null || scrollY >= bounds.last)
+          } else {
+            downAtSpanTop && (bounds == null || scrollY <= bounds.first)
+          }
+          if (atEdge) {
+            onSwipeNavigate?.invoke(direction)
+          }
         }
       }
     }
 
-    // Swallow the gesture entirely so the content never free-scrolls.
+    // Swallow the gesture entirely: the content only ever moves within the
+    // bounds above, never free-scrolls.
     return true
   }
 }
@@ -542,6 +621,7 @@ class NativeEpubReaderView(
   private var chapterWindow: List<ChapterWindowItem> = emptyList()
   private var restorePosition: Map<String, Any?> = emptyMap()
   private var restorePositionSignature = ""
+  private var restoreSeekToken = ""
   private var chapterBlocksSignature = ""
   private var chapterWindowSignature = ""
   private var pageRanges: List<ChapterPageRange> = emptyList()
@@ -559,15 +639,18 @@ class NativeEpubReaderView(
   private var readerEdgeStateEnabled = true
   private var continuousPageIndex = 0
   private var highlightTerms: List<String> = emptyList()
-  private var sameLevelTerms: List<String> = emptyList()
-  private var aboveLevelTerms: List<String> = emptyList()
+  private var levelTerms: List<LevelTerm> = emptyList()
   private var highlightMatcher = HighlightMatcher(emptyList())
-  private var sameLevelMatcher = HighlightMatcher(emptyList())
-  private var aboveLevelMatcher = HighlightMatcher(emptyList())
+  private var levelMatcher = HighlightMatcher(emptyList())
+  // Gradient weight per level term, indexed by the term's matcher priority (which
+  // is its index in the list the matcher was built from).
+  private var levelWeights: FloatArray = FloatArray(0)
   private var savedHighlightRangesByPage: Map<Int, List<TextRange>> = emptyMap()
   private var savedHighlightContextsByPage: Map<Int, List<Map<String, Any>>> = emptyMap()
-  private var sameLevelRangesByPage: Map<Int, List<TextRange>> = emptyMap()
-  private var aboveLevelRangesByPage: Map<Int, List<TextRange>> = emptyMap()
+  private var levelRangesByPage: Map<Int, List<TextRange>> = emptyMap()
+  // Graded words actually rendered on each page, shipped out with onPageChange so
+  // JS can credit "shown but not looked up" as weak positive evidence.
+  private var levelTermsByPage: Map<Int, List<String>> = emptyMap()
   private var activeSelectionRanges: List<TextRange> = emptyList()
   private var activeSelectionKind: ActiveSelectionKind? = null
   private var lastClearSelectionToken: Int? = null
@@ -575,8 +658,9 @@ class NativeEpubReaderView(
   private var textSelectionHighlightColor = themePalette.textSelectionHighlightColor
   private var savedHighlightColor = themePalette.savedHighlightColor
   private var savedHighlightTextColor = themePalette.savedHighlightTextColor
-  private var sameLevelUnderlineColor = themePalette.sameLevelUnderlineColor
-  private var aboveLevelUnderlineColor = themePalette.aboveLevelUnderlineColor
+  private var levelUnderlineEasyColor = themePalette.levelUnderlineEasyColor
+  private var levelUnderlineMidColor = themePalette.levelUnderlineMidColor
+  private var levelUnderlineHardColor = themePalette.levelUnderlineHardColor
   private var userDraggedPager = false
   private var previousPageIndex = 0
   private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
@@ -809,7 +893,16 @@ class NativeEpubReaderView(
 
   fun setRestorePosition(position: Map<String, Any?>) {
     val nextSignature = signatureForRestorePosition(position)
-    if (restorePositionSignature == nextSignature) {
+    // A seek token marks a deliberate jump (tapping a checkpoint) as distinct
+    // from the position echo JS pushes on every page event. Only a jump is
+    // allowed to move the reader to a spot it already resolves to — which in
+    // continuous mode is every in-chapter jump, since a "page" there is a whole
+    // chapter.
+    val nextSeekToken = position.stringValue("seekToken")?.takeIf { it.isNotBlank() } ?: ""
+    val isSeek = nextSeekToken.isNotEmpty() && nextSeekToken != restoreSeekToken
+    restoreSeekToken = nextSeekToken
+
+    if (restorePositionSignature == nextSignature && !isSeek) {
       restorePosition = position
       return
     }
@@ -819,7 +912,7 @@ class NativeEpubReaderView(
 
     if (pages.isNotEmpty()) {
       post {
-        applyRestorePositionToCurrentPagesIfPossible()
+        applyRestorePositionToCurrentPagesIfPossible(force = isSeek)
       }
     }
   }
@@ -899,6 +992,7 @@ class NativeEpubReaderView(
     focusScrollAnimator?.cancel()
     continuousPageView.focusPanelOpen = false
     continuousScrollView.swipeNavigationEnabled = isFocusMode() && focusSwipeEnabled
+    continuousScrollView.focusScrollBounds = null
     continuousScrollView.edgePullEnabled = readerRenderMode == "continuous"
     updateFocusLift(animated = false)
     // JS refreshes restorePosition on every page event, so resetting through
@@ -940,25 +1034,15 @@ class NativeEpubReaderView(
     refreshEdgeStatesForCurrentPages()
   }
 
-  fun setSameLevelTerms(terms: List<Any?>) {
-    val nextTerms = normalizeHighlightTerms(terms)
-    if (sameLevelTerms == nextTerms) {
+  fun setLevelTerms(terms: List<Any?>) {
+    val nextTerms = normalizeLevelTerms(terms)
+    if (levelTerms == nextTerms) {
       return
     }
 
-    sameLevelTerms = nextTerms
-    sameLevelMatcher = HighlightMatcher(nextTerms)
-    rebuildLevelUnderlineRanges()
-  }
-
-  fun setAboveLevelTerms(terms: List<Any?>) {
-    val nextTerms = normalizeHighlightTerms(terms)
-    if (aboveLevelTerms == nextTerms) {
-      return
-    }
-
-    aboveLevelTerms = nextTerms
-    aboveLevelMatcher = HighlightMatcher(nextTerms)
+    levelTerms = nextTerms
+    levelMatcher = HighlightMatcher(nextTerms.map { it.text })
+    levelWeights = FloatArray(nextTerms.size) { index -> nextTerms[index].weight }
     rebuildLevelUnderlineRanges()
   }
 
@@ -1339,8 +1423,14 @@ class NativeEpubReaderView(
     )
     savedHighlightRangesByPage = savedHighlights.rangesByPage
     savedHighlightContextsByPage = savedHighlights.contextsByPage
-    sameLevelRangesByPage = buildHighlightRanges(nextPages, sameLevelMatcher, "same-level").rangesByPage
-    aboveLevelRangesByPage = buildHighlightRanges(nextPages, aboveLevelMatcher, "above-level").rangesByPage
+    val levelHighlights = buildHighlightRanges(
+      nextPages,
+      levelMatcher,
+      "level",
+      weightForPriority = ::levelWeightForPriority
+    )
+    levelRangesByPage = levelHighlights.rangesByPage
+    levelTermsByPage = levelHighlights.termsByPage
 
     if (isVerticalLayoutMode()) {
       pages = nextPages
@@ -1372,14 +1462,14 @@ class NativeEpubReaderView(
         activeSelectionRanges,
         activeSelectionKind,
         savedHighlightRangesByPage,
-        sameLevelRangesByPage,
-        aboveLevelRangesByPage,
+        levelRangesByPage,
         activeHighlightColor,
         textSelectionHighlightColor,
         savedHighlightColor,
         savedHighlightTextColor,
-        sameLevelUnderlineColor,
-        aboveLevelUnderlineColor,
+        levelUnderlineEasyColor,
+        levelUnderlineMidColor,
+        levelUnderlineHardColor,
         ::handlePageWordSelected,
         ::handlePageTextSelected,
         ::handlePageSelectionCleared,
@@ -1400,15 +1490,16 @@ class NativeEpubReaderView(
         pages = nextPages
         adapter.updateActiveSelectionRanges(activeSelectionRanges, activeSelectionKind)
         adapter.updateSavedHighlightRanges(savedHighlightRangesByPage)
-        adapter.updateLevelUnderlineRanges(sameLevelRangesByPage, aboveLevelRangesByPage)
+        adapter.updateLevelUnderlineRanges(levelRangesByPage)
         adapter.updateThemePalette(themePaletteSnapshot)
         adapter.updateHighlightColors(
           activeHighlightColor,
           textSelectionHighlightColor,
           savedHighlightColor,
           savedHighlightTextColor,
-          sameLevelUnderlineColor,
-          aboveLevelUnderlineColor
+          levelUnderlineEasyColor,
+          levelUnderlineMidColor,
+          levelUnderlineHardColor
         )
         animateChapterTransition(
           adapter,
@@ -1427,15 +1518,16 @@ class NativeEpubReaderView(
       pagePositionOffset = 0
       adapter.updateActiveSelectionRanges(activeSelectionRanges, activeSelectionKind)
       adapter.updateSavedHighlightRanges(savedHighlightRangesByPage)
-      adapter.updateLevelUnderlineRanges(sameLevelRangesByPage, aboveLevelRangesByPage)
+      adapter.updateLevelUnderlineRanges(levelRangesByPage)
       adapter.updateThemePalette(themePaletteSnapshot)
       adapter.updateHighlightColors(
         activeHighlightColor,
         textSelectionHighlightColor,
         savedHighlightColor,
         savedHighlightTextColor,
-        sameLevelUnderlineColor,
-        aboveLevelUnderlineColor
+        levelUnderlineEasyColor,
+        levelUnderlineMidColor,
+        levelUnderlineHardColor
       )
       adapter.updateRenderConfig(readerLineHeightMultiplier, backgroundColor)
       adapter.updatePages(pages)
@@ -1582,14 +1674,14 @@ class NativeEpubReaderView(
       activeSelectionRanges = activeSelectionRanges,
       activeSelectionKind = activeSelectionKind,
       savedHighlightRanges = savedHighlightRangesByPage[page.pageIndex].orEmpty(),
-      sameLevelRanges = sameLevelRangesByPage[page.pageIndex].orEmpty(),
-      aboveLevelRanges = aboveLevelRangesByPage[page.pageIndex].orEmpty(),
+      levelRanges = levelRangesByPage[page.pageIndex].orEmpty(),
       activeHighlightColor = activeHighlightColor,
       textSelectionHighlightColor = textSelectionHighlightColor,
       savedHighlightColor = savedHighlightColor,
       savedHighlightTextColor = savedHighlightTextColor,
-      sameLevelUnderlineColor = sameLevelUnderlineColor,
-      aboveLevelUnderlineColor = aboveLevelUnderlineColor,
+      levelUnderlineEasyColor = levelUnderlineEasyColor,
+      levelUnderlineMidColor = levelUnderlineMidColor,
+      levelUnderlineHardColor = levelUnderlineHardColor,
       onWordSelected = ::handlePageWordSelected,
       onTextSelected = ::handlePageTextSelected,
       onSelectionCleared = ::handlePageSelectionCleared,
@@ -1619,6 +1711,7 @@ class NativeEpubReaderView(
 
     focusSentences = emptyList()
     continuousScrollView.swipeNavigationEnabled = false
+    continuousScrollView.focusScrollBounds = null
     val maxScroll = (contentHeight - layoutHeight).coerceAtLeast(0)
     val resolvedScrollTarget = when {
       scrollTarget != null -> scrollTarget.coerceIn(0, maxScroll)
@@ -1668,14 +1761,21 @@ class NativeEpubReaderView(
   // block anchor is preferred (stable across font size and render mode
   // changes); the page fraction is a coarse fallback for positions saved
   // without one.
-  private fun continuousRestoreScrollTarget(page: ReaderPage, maxScroll: Int): Int? {
-    val restoreSpineIndex = restorePosition.intValue("spineIndex") ?: return null
+  private fun continuousRestoreScrollTarget(page: ReaderPage, maxScroll: Int): Int? =
+    continuousRestoreScrollTargetFor(restorePosition, page, maxScroll)
+
+  private fun continuousRestoreScrollTargetFor(
+    source: Map<String, Any?>,
+    page: ReaderPage,
+    maxScroll: Int
+  ): Int? {
+    val restoreSpineIndex = source.intValue("spineIndex") ?: return null
     if (restoreSpineIndex != page.spineIndex) {
       return null
     }
 
-    val pageIndex = restorePosition.intValue("pageIndex")
-    val pagesInChapter = restorePosition.intValue("pagesInChapter")
+    val pageIndex = source.intValue("pageIndex")
+    val pagesInChapter = source.intValue("pagesInChapter")
     if (
       pageIndex != null &&
       pagesInChapter != null &&
@@ -1686,7 +1786,7 @@ class NativeEpubReaderView(
       return maxScroll
     }
 
-    restorePosition.stringValue("firstBlockId")?.takeIf { it.isNotBlank() }?.let { blockId ->
+    source.stringValue("firstBlockId")?.takeIf { it.isNotBlank() }?.let { blockId ->
       continuousBlockTopOffset(page, blockId)?.let { blockTop ->
         return blockTop.coerceIn(0, maxScroll)
       }
@@ -1814,6 +1914,93 @@ class NativeEpubReaderView(
     }
   }
 
+  // Jump to a saved checkpoint. Resolves the target from the supplied position
+  // rather than the restorePosition field, so nothing about the passive
+  // position-echo plumbing can suppress it. Logs each decision under the TAG so
+  // a failed jump can be read straight out of logcat.
+  fun seekToPosition(position: Map<String, Any?>) {
+    val spineIndex = position.intValue("spineIndex")
+    val chapterPageIndex = position.intValue("pageIndex") ?: 0
+    val blockId = position.stringValue("firstBlockId")?.takeIf { it.isNotBlank() }
+
+    if (spineIndex == null || pages.isEmpty()) {
+      Log.d(TAG, "seek: ignored spineIndex=$spineIndex pages=${pages.size}")
+      return
+    }
+
+    // Pages of the target chapter, in display order. Index N of this list is the
+    // chapter's Nth page, which is exactly what a bookmark stores.
+    val chapterPages = pages.withIndex().filter { (_, page) -> page.spineIndex == spineIndex }
+    if (chapterPages.isEmpty()) {
+      Log.d(TAG, "seek: chapter $spineIndex not in the current window (pages=${pages.size})")
+      return
+    }
+
+    val targetDisplayIndex = chapterPages
+      .getOrNull(chapterPageIndex)
+      ?.index
+      ?: chapterPages.last().index
+
+    Log.d(
+      TAG,
+      "seek: spine=$spineIndex chapterPage=$chapterPageIndex -> display=$targetDisplayIndex " +
+        "chapterPages=${chapterPages.size} vertical=${isVerticalLayoutMode()} block=$blockId"
+    )
+
+    if (isVerticalLayoutMode()) {
+      // Continuous mode scrolls within one bound chapter, so bind the chapter
+      // then resolve the block anchor to a pixel offset.
+      val page = pages.getOrNull(targetDisplayIndex) ?: return
+      val contentHeight = continuousContentHeightForPage(page).coerceAtLeast(layoutHeight)
+      val maxScroll = (contentHeight - layoutHeight).coerceAtLeast(0)
+      val scrollTarget = blockId
+        ?.let { continuousBlockTopOffset(page, it)?.coerceIn(0, maxScroll) }
+        ?: continuousRestoreScrollTargetFor(position, page, maxScroll)
+      bindContinuousPage(
+        targetDisplayIndex,
+        readerBackgroundColor(),
+        resetScroll = false,
+        scrollTarget = scrollTarget ?: 0
+      )
+      if (isFocusMode()) {
+        dispatchFocusPageChange()
+      }
+      return
+    }
+
+    isChapterTransitionAnimating = false
+    suppressPageEvents = true
+    previousPageIndex = pages.getOrNull(targetDisplayIndex)?.chapterPageIndex ?: targetDisplayIndex
+    viewPager.setCurrentItem(targetDisplayIndex, false)
+    suppressPageEvents = false
+
+    // setCurrentItem(..., smoothScroll = false) delegates to
+    // RecyclerView.scrollToPosition, which only becomes visible on the next
+    // layout pass — and this ExpoView does not lay its children out when just
+    // the content changes, so on a settled pager that pass never comes and the
+    // old page stays on screen. Force measure+layout, then rebind the visible
+    // holder to the page we actually landed on.
+    viewPager.post {
+      if (layoutWidth > 0 && layoutHeight > 0) {
+        viewPager.measure(
+          MeasureSpec.makeMeasureSpec(layoutWidth, MeasureSpec.EXACTLY),
+          MeasureSpec.makeMeasureSpec(layoutHeight, MeasureSpec.EXACTLY)
+        )
+        viewPager.layout(0, 0, layoutWidth, layoutHeight)
+      }
+
+      val settled = viewPager.currentItem
+      val recyclerView = viewPager.getChildAt(0) as? RecyclerView
+      pageAdapter?.rebindVisiblePages(recyclerView, settled)
+      Log.d(
+        TAG,
+        "seek: settled display=$settled requested=$targetDisplayIndex " +
+          "children=${recyclerView?.childCount ?: -1} items=${pageAdapter?.itemCount ?: -1}"
+      )
+      dispatchPageChange(settled, pages.size)
+    }
+  }
+
   private fun applyFocusHighlightToView(animate: Boolean, fast: Boolean = false) {
     if (focusSentences.isEmpty()) {
       continuousPageView.setFocusHighlight(emptyList(), animate = false)
@@ -1828,11 +2015,91 @@ class NativeEpubReaderView(
     continuousPageView.setFocusHighlight(ranges, animate, fast)
   }
 
-  private fun anchorScrollToFocus(animated: Boolean, fast: Boolean = false) {
-    val sentence = focusSentences.getOrNull(focusIndex) ?: return
+  // Where the focused span's top should sit, as a fraction of the viewport.
+  // Normally FOCUS_ANCHOR_RATIO, but a span taller than the room below that
+  // line would spill off screen, so it gets bottom-aligned instead: lifted
+  // just far enough that its last line clears the dictionary panel.
+  //
+  // The panel cancels out of that bottom constraint. With the lift applied the
+  // span's bottom sits at ratio*H - P + S and the panel's top edge at H - P,
+  // so requiring one to clear the other reduces to ratio <= (H - S) / H. The
+  // panel only binds at the other end, where the span's first line must stay
+  // below the top of the screen — hence the floor.
+  private fun focusAnchorRatioFor(spanHeight: Int): Float {
+    if (layoutHeight <= 0) {
+      return FOCUS_ANCHOR_RATIO
+    }
+
+    val height = layoutHeight.toFloat()
+    val fitted = (height - spanHeight - focusSpanBottomMarginPx()) / height
+    // coerceAtMost keeps the range below well-formed if a panel ever reports a
+    // height at or beyond the viewport.
+    val floor = ((focusPanelLiftPx + focusSpanTopMarginPx()) / height).coerceAtMost(1f)
+    // The floor is allowed to exceed FOCUS_ANCHOR_RATIO: a panel taller than
+    // 60% of the viewport lifts the content far enough that the resting anchor
+    // would put the span's first line above the top of the screen, and pushing
+    // the ratio up is what brings it back down into view. When the floor and
+    // the fitted ratio disagree (a very long sentence under an expanded panel)
+    // the floor wins, keeping the opening lines visible and letting the tail
+    // run behind the panel.
+    return min(FOCUS_ANCHOR_RATIO, fitted).coerceIn(floor, 1f)
+  }
+
+  // Content extent of the whole highlighted beam, first sentence's top through
+  // the last one's bottom, so multi-sentence spans anchor on what is actually
+  // lit rather than on their opening sentence alone.
+  private fun focusSpanExtent(): Pair<Int, Int>? {
+    val start = focusSentences.getOrNull(focusIndex) ?: return null
+    val lastIndex = (focusIndex + focusSpanCount - 1).coerceAtMost(focusSentences.lastIndex)
+    val end = focusSentences.getOrNull(lastIndex) ?: start
+    return start.topY to end.bottomY.coerceAtLeast(start.topY)
+  }
+
+  private fun focusSpanTopMarginPx(): Float =
+    FOCUS_SPAN_TOP_MARGIN_DP * resources.displayMetrics.density
+
+  private fun focusSpanBottomMarginPx(): Float =
+    FOCUS_SPAN_BOTTOM_MARGIN_DP * resources.displayMetrics.density
+
+  // A span taller than the viewport cannot be shown at once, so instead of
+  // anchoring it at one fixed position the reader may drag it between its two
+  // extremes: top of the span against the top of the screen, and bottom of the
+  // span against the top of the dictionary panel. A swipe that starts and ends
+  // at either extreme falls through to sentence navigation. When the span fits,
+  // both extremes collapse into the single anchor position and the bounds go
+  // away, leaving swipe navigation exactly as it was.
+  private fun updateFocusScrollBounds() {
+    val extent = focusSpanExtent()
+    if (!isFocusMode() || extent == null || layoutHeight <= 0) {
+      continuousScrollView.focusScrollBounds = null
+      return
+    }
+
+    val (spanTop, spanBottom) = extent
     val contentHeight = continuousPageView.layoutParams?.height ?: 0
     val maxScroll = (contentHeight - layoutHeight).coerceAtLeast(0)
-    val target = (sentence.topY - (layoutHeight * FOCUS_ANCHOR_RATIO)).roundToInt()
+    val topAligned = (spanTop - focusPanelLiftPx - focusSpanTopMarginPx())
+      .roundToInt().coerceIn(0, maxScroll)
+    val bottomAligned = (spanBottom - layoutHeight + focusSpanBottomMarginPx())
+      .roundToInt().coerceIn(0, maxScroll)
+
+    continuousScrollView.focusScrollBounds = if (bottomAligned > topAligned) {
+      topAligned..bottomAligned
+    } else {
+      null
+    }
+  }
+
+  private fun anchorScrollToFocus(animated: Boolean, fast: Boolean = false) {
+    updateFocusScrollBounds()
+
+    val sentence = focusSentences.getOrNull(focusIndex) ?: return
+    val extent = focusSpanExtent()
+    val spanHeight = extent?.let { (top, bottom) -> bottom - top } ?: 0
+    val contentHeight = continuousPageView.layoutParams?.height ?: 0
+    val maxScroll = (contentHeight - layoutHeight).coerceAtLeast(0)
+    val ratio = focusAnchorRatioFor(spanHeight)
+    val target = (sentence.topY - (layoutHeight * ratio)).roundToInt()
       .coerceIn(0, maxScroll)
 
     focusScrollAnimator?.cancel()
@@ -1945,6 +2212,12 @@ class NativeEpubReaderView(
 
     focusPanelLiftPx = nextLiftPx
     updateFocusLift(animated = true)
+    // The lift alone keeps a normal sentence clear of the panel, but the panel
+    // height is also the floor on the anchor ratio, so a bottom-aligned long
+    // span has to be re-solved whenever the panel opens, closes or resizes.
+    if (isFocusMode() && focusSentences.isNotEmpty()) {
+      anchorScrollToFocus(animated = true)
+    }
   }
 
   // Lifts the reading surface so the anchored sentence clears the dictionary
@@ -2097,7 +2370,8 @@ class NativeEpubReaderView(
       "globalTotal" to pages.size,
       "href" to href,
       "firstBlockId" to firstVisibleBlockId(page, continuousScrollView.scrollY),
-      "savedHighlights" to savedHighlights
+      "savedHighlights" to savedHighlights,
+      "gradedTerms" to levelTermsByPage[page.pageIndex].orEmpty()
     )
 
     (page.spineIndex ?: bookManifest.intValue("currentSpineIndex"))?.let { spineIndex ->
@@ -2249,14 +2523,14 @@ class NativeEpubReaderView(
         activeSelectionRanges = activeSelectionRanges,
         activeSelectionKind = activeSelectionKind,
         savedHighlightRanges = savedHighlightRangesByPage[page.pageIndex].orEmpty(),
-        sameLevelRanges = sameLevelRangesByPage[page.pageIndex].orEmpty(),
-        aboveLevelRanges = aboveLevelRangesByPage[page.pageIndex].orEmpty(),
+        levelRanges = levelRangesByPage[page.pageIndex].orEmpty(),
         activeHighlightColor = activeHighlightColor,
         textSelectionHighlightColor = textSelectionHighlightColor,
         savedHighlightColor = savedHighlightColor,
         savedHighlightTextColor = savedHighlightTextColor,
-        sameLevelUnderlineColor = sameLevelUnderlineColor,
-        aboveLevelUnderlineColor = aboveLevelUnderlineColor
+        levelUnderlineEasyColor = levelUnderlineEasyColor,
+        levelUnderlineMidColor = levelUnderlineMidColor,
+        levelUnderlineHardColor = levelUnderlineHardColor
       )
     }
   }
@@ -2279,11 +2553,20 @@ class NativeEpubReaderView(
   }
 
   private fun rebuildLevelUnderlineRanges() {
-    sameLevelRangesByPage = buildHighlightRanges(pages, sameLevelMatcher, "same-level").rangesByPage
-    aboveLevelRangesByPage = buildHighlightRanges(pages, aboveLevelMatcher, "above-level").rangesByPage
-    pageAdapter?.updateLevelUnderlineRanges(sameLevelRangesByPage, aboveLevelRangesByPage)
+    val levelHighlights = buildHighlightRanges(
+      pages,
+      levelMatcher,
+      "level",
+      weightForPriority = ::levelWeightForPriority
+    )
+    levelRangesByPage = levelHighlights.rangesByPage
+    levelTermsByPage = levelHighlights.termsByPage
+    pageAdapter?.updateLevelUnderlineRanges(levelRangesByPage)
     invalidateVisiblePageHighlights()
   }
+
+  private fun levelWeightForPriority(priority: Int): Float? =
+    levelWeights.getOrNull(priority)
 
   private fun refreshEdgeStatesForCurrentPages() {
     if (pages.isEmpty() || pages.none { page -> page.edgeState != null }) {
@@ -2337,7 +2620,10 @@ class NativeEpubReaderView(
     sourcePages: List<ReaderPage>,
     matcher: HighlightMatcher,
     label: String,
-    collectContexts: Boolean = false
+    collectContexts: Boolean = false,
+    // Level underlines only: resolves a match's gradient weight from its matcher
+    // priority. Null (every other range kind) leaves TextRange.levelWeight unset.
+    weightForPriority: ((Int) -> Float?)? = null
   ): HighlightBuildResult {
     if (sourcePages.isEmpty() || matcher.termCount == 0) {
       Log.d(
@@ -2349,11 +2635,14 @@ class NativeEpubReaderView(
 
     val rangesByPage = mutableMapOf<Int, MutableList<TextRange>>()
     val contextsByPage = mutableMapOf<Int, MutableList<Map<String, Any>>>()
+    val termsByPage = mutableMapOf<Int, List<String>>()
 
     sourcePages.forEach { page ->
       val pageRanges = mutableListOf<TextRange>()
       val pageContexts = mutableListOf<Map<String, Any>>()
       val seenContextKeys = mutableSetOf<String>()
+      // LinkedHashSet: a term repeated on the page is one exposure, not several.
+      val pageTerms = linkedSetOf<String>()
 
       page.blocks.forEach blockLoop@{ block ->
         if (block.type != "text") {
@@ -2373,13 +2662,15 @@ class NativeEpubReaderView(
             !overlapsAny(occupiedLocalRanges, match.start, match.end)
           ) {
             occupiedLocalRanges.add(match.start to match.end)
+            pageTerms.add(match.term)
             pageRanges.add(
               TextRange(
                 pageIndex = page.pageIndex,
                 spineIndex = page.spineIndex,
                 blockId = block.blockId,
                 sourceStartOffset = block.sourceStartOffset + match.start,
-                sourceEndOffset = block.sourceStartOffset + match.end
+                sourceEndOffset = block.sourceStartOffset + match.end,
+                levelWeight = weightForPriority?.invoke(match.priority)
               )
             )
 
@@ -2412,6 +2703,10 @@ class NativeEpubReaderView(
       if (pageContexts.isNotEmpty()) {
         contextsByPage[page.pageIndex] = pageContexts
       }
+
+      if (pageTerms.isNotEmpty()) {
+        termsByPage[page.pageIndex] = pageTerms.toList()
+      }
     }
 
     val matchCount = rangesByPage.values.sumOf { ranges -> ranges.size }
@@ -2420,7 +2715,7 @@ class NativeEpubReaderView(
       "$label highlight ranges built: terms=${matcher.termCount} pages=${sourcePages.size} matches=$matchCount"
     )
 
-    return HighlightBuildResult(rangesByPage, contextsByPage)
+    return HighlightBuildResult(rangesByPage, contextsByPage, termsByPage)
   }
 
   private fun sentenceForOffsets(text: String, startOffset: Int, endOffset: Int): String {
@@ -2454,6 +2749,32 @@ class NativeEpubReaderView(
       .mapNotNull { term -> (term as? String)?.trim()?.takeIf { it.isNotEmpty() } }
       .distinct()
       .sortedWith(compareByDescending<String> { it.length }.thenBy { it })
+  }
+
+  /**
+   * Normalize the `levelTerms` prop into matcher input. Entries arrive as
+   * `{ text, weight }` records; a bare string is accepted too and lands at the
+   * hard end of the gradient, so a caller that only has a word list still gets a
+   * sane mark rather than an invisible one.
+   *
+   * Sorted longest-first for the same reason `normalizeHighlightTerms` is: the
+   * matcher resolves overlaps by priority, so the longest surface must win.
+   */
+  private fun normalizeLevelTerms(terms: List<Any?>): List<LevelTerm> {
+    return terms
+      .mapNotNull { entry ->
+        when (entry) {
+          is String -> entry.trim().takeIf { it.isNotEmpty() }?.let { LevelTerm(it, 1f) }
+          is Map<*, *> -> {
+            val text = (entry["text"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
+            val weight = (entry["weight"] as? Number)?.toFloat() ?: 1f
+            text?.let { LevelTerm(it, weight.coerceIn(0f, 1f)) }
+          }
+          else -> null
+        }
+      }
+      .distinctBy { it.text }
+      .sortedWith(compareByDescending<LevelTerm> { it.text.length }.thenBy { it.text })
   }
 
   private fun hasTokenBoundary(
@@ -2524,8 +2845,9 @@ class NativeEpubReaderView(
     textSelectionHighlightColor = themePalette.textSelectionHighlightColor
     savedHighlightColor = themePalette.savedHighlightColor
     savedHighlightTextColor = themePalette.savedHighlightTextColor
-    sameLevelUnderlineColor = themePalette.sameLevelUnderlineColor
-    aboveLevelUnderlineColor = themePalette.aboveLevelUnderlineColor
+    levelUnderlineEasyColor = themePalette.levelUnderlineEasyColor
+    levelUnderlineMidColor = themePalette.levelUnderlineMidColor
+    levelUnderlineHardColor = themePalette.levelUnderlineHardColor
 
     pageAdapter?.updateThemePalette(themePalette)
     pageAdapter?.updateHighlightColors(
@@ -2533,8 +2855,9 @@ class NativeEpubReaderView(
       textSelectionHighlightColor,
       savedHighlightColor,
       savedHighlightTextColor,
-      sameLevelUnderlineColor,
-      aboveLevelUnderlineColor
+      levelUnderlineEasyColor,
+      levelUnderlineMidColor,
+      levelUnderlineHardColor
     )
     invalidateVisiblePageHighlights()
   }
@@ -2649,19 +2972,24 @@ class NativeEpubReaderView(
     dispatchPageChange(logicalPage, pages.size)
   }
 
-  private fun applyRestorePositionToCurrentPagesIfPossible() {
+  private fun applyRestorePositionToCurrentPagesIfPossible(force: Boolean = false) {
     if (pages.isEmpty() || isChapterTransitionAnimating) {
       return
     }
 
     if (isVerticalLayoutMode()) {
       val targetChapterPage = pageIndexForRestorePosition(pages) ?: return
-      if (targetChapterPage == continuousPageIndex) {
+      if (targetChapterPage == continuousPageIndex && !force) {
         // In-chapter restore echoes (JS refreshes the prop on every page
-        // event) must not yank the scroll position mid-read.
+        // event) must not yank the scroll position mid-read. A seek is
+        // deliberate, so it passes: in continuous mode a "page" is the whole
+        // chapter, meaning every in-chapter jump lands here.
         return
       }
 
+      // Rebinding with resetScroll re-runs continuousRestoreScrollTarget, which
+      // resolves the saved block anchor to a scroll offset. It is the only path
+      // that can move within a chapter.
       bindContinuousPage(targetChapterPage, readerBackgroundColor(), resetScroll = true)
       if (isFocusMode()) {
         dispatchFocusPageChange()
@@ -2742,7 +3070,9 @@ class NativeEpubReaderView(
 
   private fun signatureForRestorePosition(position: Map<String, Any?>): String {
     position["spineIndex"] ?: return ""
-    return listOf("spineIndex", "pageIndex", "pagesInChapter", "href", "firstBlockId")
+    // seekToken participates so that jumping back to a spot the reader has
+    // since returned to still reads as a new position rather than an echo.
+    return listOf("spineIndex", "pageIndex", "pagesInChapter", "href", "firstBlockId", "seekToken")
       .joinToString("|") { key -> "$key=${position[key] ?: ""}" }
   }
 
@@ -2763,7 +3093,8 @@ class NativeEpubReaderView(
       "globalTotal" to total,
       "href" to href,
       "firstBlockId" to (page?.blocks?.firstOrNull()?.blockId ?: ""),
-      "savedHighlights" to (page?.pageIndex?.let { savedHighlightContextsByPage[it] }.orEmpty())
+      "savedHighlights" to (page?.pageIndex?.let { savedHighlightContextsByPage[it] }.orEmpty()),
+      "gradedTerms" to (page?.pageIndex?.let { levelTermsByPage[it] }.orEmpty())
     )
 
     (page?.spineIndex ?: bookManifest.intValue("currentSpineIndex"))?.let { spineIndex ->

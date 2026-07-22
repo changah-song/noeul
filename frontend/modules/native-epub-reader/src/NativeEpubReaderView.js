@@ -34,6 +34,16 @@ export const sendFocusNavCommand = (viewTag, direction) => (
     NativeModule?.focusNav?.(viewTag, direction) ?? androidOnly()
 );
 
+// Imperative jump to a saved checkpoint. The restorePosition prop also carries
+// the passive position echo pushed on every page event, so a jump sent that way
+// can be dropped as a no-op; this command is unambiguous. The flag lets callers
+// detect an older native binary that predates it.
+export const supportsSeekToPosition = typeof NativeModule?.seekToPosition === 'function';
+
+export const sendSeekToPosition = (viewTag, position) => (
+    NativeModule?.seekToPosition?.(viewTag, position) ?? androidOnly()
+);
+
 const NativeEpubReaderView = forwardRef(({
     bookManifest,
     chapterBlocks,
@@ -48,8 +58,10 @@ const NativeEpubReaderView = forwardRef(({
     renderMode = 'paged',
     readerEdgeStateEnabled = true,
     highlightTerms = [],
-    sameLevelTerms = [],
-    aboveLevelTerms = [],
+    // [{ text, weight }] — weight 0..1 positions the term on the reader's
+    // green→amber→red underline gradient. Native owns the colors so the gradient
+    // tracks the reader theme without a round trip through JS.
+    levelTerms = [],
     clearSelectionToken = 0,
     focusSentenceCount = 1,
     focusSwipeEnabled = false,
@@ -124,8 +136,7 @@ const NativeEpubReaderView = forwardRef(({
             renderMode={renderMode}
             readerEdgeStateEnabled={readerEdgeStateEnabled}
             highlightTerms={highlightTerms || []}
-            sameLevelTerms={sameLevelTerms || []}
-            aboveLevelTerms={aboveLevelTerms || []}
+            levelTerms={levelTerms || []}
             clearSelectionToken={clearSelectionToken}
             focusSentenceCount={focusSentenceCount}
             focusSwipeEnabled={focusSwipeEnabled}

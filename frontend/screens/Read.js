@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Animated, BackHandler, Easing, PanResponder, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, Pressable, findNodeHandle } from 'react-native';
+import { Animated, BackHandler, Easing, PanResponder, ScrollView, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, Pressable, findNodeHandle } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather, MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -13,17 +13,24 @@ import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
 import NativeEpubReaderView, {
     sendFocusNavCommand,
+    sendSeekToPosition,
     supportsImperativeFocusNav,
+    supportsSeekToPosition,
 } from '../modules/native-epub-reader/src/NativeEpubReaderView';
 import {
     PREPROCESS_VERSION,
+    deleteBookBookmark,
     deleteBookNote,
+    getBookBookmarks,
     getBookNotes,
     getBookPreprocessChapter,
     getBookSavedWords,
     getBookWordCandidates,
     getCachedPKnown,
+    applyExposureBatch,
+    getProfileAbility,
     getSavedWords,
+    insertBookBookmark,
     insertBookNote,
     insertCacheEntries,
     insertBookIndexEntries,
@@ -40,6 +47,7 @@ import {
     vocabEntryExists,
 } from '../services/Database';
 import { deriveCandidateReason, pickExampleSentence } from '../services/wordCandidates';
+import { findActiveBookmark } from '../services/bookmarks';
 import BeforeYouGoSheet from '../components/Read/BeforeYouGoSheet';
 import SavedWordsPanel from '../components/Read/SavedWordsPanel';
 import NotesLogSheet from '../components/Read/NotesLogSheet';
@@ -62,6 +70,13 @@ import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
 import { requestUserDataSync } from '../services/userDataSyncQueue';
 import { normalizeBookLanguage, normalizeInterfaceLanguageCode } from '../constants/languages';
 import { getProficiencyLevelForLanguage } from '../constants/proficiencyLevels';
+import {
+    difficultyFromLevelRank,
+    levelUnderlineWeight,
+    lowestUnderlinedRank,
+    pKnown,
+    seedThetaFromRank,
+} from '../services/abilityModel';
 import { createNativeReaderThemeTokens, radii, spacing, textStyles, useTheme } from '../theme';
 
 const LOOKUP_HINT_DISMISSED_KEY = 'lookupHintDismissed';
@@ -85,6 +100,19 @@ const FOCUS_SPAN_MAX = 5;
 // (screen state + library patch + AsyncStorage write) is what made beam
 // navigation feel sluggish, so steps coalesce to the trailing event.
 const FOCUS_PAGE_CHANGE_DEBOUNCE_MS = 400;
+
+// ─── Exposure crediting ───────────────────────────────────────────────────────
+// A graded word shown on a page the reader dwelled on and then left WITHOUT
+// tapping is weak positive evidence that they knew it. It is the only read-mode
+// signal that can push ability UP — lookups only ever push it down.
+//
+// Credit is awarded on page EXIT, not entry: entering a page says nothing, so
+// flicking through five pages hunting for your place must not bank five pages of
+// "known". Below this dwell the page is treated as never read.
+const EXPOSURE_MIN_DWELL_MS = 4000;
+// Cap per page so a densely typeset page can't move ability further than a sparse
+// one — that's a property of the layout, not of the reader.
+const EXPOSURE_MAX_PER_PAGE = 5;
 const LINE_SPACING_STEPS = [
     { value: 1.4, label: 'Compact' },
     { value: 1.65, label: 'Regular' },
@@ -132,10 +160,22 @@ const uniqTerms = (values) => [...new Set(
         .filter(Boolean)
 )];
 
-const splitLevelUnderlineTerms = (rows, userRank) => {
-    const normalizedUserRank = Number(userRank);
-    if (!Number.isFinite(normalizedUserRank)) {
-        return { same: [], above: [] };
+/**
+ * buildLevelUnderlineTerms — turn the book's graded surfaces into the weighted
+ * term list the native reader shades its underlines with.
+ *
+ * The weight is a position on the green→amber→red gradient derived from
+ * P(known | theta, word difficulty), NOT from the user's self-reported band. A
+ * word the model thinks you know is dropped entirely; the rest ramp from "nearly
+ * known" to "well above you". Native owns the actual colors so the gradient can
+ * follow the reader theme without a recompute here.
+ *
+ * Ambiguous surfaces (one surface, several stems) keep their HARDEST rank — the
+ * conservative read, matching what the old rank-bucketed version did.
+ */
+const buildLevelUnderlineTerms = (rows, language, theta) => {
+    if (!Number.isFinite(Number(theta))) {
+        return [];
     }
 
     const surfaceRanks = new Map();
@@ -152,20 +192,26 @@ const splitLevelUnderlineTerms = (rows, userRank) => {
         }
     });
 
-    const same = [];
-    const above = [];
+    // Difficulty depends only on the rank, and there are at most 7 ranks, so
+    // memoize the per-rank weight instead of recomputing a sigmoid per surface.
+    const weightByRank = new Map();
+    const weightForRank = (rank) => {
+        if (!weightByRank.has(rank)) {
+            const difficulty = difficultyFromLevelRank(language, rank);
+            weightByRank.set(rank, levelUnderlineWeight(pKnown(theta, difficulty)));
+        }
+        return weightByRank.get(rank);
+    };
+
+    const terms = [];
     surfaceRanks.forEach((rank, surface) => {
-        if (rank === normalizedUserRank) {
-            same.push(surface);
-        } else if (rank > normalizedUserRank) {
-            above.push(surface);
+        const weight = weightForRank(rank);
+        if (weight != null) {
+            terms.push({ text: surface, weight });
         }
     });
 
-    return {
-        same: uniqTerms(same),
-        above: uniqTerms(above),
-    };
+    return terms;
 };
 
 const getBookLevelLabelForRank = (language, rank) => {
@@ -512,11 +558,12 @@ const Read = ({
     // (before-you-go is now note-only; candidates live in the saved-words panel)
     const [showNotesLog, setShowNotesLog] = useState(false);
     const [bookNotes, setBookNotes] = useState([]);
+    const [bookBookmarks, setBookBookmarks] = useState([]);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [savedWords, setSavedWords] = useState(null); // null = not yet loaded
     const [highlightTerms, setHighlightTerms] = useState(null);
     const [optimisticHighlightTerms, setOptimisticHighlightTerms] = useState([]);
-    const [levelUnderlineTerms, setLevelUnderlineTerms] = useState({ same: [], above: [] });
+    const [levelUnderlineTerms, setLevelUnderlineTerms] = useState([]);
     const [highlightTermsReady, setHighlightTermsReady] = useState(false);
     const [readerLocationInfo, setReaderLocationInfo] = useState(null);
     const [toc, setToc] = useState([]);
@@ -599,6 +646,22 @@ const Read = ({
     const nativeReaderPackageRef = useRef(null);
     const nativeRestorePositionRef = useRef(null);
     const currentSpineIndexRef = useRef(null);
+    // Read only as a cold-start fallback inside the level-underline effect. Held in
+    // a ref so changing the picked level mid-book doesn't re-shade the page out
+    // from under the reader — it lands at the next chapter, like every other
+    // underline change.
+    const levelsByLanguageRef = useRef(levelsByLanguage);
+    levelsByLanguageRef.current = levelsByLanguage;
+    // The page the reader is currently on, for exposure crediting on exit:
+    // { key, terms, lookedUp, enteredAt, bookUri, language }.
+    const pageExposureRef = useRef(null);
+    // Gradient weights of the current underline snapshot, keyed by surface. Used
+    // to rank exposure candidates by how uncertain the model is about them.
+    const levelUnderlineWeightsRef = useRef(new Map());
+    // Saved words are excluded from exposure: they're already in the SRS loop and
+    // earn graded evidence in Learn, so crediting them again through a far noisier
+    // channel would double-count them.
+    const savedSurfacesRef = useRef(new Set());
     const bookCompletionInProgressRef = useRef(false);
     const parsedChapterCacheRef = useRef(new Map());
     const parsedChapterInflightRef = useRef(new Map());
@@ -609,6 +672,9 @@ const Read = ({
     const readerSettingsUpdatedAtRef = useRef(null);
     const readerSettingsRef = useRef(DEFAULT_READER_SETTINGS);
     const loadNativeReaderPackageRef = useRef(null);
+    // Monotonic counter stamped onto a restorePosition that represents a
+    // deliberate jump; see handleSelectBookmark.
+    const seekTokenRef = useRef(0);
     const updateNativeRestorePosition = useCallback((position) => {
         nativeRestorePositionRef.current = position;
         setNativeRestorePosition(position);
@@ -674,11 +740,19 @@ const Read = ({
             return;
         }
 
-        if (!currentBook || shouldUseHeuristicHighlights) {
+        if (!currentBook) {
             setHighlightTerms(savedWords);
             setHighlightTermsReady(true);
             return;
         }
+
+        // Even when the book isn't fully preprocessed yet, expand saved words
+        // into whatever in-book surface forms have already been indexed. A saved
+        // lemma otherwise only highlights where its bare form literally appears,
+        // so inflected occurrences ("먹었다" for saved "먹다") silently go
+        // unhighlighted — the "sometimes not highlighted" case. We still don't
+        // block the reader on this in heuristic mode (see
+        // isReaderWaitingForHighlights); it upgrades in place once surfaces load.
 
         let isActive = true;
 
@@ -723,32 +797,63 @@ const Read = ({
         shouldUseHeuristicHighlights,
     ]);
 
+    // Level underlines are a per-chapter SNAPSHOT of the ability model, not a live
+    // readout. `theta` moves on every lookup, and re-shading mid-page would mean a
+    // word three lines down silently changing color while you read — unsettling,
+    // and it undermines trust in the marks. So this deliberately keys off the book
+    // and the committed spine index (reader open + chapter boundary) and reads
+    // theta fresh INSIDE the effect rather than depending on it.
     useEffect(() => {
         if (!currentBook) {
-            setLevelUnderlineTerms({ same: [], above: [] });
-            return;
-        }
-
-        const selectedLevel = getProficiencyLevelForLanguage(activeBookLanguage, levelsByLanguage);
-        const userRank = Number(selectedLevel?.rank);
-        if (!Number.isFinite(userRank)) {
-            setLevelUnderlineTerms({ same: [], above: [] });
+            setLevelUnderlineTerms([]);
             return;
         }
 
         let isActive = true;
 
-        lookupBookLevelSurfaces(activeOwnerId, currentBook, userRank, {
-            language: activeBookLanguage,
-        }).then((rows) => {
-            if (!isActive) {
-                return;
+        const loadLevelUnderlineTerms = async () => {
+            const ability = await getProfileAbility({
+                ownerId: activeOwnerId,
+                language: activeBookLanguage,
+            });
+
+            // No behavioral history yet → fall back to the self-reported band as a
+            // cold-start seed, exactly as updateThetaFromOutcome would have.
+            let theta = Number(ability?.theta);
+            if (!Number.isFinite(theta)) {
+                const selectedLevel = getProficiencyLevelForLanguage(
+                    activeBookLanguage,
+                    levelsByLanguageRef.current
+                );
+                const userRank = Number(selectedLevel?.rank);
+                if (!Number.isFinite(userRank)) {
+                    return [];
+                }
+                theta = seedThetaFromRank(activeBookLanguage, userRank);
             }
-            setLevelUnderlineTerms(splitLevelUnderlineTerms(rows, userRank));
+
+            // Prune SQL-side to the bands that can actually earn an underline at
+            // this ability, so an easy book doesn't ship its whole vocabulary
+            // across the bridge just to be dropped here.
+            const floorRank = lowestUnderlinedRank(activeBookLanguage, theta);
+            if (floorRank == null) {
+                return [];
+            }
+
+            const rows = await lookupBookLevelSurfaces(activeOwnerId, currentBook, floorRank, {
+                language: activeBookLanguage,
+            });
+            return buildLevelUnderlineTerms(rows, activeBookLanguage, theta);
+        };
+
+        loadLevelUnderlineTerms().then((terms) => {
+            if (isActive) {
+                setLevelUnderlineTerms(terms);
+            }
         }).catch((error) => {
             console.error('[Read] Failed to load book level underline surfaces:', error);
             if (isActive) {
-                setLevelUnderlineTerms({ same: [], above: [] });
+                setLevelUnderlineTerms([]);
             }
         });
 
@@ -760,7 +865,7 @@ const Read = ({
         activeBook?.preprocessed,
         activeOwnerId,
         currentBook,
-        levelsByLanguage,
+        currentSpineIndex,
         preprocessStatus,
     ]);
 
@@ -916,6 +1021,10 @@ const Read = ({
         }
 
         const sentence = typeof event.sentence === 'string' ? event.sentence.trim() : '';
+
+        // Looking a word up is its own (much stronger) evidence, so this word must
+        // not also be credited as a skip when the page is left.
+        pageExposureRef.current?.lookedUp.add(text);
 
         setIsNativeSelection(false);
         setHighlightedWord(text);
@@ -1322,14 +1431,20 @@ const Read = ({
         : null;
     const savedWordsList = useMemo(() => savedWords ?? [], [savedWords]);
     const readerHighlightTerms = useMemo(() => {
-        const dbReaderHighlightTerms = shouldUseHeuristicHighlights
-            ? savedWordsList
-            : (highlightTerms ?? savedWordsList);
+        const dbReaderHighlightTerms = highlightTerms ?? savedWordsList;
         return uniqTerms([
             ...dbReaderHighlightTerms,
             ...optimisticHighlightTerms,
         ]);
-    }, [shouldUseHeuristicHighlights, savedWordsList, highlightTerms, optimisticHighlightTerms]);
+    }, [savedWordsList, highlightTerms, optimisticHighlightTerms]);
+    savedSurfacesRef.current = useMemo(
+        () => new Set(readerHighlightTerms),
+        [readerHighlightTerms]
+    );
+    levelUnderlineWeightsRef.current = useMemo(
+        () => new Map(levelUnderlineTerms.map(({ text, weight }) => [text, weight])),
+        [levelUnderlineTerms]
+    );
     const isReaderWaitingForHighlights = !!currentBook && !shouldUseHeuristicHighlights && !highlightTermsReady;
     const nativeChapterBlocks = chapterBlocksForReaderPackage(nativeReaderPackage);
     const nativeChapterResources = chapterResourcesForReaderPackage(nativeReaderPackage);
@@ -1397,18 +1512,9 @@ const Read = ({
     const chapterIndexLabel = Number.isInteger(activeSpineIndex)
         ? `${t('read.chapter')} ${activeSpineIndex + 1}`
         : t('read.defaultTitle');
-    const returnToScreen = route?.params?.returnTo === 'Learn' ? 'Learn' : 'Home';
-    const handleHeaderBack = useCallback(() => {
-        setShowMenu(false);
-        setShowToc(false);
-        navigation?.navigate?.(returnToScreen);
-    }, [navigation, returnToScreen]);
-
-    // ─── "Before you go" (opt-in thoughtful close) ────────────────────────────
-    // The plain back button stays a quick exit. This flow only runs when the
-    // reader taps "Before you go" — it offers a couple of unsaved words worth
-    // keeping (daily-rotating, saved ones drop off) and a note to their future
-    // self, then exits.
+    // ─── Note-to-self panel ──────────────────────────────────────────────────
+    // Reached by long-pressing the header bookmark icon. Saving keeps the book
+    // open; the note lands in the checkpoints sheet alongside bookmarks.
     const openBeforeYouGo = useCallback(() => {
         setShowMenu(false);
         setShowBeforeYouGo(true);
@@ -1524,23 +1630,27 @@ const Read = ({
         }
     }, [activeOwnerId, activeBookLanguage, currentBook, activeChapterTitle, chapterIndexLabel, bookProgress]);
 
-    const handleFinishBeforeYouGo = useCallback(() => {
-        setShowBeforeYouGo(false);
-        handleHeaderBack();
-    }, [handleHeaderBack]);
-
+    // ─── Checkpoints (bookmarks + notes) ─────────────────────────────────────
+    // Both live in the same sheet, so open it with a fresh read of both lists —
+    // a note saved seconds ago must show up without a reopen of the book.
     const openNotesLog = useCallback(async () => {
         setShowMenu(false);
         setShowNotesLog(true);
         try {
-            const rows = await getBookNotes(currentBook, {
-                ownerId: activeOwnerId,
-                language: activeBookLanguage,
-            });
-            setBookNotes(rows);
+            const [notes, bookmarks] = await Promise.all([
+                getBookNotes(currentBook, {
+                    ownerId: activeOwnerId,
+                    language: activeBookLanguage,
+                }),
+                getBookBookmarks(currentBook, {
+                    ownerId: activeOwnerId,
+                    language: activeBookLanguage,
+                }),
+            ]);
+            setBookNotes(notes);
+            setBookBookmarks(bookmarks);
         } catch (error) {
-            console.warn('[Read] Failed to load notes:', error?.message ?? error);
-            setBookNotes([]);
+            console.warn('[Read] Failed to load checkpoints:', error?.message ?? error);
         }
     }, [activeOwnerId, activeBookLanguage, currentBook]);
 
@@ -1552,6 +1662,152 @@ const Read = ({
             console.warn('[Read] Failed to delete note:', error?.message ?? error);
         }
     }, [activeOwnerId]);
+
+    // Load the book's bookmarks as soon as it opens so the header icon can show
+    // filled/outline for the current page without waiting for the sheet.
+    useEffect(() => {
+        let isActive = true;
+        if (!currentBook) {
+            setBookBookmarks([]);
+            return undefined;
+        }
+        getBookBookmarks(currentBook, {
+            ownerId: activeOwnerId,
+            language: activeBookLanguage,
+        })
+            .then((rows) => {
+                if (isActive) setBookBookmarks(rows);
+            })
+            .catch((error) => {
+                console.warn('[Read] Failed to load bookmarks:', error?.message ?? error);
+            });
+        return () => {
+            isActive = false;
+        };
+    }, [activeOwnerId, activeBookLanguage, currentBook]);
+
+    // Which saved bookmark, if any, the reader is sitting on — drives the header
+    // icon's filled/hollow state. See services/bookmarks for why this matches on
+    // block id rather than page number.
+    const currentReaderPosition = nativeRestorePosition || activeBook?.nativePosition || null;
+    const activeBookmark = useMemo(
+        () => findActiveBookmark(bookBookmarks, currentReaderPosition),
+        [bookBookmarks, currentReaderPosition]
+    );
+
+    const toggleBookmark = useCallback(async () => {
+        // In focus mode page events are debounced, so the tracked position can
+        // trail the reader by up to FOCUS_PAGE_CHANGE_DEBOUNCE_MS. Flush first
+        // or a bookmark taken right after a sentence step records the page the
+        // reader just left.
+        flushPendingFocusPageChange();
+        const position = nativeRestorePositionRef.current || activeBook?.nativePosition || null;
+        if (!currentBook || !Number.isInteger(position?.spineIndex)) {
+            return;
+        }
+        try {
+            if (activeBookmark) {
+                setBookBookmarks((prev) => prev.filter((bookmark) => bookmark.id !== activeBookmark.id));
+                await deleteBookBookmark(activeBookmark.id, { ownerId: activeOwnerId });
+                return;
+            }
+            // pagesInChapter can be absent on a position that came from a
+            // chapter load rather than a page event; the live location info
+            // still knows the count, and it's what makes "Page 4 of 12" read
+            // as a real page number instead of a bare index.
+            const pagesInChapter = Number.isInteger(position.pagesInChapter)
+                ? position.pagesInChapter
+                : (Number.isInteger(readerLocationInfo?.pagesInChapter)
+                    ? readerLocationInfo.pagesInChapter
+                    : null);
+            const created = await insertBookBookmark({
+                ownerId: activeOwnerId,
+                language: activeBookLanguage,
+                bookUri: currentBook,
+                spineIndex: position.spineIndex,
+                pageIndex: Number.isInteger(position.pageIndex) ? position.pageIndex : 0,
+                pagesInChapter,
+                href: position.href || null,
+                firstBlockId: position.firstBlockId || null,
+                chapterLabel: activeChapterTitle || chapterIndexLabel || null,
+                progress: typeof bookProgress === 'number' ? bookProgress : null,
+            });
+            if (created) {
+                setBookBookmarks((prev) => [created, ...prev]);
+            }
+        } catch (error) {
+            console.warn('[Read] Failed to toggle bookmark:', error?.message ?? error);
+        }
+    }, [
+        activeBook,
+        activeBookmark,
+        activeBookLanguage,
+        activeChapterTitle,
+        activeOwnerId,
+        bookProgress,
+        chapterIndexLabel,
+        currentBook,
+        flushPendingFocusPageChange,
+        readerLocationInfo,
+    ]);
+
+    const handleDeleteBookmark = useCallback(async (id) => {
+        try {
+            await deleteBookBookmark(id, { ownerId: activeOwnerId });
+            setBookBookmarks((prev) => prev.filter((bookmark) => bookmark.id !== id));
+        } catch (error) {
+            console.warn('[Read] Failed to remove bookmark:', error?.message ?? error);
+        }
+    }, [activeOwnerId]);
+
+    // Jump the reader to a saved checkpoint, mirroring how the TOC navigates:
+    // reload the target chapter when it differs, otherwise seek in place.
+    const handleSelectBookmark = useCallback((bookmark) => {
+        if (!Number.isInteger(bookmark?.spineIndex)) {
+            return;
+        }
+        setShowNotesLog(false);
+        // A pending focus-mode page event would land after the jump and push the
+        // old position straight back, so retire it before moving.
+        flushPendingFocusPageChange();
+        // The seek token is what tells the native view this is a deliberate jump
+        // rather than the position echo pushed on every page event. Without it
+        // an in-chapter jump is dropped as a no-op in continuous mode, where a
+        // "page" is the whole chapter and the target always resolves to the
+        // chapter already on screen.
+        seekTokenRef.current += 1;
+        const position = {
+            spineIndex: bookmark.spineIndex,
+            pageIndex: Number.isInteger(bookmark.pageIndex) ? bookmark.pageIndex : 0,
+            pagesInChapter: Number.isInteger(bookmark.pagesInChapter) ? bookmark.pagesInChapter : null,
+            href: bookmark.href || '',
+            firstBlockId: bookmark.firstBlockId || null,
+            seekToken: `seek:${seekTokenRef.current}`,
+        };
+
+        if (bookmark.spineIndex !== activeSpineIndex) {
+            // Different chapter: the loader hands the position to the native
+            // view, which seeks to it while repaginating the new chapter.
+            loadNativeReaderPackageRef.current?.(bookmark.spineIndex, {
+                restorePosition: position,
+                animateChapterTransition: false,
+            });
+            return;
+        }
+
+        // Same chapter. Keep JS position state in step, then move the reader
+        // with an explicit command — the prop alone has repeatedly proven
+        // unreliable for this, since it doubles as the passive position echo.
+        updateNativeRestorePosition(position);
+        if (supportsSeekToPosition) {
+            const viewTag = findNodeHandle(nativeReaderViewRef.current);
+            if (viewTag != null) {
+                sendSeekToPosition(viewTag, position).catch((error) => {
+                    console.warn('[Read] Checkpoint seek failed:', error?.message ?? error);
+                });
+            }
+        }
+    }, [activeSpineIndex, flushPendingFocusPageChange, updateNativeRestorePosition]);
 
     useEffect(() => {
         const unsubscribeFocus = navigation?.addListener?.('focus', () => {
@@ -2250,7 +2506,67 @@ const Read = ({
         };
     }, [activeBook?.uri, currentBook, readerRetryKey]);
 
-    const processNativePageChange = useCallback(({ page, total, spineIndex, href, firstBlockId, savedHighlights } = {}) => {
+    /**
+     * Credit one finished page's exposures, if it earned them.
+     *
+     * Three subtractions before anything counts as "skipped because known":
+     *   1. pages left too fast — the reader never had a chance to read them
+     *   2. words looked up on that page — a lookup already logged its own (much
+     *      stronger, negative) evidence; crediting a positive too would partly
+     *      cancel it
+     *   3. saved words — already earning graded evidence through the SRS loop
+     *
+     * Survivors are ranked by how UNCERTAIN the model is about them (gradient
+     * weight nearest the midpoint) and the top few are credited. That ordering is
+     * deliberate: skipping a word we already predict you know teaches us nothing,
+     * and skipping a word far above you is at least as likely to mean "gave up and
+     * read on" as "knew it" — the informative skips are the ones in the middle.
+     */
+    const creditPageExposure = useCallback((entry) => {
+        if (!entry || !entry.bookUri || !Array.isArray(entry.terms) || entry.terms.length === 0) {
+            return;
+        }
+
+        const dwellMs = Date.now() - entry.enteredAt;
+        if (dwellMs < EXPOSURE_MIN_DWELL_MS) {
+            return;
+        }
+
+        const weights = levelUnderlineWeightsRef.current;
+        const saved = savedSurfacesRef.current;
+        const skipped = entry.terms
+            .filter((term) => !entry.lookedUp.has(term) && !saved.has(term))
+            .sort((a, b) => (
+                Math.abs((weights.get(a) ?? 1) - 0.5) - Math.abs((weights.get(b) ?? 1) - 0.5)
+            ))
+            .slice(0, EXPOSURE_MAX_PER_PAGE);
+
+        if (skipped.length === 0) {
+            return;
+        }
+
+        applyExposureBatch({
+            ownerId: entry.ownerId,
+            language: entry.language,
+            stems: skipped,
+            sourceBookUri: entry.bookUri,
+            dwellSeconds: dwellMs / 1000,
+        }).catch((error) => {
+            console.warn('[Read] Failed to apply page exposure batch:', error);
+        });
+    }, []);
+
+    // The last page of a session is never followed by another page change, so it
+    // would otherwise go uncredited — flush it on unmount. (A page left by
+    // backgrounding the app without unmounting is still dropped; that's at most
+    // one page of the weakest signal we have, which isn't worth an AppState
+    // listener to chase.)
+    useEffect(() => () => {
+        creditPageExposure(pageExposureRef.current);
+        pageExposureRef.current = null;
+    }, [creditPageExposure]);
+
+    const processNativePageChange = useCallback(({ page, total, spineIndex, href, firstBlockId, savedHighlights, gradedTerms } = {}) => {
         if (bookCompletionInProgressRef.current) {
             return;
         }
@@ -2280,6 +2596,24 @@ const Read = ({
 
         if (!currentBook || !Number.isInteger(pageIndex) || !Number.isInteger(resolvedSpineIndex)) {
             return;
+        }
+
+        // Page exit: settle up for the page being left, then open a fresh window.
+        // Native re-dispatches for the same page (rebinds, highlight refreshes),
+        // so key on the position and treat a repeat as "still here" — restarting
+        // the dwell clock on a rebind would quietly starve the signal.
+        const exposureKey = `${resolvedSpineIndex}:${pageIndex}`;
+        if (pageExposureRef.current?.key !== exposureKey) {
+            creditPageExposure(pageExposureRef.current);
+            pageExposureRef.current = {
+                key: exposureKey,
+                terms: Array.isArray(gradedTerms) ? gradedTerms.filter((term) => typeof term === 'string') : [],
+                lookedUp: new Set(),
+                enteredAt: Date.now(),
+                ownerId: activeOwnerId,
+                bookUri: currentBook,
+                language: activeBookLanguage,
+            };
         }
 
         if (Array.isArray(savedHighlights) && savedHighlights.length > 0) {
@@ -2638,10 +2972,16 @@ const Read = ({
     // Total height the lookup panel occupies from the bottom of the screen;
     // the native reading surface lifts by exactly this much.
     const focusPanelTotalHeight = focusPanelOpen
-        ? Math.max(0, Math.round(lookupPanelHeight + insets.bottom + 6))
+        ? Math.max(0, Math.round(lookupPanelHeight))
         : 0;
     const focusControlsBaseBottom = insets.bottom + 28;
-    // Controls ride 12dp above the open panel, mirroring the 28 → panel+12
+    // The position pill rides at the top of the reading surface rather than the
+    // bottom: the lit sentence rests low in the viewport, so anything anchored
+    // to the bottom sits on top of it. FOCUS_SPAN_TOP_MARGIN_DP in the native
+    // module reserves the matching strip of reading surface, so a sentence too
+    // tall to fit still stops short of the pill instead of running under it.
+    const focusPillTop = (isFullscreen ? insets.top : insets.top + spacing.xs + 52) + 12;
+    // Arrow controls ride 12dp above the open panel, mirroring the 28 → panel+12
     // bottom shift in the design.
     const focusControlsLiftTarget = focusPanelOpen
         ? Math.max(0, focusPanelTotalHeight + 12 - focusControlsBaseBottom)
@@ -2717,6 +3057,21 @@ const Read = ({
         );
     };
 
+    // Drives the options dropdown's open animation — it drops in from the
+    // three-line menu icon (top-right) rather than sliding up as a bottom sheet.
+    const menuAnim = useRef(new Animated.Value(0)).current;
+    useEffect(() => {
+        if (showMenu && !isFullscreen) {
+            menuAnim.setValue(0);
+            Animated.timing(menuAnim, {
+                toValue: 1,
+                duration: 150,
+                easing: Easing.out(Easing.cubic),
+                useNativeDriver: true,
+            }).start();
+        }
+    }, [showMenu, isFullscreen, menuAnim]);
+
     return (
         <View style={styles.container}>
             {!isFullscreen ? (
@@ -2724,11 +3079,17 @@ const Read = ({
                     <View style={styles.headerLeft}>
                         <TouchableOpacity
                             style={styles.headerIconButton}
-                            onPress={openBeforeYouGo}
+                            onPress={toggleBookmark}
+                            onLongPress={openBeforeYouGo}
                             accessibilityRole="button"
-                            accessibilityLabel={t('read.beforeYouGo')}
+                            accessibilityState={{ selected: !!activeBookmark }}
+                            accessibilityLabel={activeBookmark ? t('read.removeBookmark') : t('read.addBookmark')}
                         >
-                            <MaterialIcons name="bookmark" size={20} color={themeColors.textSecondary} />
+                            <MaterialIcons
+                                name={activeBookmark ? 'bookmark' : 'bookmark-border'}
+                                size={20}
+                                color={activeBookmark ? themeColors.inkSlate : themeColors.textSecondary}
+                            />
                         </TouchableOpacity>
                         <TouchableOpacity
                             style={styles.savedButton}
@@ -2849,8 +3210,7 @@ const Read = ({
                         renderMode={nativeRenderMode}
                         readerEdgeStateEnabled={false}
                         highlightTerms={readerHighlightTerms}
-                        sameLevelTerms={levelUnderlineTerms.same}
-                        aboveLevelTerms={levelUnderlineTerms.above}
+                        levelTerms={levelUnderlineTerms}
                         clearSelectionToken={clearSelectionToken}
                         focusSentenceCount={focusSpan}
                         focusSwipeEnabled={focusSwipe}
@@ -2921,6 +3281,7 @@ const Read = ({
                     sendFocusNav={sendFocusNav}
                     focusControlsTranslate={focusControlsTranslate}
                     focusControlsBaseBottom={focusControlsBaseBottom}
+                    focusPillTop={focusPillTop}
                     styles={styles}
                     themeColors={themeColors}
                 />
@@ -2932,12 +3293,12 @@ const Read = ({
                     shouldPlaceLookupAtTop ? styles.lookupLayerTop : styles.lookupLayerBottom,
                     shouldPlaceLookupAtTop
                         ? { paddingTop: isFullscreen ? 0 : insets.top + spacing.xs + 52 }
-                        // When the tab bar is on screen (regular reading), the reader
-                        // content already ends at its top edge, so the panel should sit
-                        // flush against it. The safe-area gap is only needed when the tab
-                        // bar is gone: fullscreen, or focus mode (which lifts the reading
-                        // surface by focusPanelTotalHeight = panel + insets.bottom + 6).
-                        : { paddingBottom: isFullscreen || focusMode ? insets.bottom + 6 : 0 },
+                        // Focus mode anchors the panel flush to the bottom edge; in
+                        // regular reading the reader content already ends at the tab
+                        // bar's top edge, so the panel sits flush against that. The
+                        // safe-area gap is only needed in fullscreen, where neither
+                        // the tab bar nor the focus panel is anchoring the bottom.
+                        : { paddingBottom: isFullscreen && !focusMode ? insets.bottom + 6 : 0 },
                 ]}
                 pointerEvents="box-none"
             >
@@ -2999,15 +3360,37 @@ const Read = ({
             {showMenu && !isFullscreen ? (
                 <View pointerEvents="box-none" style={styles.settingsOverlay}>
                     <Pressable style={styles.settingsBackdrop} onPress={() => setShowMenu(false)} />
-                    <View
+                    <Animated.View
                         pointerEvents="box-none"
-                        style={[styles.fontSettingsSheetFrame, { paddingBottom: insets.bottom + 8 }]}
+                        style={[
+                            styles.menuDropdownFrame,
+                            {
+                                top: insets.top + 48,
+                                bottom: insets.bottom + 8,
+                                opacity: menuAnim,
+                                transform: [
+                                    {
+                                        translateY: menuAnim.interpolate({
+                                            inputRange: [0, 1],
+                                            outputRange: [-10, 0],
+                                        }),
+                                    },
+                                    {
+                                        scale: menuAnim.interpolate({
+                                            inputRange: [0, 1],
+                                            outputRange: [0.96, 1],
+                                        }),
+                                    },
+                                ],
+                            },
+                        ]}
                     >
                         <View style={styles.optionsSheet}>
-                            <View style={styles.fontSettingsHandleWrap}>
-                                <View style={styles.fontSettingsHandle} />
-                            </View>
-
+                            <ScrollView
+                                showsVerticalScrollIndicator={false}
+                                bounces={false}
+                                contentContainerStyle={styles.optionsScrollContent}
+                            >
                             <TouchableOpacity
                                 style={styles.checkpointsRow}
                                 onPress={openNotesLog}
@@ -3227,8 +3610,9 @@ const Read = ({
                                     </View>
                                 </View>
                             </View>
+                            </ScrollView>
                         </View>
-                    </View>
+                    </Animated.View>
                 </View>
             ) : null}
 
@@ -3250,15 +3634,17 @@ const Read = ({
                 colors={themeColors}
                 insets={insets}
                 onSaveNote={handleSaveNote}
-                onExit={handleFinishBeforeYouGo}
-                onCancel={() => setShowBeforeYouGo(false)}
+                onClose={() => setShowBeforeYouGo(false)}
             />
 
             <NotesLogSheet
                 visible={showNotesLog}
                 colors={themeColors}
                 insets={insets}
+                bookmarks={bookBookmarks}
                 notes={bookNotes}
+                onSelectBookmark={handleSelectBookmark}
+                onDeleteBookmark={handleDeleteBookmark}
                 onDelete={handleDeleteNote}
                 onClose={() => setShowNotesLog(false)}
             />
@@ -3655,21 +4041,30 @@ const createStyles = (themeColors) => StyleSheet.create({
         shadowRadius: 30,
         elevation: 8,
     },
+    menuDropdownFrame: {
+        position: 'absolute',
+        left: 14,
+        right: 14,
+        alignItems: 'flex-end',
+    },
     optionsSheet: {
         width: '100%',
-        maxWidth: 360,
+        maxWidth: 320,
+        maxHeight: '100%',
         backgroundColor: themeColors.readerSurface,
         borderWidth: 1,
         borderColor: themeColors.readerBorder,
-        borderRadius: radii.xl,
-        paddingTop: 14,
-        paddingHorizontal: 24,
-        paddingBottom: 24,
-        shadowColor: 'rgba(27, 28, 28, 0.08)',
-        shadowOffset: { width: 0, height: -10 },
+        borderRadius: radii.lg,
+        paddingHorizontal: 22,
+        shadowColor: 'rgba(27, 28, 28, 0.18)',
+        shadowOffset: { width: 0, height: 12 },
         shadowOpacity: 1,
-        shadowRadius: 30,
-        elevation: 8,
+        shadowRadius: 28,
+        elevation: 12,
+    },
+    optionsScrollContent: {
+        paddingTop: 6,
+        paddingBottom: 20,
     },
     checkpointsRow: {
         marginTop: 12,

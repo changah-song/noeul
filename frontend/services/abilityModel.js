@@ -133,6 +133,81 @@ export const pKnown = (theta, difficulty) => {
   return sigmoid(t - d);
 };
 
+// ─── Reader level-underline shading ───────────────────────────────────────────
+//
+// The reader underlines graded words on a continuous green→amber→red gradient
+// driven by P(known) rather than by the user's self-reported band. Two cutoffs
+// define the visible range:
+//
+//   P >= UNDERLINE_KNOWN_CEILING  → no underline at all (you almost certainly
+//                                   know it; marking it is noise)
+//   P <= UNDERLINE_HARD_FLOOR     → fully saturated "hard" end of the gradient
+//
+// Between them the weight ramps linearly, so the mid-gradient (amber) lands on
+// the words the model is genuinely UNCERTAIN about — the same uncertainty signal
+// flashcardNomination uses to pick cards, so the two surfaces agree.
+export const UNDERLINE_KNOWN_CEILING = 0.85;
+export const UNDERLINE_HARD_FLOOR = 0.15;
+
+/**
+ * levelUnderlineWeight — map P(known) to a gradient position for the reader's
+ * underline, or null when the word should not be underlined at all.
+ *
+ * Pure and total so the banding is unit-testable without a device: a non-finite
+ * probability yields null (draw nothing) rather than an arbitrary color.
+ *
+ * @param {number} p  P(known) in (0, 1)
+ * @returns {number|null} weight in [0, 1] (0 = easiest shown, 1 = hardest), or
+ *                        null if the word is known well enough to leave unmarked
+ */
+export const levelUnderlineWeight = (p) => {
+  // Guard null/undefined explicitly BEFORE coercing — Number(null) is 0, a finite
+  // value below the floor, which would paint a missing probability as a fully
+  // saturated "hardest" underline instead of drawing nothing.
+  if (p == null) {
+    return null;
+  }
+  const value = Number(p);
+  if (!Number.isFinite(value) || value >= UNDERLINE_KNOWN_CEILING) {
+    return null;
+  }
+  if (value <= UNDERLINE_HARD_FLOOR) {
+    return 1;
+  }
+  const span = UNDERLINE_KNOWN_CEILING - UNDERLINE_HARD_FLOOR;
+  return clamp((UNDERLINE_KNOWN_CEILING - value) / span, 0, 1);
+};
+
+/**
+ * lowestUnderlinedRank — the easiest graded band that still earns an underline
+ * at this ability.
+ *
+ * Purely an optimization: the reader's surface query filters SQL-side on
+ * `level_rank >= ?` so it doesn't haul every graded surface in the book across
+ * the bridge. That floor used to be the user's self-reported rank; deriving it
+ * from `theta` instead is what lets the underlines follow the model down when
+ * behavior says the reader is weaker than they claimed.
+ *
+ * Safe because P(known) is monotonically decreasing in rank (harder band → lower
+ * P), so the first rank under the ceiling bounds all the rest.
+ *
+ * @returns {number|null} the floor rank, or null if every band is known well
+ *                        enough to leave unmarked
+ */
+export const lowestUnderlinedRank = (language, theta) => {
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const options = PROFICIENCY_LEVEL_OPTIONS[normalizedLanguage]
+    ?? PROFICIENCY_LEVEL_OPTIONS.ko;
+
+  for (let rank = 1; rank <= options.length; rank += 1) {
+    const p = pKnown(theta, difficultyFromLevelRank(normalizedLanguage, rank));
+    if (levelUnderlineWeight(p) != null) {
+      return rank;
+    }
+  }
+  return null;
+};
+
 // ─── Online ability update (Phase 3.1) ────────────────────────────────────────
 //
 // After each graded behavioral event we nudge `theta` toward what the outcome
@@ -153,6 +228,17 @@ export const THETA_LEARNING_RATE = 0.3;
 // A dictionary lookup is a weak, confounded "probably didn't know it" signal
 // (you might look up a known word for nuance), so it nudges far more gently.
 export const LOOKUP_LEARNING_RATE = 0.1;
+// An EXPOSURE (a graded word shown on a page the reader dwelled on and left
+// without tapping) is the weakest channel of all, and the rate is set by a volume
+// argument as much as a confidence one: a page carries on the order of ten graded
+// words against maybe one lookup, so an equal rate would let passive scrolling
+// outvote deliberate lookups roughly 10:1. An order of magnitude below the lookup
+// rate puts the two channels in the same range per page, which is the balance we
+// actually want.
+//
+// This rate is a GUESS pending real data. Exposure events log their dwell in
+// `value_num` precisely so it can later be fit rather than assumed.
+export const EXPOSURE_LEARNING_RATE = 0.01;
 
 // How the self-report seed's influence decays (design doc §2: self-assessment is
 // miscalibrated, so treat it as a prior to override quickly, not a fixed anchor).

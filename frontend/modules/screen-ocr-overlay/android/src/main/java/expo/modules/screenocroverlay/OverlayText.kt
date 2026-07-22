@@ -1,35 +1,64 @@
 package expo.modules.screenocroverlay
 
+/**
+ * Strings for the floating OCR overlay.
+ *
+ * The overlay runs from a background Service, so it can't reach the JS i18n
+ * tables directly. Instead JS pushes the active interface language's strings in
+ * via ScreenOcrOverlayModule.setInterfaceLanguage(language, strings) — see
+ * modules/screen-ocr-overlay/src/index.js, which builds the bundle from the
+ * overlay.* keys in i18n/translations.js. That keeps every interface language
+ * working here without duplicating 12 tables in Kotlin.
+ *
+ * EN below stays as the compile-time fallback for anything the bundle is
+ * missing, and for the window before JS has pushed anything (e.g. the Service
+ * being restarted by the system).
+ */
 object OverlayText {
   @Volatile
   private var language = "en"
+
+  @Volatile
+  private var pushed: Map<String, String> = emptyMap()
 
   fun setLanguage(value: String?): String {
     language = normalizeLanguage(value)
     return language
   }
 
+  /** Replaces the active string bundle. Keys match those used by [t]. */
+  fun setStrings(values: Map<String, String>?) {
+    pushed = values?.filterValues { it.isNotEmpty() }.orEmpty()
+  }
+
   fun currentLanguage(): String = language
 
   fun t(key: String): String =
-    translationsFor(language)[key] ?: EN[key] ?: key
+    pushed[key] ?: EN[key] ?: key
 
-  fun fromSurface(surface: String): String =
-    if (language == "ko") {
-      "${surface}에서"
-    } else {
-      "from $surface"
+  private fun format(key: String, vararg params: Pair<String, String>): String {
+    var result = t(key)
+    for ((name, value) in params) {
+      result = result.replace("{{$name}}", value)
     }
+    return result
+  }
+
+  fun fromSurface(surface: String): String = format("fromSurface", "surface" to surface)
 
   fun unsupportedPixelStride(value: Int): String =
-    if (language == "ko") {
-      "지원되지 않는 화면 캡처 픽셀 간격: $value"
-    } else {
-      "Unsupported screen capture pixel stride: $value"
-    }
+    format("unsupportedPixelStride", "value" to value.toString())
 
-  fun posLabel(value: String): String =
-    POS_LABELS[language]?.get(value) ?: POS_LABELS["en"]?.get(value) ?: value
+  /**
+   * [value] is the canonical uppercase POS tag (NOUN, AUXILIARY VERB, …) that
+   * OcrResultOverlayView maps raw dictionary tags onto. Uppercasing matches the
+   * in-app badge's textTransform and is a no-op for non-Latin scripts.
+   */
+  fun posLabel(value: String): String {
+    val key = "pos." + value.lowercase().replace(' ', '_')
+    val translated = pushed[key] ?: POS_LABELS["en"]?.get(value) ?: value
+    return translated.uppercase()
+  }
 
   fun displayLanguageName(code: String): String {
     val normalized = code.trim().lowercase()
@@ -42,18 +71,18 @@ object OverlayText {
       "fra", "fre", "french" -> "fr"
       else -> normalized.split('-', '_').firstOrNull().orEmpty()
     }
-    return LANGUAGE_NAMES[language]?.get(shortCode)
+    return pushed["languageName.$shortCode"]
       ?: LANGUAGE_NAMES["en"]?.get(shortCode)
       ?: code
   }
 
   private fun normalizeLanguage(value: String?): String {
-    val shortCode = value?.trim()?.lowercase()?.split('-', '_')?.firstOrNull().orEmpty()
-    return if (shortCode == "ko") "ko" else "en"
+    val raw = value?.trim()?.lowercase()?.replace('_', '-').orEmpty()
+    if (raw in setOf("zh-hant", "zh-tw", "zh-hk", "zh-mo")) {
+      return "zh-Hant"
+    }
+    return raw.split('-').firstOrNull().orEmpty().ifEmpty { "en" }
   }
-
-  private fun translationsFor(language: String): Map<String, String> =
-    if (language == "ko") KO else EN
 
   private val EN = mapOf(
     "analyzeInProgress" to "Floating OCR is already analyzing the current screen",
@@ -91,7 +120,7 @@ object OverlayText {
     "noEnglishDefinitionAvailable" to "No English definition available",
     "noHanjaDetailsFound" to "No hanja details found.",
     "noRelatedWordsAvailable" to "No related words available",
-    "openAppToLookup" to "Open FluentFable to look this up.",
+    "openAppToLookup" to "Open Noeul to look this up.",
     "overlayPermissionInProgress" to "Overlay permission request is already in progress",
     "overlayPermissionNotGranted" to "Overlay permission is not granted",
     "relatedWords" to "Related words",
@@ -121,77 +150,11 @@ object OverlayText {
     "translate" to "Translate",
     "translating" to "Translating...",
     "translation" to "Translation",
-    "whatItMeansHere" to "What it means here"
+    "whatItMeansHere" to "What it means here",
+    "fromSurface" to "from {{surface}}",
+    "unsupportedPixelStride" to "Unsupported screen capture pixel stride: {{value}}"
   )
 
-  private val KO = mapOf(
-    "analyzeInProgress" to "플로팅 OCR이 현재 화면을 이미 분석 중입니다",
-    "analysisCancelled" to "플로팅 OCR 분석이 취소되었습니다",
-    "cancelFloatingOcrScan" to "플로팅 OCR 스캔 취소",
-    "clear" to "지우기",
-    "close" to "닫기",
-    "copy" to "복사",
-    "dictionary" to "사전",
-    "dismissFloatingOcr" to "플로팅 OCR 닫기",
-    "explainFailed" to "설명을 불러오지 못했습니다.",
-    "floatingControllerUnavailable" to "플로팅 OCR 컨트롤러를 사용할 수 없습니다",
-    "floatingOcr" to "플로팅 OCR",
-    "floatingOcrActive" to "플로팅 OCR 활성화됨",
-    "floatingOcrNotificationBody" to "현재 화면을 OCR하려면 플로팅 버블을 탭하세요.",
-    "floatingOcrNotificationDescription" to "화면 OCR 캡처를 활성 상태로 유지합니다",
-    "floatingOcrNotificationTitle" to "플로팅 OCR이 활성화되어 있습니다",
-    "floatingOcrRequiresAndroid8" to "플로팅 OCR은 Android 8 이상에서 사용할 수 있습니다",
-    "grantOverlayPermissionBeforeFloatingWidget" to "플로팅 위젯을 시작하기 전에 오버레이 권한을 허용하세요",
-    "hanja" to "한자",
-    "hanjaDetails" to "한자 정보",
-    "hanjaLookupFailed" to "한자 조회에 실패했습니다.",
-    "hanjaLookupTimedOut" to "한자 조회 시간이 초과되었습니다.",
-    "loading" to "불러오는 중...",
-    "loadingHanja" to "한자를 불러오는 중...",
-    "lookingUp" to "찾는 중...",
-    "lookupFailed" to "조회에 실패했습니다.",
-    "lookupResultUnavailable" to "조회 결과를 더 이상 사용할 수 없습니다.",
-    "meaning" to "뜻",
-    "mediaProjectionCreateFailed" to "MediaProjection을 만들 수 없습니다",
-    "more" to "더 보기",
-    "noScreenImageAvailable" to "아직 사용할 수 있는 화면 이미지가 없습니다",
-    "noDefinitionFound" to "뜻을 찾을 수 없습니다.",
-    "noDefinitionToSave" to "저장할 뜻이 없습니다.",
-    "noEnglishDefinitionAvailable" to "사용 가능한 영어 뜻이 없습니다",
-    "noHanjaDetailsFound" to "한자 정보를 찾을 수 없습니다.",
-    "noRelatedWordsAvailable" to "관련 단어가 없습니다",
-    "openAppToLookup" to "조회하려면 FluentFable을 여세요.",
-    "overlayPermissionInProgress" to "오버레이 권한 요청이 이미 진행 중입니다",
-    "overlayPermissionNotGranted" to "오버레이 권한이 허용되지 않았습니다",
-    "relatedWords" to "관련 단어",
-    "requestScreenCaptureBeforeAnalyzing" to "현재 화면을 분석하기 전에 화면 캡처를 요청하세요",
-    "requestScreenCaptureBeforeFloatingWidget" to "플로팅 위젯을 시작하기 전에 화면 캡처를 요청하세요",
-    "rootCharacters" to "어근 한자",
-    "save" to "저장",
-    "saveThis" to "이 뜻 저장",
-    "saveFailed" to "저장에 실패했습니다.",
-    "saveTimedOut" to "저장 시간이 초과되었습니다. 앱을 열어 다시 시도하세요.",
-    "saved" to "저장됨",
-    "saving" to "저장 중...",
-    "screenCaptureCouldNotStart" to "화면 캡처를 시작할 수 없습니다",
-    "screenCaptureInactive" to "화면 캡처 권한이 활성화되어 있지 않습니다",
-    "screenCaptureInProgress" to "화면 캡처 요청이 이미 진행 중입니다",
-    "screenCaptureMissingResult" to "화면 캡처 결과가 없습니다",
-    "screenCaptureNoPixelPlane" to "캡처된 이미지에 픽셀 평면이 없습니다",
-    "screenCaptureRowOutsideBuffer" to "캡처된 이미지 행이 픽셀 버퍼 범위를 벗어났습니다",
-    "screenCaptureSessionInactive" to "화면 캡처 세션이 더 이상 활성화되어 있지 않습니다",
-    "seeMore" to "더 보기",
-    "sentenceSelection" to "문장 선택",
-    "smartDefinition" to "의미",
-    "slideDownForRoots" to "⌄ 어근을 보려면 아래로 밀기",
-    "slideUpForRoots" to "⌃ 어근을 보려면 위로 밀기",
-    "tapToMarkKnown" to "✓를 눌러 아는 단어로 표시",
-    "textNotFound" to "텍스트를 찾을 수 없습니다",
-    "translate" to "번역",
-    "translating" to "번역 중...",
-    "translation" to "번역",
-    "whatItMeansHere" to "여기서의 의미"
-  )
 
   private val LANGUAGE_NAMES = mapOf(
     "en" to mapOf(
@@ -201,14 +164,6 @@ object OverlayText {
       "ja" to "Japanese",
       "es" to "Spanish",
       "fr" to "French"
-    ),
-    "ko" to mapOf(
-      "ko" to "한국어",
-      "en" to "영어",
-      "zh" to "중국어",
-      "ja" to "일본어",
-      "es" to "스페인어",
-      "fr" to "프랑스어"
     )
   )
 
@@ -229,23 +184,6 @@ object OverlayText {
       "AUXILIARY VERB" to "AUXILIARY VERB",
       "AUXILIARY ADJECTIVE" to "AUXILIARY ADJECTIVE",
       "DEPENDENT NOUN" to "DEPENDENT NOUN"
-    ),
-    "ko" to mapOf(
-      "NOUN" to "명사",
-      "VERB" to "동사",
-      "ADVERB" to "부사",
-      "ADJECTIVE" to "형용사",
-      "MODIFIER" to "수식어",
-      "DETERMINER" to "관형사",
-      "INTERJECTION" to "감탄사",
-      "PRONOUN" to "대명사",
-      "NUMERAL" to "수사",
-      "PARTICLE" to "조사",
-      "AFFIX" to "접사",
-      "ENDING" to "어미",
-      "AUXILIARY VERB" to "보조 동사",
-      "AUXILIARY ADJECTIVE" to "보조 형용사",
-      "DEPENDENT NOUN" to "의존 명사"
     )
   )
 }

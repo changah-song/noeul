@@ -9,6 +9,7 @@ import { readEpubMetadata } from '../services/epubMetadata';
 import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
 import { readPdfMetadata, renderPdfCover } from '../services/pdfMetadata';
 import { getLanguageLabel, normalizeBookLanguage } from '../constants/languages';
+import { useTranslation } from './useTranslation';
 
 const createBookId = () => {
     if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') {
@@ -35,7 +36,13 @@ const useBooks = ({
     const pdfCoverChoiceResolverRef = useRef(null);
 
     const navigation = useNavigation();
+    const { t } = useTranslation();
     const activeTargetLanguage = normalizeBookLanguage(targetLanguage);
+
+    // language.* keys only cover the book languages the app supports.
+    const localizedLanguageName = (code) => (
+        ['ko', 'en', 'zh'].includes(code) ? t(`language.${code}`) : getLanguageLabel(code)
+    );
 
     const getAssetFormat = (asset) => {
         const name = String(asset?.name || '').toLowerCase();
@@ -74,16 +81,16 @@ const useBooks = ({
         const format = getAssetFormat(pickedAsset);
         if (!format) {
             Alert.alert(
-                'Unsupported file',
-                'Choose an EPUB or PDF file to import.'
+                t('books.unsupportedFileTitle'),
+                t('books.chooseFileBody')
             );
             return null;
         }
 
         if (format === 'pdf' && Platform.OS !== 'android') {
             Alert.alert(
-                'PDF import unavailable',
-                'PDF reading uses the Android native reader in this build.'
+                t('books.pdfUnavailableTitle'),
+                t('books.pdfUnavailableBody')
             );
             return null;
         }
@@ -99,7 +106,7 @@ const useBooks = ({
         pdfCoverChoiceResolverRef.current = resolve;
         setPdfCoverPageInput('1');
         setPdfCoverPrompt({
-            title: metadata.title || 'Untitled',
+            title: metadata.title || t('common.untitled'),
             author: metadata.author || '',
             pageCount: Number(metadata.pageCount) || null,
         });
@@ -145,10 +152,10 @@ const useBooks = ({
         if (!pageNumber) {
             const pageCount = Number(pdfCoverPrompt?.pageCount) || null;
             Alert.alert(
-                'Invalid page',
+                t('books.invalidPageTitle'),
                 pageCount
-                    ? `Enter a page number from 1 to ${pageCount}.`
-                    : 'Enter a page number of 1 or higher.'
+                    ? t('books.invalidPageRangeBody', { count: pageCount })
+                    : t('books.invalidPageMinBody')
             );
             return;
         }
@@ -168,7 +175,7 @@ const useBooks = ({
             const format = pickedAsset.format || 'epub';
             setIsImporting(true);
 
-            const fallbackName = pickedAsset?.name || uri.split('/').pop() || 'Untitled';
+            const fallbackName = pickedAsset?.name || uri.split('/').pop() || t('common.untitled');
             const metadata = format === 'pdf'
                 ? await readPdfMetadata(uri, fallbackName)
                 : await readEpubMetadata(uri, fallbackName);
@@ -176,8 +183,8 @@ const useBooks = ({
             const detectedLanguage = normalizeBookLanguage(language ?? 'ko');
             if (detectedLanguage !== activeTargetLanguage) {
                 Alert.alert(
-                    'Book language mismatch',
-                    `This book is marked as ${getLanguageLabel(detectedLanguage)}. Switch to your ${getLanguageLabel(detectedLanguage)} profile before importing it.`
+                    t('books.languageMismatchTitle'),
+                    t('books.languageMismatchBody', { language: localizedLanguageName(detectedLanguage) })
                 );
                 setIsImporting(false);
                 return;
@@ -194,8 +201,8 @@ const useBooks = ({
                     } catch (coverError) {
                         console.warn('[useBooks] PDF cover render failed; importing without cover:', coverError);
                         Alert.alert(
-                            'Cover not generated',
-                            'The PDF will still import, but the selected cover page could not be rendered.'
+                            t('books.coverNotGeneratedTitle'),
+                            t('books.coverNotGeneratedBody')
                         );
                         cover = null;
                         pdfCoverPageNumber = null;
@@ -333,8 +340,8 @@ const useBooks = ({
         } catch (error) {
             console.error("[useBooks] Error in addBook:", error);
             Alert.alert(
-                'Import failed',
-                error?.message || 'This book could not be imported.'
+                t('books.importFailedTitle'),
+                error?.message || t('books.importFailedBody')
             );
             setIsImporting(false);
         }
@@ -342,11 +349,11 @@ const useBooks = ({
 
     const confirmAddBook = () => {
         Alert.alert(
-            'Import book',
-            'Choose an EPUB or PDF file to import.',
+            t('books.importBookTitle'),
+            t('books.chooseFileBody'),
             [
-                { text: 'Import', onPress: addBook },
-                { text: 'Cancel', style: 'cancel' }
+                { text: t('books.importCta'), onPress: addBook },
+                { text: t('common.cancel'), style: 'cancel' }
             ]
         );
     };

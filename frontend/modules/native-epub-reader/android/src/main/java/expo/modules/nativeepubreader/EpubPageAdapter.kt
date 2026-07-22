@@ -13,14 +13,14 @@ class EpubPageAdapter(
   private var activeSelectionRanges: List<TextRange>,
   private var activeSelectionKind: ActiveSelectionKind?,
   private var savedHighlightRangesByPage: Map<Int, List<TextRange>>,
-  private var sameLevelRangesByPage: Map<Int, List<TextRange>>,
-  private var aboveLevelRangesByPage: Map<Int, List<TextRange>>,
+  private var levelRangesByPage: Map<Int, List<TextRange>>,
   private var activeHighlightColor: Int,
   private var textSelectionHighlightColor: Int,
   private var savedHighlightColor: Int,
   private var savedHighlightTextColor: Int,
-  private var sameLevelUnderlineColor: Int,
-  private var aboveLevelUnderlineColor: Int,
+  private var levelUnderlineEasyColor: Int,
+  private var levelUnderlineMidColor: Int,
+  private var levelUnderlineHardColor: Int,
   private val onWordSelected: (WordHit) -> Unit,
   private val onTextSelected: (TextSelectionHit) -> Unit,
   private val onSelectionCleared: () -> Unit,
@@ -73,12 +73,8 @@ class EpubPageAdapter(
     savedHighlightRangesByPage = rangesByPage
   }
 
-  fun updateLevelUnderlineRanges(
-    sameRangesByPage: Map<Int, List<TextRange>>,
-    aboveRangesByPage: Map<Int, List<TextRange>>
-  ) {
-    sameLevelRangesByPage = sameRangesByPage
-    aboveLevelRangesByPage = aboveRangesByPage
+  fun updateLevelUnderlineRanges(rangesByPage: Map<Int, List<TextRange>>) {
+    levelRangesByPage = rangesByPage
   }
 
   fun updateHighlightColors(
@@ -86,15 +82,17 @@ class EpubPageAdapter(
     textSelectionColor: Int,
     savedColor: Int,
     savedTextColor: Int,
-    sameLevelColor: Int,
-    aboveLevelColor: Int
+    levelEasyColor: Int,
+    levelMidColor: Int,
+    levelHardColor: Int
   ) {
     activeHighlightColor = activeColor
     textSelectionHighlightColor = textSelectionColor
     savedHighlightColor = savedColor
     savedHighlightTextColor = savedTextColor
-    sameLevelUnderlineColor = sameLevelColor
-    aboveLevelUnderlineColor = aboveLevelColor
+    levelUnderlineEasyColor = levelEasyColor
+    levelUnderlineMidColor = levelMidColor
+    levelUnderlineHardColor = levelHardColor
   }
 
   fun invalidateVisiblePages(recyclerView: RecyclerView?, fallbackPosition: Int = -1) {
@@ -113,14 +111,14 @@ class EpubPageAdapter(
           activeSelectionRanges = activeSelectionRanges,
           activeSelectionKind = activeSelectionKind,
           savedHighlightRanges = savedHighlightRangesByPage[page.pageIndex].orEmpty(),
-          sameLevelRanges = sameLevelRangesByPage[page.pageIndex].orEmpty(),
-          aboveLevelRanges = aboveLevelRangesByPage[page.pageIndex].orEmpty(),
+          levelRanges = levelRangesByPage[page.pageIndex].orEmpty(),
           activeHighlightColor = activeHighlightColor,
           textSelectionHighlightColor = textSelectionHighlightColor,
           savedHighlightColor = savedHighlightColor,
           savedHighlightTextColor = savedHighlightTextColor,
-          sameLevelUnderlineColor = sameLevelUnderlineColor,
-          aboveLevelUnderlineColor = aboveLevelUnderlineColor
+          levelUnderlineEasyColor = levelUnderlineEasyColor,
+          levelUnderlineMidColor = levelUnderlineMidColor,
+          levelUnderlineHardColor = levelUnderlineHardColor
         )
       }
     }
@@ -154,14 +152,14 @@ class EpubPageAdapter(
       activeSelectionRanges = activeSelectionRanges,
       activeSelectionKind = activeSelectionKind,
       savedHighlightRanges = savedHighlightRangesByPage[page.pageIndex].orEmpty(),
-      sameLevelRanges = sameLevelRangesByPage[page.pageIndex].orEmpty(),
-      aboveLevelRanges = aboveLevelRangesByPage[page.pageIndex].orEmpty(),
+      levelRanges = levelRangesByPage[page.pageIndex].orEmpty(),
       activeHighlightColor = activeHighlightColor,
       textSelectionHighlightColor = textSelectionHighlightColor,
       savedHighlightColor = savedHighlightColor,
       savedHighlightTextColor = savedHighlightTextColor,
-      sameLevelUnderlineColor = sameLevelUnderlineColor,
-      aboveLevelUnderlineColor = aboveLevelUnderlineColor,
+      levelUnderlineEasyColor = levelUnderlineEasyColor,
+      levelUnderlineMidColor = levelUnderlineMidColor,
+      levelUnderlineHardColor = levelUnderlineHardColor,
       onWordSelected = onWordSelected,
       onTextSelected = onTextSelected,
       onSelectionCleared = onSelectionCleared,

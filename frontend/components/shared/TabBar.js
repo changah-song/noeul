@@ -1,16 +1,19 @@
 import { StyleSheet, Text, View } from 'react-native';
 import { colors, fontFamilies } from '../../theme';
+import { useTranslation } from '../../hooks/useTranslation';
 
-const tabLabels = {
-    Home: 'HOME',
-    Read: 'READ',
-    Learn: 'VOCAB',
-    Write: 'WRITE',
-    Profile: 'PROFILE',
+const TAB_LABEL_KEYS = {
+    Home: 'tabs.home',
+    Read: 'tabs.read',
+    Learn: 'tabs.learn',
+    Write: 'tabs.write',
+    Profile: 'tabs.profile',
 };
 
 const TabIcon = ({ routeName, focused, color, activeBorderColor }) => {
-    const label = tabLabels[routeName] ?? String(routeName || '').toUpperCase();
+    const { t } = useTranslation();
+    const labelKey = TAB_LABEL_KEYS[routeName];
+    const label = labelKey ? t(labelKey) : String(routeName || '').toUpperCase();
 
     return (
         <View style={styles.tabContent}>

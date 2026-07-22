@@ -1,6 +1,6 @@
 import { Platform } from 'react-native';
 import { EventEmitter, requireNativeModule } from 'expo-modules-core';
-import { translate } from '../../../i18n/translations';
+import { translate, UI_TRANSLATIONS } from '../../../i18n/translations';
 import { getRuntimeInterfaceLanguage } from '../../../services/interfaceLanguage';
 
 const NativeScreenOcrOverlay = Platform.OS === 'android'
@@ -16,8 +16,67 @@ const androidOnly = () => Promise.reject(new Error(
 ));
 const emptySubscription = { remove: () => {} };
 
+// The overlay is drawn by a native Service that can't read these tables itself,
+// so we hand it the active language's strings. Keys match OverlayText.t() in
+// OverlayText.kt: overlay.* minus the prefix, plus pos.* and languageName.* for
+// its POS badges and translation header.
+const OVERLAY_POS_KEYS = [
+    'noun', 'verb', 'adverb', 'adjective', 'modifier', 'determiner', 'interjection',
+    'pronoun', 'numeral', 'particle', 'affix', 'ending',
+];
+const OVERLAY_POS_COMPOUND_KEYS = {
+    auxiliary_verb: 'pos.auxiliaryVerb',
+    auxiliary_adjective: 'pos.auxiliaryAdjective',
+    dependent_noun: 'pos.dependentNoun',
+};
+const OVERLAY_LANGUAGE_NAME_CODES = ['ko', 'en', 'zh', 'ja', 'es', 'fr'];
+
+const buildOverlayStrings = (language) => {
+    const table = UI_TRANSLATIONS[language] ?? UI_TRANSLATIONS.en;
+    const strings = {};
+
+    for (const key of Object.keys(table)) {
+        if (key.startsWith('overlay.')) {
+            strings[key.slice('overlay.'.length)] = table[key];
+        }
+    }
+
+    // The native fromSurface() template lives under lookup.* in the app tables.
+    // Read it raw — translate() would substitute the {{surface}} placeholder
+    // away, and the native side is what fills it in.
+    strings.fromSurface = table['lookup.fromSurface'] ?? UI_TRANSLATIONS.en['lookup.fromSurface'];
+
+    for (const pos of OVERLAY_POS_KEYS) {
+        strings[`pos.${pos}`] = translate(language, `pos.${pos}`);
+    }
+    for (const [nativeKey, appKey] of Object.entries(OVERLAY_POS_COMPOUND_KEYS)) {
+        strings[`pos.${nativeKey}`] = translate(language, appKey);
+    }
+
+    for (const code of OVERLAY_LANGUAGE_NAME_CODES) {
+        strings[`languageName.${code}`] = translate(language, `language.${code}`);
+    }
+
+    return strings;
+};
+
+// setOverlayInterfaceLanguage runs before every native call, so only rebuild and
+// ship the bundle when the language actually changed. Native holds the strings
+// process-wide, and a JS reload resets this cache, so a re-push always follows.
+let lastPushedLanguage = null;
+
 export const setOverlayInterfaceLanguage = (language = getRuntimeInterfaceLanguage()) => {
-    NativeScreenOcrOverlay?.setInterfaceLanguage?.(language);
+    if (!NativeScreenOcrOverlay?.setInterfaceLanguage) {
+        return;
+    }
+
+    if (language === lastPushedLanguage) {
+        NativeScreenOcrOverlay.setInterfaceLanguage(language, null);
+        return;
+    }
+
+    NativeScreenOcrOverlay.setInterfaceLanguage(language, buildOverlayStrings(language));
+    lastPushedLanguage = language;
 };
 
 const callNative = (method, ...args) => {

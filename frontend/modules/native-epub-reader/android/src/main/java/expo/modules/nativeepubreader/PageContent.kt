@@ -56,7 +56,11 @@ data class TextRange(
   val spineIndex: Int?,
   val blockId: String,
   val sourceStartOffset: Int,
-  val sourceEndOffset: Int
+  val sourceEndOffset: Int,
+  // Level-underline shading position in [0, 1] (0 = nearly known, 1 = well above
+  // the reader). Null for every other range kind — selections and saved
+  // highlights take their color from the palette, not from a gradient.
+  val levelWeight: Float? = null
 )
 
 // A focused sentence span in focus (sentence beam) mode. Offsets are local to

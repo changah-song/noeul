@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 import {
   ActivityIndicator,
   Alert,
+  BackHandler,
   Modal,
   Pressable,
   ScrollView,
@@ -1020,7 +1021,7 @@ const WordDetailModal = ({
     <SafeAreaView edges={['top']} style={styles.detailScreen}>
       <View style={styles.detailHeader}>
         <TouchableOpacity onPress={onClose} style={styles.detailBackButton}>
-          <MaterialIcons name="arrow-back" size={28} color={colors.text} />
+          <Feather name="chevron-left" size={28} color={colors.text} />
           <Text style={styles.detailBackLabel}>{t('learn.vocabulary')}</Text>
         </TouchableOpacity>
         <TouchableOpacity onPress={onToggleFavorite} style={styles.detailFavoriteButton}>
@@ -1294,6 +1295,20 @@ const Learn = ({ navigation, user }) => {
       isActive = false;
     };
   }, [activeOwnerId, selectedWord?.word, selectedWord?.hanja, selectedWord?.def, selectedWord?.language]);
+
+  // Hardware back closes the word detail view back to the vocabulary list,
+  // mirroring the header back button. Without this, back would fall through to
+  // the tab navigator and leave the tab or exit the app.
+  useEffect(() => {
+    if (!selectedWord) {
+      return undefined;
+    }
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      setSelectedWord(null);
+      return true;
+    });
+    return () => subscription.remove();
+  }, [selectedWord]);
 
   const visibleWords = useMemo(
     () => getFilteredWords(words, activeFilter, proficiencyByKey),

@@ -6,10 +6,14 @@ import {
 import { api } from './client';
 
 const normalizeTranslationLanguageCode = (language, fallback) => {
-  const normalized = String(language || fallback || '')
-    .trim()
-    .toLowerCase()
-    .split(/[-_]/)[0];
+  const raw = String(language || fallback || '').trim().toLowerCase().replace('_', '-');
+
+  // Google Translate distinguishes scripts for Chinese; keep Traditional intact.
+  if (['zh-hant', 'zh-tw', 'zh-hk', 'zh-mo'].includes(raw)) {
+    return 'zh-TW';
+  }
+
+  const normalized = raw.split(/[-_]/)[0];
 
   return normalized || fallback;
 };

@@ -119,7 +119,7 @@ const VocabLevelModal = ({ visible, onClose }) => {
                                                     {tierLabel(tier)}
                                                 </Text>
                                                 {isPick ? (
-                                                    <Feather name="check" size={14} color={theme.colors.readerLevelSameUnderline} />
+                                                    <Feather name="check" size={14} color={theme.colors.readerLevelUnderlineEasy} />
                                                 ) : null}
                                             </View>
                                             <View style={styles.wordsCol}>
@@ -225,7 +225,7 @@ const createStyles = (colors) => StyleSheet.create({
         fontVariant: ['tabular-nums'],
     },
     rowLabelKnown: {
-        color: colors.readerLevelSameUnderline,
+        color: colors.readerLevelUnderlineEasy,
         fontFamily: fontFamilies.sansSemiBold,
     },
     wordsCol: {
@@ -240,7 +240,7 @@ const createStyles = (colors) => StyleSheet.create({
         color: colors.text,
     },
     wordKnown: {
-        color: colors.readerLevelSameUnderline,
+        color: colors.readerLevelUnderlineEasy,
     },
     confirmButton: {
         marginTop: spacing.lg,

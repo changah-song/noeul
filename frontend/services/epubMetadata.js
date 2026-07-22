@@ -443,6 +443,182 @@ const normalizeXhtmlEntities = (xhtml = '') => (
     })
 );
 
+const VALID_XML_TAG_NAME = /^[A-Za-z][A-Za-z0-9]*$/;
+const VALID_ENTITY_REFERENCE_START = /^(amp;|lt;|gt;|quot;|apos;|#[0-9]+;|#x[0-9a-fA-F]+;)/;
+
+const escapeBareAmpersands = (text = '') => (
+    String(text).replace(/&(?!(amp;|lt;|gt;|quot;|apos;|#[0-9]+;|#x[0-9a-fA-F]+;))/g, '&amp;')
+);
+
+// Some converter-generated EPUBs (commonly Korean titles run through an
+// automated pipeline) corrupt bracket-style quotation marks (e.g. the book
+// title punctuation) into literal '<' '>' characters mid-paragraph, e.g.
+// `<페이스 투="" 더="" 선<span="" class="en">Face to the Sun>`. xmldom then
+// tries to parse that as a real tag/attribute, throws, and the whole chapter
+// is dropped — this is the "I can see the chapter start but can't scroll
+// past it" bug, since the reader silently skips chapters it can't parse.
+// Real e-readers tolerate this. We approximate that by escaping any '<' that
+// doesn't start a real, well-closed ASCII tag before parsing.
+export const sanitizeMalformedInlineMarkup = (xml = '') => {
+    const source = String(xml);
+    const len = source.length;
+    let output = '';
+    let i = 0;
+
+    while (i < len) {
+        const ch = source[i];
+
+        if (ch === '&') {
+            output += VALID_ENTITY_REFERENCE_START.test(source.slice(i + 1)) ? ch : '&amp;';
+            i += 1;
+            continue;
+        }
+
+        if (ch !== '<') {
+            output += ch;
+            i += 1;
+            continue;
+        }
+
+        if (source.startsWith('<!--', i)) {
+            const end = source.indexOf('-->', i + 4);
+            if (end === -1) {
+                output += '&lt;';
+                i += 1;
+                continue;
+            }
+            output += source.slice(i, end + 3);
+            i = end + 3;
+            continue;
+        }
+
+        if (source[i + 1] === '?' || source[i + 1] === '!') {
+            const end = source.indexOf('>', i + 1);
+            if (end === -1) {
+                output += '&lt;';
+                i += 1;
+                continue;
+            }
+            output += source.slice(i, end + 1);
+            i = end + 1;
+            continue;
+        }
+
+        const isClosingTag = source[i + 1] === '/';
+        const nameStart = isClosingTag ? i + 2 : i + 1;
+        let nameEnd = nameStart;
+        while (nameEnd < len && /[A-Za-z0-9:_-]/.test(source[nameEnd])) {
+            nameEnd += 1;
+        }
+        const tagName = source.slice(nameStart, nameEnd);
+        const nextChar = source[nameEnd];
+        // A real tag always has whitespace, '/', or '>' right after its
+        // name. A name immediately followed by '=' (no space) means this
+        // isn't actually a tag name — it's corrupted text fused onto what
+        // was meant to be a real attribute.
+        const nameLooksValid = VALID_XML_TAG_NAME.test(tagName) && nextChar !== '=';
+
+        if (!nameLooksValid) {
+            output += '&lt;';
+            i += 1;
+            continue;
+        }
+
+        let j = nameEnd;
+        let quoteChar = null;
+        let closed = false;
+        while (j < len) {
+            const c = source[j];
+            if (quoteChar) {
+                if (c === quoteChar) {
+                    quoteChar = null;
+                }
+                j += 1;
+                continue;
+            }
+            if (c === '"' || c === "'") {
+                quoteChar = c;
+                j += 1;
+                continue;
+            }
+            if (c === '<') {
+                break;
+            }
+            if (c === '>') {
+                closed = true;
+                j += 1;
+                break;
+            }
+            j += 1;
+        }
+
+        if (closed) {
+            output += source.slice(i, j);
+            i = j;
+            continue;
+        }
+
+        // No closing '>' before hitting another '<' — this "tag" is bogus.
+        output += '&lt;';
+        i += 1;
+    }
+
+    return output;
+};
+
+const PLAIN_TEXT_FALLBACK_PARAGRAPH_BREAK = '␞';
+
+// Last-resort recovery for chapters whose markup is too mangled for
+// sanitizeMalformedInlineMarkup to repair (e.g. a corrupted bracket run
+// swallows a real tag, leaving it permanently unclosed). Strips all markup
+// and rebuilds a trivially valid XHTML document from the plain paragraph
+// text, so the chapter is still readable instead of vanishing from the
+// reader entirely. Loses inline formatting/links/images for this chapter.
+export const buildPlainTextFallbackXhtml = (rawXhtml = '') => {
+    const bodyMatch = /<body[^>]*>([\s\S]*)<\/body>/i.exec(rawXhtml);
+    const bodyContent = bodyMatch ? bodyMatch[1] : rawXhtml;
+
+    const withBreaks = bodyContent
+        .replace(/<\/(p|div|li|h[1-6]|blockquote|tr)>/gi, `$&${PLAIN_TEXT_FALLBACK_PARAGRAPH_BREAK}`)
+        .replace(/<br\s*\/?>/gi, PLAIN_TEXT_FALLBACK_PARAGRAPH_BREAK);
+
+    const stripped = withBreaks.replace(/<[^>]*>/g, '');
+
+    const paragraphs = stripped
+        .split(PLAIN_TEXT_FALLBACK_PARAGRAPH_BREAK)
+        .map((chunk) => (
+            escapeBareAmpersands(chunk.replace(/</g, '&lt;').replace(/>/g, '&gt;'))
+                .replace(/\s+/g, ' ')
+                .trim()
+        ))
+        .filter(Boolean);
+
+    const body = paragraphs.map((paragraph) => `<p>${paragraph}</p>`).join('');
+    return `<?xml version="1.0" encoding="utf-8"?><html xmlns="http://www.w3.org/1999/xhtml"><body>${body}</body></html>`;
+};
+
+// Chapter body XHTML from real-world EPUBs is sometimes not well-formed.
+// Try a strict parse first, then a sanitized retry, then fall back to a
+// plain-text rebuild that's guaranteed to parse — never let one malformed
+// chapter make the whole chapter (and everything after it) unreadable.
+export const parseChapterXhtmlDocument = (rawXhtml, context = '') => {
+    const normalized = normalizeXhtmlEntities(rawXhtml);
+
+    try {
+        return parseXml(normalized, 'application/xml');
+    } catch (error) {
+        console.warn(`[epubMetadata] Chapter XHTML not well-formed (${context}), retrying sanitized:`, error?.message);
+    }
+
+    try {
+        return parseXml(sanitizeMalformedInlineMarkup(normalized), 'application/xml');
+    } catch (error) {
+        console.warn(`[epubMetadata] Sanitized chapter markup still invalid (${context}), falling back to plain text:`, error?.message);
+    }
+
+    return parseXml(buildPlainTextFallbackXhtml(normalized), 'application/xml');
+};
+
 const splitResourceHref = (href = '') => {
     const originalHref = String(href || '').trim();
     const hashIndex = originalHref.indexOf('#');
@@ -1432,7 +1608,7 @@ const buildBookManifest = ({
 };
 
 const extractBodyText = (xhtmlXml) => {
-    const xhtmlDoc = parseXml(normalizeXhtmlEntities(xhtmlXml), 'application/xml');
+    const xhtmlDoc = parseChapterXhtmlDocument(xhtmlXml, 'extractBodyText');
     const bodyNode = firstDescendant(xhtmlDoc, (node) => localNameOf(node) === 'body');
     const text = textOf(bodyNode || xhtmlDoc);
 
@@ -2400,9 +2576,10 @@ const parseXhtmlRenderTree = async (
     extractedRootUri = null,
     manifestByPath = {}
 ) => {
-    const xhtmlDoc = parseXml(normalizeXhtmlEntities(xhtmlXml), 'application/xml');
+    const chapterPathForLogging = typeof spineItemOrPath === 'string' ? spineItemOrPath : spineItemOrPath?.path;
+    const xhtmlDoc = parseChapterXhtmlDocument(xhtmlXml, chapterPathForLogging || 'parseXhtmlRenderTree');
     const bodyNode = firstDescendant(xhtmlDoc, (node) => localNameOf(node) === 'body') || xhtmlDoc;
-    const chapterPath = typeof spineItemOrPath === 'string' ? spineItemOrPath : spineItemOrPath?.path;
+    const chapterPath = chapterPathForLogging;
     const chapterDir = dirname(chapterPath);
     const idFactory = createChapterIdFactory(spineItemOrPath);
     const stylesheetResources = extractStylesheetResources(
@@ -2989,7 +3166,7 @@ const parseOpfMetadata = async (zip, packagePath, fallbackName, sourceUri = '') 
         }
 
         const documentXml = await docFile.async('string');
-        const doc = parseXml(normalizeXhtmlEntities(documentXml), 'application/xml');
+        const doc = parseChapterXhtmlDocument(documentXml, documentPath || 'imagePathFromCoverDocument');
         const imageNode = firstDescendant(doc, (node) => {
             const name = localNameOf(node).toLowerCase();
             return name === 'img' || name === 'image';

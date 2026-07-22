@@ -16,6 +16,7 @@ const FocusControls = ({
     sendFocusNav,
     focusControlsTranslate,
     focusControlsBaseBottom,
+    focusPillTop,
     styles,
     themeColors,
 }) => {
@@ -42,15 +43,12 @@ const FocusControls = ({
 
     return (
         <>
-            <Animated.View
+            {/* Sits at the top of the reading surface, so unlike the arrows it
+                does not lift with the dictionary panel — nothing at the bottom
+                of the screen can reach it. */}
+            <View
                 pointerEvents="box-none"
-                style={[
-                    styles.focusControlsLeft,
-                    {
-                        bottom: focusControlsBaseBottom,
-                        transform: [{ translateY: focusControlsTranslate }],
-                    },
-                ]}
+                style={[styles.focusControlsLeft, { top: focusPillTop }]}
             >
                 <View style={styles.focusPositionPill}>
                     <MaterialIcons
@@ -60,7 +58,7 @@ const FocusControls = ({
                     />
                     <Text style={styles.focusPositionLabel}>{focusPositionLabel}</Text>
                 </View>
-            </Animated.View>
+            </View>
             {!focusSwipe ? (
                 <Animated.View
                     pointerEvents="box-none"

@@ -19,19 +19,18 @@ import { fontFamilies, radii, spacing } from '../../theme';
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 /**
- * BeforeYouGoSheet — the opt-in "thoughtful close" the reader can open on the way
- * out of a book: a note to their future self. Word candidates used to live here
- * too, but now have a dedicated home in the saved-words panel (opened from the
- * top-bar count pill), so this sheet is note-only. The plain back button stays a
- * quick exit; this is only shown when the reader chooses it.
+ * BeforeYouGoSheet — a note to the reader's future self, opened by long-pressing
+ * the header bookmark icon. Word candidates used to live here too, but now have
+ * a dedicated home in the saved-words panel (opened from the top-bar count
+ * pill), so this sheet is note-only. Saving keeps the book open — the sheet just
+ * closes, and the note appears in the checkpoints sheet.
  */
 const BeforeYouGoSheet = ({
     visible,
     colors,
     insets,
     onSaveNote,
-    onExit,
-    onCancel,
+    onClose,
 }) => {
     const { t } = useTranslation();
     const styles = useMemo(() => createStyles(colors, insets), [colors, insets]);
@@ -74,16 +73,16 @@ const BeforeYouGoSheet = ({
         outputRange: [sheetHeight.current || windowHeight, 0],
     });
 
-    const finish = async () => {
+    const saveNote = async () => {
         const trimmed = note.trim();
         if (trimmed) {
             await onSaveNote?.(trimmed);
         }
-        onExit?.();
+        onClose?.();
     };
 
     return (
-        <Modal visible={mounted} transparent animationType="none" onRequestClose={onCancel}>
+        <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose}>
             <KeyboardAvoidingView
                 style={styles.flex}
                 behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -91,7 +90,7 @@ const BeforeYouGoSheet = ({
                 <View style={styles.overlay}>
                     <AnimatedPressable
                         style={[styles.backdrop, { opacity: progress }]}
-                        onPress={onCancel}
+                        onPress={onClose}
                     />
                     <Animated.View
                         style={[styles.sheet, { transform: [{ translateY }] }]}
@@ -119,19 +118,19 @@ const BeforeYouGoSheet = ({
 
                         <View style={styles.footer}>
                             <TouchableOpacity
-                                onPress={finish}
+                                onPress={onClose}
                                 style={styles.secondaryButton}
                                 activeOpacity={0.7}
                             >
-                                <Text style={styles.secondaryButtonText}>{t('read.skip')}</Text>
+                                <Text style={styles.secondaryButtonText}>{t('common.close')}</Text>
                             </TouchableOpacity>
                             <TouchableOpacity
-                                onPress={finish}
+                                onPress={saveNote}
                                 disabled={!note.trim()}
                                 style={[styles.primaryButton, !note.trim() && styles.primaryButtonDisabled]}
                                 activeOpacity={0.85}
                             >
-                                <Text style={styles.primaryButtonText}>{t('read.saveAndClose')}</Text>
+                                <Text style={styles.primaryButtonText}>{t('common.save')}</Text>
                             </TouchableOpacity>
                         </View>
                     </Animated.View>

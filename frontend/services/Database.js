@@ -11,6 +11,7 @@ import {
 import {
   ABILITY_THETA_MAX,
   ABILITY_THETA_MIN,
+  EXPOSURE_LEARNING_RATE,
   OOV_DIFFICULTY,
   LOOKUP_LEARNING_RATE,
   THETA_LEARNING_RATE,
@@ -367,6 +368,13 @@ const INTERACTION_EVENT_TYPES = new Set([
   'dwell',
   'reveal',
   'hanja_confirm',
+  // A graded word was rendered on a page the reader dwelled on and then left
+  // WITHOUT looking it up. Weak positive evidence ("probably knew it"), and the
+  // only read-mode channel that can push theta up — every other reader signal is
+  // a lookup, which only pushes down. `value_num` carries the dwell in seconds so
+  // the offline trainer can check whether exposure actually predicts later review
+  // outcomes rather than trusting the online rate we guessed.
+  'exposure',
 ]);
 
 // RN has no crypto.getRandomValues polyfill here, so the `uuid` package would throw.
@@ -1037,6 +1045,136 @@ export const updateThetaFromOutcome = async ({
         () => resolve(nextTheta),
         (_, error) => {
           console.error('[Database] Error updating theta from outcome:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+/**
+ * applyExposureBatch — fold one page's worth of "shown but not looked up" words
+ * into `theta` in a single pass, and append the matching exposure events.
+ *
+ * Deliberately NOT a loop over `updateThetaFromOutcome`. That helper reads the
+ * ability row, writes it, and clears `synced_at` per call; at exposure volume
+ * (every page turn, several words each) that would be a burst of SQLite writes
+ * and a re-sync per word. Here the row is read once, the steps are folded in
+ * memory with the same pure `updateThetaOnline`, and exactly one row is written —
+ * so a page turn costs the same as a single lookup.
+ *
+ * The steps are applied in sequence (each one's P uses the theta the previous
+ * step produced) and `event_count` advances with them, so the result is identical
+ * to N sequential updates — just without the write amplification.
+ *
+ * Ungraded words are skipped, matching updateThetaFromOutcome: a word with no KB
+ * rank carries almost no ability signal.
+ *
+ * @param {object}   args
+ * @param {string[]} args.stems      words shown and not looked up
+ * @param {number}   [args.dwellSeconds]  logged on each event for later fitting
+ * @returns {Promise<{ theta: number|null, applied: number }>}
+ */
+export const applyExposureBatch = async ({
+  ownerId,
+  profileId,
+  language = 'ko',
+  stems = [],
+  sourceBookUri = null,
+  dwellSeconds = null,
+  learningRate = EXPOSURE_LEARNING_RATE,
+} = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
+
+  const cleanStems = Array.from(new Set(
+    (Array.isArray(stems) ? stems : [])
+      .filter((stem) => typeof stem === 'string' && stem.trim())
+      .map((stem) => stem.trim())
+  ));
+  if (cleanStems.length === 0) {
+    return { theta: null, applied: 0 };
+  }
+
+  const difficulties = await getWordDifficulties(normalizedLanguage, cleanStems);
+  const graded = cleanStems
+    .map((stem) => ({ stem, entry: difficulties?.[stem] }))
+    .filter(({ entry }) => (
+      entry && !entry.isFallback && Number.isFinite(Number(entry.difficulty))
+    ));
+
+  if (graded.length === 0) {
+    return { theta: null, applied: 0 };
+  }
+
+  const row = await getProfileAbility({
+    ownerId: scopedOwnerId,
+    profileId: scopedProfileId,
+    language: normalizedLanguage,
+  });
+  const startingTheta = Number.isFinite(Number(row?.theta)) ? Number(row.theta) : NEUTRAL_THETA;
+  const startingEventCount = Number.isFinite(Number(row?.event_count))
+    ? Number(row.event_count)
+    : 0;
+  const theta0 = row?.self_report_rank != null
+    ? seedThetaFromRank(normalizedLanguage, row.self_report_rank)
+    : null;
+
+  let theta = startingTheta;
+  graded.forEach(({ entry }, index) => {
+    theta = updateThetaOnline({
+      theta,
+      difficulty: Number(entry.difficulty),
+      outcome: 1,
+      eventCount: startingEventCount + index,
+      theta0,
+      learningRate,
+    });
+  });
+
+  // Log BEFORE the derived state is written, matching logInteractionEvent's
+  // contract, so the historical outcome survives even if the write below fails.
+  await Promise.all(graded.map(({ stem }) => logInteractionEvent({
+    ownerId: scopedOwnerId,
+    profileId: scopedProfileId,
+    language: normalizedLanguage,
+    word: stem,
+    stem,
+    eventType: 'exposure',
+    outcome: 1,
+    valueNum: Number.isFinite(Number(dwellSeconds)) ? Number(dwellSeconds) : null,
+    sourceBookUri,
+  }).catch((error) => {
+    console.warn('[Database] Failed to log exposure event:', error);
+  })));
+
+  const now = new Date().toISOString();
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `INSERT INTO profile_ability (
+           owner_id, profile_id, language, theta, self_report_rank,
+           event_count, seeded_at, updated_at, synced_at
+         )
+         VALUES (?, ?, ?, ?, NULL, ?, NULL, ?, NULL)
+         ON CONFLICT(owner_id, profile_id, language) DO UPDATE SET
+           theta = excluded.theta,
+           event_count = profile_ability.event_count + ?,
+           updated_at = excluded.updated_at,
+           synced_at = NULL`,
+        [
+          scopedOwnerId,
+          scopedProfileId,
+          normalizedLanguage,
+          theta,
+          graded.length,
+          now,
+          graded.length,
+        ],
+        () => resolve({ theta, applied: graded.length }),
+        (_, error) => {
+          console.error('[Database] Error applying exposure batch:', error);
           reject(error);
         }
       );
@@ -3151,6 +3289,7 @@ const SQLITE_USER_DATA_TABLES = [
   'vocab',
   'vocab_contexts',
   'book_notes',
+  'book_bookmarks',
 ];
 
 const SQLITE_OWNER_CACHE_TABLES = [
@@ -3526,6 +3665,185 @@ export const deleteBookNote = (id, { ownerId } = {}) => {
   });
 };
 
+// ─── Book bookmarks (reader checkpoints) ──────────────────────────────────────
+//
+// A saved reading position the reader can jump back to from the checkpoints
+// sheet. Stores the same position shape the native reader restores from
+// (spine index + page + first block id), plus display metadata. Sync-ready
+// schema like book_notes, though bookmarks live on-device for now.
+
+const makeBookBookmarkId = () => (
+  `bb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+);
+
+export const createBookBookmarksTable = () => {
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `CREATE TABLE IF NOT EXISTS book_bookmarks (
+          id             TEXT PRIMARY KEY,
+          owner_id       TEXT NOT NULL DEFAULT 'guest',
+          profile_id     TEXT DEFAULT 'ko_default',
+          book_uri       TEXT NOT NULL,
+          language       TEXT NOT NULL DEFAULT 'ko',
+          spine_index    INTEGER NOT NULL,
+          page_index     INTEGER,
+          pages_in_chapter INTEGER,
+          href           TEXT,
+          first_block_id TEXT,
+          chapter_label  TEXT,
+          progress       REAL,
+          created_at     TEXT NOT NULL,
+          updated_at     TEXT,
+          deleted_at     TEXT,
+          synced_at      TEXT
+        )`,
+        [],
+        () => {
+          tx.executeSql(
+            `CREATE INDEX IF NOT EXISTS idx_book_bookmarks_owner_book_created
+             ON book_bookmarks(owner_id, profile_id, book_uri, created_at)`,
+            [],
+            () => resolve(),
+            (_, error) => {
+              console.error('[Database] Error indexing book_bookmarks:', error);
+              reject(error);
+              return true;
+            }
+          );
+        },
+        (_, error) => {
+          console.error('[Database] Error creating book_bookmarks table:', error);
+          reject(error);
+          return true;
+        }
+      );
+    });
+  });
+};
+
+export const insertBookBookmark = ({
+  ownerId,
+  profileId,
+  bookUri,
+  language = 'ko',
+  spineIndex,
+  pageIndex = null,
+  pagesInChapter = null,
+  href = null,
+  firstBlockId = null,
+  chapterLabel = null,
+  progress = null,
+} = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
+
+  return new Promise((resolve, reject) => {
+    if (!bookUri || !Number.isInteger(spineIndex)) {
+      return resolve(null);
+    }
+    const id = makeBookBookmarkId();
+    const createdAt = new Date().toISOString();
+    db.transaction(tx => {
+      tx.executeSql(
+        `INSERT INTO book_bookmarks
+           (id, owner_id, profile_id, book_uri, language, spine_index, page_index,
+            pages_in_chapter, href, first_block_id, chapter_label, progress, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          scopedOwnerId,
+          scopedProfileId,
+          bookUri,
+          normalizedLanguage,
+          spineIndex,
+          Number.isInteger(pageIndex) ? pageIndex : null,
+          Number.isInteger(pagesInChapter) ? pagesInChapter : null,
+          href || null,
+          firstBlockId || null,
+          chapterLabel,
+          typeof progress === 'number' ? progress : null,
+          createdAt,
+          createdAt,
+        ],
+        () => resolve({
+          id,
+          bookUri,
+          language: normalizedLanguage,
+          spineIndex,
+          pageIndex: Number.isInteger(pageIndex) ? pageIndex : null,
+          pagesInChapter: Number.isInteger(pagesInChapter) ? pagesInChapter : null,
+          href: href || null,
+          firstBlockId: firstBlockId || null,
+          chapterLabel,
+          progress: typeof progress === 'number' ? progress : null,
+          createdAt,
+        }),
+        (_, error) => {
+          console.error('[Database] Error inserting book bookmark:', error);
+          reject(error);
+          return true;
+        }
+      );
+    });
+  });
+};
+
+export const getBookBookmarks = (bookUri, { ownerId, profileId, language = 'ko', limit = 100 } = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
+
+  return new Promise((resolve, reject) => {
+    if (!bookUri) {
+      return resolve([]);
+    }
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT id, spine_index AS spineIndex, page_index AS pageIndex,
+                pages_in_chapter AS pagesInChapter, href, first_block_id AS firstBlockId,
+                chapter_label AS chapterLabel, progress, created_at AS createdAt
+         FROM book_bookmarks
+         WHERE owner_id = ? AND profile_id = ? AND book_uri = ? AND language = ?
+           AND deleted_at IS NULL
+         ORDER BY created_at DESC
+         LIMIT ?`,
+        [scopedOwnerId, scopedProfileId, bookUri, normalizedLanguage, Math.max(1, Number(limit) || 100)],
+        (_, result) => resolve(result.rows._array),
+        (_, error) => {
+          console.error('[Database] Error reading book bookmarks:', error);
+          reject(error);
+          return true;
+        }
+      );
+    });
+  });
+};
+
+export const deleteBookBookmark = (id, { ownerId } = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  return new Promise((resolve, reject) => {
+    if (!id) {
+      return resolve(false);
+    }
+    const deletedAt = new Date().toISOString();
+    db.transaction(tx => {
+      tx.executeSql(
+        `UPDATE book_bookmarks SET deleted_at = ?, updated_at = ?, synced_at = NULL
+         WHERE id = ? AND owner_id = ?`,
+        [deletedAt, deletedAt, id, scopedOwnerId],
+        (_, result) => resolve((result.rowsAffected ?? 0) > 0),
+        (_, error) => {
+          console.error('[Database] Error deleting book bookmark:', error);
+          reject(error);
+          return true;
+        }
+      );
+    });
+  });
+};
+
 // ─── Word candidates for the "before you go" panel ────────────────────────────
 //
 // Reuses the Phase 4.4 flashcard nominator (uncertain AND rare-in-book words the
@@ -3710,6 +4028,7 @@ export const initAllTables = async () => {
   await createBookIndexTable();
   await createBookNotesTable();
   await migrateBookNotesTable();
+  await createBookBookmarksTable();
   await createBookPreprocessTables();
   await migrateBookPreprocessLevelColumns();
   await migrateLocalOwnerSqlite();

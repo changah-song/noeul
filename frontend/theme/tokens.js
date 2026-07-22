@@ -58,8 +58,12 @@ export const colorPairs = {
   readerBorder: pair('#e4e2e2', '#353c47'),
   readerUnknownUnderline: pair('#75777b', '#5c5e63'),
   readerSavedUnderline: pair('#75777b', '#5c5e63'),
-  readerLevelSameUnderline: pair('#2f8f46', '#74c476'),
-  readerLevelAboveUnderline: pair('#c4661f', '#f59e0b'),
+  // Three stops of the reader's level-underline gradient (easy → mid → hard).
+  // A word's shade is interpolated between them from its P(known); see
+  // services/abilityModel.js `levelUnderlineWeight`.
+  readerLevelUnderlineEasy: pair('#2f8f46', '#74c476'),
+  readerLevelUnderlineMid: pair('#c4661f', '#f59e0b'),
+  readerLevelUnderlineHard: pair('#b32d2d', '#e5686a'),
   readerTappedWordSurfaceBg: pair('#e4e2e2', '#353c47'),
   readerTappedWordSurfaceText: pair('#1b1c1c', '#f0eded'),
   readerSavedWordSurfaceBg: pair('#202631', '#f0eded'),
@@ -112,8 +116,9 @@ export const createNativeReaderThemeTokens = (themeColors) => ({
   textSelectionHighlight: themeColors.readerTextSelectionHighlight,
   savedHighlight: themeColors.readerSavedWordSurfaceBg,
   savedHighlightText: themeColors.readerSavedWordSurfaceText,
-  levelSameUnderline: themeColors.readerLevelSameUnderline,
-  levelAboveUnderline: themeColors.readerLevelAboveUnderline,
+  levelUnderlineEasy: themeColors.readerLevelUnderlineEasy,
+  levelUnderlineMid: themeColors.readerLevelUnderlineMid,
+  levelUnderlineHard: themeColors.readerLevelUnderlineHard,
   selectionHandle: themeColors.readerProgressFill,
   placeholder: themeColors.readerPlaceholder,
 });
