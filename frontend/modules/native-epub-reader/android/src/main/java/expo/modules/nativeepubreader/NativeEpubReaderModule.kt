@@ -263,7 +263,8 @@ class NativeEpubReaderModule : Module() {
         "onWordSelected",
         "onTextSelected",
         "onSelectionCleared",
-        "onFocusSentenceChange"
+        "onFocusSentenceChange",
+        "onExposure"
       )
     }
   }
@@ -602,6 +603,7 @@ class NativeEpubReaderView(
   private val onTextSelected by EventDispatcher()
   private val onSelectionCleared by EventDispatcher()
   private val onFocusSentenceChange by EventDispatcher()
+  private val onExposure by EventDispatcher()
   private val viewPager = ViewPager2(context)
   private val continuousScrollView = ContinuousReaderScrollView(context)
   private val continuousPageView = EpubPageView(context)
@@ -651,6 +653,14 @@ class NativeEpubReaderView(
   // Graded words actually rendered on each page, shipped out with onPageChange so
   // JS can credit "shown but not looked up" as weak positive evidence.
   private var levelTermsByPage: Map<Int, List<String>> = emptyMap()
+  // Open exposure unit (paged page / focus span). Continuous mode tracks per
+  // block instead, in the two maps below.
+  private var exposureUnitKey: String? = null
+  private var exposureUnitTerms: List<String> = emptyList()
+  private var exposureUnitChars = 0
+  private var exposureUnitEnteredAtMs = 0L
+  private val blockFirstSeenAtMs = mutableMapOf<String, Long>()
+  private val exposedBlockIds = mutableSetOf<String>()
   private var activeSelectionRanges: List<TextRange> = emptyList()
   private var activeSelectionKind: ActiveSelectionKind? = null
   private var lastClearSelectionToken: Int? = null
@@ -787,6 +797,10 @@ class NativeEpubReaderView(
     paginationTask?.cancel(true)
     focusScrollAnimator?.cancel()
     mainHandler.removeCallbacks(continuousScrollDispatchRunnable)
+    // The last unit of a session is never followed by another page/beam move, so
+    // settle it here or it goes uncredited. Continuous mode already emitted each
+    // block as it scrolled past, so nothing is buffered there to flush.
+    flushExposureUnit()
     super.onDetachedFromWindow()
   }
 
@@ -1432,6 +1446,12 @@ class NativeEpubReaderView(
     levelRangesByPage = levelHighlights.rangesByPage
     levelTermsByPage = levelHighlights.termsByPage
 
+    // New content is binding: close the unit from the old layout, and forget the
+    // continuous block-visibility ledger — it's keyed to blocks that no longer
+    // exist. Both are cheap and idempotent.
+    flushExposureUnit()
+    resetContinuousExposureTracking()
+
     if (isVerticalLayoutMode()) {
       pages = nextPages
       pagePositionOffset = 0
@@ -1439,6 +1459,12 @@ class NativeEpubReaderView(
       bindContinuousPage(continuousPageIndex, backgroundColor, resetScroll = resetToFirstPage)
       if (isFocusMode()) {
         dispatchFocusPageChange()
+        beginFocusExposureUnit()
+      } else {
+        // Continuous mode: seed first-seen timestamps for whatever is on screen
+        // now, so the first blocks scrolled past aren't dropped for lack of a
+        // start time.
+        creditContinuousExposure()
       }
       // Continuous mode dispatches from scrollContinuousTo once the restored
       // scroll offset has been applied, so no page event is emitted here.
@@ -1876,11 +1902,15 @@ class NativeEpubReaderView(
       return
     }
 
+    // The beam is leaving the current span for a new one — that span's dwell is
+    // now known, so close its exposure unit before the index moves.
+    flushExposureUnit()
     focusIndex = index.coerceIn(0, focusSentences.lastIndex)
     applyFocusHighlightToView(animate, fast)
     anchorScrollToFocus(animated = animate, fast = fast)
     dispatchFocusState()
     dispatchFocusPageChange()
+    beginFocusExposureUnit()
   }
 
   private fun moveFocus(direction: Int) {
@@ -2353,6 +2383,10 @@ class NativeEpubReaderView(
     }
 
     val page = pages.getOrNull(continuousPageIndex) ?: return
+
+    // A scroll has settled: some blocks may now sit fully above the viewport.
+    creditContinuousExposure()
+
     val href = page.href.takeIf { it.isNotBlank() }
       ?: page.path.takeIf { it.isNotBlank() }
       ?: bookManifest.stringValue("currentSpineHref")?.takeIf { it.isNotBlank() }
@@ -2370,8 +2404,7 @@ class NativeEpubReaderView(
       "globalTotal" to pages.size,
       "href" to href,
       "firstBlockId" to firstVisibleBlockId(page, continuousScrollView.scrollY),
-      "savedHighlights" to savedHighlights,
-      "gradedTerms" to levelTermsByPage[page.pageIndex].orEmpty()
+      "savedHighlights" to savedHighlights
     )
 
     (page.spineIndex ?: bookManifest.intValue("currentSpineIndex"))?.let { spineIndex ->
@@ -2406,6 +2439,185 @@ class NativeEpubReaderView(
   // Content offset of a block's top edge. Restoring to exactly this offset
   // makes firstVisibleBlockId report the same block back, so restore events
   // round-trip without drifting.
+  // ─── Exposure emission ──────────────────────────────────────────────────────
+  //
+  // An "exposure" is a graded word the reader was SHOWN and moved past. Native
+  // owns this because only native knows what was actually on screen and for how
+  // long, and the answer differs per render mode:
+  //
+  //   paged      — the unit is the page; it ends when the page turns.
+  //   focus      — the unit is the focused sentence span; it ends when the beam
+  //                advances. The cleanest of the three: the reader tells us
+  //                exactly what they were reading and when they left it.
+  //   continuous — there is no page. One bound ReaderPage is the WHOLE chapter
+  //                and the page index in onPageChange is a synthetic scroll
+  //                fraction, so the unit has to be the block, credited when it
+  //                scrolls off the top of the viewport.
+  //
+  // JS applies the intent filters it owns (looked-up, saved, per-unit cap) and
+  // the dwell-plausibility gate, using `chars` to scale it to the unit's size.
+
+  private fun emitExposure(terms: List<String>, chars: Int, dwellMs: Long) {
+    if (terms.isEmpty() || dwellMs <= 0L) {
+      return
+    }
+    onExposure(
+      mapOf(
+        "terms" to terms,
+        "chars" to chars,
+        "dwellMs" to dwellMs.toDouble()
+      )
+    )
+  }
+
+  /**
+   * Graded terms lying fully inside one block's [localStart, localEnd) window.
+   * Resolved back to their surface text from the block's plain text, since a
+   * TextRange stores offsets rather than the term it matched.
+   */
+  private fun gradedTermsIn(
+    page: ReaderPage,
+    blockId: String,
+    localStart: Int,
+    localEnd: Int
+  ): List<String> {
+    val block = page.blocks.firstOrNull { it.blockId == blockId } ?: return emptyList()
+    val text = block.plainText.ifEmpty { block.styledText?.toString() ?: "" }
+    if (text.isEmpty()) return emptyList()
+
+    val terms = linkedSetOf<String>()
+    levelRangesByPage[page.pageIndex].orEmpty().forEach { range ->
+      if (range.blockId != blockId) return@forEach
+      val start = range.sourceStartOffset - block.sourceStartOffset
+      val end = range.sourceEndOffset - block.sourceStartOffset
+      if (start >= localStart && end <= localEnd && start in 0 until end && end <= text.length) {
+        terms.add(text.substring(start, end))
+      }
+    }
+    return terms.toList()
+  }
+
+  private fun blockTextLength(block: PageBlock): Int {
+    if (block.type != "text") return 0
+    return block.plainText.ifEmpty { block.styledText?.toString() ?: "" }.length
+  }
+
+  /** Ends the open paged/focus exposure unit, emitting it if it earned anything. */
+  private fun flushExposureUnit() {
+    val terms = exposureUnitTerms
+    if (terms.isEmpty()) {
+      exposureUnitKey = null
+      return
+    }
+    emitExposure(terms, exposureUnitChars, SystemClock.uptimeMillis() - exposureUnitEnteredAtMs)
+    exposureUnitKey = null
+    exposureUnitTerms = emptyList()
+    exposureUnitChars = 0
+  }
+
+  /**
+   * Opens a new paged/focus exposure unit, closing any previous one. Re-entering
+   * the SAME key is a no-op: native re-dispatches for the same position on
+   * rebinds and highlight refreshes, and restarting the clock on those would
+   * quietly starve the signal.
+   */
+  private fun beginExposureUnit(key: String, terms: List<String>, chars: Int) {
+    if (exposureUnitKey == key) {
+      return
+    }
+    flushExposureUnit()
+    exposureUnitKey = key
+    exposureUnitTerms = terms
+    exposureUnitChars = chars
+    exposureUnitEnteredAtMs = SystemClock.uptimeMillis()
+  }
+
+  private fun beginPagedExposureUnit(page: ReaderPage?) {
+    if (page == null || readerRenderMode != "paged") return
+    beginExposureUnit(
+      key = "paged:${page.spineIndex}:${page.pageIndex}",
+      terms = levelTermsByPage[page.pageIndex].orEmpty(),
+      chars = page.blocks.sumOf { blockTextLength(it) }
+    )
+  }
+
+  private fun beginFocusExposureUnit() {
+    if (!isFocusMode() || focusSentences.isEmpty()) return
+    val page = pages.getOrNull(continuousPageIndex) ?: return
+    val lastIndex = (focusIndex + focusSpanCount - 1).coerceAtMost(focusSentences.lastIndex)
+    if (focusIndex > lastIndex) return
+
+    val span = focusSentences.subList(focusIndex, lastIndex + 1)
+    val terms = linkedSetOf<String>()
+    var chars = 0
+    span.forEach { sentence ->
+      terms.addAll(gradedTermsIn(page, sentence.blockId, sentence.startOffset, sentence.endOffset))
+      chars += (sentence.endOffset - sentence.startOffset).coerceAtLeast(0)
+    }
+
+    beginExposureUnit(
+      key = "focus:${page.spineIndex}:$focusIndex:$focusSpanCount",
+      terms = terms.toList(),
+      chars = chars
+    )
+  }
+
+  /**
+   * Continuous mode: credit blocks that have scrolled fully above the viewport.
+   *
+   * A block is "seen" the first time any part of it is on screen, and "read past"
+   * once its bottom clears the top of the viewport — the vertical analogue of a
+   * page turn. Dwell is the span between those two moments. Each block is emitted
+   * at most once per bound chapter, so scrolling back up doesn't re-credit it.
+   */
+  private fun creditContinuousExposure() {
+    if (readerRenderMode != "continuous") return
+    val page = pages.getOrNull(continuousPageIndex) ?: return
+
+    val scrollY = continuousScrollView.scrollY
+    val viewportBottom = scrollY + layoutHeight
+    val now = SystemClock.uptimeMillis()
+
+    var yOffset = pagePaddingV
+    for (block in page.blocks) {
+      yOffset += block.marginTop
+      val height = if (block.type == "image") {
+        block.imageHeight
+      } else {
+        block.textLayout?.height ?: 0
+      }
+      val top = yOffset
+      val bottom = yOffset + height
+      yOffset = bottom + block.marginBottom
+
+      if (block.type != "text" || exposedBlockIds.contains(block.blockId)) {
+        continue
+      }
+
+      if (bottom > scrollY && top < viewportBottom) {
+        blockFirstSeenAtMs.putIfAbsent(block.blockId, now)
+        continue
+      }
+
+      // Fully above the viewport: the reader has moved past it.
+      if (bottom <= scrollY) {
+        val seenAt = blockFirstSeenAtMs.remove(block.blockId) ?: continue
+        exposedBlockIds.add(block.blockId)
+        val length = blockTextLength(block)
+        emitExposure(
+          gradedTermsIn(page, block.blockId, 0, length),
+          length,
+          now - seenAt
+        )
+      }
+    }
+  }
+
+  private fun resetContinuousExposureTracking() {
+    blockFirstSeenAtMs.clear()
+    exposedBlockIds.clear()
+  }
+
   private fun continuousBlockTopOffset(page: ReaderPage, blockId: String): Int? {
     var yOffset = pagePaddingV
     for (block in page.blocks) {
@@ -3093,8 +3305,7 @@ class NativeEpubReaderView(
       "globalTotal" to total,
       "href" to href,
       "firstBlockId" to (page?.blocks?.firstOrNull()?.blockId ?: ""),
-      "savedHighlights" to (page?.pageIndex?.let { savedHighlightContextsByPage[it] }.orEmpty()),
-      "gradedTerms" to (page?.pageIndex?.let { levelTermsByPage[it] }.orEmpty())
+      "savedHighlights" to (page?.pageIndex?.let { savedHighlightContextsByPage[it] }.orEmpty())
     )
 
     (page?.spineIndex ?: bookManifest.intValue("currentSpineIndex"))?.let { spineIndex ->
@@ -3102,6 +3313,7 @@ class NativeEpubReaderView(
     }
 
     onPageChange(event)
+    beginPagedExposureUnit(page)
   }
 
   private fun logicalPageForDisplayPosition(position: Int): Int {

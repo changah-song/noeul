@@ -72,6 +72,7 @@ import { normalizeBookLanguage, normalizeInterfaceLanguageCode } from '../consta
 import { getProficiencyLevelForLanguage } from '../constants/proficiencyLevels';
 import {
     difficultyFromLevelRank,
+    exposureDwellIsPlausible,
     levelUnderlineWeight,
     lowestUnderlinedRank,
     pKnown,
@@ -102,17 +103,17 @@ const FOCUS_SPAN_MAX = 5;
 const FOCUS_PAGE_CHANGE_DEBOUNCE_MS = 400;
 
 // ─── Exposure crediting ───────────────────────────────────────────────────────
-// A graded word shown on a page the reader dwelled on and then left WITHOUT
-// tapping is weak positive evidence that they knew it. It is the only read-mode
-// signal that can push ability UP — lookups only ever push it down.
+// A graded word the reader was SHOWN and moved past without tapping is weak
+// positive evidence that they knew it — the only read-mode signal that can push
+// ability UP (lookups only ever push it down). Native decides what a "unit" is
+// (a page, a focus span, or a scrolled-past block) and times the dwell; this
+// screen applies the intent filters and the plausibility gate below, then batches.
 //
-// Credit is awarded on page EXIT, not entry: entering a page says nothing, so
-// flicking through five pages hunting for your place must not bank five pages of
-// "known". Below this dwell the page is treated as never read.
-const EXPOSURE_MIN_DWELL_MS = 4000;
-// Cap per page so a densely typeset page can't move ability further than a sparse
-// one — that's a property of the layout, not of the reader.
-const EXPOSURE_MAX_PER_PAGE = 5;
+// The dwell-plausibility gate (exposureDwellIsPlausible) lives in abilityModel.js
+// so it's unit-tested alongside the exposure rate it feeds. Cap per unit so dense
+// typesetting can't move ability further than sparse — a property of the layout,
+// not of the reader.
+const EXPOSURE_MAX_PER_UNIT = 5;
 const LINE_SPACING_STEPS = [
     { value: 1.4, label: 'Compact' },
     { value: 1.65, label: 'Regular' },
@@ -652,9 +653,10 @@ const Read = ({
     // underline change.
     const levelsByLanguageRef = useRef(levelsByLanguage);
     levelsByLanguageRef.current = levelsByLanguage;
-    // The page the reader is currently on, for exposure crediting on exit:
-    // { key, terms, lookedUp, enteredAt, bookUri, language }.
-    const pageExposureRef = useRef(null);
+    // Surfaces looked up recently, to exclude from exposure crediting: a lookup is
+    // its own (stronger, negative) evidence, so the same word must not also be
+    // credited as a skip. Cleared each time native closes an exposure unit.
+    const recentLookupsRef = useRef(new Set());
     // Gradient weights of the current underline snapshot, keyed by surface. Used
     // to rank exposure candidates by how uncertain the model is about them.
     const levelUnderlineWeightsRef = useRef(new Map());
@@ -1023,8 +1025,8 @@ const Read = ({
         const sentence = typeof event.sentence === 'string' ? event.sentence.trim() : '';
 
         // Looking a word up is its own (much stronger) evidence, so this word must
-        // not also be credited as a skip when the page is left.
-        pageExposureRef.current?.lookedUp.add(text);
+        // not also be credited as a skip when the current exposure unit closes.
+        recentLookupsRef.current.add(text);
 
         setIsNativeSelection(false);
         setHighlightedWord(text);
@@ -1367,16 +1369,31 @@ const Read = ({
         setClearSelectionToken((value) => value + 1);
     }, []);
 
-    // Hardware back steps out of transient reader UI before doing anything else:
-    // first the open lookup panel, then fullscreen. Only registers when one of
-    // those is active so normal back behaviour is untouched otherwise.
+    // Hardware back steps out of transient reader UI one layer at a time,
+    // innermost first: the options dropdown, the open lookup panel, then focus
+    // mode, then fullscreen. Read is a tab-navigator root, so anything left
+    // unhandled quits the app. Only registers when one of those is active so
+    // normal back behaviour is untouched otherwise.
     useEffect(() => {
-        if (!highlightedWord && !isFullscreen) {
+        if (!showMenu && !highlightedWord && !focusMode && !isFullscreen) {
             return undefined;
         }
         const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+            if (showMenu) {
+                setShowMenu(false);
+                return true;
+            }
             if (highlightedWord) {
                 dismissLookup();
+                return true;
+            }
+            if (focusMode) {
+                // Same teardown as toggleFocusMode: flush the coalesced sentence
+                // position before the mode switch re-emits pages in the other
+                // mode's geometry.
+                flushPendingFocusPageChange();
+                setShowMenu(false);
+                setFocusMode(false);
                 return true;
             }
             if (isFullscreen) {
@@ -1386,7 +1403,7 @@ const Read = ({
             return false;
         });
         return () => subscription.remove();
-    }, [isFullscreen, highlightedWord, dismissLookup]);
+    }, [showMenu, isFullscreen, focusMode, highlightedWord, dismissLookup, flushPendingFocusPageChange]);
 
     // Swipe-down anywhere on the lookup panel dismisses it (mirrors the hardware
     // back / close-button paths). Only claims clearly downward drags so it doesn't
@@ -2507,11 +2524,13 @@ const Read = ({
     }, [activeBook?.uri, currentBook, readerRetryKey]);
 
     /**
-     * Credit one finished page's exposures, if it earned them.
+     * Consume one exposure unit native just closed — a page, a focus span, or a
+     * scrolled-past block. Native owns "what was shown and for how long"; this owns
+     * the intent filters and the plausibility gate.
      *
      * Three subtractions before anything counts as "skipped because known":
-     *   1. pages left too fast — the reader never had a chance to read them
-     *   2. words looked up on that page — a lookup already logged its own (much
+     *   1. units left too fast for their length — never really read (dwell gate)
+     *   2. words looked up recently — a lookup already logged its own (much
      *      stronger, negative) evidence; crediting a positive too would partly
      *      cancel it
      *   3. saved words — already earning graded evidence through the SRS loop
@@ -2522,51 +2541,44 @@ const Read = ({
      * and skipping a word far above you is at least as likely to mean "gave up and
      * read on" as "knew it" — the informative skips are the ones in the middle.
      */
-    const creditPageExposure = useCallback((entry) => {
-        if (!entry || !entry.bookUri || !Array.isArray(entry.terms) || entry.terms.length === 0) {
+    const handleNativeExposure = useCallback(({ terms, chars, dwellMs } = {}) => {
+        // Each closed unit ends the window in which a tap could have belonged to
+        // it; taps after this point belong to the next unit.
+        const lookedUp = recentLookupsRef.current;
+        recentLookupsRef.current = new Set();
+
+        if (!currentBook || !Array.isArray(terms) || terms.length === 0) {
             return;
         }
-
-        const dwellMs = Date.now() - entry.enteredAt;
-        if (dwellMs < EXPOSURE_MIN_DWELL_MS) {
+        if (!exposureDwellIsPlausible(chars, dwellMs)) {
             return;
         }
 
         const weights = levelUnderlineWeightsRef.current;
         const saved = savedSurfacesRef.current;
-        const skipped = entry.terms
-            .filter((term) => !entry.lookedUp.has(term) && !saved.has(term))
+        const skipped = terms
+            .filter((term) => typeof term === 'string' && term && !lookedUp.has(term) && !saved.has(term))
             .sort((a, b) => (
                 Math.abs((weights.get(a) ?? 1) - 0.5) - Math.abs((weights.get(b) ?? 1) - 0.5)
             ))
-            .slice(0, EXPOSURE_MAX_PER_PAGE);
+            .slice(0, EXPOSURE_MAX_PER_UNIT);
 
         if (skipped.length === 0) {
             return;
         }
 
         applyExposureBatch({
-            ownerId: entry.ownerId,
-            language: entry.language,
+            ownerId: activeOwnerId,
+            language: activeBookLanguage,
             stems: skipped,
-            sourceBookUri: entry.bookUri,
-            dwellSeconds: dwellMs / 1000,
+            sourceBookUri: currentBook,
+            dwellSeconds: Number(dwellMs) / 1000,
         }).catch((error) => {
-            console.warn('[Read] Failed to apply page exposure batch:', error);
+            console.warn('[Read] Failed to apply exposure batch:', error);
         });
-    }, []);
+    }, [activeOwnerId, activeBookLanguage, currentBook]);
 
-    // The last page of a session is never followed by another page change, so it
-    // would otherwise go uncredited — flush it on unmount. (A page left by
-    // backgrounding the app without unmounting is still dropped; that's at most
-    // one page of the weakest signal we have, which isn't worth an AppState
-    // listener to chase.)
-    useEffect(() => () => {
-        creditPageExposure(pageExposureRef.current);
-        pageExposureRef.current = null;
-    }, [creditPageExposure]);
-
-    const processNativePageChange = useCallback(({ page, total, spineIndex, href, firstBlockId, savedHighlights, gradedTerms } = {}) => {
+    const processNativePageChange = useCallback(({ page, total, spineIndex, href, firstBlockId, savedHighlights } = {}) => {
         if (bookCompletionInProgressRef.current) {
             return;
         }
@@ -2596,24 +2608,6 @@ const Read = ({
 
         if (!currentBook || !Number.isInteger(pageIndex) || !Number.isInteger(resolvedSpineIndex)) {
             return;
-        }
-
-        // Page exit: settle up for the page being left, then open a fresh window.
-        // Native re-dispatches for the same page (rebinds, highlight refreshes),
-        // so key on the position and treat a repeat as "still here" — restarting
-        // the dwell clock on a rebind would quietly starve the signal.
-        const exposureKey = `${resolvedSpineIndex}:${pageIndex}`;
-        if (pageExposureRef.current?.key !== exposureKey) {
-            creditPageExposure(pageExposureRef.current);
-            pageExposureRef.current = {
-                key: exposureKey,
-                terms: Array.isArray(gradedTerms) ? gradedTerms.filter((term) => typeof term === 'string') : [],
-                lookedUp: new Set(),
-                enteredAt: Date.now(),
-                ownerId: activeOwnerId,
-                bookUri: currentBook,
-                language: activeBookLanguage,
-            };
         }
 
         if (Array.isArray(savedHighlights) && savedHighlights.length > 0) {
@@ -3224,6 +3218,7 @@ const Read = ({
                         onTextSelected={handleNativeTextSelected}
                         onSelectionCleared={handleNativeSelectionCleared}
                         onFocusSentenceChange={handleFocusSentenceChange}
+                        onExposure={handleNativeExposure}
                     />
                 )}
                 {readerBrightnessOverlayOpacity > 0 ? (

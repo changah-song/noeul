@@ -2192,7 +2192,7 @@ const createStyles = (colors) => StyleSheet.create({
         paddingHorizontal: 0,
     },
     primaryEntry: {
-        gap: 14,
+        gap: 10,
         paddingHorizontal: 24,
         paddingBottom: 0,
     },
@@ -2268,7 +2268,7 @@ const createStyles = (colors) => StyleSheet.create({
     },
     pronunciationAccentButton: {
         minWidth: 42,
-        height: 24,
+        height: 22,
         borderRadius: 6,
         borderWidth: StyleSheet.hairlineWidth,
         alignItems: 'center',
@@ -2294,19 +2294,20 @@ const createStyles = (colors) => StyleSheet.create({
     },
     actionRow: {
         paddingHorizontal: 24,
-        paddingTop: 10,
+        paddingTop: 8,
         paddingBottom: 0,
     },
     actionButtonGroup: {
         flexDirection: 'row',
-        gap: 10,
+        gap: 8,
     },
     actionButton: {
         flex: 1,
-        height: 46,
+        height: 44,
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
+        paddingHorizontal: 8,
         backgroundColor: colors.readerSurface,
         borderWidth: 1,
         borderColor: colors.readerBorder,
@@ -2326,14 +2327,17 @@ const createStyles = (colors) => StyleSheet.create({
         opacity: 0.5,
     },
     actionButtonIcon: {
-        marginRight: 8,
+        marginRight: 6,
     },
     actionLabel: {
         fontFamily: fontFamilies.sansBold,
-        fontSize: 11,
-        lineHeight: 14,
-        letterSpacing: 1.8,
+        fontSize: 10,
+        lineHeight: 13,
+        // Longer labels ("translate", "smart definition") ran edge to edge in the
+        // button at 1.8; tightened so the tracking still reads but leaves gutters.
+        letterSpacing: 1.2,
         textTransform: 'uppercase',
+        flexShrink: 1,
     },
     translationPanelBody: {
         paddingHorizontal: 24,
@@ -2397,7 +2401,10 @@ const createStyles = (colors) => StyleSheet.create({
         justifyContent: 'center',
         gap: 10,
         paddingHorizontal: 0,
-        minHeight: 44,
+        // Sized to hug a single-line definition. A fixed 44 here padded the row
+        // enough that word + pronunciation + a one-line definition overflowed the
+        // compact sheet and turned it into a scroll view.
+        minHeight: 26,
     },
     definitionRowSolo: {
         justifyContent: 'center',

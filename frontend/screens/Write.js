@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useMemo, useRef, useState 
 import {
   Alert,
   Animated,
+  BackHandler,
   Easing,
   KeyboardAvoidingView,
   Modal,
@@ -1153,6 +1154,30 @@ const Write = ({ user, navigation }) => {
     setSelectedAnnotation(null);
     setMode('list');
   };
+
+  // Android hardware back returns to the entry list instead of falling through
+  // to the tab navigator and exiting the app (Write is a tab-navigator root).
+  // Editor back mirrors the header back button: auto-saves any drafted text.
+  // Open modals (annotation sheet, confirm dialogs) intercept back via their
+  // own onRequestClose, so this only fires for the mode-level navigation.
+  // Only registers when a detail or editor view is open.
+  useEffect(() => {
+    if (mode === 'list') {
+      return undefined;
+    }
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (mode === 'editor') {
+        handleEditorBack();
+        return true;
+      }
+      if (mode === 'detail') {
+        leaveDetail();
+        return true;
+      }
+      return false;
+    });
+    return () => subscription.remove();
+  }, [mode, handleEditorBack, leaveDetail]);
 
   const buildNextEntry = ({ status = 'draft', assessment = null } = {}) => {
     const now = new Date().toISOString();

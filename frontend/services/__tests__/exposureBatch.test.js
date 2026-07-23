@@ -30,7 +30,42 @@ import {
   getProfileAbility,
   updateThetaFromOutcome,
 } from '../Database';
-import { EXPOSURE_LEARNING_RATE } from '../abilityModel';
+import {
+  EXPOSURE_ABS_FLOOR_MS,
+  EXPOSURE_LEARNING_RATE,
+  EXPOSURE_MS_PER_CHAR,
+  exposureDwellIsPlausible,
+} from '../abilityModel';
+
+describe('exposureDwellIsPlausible', () => {
+  it('scales the threshold with unit length', () => {
+    // A long page needs a proportionally longer dwell than a short sentence.
+    const shortChars = 40;
+    const longChars = 800;
+    const shortReq = shortChars * EXPOSURE_MS_PER_CHAR * 0.4;
+    const longReq = longChars * EXPOSURE_MS_PER_CHAR * 0.4;
+
+    // The same 3s dwell reads a sentence but only skims a full page.
+    expect(exposureDwellIsPlausible(shortChars, 3000)).toBe(true);
+    expect(exposureDwellIsPlausible(longChars, 3000)).toBe(false);
+    // Right at each unit's own requirement.
+    expect(exposureDwellIsPlausible(longChars, longReq)).toBe(true);
+    expect(exposureDwellIsPlausible(shortChars, shortReq - 1)).toBe(false);
+  });
+
+  it('never credits a sub-floor blip even for a one-character unit', () => {
+    // A tiny unit's scaled requirement is below the absolute floor, so the floor
+    // wins — a 12ms flash past a single graded word must not count.
+    expect(exposureDwellIsPlausible(1, 12)).toBe(false);
+    expect(exposureDwellIsPlausible(1, EXPOSURE_ABS_FLOOR_MS)).toBe(true);
+  });
+
+  it('treats a missing dwell or length as not plausible', () => {
+    expect(exposureDwellIsPlausible(100, undefined)).toBe(false);
+    expect(exposureDwellIsPlausible(100, NaN)).toBe(false);
+    expect(exposureDwellIsPlausible(NaN, 5000)).toBe(true); // unknown length → floor only
+  });
+});
 
 const { __resetMockDatabases } = SQLite;
 

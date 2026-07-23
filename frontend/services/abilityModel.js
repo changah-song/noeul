@@ -240,6 +240,31 @@ export const LOOKUP_LEARNING_RATE = 0.1;
 // `value_num` precisely so it can later be fit rather than assumed.
 export const EXPOSURE_LEARNING_RATE = 0.01;
 
+// Dwell-plausibility gate for an exposure unit (a page, a focus span, or a
+// scrolled-past block — native decides the unit and times the dwell). The gate
+// scales with the unit's text length instead of a flat threshold, because unit
+// size differs ~10x across render modes: a focus sentence is read in a couple of
+// seconds, a page in tens. Expected read time is chars × MS_PER_CHAR; the reader
+// must have spent at least MIN_READ_FRACTION of it, so the one rule rejects both
+// a flicked-through page and a blitzed-past sentence.
+export const EXPOSURE_MS_PER_CHAR = 30; // ~33 chars/s, brisk reading across scripts
+export const EXPOSURE_MIN_READ_FRACTION = 0.4;
+export const EXPOSURE_ABS_FLOOR_MS = 300; // never credit a sub-300ms blip
+
+/**
+ * exposureDwellIsPlausible — did the reader dwell on this unit long enough for
+ * "didn't tap" to plausibly mean "knew it" rather than "skimmed past"?
+ *
+ * @param {number} chars   text length of the unit
+ * @param {number} dwellMs measured dwell in milliseconds
+ * @returns {boolean}
+ */
+export const exposureDwellIsPlausible = (chars, dwellMs) => {
+  const expected = Math.max(0, Number(chars) || 0) * EXPOSURE_MS_PER_CHAR;
+  const required = Math.max(EXPOSURE_ABS_FLOOR_MS, expected * EXPOSURE_MIN_READ_FRACTION);
+  return Number(dwellMs) >= required;
+};
+
 // How the self-report seed's influence decays (design doc §2: self-assessment is
 // miscalibrated, so treat it as a prior to override quickly, not a fixed anchor).
 // On top of the evidence step we add a spring pulling theta back toward the seed
