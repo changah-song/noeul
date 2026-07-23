@@ -6,7 +6,6 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
@@ -157,14 +156,13 @@ class EpubPageView(context: Context) : View(context) {
     color = savedHighlightTextColor
     style = Paint.Style.FILL
   }
-  // One paint for every level underline; its color and stroke width are set per
+  // One paint for every level underline. Its color and stroke width are set per
   // range from that word's gradient weight just before it is drawn.
-  private val levelUnderlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+  private val levelMarkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
     color = levelUnderlineEasyColor
     style = Paint.Style.STROKE
     strokeWidth = dp(1.7f).toFloat()
     strokeCap = Paint.Cap.ROUND
-    pathEffect = DashPathEffect(floatArrayOf(dp(1f).toFloat(), dp(3f).toFloat()), 0f)
   }
   private val activeHighlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
     color = activeHighlightColor
@@ -351,7 +349,7 @@ class EpubPageView(context: Context) : View(context) {
   private fun drawBlockContent(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
     activeHighlightPaint.color = activePaintColor()
     drawTextHighlights(canvas, block, layout, activeSelectionRanges, activeHighlightPaint)
-    drawTextHighlights(canvas, block, layout, levelRanges, levelUnderlinePaint)
+    drawTextHighlights(canvas, block, layout, levelRanges, levelMarkPaint)
     drawTextHighlights(canvas, block, layout, savedHighlightRanges, savedHighlightPaint)
     layout.draw(canvas)
     drawSavedHighlightText(canvas, block, layout, savedHighlightRanges)
@@ -1524,7 +1522,7 @@ class EpubPageView(context: Context) : View(context) {
         return@forEach
       }
 
-      if (paint === levelUnderlinePaint) {
+      if (paint === levelMarkPaint) {
         applyLevelUnderlineShade(paint, range.levelWeight)
         drawLevelUnderline(canvas, layout, localStart, localEnd, blockTextLength, paint)
         return@forEach
@@ -1775,12 +1773,14 @@ class EpubPageView(context: Context) : View(context) {
    */
   private fun applyLevelUnderlineShade(paint: Paint, weight: Float?) {
     val w = (weight ?: 1f).coerceIn(0f, 1f)
-    paint.color = if (w <= 0.5f) {
-      lerpColor(levelUnderlineEasyColor, levelUnderlineMidColor, w / 0.5f)
-    } else {
-      lerpColor(levelUnderlineMidColor, levelUnderlineHardColor, (w - 0.5f) / 0.5f)
-    }
+    paint.color = levelColorForWeight(w)
     paint.strokeWidth = dp(1.4f + (0.8f * w)).toFloat()
+  }
+
+  private fun levelColorForWeight(w: Float): Int = if (w <= 0.5f) {
+    lerpColor(levelUnderlineEasyColor, levelUnderlineMidColor, w / 0.5f)
+  } else {
+    lerpColor(levelUnderlineMidColor, levelUnderlineHardColor, (w - 0.5f) / 0.5f)
   }
 
   // Component-wise RGB interpolation. Deliberately not going through a perceptual

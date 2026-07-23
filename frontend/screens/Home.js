@@ -3712,6 +3712,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
                 {featuredBooks.length > 0 ? (
                     <FeaturedBookCarousel
+                        key={getBookKey(featuredBooks[0], 'featured')}
                         books={featuredBooks}
                         screenWidth={width}
                         onResumeBook={handleResumeFeaturedBook}

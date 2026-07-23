@@ -244,11 +244,12 @@ const useBooks = ({
                     || (!existingBook.coverBackgroundColor && coverColors.coverBackgroundColor)
                     || (!existingBook.pdfCoverPageNumber && pdfCoverPageNumber);
 
-                if (needsMetadataPatch) {
-                    setBooks((prevBooks) => prevBooks.map((book) => (
-                        book.id === existingBook.id
-                            ? {
-                                ...book,
+                const openedAt = new Date().toISOString();
+                setBooks((prevBooks) => prevBooks.map((book) => (
+                    book.id === existingBook.id
+                        ? {
+                            ...book,
+                            ...(needsMetadataPatch ? {
                                 cover: book.cover || cover,
                                 coverAccentColor: book.coverAccentColor || coverColors.coverAccentColor,
                                 coverBackgroundColor: book.coverBackgroundColor || coverColors.coverBackgroundColor,
@@ -262,10 +263,11 @@ const useBooks = ({
                                 language: book.language || detectedLanguage || null,
                                 wordCount: book.wordCount || wordCount || null,
                                 pdfCoverPageNumber: book.pdfCoverPageNumber || pdfCoverPageNumber || null,
-                            }
-                            : book
-                    )));
-                }
+                            } : null),
+                            lastOpenedAt: openedAt,
+                        }
+                        : book
+                )));
                 setCurrentBook(existingBook.uri);
                 setIsImporting(false);
                 navigation.navigate('Read', { returnTo: 'Home' });
@@ -273,6 +275,7 @@ const useBooks = ({
             }
 
             const preprocessed = await isBookPreprocessed(uri, { ownerId });
+            const openedAt = new Date().toISOString();
             const newBook = {
                 id: createBookId(),
                 uri,
@@ -298,6 +301,8 @@ const useBooks = ({
                 cloudFilePath: null,
                 cloudSyncedAt: null,
                 downloaded: true,
+                createdAt: openedAt,
+                lastOpenedAt: openedAt,
             };
 
             setBooks((prevBooks) => [...prevBooks, newBook]);

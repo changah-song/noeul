@@ -91,8 +91,56 @@ const DEFAULT_READER_SETTINGS = {
     focusSpan: 1,
     focusSwipe: false,
     readingMode: 'paged',
+    levelMarkStyle: 'underline',
 };
 const READING_MODES = ['paged', 'scroll'];
+// Whether graded words get a solid gradient underline. 'off' hides the marks but
+// the model keeps learning from reading.
+const LEVEL_MARK_STYLES = ['off', 'underline'];
+const LEVEL_MARK_OPTIONS = [
+    { value: 'off', icon: 'visibility-off', labelKey: 'read.markOff' },
+    { value: 'underline', icon: 'format-underlined', labelKey: 'read.markUnderline' },
+];
+// Stable empty reference so toggling underlines off doesn't hand native a fresh
+// array each render (which would churn the level matcher).
+const EMPTY_LEVEL_TERMS = [];
+
+// Number of segments in the legend gradient bar. Enough to read as continuous.
+const LEGEND_GRADIENT_STEPS = 12;
+
+// Parse "#rrggbb" → [r, g, b]; tolerant of a missing/short value (→ null so the
+// caller can skip a broken stop rather than render black).
+const parseHexColor = (hex) => {
+    const match = /^#?([0-9a-f]{6})$/i.exec(typeof hex === 'string' ? hex.trim() : '');
+    if (!match) {
+        return null;
+    }
+    const int = parseInt(match[1], 16);
+    return [(int >> 16) & 0xff, (int >> 8) & 0xff, int & 0xff];
+};
+
+const rgbToHex = ([r, g, b]) => `#${[r, g, b]
+    .map((v) => Math.round(v).toString(16).padStart(2, '0'))
+    .join('')}`;
+
+const lerpRgb = (from, to, t) => from.map((c, i) => c + (to[i] - c) * t);
+
+// Interpolate easy → mid → hard into LEGEND_GRADIENT_STEPS colors (mid at the
+// centre), mirroring EpubPageView.applyLevelUnderlineShade so the legend and the
+// page agree. Falls back to the raw stops if any hex fails to parse.
+const buildLegendGradient = (easyHex, midHex, hardHex) => {
+    const easy = parseHexColor(easyHex);
+    const mid = parseHexColor(midHex);
+    const hard = parseHexColor(hardHex);
+    if (!easy || !mid || !hard) {
+        return [easyHex, midHex, hardHex].filter(Boolean);
+    }
+    return Array.from({ length: LEGEND_GRADIENT_STEPS }, (_, i) => {
+        const t = i / (LEGEND_GRADIENT_STEPS - 1);
+        const rgb = t <= 0.5 ? lerpRgb(easy, mid, t / 0.5) : lerpRgb(mid, hard, (t - 0.5) / 0.5);
+        return rgbToHex(rgb);
+    });
+};
 const FONT_SIZE_MIN = 12;
 const FONT_SIZE_MAX = 30;
 const FOCUS_SPAN_MIN = 1;
@@ -1332,6 +1380,7 @@ const Read = ({
             lineSpacing: DEFAULT_READER_SETTINGS.lineSpacing,
             brightness: DEFAULT_READER_SETTINGS.brightness,
             readingMode: DEFAULT_READER_SETTINGS.readingMode,
+            levelMarkStyle: DEFAULT_READER_SETTINGS.levelMarkStyle,
         });
     };
 
@@ -1369,13 +1418,15 @@ const Read = ({
         setClearSelectionToken((value) => value + 1);
     }, []);
 
-    // Hardware back steps out of transient reader UI one layer at a time,
-    // innermost first: the options dropdown, the open lookup panel, then focus
-    // mode, then fullscreen. Read is a tab-navigator root, so anything left
-    // unhandled quits the app. Only registers when one of those is active so
-    // normal back behaviour is untouched otherwise.
+    // Hardware back steps out of transient reader chrome one layer at a time:
+    // the options dropdown, then the open lookup panel, then fullscreen. Focus
+    // mode is deliberately NOT unwound here — from focus mode back leaves the
+    // reader like any other read view, and when focus mode is also fullscreen
+    // back only drops fullscreen (leaving focus mode intact). Only registers
+    // when one of those layers is active so normal back behaviour is untouched
+    // otherwise.
     useEffect(() => {
-        if (!showMenu && !highlightedWord && !focusMode && !isFullscreen) {
+        if (!showMenu && !highlightedWord && !isFullscreen) {
             return undefined;
         }
         const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -1387,15 +1438,6 @@ const Read = ({
                 dismissLookup();
                 return true;
             }
-            if (focusMode) {
-                // Same teardown as toggleFocusMode: flush the coalesced sentence
-                // position before the mode switch re-emits pages in the other
-                // mode's geometry.
-                flushPendingFocusPageChange();
-                setShowMenu(false);
-                setFocusMode(false);
-                return true;
-            }
             if (isFullscreen) {
                 setIsFullscreen(false);
                 return true;
@@ -1403,7 +1445,7 @@ const Read = ({
             return false;
         });
         return () => subscription.remove();
-    }, [showMenu, isFullscreen, focusMode, highlightedWord, dismissLookup, flushPendingFocusPageChange]);
+    }, [showMenu, isFullscreen, highlightedWord, dismissLookup]);
 
     // Swipe-down anywhere on the lookup panel dismisses it (mirrors the hardware
     // back / close-button paths). Only claims clearly downward drags so it doesn't
@@ -2962,6 +3004,30 @@ const Read = ({
         : DEFAULT_READER_SETTINGS.readingMode;
     const isScrollMode = readingMode === 'scroll';
     const nativeRenderMode = focusMode ? 'focus' : (isScrollMode ? 'continuous' : 'paged');
+    // 'off' hides the marks only; exposure/lookup evidence keeps flowing, since
+    // the model should keep learning even when the marks are turned off.
+    const levelMarkStyle = LEVEL_MARK_STYLES.includes(settings.levelMarkStyle)
+        ? settings.levelMarkStyle
+        : DEFAULT_READER_SETTINGS.levelMarkStyle;
+    const levelMarksEnabled = levelMarkStyle !== 'off';
+    const readerLevelTerms = useMemo(
+        () => (levelMarksEnabled ? levelUnderlineTerms : EMPTY_LEVEL_TERMS),
+        [levelMarksEnabled, levelUnderlineTerms]
+    );
+    // Legend gradient: interpolate the same three underline stops native draws
+    // (easy → mid → hard) into a smooth bar, so the swatch matches the page.
+    const underlineLegendColors = useMemo(
+        () => buildLegendGradient(
+            themeColors.readerLevelUnderlineEasy,
+            themeColors.readerLevelUnderlineMid,
+            themeColors.readerLevelUnderlineHard,
+        ),
+        [
+            themeColors.readerLevelUnderlineEasy,
+            themeColors.readerLevelUnderlineMid,
+            themeColors.readerLevelUnderlineHard,
+        ]
+    );
     const focusPanelOpen = focusMode && !!highlightedWord;
     // Total height the lookup panel occupies from the bottom of the screen;
     // the native reading surface lifts by exactly this much.
@@ -3204,7 +3270,7 @@ const Read = ({
                         renderMode={nativeRenderMode}
                         readerEdgeStateEnabled={false}
                         highlightTerms={readerHighlightTerms}
-                        levelTerms={levelUnderlineTerms}
+                        levelTerms={readerLevelTerms}
                         clearSelectionToken={clearSelectionToken}
                         focusSentenceCount={focusSpan}
                         focusSwipeEnabled={focusSwipe}
@@ -3486,7 +3552,7 @@ const Read = ({
                                     </View>
                                 </View>
 
-                                <View style={[styles.fontSettingsRow, styles.fontSettingsLastRow]}>
+                                <View style={styles.fontSettingsRow}>
                                     <Text style={styles.fontSettingsLabel}>{t('read.readingDirection')}</Text>
                                     <View style={styles.segmentGroup}>
                                         <TouchableOpacity
@@ -3522,6 +3588,57 @@ const Read = ({
                                             </Text>
                                         </TouchableOpacity>
                                     </View>
+                                </View>
+
+                                <View style={[styles.markStyleBlock, styles.fontSettingsLastRow]}>
+                                    <Text style={styles.fontSettingsLabel}>{t('read.wordHighlighting')}</Text>
+                                    <View style={styles.segmentGroup}>
+                                        {LEVEL_MARK_OPTIONS.map(({ value, icon, labelKey }) => {
+                                            const selected = levelMarkStyle === value;
+                                            return (
+                                                <TouchableOpacity
+                                                    key={value}
+                                                    style={[styles.segmentButton, selected && styles.segmentButtonActive]}
+                                                    onPress={() => handleSettingChange('levelMarkStyle', value)}
+                                                    activeOpacity={0.7}
+                                                    accessibilityRole="button"
+                                                    accessibilityState={{ selected }}
+                                                >
+                                                    <MaterialIcons
+                                                        name={icon}
+                                                        size={16}
+                                                        color={selected ? themeColors.readerPaper : themeColors.textSecondary}
+                                                    />
+                                                    <Text
+                                                        style={[styles.segmentButtonText, selected && styles.segmentButtonTextActive]}
+                                                        numberOfLines={1}
+                                                    >
+                                                        {t(labelKey)}
+                                                    </Text>
+                                                </TouchableOpacity>
+                                            );
+                                        })}
+                                    </View>
+
+                                    {levelMarksEnabled ? (
+                                        <View style={styles.underlineLegend}>
+                                            <View style={styles.underlineLegendSwatches}>
+                                                {underlineLegendColors.map((color, index) => (
+                                                    <View
+                                                        key={index}
+                                                        style={[styles.underlineLegendSwatch, { backgroundColor: color }]}
+                                                    />
+                                                ))}
+                                            </View>
+                                            <View style={styles.underlineLegendLabels}>
+                                                <Text style={styles.underlineLegendLabel}>{t('read.underlineNearly')}</Text>
+                                                <Text style={[styles.underlineLegendLabel, styles.underlineLegendLabelEnd]}>
+                                                    {t('read.underlineHard')}
+                                                </Text>
+                                            </View>
+                                            <Text style={styles.underlineLegendHint}>{t('read.wordHighlightingHint')}</Text>
+                                        </View>
+                                    ) : null}
                                 </View>
                             </View>
 
@@ -4168,6 +4285,46 @@ const createStyles = (themeColors) => StyleSheet.create({
         lineHeight: 20,
         color: themeColors.readerBodyInk,
         flexShrink: 0,
+    },
+    markStyleBlock: {
+        borderTopWidth: 1,
+        borderTopColor: themeColors.readerHairline,
+        paddingVertical: 12,
+        gap: 10,
+    },
+    underlineLegend: {
+        paddingTop: 2,
+        paddingBottom: 2,
+        gap: 6,
+    },
+    underlineLegendSwatches: {
+        flexDirection: 'row',
+        height: 4,
+        borderRadius: 2,
+        overflow: 'hidden',
+    },
+    underlineLegendSwatch: {
+        flex: 1,
+        height: '100%',
+    },
+    underlineLegendLabels: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+    },
+    underlineLegendLabel: {
+        fontFamily: 'FFSans-Regular',
+        fontSize: 12,
+        lineHeight: 16,
+        color: themeColors.readerSubtleInk,
+    },
+    underlineLegendLabelEnd: {
+        textAlign: 'right',
+    },
+    underlineLegendHint: {
+        fontFamily: 'FFSans-Regular',
+        fontSize: 12,
+        lineHeight: 17,
+        color: themeColors.readerSubtleInk,
     },
     fontSettingsStepperGroup: {
         flexDirection: 'row',

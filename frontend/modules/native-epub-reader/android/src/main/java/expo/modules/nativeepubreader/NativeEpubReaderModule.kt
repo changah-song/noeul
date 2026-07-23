@@ -1456,7 +1456,12 @@ class NativeEpubReaderView(
       pages = nextPages
       pagePositionOffset = 0
       continuousPageIndex = targetPage.coerceIn(0, pages.lastIndex.coerceAtLeast(0))
-      bindContinuousPage(continuousPageIndex, backgroundColor, resetScroll = resetToFirstPage)
+      bindContinuousPage(
+        continuousPageIndex,
+        backgroundColor,
+        resetScroll = resetToFirstPage,
+        landFocusAtEnd = isFocusMode() && resetToFirstPage && transitionDirection == "previous"
+      )
       if (isFocusMode()) {
         dispatchFocusPageChange()
         beginFocusExposureUnit()
@@ -1665,6 +1670,10 @@ class NativeEpubReaderView(
     backgroundColor: Int,
     resetScroll: Boolean,
     scrollTarget: Int? = null,
+    // Set when this chapter is being entered by swiping backward off the top of
+    // the following chapter. The focus beam then lands on the last sentence
+    // instead of the first, so the reader resumes where they left off.
+    landFocusAtEnd: Boolean = false,
     onScrollComplete: (() -> Unit)? = null
   ) {
     val page = pages.getOrNull(position) ?: ReaderPage(0, emptyList())
@@ -1726,6 +1735,10 @@ class NativeEpubReaderView(
           focusSentenceIndexAt(preservedAnchor.blockId, preservedAnchor.startOffset)
             ?: focusIndex.coerceIn(0, focusSentences.lastIndex)
         )
+        // Backward chapter entry: start the beam on the final span so a
+        // down-swipe off the top of the next chapter returns to the previous
+        // chapter's last sentence rather than its top.
+        landFocusAtEnd -> (focusSentences.size - focusSpanCount).coerceAtLeast(0)
         else -> initialFocusIndexFromRestorePosition()
       }
       continuousScrollView.swipeNavigationEnabled = focusSwipeEnabled
