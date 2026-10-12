@@ -73,6 +73,19 @@ ENGLISH_TRANS_LANG = "영어"
 # they never touch the English glosses we keep, so no data we care about is lost.
 INVALID_XML_CHARS = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
+# Some non-English glosses contain raw "<" / ">" inside attribute values (e.g. a
+# French definition with "<système de chauffage par le sol>"), which expat rejects
+# as not well-formed. Attribute values can never hold a raw double quote, so
+# escaping angle brackets inside val="..." is safe and only touches text.
+UNESCAPED_ATTR_VALUE = re.compile(r'val="([^"]*)"')
+
+
+def escape_attr_angle_brackets(text: str) -> str:
+    return UNESCAPED_ATTR_VALUE.sub(
+        lambda m: 'val="' + m.group(1).replace("<", "&lt;").replace(">", "&gt;") + '"',
+        text,
+    )
+
 # KRDICT's own data misspells the domain attribute in some rows; accept both.
 DOMAIN_ATTS = ("subjectCategory", "subjectCategiory")
 
@@ -126,6 +139,7 @@ def iter_entries(xml_path: str, sense_counter: dict[str, int]):
     never collide on the (stem, sense_no) primary key.
     """
     text = INVALID_XML_CHARS.sub("", open(xml_path, encoding="utf-8").read())
+    text = escape_attr_angle_brackets(text)
     root = ET.fromstring(text)
     for entry in root.iter("LexicalEntry"):
         lemma = entry.find("Lemma")
