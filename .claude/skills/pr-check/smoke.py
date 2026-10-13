@@ -59,6 +59,15 @@ DISMISS = [
 ]
 NOT_RESPONDING_RE = re.compile(r"isn.t responding", re.I)
 
+# Input is only ever sent while Noeul, or one of the two system dialogs the
+# script handles on purpose, is in front. On 2026-10-13 a Wi-Fi popup took
+# the screen mid-run and stray swipes landed in the phone's Wi-Fi settings.
+SAFE_FOREGROUND = re.compile(
+    re.escape(PACKAGE) + r"[/}\s]"           # the app and its own overlays
+    + r"|permissioncontroller"               # runtime permission prompts
+    + r"|MediaProjectionPermission",          # the screen-share prompt
+    re.I,
+)
 STARTUP_TIMEOUT_S = 60
 DEFAULT_SERIAL = "R3KYC01FY8K"  # the user's Galaxy S25 Ultra
 ALL_STEPS = ("startup", "tabs", "book", "focus", "songs", "flashcards", "ocr", "offline")
@@ -81,6 +90,9 @@ class Device:
         return result.stdout if binary else result.stdout.decode(errors="replace")
 
     def shell(self, command: str, **kwargs) -> str:
+        # Every tap, swipe, key press or typed text goes through here.
+        if command.startswith("input ") and "KEYCODE_WAKEUP" not in command:
+            self.assert_foreground()
         return self.adb("shell", command, **kwargs)
 
     def device_time(self) -> float:
@@ -126,6 +138,54 @@ class Device:
             if pattern.search(node["text"]) or pattern.search(node["desc"]):
                 return node
         return None
+
+    def assert_foreground(self) -> None:
+        """Stop the whole run if anything but Noeul (or a handled dialog) is in front.
+
+        Allowed: Noeul's own windows (including its overlays and popups),
+        runtime permission prompts, and System UI windows while the
+        screen-share prompt is open (its dialog and its share-mode dropdown
+        are System UI windows). Anything else, such as Settings or a Wi-Fi
+        popup, stops the run before any input is sent.
+        """
+        # dumpsys lists a focus per display. Screen capture (the OCR scanner)
+        # adds a virtual display with nothing focused, so check every display
+        # that does have a focused window.
+        focuses: list[str] = []
+        for _ in range(6):  # focus is briefly "null" during transitions
+            listing = self.adb("shell", "dumpsys", "window", "windows", check=False)
+            window = self.adb("shell", "dumpsys", "window", check=False)
+            focuses = sorted({
+                line.strip() for line in window.splitlines()
+                if "mCurrentFocus=" in line and not line.strip().endswith("=null")
+            })
+            if focuses:
+                break
+            time.sleep(0.5)
+        if not focuses:
+            raise SystemExit("Stopped before sending input: no window has focus on the phone. Nothing was tapped.")
+        for focus in focuses:
+            self._check_focus(focus, listing)
+
+    def _check_focus(self, focus: str, listing: str) -> None:
+        if SAFE_FOREGROUND.search(focus):
+            return
+        token = re.search(r"Window\{([0-9a-f]+) ", focus)
+        owner = None
+        if token:
+            for block in listing.split("Window #")[1:]:
+                if token.group(1) in block.splitlines()[0]:
+                    match = re.search(r"\bpackage=(\S+)", block)
+                    owner = match.group(1) if match else None
+                    break
+        if owner == PACKAGE:
+            return
+        if owner == "com.android.systemui" and "MediaProjectionPermissionActivity" in listing:
+            return
+        raise SystemExit(
+            f"Stopped before sending input: something other than Noeul is on screen "
+            f"({focus}, owned by {owner or 'unknown'}). Nothing was tapped. Close it on the phone and run again."
+        )
 
     def tap(self, x: int, y: int) -> None:
         self.shell(f"input tap {x} {y}")
