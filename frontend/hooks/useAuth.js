@@ -1,7 +1,16 @@
 import { useEffect, useState, useCallback } from 'react';
-import { supabase } from '../services/supabase';
+import {
+  parsePersistedSession,
+  shouldApplyAuthEvent,
+  withTimeout,
+} from '../services/authSessionCache';
+import { readPersistedAuthSession, supabase } from '../services/supabase';
 
 const FILE_TAG = '[useAuth]';
+// Upper bound on how long startup waits for Supabase when no session is cached
+// on the device. Past this the app opens as a guest and auth keeps going in the
+// background.
+const AUTH_NETWORK_TIMEOUT_MS = 8000;
 
 const useAuth = () => {
   const [session, setSession] = useState(null);
@@ -10,45 +19,83 @@ const useAuth = () => {
 
   useEffect(() => {
     let isMounted = true;
+    let hasUser = false;
+    // Set once Supabase reports any auth state, so a slower cached read never
+    // overwrites fresher state such as a sign-out.
+    let authEventSeen = false;
+
+    const applySession = (nextSession) => {
+      if (!isMounted) {
+        return;
+      }
+      hasUser = Boolean(nextSession?.user);
+      setSession(nextSession);
+      setUser(nextSession?.user ?? null);
+    };
+
+    const finishLoading = () => {
+      if (isMounted) {
+        setLoading(false);
+      }
+    };
 
     const bootstrapSession = async () => {
+      // 1. Offline-first: adopt the session saved on this device before any
+      //    network call, so the app opens with the user's own library even when
+      //    the token refresh below is slow or never answers.
+      try {
+        const cachedSession = parsePersistedSession(await readPersistedAuthSession());
+        if (cachedSession && !authEventSeen) {
+          applySession(cachedSession);
+          finishLoading();
+        }
+      } catch (error) {
+        console.warn(`${FILE_TAG} failed to read cached session:`, error?.message ?? error);
+      }
+
+      // 2. Let Supabase restore (and refresh) the session in the background.
+      //    The timeout only bounds how long startup waits when nothing was
+      //    cached; a cached user is kept on timeout or network errors.
       try {
         const {
           data: { session: currentSession },
           error,
-        } = await supabase.auth.getSession();
+        } = await withTimeout(supabase.auth.getSession(), AUTH_NETWORK_TIMEOUT_MS, 'getSession');
 
         if (error) {
           throw error;
         }
 
-        let session = currentSession;
-
-        if (!session) {
-          const {
-            data: { session: anonymousSession },
-            error: anonymousError,
-          } = await supabase.auth.signInAnonymously();
-
-          if (anonymousError) {
-            throw anonymousError;
-          }
-
-          session = anonymousSession;
-        }
-
-        if (!isMounted) {
+        if (currentSession) {
+          applySession(currentSession);
           return;
         }
 
-        setSession(session);
-        setUser(session?.user ?? null);
-      } catch (error) {
-        console.warn(`${FILE_TAG} failed to restore or create session:`, error.message);
-      } finally {
-        if (isMounted) {
-          setLoading(false);
+        if (hasUser) {
+          // A cached session exists but Supabase could not confirm it (offline).
+          // Keep the cached user; a genuine sign-out arrives as SIGNED_OUT.
+          return;
         }
+
+        const {
+          data: { session: anonymousSession },
+          error: anonymousError,
+        } = await withTimeout(supabase.auth.signInAnonymously(), AUTH_NETWORK_TIMEOUT_MS, 'signInAnonymously');
+
+        if (anonymousError) {
+          throw anonymousError;
+        }
+
+        applySession(anonymousSession);
+      } catch (error) {
+        const message = error?.message ?? error;
+        if (hasUser) {
+          console.warn(`${FILE_TAG} offline; continuing with cached session:`, message);
+        } else {
+          console.warn(`${FILE_TAG} failed to restore or create session:`, message);
+        }
+      } finally {
+        finishLoading();
       }
     };
 
@@ -56,10 +103,12 @@ const useAuth = () => {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      setSession(nextSession);
-      setUser(nextSession?.user ?? null);
-      setLoading(false);
+    } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      if (shouldApplyAuthEvent(event, nextSession)) {
+        authEventSeen = true;
+        applySession(nextSession);
+      }
+      finishLoading();
     });
 
     return () => {
