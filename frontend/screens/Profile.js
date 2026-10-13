@@ -431,33 +431,33 @@ const Profile = ({ user, signOut, updateUsername }) => {
                     </View>
                 </View>
 
-                {!isGuest ? (
-                    <View style={styles.section}>
-                        <Text style={styles.groupEyebrow}>{t('profile.about')}</Text>
-                        <View style={styles.card}>
-                            <NavRow
-                                label={t('profile.privacyPolicy')}
-                                onPress={() => openLink(PRIVACY_POLICY_URL)}
-                                styles={styles}
-                                profileColors={profileColors}
-                            />
-                            <NavRow
-                                label={t('profile.termsOfService')}
-                                onPress={() => openLink(TERMS_OF_SERVICE_URL)}
-                                styles={styles}
-                                profileColors={profileColors}
-                            />
-                            <NavRow
-                                label={t('profile.contact')}
-                                onPress={openContactModal}
-                                icon="mail"
-                                isLast
-                                styles={styles}
-                                profileColors={profileColors}
-                            />
-                        </View>
+                {/* Shown to everyone, guests included: the privacy policy and a way to
+                    reach us shouldn't require an account. */}
+                <View style={styles.section}>
+                    <Text style={styles.groupEyebrow}>{t('profile.about')}</Text>
+                    <View style={styles.card}>
+                        <NavRow
+                            label={t('profile.privacyPolicy')}
+                            onPress={() => openLink(PRIVACY_POLICY_URL)}
+                            styles={styles}
+                            profileColors={profileColors}
+                        />
+                        <NavRow
+                            label={t('profile.termsOfService')}
+                            onPress={() => openLink(TERMS_OF_SERVICE_URL)}
+                            styles={styles}
+                            profileColors={profileColors}
+                        />
+                        <NavRow
+                            label={t('profile.contact')}
+                            onPress={openContactModal}
+                            icon="mail"
+                            isLast
+                            styles={styles}
+                            profileColors={profileColors}
+                        />
                     </View>
-                ) : null}
+                </View>
 
                 <View style={styles.section}>
                     <Text style={styles.groupEyebrow}>{t('profile.account')}</Text>
