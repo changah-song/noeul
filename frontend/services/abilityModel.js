@@ -42,7 +42,7 @@ const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
  * a word graded at band R land on the SAME number, so P = 0.5 exactly when the
  * user's band matches the word's band (Rasch-consistent by construction).
  *
- * The band count differs per language (ko: 3, en: 6, zh: 7), so we normalize
+ * The band count differs per language (ko: 6 reading levels, en: 6, zh: 7), so we normalize
  * against that count — the lowest band maps to the floor, the highest to the
  * ceiling, the middle to 0.
  */

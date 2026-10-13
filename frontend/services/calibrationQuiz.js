@@ -9,8 +9,8 @@ import {
 
 // ─── Cold-start calibration quiz ───────────────────────────────────────────────
 //
-// The self-reported level seeds theta at one of only a few values (ko has just
-// 3 bands → −3 / 0 / +3), and a profile that never reports at all sits at the
+// The self-reported level seeds theta at one of only a few values (ko's 6
+// reading levels → −3 / −1.8 / −0.6 / +0.6 / +1.8 / +3), and a profile that never reports at all sits at the
 // beginner floor. This quiz replaces that guess with a measurement: show a
 // stratified sample of graded words, ask "do you know this?", and fold each tap
 // through the SAME online IRT update the rest of Phase 3 uses
@@ -30,7 +30,7 @@ import {
 export const CALIBRATION_LEARNING_RATE = 0.5;
 
 // Total prompts to aim for per quiz run, split evenly across the language's
-// graded bands (ko: 3×8, en: 6×4, zh: 7×4 → 24–28 taps, under a minute).
+// graded bands (ko: 6×4, en: 6×4, zh: 7×4 → 24–28 taps, under a minute).
 export const CALIBRATION_TARGET_PROMPTS = 24;
 
 // Small deterministic PRNG (mulberry32) so a given seed always builds the same

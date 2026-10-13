@@ -26,19 +26,20 @@ import {
   markBookPreprocessMeta,
 } from '../Database';
 import { bookEaseFromDistribution, bookEaseFromLevel } from '../bookEase';
+import { seedThetaFromRank } from '../abilityModel';
 
 const { __resetMockDatabases } = SQLite;
 const OWNER = 'user-ease';
 const PROFILE = 'ko_default';
 
-// Intermediate ko reader: rank 2 of 3 seeds theta to the scale midpoint (0).
-const SEED_RANK = 2;
-const THETA = 0;
+// ko reader who self-reported reading level 3 of 6 (seeds theta at -0.6).
+const SEED_RANK = 3;
+const THETA = seedThetaFromRank('ko', SEED_RANK);
 
 const DISTRIBUTION = [
   { rank: 1, count: 40 },
-  { rank: 2, count: 25 },
-  { rank: 3, count: 35 },
+  { rank: 3, count: 25 },
+  { rank: 6, count: 35 },
 ];
 
 beforeEach(async () => {
