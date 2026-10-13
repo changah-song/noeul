@@ -1,4 +1,6 @@
-.claude/
+# Local Claude settings stay private; shared project skills are committed.
+.claude/*
+!.claude/skills/
 .idea/
 .DS_Store
 __pycache__/
