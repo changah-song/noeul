@@ -104,6 +104,15 @@ def generate() -> dict[str, dict]:
 
 if __name__ == "__main__":
     levels = generate()
+    # A book with no matched words means its tokenizer is missing from this
+    # environment (e.g. jieba for Chinese). Refuse to overwrite good stats with
+    # empty ones.
+    empty = sorted(book_id for book_id, payload in levels.items() if not payload.get("matched_count"))
+    if empty:
+        sys.exit(
+            "No words matched for: " + ", ".join(empty)
+            + "\nInstall the tokenizers (kiwipiepy, jieba) in this environment; nothing was written."
+        )
     OUTPUT_PATH.write_text(
         json.dumps(levels, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

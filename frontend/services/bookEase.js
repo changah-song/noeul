@@ -76,6 +76,59 @@ export const EASE_BANDS = [
  *                        "hard", so the UI can say "we'll estimate this later"
  *                        instead of scaring the reader off an unleveled book).
  */
+// ─── Legacy Korean book stats ────────────────────────────────────────────────
+//
+// Before the 6-level rescale (Phase 2, Aug 2026) the backend graded Korean books
+// on the 3 NIKL grades and tagged the result `proficiency_system: 'NIKL'` with
+// labels 초급 / 중급 / 고급. Books preprocessed back then still carry those stats
+// on device, and reading them as reading levels 1-3 makes the book look far
+// easier than it is. Remap each grade onto the LOWER level of its pair, the same
+// mapping Database.js applies to legacy dictionary_cache rows.
+export const LEGACY_NIKL_TO_READING_LEVEL = { 1: 1, 2: 3, 3: 5 };
+
+export const isLegacyKoreanStats = (stats, language) => {
+  if (!stats || typeof stats !== 'object') {
+    return false;
+  }
+  const lang = String(stats.language || language || '').toLowerCase();
+  if (lang && !lang.startsWith('ko')) {
+    return false;
+  }
+  // Only an explicit tag counts: the backend has always recorded the system,
+  // and grade labels alone are ambiguous.
+  const system = stats.proficiency_system ?? stats.level_system ?? stats.book_level_system;
+  return system === 'NIKL';
+};
+
+export const remapLegacyKoreanRank = (rank) => {
+  const numeric = Number(rank);
+  return LEGACY_NIKL_TO_READING_LEVEL[numeric] ?? rank;
+};
+
+/**
+ * Return stats with legacy NIKL grades remapped onto reading levels; stats that
+ * are already on the reading-level scale (or aren't Korean) come back unchanged.
+ */
+export const normalizeLegacyKoreanStats = (stats, language) => {
+  if (!isLegacyKoreanStats(stats, language)) {
+    return stats;
+  }
+  return {
+    ...stats,
+    level_rank: stats.level_rank == null ? stats.level_rank : remapLegacyKoreanRank(stats.level_rank),
+    proficiency_rank: stats.proficiency_rank == null
+      ? stats.proficiency_rank
+      : remapLegacyKoreanRank(stats.proficiency_rank),
+    distribution: Array.isArray(stats.distribution)
+      ? stats.distribution.map((row) => (row && typeof row === 'object'
+        ? { ...row, rank: remapLegacyKoreanRank(row.rank) }
+        : row))
+      : stats.distribution,
+    proficiency_system: 'Noeul Reading Levels',
+    remapped_from: 'NIKL',
+  };
+};
+
 export const bookEaseFromLevel = ({ theta, language, levelRank } = {}) => {
   if (levelRank == null || !Number.isFinite(Number(levelRank))) {
     return null;

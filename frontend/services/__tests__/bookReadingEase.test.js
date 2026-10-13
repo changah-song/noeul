@@ -136,3 +136,37 @@ describe('estimateBookReadingEase', () => {
     expect(result.easeSource).toBeNull();
   });
 });
+
+describe('estimateBookReadingEase with pre-rescale (NIKL) stats', () => {
+  it('scores an old-format book the same as the same book on reading levels', async () => {
+    const legacyStats = {
+      language: 'ko',
+      proficiency_system: 'NIKL',
+      level_rank: 3,
+      distribution: [
+        { rank: 1, level: '초급', count: 40 },
+        { rank: 2, level: '중급', count: 25 },
+        { rank: 3, level: '고급', count: 35 },
+      ],
+    };
+    const legacy = await estimateBookReadingEase({
+      ownerId: OWNER, profileId: PROFILE, language: 'ko', levelRank: 3, bookLevelStats: legacyStats,
+    });
+    const expected = bookEaseFromDistribution({
+      theta: THETA,
+      language: 'ko',
+      distribution: [{ rank: 1, count: 40 }, { rank: 3, count: 25 }, { rank: 5, count: 35 }],
+    });
+    expect(legacy.ease).toBeCloseTo(expected, 12);
+    expect(legacy.easeSource).toBe('distribution');
+  });
+
+  it('remaps the level-only fallback too', async () => {
+    const legacy = await estimateBookReadingEase({
+      ownerId: OWNER, profileId: PROFILE, language: 'ko', levelRank: 3,
+      bookLevelStats: { language: 'ko', proficiency_system: 'NIKL', level_rank: 3 },
+    });
+    expect(legacy.ease).toBeCloseTo(bookEaseFromLevel({ theta: THETA, language: 'ko', levelRank: 5 }), 12);
+    expect(legacy.easeSource).toBe('level');
+  });
+});

@@ -1,36 +1,51 @@
 {
   "a-lucky-day": {
     "basis": "vocabulary",
-    "coverage": 0.2388,
+    "coverage": 0.2379,
     "distribution": [
       {
-        "count": 80,
-        "level": "초급",
+        "count": 69,
+        "level": "Lower Elementary",
         "rank": 1
       },
       {
-        "count": 80,
-        "level": "중급",
+        "count": 12,
+        "level": "Upper Elementary",
         "rank": 2
       },
       {
-        "count": 86,
-        "level": "고급",
+        "count": 73,
+        "level": "Lower Intermediate",
         "rank": 3
+      },
+      {
+        "count": 7,
+        "level": "Upper Intermediate",
+        "rank": 4
+      },
+      {
+        "count": 64,
+        "level": "Lower Advanced",
+        "rank": 5
+      },
+      {
+        "count": 20,
+        "level": "Upper Advanced",
+        "rank": 6
       }
     ],
     "language": "ko",
-    "level": "고급",
-    "level_rank": 3,
-    "matched_count": 246,
+    "level": "Lower Advanced",
+    "level_rank": 5,
+    "matched_count": 245,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
-    "proficiency_level": "고급",
-    "proficiency_rank": 3,
-    "proficiency_system": "NIKL",
+    "proficiency_level": "Lower Advanced",
+    "proficiency_rank": 5,
+    "proficiency_system": "Noeul Reading Levels",
     "sample_limit": 1030,
     "sample_size": 1030,
-    "unknown_count": 784
+    "unknown_count": 785
   },
   "ah-q-true-story": {
     "basis": "vocabulary",
@@ -87,102 +102,147 @@
   },
   "b-sagam-and-love-letter": {
     "basis": "vocabulary",
-    "coverage": 0.2666,
+    "coverage": 0.2647,
     "distribution": [
       {
-        "count": 64,
-        "level": "초급",
+        "count": 51,
+        "level": "Lower Elementary",
         "rank": 1
       },
       {
-        "count": 60,
-        "level": "중급",
+        "count": 11,
+        "level": "Upper Elementary",
         "rank": 2
       },
       {
         "count": 57,
-        "level": "고급",
+        "level": "Lower Intermediate",
         "rank": 3
+      },
+      {
+        "count": 5,
+        "level": "Upper Intermediate",
+        "rank": 4
+      },
+      {
+        "count": 48,
+        "level": "Lower Advanced",
+        "rank": 5
+      },
+      {
+        "count": 8,
+        "level": "Upper Advanced",
+        "rank": 6
       }
     ],
     "language": "ko",
-    "level": "고급",
-    "level_rank": 3,
-    "matched_count": 181,
+    "level": "Lower Advanced",
+    "level_rank": 5,
+    "matched_count": 180,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
-    "proficiency_level": "고급",
-    "proficiency_rank": 3,
-    "proficiency_system": "NIKL",
-    "sample_limit": 679,
-    "sample_size": 679,
-    "unknown_count": 498
+    "proficiency_level": "Lower Advanced",
+    "proficiency_rank": 5,
+    "proficiency_system": "Noeul Reading Levels",
+    "sample_limit": 680,
+    "sample_size": 680,
+    "unknown_count": 500
   },
   "butterflys-dream": {
     "basis": "vocabulary",
-    "coverage": 0.1983,
+    "coverage": 0.2006,
     "distribution": [
       {
-        "count": 34,
-        "level": "초급",
+        "count": 31,
+        "level": "Lower Elementary",
         "rank": 1
       },
       {
-        "count": 21,
-        "level": "중급",
+        "count": 3,
+        "level": "Upper Elementary",
         "rank": 2
       },
       {
-        "count": 14,
-        "level": "고급",
+        "count": 18,
+        "level": "Lower Intermediate",
         "rank": 3
+      },
+      {
+        "count": 5,
+        "level": "Upper Intermediate",
+        "rank": 4
+      },
+      {
+        "count": 12,
+        "level": "Lower Advanced",
+        "rank": 5
+      },
+      {
+        "count": 1,
+        "level": "Upper Advanced",
+        "rank": 6
       }
     ],
     "language": "ko",
-    "level": "고급",
-    "level_rank": 3,
-    "matched_count": 69,
+    "level": "Upper Intermediate",
+    "level_rank": 4,
+    "matched_count": 70,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
-    "proficiency_level": "고급",
-    "proficiency_rank": 3,
-    "proficiency_system": "NIKL",
-    "sample_limit": 348,
-    "sample_size": 348,
+    "proficiency_level": "Upper Intermediate",
+    "proficiency_rank": 4,
+    "proficiency_system": "Noeul Reading Levels",
+    "sample_limit": 349,
+    "sample_size": 349,
     "unknown_count": 279
   },
   "camellia-flower": {
     "basis": "vocabulary",
-    "coverage": 0.1878,
+    "coverage": 0.197,
     "distribution": [
       {
-        "count": 36,
-        "level": "초급",
+        "count": 35,
+        "level": "Lower Elementary",
         "rank": 1
       },
       {
-        "count": 50,
-        "level": "중급",
+        "count": 3,
+        "level": "Upper Elementary",
         "rank": 2
       },
       {
-        "count": 53,
-        "level": "고급",
+        "count": 49,
+        "level": "Lower Intermediate",
         "rank": 3
+      },
+      {
+        "count": 3,
+        "level": "Upper Intermediate",
+        "rank": 4
+      },
+      {
+        "count": 42,
+        "level": "Lower Advanced",
+        "rank": 5
+      },
+      {
+        "count": 12,
+        "level": "Upper Advanced",
+        "rank": 6
       }
     ],
     "language": "ko",
-    "level": "고급",
-    "level_rank": 3,
-    "matched_count": 139,
+    "level": "Lower Advanced",
+    "level_rank": 5,
+    "matched_count": 144,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
-    "proficiency_level": "고급",
-    "proficiency_rank": 3,
-    "proficiency_system": "NIKL",
-    "sample_limit": 740,
-    "sample_size": 740,
-    "unknown_count": 601
+    "proficiency_level": "Lower Advanced",
+    "proficiency_rank": 5,
+    "proficiency_system": "Noeul Reading Levels",
+    "sample_limit": 731,
+    "sample_size": 731,
+    "unknown_count": 587
   },
   "chen-lun-yu-dafu": {
     "basis": "vocabulary",
@@ -239,102 +299,147 @@
   },
   "chisuk": {
     "basis": "vocabulary",
-    "coverage": 0.3205,
+    "coverage": 0.3178,
     "distribution": [
       {
-        "count": 103,
-        "level": "초급",
+        "count": 91,
+        "level": "Lower Elementary",
         "rank": 1
       },
       {
-        "count": 120,
-        "level": "중급",
+        "count": 12,
+        "level": "Upper Elementary",
         "rank": 2
       },
       {
-        "count": 127,
-        "level": "고급",
+        "count": 114,
+        "level": "Lower Intermediate",
         "rank": 3
+      },
+      {
+        "count": 4,
+        "level": "Upper Intermediate",
+        "rank": 4
+      },
+      {
+        "count": 100,
+        "level": "Lower Advanced",
+        "rank": 5
+      },
+      {
+        "count": 27,
+        "level": "Upper Advanced",
+        "rank": 6
       }
     ],
     "language": "ko",
-    "level": "고급",
-    "level_rank": 3,
-    "matched_count": 350,
+    "level": "Lower Advanced",
+    "level_rank": 5,
+    "matched_count": 348,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
-    "proficiency_level": "고급",
-    "proficiency_rank": 3,
-    "proficiency_system": "NIKL",
-    "sample_limit": 1092,
-    "sample_size": 1092,
-    "unknown_count": 742
+    "proficiency_level": "Lower Advanced",
+    "proficiency_rank": 5,
+    "proficiency_system": "Noeul Reading Levels",
+    "sample_limit": 1095,
+    "sample_size": 1095,
+    "unknown_count": 747
   },
   "city-and-ghost": {
     "basis": "vocabulary",
-    "coverage": 0.2629,
+    "coverage": 0.2627,
     "distribution": [
       {
-        "count": 83,
-        "level": "초급",
+        "count": 77,
+        "level": "Lower Elementary",
         "rank": 1
       },
       {
-        "count": 102,
-        "level": "중급",
+        "count": 8,
+        "level": "Upper Elementary",
         "rank": 2
       },
       {
-        "count": 105,
-        "level": "고급",
+        "count": 93,
+        "level": "Lower Intermediate",
         "rank": 3
+      },
+      {
+        "count": 8,
+        "level": "Upper Intermediate",
+        "rank": 4
+      },
+      {
+        "count": 83,
+        "level": "Lower Advanced",
+        "rank": 5
+      },
+      {
+        "count": 20,
+        "level": "Upper Advanced",
+        "rank": 6
       }
     ],
     "language": "ko",
-    "level": "고급",
-    "level_rank": 3,
-    "matched_count": 290,
+    "level": "Lower Advanced",
+    "level_rank": 5,
+    "matched_count": 289,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
-    "proficiency_level": "고급",
-    "proficiency_rank": 3,
-    "proficiency_system": "NIKL",
-    "sample_limit": 1103,
-    "sample_size": 1103,
-    "unknown_count": 813
+    "proficiency_level": "Lower Advanced",
+    "proficiency_rank": 5,
+    "proficiency_system": "Noeul Reading Levels",
+    "sample_limit": 1100,
+    "sample_size": 1100,
+    "unknown_count": 811
   },
   "crime-and-punishment-lee-muyeong": {
     "basis": "vocabulary",
-    "coverage": 0.4416,
+    "coverage": 0.4397,
     "distribution": [
       {
-        "count": 248,
-        "level": "초급",
+        "count": 217,
+        "level": "Lower Elementary",
         "rank": 1
       },
       {
-        "count": 374,
-        "level": "중급",
+        "count": 29,
+        "level": "Upper Elementary",
         "rank": 2
       },
       {
-        "count": 379,
-        "level": "고급",
+        "count": 352,
+        "level": "Lower Intermediate",
         "rank": 3
+      },
+      {
+        "count": 29,
+        "level": "Upper Intermediate",
+        "rank": 4
+      },
+      {
+        "count": 303,
+        "level": "Lower Advanced",
+        "rank": 5
+      },
+      {
+        "count": 73,
+        "level": "Upper Advanced",
+        "rank": 6
       }
     ],
     "language": "ko",
-    "level": "고급",
-    "level_rank": 3,
-    "matched_count": 1001,
+    "level": "Lower Advanced",
+    "level_rank": 5,
+    "matched_count": 1003,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
-    "proficiency_level": "고급",
-    "proficiency_rank": 3,
-    "proficiency_system": "NIKL",
-    "sample_limit": 2267,
-    "sample_size": 2267,
-    "unknown_count": 1266
+    "proficiency_level": "Lower Advanced",
+    "proficiency_rank": 5,
+    "proficiency_system": "Noeul Reading Levels",
+    "sample_limit": 2281,
+    "sample_size": 2281,
+    "unknown_count": 1278
   },
   "fang-huang-lu-xun": {
     "basis": "vocabulary",
@@ -391,69 +496,99 @@
   },
   "gwangyeom-sonata": {
     "basis": "vocabulary",
-    "coverage": 0.3782,
+    "coverage": 0.3818,
     "distribution": [
       {
-        "count": 128,
-        "level": "초급",
+        "count": 119,
+        "level": "Lower Elementary",
         "rank": 1
       },
       {
-        "count": 183,
-        "level": "중급",
+        "count": 12,
+        "level": "Upper Elementary",
         "rank": 2
       },
       {
         "count": 164,
-        "level": "고급",
+        "level": "Lower Intermediate",
         "rank": 3
+      },
+      {
+        "count": 16,
+        "level": "Upper Intermediate",
+        "rank": 4
+      },
+      {
+        "count": 136,
+        "level": "Lower Advanced",
+        "rank": 5
+      },
+      {
+        "count": 28,
+        "level": "Upper Advanced",
+        "rank": 6
       }
     ],
     "language": "ko",
-    "level": "고급",
-    "level_rank": 3,
+    "level": "Lower Advanced",
+    "level_rank": 5,
     "matched_count": 475,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
-    "proficiency_level": "고급",
-    "proficiency_rank": 3,
-    "proficiency_system": "NIKL",
-    "sample_limit": 1256,
-    "sample_size": 1256,
-    "unknown_count": 781
+    "proficiency_level": "Lower Advanced",
+    "proficiency_rank": 5,
+    "proficiency_system": "Noeul Reading Levels",
+    "sample_limit": 1244,
+    "sample_size": 1244,
+    "unknown_count": 769
   },
   "heosaengjeon": {
     "basis": "vocabulary",
-    "coverage": 0.3088,
+    "coverage": 0.3101,
     "distribution": [
       {
-        "count": 177,
-        "level": "초급",
+        "count": 162,
+        "level": "Lower Elementary",
         "rank": 1
       },
       {
-        "count": 293,
-        "level": "중급",
+        "count": 19,
+        "level": "Upper Elementary",
         "rank": 2
       },
       {
-        "count": 438,
-        "level": "고급",
+        "count": 254,
+        "level": "Lower Intermediate",
         "rank": 3
+      },
+      {
+        "count": 36,
+        "level": "Upper Intermediate",
+        "rank": 4
+      },
+      {
+        "count": 321,
+        "level": "Lower Advanced",
+        "rank": 5
+      },
+      {
+        "count": 120,
+        "level": "Upper Advanced",
+        "rank": 6
       }
     ],
     "language": "ko",
-    "level": "고급",
-    "level_rank": 3,
-    "matched_count": 908,
+    "level": "Lower Advanced",
+    "level_rank": 5,
+    "matched_count": 912,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
-    "proficiency_level": "고급",
-    "proficiency_rank": 3,
-    "proficiency_system": "NIKL",
-    "sample_limit": 2940,
-    "sample_size": 2940,
-    "unknown_count": 2032
+    "proficiency_level": "Lower Advanced",
+    "proficiency_rank": 5,
+    "proficiency_system": "Noeul Reading Levels",
+    "sample_limit": 2941,
+    "sample_size": 2941,
+    "unknown_count": 2029
   },
   "kong-yiji-lu-xun": {
     "basis": "vocabulary",
@@ -510,69 +645,99 @@
   },
   "little-match-girl": {
     "basis": "vocabulary",
-    "coverage": 0.2688,
+    "coverage": 0.2701,
     "distribution": [
       {
-        "count": 40,
-        "level": "초급",
+        "count": 36,
+        "level": "Lower Elementary",
         "rank": 1
       },
       {
-        "count": 36,
-        "level": "중급",
+        "count": 4,
+        "level": "Upper Elementary",
         "rank": 2
       },
       {
-        "count": 24,
-        "level": "고급",
+        "count": 30,
+        "level": "Lower Intermediate",
         "rank": 3
+      },
+      {
+        "count": 6,
+        "level": "Upper Intermediate",
+        "rank": 4
+      },
+      {
+        "count": 21,
+        "level": "Lower Advanced",
+        "rank": 5
+      },
+      {
+        "count": 4,
+        "level": "Upper Advanced",
+        "rank": 6
       }
     ],
     "language": "ko",
-    "level": "고급",
-    "level_rank": 3,
-    "matched_count": 100,
+    "level": "Lower Advanced",
+    "level_rank": 5,
+    "matched_count": 101,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
-    "proficiency_level": "고급",
-    "proficiency_rank": 3,
-    "proficiency_system": "NIKL",
-    "sample_limit": 372,
-    "sample_size": 372,
-    "unknown_count": 272
+    "proficiency_level": "Lower Advanced",
+    "proficiency_rank": 5,
+    "proficiency_system": "Noeul Reading Levels",
+    "sample_limit": 374,
+    "sample_size": 374,
+    "unknown_count": 273
   },
   "little-mermaid": {
     "basis": "vocabulary",
-    "coverage": 0.2994,
+    "coverage": 0.303,
     "distribution": [
       {
-        "count": 147,
-        "level": "초급",
+        "count": 131,
+        "level": "Lower Elementary",
         "rank": 1
       },
       {
-        "count": 168,
-        "level": "중급",
+        "count": 17,
+        "level": "Upper Elementary",
         "rank": 2
       },
       {
-        "count": 111,
-        "level": "고급",
+        "count": 147,
+        "level": "Lower Intermediate",
         "rank": 3
+      },
+      {
+        "count": 19,
+        "level": "Upper Intermediate",
+        "rank": 4
+      },
+      {
+        "count": 94,
+        "level": "Lower Advanced",
+        "rank": 5
+      },
+      {
+        "count": 22,
+        "level": "Upper Advanced",
+        "rank": 6
       }
     ],
     "language": "ko",
-    "level": "고급",
-    "level_rank": 3,
-    "matched_count": 426,
+    "level": "Lower Advanced",
+    "level_rank": 5,
+    "matched_count": 430,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
-    "proficiency_level": "고급",
-    "proficiency_rank": 3,
-    "proficiency_system": "NIKL",
-    "sample_limit": 1423,
-    "sample_size": 1423,
-    "unknown_count": 997
+    "proficiency_level": "Lower Advanced",
+    "proficiency_rank": 5,
+    "proficiency_system": "Noeul Reading Levels",
+    "sample_limit": 1419,
+    "sample_size": 1419,
+    "unknown_count": 989
   },
   "madmans-diary-lu-xun": {
     "basis": "vocabulary",
@@ -629,36 +794,51 @@
   },
   "mister-bang": {
     "basis": "vocabulary",
-    "coverage": 0.3084,
+    "coverage": 0.3016,
     "distribution": [
       {
-        "count": 115,
-        "level": "초급",
+        "count": 101,
+        "level": "Lower Elementary",
         "rank": 1
       },
       {
-        "count": 113,
-        "level": "중급",
+        "count": 16,
+        "level": "Upper Elementary",
         "rank": 2
       },
       {
-        "count": 156,
-        "level": "고급",
+        "count": 96,
+        "level": "Lower Intermediate",
         "rank": 3
+      },
+      {
+        "count": 12,
+        "level": "Upper Intermediate",
+        "rank": 4
+      },
+      {
+        "count": 123,
+        "level": "Lower Advanced",
+        "rank": 5
+      },
+      {
+        "count": 29,
+        "level": "Upper Advanced",
+        "rank": 6
       }
     ],
     "language": "ko",
-    "level": "고급",
-    "level_rank": 3,
-    "matched_count": 384,
+    "level": "Lower Advanced",
+    "level_rank": 5,
+    "matched_count": 377,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
-    "proficiency_level": "고급",
-    "proficiency_rank": 3,
-    "proficiency_system": "NIKL",
-    "sample_limit": 1245,
-    "sample_size": 1245,
-    "unknown_count": 861
+    "proficiency_level": "Lower Advanced",
+    "proficiency_rank": 5,
+    "proficiency_system": "Noeul Reading Levels",
+    "sample_limit": 1250,
+    "sample_size": 1250,
+    "unknown_count": 873
   },
   "na-han-lu-xun": {
     "basis": "vocabulary",
@@ -715,332 +895,482 @@
   },
   "potato": {
     "basis": "vocabulary",
-    "coverage": 0.3066,
+    "coverage": 0.3067,
     "distribution": [
       {
-        "count": 57,
-        "level": "초급",
+        "count": 60,
+        "level": "Lower Elementary",
         "rank": 1
       },
       {
-        "count": 56,
-        "level": "중급",
+        "count": 2,
+        "level": "Upper Elementary",
         "rank": 2
       },
       {
-        "count": 74,
-        "level": "고급",
+        "count": 52,
+        "level": "Lower Intermediate",
         "rank": 3
+      },
+      {
+        "count": 8,
+        "level": "Upper Intermediate",
+        "rank": 4
+      },
+      {
+        "count": 59,
+        "level": "Lower Advanced",
+        "rank": 5
+      },
+      {
+        "count": 11,
+        "level": "Upper Advanced",
+        "rank": 6
       }
     ],
     "language": "ko",
-    "level": "고급",
-    "level_rank": 3,
-    "matched_count": 187,
+    "level": "Lower Advanced",
+    "level_rank": 5,
+    "matched_count": 192,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
-    "proficiency_level": "고급",
-    "proficiency_rank": 3,
-    "proficiency_system": "NIKL",
-    "sample_limit": 610,
-    "sample_size": 610,
-    "unknown_count": 423
+    "proficiency_level": "Lower Advanced",
+    "proficiency_rank": 5,
+    "proficiency_system": "Noeul Reading Levels",
+    "sample_limit": 626,
+    "sample_size": 626,
+    "unknown_count": 434
   },
   "ready-made-life": {
     "basis": "vocabulary",
-    "coverage": 0.3324,
+    "coverage": 0.3344,
     "distribution": [
       {
-        "count": 179,
-        "level": "초급",
+        "count": 153,
+        "level": "Lower Elementary",
         "rank": 1
       },
       {
-        "count": 232,
-        "level": "중급",
+        "count": 23,
+        "level": "Upper Elementary",
         "rank": 2
       },
       {
-        "count": 216,
-        "level": "고급",
+        "count": 204,
+        "level": "Lower Intermediate",
         "rank": 3
+      },
+      {
+        "count": 27,
+        "level": "Upper Intermediate",
+        "rank": 4
+      },
+      {
+        "count": 177,
+        "level": "Lower Advanced",
+        "rank": 5
+      },
+      {
+        "count": 42,
+        "level": "Upper Advanced",
+        "rank": 6
       }
     ],
     "language": "ko",
-    "level": "고급",
-    "level_rank": 3,
-    "matched_count": 627,
+    "level": "Lower Advanced",
+    "level_rank": 5,
+    "matched_count": 626,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
-    "proficiency_level": "고급",
-    "proficiency_rank": 3,
-    "proficiency_system": "NIKL",
-    "sample_limit": 1886,
-    "sample_size": 1886,
-    "unknown_count": 1259
+    "proficiency_level": "Lower Advanced",
+    "proficiency_rank": 5,
+    "proficiency_system": "Noeul Reading Levels",
+    "sample_limit": 1872,
+    "sample_size": 1872,
+    "unknown_count": 1246
   },
   "snow-queen": {
     "basis": "vocabulary",
-    "coverage": 0.2858,
+    "coverage": 0.2867,
     "distribution": [
       {
-        "count": 189,
-        "level": "초급",
+        "count": 157,
+        "level": "Lower Elementary",
         "rank": 1
       },
       {
-        "count": 200,
-        "level": "중급",
+        "count": 35,
+        "level": "Upper Elementary",
         "rank": 2
       },
       {
-        "count": 126,
-        "level": "고급",
+        "count": 173,
+        "level": "Lower Intermediate",
         "rank": 3
+      },
+      {
+        "count": 28,
+        "level": "Upper Intermediate",
+        "rank": 4
+      },
+      {
+        "count": 103,
+        "level": "Lower Advanced",
+        "rank": 5
+      },
+      {
+        "count": 25,
+        "level": "Upper Advanced",
+        "rank": 6
       }
     ],
     "language": "ko",
-    "level": "고급",
-    "level_rank": 3,
-    "matched_count": 515,
+    "level": "Lower Advanced",
+    "level_rank": 5,
+    "matched_count": 521,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
-    "proficiency_level": "고급",
-    "proficiency_rank": 3,
-    "proficiency_system": "NIKL",
-    "sample_limit": 1802,
-    "sample_size": 1802,
-    "unknown_count": 1287
+    "proficiency_level": "Lower Advanced",
+    "proficiency_rank": 5,
+    "proficiency_system": "Noeul Reading Levels",
+    "sample_limit": 1817,
+    "sample_size": 1817,
+    "unknown_count": 1296
   },
   "spring-spring": {
     "basis": "vocabulary",
-    "coverage": 0.2037,
+    "coverage": 0.2036,
     "distribution": [
       {
-        "count": 51,
-        "level": "초급",
+        "count": 53,
+        "level": "Lower Elementary",
         "rank": 1
       },
       {
-        "count": 85,
-        "level": "중급",
+        "count": 1,
+        "level": "Upper Elementary",
         "rank": 2
       },
       {
-        "count": 83,
-        "level": "고급",
+        "count": 76,
+        "level": "Lower Intermediate",
         "rank": 3
+      },
+      {
+        "count": 6,
+        "level": "Upper Intermediate",
+        "rank": 4
+      },
+      {
+        "count": 70,
+        "level": "Lower Advanced",
+        "rank": 5
+      },
+      {
+        "count": 9,
+        "level": "Upper Advanced",
+        "rank": 6
       }
     ],
     "language": "ko",
-    "level": "고급",
-    "level_rank": 3,
-    "matched_count": 219,
+    "level": "Lower Advanced",
+    "level_rank": 5,
+    "matched_count": 215,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
-    "proficiency_level": "고급",
-    "proficiency_rank": 3,
-    "proficiency_system": "NIKL",
-    "sample_limit": 1075,
-    "sample_size": 1075,
-    "unknown_count": 856
+    "proficiency_level": "Lower Advanced",
+    "proficiency_rank": 5,
+    "proficiency_system": "Noeul Reading Levels",
+    "sample_limit": 1056,
+    "sample_size": 1056,
+    "unknown_count": 841
   },
   "taepyeongcheonha": {
     "basis": "vocabulary",
-    "coverage": 0.2893,
+    "coverage": 0.2806,
     "distribution": [
       {
-        "count": 339,
-        "level": "초급",
+        "count": 270,
+        "level": "Lower Elementary",
         "rank": 1
       },
       {
-        "count": 615,
-        "level": "중급",
+        "count": 66,
+        "level": "Upper Elementary",
         "rank": 2
       },
       {
-        "count": 885,
-        "level": "고급",
+        "count": 505,
+        "level": "Lower Intermediate",
         "rank": 3
+      },
+      {
+        "count": 94,
+        "level": "Upper Intermediate",
+        "rank": 4
+      },
+      {
+        "count": 625,
+        "level": "Lower Advanced",
+        "rank": 5
+      },
+      {
+        "count": 245,
+        "level": "Upper Advanced",
+        "rank": 6
       }
     ],
     "language": "ko",
-    "level": "고급",
-    "level_rank": 3,
-    "matched_count": 1839,
+    "level": "Lower Advanced",
+    "level_rank": 5,
+    "matched_count": 1805,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
-    "proficiency_level": "고급",
-    "proficiency_rank": 3,
-    "proficiency_system": "NIKL",
-    "sample_limit": 6356,
-    "sample_size": 6356,
-    "unknown_count": 4517
+    "proficiency_level": "Lower Advanced",
+    "proficiency_rank": 5,
+    "proficiency_system": "Noeul Reading Levels",
+    "sample_limit": 6432,
+    "sample_size": 6432,
+    "unknown_count": 4627
   },
   "tears-of-blood": {
     "basis": "vocabulary",
-    "coverage": 0.3327,
+    "coverage": 0.3294,
     "distribution": [
       {
-        "count": 212,
-        "level": "초급",
+        "count": 173,
+        "level": "Lower Elementary",
         "rank": 1
       },
       {
-        "count": 271,
-        "level": "중급",
+        "count": 39,
+        "level": "Upper Elementary",
         "rank": 2
       },
       {
-        "count": 343,
-        "level": "고급",
+        "count": 223,
+        "level": "Lower Intermediate",
         "rank": 3
+      },
+      {
+        "count": 43,
+        "level": "Upper Intermediate",
+        "rank": 4
+      },
+      {
+        "count": 247,
+        "level": "Lower Advanced",
+        "rank": 5
+      },
+      {
+        "count": 91,
+        "level": "Upper Advanced",
+        "rank": 6
       }
     ],
     "language": "ko",
-    "level": "고급",
-    "level_rank": 3,
-    "matched_count": 826,
+    "level": "Lower Advanced",
+    "level_rank": 5,
+    "matched_count": 816,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
-    "proficiency_level": "고급",
-    "proficiency_rank": 3,
-    "proficiency_system": "NIKL",
-    "sample_limit": 2483,
-    "sample_size": 2483,
-    "unknown_count": 1657
+    "proficiency_level": "Lower Advanced",
+    "proficiency_rank": 5,
+    "proficiency_system": "Noeul Reading Levels",
+    "sample_limit": 2477,
+    "sample_size": 2477,
+    "unknown_count": 1661
   },
   "thumbelina": {
     "basis": "vocabulary",
     "coverage": 0.2626,
     "distribution": [
       {
-        "count": 98,
-        "level": "초급",
+        "count": 84,
+        "level": "Lower Elementary",
         "rank": 1
       },
       {
-        "count": 84,
-        "level": "중급",
+        "count": 16,
+        "level": "Upper Elementary",
         "rank": 2
       },
       {
-        "count": 53,
-        "level": "고급",
+        "count": 71,
+        "level": "Lower Intermediate",
         "rank": 3
+      },
+      {
+        "count": 12,
+        "level": "Upper Intermediate",
+        "rank": 4
+      },
+      {
+        "count": 42,
+        "level": "Lower Advanced",
+        "rank": 5
+      },
+      {
+        "count": 10,
+        "level": "Upper Advanced",
+        "rank": 6
       }
     ],
     "language": "ko",
-    "level": "고급",
-    "level_rank": 3,
+    "level": "Lower Advanced",
+    "level_rank": 5,
     "matched_count": 235,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
-    "proficiency_level": "고급",
-    "proficiency_rank": 3,
-    "proficiency_system": "NIKL",
+    "proficiency_level": "Lower Advanced",
+    "proficiency_rank": 5,
+    "proficiency_system": "Noeul Reading Levels",
     "sample_limit": 895,
     "sample_size": 895,
     "unknown_count": 660
   },
   "ugly-duckling": {
     "basis": "vocabulary",
-    "coverage": 0.2363,
+    "coverage": 0.2403,
     "distribution": [
       {
-        "count": 92,
-        "level": "초급",
+        "count": 79,
+        "level": "Lower Elementary",
         "rank": 1
       },
       {
-        "count": 71,
-        "level": "중급",
+        "count": 14,
+        "level": "Upper Elementary",
         "rank": 2
       },
       {
-        "count": 44,
-        "level": "고급",
+        "count": 65,
+        "level": "Lower Intermediate",
         "rank": 3
+      },
+      {
+        "count": 7,
+        "level": "Upper Intermediate",
+        "rank": 4
+      },
+      {
+        "count": 39,
+        "level": "Lower Advanced",
+        "rank": 5
+      },
+      {
+        "count": 7,
+        "level": "Upper Advanced",
+        "rank": 6
       }
     ],
     "language": "ko",
-    "level": "고급",
-    "level_rank": 3,
-    "matched_count": 207,
+    "level": "Lower Advanced",
+    "level_rank": 5,
+    "matched_count": 211,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
-    "proficiency_level": "고급",
-    "proficiency_rank": 3,
-    "proficiency_system": "NIKL",
-    "sample_limit": 876,
-    "sample_size": 876,
-    "unknown_count": 669
+    "proficiency_level": "Lower Advanced",
+    "proficiency_rank": 5,
+    "proficiency_system": "Noeul Reading Levels",
+    "sample_limit": 878,
+    "sample_size": 878,
+    "unknown_count": 667
   },
   "when-buckwheat-flowers-bloom": {
     "basis": "vocabulary",
-    "coverage": 0.2217,
+    "coverage": 0.2288,
     "distribution": [
       {
-        "count": 57,
-        "level": "초급",
+        "count": 56,
+        "level": "Lower Elementary",
         "rank": 1
       },
       {
-        "count": 66,
-        "level": "중급",
+        "count": 4,
+        "level": "Upper Elementary",
         "rank": 2
       },
       {
-        "count": 83,
-        "level": "고급",
+        "count": 63,
+        "level": "Lower Intermediate",
         "rank": 3
+      },
+      {
+        "count": 8,
+        "level": "Upper Intermediate",
+        "rank": 4
+      },
+      {
+        "count": 69,
+        "level": "Lower Advanced",
+        "rank": 5
+      },
+      {
+        "count": 13,
+        "level": "Upper Advanced",
+        "rank": 6
       }
     ],
     "language": "ko",
-    "level": "고급",
-    "level_rank": 3,
-    "matched_count": 206,
+    "level": "Lower Advanced",
+    "level_rank": 5,
+    "matched_count": 213,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
-    "proficiency_level": "고급",
-    "proficiency_rank": 3,
-    "proficiency_system": "NIKL",
-    "sample_limit": 929,
-    "sample_size": 929,
-    "unknown_count": 723
+    "proficiency_level": "Lower Advanced",
+    "proficiency_rank": 5,
+    "proficiency_system": "Noeul Reading Levels",
+    "sample_limit": 931,
+    "sample_size": 931,
+    "unknown_count": 718
   },
   "wings": {
     "basis": "vocabulary",
-    "coverage": 0.301,
+    "coverage": 0.3015,
     "distribution": [
       {
-        "count": 137,
-        "level": "초급",
+        "count": 122,
+        "level": "Lower Elementary",
         "rank": 1
       },
       {
-        "count": 179,
-        "level": "중급",
+        "count": 19,
+        "level": "Upper Elementary",
         "rank": 2
       },
       {
-        "count": 159,
-        "level": "고급",
+        "count": 167,
+        "level": "Lower Intermediate",
         "rank": 3
+      },
+      {
+        "count": 13,
+        "level": "Upper Intermediate",
+        "rank": 4
+      },
+      {
+        "count": 135,
+        "level": "Lower Advanced",
+        "rank": 5
+      },
+      {
+        "count": 20,
+        "level": "Upper Advanced",
+        "rank": 6
       }
     ],
     "language": "ko",
-    "level": "고급",
-    "level_rank": 3,
-    "matched_count": 475,
+    "level": "Lower Advanced",
+    "level_rank": 5,
+    "matched_count": 476,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
-    "proficiency_level": "고급",
-    "proficiency_rank": 3,
-    "proficiency_system": "NIKL",
-    "sample_limit": 1578,
-    "sample_size": 1578,
+    "proficiency_level": "Lower Advanced",
+    "proficiency_rank": 5,
+    "proficiency_system": "Noeul Reading Levels",
+    "sample_limit": 1579,
+    "sample_size": 1579,
     "unknown_count": 1103
   }
 }

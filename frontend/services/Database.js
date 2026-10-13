@@ -21,7 +21,13 @@ import {
   updateThetaOnline,
 } from './abilityModel';
 import { assembleFeatures } from './featureAssembly';
-import { bookEaseFromDistribution, bookEaseFromLevel } from './bookEase';
+import {
+  bookEaseFromDistribution,
+  bookEaseFromLevel,
+  isLegacyKoreanStats,
+  normalizeLegacyKoreanStats,
+  remapLegacyKoreanRank,
+} from './bookEase';
 import { getActivePknownModel } from './pknownModel';
 import { initialFsrsFromPKnown, rankNominations } from './flashcardNomination';
 
@@ -818,7 +824,11 @@ export const estimateBookReadingEase = async ({
     }
   };
 
-  let stats = parseStats(bookLevelStats);
+  // The caller's bookLevel: if it was graded on the old 3 NIKL grades, its
+  // level rank is on that old scale too.
+  const callerStats = parseStats(bookLevelStats);
+  const callerIsLegacy = isLegacyKoreanStats(callerStats, normalizedLanguage);
+  let stats = callerStats;
 
   // The caller's bookLevel may predate the distribution (bundled catalog, cloud
   // row). If we know which book this is, prefer the locally-accumulated stats
@@ -835,6 +845,10 @@ export const estimateBookReadingEase = async ({
     }
   }
 
+  // Books preprocessed before the 6-level rescale carry NIKL grades; remap them.
+  stats = normalizeLegacyKoreanStats(stats, normalizedLanguage);
+  const effectiveLevelRank = callerIsLegacy ? remapLegacyKoreanRank(levelRank) : levelRank;
+
   const distributionEase = bookEaseFromDistribution({
     theta,
     language: normalizedLanguage,
@@ -843,7 +857,7 @@ export const estimateBookReadingEase = async ({
   const ease = distributionEase ?? bookEaseFromLevel({
     theta,
     language: normalizedLanguage,
-    levelRank,
+    levelRank: effectiveLevelRank,
   });
 
   const rawCoverage = Number(stats?.coverage);
