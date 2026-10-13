@@ -275,6 +275,12 @@ def run(args: argparse.Namespace) -> None:
     out.mkdir(parents=True, exist_ok=True)
     _lock = lock_device(args.serial)
     dev = Device(args.serial)
+    state = subprocess.run([ADB, "-s", args.serial, "get-state"], capture_output=True, text=True)
+    if state.stdout.strip() != "device":
+        raise SystemExit(
+            f"Phone {args.serial} isn't connected ({(state.stdout or state.stderr).strip() or 'not found'}). "
+            "Plug it in, unlock it, and allow USB debugging if asked."
+        )
 
     dev.ensure_awake()
     dev.set_airplane(False)
