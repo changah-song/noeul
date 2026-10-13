@@ -348,7 +348,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     script: 'zh-Hans',
     wordCount: 12996,
     source: ZH_SOURCE,
-    textAsset: require('./books/阿Q正传 - 鲁迅.txt'),
+    textAsset: require('./books/ah_q_true_story.txt'),
   },
   {
     id: 'chen-lun-yu-dafu',
@@ -358,7 +358,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     script: 'zh-Hans',
     wordCount: 10694,
     source: ZH_SOURCE,
-    textAsset: require('./books/沉沦 - 郁达夫.txt'),
+    textAsset: require('./books/chen_lun_yu_dafu.txt'),
   },
   {
     id: 'fang-huang-lu-xun',
@@ -368,7 +368,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     script: 'zh-Hans',
     wordCount: 41836,
     source: ZH_SOURCE,
-    textAsset: require('./books/彷徨 - 鲁迅.txt'),
+    textAsset: require('./books/fang_huang_lu_xun.txt'),
   },
   {
     id: 'kong-yiji-lu-xun',
@@ -378,7 +378,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     script: 'zh-Hans',
     wordCount: 1584,
     source: ZH_SOURCE,
-    textAsset: require('./books/孔乙己 - 鲁迅.txt'),
+    textAsset: require('./books/kong_yiji_lu_xun.txt'),
   },
   {
     id: 'madmans-diary-lu-xun',
@@ -388,7 +388,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     script: 'zh-Hans',
     wordCount: 2660,
     source: ZH_SOURCE,
-    textAsset: require('./books/狂人日记 - 鲁迅.txt'),
+    textAsset: require('./books/madmans_diary_lu_xun.txt'),
   },
   {
     id: 'na-han-lu-xun',
@@ -398,7 +398,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     script: 'zh-Hans',
     wordCount: 41805,
     source: ZH_SOURCE,
-    textAsset: require('./books/呐喊 - 鲁迅.txt'),
+    textAsset: require('./books/na_han_lu_xun.txt'),
   },
   {
     id: 'b-sagam-and-love-letter',
@@ -407,7 +407,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     language: 'ko',
     wordCount: 1460,
     source: SOURCE,
-    textAsset: require('./books/B사감과 러브레터 - 현진건.txt'),
+    textAsset: require('./books/b_sagam_and_love_letter.txt'),
   },
   {
     id: 'snow-queen',
@@ -416,7 +416,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     language: 'ko',
     wordCount: 8412,
     source: SOURCE,
-    textAsset: require('./books/눈의 여왕 - 김선희.txt'),
+    textAsset: require('./books/snow_queen.txt'),
   },
   {
     id: 'ugly-duckling',
@@ -425,7 +425,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     language: 'ko',
     wordCount: 2596,
     source: SOURCE,
-    textAsset: require('./books/미운 아기 오리 - 김선희.txt'),
+    textAsset: require('./books/ugly_duckling.txt'),
   },
   {
     id: 'little-match-girl',
@@ -434,7 +434,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     language: 'ko',
     wordCount: 702,
     source: SOURCE,
-    textAsset: require('./books/성냥팔이 소녀 - 김선희.txt'),
+    textAsset: require('./books/little_match_girl.txt'),
   },
   {
     id: 'thumbelina',
@@ -443,7 +443,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     language: 'ko',
     wordCount: 2937,
     source: SOURCE,
-    textAsset: require('./books/엄지 공주 - 김선희.txt'),
+    textAsset: require('./books/thumbelina.txt'),
   },
   {
     id: 'little-mermaid',
@@ -452,7 +452,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     language: 'ko',
     wordCount: 6082,
     source: SOURCE,
-    textAsset: require('./books/인어 공주 - 김선희.txt'),
+    textAsset: require('./books/little_mermaid.txt'),
   },
   {
     id: 'gwangyeom-sonata',
@@ -461,7 +461,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     language: 'ko',
     wordCount: 4780,
     source: SOURCE,
-    textAsset: require('./books/광염 소나타 - 김동인.txt'),
+    textAsset: require('./books/gwangyeom_sonata.txt'),
   },
   {
     id: 'wings',
@@ -470,7 +470,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     language: 'ko',
     wordCount: 6113,
     source: SOURCE,
-    textAsset: require('./books/날개 - 김해경.txt'),
+    textAsset: require('./books/wings.txt'),
   },
   {
     id: 'city-and-ghost',
@@ -479,7 +479,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     language: 'ko',
     wordCount: 3000,
     source: SOURCE,
-    textAsset: require('./books/도시와 유령(幽靈) - 이효석.txt'),
+    textAsset: require('./books/city_and_ghost.txt'),
   },
   {
     id: 'camellia-flower',
@@ -488,7 +488,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     language: 'ko',
     wordCount: 1867,
     source: SOURCE,
-    textAsset: require('./books/동백꽃 - 김유정.txt'),
+    textAsset: require('./books/camellia_flower.txt'),
   },
   {
     id: 'when-buckwheat-flowers-bloom',
@@ -497,7 +497,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     language: 'ko',
     wordCount: 2028,
     source: SOURCE,
-    textAsset: require('./books/모밀꽃 필 무렵 - 이효석.txt'),
+    textAsset: require('./books/when_buckwheat_flowers_bloom.txt'),
   },
   {
     id: 'mister-bang',
@@ -506,7 +506,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     language: 'ko',
     wordCount: 2867,
     source: SOURCE,
-    textAsset: require('./books/미스터 방(方) - 채만식.txt'),
+    textAsset: require('./books/mister_bang.txt'),
   },
   {
     id: 'spring-spring',
@@ -515,7 +515,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     language: 'ko',
     wordCount: 3111,
     source: SOURCE,
-    textAsset: require('./books/봄 봄 - 김유정.txt'),
+    textAsset: require('./books/spring_spring.txt'),
   },
   {
     id: 'a-lucky-day',
@@ -524,7 +524,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     language: 'ko',
     wordCount: 2747,
     source: SOURCE,
-    textAsset: require('./books/운수 좋은 날 - 현진건.txt'),
+    textAsset: require('./books/a_lucky_day.txt'),
   },
   {
     id: 'crime-and-punishment-lee-muyeong',
@@ -533,7 +533,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     language: 'ko',
     wordCount: 9378,
     source: SOURCE,
-    textAsset: require('./books/죄와벌 - 이무영.txt'),
+    textAsset: require('./books/crime_and_punishment_lee_muyeong.txt'),
   },
   {
     id: 'taepyeongcheonha',
@@ -542,7 +542,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     language: 'ko',
     wordCount: 40800,
     source: SOURCE,
-    textAsset: require('./books/태평천하 - 채만식.txt'),
+    textAsset: require('./books/taepyeongcheonha.txt'),
   },
   {
     id: 'potato',
@@ -551,7 +551,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     language: 'ko',
     wordCount: 1604,
     source: SOURCE,
-    textAsset: require('./books/감자 - 김동인.txt'),
+    textAsset: require('./books/potato.txt'),
   },
   {
     id: 'butterflys-dream',
@@ -560,7 +560,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     language: 'ko',
     wordCount: 868,
     source: SOURCE,
-    textAsset: require('./books/나비의 꿈 - 방정환.txt'),
+    textAsset: require('./books/butterflys_dream.txt'),
   },
   {
     id: 'ready-made-life',
@@ -569,7 +569,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     language: 'ko',
     wordCount: 5994,
     source: SOURCE,
-    textAsset: require('./books/레디메이드 인생 - 채만식.txt'),
+    textAsset: require('./books/ready_made_life.txt'),
   },
   {
     id: 'chisuk',
@@ -578,7 +578,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     language: 'ko',
     wordCount: 3504,
     source: SOURCE,
-    textAsset: require('./books/치숙 - 채만식.txt'),
+    textAsset: require('./books/chisuk.txt'),
   },
   {
     id: 'heosaengjeon',
@@ -587,7 +587,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     language: 'ko',
     wordCount: 13660,
     source: SOURCE,
-    textAsset: require('./books/허생전 - 채만식.txt'),
+    textAsset: require('./books/heosaengjeon.txt'),
   },
   {
     id: 'tears-of-blood',
@@ -596,7 +596,7 @@ const PUBLIC_DOMAIN_TEXTS_BASE = [
     language: 'ko',
     wordCount: 15774,
     source: SOURCE,
-    textAsset: require('./books/혈의 누 - 이인직.txt'),
+    textAsset: require('./books/tears_of_blood.txt'),
   },
 ];
 
