@@ -8,7 +8,14 @@
   1. fresh-install launch, then three normal cold starts (startup time),
   2. visits every tab,
   3. adds a public-domain book and pages through it in the reader,
-  4. a cold start in airplane mode (the offline-first promise).
+  4. turns on focus mode in the reader and steps to the next sentence,
+  5. adds a song with lyrics and opens it,
+  6. saves a word from the reader and reviews it as a flashcard in Learn,
+  7. starts the floating OCR scanner, scans the screen, and turns it off,
+  8. a cold start in airplane mode (the offline-first promise).
+
+`--steps` runs a subset (comma-separated: startup, tabs, book, focus, songs,
+flashcards, ocr, offline). A fresh-install launch always runs first.
 
 It reads the app's `[noeul-telemetry]` log lines (frontend/services/
 appTelemetry.js) to time startup and count UI freezes, and watches the system
@@ -20,6 +27,7 @@ Standard library only. Talks to the device through adb.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -37,7 +45,9 @@ ADB = os.environ.get("ADB", str(Path.home() / "Library/Android/sdk/platform-tool
 TELEMETRY_RE = re.compile(
     r"^\s*(?P<ts>\d+\.\d+).*\[noeul-telemetry\] event=(?P<event>\w+) duration_ms=(?P<ms>\d*) screen=(?P<screen>\S*)"
 )
-FATAL_RE = re.compile(r"FATAL EXCEPTION|Process: " + re.escape(PACKAGE))
+# A fatal Java crash prints "FATAL EXCEPTION" and then "Process: <name>". Only
+# count it when the process is Noeul: uiautomator itself can crash too.
+APP_CRASH_RE = re.compile(r"AndroidRuntime.*Process: " + re.escape(PACKAGE) + r"(,|\s|$)")
 ANR_RE = re.compile(r"ANR in " + re.escape(PACKAGE))
 
 # System dialogs that can block the UI during a run, and what to tap.
@@ -50,6 +60,7 @@ NOT_RESPONDING_RE = re.compile(r"isn.t responding", re.I)
 
 STARTUP_TIMEOUT_S = 60
 DEFAULT_SERIAL = "R3KYC01FY8K"  # the user's Galaxy S25 Ultra
+ALL_STEPS = ("startup", "tabs", "book", "focus", "songs", "flashcards", "ocr", "offline")
 HOME_MARKERS = re.compile(r"^(Collection|My books|Your shelf is empty)$", re.I)
 
 
@@ -101,6 +112,10 @@ class Device:
             nodes.append({
                 "text": (node.get("text") or "").strip(),
                 "desc": (node.get("content-desc") or "").strip(),
+                "hint": (node.get("hint") or "").strip(),
+                "cls": node.get("class") or "",
+                "enabled": node.get("enabled") != "false",
+                "bounds": (x1, y1, x2, y2),
                 "center": ((x1 + x2) // 2, (y1 + y2) // 2),
             })
         return nodes
@@ -123,6 +138,18 @@ class Device:
                 return True
             time.sleep(0.5)
         return False
+
+    def find_input(self, pattern: re.Pattern) -> dict | None:
+        """An editable field whose hint (or empty-field text) matches."""
+        for node in self.ui_nodes():
+            if "EditText" in node["cls"] and (pattern.search(node["hint"]) or pattern.search(node["text"])):
+                return node
+        return None
+
+    def type_text(self, text: str) -> None:
+        """Type ASCII text into the focused field (adb can't type Hangul)."""
+        escaped = re.sub(r"([\\'\"`$&|;<>()])", r"\\\1", text).replace(" ", "%s")
+        self.shell(f"input text {escaped}")
 
     def wait_for(self, pattern: re.Pattern, timeout_s: float = 15) -> bool:
         deadline = time.time() + timeout_s
@@ -226,9 +253,27 @@ def step(dev: Device, out: Path, name: str, action) -> dict:
     return {"name": name, "ok": ok, "detail": detail, "screenshot": shot}
 
 
+def lock_device(serial: str):
+    """Hold an exclusive lock on the phone for the whole run.
+
+    Two checks on one phone at once install over each other and fight over the
+    screen, which makes both runs' results meaningless. A second run waits here.
+    """
+    lock_dir = Path(os.environ.get("NOEUL_PR_CHECK_CACHE", Path.home() / ".cache/noeul-pr-check"))
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    handle = open(lock_dir / f"device-{serial}.lock", "w")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print(f"Another check is using {serial}; waiting for it to finish...", file=sys.stderr, flush=True)
+        fcntl.flock(handle, fcntl.LOCK_EX)
+    return handle  # keep a reference; the lock lasts until the process exits
+
+
 def run(args: argparse.Namespace) -> None:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    _lock = lock_device(args.serial)
     dev = Device(args.serial)
 
     dev.ensure_awake()
@@ -237,9 +282,18 @@ def run(args: argparse.Namespace) -> None:
     dev.shell(f"pm clear {PACKAGE}")
     dev.adb("logcat", "-c", check=False)
 
+    groups = set(args.steps.split(",")) if args.steps else set(ALL_STEPS)
+    unknown = groups - set(ALL_STEPS)
+    if unknown:
+        raise SystemExit(f"unknown --steps: {', '.join(sorted(unknown))}")
+    # The OCR scanner draws over other apps; grant that from adb so the run
+    # doesn't stop at Android's settings screen.
+    dev.shell(f"appops set {PACKAGE} SYSTEM_ALERT_WINDOW allow", check=False)
+
     startups = [cold_start(dev, out, "start-fresh-install")]
-    for i in range(1, 4):
-        startups.append(cold_start(dev, out, f"start-cold-{i}"))
+    if "startup" in groups:
+        for i in range(1, 4):
+            startups.append(cold_start(dev, out, f"start-cold-{i}"))
 
     steps = []
 
@@ -251,8 +305,9 @@ def run(args: argparse.Namespace) -> None:
             return f"opened {tab}"
         return action
 
-    for tab in ("Read", "Learn", "Profile", "Home"):
-        steps.append(step(dev, out, f"tab-{tab.lower()}", visit(tab)))
+    if "tabs" in groups:
+        for tab in ("Read", "Learn", "Profile", "Home"):
+            steps.append(step(dev, out, f"tab-{tab.lower()}", visit(tab)))
 
     def add_book():
         if not dev.tap_text(re.compile(r"^Public domain$", re.I)):
@@ -282,15 +337,245 @@ def run(args: argparse.Namespace) -> None:
             time.sleep(1.2)
         return "swiped forward 6 times"
 
-    steps.append(step(dev, out, "book-add", add_book))
-    steps.append(step(dev, out, "book-open-reader", open_reader))
-    steps.append(step(dev, out, "book-page-through", page_through))
+    def go_home():
+        if not dev.tap_text(re.compile(r"^Home$", re.I)):
+            dev.shell("input keyevent KEYCODE_BACK")
+            time.sleep(1)
+            dev.tap_text(re.compile(r"^Home$", re.I))
+        time.sleep(2)
 
-    dev.set_airplane(True)
-    try:
-        startups.append(cold_start(dev, out, "start-offline"))
-    finally:
-        dev.set_airplane(False)
+    counter_re = re.compile(r"^SENTENCES? (\d+)(?:[–-]\d+)? / (\d+)$", re.I)
+
+    def focus_counter():
+        node = dev.find(counter_re)
+        if not node:
+            return None
+        match = counter_re.search(node["text"] or node["desc"])
+        return int(match[1]), int(match[2])
+
+    def focus_mode():
+        if dev.find(re.compile(r"^Resume", re.I)) and not dev.find(re.compile(r"^Focus mode$")):
+            open_reader()
+        if not dev.tap_text(re.compile(r"^Focus mode$")):
+            raise RuntimeError("'Focus mode' button not found in the reader")
+        time.sleep(2)
+        before = focus_counter()
+        if not before:
+            raise RuntimeError("focus mode did not show its sentence counter")
+        if dev.find(re.compile(r"^Next sentence$")):
+            dev.tap_text(re.compile(r"^Next sentence$"))
+            how = "Next button"
+        else:
+            size = dev.shell("wm size").strip().split()[-1]
+            width, height = map(int, size.split("x"))
+            dev.shell(f"input swipe {width // 2} {int(height * 0.7)} {width // 2} {int(height * 0.35)} 250")
+            how = "swipe"
+        time.sleep(1.5)
+        after = focus_counter()
+        dev.tap_text(re.compile(r"^Focus mode$"))  # leave focus mode
+        time.sleep(1)
+        if not after or after[0] <= before[0]:
+            raise RuntimeError(f"sentence counter did not advance ({before} -> {after}) using {how}")
+        return f"sentence {before[0]} -> {after[0]} of {after[1]} via {how}"
+
+    song_title = "Smoke test song"
+
+    def song_add():
+        go_home()
+        if not dev.tap_text(re.compile(r"^Songs$", re.I)):
+            raise RuntimeError("'Songs' tab not found on Home")
+        time.sleep(2)
+        if not dev.tap_text(re.compile(r"^(New song|Add a song|\+ Add song)$", re.I)):
+            raise RuntimeError("no button to add a song")
+        time.sleep(2)
+        title = dev.find_input(re.compile(r"^Song title$", re.I))
+        if not title:
+            raise RuntimeError("song title field not found")
+        dev.tap(*title["center"])
+        dev.type_text(song_title)
+        lyrics = dev.find_input(re.compile(r"^Enter lyrics$", re.I))
+        if not lyrics:
+            raise RuntimeError("lyrics field not found")
+        dev.tap(*lyrics["center"])
+        dev.type_text("The sunset paints the river gold")
+        dev.shell("input keyevent KEYCODE_ENTER")
+        dev.type_text("and the night comes slowly home")
+        time.sleep(1)
+        if not dev.tap_text(re.compile(r"^Save$", re.I)):
+            raise RuntimeError("'Save' button not found in the song editor")
+        time.sleep(2)
+        if not dev.wait_for(re.compile(rf"^{song_title}$"), timeout_s=8):
+            raise RuntimeError("the new song did not appear in the list")
+        return "added a song with two lines of lyrics"
+
+    def song_open():
+        if not dev.tap_text(re.compile(rf"^{song_title}$")):
+            raise RuntimeError("song not found in the list")
+        time.sleep(3)
+        # The lyrics view doesn't expose its words to the screen reader, so
+        # confirm the song reader by its header; the screenshot shows the lyrics.
+        if not dev.wait_for(re.compile(r"\bwords saved$", re.I), timeout_s=8):
+            raise RuntimeError("the song reader did not open")
+        shot = dev.screenshot(out / "song-reader.png")
+        dev.tap_text(re.compile(r"^Back to songs$"), timeout_s=3) or dev.shell("input keyevent KEYCODE_BACK")
+        time.sleep(1)
+        return f"lyrics shown ({Path(shot).name})"
+
+    def flashcards():
+        # Into the reader with the book from the earlier step.
+        if not dev.find(re.compile(r"^Focus mode$")):
+            go_home()
+            open_reader()
+        # Tap a word near the start of a paragraph until the lookup panel offers "Save word".
+        # The lookup panel's save button; the reader header then counts it as "Saved (1)".
+        save_re = re.compile(r"^(Save|Save word)$")
+        saved_re = re.compile(r"^Saved \(([1-9]\d*)\)$")
+        # The reader's text isn't exposed to the screen reader, so tap spots in
+        # the text area (as fractions of the screen) where lines of the book sit.
+        size = dev.shell("wm size").strip().split()[-1]
+        width, height = map(int, size.split("x"))
+        # Words with no dictionary entry can't be saved (their Save button does
+        # nothing), so try spots across the page until a word with a definition opens.
+        no_entry_re = re.compile(r"^(No dictionary entry available|No definition found)$")
+        spots = [(fx, fy) for fy in (0.34, 0.40, 0.46, 0.52, 0.58, 0.64) for fx in (0.6, 0.3, 0.8)]
+        save_node = None
+        for fx, fy in spots:
+            if not dev.find(re.compile(r"^Focus mode$")):
+                go_home()
+                open_reader()
+            dev.tap(int(width * fx), int(height * fy))
+            if not dev.wait_for(save_re, timeout_s=8):
+                continue
+            time.sleep(2)  # let the definition finish loading
+            nodes = dev.ui_nodes()
+            if not dev.find(no_entry_re, nodes):
+                save_node = dev.find(save_re, nodes)
+                if save_node:
+                    break
+            dev.shell("input keyevent KEYCODE_BACK")
+            time.sleep(1)
+        if not save_node:
+            raise RuntimeError("no tapped word opened a dictionary entry that could be saved")
+        dev.tap(*save_node["center"])
+        dev.shell("input keyevent KEYCODE_BACK")  # close the lookup panel
+        time.sleep(1)
+        if not dev.wait_for(saved_re, timeout_s=6):
+            raise RuntimeError("tapped Save, but the reader's saved-word count didn't go up")
+        dev.screenshot(out / "flashcards-saved-word.png")
+        # Review it in Learn.
+        if not dev.tap_text(re.compile(r"^Learn$", re.I)):
+            raise RuntimeError("'Learn' tab not found")
+        time.sleep(2)
+        if not dev.tap_text(re.compile(r"^Review \d+ due$", re.I), timeout_s=8):
+            raise RuntimeError("Learn shows no 'Review N due' button after saving a word")
+        time.sleep(2)
+        if not dev.tap_text(re.compile(r"^(Show answer|Tap to flip)$", re.I), timeout_s=8):
+            raise RuntimeError("flashcard did not appear")
+        time.sleep(1.5)
+        dev.screenshot(out / "flashcards-answer.png")
+        if not dev.tap_text(re.compile(r"^Okay$", re.I), timeout_s=6):
+            raise RuntimeError("grading buttons (Hard / Okay / Easy) did not appear")
+        time.sleep(2)
+        return "saved a word from the reader, flipped its flashcard and graded it Okay"
+
+    ocr_on = re.compile(r"^Turn on screen text scanner$")
+    ocr_off = re.compile(r"^Turn off screen text scanner$")
+    # Android's screen-capture consent dialog, worded differently across versions.
+    capture_choice = re.compile(r"^(Entire screen|Share entire screen|Full screen)$", re.I)
+    capture_confirm = re.compile(r"^(Start now|Start|Next|Share screen|Allow)$", re.I)
+
+    def ocr_bubble():
+        """Center of the floating scanner bubble. It's an overlay window the
+        screen reader doesn't list, so find it in the window manager's list."""
+        windows = dev.shell("dumpsys window windows", check=False)
+        for block in windows.split("Window #")[1:]:
+            header = block.splitlines()[0]
+            if f"u0 {PACKAGE}}}" not in header or "ty=APPLICATION_OVERLAY" not in block:
+                continue
+            match = re.search(r"\bframe=\[(\d+),(\d+)\]\[(\d+),(\d+)\]", block)
+            if not match:
+                continue
+            x1, y1, x2, y2 = map(int, match.groups())
+            if 0 < x2 - x1 < 500 and 0 < y2 - y1 < 500:
+                return (x1 + x2) // 2, (y1 + y2) // 2
+        return None
+
+    ocr_result_re = re.compile(r"OcrResultOverlay: .*targets=(\d+)")
+
+    def ocr_scan():
+        go_home()
+        if not dev.tap_text(ocr_on):
+            raise RuntimeError("scanner switch not found on Home")
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            nodes = dev.ui_nodes()
+            if dev.find(ocr_off, nodes):
+                break
+            choice = dev.find(capture_choice, nodes)
+            if choice:
+                dev.tap(*choice["center"])
+                time.sleep(1)
+                continue
+            confirm = dev.find(capture_confirm, nodes)
+            if confirm:
+                dev.tap(*confirm["center"])
+            time.sleep(1)
+        else:
+            raise RuntimeError("scanner did not turn on (screen-capture consent may need a manual tap)")
+        try:
+            # Scan a page of Korean text: the scanner only picks out words in
+            # the language being learned.
+            open_reader()
+            bubble = ocr_bubble()
+            if not bubble:
+                raise RuntimeError("scanner is on but its floating bubble isn't on screen")
+            dev.adb("logcat", "-c", check=False)
+            dev.tap(*bubble)
+            words = None
+            deadline = time.time() + 15
+            while time.time() < deadline and words is None:
+                for line in dev.adb("logcat", "-d", check=False).splitlines():
+                    match = ocr_result_re.search(line)
+                    if match:
+                        words = int(match[1])
+                time.sleep(0.5)
+            dev.screenshot(out / "ocr-result.png")
+            dev.drain_log()
+            if words is None:
+                raise RuntimeError("tapped the bubble but no scan result appeared within 15 s")
+            if words == 0:
+                raise RuntimeError("scan ran but found no words on a page of Korean text")
+            return f"scanned the reader page and found {words} words"
+        finally:
+            # Always turn the scanner off again.
+            dev.shell("input keyevent KEYCODE_BACK")
+            time.sleep(1)
+            go_home()
+            if dev.tap_text(ocr_off, timeout_s=8):
+                time.sleep(2)
+
+    if groups & {"book", "focus", "flashcards", "ocr"}:
+        steps.append(step(dev, out, "book-add", add_book))
+        steps.append(step(dev, out, "book-open-reader", open_reader))
+    if "book" in groups:
+        steps.append(step(dev, out, "book-page-through", page_through))
+    if "focus" in groups:
+        steps.append(step(dev, out, "focus-mode", focus_mode))
+    if "flashcards" in groups:
+        steps.append(step(dev, out, "flashcards", flashcards))
+    if "songs" in groups:
+        steps.append(step(dev, out, "song-add", song_add))
+        steps.append(step(dev, out, "song-open", song_open))
+    if "ocr" in groups:
+        steps.append(step(dev, out, "ocr-scan", ocr_scan))
+        dev.shell(f"am force-stop {PACKAGE}")  # never leave the scanner running
+
+    if "offline" in groups:
+        dev.set_airplane(True)
+        try:
+            startups.append(cold_start(dev, out, "start-offline"))
+        finally:
+            dev.set_airplane(False)
 
     dev.drain_log()
     log = "\n".join(dev.log_text)
@@ -304,7 +589,7 @@ def run(args: argparse.Namespace) -> None:
             freezes.append({"duration_ms": int(match["ms"] or 0), "screen": match["screen"] or None})
         elif match and match["event"] == "crash":
             crashes.append(line.strip())
-        elif FATAL_RE.search(line) and "AndroidRuntime" in line:
+        elif APP_CRASH_RE.search(line):
             crashes.append(line.strip())
     anrs = [line.strip() for line in log.splitlines() if ANR_RE.search(line)]
 
@@ -394,6 +679,7 @@ def main() -> None:
     run_parser.add_argument("--label", required=True)
     run_parser.add_argument("--out", required=True)
     run_parser.add_argument("--serial", default=os.environ.get("ANDROID_SERIAL", DEFAULT_SERIAL))
+    run_parser.add_argument("--steps", help="comma-separated subset of: " + ",".join(ALL_STEPS))
     compare_parser = sub.add_parser("compare")
     compare_parser.add_argument("base")
     compare_parser.add_argument("pr")

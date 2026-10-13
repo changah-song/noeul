@@ -12,7 +12,11 @@ REPO=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 REF=${1:?usage: build_apk.sh <git-ref>}
 SHA=$(git -C "$REPO" rev-parse --verify "${REF}^{commit}")
 CACHE=${NOEUL_PR_CHECK_CACHE:-$HOME/.cache/noeul-pr-check}
-APK="$CACHE/apk/$SHA.apk"
+# Builds use the EAS "preview" profile's env (the production backend and
+# Supabase), the same settings as a real release. The "-preview" suffix keeps
+# them apart from older cached builds made with the local dev .env.
+PROFILE=${NOEUL_PR_CHECK_PROFILE:-preview}
+APK="$CACHE/apk/$SHA-$PROFILE.apk"
 LOG="$CACHE/logs/$SHA.log"
 
 if [ -f "$APK" ]; then
@@ -31,9 +35,18 @@ trap cleanup EXIT
 
 git -C "$REPO" worktree add --detach "$WT" "$SHA" >"$LOG" 2>&1
 
-# Gitignored files the build needs: the app's public env values (inlined into
-# the JS bundle) and the SDK location.
-[ -f "$REPO/frontend/.env" ] && cp "$REPO/frontend/.env" "$WT/frontend/.env"
+# The app's public env values are inlined into the JS bundle. Take them from
+# the commit's own eas.json build profile, not the local dev .env, whose
+# backend address (10.0.2.2) only works from the emulator.
+python3 - "$WT/frontend/eas.json" "$PROFILE" > "$WT/frontend/.env" <<'PY'
+import json, sys
+env = json.load(open(sys.argv[1]))["build"][sys.argv[2]].get("env", {})
+if not env.get("EXPO_PUBLIC_API_BASE_URL"):
+    sys.exit(f"eas.json profile {sys.argv[2]!r} has no EXPO_PUBLIC_API_BASE_URL")
+for key, value in sorted(env.items()):
+    print(f"{key}={value}")
+PY
+# Gitignored: the SDK location.
 [ -f "$REPO/frontend/android/local.properties" ] && cp "$REPO/frontend/android/local.properties" "$WT/frontend/android/local.properties"
 
 echo "building $SHA (log: $LOG)" >&2

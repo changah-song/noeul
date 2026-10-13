@@ -47,7 +47,13 @@ chose the phone over the emulator. Do not start the emulator.
 - The phone must stay unlocked during the run. The script wakes the screen and
   stops with a message if the phone is locked.
 - Tell the user before starting that the phone will be busy for about
-  6 minutes. Its Noeul data gets wiped, and airplane mode toggles on briefly.
+  15 minutes. Its Noeul data gets wiped, airplane mode toggles on briefly, and
+  the screen-text scanner turns on and off.
+- Only one smoke run can use the phone at a time. `smoke.py` holds a lock
+  for the whole run, so a second run, including one from another session,
+  waits instead of interfering. If a run reports crashes or failed steps that
+  don't fit the diff, check its `device.log` for another process driving the
+  screen before blaming the PR.
 
 ### 4. Build both APKs
 
@@ -57,7 +63,10 @@ chose the phone over the emulator. Do not start the emulator.
 ```
 
 Each prints an APK path. Builds take about 7 minutes and are cached by commit
-in `~/.cache/noeul-pr-check/apk/`, so main usually comes from the cache. Run
+in `~/.cache/noeul-pr-check/apk/`, so main usually comes from the cache. They
+use the `preview` profile's env from that commit's `eas.json` (the production
+backend), like a real release. The local dev `.env` points at the emulator-only
+address 10.0.2.2, so on the phone it would break lookups. Run
 long builds in the background. On failure, read the log path it printed and
 report the error. A build failure is a finding, not a reason to stop.
 
@@ -71,10 +80,20 @@ python3 .claude/skills/pr-check/smoke.py compare $OUT/main/results.json $OUT/pr/
 ```
 
 Each run installs the release APK over the phone's dev build, wipes the app's
-data, and takes about 3 minutes. It times a
-fresh-install launch, three cold starts and an airplane-mode start, and visits
-every tab. It also adds the public-domain book 감자 and pages through it in the
-reader. Freezes and crash signals come from the device log.
+data, and takes about 7 minutes. It:
+
+- times a fresh-install launch, three cold starts and an airplane-mode start,
+- visits every tab,
+- adds the public-domain book 감자 and pages through it in the reader,
+- turns on focus mode and steps to the next sentence,
+- saves a word from the reader and reviews it as a flashcard in Learn,
+- adds a song with lyrics and opens it,
+- starts the screen-text scanner, scans the reader page (it must find Korean
+  words), and turns the scanner off.
+
+Freezes and crash signals come from the device log. To debug or try one part,
+pass `--steps` with a comma-separated subset: `startup`, `tabs`, `book`,
+`focus`, `songs`, `flashcards`, `ocr`, `offline`.
 
 Timings vary between runs. The comparison only calls a startup "slower" past
 20% and 300 ms. Treat small differences as noise.
@@ -137,6 +156,12 @@ are more freezes, CI fails, or a screenshot shows a visible regression.
 - The startup and freeze numbers come from the app's `[noeul-telemetry]` log
   lines (`frontend/services/appTelemetry.js`). A build from before that line
   existed shows no startup times. Say that rather than reporting a failure.
-- The smoke script finds buttons by their English text. If a PR renames
-  "Public domain", "Add", "Resume" or a tab label, update `smoke.py` in the
-  same PR.
+- The smoke script finds buttons by their English text or accessibility labels:
+  tab names, "Public domain", "Add", "Resume", "Focus mode", "Next sentence",
+  "Save", "Review N due", "Show answer", "Okay", "New song", "Song title",
+  "Enter lyrics", "Save", "Back to songs", and "Turn on/off screen text scanner".
+  If a PR renames one, update `smoke.py` in the same PR.
+- The reader's and song lyrics' text isn't visible to the screen reader. The
+  flashcard step taps spots in the text area until a word with a dictionary
+  entry opens. The OCR bubble is found through `dumpsys window`, and its result
+  through the `OcrResultOverlay: ... targets=N` log line.
