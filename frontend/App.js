@@ -1,7 +1,7 @@
-import { DefaultTheme, NavigationContainer } from '@react-navigation/native';
+import { DefaultTheme, NavigationContainer, useNavigationContainerRef } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { TranslatorProvider } from 'react-native-translator';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert } from 'react-native';
 import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen';
@@ -53,6 +53,12 @@ import { hasLocalUserData } from './services/localUserData';
 import { getRuntimeInterfaceLanguage, loadRuntimeInterfaceLanguage } from './services/interfaceLanguage';
 import { translate } from './i18n/translations';
 import { initializeOverlayLookupBridge } from './services/overlayLookup';
+import {
+    installCrashReporting,
+    setTelemetryScreen,
+    setTelemetryUser,
+    startTelemetry,
+} from './services/appTelemetry';
 import { syncUserDataFromCloud } from './services/userDataSync';
 import { subscribeUserDataSyncRequests } from './services/userDataSyncQueue';
 import { colors, useTheme } from './theme';
@@ -69,6 +75,8 @@ const isStaleSyncGenerationError = (error) => (
 );
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
+// Before anything renders, so crashes during startup are captured too.
+installCrashReporting();
 
 export default function App() {
     return (
@@ -121,8 +129,15 @@ function AppContent() {
     useEffect(() => {
         if (appReady) {
             SplashScreen.hideAsync().catch(() => {});
+            // Records startup time once per launch, then watches for UI freezes
+            // and uploads queued telemetry in the background.
+            startTelemetry();
         }
     }, [appReady]);
+
+    useEffect(() => {
+        setTelemetryUser(user?.id ?? null);
+    }, [user?.id]);
 
     useEffect(() => {
         if (!appReady) {
@@ -523,6 +538,10 @@ function ThemedAppShell({
             notification: themeColors.inkSlate,
         },
     }), [appBackground, themeColors]);
+    const navigationRef = useNavigationContainerRef();
+    const trackScreen = useCallback(() => {
+        setTelemetryScreen(navigationRef.getCurrentRoute()?.name ?? null);
+    }, [navigationRef]);
     const sceneContainerStyle = useMemo(() => ({
         backgroundColor: appBackground,
     }), [appBackground]);
@@ -538,7 +557,12 @@ function ThemedAppShell({
                 backgroundColor={appBackground}
                 translucent={false}
             />
-            <NavigationContainer theme={navigationTheme}>
+            <NavigationContainer
+                ref={navigationRef}
+                theme={navigationTheme}
+                onReady={trackScreen}
+                onStateChange={trackScreen}
+            >
                 <Tab.Navigator
                     sceneContainerStyle={sceneContainerStyle}
                     screenOptions={(props) => tabScreenOptions(props, {

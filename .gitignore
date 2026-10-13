@@ -13,3 +13,6 @@ nikl_balanced_corpus/
 .env
 .env.local
 .env.*.local
+
+# Admin dashboard local config (Supabase URL + anon key)
+dashboard/config.js

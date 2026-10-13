@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Noeul Admin</title>
+  <link rel="stylesheet" href="dashboard.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <!-- Optional: copy config.example.js to config.js and fill in your project. -->
+  <script src="config.js" onerror="window.NOEUL_DASHBOARD_CONFIG = window.NOEUL_DASHBOARD_CONFIG || null"></script>
+</head>
+<body>
+  <!-- Sign-in -->
+  <main id="signin-view" class="wrap hidden">
+    <div class="signin card">
+      <h1>Noeul admin</h1>
+      <p>Sign in with an account listed in <span class="mono">admin_users</span>.</p>
+      <form id="signin-form" novalidate>
+        <div class="field">
+          <label for="email">Email</label>
+          <input id="email" type="email" autocomplete="username" required>
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" type="password" autocomplete="current-password" required>
+        </div>
+        <div id="signin-error" class="form-error" role="alert"></div>
+        <button class="btn btn-primary" type="submit" id="signin-submit">Sign in</button>
+      </form>
+      <div class="signin-foot">
+        <span id="config-note"></span>
+        <a href="?demo=1">Preview with sample data</a>
+      </div>
+    </div>
+  </main>
+
+  <!-- Dashboard -->
+  <div id="dashboard-view" class="hidden">
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">Noeul <small>Admin</small></div>
+        <span class="meta" id="updated-at"></span>
+        <button class="btn" id="refresh-btn" type="button">Refresh</button>
+        <button class="btn btn-ghost" id="signout-btn" type="button">Sign out</button>
+      </div>
+    </header>
+
+    <main class="wrap" id="content">
+      <div id="demo-banner" class="banner hidden">
+        Sample data for previewing the layout. These are not real users.
+        <a href="./">Sign in</a> to see live numbers.
+      </div>
+      <div id="error-banner" class="banner hidden" role="alert"></div>
+
+      <div class="filters" role="group" aria-label="Filters">
+        <div>
+          <span class="filter-label" id="range-label">Range</span>
+          <div class="segmented" id="range-control" aria-labelledby="range-label">
+            <button type="button" data-days="7">7 days</button>
+            <button type="button" data-days="30">30 days</button>
+            <button type="button" data-days="90">90 days</button>
+          </div>
+        </div>
+        <label>
+          <span class="filter-label">Builds</span>
+          <select class="select" id="env-control">
+            <option value="production">Production</option>
+            <option value="development">Development</option>
+            <option value="all">All</option>
+          </select>
+        </label>
+        <span class="meta">Days are in UTC.</span>
+      </div>
+
+      <div class="alerts" id="alerts" aria-live="polite"></div>
+
+      <section aria-labelledby="overview-h">
+        <div class="section-head"><h2 id="overview-h">Overview</h2></div>
+        <div class="overview">
+          <div class="card" id="hero"></div>
+          <div class="tiles" id="tiles"></div>
+        </div>
+      </section>
+
+      <section aria-labelledby="users-h">
+        <div class="section-head">
+          <h2 id="users-h">Users</h2>
+          <p>Active means the user opened the app or studied a word that day.</p>
+        </div>
+        <div class="grid grid-2">
+          <div class="card" id="chart-active"></div>
+          <div class="card" id="chart-new"></div>
+        </div>
+      </section>
+
+      <section aria-labelledby="engagement-h">
+        <div class="section-head"><h2 id="engagement-h">Learning activity</h2></div>
+        <div class="grid grid-2">
+          <div class="card" id="chart-learning"></div>
+          <div class="card" id="languages"></div>
+        </div>
+      </section>
+
+      <section aria-labelledby="stability-h">
+        <div class="section-head">
+          <h2 id="stability-h">Stability</h2>
+          <p>Crashes are fatal JavaScript errors. Errors were reported but the app kept running.</p>
+        </div>
+        <div class="grid grid-2">
+          <div class="card" id="chart-crashes"></div>
+          <div class="card" id="versions"></div>
+        </div>
+        <div class="card" style="margin-top:16px" id="crash-groups"></div>
+      </section>
+
+      <section aria-labelledby="perf-h">
+        <div class="section-head">
+          <h2 id="perf-h">Performance</h2>
+          <p>A freeze is when the app stopped responding for at least one second.</p>
+        </div>
+        <div class="grid grid-2">
+          <div class="card" id="chart-startup"></div>
+          <div class="card" id="stall-screens"></div>
+        </div>
+      </section>
+
+      <section aria-labelledby="recent-h">
+        <div class="section-head"><h2 id="recent-h">Recent problems</h2></div>
+        <div class="card" id="recent"></div>
+      </section>
+
+      <section aria-labelledby="userlist-h">
+        <div class="section-head"><h2 id="userlist-h">All users</h2></div>
+        <div class="card" id="user-list"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="demo-data.js"></script>
+  <script src="charts.js"></script>
+  <script src="dashboard.js"></script>
+</body>
+</html>

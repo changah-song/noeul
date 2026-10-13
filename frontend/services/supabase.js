@@ -1234,3 +1234,15 @@ export const toggleCloudRelatedKnownWord = async ({
 };
 
 export default supabase;
+
+// Read the persisted auth session from device storage without going through
+// the auth client, so no network refresh can block the caller. See
+// services/authSessionCache.js for why startup needs this.
+export const readPersistedAuthSession = async () => {
+  const storageKey = supabase.storageKey || supabase.auth?.storageKey;
+  if (!storageKey) {
+    return null;
+  }
+
+  return secureStoreAdapter.getItem(storageKey);
+};
