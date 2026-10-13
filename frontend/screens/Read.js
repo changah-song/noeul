@@ -448,49 +448,6 @@ const progressForBookPosition = (spineIndex, totalSpineItems, pageIndex = null, 
     return clampProgress((spineIndex + chapterProgress) / totalSpineItems);
 };
 
-const progressForChapterPosition = ({
-    pageInChapter = null,
-    pagesInChapter = null,
-    activeSpineIndex = null,
-    nativePosition = null,
-    bookProgress = null,
-    totalSpineItems = null,
-}) => {
-    if (
-        Number.isInteger(pageInChapter)
-        && Number.isInteger(pagesInChapter)
-        && pagesInChapter > 0
-    ) {
-        return clampProgress(pageInChapter / pagesInChapter);
-    }
-
-    if (
-        Number.isInteger(nativePosition?.pageIndex)
-        && Number.isInteger(nativePosition?.pagesInChapter)
-        && nativePosition.pagesInChapter > 0
-        && (
-            !Number.isInteger(nativePosition?.spineIndex)
-            || !Number.isInteger(activeSpineIndex)
-            || nativePosition.spineIndex === activeSpineIndex
-        )
-    ) {
-        return clampProgress((nativePosition.pageIndex + 1) / nativePosition.pagesInChapter);
-    }
-
-    if (
-        Number.isInteger(activeSpineIndex)
-        && totalSpineItems > 0
-        && typeof bookProgress === 'number'
-    ) {
-        const inferredChapterProgress = (bookProgress * totalSpineItems) - activeSpineIndex;
-        if (inferredChapterProgress >= 0 && inferredChapterProgress <= 1) {
-            return clampProgress(inferredChapterProgress);
-        }
-    }
-
-    return 0;
-};
-
 const flattenTocItems = (items, depth = 0) => {
     if (!Array.isArray(items)) {
         return [];
@@ -1580,15 +1537,10 @@ const Read = ({
             ? readerLocationInfo.percentage
             : activeBook?.progress
     );
-    const chapterProgress = progressForChapterPosition({
-        pageInChapter: readerLocationInfo?.pageInChapter,
-        pagesInChapter: readerLocationInfo?.pagesInChapter,
-        activeSpineIndex,
-        nativePosition: nativeRestorePosition || activeBook?.nativePosition,
-        bookProgress,
-        totalSpineItems: nativeChapterTotal,
-    });
-    const progressPercent = Math.round(chapterProgress * 100);
+    // The header shows progress through the whole book, the same number Home
+    // and the book page show. (It used to show progress through the current
+    // chapter, so a short first chapter read "100%" while Home said 50%.)
+    const progressPercent = Math.round(bookProgress * 100);
     const progressLabel = `${progressPercent}%`;
     const progressFillWidth = `${progressPercent}%`;
     const chapterIndexLabel = Number.isInteger(activeSpineIndex)
