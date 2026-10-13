@@ -207,3 +207,55 @@ describe('getEaseBandKey', () => {
     expect(getEaseBandKey(NaN)).toBeNull();
   });
 });
+
+describe('legacy Korean (NIKL) book stats', () => {
+  const { isLegacyKoreanStats, normalizeLegacyKoreanStats, remapLegacyKoreanRank } = require('../bookEase');
+
+  const legacy = {
+    language: 'ko',
+    proficiency_system: 'NIKL',
+    level: '고급',
+    level_rank: 3,
+    distribution: [
+      { rank: 1, level: '초급', count: 40 },
+      { rank: 2, level: '중급', count: 25 },
+      { rank: 3, level: '고급', count: 35 },
+    ],
+  };
+
+  it('recognizes stats tagged with the NIKL system', () => {
+    expect(isLegacyKoreanStats(legacy, 'ko')).toBe(true);
+    expect(isLegacyKoreanStats({ ...legacy, proficiency_system: undefined, level_system: 'NIKL' }, 'ko')).toBe(true);
+  });
+
+  it('does not guess from grade labels when no system is recorded', () => {
+    const { proficiency_system: _drop, ...untagged } = legacy;
+    expect(isLegacyKoreanStats(untagged, 'ko')).toBe(false);
+  });
+
+  it('leaves current reading-level stats and other languages alone', () => {
+    const current = { ...legacy, proficiency_system: 'Noeul Reading Levels', level: 'Level 5', distribution: [{ rank: 5, count: 3 }] };
+    expect(isLegacyKoreanStats(current, 'ko')).toBe(false);
+    expect(normalizeLegacyKoreanStats(current, 'ko')).toBe(current);
+    expect(isLegacyKoreanStats({ proficiency_system: 'HSK', distribution: [] }, 'zh')).toBe(false);
+    expect(isLegacyKoreanStats({ ...legacy, language: 'zh' }, 'zh')).toBe(false);
+    expect(isLegacyKoreanStats(null, 'ko')).toBe(false);
+  });
+
+  it('remaps each grade onto the lower level of its pair (1→1, 2→3, 3→5)', () => {
+    expect([1, 2, 3].map(remapLegacyKoreanRank)).toEqual([1, 3, 5]);
+    const normalized = normalizeLegacyKoreanStats(legacy, 'ko');
+    expect(normalized.distribution.map((row) => row.rank)).toEqual([1, 3, 5]);
+    expect(normalized.distribution.map((row) => row.count)).toEqual([40, 25, 35]);
+    expect(normalized.level_rank).toBe(5);
+    expect(normalized.proficiency_system).toBe('Noeul Reading Levels');
+  });
+
+  it('makes an old book read harder than its uncorrected stats suggested', () => {
+    const naive = bookEaseFromDistribution({ theta: 0, language: 'ko', distribution: legacy.distribution });
+    const corrected = bookEaseFromDistribution({
+      theta: 0, language: 'ko', distribution: normalizeLegacyKoreanStats(legacy, 'ko').distribution,
+    });
+    expect(corrected).toBeLessThan(naive);
+  });
+});
