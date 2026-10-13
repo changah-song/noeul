@@ -67,6 +67,7 @@ MAX_STEMS_DEFAULT = None
 KRDICT_CONCURRENCY_LIMIT = 10
 JOB_PROGRESS_LOG_INTERVAL = 25
 KRDICT_API_URL = "https://krdict.korean.go.kr/api/search"
+KRDICT_SEARCH_TIMEOUT_SECONDS = 6.0
 KRDICT_INTERFACE_LANGUAGES = {
     "en": "1",
     "fr": "3",
@@ -3558,7 +3559,10 @@ async def search_krdict_entries(
                 "translated": "y",
                 "trans_lang": trans_lang,
             },
-            timeout=10.0,
+            # Shorter than the app's own 10 s lookup timeout, so when KRDICT is
+            # slow or down the app still gets an answer (an empty one) instead
+            # of timing out first.
+            timeout=KRDICT_SEARCH_TIMEOUT_SECONDS,
         )
 
         if response.status_code != 200:
