@@ -121,6 +121,11 @@ export const createTelemetry = ({
       occurred_at: new Date(now()).toISOString(),
       ...deviceInfo,
     };
+    // One greppable line per event in the device log. The PR check routine
+    // (.claude/skills/pr-check) reads these to time startup and count freezes.
+    logger.info?.(
+      `[noeul-telemetry] event=${eventType} duration_ms=${event.duration_ms ?? ''} screen=${event.screen ?? ''}`
+    );
     queue.push(event);
     if (queue.length > MAX_QUEUE) {
       queue = queue.slice(-MAX_QUEUE);

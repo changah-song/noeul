@@ -175,6 +175,16 @@ describe('crash handler', () => {
   });
 });
 
+describe('device log line', () => {
+  it('logs one parseable line per event for the PR check routine', async () => {
+    const info = jest.fn();
+    const t = makeTelemetry({ logger: { warn: () => {}, info } });
+    t.setScreen('Read');
+    await t.record('js_stall', { durationMs: 1500 });
+    expect(info).toHaveBeenCalledWith('[noeul-telemetry] event=js_stall duration_ms=1500 screen=Read');
+  });
+});
+
 describe('freeze detection', () => {
   it('ignores normal timer jitter', () => {
     const t = makeTelemetry();
