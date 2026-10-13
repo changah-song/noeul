@@ -28,18 +28,18 @@ import {
 
 describe('bookEaseFromLevel', () => {
   it('reports the leveling percentile (~80%) for a reader AT the book level, not a bare 50%', () => {
-    // ko band 3 (고급): difficulty at the ceiling; an "advanced" reader (rank 3)
+    // ko reading level 6 (the top): difficulty at the ceiling; a level-6 reader
     // seeds to that same ceiling, so theta === difficulty — the exact case the naive
     // sigmoid(theta − difficulty) collapsed to 0.5.
     const theta = ABILITY_THETA_MAX;
-    const difficulty = difficultyFromLevelRank('ko', 3);
+    const difficulty = difficultyFromLevelRank('ko', 6);
     expect(theta).toBeCloseTo(difficulty, 12);
-    expect(bookEaseFromLevel({ theta, language: 'ko', levelRank: 3 }))
+    expect(bookEaseFromLevel({ theta, language: 'ko', levelRank: 6 }))
       .toBeCloseTo(BOOK_LEVEL_COMPREHENSION_ANCHOR, 12);
   });
 
   it('rises above the anchor when the reader out-levels the book', () => {
-    // Advanced ko reader on an intermediate (band 2) book.
+    // Top-level ko reader on a level-2 book.
     const ease = bookEaseFromLevel({ theta: ABILITY_THETA_MAX, language: 'ko', levelRank: 2 });
     expect(ease).toBeGreaterThan(BOOK_LEVEL_COMPREHENSION_ANCHOR);
   });
@@ -77,32 +77,37 @@ describe('bookEaseFromLevel', () => {
 
 describe('bookEaseFromDistribution', () => {
   it('is the count-weighted mean of the per-band word-level sigmoid (no anchor)', () => {
-    // ko bands 1/2/3 map to difficulties -3/0/+3. For a neutral reader (theta 0)
-    // a 40/25/35 split should give 0.4·σ(3) + 0.25·σ(0) + 0.35·σ(-3) exactly.
+    // ko reading levels 1/3/6 map to difficulties -3/-0.6/+3. For a neutral
+    // reader (theta 0) a 40/25/35 split is 0.4·σ(3) + 0.25·σ(0.6) + 0.35·σ(-3).
     const distribution = [
       { rank: 1, count: 40 },
-      { rank: 2, count: 25 },
-      { rank: 3, count: 35 },
+      { rank: 3, count: 25 },
+      { rank: 6, count: 35 },
     ];
-    const expected = (40 * sigmoid(3) + 25 * sigmoid(0) + 35 * sigmoid(-3)) / 100;
+    const expected = (
+      40 * sigmoid(-difficultyFromLevelRank('ko', 1))
+      + 25 * sigmoid(-difficultyFromLevelRank('ko', 3))
+      + 35 * sigmoid(-difficultyFromLevelRank('ko', 6))
+    ) / 100;
+    expect(expected).toBeCloseTo((40 * sigmoid(3) + 25 * sigmoid(0.6) + 35 * sigmoid(-3)) / 100, 12);
     expect(bookEaseFromDistribution({ theta: 0, language: 'ko', distribution }))
       .toBeCloseTo(expected, 12);
   });
 
   it('differentiates two same-band books with different vocabulary mixes', () => {
-    // Both books level to ko band 3 under the 80th-percentile rule, but one is
-    // mostly easy words with a hard tail while the other is hard throughout.
-    // The single-band estimate collapses them to the same number; the
-    // distribution must not.
+    // Both books level to ko reading level 6 under the 80th-percentile rule, but
+    // one is mostly easy words with a hard tail while the other is hard
+    // throughout. The single-level estimate collapses them to the same number;
+    // the distribution must not.
     const easierMix = [
       { rank: 1, count: 70 },
-      { rank: 2, count: 8 },
-      { rank: 3, count: 22 },
+      { rank: 3, count: 8 },
+      { rank: 6, count: 22 },
     ];
     const harderMix = [
       { rank: 1, count: 20 },
-      { rank: 2, count: 20 },
-      { rank: 3, count: 60 },
+      { rank: 3, count: 20 },
+      { rank: 6, count: 60 },
     ];
     const easier = bookEaseFromDistribution({ theta: 0, language: 'ko', distribution: easierMix });
     const harder = bookEaseFromDistribution({ theta: 0, language: 'ko', distribution: harderMix });
@@ -137,13 +142,13 @@ describe('bookEaseFromDistribution', () => {
       language: 'ko',
       distribution: [{ rank: 'x', count: 5 }, { rank: 2, count: 0 }, { rank: 3, count: -1 }],
     })).toBeNull();
-    // One good band among junk still produces an estimate.
+    // One good band among junk still produces an estimate: just that band's P.
     const ease = bookEaseFromDistribution({
       theta: 0,
       language: 'ko',
       distribution: [{ rank: 'x', count: 5 }, { rank: 2, count: 10 }],
     });
-    expect(ease).toBeCloseTo(sigmoid(0), 12);
+    expect(ease).toBeCloseTo(sigmoid(-difficultyFromLevelRank('ko', 2)), 12);
   });
 });
 

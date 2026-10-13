@@ -30,10 +30,10 @@ describe('selectCalibrationWords', () => {
 
     const ranks = words.map((entry) => entry.rank);
     expect([...ranks].sort((a, b) => a - b)).toEqual(ranks); // non-decreasing
-    expect(new Set(ranks)).toEqual(new Set([1, 2, 3])); // all ko bands present
+    expect(new Set(ranks)).toEqual(new Set([1, 2, 3, 4, 5, 6])); // all 6 ko reading levels
 
     const perBand = ranks.filter((rank) => rank === 1).length;
-    expect(ranks.filter((rank) => rank === 3).length).toBe(perBand);
+    expect(ranks.filter((rank) => rank === 6).length).toBe(perBand);
   });
 
   it('is deterministic for a fixed seed and varies across seeds', () => {
@@ -69,21 +69,24 @@ describe('estimateThetaFromResponses', () => {
   });
 
   it('lands BETWEEN band seeds for a mixed profile (the anti-quantization point)', () => {
-    // Knows all band-1, most band-2, no band-3: a solid intermediate-plus.
+    // Knows all of levels 1-2, ~75% of level 3, nothing above: around level 3.
     const words = selectCalibrationWords('ko', { seed: 5 });
-    let band2Seen = 0;
+    let level3Seen = 0;
     const responses = words.map((w) => {
-      if (w.rank === 1) return { ...w, outcome: 1 };
-      if (w.rank === 3) return { ...w, outcome: 0 };
-      band2Seen += 1;
-      return { ...w, outcome: band2Seen % 4 === 0 ? 0 : 1 }; // knows ~75% of band 2
+      if (w.rank <= 2) return { ...w, outcome: 1 };
+      if (w.rank >= 4) return { ...w, outcome: 0 };
+      level3Seen += 1;
+      return { ...w, outcome: level3Seen % 4 === 0 ? 0 : 1 };
     });
     const { theta } = estimateThetaFromResponses({ language: 'ko', responses, initialTheta: 0 });
 
-    const band2Seed = seedThetaFromRank('ko', 2); // 0
-    const band3Seed = seedThetaFromRank('ko', 3); // 3
-    expect(theta).toBeGreaterThan(band2Seed);
-    expect(theta).toBeLessThan(band3Seed);
+    // Lands in the level-3 neighborhood, but on a continuous value rather than
+    // snapping onto any level's seed.
+    expect(theta).toBeGreaterThan(seedThetaFromRank('ko', 2)); // -1.8
+    expect(theta).toBeLessThan(seedThetaFromRank('ko', 4)); // +0.6
+    [1, 2, 3, 4, 5, 6].forEach((rank) => {
+      expect(Math.abs(theta - seedThetaFromRank('ko', rank))).toBeGreaterThan(0.01);
+    });
   });
 
   it('starts a truly cold profile at the midpoint and skips malformed outcomes', () => {
@@ -108,11 +111,14 @@ describe('estimateThetaFromResponses', () => {
 
 describe('nearestRankForTheta', () => {
   it('inverts the band seeding at the seeds and splits sensibly between them', () => {
-    expect(nearestRankForTheta('ko', seedThetaFromRank('ko', 1))).toBe(1);
-    expect(nearestRankForTheta('ko', seedThetaFromRank('ko', 2))).toBe(2);
-    expect(nearestRankForTheta('ko', seedThetaFromRank('ko', 3))).toBe(3);
-    expect(nearestRankForTheta('ko', 1.2)).toBe(2); // closer to 0 than to +3
-    expect(nearestRankForTheta('ko', 2.1)).toBe(3);
+    // ko reading levels 1-6 seed at -3, -1.8, -0.6, +0.6, +1.8, +3.
+    [1, 2, 3, 4, 5, 6].forEach((rank) => {
+      expect(nearestRankForTheta('ko', seedThetaFromRank('ko', rank))).toBe(rank);
+    });
+    expect(nearestRankForTheta('ko', -0.1)).toBe(3); // closer to -0.6 than to +0.6
+    expect(nearestRankForTheta('ko', 0.1)).toBe(4);
+    expect(nearestRankForTheta('ko', 2.5)).toBe(6); // closer to +3 than to +1.8
+    expect(nearestRankForTheta('ko', -10)).toBe(1); // clamps at the floor
     expect(nearestRankForTheta('zh', 0)).toBe(4); // HSK midpoint band
   });
 });

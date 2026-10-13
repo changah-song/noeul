@@ -33,7 +33,12 @@ import {
   migrateVocabTable,
   scoreWordsForProfile,
 } from '../Database';
-import { OOV_DIFFICULTY, pKnown, seedThetaFromRank } from '../abilityModel';
+import {
+  OOV_DIFFICULTY,
+  difficultyFromLevelRank,
+  pKnown,
+  seedThetaFromRank,
+} from '../abilityModel';
 
 const { __resetMockDatabases } = SQLite;
 
@@ -107,7 +112,8 @@ describe('scoreWordsForProfile', () => {
   });
 
   it('matches the pure scorer: P = 0.5 when the user band equals the word band', async () => {
-    // ko rank 2 → theta 0; a rank-2 word → difficulty 0 → sigmoid(0) = 0.5.
+    // A level-2 reader and a level-2 word land on the same scale value (-1.8),
+    // so sigmoid(theta - difficulty) = sigmoid(0) = 0.5.
     await cacheStem({ stem: '가격', language: 'ko', levelRank: 2 });
     await ensureProfileAbilitySeed({ ownerId: OWNER, profileId: PROFILE, language: 'ko', rank: 2 });
 
@@ -118,8 +124,10 @@ describe('scoreWordsForProfile', () => {
       stems: ['가격'],
     });
 
-    expect(scores['가격'].pKnown).toBe(pKnown(seedThetaFromRank('ko', 2), 0));
-    expect(scores['가격'].pKnown).toBe(0.5);
+    expect(scores['가격'].pKnown).toBe(
+      pKnown(seedThetaFromRank('ko', 2), difficultyFromLevelRank('ko', 2))
+    );
+    expect(scores['가격'].pKnown).toBeCloseTo(0.5, 12);
   });
 
   it('orders a harder word below an easier one, and OOV lowest of all', async () => {
@@ -177,9 +185,10 @@ describe('scoreWordsForProfile', () => {
       stems: ['가격'],
     });
 
-    // Midpoint theta (0) vs. a rank-2 (difficulty 0) word → 0.5, and it's recorded.
+    // Midpoint theta (0) vs. a level-2 word (difficulty -1.8): scored with the
+    // neutral theta rather than skipped, and the theta is recorded.
     expect(scores['가격'].theta).toBe(0);
-    expect(scores['가격'].pKnown).toBe(0.5);
+    expect(scores['가격'].pKnown).toBe(pKnown(0, difficultyFromLevelRank('ko', 2)));
   });
 
   it('re-scoring overwrites the cached row in place (idempotent per stem)', async () => {

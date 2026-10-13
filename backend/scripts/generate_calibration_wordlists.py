@@ -52,8 +52,10 @@ def sample_band(rng: random.Random, words: list[str], count: int) -> list[str]:
 
 
 def korean_bands(conn: sqlite3.Connection, rng: random.Random) -> dict[str, list[str]]:
+    # level_rank is the 1..6 Noeul reading level (frontend PROFICIENCY_LEVEL_OPTIONS.ko),
+    # not the old 3 NIKL grades; the quiz must sample every level the model scores.
     bands: dict[str, list[str]] = {}
-    for rank in (1, 2, 3):
+    for rank in range(1, 7):
         rows = conn.execute(
             "SELECT term FROM korean_nikl_vocab WHERE level_rank = ?", (rank,)
         ).fetchall()
@@ -91,11 +93,13 @@ def english_bands(conn: sqlite3.Connection, rng: random.Random) -> dict[str, lis
 def generate() -> dict:
     conn = sqlite3.connect(DB_PATH)
     try:
-        rng = random.Random(SEED)
+        # One RNG per language, so changing one language's bands never reshuffles
+        # another language's pool.
+        rng_for = lambda language: random.Random(f"{SEED}-{language}")
         return {
-            "ko": {"system": "NIKL", "bands": korean_bands(conn, rng)},
-            "zh": {"system": "HSK", "bands": chinese_bands(conn, rng)},
-            "en": {"system": "CEFR", "bands": english_bands(conn, rng)},
+            "ko": {"system": "Noeul Reading Levels", "bands": korean_bands(conn, rng_for("ko"))},
+            "zh": {"system": "HSK", "bands": chinese_bands(conn, rng_for("zh"))},
+            "en": {"system": "CEFR", "bands": english_bands(conn, rng_for("en"))},
         }
     finally:
         conn.close()

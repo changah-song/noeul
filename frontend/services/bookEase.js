@@ -31,7 +31,7 @@ import { difficultyFromLevelRank, sigmoid } from './abilityModel';
 //     Each band uses the REAL word-level sigmoid, weighted by how many of the
 //     book's words sit in that band, so no anchor is needed and the result is
 //     continuous instead of collapsing to one number per band. This matters most
-//     for Korean, where 3 NIKL bands otherwise quantize every book to 3 values.
+//     with few levels (ko has 6), which otherwise quantize every book to 6 values.
 //   • `bookEaseFromWordScores` — the full per-token refinement over actual scored
 //     words (needs a book_index ⋈ word_scores join; not wired into the read path
 //     yet).

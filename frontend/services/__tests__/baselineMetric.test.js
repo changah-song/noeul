@@ -38,8 +38,8 @@ const ev = (overrides = {}) => ({
   outcome: 1,
   createdAt: '2026-01-01T00:00:00Z',
   clientEventId: 'c1',
-  levelRank: 2, // ko mid band → difficulty 0
-  selfReportRank: 2, // ko mid band → theta_0 = 0
+  levelRank: 2, // ko level 2 → difficulty -1.8
+  selfReportRank: 2, // ko level 2 → theta_0 = -1.8 (same point, so P = 0.5)
   ...overrides,
 });
 
@@ -168,8 +168,8 @@ describe('replayProfile — prequential replay', () => {
 
   it('starts from the neutral midpoint when there is no self-report', () => {
     const samples = replayProfile({ events: [ev({ selfReportRank: null })], language: 'ko', selfReportRank: null });
-    // Neutral theta 0, mid difficulty 0 → 0.5.
-    expect(samples[0].prediction).toBeCloseTo(0.5, 10);
+    // Neutral theta 0 (not a level seed) against the level-2 word.
+    expect(samples[0].prediction).toBeCloseTo(pKnown(0, difficultyFromLevelRank('ko', 2)), 10);
   });
 });
 

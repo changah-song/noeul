@@ -28,6 +28,7 @@ import {
   clearActivePknownModel,
   setActivePknownModel,
 } from '../pknownModel';
+import { difficultyFromLevelRank, pKnown, seedThetaFromRank } from '../abilityModel';
 
 const { __resetMockDatabases } = SQLite;
 const OWNER = 'user-serve';
@@ -68,8 +69,12 @@ describe('scoreWordsForProfile — full-model serving', () => {
       ownerId: OWNER, profileId: PROFILE, language: 'ko', stems: ['학교'],
     });
     expect(scores['학교'].source).toBe('baseline');
-    // baseline P = sigmoid(theta - difficulty); theta seed rank2 = 0, diff(rank1)=-3
-    expect(scores['학교'].pKnown).toBeGreaterThan(0.9);
+    // Baseline P = sigmoid(theta - difficulty): a level-2 reader on a level-1 word.
+    expect(scores['학교'].pKnown).toBeCloseTo(
+      pKnown(seedThetaFromRank('ko', 2), difficultyFromLevelRank('ko', 1)),
+      10
+    );
+    expect(scores['학교'].pKnown).toBeGreaterThan(0.5); // an easier word is more likely known
   });
 
   it('replaces the baseline score with the model score and caches it', async () => {
