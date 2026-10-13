@@ -1,0 +1,114 @@
+# Runs on every pull request into main and on every push to main.
+#
+# - frontend-tests: the Jest unit tests (frontend/services/__tests__).
+# - backend-tests: pytest for the backend's pure modules, plus a syntax check
+#   of every backend Python file.
+# - android-build: a full Android release build (native code + JS bundle),
+#   the closest thing to what users install. Android only: iOS is not a
+#   supported target right now.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A new push to the same PR cancels the run that is still going.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-tests:
+    name: Frontend unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Jest
+        run: npx jest --ci
+
+  backend-tests:
+    name: Backend unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements-ci.txt
+
+      # requirements-ci.txt is a small pinned subset; the full requirements
+      # pull in KoNLPy, spaCy and Java-backed taggers the tests don't need.
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-ci.txt
+
+      - name: Check every Python file compiles
+        run: python -m compileall -q main.py explain_graph.py ml scripts
+
+      - name: Run pytest
+        run: python -m pytest -q
+
+  android-build:
+    name: Android release build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install JS dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # Gradle 8.3 in this project needs JDK 17.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The project pins NDK 25.1.8937393 (android/build.gradle), which the
+      # runner image does not preinstall.
+      - name: Install the pinned Android NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;25.1.8937393" > /dev/null
+
+      # One CPU architecture (what real phones use) keeps the check fast; the
+      # release builds for distribution still produce all four.
+      - name: Build release APK
+        working-directory: frontend/android
+        run: ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a --no-daemon
