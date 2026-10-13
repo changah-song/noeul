@@ -1,10 +1,10 @@
 {
   "a-lucky-day": {
     "basis": "vocabulary",
-    "coverage": 0.2379,
+    "coverage": 0.2319,
     "distribution": [
       {
-        "count": 69,
+        "count": 65,
         "level": "Lower Elementary",
         "rank": 1
       },
@@ -14,22 +14,22 @@
         "rank": 2
       },
       {
-        "count": 73,
+        "count": 68,
         "level": "Lower Intermediate",
         "rank": 3
       },
       {
-        "count": 7,
+        "count": 6,
         "level": "Upper Intermediate",
         "rank": 4
       },
       {
-        "count": 64,
+        "count": 58,
         "level": "Lower Advanced",
         "rank": 5
       },
       {
-        "count": 20,
+        "count": 21,
         "level": "Upper Advanced",
         "rank": 6
       }
@@ -37,15 +37,15 @@
     "language": "ko",
     "level": "Lower Advanced",
     "level_rank": 5,
-    "matched_count": 245,
+    "matched_count": 230,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "Lower Advanced",
     "proficiency_rank": 5,
     "proficiency_system": "Noeul Reading Levels",
-    "sample_limit": 1030,
-    "sample_size": 1030,
-    "unknown_count": 785
+    "sample_limit": 992,
+    "sample_size": 992,
+    "unknown_count": 762
   },
   "ah-q-true-story": {
     "basis": "vocabulary",
@@ -102,10 +102,10 @@
   },
   "b-sagam-and-love-letter": {
     "basis": "vocabulary",
-    "coverage": 0.2647,
+    "coverage": 0.266,
     "distribution": [
       {
-        "count": 51,
+        "count": 50,
         "level": "Lower Elementary",
         "rank": 1
       },
@@ -115,7 +115,7 @@
         "rank": 2
       },
       {
-        "count": 57,
+        "count": 58,
         "level": "Lower Intermediate",
         "rank": 3
       },
@@ -125,7 +125,7 @@
         "rank": 4
       },
       {
-        "count": 48,
+        "count": 47,
         "level": "Lower Advanced",
         "rank": 5
       },
@@ -138,19 +138,19 @@
     "language": "ko",
     "level": "Lower Advanced",
     "level_rank": 5,
-    "matched_count": 180,
+    "matched_count": 179,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "Lower Advanced",
     "proficiency_rank": 5,
     "proficiency_system": "Noeul Reading Levels",
-    "sample_limit": 680,
-    "sample_size": 680,
-    "unknown_count": 500
+    "sample_limit": 673,
+    "sample_size": 673,
+    "unknown_count": 494
   },
   "butterflys-dream": {
     "basis": "vocabulary",
-    "coverage": 0.2006,
+    "coverage": 0.1923,
     "distribution": [
       {
         "count": 31,
@@ -163,7 +163,7 @@
         "rank": 2
       },
       {
-        "count": 18,
+        "count": 17,
         "level": "Lower Intermediate",
         "rank": 3
       },
@@ -173,32 +173,27 @@
         "rank": 4
       },
       {
-        "count": 12,
+        "count": 9,
         "level": "Lower Advanced",
         "rank": 5
-      },
-      {
-        "count": 1,
-        "level": "Upper Advanced",
-        "rank": 6
       }
     ],
     "language": "ko",
     "level": "Upper Intermediate",
     "level_rank": 4,
-    "matched_count": 70,
+    "matched_count": 65,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "Upper Intermediate",
     "proficiency_rank": 4,
     "proficiency_system": "Noeul Reading Levels",
-    "sample_limit": 349,
-    "sample_size": 349,
-    "unknown_count": 279
+    "sample_limit": 338,
+    "sample_size": 338,
+    "unknown_count": 273
   },
   "camellia-flower": {
     "basis": "vocabulary",
-    "coverage": 0.197,
+    "coverage": 0.1923,
     "distribution": [
       {
         "count": 35,
@@ -211,7 +206,7 @@
         "rank": 2
       },
       {
-        "count": 49,
+        "count": 47,
         "level": "Lower Intermediate",
         "rank": 3
       },
@@ -221,7 +216,7 @@
         "rank": 4
       },
       {
-        "count": 42,
+        "count": 39,
         "level": "Lower Advanced",
         "rank": 5
       },
@@ -234,15 +229,15 @@
     "language": "ko",
     "level": "Lower Advanced",
     "level_rank": 5,
-    "matched_count": 144,
+    "matched_count": 139,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "Lower Advanced",
     "proficiency_rank": 5,
     "proficiency_system": "Noeul Reading Levels",
-    "sample_limit": 731,
-    "sample_size": 731,
-    "unknown_count": 587
+    "sample_limit": 723,
+    "sample_size": 723,
+    "unknown_count": 584
   },
   "chen-lun-yu-dafu": {
     "basis": "vocabulary",
@@ -299,10 +294,10 @@
   },
   "chisuk": {
     "basis": "vocabulary",
-    "coverage": 0.3178,
+    "coverage": 0.3166,
     "distribution": [
       {
-        "count": 91,
+        "count": 89,
         "level": "Lower Elementary",
         "rank": 1
       },
@@ -312,7 +307,7 @@
         "rank": 2
       },
       {
-        "count": 114,
+        "count": 112,
         "level": "Lower Intermediate",
         "rank": 3
       },
@@ -322,12 +317,12 @@
         "rank": 4
       },
       {
-        "count": 100,
+        "count": 96,
         "level": "Lower Advanced",
         "rank": 5
       },
       {
-        "count": 27,
+        "count": 28,
         "level": "Upper Advanced",
         "rank": 6
       }
@@ -335,15 +330,15 @@
     "language": "ko",
     "level": "Lower Advanced",
     "level_rank": 5,
-    "matched_count": 348,
+    "matched_count": 341,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "Lower Advanced",
     "proficiency_rank": 5,
     "proficiency_system": "Noeul Reading Levels",
-    "sample_limit": 1095,
-    "sample_size": 1095,
-    "unknown_count": 747
+    "sample_limit": 1077,
+    "sample_size": 1077,
+    "unknown_count": 736
   },
   "city-and-ghost": {
     "basis": "vocabulary",
@@ -496,7 +491,7 @@
   },
   "gwangyeom-sonata": {
     "basis": "vocabulary",
-    "coverage": 0.3818,
+    "coverage": 0.3821,
     "distribution": [
       {
         "count": 119,
@@ -538,16 +533,16 @@
     "proficiency_level": "Lower Advanced",
     "proficiency_rank": 5,
     "proficiency_system": "Noeul Reading Levels",
-    "sample_limit": 1244,
-    "sample_size": 1244,
-    "unknown_count": 769
+    "sample_limit": 1243,
+    "sample_size": 1243,
+    "unknown_count": 768
   },
   "heosaengjeon": {
     "basis": "vocabulary",
-    "coverage": 0.3101,
+    "coverage": 0.3094,
     "distribution": [
       {
-        "count": 162,
+        "count": 161,
         "level": "Lower Elementary",
         "rank": 1
       },
@@ -557,7 +552,7 @@
         "rank": 2
       },
       {
-        "count": 254,
+        "count": 253,
         "level": "Lower Intermediate",
         "rank": 3
       },
@@ -567,7 +562,7 @@
         "rank": 4
       },
       {
-        "count": 321,
+        "count": 320,
         "level": "Lower Advanced",
         "rank": 5
       },
@@ -580,14 +575,14 @@
     "language": "ko",
     "level": "Lower Advanced",
     "level_rank": 5,
-    "matched_count": 912,
+    "matched_count": 909,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "Lower Advanced",
     "proficiency_rank": 5,
     "proficiency_system": "Noeul Reading Levels",
-    "sample_limit": 2941,
-    "sample_size": 2941,
+    "sample_limit": 2938,
+    "sample_size": 2938,
     "unknown_count": 2029
   },
   "kong-yiji-lu-xun": {
@@ -794,20 +789,20 @@
   },
   "mister-bang": {
     "basis": "vocabulary",
-    "coverage": 0.3016,
+    "coverage": 0.2992,
     "distribution": [
       {
-        "count": 101,
+        "count": 98,
         "level": "Lower Elementary",
         "rank": 1
       },
       {
-        "count": 16,
+        "count": 15,
         "level": "Upper Elementary",
         "rank": 2
       },
       {
-        "count": 96,
+        "count": 95,
         "level": "Lower Intermediate",
         "rank": 3
       },
@@ -817,7 +812,7 @@
         "rank": 4
       },
       {
-        "count": 123,
+        "count": 122,
         "level": "Lower Advanced",
         "rank": 5
       },
@@ -830,15 +825,15 @@
     "language": "ko",
     "level": "Lower Advanced",
     "level_rank": 5,
-    "matched_count": 377,
+    "matched_count": 371,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "Lower Advanced",
     "proficiency_rank": 5,
     "proficiency_system": "Noeul Reading Levels",
-    "sample_limit": 1250,
-    "sample_size": 1250,
-    "unknown_count": 873
+    "sample_limit": 1240,
+    "sample_size": 1240,
+    "unknown_count": 869
   },
   "na-han-lu-xun": {
     "basis": "vocabulary",
@@ -895,7 +890,7 @@
   },
   "potato": {
     "basis": "vocabulary",
-    "coverage": 0.3067,
+    "coverage": 0.3072,
     "distribution": [
       {
         "count": 60,
@@ -937,13 +932,13 @@
     "proficiency_level": "Lower Advanced",
     "proficiency_rank": 5,
     "proficiency_system": "Noeul Reading Levels",
-    "sample_limit": 626,
-    "sample_size": 626,
-    "unknown_count": 434
+    "sample_limit": 625,
+    "sample_size": 625,
+    "unknown_count": 433
   },
   "ready-made-life": {
     "basis": "vocabulary",
-    "coverage": 0.3344,
+    "coverage": 0.3346,
     "distribution": [
       {
         "count": 153,
@@ -985,9 +980,9 @@
     "proficiency_level": "Lower Advanced",
     "proficiency_rank": 5,
     "proficiency_system": "Noeul Reading Levels",
-    "sample_limit": 1872,
-    "sample_size": 1872,
-    "unknown_count": 1246
+    "sample_limit": 1871,
+    "sample_size": 1871,
+    "unknown_count": 1245
   },
   "snow-queen": {
     "basis": "vocabulary",
@@ -1039,7 +1034,7 @@
   },
   "spring-spring": {
     "basis": "vocabulary",
-    "coverage": 0.2036,
+    "coverage": 0.2008,
     "distribution": [
       {
         "count": 53,
@@ -1052,7 +1047,7 @@
         "rank": 2
       },
       {
-        "count": 76,
+        "count": 73,
         "level": "Lower Intermediate",
         "rank": 3
       },
@@ -1062,7 +1057,7 @@
         "rank": 4
       },
       {
-        "count": 70,
+        "count": 68,
         "level": "Lower Advanced",
         "rank": 5
       },
@@ -1075,15 +1070,15 @@
     "language": "ko",
     "level": "Lower Advanced",
     "level_rank": 5,
-    "matched_count": 215,
+    "matched_count": 210,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "Lower Advanced",
     "proficiency_rank": 5,
     "proficiency_system": "Noeul Reading Levels",
-    "sample_limit": 1056,
-    "sample_size": 1056,
-    "unknown_count": 841
+    "sample_limit": 1046,
+    "sample_size": 1046,
+    "unknown_count": 836
   },
   "taepyeongcheonha": {
     "basis": "vocabulary",
@@ -1135,10 +1130,10 @@
   },
   "tears-of-blood": {
     "basis": "vocabulary",
-    "coverage": 0.3294,
+    "coverage": 0.3277,
     "distribution": [
       {
-        "count": 173,
+        "count": 170,
         "level": "Lower Elementary",
         "rank": 1
       },
@@ -1148,22 +1143,22 @@
         "rank": 2
       },
       {
-        "count": 223,
+        "count": 219,
         "level": "Lower Intermediate",
         "rank": 3
       },
       {
-        "count": 43,
+        "count": 44,
         "level": "Upper Intermediate",
         "rank": 4
       },
       {
-        "count": 247,
+        "count": 238,
         "level": "Lower Advanced",
         "rank": 5
       },
       {
-        "count": 91,
+        "count": 88,
         "level": "Upper Advanced",
         "rank": 6
       }
@@ -1171,15 +1166,15 @@
     "language": "ko",
     "level": "Lower Advanced",
     "level_rank": 5,
-    "matched_count": 816,
+    "matched_count": 798,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "Lower Advanced",
     "proficiency_rank": 5,
     "proficiency_system": "Noeul Reading Levels",
-    "sample_limit": 2477,
-    "sample_size": 2477,
-    "unknown_count": 1661
+    "sample_limit": 2435,
+    "sample_size": 2435,
+    "unknown_count": 1637
   },
   "thumbelina": {
     "basis": "vocabulary",
@@ -1279,10 +1274,10 @@
   },
   "when-buckwheat-flowers-bloom": {
     "basis": "vocabulary",
-    "coverage": 0.2288,
+    "coverage": 0.2228,
     "distribution": [
       {
-        "count": 56,
+        "count": 54,
         "level": "Lower Elementary",
         "rank": 1
       },
@@ -1292,17 +1287,17 @@
         "rank": 2
       },
       {
-        "count": 63,
+        "count": 61,
         "level": "Lower Intermediate",
         "rank": 3
       },
       {
-        "count": 8,
+        "count": 7,
         "level": "Upper Intermediate",
         "rank": 4
       },
       {
-        "count": 69,
+        "count": 66,
         "level": "Lower Advanced",
         "rank": 5
       },
@@ -1315,19 +1310,19 @@
     "language": "ko",
     "level": "Lower Advanced",
     "level_rank": 5,
-    "matched_count": 213,
+    "matched_count": 205,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "Lower Advanced",
     "proficiency_rank": 5,
     "proficiency_system": "Noeul Reading Levels",
-    "sample_limit": 931,
-    "sample_size": 931,
-    "unknown_count": 718
+    "sample_limit": 920,
+    "sample_size": 920,
+    "unknown_count": 715
   },
   "wings": {
     "basis": "vocabulary",
-    "coverage": 0.3015,
+    "coverage": 0.3008,
     "distribution": [
       {
         "count": 122,
@@ -1340,22 +1335,22 @@
         "rank": 2
       },
       {
-        "count": 167,
+        "count": 168,
         "level": "Lower Intermediate",
         "rank": 3
       },
       {
-        "count": 13,
+        "count": 12,
         "level": "Upper Intermediate",
         "rank": 4
       },
       {
-        "count": 135,
+        "count": 134,
         "level": "Lower Advanced",
         "rank": 5
       },
       {
-        "count": 20,
+        "count": 19,
         "level": "Upper Advanced",
         "rank": 6
       }
@@ -1363,14 +1358,14 @@
     "language": "ko",
     "level": "Lower Advanced",
     "level_rank": 5,
-    "matched_count": 476,
+    "matched_count": 474,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "Lower Advanced",
     "proficiency_rank": 5,
     "proficiency_system": "Noeul Reading Levels",
-    "sample_limit": 1579,
-    "sample_size": 1579,
-    "unknown_count": 1103
+    "sample_limit": 1576,
+    "sample_size": 1576,
+    "unknown_count": 1102
   }
 }
