@@ -161,6 +161,11 @@ are more freezes, CI fails, or a screenshot shows a visible regression.
   "Save", "Review N due", "Show answer", "Okay", "New song", "Song title",
   "Enter lyrics", "Save", "Back to songs", and "Turn on/off screen text scanner".
   If a PR renames one, update `smoke.py` in the same PR.
+- The phone's system language and keyboard are Korean. smoke.py recognizes
+  Android's dialogs in English and Korean (screen-share prompt, permission
+  prompt, 16 KB notice). It types digits only, because `adb input text` goes
+  through the keyboard, and a keyboard in Korean mode turns Latin letters into
+  jamo.
 - The reader's and song lyrics' text isn't visible to the screen reader. The
   flashcard step taps spots in the text area until a word with a dictionary
   entry opens. The OCR bubble is found through `dumpsys window`, and its result

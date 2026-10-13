@@ -51,10 +51,11 @@ APP_CRASH_RE = re.compile(r"AndroidRuntime.*Process: " + re.escape(PACKAGE) + r"
 ANR_RE = re.compile(r"ANR in " + re.escape(PACKAGE))
 
 # System dialogs that can block the UI during a run, and what to tap.
+# The phone's system language may be Korean, so each has both wordings.
 DISMISS = [
-    (re.compile(r"^Don.t show again$", re.I), "16 KB page-size compatibility notice"),
-    (re.compile(r"^Don.t allow$", re.I), "permission prompt"),
-    (re.compile(r"^Close app$", re.I), "crash dialog"),
+    (re.compile(r"^(Don.t show again|다시 표시 안함)$", re.I), "16 KB page-size compatibility notice"),
+    (re.compile(r"^(Don.t allow|허용 안함|허용 안 함)$", re.I), "permission prompt"),
+    (re.compile(r"^(Close app|앱 닫기)$", re.I), "crash dialog"),
 ]
 NOT_RESPONDING_RE = re.compile(r"isn.t responding", re.I)
 
@@ -349,6 +350,10 @@ def run(args: argparse.Namespace) -> None:
             time.sleep(1)
             dev.tap_text(re.compile(r"^Home$", re.I))
         time.sleep(2)
+        # Back to the top, where the header (and the scanner switch) lives.
+        for _ in range(3):
+            dev.shell("input swipe 540 900 540 1900 250")
+            time.sleep(0.5)
 
     counter_re = re.compile(r"^SENTENCES? (\d+)(?:[–-]\d+)? / (\d+)$", re.I)
 
@@ -384,7 +389,19 @@ def run(args: argparse.Namespace) -> None:
             raise RuntimeError(f"sentence counter did not advance ({before} -> {after}) using {how}")
         return f"sentence {before[0]} -> {after[0]} of {after[1]} via {how}"
 
-    song_title = "Smoke test song"
+    # Digits only: `adb input text` goes through the phone's keyboard, and a
+    # keyboard in Korean mode turns Latin letters into jamo. Digits type the
+    # same in every layout.
+    song_title = "1013 2026"
+
+    def scroll_to(pattern, swipes=4):
+        """Home's "Continue reading" card pushes the list below the fold."""
+        for _ in range(swipes + 1):
+            if dev.wait_for(pattern, timeout_s=2):
+                return True
+            dev.shell("input swipe 540 1900 540 1000 300")
+            time.sleep(1)
+        return False
 
     def song_add():
         go_home()
@@ -403,18 +420,19 @@ def run(args: argparse.Namespace) -> None:
         if not lyrics:
             raise RuntimeError("lyrics field not found")
         dev.tap(*lyrics["center"])
-        dev.type_text("The sunset paints the river gold")
+        dev.type_text("10 13 2026")
         dev.shell("input keyevent KEYCODE_ENTER")
-        dev.type_text("and the night comes slowly home")
+        dev.type_text("1 2 3 4 5")
         time.sleep(1)
         if not dev.tap_text(re.compile(r"^Save$", re.I)):
             raise RuntimeError("'Save' button not found in the song editor")
         time.sleep(2)
-        if not dev.wait_for(re.compile(rf"^{song_title}$"), timeout_s=8):
+        if not scroll_to(re.compile(rf"^{song_title}$")):
             raise RuntimeError("the new song did not appear in the list")
         return "added a song with two lines of lyrics"
 
     def song_open():
+        scroll_to(re.compile(rf"^{song_title}$"))
         if not dev.tap_text(re.compile(rf"^{song_title}$")):
             raise RuntimeError("song not found in the list")
         time.sleep(3)
@@ -486,9 +504,13 @@ def run(args: argparse.Namespace) -> None:
 
     ocr_on = re.compile(r"^Turn on screen text scanner$")
     ocr_off = re.compile(r"^Turn off screen text scanner$")
-    # Android's screen-capture consent dialog, worded differently across versions.
-    capture_choice = re.compile(r"^(Entire screen|Share entire screen|Full screen)$", re.I)
-    capture_confirm = re.compile(r"^(Start now|Start|Next|Share screen|Allow)$", re.I)
+    # Android's screen-capture consent dialog, worded differently across
+    # versions and languages. It may default to sharing a single app; open
+    # that dropdown and pick the entire screen, then confirm.
+    capture_single_app = re.compile(r"^(A single app|Share one app|앱 하나 공유)$", re.I)
+    capture_choice = re.compile(r"^(Entire screen|Share entire screen|Full screen|전체 화면 공유|전체 화면)$", re.I)
+    capture_confirm = re.compile(r"^(Start now|Start|Next|Share screen|Allow|지금 시작|시작|다음|화면 공유|허용)$", re.I)
+    capture_cancel = re.compile(r"^(Cancel|취소)$", re.I)
 
     def ocr_bubble():
         """Center of the floating scanner bubble. It's an overlay window the
@@ -513,15 +535,25 @@ def run(args: argparse.Namespace) -> None:
         if not dev.tap_text(ocr_on):
             raise RuntimeError("scanner switch not found on Home")
         deadline = time.time() + 20
+        chose_entire_screen = False
         while time.time() < deadline:
             nodes = dev.ui_nodes()
             if dev.find(ocr_off, nodes):
                 break
-            choice = dev.find(capture_choice, nodes)
-            if choice:
-                dev.tap(*choice["center"])
-                time.sleep(1)
-                continue
+            # Once "entire screen" is picked, the dropdown shows that same
+            # text; tapping it again would just reopen the dropdown.
+            if not chose_entire_screen:
+                choice = dev.find(capture_choice, nodes)
+                if choice:
+                    dev.tap(*choice["center"])
+                    chose_entire_screen = True
+                    time.sleep(1)
+                    continue
+                single = dev.find(capture_single_app, nodes)
+                if single:
+                    dev.tap(*single["center"])  # opens the share-mode dropdown
+                    time.sleep(1)
+                    continue
             confirm = dev.find(capture_confirm, nodes)
             if confirm:
                 dev.tap(*confirm["center"])
@@ -553,6 +585,11 @@ def run(args: argparse.Namespace) -> None:
                 raise RuntimeError("scan ran but found no words on a page of Korean text")
             return f"scanned the reader page and found {words} words"
         finally:
+            # Never leave the screen-share prompt up; it covers later steps.
+            leftover = dev.find(capture_cancel)
+            if leftover:
+                dev.tap(*leftover["center"])
+                time.sleep(1)
             # Always turn the scanner off again.
             dev.shell("input keyevent KEYCODE_BACK")
             time.sleep(1)
