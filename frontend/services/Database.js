@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { normalizeBookLanguage, normalizeInterfaceLanguageCode } from '../constants/languages';
 import { initializeHanjaDatabase } from './hanjaDatabase';
 import { GUEST_OWNER_ID } from './localDataScope';
+import { getActiveOwnerId } from './localOwnerCoordinator';
 import {
   DEFAULT_ACTIVE_PROFILE_ID,
   getDefaultProfileIdForLanguage,
@@ -48,6 +49,7 @@ const DICTIONARY_CACHE_DIFFICULTY_MIGRATION_KEY = 'dictionary_cache_difficulty_m
 const DICTIONARY_CACHE_ZH_SCRIPTS_MIGRATION_KEY = 'dictionary_cache_zh_scripts_migration_v1';
 const LOCAL_OWNER_SQLITE_MIGRATION_KEY = 'local_owner_sqlite_migration_v1';
 const PROFILE_SQLITE_MIGRATION_KEY = 'profile_sqlite_migration_v1';
+const VOCAB_EMPTY_HANJA_MIGRATION_KEY = 'vocab_empty_hanja_migration_v1';
 export const PREPROCESS_VERSION = 4;
 const SQLITE_BIND_BATCH_SIZE = 450;
 const DEFAULT_STABILITY = 1.0;
@@ -68,6 +70,18 @@ const normalizeIdentityText = (value) => {
 const makeVocabDefinitionKey = (value) => {
   const normalized = normalizeIdentityText(value).toLowerCase();
   return normalized || null;
+};
+
+// "No hanja" is stored as NULL. Callers pass '' for it (`candidate.hanja || ''`)
+// while the cloud round-trips it as null; storing both made the same word two
+// rows. Lookups also compare with COALESCE(hanja, '') so legacy '' rows match.
+const normalizeHanjaForStorage = (value) => {
+  if (value == null) {
+    return null;
+  }
+
+  const text = String(value);
+  return text.trim() ? text : null;
 };
 
 const resolveOwnerId = (value) => {
@@ -257,6 +271,7 @@ export const createTable = () => {
           def_key TEXT,
           level TEXT,
           related_known_words TEXT DEFAULT '[]',
+          related_known_words_deleted TEXT DEFAULT '[]',
           stability REAL DEFAULT 1.0,
           difficulty REAL DEFAULT 5.0,
           p_known REAL,
@@ -2019,6 +2034,13 @@ export const migrateVocabTable = async () => {
     alterations.push(`ALTER TABLE vocab ADD COLUMN related_known_words TEXT DEFAULT '[]'`);
   }
 
+  // Tombstones for un-marked related known words ([{ korean, hanja, deletedAt }]).
+  // Kept apart from related_known_words so screens that parse that column keep
+  // seeing live entries only; sync reads both so an un-mark isn't resurrected.
+  if (!columns.includes('related_known_words_deleted')) {
+    alterations.push(`ALTER TABLE vocab ADD COLUMN related_known_words_deleted TEXT DEFAULT '[]'`);
+  }
+
   if (!columns.includes('is_favorite')) {
     alterations.push('ALTER TABLE vocab ADD COLUMN is_favorite INTEGER DEFAULT 0');
   }
@@ -2176,7 +2198,80 @@ const latestTimestamp = (values) => {
   return sorted[0] ?? null;
 };
 
-const dedupeVocabDefinitionKeyRows = async () => {
+const relatedEntryUpdatedAt = (entry) => (
+  timestampValue(entry?.updatedAt ?? entry?.markedAt)
+);
+
+// Union the live related-known-word lists and their tombstones across rows that
+// are being merged into one. The newest of a live entry and its tombstone wins.
+const mergeRelatedKnownWordLists = (rows) => {
+  const live = new Map();
+  const tombstones = new Map();
+
+  rows.forEach((row) => {
+    parseRelatedKnownWords(row.related_known_words).forEach((entry) => {
+      const key = relatedKnownWordKey(entry);
+      const existing = live.get(key);
+      if (!existing || relatedEntryUpdatedAt(entry) > relatedEntryUpdatedAt(existing)) {
+        live.set(key, entry);
+      }
+    });
+    parseRelatedKnownWords(row.related_known_words_deleted).forEach((entry) => {
+      const key = relatedKnownWordKey(entry);
+      const existing = tombstones.get(key);
+      if (!existing || timestampValue(entry.deletedAt) > timestampValue(existing.deletedAt)) {
+        tombstones.set(key, entry);
+      }
+    });
+  });
+
+  tombstones.forEach((tombstone, key) => {
+    const entry = live.get(key);
+    if (!entry) {
+      return;
+    }
+
+    if (timestampValue(tombstone.deletedAt) >= relatedEntryUpdatedAt(entry)) {
+      live.delete(key);
+    } else {
+      tombstones.delete(key);
+    }
+  });
+
+  return { live: [...live.values()], tombstones: [...tombstones.values()] };
+};
+
+/**
+ * One-off: rows saved with hanja '' (the "no hanja" value the reader / learn
+ * screens pass) never matched their cloud copy (hanja null), so a sync pull
+ * inserted a second row. Normalize '' to NULL; dedupeVocabDefinitionKeyRows,
+ * which runs right after this in initAllTables and already keys ''/NULL hanja
+ * the same, then merges the duplicates.
+ */
+export const migrateVocabEmptyHanja = async () => {
+  const migrationState = await AsyncStorage.getItem(VOCAB_EMPTY_HANJA_MIGRATION_KEY);
+  if (migrationState === 'done') {
+    return;
+  }
+
+  await new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        tx.executeSql(`UPDATE vocab SET hanja = NULL WHERE hanja IS NOT NULL AND TRIM(hanja) = ''`);
+        tx.executeSql(`UPDATE vocab_contexts SET hanja = NULL WHERE hanja IS NOT NULL AND TRIM(hanja) = ''`);
+      },
+      (error) => {
+        console.error('[Database] Error normalizing empty vocab hanja:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+
+  await AsyncStorage.setItem(VOCAB_EMPTY_HANJA_MIGRATION_KEY, 'done');
+};
+
+export const dedupeVocabDefinitionKeyRows = async () => {
   await new Promise((resolve, reject) => {
     db.transaction(
       tx => {
@@ -2214,6 +2309,7 @@ const dedupeVocabDefinitionKeyRows = async () => {
               const duplicates = sorted.slice(1);
               const correctCount = rows.reduce((sum, row) => sum + (Number(row.correct_count) || 0), 0);
               const wrongCount = rows.reduce((sum, row) => sum + (Number(row.wrong_count) || 0), 0);
+              const { live: mergedRelated, tombstones: mergedTombstones } = mergeRelatedKnownWordLists(sorted);
 
               tx.executeSql(
                 `UPDATE vocab
@@ -2221,6 +2317,9 @@ const dedupeVocabDefinitionKeyRows = async () => {
                      wrong_count = ?,
                      created_at = COALESCE(?, created_at),
                      last_reviewed_at = COALESCE(?, last_reviewed_at),
+                     is_favorite = ?,
+                     related_known_words = ?,
+                     related_known_words_deleted = ?,
                      updated_at = ?
                  WHERE id = ?`,
                 [
@@ -2228,6 +2327,9 @@ const dedupeVocabDefinitionKeyRows = async () => {
                   Math.max(Number(keeper.wrong_count) || 0, wrongCount),
                   earliestTimestamp(rows.map((row) => row.created_at)),
                   latestTimestamp(rows.map((row) => row.last_reviewed_at)),
+                  rows.some((row) => Number(row.is_favorite) === 1) ? 1 : 0,
+                  JSON.stringify(mergedRelated),
+                  JSON.stringify(mergedTombstones),
                   deletedAt,
                   keeper.id,
                 ]
@@ -2237,6 +2339,12 @@ const dedupeVocabDefinitionKeyRows = async () => {
                 tx.executeSql(
                   'UPDATE vocab SET deleted_at = ?, updated_at = ? WHERE id = ?',
                   [deletedAt, deletedAt, row.id]
+                );
+                // Keep the merged-away row's example sentences attached to the
+                // surviving card (getVocabContexts reads by vocab_id).
+                tx.executeSql(
+                  'UPDATE vocab_contexts SET vocab_id = ? WHERE vocab_id = ?',
+                  [keeper.id, row.id]
                 );
               });
             });
@@ -3401,9 +3509,23 @@ export const migrateProfileSqlite = async () => {
   await AsyncStorage.setItem(PROFILE_SQLITE_MIGRATION_KEY, 'done');
 };
 
-export const replaceDefaultProfileId = (profileId, language = 'ko') => {
+/**
+ * Move one owner's rows for one language from that language's placeholder
+ * profile id (e.g. 'ko_default') to the real (cloud) profile id. Scoped by owner
+ * and language so it never relabels another account's or another language's
+ * rows. `ownerId` defaults to the active local owner.
+ */
+export const replaceDefaultProfileId = (profileId, language = 'ko', options = {}) => {
   const nextProfileId = typeof profileId === 'string' ? profileId.trim() : '';
-  const defaultProfileId = getDefaultProfileIdForLanguage(language);
+  const normalizedLanguage = typeof language === 'string' && language.trim() ? language.trim() : 'ko';
+  const defaultProfileId = getDefaultProfileIdForLanguage(normalizedLanguage);
+  const ownerId = resolveOwnerId(options.ownerId ?? getActiveOwnerId());
+  // Rows from before profiles existed have no profile id; they predate
+  // multi-language support, so they belong to the default (Korean) profile only.
+  const includeUnscopedRows = defaultProfileId === DEFAULT_ACTIVE_PROFILE_ID;
+  const profileClause = includeUnscopedRows
+    ? "(profile_id = ? OR profile_id IS NULL OR TRIM(profile_id) = '')"
+    : 'profile_id = ?';
 
   return new Promise((resolve, reject) => {
     if (!nextProfileId || nextProfileId === defaultProfileId) {
@@ -3414,11 +3536,18 @@ export const replaceDefaultProfileId = (profileId, language = 'ko') => {
     db.transaction(
       tx => {
         SQLITE_OWNER_SCOPED_TABLES.forEach((tableName) => {
+          const hasLanguage = SQLITE_TABLES_WITH_LANGUAGE.has(tableName);
+          // OR IGNORE: tables with a unique (owner, profile, ...) key may already
+          // hold a row for the real profile; keep that one rather than failing.
           tx.executeSql(
-            `UPDATE ${tableName}
+            `UPDATE OR IGNORE ${tableName}
              SET profile_id = ?
-             WHERE profile_id = ? OR profile_id IS NULL OR TRIM(profile_id) = ''`,
-            [nextProfileId, defaultProfileId]
+             WHERE owner_id = ?
+               ${hasLanguage ? 'AND language = ?' : ''}
+               AND ${profileClause}`,
+            hasLanguage
+              ? [nextProfileId, ownerId, normalizedLanguage, defaultProfileId]
+              : [nextProfileId, ownerId, defaultProfileId]
           );
         });
       },
@@ -3431,11 +3560,28 @@ export const replaceDefaultProfileId = (profileId, language = 'ko') => {
   });
 };
 
-const SQLITE_USER_DATA_TABLES = [
+// Tables whose rows mean "this owner has saved something". hasSqliteUserData
+// checks only these: the learning-signal tables below fill in automatically
+// (ability seeds, word scores, lookups), so counting them would make every
+// signed-in account look non-empty and block a guest import.
+const SQLITE_PRIMARY_USER_DATA_TABLES = [
   'vocab',
   'vocab_contexts',
   'book_notes',
   'book_bookmarks',
+];
+
+// Per-owner learning signal that must move with the owner on guest import and
+// be removed on discard, but doesn't count as "has data" on its own.
+const SQLITE_LEARNING_SIGNAL_TABLES = [
+  'interaction_events',
+  'profile_ability',
+  'word_scores',
+];
+
+const SQLITE_USER_DATA_TABLES = [
+  ...SQLITE_PRIMARY_USER_DATA_TABLES,
+  ...SQLITE_LEARNING_SIGNAL_TABLES,
 ];
 
 const SQLITE_OWNER_CACHE_TABLES = [
@@ -3448,6 +3594,16 @@ const SQLITE_OWNER_SCOPED_TABLES = [
   ...SQLITE_USER_DATA_TABLES,
   ...SQLITE_OWNER_CACHE_TABLES,
 ];
+
+const SQLITE_TABLES_WITH_LANGUAGE = new Set([
+  'vocab',
+  'vocab_contexts',
+  'book_notes',
+  'book_bookmarks',
+  'interaction_events',
+  'profile_ability',
+  'word_scores',
+]);
 
 const sqliteTableHasData = (tableName, whereClause, params = [], logLabel = 'owner data') => (
   new Promise((resolve, reject) => {
@@ -3474,7 +3630,7 @@ const sqliteTableHasData = (tableName, whereClause, params = [], logLabel = 'own
 export const hasSqliteUserData = async (ownerId = GUEST_OWNER_ID) => {
   const scopedOwnerId = resolveOwnerId(ownerId);
   const results = await Promise.all(
-    SQLITE_USER_DATA_TABLES.map((tableName) => (
+    SQLITE_PRIMARY_USER_DATA_TABLES.map((tableName) => (
       sqliteTableHasData(tableName, 'owner_id = ?', [scopedOwnerId], 'owner data')
     ))
   );
@@ -3503,7 +3659,7 @@ export const clearSqliteUserData = async (ownerId = GUEST_OWNER_ID) => {
 
 export const hasUnscopedSqliteUserData = async () => {
   const results = await Promise.all(
-    SQLITE_USER_DATA_TABLES.map((tableName) => (
+    SQLITE_PRIMARY_USER_DATA_TABLES.map((tableName) => (
       sqliteTableHasData(
         tableName,
         "owner_id IS NULL OR TRIM(owner_id) = ''",
@@ -3573,12 +3729,79 @@ export const reassignSqliteUserData = async (fromOwnerId, toOwnerId) => {
   return new Promise((resolve, reject) => {
     db.transaction(
       tx => {
-        SQLITE_USER_DATA_TABLES.forEach((tableName) => {
+        SQLITE_PRIMARY_USER_DATA_TABLES.forEach((tableName) => {
           tx.executeSql(
             `UPDATE ${tableName} SET owner_id = ? WHERE owner_id = ?`,
             [targetOwnerId, sourceOwnerId]
           );
         });
+
+        // Events are append-only with a globally unique client_event_id; clear
+        // synced_at so they are pushed to the new owner's account.
+        tx.executeSql(
+          'UPDATE interaction_events SET owner_id = ?, synced_at = NULL WHERE owner_id = ?',
+          [targetOwnerId, sourceOwnerId]
+        );
+
+        // word_scores is a recomputable cache keyed (owner, profile, language,
+        // stem): move what doesn't collide, drop the source's colliding rows.
+        tx.executeSql(
+          'UPDATE OR IGNORE word_scores SET owner_id = ? WHERE owner_id = ?',
+          [targetOwnerId, sourceOwnerId]
+        );
+        tx.executeSql('DELETE FROM word_scores WHERE owner_id = ?', [sourceOwnerId]);
+
+        // profile_ability is unique per (owner, profile, language). The target
+        // may already have a seeded row; keep whichever estimate has seen more
+        // events (newer on a tie) instead of hitting a duplicate-key failure.
+        tx.executeSql(
+          'SELECT * FROM profile_ability WHERE owner_id IN (?, ?)',
+          [sourceOwnerId, targetOwnerId],
+          (_, result) => {
+            const rows = result.rows._array ?? [];
+            const scopeKey = (row) => `${row.profile_id ?? ''}::${row.language ?? ''}`;
+            const targetByScope = new Map(
+              rows.filter((row) => row.owner_id === targetOwnerId).map((row) => [scopeKey(row), row])
+            );
+
+            rows.filter((row) => row.owner_id === sourceOwnerId).forEach((sourceRow) => {
+              const targetRow = targetByScope.get(scopeKey(sourceRow));
+              if (!targetRow) {
+                tx.executeSql(
+                  'UPDATE profile_ability SET owner_id = ?, synced_at = NULL WHERE id = ?',
+                  [targetOwnerId, sourceRow.id]
+                );
+                return;
+              }
+
+              const sourceEvents = Number(sourceRow.event_count) || 0;
+              const targetEvents = Number(targetRow.event_count) || 0;
+              const sourceWins = sourceEvents > targetEvents || (
+                sourceEvents === targetEvents
+                && timestampValue(sourceRow.updated_at) > timestampValue(targetRow.updated_at)
+              );
+
+              if (sourceWins) {
+                tx.executeSql(
+                  `UPDATE profile_ability
+                   SET theta = ?, self_report_rank = ?, event_count = ?, seeded_at = ?,
+                       updated_at = ?, synced_at = NULL
+                   WHERE id = ?`,
+                  [
+                    sourceRow.theta,
+                    sourceRow.self_report_rank,
+                    sourceRow.event_count,
+                    sourceRow.seeded_at,
+                    sourceRow.updated_at ?? nowIso(),
+                    targetRow.id,
+                  ]
+                );
+              }
+
+              tx.executeSql('DELETE FROM profile_ability WHERE id = ?', [sourceRow.id]);
+            });
+          }
+        );
       },
       (error) => {
         console.error(`[Database] Error reassigning SQLite data from "${sourceOwnerId}" to "${targetOwnerId}":`, error);
@@ -4160,6 +4383,7 @@ export const initAllTables = async () => {
   await createWordScoresTable();
   await migrateWordScoresTable();
   await backfillVocabDefinitionKeys();
+  await migrateVocabEmptyHanja();
   await dedupeVocabDefinitionKeyRows();
   await createDictionaryCacheTable();
   await migrateDictionaryCache();
@@ -4245,7 +4469,7 @@ export const insertData = (word, hanja, definition, levelOrOptions) => {
           scopedOwnerId,
           scopedProfileId,
           word,
-          hanja,
+          normalizeHanjaForStorage(hanja),
           definition,
           definitionKey,
           level,
@@ -4286,7 +4510,7 @@ export const vocabEntryExists = (word, hanja, definition, language = 'ko', optio
       tx.executeSql(
         `SELECT COUNT(*) AS count
          FROM vocab
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND COALESCE(hanja, '') = COALESCE(?, '') AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
         [ownerId, profileId, word, hanja ?? null, definitionKey, language],
         (_, result) => {
           const { count } = result.rows.item(0);
@@ -4319,7 +4543,7 @@ export const insertDataIfMissing = async (word, hanja, definition, levelOrOption
 export const upsertVocabEntryFromCloud = (entry, options = {}) => {
   const now = new Date().toISOString();
   const word = entry.word;
-  const hanja = entry.hanja ?? null;
+  const hanja = normalizeHanjaForStorage(entry.hanja);
   const definition = entry.definition ?? entry.def ?? null;
   const definitionKey = makeVocabDefinitionKey(definition);
   const level = entry.status ?? entry.level ?? 'unorganized';
@@ -4330,6 +4554,13 @@ export const upsertVocabEntryFromCloud = (entry, options = {}) => {
   const difficulty = normalizeFsrsValue(entry.difficulty, DEFAULT_DIFFICULTY, 1, 10);
   const ownerId = resolveOwnerId(options.ownerId ?? entry.owner_id ?? entry.ownerId);
   const profileId = resolveProfileId(options.profileId ?? entry.profile_id ?? entry.profileId ?? options, language);
+  // Cloud vocab rows don't carry related_known_words (those sync through their
+  // own table). Bind null when the field is absent so the UPDATE keeps the local
+  // list instead of wiping it to '[]'.
+  const rawRelatedKnownWords = entry.related_known_words ?? entry.relatedKnownWords;
+  const relatedKnownWordsJson = rawRelatedKnownWords == null
+    ? null
+    : (Array.isArray(rawRelatedKnownWords) ? JSON.stringify(rawRelatedKnownWords) : String(rawRelatedKnownWords));
 
   return new Promise((resolve, reject) => {
     if (!word) {
@@ -4341,8 +4572,8 @@ export const upsertVocabEntryFromCloud = (entry, options = {}) => {
       tx.executeSql(
         `SELECT id
          FROM vocab
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ?
-         ORDER BY id ASC
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND COALESCE(hanja, '') = COALESCE(?, '') AND def_key IS ? AND language = ?
+         ORDER BY CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END, id ASC
          LIMIT 1`,
         [ownerId, profileId, word, hanja, definitionKey, language],
         (_, result) => {
@@ -4365,9 +4596,7 @@ export const upsertVocabEntryFromCloud = (entry, options = {}) => {
             Number(entry.wrong_count ?? entry.wrongCount ?? 0) || 0,
             stability,
             difficulty,
-            Array.isArray(entry.related_known_words ?? entry.relatedKnownWords)
-              ? JSON.stringify(entry.related_known_words ?? entry.relatedKnownWords)
-              : (entry.related_known_words ?? entry.relatedKnownWords ?? '[]'),
+            relatedKnownWordsJson ?? '[]',
             updatedAt,
             entry.deleted_at ?? entry.deletedAt ?? null,
             language,
@@ -4412,7 +4641,7 @@ export const upsertVocabEntryFromCloud = (entry, options = {}) => {
                  wrong_count = ?,
                  stability = ?,
                  difficulty = ?,
-                 related_known_words = ?,
+                 related_known_words = COALESCE(?, related_known_words),
                  updated_at = ?,
                  deleted_at = ?,
                  language = ?
@@ -4436,9 +4665,7 @@ export const upsertVocabEntryFromCloud = (entry, options = {}) => {
               Number(entry.wrong_count ?? entry.wrongCount ?? 0) || 0,
               stability,
               difficulty,
-              Array.isArray(entry.related_known_words ?? entry.relatedKnownWords)
-                ? JSON.stringify(entry.related_known_words ?? entry.relatedKnownWords)
-                : (entry.related_known_words ?? entry.relatedKnownWords ?? '[]'),
+              relatedKnownWordsJson,
               updatedAt,
               entry.deleted_at ?? entry.deletedAt ?? null,
               language,
@@ -4516,7 +4743,7 @@ const upsertContextForVocabRow = (tx, row, {
     profileId: scopedProfileId,
     vocab_id: row.id,
     word: row.word,
-    hanja: row.hanja ?? null,
+    hanja: normalizeHanjaForStorage(row.hanja),
     def: row.def ?? null,
     definition: row.def ?? null,
     def_key: definitionKey,
@@ -4536,7 +4763,7 @@ const upsertContextForVocabRow = (tx, row, {
        AND profile_id = ?
        AND language = ?
        AND word = ?
-       AND hanja IS ?
+       AND COALESCE(hanja, '') = COALESCE(?, '')
        AND def_key IS ?
        AND sentence = ?
        AND COALESCE(source_book_uri, '') = COALESCE(?, '')
@@ -4548,7 +4775,7 @@ const upsertContextForVocabRow = (tx, row, {
       scopedProfileId,
       normalizedLanguage,
       row.word,
-      row.hanja ?? null,
+      normalizeHanjaForStorage(row.hanja),
       definitionKey,
       cleanedSentence,
       normalizedSourceUri,
@@ -4588,7 +4815,7 @@ const upsertContextForVocabRow = (tx, row, {
           scopedProfileId,
           row.id,
           row.word,
-          row.hanja ?? null,
+          normalizeHanjaForStorage(row.hanja),
           row.def ?? null,
           definitionKey,
           normalizedSourceUri,
@@ -4644,7 +4871,7 @@ export const recordVocabContext = ({
       tx.executeSql(
         `SELECT id, owner_id, profile_id, word, hanja, def, def_key, level, language
          FROM vocab
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND COALESCE(hanja, '') = COALESCE(?, '') AND def_key IS ? AND language = ? AND deleted_at IS NULL
          ORDER BY id ASC
          LIMIT 1`,
         [scopedOwnerId, scopedProfileId, cleanedWord, hanja ?? null, definitionKey, language],
@@ -4787,7 +5014,7 @@ export const getVocabContexts = (word, hanja, definition, limit = 12, language =
       tx.executeSql(
         `SELECT id
          FROM vocab
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND COALESCE(hanja, '') = COALESCE(?, '') AND def_key IS ? AND language = ? AND deleted_at IS NULL
          ORDER BY id ASC
          LIMIT 1`,
         [ownerId, profileId, cleanedWord, hanja ?? null, definitionKey, language],
@@ -4847,6 +5074,11 @@ export const getAllVocabContexts = (options = {}) => {
         whereClauses.push('deleted_at IS NULL');
       }
 
+      if (options.language != null) {
+        whereClauses.push('language = ?');
+        params.push(options.language);
+      }
+
       if (updatedAfter) {
         whereClauses.push('updated_at IS NOT NULL AND julianday(updated_at) > julianday(?)');
         params.push(updatedAfter);
@@ -4892,7 +5124,7 @@ export const insertVocabContextIfMissing = (context, options = {}) => {
       tx.executeSql(
         `SELECT id, owner_id, profile_id, word, hanja, def, def_key, level, language
          FROM vocab
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND COALESCE(hanja, '') = COALESCE(?, '') AND def_key IS ? AND language = ? AND deleted_at IS NULL
          ORDER BY id ASC
          LIMIT 1`,
         [ownerId, profileId, cleanedWord, hanja, definitionKey, language],
@@ -4934,13 +5166,74 @@ export const softDeleteVocabContextsForWord = (word, hanja, definition, language
       tx.executeSql(
         `UPDATE vocab_contexts
          SET deleted_at = ?, updated_at = ?
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND COALESCE(hanja, '') = COALESCE(?, '') AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
         [deletedAt, deletedAt, ownerId, profileId, word, hanja ?? null, definitionKey, language],
         (_, result) => resolve(result.rowsAffected ?? 0),
         (_, error) => {
           console.error(`[Database] Error soft-deleting vocab contexts for "${word}":`, error);
           reject(error);
           return false;
+        }
+      );
+    });
+  });
+};
+
+/**
+ * Soft-delete the one example sentence that matches `context` exactly (word,
+ * hanja, definition, sentence and source book). Used to apply a single cloud
+ * context tombstone; never touches the word's other sentences. Resolves with the
+ * number of rows deleted (0 when nothing matches).
+ */
+export const softDeleteVocabContext = (context, options = {}) => {
+  const word = cleanValue(context?.word);
+  const language = context?.language ?? 'ko';
+  const hanja = normalizeHanjaForStorage(context?.hanja);
+  const definitionKey = makeVocabDefinitionKey(context?.def ?? context?.definition ?? null);
+  const sentenceKey = normalizeIdentityText(context?.sentence);
+  const sourceUriKey = normalizeIdentityText(context?.source_book_uri ?? context?.sourceBookUri);
+  const deletedAt = context?.deleted_at ?? context?.deletedAt ?? nowIso();
+  const ownerId = resolveOwnerId(options.ownerId ?? options);
+  const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, language);
+
+  return new Promise((resolve, reject) => {
+    if (!word || !sentenceKey) {
+      resolve(0);
+      return;
+    }
+
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT id, sentence, source_book_uri
+         FROM vocab_contexts
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND COALESCE(hanja, '') = COALESCE(?, '') AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
+        [ownerId, profileId, word, hanja, definitionKey, language],
+        (_, result) => {
+          // Compare sentence and source with the same normalization the cloud
+          // key uses (NFKC, collapsed whitespace), so a stored sentence matches
+          // its cloud copy even if spacing differs.
+          const matches = (result.rows._array ?? []).filter((row) => (
+            normalizeIdentityText(row.sentence) === sentenceKey
+            && normalizeIdentityText(row.source_book_uri) === sourceUriKey
+          ));
+
+          if (matches.length === 0) {
+            resolve(0);
+            return;
+          }
+
+          matches.forEach((row) => {
+            tx.executeSql(
+              'UPDATE vocab_contexts SET deleted_at = ?, updated_at = ? WHERE id = ?',
+              [deletedAt, deletedAt, row.id]
+            );
+          });
+          resolve(matches.length);
+        },
+        (_, error) => {
+          console.error(`[Database] Error soft-deleting vocab context for "${word}":`, error);
+          reject(error);
+          return true;
         }
       );
     });
@@ -5005,10 +5298,10 @@ export const addRelatedKnownWord = (word, relatedWord, options = {}) => {
     db.transaction(tx => {
       tx.executeSql(
         shouldScopeToEntry
-          ? `SELECT id, related_known_words
+          ? `SELECT id, related_known_words, related_known_words_deleted
              FROM vocab
-             WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL`
-          : 'SELECT id, related_known_words FROM vocab WHERE owner_id = ? AND profile_id = ? AND word = ? AND language = ? AND deleted_at IS NULL',
+             WHERE owner_id = ? AND profile_id = ? AND word = ? AND COALESCE(hanja, '') = COALESCE(?, '') AND def_key IS ? AND language = ? AND deleted_at IS NULL`
+          : 'SELECT id, related_known_words, related_known_words_deleted FROM vocab WHERE owner_id = ? AND profile_id = ? AND word = ? AND language = ? AND deleted_at IS NULL',
         shouldScopeToEntry
           ? [scopedOwnerId, profileId, word, mainHanja, mainDefinitionKey, language]
           : [scopedOwnerId, profileId, word, language],
@@ -5031,7 +5324,7 @@ export const addRelatedKnownWord = (word, relatedWord, options = {}) => {
                 scopedOwnerId,
                 profileId,
                 word,
-                mainWord.hanja ?? null,
+                normalizeHanjaForStorage(mainWord.hanja),
                 mainWord.definition ?? null,
                 makeVocabDefinitionKey(mainWord.definition),
                 mainWord.level ?? 'unorganized',
@@ -5070,11 +5363,16 @@ export const addRelatedKnownWord = (word, relatedWord, options = {}) => {
               ))
             : [...firstKnownWords, normalizedEntry];
           const nextJson = JSON.stringify(nextKnownWords);
+          // Re-marking clears any un-mark tombstone for the same word.
+          const nextTombstonesJson = JSON.stringify(
+            parseRelatedKnownWords(result.rows.item(0).related_known_words_deleted)
+              .filter((entry) => relatedKnownWordKey(entry) !== normalizedKey)
+          );
 
           for (let index = 0; index < result.rows.length; index += 1) {
             tx.executeSql(
-              'UPDATE vocab SET related_known_words = ?, updated_at = ? WHERE id = ?',
-              [nextJson, nowIso(), result.rows.item(index).id]
+              'UPDATE vocab SET related_known_words = ?, related_known_words_deleted = ?, updated_at = ? WHERE id = ?',
+              [nextJson, nextTombstonesJson, nowIso(), result.rows.item(index).id]
             );
           }
 
@@ -5100,15 +5398,16 @@ export const removeRelatedKnownWord = (word, relatedWord, language = 'ko', optio
   const mainHanja = options.mainHanja ?? null;
   const mainDefinition = options.mainDefinition ?? null;
   const mainDefinitionKey = makeVocabDefinitionKey(mainDefinition);
+  const deletedAt = options.deletedAt ?? nowIso();
 
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
       tx.executeSql(
         shouldScopeToEntry
-          ? `SELECT id, related_known_words
+          ? `SELECT id, related_known_words, related_known_words_deleted
              FROM vocab
-             WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL`
-          : 'SELECT id, related_known_words FROM vocab WHERE owner_id = ? AND profile_id = ? AND word = ? AND language = ? AND deleted_at IS NULL',
+             WHERE owner_id = ? AND profile_id = ? AND word = ? AND COALESCE(hanja, '') = COALESCE(?, '') AND def_key IS ? AND language = ? AND deleted_at IS NULL`
+          : 'SELECT id, related_known_words, related_known_words_deleted FROM vocab WHERE owner_id = ? AND profile_id = ? AND word = ? AND language = ? AND deleted_at IS NULL',
         shouldScopeToEntry
           ? [ownerId, profileId, word, mainHanja, mainDefinitionKey, language]
           : [ownerId, profileId, word, language],
@@ -5123,11 +5422,24 @@ export const removeRelatedKnownWord = (word, relatedWord, language = 'ko', optio
             (entry) => relatedKnownWordKey(entry) !== keyToRemove
           );
           const nextJson = JSON.stringify(nextKnownWords);
+          // Record a tombstone so the next full sync pushes the un-mark to the
+          // cloud instead of pulling the cloud's live copy back in.
+          const nextTombstones = [
+            ...parseRelatedKnownWords(result.rows.item(0).related_known_words_deleted)
+              .filter((entry) => relatedKnownWordKey(entry) !== keyToRemove),
+            {
+              korean: relatedWord?.korean ?? '',
+              hanja: relatedWord?.hanja ?? '',
+              deletedAt,
+              updatedAt: deletedAt,
+            },
+          ];
+          const nextTombstonesJson = JSON.stringify(nextTombstones);
 
           for (let index = 0; index < result.rows.length; index += 1) {
             tx.executeSql(
-              'UPDATE vocab SET related_known_words = ?, updated_at = ? WHERE id = ?',
-              [nextJson, nowIso(), result.rows.item(index).id]
+              'UPDATE vocab SET related_known_words = ?, related_known_words_deleted = ?, updated_at = ? WHERE id = ?',
+              [nextJson, nextTombstonesJson, nowIso(), result.rows.item(index).id]
             );
           }
 
@@ -5142,22 +5454,33 @@ export const removeRelatedKnownWord = (word, relatedWord, language = 'ko', optio
   });
 };
 
+/**
+ * Flatten every saved word's related known words into relation rows. With
+ * `includeDeleted`, un-mark tombstones are included too, as relations carrying
+ * `deletedAt` (sync uses them so an un-mark isn't resurrected by the cloud).
+ * `language` optionally narrows to one language.
+ */
 export const getAllRelatedKnownWords = (options = {}) => {
-  const { updatedAfter = null } = options;
+  const { updatedAfter = null, includeDeleted = false, language = null } = options;
   const ownerId = resolveOwnerId(options);
-  const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, options.language ?? 'ko');
+  const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, language ?? 'ko');
 
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
+      const hasLiveClause = "(related_known_words IS NOT NULL AND related_known_words != '' AND related_known_words != '[]')";
+      const hasTombstoneClause = "(related_known_words_deleted IS NOT NULL AND related_known_words_deleted != '' AND related_known_words_deleted != '[]')";
       const whereClauses = [
         'owner_id = ?',
         'profile_id = ?',
-        'related_known_words IS NOT NULL',
-        "related_known_words != ''",
-        "related_known_words != '[]'",
+        includeDeleted ? `(${hasLiveClause} OR ${hasTombstoneClause})` : hasLiveClause,
         'deleted_at IS NULL',
       ];
       const params = [ownerId, profileId];
+
+      if (language != null) {
+        whereClauses.push('language = ?');
+        params.push(language);
+      }
 
       if (updatedAfter) {
         whereClauses.push('updated_at IS NOT NULL AND julianday(updated_at) > julianday(?)');
@@ -5165,7 +5488,7 @@ export const getAllRelatedKnownWords = (options = {}) => {
       }
 
       tx.executeSql(
-        `SELECT word, hanja, def, related_known_words, language, updated_at
+        `SELECT word, hanja, def, related_known_words, related_known_words_deleted, language, updated_at
          FROM vocab
          WHERE ${whereClauses.join(' AND ')}`,
         params,
@@ -5174,6 +5497,29 @@ export const getAllRelatedKnownWords = (options = {}) => {
           const rows = result.rows._array ?? [];
 
           rows.forEach((row) => {
+            if (includeDeleted) {
+              parseRelatedKnownWords(row.related_known_words_deleted).forEach((entry) => {
+                const relatedWord = cleanValue(entry?.korean);
+                if (!relatedWord || !entry?.deletedAt) {
+                  return;
+                }
+
+                relations.push({
+                  language: row.language ?? 'ko',
+                  mainWord: row.word,
+                  mainHanja: normalizeHanjaForStorage(row.hanja),
+                  mainDefinition: row.def ?? null,
+                  relatedWord,
+                  relatedHanja: entry?.hanja ?? null,
+                  relatedDefinition: null,
+                  sourceHanja: null,
+                  markedAt: entry.deletedAt,
+                  updatedAt: entry.updatedAt ?? entry.deletedAt,
+                  deletedAt: entry.deletedAt,
+                });
+              });
+            }
+
             parseRelatedKnownWords(row.related_known_words).forEach((entry) => {
               const relatedWord = cleanValue(entry?.korean);
               if (!relatedWord) {
@@ -5184,7 +5530,7 @@ export const getAllRelatedKnownWords = (options = {}) => {
               relations.push({
                 language: row.language ?? 'ko',
                 mainWord: row.word,
-                mainHanja: row.hanja ?? null,
+                mainHanja: normalizeHanjaForStorage(row.hanja),
                 mainDefinition: row.def ?? null,
                 relatedWord,
                 relatedHanja: entry?.hanja ?? null,
@@ -5220,6 +5566,7 @@ export const addRelatedKnownWordForEntry = ({
   updatedAt = markedAt,
   language = 'ko',
   ownerId = GUEST_OWNER_ID,
+  profileId = null,
 }) => {
   if (!mainWord || !relatedWord) {
     return Promise.resolve([]);
@@ -5238,6 +5585,7 @@ export const addRelatedKnownWordForEntry = ({
     {
       createIfMissing: true,
       ownerId,
+      ...(profileId ? { profileId } : {}),
       language,
       mainWord: {
         hanja: mainHanja,
@@ -5259,6 +5607,8 @@ export const removeRelatedKnownWordForEntry = ({
   relatedHanja = null,
   language = 'ko',
   ownerId = GUEST_OWNER_ID,
+  profileId = null,
+  deletedAt = null,
 }) => {
   if (!mainWord || !relatedWord) {
     return Promise.resolve([]);
@@ -5273,6 +5623,8 @@ export const removeRelatedKnownWordForEntry = ({
     language,
     {
       ownerId,
+      ...(profileId ? { profileId } : {}),
+      ...(deletedAt ? { deletedAt } : {}),
       mainHanja,
       mainDefinition,
     }
@@ -5290,7 +5642,7 @@ export const updateLevel = (word, hanja, definition, newLevel, language = 'ko', 
       tx.executeSql(
         `UPDATE vocab
          SET level = ?, updated_at = ?
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND COALESCE(hanja, '') = COALESCE(?, '') AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
         [newLevel, updatedAt, ownerId, profileId, word, hanja, definitionKey, language],
         () => resolve(),
         (_, error) => {
@@ -5313,7 +5665,7 @@ export const updateFavorite = (word, hanja, definition, isFavorite, language = '
       tx.executeSql(
         `UPDATE vocab
          SET is_favorite = ?, updated_at = ?
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND COALESCE(hanja, '') = COALESCE(?, '') AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
         [isFavorite ? 1 : 0, updatedAt, ownerId, profileId, word, hanja, definitionKey, language],
         () => resolve(),
         (_, error) => {
@@ -5336,7 +5688,7 @@ export const updatePriority = (word, hanja, definition, priority, language = 'ko
       tx.executeSql(
         `UPDATE vocab
          SET priority = ?, updated_at = ?
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND COALESCE(hanja, '') = COALESCE(?, '') AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
         [priority, updatedAt, ownerId, profileId, word, hanja, definitionKey, language],
         () => resolve(),
         (_, error) => {
@@ -5488,7 +5840,7 @@ export const recordReviewOutcome = (word, hanja, definition, _currentLevel, outc
              correct_count = COALESCE(correct_count, 0) + ?,
              wrong_count = COALESCE(wrong_count, 0) + ?,
              updated_at = ?
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
+         WHERE owner_id = ? AND profile_id = ? AND word = ? AND COALESCE(hanja, '') = COALESCE(?, '') AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
         [
           levelMap[outcome],
           reviewedAt,
@@ -5524,34 +5876,42 @@ export const removeData = (word, hanja, definition, language = 'ko', options = {
   const profileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, language);
   const definitionKey = makeVocabDefinitionKey(definition);
 
+  // All-or-nothing: a failing statement's error callback returns true so the
+  // transaction rolls back (returning false would commit the contexts delete
+  // while the word itself stayed). Resolve only once the transaction commits.
   return new Promise((resolve, reject) => {
     const deletedAt = nowIso();
-    db.transaction(tx => {
-      tx.executeSql(
-        `UPDATE vocab_contexts
-         SET deleted_at = ?, updated_at = ?
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
-        [deletedAt, deletedAt, ownerId, profileId, word, hanja, definitionKey, language],
-        () => {},
-        (_, error) => {
-          console.error(`[Database] Error soft-deleting vocab contexts for "${word}":`, error);
-          reject(error);
-          return false;
-        }
-      );
-      tx.executeSql(
-        `UPDATE vocab
-         SET deleted_at = ?, updated_at = ?
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND hanja IS ? AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
-        [deletedAt, deletedAt, ownerId, profileId, word, hanja, definitionKey, language],
-        (_, result) => resolve(result),
-        (_, error) => {
-          console.error(`[Database] Error removing vocab word "${word}":`, error);
-          reject(error);
-          return false;
-        }
-      );
-    });
+    let vocabResult = null;
+    db.transaction(
+      tx => {
+        tx.executeSql(
+          `UPDATE vocab_contexts
+           SET deleted_at = ?, updated_at = ?
+           WHERE owner_id = ? AND profile_id = ? AND word = ? AND COALESCE(hanja, '') = COALESCE(?, '') AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
+          [deletedAt, deletedAt, ownerId, profileId, word, hanja, definitionKey, language],
+          () => {},
+          (_, error) => {
+            console.error(`[Database] Error soft-deleting vocab contexts for "${word}":`, error);
+            return true;
+          }
+        );
+        tx.executeSql(
+          `UPDATE vocab
+           SET deleted_at = ?, updated_at = ?
+           WHERE owner_id = ? AND profile_id = ? AND word = ? AND COALESCE(hanja, '') = COALESCE(?, '') AND def_key IS ? AND language = ? AND deleted_at IS NULL`,
+          [deletedAt, deletedAt, ownerId, profileId, word, hanja, definitionKey, language],
+          (_, result) => {
+            vocabResult = result;
+          },
+          (_, error) => {
+            console.error(`[Database] Error removing vocab word "${word}":`, error);
+            return true;
+          }
+        );
+      },
+      (error) => reject(error),
+      () => resolve(vocabResult)
+    );
   });
 };
 
