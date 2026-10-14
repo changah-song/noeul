@@ -52,6 +52,9 @@ const TopSection = ({
     const [dictionaryExpandedRows, setDictionaryExpandedRows] = useState(0);
     const [dictionaryContentHeight, setDictionaryContentHeight] = useState(0);
     const [visibleWord, setVisibleWord] = useState('');
+    // The mode the panel was showing, kept through the fade-out so a closing
+    // translation doesn't flip to (and mount) the dictionary for its last frames.
+    const [visibleIsNativeSelection, setVisibleIsNativeSelection] = useState(false);
     const [translationTarget, setTranslationTarget] = useState('');
     const [isCopied, setIsCopied] = useState(false);
     const [isCopying, setIsCopying] = useState(false);
@@ -173,6 +176,12 @@ const TopSection = ({
         });
     }, [highlightedWord, opacity, translateY]);
 
+    useEffect(() => {
+        if (highlightedWord) {
+            setVisibleIsNativeSelection(Boolean(isNativeSelection));
+        }
+    }, [highlightedWord, isNativeSelection]);
+
     const handleDictionaryExpandedStateChange = useCallback((rowCount) => {
         const nextRowCount = Number.isFinite(rowCount) ? rowCount : 0;
         setDictionaryExpandedRows((previousRowCount) => {
@@ -210,7 +219,7 @@ const TopSection = ({
         return null;
     }
 
-    const isTranslationMode = isNativeSelection;
+    const isTranslationMode = highlightedWord ? Boolean(isNativeSelection) : visibleIsNativeSelection;
     const isTopPlacement = placement === 'top';
     const panelColors = {
         background: themeColors.readerSurface,

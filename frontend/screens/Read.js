@@ -632,14 +632,20 @@ const Read = ({
 
     // Load saved words for highlighting on mount
     useEffect(() => {
+        // Ignore a load that finishes after the language/owner changed, so the
+        // previous book's words don't overwrite the current ones.
+        let isActive = true;
         getSavedWords({ ownerId: activeOwnerId, language: activeBookLanguage })
             .then(words => {
-                setSavedWords(words);
+                if (isActive) setSavedWords(words);
             })
             .catch(err => {
                 console.error('[Read] Failed to load saved words:', err);
-                setSavedWords([]);
+                if (isActive) setSavedWords([]);
             });
+        return () => {
+            isActive = false;
+        };
     }, [activeBookLanguage, activeOwnerId]);
 
     // Words saved from *this* book — drives the top-bar count pill and the saved
@@ -1122,7 +1128,9 @@ const Read = ({
         }
     };
 
-    const saveSettings = async (newSettings, updatedAt = new Date().toISOString(), options = {}) => {
+    // Stable so the cloud-merge effect below (which lists it as a dependency)
+    // isn't restarted, and its in-flight fetch cancelled, on every render.
+    const saveSettings = useCallback(async (newSettings, updatedAt = new Date().toISOString(), options = {}) => {
         const { syncCloud = true } = options;
         try {
             readerSettingsUpdatedAtRef.current = updatedAt;
@@ -1136,7 +1144,7 @@ const Read = ({
         } catch (error) {
             console.error('[Read] Error saving settings:', error);
         }
-    };
+    }, [scheduleCloudReaderSettingsSync]);
 
     useEffect(() => {
         if (!readerSettingsLoaded) {
@@ -1162,6 +1170,7 @@ const Read = ({
         }
 
         let isMounted = true;
+        let mergeFinished = false;
         readerSettingsCloudUserRef.current = user.id;
         const ownerId = activeOwnerId;
         const generation = syncGeneration;
@@ -1203,9 +1212,12 @@ const Read = ({
 
                     readerSettingsRef.current = nextSettings;
                     setSettings(nextSettings);
+                    mergeFinished = true;
                     await saveSettings(nextSettings, cloudUpdatedAt, { syncCloud: false });
                     return;
                 }
+
+                mergeFinished = true;
 
                 const updatedAt = localUpdatedAt ?? new Date().toISOString();
                 await updateUserPreferenceFields({
@@ -1230,6 +1242,11 @@ const Read = ({
 
         return () => {
             isMounted = false;
+            // A merge cancelled before it applied must run again on the next
+            // pass instead of being treated as done for this user.
+            if (!mergeFinished && readerSettingsCloudUserRef.current === user.id) {
+                readerSettingsCloudUserRef.current = null;
+            }
         };
     }, [activeOwnerId, isDarkMode, readerSettingsLoaded, saveSettings, setIsDarkMode, syncGeneration, syncPaused, user]);
 
@@ -1496,11 +1513,13 @@ const Read = ({
         const definition = candidate.gloss || '';
         // Optimistically highlight it in the reader like an in-line save.
         handleWordSave(word, { includeSurface: false });
+        let wordStored = false;
         try {
             const createdAt = new Date().toISOString();
             const alreadySaved = await vocabEntryExists(word, hanja, definition, activeBookLanguage, {
                 ownerId: activeOwnerId,
             });
+            wordStored = alreadySaved;
             if (!alreadySaved) {
                 const pKnown = await getCachedPKnown({
                     ownerId: activeOwnerId,
@@ -1518,6 +1537,7 @@ const Read = ({
                     language: activeBookLanguage,
                     pKnown,
                 });
+                wordStored = true;
             }
             if (candidate.exampleSentence) {
                 await recordVocabContext({
@@ -1546,6 +1566,11 @@ const Read = ({
             refreshBookSavedWords();
         } catch (error) {
             console.warn('[Read] Failed to save candidate word:', error?.message ?? error);
+            if (!wordStored) {
+                // The word never reached the deck: undo the optimistic highlight.
+                setSavedWords((prev) => (prev ?? []).filter((w) => w !== word));
+                setOptimisticHighlightTerms((prev) => prev.filter((term) => term !== word));
+            }
         }
     }, [activeOwnerId, activeBookLanguage, currentBook, activeBook, refreshBookSavedWords]);
 
@@ -1602,6 +1627,9 @@ const Read = ({
     // filled/outline for the current page without waiting for the sheet.
     useEffect(() => {
         let isActive = true;
+        // Notes are only read when the checkpoints sheet opens; drop the previous
+        // book's so they can't show under this one.
+        setBookNotes([]);
         if (!currentBook) {
             setBookBookmarks([]);
             return undefined;
@@ -1642,8 +1670,19 @@ const Read = ({
         }
         try {
             if (activeBookmark) {
-                setBookBookmarks((prev) => prev.filter((bookmark) => bookmark.id !== activeBookmark.id));
-                await deleteBookBookmark(activeBookmark.id, { ownerId: activeOwnerId });
+                const removedBookmark = activeBookmark;
+                setBookBookmarks((prev) => prev.filter((bookmark) => bookmark.id !== removedBookmark.id));
+                try {
+                    await deleteBookBookmark(removedBookmark.id, { ownerId: activeOwnerId });
+                } catch (error) {
+                    // Still saved: put it back rather than show it as removed.
+                    setBookBookmarks((prev) => (
+                        prev.some((bookmark) => bookmark.id === removedBookmark.id)
+                            ? prev
+                            : [removedBookmark, ...prev]
+                    ));
+                    throw error;
+                }
                 return;
             }
             // pagesInChapter can be absent on a position that came from a
@@ -1877,14 +1916,21 @@ const Read = ({
                     loadOptions
                 );
 
+        // Switching books replaces both maps; a load still running for the old
+        // book must not land in (or clear entries from) the new book's maps.
+        const chapterCacheAtStart = parsedChapterCacheRef.current;
+        const inflightAtStart = parsedChapterInflightRef.current;
         const loadPromise = packageLoader.then((parsedPackage) => {
+            if (parsedChapterCacheRef.current !== chapterCacheAtStart) {
+                return null;
+            }
             cacheParsedChapterPackage(parsedPackage);
             return parsedPackage;
         }).finally(() => {
-            parsedChapterInflightRef.current.delete(cacheKey);
+            inflightAtStart.delete(cacheKey);
         });
 
-        parsedChapterInflightRef.current.set(cacheKey, loadPromise);
+        inflightAtStart.set(cacheKey, loadPromise);
         return loadPromise;
     }, [
         activeBook?.format,
@@ -3263,22 +3309,16 @@ const Read = ({
                     }
 
                     setShowToc(false);
-                    const firstPagePosition = {
+                    // Same path as a checkpoint jump: it carries a seek token and
+                    // sends an explicit seek for the chapter already on screen,
+                    // which a bare restore-position update can't do in scroll mode.
+                    handleSelectBookmark({
                         spineIndex: item.spineIndex,
                         pageIndex: 0,
                         pagesInChapter: null,
                         href: item.path || item.href || '',
                         firstBlockId: null,
-                    };
-
-                    if (item.spineIndex !== activeSpineIndex) {
-                        loadNativeReaderPackage(item.spineIndex, {
-                            restorePosition: firstPagePosition,
-                            animateChapterTransition: false,
-                        });
-                    } else {
-                        updateNativeRestorePosition(firstPagePosition);
-                    }
+                    });
                 }}
             />
 
