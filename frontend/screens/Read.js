@@ -104,6 +104,8 @@ const DEFAULT_READER_SETTINGS = {
     glossAnnotations: false,
     // Which words get pinyin / translations: 'underlined' or 'all'.
     annotationScope: 'underlined',
+    // Draw underlines on text already read past lighter than the ones ahead.
+    fadeReadMarks: true,
 };
 const READING_MODES = ['paged', 'scroll'];
 // Whether graded words get a solid gradient underline. 'off' hides the marks but
@@ -2496,7 +2498,7 @@ const Read = ({
         });
     }, [activeOwnerId, activeBookLanguage, currentBook]);
 
-    const processNativePageChange = useCallback(({ page, total, spineIndex, href, firstBlockId, savedHighlights } = {}) => {
+    const processNativePageChange = useCallback(({ page, total, spineIndex, href, firstBlockId, savedHighlights, readThrough } = {}) => {
         if (bookCompletionInProgressRef.current) {
             return;
         }
@@ -2572,6 +2574,9 @@ const Read = ({
             location: nextPosition.href || null,
             progress: nextProgress ?? clampProgress(activeBook?.progress ?? 0),
         };
+        // Furthest point read per chapter (for faded marks), kept on the book.
+        const readSpine = Number.isInteger(readThrough?.spineIndex) ? String(readThrough.spineIndex) : null;
+        const readPosition = Number(readThrough?.position);
 
         if (activeBook?.cloudId) {
             scheduleCloudProgressSync({
@@ -2595,9 +2600,20 @@ const Read = ({
                 && previousPosition.firstBlockId === nextPosition.firstBlockId
             );
 
-            return isUnchanged
-                ? book
-                : { ...book, ...nextBookPatch };
+            const previousRead = readSpine ? Number(book.readThrough?.[readSpine] ?? -1) : -1;
+            const readAdvanced = readSpine != null
+                && Number.isFinite(readPosition)
+                && readPosition > previousRead;
+            if (isUnchanged && !readAdvanced) {
+                return book;
+            }
+            return {
+                ...book,
+                ...nextBookPatch,
+                ...(readAdvanced
+                    ? { readThrough: { ...(book.readThrough || {}), [readSpine]: readPosition } }
+                    : {}),
+            };
         }));
     }, [
         activeBook,
@@ -3219,6 +3235,8 @@ const Read = ({
                         levelTerms={readerLevelTerms}
                         showPinyin={readerShowPinyin}
                         showGloss={readerShowGloss}
+                        readThrough={activeBook?.readThrough}
+                        fadeReadMarks={settings.fadeReadMarks !== false}
                         clearSelectionToken={clearSelectionToken}
                         focusSentenceCount={focusSpan}
                         focusSwipeEnabled={focusSwipe}
@@ -3589,6 +3607,34 @@ const Read = ({
                                     ) : null}
                                 </View>
 
+                                {/* Lighter underlines on text already read past. */}
+                                {levelMarksEnabled ? (
+                                    <View style={styles.markStyleBlock}>
+                                        <Text style={styles.fontSettingsLabel}>{t('read.fadeReadMarks')}</Text>
+                                        <View style={styles.segmentGroup}>
+                                            {[false, true].map((value) => {
+                                                const selected = (settings.fadeReadMarks !== false) === value;
+                                                return (
+                                                    <TouchableOpacity
+                                                        key={String(value)}
+                                                        style={[styles.segmentButton, selected && styles.segmentButtonActive]}
+                                                        onPress={() => handleSettingChange('fadeReadMarks', value)}
+                                                        activeOpacity={0.7}
+                                                        accessibilityRole="button"
+                                                        accessibilityState={{ selected }}
+                                                    >
+                                                        <Text
+                                                            style={[styles.segmentButtonText, selected && styles.segmentButtonTextActive]}
+                                                            numberOfLines={1}
+                                                        >
+                                                            {value ? t('read.pinyinOn') : t('read.pinyinOff')}
+                                                        </Text>
+                                                    </TouchableOpacity>
+                                                );
+                                            })}
+                                        </View>
+                                    </View>
+                                ) : null}
                                 {/* Word annotations: pinyin above words (Chinese only) and a
                                     short translation under them, on underlined or all words. */}
                                 {activeBookLanguage === 'zh' ? (

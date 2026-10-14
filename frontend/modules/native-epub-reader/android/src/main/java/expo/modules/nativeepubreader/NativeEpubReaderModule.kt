@@ -245,6 +245,14 @@ class NativeEpubReaderModule : Module() {
         view.setLevelTerms(terms)
       }
 
+      Prop("readThrough") { view: NativeEpubReaderView, positions: Map<String, Any?> ->
+        view.setReadThrough(positions)
+      }
+
+      Prop("fadeReadMarks") { view: NativeEpubReaderView, enabled: Boolean ->
+        view.setFadeReadMarks(enabled)
+      }
+
       Prop("showGloss") { view: NativeEpubReaderView, enabled: Boolean ->
         view.setShowGloss(enabled)
       }
@@ -469,6 +477,8 @@ internal fun annotationSpacePx(bodyTextPx: Float, pinyin: Boolean, gloss: Boolea
 }
 
 internal const val PINYIN_ROW_SCALE = 0.9f
+// Read positions pack (block ordinal, offset in block) into one comparable Long.
+private const val READ_POSITION_SCALE = 1_000_000L
 internal const val GLOSS_ROW_SCALE = 0.85f
 
 private class ContinuousReaderScrollView(context: Context) : ScrollView(context) {
@@ -719,6 +729,14 @@ class NativeEpubReaderView(
   private var showPinyin: Boolean = false
   // Whether short translations are drawn under annotated words.
   private var showGloss: Boolean = false
+
+  // Furthest point read per chapter (spine index -> position), where a position
+  // is blockOrdinal * READ_POSITION_SCALE + offset within the source block.
+  // Level underlines before it are drawn faded when fadeReadMarks is on.
+  private val readThroughBySpine = mutableMapOf<Int, Long>()
+  private var fadeReadMarks: Boolean = true
+  // Reading order of each source block, per spine: "spine|blockId" -> ordinal.
+  private var blockOrdinals: Map<String, Int> = emptyMap()
   private var savedHighlightRangesByPage: Map<Int, List<TextRange>> = emptyMap()
   private var savedHighlightContextsByPage: Map<Int, List<Map<String, Any>>> = emptyMap()
   private var levelRangesByPage: Map<Int, List<TextRange>> = emptyMap()
@@ -834,6 +852,7 @@ class NativeEpubReaderView(
     }
     continuousScrollView.onScrollPositionChanged = { handleContinuousScrollChanged() }
     continuousScrollView.onEdgePull = { direction -> handleContinuousEdgePull(direction) }
+    continuousPageView.isRangeRead = ::isLevelRangeRead
     continuousScrollView.addView(
       continuousPageView,
       FrameLayout.LayoutParams(
@@ -1156,6 +1175,73 @@ class NativeEpubReaderView(
     // own flags won't pick up the change unless we push them here.
     pageAdapter?.setAnnotations(showPinyin, showGloss)
     repaginate(resetToFirstPage = false)
+  }
+
+  fun setReadThrough(positions: Map<String, Any?>) {
+    var changed = false
+    positions.forEach { (key, value) ->
+      val spine = key.toIntOrNull() ?: return@forEach
+      val position = (value as? Number)?.toLong() ?: return@forEach
+      if (position > (readThroughBySpine[spine] ?: -1L)) {
+        readThroughBySpine[spine] = position
+        changed = true
+      }
+    }
+    if (changed) invalidateVisiblePageHighlights()
+  }
+
+  fun setFadeReadMarks(enabled: Boolean) {
+    if (fadeReadMarks == enabled) return
+    fadeReadMarks = enabled
+    invalidateVisiblePageHighlights()
+  }
+
+  private fun rebuildBlockOrdinals(sourcePages: List<ReaderPage>) {
+    val next = mutableMapOf<String, Int>()
+    val counters = mutableMapOf<Int, Int>()
+    sourcePages.forEach { page ->
+      val spine = page.spineIndex ?: return@forEach
+      page.blocks.forEach { block ->
+        val key = "$spine|${block.blockId}"
+        if (!next.containsKey(key)) {
+          val ordinal = counters[spine] ?: 0
+          next[key] = ordinal
+          counters[spine] = ordinal + 1
+        }
+      }
+    }
+    blockOrdinals = next
+  }
+
+  private fun readPosition(spine: Int?, blockId: String, sourceOffset: Int): Long? {
+    if (spine == null) return null
+    val ordinal = blockOrdinals["$spine|$blockId"] ?: return null
+    return ordinal * READ_POSITION_SCALE + sourceOffset.coerceAtLeast(0)
+  }
+
+  private fun isLevelRangeRead(range: TextRange): Boolean {
+    if (!fadeReadMarks) return false
+    val spine = range.spineIndex ?: return false
+    val readThrough = readThroughBySpine[spine] ?: return false
+    val end = readPosition(spine, range.blockId, range.sourceEndOffset) ?: return false
+    return end <= readThrough
+  }
+
+  // The reader has reached `position` in `spine` (the start of the page, the
+  // topmost visible block, or the focused sentence). Everything before it
+  // counts as read. Returns the chapter's read-through position for the event.
+  private fun noteReadThrough(spine: Int?, position: Long?): Long? {
+    if (spine == null) return null
+    if (position != null && position > (readThroughBySpine[spine] ?: -1L)) {
+      readThroughBySpine[spine] = position
+      invalidateVisiblePageHighlights()
+    }
+    return readThroughBySpine[spine]
+  }
+
+  private fun addReadThrough(event: MutableMap<String, Any>, spine: Int?, position: Long?) {
+    val readThrough = noteReadThrough(spine, position) ?: return
+    event["readThrough"] = mapOf("spineIndex" to spine!!, "position" to readThrough.toDouble())
   }
 
   // Toggle short translations under annotated words. Repaginate so the line
@@ -1569,6 +1655,7 @@ class NativeEpubReaderView(
     )
     savedHighlightRangesByPage = savedHighlights.rangesByPage
     savedHighlightContextsByPage = savedHighlights.contextsByPage
+    rebuildBlockOrdinals(nextPages)
     val levelHighlights = buildHighlightRanges(
       nextPages,
       levelMatcher,
@@ -1645,6 +1732,7 @@ class NativeEpubReaderView(
         ::handlePageSelectionDragStateChanged,
         ::handlePageEdgeAction
       )
+      pageAdapter?.isRangeRead = ::isLevelRangeRead
       viewPager.adapter = pageAdapter
     } else {
       val canAnimateChapterTransition = (
@@ -2356,6 +2444,14 @@ class NativeEpubReaderView(
     (page?.spineIndex ?: bookManifest.intValue("currentSpineIndex"))?.let { spineIndex ->
       event["spineIndex"] = spineIndex
     }
+    if (page != null && sentence != null) {
+      val block = page.blocks.firstOrNull { it.blockId == sentence.blockId }
+      addReadThrough(
+        event,
+        page.spineIndex,
+        readPosition(page.spineIndex, sentence.blockId, (block?.sourceStartOffset ?: 0) + sentence.startOffset)
+      )
+    }
 
     onPageChange(event)
   }
@@ -2575,6 +2671,11 @@ class NativeEpubReaderView(
 
     (page.spineIndex ?: bookManifest.intValue("currentSpineIndex"))?.let { spineIndex ->
       event["spineIndex"] = spineIndex
+    }
+    val topBlockId = event["firstBlockId"] as? String
+    if (!topBlockId.isNullOrEmpty()) {
+      val topBlock = page.blocks.firstOrNull { it.blockId == topBlockId }
+      addReadThrough(event, page.spineIndex, readPosition(page.spineIndex, topBlockId, topBlock?.sourceStartOffset ?: 0))
     }
 
     onPageChange(event)
@@ -3511,6 +3612,9 @@ class NativeEpubReaderView(
 
     (page?.spineIndex ?: bookManifest.intValue("currentSpineIndex"))?.let { spineIndex ->
       event["spineIndex"] = spineIndex
+    }
+    page?.blocks?.firstOrNull()?.let { first ->
+      addReadThrough(event, page.spineIndex, readPosition(page.spineIndex, first.blockId, first.sourceStartOffset))
     }
 
     onPageChange(event)

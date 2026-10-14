@@ -151,8 +151,12 @@ class EpubPageAdapter(
     }
   }
 
+  // Forwarded to every page view; see EpubPageView.isRangeRead.
+  var isRangeRead: ((TextRange) -> Boolean)? = null
+
   private fun bindView(view: EpubPageView, position: Int) {
     val page = pages[position]
+    view.isRangeRead = isRangeRead
     view.bind(
       page = page,
       paddingH = paddingH,
