@@ -1,5 +1,5 @@
 import { Asset } from 'expo-asset';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 
 import { normalizeBookLanguage } from '../constants/languages';
 import { PUBLIC_DOMAIN_TEXTS } from '../assets/data/public-domain/catalog';

@@ -1,6 +1,5 @@
 import { DefaultTheme, NavigationContainer, useNavigationContainerRef } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { TranslatorProvider } from 'react-native-translator';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert } from 'react-native';
 import { useFonts } from 'expo-font';
@@ -551,7 +550,7 @@ function ThemedAppShell({
     }, [appBackground]);
 
     return (
-        <TranslatorProvider>
+        <>
             <StatusBar
                 style={isDarkMode ? 'light' : 'dark'}
                 backgroundColor={appBackground}
@@ -628,6 +627,6 @@ function ThemedAppShell({
                 busy={localDataDecisionBusy}
                 onResolve={onOwnershipDecision}
             />
-        </TranslatorProvider>
+        </>
     );
 }
