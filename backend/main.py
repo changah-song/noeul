@@ -32,6 +32,13 @@ from explain_graph import (
     user_message_for,
 )
 from word_lookup import lookup_surface
+from translation import (
+    MAX_STRINGS_PER_REQUEST as TRANSLATE_MAX_STRINGS,
+    TranslationError,
+    configured_providers as configured_translation_providers,
+    normalize_language_code as normalize_translate_language,
+    translate_texts,
+)
 
 try:
     from koroman import romanize as koroman_romanize
@@ -91,8 +98,6 @@ KRDICT_INTERFACE_LANGUAGES = {
     "zh": "11",
 }
 DEFAULT_INTERFACE_LANGUAGE = "en"
-GOOGLE_TRANSLATE_RAPIDAPI_URL = "https://google-translator9.p.rapidapi.com/v2"
-GOOGLE_TRANSLATE_RAPIDAPI_HOST = "google-translator9.p.rapidapi.com"
 MAX_TEXT_LENGTH = 500_000
 
 AUTHENTICATED_LIMITS = {
@@ -745,7 +750,14 @@ app.add_middleware(
 )
 
 KRDICT_CLIENT_ID = os.getenv("KOREAN_DICTIONARY_CLIENT_ID", "").strip()
+# Official Google Cloud Translation (v2) first; the RapidAPI reseller is the fallback.
+GOOGLE_CLOUD_TRANSLATE_API_KEY = os.getenv("GOOGLE_CLOUD_TRANSLATE_API_KEY", "").strip()
 GOOGLE_TRANSLATE_RAPIDAPI_KEY = os.getenv("GOOGLE_TRANSLATE_RAPIDAPI_KEY", "").strip()
+TRANSLATION_PROVIDERS = configured_translation_providers(
+    GOOGLE_CLOUD_TRANSLATE_API_KEY, GOOGLE_TRANSLATE_RAPIDAPI_KEY
+)
+# The app gives up on /translate/ after 8 s; two providers at 3.8 s each fit inside it.
+INTERACTIVE_TRANSLATE_TIMEOUT_SECONDS = 3.8
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_JWT_AUDIENCE = os.getenv("SUPABASE_JWT_AUDIENCE", "").strip() or "authenticated"
@@ -3109,40 +3121,23 @@ async def romanize_text(text: str, auth: dict[str, Any] = Depends(verify_supabas
 
 async def _translate_text(text: str, source: str = "en", target: str = "en") -> str | None:
     cleaned_text = text.strip() if isinstance(text, str) else ""
-    normalized_source = source.strip() if isinstance(source, str) and source.strip() else "en"
-    normalized_target = target.strip() if isinstance(target, str) and target.strip() else "en"
+    normalized_source = normalize_translate_language(source, "en")
+    normalized_target = normalize_translate_language(target, "en")
 
-    if not cleaned_text or normalized_source == normalized_target or not GOOGLE_TRANSLATE_RAPIDAPI_KEY:
+    if not cleaned_text or normalized_source == normalized_target or not TRANSLATION_PROVIDERS:
         return None
 
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(
-                GOOGLE_TRANSLATE_RAPIDAPI_URL,
-                headers={
-                    "content-type": "application/json",
-                    "X-RapidAPI-Key": GOOGLE_TRANSLATE_RAPIDAPI_KEY,
-                    "X-RapidAPI-Host": GOOGLE_TRANSLATE_RAPIDAPI_HOST,
-                },
-                json={
-                    "q": cleaned_text,
-                    "source": normalized_source,
-                    "target": normalized_target,
-                    "format": "text",
-                },
+            [translated] = await translate_texts(
+                client,
+                TRANSLATION_PROVIDERS,
+                [cleaned_text],
+                source=normalized_source,
+                target=normalized_target,
                 timeout=8.0,
             )
-            response.raise_for_status()
-            data = response.json()
-            response_data = data.get("data", {}) if isinstance(data, dict) else {}
-            translations = response_data.get("translations", []) if isinstance(response_data, dict) else []
-            first_translation = translations[0] if translations else {}
-            translated_text = (
-                first_translation.get("translatedText", "")
-                if isinstance(first_translation, dict)
-                else ""
-            )
-            return translated_text.strip() if isinstance(translated_text, str) else None
+            return translated
     except Exception as error:
         print(f"[main] Internal translation failed: {error}")
         return None
@@ -3158,11 +3153,12 @@ async def _translate_batch(
     returns translations in order). Returns a list aligned to `texts`; entries that
     fail translate as None. Used to translate a whole chapter's zh definitions at once
     instead of one HTTP call per word."""
-    normalized_source = source.strip() if isinstance(source, str) and source.strip() else "en"
-    normalized_target = target.strip() if isinstance(target, str) and target.strip() else "en"
-    if not texts or normalized_source == normalized_target or not GOOGLE_TRANSLATE_RAPIDAPI_KEY:
+    normalized_source = normalize_translate_language(source, "en")
+    normalized_target = normalize_translate_language(target, "en")
+    if not texts or normalized_source == normalized_target or not TRANSLATION_PROVIDERS:
         return [None] * len(texts)
 
+    batch_size = min(batch_size, TRANSLATE_MAX_STRINGS)
     chunks = [texts[start:start + batch_size] for start in range(0, len(texts), batch_size)]
     # Cap concurrent requests so a big chapter translates in a few seconds (staying
     # under the reader's preprocess timeout) without tripping the API's rate limit.
@@ -3171,43 +3167,17 @@ async def _translate_batch(
     async def translate_chunk(client: httpx.AsyncClient, chunk: list[str]) -> list[str | None]:
         async with semaphore:
             try:
-                response = await client.post(
-                    GOOGLE_TRANSLATE_RAPIDAPI_URL,
-                    headers={
-                        "content-type": "application/json",
-                        "X-RapidAPI-Key": GOOGLE_TRANSLATE_RAPIDAPI_KEY,
-                        "X-RapidAPI-Host": GOOGLE_TRANSLATE_RAPIDAPI_HOST,
-                    },
-                    json={
-                        "q": chunk,
-                        "source": normalized_source,
-                        "target": normalized_target,
-                        "format": "text",
-                    },
+                return await translate_texts(
+                    client,
+                    TRANSLATION_PROVIDERS,
+                    chunk,
+                    source=normalized_source,
+                    target=normalized_target,
                     timeout=30.0,
                 )
-                response.raise_for_status()
-                data = response.json()
-                response_data = data.get("data", {}) if isinstance(data, dict) else {}
-                items = response_data.get("translations", []) if isinstance(response_data, dict) else []
-                chunk_out = [
-                    (item.get("translatedText") or "").strip() or None
-                    if isinstance(item, dict) else None
-                    for item in items
-                ]
             except Exception as error:
                 print(f"[main] Batch translation failed: {error}")
-                chunk_out = []
-
-            # If the endpoint didn't return one translation per input (e.g. it doesn't
-            # honor an array `q`), fall back to translating this chunk item-by-item so
-            # results stay correct — just with more calls for that chunk.
-            if len(chunk_out) != len(chunk):
-                chunk_out = list(await asyncio.gather(*(
-                    _translate_text(text, source=normalized_source, target=normalized_target)
-                    for text in chunk
-                )))
-            return chunk_out[:len(chunk)]
+                return [None] * len(chunk)
 
     async with httpx.AsyncClient() as client:
         chunk_results = await asyncio.gather(*(translate_chunk(client, chunk) for chunk in chunks))
@@ -3344,49 +3314,24 @@ async def translate_text(payload: dict, auth: dict[str, Any] = Depends(verify_su
     )
     await enforce_daily_quota(auth)
 
-    if not GOOGLE_TRANSLATE_RAPIDAPI_KEY:
-        raise HTTPException(status_code=500, detail="No Google Translate RapidAPI key configured on server")
+    if not TRANSLATION_PROVIDERS:
+        raise HTTPException(status_code=500, detail="No translation provider configured on server")
 
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(
-                GOOGLE_TRANSLATE_RAPIDAPI_URL,
-                headers={
-                    "content-type": "application/json",
-                    "X-RapidAPI-Key": GOOGLE_TRANSLATE_RAPIDAPI_KEY,
-                    "X-RapidAPI-Host": GOOGLE_TRANSLATE_RAPIDAPI_HOST,
-                },
-                json={
-                    "q": cleaned_query,
-                    "source": source if isinstance(source, str) and source.strip() else "ko",
-                    "target": target if isinstance(target, str) and target.strip() else "en-US",
-                    "format": "text",
-                },
-                timeout=8.0,
+            [translated] = await translate_texts(
+                client,
+                TRANSLATION_PROVIDERS,
+                [cleaned_query],
+                source=normalize_translate_language(source, "ko"),
+                target=normalize_translate_language(target, "en"),
+                timeout=INTERACTIVE_TRANSLATE_TIMEOUT_SECONDS,
             )
-            response.raise_for_status()
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Google Translate request timed out")
-    except httpx.HTTPStatusError as error:
-        print(f"[main] Google Translate returned HTTP {error.response.status_code}")
+    except TranslationError as error:
+        if error.timed_out:
+            raise HTTPException(status_code=504, detail="Google Translate request timed out")
         raise HTTPException(status_code=502, detail="Google Translate request failed")
-    except httpx.RequestError as error:
-        print(f"[main] Google Translate request error: {error}")
-        raise HTTPException(status_code=502, detail="Google Translate request failed")
-
-    try:
-        data = response.json()
-    except ValueError:
-        raise HTTPException(status_code=502, detail="Google Translate returned an invalid response")
-
-    response_data = data.get("data", {}) if isinstance(data, dict) else {}
-    translations = response_data.get("translations", []) if isinstance(response_data, dict) else []
-    first_translation = translations[0] if translations else {}
-    translated_text = first_translation.get("translatedText", "") if isinstance(first_translation, dict) else ""
-    if isinstance(translated_text, str):
-        translated_text = translated_text.strip()
-    else:
-        translated_text = ""
+    translated_text = translated or ""
 
     # For Chinese source text the panels show tone-marked pinyin above the
     # translation (no source characters), so hand it back alongside the text.
