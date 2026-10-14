@@ -48,7 +48,7 @@ import {
     useTheme,
 } from '../theme';
 import useBooks from '../hooks/useBooks';
-import { deleteBookIndexEntries, estimateBookReadingEase, getLatestBookNote } from '../services/Database';
+import { deleteBookIndexEntries, estimateBookReadingEase, getLatestBookNote, getProfileAbility } from '../services/Database';
 import { formatEasePercent, getEaseBandKey } from '../services/bookEase';
 import {
     darkenHex,
@@ -72,6 +72,7 @@ import {
 import { readEpubMetadata } from '../services/epubMetadata';
 import { readPdfMetadata } from '../services/pdfMetadata';
 import { getPublicDomainBooks } from '../services/publicDomainBooks';
+import { pickStarterBook, starterThetaFromAbility } from '../services/starterBook';
 import {
     downloadFeaturedBooks,
     downloadPublicBook,
@@ -1982,6 +1983,69 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const showingEmptyMyBooks = activeLibraryTab === 'Books'
         && !showingPublicDomainBooks
         && filteredLibraryBooks.length === 0;
+
+    // Empty-shelf starter suggestion: instead of a dead end, offer one short
+    // bundled book matched to the reader (services/starterBook.js). The reader's
+    // ability is read once per (owner, profile, language) while the shelf is
+    // empty; the result is keyed so a language/profile switch never pairs the new
+    // catalog with the previous profile's theta for a frame.
+    const shelfIsEmpty = languageFilteredBooks.length === 0;
+    const starterAbilityKey = `${activeOwnerId ?? ''}|${activeProfileId ?? ''}|${targetLanguage}`;
+    const starterLookupEnabled = shelfIsEmpty
+        && languageSettingsReady
+        && bundledPublicDomainBooks.length > 0;
+    const [starterAbility, setStarterAbility] = useState({ key: null, theta: null });
+    useEffect(() => {
+        if (!starterLookupEnabled) {
+            return undefined;
+        }
+
+        let active = true;
+        getProfileAbility({ ownerId: activeOwnerId, profileId: activeProfileId, language: targetLanguage })
+            .then((ability) => {
+                if (active) {
+                    setStarterAbility({ key: starterAbilityKey, theta: starterThetaFromAbility(ability) });
+                }
+            })
+            .catch((error) => {
+                console.warn('[Home] Failed to read ability for the starter book:', error?.message ?? error);
+                if (active) {
+                    setStarterAbility({ key: starterAbilityKey, theta: null });
+                }
+            });
+
+        return () => {
+            active = false;
+        };
+    }, [activeOwnerId, activeProfileId, starterAbilityKey, starterLookupEnabled, targetLanguage]);
+    const starterAbilityReady = starterAbility.key === starterAbilityKey;
+    // Still waiting on the ability read: hold the empty-state space rather than
+    // flashing the plain empty state (or the wrong book) for a frame.
+    const starterBookPending = starterLookupEnabled && !starterAbilityReady;
+    const starterBook = useMemo(() => {
+        if (!starterLookupEnabled || !starterAbilityReady) {
+            return null;
+        }
+
+        const picked = pickStarterBook(bundledPublicDomainBooks, {
+            language: targetLanguage,
+            theta: starterAbility.theta,
+        });
+        if (!picked) {
+            return null;
+        }
+
+        // Prefer the shelf row: it carries the catalog cover colors the Public
+        // Domain tab shows, so the suggestion looks like the same book.
+        return publicDomainBookRows.find((row) => isSamePublicDomainBook(row, picked)) ?? picked;
+    }, [
+        bundledPublicDomainBooks,
+        publicDomainBookRows,
+        starterAbility.theta,
+        starterAbilityReady,
+        starterLookupEnabled,
+        targetLanguage,
+    ]);
     const showingEmptyPublicDomain = showingPublicDomainBooks
         && !publicLibraryLoading
         && !publicLibraryError
@@ -3534,6 +3598,103 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         </View>
     );
 
+    // Empty "My Books" with a bundled book to suggest: a one-tap "Start reading"
+    // card (adds the book to the shelf and opens it, exactly like Read on the
+    // public-domain preview), with Import / Browse kept as secondary actions.
+    const renderStarterBookCard = (book) => {
+        const title = getBookTitle(book, t);
+        const author = getBookAuthor(book, t);
+        const translatedTitle = typeof book.titleTranslation === 'string' ? book.titleTranslation.trim() : '';
+        const wordCount = getBookWordCount(book);
+        const meta = [
+            wordCount ? formatWordCount(wordCount, t) : null,
+            t('home.publicDomain'),
+        ].filter(Boolean).join(' · ');
+        const openStarterBook = () => handlePublicDomainBookPress(book);
+
+        return (
+            <View style={styles.collectionEmptyState}>
+                <View style={styles.starterCard}>
+                    <Text style={styles.collectionEyebrow}>{t('home.starterEyebrow')}</Text>
+                    <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={t('home.starterPreviewA11y', { title, author })}
+                        onPress={() => handleBookPreviewPress(book, 0)}
+                        style={({ pressed }) => [styles.starterBookRow, pressed && styles.pressed]}
+                    >
+                        <Book3D
+                            width={Spacing.xl8 * 3}
+                            height={Spacing.xl8 * 4 + Spacing.lg}
+                            radius={2}
+                        >
+                            <BookCover
+                                book={book}
+                                width={Spacing.xl8 * 3}
+                                height={Spacing.xl8 * 4 + Spacing.lg}
+                                style={styles.bookRowCover}
+                                titleStyle={styles.bookRowCoverText}
+                            />
+                        </Book3D>
+                        <View style={styles.bookRowCopy}>
+                            <Text
+                                style={[styles.bookRowTitle, getSerifFontForText(title)]}
+                                numberOfLines={2}
+                            >
+                                {title}
+                            </Text>
+                            {translatedTitle && translatedTitle !== title ? (
+                                <Text style={styles.starterTranslatedTitle} numberOfLines={1}>
+                                    {translatedTitle}
+                                </Text>
+                            ) : null}
+                            <Text style={styles.bookRowAuthor} numberOfLines={1}>
+                                {author}
+                            </Text>
+                            {meta ? (
+                                <Text style={styles.bookRowMeta} numberOfLines={1}>
+                                    {meta}
+                                </Text>
+                            ) : null}
+                        </View>
+                    </Pressable>
+                    <Text style={styles.starterCopy}>{t('home.starterBody')}</Text>
+                    <TouchableOpacity
+                        accessibilityRole="button"
+                        accessibilityLabel={t('home.starterStartA11y', { title })}
+                        activeOpacity={Motion.pressedOpacity}
+                        onPress={openStarterBook}
+                        style={[styles.collectionEmptyPrimary, styles.starterPrimary]}
+                    >
+                        <Feather name="book-open" size={IconDefaults.size - Spacing.sm} color={HOME_COLORS.onAccent} />
+                        <Text style={styles.collectionEmptyPrimaryText}>{t('home.startReading')}</Text>
+                    </TouchableOpacity>
+                </View>
+                <Text style={styles.starterAltLabel}>{t('home.starterOrOwn')}</Text>
+                <View style={styles.starterSecondaryActions}>
+                    <TouchableOpacity
+                        accessibilityRole="button"
+                        activeOpacity={Motion.pressedOpacity}
+                        onPress={confirmAddBook}
+                        style={styles.collectionEmptySecondary}
+                    >
+                        <Text style={styles.collectionEmptySecondaryText}>{t('home.importEpub')}</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                        accessibilityRole="button"
+                        activeOpacity={Motion.pressedOpacity}
+                        onPress={() => {
+                            setActiveLibraryTab('Books');
+                            setActiveBookFilter('public-domain');
+                        }}
+                        style={styles.collectionEmptySecondary}
+                    >
+                        <Text style={styles.collectionEmptySecondaryText}>{t('home.browse')}</Text>
+                    </TouchableOpacity>
+                </View>
+            </View>
+        );
+    };
+
     const renderBookGrid = (items) => (
         <View style={styles.bookGrid}>
             {items.map((book, index) => {
@@ -3917,7 +4078,11 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
                     {!showingPublicDomainBooks ? (
                         <>
-                            {filteredLibraryBooks.length === 0 ? (
+                            {filteredLibraryBooks.length === 0 && activeBookFilter !== 'favorites' && starterBook ? (
+                                renderStarterBookCard(starterBook)
+                            ) : filteredLibraryBooks.length === 0 && activeBookFilter !== 'favorites' && starterBookPending ? (
+                                <View style={styles.collectionEmptyState} />
+                            ) : filteredLibraryBooks.length === 0 ? (
                                 renderCollectionEmptyState({
                                     icon: activeBookFilter === 'favorites' ? 'star' : 'book-open',
                                     title: activeBookFilter === 'favorites' ? t('home.noFavoritesTitle') : t('home.shelfEmptyTitle'),
@@ -5172,6 +5337,57 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         letterSpacing: TextStyles.label.letterSpacing,
         textTransform: 'uppercase',
         color: HOME_COLORS.text,
+    },
+    starterCard: {
+        alignSelf: 'stretch',
+        width: '100%',
+        maxWidth: Layout.tabBarHeight * 8,
+        marginTop: Spacing.xl6,
+        padding: Spacing.xl6,
+        borderRadius: Radii.card,
+        borderWidth: Layout.tabBarBorderWidth,
+        borderColor: HOME_COLORS.border,
+        backgroundColor: HOME_COLORS.paper,
+    },
+    starterBookRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: Spacing.xl3,
+        marginTop: Spacing.xl3,
+    },
+    starterTranslatedTitle: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: TextStyles.bodyUISmall.fontSize,
+        lineHeight: TextStyles.bodyUISmall.lineHeight,
+        color: HOME_COLORS.secondary,
+        marginTop: Spacing.xs,
+    },
+    starterCopy: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: TextStyles.bodyUILarge.fontSize,
+        lineHeight: TextStyles.bodyUILarge.lineHeight,
+        marginTop: Spacing.xl3,
+        color: HOME_COLORS.sub,
+    },
+    starterPrimary: {
+        alignSelf: 'stretch',
+        marginTop: Spacing.xl6,
+    },
+    starterAltLabel: {
+        ...textStyles.eyebrow,
+        fontSize: 10,
+        lineHeight: 13,
+        marginTop: Spacing.xl8,
+        textAlign: 'center',
+        color: HOME_COLORS.tertiary,
+    },
+    starterSecondaryActions: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexWrap: 'wrap',
+        gap: Spacing.lg,
+        marginTop: Spacing.xl3,
     },
     bookGrid: {
         flexDirection: 'row',
