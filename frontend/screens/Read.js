@@ -8,6 +8,7 @@ import { Slider } from 'react-native-elements';
 import TopSection from '../components/Read/TopSection/TopSection';
 import TocDrawer from '../components/Read/TocDrawer';
 import FocusControls from '../components/Read/FocusControls';
+import PinnedSentenceTranslation, { PINNED_TRANSLATION_BAR_HEIGHT } from '../components/Read/PinnedSentenceTranslation';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
@@ -99,6 +100,9 @@ const DEFAULT_READER_SETTINGS = {
     // Chinese only: draw pinyin above underlined (graded) words. Loosens line
     // spacing when on, so it re-paginates. Ignored for non-Chinese books.
     pinyinAnnotations: false,
+    // A fixed-height bar under the header that keeps the translation of the
+    // last tapped word's sentence on screen (duChinese-style). Off by default.
+    pinnedSentenceTranslation: false,
 };
 const READING_MODES = ['paged', 'scroll'];
 // Whether graded words get a solid gradient underline. 'off' hides the marks but
@@ -610,6 +614,9 @@ const Read = ({
 
     // ── Focus (sentence beam) mode ───────────────────────────────────────────
     const [focusMode, setFocusMode] = useState(false);
+    // Sentence of the last tapped word, for the pinned translation bar. Outlives
+    // the lookup panel; cleared on a chapter or book change.
+    const [pinnedSentence, setPinnedSentence] = useState('');
     const [focusNavToken, setFocusNavToken] = useState('none:0');
     const [lookupPanelHeight, setLookupPanelHeight] = useState(0);
     // Focus info (sentence index/total) updates on every beam step. It is kept
@@ -1062,6 +1069,7 @@ const Read = ({
         setHighlightedWordContext({
             sentence,
         });
+        setPinnedSentence(sentence || text);
         setLookupPlacement(event.placement === 'top' ? 'top' : 'bottom');
 
         recordVocabContextForSurface({
@@ -1362,6 +1370,7 @@ const Read = ({
             brightness: DEFAULT_READER_SETTINGS.brightness,
             readingMode: DEFAULT_READER_SETTINGS.readingMode,
             levelMarkStyle: DEFAULT_READER_SETTINGS.levelMarkStyle,
+            pinnedSentenceTranslation: DEFAULT_READER_SETTINGS.pinnedSentenceTranslation,
         });
     };
 
@@ -1493,6 +1502,10 @@ const Read = ({
     const activeSpineIndex = Number.isInteger(currentSpineIndex)
         ? currentSpineIndex
         : spineIndexForReaderPackage(nativeReaderPackage);
+    // The pinned sentence translation belongs to the chapter it came from.
+    useEffect(() => {
+        setPinnedSentence('');
+    }, [activeSpineIndex, currentBook]);
     const activeChapterTitle = useMemo(() => {
         const fallbackTitle = Number.isInteger(activeSpineIndex)
             ? `${t('read.chapter')} ${activeSpineIndex + 1}`
@@ -3023,7 +3036,14 @@ const Read = ({
     // to the bottom sits on top of it. FOCUS_SPAN_TOP_MARGIN_DP in the native
     // module reserves the matching strip of reading surface, so a sentence too
     // tall to fit still stops short of the pill instead of running under it.
-    const focusPillTop = (isFullscreen ? insets.top : insets.top + spacing.xs + 52) + 12;
+    // The pinned translation bar (when shown) pushes the reading surface down by
+    // its fixed height, so everything anchored to the reader's top edge shifts
+    // with it. Hidden in fullscreen, like the header.
+    const showPinnedTranslation = Boolean(settings.pinnedSentenceTranslation)
+        && !isFullscreen
+        && Boolean(currentBook);
+    const pinnedTranslationOffset = showPinnedTranslation ? PINNED_TRANSLATION_BAR_HEIGHT : 0;
+    const focusPillTop = (isFullscreen ? insets.top : insets.top + spacing.xs + 52 + pinnedTranslationOffset) + 12;
     // Arrow controls ride 12dp above the open panel, mirroring the 28 → panel+12
     // bottom shift in the design.
     const focusControlsLiftTarget = focusPanelOpen
@@ -3203,6 +3223,14 @@ const Read = ({
                 </View>
             ) : null}
 
+            {showPinnedTranslation ? (
+                <PinnedSentenceTranslation
+                    sentence={pinnedSentence}
+                    sourceLanguage={activeBookLanguage}
+                    targetLanguage={interfaceLanguage}
+                />
+            ) : null}
+
             <View style={styles.reader}>
                 {bookLoadState === 'error' ? (
                     <View style={styles.readerErrorState}>
@@ -3348,7 +3376,7 @@ const Read = ({
                     styles.lookupLayer,
                     shouldPlaceLookupAtTop ? styles.lookupLayerTop : styles.lookupLayerBottom,
                     shouldPlaceLookupAtTop
-                        ? { paddingTop: isFullscreen ? 0 : insets.top + spacing.xs + 52 }
+                        ? { paddingTop: isFullscreen ? 0 : insets.top + spacing.xs + 52 + pinnedTranslationOffset }
                         // Focus mode anchors the panel flush to the bottom edge; in
                         // regular reading the reader content already ends at the tab
                         // bar's top edge, so the panel sits flush against that. The
@@ -3390,7 +3418,7 @@ const Read = ({
                         {
                             paddingTop: isFullscreen
                                 ? insets.top + 8
-                                : insets.top + spacing.xs + 60,
+                                : insets.top + spacing.xs + 60 + pinnedTranslationOffset,
                         },
                     ]}
                 >
@@ -3665,6 +3693,33 @@ const Read = ({
                                         </View>
                                     </View>
                                 ) : null}
+
+                                <View style={styles.markStyleBlock}>
+                                    <Text style={styles.fontSettingsLabel}>{t('read.pinnedTranslation')}</Text>
+                                    <View style={styles.segmentGroup}>
+                                        {[false, true].map((value) => {
+                                            const selected = Boolean(settings.pinnedSentenceTranslation) === value;
+                                            return (
+                                                <TouchableOpacity
+                                                    key={String(value)}
+                                                    style={[styles.segmentButton, selected && styles.segmentButtonActive]}
+                                                    onPress={() => handleSettingChange('pinnedSentenceTranslation', value)}
+                                                    activeOpacity={0.7}
+                                                    accessibilityRole="button"
+                                                    accessibilityState={{ selected }}
+                                                >
+                                                    <Text
+                                                        style={[styles.segmentButtonText, selected && styles.segmentButtonTextActive]}
+                                                        numberOfLines={1}
+                                                    >
+                                                        {value ? t('read.pinyinOn') : t('read.pinyinOff')}
+                                                    </Text>
+                                                </TouchableOpacity>
+                                            );
+                                        })}
+                                    </View>
+                                    <Text style={styles.underlineLegendHint}>{t('read.pinnedTranslationHint')}</Text>
+                                </View>
                             </View>
 
                             <View style={styles.optionsSectionHeader}>
