@@ -318,11 +318,63 @@ class EpubPageView(context: Context) : View(context) {
     drawReaderEdgeState(canvas)
   }
 
+  // In scroll and focus modes this view holds the whole chapter inside a
+  // ScrollView, and every invalidate (each focus fade frame, a selection, a
+  // highlight change) re-records its display list. Recording only the blocks
+  // near the visible window keeps that cost proportional to the screen, not
+  // the chapter. The window spans one screen above and below what's visible;
+  // the scroll view calls onViewportScrolled so we re-record before the
+  // reader scrolls past it.
+  private var recordedWindowTop = Int.MIN_VALUE
+  private var recordedWindowBottom = Int.MAX_VALUE
+
+  private fun scrollViewport(): Pair<Int, Int>? {
+    val scroller = parent as? android.widget.ScrollView ?: return null
+    val viewportHeight = scroller.height
+    if (viewportHeight <= 0) return null
+    return scroller.scrollY to viewportHeight
+  }
+
+  fun onViewportScrolled(scrollY: Int, viewportHeight: Int) {
+    if (recordedWindowTop == Int.MIN_VALUE) return
+    val margin = viewportHeight / 4
+    if (scrollY - margin < recordedWindowTop || scrollY + viewportHeight + margin > recordedWindowBottom) {
+      invalidate()
+    }
+  }
+
   private fun drawPageBlocks(canvas: Canvas, contentWidth: Int) {
     var yOffset = paddingV.toFloat()
+    val viewport = scrollViewport()
+    val windowTop: Float
+    val windowBottom: Float
+    if (viewport != null) {
+      val (scrollY, viewportHeight) = viewport
+      recordedWindowTop = scrollY - viewportHeight
+      recordedWindowBottom = scrollY + viewportHeight * 2
+      windowTop = recordedWindowTop.toFloat()
+      windowBottom = recordedWindowBottom.toFloat()
+    } else {
+      recordedWindowTop = Int.MIN_VALUE
+      recordedWindowBottom = Int.MAX_VALUE
+      windowTop = Float.NEGATIVE_INFINITY
+      windowBottom = Float.POSITIVE_INFINITY
+    }
 
     page?.blocks?.forEach { block ->
       yOffset += block.marginTop
+
+      // Skip blocks wholly outside the recorded window. Text heights come from
+      // the prebuilt layout, so skipping never changes where later blocks land.
+      val blockHeight = if (block.type == "image") {
+        block.imageHeight.toFloat()
+      } else {
+        block.textLayout?.height?.toFloat()
+      }
+      if (blockHeight != null && (yOffset + blockHeight < windowTop || yOffset > windowBottom)) {
+        yOffset += blockHeight + block.marginBottom
+        return@forEach
+      }
 
       if (block.type == "image") {
         val blockWidth = block.contentWidth.takeIf { it > 0 } ?: contentWidth
@@ -389,7 +441,7 @@ class EpubPageView(context: Context) : View(context) {
     var drawnCount = 0
     var firstBaseline = -1f
 
-    levelRanges.forEach { range ->
+    rangesForBlock(levelRanges, block.blockId).forEach { range ->
       val pinyin = range.pinyin?.takeIf { it.isNotBlank() } ?: return@forEach
       if (
         range.pageIndex != currentPage.pageIndex ||
@@ -1578,6 +1630,21 @@ class EpubPageView(context: Context) : View(context) {
     geometryDirty = false
   }
 
+  // A chapter's level ranges number in the hundreds or thousands; scanning all
+  // of them for every block on every frame dominated draw time. Group each
+  // range list by block once (keyed by list identity: the lists are replaced,
+  // never mutated) and reuse the grouping until a new list arrives.
+  private val rangesByBlockCache = java.util.IdentityHashMap<List<TextRange>, Map<String, List<TextRange>>>()
+
+  private fun rangesForBlock(ranges: List<TextRange>, blockId: String): List<TextRange> {
+    if (ranges.isEmpty()) return ranges
+    val grouped = rangesByBlockCache[ranges] ?: run {
+      if (rangesByBlockCache.size >= 8) rangesByBlockCache.clear()
+      ranges.groupBy { it.blockId }.also { rangesByBlockCache[ranges] = it }
+    }
+    return grouped[blockId].orEmpty()
+  }
+
   private fun drawTextHighlights(
     canvas: Canvas,
     block: PageBlock,
@@ -1589,11 +1656,10 @@ class EpubPageView(context: Context) : View(context) {
     val blockTextLength = blockTextForSelection(block).length
     if (blockTextLength <= 0) return
 
-    ranges.forEach { range ->
+    rangesForBlock(ranges, block.blockId).forEach { range ->
       if (
         range.pageIndex != currentPage.pageIndex ||
-        range.spineIndex != currentPage.spineIndex ||
-        range.blockId != block.blockId
+        range.spineIndex != currentPage.spineIndex
       ) {
         return@forEach
       }
