@@ -76,12 +76,11 @@ import {
     normalizeInterfaceLanguageCode,
 } from '../constants/languages';
 import {
-    difficultyFromLevelRank,
     exposureDwellIsPlausible,
     lowestUnderlinedRank,
-    pKnown,
-    underlineCategory,
 } from '../services/abilityModel';
+import { buildLevelUnderlineTerms } from '../services/levelUnderlineTerms';
+import { buildLegendGradient } from '../services/readerSettings';
 import { createNativeReaderThemeTokens, radii, spacing, textStyles, useTheme } from '../theme';
 
 const LOOKUP_HINT_DISMISSED_KEY = 'lookupHintDismissed';
@@ -112,42 +111,6 @@ const LEVEL_MARK_OPTIONS = [
 // array each render (which would churn the level matcher).
 const EMPTY_LEVEL_TERMS = [];
 
-// Number of segments in the legend gradient bar. Enough to read as continuous.
-const LEGEND_GRADIENT_STEPS = 12;
-
-// Parse "#rrggbb" → [r, g, b]; tolerant of a missing/short value (→ null so the
-// caller can skip a broken stop rather than render black).
-const parseHexColor = (hex) => {
-    const match = /^#?([0-9a-f]{6})$/i.exec(typeof hex === 'string' ? hex.trim() : '');
-    if (!match) {
-        return null;
-    }
-    const int = parseInt(match[1], 16);
-    return [(int >> 16) & 0xff, (int >> 8) & 0xff, int & 0xff];
-};
-
-const rgbToHex = ([r, g, b]) => `#${[r, g, b]
-    .map((v) => Math.round(v).toString(16).padStart(2, '0'))
-    .join('')}`;
-
-const lerpRgb = (from, to, t) => from.map((c, i) => c + (to[i] - c) * t);
-
-// Interpolate easy → mid → hard into LEGEND_GRADIENT_STEPS colors (mid at the
-// centre), mirroring EpubPageView.applyLevelUnderlineShade so the legend and the
-// page agree. Falls back to the raw stops if any hex fails to parse.
-const buildLegendGradient = (easyHex, midHex, hardHex) => {
-    const easy = parseHexColor(easyHex);
-    const mid = parseHexColor(midHex);
-    const hard = parseHexColor(hardHex);
-    if (!easy || !mid || !hard) {
-        return [easyHex, midHex, hardHex].filter(Boolean);
-    }
-    return Array.from({ length: LEGEND_GRADIENT_STEPS }, (_, i) => {
-        const t = i / (LEGEND_GRADIENT_STEPS - 1);
-        const rgb = t <= 0.5 ? lerpRgb(easy, mid, t / 0.5) : lerpRgb(mid, hard, (t - 0.5) / 0.5);
-        return rgbToHex(rgb);
-    });
-};
 const FONT_SIZE_MIN = 12;
 const FONT_SIZE_MAX = 30;
 const FOCUS_SPAN_MIN = 1;
@@ -215,78 +178,6 @@ const uniqTerms = (values) => [...new Set(
         .map((value) => (typeof value === 'string' ? value.trim() : ''))
         .filter(Boolean)
 )];
-
-/**
- * buildLevelUnderlineTerms — turn the book's graded surfaces into the weighted
- * term list the native reader shades its underlines with.
- *
- * The weight is a position on the green→amber→red gradient derived from
- * P(known | theta, word difficulty), NOT from the user's self-reported band. A
- * word the model thinks you know is dropped entirely; the rest ramp from "nearly
- * known" to "well above you". Native owns the actual colors so the gradient can
- * follow the reader theme without a recompute here.
- *
- * Ambiguous surfaces (one surface, several stems) keep their HARDEST rank — the
- * conservative read, matching what the old rank-bucketed version did.
- */
-const buildLevelUnderlineTerms = (rows, language, theta) => {
-    if (!Number.isFinite(Number(theta))) {
-        return [];
-    }
-
-    // Per surface keep its hardest rank (conservative) AND that stem's in-book
-    // occurrence count (stem_count, from the window function) — the §8 "future
-    // exposure" signal that splits hard words into study vs reinforced.
-    const surfaceInfo = new Map();
-    // Pinyin (dc.ipa for zh) rides along so the native reader can annotate underlined
-    // words. Only present for Chinese; harmless (unused) for other languages.
-    const surfacePinyin = new Map();
-    (rows || []).forEach((row) => {
-        const surface = typeof row?.surface === 'string' ? row.surface.trim() : '';
-        const rank = Number(row?.level_rank ?? row?.proficiency_rank);
-        if (!surface || !Number.isFinite(rank)) {
-            return;
-        }
-
-        const pinyin = typeof row?.ipa === 'string' ? row.ipa.trim() : '';
-        if (pinyin && !surfacePinyin.has(surface)) {
-            surfacePinyin.set(surface, pinyin);
-        }
-
-        const count = Number(row?.stem_count);
-        const previous = surfaceInfo.get(surface);
-        if (!previous || rank > previous.rank) {
-            surfaceInfo.set(surface, { rank, count: Number.isFinite(count) ? count : 0 });
-        }
-    });
-
-    // P(known) depends only on the rank, and there are at most 7 ranks, so memoize it
-    // per rank instead of recomputing a sigmoid per surface. underlineCategory turns
-    // (P, remaining count) into { weight, category } — same weight as before, plus the
-    // study/reinforced split.
-    const pKnownByRank = new Map();
-    const pKnownForRank = (rank) => {
-        if (!pKnownByRank.has(rank)) {
-            pKnownByRank.set(rank, pKnown(theta, difficultyFromLevelRank(language, rank)));
-        }
-        return pKnownByRank.get(rank);
-    };
-
-    const terms = [];
-    surfaceInfo.forEach(({ rank, count }, surface) => {
-        const shade = underlineCategory(pKnownForRank(rank), count);
-        if (shade != null) {
-            const term = { text: surface, weight: shade.weight, category: shade.category };
-            const pinyin = surfacePinyin.get(surface);
-            if (pinyin) {
-                term.pinyin = pinyin;
-            }
-            terms.push(term);
-        }
-    });
-
-    return terms;
-};
 
 const getBookLevelLabelForRank = (language, rank) => {
     const normalizedLanguage = normalizeBookLanguage(language);
