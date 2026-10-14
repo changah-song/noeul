@@ -39,9 +39,19 @@ each file (DTD_LMF_REV_16.dtd). Everything is `<feat att="…" val="…"/>` pair
       </Sense>
     </LexicalEntry>
 
-Homonyms are repeated LexicalEntry elements sharing one writtenForm, so sense_no
-is assigned as a running counter per headword across all its entries (primary
-sense = 1). This is verified against real dump data, not guessed.
+Homographs are repeated LexicalEntry elements sharing one writtenForm (가격 加擊
+"hitting" and 가격 價格 "price"; 눈 "eye" and 눈 "snow"). The dump lists them in
+homonym-number order, which is not frequency order: 加擊 comes before 價格. So the
+importer collects every entry first, then for each headword stably sorts its
+entries by the entry's learner vocabulary grade —
+
+    <feat att="vocabularyLevel" val="초급" />   <!-- 초급 < 중급 < 고급 < 없음 -->
+
+— and only then assigns sense_no as a running counter across the sorted entries
+(primary sense = 1). Entries with the same grade keep dump order, and each
+entry's own senses keep their dictionary order. The dump has no per-entry
+frequency field, so the grade is the only commonness signal used. Entries can
+span file boundaries, so ordering happens after all files are read.
 
 Scope
 -----
@@ -131,12 +141,22 @@ def english_gloss(sense: ET.Element) -> str | None:
     return None
 
 
-def iter_entries(xml_path: str, sense_counter: dict[str, int]):
-    """Yield (stem, sense_no, pos, hanja, definition, domain) rows from one LMF
-    file. One row per sense that has an English equivalent; senses without one
-    are skipped. `sense_counter` is shared across files so homonyms (repeated
-    LexicalEntry with the same writtenForm) get a stable running sense_no and
-    never collide on the (stem, sense_no) primary key.
+# Learner vocabulary grade per LexicalEntry: basic words first. Anything else
+# (없음 = not in the learner word list, or a missing feat) sorts last.
+VOCABULARY_LEVEL_RANK = {"초급": 0, "중급": 1, "고급": 2}
+UNGRADED_RANK = len(VOCABULARY_LEVEL_RANK)
+
+
+def vocabulary_rank(entry: ET.Element) -> int:
+    return VOCABULARY_LEVEL_RANK.get(feat(entry, "vocabularyLevel"), UNGRADED_RANK)
+
+
+def iter_entries(xml_path: str):
+    """Yield (stem, rank, senses) per LexicalEntry in one LMF file, where senses
+    is a list of (pos, hanja, definition, domain) in dictionary order — one per
+    sense with an English equivalent; senses without one are skipped. Entries
+    with no English sense at all are still yielded (with an empty list) so the
+    caller sees every entry; they contribute no rows.
     """
     text = INVALID_XML_CHARS.sub("", open(xml_path, encoding="utf-8").read())
     text = escape_attr_angle_brackets(text)
@@ -151,13 +171,25 @@ def iter_entries(xml_path: str, sense_counter: dict[str, int]):
         hanja = feat(entry, "origin")
         domain = feat_any(entry, DOMAIN_ATTS)
 
+        senses = []
         for sense in entry.findall("Sense"):
             gloss = english_gloss(sense)
-            if not gloss:
-                continue
-            sense_no = sense_counter.get(stem, 0) + 1
-            sense_counter[stem] = sense_no
-            yield (stem, sense_no, pos, hanja, gloss, domain)
+            if gloss:
+                senses.append((pos, hanja, gloss, domain))
+        yield stem, vocabulary_rank(entry), senses
+
+
+def number_senses(entries_by_stem: dict[str, list[tuple[int, list]]]):
+    """Yield (stem, sense_no, pos, hanja, definition, domain) rows. Each
+    headword's entries (homographs) are stably sorted by vocabulary grade, then
+    sense_no runs across them so sense 1 is the first sense of the most basic
+    entry."""
+    for stem, entries in entries_by_stem.items():
+        sense_no = 0
+        for _rank, senses in sorted(entries, key=lambda item: item[0]):
+            for pos, hanja, gloss, domain in senses:
+                sense_no += 1
+                yield (stem, sense_no, pos, hanja, gloss, domain)
 
 
 def main() -> None:
@@ -168,8 +200,8 @@ def main() -> None:
 
     def numeric_key(path: str) -> tuple[int, str]:
         # Files are named by entry count (5000.xml … 51947.xml); sort numerically
-        # so senses arrive in dump order and sense_no=1 is the first/most-common
-        # sense even when a headword's homonyms span a file boundary.
+        # so entries arrive in dump order, which breaks ties between homographs
+        # of the same vocabulary grade.
         name = os.path.splitext(os.path.basename(path))[0]
         return (int(name), name) if name.isdigit() else (10**9, name)
 
@@ -180,26 +212,30 @@ def main() -> None:
     conn = sqlite3.connect(args.out)
     try:
         conn.executescript(SCHEMA)
-        total = 0
         skipped = []
-        sense_counter: dict[str, int] = {}
+        # stem -> [(vocabulary rank, senses)] in dump order. Homographs can span
+        # files, so every file is read before any sense_no is assigned.
+        entries_by_stem: dict[str, list[tuple[int, list]]] = {}
         for xml_path in xml_files:
             try:
-                rows = list(iter_entries(xml_path, sense_counter))
+                entries = list(iter_entries(xml_path))
             except ET.ParseError as error:
                 # One unparseable file shouldn't sink a 50-file import — warn,
                 # skip, keep going, and report the casualties at the end.
                 print(f"[import] SKIP {os.path.basename(xml_path)}: {error}")
                 skipped.append(os.path.basename(xml_path))
                 continue
-            conn.executemany(
-                "INSERT OR IGNORE INTO ko_dictionary "
-                "(stem, sense_no, pos, hanja, definition, domain) VALUES (?,?,?,?,?,?)",
-                rows,
-            )
-            conn.commit()
-            total += len(rows)
-            print(f"[import] {os.path.basename(xml_path)}: +{len(rows)} rows (total {total})")
+            for stem, rank, senses in entries:
+                entries_by_stem.setdefault(stem, []).append((rank, senses))
+            print(f"[import] {os.path.basename(xml_path)}: {len(entries)} entries")
+
+        conn.executemany(
+            "INSERT INTO ko_dictionary "
+            "(stem, sense_no, pos, hanja, definition, domain) VALUES (?,?,?,?,?,?)",
+            number_senses(entries_by_stem),
+        )
+        conn.commit()
+        total = conn.execute("SELECT COUNT(*) FROM ko_dictionary").fetchone()[0]
 
         conn.execute("CREATE INDEX idx_ko_dictionary_stem ON ko_dictionary(stem)")
         conn.commit()

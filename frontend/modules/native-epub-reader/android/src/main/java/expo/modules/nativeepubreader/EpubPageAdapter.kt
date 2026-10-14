@@ -15,6 +15,7 @@ class EpubPageAdapter(
   private var savedHighlightRangesByPage: Map<Int, List<TextRange>>,
   private var levelRangesByPage: Map<Int, List<TextRange>>,
   private var showPinyin: Boolean,
+  private var showGloss: Boolean,
   private var activeHighlightColor: Int,
   private var textSelectionHighlightColor: Int,
   private var savedHighlightColor: Int,
@@ -74,11 +75,12 @@ class EpubPageAdapter(
     savedHighlightRangesByPage = rangesByPage
   }
 
-  fun setShowPinyin(enabled: Boolean) {
-    if (showPinyin == enabled) {
+  fun setAnnotations(pinyin: Boolean, gloss: Boolean) {
+    if (showPinyin == pinyin && showGloss == gloss) {
       return
     }
-    showPinyin = enabled
+    showPinyin = pinyin
+    showGloss = gloss
     notifyDataSetChanged()
   }
 
@@ -174,7 +176,8 @@ class EpubPageAdapter(
       onSelectionCleared = onSelectionCleared,
       onSelectionDragStateChanged = onSelectionDragStateChanged,
       onEdgeAction = onEdgeAction,
-      showPinyin = showPinyin
+      showPinyin = showPinyin,
+      showGloss = showGloss
     )
   }
 

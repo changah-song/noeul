@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     Alert,
+    Animated,
+    BackHandler,
+    Easing,
     Modal,
+    PanResponder,
     Platform,
     Pressable,
     ScrollView,
@@ -9,19 +13,58 @@ import {
     Text,
     TextInput,
     TouchableOpacity,
-    useWindowDimensions,
     View,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import TopSection from '../Read/TopSection/TopSection';
+import FocusControls from '../Read/FocusControls';
+import SavedWordsPanel from '../Read/SavedWordsPanel';
+import ReaderOptionsMenu from '../Read/ReaderOptionsMenu';
+import {
+    ReaderFocusModeButton,
+    ReaderHeaderBar,
+    ReaderMenuButton,
+    ReaderSavedWordsButton,
+} from '../Read/ReaderHeaderBar';
+import { createReaderChromeStyles } from '../Read/readerChromeStyles';
 import NativeEpubReaderView from '../../modules/native-epub-reader/src/NativeEpubReaderView';
 import { useAppContext } from '../../contexts/AppContext';
 import { useLocalOwner } from '../../contexts/LocalOwnerContext';
 import { useTranslation } from '../../hooks/useTranslation';
-import { getSavedWords } from '../../services/Database';
+import useReaderLookup from '../../hooks/useReaderLookup';
+import useLevelUnderlineTerms from '../../hooks/useLevelUnderlineTerms';
+import useFocusNavigation from '../../hooks/useFocusNavigation';
+import {
+    applyExposureBatch,
+    getBookSavedWords,
+    getBookWordCandidates,
+    getSavedWords,
+    lookupBookHighlightSurfaces,
+    recordVocabContextForSurface,
+} from '../../services/Database';
 import { ensureSongPreprocessed, getSongBookUri } from '../../services/songPreprocess';
+import { tapCommit, tapUndo } from '../../services/haptics';
+import { requestUserDataSync } from '../../services/userDataSyncQueue';
+import { deriveCandidateReason, pickExampleSentence } from '../../services/wordCandidates';
+import { saveWordCandidate } from '../../services/saveWordCandidate';
+import { selectExposureCredits } from '../../services/readerExposure';
+import { lookupLayerPlacement } from '../../services/readerSelection';
+import {
+    DEFAULT_SONG_READER_SETTINGS,
+    brightnessOverlay,
+    normalizeReaderSettings,
+} from '../../services/readerSettings';
+import { normalizeBookLanguage } from '../../constants/languages';
 import { createNativeReaderThemeTokens, fontFamilies, spacing, textStyles, useTheme } from '../../theme';
+
+// Song reader settings are kept apart from the book reader's (`readerSettings`)
+// because Read.js holds those in memory and would overwrite changes made here.
+const SONG_READER_SETTINGS_KEY = 'songReaderSettings';
+const SONG_RESTORE_POSITION = { spineIndex: 0, pageIndex: 0 };
+// Stable empty reference so toggling underlines off doesn't churn native.
+const EMPTY_LEVEL_TERMS = [];
 
 // Word characters we treat as tappable/lookup-able across supported targets:
 // Hangul (jamo + syllables), Latin letters, digits, and CJK ideographs
@@ -29,15 +72,9 @@ import { createNativeReaderThemeTokens, fontFamilies, spacing, textStyles, useTh
 const CJK_IDEOGRAPHS = '\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff';
 const WORD_CHARS = `\\u3131-\\u318e\\uac00-\\ud7a3a-zA-Z0-9${CJK_IDEOGRAPHS}`;
 const WORD_EDGE_PATTERN = new RegExp(`^[^${WORD_CHARS}]+|[^${WORD_CHARS}]+$`, 'g');
-const DEFAULT_LYRIC_FONT_SIZE = 28;
-const MIN_LYRIC_FONT_SIZE = 20;
-const MAX_LYRIC_FONT_SIZE = 30;
-const SONG_READER_LINE_HEIGHT = 1.54;
 
 const cleanLyricToken = (value) => String(value || '').replace(WORD_EDGE_PATTERN, '').trim();
-
 const normalizeForMatch = (value) => cleanLyricToken(value).toLowerCase();
-const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 const countSongLines = (lyrics) => String(lyrics || '')
     .split(/\r?\n/)
     .filter((line) => line.trim().length > 0)
@@ -57,8 +94,8 @@ const makeSongDraft = (song) => ({
 
 // CJK ideographs are emitted one-per-segment (Chinese lyrics rarely use spaces,
 // so a whole run in one tappable token would select the entire line); Hangul,
-// Latin, and digit runs stay grouped as before. On Android the native reader
-// handles word selection, so this JS path only runs on iOS.
+// Latin, and digit runs stay grouped. On Android the native reader handles word
+// selection, so this JS path only runs on iOS.
 const LYRIC_SEGMENT_PATTERN = new RegExp(
     `[${CJK_IDEOGRAPHS}]|[\\u3131-\\u318e\\uac00-\\ud7a3a-zA-Z0-9]+|[^${WORD_CHARS}]+`,
     'g'
@@ -106,29 +143,135 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     const { t } = useTranslation();
     const { colors } = useTheme();
     const styles = useMemo(() => createStyles(colors), [colors]);
+    const chrome = useMemo(() => createReaderChromeStyles(colors), [colors]);
     const { targetLanguage, chineseScript, interfaceLanguage, isDarkMode } = useAppContext();
     const { activeOwnerId } = useLocalOwner();
     const insets = useSafeAreaInsets();
-    const { height: viewportHeight } = useWindowDimensions();
-    const [savedWords, setSavedWords] = useState(null);
-    const [highlightedWord, setHighlightedWord] = useState('');
-    const [highlightedWordContext, setHighlightedWordContext] = useState(null);
-    const [isNativeSelection, setIsNativeSelection] = useState(false);
-    const [lookupPlacement, setLookupPlacement] = useState('bottom');
-    const [clearSelectionToken, setClearSelectionToken] = useState(0);
-    const [lyricFontSize, setLyricFontSize] = useState(() => clamp(
-        Number(song?.fontSize) || DEFAULT_LYRIC_FONT_SIZE,
-        MIN_LYRIC_FONT_SIZE,
-        MAX_LYRIC_FONT_SIZE
-    ));
+    const songLanguage = normalizeBookLanguage(targetLanguage);
+    const songUri = getSongBookUri(song?.id);
+
+    const [savedWords, setSavedWords] = useState(null); // null = not yet loaded
+    const [highlightSurfaces, setHighlightSurfaces] = useState([]);
+    const [optimisticHighlightTerms, setOptimisticHighlightTerms] = useState([]);
+    const [songSavedWords, setSongSavedWords] = useState([]);
+    // Bumped when the lyrics finish indexing into book_index, so the level
+    // underlines and saved-word surfaces (which read book_index) reload.
+    const [indexVersion, setIndexVersion] = useState(0);
+    const [settings, setSettings] = useState(() => normalizeReaderSettings(null, DEFAULT_SONG_READER_SETTINGS));
+    const [focusMode, setFocusMode] = useState(false);
+    const [lookupPanelHeight, setLookupPanelHeight] = useState(0);
     const [isMenuVisible, setIsMenuVisible] = useState(false);
     const [isEditModalVisible, setIsEditModalVisible] = useState(false);
     const [editDraft, setEditDraft] = useState(() => makeSongDraft(song));
+    const [showSavedPanel, setShowSavedPanel] = useState(false);
+    const [panelCandidates, setPanelCandidates] = useState([]);
+    const [panelCandidatesLoading, setPanelCandidatesLoading] = useState(false);
+    const [panelSavedStems, setPanelSavedStems] = useState(() => new Set());
 
+    const nativeReaderViewRef = useRef(null);
+    // Surfaces looked up since the last exposure unit closed; a lookup is its
+    // own (negative) evidence so those words must not also be credited.
+    const recentLookupsRef = useRef(new Set());
+    const savedSurfacesRef = useRef(new Set());
+    const levelWeightsRef = useRef(new Map());
+    const focusControlsTranslate = useRef(new Animated.Value(0)).current;
+
+    // ── Lookup panel (shared with the book reader) ───────────────────────────
+    const handleWordLookup = useCallback(({ text, sentence }) => {
+        recentLookupsRef.current.add(text);
+        recordVocabContextForSurface({
+            ownerId: activeOwnerId,
+            surface: text,
+            sentence,
+            sourceBookUri: songUri,
+            sourceBookTitle: song?.title ?? null,
+            language: songLanguage,
+        }).then((context) => {
+            if (context) {
+                requestUserDataSync('reader-selected-vocab-context');
+            }
+        }).catch((error) => {
+            console.warn('[SongReader] Failed to record vocab context:', error?.message ?? error);
+        });
+    }, [activeOwnerId, song?.title, songLanguage, songUri]);
+
+    const {
+        highlightedWord,
+        highlightedWordContext,
+        isNativeSelection,
+        lookupPlacement,
+        clearSelectionToken,
+        dismissLookup,
+        clearNativeSelection,
+        handleNativeWordSelected,
+        handleNativeTextSelected,
+        handleNativeSelectionCleared,
+    } = useReaderLookup({ onWordLookup: handleWordLookup, cleanText: cleanLyricToken });
+
+    const {
+        focusNavToken,
+        subscribeFocusInfo,
+        handleFocusSentenceChange,
+        sendFocusNav,
+        resetFocusNavigation,
+    } = useFocusNavigation(nativeReaderViewRef);
+
+    // ── Settings (persisted per device, separate from book settings) ─────────
     useEffect(() => {
         let isMounted = true;
+        AsyncStorage.getItem(SONG_READER_SETTINGS_KEY)
+            .then((stored) => {
+                if (!isMounted || !stored) {
+                    return;
+                }
+                setSettings(normalizeReaderSettings(JSON.parse(stored), DEFAULT_SONG_READER_SETTINGS));
+            })
+            .catch((error) => {
+                console.warn('[SongReader] Failed to load reader settings:', error?.message ?? error);
+            });
+        return () => {
+            isMounted = false;
+        };
+    }, []);
 
-        getSavedWords({ ownerId: activeOwnerId, language: targetLanguage })
+    const updateSettings = useCallback((patch) => {
+        // Like the book reader, any settings change closes the lookup panel
+        // (the layout it was anchored to is about to change).
+        dismissLookup();
+        setSettings((current) => {
+            const next = normalizeReaderSettings({ ...current, ...patch }, DEFAULT_SONG_READER_SETTINGS);
+            AsyncStorage.setItem(SONG_READER_SETTINGS_KEY, JSON.stringify(next)).catch((error) => {
+                console.warn('[SongReader] Failed to save reader settings:', error?.message ?? error);
+            });
+            return next;
+        });
+    }, [dismissLookup]);
+
+    const handleSettingChange = useCallback((key, value) => {
+        updateSettings({ [key]: value });
+    }, [updateSettings]);
+
+    const resetSongSettings = useCallback(() => {
+        updateSettings({
+            fontSize: DEFAULT_SONG_READER_SETTINGS.fontSize,
+            lineSpacing: DEFAULT_SONG_READER_SETTINGS.lineSpacing,
+            brightness: DEFAULT_SONG_READER_SETTINGS.brightness,
+            readingMode: DEFAULT_SONG_READER_SETTINGS.readingMode,
+            levelMarkStyle: DEFAULT_SONG_READER_SETTINGS.levelMarkStyle,
+        });
+    }, [updateSettings]);
+
+    const resetFocusSettings = useCallback(() => {
+        updateSettings({
+            focusSwipe: DEFAULT_SONG_READER_SETTINGS.focusSwipe,
+            focusSpan: DEFAULT_SONG_READER_SETTINGS.focusSpan,
+        });
+    }, [updateSettings]);
+
+    // ── Saved words + highlight surfaces ─────────────────────────────────────
+    useEffect(() => {
+        let isMounted = true;
+        getSavedWords({ ownerId: activeOwnerId, language: songLanguage })
             .then((words) => {
                 if (isMounted) {
                     setSavedWords(words);
@@ -140,148 +283,269 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                     setSavedWords([]);
                 }
             });
-
         return () => {
             isMounted = false;
         };
-    }, [activeOwnerId, targetLanguage]);
+    }, [activeOwnerId, songLanguage]);
 
-    // Preprocess the lyrics once (per content + interface language + script) so
-    // word taps resolve against the local book index instead of paying a remote
-    // stem + dictionary round-trip on every lookup. Fire-and-forget: until this
-    // finishes, taps still work via the live lookup fallback in DictionaryContent.
+    // Expand saved lemmas into the inflected surfaces that actually appear in
+    // the lyrics (book_index), as the book reader does.
     useEffect(() => {
-        if (!song?.id || !song?.lyrics) {
+        if (!songUri || !savedWords || savedWords.length === 0) {
+            setHighlightSurfaces([]);
+            return undefined;
+        }
+        let isActive = true;
+        lookupBookHighlightSurfaces(activeOwnerId, songUri, savedWords, {
+            language: songLanguage,
+            interfaceLanguage,
+        }).then((rows) => {
+            if (isActive) {
+                setHighlightSurfaces(rows.map((row) => row.surface).filter(Boolean));
+            }
+        }).catch((error) => {
+            console.warn('[SongReader] Failed to load highlight surfaces:', error?.message ?? error);
+            if (isActive) {
+                setHighlightSurfaces([]);
+            }
+        });
+        return () => {
+            isActive = false;
+        };
+    }, [activeOwnerId, indexVersion, interfaceLanguage, savedWords, songLanguage, songUri]);
+
+    // Words saved from *this* song — drives the header count badge and the
+    // saved-words panel.
+    const refreshSongSavedWords = useCallback(async () => {
+        if (!songUri) {
+            setSongSavedWords([]);
             return;
         }
+        try {
+            const rows = await getBookSavedWords({
+                ownerId: activeOwnerId,
+                language: songLanguage,
+                bookUri: songUri,
+            });
+            setSongSavedWords(rows);
+        } catch (error) {
+            console.warn('[SongReader] Failed to load song saved words:', error?.message ?? error);
+        }
+    }, [activeOwnerId, songLanguage, songUri]);
 
+    useEffect(() => {
+        refreshSongSavedWords();
+    }, [refreshSongSavedWords]);
+
+    // Preprocess the lyrics once (per content + interface language + script) so
+    // word taps resolve against the local book index, and so level underlines
+    // have graded surfaces to draw. Until it finishes, taps still work via the
+    // live lookup fallback in DictionaryContent.
+    useEffect(() => {
+        if (!song?.id || !song?.lyrics) {
+            return undefined;
+        }
+        let isActive = true;
         ensureSongPreprocessed({
             song,
             ownerId: activeOwnerId,
             interfaceLanguage,
             targetLanguage,
             script: targetLanguage === 'zh' ? chineseScript : undefined,
+        }).then(() => {
+            if (isActive) {
+                setIndexVersion((value) => value + 1);
+            }
         }).catch((error) => {
             console.warn('[SongReader] Failed to preprocess song lyrics:', error?.message ?? error);
         });
+        return () => {
+            isActive = false;
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [song?.id, song?.lyrics, activeOwnerId, interfaceLanguage, targetLanguage, chineseScript]);
 
+    const levelUnderlineTerms = useLevelUnderlineTerms({
+        ownerId: activeOwnerId,
+        bookUri: songUri,
+        language: songLanguage,
+        refreshKey: indexVersion,
+    });
+
     useEffect(() => {
-        setHighlightedWord('');
-        setHighlightedWordContext(null);
-        setIsNativeSelection(false);
-        setLookupPlacement('bottom');
-        setClearSelectionToken((token) => token + 1);
-        setLyricFontSize(clamp(
-            Number(song?.fontSize) || DEFAULT_LYRIC_FONT_SIZE,
-            MIN_LYRIC_FONT_SIZE,
-            MAX_LYRIC_FONT_SIZE
-        ));
+        dismissLookup();
+        setOptimisticHighlightTerms([]);
         setIsMenuVisible(false);
+        setShowSavedPanel(false);
         setEditDraft(makeSongDraft(song));
         setIsEditModalVisible(false);
+        resetFocusNavigation();
+        recentLookupsRef.current = new Set();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [song?.id]);
 
     const lyricLines = useMemo(() => buildLyricLines(song?.lyrics), [song?.lyrics]);
-    const songHighlightTerms = useMemo(() => uniqueTerms([
+    const readerHighlightTerms = useMemo(() => uniqueTerms([
         ...(savedWords || []),
+        ...highlightSurfaces,
         ...(song?.savedTerms || []),
-    ]), [savedWords, song?.savedTerms]);
+        ...optimisticHighlightTerms,
+    ]), [highlightSurfaces, optimisticHighlightTerms, savedWords, song?.savedTerms]);
+    savedSurfacesRef.current = useMemo(() => new Set(readerHighlightTerms), [readerHighlightTerms]);
+    levelWeightsRef.current = useMemo(
+        () => new Map(levelUnderlineTerms.map(({ text, weight }) => [text, weight])),
+        [levelUnderlineTerms]
+    );
     const songHighlightSet = useMemo(() => new Set(
-        songHighlightTerms.map(normalizeForMatch).filter(Boolean)
-    ), [songHighlightTerms]);
+        readerHighlightTerms.map(normalizeForMatch).filter(Boolean)
+    ), [readerHighlightTerms]);
+
     const sourceBook = useMemo(() => ({
-        uri: song?.id ? `song:${song.id}` : null,
+        uri: songUri,
         title: song?.title || t('song.untitled'),
         author: song?.artist || t('common.unknownArtist'),
-        language: targetLanguage,
-    }), [song?.artist, song?.id, song?.title, t, targetLanguage]);
+        language: songLanguage,
+    }), [song?.artist, song?.title, songLanguage, songUri, t]);
+
+    const isScrollMode = settings.readingMode === 'scroll';
+    const nativeRenderMode = focusMode ? 'focus' : (isScrollMode ? 'continuous' : 'paged');
     const nativeSongManifest = useMemo(() => ({
-        sourceUri: song?.id ? `song:${song.id}` : 'song:unknown',
+        sourceUri: songUri || 'song:unknown',
         currentSpineIndex: 0,
         currentSpineHref: 'lyrics',
         currentSpinePath: 'lyrics',
-        renderMode: 'continuous',
+        renderMode: nativeRenderMode,
         readerEdgeStateEnabled: false,
-    }), [song?.id]);
+    }), [nativeRenderMode, songUri]);
     const nativeLyricBlocks = useMemo(() => buildNativeLyricBlocks(lyricLines), [lyricLines]);
-    const nativeReaderThemeTokens = useMemo(
-        () => createNativeReaderThemeTokens(colors),
-        [colors]
-    );
+    const nativeReaderThemeTokens = useMemo(() => createNativeReaderThemeTokens(colors), [colors]);
 
-    const savedLyricsCount = useMemo(() => {
-        const lyricTokens = new Set(
-            String(song?.lyrics || '')
-                .split(/\s+/)
-                .map(normalizeForMatch)
-                .filter(Boolean)
-        );
-        return songHighlightTerms.filter((term) => lyricTokens.has(normalizeForMatch(term))).length;
-    }, [song?.lyrics, songHighlightTerms]);
+    const levelMarksEnabled = settings.levelMarkStyle !== 'off';
+    const readerLevelTerms = levelMarksEnabled ? levelUnderlineTerms : EMPTY_LEVEL_TERMS;
+    const readerShowPinyin = songLanguage === 'zh' && settings.pinyinAnnotations && levelMarksEnabled;
+    const overlay = brightnessOverlay(settings.brightness);
 
-    const closeLookup = useCallback(() => {
-        setHighlightedWord('');
-        setHighlightedWordContext(null);
-        setIsNativeSelection(false);
-        setClearSelectionToken((token) => token + 1);
-    }, []);
-
-    const lookupPlacementForEvent = useCallback((event = {}) => {
-        const pageY = Number(event?.nativeEvent?.pageY);
-        return Number.isFinite(pageY) && pageY <= viewportHeight * 0.3 ? 'top' : 'bottom';
-    }, [viewportHeight]);
-
-    const handleLyricWordPress = useCallback((word, line, event = {}) => {
-        const text = cleanLyricToken(word);
-        if (!text) {
+    // ── Exposure crediting (same rules as the book reader) ───────────────────
+    const handleNativeExposure = useCallback(({ terms, chars, dwellMs } = {}) => {
+        const lookedUp = recentLookupsRef.current;
+        recentLookupsRef.current = new Set();
+        if (!songUri) {
             return;
         }
-
-        setHighlightedWord(text);
-        setHighlightedWordContext({
-            sentence: String(line || '').trim(),
+        const skipped = selectExposureCredits({
+            terms,
+            chars,
+            dwellMs,
+            lookedUp,
+            saved: savedSurfacesRef.current,
+            weights: levelWeightsRef.current,
         });
-        setIsNativeSelection(false);
-        setLookupPlacement(lookupPlacementForEvent(event));
-    }, [lookupPlacementForEvent]);
-
-    const handleNativeWordSelected = useCallback((event = {}) => {
-        const text = cleanLyricToken(event.text);
-        if (!text) {
+        if (skipped.length === 0) {
             return;
         }
-
-        setHighlightedWord(text);
-        setHighlightedWordContext({
-            sentence: String(event.sentence || '').trim(),
+        applyExposureBatch({
+            ownerId: activeOwnerId,
+            language: songLanguage,
+            stems: skipped,
+            sourceBookUri: songUri,
+            dwellSeconds: Number(dwellMs) / 1000,
+        }).catch((error) => {
+            console.warn('[SongReader] Failed to apply exposure batch:', error);
         });
-        setIsNativeSelection(false);
-        setLookupPlacement(event.placement === 'top' ? 'top' : 'bottom');
-    }, []);
+    }, [activeOwnerId, songLanguage, songUri]);
 
-    const handleNativeTextSelected = useCallback((event = {}) => {
-        const text = String(event.text || '').trim();
-        if (!text) {
+    // ── Focus mode ───────────────────────────────────────────────────────────
+    const toggleFocusMode = useCallback(() => {
+        setIsMenuVisible(false);
+        dismissLookup();
+        setFocusMode((current) => !current);
+    }, [dismissLookup]);
+
+    const focusPanelOpen = focusMode && !!highlightedWord;
+    const focusPanelTotalHeight = focusPanelOpen ? Math.max(0, Math.round(lookupPanelHeight)) : 0;
+    const focusControlsBaseBottom = insets.bottom + 28;
+    const focusPillTop = insets.top + spacing.xs + 52 + 12;
+    const focusControlsLiftTarget = focusPanelOpen
+        ? Math.max(0, focusPanelTotalHeight + 12 - focusControlsBaseBottom)
+        : 0;
+
+    useEffect(() => {
+        Animated.timing(focusControlsTranslate, {
+            toValue: -focusControlsLiftTarget,
+            duration: 450,
+            easing: Easing.bezier(0.22, 0.61, 0.36, 1),
+            useNativeDriver: true,
+        }).start();
+    }, [focusControlsLiftTarget, focusControlsTranslate]);
+
+    // ── Save / unsave from the lookup panel ──────────────────────────────────
+    const handleWordSave = useCallback((word, options = {}) => {
+        const surface = options.includeSurface === false ? '' : highlightedWord?.trim();
+        tapCommit();
+        setSavedWords((previous) => uniqueTerms([...(previous ?? []), word]));
+        setOptimisticHighlightTerms((previous) => uniqueTerms([...previous, word, surface]));
+        onSavedTermsChange?.(uniqueTerms([...(song?.savedTerms ?? []), word, surface]));
+        clearNativeSelection();
+    }, [clearNativeSelection, highlightedWord, onSavedTermsChange, song?.savedTerms]);
+
+    const handleWordUnsave = useCallback((word, options = {}) => {
+        const surface = options.includeSurface === false ? '' : highlightedWord?.trim();
+        tapUndo();
+        setSavedWords((previous) => (previous ?? []).filter((term) => term !== word));
+        setOptimisticHighlightTerms((previous) => previous.filter((term) => term !== word && term !== surface));
+        onSavedTermsChange?.((song?.savedTerms ?? []).filter((term) => term !== word && term !== surface));
+    }, [highlightedWord, onSavedTermsChange, song?.savedTerms]);
+
+    // ── Saved-words panel ────────────────────────────────────────────────────
+    const openSavedPanel = useCallback(async () => {
+        setShowSavedPanel(true);
+        setPanelSavedStems(new Set());
+        refreshSongSavedWords();
+        setPanelCandidates([]);
+        setPanelCandidatesLoading(true);
+        try {
+            const raw = await getBookWordCandidates({
+                ownerId: activeOwnerId,
+                language: songLanguage,
+                interfaceLanguage,
+                bookUri: songUri,
+                limit: 20,
+            });
+            setPanelCandidates(raw.map((candidate) => ({
+                ...candidate,
+                reason: deriveCandidateReason(candidate),
+                exampleSentence: pickExampleSentence(song?.lyrics || '', candidate.headword),
+                exampleSurface: candidate.headword,
+            })));
+        } catch (error) {
+            console.warn('[SongReader] Failed to load word candidates:', error?.message ?? error);
+            setPanelCandidates([]);
+        } finally {
+            setPanelCandidatesLoading(false);
+        }
+    }, [activeOwnerId, interfaceLanguage, refreshSongSavedWords, song?.lyrics, songLanguage, songUri]);
+
+    const handleSaveCandidate = useCallback(async (candidate) => {
+        if (!candidate?.stem) {
             return;
         }
-
-        setHighlightedWord(text);
-        setHighlightedWordContext(null);
-        setIsNativeSelection(true);
-        setLookupPlacement(event.placement === 'top' ? 'top' : 'bottom');
-    }, []);
-
-    const updateLyricFontSize = useCallback((delta) => {
-        const nextSize = clamp(lyricFontSize + delta, MIN_LYRIC_FONT_SIZE, MAX_LYRIC_FONT_SIZE);
-        if (nextSize === lyricFontSize) {
-            return;
+        handleWordSave(candidate.stem, { includeSurface: false });
+        try {
+            await saveWordCandidate({
+                candidate,
+                ownerId: activeOwnerId,
+                language: songLanguage,
+                sourceBookUri: songUri,
+                sourceBookTitle: song?.title ?? null,
+            });
+            setPanelSavedStems((previous) => new Set(previous).add(candidate.stem));
+            refreshSongSavedWords();
+        } catch (error) {
+            console.warn('[SongReader] Failed to save candidate word:', error?.message ?? error);
         }
+    }, [activeOwnerId, handleWordSave, refreshSongSavedWords, song?.title, songLanguage, songUri]);
 
-        setLyricFontSize(nextSize);
-        onSongUpdate?.({ fontSize: nextSize });
-    }, [lyricFontSize, onSongUpdate]);
-
+    // ── Song actions ─────────────────────────────────────────────────────────
     const openEditModal = useCallback(() => {
         setIsMenuVisible(false);
         setEditDraft(makeSongDraft(song));
@@ -328,150 +592,128 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         );
     }, [onSongDelete, song?.title, t]);
 
-    const handleWordSave = useCallback((word, options = {}) => {
-        const surface = options.includeSurface === false ? '' : highlightedWord?.trim();
-        setSavedWords((previous) => uniqueTerms([...(previous ?? []), word, surface]));
-        onSavedTermsChange?.(uniqueTerms([...(song?.savedTerms ?? []), word, surface]));
-    }, [highlightedWord, onSavedTermsChange, song?.savedTerms]);
+    // Hardware back steps out of transient chrome one layer at a time (menu,
+    // then lookup panel) before Home's handler closes the song. Registered only
+    // while a layer is open, so it sits above Home's listener.
+    useEffect(() => {
+        if (!isMenuVisible && !highlightedWord) {
+            return undefined;
+        }
+        const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+            if (isMenuVisible) {
+                setIsMenuVisible(false);
+                return true;
+            }
+            if (highlightedWord) {
+                dismissLookup();
+                return true;
+            }
+            return false;
+        });
+        return () => subscription.remove();
+    }, [dismissLookup, highlightedWord, isMenuVisible]);
 
-    const handleWordUnsave = useCallback((word, options = {}) => {
-        const surface = options.includeSurface === false ? '' : highlightedWord?.trim();
-        setSavedWords((previous) => (
-            previous ?? []
-        ).filter((term) => term !== word && term !== surface));
-        onSavedTermsChange?.((song?.savedTerms ?? []).filter((term) => term !== word && term !== surface));
-    }, [highlightedWord, onSavedTermsChange, song?.savedTerms]);
+    // Swipe-down on the bottom lookup panel dismisses it, as in the book reader.
+    const lookupPanResponder = useMemo(() => PanResponder.create({
+        onMoveShouldSetPanResponder: (_evt, gesture) => (
+            gesture.dy > 14 && gesture.dy > Math.abs(gesture.dx)
+        ),
+        onPanResponderRelease: (_evt, gesture) => {
+            if (gesture.dy > 40) {
+                dismissLookup();
+            }
+        },
+        onPanResponderTerminationRequest: () => true,
+    }), [dismissLookup]);
+
+    const placement = lookupLayerPlacement(lookupPlacement, focusMode);
     const useNativeLyricReader = Platform.OS === 'android';
+    const lyricLineHeight = settings.fontSize * settings.lineSpacing;
 
     return (
         <View style={styles.container}>
-            <View style={[styles.topBar, { paddingTop: insets.top + spacing.xs }]}>
-                <TouchableOpacity
-                    accessibilityRole="button"
-                    accessibilityLabel={t('song.back')}
-                    activeOpacity={0.78}
-                    onPress={onClose}
-                    style={styles.iconButton}
-                >
-                    <Feather name="chevron-left" size={30} color={colors.textMuted} />
-                </TouchableOpacity>
-                <Text
-                    style={[
-                        styles.topSongTitle,
-                        /[\u3131-\u318e\uac00-\ud7a3]/.test(song?.title || '') && styles.koreanTitle,
-                    ]}
-                    numberOfLines={1}
-                >
-                    {song?.title || t('song.untitled')}
-                </Text>
-                <TouchableOpacity
-                    accessibilityRole="button"
-                    accessibilityLabel={t('song.options')}
-                    activeOpacity={0.78}
-                    onPress={() => setIsMenuVisible((visible) => !visible)}
-                    style={styles.iconButton}
-                >
-                    <Feather name="more-horizontal" size={24} color={colors.textMuted} />
-                </TouchableOpacity>
-            </View>
-
-            <View style={styles.songMetaRow}>
-                <Text style={styles.songArtist} numberOfLines={1}>
-                    {song?.artist || t('common.unknownArtist')}
-                </Text>
-                <Text style={styles.savedMeta} numberOfLines={1}>
-                    {t('song.wordsSaved', {
-                        count: savedLyricsCount,
-                        noun: savedLyricsCount === 1 ? t('song.wordSingular') : t('song.wordPlural'),
-                    })}
-                </Text>
-            </View>
-
-            <View style={styles.divider} />
-
-            {isMenuVisible ? (
-                <Pressable
-                    style={styles.menuDismissLayer}
-                    onPress={() => setIsMenuVisible(false)}
-                >
-                    <Pressable
-                        style={[styles.songMenu, { top: insets.top + 54 }]}
-                        onPress={() => {}}
+            <ReaderHeaderBar styles={chrome} topInset={insets.top}>
+                <View style={chrome.headerLeft}>
+                    <TouchableOpacity
+                        style={chrome.headerIconButton}
+                        onPress={onClose}
+                        accessibilityRole="button"
+                        accessibilityLabel={t('song.back')}
                     >
-                        <View style={styles.menuFontRow}>
-                            <Text style={styles.menuLabel}>{t('song.fontSize')}</Text>
-                            <View style={styles.menuFontControls}>
-                                <TouchableOpacity
-                                    accessibilityRole="button"
-                                    accessibilityLabel={t('song.decreaseFont')}
-                                    activeOpacity={0.78}
-                                    onPress={() => updateLyricFontSize(-2)}
-                                    disabled={lyricFontSize <= MIN_LYRIC_FONT_SIZE}
-                                    style={[
-                                        styles.menuFontButton,
-                                        lyricFontSize <= MIN_LYRIC_FONT_SIZE && styles.disabledControl,
-                                    ]}
-                                >
-                                    <Text style={styles.menuFontButtonText}>A-</Text>
-                                </TouchableOpacity>
-                                <Text style={styles.menuFontValue}>{lyricFontSize}</Text>
-                                <TouchableOpacity
-                                    accessibilityRole="button"
-                                    accessibilityLabel={t('song.increaseFont')}
-                                    activeOpacity={0.78}
-                                    onPress={() => updateLyricFontSize(2)}
-                                    disabled={lyricFontSize >= MAX_LYRIC_FONT_SIZE}
-                                    style={[
-                                        styles.menuFontButton,
-                                        lyricFontSize >= MAX_LYRIC_FONT_SIZE && styles.disabledControl,
-                                    ]}
-                                >
-                                    <Text style={styles.menuFontButtonText}>A+</Text>
-                                </TouchableOpacity>
-                            </View>
-                        </View>
-                        <TouchableOpacity
-                            accessibilityRole="button"
-                            activeOpacity={0.82}
-                            onPress={openEditModal}
-                            style={styles.menuActionRow}
-                        >
-                            <Feather name="edit-3" size={18} color={colors.textMuted} />
-                            <Text style={styles.menuActionText}>{t('common.edit')}</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            accessibilityRole="button"
-                            activeOpacity={0.82}
-                            onPress={confirmDeleteSong}
-                            style={styles.menuActionRow}
-                        >
-                            <Feather name="trash-2" size={18} color={colors.danger} />
-                            <Text style={[styles.menuActionText, styles.menuDangerText]}>{t('common.delete')}</Text>
-                        </TouchableOpacity>
-                    </Pressable>
-                </Pressable>
-            ) : null}
+                        <Feather name="chevron-left" size={24} color={colors.textSecondary} />
+                    </TouchableOpacity>
+                    <ReaderSavedWordsButton
+                        styles={chrome}
+                        themeColors={colors}
+                        count={songSavedWords.length}
+                        onPress={openSavedPanel}
+                        accessibilityLabel={t('read.savedTab', { count: songSavedWords.length })}
+                    />
+                    <ReaderFocusModeButton
+                        styles={chrome}
+                        themeColors={colors}
+                        active={focusMode}
+                        onPress={toggleFocusMode}
+                        accessibilityLabel={t('read.focusMode')}
+                    />
+                </View>
 
-            <View style={styles.readerSurface}>
+                <View style={styles.headerTitleBlock}>
+                    <Text
+                        style={[
+                            styles.headerTitle,
+                            /[ㄱ-ㆎ가-힣]/.test(song?.title || '') && styles.koreanTitle,
+                        ]}
+                        numberOfLines={1}
+                    >
+                        {song?.title || t('song.untitled')}
+                    </Text>
+                    <Text style={styles.headerArtist} numberOfLines={1}>
+                        {song?.artist || t('common.unknownArtist')}
+                    </Text>
+                </View>
+
+                <View style={chrome.headerControls}>
+                    <ReaderMenuButton
+                        styles={chrome}
+                        themeColors={colors}
+                        open={isMenuVisible}
+                        onPress={() => setIsMenuVisible((visible) => !visible)}
+                        accessibilityLabel={t('song.options')}
+                    />
+                </View>
+            </ReaderHeaderBar>
+
+            <View style={chrome.reader}>
                 {useNativeLyricReader ? (
                     <NativeEpubReaderView
-                        style={styles.nativeLyricReader}
+                        ref={nativeReaderViewRef}
+                        key={songUri || 'song:unknown'}
+                        style={chrome.nativeReaderView}
                         bookManifest={nativeSongManifest}
                         chapterBlocks={nativeLyricBlocks}
                         chapterResources={[]}
                         chapterWindow={[]}
-                        restorePosition={{ spineIndex: 0, pageIndex: 0 }}
-                        renderMode="continuous"
+                        restorePosition={SONG_RESTORE_POSITION}
+                        renderMode={nativeRenderMode}
                         readerEdgeStateEnabled={false}
-                        fontSize={lyricFontSize}
-                        lineHeight={SONG_READER_LINE_HEIGHT}
+                        fontSize={settings.fontSize}
+                        lineHeight={settings.lineSpacing}
                         theme={isDarkMode ? 'dark' : 'light'}
                         themeTokens={nativeReaderThemeTokens}
-                        highlightTerms={songHighlightTerms}
+                        highlightTerms={readerHighlightTerms}
+                        levelTerms={readerLevelTerms}
+                        showPinyin={readerShowPinyin}
                         clearSelectionToken={clearSelectionToken}
+                        focusSentenceCount={settings.focusSpan}
+                        focusSwipeEnabled={settings.focusSwipe}
+                        focusNavToken={focusNavToken}
+                        focusPanelHeight={focusMode ? focusPanelTotalHeight : 0}
                         onWordSelected={handleNativeWordSelected}
                         onTextSelected={handleNativeTextSelected}
-                        onSelectionCleared={closeLookup}
+                        onSelectionCleared={handleNativeSelectionCleared}
+                        onFocusSentenceChange={handleFocusSentenceChange}
+                        onExposure={handleNativeExposure}
                     />
                 ) : (
                     <ScrollView
@@ -482,19 +724,14 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                         ]}
                         showsVerticalScrollIndicator={false}
                         scrollEventThrottle={16}
-                        onScroll={highlightedWord ? closeLookup : undefined}
-                        onTouchStart={highlightedWord ? closeLookup : undefined}
+                        onScroll={highlightedWord ? dismissLookup : undefined}
                     >
                         {lyricLines.map((line) => (
                             <Text
                                 key={line.id}
-                                selectable
                                 style={[
                                     styles.lyricLine,
-                                    {
-                                        fontSize: lyricFontSize,
-                                        lineHeight: lyricFontSize * SONG_READER_LINE_HEIGHT,
-                                    },
+                                    { fontSize: settings.fontSize, lineHeight: lyricLineHeight },
                                     line.isBlank && styles.lyricLineBlank,
                                 ]}
                             >
@@ -511,10 +748,12 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                                             key={segment.id}
                                             suppressHighlighting
                                             onPress={segment.isWord
-                                                ? (event) => handleLyricWordPress(segment.text, line.text, event)
+                                                ? () => handleNativeWordSelected({
+                                                    text: segment.text,
+                                                    sentence: line.text,
+                                                })
                                                 : undefined}
                                             style={[
-                                                segment.isWord && styles.lyricWord,
                                                 isSaved && styles.savedLyricWord,
                                                 isActive && styles.activeLyricWord,
                                             ]}
@@ -527,32 +766,118 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                         ))}
                     </ScrollView>
                 )}
+                {overlay.opacity > 0 ? (
+                    <View
+                        pointerEvents="none"
+                        style={[
+                            chrome.readerBrightnessOverlay,
+                            { backgroundColor: overlay.color, opacity: overlay.opacity },
+                        ]}
+                    />
+                ) : null}
             </View>
+
+            {focusMode && useNativeLyricReader ? (
+                <FocusControls
+                    subscribe={subscribeFocusInfo}
+                    focusSpan={settings.focusSpan}
+                    focusSwipe={settings.focusSwipe}
+                    sendFocusNav={sendFocusNav}
+                    focusControlsTranslate={focusControlsTranslate}
+                    focusControlsBaseBottom={focusControlsBaseBottom}
+                    focusPillTop={focusPillTop}
+                    styles={chrome}
+                    themeColors={colors}
+                />
+            ) : null}
 
             <View
                 style={[
-                    styles.lookupLayer,
-                    lookupPlacement === 'top' ? styles.lookupLayerTop : styles.lookupLayerBottom,
-                    lookupPlacement === 'top'
-                        ? { paddingTop: insets.top + 72 }
-                        : { paddingBottom: insets.bottom + 6 },
+                    chrome.lookupLayer,
+                    placement === 'top' ? chrome.lookupLayerTop : chrome.lookupLayerBottom,
+                    placement === 'top'
+                        ? { paddingTop: insets.top + spacing.xs + 52 }
+                        // The song reader hides the tab bar, so (like the book
+                        // reader in fullscreen) the panel clears the gesture
+                        // area — except in focus mode, where it sits flush.
+                        : { paddingBottom: focusMode ? 0 : insets.bottom + 6 },
                 ]}
                 pointerEvents="box-none"
             >
-                <TopSection
-                    highlightedWord={highlightedWord}
-                    sourceSentence={highlightedWordContext?.sentence ?? ''}
-                    isNativeSelection={isNativeSelection}
-                    placement={lookupPlacement}
-                    isDarkMode={isDarkMode}
-                    onClose={closeLookup}
-                    onWordSave={handleWordSave}
-                    onWordUnsave={handleWordUnsave}
-                    currentBook={getSongBookUri(song?.id)}
-                    sourceBook={sourceBook}
-                    savedWords={savedWords ?? []}
-                />
+                <View
+                    onLayout={(event) => {
+                        setLookupPanelHeight(event?.nativeEvent?.layout?.height ?? 0);
+                    }}
+                    {...(placement === 'top' ? {} : lookupPanResponder.panHandlers)}
+                >
+                    <TopSection
+                        highlightedWord={highlightedWord}
+                        sourceSentence={highlightedWordContext?.sentence ?? ''}
+                        isNativeSelection={isNativeSelection}
+                        placement={placement}
+                        isDarkMode={isDarkMode}
+                        onClose={dismissLookup}
+                        onWordSave={handleWordSave}
+                        onWordUnsave={handleWordUnsave}
+                        onSavedWordsChanged={refreshSongSavedWords}
+                        currentBook={songUri}
+                        sourceBook={sourceBook}
+                        savedWords={savedWords ?? []}
+                    />
+                </View>
             </View>
+
+            <ReaderOptionsMenu
+                visible={isMenuVisible}
+                onClose={() => setIsMenuVisible(false)}
+                top={insets.top + 48}
+                bottom={insets.bottom + 8}
+                styles={chrome}
+                themeColors={colors}
+                sectionTitle={t('song.readerSettings')}
+                settings={settings}
+                language={songLanguage}
+                onSettingChange={handleSettingChange}
+                onResetSettings={resetSongSettings}
+                onResetFocusSettings={resetFocusSettings}
+            >
+                <TouchableOpacity
+                    style={chrome.checkpointsRow}
+                    onPress={openEditModal}
+                    activeOpacity={0.7}
+                    accessibilityRole="button"
+                >
+                    <View style={chrome.checkpointsRowLeft}>
+                        <Feather name="edit-3" size={19} color={colors.readerBodyInk} />
+                        <Text style={chrome.checkpointsLabel}>{t('song.editLyrics')}</Text>
+                    </View>
+                    <Feather name="chevron-right" size={20} color={colors.readerSubtleInk} />
+                </TouchableOpacity>
+                <TouchableOpacity
+                    style={[chrome.checkpointsRow, styles.menuRowTight]}
+                    onPress={confirmDeleteSong}
+                    activeOpacity={0.7}
+                    accessibilityRole="button"
+                >
+                    <View style={chrome.checkpointsRowLeft}>
+                        <Feather name="trash-2" size={19} color={colors.danger} />
+                        <Text style={[chrome.checkpointsLabel, styles.menuDangerText]}>{t('song.deleteTitle')}</Text>
+                    </View>
+                </TouchableOpacity>
+            </ReaderOptionsMenu>
+
+            <SavedWordsPanel
+                visible={showSavedPanel}
+                colors={colors}
+                insets={insets}
+                initialTab="saved"
+                savedWords={songSavedWords}
+                candidates={panelCandidates}
+                candidatesLoading={panelCandidatesLoading}
+                savedStems={panelSavedStems}
+                onSaveCandidate={handleSaveCandidate}
+                onClose={() => setShowSavedPanel(false)}
+            />
 
             <Modal visible={isEditModalVisible} animationType="fade" transparent onRequestClose={closeEditModal}>
                 <Pressable style={styles.modalBackdrop} onPress={closeEditModal}>
@@ -621,162 +946,44 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
 const createStyles = (colors) => StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: colors.bgPage,
+        backgroundColor: colors.readerPaper,
     },
-    topBar: {
-        minHeight: 56,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        paddingHorizontal: 20,
-        backgroundColor: colors.bgPage,
-        borderBottomWidth: 1,
-        borderBottomColor: colors.divider,
-    },
-    iconButton: {
-        width: 42,
-        height: 42,
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderRadius: 0,
-    },
-    disabledControl: {
-        opacity: 0.36,
-    },
-    topSongTitle: {
+    headerTitleBlock: {
         flex: 1,
         minWidth: 0,
+        alignItems: 'center',
+    },
+    headerTitle: {
+        maxWidth: '100%',
         fontFamily: fontFamilies.krSerifSemiBold,
-        fontSize: 16,
-        lineHeight: 22,
-        color: colors.text,
+        fontSize: 15,
+        lineHeight: 20,
+        color: colors.readerBodyInk,
         letterSpacing: 0,
         textAlign: 'center',
     },
     koreanTitle: {
         fontFamily: fontFamilies.krSerifBold,
     },
-    songMetaRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: spacing.md,
-        paddingHorizontal: 24,
-        paddingVertical: spacing.sm,
-        backgroundColor: colors.bgPage,
-    },
-    songArtist: {
-        flex: 1,
-        minWidth: 0,
+    headerArtist: {
+        maxWidth: '100%',
         fontFamily: fontFamilies.sansBold,
         fontSize: 10,
         lineHeight: 13,
-        color: colors.textTertiary,
-        letterSpacing: 1.8,
+        color: colors.readerSubtleInk,
+        letterSpacing: 1.4,
         textTransform: 'uppercase',
-        textAlign: 'left',
-    },
-    savedMeta: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 13,
-        lineHeight: 17,
-        color: colors.textSubtle,
-    },
-    menuDismissLayer: {
-        ...StyleSheet.absoluteFillObject,
-        zIndex: 20,
-    },
-    songMenu: {
-        position: 'absolute',
-        right: spacing.md,
-        width: 236,
-        borderRadius: 4,
-        borderWidth: 1,
-        borderColor: colors.border,
-        backgroundColor: colors.surfaceElevated,
-        paddingVertical: spacing.xs,
-        shadowColor: colors.transparent,
-        shadowOffset: { width: 0, height: 0 },
-        shadowOpacity: 0,
-        shadowRadius: 0,
-        elevation: 0,
-    },
-    menuFontRow: {
-        paddingHorizontal: spacing.md,
-        paddingVertical: spacing.sm,
-        gap: spacing.xs,
-        borderBottomWidth: 1,
-        borderBottomColor: colors.divider,
-    },
-    menuLabel: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 12,
-        lineHeight: 15,
-        color: colors.textSubtle,
-        letterSpacing: 0,
-    },
-    menuFontControls: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: spacing.xs,
-    },
-    menuFontButton: {
-        width: 42,
-        height: 34,
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderRadius: 3,
-        backgroundColor: colors.surfaceMuted,
-    },
-    menuFontButtonText: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 13,
-        lineHeight: 16,
-        color: colors.textMuted,
-        letterSpacing: 0,
-    },
-    menuFontValue: {
-        minWidth: 34,
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 13,
-        lineHeight: 16,
         textAlign: 'center',
-        color: colors.textMuted,
-        fontVariant: ['tabular-nums'],
     },
-    menuActionRow: {
-        minHeight: 44,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: spacing.sm,
-        paddingHorizontal: spacing.md,
-        paddingVertical: spacing.sm,
-    },
-    menuActionText: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 14,
-        lineHeight: 18,
-        color: colors.textMuted,
-        letterSpacing: 0,
+    menuRowTight: {
+        marginTop: 0,
     },
     menuDangerText: {
         color: colors.danger,
     },
-    divider: {
-        height: 1,
-        backgroundColor: colors.divider,
-    },
-    readerSurface: {
-        flex: 1,
-        backgroundColor: colors.bgPage,
-    },
-    nativeLyricReader: {
-        flex: 1,
-        backgroundColor: colors.bgPage,
-    },
     lyricsScroll: {
         flex: 1,
-        backgroundColor: colors.bgPage,
+        backgroundColor: colors.readerPaper,
     },
     lyricsContent: {
         paddingTop: spacing.xl,
@@ -787,19 +994,14 @@ const createStyles = (colors) => StyleSheet.create({
         width: '100%',
         marginBottom: 10,
         fontFamily: fontFamilies.krSerifRegular,
-        color: colors.text,
+        color: colors.readerBodyInk,
         textAlign: 'center',
         letterSpacing: 0,
     },
     lyricLineBlank: {
         marginBottom: 18,
     },
-    lyricWord: {
-        color: colors.text,
-    },
     savedLyricWord: {
-        color: colors.text,
-        backgroundColor: colors.transparent,
         textDecorationLine: 'underline',
         textDecorationStyle: 'dotted',
         textDecorationColor: colors.textTertiary,
@@ -807,16 +1009,6 @@ const createStyles = (colors) => StyleSheet.create({
     activeLyricWord: {
         color: colors.bgPage,
         backgroundColor: colors.accent,
-    },
-    lookupLayer: {
-        ...StyleSheet.absoluteFillObject,
-        justifyContent: 'flex-end',
-    },
-    lookupLayerTop: {
-        justifyContent: 'flex-start',
-    },
-    lookupLayerBottom: {
-        justifyContent: 'flex-end',
     },
     modalBackdrop: {
         flex: 1,
