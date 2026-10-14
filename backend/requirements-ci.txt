@@ -1,8 +1,7 @@
 # Minimal dependencies for the CI test job (.github/workflows/ci.yml).
 # The full requirements.txt pulls in KoNLPy, spaCy and Java-backed taggers that
-# the tests don't need. Keep langgraph and numpy in sync with requirements.txt.
+# the tests don't need. Keep numpy in sync with requirements.txt.
 pytest==8.3.4
-langgraph==1.2.11
 numpy==2.4.2
 scikit-learn==1.9.1
 scipy==1.18.1

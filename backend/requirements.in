@@ -8,7 +8,6 @@ supabase
 anthropic
 
 # Agentic explain-in-context workflow (explain_graph.py).
-langgraph
 
 requests
 beautifulsoup4

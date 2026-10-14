@@ -1,8 +1,6 @@
-"""Tests for the agentic explain-in-context workflow (explain_graph.py).
+"""Tests for the checked explain-in-context flow (explain_graph.py).
 
-The pure helpers run everywhere. The graph tests need ``langgraph`` installed and
-are skipped otherwise; they inject a fake model caller, so no network/API key is
-required.
+The flow tests inject a fake model caller, so no network/API key is required.
 """
 
 import pytest
@@ -10,7 +8,7 @@ import pytest
 import explain_graph as g
 
 
-# ─── Pure helpers (no langgraph needed) ───────────────────────────────────────
+# ─── Pure helpers ─────────────────────────────────────────────────────────────
 
 
 def test_p_known_matches_sigmoid_of_theta_minus_difficulty():
@@ -127,7 +125,7 @@ def test_format_senses_skips_empty_and_caps():
     assert out.count("\n") == 2  # exactly 3 lines
 
 
-# ─── Graph workflow (needs langgraph) ─────────────────────────────────────────
+# ─── Checked flow (draft → verify → refine) ───────────────────────────────────
 
 def test_known_lemma_replaces_the_lemma_tag():
     prompt = g.build_grounded_prompt(
@@ -174,8 +172,6 @@ def test_parse_partial_explanation_streams_in_order():
     assert done["explanation"] == "All of it."
 
 
-pytest.importorskip("langgraph", reason="langgraph not installed")
-
 GOOD = (
     "<lemma>가다</lemma><gloss>to go</gloss>"
     "<explanation>Here 갔어 is the past tense of 가다; she left.</explanation>"
@@ -201,9 +197,8 @@ def _scripted_caller(outputs):
 
 
 def _run(caller, **kwargs):
-    graph = g.build_explain_graph(caller)
     return g.run_explain_graph(
-        graph,
+        caller,
         word=kwargs.pop("word", "갔어"),
         sentence=kwargs.pop("sentence", "그녀는 갔어."),
         target_language_name="Korean",
@@ -232,7 +227,7 @@ def test_bad_gloss_triggers_one_refine_with_issue_fed_back():
 
 
 def test_refine_is_capped():
-    # Model never fixes the gloss; the graph must still stop after one refine.
+    # Model never fixes the gloss; the flow must still stop after one refine.
     caller, calls = _scripted_caller([BAD_GLOSS, BAD_GLOSS, GOOD])
     _run(caller)
     assert len(calls) == g.REFINE_MAX_ATTEMPTS + 1
