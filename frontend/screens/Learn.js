@@ -1022,7 +1022,7 @@ const WordDetailModal = ({
       <View style={styles.detailHeader}>
         <TouchableOpacity onPress={onClose} style={styles.detailBackButton}>
           <Feather name="chevron-left" size={28} color={colors.text} />
-          <Text style={styles.detailBackLabel}>{t('learn.vocabulary')}</Text>
+          <Text style={styles.detailBackLabel}>{t('learn.title')}</Text>
         </TouchableOpacity>
         <TouchableOpacity onPress={onToggleFavorite} style={styles.detailFavoriteButton}>
           <MaterialIcons
@@ -1577,7 +1577,7 @@ const Learn = ({ navigation, user }) => {
     <Screen scroll backgroundColor={colors.bgPage} contentContainerStyle={styles.content}>
       <View style={styles.appTopBar}>
         <View style={styles.appTopSide} />
-        <Text style={styles.appTopTitle}>{t('learn.vocabulary')}</Text>
+        <Text style={styles.appTopTitle}>{t('learn.title')}</Text>
         <View style={styles.appTopSide} />
       </View>
 
@@ -1883,8 +1883,11 @@ const createStyles = (colors) => StyleSheet.create({
     paddingHorizontal: 12,
     backgroundColor: colors.accent,
   },
+  // Disabled reads as an outline with muted text, not a faded fill: the
+  // faded near-white fill turned into a muddy grey block in dark mode.
   reviewButtonDisabled: {
-    opacity: 0.48,
+    backgroundColor: 'transparent',
+    borderColor: colors.border,
   },
   reviewButtonText: {
     fontFamily: fontFamilies.sansBold,
@@ -1894,7 +1897,7 @@ const createStyles = (colors) => StyleSheet.create({
     textTransform: 'uppercase',
   },
   reviewButtonTextDisabled: {
-    color: colors.white,
+    color: colors.textMuted,
   },
   filters: {
     marginHorizontal: 24,

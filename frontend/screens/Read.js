@@ -3116,7 +3116,9 @@ const Read = ({
 
     return (
         <View style={styles.container}>
-            {!isFullscreen ? (
+            {/* With no book open, the bookmark, focus, progress and menu
+                controls have nothing to act on, so hide the header. */}
+            {!isFullscreen && currentBook ? (
                 <View style={[styles.headerBar, { paddingTop: insets.top + spacing.xs }]}>
                     <View style={styles.headerLeft}>
                         <TouchableOpacity
@@ -3216,7 +3218,16 @@ const Read = ({
                     </View>
                 ) : !currentBook ? (
                     <View style={styles.readerLoadingState}>
+                        <MaterialIcons name="menu-book" size={28} color={themeColors.readerMutedInk} />
                         <Text style={styles.readerLoadingTitle}>{t('read.noBook')}</Text>
+                        <Text style={styles.readerLoadingBody}>{t('read.noBookBody')}</Text>
+                        <TouchableOpacity
+                            style={styles.retryButton}
+                            onPress={() => navigation?.navigate?.('Home')}
+                            accessibilityRole="button"
+                        >
+                            <Text style={styles.retryButtonText}>{t('read.noBookAction')}</Text>
+                        </TouchableOpacity>
                     </View>
                 ) : isReaderWaitingForHighlights ? (
                     <View style={styles.readerLoadingState}>
@@ -3370,7 +3381,7 @@ const Read = ({
                 </View>
             </View>
 
-            {!highlightedWord && showLookupHint ? (
+            {currentBook && !highlightedWord && showLookupHint ? (
                 <View
                     pointerEvents="box-none"
                     style={[
