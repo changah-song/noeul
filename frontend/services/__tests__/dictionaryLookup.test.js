@@ -46,6 +46,7 @@ import {
 import { api } from '../api/client';
 import stemWord from '../api/stemWord';
 import {
+    getEntryFallbackLanguage,
     resetLookupSessionStateForTests,
     resolveDictionaryLookup,
     withNormalizedSurfaceIndex,
@@ -230,6 +231,85 @@ describe('resolveDictionaryLookup (Korean)', () => {
         expect(logInteractionEvent).toHaveBeenCalledWith(expect.objectContaining({
             word: '갔다', stem: '갔다', eventType: 'lookup', sourceBookUri: 'book-1',
         }));
+    });
+});
+
+describe('English fallback while KRDICT is unavailable', () => {
+    // What the backend sends a non-English interface when KRDICT fails: the
+    // bundled snapshot's English senses, tagged fallback_language "en".
+    const FALLBACK_GADA = GADA_ENTRIES.map((entry) => ({ ...entry, fallback_language: 'en' }));
+    const SPANISH_GADA = [{ word: '가다', origin: 'N/A', pos: '동사', romanization: 'gada', transWord: 'ir' }];
+
+    test('fallback entries are shown but not cached under the interface language', async () => {
+        api.post.mockResolvedValue({ data: { stems: ['가다'], results: [FALLBACK_GADA] } });
+
+        const result = await lookup({ interfaceLanguage: 'es' });
+
+        expect(api.post).toHaveBeenCalledWith(
+            '/krdict_lookup/',
+            { surface: '갔다', language: 'es' },
+            { timeout: 10000 }
+        );
+        expect(result.dictionaryData).toEqual([FALLBACK_GADA]);
+        expect(result.liveError).toBeNull();
+        expect(insertCacheEntries).not.toHaveBeenCalled();
+    });
+
+    test('once KRDICT recovers the next tap fetches and caches the real translation', async () => {
+        api.post.mockResolvedValueOnce({ data: { stems: ['가다'], results: [FALLBACK_GADA] } });
+        await lookup({ interfaceLanguage: 'es' });
+        expect(insertCacheEntries).not.toHaveBeenCalled();
+
+        // Nothing was cached, so the repeat tap goes back to the network.
+        api.post.mockResolvedValueOnce({ data: { stems: ['가다'], results: [SPANISH_GADA] } });
+        const second = await lookup({ interfaceLanguage: 'es' });
+
+        expect(api.post).toHaveBeenCalledTimes(2);
+        expect(second.dictionaryData).toEqual([SPANISH_GADA]);
+        expect(insertCacheEntries).toHaveBeenCalledWith(
+            [expect.objectContaining({ stem: '가다', definition: 'ir' })],
+            { language: 'ko', interfaceLanguage: 'es' }
+        );
+    });
+
+    test('only the fallback stems are skipped when a lookup mixes both', async () => {
+        api.post.mockResolvedValue({
+            data: {
+                stems: ['공부', '가다'],
+                results: [[{ word: '공부', transWord: 'estudio' }], FALLBACK_GADA],
+            },
+        });
+
+        await lookup({ surface: '공부하러가다', interfaceLanguage: 'es' });
+
+        expect(insertCacheEntries).toHaveBeenCalledTimes(1);
+        expect(insertCacheEntries).toHaveBeenCalledWith(
+            [expect.objectContaining({ stem: '공부', definition: 'estudio' })],
+            { language: 'ko', interfaceLanguage: 'es' }
+        );
+    });
+
+    test('the two-request path (/krdict_search/) skips caching fallbacks too', async () => {
+        const notFound = Object.assign(new Error('Not Found'), { response: { status: 404 } });
+        api.post.mockImplementation(async (path) => {
+            if (path === '/krdict_lookup/') {
+                throw notFound;
+            }
+            return { data: { results: [FALLBACK_GADA] } };
+        });
+        stemWord.mockResolvedValue(['가다']);
+
+        const result = await lookup({ interfaceLanguage: 'fr' });
+
+        expect(result.dictionaryData).toEqual([FALLBACK_GADA]);
+        expect(insertCacheEntries).not.toHaveBeenCalled();
+    });
+
+    test('getEntryFallbackLanguage flags only a language other than the interface', () => {
+        expect(getEntryFallbackLanguage(FALLBACK_GADA[0], 'es')).toBe('en');
+        expect(getEntryFallbackLanguage(FALLBACK_GADA[0], 'en')).toBeNull();
+        expect(getEntryFallbackLanguage(SPANISH_GADA[0], 'es')).toBeNull();
+        expect(getEntryFallbackLanguage(null, 'es')).toBeNull();
     });
 });
 

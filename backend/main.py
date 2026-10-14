@@ -29,7 +29,12 @@ from explain_graph import (
     run_explain_graph,
     user_message_for,
 )
-from word_lookup import lookup_surface
+from word_lookup import (
+    KrdictUnavailableError,
+    lookup_surface,
+    parse_krdict_search_items,
+    search_with_english_fallback,
+)
 from translation import (
     MAX_STRINGS_PER_REQUEST as TRANSLATE_MAX_STRINGS,
     TranslationError,
@@ -3528,6 +3533,44 @@ async def search_krdict_entries(
         KRDICT_INTERFACE_LANGUAGES[DEFAULT_INTERFACE_LANGUAGE],
     )
 
+    async def live_search(q: str) -> list[dict]:
+        return await search_krdict_live(client, q, krdict_key, trans_lang)
+
+    async def english_search(q: str) -> list[dict]:
+        # Non-English interface + KRDICT unavailable: the snapshot's English
+        # senses beat "No definition found". Marked fallback_language="en".
+        if not is_ko_dict_db_installed():
+            return []
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lookup_ko_dictionary_search, q)
+
+    def log_fallback(q: str, error: Exception, count: int) -> None:
+        print(
+            f"[main] KRDICT unavailable for '{q}' ({interface_language}): {error}; "
+            f"serving {count} English snapshot sense(s)"
+        )
+
+    return await search_with_english_fallback(
+        query,
+        interface_language,
+        live_search,
+        english_search,
+        on_fallback=log_fallback,
+    )
+
+
+async def search_krdict_live(
+    client: httpx.AsyncClient,
+    query: str,
+    krdict_key: str,
+    trans_lang: str,
+) -> list[dict]:
+    """Query the live KRDICT search API.
+
+    Returns [] when KRDICT answers with no entries; raises
+    KrdictUnavailableError when it cannot answer (timeout, network, HTTP or
+    KRDICT error), so the caller can fall back to the English snapshot.
+    """
     try:
         response = await client.get(
             KRDICT_API_URL,
@@ -3539,45 +3582,45 @@ async def search_krdict_entries(
                 "trans_lang": trans_lang,
             },
             # Shorter than the app's own 10 s lookup timeout, so when KRDICT is
-            # slow or down the app still gets an answer (an empty one) instead
-            # of timing out first.
+            # slow or down the app still gets an answer (the English fallback,
+            # or an empty one) instead of timing out first.
             timeout=KRDICT_SEARCH_TIMEOUT_SECONDS,
         )
-
-        if response.status_code != 200:
-            print(f"[main] KRDICT search returned HTTP {response.status_code} for '{query}'")
-            return []
-
-        root = ET.fromstring(response.text)
-        items = root.findall(".//item")
-        results = []
-        for item in items:
-            word_el = item.find("word")
-            origin_el = item.find("origin")
-            pos_el = item.find("pos")
-            pronunciation_el = item.find("pronunciation")
-            trans_el = item.find(".//trans_word")
-            word_text = word_el.text if word_el is not None and word_el.text else query
-            results.append({
-                "word": word_text,
-                "origin": origin_el.text if origin_el is not None and origin_el.text else "N/A",
-                "pos": pos_el.text if pos_el is not None and pos_el.text else None,
-                "pronunciation": (
-                    pronunciation_el.text
-                    if pronunciation_el is not None and pronunciation_el.text
-                    else None
-                ),
-                "romanization": romanize_korean_text(word_text),
-                "transWord": (
-                    trans_el.text.strip().rstrip("^").strip()
-                    if trans_el is not None and trans_el.text
-                    else "N/A"
-                ),
-            })
-        return results
     except Exception as error:
-        print(f"[main] Error searching KRDICT for '{query}': {error}")
-        return []
+        print(f"[main] Error searching KRDICT for '{query}': {error!r}")
+        raise KrdictUnavailableError(repr(error)) from error
+
+    try:
+        items = parse_krdict_search_items(response.status_code, response.text)
+    except KrdictUnavailableError as error:
+        print(f"[main] KRDICT search failed for '{query}': {error}")
+        raise
+
+    results = []
+    for item in items:
+        word_el = item.find("word")
+        origin_el = item.find("origin")
+        pos_el = item.find("pos")
+        pronunciation_el = item.find("pronunciation")
+        trans_el = item.find(".//trans_word")
+        word_text = word_el.text if word_el is not None and word_el.text else query
+        results.append({
+            "word": word_text,
+            "origin": origin_el.text if origin_el is not None and origin_el.text else "N/A",
+            "pos": pos_el.text if pos_el is not None and pos_el.text else None,
+            "pronunciation": (
+                pronunciation_el.text
+                if pronunciation_el is not None and pronunciation_el.text
+                else None
+            ),
+            "romanization": romanize_korean_text(word_text),
+            "transWord": (
+                trans_el.text.strip().rstrip("^").strip()
+                if trans_el is not None and trans_el.text
+                else "N/A"
+            ),
+        })
+    return results
 
 
 async def _preprocess_core(text: str, krdict_key: str, max_stems=None, progress_callback=None) -> dict:

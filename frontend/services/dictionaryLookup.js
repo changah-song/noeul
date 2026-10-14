@@ -68,6 +68,26 @@ export const normalizeSurfaceWordForLanguage = (word, language) => {
     return normalizeSurfaceWord(word);
 };
 
+/**
+ * The language a live entry's definition is actually in when the server could
+ * not serve the requested interface language (KRDICT unavailable -> English
+ * senses from the bundled snapshot, tagged `fallback_language: "en"`), or null
+ * for a normal entry. Fallback entries are shown, labelled, but never cached
+ * under the interface language: once KRDICT recovers, the next lookup fetches
+ * the real translation.
+ */
+export const getEntryFallbackLanguage = (entry, interfaceLanguage = getRuntimeInterfaceLanguage()) => {
+    const fallbackLanguage = cleanValue(entry?.fallback_language ?? entry?.fallbackLanguage);
+    if (!fallbackLanguage) {
+        return null;
+    }
+    return normalizeInterfaceLanguageCode(fallbackLanguage) === normalizeInterfaceLanguageCode(interfaceLanguage)
+        ? null
+        : fallbackLanguage;
+};
+
+const isFallbackEntry = (entry, interfaceLanguage) => Boolean(getEntryFallbackLanguage(entry, interfaceLanguage));
+
 const uniqueValues = (values) => [...new Set(
     (values || [])
         .map(cleanValue)
@@ -117,8 +137,11 @@ const cacheEntryToLookupResult = async ({
     targetLanguage = getRuntimeTargetLanguage(),
 }) => {
     const primary = cacheEntryToDefinitionEntry(entry, surface);
+    // A cached primary is in the interface language; don't pad it with English
+    // fallback alternatives while KRDICT is unavailable.
     const liveEntries = includeEnrichment
-        ? await fetchLiveEntriesForStem(primary.word, interfaceLanguage, targetLanguage)
+        ? (await fetchLiveEntriesForStem(primary.word, interfaceLanguage, targetLanguage))
+            .filter((liveEntry) => !isFallbackEntry(liveEntry, interfaceLanguage))
         : [];
     const alternatives = includeEnrichment
         ? normalizeLiveAlternatives(liveEntries.slice(1), primary, targetLanguage).slice(0, MAX_ALTERNATIVES)
@@ -198,6 +221,7 @@ const liveEntryToDefinitionEntry = (entry, fallbackWord, targetLanguage = getRun
     audio_us: nullableValue(entry?.audio_us),
     audio_uk: nullableValue(entry?.audio_uk),
     wordParts: entry?.word_parts ?? entry?.wordParts ?? null,
+    fallbackLanguage: nullableValue(entry?.fallback_language ?? entry?.fallbackLanguage),
     saved: false,
 });
 
@@ -309,7 +333,9 @@ const fetchAndCacheLiveDictionary = async ({
     const cacheEntries = uniqueStems
         .map((stem, index) => {
             const first = liveResults[index]?.[0];
-            return first ? liveEntryToCacheEntry(stem, first, interfaceLanguage, targetLanguage) : null;
+            return first && !isFallbackEntry(first, interfaceLanguage)
+                ? liveEntryToCacheEntry(stem, first, interfaceLanguage, targetLanguage)
+                : null;
         })
         .filter(Boolean);
 
@@ -577,7 +603,7 @@ export const resolveDictionaryLookup = async ({
             [...liveStemSet]
                 .map((stem) => {
                     const first = liveByStem.get(stem)?.[0];
-                    return first
+                    return first && !isFallbackEntry(first, normalizedInterfaceLanguage)
                         ? liveEntryToCacheEntry(stem, first, normalizedInterfaceLanguage, normalizedTargetLanguage)
                         : null;
                 })
@@ -768,6 +794,7 @@ const hydrateDefinitionEntry = async (entry, ownerId, options = {}) => {
         audio_us: nullableValue(entry?.audio_us),
         audio_uk: nullableValue(entry?.audio_uk),
         wordParts: entry?.wordParts ?? entry?.word_parts ?? null,
+        fallbackLanguage: getEntryFallbackLanguage(entry, interfaceLanguage),
         saved: definition ? await vocabEntryExists(word, hanja, definition, targetLanguage, { ownerId }) : false,
     };
 };
@@ -807,6 +834,9 @@ const buildLookupResult = async ({
         pos: hydratedPrimary.pos,
         romanization: hydratedPrimary.romanization,
         wordParts: hydratedPrimary.wordParts,
+        // Set (e.g. 'en') when KRDICT was unavailable and the definition is an
+        // English fallback rather than the interface language.
+        fallbackLanguage: hydratedPrimary.fallbackLanguage,
         saved: hydratedPrimary.saved,
         sourceSentence: cleanValue(sourceSentence),
         alternatives: hydratedAlternatives,

@@ -26,6 +26,7 @@ import { playEnglishPronunciation } from '../../../services/pronunciationAudio';
 import { getRuntimeChineseScript } from '../../../services/interfaceLanguage';
 import { requestUserDataSync } from '../../../services/userDataSyncQueue';
 import {
+    getEntryFallbackLanguage,
     normalizeSurfaceWordForLanguage,
     resolveDictionaryLookup,
 } from '../../../services/dictionaryLookup';
@@ -913,7 +914,11 @@ const DictionaryContent = ({
             }, {
                 timeout: 10000,
             });
-            const entries = response.data?.results?.[0] ?? [];
+            // The cached definition is in the interface language; while KRDICT
+            // is unavailable the server answers with English fallback senses,
+            // which would read as mismatched extra definitions under it.
+            const entries = (response.data?.results?.[0] ?? [])
+                .filter((entry) => !getEntryFallbackLanguage(entry, interfaceLanguage));
             if (entries[0]) {
                 setLiveEntryMeta(prev => ({ ...prev, [stem]: entries[0] }));
             }
@@ -2370,6 +2375,7 @@ const DictionaryContent = ({
         onLess,
         extraEntries,
         separated,
+        fallbackLanguage = null,
     }) => {
         const posLabel = formatPos(pos, t);
 
@@ -2409,6 +2415,17 @@ const DictionaryContent = ({
                     audioUs: keepEntryDetails ? audioUs : '',
                     audioUk: keepEntryDetails ? audioUk : '',
                 })}
+                {fallbackLanguage && !explainMode ? (
+                    // KRDICT was unavailable for the interface language, so these
+                    // are the bundled English senses (not cached; a later lookup
+                    // fetches the real translation).
+                    <Text
+                        style={[styles.fallbackNotice, { color: palette.mutedText }]}
+                        accessibilityRole="text"
+                    >
+                        {t('lookup.englishFallbackNotice')}
+                    </Text>
+                ) : null}
                 {explainMode ? renderExplainBodySection() : (
                     isChineseBook ? (
                         <View style={styles.zhBody}>
@@ -2654,6 +2671,7 @@ const DictionaryContent = ({
                 onLess: () => setExpandedWords(prev => prev.filter(item => item !== word)),
                 extraEntries,
                 separated: false,
+                fallbackLanguage: getEntryFallbackLanguage(first, interfaceLanguage),
             }) : renderPrimaryEntry({
                 key: `${word}-empty`,
                 word,
@@ -3501,6 +3519,12 @@ const createStyles = (colors) => StyleSheet.create({
         fontSize: 14,
         lineHeight: 20,
         textAlign: 'center',
+    },
+    fallbackNotice: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 12,
+        lineHeight: 16,
+        fontStyle: 'italic',
     },
 });
 
