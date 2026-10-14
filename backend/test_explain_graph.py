@@ -129,6 +129,51 @@ def test_format_senses_skips_empty_and_caps():
 
 # ─── Graph workflow (needs langgraph) ─────────────────────────────────────────
 
+def test_known_lemma_replaces_the_lemma_tag():
+    prompt = g.build_grounded_prompt(
+        target_language_name="Korean",
+        interface_language_name="English",
+        familiarity=g.FAMILIARITY_UNKNOWN,
+        known_lemma="눕다",
+    )
+    assert "base form of this word is 눕다" in prompt
+    assert "<lemma>" not in prompt
+    assert "<gloss>" in prompt and "<explanation>" in prompt
+    # Without it, the model is still asked for its own base form.
+    assert "<lemma>" in g.build_grounded_prompt(
+        target_language_name="Korean",
+        interface_language_name="English",
+        familiarity=g.FAMILIARITY_UNKNOWN,
+    )
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("눕다", "눕다"),
+    ("  눕다 ", "눕다"),
+    ("", None),
+    (None, None),
+    (42, None),
+    ("x" * 65, None),
+    ("<lemma>", None),
+])
+def test_clean_known_lemma(value, expected):
+    assert g.clean_known_lemma(value) == expected
+
+
+def test_parse_partial_explanation_streams_in_order():
+    assert g.parse_partial_explanation("") == {"gloss": None, "explanation": None}
+    # Gloss is withheld until its closing tag arrives.
+    assert g.parse_partial_explanation("<gloss>to lie")["gloss"] is None
+    partial = g.parse_partial_explanation("<gloss>to lie down</gloss>\n<explanation>Here it")
+    assert partial == {"gloss": "to lie down", "explanation": "Here it"}
+    # A trailing fragment of the closing tag is held back, not shown.
+    assert g.parse_partial_explanation("<gloss>x</gloss><explanation>Done.</expl")["explanation"] == "Done."
+    # A '<' that is not the closing tag is real text.
+    assert g.parse_partial_explanation("<gloss>x</gloss><explanation>a <b")["explanation"] == "a <b"
+    done = g.parse_partial_explanation("<gloss>x</gloss><explanation>All of it.</explanation>")
+    assert done["explanation"] == "All of it."
+
+
 pytest.importorskip("langgraph", reason="langgraph not installed")
 
 GOOD = (
@@ -220,3 +265,16 @@ def test_grounding_injected_into_draft_prompt():
     system = calls[0]["system"]
     assert "學校" in system
     assert "학생" in system and "student" in system
+
+
+def test_known_lemma_overrides_model_lemma_and_skips_lemma_check():
+    # The model's own (wrong) base form is ignored, and a reply without <lemma>
+    # is not sent back for refinement when the client supplied the base form.
+    caller, calls = _scripted_caller([
+        "<gloss>to lie down</gloss><explanation>Here 누워 means lying down.</explanation>",
+    ])
+    result = _run(caller, word="누워", sentence="그는 침대에 누워 책을 읽었다.", known_lemma="눕다")
+    assert result["lemma"] == "눕다"
+    assert len(calls) == 1
+    assert "<lemma>" not in calls[0]["system"]
+    assert "눕다" in calls[0]["system"]

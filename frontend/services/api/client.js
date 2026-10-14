@@ -53,6 +53,13 @@ const getAuthenticatedSession = async ({ refresh = false } = {}) => {
   throw lastError instanceof Error ? lastError : new Error('No Supabase session');
 };
 
+// For requests that can't go through axios (e.g. the streaming explanation,
+// which needs XMLHttpRequest progress events): the current access token.
+export const getAccessToken = async ({ refresh = false } = {}) => {
+  const session = await getAuthenticatedSession({ refresh });
+  return session.access_token;
+};
+
 const withAuthHeader = (config, accessToken) => {
   config.headers = {
     ...(config.headers ?? {}),

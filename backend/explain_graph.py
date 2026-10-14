@@ -112,6 +112,39 @@ def parse_contextual_explanation(raw: str) -> dict[str, str | None]:
     }
 
 
+_OPEN_EXPLANATION = "<explanation>"
+_CLOSE_EXPLANATION = "</explanation>"
+
+
+def parse_partial_explanation(raw: str) -> dict[str, str | None]:
+    """Best-effort fields from a still-streaming tagged response.
+
+    Returns ``gloss`` only once its closing tag has arrived (so the client never
+    shows a half-written flashcard label), and ``explanation`` as the text
+    streamed so far inside ``<explanation>``, holding back any trailing fragment
+    that could be the start of the closing tag. Untagged output yields nothing
+    here; the final ``parse_contextual_explanation`` handles that fallback.
+    """
+    raw = raw or ""
+    gloss_match = _EXPLAIN_TAG_PATTERN["gloss"].search(raw)
+    gloss = gloss_match.group(1).strip() if gloss_match else None
+
+    explanation: str | None = None
+    start = raw.lower().find(_OPEN_EXPLANATION)
+    if start != -1:
+        body = raw[start + len(_OPEN_EXPLANATION):]
+        end = body.lower().find(_CLOSE_EXPLANATION)
+        if end != -1:
+            body = body[:end]
+        else:
+            cut = body.rfind("<")
+            if cut != -1 and _CLOSE_EXPLANATION.startswith(body[cut:].lower()):
+                body = body[:cut]
+        explanation = body.lstrip()
+
+    return {"gloss": gloss or None, "explanation": explanation}
+
+
 # ─── Prompt construction ──────────────────────────────────────────────────────
 
 _FAMILIARITY_GUIDANCE = {
@@ -129,11 +162,37 @@ _FAMILIARITY_GUIDANCE = {
     ),
 }
 
-_TAG_CONTRACT = """Reply with exactly these three tags in this order and nothing else — no preamble, labels, quotes, or markdown:
+_LEMMA_TAG = """<lemma>The dictionary base form of the tapped word, in {target}: strip conjugation, inflected endings, and attached particles. If it is already the base form, repeat it. Base form only.</lemma>
+"""
 
-<lemma>The dictionary base form of the tapped word, in {target}: strip conjugation, inflected endings, and attached particles. If it is already the base form, repeat it. Base form only.</lemma>
-<gloss>A clean standalone definition in {interface}, at most 5 words, no full sentence. This is saved as the learner's flashcard.</gloss>
-<explanation>2-4 short sentences in {interface} on the word as used in this sentence: its specific sense here; if the surface form differs from the base form, what the ending or inflection adds; any nuance it carries. Stay concrete and tied to this sentence — not a generic dictionary entry.</explanation>"""
+_GLOSS_EXPLANATION_TAGS = """<gloss>A clean standalone definition in {interface}, at most 5 words, no full sentence. This is saved as the learner's flashcard.</gloss>
+<explanation>2-3 short sentences in {interface} on the word as used in this sentence: its specific sense here; if the surface form differs from the base form, what the ending or inflection adds; any nuance it carries. Stay concrete and tied to this sentence — not a generic dictionary entry.</explanation>"""
+
+# Full contract (the model supplies the base form), and the short one used when
+# the client already resolved the dictionary form: the model then skips <lemma>,
+# which removes a source of disagreement with the lookup panel and gets the
+# learner-facing <gloss> streaming sooner.
+_TAG_CONTRACT = (
+    "Reply with exactly these three tags in this order and nothing else — no "
+    "preamble, labels, quotes, or markdown:\n\n" + _LEMMA_TAG + _GLOSS_EXPLANATION_TAGS
+)
+_TAG_CONTRACT_KNOWN_LEMMA = (
+    "Reply with exactly these two tags in this order and nothing else — no "
+    "preamble, labels, quotes, or markdown:\n\n" + _GLOSS_EXPLANATION_TAGS
+)
+
+# Bound on a client-supplied dictionary form; anything longer is not a headword.
+MAX_KNOWN_LEMMA_LEN = 64
+
+
+def clean_known_lemma(value: Any) -> str | None:
+    """The client's dictionary form for the tapped word, or None if unusable."""
+    if not isinstance(value, str):
+        return None
+    lemma = " ".join(value.split())
+    if not lemma or len(lemma) > MAX_KNOWN_LEMMA_LEN or "<" in lemma or ">" in lemma:
+        return None
+    return lemma
 
 
 def build_grounded_prompt(
@@ -146,11 +205,16 @@ def build_grounded_prompt(
     dictionary_found: bool | None = None,
     dictionary_senses: list[dict] | None = None,
     issues: list[str] | None = None,
+    known_lemma: str | None = None,
 ) -> str:
     """System prompt for the draft/refine nodes, layered with grounding.
 
     Grounding lines are additive and each is safe to omit, so the prompt collapses
     to the original ungrounded instruction when no signals are available.
+
+    ``known_lemma`` is the dictionary form the client's lookup already resolved.
+    When given, the model is told to use it and not to emit its own <lemma>, so
+    the explanation never names a different base form than the panel shows.
     """
     lines = [
         f"You are an expert {target_language_name} tutor. A learner reading "
@@ -198,6 +262,13 @@ def build_grounded_prompt(
             "dictionary entry."
         )
 
+    if known_lemma:
+        lines.append(
+            f"The dictionary base form of this word is {known_lemma}. Whenever you "
+            "mention the base form, write exactly that form, never a different "
+            "spelling or a reconstructed form."
+        )
+
     if issues:
         lines.append(
             "A previous attempt had these problems: "
@@ -205,9 +276,8 @@ def build_grounded_prompt(
             + ". Produce a corrected version that fixes them."
         )
 
-    lines.append(
-        _TAG_CONTRACT.format(target=target_language_name, interface=interface_language_name)
-    )
+    contract = _TAG_CONTRACT_KNOWN_LEMMA if known_lemma else _TAG_CONTRACT
+    lines.append(contract.format(target=target_language_name, interface=interface_language_name))
     return "\n\n".join(lines)
 
 
@@ -266,6 +336,8 @@ class ExplainState(TypedDict, total=False):
     # Dictionary result the client already fetched on-device (reused, not re-queried).
     dictionary_found: bool | None
     dictionary_senses: list[dict]
+    # Dictionary form the client's lookup resolved; authoritative when present.
+    known_lemma: str | None
     # Derived by ``ground``
     p_known: float | None
     familiarity: str
@@ -279,8 +351,12 @@ class ExplainState(TypedDict, total=False):
     usages: list
 
 
+def user_message_for(word: str, sentence: str) -> str:
+    return f"Word: {word}\n\nSentence: {sentence}"
+
+
 def _user_message(state: ExplainState) -> str:
-    return f"Word: {state.get('word', '')}\n\nSentence: {state.get('sentence', '')}"
+    return user_message_for(state.get("word", ""), state.get("sentence", ""))
 
 
 def _ground_node(state: ExplainState) -> dict:
@@ -344,11 +420,13 @@ def build_explain_graph(model_caller: ModelCaller):
             dictionary_found=state.get("dictionary_found"),
             dictionary_senses=state.get("dictionary_senses"),
             issues=issues,
+            known_lemma=state.get("known_lemma"),
         )
         raw, usage = model_caller(system_prompt, _user_message(state))
         parsed = parse_contextual_explanation(raw or "")
         return {
-            "lemma": parsed["lemma"],
+            # The client's dictionary form wins over anything the model wrote.
+            "lemma": state.get("known_lemma") or parsed["lemma"],
             "gloss": parsed["gloss"],
             "explanation": parsed["explanation"],
             "attempts": int(state.get("attempts", 0)) + 1,
@@ -390,6 +468,7 @@ def run_explain_graph(
     anchor_words: list[dict] | None = None,
     dictionary_found: bool | None = None,
     dictionary_senses: list[dict] | None = None,
+    known_lemma: str | None = None,
 ) -> dict:
     """Invoke the compiled graph and return the parsed result + spend usages.
 
@@ -414,6 +493,7 @@ def run_explain_graph(
             "anchor_words": anchor_words or [],
             "dictionary_found": dictionary_found,
             "dictionary_senses": dictionary_senses or [],
+            "known_lemma": known_lemma,
         }
     )
     return {
