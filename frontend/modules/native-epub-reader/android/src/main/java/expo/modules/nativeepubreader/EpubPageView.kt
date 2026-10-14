@@ -1525,7 +1525,15 @@ class EpubPageView(context: Context) : View(context) {
     return if (usesTopLookupPlacement(centerY)) "top" else "bottom"
   }
 
+  // Lookup panel goes above the word when the word sits in the lower half of
+  // what's on screen. In scroll and focus modes this view holds the whole
+  // chapter inside a ScrollView, so measure against the visible window, not
+  // against this view's (chapter-tall) height.
   private fun usesTopLookupPlacement(centerY: Float): Boolean {
+    val scroller = parent as? android.widget.ScrollView
+    if (scroller != null && scroller.height > 0) {
+      return centerY - scroller.scrollY >= scroller.height * 0.5f
+    }
     return height > 0 && centerY >= height * 0.5f
   }
 

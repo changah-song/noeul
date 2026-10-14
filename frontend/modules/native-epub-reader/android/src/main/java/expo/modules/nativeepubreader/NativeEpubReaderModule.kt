@@ -444,6 +444,11 @@ private const val FOCUS_SCROLL_FAST_DURATION_MS = 180L
 // so it never fires from scroll momentum.
 private const val CONTINUOUS_SCROLL_DISPATCH_DELAY_MS = 180L
 private const val CONTINUOUS_EDGE_PULL_THRESHOLD_DP = 56f
+// A touch this soon after the content last moved on its own counts as landing
+// on a fling. Frames thin out as a fling slows (touches on the emulator landed
+// up to 47 ms after the last frame), and 80 ms is still far shorter than anyone
+// reacts, so a real tap on settled text is never mistaken for a catch.
+private const val FLING_STOP_WINDOW_MS = 80L
 
 private class ContinuousReaderScrollView(context: Context) : ScrollView(context) {
   private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
@@ -476,9 +481,22 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
   private var downAtTop = false
   private var downAtBottom = false
 
+  // Fling tracking. ScrollView keeps its scroller private, so a fling is
+  // "the content moved within the last few frames while no finger was down".
+  private var fingerDown = false
+  private var lastScrollChangeAtMs = 0L
+
   init {
     isFillViewport = true
     overScrollMode = OVER_SCROLL_IF_CONTENT_SCROLLS
+  }
+
+  override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+    when (event.actionMasked) {
+      MotionEvent.ACTION_DOWN -> fingerDown = true
+      MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> fingerDown = false
+    }
+    return super.dispatchTouchEvent(event)
   }
 
   // Records where an overlong span sat when the finger landed. Navigation
@@ -499,12 +517,19 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
 
   override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
     super.onScrollChanged(l, t, oldl, oldt)
+    if (!fingerDown) {
+      lastScrollChangeAtMs = SystemClock.uptimeMillis()
+    }
     onScrollPositionChanged?.invoke(t)
   }
 
   override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
     when (event.actionMasked) {
       MotionEvent.ACTION_DOWN -> {
+        // lastScrollChangeAtMs only advances while no finger is down, so this
+        // reads the motion from before this touch.
+        val wasFlinging = !swipeNavigationEnabled &&
+          SystemClock.uptimeMillis() - lastScrollChangeAtMs < FLING_STOP_WINDOW_MS
         startX = event.x
         startY = event.y
         reportedVerticalDrag = false
@@ -516,6 +541,13 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
         // it is never left over from the previous gesture.
         beginFocusDrag(event.y)
         super.onInterceptTouchEvent(event)
+        // A touch while the text is still coasting only stops it, as in any
+        // Android list: take the gesture here so the page view never turns it
+        // into a word tap, and ScrollView.onTouchEvent's DOWN aborts the fling.
+        if (wasFlinging) {
+          lastScrollChangeAtMs = 0L
+          return true
+        }
         return false
       }
       MotionEvent.ACTION_MOVE -> {
