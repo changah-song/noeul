@@ -1,4 +1,4 @@
-import * as SQLite from 'expo-sqlite';
+import * as SQLite from './legacySqlite';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { normalizeBookLanguage, normalizeInterfaceLanguageCode } from '../constants/languages';
 import { initializeHanjaDatabase } from './hanjaDatabase';

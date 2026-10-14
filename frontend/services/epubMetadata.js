@@ -1,6 +1,6 @@
 import JSZip from 'jszip';
 import { DOMParser } from '@xmldom/xmldom';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { normalizeBookLanguage } from '../constants/languages';
 
 // xmldom parses in strict XML mode, so any prefixed tag/attribute (e.g.

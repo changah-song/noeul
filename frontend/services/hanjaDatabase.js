@@ -1,5 +1,5 @@
-import * as SQLite from 'expo-sqlite';
-import * as FileSystem from 'expo-file-system';
+import * as SQLite from './legacySqlite';
+import * as FileSystem from 'expo-file-system/legacy';
 import { Asset } from 'expo-asset';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { normalizeInterfaceLanguageCode } from '../constants/languages';

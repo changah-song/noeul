@@ -1,4 +1,4 @@
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 
 import { normalizeBookLanguage } from '../constants/languages';
 import { translate } from '../i18n/translations';

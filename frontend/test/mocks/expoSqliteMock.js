@@ -3,71 +3,22 @@
  * (better-sqlite3).
  *
  * Why back it with a real engine instead of a hand-rolled fake:
- * the behavior we most want to test in Phase 1 — that re-inserting the same
+ * the behavior we most want to test — e.g. that re-inserting the same
  * `client_event_id` is a genuine no-op — depends on SQLite actually enforcing a
  * UNIQUE index and honoring `INSERT OR IGNORE`. A fake that just pushed rows into
- * an array would only test the fake, not our SQL. Running the exact SQL against a
- * real engine tests the schema for real.
+ * an array would only test the fake, not our SQL.
  *
- * This shim reproduces the small slice of expo-sqlite's WebSQL-style API that
- * Database.js uses:
- *   const db = SQLite.openDatabase(name);
- *   db.transaction(txCallback, errorCallback, successCallback);
- *   tx.executeSql(sql, params, onSuccess, onError);
- *     -> onSuccess(tx, { rows: { _array, length, item }, rowsAffected, insertId })
+ * It implements the slice of the current expo-sqlite API that
+ * services/legacySqlite.js uses (openDatabaseSync → getAllAsync / runAsync), so
+ * tests run the app's real callback-API adapter on top of it. `openDatabase` is
+ * that adapter, for tests that open a database directly.
  */
 
 const BetterSqlite3 = require('better-sqlite3');
+const { openLegacyDatabase } = require('../../services/legacySqlite');
 
-// One in-memory database per filename, cached so repeated openDatabase(name)
-// calls (Database.js opens once at module load) share the same state.
+// One in-memory database per filename, cached so repeated opens share state.
 const databases = new Map();
-
-const makeResultSet = (rows, runInfo) => ({
-  rows: {
-    _array: rows,
-    length: rows.length,
-    item: (index) => rows[index],
-  },
-  rowsAffected: runInfo ? runInfo.changes : 0,
-  insertId: runInfo ? runInfo.lastInsertRowid : undefined,
-});
-
-// better-sqlite3 rejects `undefined` binds; our callers pass explicit nulls, but
-// normalize defensively so a stray undefined doesn't crash the whole transaction.
-const normalizeParams = (params) =>
-  (Array.isArray(params) ? params : []).map((value) =>
-    value === undefined ? null : value
-  );
-
-const isReadStatement = (sql) => /^\s*(select|pragma)/i.test(sql);
-
-const createExecuteSql = (engine) => (sql, params, onSuccess, onError) => {
-  try {
-    const statement = engine.prepare(sql);
-    const boundParams = normalizeParams(params);
-
-    if (isReadStatement(sql)) {
-      const rows = statement.all(...boundParams);
-      onSuccess && onSuccess(tx, makeResultSet(rows, null));
-    } else {
-      const info = statement.run(...boundParams);
-      onSuccess && onSuccess(tx, makeResultSet([], info));
-    }
-    return true;
-  } catch (error) {
-    // WebSQL semantics: if a statement error handler is present it may swallow the
-    // error; otherwise the error propagates to the transaction error callback.
-    if (onError) {
-      return onError(tx, error);
-    }
-    throw error;
-  }
-};
-
-// `tx` is assigned per transaction below; executeSql references it lazily (only
-// when called), by which point the current transaction has set it.
-let tx;
 
 const getEngine = (name) => {
   if (!databases.has(name)) {
@@ -76,27 +27,26 @@ const getEngine = (name) => {
   return databases.get(name);
 };
 
-// The handle resolves its engine by name *per transaction*, not once at open time.
-// Database.js captures its db handle at module load and never re-opens; resolving
-// lazily lets __resetMockDatabases() swap in a fresh engine between tests while
-// that long-lived handle keeps working.
-const makeDatabase = (name) => ({
-  transaction(txCallback, errorCallback, successCallback) {
-    tx = { executeSql: createExecuteSql(getEngine(name)) };
-    try {
-      txCallback(tx);
-      successCallback && successCallback();
-    } catch (error) {
-      if (errorCallback) {
-        errorCallback(error);
-      } else {
-        throw error;
-      }
+// The handle resolves its engine by name per call, not once at open time.
+// Database.js opens its db at module load and never re-opens; resolving lazily
+// lets __resetMockDatabases() swap in a fresh engine between tests while that
+// long-lived handle keeps working.
+const openDatabaseSync = (name = ':memory:') => ({
+  async getAllAsync(sql, params = []) {
+    const statement = getEngine(name).prepare(sql);
+    if (!statement.reader) {
+      statement.run(...params);
+      return [];
     }
+    return statement.all(...params);
+  },
+  async runAsync(sql, params = []) {
+    const info = getEngine(name).prepare(sql).run(...params);
+    return { lastInsertRowId: Number(info.lastInsertRowid), changes: info.changes };
   },
 });
 
-const openDatabase = (name = ':memory:') => makeDatabase(name);
+const openDatabase = (name = ':memory:') => openLegacyDatabase(name, openDatabaseSync);
 
 /**
  * Test helper (not part of the real expo-sqlite API): wipe all in-memory
@@ -110,6 +60,7 @@ const __resetMockDatabases = () => {
 };
 
 module.exports = {
+  openDatabaseSync,
   openDatabase,
   __resetMockDatabases,
 };

@@ -1,9 +1,8 @@
 package com.noeulapp.Noeul
+import expo.modules.splashscreen.SplashScreenManager
 
 import android.os.Build
 import android.os.Bundle
-import android.window.OnBackInvokedCallback
-import android.window.OnBackInvokedDispatcher
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
@@ -17,34 +16,11 @@ class MainActivity : ReactActivity() {
     // Set the theme to AppTheme BEFORE onCreate to support
     // coloring the background, status bar, and navigation bar.
     // This is required for expo-splash-screen.
-    setTheme(R.style.AppTheme);
+    // setTheme(R.style.AppTheme);
+    // @generated begin expo-splashscreen - expo prebuild (DO NOT MODIFY) sync-f3ff59a738c56c9a6119210cb55f0b613eb8b6af
+    SplashScreenManager.registerOnActivity(this)
+    // @generated end expo-splashscreen
     super.onCreate(null)
-    registerReactBackInvokedCallback()
-  }
-
-  /**
-   * On Android 13+ (API 33) the platform can route the Back gesture through the new
-   * [OnBackInvokedDispatcher] instead of the legacy `onBackPressed()`. For apps targeting
-   * SDK 35+, that new path is enabled by default (Android 15/16), which means React Native
-   * 0.73 — which only listens on the legacy path — never receives the event and the OS just
-   * backgrounds the task. Registering our own callback forwards Back into React Native's
-   * existing handling, so JS `BackHandler` ("hardwareBackPress") and React Navigation work
-   * again without opting out of the modern dispatcher.
-   */
-  private fun registerReactBackInvokedCallback() {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-      return
-    }
-    onBackInvokedDispatcher.registerOnBackInvokedCallback(
-      OnBackInvokedDispatcher.PRIORITY_DEFAULT,
-      OnBackInvokedCallback {
-        // ReactActivity.onBackPressed() emits "hardwareBackPress" to JS via the delegate,
-        // letting registered BackHandler listeners consume it; if none do, it falls through
-        // to invokeDefaultOnBackPressed() below.
-        @Suppress("DEPRECATION")
-        onBackPressed()
-      }
-    )
   }
 
   /**
