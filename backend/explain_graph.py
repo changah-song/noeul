@@ -31,6 +31,35 @@ from typing import Any, Callable, TypedDict
 # the graph only collects it, never inspects it.
 ModelCaller = Callable[[str, str], "tuple[str, Any]"]
 
+
+class ExplainGraphError(Exception):
+    """A model call inside the flow failed.
+
+    ``usages`` holds the usage of every call that completed before the failure
+    (e.g. the draft when the refine call raised), so the caller can still record
+    that spend instead of losing it with the exception.
+    """
+
+    def __init__(self, cause: BaseException, usages: list):
+        super().__init__(f"{cause.__class__.__name__}: {cause}")
+        self.usages = list(usages)
+
+
+def stream_snapshot_usage(stream: Any) -> Any:
+    """Best-effort usage from an Anthropic message stream that may have ended early.
+
+    ``current_message_snapshot`` carries input tokens from message_start and
+    output tokens as message_delta events arrive; before message_start it is
+    unset (the SDK raises), in which case nothing was billed worth recording.
+    """
+    if stream is None:
+        return None
+    try:
+        snapshot = stream.current_message_snapshot
+    except Exception:  # noqa: BLE001 - no snapshot yet
+        return None
+    return getattr(snapshot, "usage", None)
+
 # One draft + at most this many refine passes. Caps worst-case model spend per
 # lookup at REFINE_MAX_ATTEMPTS + 1 calls.
 REFINE_MAX_ATTEMPTS = 1
@@ -449,7 +478,10 @@ def run_explain_graph(
             issues=issues,
             known_lemma=known_lemma,
         )
-        raw, usage = model_caller(system_prompt, _user_message(state))
+        try:
+            raw, usage = model_caller(system_prompt, _user_message(state))
+        except Exception as error:
+            raise ExplainGraphError(error, state["usages"]) from error
         parsed = parse_contextual_explanation(raw or "")
         state.update({
             # The client's dictionary form wins over anything the model wrote.
