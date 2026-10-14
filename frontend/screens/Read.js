@@ -38,6 +38,7 @@ import {
     logInteractionEvent,
     lookupBookHighlightSurfaces,
     lookupBookLevelSurfaces,
+    lookupBookAnnotationSurfaces,
     lookupCacheByStems,
     markBookPreprocessChapter,
     markBookPreprocessMeta,
@@ -80,6 +81,7 @@ import {
     lowestUnderlinedRank,
 } from '../services/abilityModel';
 import { buildLevelUnderlineTerms } from '../services/levelUnderlineTerms';
+import { ANNOTATION_SCOPES, buildAnnotatedLevelTerms } from '../services/readerAnnotations';
 import { buildLegendGradient } from '../services/readerSettings';
 import { createNativeReaderThemeTokens, radii, spacing, textStyles, useTheme } from '../theme';
 
@@ -95,9 +97,13 @@ const DEFAULT_READER_SETTINGS = {
     focusSwipe: false,
     readingMode: 'paged',
     levelMarkStyle: 'underline',
-    // Chinese only: draw pinyin above underlined (graded) words. Loosens line
-    // spacing when on, so it re-paginates. Ignored for non-Chinese books.
+    // Chinese only: draw pinyin above words. Loosens line spacing when on, so
+    // it re-paginates. Ignored for non-Chinese books.
     pinyinAnnotations: false,
+    // Short translation under words (any language). Also re-paginates.
+    glossAnnotations: false,
+    // Which words get pinyin / translations: 'underlined' or 'all'.
+    annotationScope: 'underlined',
 };
 const READING_MODES = ['paged', 'scroll'];
 
@@ -494,6 +500,9 @@ const Read = ({
     const [highlightTerms, setHighlightTerms] = useState(null);
     const [optimisticHighlightTerms, setOptimisticHighlightTerms] = useState([]);
     const [levelUnderlineTerms, setLevelUnderlineTerms] = useState([]);
+    // Every word in the book with its pinyin / gloss, loaded only while word
+    // annotations are on.
+    const [annotationRows, setAnnotationRows] = useState([]);
     const [highlightTermsReady, setHighlightTermsReady] = useState(false);
     const [readerLocationInfo, setReaderLocationInfo] = useState(null);
     const [toc, setToc] = useState([]);
@@ -2922,16 +2931,68 @@ const Read = ({
         ? settings.levelMarkStyle
         : DEFAULT_READER_SETTINGS.levelMarkStyle;
     const levelMarksEnabled = levelMarkStyle !== 'off';
-    const readerLevelTerms = useMemo(
-        () => (levelMarksEnabled ? levelUnderlineTerms : EMPTY_LEVEL_TERMS),
-        [levelMarksEnabled, levelUnderlineTerms]
+    // Pinyin / gloss for every word in the book, while word annotations are on.
+    const annotationsWanted = (
+        (activeBookLanguage === 'zh' && Boolean(settings.pinyinAnnotations))
+        || Boolean(settings.glossAnnotations)
     );
-    // Pinyin annotations ride on the underlined (level) words, so they only make
-    // sense for Chinese books when the level marks are showing.
-    const readerShowPinyin = (
-        activeBookLanguage === 'zh'
-        && Boolean(settings.pinyinAnnotations)
-        && levelMarksEnabled
+    useEffect(() => {
+        if (!annotationsWanted || !currentBook || !activeBook?.preprocessed) {
+            setAnnotationRows([]);
+            return undefined;
+        }
+        let isActive = true;
+        lookupBookAnnotationSurfaces(activeOwnerId, currentBook, { language: activeBookLanguage })
+            .then((rows) => {
+                if (isActive) setAnnotationRows(rows || []);
+            })
+            .catch((error) => {
+                console.error('[Read] Failed to load word annotations:', error);
+                if (isActive) setAnnotationRows([]);
+            });
+        return () => {
+            isActive = false;
+        };
+    }, [
+        activeBook?.preprocessed,
+        activeBookLanguage,
+        activeOwnerId,
+        annotationsWanted,
+        currentBook,
+        preprocessStatus,
+    ]);
+
+    // Word annotations ride on the level-term list: underlined words carry their
+    // pinyin / gloss, and the "all words" scope adds the rest as annotation-only.
+    const readerShowPinyin = activeBookLanguage === 'zh' && Boolean(settings.pinyinAnnotations);
+    const readerShowGloss = Boolean(settings.glossAnnotations);
+    const annotationScope = ANNOTATION_SCOPES.includes(settings.annotationScope)
+        ? settings.annotationScope
+        : DEFAULT_READER_SETTINGS.annotationScope;
+    const readerLevelTerms = useMemo(
+        () => {
+            if (!readerShowPinyin && !readerShowGloss) {
+                return levelMarksEnabled ? levelUnderlineTerms : EMPTY_LEVEL_TERMS;
+            }
+            return buildAnnotatedLevelTerms({
+                levelTerms: levelUnderlineTerms,
+                annotationRows,
+                marksEnabled: levelMarksEnabled,
+                pinyin: readerShowPinyin,
+                gloss: readerShowGloss,
+                scope: annotationScope,
+                interfaceLanguage,
+            });
+        },
+        [
+            annotationRows,
+            annotationScope,
+            interfaceLanguage,
+            levelMarksEnabled,
+            levelUnderlineTerms,
+            readerShowGloss,
+            readerShowPinyin,
+        ]
     );
     // Legend gradient: interpolate the same three underline stops native draws
     // (easy → mid → hard) into a smooth bar, so the swatch matches the page.
@@ -3202,6 +3263,7 @@ const Read = ({
                         highlightTerms={readerHighlightTerms}
                         levelTerms={readerLevelTerms}
                         showPinyin={readerShowPinyin}
+                        showGloss={readerShowGloss}
                         clearSelectionToken={clearSelectionToken}
                         focusSentenceCount={focusSpan}
                         focusSwipeEnabled={focusSwipe}
@@ -3572,9 +3634,9 @@ const Read = ({
                                     ) : null}
                                 </View>
 
-                                {/* Pinyin over marked words — Chinese only, and only
-                                    meaningful when the vocabulary marks are showing. */}
-                                {activeBookLanguage === 'zh' && levelMarksEnabled ? (
+                                {/* Word annotations: pinyin above words (Chinese only) and a
+                                    short translation under them, on underlined or all words. */}
+                                {activeBookLanguage === 'zh' ? (
                                     <View style={styles.markStyleBlock}>
                                         <Text style={styles.fontSettingsLabel}>{t('read.pinyinAnnotations')}</Text>
                                         <View style={styles.segmentGroup}>
@@ -3594,6 +3656,58 @@ const Read = ({
                                                             numberOfLines={1}
                                                         >
                                                             {value ? t('read.pinyinOn') : t('read.pinyinOff')}
+                                                        </Text>
+                                                    </TouchableOpacity>
+                                                );
+                                            })}
+                                        </View>
+                                    </View>
+                                ) : null}
+                                    <View style={styles.markStyleBlock}>
+                                        <Text style={styles.fontSettingsLabel}>{t('read.glossAnnotations')}</Text>
+                                        <View style={styles.segmentGroup}>
+                                            {[false, true].map((value) => {
+                                                const selected = Boolean(settings.glossAnnotations) === value;
+                                                return (
+                                                    <TouchableOpacity
+                                                        key={String(value)}
+                                                        style={[styles.segmentButton, selected && styles.segmentButtonActive]}
+                                                        onPress={() => handleSettingChange('glossAnnotations', value)}
+                                                        activeOpacity={0.7}
+                                                        accessibilityRole="button"
+                                                        accessibilityState={{ selected }}
+                                                    >
+                                                        <Text
+                                                            style={[styles.segmentButtonText, selected && styles.segmentButtonTextActive]}
+                                                            numberOfLines={1}
+                                                        >
+                                                            {value ? t('read.pinyinOn') : t('read.pinyinOff')}
+                                                        </Text>
+                                                    </TouchableOpacity>
+                                                );
+                                            })}
+                                        </View>
+                                    </View>
+                                {(readerShowPinyin || readerShowGloss) ? (
+                                    <View style={styles.markStyleBlock}>
+                                        <Text style={styles.fontSettingsLabel}>{t('read.annotationScope')}</Text>
+                                        <View style={styles.segmentGroup}>
+                                            {ANNOTATION_SCOPES.map((value) => {
+                                                const selected = annotationScope === value;
+                                                return (
+                                                    <TouchableOpacity
+                                                        key={String(value)}
+                                                        style={[styles.segmentButton, selected && styles.segmentButtonActive]}
+                                                        onPress={() => handleSettingChange('annotationScope', value)}
+                                                        activeOpacity={0.7}
+                                                        accessibilityRole="button"
+                                                        accessibilityState={{ selected }}
+                                                    >
+                                                        <Text
+                                                            style={[styles.segmentButtonText, selected && styles.segmentButtonTextActive]}
+                                                            numberOfLines={1}
+                                                        >
+                                                            {value === 'all' ? t('read.annotationScopeAll') : t('read.annotationScopeUnderlined')}
                                                         </Text>
                                                     </TouchableOpacity>
                                                 );

@@ -61,7 +61,11 @@ const NativeEpubReaderView = forwardRef(({
     // [{ text, weight }] — weight 0..1 positions the term on the reader's
     // green→amber→red underline gradient. Native owns the colors so the gradient
     // tracks the reader theme without a round trip through JS.
+    // Optional per-term `pinyin` / `gloss` are drawn above / below the word when
+    // showPinyin / showGloss are on; `annotationOnly` terms draw no underline.
     levelTerms = [],
+    showPinyin = false,
+    showGloss = false,
     clearSelectionToken = 0,
     focusSentenceCount = 1,
     focusSwipeEnabled = false,
@@ -142,6 +146,8 @@ const NativeEpubReaderView = forwardRef(({
             readerEdgeStateEnabled={readerEdgeStateEnabled}
             highlightTerms={highlightTerms || []}
             levelTerms={levelTerms || []}
+            showPinyin={!!showPinyin}
+            showGloss={!!showGloss}
             clearSelectionToken={clearSelectionToken}
             focusSentenceCount={focusSentenceCount}
             focusSwipeEnabled={focusSwipeEnabled}

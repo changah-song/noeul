@@ -48,7 +48,12 @@ private data class LevelTerm(
   val pinyin: String? = null,
   // §8: true when the word is hard but frequent in the book (the book will reteach it),
   // so it is drawn in a calmer tone than a hard+rare ("study") word.
-  val reinforced: Boolean = false
+  val reinforced: Boolean = false,
+  // Short translation, drawn under the word when gloss annotations are on.
+  val gloss: String? = null,
+  // Annotation-only words (the "all words" annotation setting): they carry pinyin
+  // or a gloss but draw no underline and don't count as graded exposures.
+  val annotationOnly: Boolean = false
 )
 
 private data class HighlightMatch(
@@ -238,6 +243,10 @@ class NativeEpubReaderModule : Module() {
 
       Prop("levelTerms") { view: NativeEpubReaderView, terms: List<Any?> ->
         view.setLevelTerms(terms)
+      }
+
+      Prop("showGloss") { view: NativeEpubReaderView, enabled: Boolean ->
+        view.setShowGloss(enabled)
       }
 
       Prop("showPinyin") { view: NativeEpubReaderView, enabled: Boolean ->
@@ -449,6 +458,18 @@ private const val CONTINUOUS_EDGE_PULL_THRESHOLD_DP = 56f
 // up to 47 ms after the last frame), and 80 ms is still far shorter than anyone
 // reacts, so a real tap on settled text is never mistaken for a catch.
 private const val FLING_STOP_WINDOW_MS = 80L
+
+// Space reserved between lines for annotation rows: pinyin sits above a line,
+// the gloss below it. Shared with EpubPageView, which draws into this space.
+internal fun annotationSpacePx(bodyTextPx: Float, pinyin: Boolean, gloss: Boolean): Int {
+  var space = 0f
+  if (pinyin) space += bodyTextPx * PINYIN_ROW_SCALE
+  if (gloss) space += bodyTextPx * GLOSS_ROW_SCALE
+  return space.toInt()
+}
+
+internal const val PINYIN_ROW_SCALE = 0.9f
+internal const val GLOSS_ROW_SCALE = 0.85f
 
 private class ContinuousReaderScrollView(context: Context) : ScrollView(context) {
   private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
@@ -691,10 +712,14 @@ class NativeEpubReaderView(
   private var levelWeights: FloatArray = FloatArray(0)
   // Pinyin per level term, indexed the same way as levelWeights.
   private var levelPinyins: Array<String?> = emptyArray()
+  private var levelGlosses: Array<String?> = emptyArray()
+  private var levelAnnotationOnlyFlags: BooleanArray = BooleanArray(0)
   // §8 reinforced flag per level term, indexed the same way as levelWeights.
   private var levelReinforcedFlags: BooleanArray = BooleanArray(0)
   // Whether pinyin annotations are drawn above underlined words (Chinese only).
   private var showPinyin: Boolean = false
+  // Whether short translations are drawn under annotated words.
+  private var showGloss: Boolean = false
   private var savedHighlightRangesByPage: Map<Int, List<TextRange>> = emptyMap()
   private var savedHighlightContextsByPage: Map<Int, List<Map<String, Any>>> = emptyMap()
   private var levelRangesByPage: Map<Int, List<TextRange>> = emptyMap()
@@ -1115,8 +1140,9 @@ class NativeEpubReaderView(
     levelMatcher = HighlightMatcher(nextTerms.map { it.text })
     levelWeights = FloatArray(nextTerms.size) { index -> nextTerms[index].weight }
     levelPinyins = Array(nextTerms.size) { index -> nextTerms[index].pinyin }
+    levelGlosses = Array(nextTerms.size) { index -> nextTerms[index].gloss }
+    levelAnnotationOnlyFlags = BooleanArray(nextTerms.size) { index -> nextTerms[index].annotationOnly }
     levelReinforcedFlags = BooleanArray(nextTerms.size) { index -> nextTerms[index].reinforced }
-    Log.d(TAG, "setLevelTerms: ${nextTerms.size} terms, ${nextTerms.count { it.pinyin != null }} with pinyin, showPinyin=$showPinyin")
     rebuildLevelUnderlineRanges()
   }
 
@@ -1127,10 +1153,20 @@ class NativeEpubReaderView(
       return
     }
     showPinyin = enabled
-    Log.d(TAG, "setShowPinyin: $enabled")
     // The adapter is reused across repaginations (only created when null), so its
-    // own showPinyin flag won't pick up the change unless we push it here.
-    pageAdapter?.setShowPinyin(enabled)
+    // own flags won't pick up the change unless we push them here.
+    pageAdapter?.setAnnotations(showPinyin, showGloss)
+    repaginate(resetToFirstPage = false)
+  }
+
+  // Toggle short translations under annotated words. Repaginate so the line
+  // spacing reserves (or releases) the row of space below each line.
+  fun setShowGloss(enabled: Boolean) {
+    if (showGloss == enabled) {
+      return
+    }
+    showGloss = enabled
+    pageAdapter?.setAnnotations(showPinyin, showGloss)
     repaginate(resetToFirstPage = false)
   }
 
@@ -1161,12 +1197,13 @@ class NativeEpubReaderView(
     val lineHeightSnapshot = readerLineHeightMultiplier
     val isDarkSnapshot = readerTheme == "dark"
     val appContext = context.applicationContext ?: context
-    // Room for one pinyin row above each line, scaled to the body font. 0 when off.
-    val rubySpaceSnapshot = if (showPinyin) {
-      (fontSizeSnapshot * resources.displayMetrics.density * 0.9f).toInt()
-    } else {
-      0
-    }
+    // Room between lines for the annotation rows (pinyin above a line, gloss
+    // below it), scaled to the body font. 0 when both are off.
+    val rubySpaceSnapshot = annotationSpacePx(
+      fontSizeSnapshot * resources.displayMetrics.density,
+      showPinyin,
+      showGloss
+    )
     val previousPages = pages
     val previousPage = pages.getOrNull(viewPager.currentItem)
     val previousLogicalPage = logicalPageForDisplayPosition(viewPager.currentItem)
@@ -1539,7 +1576,9 @@ class NativeEpubReaderView(
       "level",
       weightForPriority = ::levelWeightForPriority,
       pinyinForPriority = ::levelPinyinForPriority,
-      reinforcedForPriority = ::levelReinforcedForPriority
+      reinforcedForPriority = ::levelReinforcedForPriority,
+      glossForPriority = ::levelGlossForPriority,
+      annotationOnlyForPriority = ::levelAnnotationOnlyForPriority
     )
     levelRangesByPage = levelHighlights.rangesByPage
     levelTermsByPage = levelHighlights.termsByPage
@@ -1593,6 +1632,7 @@ class NativeEpubReaderView(
         savedHighlightRangesByPage,
         levelRangesByPage,
         showPinyin,
+        showGloss,
         activeHighlightColor,
         textSelectionHighlightColor,
         savedHighlightColor,
@@ -1822,7 +1862,9 @@ class NativeEpubReaderView(
       onSelectionDragStateChanged = ::handlePageSelectionDragStateChanged,
       onEdgeAction = ::handlePageEdgeAction,
       focusModeEnabled = focusEnabled,
-      onFocusTextTapped = ::handleFocusTextTapped
+      onFocusTextTapped = ::handleFocusTextTapped,
+      showPinyin = showPinyin,
+      showGloss = showGloss
     )
 
     if (focusEnabled) {
@@ -2612,7 +2654,7 @@ class NativeEpubReaderView(
 
     val terms = linkedSetOf<String>()
     levelRangesByPage[page.pageIndex].orEmpty().forEach { range ->
-      if (range.blockId != blockId) return@forEach
+      if (range.blockId != blockId || range.annotationOnly) return@forEach
       val start = range.sourceStartOffset - block.sourceStartOffset
       val end = range.sourceEndOffset - block.sourceStartOffset
       if (start >= localStart && end <= localEnd && start in 0 until end && end <= text.length) {
@@ -2896,7 +2938,9 @@ class NativeEpubReaderView(
       "level",
       weightForPriority = ::levelWeightForPriority,
       pinyinForPriority = ::levelPinyinForPriority,
-      reinforcedForPriority = ::levelReinforcedForPriority
+      reinforcedForPriority = ::levelReinforcedForPriority,
+      glossForPriority = ::levelGlossForPriority,
+      annotationOnlyForPriority = ::levelAnnotationOnlyForPriority
     )
     levelRangesByPage = levelHighlights.rangesByPage
     levelTermsByPage = levelHighlights.termsByPage
@@ -2912,6 +2956,12 @@ class NativeEpubReaderView(
 
   private fun levelReinforcedForPriority(priority: Int): Boolean =
     levelReinforcedFlags.getOrNull(priority) ?: false
+
+  private fun levelGlossForPriority(priority: Int): String? =
+    levelGlosses.getOrNull(priority)
+
+  private fun levelAnnotationOnlyForPriority(priority: Int): Boolean =
+    levelAnnotationOnlyFlags.getOrNull(priority) ?: false
 
   private fun refreshEdgeStatesForCurrentPages() {
     if (pages.isEmpty() || pages.none { page -> page.edgeState != null }) {
@@ -2972,7 +3022,11 @@ class NativeEpubReaderView(
     // Level underlines only: the word's pinyin, drawn above it when annotations are on.
     pinyinForPriority: ((Int) -> String?)? = null,
     // Level underlines only (§8): whether the word is hard+frequent ("reinforced").
-    reinforcedForPriority: ((Int) -> Boolean)? = null
+    reinforcedForPriority: ((Int) -> Boolean)? = null,
+    // Level terms only: the word's short translation, drawn under it when on.
+    glossForPriority: ((Int) -> String?)? = null,
+    // Level terms only: annotation-only words get no underline and no exposure.
+    annotationOnlyForPriority: ((Int) -> Boolean)? = null
   ): HighlightBuildResult {
     if (sourcePages.isEmpty() || matcher.termCount == 0) {
       Log.d(
@@ -3011,7 +3065,10 @@ class NativeEpubReaderView(
             !overlapsAny(occupiedLocalRanges, match.start, match.end)
           ) {
             occupiedLocalRanges.add(match.start to match.end)
-            pageTerms.add(match.term)
+            val annotationOnly = annotationOnlyForPriority?.invoke(match.priority) ?: false
+            if (!annotationOnly) {
+              pageTerms.add(match.term)
+            }
             pageRanges.add(
               TextRange(
                 pageIndex = page.pageIndex,
@@ -3019,9 +3076,11 @@ class NativeEpubReaderView(
                 blockId = block.blockId,
                 sourceStartOffset = block.sourceStartOffset + match.start,
                 sourceEndOffset = block.sourceStartOffset + match.end,
-                levelWeight = weightForPriority?.invoke(match.priority),
+                levelWeight = if (annotationOnly) null else weightForPriority?.invoke(match.priority),
                 pinyin = pinyinForPriority?.invoke(match.priority),
-                levelReinforced = reinforcedForPriority?.invoke(match.priority) ?: false
+                levelReinforced = reinforcedForPriority?.invoke(match.priority) ?: false,
+                gloss = glossForPriority?.invoke(match.priority),
+                annotationOnly = annotationOnly
               )
             )
 
@@ -3121,7 +3180,9 @@ class NativeEpubReaderView(
             val weight = (entry["weight"] as? Number)?.toFloat() ?: 1f
             val pinyin = (entry["pinyin"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
             val reinforced = (entry["category"] as? String) == "reinforced"
-            text?.let { LevelTerm(it, weight.coerceIn(0f, 1f), pinyin, reinforced) }
+            val gloss = (entry["gloss"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
+            val annotationOnly = entry["annotationOnly"] == true
+            text?.let { LevelTerm(it, weight.coerceIn(0f, 1f), pinyin, reinforced, gloss, annotationOnly) }
           }
           else -> null
         }

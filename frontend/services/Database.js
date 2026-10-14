@@ -6111,6 +6111,50 @@ export const lookupBookLevelSurfaces = (
   });
 };
 
+// Every word surface in the book with its reading (dc.ipa: pinyin for Chinese),
+// short gloss and definition, for the reader's pinyin / translation annotations. A surface
+// can have rows in several interface languages; the caller picks one.
+export const lookupBookAnnotationSurfaces = (
+  ownerId,
+  bookUri,
+  scopeOrInterfaceLanguage = 'en',
+  options = {}
+) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const scope = normalizeDictionaryCacheScope(scopeOrInterfaceLanguage, options);
+  const scopedProfileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, scope.language);
+
+  return new Promise((resolve, reject) => {
+    if (!bookUri) {
+      return resolve([]);
+    }
+
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT DISTINCT bi.surface,
+                dc.ipa,
+                dc.gloss,
+                dc.definition,
+                dc.interface_language
+         FROM dictionary_cache dc
+         JOIN book_index bi ON bi.stem_id = dc.id
+         WHERE dc.language = ?
+           AND bi.owner_id = ?
+           AND bi.profile_id = ?
+           AND bi.book_uri = ?`,
+        [scope.language, scopedOwnerId, scopedProfileId, bookUri],
+        (_, result) => {
+          resolve(result.rows._array);
+        },
+        (_, error) => {
+          console.error('[Database] Error querying annotation surfaces from book_index:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
 export const getBookPreprocessMeta = (
   ownerId,
   bookUri,
