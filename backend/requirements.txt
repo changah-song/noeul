@@ -7,6 +7,10 @@
 # kiwipiepy manually pinned — pip-compile excluded it (no Python 3.14 wheel),
 # but the Docker build uses Python 3.12 where it installs fine.
 kiwipiepy
+# jieba and pypinyin manually pinned: pure Python, and missing from the last
+# pip-compile run, so production had no Chinese segmentation or pinyin.
+jieba==0.42.1
+pypinyin==0.55.0
 annotated-doc==0.0.4
     # via
     #   fastapi

@@ -7,8 +7,6 @@ supabase
 
 anthropic
 
-# Agentic explain-in-context workflow (explain_graph.py).
-
 requests
 beautifulsoup4
 lxml
@@ -16,15 +14,13 @@ lxml
 numpy
 pandas
 
-# Phase 4.2 offline P(known) training pipeline (ml/train_pknown.py).
-scikit-learn
-joblib
-
 spacy
 en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 
 opencc-python-reimplemented
 
+# Chinese word segmentation (zh lookups and preprocessing).
+jieba
 # Pinyin generation for Chinese lookups / translations (zh_to_pinyin helper).
 pypinyin
 
