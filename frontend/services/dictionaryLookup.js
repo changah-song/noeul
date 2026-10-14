@@ -5,6 +5,7 @@ import {
     insertData,
     logInteractionEvent,
     lookupBookIndexBySurface,
+    lookupBookIndexBySurfaceVariants,
     lookupCacheByStems,
     recordVocabContext,
     removeData,
@@ -312,11 +313,123 @@ const fetchAndCacheLiveDictionary = async ({
         })
         .filter(Boolean);
 
-    if (cacheEntries.length > 0) {
-        await insertCacheEntries(cacheEntries, cacheScope);
-    }
+    writeLiveCacheEntries(cacheEntries, cacheScope);
 
     return new Map(uniqueStems.map((stem, index) => [stem, liveResults[index] ?? []]));
+};
+
+// Caching a live result must not hold the panel back: the definition is already
+// in hand. expo-sqlite runs transactions in order, so a later cache read (e.g.
+// the panel's romanization lookup) still sees this write.
+const writeLiveCacheEntries = (cacheEntries, cacheScope) => {
+    if (!cacheEntries.length) {
+        return;
+    }
+    insertCacheEntries(cacheEntries, cacheScope).catch((error) => {
+        console.warn('[dictionaryLookup] Failed to cache live dictionary entries:', error?.message ?? error);
+    });
+};
+
+// Surface -> stems for surfaces already stemmed by the server this session
+// (stemming is deterministic), so a repeat tap whose stems are cached locally
+// skips the network. Bounded; oldest entries are dropped first.
+const SURFACE_STEM_MEMO_LIMIT = 500;
+const surfaceStemMemo = new Map();
+
+const rememberSurfaceStems = (key, stems) => {
+    if (!Array.isArray(stems) || stems.length === 0) {
+        return;
+    }
+    surfaceStemMemo.delete(key);
+    surfaceStemMemo.set(key, stems);
+    if (surfaceStemMemo.size > SURFACE_STEM_MEMO_LIMIT) {
+        surfaceStemMemo.delete(surfaceStemMemo.keys().next().value);
+    }
+};
+
+// Set once the server answers 404/405 to /krdict_lookup/ (a backend deployed
+// before the endpoint existed); later taps go straight to the two-request path.
+let combinedKoreanLookupUnsupported = false;
+
+export const resetLookupSessionStateForTests = () => {
+    combinedKoreanLookupUnsupported = false;
+    surfaceStemMemo.clear();
+};
+
+/**
+ * One request that stems the tapped surface on the server and returns the
+ * dictionary entries for every stem: { stems, results } with results[i] for
+ * stems[i]. Returns null when the server has no /krdict_lookup/ (or the call
+ * fails), so the caller falls back to /okt_morphs/ + /krdict_search/.
+ */
+const fetchCombinedKoreanLookup = async (surface, interfaceLanguage) => {
+    if (combinedKoreanLookupUnsupported) {
+        return null;
+    }
+
+    try {
+        const response = await api.post('/krdict_lookup/', {
+            surface,
+            language: normalizeInterfaceLanguageCode(interfaceLanguage),
+        }, {
+            timeout: 10000,
+        });
+        const stems = response.data?.stems;
+        const results = response.data?.results;
+        if (!Array.isArray(stems) || !Array.isArray(results)) {
+            combinedKoreanLookupUnsupported = true;
+            return null;
+        }
+        return { stems, results };
+    } catch (error) {
+        const status = error?.response?.status;
+        if (status === 404 || status === 405) {
+            combinedKoreanLookupUnsupported = true;
+        }
+        return null;
+    }
+};
+
+// Book-index rows stored under a punctuated eojeol ("갔다.", "“누워") for a
+// tapped bare word ("갔다"). Chapters preprocessed before surfaces were also
+// stored normalized only have the punctuated form.
+const lookupBookIndexVariantRows = async (ownerId, bookUri, normalizedSurface, cacheScope) => {
+    try {
+        const rows = await lookupBookIndexBySurfaceVariants(ownerId, bookUri, normalizedSurface, cacheScope);
+        return (rows || [])
+            .filter((row) => normalizeSurfaceWord(row?.index_surface) === normalizedSurface)
+            .map(({ index_surface: _indexSurface, ...row }) => row);
+    } catch (error) {
+        return [];
+    }
+};
+
+/**
+ * Adds a normalized copy of each preprocessed surface (punctuation stripped, as
+ * the reader's tap produces it) so a tapped sentence-final or quoted word hits
+ * the book index instead of going to the network.
+ */
+export const withNormalizedSurfaceIndex = (surfaceIndex = [], language = 'ko') => {
+    const seen = new Set();
+    const expanded = [];
+    const add = (entry, surface) => {
+        const key = `${surface}|${entry.stem}`;
+        if (!surface || seen.has(key)) {
+            return;
+        }
+        seen.add(key);
+        expanded.push(surface === entry.surface ? entry : { ...entry, surface });
+    };
+
+    (surfaceIndex || []).forEach((entry) => {
+        if (!entry?.surface) {
+            return;
+        }
+        add(entry, entry.surface);
+        add(entry, normalizeSurfaceWordForLanguage(entry.surface, language));
+    });
+
+    return expanded;
 };
 
 export const resolveDictionaryLookup = async ({
@@ -358,31 +471,36 @@ export const resolveDictionaryLookup = async ({
     // Log the lookup once per user query. Both lookup flows funnel through here
     // (overlay via lookupWordForOverlay, and the reader panel directly), and every
     // caller is user-initiated, so this is the single choke point. Fire-and-forget
-    // so dictionary resolution never waits on or fails because of logging.
-    logInteractionEvent({
-        ownerId,
-        language: normalizedTargetLanguage,
-        word: normalizedSurface,
-        stem: normalizedSurface,
-        eventType: 'lookup',
-        sourceBookUri: currentBook ?? null,
-    }).catch((error) => {
-        console.warn('[dictionaryLookup] Failed to log lookup interaction event:', error);
-    });
+    // so dictionary resolution never waits on or fails because of logging. Run
+    // once the lookup has resolved: these are SQLite writes, and expo-sqlite runs
+    // transactions in order, so starting them first queued them ahead of the
+    // lookup's own cache reads.
+    const recordLookupSignals = () => {
+        logInteractionEvent({
+            ownerId,
+            language: normalizedTargetLanguage,
+            word: normalizedSurface,
+            stem: normalizedSurface,
+            eventType: 'lookup',
+            sourceBookUri: currentBook ?? null,
+        }).catch((error) => {
+            console.warn('[dictionaryLookup] Failed to log lookup interaction event:', error);
+        });
 
-    // Phase 3.1: a lookup is a weak "probably didn't know it" signal — nudge theta
-    // down gently (outcome 0, reduced learning rate). Fire-and-forget; profile
-    // scope resolves to the runtime-active profile inside the helper. The helper
-    // self-skips words with no graded KB rank, so this only moves on real signal.
-    updateThetaFromOutcome({
-        ownerId,
-        language: normalizedTargetLanguage,
-        stem: normalizedSurface,
-        outcome: 0,
-        learningRate: LOOKUP_LEARNING_RATE,
-    }).catch((error) => {
-        console.warn('[dictionaryLookup] Failed to update theta from lookup:', error);
-    });
+        // Phase 3.1: a lookup is a weak "probably didn't know it" signal — nudge theta
+        // down gently (outcome 0, reduced learning rate). Fire-and-forget; profile
+        // scope resolves to the runtime-active profile inside the helper. The helper
+        // self-skips words with no graded KB rank, so this only moves on real signal.
+        updateThetaFromOutcome({
+            ownerId,
+            language: normalizedTargetLanguage,
+            stem: normalizedSurface,
+            outcome: 0,
+            learningRate: LOOKUP_LEARNING_RATE,
+        }).catch((error) => {
+            console.warn('[dictionaryLookup] Failed to update theta from lookup:', error);
+        });
+    };
 
     const buildResolved = async (stems, cachedResults = [], liveStems = stems) => {
         const uniqueStems = uniqueValues(stems);
@@ -442,47 +560,153 @@ export const resolveDictionaryLookup = async ({
         return buildResolved(staleStems, usableRows, staleStems);
     };
 
-    if (currentBook) {
-        const indexRows = await lookupBookIndexBySurface(
-            ownerId,
-            currentBook,
-            normalizedSurface,
+    // Like buildResolved, but the live entries arrived with the stems (one
+    // request). Locally cached stems still show their cached entry, as before;
+    // the rest show the live entries, which are cached in the background.
+    const resolveWithLiveEntries = async (stems, liveByStem) => {
+        const uniqueStems = uniqueValues(stems);
+        const stemCacheRows = await lookupCacheByStems(uniqueStems, cacheScope);
+        const { usableRows, staleStems } = splitCacheRows(stemCacheRows, usableCachedEntry);
+        const usableStemSet = new Set(usableRows.map((row) => cleanValue(row?.stem)).filter(Boolean));
+        const staleStemSet = new Set(staleStems);
+        const liveStemSet = new Set(
+            uniqueStems.filter((stem) => staleStemSet.has(stem) || !usableStemSet.has(stem))
+        );
+
+        writeLiveCacheEntries(
+            [...liveStemSet]
+                .map((stem) => {
+                    const first = liveByStem.get(stem)?.[0];
+                    return first
+                        ? liveEntryToCacheEntry(stem, first, normalizedInterfaceLanguage, normalizedTargetLanguage)
+                        : null;
+                })
+                .filter(Boolean),
             cacheScope
         );
-        const indexedResult = await buildCacheResolved(indexRows);
-        if (indexedResult) {
-            return indexedResult;
+
+        return {
+            ...baseResult,
+            stems: uniqueStems,
+            cachedResults: usableRows,
+            dictionaryData: uniqueStems.map((stem) => (
+                liveStemSet.has(stem) ? (liveByStem.get(stem) ?? []) : []
+            )),
+            needsLiveFetch: false,
+        };
+    };
+
+    const resolveNormalizedLookup = async () => {
+        if (currentBook) {
+            const indexRows = await lookupBookIndexBySurface(
+                ownerId,
+                currentBook,
+                normalizedSurface,
+                cacheScope
+            );
+            const indexedResult = await buildCacheResolved(indexRows);
+            if (indexedResult) {
+                return indexedResult;
+            }
+
+            if (normalizedTargetLanguage === 'ko') {
+                const variantRows = await lookupBookIndexVariantRows(
+                    ownerId,
+                    currentBook,
+                    normalizedSurface,
+                    cacheScope
+                );
+                const variantResult = await buildCacheResolved(variantRows);
+                if (variantResult) {
+                    return variantResult;
+                }
+            }
         }
+
+        const directCacheRows = await lookupCacheByStems([normalizedSurface], cacheScope);
+        const directResult = await buildCacheResolved(directCacheRows);
+        if (directResult) {
+            return directResult;
+        }
+
+        const shouldFallbackToSurface = normalizedTargetLanguage !== 'ko' || fallbackToSurfaceForKorean;
+        const memoKey = `${normalizedTargetLanguage}|${rawSurface || normalizedSurface}`;
+
+        // Tapped this surface before in this session: its stems are known, so if
+        // every stem is cached locally the panel needs no network at all.
+        const rememberedStems = allowRemoteStemming ? surfaceStemMemo.get(memoKey) : null;
+        if (rememberedStems?.length) {
+            const rememberedRows = await lookupCacheByStems(rememberedStems, cacheScope);
+            const { usableRows, staleStems } = splitCacheRows(rememberedRows, usableCachedEntry);
+            if (staleStems.length === 0 && usableRows.length === rememberedStems.length) {
+                return buildResolved(rememberedStems, usableRows, []);
+            }
+        }
+
+        // Korean: stemming + dictionary search in one request instead of two
+        // sequential round trips. Falls through to the two-request path when the
+        // server predates /krdict_lookup/ or the call fails.
+        if (allowRemoteStemming && fetchLive && normalizedTargetLanguage === 'ko') {
+            const combined = await fetchCombinedKoreanLookup(
+                rawSurface || normalizedSurface,
+                normalizedInterfaceLanguage
+            );
+            if (combined) {
+                const combinedStems = uniqueValues(combined.stems).filter((stem) => !STOP_STEMS.has(stem));
+                rememberSurfaceStems(memoKey, combinedStems);
+                if (combinedStems.length > 0) {
+                    const liveByStem = new Map();
+                    combined.stems.forEach((stem, index) => {
+                        const cleanedStem = cleanValue(stem);
+                        if (cleanedStem && !liveByStem.has(cleanedStem)) {
+                            const entries = combined.results[index];
+                            liveByStem.set(cleanedStem, Array.isArray(entries) ? entries : []);
+                        }
+                    });
+                    return resolveWithLiveEntries(combinedStems, liveByStem);
+                }
+
+                if (!shouldFallbackToSurface) {
+                    return baseResult;
+                }
+
+                // No stems: look the surface itself up, as the two-request path
+                // does. The direct cache check above already missed for it.
+                return buildResolved([normalizedSurface], [], [normalizedSurface]);
+            }
+        }
+
+        const stemCandidates = allowRemoteStemming
+            ? uniqueValues(await stemWord({
+                query: rawSurface || normalizedSurface,
+                language: normalizedTargetLanguage,
+            })).filter((stem) => normalizedTargetLanguage !== 'ko' || !STOP_STEMS.has(stem))
+            : [];
+        if (allowRemoteStemming) {
+            rememberSurfaceStems(memoKey, stemCandidates);
+        }
+        const stems = stemCandidates.length > 0
+            ? stemCandidates
+            : (shouldFallbackToSurface ? [normalizedSurface] : []);
+
+        if (stems.length === 0) {
+            return baseResult;
+        }
+
+        const stemCacheRows = await lookupCacheByStems(stems, cacheScope);
+        const { usableRows, staleStems } = splitCacheRows(stemCacheRows, usableCachedEntry);
+        const usableStemSet = new Set(usableRows.map((row) => cleanValue(row?.stem)).filter(Boolean));
+        const staleStemSet = new Set(staleStems);
+        const liveStems = stems.filter((stem) => staleStemSet.has(stem) || !usableStemSet.has(stem));
+
+        return buildResolved(stems, usableRows, liveStems);
+    };
+
+    try {
+        return await resolveNormalizedLookup();
+    } finally {
+        recordLookupSignals();
     }
-
-    const directCacheRows = await lookupCacheByStems([normalizedSurface], cacheScope);
-    const directResult = await buildCacheResolved(directCacheRows);
-    if (directResult) {
-        return directResult;
-    }
-
-    const stemCandidates = allowRemoteStemming
-        ? uniqueValues(await stemWord({
-            query: rawSurface || normalizedSurface,
-            language: normalizedTargetLanguage,
-        })).filter((stem) => normalizedTargetLanguage !== 'ko' || !STOP_STEMS.has(stem))
-        : [];
-    const shouldFallbackToSurface = normalizedTargetLanguage !== 'ko' || fallbackToSurfaceForKorean;
-    const stems = stemCandidates.length > 0
-        ? stemCandidates
-        : (shouldFallbackToSurface ? [normalizedSurface] : []);
-
-    if (stems.length === 0) {
-        return baseResult;
-    }
-
-    const stemCacheRows = await lookupCacheByStems(stems, cacheScope);
-    const { usableRows, staleStems } = splitCacheRows(stemCacheRows, usableCachedEntry);
-    const usableStemSet = new Set(usableRows.map((row) => cleanValue(row?.stem)).filter(Boolean));
-    const staleStemSet = new Set(staleStems);
-    const liveStems = stems.filter((stem) => staleStemSet.has(stem) || !usableStemSet.has(stem));
-
-    return buildResolved(stems, usableRows, liveStems);
 };
 
 const fetchRomanization = async (term, options = {}) => {

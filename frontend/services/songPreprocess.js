@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import preprocessChapter from './api/preprocessChapter';
+import { withNormalizedSurfaceIndex } from './dictionaryLookup';
 import {
     insertBookIndexEntries,
     insertCacheEntries,
@@ -108,7 +109,7 @@ const preprocessSong = async ({
     });
 
     const seenSurfaceStem = new Set();
-    const bookIndexEntries = surfaceIndex
+    const bookIndexEntries = withNormalizedSurfaceIndex(surfaceIndex, normalizedLanguage)
         .filter((entry) => entry?.surface && stemToId[entry.stem] != null)
         .map((entry) => ({
             surface: entry.surface,
