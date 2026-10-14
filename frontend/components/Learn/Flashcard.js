@@ -101,6 +101,12 @@ const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGe
   const flashcardSettingsRef = useRef(createDefaultFlashcardSettings());
   const flashcardSettingsUpdatedAtRef = useRef(null);
   const flashcardSettingsCloudUserRef = useRef(null);
+  const markedVocabRef = useRef(null);
+  useEffect(() => {
+    // A new card is a new object, so the guard below re-arms by itself; reset
+    // on close too so reopening a deck with the same word objects still grades.
+    if (!vocab) markedVocabRef.current = null;
+  }, [vocab]);
 
   const hanjaText = useMemo(
     () => (vocab?.hanja && vocab.hanja !== 'N/A' ? vocab.hanja : null),
@@ -441,7 +447,12 @@ const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGe
     <SafeAreaView edges={['top', 'bottom']} style={styles.shell}>
       <View style={styles.header}>
         <View style={styles.headerSide}>
-          <TouchableOpacity onPress={onClose} style={styles.closeButton}>
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel={t('common.close')}
+            onPress={onClose}
+            style={styles.closeButton}
+          >
             <Feather name="x" size={28} color={colors.text} />
           </TouchableOpacity>
         </View>
@@ -521,6 +532,9 @@ const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGe
           <TouchableOpacity
             key={action.key}
             onPress={() => {
+              // One grade per card: a double tap must not record twice.
+              if (markedVocabRef.current === vocab) return;
+              markedVocabRef.current = vocab;
               setIsFlipped(false);
               onMark(action.key);
             }}

@@ -720,7 +720,8 @@ const ScreenshotOcr = ({ navigation, route }) => {
                 setImageSize({ width: result.imageWidth, height: result.imageHeight });
             }
             if ((result.blocks || []).length === 0) {
-                setError(t('ocr.noKoreanText'));
+                // Language-neutral: OCR serves Chinese and English learners too.
+                setError(t('ocr.noTextFound'));
             }
         } catch (recognitionError) {
             console.error('[ScreenshotOcr] OCR failed:', recognitionError);

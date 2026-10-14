@@ -119,7 +119,12 @@ const NotesLogSheet = ({
 
                     <View style={styles.header}>
                         <Text style={styles.title}>{t('read.checkpoints')}</Text>
-                        <TouchableOpacity onPress={onClose} style={styles.closeButton} accessibilityRole="button">
+                        <TouchableOpacity
+                            onPress={onClose}
+                            style={styles.closeButton}
+                            accessibilityRole="button"
+                            accessibilityLabel={t('common.close')}
+                        >
                             <Feather name="x" size={20} color={colors.textMuted} />
                         </TouchableOpacity>
                     </View>

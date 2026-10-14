@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Modal,
   Pressable,
   StyleSheet,
@@ -11,6 +12,17 @@ import {
 import { colors, radii, spacing, textStyles, useTheme } from '../../theme';
 import { useTranslation } from '../../hooks/useTranslation';
 
+// These choices erase this device's offline data, which can't be undone, so
+// they ask for a second confirmation.
+const DISCARD_CONFIRM = {
+  titleKey: 'localData.confirmDiscardTitle',
+  bodyKey: 'localData.confirmDiscardBody',
+};
+const START_FRESH_CONFIRM = {
+  titleKey: 'localData.confirmStartFreshTitle',
+  bodyKey: 'localData.confirmStartFreshBody',
+};
+
 const DECISION_CONTENT = {
   'legacy-signed-in': {
     titleKey: 'localData.legacyTitle',
@@ -18,7 +30,7 @@ const DECISION_CONTENT = {
     actions: [
       { action: 'import-to-account', labelKey: 'localData.importAccount', tone: 'primary' },
       { action: 'keep-as-guest', labelKey: 'localData.keepGuest', tone: 'secondary' },
-      { action: 'discard', labelKey: 'localData.discard', tone: 'danger' },
+      { action: 'discard', labelKey: 'localData.discard', tone: 'danger', confirm: DISCARD_CONFIRM },
     ],
   },
   'guest-signup-empty-remote': {
@@ -26,7 +38,7 @@ const DECISION_CONTENT = {
     bodyKey: 'localData.saveProgressBody',
     actions: [
       { action: 'save-progress', labelKey: 'localData.saveProgress', tone: 'primary' },
-      { action: 'start-fresh', labelKey: 'localData.startFresh', tone: 'secondary' },
+      { action: 'start-fresh', labelKey: 'localData.startFresh', tone: 'secondary', confirm: START_FRESH_CONFIRM },
     ],
   },
   'guest-login-existing-remote': {
@@ -34,7 +46,7 @@ const DECISION_CONTENT = {
     bodyKey: 'localData.offlineFoundBody',
     actions: [
       { action: 'merge', labelKey: 'localData.merge', tone: 'primary' },
-      { action: 'discard', labelKey: 'localData.discard', tone: 'danger' },
+      { action: 'discard', labelKey: 'localData.discard', tone: 'danger', confirm: DISCARD_CONFIRM },
     ],
   },
 };
@@ -61,6 +73,26 @@ const LocalDataDecisionModal = ({
   const content = getContent(decision);
   const email = user?.email || user?.user_metadata?.email || '';
 
+  const handleAction = (item) => {
+    if (!item.confirm) {
+      onResolve?.(item.action);
+      return;
+    }
+    Alert.alert(
+      t(item.confirm.titleKey),
+      t(item.confirm.bodyKey),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t(item.labelKey),
+          style: 'destructive',
+          onPress: () => onResolve?.(item.action),
+        },
+      ],
+      { cancelable: true }
+    );
+  };
+
   return (
     <Modal
       visible={visible}
@@ -83,7 +115,7 @@ const LocalDataDecisionModal = ({
               <Pressable
                 key={item.action}
                 disabled={busy}
-                onPress={() => onResolve?.(item.action)}
+                onPress={() => handleAction(item)}
                 style={({ pressed }) => [
                   styles.button,
                   item.tone === 'primary' && styles.primaryButton,

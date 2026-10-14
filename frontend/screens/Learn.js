@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -1024,7 +1024,13 @@ const WordDetailModal = ({
           <Feather name="chevron-left" size={28} color={colors.text} />
           <Text style={styles.detailBackLabel}>{t('learn.title')}</Text>
         </TouchableOpacity>
-        <TouchableOpacity onPress={onToggleFavorite} style={styles.detailFavoriteButton}>
+        <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel={word.is_favorite ? t('learn.removeFavorite') : t('learn.addFavorite')}
+          accessibilityState={{ selected: Boolean(word.is_favorite) }}
+          onPress={onToggleFavorite}
+          style={styles.detailFavoriteButton}
+        >
           <MaterialIcons
             name={word.is_favorite ? 'star' : 'star-outline'}
             size={28}
@@ -1130,16 +1136,26 @@ const Learn = ({ navigation, user }) => {
   const [activeFilter, setActiveFilter] = useState('recent');
   const [practiceDeck, setPracticeDeck] = useState(null);
   const [practiceIndex, setPracticeIndex] = useState(0);
+  const markedPracticeIndexRef = useRef(-1);
   const [selectedWord, setSelectedWord] = useState(null);
   const [selectedWordContexts, setSelectedWordContexts] = useState([]);
   const [selectedWordKeys, setSelectedWordKeys] = useState(() => new Set());
 
   const isSelectionMode = selectedWordKeys.size > 0;
 
+  // Request ids: a fetch started for the previous language/owner can resolve
+  // after the switch; only the latest request may write state.
+  const wordsRequestIdRef = useRef(0);
+  const candidatesRequestIdRef = useRef(0);
+
   const fetchWords = useCallback(async () => {
+    const requestId = ++wordsRequestIdRef.current;
     try {
       const data = await viewData({ ownerId: activeOwnerId, language: targetLanguage });
       const normalized = normalizeRows(data);
+      if (requestId !== wordsRequestIdRef.current) {
+        return normalized;
+      }
       setWords(normalized);
       setSelectedWord((current) => {
         if (!current) {
@@ -1162,8 +1178,12 @@ const Learn = ({ navigation, user }) => {
     setSelectedWord(null);
     setSelectedWordContexts([]);
     setSelectedWordKeys(new Set());
+    // Invalidate any in-flight suggestions load for the old language and
+    // unblock the loader so the Suggested tab refetches for the new one.
+    candidatesRequestIdRef.current += 1;
     setCandidateGroups([]);
     setCandidatesLoaded(false);
+    setCandidatesLoading(false);
     setSavedCandidateStems(new Set());
     fetchWords();
   }, [activeOwnerId, fetchWords, targetLanguage]);
@@ -1171,6 +1191,8 @@ const Learn = ({ navigation, user }) => {
   // Suggested tab: unsaved candidate words grouped by book, loaded on demand the
   // first time the reader opens the tab (and refreshable via pull/retry).
   const loadCandidates = useCallback(async () => {
+    const requestId = ++candidatesRequestIdRef.current;
+    const isStale = () => requestId !== candidatesRequestIdRef.current;
     setCandidatesLoading(true);
     try {
       const groups = await getAllBooksWordCandidates({
@@ -1178,6 +1200,7 @@ const Learn = ({ navigation, user }) => {
         language: targetLanguage,
         interfaceLanguage,
       });
+      if (isStale()) return;
       const withReasons = groups.map((group) => ({
         ...group,
         candidates: group.candidates.map((candidate) => ({
@@ -1190,11 +1213,14 @@ const Learn = ({ navigation, user }) => {
       setCandidateGroups(withReasons);
       setCandidatesLoaded(true);
     } catch (error) {
+      if (isStale()) return;
       console.warn('[Learn] Failed to load word candidates:', error?.message ?? error);
       setCandidateGroups([]);
       setCandidatesLoaded(true);
     } finally {
-      setCandidatesLoading(false);
+      if (!isStale()) {
+        setCandidatesLoading(false);
+      }
     }
   }, [activeOwnerId, targetLanguage, interfaceLanguage]);
 
@@ -1467,6 +1493,7 @@ const Learn = ({ navigation, user }) => {
       return;
     }
 
+    markedPracticeIndexRef.current = -1;
     setPracticeDeck({
       title,
       words: availableDeckWords,
@@ -1475,16 +1502,13 @@ const Learn = ({ navigation, user }) => {
   }, []);
 
   const closePractice = useCallback(() => {
+    // markedPracticeIndexRef is reset in startPractice, not here: a double tap
+    // on the last card still sees the old deck in its closure.
     setPracticeDeck(null);
     setPracticeIndex(0);
   }, []);
 
-  const handlePracticeMark = useCallback(async (status) => {
-    if (!practiceDeck?.words?.length) {
-      return;
-    }
-
-    const currentWord = practiceDeck.words[practiceIndex];
+  const persistPracticeOutcome = useCallback(async (currentWord, status) => {
     await recordReviewOutcome(
       currentWord.word,
       currentWord.hanja,
@@ -1539,24 +1563,40 @@ const Learn = ({ navigation, user }) => {
         await syncFieldsToCloud(updatedWord);
       }
     }
-
-    if (practiceIndex >= practiceDeck.words.length - 1) {
-      closePractice();
-      return;
-    }
-
-    setPracticeIndex((prev) => prev + 1);
   }, [
     activeOwnerId,
-    closePractice,
     fetchWords,
-    practiceDeck,
-    practiceIndex,
     syncFieldsToCloud,
     syncGeneration,
     syncPaused,
     user,
   ]);
+
+  const handlePracticeMark = useCallback(async (status) => {
+    if (!practiceDeck?.words?.length) {
+      return;
+    }
+    // A fast double tap fires twice before the re-render: without this guard
+    // the same card is recorded twice and the index skips the next card.
+    if (markedPracticeIndexRef.current === practiceIndex) {
+      return;
+    }
+    markedPracticeIndexRef.current = practiceIndex;
+
+    const currentWord = practiceDeck.words[practiceIndex];
+    // Advance before the slow DB/cloud work so the next card shows at once.
+    if (practiceIndex >= practiceDeck.words.length - 1) {
+      closePractice();
+    } else {
+      setPracticeIndex(practiceIndex + 1);
+    }
+
+    try {
+      await persistPracticeOutcome(currentWord, status);
+    } catch (error) {
+      console.warn('[Learn] Failed to record flashcard review:', error?.message ?? error);
+    }
+  }, [closePractice, persistPracticeOutcome, practiceDeck, practiceIndex]);
 
   if (selectedWord) {
     return (
