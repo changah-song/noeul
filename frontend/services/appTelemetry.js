@@ -321,3 +321,15 @@ export const startTelemetry = () => {
     started = false;
   };
 };
+
+// Timing of user-facing waits (word lookup, AI explanation), written to the
+// device log only. The PR check routine reads these lines to time lookups on
+// the phone. They aren't queued for upload: app_events only accepts the event
+// types in supabase/app_telemetry.sql.
+export const logTiming = (name, durationMs, details = {}) => {
+  const extra = Object.entries(details)
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .map(([key, value]) => ` ${key}=${String(value).replace(/\s+/g, '_')}`)
+    .join('');
+  console.info(`[noeul-timing] ${name} ms=${Math.round(durationMs)}${extra}`);
+};

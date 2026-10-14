@@ -3,6 +3,7 @@ import { Text, View, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator
 import { MaterialIcons } from '@expo/vector-icons';
 import { api } from '../../../services/api/client';
 import { streamExplainInContext } from '../../../services/api/explainInContext';
+import { logTiming } from '../../../services/appTelemetry';
 import { useAppContext } from '../../../contexts/AppContext';
 import { useTranslation } from '../../../hooks/useTranslation';
 import { useLocalOwner } from '../../../contexts/LocalOwnerContext';
@@ -475,6 +476,14 @@ const DictionaryContent = ({
 
     const fetchExplanation = useCallback(async (key, grounding = {}) => {
         setExplainData((prev) => ({ ...prev, [key]: { loading: true, text: '', error: null } }));
+        const explainStartedAt = Date.now();
+        let firstTextLogged = false;
+        const logFirstText = () => {
+            if (!firstTextLogged) {
+                firstTextLogged = true;
+                logTiming('explain_first_text', Date.now() - explainStartedAt);
+            }
+        };
 
         // Grounding for the agentic backend workflow. The tapped word's hanja and
         // known-word anchors are gathered at the call site (they depend on
@@ -515,9 +524,11 @@ const DictionaryContent = ({
                 anchorWords: grounding.anchorWords,
                 dictionary: grounding.dictionary,
                 lemma: grounding.lemma,
-                onGloss: (gloss) => updateStreaming({ gloss: cleanValue(gloss) }),
-                onText: (text) => updateStreaming({ text }),
+                onGloss: (gloss) => { logFirstText(); updateStreaming({ gloss: cleanValue(gloss) }); },
+                onText: (text) => { logFirstText(); updateStreaming({ text }); },
             });
+            logFirstText();
+            logTiming('explain_done', Date.now() - explainStartedAt);
             const text = cleanValue(response?.explanation);
             const gloss = cleanValue(response?.gloss);
             const lemma = cleanValue(response?.lemma);
@@ -662,6 +673,7 @@ const DictionaryContent = ({
 
         const resolveLookup = async () => {
             setIsLiveLoading(true);
+            const lookupStartedAt = Date.now();
 
             try {
                 const result = await resolveDictionaryLookup({
@@ -676,6 +688,10 @@ const DictionaryContent = ({
                     return;
                 }
 
+                logTiming('lookup_ready', Date.now() - lookupStartedAt, {
+                    entries: (result.cachedResults?.length ?? 0) + (result.dictionaryData?.length ?? 0),
+                    live: result.needsLiveFetch ? 'yes' : 'no',
+                });
                 setCachedResults(result.cachedResults);
                 setStemWordList(result.stems);
                 setNeedsLiveFetch(result.needsLiveFetch);
