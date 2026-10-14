@@ -112,6 +112,8 @@ class EpubPageView(context: Context) : View(context) {
   // When true, draw each level range's pinyin above the word (Chinese only). The
   // paginator reserves the vertical room; this view fills it.
   private var showPinyin: Boolean = false
+  // When true, draw each annotated word's short translation under it.
+  private var showGloss: Boolean = false
   private var activeHighlightColor = themePalette.activeHighlightColor
   private var textSelectionHighlightColor = themePalette.textSelectionHighlightColor
   private var savedHighlightColor = themePalette.savedHighlightColor
@@ -177,6 +179,11 @@ class EpubPageView(context: Context) : View(context) {
   private val pinyinPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
     textAlign = Paint.Align.CENTER
   }
+  // Short translations drawn under annotated words, sized like the pinyin.
+  private val glossPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    textAlign = Paint.Align.CENTER
+  }
+
   private val activeHighlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
     color = activeHighlightColor
     style = Paint.Style.FILL
@@ -236,9 +243,11 @@ class EpubPageView(context: Context) : View(context) {
     onEdgeAction: ((ReaderEdgeKind) -> Unit)?,
     focusModeEnabled: Boolean = false,
     onFocusTextTapped: ((String, Int) -> Unit)? = null,
-    showPinyin: Boolean = false
+    showPinyin: Boolean = false,
+    showGloss: Boolean = false
   ) {
     this.showPinyin = showPinyin
+    this.showGloss = showGloss
     this.page = page
     this.paddingH = paddingH
     this.paddingV = paddingV
@@ -368,15 +377,17 @@ class EpubPageView(context: Context) : View(context) {
     drawTextHighlights(canvas, block, layout, savedHighlightRanges, savedHighlightPaint)
     layout.draw(canvas)
     drawSavedHighlightText(canvas, block, layout, savedHighlightRanges)
-    if (showPinyin) {
-      drawPinyinAnnotations(canvas, block, layout)
+    if (showPinyin || showGloss) {
+      drawAnnotations(canvas, block, layout)
     }
   }
 
-  // Draw each underlined word's pinyin, centered above the word, into the row of
-  // space the paginator reserved above the line. Chinese only (only level ranges
-  // carry pinyin) and only when the toggle is on.
-  private fun drawPinyinAnnotations(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
+  // Draw annotations for each level range that carries them: pinyin centered
+  // above the word, the gloss centered below it, both inside the space the
+  // paginator reserved between lines. Glosses are shortened to roughly the
+  // word's width and skipped when they would run into the previous gloss on the
+  // same line, so neighbors never overlap.
+  private fun drawAnnotations(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
     if (levelRanges.isEmpty()) return
     val currentPage = page ?: return
     val blockTextLength = blockTextForSelection(block).length
@@ -385,12 +396,15 @@ class EpubPageView(context: Context) : View(context) {
 
     pinyinPaint.textSize = bodyPaint.textSize * 0.55f
     pinyinPaint.color = themePalette.subtleTextColor
+    glossPaint.textSize = bodyPaint.textSize * 0.5f
+    glossPaint.color = themePalette.subtleTextColor
     val ascent = bodyPaint.fontMetrics.ascent
-    var drawnCount = 0
-    var firstBaseline = -1f
+    val descent = bodyPaint.fontMetrics.descent
+    val glossGap = dp(4f)
+    var glossLine = -1
+    var glossRightEdge = Float.NEGATIVE_INFINITY
 
     levelRanges.forEach { range ->
-      val pinyin = range.pinyin?.takeIf { it.isNotBlank() } ?: return@forEach
       if (
         range.pageIndex != currentPage.pageIndex ||
         range.spineIndex != currentPage.spineIndex ||
@@ -398,6 +412,9 @@ class EpubPageView(context: Context) : View(context) {
       ) {
         return@forEach
       }
+      val pinyin = if (showPinyin) range.pinyin?.takeIf { it.isNotBlank() } else null
+      val gloss = if (showGloss) range.gloss?.takeIf { it.isNotBlank() } else null
+      if (pinyin == null && gloss == null) return@forEach
 
       val blockSourceStart = block.sourceStartOffset
       val blockSourceEnd = blockSourceStart + blockTextLength
@@ -409,23 +426,52 @@ class EpubPageView(context: Context) : View(context) {
         return@forEach
       }
 
-      // Annotate above the first line the word sits on (words rarely wrap).
+      // Annotate on the first line the word sits on (words rarely wrap).
       val line = layout.getLineForOffset(localStart)
       val lineEnd = min(localEnd, layout.getLineEnd(line))
       val startX = layout.getPrimaryHorizontal(localStart)
       val endX = layout.getPrimaryHorizontal(max(localStart, lineEnd))
-      val centerX = (min(startX, endX) + max(startX, endX)) / 2f
+      val left = min(startX, endX)
+      val right = max(startX, endX)
+      val centerX = (left + right) / 2f
+      val baseline = layout.getLineBaseline(line).toFloat()
 
-      // Sit the pinyin's baseline just above the word's glyph tops, in the reserved gap.
-      val glyphTop = layout.getLineBaseline(line) + ascent
-      val baseline = glyphTop - dp(1f) - pinyinPaint.descent()
-      canvas.drawText(pinyin, centerX, baseline, pinyinPaint)
-      if (drawnCount == 0) firstBaseline = baseline
-      drawnCount++
+      if (pinyin != null) {
+        // Baseline just above the word's glyph tops, in the gap above the line.
+        val pinyinBaseline = baseline + ascent - dp(1f) - pinyinPaint.descent()
+        canvas.drawText(pinyin, centerX, pinyinBaseline, pinyinPaint)
+      }
+
+      if (gloss != null) {
+        if (line != glossLine) {
+          glossLine = line
+          glossRightEdge = Float.NEGATIVE_INFINITY
+        }
+        val maxWidth = max(right - left + dp(16f), bodyPaint.textSize * 2.5f)
+        val label = fitGloss(gloss, maxWidth)
+        val width = glossPaint.measureText(label)
+        val glossLeft = centerX - width / 2f
+        if (label.isNotEmpty() && glossLeft >= glossRightEdge + glossGap) {
+          // Baseline just below the word's descenders, in the gap below the line.
+          val glossBaseline = baseline + descent + dp(1f) - glossPaint.ascent()
+          canvas.drawText(label, centerX, glossBaseline, glossPaint)
+          glossRightEdge = centerX + width / 2f
+        }
+      }
     }
-    if (drawnCount > 0) {
-      android.util.Log.d("NativeEpubReader", "drawPinyin: block drew $drawnCount, firstBaseline=$firstBaseline, size=${pinyinPaint.textSize}, color=${pinyinPaint.color}")
+  }
+
+  // The gloss's first sense ("to lie down; to recline" -> "to lie down"),
+  // shortened with an ellipsis if it still doesn't fit.
+  private fun fitGloss(gloss: String, maxWidth: Float): String {
+    val first = gloss.split(';', '；', ',', '，').firstOrNull()?.trim().orEmpty()
+    if (first.isEmpty()) return ""
+    if (glossPaint.measureText(first) <= maxWidth) return first
+    var end = first.length
+    while (end > 1 && glossPaint.measureText(first, 0, end) + glossPaint.measureText("…") > maxWidth) {
+      end--
     }
+    return first.substring(0, end).trimEnd() + "…"
   }
 
   // Focus mode: draw the whole block dimmed, then re-draw the focused sentence
@@ -472,6 +518,9 @@ class EpubPageView(context: Context) : View(context) {
       focusRangePath.reset()
       layout.getSelectionPath(localStart, localEnd, focusRangePath)
       focusClipPath.addPath(focusRangePath)
+      if (showPinyin || showGloss) {
+        addAnnotationClip(block, layout, localStart, localEnd)
+      }
       hasClip = true
     }
     if (!hasClip || focusClipPath.isEmpty) return
@@ -496,6 +545,32 @@ class EpubPageView(context: Context) : View(context) {
     drawSavedHighlightText(canvas, block, layout, savedHighlightRanges)
     canvas.restoreToCount(overlayLayer)
     canvas.restoreToCount(clipSave)
+  }
+
+  // Light the annotation rows of the focused span too: the pinyin row above each
+  // of its lines and the gloss row below, which the glyph selection path misses.
+  private fun addAnnotationClip(block: PageBlock, layout: StaticLayout, localStart: Int, localEnd: Int) {
+    val bodyTextPx = block.textPaint?.textSize ?: return
+    val above = if (showPinyin) bodyTextPx * PINYIN_ROW_SCALE else 0f
+    val below = if (showGloss) bodyTextPx * GLOSS_ROW_SCALE else 0f
+    val firstLine = layout.getLineForOffset(localStart)
+    val lastLine = layout.getLineForOffset(max(localStart, localEnd - 1))
+    for (line in firstLine..lastLine) {
+      val from = max(localStart, layout.getLineStart(line))
+      val to = min(localEnd, layout.getLineEnd(line))
+      if (from >= to) continue
+      val x1 = layout.getPrimaryHorizontal(from)
+      val x2 = if (to >= layout.getLineEnd(line)) layout.getLineRight(line) else layout.getPrimaryHorizontal(to)
+      val baseline = layout.getLineBaseline(line).toFloat()
+      val metrics = block.textPaint!!.fontMetrics
+      focusClipPath.addRect(
+        min(x1, x2) - dp(8f),
+        baseline + metrics.ascent - above,
+        max(x1, x2) + dp(8f),
+        baseline + metrics.descent + below,
+        Path.Direction.CW
+      )
+    }
   }
 
   fun setFocusHighlight(ranges: List<FocusRange>, animate: Boolean, fast: Boolean = false) {
@@ -1621,6 +1696,7 @@ class EpubPageView(context: Context) : View(context) {
       }
 
       if (paint === levelMarkPaint) {
+        if (range.annotationOnly) return@forEach
         applyLevelUnderlineShade(paint, range.levelWeight, range.levelReinforced)
         drawLevelUnderline(canvas, layout, localStart, localEnd, blockTextLength, paint)
         return@forEach

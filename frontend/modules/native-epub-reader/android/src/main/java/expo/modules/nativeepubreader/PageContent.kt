@@ -66,7 +66,11 @@ data class TextRange(
   val pinyin: String? = null,
   // §8: this word is hard but frequent enough that the book will reteach it, so it is
   // shaded with a calmer tone than a hard+rare ("study") word. Level ranges only.
-  val levelReinforced: Boolean = false
+  val levelReinforced: Boolean = false,
+  // Short translation drawn under the word when gloss annotations are on.
+  val gloss: String? = null,
+  // Annotation-only range: draws pinyin/gloss but no underline.
+  val annotationOnly: Boolean = false
 )
 
 // A focused sentence span in focus (sentence beam) mode. Offsets are local to
