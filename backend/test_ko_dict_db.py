@@ -47,3 +47,38 @@ def test_common_words_have_a_primary_english_sense(conn, stem, expected):
     ).fetchone()
     assert row is not None, f"{stem} is missing"
     assert expected in row[0]
+
+
+@pytest.mark.parametrize(
+    "stem, expected",
+    [
+        # Homographs (separate KRDICT entries sharing one spelling) are ordered
+        # by learner grade, so the basic word wins sense 1 over the rare one
+        # that happens to come first in the dump.
+        ("가격", "price"),  # 價格 (초급) before 加擊 "hitting" (없음)
+        ("묻다", "ask"),  # 초급 "ask" before 중급 "be stained" / "bury"
+        ("내", "I"),  # 초급 pronoun before ungraded "creek"
+        # Same grade keeps dump order: these stay as they were.
+        ("눈", "eye"),  # eye and snow are both 초급; eye comes first
+        ("사과", "apple"),  # 초급 apple before 중급 apology
+        ("밤", "night"),  # 초급 night before 중급 chestnut
+        ("차", "tea"),  # tea and car are both 초급; tea comes first
+    ],
+)
+def test_homographs_put_the_basic_word_first(conn, stem, expected):
+    row = conn.execute(
+        "SELECT definition FROM ko_dictionary WHERE stem = ? AND sense_no = 1", (stem,)
+    ).fetchone()
+    assert row is not None, f"{stem} is missing"
+    assert expected in row[0]
+
+
+def test_homograph_senses_stay_reachable(conn):
+    definitions = [
+        row[0]
+        for row in conn.execute(
+            "SELECT definition FROM ko_dictionary WHERE stem = '가격' ORDER BY sense_no"
+        )
+    ]
+    assert definitions[0] == "price"
+    assert any("hitting" in d for d in definitions[1:])
