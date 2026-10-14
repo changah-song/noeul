@@ -31,6 +31,7 @@ from explain_graph import (
     run_explain_graph,
     user_message_for,
 )
+from word_lookup import lookup_surface
 
 try:
     from koroman import romanize as koroman_romanize
@@ -4249,9 +4250,7 @@ async def preprocess_chapter_zh(payload: dict, auth: dict[str, Any] = Depends(ve
     }
 
 
-@app.post("/krdict_search/")
-async def krdict_search(payload: dict, auth: dict[str, Any] = Depends(verify_supabase_token)):
-    queries = payload.get("queries", [])
+def krdict_interface_language_from_payload(payload: dict) -> str:
     raw_language = payload.get("language", payload.get("lang", DEFAULT_INTERFACE_LANGUAGE))
     interface_language = (
         str(raw_language or DEFAULT_INTERFACE_LANGUAGE)
@@ -4262,6 +4261,13 @@ async def krdict_search(payload: dict, auth: dict[str, Any] = Depends(verify_sup
     )
     if interface_language not in KRDICT_INTERFACE_LANGUAGES:
         interface_language = DEFAULT_INTERFACE_LANGUAGE
+    return interface_language
+
+
+@app.post("/krdict_search/")
+async def krdict_search(payload: dict, auth: dict[str, Any] = Depends(verify_supabase_token)):
+    queries = payload.get("queries", [])
+    interface_language = krdict_interface_language_from_payload(payload)
 
     if not KRDICT_CLIENT_ID:
         raise HTTPException(status_code=500, detail="No KRDICT key configured on server")
@@ -4301,6 +4307,58 @@ async def krdict_search(payload: dict, auth: dict[str, Any] = Depends(verify_sup
         )
 
     return {"results": results}
+
+
+@app.post("/krdict_lookup/")
+async def krdict_lookup(payload: dict, auth: dict[str, Any] = Depends(verify_supabase_token)):
+    """
+    Word-tap lookup in one round trip: stem the tapped surface with Kiwi (what
+    /okt_morphs/ does) and search every stem (what /krdict_search/ does).
+
+    Body: {"surface": "갔다", "language": "en"}
+    Returns: {"stems": ["가다"], "results": [[entry, ...]]} where results[i]
+    holds stems[i]'s entries in the /krdict_search/ entry shape. Stop stems
+    (하다, 있다, ...) are dropped. /okt_morphs/ and /krdict_search/ stay for
+    older app builds.
+    """
+    surface = payload.get("surface", "")
+    if not isinstance(surface, str):
+        raise HTTPException(status_code=400, detail="surface must be a string")
+    surface = surface.strip()
+    interface_language = krdict_interface_language_from_payload(payload)
+    if not surface:
+        return {"stems": [], "results": []}
+
+    if not KRDICT_CLIENT_ID:
+        raise HTTPException(status_code=500, detail="No KRDICT key configured on server")
+
+    enforce_text_limit(surface, auth, field_name="surface")
+    query_limit = get_auth_limits(auth)["max_krdict_queries_per_request"]
+    loop = asyncio.get_event_loop()
+
+    async def stem_surface(text: str) -> list[str]:
+        stems, _surface_index, _pos_by_stem = await loop.run_in_executor(
+            None, partial(extract_ko_lookup_tokens, text)
+        )
+        return stems
+
+    async def charge_quota(stems: list[str]) -> None:
+        # Same accounting as the old pair: 1 for stemming + 1 per stem searched.
+        await enforce_daily_quota(auth, amount=1 + len(stems))
+
+    async with httpx.AsyncClient() as client:
+        return await lookup_surface(
+            surface,
+            stem_surface,
+            lambda stem: search_krdict_entries(
+                client,
+                stem,
+                KRDICT_CLIENT_ID,
+                interface_language,
+            ),
+            max_stems=query_limit,
+            before_search=charge_quota,
+        )
 
 
 # ─── Writing Assessment ───────────────────────────────────────────────────────

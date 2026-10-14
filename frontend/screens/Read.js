@@ -54,6 +54,7 @@ import SavedWordsPanel from '../components/Read/SavedWordsPanel';
 import NotesLogSheet from '../components/Read/NotesLogSheet';
 import { createTabBarBaseStyle } from '../components/shared/TabBar';
 import preprocessChapter from '../services/api/preprocessChapter';
+import { withNormalizedSurfaceIndex } from '../services/dictionaryLookup';
 import { updateUserBookProgress } from '../services/bookCloudSync';
 import { addReadingMillis } from '../services/dailyProgress';
 import { countReadableTextWords, readEpubPackageXml } from '../services/epubMetadata';
@@ -2066,7 +2067,7 @@ const Read = ({
         cachedRows.forEach(row => { stemToId[row.stem] = row.id; });
 
         const seenSurfaceStem = new Set();
-        const bookIndexEntries = (surfaceIndex || [])
+        const bookIndexEntries = withNormalizedSurfaceIndex(surfaceIndex, normalizedLanguage)
             .filter((entry) => entry?.surface && stemToId[entry.stem] != null)
             .map((entry) => ({
                 surface: entry.surface,

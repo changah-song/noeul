@@ -5949,6 +5949,64 @@ export const lookupBookIndexBySurface = (ownerId, bookUri, surface, scopeOrInter
   });
 };
 
+/**
+ * lookupBookIndexBySurfaceVariants
+ * Book-index rows whose stored surface contains `fragment`, with that stored
+ * surface returned as `index_surface`. Preprocessing stores whitespace-delimited
+ * eojeols, so a sentence-final or quoted word is indexed with its punctuation
+ * ("갔다.", "“누워") while the reader taps the bare token ("갔다"). The caller
+ * keeps only rows whose surface normalizes to the tapped word. Used only after
+ * an exact lookupBookIndexBySurface miss; `fragment` must not contain LIKE
+ * wildcards (normalized Hangul never does).
+ */
+export const lookupBookIndexBySurfaceVariants = (ownerId, bookUri, fragment, scopeOrInterfaceLanguage = 'en', options = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const scope = normalizeDictionaryCacheScope(scopeOrInterfaceLanguage, options);
+  const scopedProfileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, scope.language);
+  const maxExtraChars = Number.isInteger(options.maxExtraChars) ? options.maxExtraChars : 4;
+
+  return new Promise((resolve, reject) => {
+    if (!bookUri || !fragment || /[%_\\]/.test(fragment)) {
+      resolve([]);
+      return;
+    }
+
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT bi.surface AS index_surface,
+                dc.id, dc.stem, dc.language, dc.interface_language, dc.definition, dc.gloss, dc.hanja, dc.pos,
+                dc.domain, dc.romanization, dc.ipa, dc.simplified, dc.traditional, dc.audio_us, dc.audio_uk, dc.etymology, dc.derived, dc.related, dc.word_parts,
+                dc.level_rank, dc.level_label, dc.level_system, dc.level_source
+         FROM book_index bi
+         JOIN dictionary_cache dc ON dc.id = bi.stem_id
+         WHERE bi.owner_id = ?
+           AND bi.profile_id = ?
+           AND bi.book_uri = ?
+           AND bi.surface LIKE ?
+           AND length(bi.surface) <= ?
+           AND dc.language = ?
+           AND dc.interface_language = ?`,
+        [
+          scopedOwnerId,
+          scopedProfileId,
+          bookUri,
+          `%${fragment}%`,
+          fragment.length + maxExtraChars,
+          scope.language,
+          scope.interfaceLanguage,
+        ],
+        (_, result) => {
+          resolve(result.rows._array);
+        },
+        (_, error) => {
+          console.error('[Database] Error querying book_index by surface variants:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
 export const lookupBookHighlightSurfaces = async (ownerId, bookUri, savedStems, scopeOrInterfaceLanguage = 'en', options = {}) => {
   const scopedOwnerId = resolveOwnerId(ownerId);
   const scope = normalizeDictionaryCacheScope(scopeOrInterfaceLanguage, options);
