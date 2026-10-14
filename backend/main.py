@@ -20,8 +20,6 @@ from functools import partial
 import certifi
 from dotenv import load_dotenv
 
-# Pure helpers (no langgraph import at module load); the compiled graph itself is
-# built lazily in get_explain_graph().
 from explain_graph import (
     build_grounded_prompt,
     clean_known_lemma,
@@ -984,9 +982,10 @@ LOOKUP_CACHE_MAX_ROWS = 100_000
 # When on, /explain_in_context/ runs the multi-step agentic LangGraph workflow
 # (ground -> draft -> verify -> refine) instead of the single-shot model call.
 # Default off so production is unchanged until deliberately enabled.
-# On by default: the agentic graph (ground → draft → verify → refine) is now the
-# production path for /explain_in_context. Set EXPLAIN_USE_GRAPH=off (or 0/false/
-# no) to fall back to the single-shot flat path as a kill-switch.
+# On by default: the checked flow (ground → draft → verify → refine, see
+# explain_graph.py) is the production path for /explain_in_context. Set
+# EXPLAIN_USE_GRAPH=off (or 0/false/no) to fall back to the single-shot flat path
+# as a kill-switch.
 EXPLAIN_USE_GRAPH = os.getenv("EXPLAIN_USE_GRAPH", "on").strip().lower() not in (
     "0",
     "false",
@@ -995,12 +994,7 @@ EXPLAIN_USE_GRAPH = os.getenv("EXPLAIN_USE_GRAPH", "on").strip().lower() not in 
     "",
 )
 
-# Compiled lazily on first use so the langgraph dependency is only required when
-# the flag is actually enabled (import stays cheap and failure is localized).
-_explain_graph = None
-
-
-# One long-lived client each (sync for the graph thread, async for streaming) so
+# One long-lived client each (sync for the checked flow's thread, async for streaming) so
 # lookups reuse pooled HTTPS connections instead of a fresh TLS handshake per call.
 _anthropic_sync_client = None
 _anthropic_async_client = None
@@ -1036,7 +1030,7 @@ def explain_model_params(model: str = None) -> dict:
 
 
 def _explain_model_caller(system_prompt: str, user_message: str):
-    """Injected into the explain graph: one Anthropic call -> (raw_text, usage)."""
+    """Injected into the explain flow: one Anthropic call -> (raw_text, usage)."""
     message = get_anthropic_client().messages.create(
         **explain_model_params(),
         system=system_prompt,
@@ -1049,14 +1043,6 @@ def _explain_model_caller(system_prompt: str, user_message: str):
     ).strip()
     return raw, getattr(message, "usage", None)
 
-
-def get_explain_graph():
-    global _explain_graph
-    if _explain_graph is None:
-        from explain_graph import build_explain_graph
-
-        _explain_graph = build_explain_graph(_explain_model_caller)
-    return _explain_graph
 
 
 def create_ops_tables(conn: sqlite3.Connection):
@@ -4848,10 +4834,9 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
 
     if EXPLAIN_USE_GRAPH:
         try:
-            graph = get_explain_graph()
             result = await asyncio.to_thread(
                 run_explain_graph,
-                graph,
+                _explain_model_caller,
                 word=req.word,
                 sentence=req.sentence,
                 target_language_name=target_language_name,
@@ -4866,10 +4851,10 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
                 known_lemma=req.known_lemma,
             )
         except Exception as error:
-            print(f"[explain_in_context] Graph workflow error: {error.__class__.__name__}: {error}")
+            print(f"[explain_in_context] Explain flow error: {error.__class__.__name__}: {error}")
             raise HTTPException(status_code=502, detail="AI explanation service is temporarily unavailable")
 
-        # One spend record per model call the graph made (draft + any refine).
+        # One spend record per model call the flow made (draft + any refine).
         for usage in result.get("usages", []):
             await record_ai_spend(EXPLAIN_MODEL, usage)
 

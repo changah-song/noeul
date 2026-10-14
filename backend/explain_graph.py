@@ -1,27 +1,23 @@
-"""Agentic explain-in-context workflow (LangGraph).
+"""Checked explain-in-context flow.
 
-A multi-step replacement for the single-shot `/explain_in_context/` model call.
-The graph:
+    ground -> draft -> verify -> (refine -> verify)? -> done
 
-    ground -> draft -> verify -> (refine -> verify)? -> END
+- ground  Deterministic, no model spend. Turns the learner's ability
+          (``theta``) and the tapped word's ``word_difficulty`` into a
+          P(known) familiarity bucket, and carries the grounding hints
+          (hanja bridge, known-word anchors) forward.
+- draft   One model call. Emits the ``<lemma>/<gloss>/<explanation>``
+          contract, calibrated to the learner's familiarity and grounded in
+          the hints.
+- verify  Deterministic checks (no model spend): required tags present, the
+          flashcard gloss is short enough, explanation is non-trivial.
+- refine  At most ``REFINE_MAX_ATTEMPTS`` follow-up model calls, fed the
+          verifier's issues, to fix a bad draft.
 
-- ``ground``  Deterministic, no model spend. Turns the learner's ability
-              (``theta``) and the tapped word's ``word_difficulty`` into a
-              P(known) familiarity bucket, and carries the grounding hints
-              (hanja bridge, known-word anchors) forward.
-- ``draft``   One model call. Emits the ``<lemma>/<gloss>/<explanation>``
-              contract, calibrated to the learner's familiarity and grounded in
-              the hints.
-- ``verify``  Deterministic checks (no model spend) — required tags present, the
-              flashcard gloss is short enough, explanation is non-trivial.
-- ``refine``  At most ``REFINE_MAX_ATTEMPTS`` follow-up model calls, fed the
-              verifier's issues, to fix a bad draft.
-
-The module is transport-agnostic: the caller injects ``model_caller`` (see
-``build_explain_graph``), so the graph has no dependency on the Anthropic SDK or
-FastAPI and can be unit-tested with a fake caller. ``langgraph`` is imported
-lazily inside ``build_explain_graph`` so that importing this module (for the
-pure helpers below) never requires the dependency to be installed.
+It is a plain loop (it used to be a LangGraph graph; the flow is linear with one
+bounded retry, so the framework added a dependency and nothing else). The
+caller injects ``model_caller``, so this module has no dependency on the
+Anthropic SDK or FastAPI and is unit-tested with a fake caller.
 """
 
 from __future__ import annotations
@@ -390,10 +386,6 @@ def _verify_issues(state: ExplainState) -> list[str]:
     return issues
 
 
-def _verify_node(state: ExplainState) -> dict:
-    return {"issues": _verify_issues(state)}
-
-
 def _route_after_verify(state: ExplainState) -> str:
     issues = state.get("issues") or []
     if issues and int(state.get("attempts", 0)) <= REFINE_MAX_ATTEMPTS:
@@ -401,61 +393,8 @@ def _route_after_verify(state: ExplainState) -> str:
     return "end"
 
 
-def build_explain_graph(model_caller: ModelCaller):
-    """Compile the explain-in-context graph.
-
-    ``model_caller(system, user) -> (raw_text, usage)`` is injected so this module
-    stays free of any SDK/HTTP dependency. ``langgraph`` is imported here (not at
-    module load) so the pure helpers above remain importable without it.
-    """
-    from langgraph.graph import END, StateGraph
-
-    def _generate(state: ExplainState, *, issues: list[str] | None) -> dict:
-        system_prompt = build_grounded_prompt(
-            target_language_name=state.get("target_language_name", ""),
-            interface_language_name=state.get("interface_language_name", ""),
-            familiarity=state.get("familiarity", FAMILIARITY_UNKNOWN),
-            hanja=state.get("hanja"),
-            anchor_words=state.get("anchor_words"),
-            dictionary_found=state.get("dictionary_found"),
-            dictionary_senses=state.get("dictionary_senses"),
-            issues=issues,
-            known_lemma=state.get("known_lemma"),
-        )
-        raw, usage = model_caller(system_prompt, _user_message(state))
-        parsed = parse_contextual_explanation(raw or "")
-        return {
-            # The client's dictionary form wins over anything the model wrote.
-            "lemma": state.get("known_lemma") or parsed["lemma"],
-            "gloss": parsed["gloss"],
-            "explanation": parsed["explanation"],
-            "attempts": int(state.get("attempts", 0)) + 1,
-            "usages": [*(state.get("usages") or []), usage],
-        }
-
-    def _draft_node(state: ExplainState) -> dict:
-        return _generate(state, issues=None)
-
-    def _refine_node(state: ExplainState) -> dict:
-        return _generate(state, issues=state.get("issues"))
-
-    graph = StateGraph(ExplainState)
-    graph.add_node("ground", _ground_node)
-    graph.add_node("draft", _draft_node)
-    graph.add_node("verify", _verify_node)
-    graph.add_node("refine", _refine_node)
-
-    graph.set_entry_point("ground")
-    graph.add_edge("ground", "draft")
-    graph.add_edge("draft", "verify")
-    graph.add_conditional_edges("verify", _route_after_verify, {"refine": "refine", "end": END})
-    graph.add_edge("refine", "verify")
-
-    return graph.compile()
-
-
 def run_explain_graph(
-    graph,
+    model_caller: ModelCaller,
     *,
     word: str,
     sentence: str,
@@ -470,36 +409,65 @@ def run_explain_graph(
     dictionary_senses: list[dict] | None = None,
     known_lemma: str | None = None,
 ) -> dict:
-    """Invoke the compiled graph and return the parsed result + spend usages.
+    """Run the checked flow and return the parsed result + spend usages.
 
+    ``model_caller(system, user) -> (raw_text, usage)`` makes one model call.
     ``p_known`` (0..1) is the preferred familiarity signal; when absent it is
     derived from ``theta`` and ``word_difficulty``. ``dictionary_found`` /
     ``dictionary_senses`` carry the on-device lookup the client already did:
     senses ground the model toward the right meaning, and ``found=False`` tells
     it the word is not a standard dictionary entry. Returns
-    ``{lemma, gloss, explanation, familiarity, usages}`` — ``usages`` holds one
+    ``{lemma, gloss, explanation, familiarity, usages}``; ``usages`` holds one
     entry per model call so the caller can record spend for each.
     """
-    final: ExplainState = graph.invoke(
-        {
-            "word": word,
-            "sentence": sentence,
-            "target_language_name": target_language_name,
-            "interface_language_name": interface_language_name,
-            "p_known": p_known,
-            "theta": theta,
-            "word_difficulty": word_difficulty,
-            "hanja": hanja,
-            "anchor_words": anchor_words or [],
-            "dictionary_found": dictionary_found,
-            "dictionary_senses": dictionary_senses or [],
-            "known_lemma": known_lemma,
-        }
-    )
+    state: ExplainState = {
+        "word": word,
+        "sentence": sentence,
+        "target_language_name": target_language_name,
+        "interface_language_name": interface_language_name,
+        "p_known": p_known,
+        "theta": theta,
+        "word_difficulty": word_difficulty,
+        "hanja": hanja,
+        "anchor_words": anchor_words or [],
+        "dictionary_found": dictionary_found,
+        "dictionary_senses": dictionary_senses or [],
+        "known_lemma": known_lemma,
+    }
+    state.update(_ground_node(state))
+
+    issues: list[str] | None = None
+    while True:
+        system_prompt = build_grounded_prompt(
+            target_language_name=target_language_name,
+            interface_language_name=interface_language_name,
+            familiarity=state["familiarity"],
+            hanja=hanja,
+            anchor_words=state["anchor_words"],
+            dictionary_found=dictionary_found,
+            dictionary_senses=state["dictionary_senses"],
+            issues=issues,
+            known_lemma=known_lemma,
+        )
+        raw, usage = model_caller(system_prompt, _user_message(state))
+        parsed = parse_contextual_explanation(raw or "")
+        state.update({
+            # The client's dictionary form wins over anything the model wrote.
+            "lemma": known_lemma or parsed["lemma"],
+            "gloss": parsed["gloss"],
+            "explanation": parsed["explanation"],
+            "attempts": state["attempts"] + 1,
+            "usages": [*state["usages"], usage],
+        })
+        state["issues"] = _verify_issues(state)
+        if _route_after_verify(state) != "refine":
+            break
+        issues = state["issues"]
+
     return {
-        "lemma": final.get("lemma"),
-        "gloss": final.get("gloss"),
-        "explanation": final.get("explanation"),
-        "familiarity": final.get("familiarity", FAMILIARITY_UNKNOWN),
-        "usages": final.get("usages") or [],
+        "lemma": state.get("lemma"),
+        "gloss": state.get("gloss"),
+        "explanation": state.get("explanation"),
+        "familiarity": state.get("familiarity", FAMILIARITY_UNKNOWN),
+        "usages": state.get("usages") or [],
     }
