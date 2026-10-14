@@ -13,6 +13,8 @@ import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
 import NativeEpubReaderView, {
     sendFocusNavCommand,
+    sendExtendSelection,
+    supportsExtendSelection,
     sendSeekToPosition,
     supportsImperativeFocusNav,
     supportsSeekToPosition,
@@ -1003,7 +1005,31 @@ const Read = ({
         setIsNativeSelection(true);
         setHighlightedWord(text);
         setHighlightedWordContext(null);
+        // Growing an open selection keeps the panel where it is.
+        if (extendingSelectionRef.current) {
+            extendingSelectionRef.current = false;
+            return;
+        }
         setLookupPlacement(event.placement === 'top' ? 'top' : 'bottom');
+    }, []);
+
+    const extendingSelectionRef = useRef(false);
+    const handleExtendSelection = useCallback((direction) => {
+        const viewTag = findNodeHandle(nativeReaderViewRef.current);
+        if (viewTag == null) {
+            return;
+        }
+        extendingSelectionRef.current = true;
+        sendExtendSelection(viewTag, direction)
+            .then((extended) => {
+                if (!extended) {
+                    extendingSelectionRef.current = false;
+                }
+            })
+            .catch((error) => {
+                extendingSelectionRef.current = false;
+                console.warn('[Read] Extend selection failed:', error?.message ?? error);
+            });
     }, []);
 
     // ── Book text extraction callback ────────────────────────────────────────
@@ -3321,6 +3347,7 @@ const Read = ({
                         highlightedWord={highlightedWord}
                         sourceSentence={highlightedWordContext?.sentence ?? ''}
                         isNativeSelection={isNativeSelection}
+                        onExtendSelection={supportsExtendSelection ? handleExtendSelection : undefined}
                         placement={shouldPlaceLookupAtTop ? 'top' : 'bottom'}
                         isDarkMode={isDarkMode}
                         onClose={dismissLookup}

@@ -34,6 +34,14 @@ export const sendFocusNavCommand = (viewTag, direction) => (
     NativeModule?.focusNav?.(viewTag, direction) ?? androidOnly()
 );
 
+// Grow the long-press selection by one sentence ('previous' | 'next'). The
+// native view re-sends onTextSelected with the longer text.
+export const supportsExtendSelection = typeof NativeModule?.extendSelection === 'function';
+
+export const sendExtendSelection = (viewTag, direction) => (
+    NativeModule?.extendSelection?.(viewTag, direction) ?? androidOnly()
+);
+
 // Imperative jump to a saved checkpoint. The restorePosition prop also carries
 // the passive position echo pushed on every page event, so a jump sent that way
 // can be dropped as a no-op; this command is unambiguous. The flag lets callers

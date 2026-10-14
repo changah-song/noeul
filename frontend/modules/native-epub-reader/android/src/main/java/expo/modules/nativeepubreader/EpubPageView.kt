@@ -2099,6 +2099,88 @@ class EpubPageView(context: Context) : View(context) {
   // sentenceRanges (the same source focus mode uses); falls back to scanning
   // for sentence-boundary punctuation. Returns null if nothing sensible is
   // found so the caller can default to the bare word.
+  // Grow the active text selection by one sentence: direction < 0 moves its
+  // start to the previous sentence's start, direction > 0 moves its end to the
+  // next sentence's end, crossing into the neighbouring paragraph when needed
+  // (within this page). Re-emits onTextSelected so the translation updates.
+  // Returns false when there is no text selection or nothing further to add.
+  fun extendSelectionBySentence(direction: Int): Boolean {
+    if (activeSelectionKind != ActiveSelectionKind.TEXT) return false
+    val (start, end) = activeTextSelectionEndpoints() ?: return false
+    val ranges = if (direction < 0) {
+      val newStart = previousSentenceStart(start) ?: return false
+      buildSelectionRangesBetween(newStart, end)
+    } else {
+      val newEnd = nextSentenceEnd(end) ?: return false
+      buildSelectionRangesBetween(start, newEnd)
+    }
+    if (ranges.isEmpty()) return false
+    activeSelectionRanges = ranges
+    activeHighlightPaint.color = activePaintColor()
+    invalidate()
+    postInvalidateOnAnimation()
+    val selectedText = selectedTextForRanges(ranges)
+    if (selectedText.isNotBlank()) {
+      onTextSelected?.invoke(
+        TextSelectionHit(
+          text = selectedText,
+          placement = placementForRanges(ranges),
+          ranges = ranges
+        )
+      )
+    }
+    return true
+  }
+
+  private fun sentenceSpans(block: PageBlock): List<Pair<Int, Int>> {
+    val length = blockTextForSelection(block).length
+    if (length <= 0) return emptyList()
+    val spans = block.sentenceRanges
+      .map { it.first.coerceIn(0, length) to (it.last + 1).coerceIn(0, length) }
+      .filter { it.first < it.second }
+    if (spans.isNotEmpty()) return spans
+    // No precomputed ranges: walk the text with the same fallback rule.
+    val out = mutableListOf<Pair<Int, Int>>()
+    var cursor = 0
+    while (cursor < length) {
+      val bounds = sentenceBoundsAtOffset(block, cursor, cursor) ?: break
+      if (bounds.second <= cursor) break
+      out.add(bounds)
+      cursor = bounds.second
+      while (cursor < length && blockTextForSelection(block)[cursor].isWhitespace()) cursor++
+    }
+    return out
+  }
+
+  private fun textPositionAt(renderedIndex: Int, localOffset: Int): TextPosition? {
+    val block = renderedTextBlocks.getOrNull(renderedIndex)?.block ?: return null
+    return TextPosition(renderedIndex, block, localOffset, block.sourceStartOffset + localOffset)
+  }
+
+  private fun previousSentenceStart(position: TextPosition): TextPosition? {
+    sentenceSpans(position.block)
+      .lastOrNull { it.first < position.localOffset }
+      ?.let { return textPositionAt(position.renderedIndex, it.first) }
+    for (index in position.renderedIndex - 1 downTo 0) {
+      val block = renderedTextBlocks[index].block
+      val last = sentenceSpans(block).lastOrNull() ?: continue
+      return textPositionAt(index, last.first)
+    }
+    return null
+  }
+
+  private fun nextSentenceEnd(position: TextPosition): TextPosition? {
+    sentenceSpans(position.block)
+      .firstOrNull { it.second > position.localOffset }
+      ?.let { return textPositionAt(position.renderedIndex, it.second) }
+    for (index in position.renderedIndex + 1 until renderedTextBlocks.size) {
+      val block = renderedTextBlocks[index].block
+      val first = sentenceSpans(block).firstOrNull() ?: continue
+      return textPositionAt(index, first.second)
+    }
+    return null
+  }
+
   private fun sentenceBoundsAtOffset(
     block: PageBlock,
     localStart: Int,

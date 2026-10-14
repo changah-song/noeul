@@ -188,6 +188,11 @@ class NativeEpubReaderModule : Module() {
       view.seekToPosition(position)
     }.runOnQueue(Queues.MAIN)
 
+    // Grow the long-press selection by one sentence ("previous" | "next").
+    AsyncFunction("extendSelection") { view: NativeEpubReaderView, direction: String ->
+      view.extendSelection(direction)
+    }.runOnQueue(Queues.MAIN)
+
     View(NativeEpubReaderView::class) {
       Prop("bookManifest") { view: NativeEpubReaderView, manifest: Map<String, Any?> ->
         view.setBookManifest(manifest)
@@ -2101,6 +2106,20 @@ class NativeEpubReaderView(
 
     clearActiveSelection(dispatchEvent = true, forceEvent = true)
     focusTo(next, animate = true, fast = rapid)
+  }
+
+  fun extendSelection(direction: String): Boolean {
+    val step = when (direction.lowercase()) {
+      "next" -> 1
+      "prev", "previous" -> -1
+      else -> return false
+    }
+    val view = if (isVerticalLayoutMode()) {
+      continuousPageView
+    } else {
+      (recyclerView()?.findViewHolderForAdapterPosition(viewPager.currentItem) as? EpubPageAdapter.PageHolder)?.view
+    } ?: return false
+    return view.extendSelectionBySentence(step)
   }
 
   fun focusNav(direction: String) {
