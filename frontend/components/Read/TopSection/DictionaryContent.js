@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { Text, View, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { api } from '../../../services/api/client';
-import { explainInContext } from '../../../services/api/explainInContext';
+import { streamExplainInContext } from '../../../services/api/explainInContext';
 import { useAppContext } from '../../../contexts/AppContext';
 import { useTranslation } from '../../../hooks/useTranslation';
 import { useLocalOwner } from '../../../contexts/LocalOwnerContext';
@@ -495,8 +495,17 @@ const DictionaryContent = ({
             console.warn('[DictionaryContent] getCachedPKnown failed:', pKnownError?.message ?? pKnownError);
         }
 
+        // Partial results stream in while the request is open: the short gloss
+        // first, then the explanation as it is written. Both only ever update an
+        // entry that is still loading, so a late chunk can't clobber a final result.
+        const updateStreaming = (patch) => {
+            setExplainData((prev) => (
+                prev[key]?.loading ? { ...prev, [key]: { ...prev[key], ...patch } } : prev
+            ));
+        };
+
         try {
-            const response = await explainInContext({
+            const response = await streamExplainInContext({
                 word: key,
                 sentence: contextSentence,
                 language: targetLanguage,
@@ -505,6 +514,9 @@ const DictionaryContent = ({
                 hanja: grounding.hanja,
                 anchorWords: grounding.anchorWords,
                 dictionary: grounding.dictionary,
+                lemma: grounding.lemma,
+                onGloss: (gloss) => updateStreaming({ gloss: cleanValue(gloss) }),
+                onText: (text) => updateStreaming({ text }),
             });
             const text = cleanValue(response?.explanation);
             const gloss = cleanValue(response?.gloss);
@@ -2007,8 +2019,24 @@ const DictionaryContent = ({
     // often can't lemmatize the words that land here (archaic/dialectal). Once the
     // fetch resolves we show and save that base form; until then (or if the model
     // returns none) we fall back to the tapped surface itself.
+    //
+    // When our own dictionary resolved the tap to a single entry (누워 → 눕다), that
+    // dictionary form is authoritative: it is sent with the request (the backend
+    // then uses it instead of guessing) and shown as the headword, so the title,
+    // its romanization, the explanation and the saved card all name one form.
+    // Multi-fragment lookups (Kiwi shattering an archaic eojeol) have no single
+    // dictionary form and keep using the AI's base form.
+    const explainDictionaryLemma = activeDictionaryGrounding.found && lookupItemCount === 1
+        ? cleanValue(activeLookupDetails.word)
+        : '';
     const explainLemma = cleanValue(explainData[explainKey]?.lemma);
-    const explainHeadword = explainLemma || explainKey;
+    const explainHeadword = explainDictionaryLemma || explainLemma || explainKey;
+    const getExplainGrounding = () => ({
+        hanja: activeLookupHanja || null,
+        anchorWords: toAnchorWords(relatedKnownByWord[explainKey]),
+        dictionary: activeDictionaryGrounding,
+        lemma: explainDictionaryLemma || undefined,
+    });
 
     // Body-only smart-definition content: the short gloss + save button on top
     // (immediately visible and saveable), then the longer contextual explanation
@@ -2023,7 +2051,10 @@ const DictionaryContent = ({
         // Chinese: the AI-attached pinyin sits next to the definition and is saved
         // alongside it (empty for other target languages).
         const pinyinText = isChineseBook ? cleanValue(data.pinyin) : '';
-        const hasGloss = !data.loading && !!data.text && !!glossText;
+        // The gloss streams in complete (the server only sends it once its tag
+        // closes), so it is shown and saveable while the explanation still loads.
+        const hasGloss = !data.error && !!glossText;
+        const isWaitingForText = data.loading && !data.text;
         const aiSaved = hasGloss && isWordSaved(saveWord);
 
         return (
@@ -2077,7 +2108,7 @@ const DictionaryContent = ({
                             </Text>
                         </View>
                     ) : null}
-                    {data.loading ? (
+                    {isWaitingForText ? (
                         <View style={styles.explainLoadingRow}>
                             <ActivityIndicator size="small" color={palette.action} />
                             <Text style={[styles.explainLoadingText, { color: palette.mutedText }]}>
@@ -2092,7 +2123,7 @@ const DictionaryContent = ({
                         <TouchableOpacity
                             accessibilityRole="button"
                             activeOpacity={0.85}
-                            onPress={() => fetchExplanation(explainKey)}
+                            onPress={() => fetchExplanation(explainKey, getExplainGrounding())}
                         >
                             <Text style={[styles.explainErrorText, { color: palette.emptyText }]}>
                                 {data.error || t('lookup.explainFailed')}
@@ -2113,11 +2144,7 @@ const DictionaryContent = ({
         return (
             <TouchableOpacity
                 style={[styles.actionButton, explainMode ? styles.actionButtonRightActive : null]}
-                onPress={() => handleSmartDefinitionPress(explainKey, {
-                    hanja: activeLookupHanja || null,
-                    anchorWords: toAnchorWords(relatedKnownByWord[explainKey]),
-                    dictionary: activeDictionaryGrounding,
-                })}
+                onPress={() => handleSmartDefinitionPress(explainKey, getExplainGrounding())}
                 activeOpacity={0.7}
                 accessibilityRole="button"
                 accessibilityState={{ expanded: explainMode }}
@@ -2330,10 +2357,15 @@ const DictionaryContent = ({
     }) => {
         const posLabel = formatPos(pos, t);
 
-        // In smart-definition mode the title shows the AI-stemmed base form of the
-        // tapped word (surface fallback until the fetch resolves), matching what
-        // "Save this" keeps.
+        // In smart-definition mode the title shows the explanation's base form —
+        // the dictionary form when the lookup resolved one, else the AI-stemmed
+        // form (surface fallback until the fetch resolves) — matching what "Save
+        // this" keeps. If that differs from this entry's word, the entry's
+        // pronunciation, hanja and audio describe a different word, so they are
+        // left out rather than shown under the wrong headword.
         const headingWord = explainMode ? explainHeadword : word;
+        const headingIsEntryWord = cleanValue(headingWord) === cleanValue(word);
+        const keepEntryDetails = !explainMode || headingIsEntryWord;
 
         // Chinese keeps pinyin in the heading (to the right of the character); when a
         // word has several readings with different meanings, each reading carries its
@@ -2348,7 +2380,19 @@ const DictionaryContent = ({
 
         return (
             <View key={key} style={[styles.primaryEntry, separated && { borderTopColor: palette.border, borderTopWidth: StyleSheet.hairlineWidth }]}>
-                {renderEntryHeading({ word: headingWord, hanja, definition, pos, romanization, ipa, pinyin: headingPinyin, simplified: explainMode ? null : simplified, traditional: explainMode ? null : traditional, audioUs, audioUk })}
+                {renderEntryHeading({
+                    word: headingWord,
+                    hanja: keepEntryDetails ? hanja : '',
+                    definition,
+                    pos: keepEntryDetails ? pos : '',
+                    romanization: keepEntryDetails ? romanization : null,
+                    ipa: keepEntryDetails ? ipa : '',
+                    pinyin: keepEntryDetails ? headingPinyin : null,
+                    simplified: explainMode ? null : simplified,
+                    traditional: explainMode ? null : traditional,
+                    audioUs: keepEntryDetails ? audioUs : '',
+                    audioUk: keepEntryDetails ? audioUk : '',
+                })}
                 {explainMode ? renderExplainBodySection() : (
                     isChineseBook ? (
                         <View style={styles.zhBody}>

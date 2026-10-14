@@ -1,6 +1,7 @@
 from fastapi import Depends, FastAPI, Header, HTTPException
 from konlpy.tag import Okt
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 import jwt
 from jwt import PyJWKClient
 import json
@@ -21,7 +22,15 @@ from dotenv import load_dotenv
 
 # Pure helpers (no langgraph import at module load); the compiled graph itself is
 # built lazily in get_explain_graph().
-from explain_graph import familiarity_from_p_known, p_known_for, run_explain_graph
+from explain_graph import (
+    build_grounded_prompt,
+    clean_known_lemma,
+    familiarity_from_p_known,
+    p_known_for,
+    parse_partial_explanation,
+    run_explain_graph,
+    user_message_for,
+)
 
 try:
     from koroman import romanize as koroman_romanize
@@ -957,10 +966,15 @@ DAILY_AI_BUDGET_USD = float(os.getenv("DAILY_AI_BUDGET_USD", "25") or "25")
 
 # Model IDs used by the AI endpoints, and their price per 1M tokens (USD).
 # Keep in sync with the models passed to client.messages.create below.
-LOOKUP_MODEL = "claude-haiku-4-5"
 ASSESSMENT_MODEL = "claude-sonnet-4-6"
+# The in-context "What it means here" explanation. Haiku 5.5 is as fast as Haiku
+# 4.5 here, gets base forms right more often (눕다, not 누우다), and costs a tenth.
+# Override with EXPLAIN_MODEL (e.g. claude-haiku-4-5) as a rollback switch.
+EXPLAIN_MODEL = os.getenv("EXPLAIN_MODEL", "claude-haiku-5-5").strip() or "claude-haiku-5-5"
 MODEL_PRICING_PER_MTOK = {
     "claude-haiku-4-5": {"input": 1.0, "output": 5.0},
+    # Prompts here are far below Haiku 5.5's 100K-token long-context tier.
+    "claude-haiku-5-5": {"input": 0.10, "output": 0.50},
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
 }
 
@@ -985,12 +999,45 @@ EXPLAIN_USE_GRAPH = os.getenv("EXPLAIN_USE_GRAPH", "on").strip().lower() not in 
 _explain_graph = None
 
 
+# One long-lived client each (sync for the graph thread, async for streaming) so
+# lookups reuse pooled HTTPS connections instead of a fresh TLS handshake per call.
+_anthropic_sync_client = None
+_anthropic_async_client = None
+
+
+def get_anthropic_client():
+    global _anthropic_sync_client
+    if _anthropic_sync_client is None:
+        _anthropic_sync_client = anthropic_sdk.Anthropic(api_key=ANTHROPIC_API_KEY)
+    return _anthropic_sync_client
+
+
+def get_anthropic_async_client():
+    global _anthropic_async_client
+    if _anthropic_async_client is None:
+        _anthropic_async_client = anthropic_sdk.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    return _anthropic_async_client
+
+
+def explain_model_params(model: str = None) -> dict:
+    """Request params for the explain call, tuned for latency.
+
+    Haiku 5.x thinks by default; a 2-3 sentence explanation does not need it, and
+    thinking would delay the first streamed word, so it is turned off (allowed at
+    effort low). Older models take neither field.
+    """
+    model = model or EXPLAIN_MODEL
+    params = {"model": model, "max_tokens": CONTEXT_EXPLANATION_MAX_TOKENS}
+    if not model.startswith(("claude-haiku-4", "claude-sonnet-4", "claude-3")):
+        params["thinking"] = {"type": "disabled"}
+        params["output_config"] = {"effort": "low"}
+    return params
+
+
 def _explain_model_caller(system_prompt: str, user_message: str):
     """Injected into the explain graph: one Anthropic call -> (raw_text, usage)."""
-    client = anthropic_sdk.Anthropic(api_key=ANTHROPIC_API_KEY)
-    message = client.messages.create(
-        model=LOOKUP_MODEL,
-        max_tokens=CONTEXT_EXPLANATION_MAX_TOKENS,
+    message = get_anthropic_client().messages.create(
+        **explain_model_params(),
         system=system_prompt,
         messages=[{"role": "user", "content": user_message}],
     )
@@ -4606,8 +4653,17 @@ def _coerce_grounding_number(value):
     return float(value)
 
 
-@app.post("/explain_in_context/")
-async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verify_supabase_token)):
+class _ExplainRequest:
+    """Validated, grounded inputs shared by the JSON and streaming endpoints."""
+
+    __slots__ = (
+        "word", "sentence", "target_language", "interface_language", "p_known",
+        "theta", "word_difficulty", "hanja", "anchor_words", "dictionary_found",
+        "dictionary_senses", "known_lemma", "personalized", "cache_key",
+    )
+
+
+async def _prepare_explain_request(payload: dict, auth: dict[str, Any]) -> _ExplainRequest:
     if not anthropic_sdk:
         raise HTTPException(status_code=503, detail="Anthropic SDK is not installed on the backend")
 
@@ -4616,8 +4672,6 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
 
     word = payload.get("word", "")
     sentence = payload.get("sentence", "")
-    target_language = normalize_scoring_language(payload.get("language", "ko"))
-    interface_language = normalize_interface_language_code(payload.get("interface_language"))
 
     if not isinstance(word, str) or not word.strip():
         raise HTTPException(status_code=400, detail="word is required")
@@ -4625,11 +4679,14 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
     if not isinstance(sentence, str) or not sentence.strip():
         raise HTTPException(status_code=400, detail="sentence is required")
 
-    word = word.strip()
-    sentence = sentence.strip()
+    req = _ExplainRequest()
+    req.word = word.strip()
+    req.sentence = sentence.strip()
+    req.target_language = normalize_scoring_language(payload.get("language", "ko"))
+    req.interface_language = normalize_interface_language_code(payload.get("interface_language"))
 
-    enforce_text_limit(word, auth, field_name="word")
-    enforce_text_limit(sentence, auth, field_name="sentence")
+    enforce_text_limit(req.word, auth, field_name="word")
+    enforce_text_limit(req.sentence, auth, field_name="sentence")
 
     await enforce_daily_quota(auth)
 
@@ -4640,50 +4697,96 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
     p_known = _coerce_grounding_number(payload.get("p_known"))
     if p_known is not None:
         p_known = max(0.0, min(1.0, p_known))
-    theta = _coerce_grounding_number(payload.get("theta"))
-    word_difficulty = _coerce_grounding_number(payload.get("word_difficulty"))
+    req.theta = _coerce_grounding_number(payload.get("theta"))
+    req.word_difficulty = _coerce_grounding_number(payload.get("word_difficulty"))
     if p_known is None:
-        p_known = p_known_for(theta, word_difficulty)
+        p_known = p_known_for(req.theta, req.word_difficulty)
+    req.p_known = p_known
     hanja = payload.get("hanja")
-    hanja = hanja.strip() if isinstance(hanja, str) and hanja.strip() else None
-    anchor_words = _sanitize_anchor_words(payload.get("anchor_words"))
+    req.hanja = hanja.strip() if isinstance(hanja, str) and hanja.strip() else None
+    req.anchor_words = _sanitize_anchor_words(payload.get("anchor_words"))
     # The client already looked this word up on-device; reuse that result to
     # ground the explanation instead of re-querying. Shared across users for the
     # same word, so — unlike anchor_words — it does not bust the response cache.
-    dictionary_found, dictionary_senses = _sanitize_dictionary_grounding(payload.get("dictionary"))
+    req.dictionary_found, req.dictionary_senses = _sanitize_dictionary_grounding(payload.get("dictionary"))
+    # The dictionary form the client's lookup resolved (e.g. 눕다 for 누워). When
+    # sent, it is authoritative: the model is told to use it and the response
+    # echoes it, so the panel never shows two different base forms. Older app
+    # versions don't send it and get the model's own <lemma> as before.
+    req.known_lemma = clean_known_lemma(payload.get("lemma"))
 
     # Known-word anchors are per-learner, so an anchored explanation must never be
     # shared through the global cache.
-    personalized = bool(anchor_words)
+    req.personalized = bool(req.anchor_words)
 
     # Serve identical lookups from cache without calling the model — kills
     # repeated-input abuse and cheap re-reads. The explanation is context-specific
     # (a different sentence is a cache miss); under the graph it is also calibrated
     # to the learner's familiarity, so the coarse familiarity bucket joins the key.
-    cache_key = lookup_cache_key(word, sentence, target_language, interface_language)
+    # A client-supplied base form changes the prompt, so it joins the key too
+    # (and keeps old model-lemma entries away from new clients).
+    cache_key = lookup_cache_key(req.word, req.sentence, req.target_language, req.interface_language)
     if EXPLAIN_USE_GRAPH:
         cache_key = f"{cache_key}:{familiarity_from_p_known(p_known)}"
+    if req.known_lemma:
+        lemma_hash = hashlib.sha256(_normalize_for_cache(req.known_lemma).encode("utf-8")).hexdigest()[:16]
+        cache_key = f"{cache_key}:l{lemma_hash}"
+    req.cache_key = cache_key
+    return req
 
-    if not personalized:
-        cached = await asyncio.to_thread(_lookup_cache_get, cache_key)
-        if cached is not None:
-            # lookup_cache stores only lemma/gloss/explanation, so re-derive the
-            # fields that live outside its schema before returning — otherwise a
-            # cache hit silently drops them. pinyin is deterministic from the
-            # lemma (no model call); not_in_dictionary comes from the request.
-            # Keeps a hit's response shape identical to a miss.
-            if target_language == "zh":
-                cached["pinyin"] = zh_to_pinyin(cached.get("lemma") or word)
-            cached["not_in_dictionary"] = dictionary_found is False
-            return cached
 
+def _finalize_explain_result(req: _ExplainRequest, parsed: dict) -> dict:
+    """Attach the fields that live outside lookup_cache's schema.
+
+    Applied to both cache hits and fresh results so the response shape is
+    identical either way: pinyin is deterministic from the lemma (no model call),
+    not_in_dictionary comes from the client's own on-device lookup (authoritative
+    for our bundled dictionary), and a client-supplied base form always wins.
+    """
+    if req.known_lemma:
+        parsed["lemma"] = req.known_lemma
+    parsed["not_in_dictionary"] = req.dictionary_found is False
+    # Chinese: tone-marked pinyin for the base form (falling back to the tapped
+    # word) so the panel can show it next to the gloss and save it with the card.
+    if req.target_language == "zh":
+        parsed["pinyin"] = zh_to_pinyin(parsed.get("lemma") or req.word)
+    return parsed
+
+
+async def _get_cached_explanation(req: _ExplainRequest) -> dict | None:
+    if req.personalized:
+        return None
+    cached = await asyncio.to_thread(_lookup_cache_get, req.cache_key)
+    if cached is None:
+        return None
+    return _finalize_explain_result(req, cached)
+
+
+async def _charge_explain_miss(auth: dict[str, Any]) -> None:
     # Only reached on a cache miss — i.e. we're about to spend on the model.
     # Charge this lookup against the user's daily tier allowance before spending.
     await enforce_lookup_quota(auth["user_id"])
     await enforce_ai_budget()
 
-    target_language_name = LANGUAGE_DISPLAY_NAMES.get(target_language, target_language.upper())
-    interface_language_name = LANGUAGE_DISPLAY_NAMES.get(interface_language, "English")
+
+def _explain_language_names(req: _ExplainRequest) -> tuple[str, str]:
+    return (
+        LANGUAGE_DISPLAY_NAMES.get(req.target_language, req.target_language.upper()),
+        LANGUAGE_DISPLAY_NAMES.get(req.interface_language, "English"),
+    )
+
+
+@app.post("/explain_in_context/")
+async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verify_supabase_token)):
+    req = await _prepare_explain_request(payload, auth)
+
+    cached = await _get_cached_explanation(req)
+    if cached is not None:
+        return cached
+
+    await _charge_explain_miss(auth)
+
+    target_language_name, interface_language_name = _explain_language_names(req)
 
     if EXPLAIN_USE_GRAPH:
         try:
@@ -4691,17 +4794,18 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
             result = await asyncio.to_thread(
                 run_explain_graph,
                 graph,
-                word=word,
-                sentence=sentence,
+                word=req.word,
+                sentence=req.sentence,
                 target_language_name=target_language_name,
                 interface_language_name=interface_language_name,
-                p_known=p_known,
-                theta=theta,
-                word_difficulty=word_difficulty,
-                hanja=hanja,
-                anchor_words=anchor_words,
-                dictionary_found=dictionary_found,
-                dictionary_senses=dictionary_senses,
+                p_known=req.p_known,
+                theta=req.theta,
+                word_difficulty=req.word_difficulty,
+                hanja=req.hanja,
+                anchor_words=req.anchor_words,
+                dictionary_found=req.dictionary_found,
+                dictionary_senses=req.dictionary_senses,
+                known_lemma=req.known_lemma,
             )
         except Exception as error:
             print(f"[explain_in_context] Graph workflow error: {error.__class__.__name__}: {error}")
@@ -4709,7 +4813,7 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
 
         # One spend record per model call the graph made (draft + any refine).
         for usage in result.get("usages", []):
-            await record_ai_spend(LOOKUP_MODEL, usage)
+            await record_ai_spend(EXPLAIN_MODEL, usage)
 
         parsed = {
             "explanation": result.get("explanation"),
@@ -4718,13 +4822,11 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
         }
     else:
         system_prompt = build_contextual_explanation_prompt(target_language_name, interface_language_name)
-        user_message = f"Word: {word}\n\nSentence: {sentence}"
+        user_message = f"Word: {req.word}\n\nSentence: {req.sentence}"
 
         try:
-            client = anthropic_sdk.Anthropic(api_key=ANTHROPIC_API_KEY)
-            message = client.messages.create(
-                model=LOOKUP_MODEL,
-                max_tokens=CONTEXT_EXPLANATION_MAX_TOKENS,
+            message = await get_anthropic_async_client().messages.create(
+                **explain_model_params(),
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_message}],
             )
@@ -4732,7 +4834,7 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
             print(f"[explain_in_context] Anthropic API error: {error.__class__.__name__}: {error}")
             raise HTTPException(status_code=502, detail="AI explanation service is temporarily unavailable")
 
-        await record_ai_spend(LOOKUP_MODEL, getattr(message, "usage", None))
+        await record_ai_spend(EXPLAIN_MODEL, getattr(message, "usage", None))
 
         raw = "".join(
             block.text for block in (message.content or []) if getattr(block, "type", None) == "text"
@@ -4746,22 +4848,104 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
     if not parsed["explanation"]:
         raise HTTPException(status_code=502, detail="AI returned an empty explanation")
 
-    # Surface the not-in-dictionary state so the panel can show a quiet badge.
-    # Derived from the client's own on-device lookup (authoritative for our
-    # bundled dictionary), not the model — more reliable than asking the LLM.
-    # It is a stable function of the word, so it rides the cache safely.
-    parsed["not_in_dictionary"] = dictionary_found is False
+    parsed = _finalize_explain_result(req, parsed)
 
-    # Chinese: attach tone-marked pinyin for the base form (falling back to the
-    # tapped word) so the panel can show it next to the gloss and the learner can
-    # save pinyin + definition together. Computed here so it rides the cache too.
-    if target_language == "zh":
-        parsed["pinyin"] = zh_to_pinyin(parsed.get("lemma") or word)
-
-    if not personalized:
-        await asyncio.to_thread(_lookup_cache_put, cache_key, parsed)
+    if not req.personalized:
+        await asyncio.to_thread(_lookup_cache_put, req.cache_key, parsed)
 
     return parsed
+
+
+def _ndjson(event: dict) -> bytes:
+    return (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+@app.post("/explain_in_context/stream/")
+async def explain_in_context_stream(payload: dict, auth: dict[str, Any] = Depends(verify_supabase_token)):
+    """Streaming twin of /explain_in_context/ for the lookup panel.
+
+    Same request body, same cache, quotas and spend accounting. The response is
+    newline-delimited JSON so the app can render text as it is generated:
+
+        {"type": "gloss", "gloss": "..."}        once the flashcard label is complete
+        {"type": "delta", "text": "..."}         explanation text, in order
+        {"type": "done", "result": {...}}         the same object /explain_in_context/ returns
+        {"type": "error", "detail": "..."}        generation failed after the stream began
+
+    A cache hit sends only "done". Validation, quota and budget failures happen
+    before the stream starts and come back as normal HTTP errors. This is a
+    single streamed model call (no graph refine pass): the refine step existed to
+    repair malformed tags, which the current model rarely produces, and the final
+    parse still falls back to treating untagged output as the explanation.
+    """
+    req = await _prepare_explain_request(payload, auth)
+
+    cached = await _get_cached_explanation(req)
+    stream_headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    if cached is not None:
+        async def _cached_events():
+            yield _ndjson({"type": "done", "result": cached})
+
+        return StreamingResponse(_cached_events(), media_type="application/x-ndjson", headers=stream_headers)
+
+    await _charge_explain_miss(auth)
+
+    target_language_name, interface_language_name = _explain_language_names(req)
+    familiarity = familiarity_from_p_known(req.p_known)
+    system_prompt = build_grounded_prompt(
+        target_language_name=target_language_name,
+        interface_language_name=interface_language_name,
+        familiarity=familiarity,
+        hanja=req.hanja,
+        anchor_words=req.anchor_words,
+        dictionary_found=req.dictionary_found,
+        dictionary_senses=req.dictionary_senses,
+        known_lemma=req.known_lemma,
+    )
+    user_message = user_message_for(req.word, req.sentence)
+
+    async def _events():
+        raw = ""
+        sent_gloss = False
+        sent_len = 0
+        usage = None
+        try:
+            async with get_anthropic_async_client().messages.stream(
+                **explain_model_params(),
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_message}],
+            ) as stream:
+                async for text in stream.text_stream:
+                    raw += text
+                    partial = parse_partial_explanation(raw)
+                    if not sent_gloss and partial["gloss"]:
+                        sent_gloss = True
+                        yield _ndjson({"type": "gloss", "gloss": partial["gloss"]})
+                    body = partial["explanation"]
+                    if body is not None and len(body) > sent_len:
+                        yield _ndjson({"type": "delta", "text": body[sent_len:]})
+                        sent_len = len(body)
+                final_message = await stream.get_final_message()
+                usage = getattr(final_message, "usage", None)
+        except Exception as error:
+            print(f"[explain_in_context/stream] Anthropic API error: {error.__class__.__name__}: {error}")
+            yield _ndjson({"type": "error", "detail": "AI explanation service is temporarily unavailable"})
+            return
+        finally:
+            if usage is not None:
+                await record_ai_spend(EXPLAIN_MODEL, usage)
+
+        parsed = parse_contextual_explanation(raw.strip())
+        if not parsed["explanation"]:
+            yield _ndjson({"type": "error", "detail": "AI returned an empty explanation"})
+            return
+
+        parsed = _finalize_explain_result(req, parsed)
+        if not req.personalized:
+            await asyncio.to_thread(_lookup_cache_put, req.cache_key, parsed)
+        yield _ndjson({"type": "done", "result": parsed})
+
+    return StreamingResponse(_events(), media_type="application/x-ndjson", headers=stream_headers)
 
 
 # ─── Run on module load (executes when uvicorn starts the server) ──────────────
