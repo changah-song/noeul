@@ -13,6 +13,8 @@ const FocusControls = ({
     subscribe,
     focusSpan,
     focusSwipe,
+    // Listen mode shows its own transport in the arrows' place.
+    hideArrows = false,
     sendFocusNav,
     focusControlsTranslate,
     focusControlsBaseBottom,
@@ -59,7 +61,7 @@ const FocusControls = ({
                     <Text style={styles.focusPositionLabel}>{focusPositionLabel}</Text>
                 </View>
             </View>
-            {!focusSwipe ? (
+            {!focusSwipe && !hideArrows ? (
                 <Animated.View
                     pointerEvents="box-none"
                     style={[

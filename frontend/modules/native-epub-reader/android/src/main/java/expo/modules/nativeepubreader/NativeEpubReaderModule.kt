@@ -194,6 +194,12 @@ class NativeEpubReaderModule : Module() {
       view.extendSelection(direction)
     }.runOnQueue(Queues.MAIN)
 
+    // Listen mode: highlight the word being explained ({ blockId,
+    // sourceStartOffset, sourceEndOffset }), or clear it with an empty map.
+    AsyncFunction("setSpokenWord") { view: NativeEpubReaderView, word: Map<String, Any?> ->
+      view.setSpokenWord(word)
+    }.runOnQueue(Queues.MAIN)
+
     View(NativeEpubReaderView::class) {
       Prop("bookManifest") { view: NativeEpubReaderView, manifest: Map<String, Any?> ->
         view.setBookManifest(manifest)
@@ -2442,13 +2448,81 @@ class NativeEpubReaderView(
   }
 
   private fun dispatchFocusState() {
-    onFocusSentenceChange(
-      mapOf(
-        "index" to focusIndex,
-        "count" to focusSpanCount,
-        "total" to focusSentences.size
+    val event = mutableMapOf<String, Any>(
+      "index" to focusIndex,
+      "count" to focusSpanCount,
+      "total" to focusSentences.size
+    )
+    focusSpanText()?.let { (text, words) ->
+      event["text"] = text
+      event["levelWords"] = words
+    }
+    onFocusSentenceChange(event)
+  }
+
+  // The focused sentences' text and the graded (underlined) words inside
+  // them, in reading order: what listen mode reads aloud and may stop on.
+  private fun focusSpanText(): Pair<String, List<Map<String, Any>>>? {
+    if (focusSentences.isEmpty()) return null
+    val page = pages.getOrNull(continuousPageIndex) ?: return null
+    val start = focusIndex.coerceIn(0, focusSentences.lastIndex)
+    val end = (start + focusSpanCount).coerceAtMost(focusSentences.size)
+    val levelRanges = levelRangesByPage[page.pageIndex].orEmpty()
+    val parts = ArrayList<String>()
+    val words = ArrayList<Map<String, Any>>()
+    focusSentences.subList(start, end).forEach { sentence ->
+      val block = page.blocks.firstOrNull { it.blockId == sentence.blockId } ?: return@forEach
+      val text = block.plainText
+      val localStart = sentence.startOffset.coerceIn(0, text.length)
+      val localEnd = sentence.endOffset.coerceIn(localStart, text.length)
+      if (localStart >= localEnd) return@forEach
+      parts.add(text.substring(localStart, localEnd))
+      val sourceStart = block.sourceStartOffset + localStart
+      val sourceEnd = block.sourceStartOffset + localEnd
+      levelRanges.forEach { range ->
+        if (range.blockId != block.blockId || range.annotationOnly) return@forEach
+        if (range.sourceStartOffset < sourceStart || range.sourceEndOffset > sourceEnd) return@forEach
+        val wordStart = range.sourceStartOffset - block.sourceStartOffset
+        val wordEnd = range.sourceEndOffset - block.sourceStartOffset
+        if (wordStart < 0 || wordEnd > text.length || wordStart >= wordEnd) return@forEach
+        val word = mutableMapOf<String, Any>(
+          "text" to text.substring(wordStart, wordEnd),
+          "blockId" to block.blockId,
+          "sourceStartOffset" to range.sourceStartOffset,
+          "sourceEndOffset" to range.sourceEndOffset
+        )
+        range.gloss?.let { word["gloss"] = it }
+        range.pinyin?.let { word["pinyin"] = it }
+        words.add(word)
+      }
+    }
+    if (parts.isEmpty()) return null
+    return parts.joinToString(" ") to words.sortedBy { it["sourceStartOffset"] as Int }
+  }
+
+  // Listen mode highlights the word it is explaining with the word-selection
+  // highlight; no lookup event is sent, so no panel opens.
+  fun setSpokenWord(word: Map<String, Any?>) {
+    val blockId = word["blockId"] as? String
+    val start = (word["sourceStartOffset"] as? Number)?.toInt()
+    val end = (word["sourceEndOffset"] as? Number)?.toInt()
+    if (blockId == null || start == null || end == null) {
+      clearActiveSelection(dispatchEvent = false)
+      return
+    }
+    val page = pages.getOrNull(continuousPageIndex) ?: return
+    activeSelectionRanges = listOf(
+      TextRange(
+        pageIndex = page.pageIndex,
+        spineIndex = page.spineIndex,
+        blockId = blockId,
+        sourceStartOffset = start,
+        sourceEndOffset = end
       )
     )
+    activeSelectionKind = ActiveSelectionKind.WORD
+    pageAdapter?.updateActiveSelectionRanges(activeSelectionRanges, activeSelectionKind)
+    invalidateVisiblePageHighlights()
   }
 
   // Reading-progress event for focus mode: sentence index stands in for the
