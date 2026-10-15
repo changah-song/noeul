@@ -103,6 +103,9 @@ private data class SelectionHighlightVerticalMetrics(
 private const val READ_MARK_ALPHA = 0.35f
 // Sliding glosses: pause at each end, then slide at this speed (dp/s).
 private const val MARQUEE_PAUSE_MS = 1400L
+// Parenthesised and bracketed asides in dictionary senses: "(CL:个[ge4])",
+// "(bound form)", "[Lu3 Xun4]".
+private val ASIDE_PATTERN = Regex("\\([^)]*\\)|（[^）]*）|\\[[^\\]]*]")
 private const val MARQUEE_FRAME_MS = 40L
 
 class EpubPageView(context: Context) : View(context) {
@@ -491,30 +494,61 @@ class EpubPageView(context: Context) : View(context) {
         return@forEach
       }
 
-      // Annotate the part of the word on the first line it sits on. For a word
-      // that wraps, that part ends at the line's right edge: asking for the
-      // horizontal of the next line's first offset would give the next line's
-      // left edge instead.
-      val line = layout.getLineForOffset(localStart)
-      val visibleLineEnd = layout.getLineVisibleEnd(line)
-      val startX = layout.getPrimaryHorizontal(localStart)
-      val endX = if (localEnd >= visibleLineEnd) {
-        layout.getLineRight(line)
-      } else {
-        layout.getPrimaryHorizontal(localEnd)
-      }
-      val left = min(startX, endX)
-      val right = max(startX, endX)
-      val baseline = layout.getLineBaseline(line).toFloat()
+      // A word can wrap across lines (Chinese breaks anywhere, so 大钱 often
+      // ends one line as 大 and starts the next as 钱). Annotate every part:
+      // pinyin syllable by syllable when the reading has one per character,
+      // and the gloss under each part, so the character that starts the next
+      // line is never left bare.
+      val firstLine = layout.getLineForOffset(localStart)
+      val lastLine = layout.getLineForOffset(localEnd - 1)
+      val syllables = pinyin?.trim()?.split(Regex("\\s+"))
+      val perCharacterPinyin = syllables != null && syllables.size == localEnd - localStart
+      val glossLabel = gloss?.let { firstSense(it) }.orEmpty()
+      for (line in firstLine..lastLine) {
+        val partStart = max(localStart, layout.getLineStart(line))
+        val visibleLineEnd = layout.getLineVisibleEnd(line)
+        val partEnd = min(localEnd, visibleLineEnd)
+        if (partStart >= partEnd) continue
+        val startX = layout.getPrimaryHorizontal(partStart)
+        val endX = if (partEnd >= visibleLineEnd) {
+          layout.getLineRight(line)
+        } else {
+          layout.getPrimaryHorizontal(partEnd)
+        }
+        val left = min(startX, endX)
+        val right = max(startX, endX)
+        val baseline = layout.getLineBaseline(line).toFloat()
 
-      if (pinyin != null) {
-        // Baseline just above the word's glyph tops, in the gap above the line.
-        val pinyinBaseline = baseline + ascent - dp(1f) - pinyinPaint.descent()
-        canvas.drawText(pinyin, (left + right) / 2f, pinyinBaseline, pinyinPaint)
-      }
-      if (gloss != null) {
-        val label = firstSense(gloss)
-        if (label.isNotEmpty()) glosses.add(GlossItem(line, left, right, label))
+        if (pinyin != null) {
+          // Baseline just above the glyph tops, in the gap above the line.
+          val pinyinBaseline = baseline + ascent - dp(1f) - pinyinPaint.descent()
+          if (perCharacterPinyin) {
+            // Ruby style: each syllable over its own character, squeezed
+            // horizontally when it's wider than the character, so neighbouring
+            // words' readings never run into each other.
+            for (index in partStart until partEnd) {
+              val syllable = syllables!![index - localStart]
+              val cellLeft = layout.getPrimaryHorizontal(index)
+              val cellRight = if (index + 1 >= visibleLineEnd) layout.getLineRight(line) else layout.getPrimaryHorizontal(index + 1)
+              val cellWidth = abs(cellRight - cellLeft) - dp(1f)
+              if (cellWidth <= 0f) continue
+              val natural = pinyinPaint.measureText(syllable)
+              pinyinPaint.textScaleX = if (natural > cellWidth) (cellWidth / natural).coerceAtLeast(0.55f) else 1f
+              canvas.drawText(syllable, (cellLeft + cellRight) / 2f, pinyinBaseline, pinyinPaint)
+            }
+            pinyinPaint.textScaleX = 1f
+          } else if (line == firstLine) {
+            // No per-character reading: the whole thing over the word, squeezed to fit.
+            val natural = pinyinPaint.measureText(pinyin)
+            val available = right - left + dp(6f)
+            pinyinPaint.textScaleX = if (natural > available) (available / natural).coerceAtLeast(0.55f) else 1f
+            canvas.drawText(pinyin, (left + right) / 2f, pinyinBaseline, pinyinPaint)
+            pinyinPaint.textScaleX = 1f
+          }
+        }
+        if (glossLabel.isNotEmpty()) {
+          glosses.add(GlossItem(line, left, right, glossLabel))
+        }
       }
     }
 
@@ -582,9 +616,19 @@ class EpubPageView(context: Context) : View(context) {
     }
   }
 
-  // The gloss's first sense: "to lie down; to recline" -> "to lie down".
-  private fun firstSense(gloss: String): String =
-    gloss.split(';', '；', ',', '，').firstOrNull()?.trim().orEmpty()
+  // The gloss's first sense, without the dictionary's asides: "(located) at;
+  // (to be) in" -> "at", "pocket (in a garment)" -> "pocket", "(bound form)
+  // to go" -> "to go". A sense that is nothing but an aside is skipped.
+  private fun firstSense(gloss: String): String {
+    // Asides first: a comma inside "(since the 20th century, ...)" would
+    // otherwise split the sense in the middle of the parenthesis.
+    val withoutAsides = gloss.replace(ASIDE_PATTERN, " ")
+    withoutAsides.split(';', '；', ',', '，').forEach { sense ->
+      val cleaned = sense.replace(Regex("\\s+"), " ").trim()
+      if (cleaned.isNotEmpty()) return cleaned
+    }
+    return ""
+  }
 
   // Focus mode: draw the whole block dimmed, then re-draw the focused sentence
   // span(s) at full opacity clipped to their glyph bounds. During a focus shift
