@@ -6492,6 +6492,7 @@ export const lookupBookAnnotationSurfaces = (
     db.transaction(tx => {
       tx.executeSql(
         `SELECT DISTINCT bi.surface,
+                dc.stem,
                 dc.ipa,
                 dc.gloss,
                 dc.definition,

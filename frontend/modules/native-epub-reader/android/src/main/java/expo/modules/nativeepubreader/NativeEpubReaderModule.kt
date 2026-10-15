@@ -261,6 +261,11 @@ class NativeEpubReaderModule : Module() {
         view.setReadThrough(positions)
       }
 
+      // Listen mode keeps the screen on while the voice reads.
+      Prop("keepScreenOn") { view: NativeEpubReaderView, enabled: Boolean ->
+        view.keepScreenOn = enabled
+      }
+
       Prop("fadeReadMarks") { view: NativeEpubReaderView, enabled: Boolean ->
         view.setFadeReadMarks(enabled)
       }
