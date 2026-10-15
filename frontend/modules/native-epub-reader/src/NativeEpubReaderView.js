@@ -1,6 +1,11 @@
-import React, { forwardRef } from 'react';
+import React, { forwardRef, useMemo } from 'react';
 import { Platform, Text, View } from 'react-native';
 import { requireNativeModule, requireNativeViewManager } from 'expo-modules-core';
+import {
+    joinKoreanInBlocks,
+    joinKoreanInTerms,
+    stripJoinersDeep,
+} from './koreanLineBreak';
 import { useTranslation } from '../../../hooks/useTranslation';
 import { translate } from '../../../i18n/translations';
 import { getRuntimeInterfaceLanguage } from '../../../services/interfaceLanguage';
@@ -96,6 +101,37 @@ const NativeEpubReaderView = forwardRef(({
 }, ref) => {
     const { t } = useTranslation();
 
+    // Korean books: join each word's syllables so lines break only at spaces
+    // (see koreanLineBreak.js). Terms get the same treatment so they still
+    // match the text, and every event payload is stripped on the way out.
+    const isKorean = String(bookManifest?.language || '').toLowerCase().startsWith('ko');
+    const nativeChapterBlocks = useMemo(
+        () => (isKorean ? joinKoreanInBlocks(chapterBlocks || []) : (chapterBlocks || [])),
+        [isKorean, chapterBlocks]
+    );
+    // Paged/scroll modes read the text from chapterWindow (a few chapters with
+    // their blocks); chapterBlocks is the older single-chapter path.
+    const nativeChapterWindow = useMemo(
+        () => (isKorean
+            ? (chapterWindow || []).map((entry) => (
+                entry && Array.isArray(entry.blocks) ? { ...entry, blocks: joinKoreanInBlocks(entry.blocks) } : entry
+            ))
+            : (chapterWindow || [])),
+        [isKorean, chapterWindow]
+    );
+    const nativeHighlightTerms = useMemo(
+        () => (isKorean ? joinKoreanInTerms(highlightTerms || []) : (highlightTerms || [])),
+        [isKorean, highlightTerms]
+    );
+    const nativeLevelTerms = useMemo(
+        () => (isKorean ? joinKoreanInTerms(levelTerms || []) : (levelTerms || [])),
+        [isKorean, levelTerms]
+    );
+    const payloadOf = (event) => {
+        const payload = event?.nativeEvent || event || {};
+        return isKorean ? stripJoinersDeep(payload) : payload;
+    };
+
     if (!NativeView) {
         return (
             <View style={style}>
@@ -105,7 +141,7 @@ const NativeEpubReaderView = forwardRef(({
     }
 
     const handlePageChange = (event) => {
-        onPageChange?.(event?.nativeEvent || event || {});
+        onPageChange?.(payloadOf(event));
     };
 
     const handleChapterEnd = () => {
@@ -117,27 +153,27 @@ const NativeEpubReaderView = forwardRef(({
     };
 
     const handleChapterCommit = (event) => {
-        onChapterCommit?.(event?.nativeEvent || event || {});
+        onChapterCommit?.(payloadOf(event));
     };
 
     const handleWordSelected = (event) => {
-        onWordSelected?.(event?.nativeEvent || event || {});
+        onWordSelected?.(payloadOf(event));
     };
 
     const handleTextSelected = (event) => {
-        onTextSelected?.(event?.nativeEvent || event || {});
+        onTextSelected?.(payloadOf(event));
     };
 
     const handleSelectionCleared = (event) => {
-        onSelectionCleared?.(event?.nativeEvent || event || {});
+        onSelectionCleared?.(payloadOf(event));
     };
 
     const handleFocusSentenceChange = (event) => {
-        onFocusSentenceChange?.(event?.nativeEvent || event || {});
+        onFocusSentenceChange?.(payloadOf(event));
     };
 
     const handleExposure = (event) => {
-        onExposure?.(event?.nativeEvent || event || {});
+        onExposure?.(payloadOf(event));
     };
 
     return (
@@ -145,9 +181,9 @@ const NativeEpubReaderView = forwardRef(({
             ref={ref}
             style={style}
             bookManifest={bookManifest || {}}
-            chapterBlocks={chapterBlocks || []}
+            chapterBlocks={nativeChapterBlocks}
             chapterResources={chapterResources || []}
-            chapterWindow={chapterWindow || []}
+            chapterWindow={nativeChapterWindow}
             restorePosition={restorePosition || {}}
             chapterTransitionDirection={chapterTransitionDirection}
             fontSize={fontSize}
@@ -156,8 +192,8 @@ const NativeEpubReaderView = forwardRef(({
             themeTokens={themeTokens || {}}
             renderMode={renderMode}
             readerEdgeStateEnabled={readerEdgeStateEnabled}
-            highlightTerms={highlightTerms || []}
-            levelTerms={levelTerms || []}
+            highlightTerms={nativeHighlightTerms}
+            levelTerms={nativeLevelTerms}
             showPinyin={!!showPinyin}
             showGloss={!!showGloss}
             readThrough={readThrough || {}}
