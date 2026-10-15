@@ -119,6 +119,7 @@ describe('SongReader', () => {
     const json = JSON.stringify(tree.toJSON());
     expect(json).toContain('Song settings');
     expect(json).toContain('Edit lyrics');
-    expect(json).toContain('Focus mode settings');
+    expect(json).toContain('Delete song');
+    expect(json).toContain('Font size');
   });
 });

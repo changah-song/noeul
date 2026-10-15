@@ -1,9 +1,8 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Animated, BackHandler, Easing, PanResponder, ScrollView, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, Pressable, findNodeHandle } from 'react-native';
+import { Animated, BackHandler, Easing, PanResponder, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, Pressable, findNodeHandle } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather, MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { Slider } from 'react-native-elements';
 
 import TopSection from '../components/Read/TopSection/TopSection';
 import TocDrawer from '../components/Read/TocDrawer';
@@ -55,6 +54,7 @@ import { tapSelect, tapCommit, tapUndo } from '../services/haptics';
 import BeforeYouGoSheet from '../components/Read/BeforeYouGoSheet';
 import SavedWordsPanel from '../components/Read/SavedWordsPanel';
 import NotesLogSheet from '../components/Read/NotesLogSheet';
+import ReaderSettingsSheet from '../components/Read/ReaderSettingsSheet';
 import { createTabBarBaseStyle } from '../components/shared/TabBar';
 import preprocessChapter from '../services/api/preprocessChapter';
 import { withNormalizedSurfaceIndex } from '../services/dictionaryLookup';
@@ -84,7 +84,6 @@ import {
 } from '../services/abilityModel';
 import { buildLevelUnderlineTerms } from '../services/levelUnderlineTerms';
 import { ANNOTATION_SCOPES, buildAnnotatedLevelTerms } from '../services/readerAnnotations';
-import { buildLegendGradient } from '../services/readerSettings';
 import { createNativeReaderThemeTokens, radii, spacing, textStyles, useTheme } from '../theme';
 
 const LOOKUP_HINT_DISMISSED_KEY = 'lookupHintDismissed';
@@ -123,10 +122,6 @@ const shallowEqualObjects = (a, b) => {
 // Whether graded words get a solid gradient underline. 'off' hides the marks but
 // the model keeps learning from reading.
 const LEVEL_MARK_STYLES = ['off', 'underline'];
-const LEVEL_MARK_OPTIONS = [
-    { value: 'off', icon: 'visibility-off', labelKey: 'read.markOff' },
-    { value: 'underline', icon: 'format-underlined', labelKey: 'read.markUnderline' },
-];
 // Stable empty reference so toggling underlines off doesn't hand native a fresh
 // array each render (which would churn the level matcher).
 const EMPTY_LEVEL_TERMS = [];
@@ -326,23 +321,7 @@ const clampNumber = (value, min, max, fallback = min) => {
     return Math.min(Math.max(numeric, min), max);
 };
 
-const nearestLineSpacingIndex = (value) => {
-    const spacing = Number(value);
-    if (!Number.isFinite(spacing)) {
-        return LINE_SPACING_STEPS.findIndex((step) => step.value === DEFAULT_READER_SETTINGS.lineSpacing);
-    }
 
-    return LINE_SPACING_STEPS.reduce((closestIndex, step, index) => {
-        const closestDelta = Math.abs(LINE_SPACING_STEPS[closestIndex].value - spacing);
-        const currentDelta = Math.abs(step.value - spacing);
-        return currentDelta < closestDelta ? index : closestIndex;
-    }, 0);
-};
-
-const lineSpacingLabel = (value) => (
-    LINE_SPACING_STEPS[nearestLineSpacingIndex(value)]?.label
-    ?? LINE_SPACING_STEPS[nearestLineSpacingIndex(DEFAULT_READER_SETTINGS.lineSpacing)].label
-);
 
 const progressForBookPosition = (spineIndex, totalSpineItems, pageIndex = null, pagesInChapter = null) => {
     if (!Number.isInteger(spineIndex) || totalSpineItems <= 0) {
@@ -1325,6 +1304,16 @@ const Read = ({
             brightness: DEFAULT_READER_SETTINGS.brightness,
             readingMode: DEFAULT_READER_SETTINGS.readingMode,
             levelMarkStyle: DEFAULT_READER_SETTINGS.levelMarkStyle,
+        });
+    };
+
+    const resetWordSettings = () => {
+        updateSettings({
+            fadeReadMarks: DEFAULT_READER_SETTINGS.fadeReadMarks,
+            pinyinAnnotations: DEFAULT_READER_SETTINGS.pinyinAnnotations,
+            glossAnnotations: DEFAULT_READER_SETTINGS.glossAnnotations,
+            pinyinScope: DEFAULT_READER_SETTINGS.pinyinScope,
+            glossScope: DEFAULT_READER_SETTINGS.glossScope,
         });
     };
 
@@ -2981,27 +2970,6 @@ const Read = ({
     const readerBrightnessOverlayOpacity = readerBrightnessDelta < 0
         ? Math.min(0.28, (Math.abs(readerBrightnessDelta) / (DEFAULT_READER_SETTINGS.brightness - BRIGHTNESS_MIN)) * 0.28)
         : Math.min(0.08, (readerBrightnessDelta / (BRIGHTNESS_MAX - DEFAULT_READER_SETTINGS.brightness)) * 0.08);
-    const activeLineSpacingIndex = nearestLineSpacingIndex(readerLineSpacing);
-    const activeLineSpacingLabel = lineSpacingLabel(readerLineSpacing);
-    const handleFontSizeStep = (direction) => {
-        handleSettingChange(
-            'fontSize',
-            Math.round(clampNumber(readerFontSize + direction, FONT_SIZE_MIN, FONT_SIZE_MAX, DEFAULT_READER_SETTINGS.fontSize))
-        );
-    };
-    const handleLineSpacingStep = (direction) => {
-        const nextIndex = clampNumber(
-            activeLineSpacingIndex + direction,
-            0,
-            LINE_SPACING_STEPS.length - 1,
-            activeLineSpacingIndex
-        );
-        handleSettingChange('lineSpacing', LINE_SPACING_STEPS[nextIndex].value);
-    };
-    const handleBrightnessChange = (value) => {
-        const nextBrightness = clampNumber(value, BRIGHTNESS_MIN, BRIGHTNESS_MAX, DEFAULT_READER_SETTINGS.brightness);
-        handleSettingChange('brightness', Number(nextBrightness.toFixed(2)));
-    };
 
     // ── Focus (sentence beam) mode wiring ────────────────────────────────────
     const focusSpan = Math.round(clampNumber(
@@ -3092,20 +3060,13 @@ const Read = ({
             readerShowPinyin,
         ]
     );
-    // Legend gradient: interpolate the same three underline stops native draws
-    // (easy → mid → hard) into a smooth bar, so the swatch matches the page.
-    const underlineLegendColors = useMemo(
-        () => buildLegendGradient(
-            themeColors.readerLevelUnderlineEasy,
-            themeColors.readerLevelUnderlineMid,
-            themeColors.readerLevelUnderlineHard,
-        ),
-        [
-            themeColors.readerLevelUnderlineEasy,
-            themeColors.readerLevelUnderlineMid,
-            themeColors.readerLevelUnderlineHard,
-        ]
-    );
+    // Rows above the settings tabs in the sheet: Checkpoints stays one tap away.
+    const settingsSheetActions = useMemo(() => [{
+        key: 'checkpoints',
+        label: t('read.checkpoints'),
+        icon: <MaterialIcons name="bookmark-border" size={21} color={themeColors.readerBodyInk} />,
+        onPress: openNotesLog,
+    }], [openNotesLog, t, themeColors.readerBodyInk]);
     const focusPanelOpen = focusMode && !!highlightedWord;
     // Total height the lookup panel occupies from the bottom of the screen;
     // the native reading surface lifts by exactly this much.
@@ -3188,27 +3149,6 @@ const Read = ({
         setFocusMode((current) => !current);
     }, [flushPendingFocusPageChange]);
 
-    const handleFocusSpanStep = (direction) => {
-        handleSettingChange(
-            'focusSpan',
-            Math.round(clampNumber(focusSpan + direction, FOCUS_SPAN_MIN, FOCUS_SPAN_MAX, DEFAULT_READER_SETTINGS.focusSpan))
-        );
-    };
-
-    // Drives the options dropdown's open animation — it drops in from the
-    // three-line menu icon (top-right) rather than sliding up as a bottom sheet.
-    const menuAnim = useRef(new Animated.Value(0)).current;
-    useEffect(() => {
-        if (showMenu && !isFullscreen) {
-            menuAnim.setValue(0);
-            Animated.timing(menuAnim, {
-                toValue: 1,
-                duration: 150,
-                easing: Easing.out(Easing.cubic),
-                useNativeDriver: true,
-            }).start();
-        }
-    }, [showMenu, isFullscreen, menuAnim]);
 
     return (
         <View style={styles.container}>
@@ -3506,454 +3446,20 @@ const Read = ({
                 </View>
             ) : null}
 
-            {showMenu && !isFullscreen ? (
-                <View pointerEvents="box-none" style={styles.settingsOverlay}>
-                    <Pressable style={styles.settingsBackdrop} onPress={() => setShowMenu(false)} />
-                    <Animated.View
-                        pointerEvents="box-none"
-                        style={[
-                            styles.menuDropdownFrame,
-                            {
-                                top: insets.top + 48,
-                                bottom: insets.bottom + 8,
-                                opacity: menuAnim,
-                                transform: [
-                                    {
-                                        translateY: menuAnim.interpolate({
-                                            inputRange: [0, 1],
-                                            outputRange: [-10, 0],
-                                        }),
-                                    },
-                                    {
-                                        scale: menuAnim.interpolate({
-                                            inputRange: [0, 1],
-                                            outputRange: [0.96, 1],
-                                        }),
-                                    },
-                                ],
-                            },
-                        ]}
-                    >
-                        <View style={styles.optionsSheet}>
-                            <ScrollView
-                                showsVerticalScrollIndicator={false}
-                                bounces={false}
-                                contentContainerStyle={styles.optionsScrollContent}
-                            >
-                            <TouchableOpacity
-                                style={styles.checkpointsRow}
-                                onPress={openNotesLog}
-                                activeOpacity={0.7}
-                                accessibilityRole="button"
-                            >
-                                <View style={styles.checkpointsRowLeft}>
-                                    <MaterialIcons name="bookmark-border" size={21} color={themeColors.readerBodyInk} />
-                                    <Text style={styles.checkpointsLabel}>{t('read.checkpoints')}</Text>
-                                </View>
-                                <Feather name="chevron-right" size={20} color={themeColors.readerSubtleInk} />
-                            </TouchableOpacity>
-
-                            <View style={styles.optionsSectionHeader}>
-                                <Text style={styles.optionsSectionTitle}>{t('read.bookSettings')}</Text>
-                                <TouchableOpacity
-                                    onPress={resetBookSettings}
-                                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                                    accessibilityRole="button"
-                                    accessibilityLabel={t('read.resetSection')}
-                                >
-                                    <Feather name="rotate-ccw" size={15} color={themeColors.readerSubtleInk} />
-                                </TouchableOpacity>
-                            </View>
-
-                            <View style={styles.fontSettingsRows}>
-                                <View style={styles.fontSettingsRow}>
-                                    <Text style={styles.fontSettingsLabel}>{t('read.fontSize')}</Text>
-                                    <View style={styles.fontSettingsStepperGroup}>
-                                        <TouchableOpacity
-                                            style={styles.fontSettingsStepperButton}
-                                            onPress={() => handleFontSizeStep(-1)}
-                                            activeOpacity={0.7}
-                                            accessibilityRole="button"
-                                            accessibilityLabel={t('read.decreaseFontSize')}
-                                        >
-                                            <Feather name="minus" size={18} color={themeColors.textSecondary} />
-                                        </TouchableOpacity>
-                                        <Text style={styles.fontSettingsValue}>{readerFontSize}</Text>
-                                        <TouchableOpacity
-                                            style={styles.fontSettingsStepperButton}
-                                            onPress={() => handleFontSizeStep(1)}
-                                            activeOpacity={0.7}
-                                            accessibilityRole="button"
-                                            accessibilityLabel={t('read.increaseFontSize')}
-                                        >
-                                            <Feather name="plus" size={18} color={themeColors.textSecondary} />
-                                        </TouchableOpacity>
-                                    </View>
-                                </View>
-
-                                <View style={styles.fontSettingsRow}>
-                                    <Text style={styles.fontSettingsLabel}>{t('read.lineSpacing')}</Text>
-                                    <View style={styles.fontSettingsStepperGroup}>
-                                        <TouchableOpacity
-                                            style={styles.fontSettingsStepperButton}
-                                            onPress={() => handleLineSpacingStep(-1)}
-                                            activeOpacity={0.7}
-                                            accessibilityRole="button"
-                                            accessibilityLabel={t('read.decreaseLineSpacing')}
-                                        >
-                                            <Feather name="minus" size={18} color={themeColors.textSecondary} />
-                                        </TouchableOpacity>
-                                        <Text style={[styles.fontSettingsValue, styles.fontSettingsLineSpacingValue]}>
-                                            {activeLineSpacingLabel}
-                                        </Text>
-                                        <TouchableOpacity
-                                            style={styles.fontSettingsStepperButton}
-                                            onPress={() => handleLineSpacingStep(1)}
-                                            activeOpacity={0.7}
-                                            accessibilityRole="button"
-                                            accessibilityLabel={t('read.increaseLineSpacing')}
-                                        >
-                                            <Feather name="plus" size={18} color={themeColors.textSecondary} />
-                                        </TouchableOpacity>
-                                    </View>
-                                </View>
-
-                                <View style={styles.fontSettingsRow}>
-                                    <Text style={styles.fontSettingsLabel}>{t('read.brightness')}</Text>
-                                    <View style={styles.fontSettingsBrightnessGroup}>
-                                        <MaterialIcons name="light-mode" size={18} color={themeColors.readerSubtleInk} />
-                                        <Slider
-                                            style={styles.fontSettingsBrightnessSlider}
-                                            value={readerBrightness}
-                                            onValueChange={handleBrightnessChange}
-                                            minimumValue={BRIGHTNESS_MIN}
-                                            maximumValue={BRIGHTNESS_MAX}
-                                            step={0.01}
-                                            allowTouchTrack
-                                            thumbTintColor={themeColors.readerProgressFill}
-                                            minimumTrackTintColor={themeColors.readerProgressFill}
-                                            maximumTrackTintColor={themeColors.readerHairline}
-                                            trackStyle={styles.fontSettingsSliderTrack}
-                                            thumbStyle={styles.fontSettingsSliderThumb}
-                                            accessibilityLabel={t('read.readerBrightness')}
-                                        />
-                                    </View>
-                                </View>
-
-                                <View style={styles.fontSettingsRow}>
-                                    <Text style={styles.fontSettingsLabel}>{t('read.readingDirection')}</Text>
-                                    <View style={styles.segmentGroup}>
-                                        <TouchableOpacity
-                                            style={[styles.segmentButton, !isScrollMode && styles.segmentButtonActive]}
-                                            onPress={() => handleSettingChange('readingMode', 'paged')}
-                                            activeOpacity={0.7}
-                                            accessibilityRole="button"
-                                            accessibilityState={{ selected: !isScrollMode }}
-                                        >
-                                            <MaterialIcons
-                                                name="swap-horiz"
-                                                size={16}
-                                                color={!isScrollMode ? themeColors.readerPaper : themeColors.textSecondary}
-                                            />
-                                            <Text style={[styles.segmentButtonText, !isScrollMode && styles.segmentButtonTextActive]} numberOfLines={1}>
-                                                {t('read.readingHorizontal')}
-                                            </Text>
-                                        </TouchableOpacity>
-                                        <TouchableOpacity
-                                            style={[styles.segmentButton, isScrollMode && styles.segmentButtonActive]}
-                                            onPress={() => handleSettingChange('readingMode', 'scroll')}
-                                            activeOpacity={0.7}
-                                            accessibilityRole="button"
-                                            accessibilityState={{ selected: isScrollMode }}
-                                        >
-                                            <MaterialIcons
-                                                name="swap-vert"
-                                                size={16}
-                                                color={isScrollMode ? themeColors.readerPaper : themeColors.textSecondary}
-                                            />
-                                            <Text style={[styles.segmentButtonText, isScrollMode && styles.segmentButtonTextActive]} numberOfLines={1}>
-                                                {t('read.readingVertical')}
-                                            </Text>
-                                        </TouchableOpacity>
-                                    </View>
-                                </View>
-
-                                <View style={[styles.markStyleBlock, styles.fontSettingsLastRow]}>
-                                    <Text style={styles.fontSettingsLabel}>{t('read.wordHighlighting')}</Text>
-                                    <View style={styles.segmentGroup}>
-                                        {LEVEL_MARK_OPTIONS.map(({ value, icon, labelKey }) => {
-                                            const selected = levelMarkStyle === value;
-                                            return (
-                                                <TouchableOpacity
-                                                    key={value}
-                                                    style={[styles.segmentButton, selected && styles.segmentButtonActive]}
-                                                    onPress={() => handleSettingChange('levelMarkStyle', value)}
-                                                    activeOpacity={0.7}
-                                                    accessibilityRole="button"
-                                                    accessibilityState={{ selected }}
-                                                >
-                                                    <MaterialIcons
-                                                        name={icon}
-                                                        size={16}
-                                                        color={selected ? themeColors.readerPaper : themeColors.textSecondary}
-                                                    />
-                                                    <Text
-                                                        style={[styles.segmentButtonText, selected && styles.segmentButtonTextActive]}
-                                                        numberOfLines={1}
-                                                    >
-                                                        {t(labelKey)}
-                                                    </Text>
-                                                </TouchableOpacity>
-                                            );
-                                        })}
-                                    </View>
-
-                                    {levelMarksEnabled ? (
-                                        <View style={styles.underlineLegend}>
-                                            <View style={styles.underlineLegendSwatches}>
-                                                {underlineLegendColors.map((color, index) => (
-                                                    <View
-                                                        key={index}
-                                                        style={[styles.underlineLegendSwatch, { backgroundColor: color }]}
-                                                    />
-                                                ))}
-                                            </View>
-                                            <View style={styles.underlineLegendLabels}>
-                                                <Text style={styles.underlineLegendLabel}>{t('read.underlineNearly')}</Text>
-                                                <Text style={[styles.underlineLegendLabel, styles.underlineLegendLabelEnd]}>
-                                                    {t('read.underlineHard')}
-                                                </Text>
-                                            </View>
-                                            <Text style={styles.underlineLegendHint}>{t('read.wordHighlightingHint')}</Text>
-                                        </View>
-                                    ) : null}
-                                </View>
-
-                                {/* Lighter underlines on text already read past. */}
-                                {levelMarksEnabled ? (
-                                    <View style={styles.markStyleBlock}>
-                                        <Text style={styles.fontSettingsLabel}>{t('read.fadeReadMarks')}</Text>
-                                        <View style={styles.segmentGroup}>
-                                            {[false, true].map((value) => {
-                                                const selected = (settings.fadeReadMarks !== false) === value;
-                                                return (
-                                                    <TouchableOpacity
-                                                        key={String(value)}
-                                                        style={[styles.segmentButton, selected && styles.segmentButtonActive]}
-                                                        onPress={() => handleSettingChange('fadeReadMarks', value)}
-                                                        activeOpacity={0.7}
-                                                        accessibilityRole="button"
-                                                        accessibilityState={{ selected }}
-                                                    >
-                                                        <Text
-                                                            style={[styles.segmentButtonText, selected && styles.segmentButtonTextActive]}
-                                                            numberOfLines={1}
-                                                        >
-                                                            {value ? t('read.pinyinOn') : t('read.pinyinOff')}
-                                                        </Text>
-                                                    </TouchableOpacity>
-                                                );
-                                            })}
-                                        </View>
-                                    </View>
-                                ) : null}
-                                {/* Word annotations: pinyin above words (Chinese only) and a
-                                    short translation under them, on underlined or all words. */}
-                                {activeBookLanguage === 'zh' ? (
-                                    <>
-                                    <View style={styles.markStyleBlock}>
-                                        <Text style={styles.fontSettingsLabel}>{t('read.pinyinAnnotations')}</Text>
-                                        <View style={styles.segmentGroup}>
-                                            {[false, true].map((value) => {
-                                                const selected = Boolean(settings.pinyinAnnotations) === value;
-                                                return (
-                                                    <TouchableOpacity
-                                                        key={String(value)}
-                                                        style={[styles.segmentButton, selected && styles.segmentButtonActive]}
-                                                        onPress={() => handleSettingChange('pinyinAnnotations', value)}
-                                                        activeOpacity={0.7}
-                                                        accessibilityRole="button"
-                                                        accessibilityState={{ selected }}
-                                                    >
-                                                        <Text
-                                                            style={[styles.segmentButtonText, selected && styles.segmentButtonTextActive]}
-                                                            numberOfLines={1}
-                                                        >
-                                                            {value ? t('read.pinyinOn') : t('read.pinyinOff')}
-                                                        </Text>
-                                                    </TouchableOpacity>
-                                                );
-                                            })}
-                                        </View>
-                                    </View>
-                                    {readerShowPinyin ? (
-                                    <View style={styles.markStyleBlock}>
-                                        <Text style={styles.fontSettingsLabel}>{t('read.annotationScope')}</Text>
-                                        <View style={styles.segmentGroup}>
-                                            {ANNOTATION_SCOPES.map((value) => {
-                                                const selected = pinyinScope === value;
-                                                return (
-                                                    <TouchableOpacity
-                                                        key={String(value)}
-                                                        style={[styles.segmentButton, selected && styles.segmentButtonActive]}
-                                                        onPress={() => handleSettingChange('pinyinScope', value)}
-                                                        activeOpacity={0.7}
-                                                        accessibilityRole="button"
-                                                        accessibilityState={{ selected }}
-                                                    >
-                                                        <Text
-                                                            style={[styles.segmentButtonText, selected && styles.segmentButtonTextActive]}
-                                                            numberOfLines={1}
-                                                        >
-                                                            {value === 'all' ? t('read.annotationScopeAll') : t('read.annotationScopeUnderlined')}
-                                                        </Text>
-                                                    </TouchableOpacity>
-                                                );
-                                            })}
-                                        </View>
-                                    </View>
-                                    ) : null}
-                                    </>
-                                ) : null}
-                                    <View style={styles.markStyleBlock}>
-                                        <Text style={styles.fontSettingsLabel}>{t('read.glossAnnotations')}</Text>
-                                        <View style={styles.segmentGroup}>
-                                            {[false, true].map((value) => {
-                                                const selected = Boolean(settings.glossAnnotations) === value;
-                                                return (
-                                                    <TouchableOpacity
-                                                        key={String(value)}
-                                                        style={[styles.segmentButton, selected && styles.segmentButtonActive]}
-                                                        onPress={() => handleSettingChange('glossAnnotations', value)}
-                                                        activeOpacity={0.7}
-                                                        accessibilityRole="button"
-                                                        accessibilityState={{ selected }}
-                                                    >
-                                                        <Text
-                                                            style={[styles.segmentButtonText, selected && styles.segmentButtonTextActive]}
-                                                            numberOfLines={1}
-                                                        >
-                                                            {value ? t('read.pinyinOn') : t('read.pinyinOff')}
-                                                        </Text>
-                                                    </TouchableOpacity>
-                                                );
-                                            })}
-                                        </View>
-                                    </View>
-                                {readerShowGloss ? (
-                                    <View style={styles.markStyleBlock}>
-                                        <Text style={styles.fontSettingsLabel}>{t('read.annotationScope')}</Text>
-                                        <View style={styles.segmentGroup}>
-                                            {ANNOTATION_SCOPES.map((value) => {
-                                                const selected = glossScope === value;
-                                                return (
-                                                    <TouchableOpacity
-                                                        key={String(value)}
-                                                        style={[styles.segmentButton, selected && styles.segmentButtonActive]}
-                                                        onPress={() => handleSettingChange('glossScope', value)}
-                                                        activeOpacity={0.7}
-                                                        accessibilityRole="button"
-                                                        accessibilityState={{ selected }}
-                                                    >
-                                                        <Text
-                                                            style={[styles.segmentButtonText, selected && styles.segmentButtonTextActive]}
-                                                            numberOfLines={1}
-                                                        >
-                                                            {value === 'all' ? t('read.annotationScopeAll') : t('read.annotationScopeUnderlined')}
-                                                        </Text>
-                                                    </TouchableOpacity>
-                                                );
-                                            })}
-                                        </View>
-                                    </View>
-                                ) : null}
-                            </View>
-
-                            <View style={styles.optionsSectionHeader}>
-                                <Text style={styles.optionsSectionTitle}>{t('read.focusModeSettings')}</Text>
-                                <TouchableOpacity
-                                    onPress={resetFocusSettings}
-                                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                                    accessibilityRole="button"
-                                    accessibilityLabel={t('read.resetSection')}
-                                >
-                                    <Feather name="rotate-ccw" size={15} color={themeColors.readerSubtleInk} />
-                                </TouchableOpacity>
-                            </View>
-
-                            <View style={styles.fontSettingsRows}>
-                                <View style={styles.fontSettingsRow}>
-                                    <Text style={styles.fontSettingsLabel}>{t('read.focusNavigate')}</Text>
-                                    <View style={styles.segmentGroup}>
-                                        <TouchableOpacity
-                                            style={[styles.segmentButton, focusSwipe && styles.segmentButtonActive]}
-                                            onPress={() => handleSettingChange('focusSwipe', true)}
-                                            activeOpacity={0.7}
-                                            accessibilityRole="button"
-                                            accessibilityState={{ selected: focusSwipe }}
-                                        >
-                                            <MaterialIcons
-                                                name="gesture"
-                                                size={16}
-                                                color={focusSwipe ? themeColors.readerPaper : themeColors.textSecondary}
-                                            />
-                                            <Text style={[styles.segmentButtonText, focusSwipe && styles.segmentButtonTextActive]} numberOfLines={1}>
-                                                {t('read.focusNavSwipe')}
-                                            </Text>
-                                        </TouchableOpacity>
-                                        <TouchableOpacity
-                                            style={[styles.segmentButton, !focusSwipe && styles.segmentButtonActive]}
-                                            onPress={() => handleSettingChange('focusSwipe', false)}
-                                            activeOpacity={0.7}
-                                            accessibilityRole="button"
-                                            accessibilityState={{ selected: !focusSwipe }}
-                                        >
-                                            <MaterialIcons
-                                                name="touch-app"
-                                                size={16}
-                                                color={!focusSwipe ? themeColors.readerPaper : themeColors.textSecondary}
-                                            />
-                                            <Text style={[styles.segmentButtonText, !focusSwipe && styles.segmentButtonTextActive]} numberOfLines={1}>
-                                                {t('read.focusNavButtons')}
-                                            </Text>
-                                        </TouchableOpacity>
-                                    </View>
-                                </View>
-
-                                <View style={[styles.fontSettingsRow, styles.fontSettingsLastRow]}>
-                                    <Text style={styles.fontSettingsLabel}>{t('read.focusSpan')}</Text>
-                                    <View style={styles.fontSettingsStepperGroup}>
-                                        <TouchableOpacity
-                                            style={[
-                                                styles.fontSettingsStepperButton,
-                                                focusSpan <= FOCUS_SPAN_MIN && styles.focusStepperDisabled,
-                                            ]}
-                                            onPress={() => handleFocusSpanStep(-1)}
-                                            activeOpacity={0.7}
-                                            accessibilityRole="button"
-                                        >
-                                            <Feather name="minus" size={18} color={themeColors.textSecondary} />
-                                        </TouchableOpacity>
-                                        <Text style={styles.fontSettingsValue}>{focusSpan}</Text>
-                                        <TouchableOpacity
-                                            style={[
-                                                styles.fontSettingsStepperButton,
-                                                focusSpan >= FOCUS_SPAN_MAX && styles.focusStepperDisabled,
-                                            ]}
-                                            onPress={() => handleFocusSpanStep(1)}
-                                            activeOpacity={0.7}
-                                            accessibilityRole="button"
-                                        >
-                                            <Feather name="plus" size={18} color={themeColors.textSecondary} />
-                                        </TouchableOpacity>
-                                    </View>
-                                </View>
-                            </View>
-                            </ScrollView>
-                        </View>
-                    </Animated.View>
-                </View>
-            ) : null}
+            <ReaderSettingsSheet
+                visible={showMenu && !isFullscreen}
+                onClose={() => setShowMenu(false)}
+                colors={themeColors}
+                insets={insets}
+                title={t('read.bookSettings')}
+                language={activeBookLanguage}
+                settings={settings}
+                onSettingChange={handleSettingChange}
+                onResetTextSettings={resetBookSettings}
+                onResetWordSettings={resetWordSettings}
+                onResetFocusSettings={resetFocusSettings}
+                actions={settingsSheetActions}
+            />
 
             <SavedWordsPanel
                 visible={showSavedPanel}
@@ -4348,14 +3854,6 @@ const createStyles = (themeColors) => StyleSheet.create({
     focusStepperDisabled: {
         opacity: 0.35,
     },
-    settingsOverlay: {
-        ...StyleSheet.absoluteFillObject,
-        zIndex: 25,
-        elevation: 25,
-    },
-    settingsBackdrop: {
-        ...StyleSheet.absoluteFillObject,
-    },
     fontSettingsSheetFrame: {
         position: 'absolute',
         left: 0,
@@ -4380,98 +3878,6 @@ const createStyles = (themeColors) => StyleSheet.create({
         shadowRadius: 30,
         elevation: 8,
     },
-    menuDropdownFrame: {
-        position: 'absolute',
-        left: 14,
-        right: 14,
-        alignItems: 'flex-end',
-    },
-    optionsSheet: {
-        width: '100%',
-        maxWidth: 320,
-        maxHeight: '100%',
-        backgroundColor: themeColors.readerSurface,
-        borderWidth: 1,
-        borderColor: themeColors.readerBorder,
-        borderRadius: radii.lg,
-        paddingHorizontal: 22,
-        shadowColor: 'rgba(27, 28, 28, 0.18)',
-        shadowOffset: { width: 0, height: 12 },
-        shadowOpacity: 1,
-        shadowRadius: 28,
-        elevation: 12,
-    },
-    optionsScrollContent: {
-        paddingTop: 6,
-        paddingBottom: 20,
-    },
-    checkpointsRow: {
-        marginTop: 12,
-        height: 52,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-    },
-    checkpointsRowLeft: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 12,
-    },
-    checkpointsLabel: {
-        fontFamily: 'FFSans-SemiBold',
-        fontSize: 16,
-        lineHeight: 21,
-        color: themeColors.readerBodyInk,
-    },
-    optionsSectionHeader: {
-        marginTop: 18,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-    },
-    optionsSectionTitle: {
-        fontFamily: 'FFSans-SemiBold',
-        fontSize: 12,
-        lineHeight: 16,
-        letterSpacing: 1.1,
-        textTransform: 'uppercase',
-        color: themeColors.textSecondary,
-    },
-    segmentGroup: {
-        flex: 1,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'flex-end',
-        gap: 8,
-    },
-    segmentButton: {
-        flex: 1,
-        minWidth: 0,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 6,
-        paddingVertical: 7,
-        paddingHorizontal: 10,
-        borderRadius: radii.sm,
-        borderWidth: 1,
-        borderColor: themeColors.readerBorder,
-        backgroundColor: themeColors.readerSurface,
-    },
-    segmentButtonActive: {
-        backgroundColor: themeColors.inkSlate,
-        borderColor: themeColors.inkSlate,
-    },
-    segmentButtonText: {
-        fontFamily: 'FFSans-Medium',
-        fontSize: 13,
-        lineHeight: 17,
-        color: themeColors.textSecondary,
-    },
-    segmentButtonTextActive: {
-        color: themeColors.readerPaper,
-        fontFamily: 'FFSans-SemiBold',
-    },
     fontSettingsHandleWrap: {
         alignItems: 'center',
     },
@@ -4489,122 +3895,6 @@ const createStyles = (themeColors) => StyleSheet.create({
         letterSpacing: 3,
         color: themeColors.textSecondary,
         textAlign: 'center',
-    },
-    fontSettingsRows: {
-        marginTop: 16,
-    },
-    fontSettingsRow: {
-        height: 48,
-        borderTopWidth: 1,
-        borderTopColor: themeColors.readerHairline,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 12,
-    },
-    fontSettingsLastRow: {
-        borderBottomWidth: 1,
-        borderBottomColor: themeColors.readerHairline,
-    },
-    fontSettingsLabel: {
-        fontFamily: 'FFSans-Regular',
-        fontSize: 15,
-        lineHeight: 20,
-        color: themeColors.readerBodyInk,
-        flexShrink: 0,
-    },
-    markStyleBlock: {
-        borderTopWidth: 1,
-        borderTopColor: themeColors.readerHairline,
-        paddingVertical: 12,
-        gap: 10,
-    },
-    underlineLegend: {
-        paddingTop: 2,
-        paddingBottom: 2,
-        gap: 6,
-    },
-    underlineLegendSwatches: {
-        flexDirection: 'row',
-        height: 4,
-        borderRadius: 2,
-        overflow: 'hidden',
-    },
-    underlineLegendSwatch: {
-        flex: 1,
-        height: '100%',
-    },
-    underlineLegendLabels: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-    },
-    underlineLegendLabel: {
-        fontFamily: 'FFSans-Regular',
-        fontSize: 12,
-        lineHeight: 16,
-        color: themeColors.readerSubtleInk,
-    },
-    underlineLegendLabelEnd: {
-        textAlign: 'right',
-    },
-    underlineLegendHint: {
-        fontFamily: 'FFSans-Regular',
-        fontSize: 12,
-        lineHeight: 17,
-        color: themeColors.readerSubtleInk,
-    },
-    fontSettingsStepperGroup: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 12,
-    },
-    fontSettingsStepperButton: {
-        width: 30,
-        height: 30,
-        borderWidth: 1,
-        borderColor: themeColors.readerBorder,
-        borderRadius: radii.sm,
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: themeColors.readerSurface,
-    },
-    fontSettingsValue: {
-        minWidth: 22,
-        fontFamily: 'FFSans-Regular',
-        fontSize: 15,
-        lineHeight: 20,
-        color: themeColors.readerBodyInk,
-        textAlign: 'center',
-    },
-    fontSettingsLineSpacingValue: {
-        minWidth: 80,
-    },
-    fontSettingsBrightnessGroup: {
-        width: 150,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 10,
-    },
-    fontSettingsBrightnessSlider: {
-        flex: 1,
-        height: 30,
-    },
-    fontSettingsSliderTrack: {
-        height: 3,
-        borderRadius: 2,
-    },
-    fontSettingsSliderThumb: {
-        width: 16,
-        height: 16,
-        borderRadius: 8,
-        borderWidth: 2,
-        borderColor: themeColors.readerSurface,
-        backgroundColor: themeColors.readerProgressFill,
-        shadowColor: themeColors.readerBorder,
-        shadowOffset: { width: 0, height: 0 },
-        shadowOpacity: 1,
-        shadowRadius: 1,
-        elevation: 2,
     },
 });
 
