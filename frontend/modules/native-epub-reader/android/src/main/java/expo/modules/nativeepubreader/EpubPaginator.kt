@@ -38,10 +38,13 @@ class EpubPaginator(
   private val rubySpacePx: Int = 0,
   // The book's language, so line breaking follows its rules: Korean breaks
   // only at spaces (keep-all), not between syllables inside a word.
-  private val textLocale: Locale? = null
+  private val textLocale: Locale? = null,
+  // Bottom padding of a page; paged mode keeps it small so a page can hold
+  // one more line instead of leaving a band of empty paper above the tab bar.
+  private val paddingBottom: Int = paddingV
 ) {
   private val contentWidth = (pageWidth - (paddingH * 2)).coerceAtLeast(1)
-  private val contentHeight = (pageHeight - (paddingV * 2)).coerceAtLeast(1)
+  private val contentHeight = (pageHeight - paddingV - paddingBottom).coerceAtLeast(1)
   private val density = context.resources.displayMetrics.density
   private val loadedFonts = mutableMapOf<String, Typeface>()
 
@@ -275,7 +278,8 @@ class EpubPaginator(
       marginTop = marginTop,
       marginBottom = marginBottom,
       lineHeightMult = blockLineHeightMult,
-      sentenceRanges = splitSentences(styledText.toString())
+      sentenceRanges = splitSentences(styledText.toString()),
+      sourceText = styledText.toString()
     ))
   }
 
@@ -376,7 +380,8 @@ class EpubPaginator(
     var result = -1
 
     for (line in 0 until layout.lineCount) {
-      if (layout.getLineBottom(line) <= availableHeight) {
+      // The annotation row under a line may run into the bottom padding.
+      if (layout.getLineBottom(line) - rubySpacePx <= availableHeight) {
         result = line
       } else {
         break

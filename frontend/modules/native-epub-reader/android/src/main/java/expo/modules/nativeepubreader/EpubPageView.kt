@@ -457,6 +457,8 @@ class EpubPageView(context: Context) : View(context) {
   private data class GlossItem(val line: Int, val left: Float, val right: Float, val text: String)
 
   private var marqueeTickScheduled = false
+  private var selectionDragStarted = false
+  private val selectionDragSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
 
   private fun drawAnnotations(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
     if (levelRanges.isEmpty()) return
@@ -784,6 +786,15 @@ class EpubPageView(context: Context) : View(context) {
         }
 
         if (isSelectionMode) {
+          // A held finger jitters; the long-press sentence selection (which
+          // may spill onto the neighbouring page) only turns into a drag once
+          // the finger actually moves.
+          if (!selectionDragStarted) {
+            if (abs(event.x - tapStartX) < selectionDragSlop && abs(event.y - tapStartY) < selectionDragSlop) {
+              return true
+            }
+            selectionDragStarted = true
+          }
           updateDragSelection(event.x, event.y)
           return true
         }
@@ -1222,11 +1233,15 @@ class EpubPageView(context: Context) : View(context) {
     // handles still let them narrow or widen the range afterward. Falls back to
     // just the tapped word if no sentence bounds can be resolved.
     val sentenceBounds = sentenceBoundsAtOffset(block, hit.localStartOffset, hit.localEndOffset)
-    val selStart = sentenceBounds?.first ?: hit.localStartOffset
-    val selEnd = sentenceBounds?.second ?: hit.localEndOffset
+    val sliceLength = blockTextForSelection(block).length
+    val srcStart = sentenceBounds?.first ?: hit.range.sourceStartOffset
+    val srcEnd = sentenceBounds?.second ?: hit.range.sourceEndOffset
+    val selStart = (srcStart - block.sourceStartOffset).coerceIn(0, sliceLength)
+    val selEnd = (srcEnd - block.sourceStartOffset).coerceIn(selStart, sliceLength)
 
     isTapCandidate = false
     isSelectionMode = true
+    selectionDragStarted = false
     parent?.requestDisallowInterceptTouchEvent(true)
     onSelectionDragStateChanged?.invoke(true)
     selectionAnchor = SelectionAnchor(
@@ -1239,15 +1254,7 @@ class EpubPageView(context: Context) : View(context) {
       sourceStartOffset = block.sourceStartOffset + selStart,
       sourceEndOffset = block.sourceStartOffset + selEnd
     )
-    activeSelectionRanges = listOf(
-      TextRange(
-        pageIndex = hit.range.pageIndex,
-        spineIndex = hit.range.spineIndex,
-        blockId = hit.range.blockId,
-        sourceStartOffset = block.sourceStartOffset + selStart,
-        sourceEndOffset = block.sourceStartOffset + selEnd
-      )
-    )
+    activeSelectionRanges = rangesForSourceSpan(block, hit.range.pageIndex, hit.range.spineIndex, srcStart, srcEnd)
     activeSelectionKind = ActiveSelectionKind.TEXT
     activeHighlightPaint.color = activePaintColor()
     invalidate()
@@ -1291,6 +1298,7 @@ class EpubPageView(context: Context) : View(context) {
 
     if (!cancelled) {
       val selectedText = selectedTextForRanges(activeSelectionRanges)
+      Log.d(PAGE_VIEW_TAG, "text selection: pages=${activeSelectionRanges.map { it.pageIndex }} text=$selectedText")
       if (selectedText.isNotBlank() && activeSelectionRanges.isNotEmpty()) {
         onTextSelected?.invoke(
           TextSelectionHit(
@@ -1435,7 +1443,7 @@ class EpubPageView(context: Context) : View(context) {
         range = range,
         localStartOffset = tokenRange.start,
         localEndOffset = tokenRange.end,
-        sentence = sentenceForToken(blockText, tokenRange)
+        sentence = sentenceForToken(block, tokenRange)
       )
     }
 
@@ -1605,28 +1613,32 @@ class EpubPageView(context: Context) : View(context) {
 
   private fun selectedTextForRanges(ranges: List<TextRange>): String {
     val builder = StringBuilder()
+    var lastBlockId: String? = null
+    var lastEnd = -1
 
     ranges.forEach { range ->
+      // Parts on neighbouring pages belong to a paragraph this page also
+      // holds a slice of, so its whole text is available here.
       val rendered = renderedTextBlocks.firstOrNull { item ->
-        item.block.blockId == range.blockId &&
-          page?.pageIndex == range.pageIndex &&
-          page?.spineIndex == range.spineIndex
+        item.block.blockId == range.blockId && page?.spineIndex == range.spineIndex
       } ?: return@forEach
-      val block = rendered.block
-      val text = blockTextForSelection(block)
-      val localStart = (range.sourceStartOffset - block.sourceStartOffset).coerceIn(0, text.length)
-      val localEnd = (range.sourceEndOffset - block.sourceStartOffset).coerceIn(localStart, text.length)
-      val selected = text.substring(localStart, localEnd).trim()
+      val source = sourceTextOf(rendered.block)
+      val start = range.sourceStartOffset.coerceIn(0, source.length)
+      val end = range.sourceEndOffset.coerceIn(start, source.length)
+      val contiguous = range.blockId == lastBlockId && start <= lastEnd
+      val selected = if (contiguous) source.substring(start, end) else source.substring(start, end).trim()
 
       if (selected.isNotEmpty()) {
-        if (builder.isNotEmpty()) {
+        if (builder.isNotEmpty() && !contiguous) {
           builder.append('\n')
         }
         builder.append(selected)
       }
+      lastBlockId = range.blockId
+      lastEnd = end
     }
 
-    return builder.toString()
+    return builder.toString().trim()
   }
 
   private fun activeTextSelectionEndpoints(): Pair<TextPosition, TextPosition>? {
@@ -2281,6 +2293,10 @@ class EpubPageView(context: Context) : View(context) {
   // Returns false when there is no text selection or nothing further to add.
   fun extendSelectionBySentence(direction: Int): Boolean {
     if (activeSelectionKind != ActiveSelectionKind.TEXT) return false
+    extendWithinParagraph(direction)?.let { ranges ->
+      publishExtendedSelection(ranges)
+      return true
+    }
     val (start, end) = activeTextSelectionEndpoints() ?: return false
     val ranges = if (direction < 0) {
       val newStart = previousSentenceStart(start) ?: return false
@@ -2290,11 +2306,17 @@ class EpubPageView(context: Context) : View(context) {
       buildSelectionRangesBetween(start, newEnd)
     }
     if (ranges.isEmpty()) return false
+    publishExtendedSelection(ranges)
+    return true
+  }
+
+  private fun publishExtendedSelection(ranges: List<TextRange>) {
     activeSelectionRanges = ranges
     activeHighlightPaint.color = activePaintColor()
     invalidate()
     postInvalidateOnAnimation()
     val selectedText = selectedTextForRanges(ranges)
+    Log.d(PAGE_VIEW_TAG, "text selection extended: pages=${ranges.map { it.pageIndex }} text=$selectedText")
     if (selectedText.isNotBlank()) {
       onTextSelected?.invoke(
         TextSelectionHit(
@@ -2304,27 +2326,57 @@ class EpubPageView(context: Context) : View(context) {
         )
       )
     }
-    return true
   }
 
-  private fun sentenceSpans(block: PageBlock): List<Pair<Int, Int>> {
-    val length = blockTextForSelection(block).length
+  // When the selection sits inside one paragraph, grow it by that paragraph's
+  // own sentences in source coordinates, so it can reach the next sentence
+  // even when it starts on the next page. Null means "not a single paragraph
+  // or no further sentence here": the caller then tries the neighbouring
+  // paragraphs on this page.
+  private fun extendWithinParagraph(direction: Int): List<TextRange>? {
+    val currentPage = page ?: return null
+    val blockIds = activeSelectionRanges.map { it.blockId }.distinct()
+    if (blockIds.size != 1) return null
+    val rendered = renderedTextBlocks.firstOrNull { it.block.blockId == blockIds[0] } ?: return null
+    val block = rendered.block
+    val source = sourceTextOf(block)
+    if (source.isEmpty()) return null
+    val srcStart = activeSelectionRanges.minOf { it.sourceStartOffset }
+    val srcEnd = activeSelectionRanges.maxOf { it.sourceEndOffset }
+    val spans = sourceSentenceSpans(block)
+    val newStart = if (direction < 0) spans.lastOrNull { it.first < srcStart }?.first ?: return null else srcStart
+    val newEnd = if (direction > 0) spans.firstOrNull { it.second > srcEnd }?.second ?: return null else srcEnd
+    return rangesForSourceSpan(block, currentPage.pageIndex, currentPage.spineIndex, newStart, newEnd)
+  }
+
+  // Sentence spans [start, end) of a paragraph in source coordinates.
+  private fun sourceSentenceSpans(block: PageBlock): List<Pair<Int, Int>> {
+    val length = sourceTextOf(block).length
     if (length <= 0) return emptyList()
     val spans = block.sentenceRanges
       .map { it.first.coerceIn(0, length) to (it.last + 1).coerceIn(0, length) }
       .filter { it.first < it.second }
     if (spans.isNotEmpty()) return spans
-    // No precomputed ranges: walk the text with the same fallback rule.
     val out = mutableListOf<Pair<Int, Int>>()
     var cursor = 0
     while (cursor < length) {
-      val bounds = sentenceBoundsAtOffset(block, cursor, cursor) ?: break
+      val bounds = sentenceBoundsAtOffset(block, cursor - block.sourceStartOffset, cursor - block.sourceStartOffset) ?: break
       if (bounds.second <= cursor) break
       out.add(bounds)
       cursor = bounds.second
-      while (cursor < length && blockTextForSelection(block)[cursor].isWhitespace()) cursor++
+      while (cursor < length && sourceTextOf(block)[cursor].isWhitespace()) cursor++
     }
     return out
+  }
+
+  // Sentence spans of the part of a paragraph on this page, in local offsets.
+  private fun sentenceSpans(block: PageBlock): List<Pair<Int, Int>> {
+    val length = blockTextForSelection(block).length
+    if (length <= 0) return emptyList()
+    val sliceStart = block.sourceStartOffset
+    return sourceSentenceSpans(block)
+      .map { (it.first - sliceStart).coerceIn(0, length) to (it.second - sliceStart).coerceIn(0, length) }
+      .filter { it.first < it.second }
   }
 
   private fun textPositionAt(renderedIndex: Int, localOffset: Int): TextPosition? {
@@ -2356,61 +2408,85 @@ class EpubPageView(context: Context) : View(context) {
     return null
   }
 
+  // Bounds [start, end) in SOURCE coordinates (offsets into the whole
+  // paragraph) of the sentence containing the word at local [localStart,
+  // localEnd) of this slice. Prefers the paginator's sentenceRanges, which are
+  // in source coordinates; falls back to scanning the paragraph for terminal
+  // punctuation. Null when nothing sensible is found.
   private fun sentenceBoundsAtOffset(
     block: PageBlock,
     localStart: Int,
     localEnd: Int
   ): Pair<Int, Int>? {
-    val blockText = blockTextForSelection(block)
-    if (blockText.isEmpty()) {
+    val source = sourceTextOf(block)
+    if (source.isEmpty()) {
       return null
     }
 
-    val probe = localStart.coerceIn(0, blockText.length)
+    val probe = (block.sourceStartOffset + localStart).coerceIn(0, source.length)
     val match = block.sentenceRanges.firstOrNull { probe in it.first..(it.last + 1) }
     if (match != null) {
-      val start = match.first.coerceIn(0, blockText.length)
-      val end = (match.last + 1).coerceIn(start, blockText.length)
+      val start = match.first.coerceIn(0, source.length)
+      val end = (match.last + 1).coerceIn(start, source.length)
       if (start < end) {
         return start to end
       }
     }
 
     val boundaries = setOf('.', '!', '?', '。', '！', '？', '\n')
-    var start = localStart.coerceIn(0, blockText.length)
-    while (start > 0 && !boundaries.contains(blockText[start - 1])) {
+    var start = probe
+    while (start > 0 && !boundaries.contains(source[start - 1])) {
       start -= 1
     }
-    var end = localEnd.coerceIn(start, blockText.length)
-    while (end < blockText.length && !boundaries.contains(blockText[end])) {
+    var end = (block.sourceStartOffset + localEnd).coerceIn(start, source.length)
+    while (end < source.length && !boundaries.contains(source[end])) {
       end += 1
     }
-    if (end < blockText.length && boundaries.contains(blockText[end]) && blockText[end] != '\n') {
+    if (end < source.length && boundaries.contains(source[end]) && source[end] != '\n') {
       end += 1
     }
     return if (start < end) start to end else null
   }
 
-  private fun sentenceForToken(text: String, tokenRange: LocalTokenRange): String {
-    if (text.isEmpty()) {
-      return ""
-    }
+  private fun sourceTextOf(block: PageBlock): String =
+    block.sourceText.ifEmpty { blockTextForSelection(block) }
 
-    val sentenceBoundaries = setOf('.', '!', '?', '。', '！', '？', '\n')
-    var start = tokenRange.start.coerceIn(0, text.length)
-    while (start > 0 && !sentenceBoundaries.contains(text[start - 1])) {
-      start -= 1
+  // Selection ranges for [srcStart, srcEnd) of a paragraph: the part on this
+  // page, plus the parts that spill onto the previous / next page when this
+  // page only holds a slice of the paragraph. Those pages draw their part when
+  // the reader turns to them.
+  private fun rangesForSourceSpan(
+    block: PageBlock,
+    pageIndex: Int,
+    spineIndex: Int?,
+    srcStart: Int,
+    srcEnd: Int
+  ): List<TextRange> {
+    val sliceStart = block.sourceStartOffset
+    val sliceEnd = sliceStart + blockTextForSelection(block).length
+    val ranges = mutableListOf<TextRange>()
+    if (srcStart < sliceStart && pageIndex > 0) {
+      ranges.add(TextRange(pageIndex - 1, spineIndex, block.blockId, srcStart, sliceStart))
     }
+    val hereStart = max(srcStart, sliceStart)
+    val hereEnd = min(srcEnd, sliceEnd)
+    if (hereStart < hereEnd) {
+      ranges.add(TextRange(pageIndex, spineIndex, block.blockId, hereStart, hereEnd))
+    }
+    if (srcEnd > sliceEnd) {
+      ranges.add(TextRange(pageIndex + 1, spineIndex, block.blockId, sliceEnd, srcEnd))
+    }
+    return ranges
+  }
 
-    var end = tokenRange.end.coerceIn(start, text.length)
-    while (end < text.length && !sentenceBoundaries.contains(text[end])) {
-      end += 1
-    }
-    if (end < text.length && sentenceBoundaries.contains(text[end]) && text[end] != '\n') {
-      end += 1
-    }
-
-    return text.substring(start, end)
+  // The sentence around a tapped word, from the whole paragraph, so a word
+  // near a page edge still gets its complete sentence.
+  private fun sentenceForToken(block: PageBlock, tokenRange: LocalTokenRange): String {
+    val source = sourceTextOf(block)
+    if (source.isEmpty()) return ""
+    val (start, end) = sentenceBoundsAtOffset(block, tokenRange.start, tokenRange.end)
+      ?: (block.sourceStartOffset + tokenRange.start to block.sourceStartOffset + tokenRange.end)
+    return source.substring(start.coerceIn(0, source.length), end.coerceIn(0, source.length))
       .replace(Regex("\\s+"), " ")
       .trim()
       .trim('“', '”', '"', '\'', '‘', '’')

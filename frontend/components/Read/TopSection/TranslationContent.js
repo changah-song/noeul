@@ -24,7 +24,6 @@ const TranslationContent = ({
     const { colors } = useTheme();
     const styles = useMemo(() => createStyles(colors), [colors]);
     const [translatedText, setTranslatedText] = useState('');
-    const [pinyin, setPinyin] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [errorMessage, setErrorMessage] = useState('');
 
@@ -38,7 +37,6 @@ const TranslationContent = ({
         let isCancelled = false;
 
         setTranslatedText('');
-        setPinyin('');
         setErrorMessage('');
 
         if (!query) {
@@ -53,12 +51,11 @@ const TranslationContent = ({
             source: sourceLanguage,
             target: targetLanguage,
         })
-            .then(({ translatedText: translation, pinyin: readingPinyin }) => {
+            .then(({ translatedText: translation }) => {
                 if (isCancelled) {
                     return;
                 }
                 setTranslatedText(translation || '');
-                setPinyin(readingPinyin || '');
                 setErrorMessage(translation ? '' : t('lookup.noTranslation'));
             })
             .catch((error) => {
@@ -90,9 +87,6 @@ const TranslationContent = ({
     const effectiveTranslatedText = effectiveIsLoading || effectiveErrorMessage
         ? ''
         : (forceTranslatedText || translatedText);
-    // Pinyin (Chinese source only) is shown above the translation, without the
-    // source characters. Only when there is a real translation on screen.
-    const effectivePinyin = effectiveTranslatedText ? (pinyin || '') : '';
 
     useEffect(() => {
         onStatusChange?.({
@@ -118,11 +112,6 @@ const TranslationContent = ({
                     </Text>
                 ) : effectiveTranslatedText ? (
                     <>
-                        {effectivePinyin ? (
-                            <Text style={[styles.translationPinyin, { color: palette.muted }]}>
-                                {effectivePinyin}
-                            </Text>
-                        ) : null}
                         <Text
                             style={[styles.translationText, { color: palette.text }]}
                             numberOfLines={boundedScrollStyle ? undefined : 4}
@@ -171,11 +160,6 @@ const TranslationContent = ({
                     <Text style={[styles.offlineText, { color: palette.muted }]}>{effectiveErrorMessage}</Text>
                 ) : effectiveTranslatedText ? (
                     <>
-                        {effectivePinyin ? (
-                            <Text style={[styles.translationPinyin, { color: palette.muted }]}>
-                                {effectivePinyin}
-                            </Text>
-                        ) : null}
                         <Text style={[styles.translationText, { color: palette.text }]}>{effectiveTranslatedText}</Text>
                     </>
                 ) : null}
@@ -210,14 +194,6 @@ const createStyles = (colors) => StyleSheet.create({
         ...textStyles.caption,
         color: colors.textMuted,
         fontStyle: 'italic',
-    },
-    translationPinyin: {
-        flexShrink: 1,
-        fontFamily: textStyles.body.fontFamily,
-        fontSize: 14,
-        lineHeight: 20,
-        marginBottom: 4,
-        color: colors.textMuted,
     },
     translationText: {
         flexShrink: 1,
