@@ -98,6 +98,9 @@ private data class SelectionHighlightVerticalMetrics(
   val bottom: Float
 )
 
+// Opacity factor for underlines on text the reader has already read past.
+private const val READ_MARK_ALPHA = 0.35f
+
 class EpubPageView(context: Context) : View(context) {
   private var page: ReaderPage? = null
   private var paddingH = 0
@@ -114,6 +117,9 @@ class EpubPageView(context: Context) : View(context) {
   private var showPinyin: Boolean = false
   // When true, draw each annotated word's short translation under it.
   private var showGloss: Boolean = false
+  // True for level ranges behind the furthest point the reader has reached in
+  // this chapter; their underline is drawn faded. Set by the owner.
+  var isRangeRead: ((TextRange) -> Boolean)? = null
   private var activeHighlightColor = themePalette.activeHighlightColor
   private var textSelectionHighlightColor = themePalette.textSelectionHighlightColor
   private var savedHighlightColor = themePalette.savedHighlightColor
@@ -1764,6 +1770,11 @@ class EpubPageView(context: Context) : View(context) {
       if (paint === levelMarkPaint) {
         if (range.annotationOnly) return@forEach
         applyLevelUnderlineShade(paint, range.levelWeight, range.levelReinforced)
+        if (isRangeRead?.invoke(range) == true) {
+          // Already read past: same color, much lighter, so a returning reader
+          // can tell old marks from the ones ahead.
+          paint.alpha = (paint.alpha * READ_MARK_ALPHA).roundToInt()
+        }
         drawLevelUnderline(canvas, layout, localStart, localEnd, blockTextLength, paint)
         return@forEach
       }
