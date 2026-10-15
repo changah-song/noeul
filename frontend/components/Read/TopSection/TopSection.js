@@ -31,6 +31,7 @@ const TOP_PLACEMENT_TRANSLATION_TOP_PADDING = 22;
 const TOP_PLACEMENT_TRANSLATION_BOTTOM_PADDING = 10;
 
 const TopSection = ({
+    onExtendSelection,
     highlightedWord,
     sourceSentence = '',
     isNativeSelection,
@@ -395,6 +396,31 @@ const TopSection = ({
                         savedWords={savedWords}
                     />
                 ) : (
+                    <>
+                    {isNativeSelection && onExtendSelection ? (
+                        <View style={styles.extendRow}>
+                            <TouchableOpacity
+                                style={styles.extendButton}
+                                onPress={() => onExtendSelection('previous')}
+                                accessibilityRole="button"
+                                accessibilityLabel={t('read.addPreviousSentence')}
+                                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                            >
+                                <MaterialIcons name="chevron-left" size={18} color={themeColors.textSecondary} />
+                                <Text style={styles.extendButtonText} numberOfLines={1}>{t('read.addPreviousSentence')}</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={styles.extendButton}
+                                onPress={() => onExtendSelection('next')}
+                                accessibilityRole="button"
+                                accessibilityLabel={t('read.addNextSentence')}
+                                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                            >
+                                <Text style={styles.extendButtonText} numberOfLines={1}>{t('read.addNextSentence')}</Text>
+                                <MaterialIcons name="chevron-right" size={18} color={themeColors.textSecondary} />
+                            </TouchableOpacity>
+                        </View>
+                    ) : null}
                     <TranslationContent
                         key={`${translationText}-${translationSourceLanguage}-${translationTargetLanguage}-translation`}
                         highlightedWord={translationText}
@@ -411,6 +437,7 @@ const TopSection = ({
                         nestedScrollEnabled
                         onStatusChange={handleTranslationStatusChange}
                     />
+                    </>
                 )}
 
             </View>
@@ -435,6 +462,28 @@ const TopSection = ({
 };
 
 const createStyles = (colors) => StyleSheet.create({
+    extendRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        gap: spacing.sm,
+        paddingHorizontal: spacing.md,
+        paddingTop: spacing.xs,
+    },
+    extendButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        flexShrink: 1,
+        paddingVertical: 4,
+        paddingHorizontal: 6,
+        borderRadius: 6,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: colors.border,
+    },
+    extendButtonText: {
+        fontSize: 12,
+        color: colors.textSecondary,
+        flexShrink: 1,
+    },
     sheet: {
         marginHorizontal: 0,
         paddingHorizontal: 24,
