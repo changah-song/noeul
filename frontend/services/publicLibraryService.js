@@ -14,9 +14,16 @@ const BOOK_DOWNLOAD_TIMEOUT_MS = 90000;
 const EPUB_SIGNATURES = ['UEsD', 'UEsF', 'UEsH'];
 const PDF_SIGNATURE = 'JVBER';
 
-const withTimeout = (promise, timeoutMs, message) => new Promise((resolve, reject) => {
+const withTimeout = (promise, timeoutMs, message, onTimeout = null) => new Promise((resolve, reject) => {
   const timeout = setTimeout(() => {
-    reject(new Error(message));
+    const error = new Error(message);
+    error.code = 'TIMEOUT';
+    // Let the caller stop the underlying work (e.g. cancel a native download
+    // that would otherwise keep writing to disk after we gave up on it).
+    Promise.resolve()
+      .then(() => onTimeout?.())
+      .catch(() => {})
+      .finally(() => reject(error));
   }, timeoutMs);
 
   promise
@@ -166,6 +173,11 @@ export const getLocalPath = (storagePath) => {
   return `${PUBLIC_LIBRARY_DIR}${filename || 'book.epub'}`;
 };
 
+// In-progress downloads land here and are renamed into place only once they
+// are complete and valid, so a timed-out or interrupted download never leaves
+// a file at the final path that later counts as "downloaded".
+const getPartialPath = (localPath) => `${localPath}.part`;
+
 export const isBookDownloaded = async (storagePath, format = 'epub') => {
   if (!cleanString(storagePath)) {
     return false;
@@ -174,6 +186,9 @@ export const isBookDownloaded = async (storagePath, format = 'epub') => {
   const localPath = getLocalPath(storagePath);
   try {
     await validateDownloadedBookFile(localPath, format, { storagePath });
+    // A truncated EPUB still starts with the ZIP signature; require the
+    // trailer (ZIP end-of-central-directory / PDF %%EOF) as well.
+    await assertDownloadedFileComplete(localPath, format);
     return true;
   } catch (error) {
     const info = await FileSystem.getInfoAsync(localPath).catch(() => null);
@@ -405,6 +420,53 @@ const makeDownloadHttpError = async ({ status, storagePath, url }) => {
   return new Error(parts.join(': '));
 };
 
+const ZIP_EOCD = [0x50, 0x4b, 0x05, 0x06];
+const PDF_EOF = [0x25, 0x25, 0x45, 0x4f, 0x46]; // "%%EOF"
+// EOCD is 22 bytes plus an optional comment of up to 64 KiB; EPUBs normally
+// have no comment, so the last few KB is plenty. PDFs may have trailing junk
+// after %%EOF, so search the tail too.
+const TRAILER_SCAN_BYTES = 4096;
+
+const containsSequence = (bytes, sequence) => {
+  if (!bytes || bytes.length < sequence.length) return false;
+  for (let start = bytes.length - sequence.length; start >= 0; start -= 1) {
+    let matched = true;
+    for (let offset = 0; offset < sequence.length; offset += 1) {
+      if (bytes[start + offset] !== sequence[offset]) {
+        matched = false;
+        break;
+      }
+    }
+    if (matched) return true;
+  }
+  return false;
+};
+
+// Pure check on the last bytes of a file: does it end like a complete book?
+export const hasCompleteBookTrailer = (tailBytes, format = 'epub') => (
+  String(format).toLowerCase() === 'pdf'
+    ? containsSequence(tailBytes, PDF_EOF)
+    : containsSequence(tailBytes, ZIP_EOCD)
+);
+
+async function assertDownloadedFileComplete(uri, format = 'epub') {
+  const info = await FileSystem.getInfoAsync(uri, { size: true });
+  const size = typeof info?.size === 'number' ? info.size : null;
+  if (!size) {
+    // Size unknown: can't seek to the tail; the header check already passed.
+    return;
+  }
+  const length = Math.min(size, TRAILER_SCAN_BYTES);
+  const base64 = await FileSystem.readAsStringAsync(uri, {
+    encoding: FileSystem.EncodingType?.Base64 ?? 'base64',
+    position: size - length,
+    length,
+  });
+  if (!hasCompleteBookTrailer(base64ToBytes(base64), inferFormat(format, uri))) {
+    throw new Error('Downloaded public library book is incomplete');
+  }
+}
+
 async function validateDownloadedBookFile(uri, format = 'epub', context = {}) {
   await assertDownloadedFileReady(uri);
 
@@ -427,31 +489,50 @@ async function validateDownloadedBookFile(uri, format = 'epub', context = {}) {
 }
 
 const downloadUrlToFile = async ({ url, localPath, format, storagePath, onProgress }) => {
+  const partialPath = getPartialPath(localPath);
+  const removePartial = () => FileSystem.deleteAsync(partialPath, { idempotent: true }).catch(() => {});
+  await removePartial();
+
   const downloadResumable = FileSystem.createDownloadResumable(
     url,
-    localPath,
+    partialPath,
     {},
     onProgress
   );
 
-  const result = await withTimeout(
-    downloadResumable.downloadAsync(),
-    BOOK_DOWNLOAD_TIMEOUT_MS,
-    'Timed out while downloading public library book'
-  );
-  if (typeof result?.status === 'number' && (result.status < 200 || result.status >= 300)) {
-    await FileSystem.deleteAsync(result.uri, { idempotent: true }).catch(() => {});
+  let result;
+  try {
+    result = await withTimeout(
+      downloadResumable.downloadAsync(),
+      BOOK_DOWNLOAD_TIMEOUT_MS,
+      'Timed out while downloading public library book',
+      () => downloadResumable.cancelAsync?.()
+    );
+  } catch (error) {
+    await removePartial();
+    throw error;
+  }
+  if (!result?.uri) {
+    // downloadAsync resolves undefined when the task was cancelled.
+    await removePartial();
+    throw new Error('Public library download was cancelled');
+  }
+  if (typeof result.status === 'number' && (result.status < 200 || result.status >= 300)) {
+    await removePartial();
     throw await makeDownloadHttpError({ status: result.status, storagePath, url });
   }
 
   try {
-    await validateDownloadedBookFile(result.uri, format, { storagePath, url });
+    await validateDownloadedBookFile(partialPath, format, { storagePath, url });
+    await assertDownloadedFileComplete(partialPath, format);
+    await FileSystem.deleteAsync(localPath, { idempotent: true }).catch(() => {});
+    await FileSystem.moveAsync({ from: partialPath, to: localPath });
   } catch (error) {
-    await FileSystem.deleteAsync(result.uri, { idempotent: true }).catch(() => {});
+    await removePartial();
     throw error;
   }
 
-  return result.uri;
+  return localPath;
 };
 
 export const downloadPublicBook = async (book, onProgress) => {

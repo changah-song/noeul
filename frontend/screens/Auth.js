@@ -10,7 +10,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { GoogleSignin } from '@react-native-google-signin/google-signin';
+import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import { useTranslation } from '../hooks/useTranslation';
 import { supabase } from '../services/supabase';
@@ -131,6 +131,12 @@ const Auth = ({
       await GoogleSignin.signOut();
 
       const signInResult = await GoogleSignin.signIn();
+      // google-signin 13.x resolves (not rejects) when the user backs out of
+      // the account picker: { type: 'cancelled' }. 'noSavedCredentialFound' is
+      // the silent/one-tap equivalent of "nothing chosen". Neither is an error.
+      if (signInResult?.type === 'cancelled' || signInResult?.type === 'noSavedCredentialFound') {
+        return;
+      }
       const idToken = signInResult?.data?.idToken ?? signInResult?.idToken;
       let accessToken = signInResult?.data?.accessToken ?? signInResult?.accessToken;
 
@@ -167,7 +173,12 @@ const Auth = ({
       }
       onAuthenticated?.();
     } catch (error) {
-      if (error?.code === 'SIGN_IN_CANCELLED') {
+      // Older native paths still reject with a cancel / in-progress code.
+      if (
+        error?.code === 'SIGN_IN_CANCELLED'
+        || (statusCodes?.SIGN_IN_CANCELLED != null && error?.code === statusCodes.SIGN_IN_CANCELLED)
+        || (statusCodes?.IN_PROGRESS != null && error?.code === statusCodes.IN_PROGRESS)
+      ) {
         return;
       }
 
