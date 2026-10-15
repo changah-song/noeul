@@ -18,6 +18,8 @@ import * as Clipboard from 'expo-clipboard';
 import Auth from './Auth';
 import { deleteCurrentUserProfile } from '../services/accountDeletion';
 import { Screen } from '../components/ui';
+import VocabLevelModal from '../components/shared/VocabLevelModal';
+import { hasVocabSizeGrid } from '../services/vocabSizeLevels';
 import { useAppContext } from '../contexts/AppContext';
 import { useTranslation } from '../hooks/useTranslation';
 import {
@@ -155,6 +157,7 @@ const Profile = ({ user, signOut, updateUsername }) => {
     const [draftName, setDraftName] = useState('');
     const [isSavingName, setIsSavingName] = useState(false);
     const [showTargetLanguagePicker, setShowTargetLanguagePicker] = useState(false);
+    const [showVocabLevel, setShowVocabLevel] = useState(false);
     const {
         interfaceLanguage,
         setInterfaceLanguage,
@@ -405,12 +408,23 @@ const Profile = ({ user, signOut, updateUsername }) => {
                             label={t('profile.learningLanguage')}
                             value={activeTargetOption?.label}
                             onPress={() => setShowTargetLanguagePicker(true)}
-                            isLast
+                            isLast={!hasVocabSizeGrid(targetLanguage)}
                             styles={styles}
                             profileColors={profileColors}
                         />
+                        {hasVocabSizeGrid(targetLanguage) ? (
+                            <NavRow
+                                label={t('profile.vocabLevel')}
+                                onPress={() => setShowVocabLevel(true)}
+                                isLast
+                                styles={styles}
+                                profileColors={profileColors}
+                            />
+                        ) : null}
                     </View>
-                    <Text style={styles.levelHelperText}>{t('profile.learningLanguageDesc')}</Text>
+                    <Text style={styles.levelHelperText}>
+                        {hasVocabSizeGrid(targetLanguage) ? t('profile.vocabLevelDesc') : t('profile.learningLanguageDesc')}
+                    </Text>
                 </View>
 
                 <View style={styles.section}>
@@ -518,6 +532,8 @@ const Profile = ({ user, signOut, updateUsername }) => {
                     </View>
                 ) : null}
             </ScrollView>
+
+            <VocabLevelModal visible={showVocabLevel} onClose={() => setShowVocabLevel(false)} />
 
             <Modal
                 visible={showTargetLanguagePicker}

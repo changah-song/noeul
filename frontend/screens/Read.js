@@ -25,6 +25,8 @@ import NativeEpubReaderView, {
     addListenControlListener,
 } from '../modules/native-epub-reader/src/NativeEpubReaderView';
 import ListenBar from '../components/Read/ListenBar';
+import VocabLevelModal from '../components/shared/VocabLevelModal';
+import { hasVocabSizeGrid } from '../services/vocabSizeLevels';
 import { createListenPlayer, voiceLocaleFor, LISTEN_RATES } from '../services/listenPlayer';
 import { translateText } from '../services/api/googleTranslate';
 import {
@@ -527,6 +529,9 @@ const Read = ({
     const [focusNavToken, setFocusNavToken] = useState('none:0');
     // Listen mode: the phone's text-to-speech reads the focused sentence and
     // steps the beam on; study mode stops on each underlined word first.
+    // Cold start: a profile with no reading history yet is asked for its
+    // vocabulary size once, the first time a book opens.
+    const [showVocabLevelPrompt, setShowVocabLevelPrompt] = useState(false);
     const [listenActive, setListenActive] = useState(false);
     const [listenPlaying, setListenPlaying] = useState(false);
     const [listenPrefs, setListenPrefs] = useState(DEFAULT_LISTEN_PREFS);
@@ -3225,6 +3230,32 @@ const Read = ({
         setFocusMode((current) => !current);
     }, [flushPendingFocusPageChange]);
 
+    useEffect(() => {
+        if (!currentBook || bookLoadState !== 'ready' || !hasVocabSizeGrid(activeBookLanguage)) {
+            return undefined;
+        }
+        let cancelled = false;
+        const promptKey = `vocabLevelPrompt:${activeOwnerId}:${activeBookLanguage}`;
+        (async () => {
+            try {
+                if (await AsyncStorage.getItem(promptKey)) return;
+                const ability = await getProfileAbility({ ownerId: activeOwnerId, language: activeBookLanguage });
+                const cold = !ability
+                    || (Number(ability.event_count ?? ability.eventCount ?? 0) === 0
+                        && ability.self_report_rank == null && ability.selfReportRank == null);
+                if (!cancelled && cold) {
+                    await AsyncStorage.setItem(promptKey, '1');
+                    setShowVocabLevelPrompt(true);
+                }
+            } catch {
+                // Nothing to ask without the ability row; reading proceeds.
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [currentBook, bookLoadState, activeBookLanguage, activeOwnerId]);
+
     // ── Listen mode ─────────────────────────────────────────────────────────
     sendFocusNavRef.current = sendFocusNav;
     listenChapterEndRef.current = handleNativeChapterEnd;
@@ -3908,6 +3939,8 @@ const Read = ({
                 onSaveCandidate={handleSaveCandidate}
                 onClose={() => setShowSavedPanel(false)}
             />
+
+            <VocabLevelModal visible={showVocabLevelPrompt} onClose={() => setShowVocabLevelPrompt(false)} />
 
             <BeforeYouGoSheet
                 visible={showBeforeYouGo}

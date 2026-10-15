@@ -80,7 +80,7 @@ const VocabLevelModal = ({ visible, onClose }) => {
     }, [activeOwnerId, activeProfileId, isSaving, onClose, selectedIndex, setTargetLanguageLevel, targetLanguage, tiers]);
 
     const tierLabel = useCallback((tier) => (
-        tier.advanced ? t('vocabLevel.advancedTier') : String(tier.threshold)
+        tier.advanced ? t('vocabLevel.advancedTier') : (tier.label || String(tier.threshold))
     ), [t]);
 
     return (
