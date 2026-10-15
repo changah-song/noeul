@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Animated, BackHandler, Easing, PanResponder, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, Pressable, findNodeHandle } from 'react-native';
+import { Animated, BackHandler, Easing, PanResponder, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, Pressable, findNodeHandle, ToastAndroid } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather, MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -17,7 +17,12 @@ import NativeEpubReaderView, {
     sendSeekToPosition,
     supportsImperativeFocusNav,
     supportsSeekToPosition,
+    sendSpokenWord,
+    supportsSpokenWord,
 } from '../modules/native-epub-reader/src/NativeEpubReaderView';
+import ListenBar from '../components/Read/ListenBar';
+import { createListenPlayer, voiceLocaleFor, LISTEN_RATES } from '../services/listenPlayer';
+import { explainInContext } from '../services/api/explainInContext';
 import {
     PREPROCESS_VERSION,
     deleteBookBookmark,
@@ -83,10 +88,15 @@ import {
     lowestUnderlinedRank,
 } from '../services/abilityModel';
 import { buildLevelUnderlineTerms } from '../services/levelUnderlineTerms';
-import { ANNOTATION_SCOPES, buildAnnotatedLevelTerms } from '../services/readerAnnotations';
+import { ANNOTATION_SCOPES, annotationsBySurface, buildAnnotatedLevelTerms } from '../services/readerAnnotations';
 import { createNativeReaderThemeTokens, radii, spacing, textStyles, useTheme } from '../theme';
 
 const LOOKUP_HINT_DISMISSED_KEY = 'lookupHintDismissed';
+// Listen mode preferences (speed, stop on underlined words, AI meaning).
+const LISTEN_PREFS_KEY = 'listenPrefs';
+const DEFAULT_LISTEN_PREFS = { rate: 1, explainWords: false, aiMeaning: false };
+const cleanListenText = (value) => (typeof value === 'string' ? value.trim() : '');
+
 const READER_SETTINGS_KEY = 'readerSettings';
 const READER_SETTINGS_UPDATED_AT_KEY = 'readerSettingsUpdatedAt';
 const DEFAULT_READER_SETTINGS = {
@@ -504,6 +514,21 @@ const Read = ({
     // ── Focus (sentence beam) mode ───────────────────────────────────────────
     const [focusMode, setFocusMode] = useState(false);
     const [focusNavToken, setFocusNavToken] = useState('none:0');
+    // Listen mode: the phone's text-to-speech reads the focused sentence and
+    // steps the beam on; study mode stops on each underlined word first.
+    const [listenActive, setListenActive] = useState(false);
+    const [listenPlaying, setListenPlaying] = useState(false);
+    const [listenPrefs, setListenPrefs] = useState(DEFAULT_LISTEN_PREFS);
+    const listenPrefsRef = useRef(DEFAULT_LISTEN_PREFS);
+    const listenPlayingRef = useRef(false);
+    const listenPlayerRef = useRef(null);
+    const listenFocusRef = useRef(null);
+    const listenSpokenKeyRef = useRef('');
+    const listenRunRef = useRef(0);
+    const listenCtxRef = useRef({});
+    const listenSpeakRef = useRef(null);
+    const listenPauseRef = useRef(null);
+    const sendFocusNavRef = useRef(null);
     const [lookupPanelHeight, setLookupPanelHeight] = useState(0);
     // Focus info (sentence index/total) updates on every beam step. It is kept
     // in a ref and pushed to a single subscriber (FocusControls) instead of
@@ -957,6 +982,12 @@ const Read = ({
         // A genuine new selection (not a panel dismiss): a whisper-light tick so
         // the lookup feels physical the instant you touch a word.
         tapSelect();
+
+        // Reading aloud stops while the reader looks a word up; play resumes
+        // from the same sentence.
+        if (listenPlayingRef.current) {
+            listenPauseRef.current?.();
+        }
 
         const sentence = typeof event.sentence === 'string' ? event.sentence.trim() : '';
 
@@ -2877,6 +2908,7 @@ const Read = ({
         }
 
         bookCompletionInProgressRef.current = true;
+        listenPauseRef.current?.({ keepActive: false });
 
         if (currentBook) {
             const previousPosition = nativeRestorePositionRef.current || activeBook?.nativePosition || {};
@@ -3117,6 +3149,12 @@ const Read = ({
             count: Number.isInteger(event.count) && event.count > 0 ? event.count : 1,
             total: Number.isInteger(event.total) ? event.total : 0,
         });
+        listenFocusRef.current = event;
+        // Repagination re-sends the same sentence; only a new one is read.
+        const key = `${currentSpineIndexRef.current}:${event.index}:${cleanListenText(event.text)}`;
+        if (listenPlayingRef.current && key !== listenSpokenKeyRef.current) {
+            listenSpeakRef.current?.(event, key);
+        }
     }, [publishFocusInfo]);
 
     const sendFocusNav = useCallback((direction) => {
@@ -3148,6 +3186,190 @@ const Read = ({
         setClearSelectionToken((value) => value + 1);
         setFocusMode((current) => !current);
     }, [flushPendingFocusPageChange]);
+
+    // ── Listen mode ─────────────────────────────────────────────────────────
+    sendFocusNavRef.current = sendFocusNav;
+    const listenGlossIndex = useMemo(
+        () => annotationsBySurface(annotationRows, interfaceLanguage),
+        [annotationRows, interfaceLanguage]
+    );
+    listenCtxRef.current = {
+        targetLocale: voiceLocaleFor(activeBookLanguage),
+        interfaceLocale: voiceLocaleFor(interfaceLanguage),
+        language: activeBookLanguage,
+        interfaceLanguage,
+        glossIndex: listenGlossIndex,
+        unavailableNotice: t('read.listenUnavailable'),
+    };
+
+    const getListenPlayer = useCallback(() => {
+        if (!listenPlayerRef.current) {
+            listenPlayerRef.current = createListenPlayer();
+        }
+        return listenPlayerRef.current;
+    }, []);
+
+    const setSpokenWord = useCallback((word) => {
+        if (!supportsSpokenWord) return;
+        const viewTag = findNodeHandle(nativeReaderViewRef.current);
+        if (viewTag == null) return;
+        sendSpokenWord(viewTag, word).catch(() => {});
+    }, []);
+
+    const pauseListening = useCallback(({ keepActive = true } = {}) => {
+        listenRunRef.current += 1;
+        listenPlayingRef.current = false;
+        listenSpokenKeyRef.current = '';
+        listenPlayerRef.current?.stop();
+        setSpokenWord(null);
+        setListenPlaying(false);
+        if (!keepActive) {
+            setListenActive(false);
+        }
+    }, [setSpokenWord]);
+    listenPauseRef.current = pauseListening;
+
+    // Read the focused sentence, then (study mode) each underlined word in it
+    // with its meaning, then step the beam on. Every await re-checks that this
+    // run is still the current one, so pause, a tap or a newer sentence stops
+    // it between utterances.
+    const speakFocusedSentence = useCallback(async (event, key) => {
+        const text = cleanListenText(event?.text);
+        if (!text) return;
+        const run = ++listenRunRef.current;
+        listenSpokenKeyRef.current = key;
+        const player = getListenPlayer();
+        const ctx = listenCtxRef.current;
+        const prefs = listenPrefsRef.current;
+        const mine = () => run === listenRunRef.current && listenPlayingRef.current;
+        const failed = () => {
+            pauseListening();
+            ToastAndroid.show(ctx.unavailableNotice, ToastAndroid.SHORT);
+        };
+
+        let outcome = await player.speakSequence([{ text, locale: ctx.targetLocale, rate: prefs.rate }]);
+        if (!mine()) return;
+        if (outcome === 'error') { failed(); return; }
+
+        if (prefs.explainWords) {
+            const words = Array.isArray(event.levelWords) ? event.levelWords : [];
+            for (const word of words) {
+                const wordText = cleanListenText(word?.text);
+                if (!wordText) continue;
+                const gloss = ctx.glossIndex.get(wordText)?.gloss || cleanListenText(word?.gloss);
+                const parts = [{
+                    text: wordText,
+                    locale: ctx.targetLocale,
+                    rate: prefs.rate,
+                    before: () => setSpokenWord(word),
+                }];
+                if (gloss) {
+                    parts.push({ text: gloss, locale: ctx.interfaceLocale, rate: prefs.rate });
+                }
+                outcome = await player.speakSequence(parts);
+                if (!mine()) return;
+                if (outcome === 'error') { failed(); return; }
+
+                if (prefs.aiMeaning) {
+                    let explanation = '';
+                    try {
+                        const response = await explainInContext({
+                            word: wordText,
+                            sentence: text,
+                            language: ctx.language,
+                            interfaceLanguage: ctx.interfaceLanguage,
+                        });
+                        explanation = cleanListenText(response?.explanation);
+                    } catch {
+                        explanation = '';
+                    }
+                    if (!mine()) return;
+                    if (explanation) {
+                        outcome = await player.speakSequence([{ text: explanation, locale: ctx.interfaceLocale, rate: prefs.rate }]);
+                        if (!mine()) return;
+                    }
+                }
+            }
+            setSpokenWord(null);
+        }
+
+        if (mine()) {
+            listenSpokenKeyRef.current = '';
+            sendFocusNavRef.current?.('next');
+        }
+    }, [getListenPlayer, pauseListening, setSpokenWord]);
+    listenSpeakRef.current = speakFocusedSentence;
+
+    const resumeListening = useCallback(() => {
+        setListenActive(true);
+        setListenPlaying(true);
+        listenPlayingRef.current = true;
+        if (!focusModeRef.current) {
+            // Entering focus mode sends the first sentence; that starts the voice.
+            toggleFocusMode();
+            return;
+        }
+        const current = listenFocusRef.current;
+        if (current?.text) {
+            const key = `${currentSpineIndexRef.current}:${current.index}:${cleanListenText(current.text)}`;
+            speakFocusedSentence(current, key);
+        }
+    }, [speakFocusedSentence, toggleFocusMode]);
+
+    const toggleListenPlay = useCallback(() => {
+        if (listenPlayingRef.current) {
+            pauseListening();
+        } else {
+            resumeListening();
+        }
+    }, [pauseListening, resumeListening]);
+
+    const updateListenPrefs = useCallback((patch) => {
+        const next = { ...listenPrefsRef.current, ...patch };
+        listenPrefsRef.current = next;
+        setListenPrefs(next);
+        AsyncStorage.setItem(LISTEN_PREFS_KEY, JSON.stringify(next)).catch(() => {});
+    }, []);
+
+    const cycleListenRate = useCallback(() => {
+        const index = LISTEN_RATES.indexOf(listenPrefsRef.current.rate);
+        updateListenPrefs({ rate: LISTEN_RATES[(index + 1) % LISTEN_RATES.length] });
+    }, [updateListenPrefs]);
+
+    useEffect(() => {
+        let cancelled = false;
+        AsyncStorage.getItem(LISTEN_PREFS_KEY)
+            .then((raw) => {
+                if (cancelled || !raw) return;
+                const parsed = JSON.parse(raw);
+                const next = {
+                    rate: LISTEN_RATES.includes(parsed?.rate) ? parsed.rate : 1,
+                    explainWords: !!parsed?.explainWords,
+                    aiMeaning: !!parsed?.aiMeaning,
+                };
+                listenPrefsRef.current = next;
+                setListenPrefs(next);
+            })
+            .catch(() => {});
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    // Leaving focus mode or switching books ends the session; unmount frees
+    // the engine listeners.
+    useEffect(() => {
+        if (!focusMode && listenActive) {
+            pauseListening({ keepActive: false });
+        }
+    }, [focusMode, listenActive, pauseListening]);
+    useEffect(() => {
+        pauseListening({ keepActive: false });
+    }, [currentBook?.id, pauseListening]);
+    useEffect(() => () => {
+        listenPlayerRef.current?.destroy();
+        listenPlayerRef.current = null;
+    }, []);
 
 
     return (
@@ -3197,6 +3419,19 @@ const Read = ({
                                 name="visibility"
                                 size={21}
                                 color={focusMode ? themeColors.inkSlate : themeColors.textSecondary}
+                            />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            style={styles.headerIconButton}
+                            onPress={() => (listenActive ? pauseListening({ keepActive: false }) : resumeListening())}
+                            accessibilityRole="button"
+                            accessibilityState={{ selected: listenActive }}
+                            accessibilityLabel={listenActive ? t('read.listenStop') : t('read.listen')}
+                        >
+                            <MaterialIcons
+                                name="headset"
+                                size={20}
+                                color={listenActive ? themeColors.inkSlate : themeColors.textSecondary}
                             />
                         </TouchableOpacity>
                     </View>
@@ -3366,10 +3601,32 @@ const Read = ({
                     subscribe={subscribeFocusInfo}
                     focusSpan={focusSpan}
                     focusSwipe={focusSwipe}
+                    hideArrows={listenActive}
                     sendFocusNav={sendFocusNav}
                     focusControlsTranslate={focusControlsTranslate}
                     focusControlsBaseBottom={focusControlsBaseBottom}
                     focusPillTop={focusPillTop}
+                    styles={styles}
+                    themeColors={themeColors}
+                />
+            ) : null}
+
+            {listenActive && focusMode && bookLoadState === 'ready' && nativeReaderPackage ? (
+                <ListenBar
+                    playing={listenPlaying}
+                    rate={listenPrefs.rate}
+                    explainWords={listenPrefs.explainWords}
+                    aiMeaning={listenPrefs.aiMeaning}
+                    aiAvailable
+                    onTogglePlay={toggleListenPlay}
+                    onPrevious={() => sendFocusNav('prev')}
+                    onNext={() => sendFocusNav('next')}
+                    onCycleRate={cycleListenRate}
+                    onToggleExplain={() => updateListenPrefs({ explainWords: !listenPrefsRef.current.explainWords })}
+                    onToggleAi={() => updateListenPrefs({ aiMeaning: !listenPrefsRef.current.aiMeaning })}
+                    onClose={() => pauseListening({ keepActive: false })}
+                    bottom={focusControlsBaseBottom}
+                    translateY={focusControlsTranslate}
                     styles={styles}
                     themeColors={themeColors}
                 />
@@ -3832,6 +4089,69 @@ const createStyles = (themeColors) => StyleSheet.create({
         shadowOpacity: 1,
         shadowRadius: 16,
         elevation: 5,
+    },
+    listenBarWrap: {
+        position: 'absolute',
+        left: 16,
+        right: 16,
+        zIndex: 12,
+        alignItems: 'center',
+    },
+    listenBar: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+        paddingVertical: 6,
+        paddingHorizontal: 8,
+        borderRadius: 30,
+        backgroundColor: themeColors.readerSurface,
+        borderWidth: 1,
+        borderColor: themeColors.readerBorder,
+        shadowColor: 'rgba(27, 28, 28, 0.14)',
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 1,
+        shadowRadius: 16,
+        elevation: 5,
+    },
+    listenButton: {
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    listenPlayButton: {
+        width: 46,
+        height: 46,
+        borderRadius: 23,
+        backgroundColor: themeColors.inkSlate,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    listenDivider: {
+        width: 1,
+        height: 24,
+        marginHorizontal: 4,
+        backgroundColor: themeColors.readerBorder,
+    },
+    listenChip: {
+        minWidth: 40,
+        height: 32,
+        paddingHorizontal: 10,
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: themeColors.readerBorder,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    listenChipActive: {
+        backgroundColor: themeColors.inkSlate,
+        borderColor: themeColors.inkSlate,
+    },
+    listenChipLabel: {
+        fontFamily: 'FFSans-SemiBold',
+        fontSize: 12,
+        color: themeColors.readerBodyInk,
     },
     focusSwipeTrack: {
         width: 44,

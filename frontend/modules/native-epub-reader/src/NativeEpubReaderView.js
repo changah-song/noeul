@@ -57,6 +57,14 @@ export const sendSeekToPosition = (viewTag, position) => (
     NativeModule?.seekToPosition?.(viewTag, position) ?? androidOnly()
 );
 
+// Listen mode: highlight the word being explained, or clear it with null. The
+// native view draws it like a tapped word but sends no lookup event.
+export const supportsSpokenWord = typeof NativeModule?.setSpokenWord === 'function';
+
+export const sendSpokenWord = (viewTag, word) => (
+    NativeModule?.setSpokenWord?.(viewTag, word || {}) ?? androidOnly()
+);
+
 const NativeEpubReaderView = forwardRef(({
     bookManifest,
     chapterBlocks,
