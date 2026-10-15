@@ -7,7 +7,10 @@ import android.text.TextPaint
 
 // A single renderable block on a page. Text blocks may represent either a
 // complete EPUB block or a slice of a block split across a page boundary.
-// sentenceRanges: character offset ranges within plainText, first..last inclusive.
+// sourceText is the whole block's text; a slice's plainText starts at
+// sourceStartOffset within it. sentenceRanges are first..last inclusive
+// offsets within sourceText (not the slice), so a sentence that continues on
+// the next page can still be resolved from either page.
 data class PageBlock(
   val blockId: String,
   val type: String,
@@ -25,7 +28,8 @@ data class PageBlock(
   val marginTop: Int = 0,
   val marginBottom: Int = 0,
   val lineHeightMult: Float = 1.5f,
-  val sentenceRanges: List<IntRange> = emptyList()
+  val sentenceRanges: List<IntRange> = emptyList(),
+  val sourceText: String = ""
 )
 
 data class ReaderPage(

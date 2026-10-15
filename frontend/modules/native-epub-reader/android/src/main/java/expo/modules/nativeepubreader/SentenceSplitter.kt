@@ -61,7 +61,11 @@ fun splitSentences(text: String): List<IntRange> {
 }
 
 private val TERMINAL_PUNCTUATION = setOf('.', '!', '?', '。', '！', '？')
-private val CLOSING_DELIMITERS = setOf(')', ']', '"', '“', '”', '\'', '‘', '’')
+private val CLOSING_DELIMITERS = setOf(
+  ')', ']', '"', '“', '”', '\'', '‘', '’',
+  // CJK quotes and brackets that close after the full stop: 。』 。」 。）
+  '』', '」', '）', '】', '》', '〉'
+)
 
 private fun skipLeadingSpace(text: String, start: Int): Int {
   var i = start

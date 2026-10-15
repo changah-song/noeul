@@ -1341,7 +1341,8 @@ class NativeEpubReaderView(
           readerTextColor = themePaletteSnapshot.bodyTextColor,
           context = appContext,
           rubySpacePx = rubySpaceSnapshot,
-          textLocale = textLocaleSnapshot
+          textLocale = textLocaleSnapshot,
+          paddingBottom = if (renderModeSnapshot == "paged") dp(16f) else pagePaddingV
         )
         if (renderModeSnapshot == "continuous" || renderModeSnapshot == "focus") {
           buildContinuousChapterWindow(paginator, windowSnapshot)
