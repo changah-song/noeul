@@ -40,6 +40,13 @@ from word_lookup import (
     parse_krdict_search_items,
     search_with_english_fallback,
 )
+from zh_tokens import (
+    ZH_LOOKUP_CONTENT_POS_PREFIXES,
+    ZH_LOOKUP_MULTI_CHAR_ONLY_POS_PREFIXES,
+    expand_unknown_compounds,
+    is_zh_lookup_token,
+    zh_split_candidates,
+)
 from translation import (
     MAX_STRINGS_PER_REQUEST as TRANSLATE_MAX_STRINGS,
     TranslationError,
@@ -837,7 +844,12 @@ LANGUAGE_DISPLAY_NAMES = {
 }
 LOOKUP_ALLOWED_POS = {"Noun", "Verb", "Adverb", "Adjective"}
 EN_LOOKUP_ALLOWED_POS = {"NOUN", "PROPN", "VERB", "ADJ", "ADV", "NUM"}
-ZH_LOOKUP_ALLOWED_POS_PREFIXES = ("n", "v", "a", "d")
+# Which jieba POS flags become Chinese lookup tokens lives in zh_tokens.py
+# (ZH_LOOKUP_CONTENT_POS_PREFIXES: n/v/a/r/m/q/t/s/f/z/b/i/l/j, any length;
+# ZH_LOOKUP_MULTI_CHAR_ONLY_POS_PREFIXES: d, two+ characters only). Kept as
+# aliases here so the policy is visible next to the other lookup POS sets.
+ZH_LOOKUP_POS_PREFIXES = ZH_LOOKUP_CONTENT_POS_PREFIXES
+ZH_LOOKUP_MULTI_CHAR_POS_PREFIXES = ZH_LOOKUP_MULTI_CHAR_ONLY_POS_PREFIXES
 ZH_SEARCH_RESULT_LIMIT = 6
 ZH_FALLBACK_MAX_WORD_LEN = 8
 DEFAULT_CHINESE_SCRIPT = "zh-Hans"
@@ -855,6 +867,17 @@ ZH_POS_LABELS = {
     "ad": "Adverbial adjective",
     "an": "Adjectival noun",
     "d": "Adverb",
+    "r": "Pronoun",
+    "m": "Numeral",
+    "q": "Measure word",
+    "t": "Time word",
+    "s": "Place word",
+    "f": "Direction word",
+    "z": "Status word",
+    "b": "Distinguishing word",
+    "i": "Idiom",
+    "l": "Idiomatic phrase",
+    "j": "Abbreviation",
 }
 
 # Okt occasionally mislabels these as Noun in eojeol-final position.
@@ -2532,7 +2555,7 @@ def append_zh_lookup_token(
     pos_by_word: dict[str, str],
 ):
     normalized_word = word.strip() if isinstance(word, str) else ""
-    if not normalized_word or len(normalized_word) <= 1:
+    if not normalized_word:
         return
 
     if normalized_word not in seen_words:
@@ -2561,16 +2584,39 @@ def extract_zh_lookup_tokens_with_jieba(text: str) -> tuple[list[str], list[dict
     if segmenter is None:
         return words, surface_index, pos_by_word
 
+    # Pass 1: keep the content tokens (single characters included — 人, 买,
+    # 酒 are real words; see zh_tokens.is_zh_lookup_token for the POS policy).
+    tokens: list[tuple[str, str]] = []
     for pair in segmenter.cut(text):
         word = getattr(pair, "word", "").strip()
         flag = getattr(pair, "flag", "").strip()
-        if (
-            not word
-            or len(word) <= 1
-            or not flag.startswith(ZH_LOOKUP_ALLOWED_POS_PREFIXES)
-        ):
+        if not is_zh_lookup_token(word, flag):
             continue
+        tokens.append((word, flag))
 
+    # Pass 2: jieba happily emits compounds that CC-CEDICT has never heard of
+    # (鲁镇, 镇口, 看着, 做点事). They get pinyin but no gloss, and the reader
+    # can't annotate the parts. Batch-check the multi-character tokens against
+    # the dictionary once, then split the unknown ones into dictionary-known
+    # parts (greedy longest-match from the left, like the dictionary-only
+    # tokenizer below) and index those parts as their own surfaces. The
+    # compound itself is still indexed so a tap on the whole word resolves.
+    compounds = {word for word, _flag in tokens if len(word) > 1}
+    expansions: dict[str, list[str]] = {}
+    if compounds:
+        known_compounds = fetch_zh_dictionary_candidate_words(compounds)
+        unknown_compounds = compounds - known_compounds
+        if unknown_compounds:
+            known_parts = fetch_zh_dictionary_candidate_words(
+                zh_split_candidates(unknown_compounds, max_part_len=ZH_FALLBACK_MAX_WORD_LEN)
+            )
+            expansions = expand_unknown_compounds(
+                unknown_compounds,
+                known_parts,
+                max_part_len=ZH_FALLBACK_MAX_WORD_LEN,
+            )
+
+    for word, flag in tokens:
         append_zh_lookup_token(
             word,
             zh_pos_label(flag),
@@ -2580,6 +2626,18 @@ def extract_zh_lookup_tokens_with_jieba(text: str) -> tuple[list[str], list[dict
             surface_index=surface_index,
             pos_by_word=pos_by_word,
         )
+        # Parts go right after their compound so the index keeps text order.
+        # They carry no POS: jieba tagged the compound, not the pieces.
+        for part in expansions.get(word, ()):
+            append_zh_lookup_token(
+                part,
+                None,
+                seen_words=seen_words,
+                seen_surface_pairs=seen_surface_pairs,
+                words=words,
+                surface_index=surface_index,
+                pos_by_word=pos_by_word,
+            )
 
     return words, surface_index, pos_by_word
 
