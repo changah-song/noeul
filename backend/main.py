@@ -40,6 +40,7 @@ from word_lookup import (
     parse_krdict_search_items,
     search_with_english_fallback,
 )
+from zh_senses import first_meaning_sense, is_reference_only_definition, rank_zh_entries
 from zh_tokens import (
     ZH_LOOKUP_CONTENT_POS_PREFIXES,
     ZH_LOOKUP_MULTI_CHAR_ONLY_POS_PREFIXES,
@@ -2737,7 +2738,10 @@ def zh_definition_gloss(definition: str | None) -> str | None:
     if not raw_definition:
         return None
 
-    short = raw_definition.split(";")[0].split(",")[0].strip()
+    # First *meaning* sense: skip "variant of X" / "surname X" / "see X" pointers so
+    # the gloss under a word is a definition, not a cross-reference.
+    first_sense = first_meaning_sense(raw_definition) or raw_definition
+    short = first_sense.split(",")[0].strip()
     return short if short and len(short) <= 40 else None
 
 
@@ -2898,13 +2902,19 @@ def enrich_zh_entries(entry_lists: list[list[dict]]) -> None:
     finally:
         conn.close()
 
+    # Group the candidate rows per headword, then let rank_zh_entries pick the
+    # first *meaning* row. Taking the first DB row blindly made 干's pointer
+    # resolve to another pointer ("variant of 干: old variant of 乾|干[gan1]").
+    rows_by_key: dict[str, list[dict]] = {}
     for row in rows:
         for key in ((row["simplified"] or "").strip(), (row["traditional"] or "").strip()):
-            if key and key not in resolved:  # first row wins = most frequent reading
-                resolved[key] = {
+            if key:
+                rows_by_key.setdefault(key, []).append({
                     "pinyin": (row["pinyin"] or "").strip(),
                     "definition": (row["definition"] or "").strip(),
-                }
+                })
+    for key, key_rows in rows_by_key.items():
+        resolved[key] = rank_zh_entries(key_rows)[0]
 
     for entry in flat:
         definition = entry.get("definition") or ""
@@ -2913,8 +2923,13 @@ def enrich_zh_entries(entry_lists: list[list[dict]]) -> None:
             for sense in definition.split("; "):
                 reference = _zh_variant_reference(sense)
                 target = resolved.get(reference) if reference else None
-                if target and target.get("definition"):
-                    rebuilt.append(f"variant of {reference}: {target['definition']}")
+                target_definition = (target or {}).get("definition") or ""
+                if (
+                    target_definition
+                    and target_definition != definition  # not a pointer back at this very entry
+                    and not is_reference_only_definition(target_definition)
+                ):
+                    rebuilt.append(f"variant of {reference}: {target_definition}")
                 else:
                     rebuilt.append(sense)
             entry["definition"] = "; ".join(rebuilt)
@@ -3003,9 +3018,6 @@ def lookup_zh_dictionary_entries(
     results: list[list[dict]] = []
     for stem in normalized_stems:
         stem_rows = rows_by_lookup.get(stem, [])
-        if limit_per_stem is not None:
-            stem_rows = stem_rows[:limit_per_stem]
-
         if not stem_rows:
             results.append([
                 zh_dictionary_no_entry(
@@ -3017,7 +3029,12 @@ def lookup_zh_dictionary_entries(
             ])
             continue
 
-        results.append([
+        # Rank the full entry list before applying the limit: CC-CEDICT often puts
+        # a pointer entry ("old variant of 乾|干[gan1]", "surname Li") on the line
+        # before the real meaning, and with limit_per_stem=1 that pointer became the
+        # whole stored definition. Real meanings first, proper-name readings next,
+        # reference-only entries last; order is otherwise preserved.
+        stem_entries = rank_zh_entries([
             zh_dictionary_row_to_result(
                 row,
                 script=script,
@@ -3026,6 +3043,9 @@ def lookup_zh_dictionary_entries(
             )
             for row in stem_rows
         ])
+        if limit_per_stem is not None:
+            stem_entries = stem_entries[:limit_per_stem]
+        results.append(stem_entries)
 
     enrich_zh_entries(results)
     return results, found_count

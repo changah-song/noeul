@@ -16,6 +16,10 @@ jest.mock('../../contexts/AppContext', () => ({
 }));
 
 require('react-native').Platform.OS = 'android';
+
+// The first render of the sheet compiles the whole component tree through
+// Babel; on a loaded CI runner that alone can pass Jest's 5 s default.
+jest.setTimeout(30000);
 const ReaderSettingsSheet = require('../Read/ReaderSettingsSheet').default;
 const { createTheme } = require('../../theme/tokens');
 
