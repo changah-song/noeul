@@ -479,9 +479,11 @@ class EpubPageView(context: Context) : View(context) {
   private val readTransitions = HashMap<Long, Long>()
   private var readAnimationPending = false
   // Whether this view is actually on screen for the current draw. ViewPager2
-  // records the neighbouring pages' display lists off screen; a transition
-  // started there would finish unseen, so off-screen draws show marks as
-  // unread and the dissolve runs once the page is in front of the reader.
+  // records the neighbouring pages' display lists off screen. A mark that is
+  // already read when it is first drawn off screen was read on some earlier
+  // visit, so it is shown settled with no dissolve: the dissolve only plays
+  // the first time a mark turns read in front of the reader, and a page the
+  // reader comes back to is already pixelated.
   private var drawingOnScreen = true
   private val visibleRect = Rect()
   private val underlinePath = Path()
@@ -512,8 +514,11 @@ class EpubPageView(context: Context) : View(context) {
       readTransitions.remove(key)
       return 0f
     }
-    if (!drawingOnScreen && !readTransitions.containsKey(key)) return 0f
     val now = SystemClock.uptimeMillis()
+    if (!drawingOnScreen && !readTransitions.containsKey(key)) {
+      readTransitions[key] = now - READ_TRANSITION_MS.toLong()
+      return 1f
+    }
     val startedAt = readTransitions.getOrPut(key) { now }
     val progress = ((now - startedAt).toFloat() / READ_TRANSITION_MS).coerceIn(0f, 1f)
     if (progress < 1f) readAnimationPending = true

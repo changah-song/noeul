@@ -2965,13 +2965,6 @@ class NativeEpubReaderView(
   }
 
   private fun handlePageWordSelected(hit: WordHit) {
-    // Tapping a word means the reader is there: it and everything before it
-    // count as read, so its mark and the ones above it settle into their
-    // read style while the reader watches.
-    noteReadThrough(
-      hit.range.spineIndex,
-      readPosition(hit.range.spineIndex, hit.range.blockId, hit.range.sourceEndOffset)
-    )
     activeSelectionRanges = listOf(hit.range)
     activeSelectionKind = ActiveSelectionKind.WORD
     pageAdapter?.updateActiveSelectionRanges(activeSelectionRanges, activeSelectionKind)
