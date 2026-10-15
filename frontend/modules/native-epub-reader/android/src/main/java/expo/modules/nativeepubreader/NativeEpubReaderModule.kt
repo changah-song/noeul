@@ -471,8 +471,9 @@ private const val CONTINUOUS_EDGE_PULL_THRESHOLD_DP = 56f
 // on a fling. Frames thin out as a fling slows (touches on the emulator landed
 // up to 47 ms after the last frame), and 80 ms is still far shorter than anyone
 // reacts, so a real tap on settled text is never mistaken for a catch.
-private const val WORD_JOINER = '\u2060'
 private const val FLING_STOP_WINDOW_MS = 80L
+// In scroll mode, lines above this fraction of the viewport height count as read.
+private const val READ_LINE_FRACTION = 0.25f
 
 // Space reserved between lines for annotation rows: pinyin sits above a line,
 // the gloss below it. Shared with EpubPageView, which draws into this space.
@@ -2702,7 +2703,10 @@ class NativeEpubReaderView(
     (page.spineIndex ?: bookManifest.intValue("currentSpineIndex"))?.let { spineIndex ->
       event["spineIndex"] = spineIndex
     }
-    topVisibleTextPosition(page, continuousScrollView.scrollY)?.let { (block, localOffset) ->
+    // Text that has scrolled into the top part of the viewport counts as read,
+    // so the reader sees the marks change while the lines are still on screen.
+    val readLineY = continuousScrollView.scrollY + (continuousScrollView.height * READ_LINE_FRACTION).roundToInt()
+    topVisibleTextPosition(page, readLineY)?.let { (block, localOffset) ->
       addReadThrough(
         event,
         page.spineIndex,
@@ -2961,6 +2965,12 @@ class NativeEpubReaderView(
   }
 
   private fun handlePageWordSelected(hit: WordHit) {
+    // Tapping a word means the reader is there: everything before it counts
+    // as read, so the marks above it settle into their read style on screen.
+    noteReadThrough(
+      hit.range.spineIndex,
+      readPosition(hit.range.spineIndex, hit.range.blockId, hit.range.sourceStartOffset)
+    )
     activeSelectionRanges = listOf(hit.range)
     activeSelectionKind = ActiveSelectionKind.WORD
     pageAdapter?.updateActiveSelectionRanges(activeSelectionRanges, activeSelectionKind)
