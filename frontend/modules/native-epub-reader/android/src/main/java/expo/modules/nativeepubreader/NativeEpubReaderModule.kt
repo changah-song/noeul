@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import java.util.Locale
 import android.util.Log
 import android.view.MotionEvent
 import android.view.View
@@ -470,6 +471,7 @@ private const val CONTINUOUS_EDGE_PULL_THRESHOLD_DP = 56f
 // on a fling. Frames thin out as a fling slows (touches on the emulator landed
 // up to 47 ms after the last frame), and 80 ms is still far shorter than anyone
 // reacts, so a real tap on settled text is never mistaken for a catch.
+private const val WORD_JOINER = '\u2060'
 private const val FLING_STOP_WINDOW_MS = 80L
 
 // Space reserved between lines for annotation rows: pinyin sits above a line,
@@ -1295,6 +1297,12 @@ class NativeEpubReaderView(
       showPinyin,
       showGloss
     )
+    val textLocaleSnapshot = when (bookManifest.stringValue("language")?.lowercase()?.take(2)) {
+      "ko" -> Locale.KOREAN
+      "zh" -> Locale.CHINESE
+      "en" -> Locale.ENGLISH
+      else -> null
+    }
     val previousPages = pages
     val previousPage = pages.getOrNull(viewPager.currentItem)
     val previousLogicalPage = logicalPageForDisplayPosition(viewPager.currentItem)
@@ -1332,7 +1340,8 @@ class NativeEpubReaderView(
           isDark = isDarkSnapshot,
           readerTextColor = themePaletteSnapshot.bodyTextColor,
           context = appContext,
-          rubySpacePx = rubySpaceSnapshot
+          rubySpacePx = rubySpaceSnapshot,
+          textLocale = textLocaleSnapshot
         )
         if (renderModeSnapshot == "continuous" || renderModeSnapshot == "focus") {
           buildContinuousChapterWindow(paginator, windowSnapshot)
@@ -3349,11 +3358,19 @@ class NativeEpubReaderView(
     val startsWithCjk = term.firstOrNull()?.let { isCjkIdeograph(it) } == true
     val endsWithCjk = term.lastOrNull()?.let { isCjkIdeograph(it) } == true
 
-    if (startsWithToken && !startsWithCjk && start > 0 && isReaderTokenChar(text[start - 1])) {
+    // Korean text arrives with WORD JOINER (U+2060) between a word's syllables
+    // (see src/koreanLineBreak.js); it's invisible and never a boundary, so
+    // look past it to the real neighbour.
+    var before = start - 1
+    while (before >= 0 && text[before] == WORD_JOINER) before--
+    var after = end
+    while (after < text.length && text[after] == WORD_JOINER) after++
+
+    if (startsWithToken && !startsWithCjk && before >= 0 && isReaderTokenChar(text[before])) {
       return false
     }
 
-    if (endsWithToken && !endsWithCjk && end < text.length && isReaderTokenChar(text[end])) {
+    if (endsWithToken && !endsWithCjk && after < text.length && isReaderTokenChar(text[after])) {
       return false
     }
 

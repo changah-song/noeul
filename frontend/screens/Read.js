@@ -1502,11 +1502,13 @@ const Read = ({
     // bridge on every render (e.g. every focus-mode sentence step).
     const nativeBookManifest = useMemo(() => ({
         ...(nativeReaderPackage?.bookManifest ?? {}),
+        // Native line breaking follows the book's language (Korean: keep words whole).
+        language: activeBookLanguage,
         chapterTransitionDirection,
         currentChapterTitle: activeChapterTitle,
         currentSpineTitle: activeChapterTitle,
         currentBookTitle: headerBookTitle,
-    }), [nativeReaderPackage?.bookManifest, chapterTransitionDirection, activeChapterTitle, headerBookTitle]);
+    }), [nativeReaderPackage?.bookManifest, activeBookLanguage, chapterTransitionDirection, activeChapterTitle, headerBookTitle]);
     const bookProgress = clampProgress(
         typeof readerLocationInfo?.percentage === 'number'
             ? readerLocationInfo.percentage

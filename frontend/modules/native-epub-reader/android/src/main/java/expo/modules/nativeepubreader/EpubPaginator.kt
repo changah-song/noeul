@@ -17,6 +17,7 @@ import android.text.style.StyleSpan
 import android.text.style.UnderlineSpan
 import android.util.TypedValue
 import kotlin.math.roundToInt
+import java.util.Locale
 import java.util.concurrent.CancellationException
 
 private const val DEFAULT_READER_LINE_HEIGHT_MULT = 1.5f
@@ -34,7 +35,10 @@ class EpubPaginator(
   // Extra vertical space added above each line to hold pinyin annotations (0 when
   // the pinyin toggle is off). Applied as leading so lines separate and the ruby
   // row has room; the page view draws the pinyin into that gap.
-  private val rubySpacePx: Int = 0
+  private val rubySpacePx: Int = 0,
+  // The book's language, so line breaking follows its rules: Korean breaks
+  // only at spaces (keep-all), not between syllables inside a word.
+  private val textLocale: Locale? = null
 ) {
   private val contentWidth = (pageWidth - (paddingH * 2)).coerceAtLeast(1)
   private val contentHeight = (pageHeight - (paddingV * 2)).coerceAtLeast(1)
@@ -252,7 +256,10 @@ class EpubPaginator(
     val textPaint = textPaintForBlock(tag, styleTokens)
     val blockLineHeightMult = lineHeightMultiplierForBlock(styleTokens["lineHeight"], textPaint.textSize)
     val marginTop = spacingFromToken(styleTokens["marginTop"], 0f)
-    val marginBottom = spacingFromToken(styleTokens["marginBottom"], defaultBottomMargin(tag))
+    // StaticLayout adds the annotation row (spacingAdd) between lines but not
+    // under the last line, so give the paragraph gap the same room: the last
+    // line's gloss and the next paragraph's first-line pinyin draw there.
+    val marginBottom = spacingFromToken(styleTokens["marginBottom"], defaultBottomMargin(tag)) + rubySpacePx
 
     return withTextLayout(PageBlock(
       blockId = blockId,
@@ -471,6 +478,7 @@ class EpubPaginator(
 
   private fun textPaintForBlock(tag: String, styleTokens: Map<*, *>): TextPaint {
     return TextPaint(TextPaint.ANTI_ALIAS_FLAG).apply {
+      textLocale?.let { textLocale = it }
       color = textColorForToken(styleTokens["color"])
       textSize = sp(textSizeForBlock(tag, styleTokens))
       typeface = typefaceForStyle(styleTokens, tag)
