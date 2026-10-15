@@ -46,6 +46,8 @@ export const annotationsBySurface = (rows, interfaceLanguage = 'en') => {
  *   annotation-only, so no underline is drawn.
  * - `pinyin` / `gloss`: which annotations are on. With both off the level terms
  *   are returned as they are (or empty when marks are off).
+ * - `pinyinScope` / `glossScope`: 'underlined' (graded words only) or 'all'
+ *   (every word in the book), chosen separately for each annotation.
  */
 export const buildAnnotatedLevelTerms = ({
   levelTerms = [],
@@ -53,7 +55,8 @@ export const buildAnnotatedLevelTerms = ({
   marksEnabled = true,
   pinyin = false,
   gloss = false,
-  scope = 'underlined',
+  pinyinScope = 'underlined',
+  glossScope = 'underlined',
   interfaceLanguage = 'en',
 } = {}) => {
   if (!pinyin && !gloss) {
@@ -82,12 +85,14 @@ export const buildAnnotatedLevelTerms = ({
     return next;
   });
 
-  if (scope === 'all') {
+  const pinyinForAll = pinyin && pinyinScope === 'all';
+  const glossForAll = gloss && glossScope === 'all';
+  if (pinyinForAll || glossForAll) {
     const seen = new Set(result.map((term) => term.text));
     annotations.forEach((entry, surface) => {
       if (seen.has(surface)) return;
-      const hasPinyin = pinyin && entry.pinyin;
-      const hasGloss = gloss && entry.gloss;
+      const hasPinyin = pinyinForAll && entry.pinyin;
+      const hasGloss = glossForAll && entry.gloss;
       if (!hasPinyin && !hasGloss) return;
       const term = { text: surface, weight: 0, annotationOnly: true };
       if (hasPinyin) term.pinyin = entry.pinyin;

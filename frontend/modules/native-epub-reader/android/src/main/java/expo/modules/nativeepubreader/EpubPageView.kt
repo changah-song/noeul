@@ -13,6 +13,7 @@ import android.graphics.Typeface
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.text.StaticLayout
 import android.text.TextUtils
 import android.text.TextPaint
@@ -100,6 +101,9 @@ private data class SelectionHighlightVerticalMetrics(
 
 // Opacity factor for underlines on text the reader has already read past.
 private const val READ_MARK_ALPHA = 0.35f
+// Sliding glosses: pause at each end, then slide at this speed (dp/s).
+private const val MARQUEE_PAUSE_MS = 1400L
+private const val MARQUEE_FRAME_MS = 40L
 
 class EpubPageView(context: Context) : View(context) {
   private var page: ReaderPage? = null
@@ -326,6 +330,7 @@ class EpubPageView(context: Context) : View(context) {
   }
 
   override fun onDraw(canvas: Canvas) {
+    marqueeTickScheduled = false
     canvas.drawColor(pageBackgroundColor)
     val contentWidth = width - (paddingH * 2)
     if (contentWidth <= 0) return
@@ -440,11 +445,16 @@ class EpubPageView(context: Context) : View(context) {
     }
   }
 
-  // Draw annotations for each level range that carries them: pinyin centered
-  // above the word, the gloss centered below it, both inside the space the
-  // paginator reserved between lines. Glosses are shortened to roughly the
-  // word's width and skipped when they would run into the previous gloss on the
-  // same line, so neighbors never overlap.
+  // Annotation rows drawn into the space the paginator reserved between lines:
+  // pinyin centered above each word, the gloss centered below it. Each gloss
+  // gets a slot reaching halfway to its neighbours on the line; one that doesn't
+  // fit its slot slides back and forth inside it instead of being cut off, so
+  // the whole translation can be read. Sliding glosses schedule redraws only
+  // while one is on screen, and none during the pauses at either end.
+  private data class GlossItem(val line: Int, val left: Float, val right: Float, val text: String)
+
+  private var marqueeTickScheduled = false
+
   private fun drawAnnotations(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
     if (levelRanges.isEmpty()) return
     val currentPage = page ?: return
@@ -458,15 +468,12 @@ class EpubPageView(context: Context) : View(context) {
     glossPaint.color = themePalette.subtleTextColor
     val ascent = bodyPaint.fontMetrics.ascent
     val descent = bodyPaint.fontMetrics.descent
-    val glossGap = dp(4f)
-    var glossLine = -1
-    var glossRightEdge = Float.NEGATIVE_INFINITY
+    val glosses = mutableListOf<GlossItem>()
 
     rangesForBlock(levelRanges, block.blockId).forEach { range ->
       if (
         range.pageIndex != currentPage.pageIndex ||
-        range.spineIndex != currentPage.spineIndex ||
-        range.blockId != block.blockId
+        range.spineIndex != currentPage.spineIndex
       ) {
         return@forEach
       }
@@ -484,53 +491,100 @@ class EpubPageView(context: Context) : View(context) {
         return@forEach
       }
 
-      // Annotate on the first line the word sits on (words rarely wrap).
+      // Annotate the part of the word on the first line it sits on. For a word
+      // that wraps, that part ends at the line's right edge: asking for the
+      // horizontal of the next line's first offset would give the next line's
+      // left edge instead.
       val line = layout.getLineForOffset(localStart)
-      val lineEnd = min(localEnd, layout.getLineEnd(line))
+      val visibleLineEnd = layout.getLineVisibleEnd(line)
       val startX = layout.getPrimaryHorizontal(localStart)
-      val endX = layout.getPrimaryHorizontal(max(localStart, lineEnd))
+      val endX = if (localEnd >= visibleLineEnd) {
+        layout.getLineRight(line)
+      } else {
+        layout.getPrimaryHorizontal(localEnd)
+      }
       val left = min(startX, endX)
       val right = max(startX, endX)
-      val centerX = (left + right) / 2f
       val baseline = layout.getLineBaseline(line).toFloat()
 
       if (pinyin != null) {
         // Baseline just above the word's glyph tops, in the gap above the line.
         val pinyinBaseline = baseline + ascent - dp(1f) - pinyinPaint.descent()
-        canvas.drawText(pinyin, centerX, pinyinBaseline, pinyinPaint)
+        canvas.drawText(pinyin, (left + right) / 2f, pinyinBaseline, pinyinPaint)
       }
-
       if (gloss != null) {
-        if (line != glossLine) {
-          glossLine = line
-          glossRightEdge = Float.NEGATIVE_INFINITY
+        val label = firstSense(gloss)
+        if (label.isNotEmpty()) glosses.add(GlossItem(line, left, right, label))
+      }
+    }
+
+    if (glosses.isEmpty()) return
+    val gap = dp(3f).toFloat()
+    val edgeSlack = dp(24f).toFloat()
+    val now = SystemClock.uptimeMillis()
+    var nextTickMs = Long.MAX_VALUE
+
+    glosses.groupBy { it.line }.forEach { (line, items) ->
+      val sorted = items.sortedBy { it.left }
+      // Baseline just below the line's descenders, in the gap below the line.
+      val baseline = layout.getLineBaseline(line) + descent + dp(1f) - glossPaint.ascent()
+      sorted.forEachIndexed { index, item ->
+        val slotLeft = if (index == 0) {
+          max(0f, item.left - edgeSlack)
+        } else {
+          (sorted[index - 1].right + item.left) / 2f + gap / 2f
         }
-        val maxWidth = max(right - left + dp(16f), bodyPaint.textSize * 2.5f)
-        val label = fitGloss(gloss, maxWidth)
-        val width = glossPaint.measureText(label)
-        val glossLeft = centerX - width / 2f
-        if (label.isNotEmpty() && glossLeft >= glossRightEdge + glossGap) {
-          // Baseline just below the word's descenders, in the gap below the line.
-          val glossBaseline = baseline + descent + dp(1f) - glossPaint.ascent()
-          canvas.drawText(label, centerX, glossBaseline, glossPaint)
-          glossRightEdge = centerX + width / 2f
+        val slotRight = if (index == sorted.lastIndex) {
+          min(layout.width.toFloat(), item.right + edgeSlack)
+        } else {
+          (item.right + sorted[index + 1].left) / 2f - gap / 2f
+        }
+        val slotWidth = slotRight - slotLeft
+        if (slotWidth < dp(10f)) return@forEachIndexed
+        val width = glossPaint.measureText(item.text)
+        val center = (item.left + item.right) / 2f
+
+        if (width <= slotWidth) {
+          // Centered on the word, nudged to stay inside the slot.
+          val x = center.coerceIn(slotLeft + width / 2f, slotRight - width / 2f)
+          canvas.drawText(item.text, x, baseline, glossPaint)
+        } else {
+          val overflow = width - slotWidth
+          val (offset, untilChange) = marqueeOffset(overflow, now)
+          nextTickMs = min(nextTickMs, untilChange)
+          val save = canvas.save()
+          canvas.clipRect(slotLeft, baseline + glossPaint.ascent(), slotRight, baseline + glossPaint.descent())
+          // textAlign is CENTER: the text's left edge sits at slotLeft - offset.
+          canvas.drawText(item.text, slotLeft - offset + width / 2f, baseline, glossPaint)
+          canvas.restoreToCount(save)
         }
       }
     }
+
+    if (nextTickMs != Long.MAX_VALUE && !marqueeTickScheduled) {
+      marqueeTickScheduled = true
+      postInvalidateDelayed(nextTickMs.coerceIn(MARQUEE_FRAME_MS, MARQUEE_PAUSE_MS))
+    }
   }
 
-  // The gloss's first sense ("to lie down; to recline" -> "to lie down"),
-  // shortened with an ellipsis if it still doesn't fit.
-  private fun fitGloss(gloss: String, maxWidth: Float): String {
-    val first = gloss.split(';', '；', ',', '，').firstOrNull()?.trim().orEmpty()
-    if (first.isEmpty()) return ""
-    if (glossPaint.measureText(first) <= maxWidth) return first
-    var end = first.length
-    while (end > 1 && glossPaint.measureText(first, 0, end) + glossPaint.measureText("…") > maxWidth) {
-      end--
+  // Where a sliding gloss is right now: (pixels scrolled, ms until the next
+  // frame is needed). The cycle is pause, slide left, pause, slide back; all
+  // glosses share the clock so they move together.
+  private fun marqueeOffset(overflow: Float, now: Long): Pair<Float, Long> {
+    val slideMs = (overflow / (dp(28f).toFloat()) * 1000f).toLong().coerceAtLeast(500L)
+    val cycle = 2 * MARQUEE_PAUSE_MS + 2 * slideMs
+    val t = now % cycle
+    return when {
+      t < MARQUEE_PAUSE_MS -> 0f to (MARQUEE_PAUSE_MS - t)
+      t < MARQUEE_PAUSE_MS + slideMs -> (overflow * (t - MARQUEE_PAUSE_MS) / slideMs) to MARQUEE_FRAME_MS
+      t < 2 * MARQUEE_PAUSE_MS + slideMs -> overflow to (2 * MARQUEE_PAUSE_MS + slideMs - t)
+      else -> (overflow * (1f - (t - 2 * MARQUEE_PAUSE_MS - slideMs).toFloat() / slideMs)) to MARQUEE_FRAME_MS
     }
-    return first.substring(0, end).trimEnd() + "…"
   }
+
+  // The gloss's first sense: "to lie down; to recline" -> "to lie down".
+  private fun firstSense(gloss: String): String =
+    gloss.split(';', '；', ',', '，').firstOrNull()?.trim().orEmpty()
 
   // Focus mode: draw the whole block dimmed, then re-draw the focused sentence
   // span(s) at full opacity clipped to their glyph bounds. During a focus shift
