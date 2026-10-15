@@ -37,6 +37,9 @@ const BeforeYouGoSheet = ({
     const { height: windowHeight } = useWindowDimensions();
 
     const [note, setNote] = useState('');
+    const [saving, setSaving] = useState(false);
+    const [saveFailed, setSaveFailed] = useState(false);
+    const savingRef = useRef(false);
 
     // Keep the modal mounted while it animates out, then unmount. The backdrop
     // fades in place while only the sheet slides up — otherwise the whole scrim
@@ -49,6 +52,7 @@ const BeforeYouGoSheet = ({
     useEffect(() => {
         if (visible) {
             setNote('');
+            setSaveFailed(false);
             setMounted(true);
             Animated.timing(progress, {
                 toValue: 1,
@@ -73,12 +77,33 @@ const BeforeYouGoSheet = ({
         outputRange: [sheetHeight.current || windowHeight, 0],
     });
 
+    // Close only once the note is stored: the save handler resolves null (or
+    // throws) on failure, and closing then would throw away what was typed.
     const saveNote = async () => {
+        if (savingRef.current) return;
         const trimmed = note.trim();
-        if (trimmed) {
-            await onSaveNote?.(trimmed);
+        if (!trimmed) {
+            onClose?.();
+            return;
         }
-        onClose?.();
+        savingRef.current = true;
+        setSaving(true);
+        setSaveFailed(false);
+        let saved = false;
+        try {
+            const result = await onSaveNote?.(trimmed);
+            saved = result != null;
+        } catch {
+            saved = false;
+        } finally {
+            savingRef.current = false;
+            setSaving(false);
+        }
+        if (saved) {
+            onClose?.();
+        } else {
+            setSaveFailed(true);
+        }
     };
 
     return (
@@ -108,13 +133,22 @@ const BeforeYouGoSheet = ({
                         <TextInput
                             style={styles.noteInput}
                             value={note}
-                            onChangeText={setNote}
+                            onChangeText={(text) => {
+                                setNote(text);
+                                if (saveFailed) setSaveFailed(false);
+                            }}
                             placeholder={t('read.notePlaceholder')}
                             placeholderTextColor={colors.textSubtle}
                             multiline
                             textAlignVertical="top"
                             autoFocus
                         />
+
+                        {saveFailed ? (
+                            <Text style={styles.errorText} accessibilityRole="alert">
+                                {t('lookup.saveFailed')}
+                            </Text>
+                        ) : null}
 
                         <View style={styles.footer}>
                             <TouchableOpacity
@@ -126,8 +160,8 @@ const BeforeYouGoSheet = ({
                             </TouchableOpacity>
                             <TouchableOpacity
                                 onPress={saveNote}
-                                disabled={!note.trim()}
-                                style={[styles.primaryButton, !note.trim() && styles.primaryButtonDisabled]}
+                                disabled={!note.trim() || saving}
+                                style={[styles.primaryButton, (!note.trim() || saving) && styles.primaryButtonDisabled]}
                                 activeOpacity={0.85}
                             >
                                 <Text style={styles.primaryButtonText}>{t('common.save')}</Text>
@@ -192,6 +226,13 @@ const createStyles = (colors, insets = { bottom: 0 }) => StyleSheet.create({
         color: colors.text,
         backgroundColor: colors.surfaceCard,
         marginBottom: spacing.md,
+    },
+    errorText: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 14,
+        color: colors.danger ?? '#c0362c',
+        marginTop: -spacing.xs,
+        marginBottom: spacing.xs,
     },
     footer: {
         flexDirection: 'row',

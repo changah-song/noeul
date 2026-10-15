@@ -74,6 +74,10 @@ const cleanValue = (value) => {
     return trimmed === 'N/A' || trimmed === 'Unknown' ? '' : trimmed;
 };
 
+// Smart-definition results depend on the sentence, so they are cached per
+// (word, sentence) pair rather than per word.
+export const makeExplainCacheKey = (word, sentence) => `${cleanValue(sentence)}\u0000${cleanValue(word)}`;
+
 const normalizeEnglishSurfaceWord = (word) => cleanValue(word).replace(ENGLISH_EDGE_RE, '').toLowerCase();
 
 const hasSavableDefinition = (definition) => {
@@ -467,16 +471,25 @@ const DictionaryContent = ({
     // caches results keyed by tapped surface: { loading, text, gloss, lemma, error }.
     const [explainMode, setExplainMode] = useState(false);
     const [explainData, setExplainData] = useState({});
+    // Bumped whenever the word/sentence context changes; a response that
+    // arrives after that belongs to the old context and is dropped.
+    const explainGenerationRef = useRef(0);
 
     // Reset smart-definition state whenever a new word/sentence context is opened so
     // we never show an explanation fetched for a different sentence.
     useEffect(() => {
+        explainGenerationRef.current += 1;
         setExplainMode(false);
         setExplainData({});
     }, [highlightedWord, contextSentence]);
 
     const fetchExplanation = useCallback(async (key, grounding = {}) => {
-        setExplainData((prev) => ({ ...prev, [key]: { loading: true, text: '', error: null } }));
+        // explainData is keyed by word AND sentence: the same word in another
+        // sentence means something else and must not reuse this result.
+        const cacheKey = makeExplainCacheKey(key, contextSentence);
+        const generation = explainGenerationRef.current;
+        const isStale = () => explainGenerationRef.current !== generation;
+        setExplainData((prev) => ({ ...prev, [cacheKey]: { loading: true, text: '', error: null } }));
         const explainStartedAt = Date.now();
         let firstTextLogged = false;
         const logFirstText = () => {
@@ -509,8 +522,9 @@ const DictionaryContent = ({
         // first, then the explanation as it is written. Both only ever update an
         // entry that is still loading, so a late chunk can't clobber a final result.
         const updateStreaming = (patch) => {
+            if (isStale()) return;
             setExplainData((prev) => (
-                prev[key]?.loading ? { ...prev, [key]: { ...prev[key], ...patch } } : prev
+                prev[cacheKey]?.loading ? { ...prev, [cacheKey]: { ...prev[cacheKey], ...patch } } : prev
             ));
         };
 
@@ -540,16 +554,18 @@ const DictionaryContent = ({
             // explanation, so response.not_in_dictionary is dropped on hits.
             const notInDictionary = grounding?.dictionary?.found === false
                 || response?.not_in_dictionary === true;
+            if (isStale()) return;
             setExplainData((prev) => ({
                 ...prev,
-                [key]: text
+                [cacheKey]: text
                     ? { loading: false, text, gloss, lemma, pinyin, notInDictionary, error: null }
                     : { loading: false, text: '', gloss: '', lemma: '', pinyin: '', error: t('lookup.explainFailed') },
             }));
         } catch (error) {
+            if (isStale()) return;
             setExplainData((prev) => ({
                 ...prev,
-                [key]: { loading: false, text: '', error: error?.message || t('lookup.explainFailed') },
+                [cacheKey]: { loading: false, text: '', error: error?.message || t('lookup.explainFailed') },
             }));
         }
     }, [contextSentence, targetLanguage, interfaceLanguage, activeOwnerId, activeProfileId, t]);
@@ -571,7 +587,7 @@ const DictionaryContent = ({
         setTranslationMode(false);
         setExplainMode(true);
 
-        const existing = explainData[key];
+        const existing = explainData[makeExplainCacheKey(key, contextSentence)];
         if (existing && (existing.loading || existing.text)) {
             return; // already fetched or in flight
         }
@@ -2050,7 +2066,8 @@ const DictionaryContent = ({
     const explainDictionaryLemma = activeDictionaryGrounding.found && lookupItemCount === 1
         ? cleanValue(activeLookupDetails.word)
         : '';
-    const explainLemma = cleanValue(explainData[explainKey]?.lemma);
+    const explainEntry = explainData[makeExplainCacheKey(explainKey, contextSentence)];
+    const explainLemma = cleanValue(explainEntry?.lemma);
     const explainHeadword = explainDictionaryLemma || explainLemma || explainKey;
     const getExplainGrounding = () => ({
         hanja: activeLookupHanja || null,
@@ -2064,7 +2081,7 @@ const DictionaryContent = ({
     // underneath. It REPLACES the dictionary definition body while keeping the
     // entry's title (word + hanja + pronunciation) rendered above it by the caller.
     const renderExplainBodySection = () => {
-        const data = explainData[explainKey] || {};
+        const data = explainEntry || {};
         // Save the AI-stemmed base form (falling back to the tapped surface when the
         // model returns none), so title and flashcard both show a clean headword.
         const saveWord = explainHeadword;
