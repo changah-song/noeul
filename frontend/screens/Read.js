@@ -110,6 +110,14 @@ const DEFAULT_READER_SETTINGS = {
     pinnedSentenceTranslation: false,
 };
 const READING_MODES = ['paged', 'scroll'];
+
+const shallowEqualObjects = (a, b) => {
+    const aKeys = Object.keys(a);
+    if (aKeys.length !== Object.keys(b).length) {
+        return false;
+    }
+    return aKeys.every((key) => a[key] === b[key]);
+};
 // Whether graded words get a solid gradient underline. 'off' hides the marks but
 // the model keeps learning from reading.
 const LEVEL_MARK_STYLES = ['off', 'underline'];
@@ -608,7 +616,15 @@ const Read = ({
     // Monotonic counter stamped onto a restorePosition that represents a
     // deliberate jump; see handleSelectBookmark.
     const seekTokenRef = useRef(0);
+    const recordedVocabContextsRef = useRef({ book: null, keys: new Set() });
     const updateNativeRestorePosition = useCallback((position) => {
+        // Page changes repeat the same position often (every focus-mode step
+        // resends it); skip the re-render, and the prop round trip to native,
+        // when nothing moved.
+        const previous = nativeRestorePositionRef.current;
+        if (previous && position && shallowEqualObjects(previous, position)) {
+            return;
+        }
         nativeRestorePositionRef.current = position;
         setNativeRestorePosition(position);
     }, []);
@@ -2569,7 +2585,8 @@ const Read = ({
         const totalSpineItems = nativeReaderPackageRef.current?.spine?.length ?? nativeChapterTotal;
         const nextProgress = progressForBookPosition(resolvedSpineIndex, totalSpineItems, pageIndex, total);
 
-        setReaderLocationInfo((prev) => ({
+        setReaderLocationInfo((prev) => {
+            const next = {
             ...(prev || {}),
             page: (
                 Number.isInteger(resolvedSpineIndex) && totalSpineItems > 0
@@ -2581,14 +2598,35 @@ const Read = ({
             href: typeof href === 'string' && href.length > 0 ? href : (prev?.href || ''),
             pageInChapter: Number.isInteger(page) ? page + 1 : null,
             pagesInChapter: Number.isInteger(total) ? total : null,
-        }));
+            };
+            // Returning the same object lets React skip re-rendering the reader.
+            return prev && shallowEqualObjects(prev, next) ? prev : next;
+        });
 
         if (!currentBook || !Number.isInteger(pageIndex) || !Number.isInteger(resolvedSpineIndex)) {
             return;
         }
 
-        if (Array.isArray(savedHighlights) && savedHighlights.length > 0) {
-            Promise.all(savedHighlights.map((highlight) => (
+        // Native resends every saved word's context in the chapter on each page
+        // change (each focus-mode step included). Record each (word, sentence)
+        // once per book session instead of rewriting them all every time.
+        const recordedContexts = recordedVocabContextsRef.current;
+        if (recordedContexts.book !== currentBook) {
+            recordedContexts.book = currentBook;
+            recordedContexts.keys = new Set();
+        }
+        const newHighlights = Array.isArray(savedHighlights)
+            ? savedHighlights.filter((highlight) => {
+                const key = `${highlight?.text ?? ''}\u0000${highlight?.sentence ?? ''}`;
+                if (recordedContexts.keys.has(key)) {
+                    return false;
+                }
+                recordedContexts.keys.add(key);
+                return true;
+            })
+            : [];
+        if (newHighlights.length > 0) {
+            Promise.all(newHighlights.map((highlight) => (
                 recordVocabContextForSurface({
                     ownerId: activeOwnerId,
                     surface: typeof highlight?.text === 'string' ? highlight.text : '',
@@ -2640,24 +2678,31 @@ const Read = ({
         }
 
         updateNativeRestorePosition(nextPosition);
-        setBooks((prevBooks) => prevBooks.map((book) => {
-            if (book.uri !== currentBook) {
-                return book;
-            }
+        setBooks((prevBooks) => {
+            let changed = false;
+            const nextBooks = prevBooks.map((book) => {
+                if (book.uri !== currentBook) {
+                    return book;
+                }
 
-            const previousPosition = book.nativePosition || {};
-            const isUnchanged = (
-                previousPosition.spineIndex === nextPosition.spineIndex
-                && previousPosition.pageIndex === nextPosition.pageIndex
-                && previousPosition.pagesInChapter === nextPosition.pagesInChapter
-                && previousPosition.href === nextPosition.href
-                && previousPosition.firstBlockId === nextPosition.firstBlockId
-            );
-
-            return isUnchanged
-                ? book
-                : { ...book, ...nextBookPatch };
-        }));
+                const previousPosition = book.nativePosition || {};
+                const isUnchanged = (
+                    previousPosition.spineIndex === nextPosition.spineIndex
+                    && previousPosition.pageIndex === nextPosition.pageIndex
+                    && previousPosition.pagesInChapter === nextPosition.pagesInChapter
+                    && previousPosition.href === nextPosition.href
+                    && previousPosition.firstBlockId === nextPosition.firstBlockId
+                    && book.progress === nextBookPatch.progress
+                );
+                if (isUnchanged) {
+                    return book;
+                }
+                changed = true;
+                return { ...book, ...nextBookPatch };
+            });
+            // Same array when nothing moved, so the whole app doesn't re-render.
+            return changed ? nextBooks : prevBooks;
+        });
     }, [
         activeBook,
         activeBookLanguage,
