@@ -47,6 +47,24 @@ from translation import (
     normalize_language_code as normalize_translate_language,
     translate_texts,
 )
+import limits
+from limits import (
+    BodySizeLimitMiddleware,
+    ENTRY_BODY_HARD_MAX_CHARS,
+    ENTRY_PROMPT_MAX_CHARS,
+    ENTRY_SANDBOX_WORD_MAX_CHARS,
+    EXPLAIN_SENTENCE_HARD_MAX_CHARS,
+    EXPLAIN_SENTENCE_MAX_CHARS,
+    EXPLAIN_WORD_MAX_CHARS,
+    clip_sentence_around_word,
+    count_entry_length,
+    entry_length_bounds,
+    explain_grounding_fingerprint,
+    parse_positive_int_env,
+    preprocess_live_fetch_quota_units,
+    sanitize_hanja,
+    translate_cache_key,
+)
 
 try:
     from koroman import romanize as koroman_romanize
@@ -106,7 +124,6 @@ KRDICT_INTERFACE_LANGUAGES = {
     "zh": "11",
 }
 DEFAULT_INTERFACE_LANGUAGE = "en"
-MAX_TEXT_LENGTH = 500_000
 
 AUTHENTICATED_LIMITS = {
     "max_text_chars_per_request": 500_000,
@@ -763,10 +780,6 @@ def health():
     return {"status": "ok"}
 
 
-def count_words(text: str) -> int:
-    return len(text.split())
-
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -774,6 +787,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Refuse oversized request bodies (413) before anything parses them. The cap sits
+# above the largest real request (a 500k-character chapter for preprocessing).
+MAX_REQUEST_BODY_BYTES = parse_positive_int_env(
+    os.getenv("MAX_REQUEST_BODY_BYTES"), limits.MAX_REQUEST_BODY_BYTES
+)
+app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_REQUEST_BODY_BYTES)
 
 KRDICT_CLIENT_ID = os.getenv("KOREAN_DICTIONARY_CLIENT_ID", "").strip()
 # Official Google Cloud Translation (v2) first; the RapidAPI reseller is the fallback.
@@ -798,8 +817,6 @@ supabase_jwks_client = (
 )
 
 ASSESSMENT_DAILY_LIMIT = 5
-ENTRY_MIN_WORDS = 30
-ENTRY_MAX_WORDS = 500
 VALID_CATEGORIES = {"reflective", "persuasive", "creative", "sandbox"}
 VALID_TARGET_LANGUAGES = {"ko", "zh", "en", "ja", "fr", "es", "de", "ru", "ar", "id", "vi", "th", "mn"}
 LANGUAGE_DISPLAY_NAMES = {
@@ -1141,6 +1158,16 @@ def create_ops_tables(conn: sqlite3.Connection):
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS translate_cache (
+            key_hash TEXT PRIMARY KEY,
+            translated TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            hit_count INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
 
 
 def _utc_today() -> str:
@@ -1329,6 +1356,87 @@ def _lookup_cache_put(key_hash: str, parsed: dict[str, str | None]) -> None:
         conn.close()
 
 
+# --- Translation response cache + daily character budget --------------------
+#
+# Every character sent to Google Translate is billed, so identical requests are
+# served from translate_cache (shared across users, bounded by
+# TRANSLATE_CACHE_MAX_ROWS) and the characters actually sent to a provider are
+# counted against a global daily budget. Cache hits are free. The counter lives in
+# daily_usage under a reserved user id, so it is reset/pruned with the other daily
+# counters and reserved atomically before the provider call.
+DAILY_TRANSLATE_CHAR_BUDGET = parse_positive_int_env(
+    os.getenv("DAILY_TRANSLATE_CHAR_BUDGET"), 2_000_000
+)
+TRANSLATE_BUDGET_USER_ID = "__global__"
+TRANSLATE_BUDGET_BUCKET = "translate_chars"
+
+
+class TranslateBudgetExceeded(Exception):
+    """Today's translation character budget is used up."""
+
+
+def _translate_cache_get(key_hash: str) -> str | None:
+    conn = get_db_connection()
+    try:
+        conn.execute("PRAGMA busy_timeout=3000")
+        row = conn.execute(
+            "SELECT translated FROM translate_cache WHERE key_hash=?", (key_hash,)
+        ).fetchone()
+        if not row:
+            return None
+        conn.execute(
+            "UPDATE translate_cache SET hit_count = hit_count + 1 WHERE key_hash=?",
+            (key_hash,),
+        )
+        conn.commit()
+        return row["translated"]
+    finally:
+        conn.close()
+
+
+def _translate_cache_put(key_hash: str, translated: str) -> None:
+    if not translated:
+        return
+    conn = get_db_connection()
+    try:
+        conn.execute("PRAGMA busy_timeout=3000")
+        conn.execute(
+            """
+            INSERT INTO translate_cache (key_hash, translated, created_at, hit_count)
+            VALUES (?, ?, ?, 0)
+            ON CONFLICT(key_hash) DO NOTHING
+            """,
+            (key_hash, translated, datetime.now(timezone.utc).isoformat()),
+        )
+        count = conn.execute("SELECT COUNT(*) AS c FROM translate_cache").fetchone()["c"]
+        if count > limits.TRANSLATE_CACHE_MAX_ROWS:
+            conn.execute(
+                """
+                DELETE FROM translate_cache WHERE key_hash IN (
+                    SELECT key_hash FROM translate_cache ORDER BY created_at ASC LIMIT ?
+                )
+                """,
+                (count - limits.TRANSLATE_CACHE_MAX_ROWS,),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def reserve_translate_chars(char_count: int) -> bool:
+    """Reserve `char_count` characters of today's global translation budget.
+    Returns False (nothing reserved) when it would go over."""
+    if char_count <= 0:
+        return True
+    return await asyncio.to_thread(
+        _usage_check_and_increment,
+        TRANSLATE_BUDGET_USER_ID,
+        TRANSLATE_BUDGET_BUCKET,
+        DAILY_TRANSLATE_CHAR_BUDGET,
+        char_count,
+    )
+
+
 def enforce_text_limit(
     text: str,
     auth: dict[str, Any],
@@ -1342,11 +1450,6 @@ def enforce_text_limit(
             status_code=413,
             detail=f"{field_name} exceeds {limit} characters",
         )
-
-
-def enforce_preprocess_text_limit(text: str):
-    if len(text) > MAX_TEXT_LENGTH:
-        raise HTTPException(status_code=400, detail=f"Text too long: {len(text)} chars")
 
 
 def limited_preprocess_max_stems(max_stems, auth: dict[str, Any]):
@@ -3157,6 +3260,33 @@ async def romanize_text(text: str, auth: dict[str, Any] = Depends(verify_supabas
     return {"romanization": await asyncio.to_thread(romanize_korean_text, normalized)}
 
 
+async def _translate_one_cached(text: str, source: str, target: str, timeout: float) -> str | None:
+    """Translate one string through translate_cache and the daily character budget.
+
+    `source`/`target` must already be normalized. Raises TranslateBudgetExceeded
+    when a cache miss would go over today's budget, and TranslationError when every
+    provider fails.
+    """
+    key = translate_cache_key(text, source, target)
+    cached = await asyncio.to_thread(_translate_cache_get, key)
+    if cached is not None:
+        return cached
+    if not await reserve_translate_chars(len(text)):
+        raise TranslateBudgetExceeded()
+    async with httpx.AsyncClient() as client:
+        [translated] = await translate_texts(
+            client,
+            TRANSLATION_PROVIDERS,
+            [text],
+            source=source,
+            target=target,
+            timeout=timeout,
+        )
+    if translated:
+        await asyncio.to_thread(_translate_cache_put, key, translated)
+    return translated
+
+
 async def _translate_text(text: str, source: str = "en", target: str = "en") -> str | None:
     cleaned_text = text.strip() if isinstance(text, str) else ""
     normalized_source = normalize_translate_language(source, "en")
@@ -3166,16 +3296,10 @@ async def _translate_text(text: str, source: str = "en", target: str = "en") -> 
         return None
 
     try:
-        async with httpx.AsyncClient() as client:
-            [translated] = await translate_texts(
-                client,
-                TRANSLATION_PROVIDERS,
-                [cleaned_text],
-                source=normalized_source,
-                target=normalized_target,
-                timeout=8.0,
-            )
-            return translated
+        return await _translate_one_cached(cleaned_text, normalized_source, normalized_target, 8.0)
+    except TranslateBudgetExceeded:
+        print("[main] Internal translation skipped: daily translation budget reached")
+        return None
     except Exception as error:
         print(f"[main] Internal translation failed: {error}")
         return None
@@ -3204,6 +3328,11 @@ async def _translate_batch(
 
     async def translate_chunk(client: httpx.AsyncClient, chunk: list[str]) -> list[str | None]:
         async with semaphore:
+            # Callers keep their own per-word cache (dictionary_cache), so only the
+            # global character budget applies here.
+            if not await reserve_translate_chars(sum(len(text or "") for text in chunk)):
+                print("[main] Batch translation skipped: daily translation budget reached")
+                return [None] * len(chunk)
             try:
                 return await translate_texts(
                     client,
@@ -3356,15 +3485,17 @@ async def translate_text(payload: dict, auth: dict[str, Any] = Depends(verify_su
         raise HTTPException(status_code=500, detail="No translation provider configured on server")
 
     try:
-        async with httpx.AsyncClient() as client:
-            [translated] = await translate_texts(
-                client,
-                TRANSLATION_PROVIDERS,
-                [cleaned_query],
-                source=normalize_translate_language(source, "ko"),
-                target=normalize_translate_language(target, "en"),
-                timeout=INTERACTIVE_TRANSLATE_TIMEOUT_SECONDS,
-            )
+        translated = await _translate_one_cached(
+            cleaned_query,
+            normalize_translate_language(source, "ko"),
+            normalize_translate_language(target, "en"),
+            INTERACTIVE_TRANSLATE_TIMEOUT_SECONDS,
+        )
+    except TranslateBudgetExceeded:
+        raise HTTPException(
+            status_code=503,
+            detail="Translation is resting for today. Please try again tomorrow.",
+        )
     except TranslationError as error:
         if error.timed_out:
             raise HTTPException(status_code=504, detail="Google Translate request timed out")
@@ -3925,7 +4056,7 @@ async def preprocess_chapter(payload: dict, auth: dict[str, Any] = Depends(verif
             },
         }
 
-    enforce_preprocess_text_limit(text)
+    enforce_text_limit(text, auth)
     await enforce_daily_quota(auth)
 
     if not KRDICT_CLIENT_ID:
@@ -3935,7 +4066,21 @@ async def preprocess_chapter(payload: dict, auth: dict[str, Any] = Depends(verif
         f"[main] /preprocess_chapter/ | spine={spine_index} "
         f"text length={len(text):,} chars | max_stems={max_stems}"
     )
-    result = await preprocess_text_for_dictionary(text, KRDICT_CLIENT_ID, max_stems)
+    # Every chapter costs 1 quota unit (charged above). Stems that must be fetched
+    # live from KRDICT (not in cache.db or the bundled snapshot) cost extra: one
+    # unit per PREPROCESS_STEMS_PER_QUOTA_UNIT, charged once the cache check knows
+    # the count and before any KRDICT call, so a run of all-new text can't fan out
+    # thousands of KRDICT requests for one quota unit.
+    async def charge_live_fetches(event: str, data: dict) -> None:
+        if event != "cache_checked":
+            return
+        extra_units = preprocess_live_fetch_quota_units(data.get("missing_stems", 0))
+        if extra_units:
+            await enforce_daily_quota(auth, amount=extra_units)
+
+    result = await _preprocess_core(
+        text, KRDICT_CLIENT_ID, max_stems, progress_callback=charge_live_fetches
+    )
     return {
         "book_uri": book_uri,
         "spine_index": spine_index,
@@ -4223,7 +4368,7 @@ async def preprocess_chapter_en(payload: dict, auth: dict[str, Any] = Depends(ve
             },
         }
 
-    enforce_preprocess_text_limit(text)
+    enforce_text_limit(text, auth)
     await enforce_daily_quota(auth)
 
     print(
@@ -4273,7 +4418,7 @@ async def preprocess_chapter_zh(payload: dict, auth: dict[str, Any] = Depends(ve
             },
         }
 
-    enforce_preprocess_text_limit(text)
+    enforce_text_limit(text, auth)
     await enforce_daily_quota(auth)
 
     print(
@@ -4540,6 +4685,14 @@ async def assess_entry(payload: dict, auth: dict[str, Any] = Depends(verify_supa
     if not isinstance(body, str) or not body.strip():
         raise HTTPException(status_code=400, detail="body is required")
 
+    if len(body) > ENTRY_BODY_HARD_MAX_CHARS:
+        raise HTTPException(status_code=413, detail=f"body exceeds {ENTRY_BODY_HARD_MAX_CHARS} characters")
+
+    if not isinstance(prompt_text, str):
+        prompt_text = ""
+    if len(prompt_text) > ENTRY_PROMPT_MAX_CHARS:
+        raise HTTPException(status_code=413, detail=f"prompt exceeds {ENTRY_PROMPT_MAX_CHARS} characters")
+
     if category not in VALID_CATEGORIES:
         raise HTTPException(status_code=400, detail=f"category must be one of: {', '.join(sorted(VALID_CATEGORIES))}")
 
@@ -4548,13 +4701,21 @@ async def assess_entry(payload: dict, auth: dict[str, Any] = Depends(verify_supa
 
     if not isinstance(sandbox_words, list):
         sandbox_words = []
-    sandbox_words = [str(w) for w in sandbox_words if isinstance(w, str) and w.strip()][:10]
+    sandbox_words = [
+        w.strip()[:ENTRY_SANDBOX_WORD_MAX_CHARS]
+        for w in sandbox_words
+        if isinstance(w, str) and w.strip()
+    ][:10]
 
-    word_count = count_words(body.strip())
-    if word_count < ENTRY_MIN_WORDS:
-        raise HTTPException(status_code=422, detail=f"Entry is too short ({word_count} words). Write at least {ENTRY_MIN_WORDS} words.")
-    if word_count > ENTRY_MAX_WORDS:
-        raise HTTPException(status_code=422, detail=f"Entry is too long ({word_count} words). Keep it under {ENTRY_MAX_WORDS} words.")
+    # Chinese and Japanese have no spaces between words, so they are measured in
+    # characters (see limits.count_entry_length); other languages in words.
+    # The raw code, not language_code: "zh-hant" is coerced to "ko" above.
+    entry_length, length_unit = count_entry_length(body.strip(), str(payload.get("language", "ko")))
+    min_length, max_length = entry_length_bounds(length_unit)
+    if entry_length < min_length:
+        raise HTTPException(status_code=422, detail=f"Entry is too short ({entry_length} {length_unit}). Write at least {min_length} {length_unit}.")
+    if entry_length > max_length:
+        raise HTTPException(status_code=422, detail=f"Entry is too long ({entry_length} {length_unit}). Keep it under {max_length} {length_unit}.")
 
     await enforce_assessment_quota(auth["user_id"])
     await enforce_ai_budget()
@@ -4789,8 +4950,14 @@ async def _prepare_explain_request(payload: dict, auth: dict[str, Any]) -> _Expl
     req.target_language = normalize_scoring_language(payload.get("language", "ko"))
     req.interface_language = normalize_interface_language_code(payload.get("interface_language"))
 
-    enforce_text_limit(req.word, auth, field_name="word")
-    enforce_text_limit(req.sentence, auth, field_name="sentence")
+    # Dedicated limits: a tapped word and its sentence, not a document. An
+    # over-long sentence (old builds can send a whole OCR block) is clipped to a
+    # window around the word; only absurd sizes are refused.
+    if len(req.word) > EXPLAIN_WORD_MAX_CHARS:
+        raise HTTPException(status_code=413, detail=f"word exceeds {EXPLAIN_WORD_MAX_CHARS} characters")
+    if len(req.sentence) > EXPLAIN_SENTENCE_HARD_MAX_CHARS:
+        raise HTTPException(status_code=413, detail=f"sentence exceeds {EXPLAIN_SENTENCE_HARD_MAX_CHARS} characters")
+    req.sentence = clip_sentence_around_word(req.sentence, req.word, EXPLAIN_SENTENCE_MAX_CHARS)
 
     await enforce_daily_quota(auth)
 
@@ -4806,12 +4973,13 @@ async def _prepare_explain_request(payload: dict, auth: dict[str, Any]) -> _Expl
     if p_known is None:
         p_known = p_known_for(req.theta, req.word_difficulty)
     req.p_known = p_known
-    hanja = payload.get("hanja")
-    req.hanja = hanja.strip() if isinstance(hanja, str) and hanja.strip() else None
+    req.hanja = sanitize_hanja(payload.get("hanja"))
     req.anchor_words = _sanitize_anchor_words(payload.get("anchor_words"))
     # The client already looked this word up on-device; reuse that result to
-    # ground the explanation instead of re-querying. Shared across users for the
-    # same word, so — unlike anchor_words — it does not bust the response cache.
+    # ground the explanation instead of re-querying. It goes into the prompt, so
+    # it is fingerprinted into the cache key below; it comes from the bundled
+    # dictionary and is the same for every reader of a word, so (unlike
+    # anchor_words) the cache stays shared across users.
     req.dictionary_found, req.dictionary_senses = _sanitize_dictionary_grounding(payload.get("dictionary"))
     # The dictionary form the client's lookup resolved (e.g. 눕다 for 누워). When
     # sent, it is authoritative: the model is told to use it and the response
@@ -4835,6 +5003,13 @@ async def _prepare_explain_request(payload: dict, auth: dict[str, Any]) -> _Expl
     if req.known_lemma:
         lemma_hash = hashlib.sha256(_normalize_for_cache(req.known_lemma).encode("utf-8")).hexdigest()[:16]
         cache_key = f"{cache_key}:l{lemma_hash}"
+    # Client grounding (hanja + dictionary senses) also shapes the prompt, so a
+    # request carrying crafted grounding must not be able to write an answer that
+    # other readers of the same word+sentence are then served. Requests without
+    # grounding (older builds) get an empty fingerprint and keep their old key.
+    grounding_hash = explain_grounding_fingerprint(req.hanja, req.dictionary_found, req.dictionary_senses)
+    if grounding_hash:
+        cache_key = f"{cache_key}:g{grounding_hash}"
     req.cache_key = cache_key
     return req
 
