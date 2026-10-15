@@ -1,7 +1,12 @@
 import { useEffect, useState } from 'react';
-import { getProfileAbility, lookupBookLevelSurfaces } from '../services/Database';
+import {
+    getProfileAbility,
+    lookupBookLevelSurfaces,
+    lookupBookWordEvidence,
+} from '../services/Database';
 import { lowestUnderlinedRank } from '../services/abilityModel';
 import { buildLevelUnderlineTerms } from '../services/levelUnderlineTerms';
+import { summarizeEvidenceRows } from '../services/wordEvidence';
 
 /**
  * Load the graded-word underline snapshot for an indexed text (a book, or a
@@ -26,8 +31,11 @@ export const loadLevelUnderlineTerms = async ({ ownerId, bookUri, language }) =>
     if (floorRank == null) {
         return [];
     }
-    const rows = await lookupBookLevelSurfaces(ownerId, bookUri, floorRank, { language });
-    return buildLevelUnderlineTerms(rows, language, theta);
+    const [rows, evidenceRows] = await Promise.all([
+        lookupBookLevelSurfaces(ownerId, bookUri, floorRank, { language }),
+        lookupBookWordEvidence(ownerId, bookUri, { language }).catch(() => []),
+    ]);
+    return buildLevelUnderlineTerms(rows, language, theta, { evidence: summarizeEvidenceRows(evidenceRows) });
 };
 
 const useLevelUnderlineTerms = ({ ownerId, bookUri, language, refreshKey }) => {

@@ -6444,6 +6444,7 @@ export const lookupBookLevelSurfaces = (
         `SELECT bi.surface,
                 dc.stem,
                 dc.level_rank,
+                dc.difficulty_percentile,
                 dc.level_label,
                 dc.level_system,
                 dc.level_source,
@@ -6452,8 +6453,7 @@ export const lookupBookLevelSurfaces = (
          FROM dictionary_cache dc
          JOIN book_index bi ON bi.stem_id = dc.id
          WHERE dc.language = ?
-           AND dc.level_rank IS NOT NULL
-           AND dc.level_rank >= ?
+           AND (dc.level_rank IS NULL OR dc.level_rank >= ?)
            AND bi.owner_id = ?
            AND bi.profile_id = ?
            AND bi.book_uri = ?
@@ -6509,6 +6509,44 @@ export const lookupBookAnnotationSurfaces = (
         },
         (_, error) => {
           console.error('[Database] Error querying annotation surfaces from book_index:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+// Difficulty phase 2: what the reader has done with each of a book's words —
+// lookups (count + latest), exposures, graded reviews, saves — grouped per
+// stem, for services/wordEvidence.js. Only this profile's events for stems
+// that occur in the book.
+export const lookupBookWordEvidence = (ownerId, bookUri, scopeOrInterfaceLanguage = 'en', options = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const scope = normalizeDictionaryCacheScope(scopeOrInterfaceLanguage, options);
+  const scopedProfileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, scope.language);
+
+  return new Promise((resolve, reject) => {
+    if (!bookUri) {
+      return resolve([]);
+    }
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT e.stem, e.event_type, e.outcome, COUNT(*) AS n, MAX(e.created_at) AS last_at
+         FROM interaction_events e
+         WHERE e.owner_id = ?
+           AND e.profile_id = ?
+           AND e.language = ?
+           AND e.deleted_at IS NULL
+           AND e.stem IN (
+             SELECT dc.stem FROM book_index bi
+             JOIN dictionary_cache dc ON dc.id = bi.stem_id
+             WHERE bi.owner_id = ? AND bi.profile_id = ? AND bi.book_uri = ?
+           )
+         GROUP BY e.stem, e.event_type, e.outcome`,
+        [scopedOwnerId, scopedProfileId, scope.language, scopedOwnerId, scopedProfileId, bookUri],
+        (_, result) => resolve(result.rows._array),
+        (_, error) => {
+          console.error('[Database] Error querying word evidence for book:', error);
           reject(error);
         }
       );

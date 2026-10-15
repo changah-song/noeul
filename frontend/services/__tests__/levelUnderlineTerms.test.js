@@ -46,7 +46,7 @@ describe('buildLevelUnderlineTerms', () => {
     expect(ambiguous[0]).toEqual(hardOnly[0]);
   });
 
-  it('skips malformed rows and attaches pinyin when present', () => {
+  it('skips malformed rows, keeps ungraded words as hardest, and attaches pinyin', () => {
     const terms = buildLevelUnderlineTerms(
       [
         { surface: '', level_rank: 6 },
@@ -57,8 +57,40 @@ describe('buildLevelUnderlineTerms', () => {
       -3
     );
 
-    expect(terms).toHaveLength(1);
-    expect(terms[0].text).toBe('邂逅');
-    expect(terms[0].pinyin).toBe('xiè hòu');
+    expect(terms.map((t) => t.text).sort()).toEqual(['缘分', '邂逅']);
+    const ungraded = terms.find((t) => t.text === '缘分');
+    const hardestBand = terms.find((t) => t.text === '邂逅');
+    // Outside the graded lists: shaded like the hardest band.
+    expect(ungraded.weight).toBe(hardestBand.weight);
+    expect(hardestBand.pinyin).toBe('xiè hòu');
+  });
+
+  it('uses the difficulty percentile over the band when present', () => {
+    const theta = 0;
+    const [easyInBand] = buildLevelUnderlineTerms(
+      [{ surface: '가', level_rank: 4, difficulty_percentile: 0.55, stem_count: 1 }], 'ko', theta
+    );
+    const [hardInBand] = buildLevelUnderlineTerms(
+      [{ surface: '나', level_rank: 4, difficulty_percentile: 0.95, stem_count: 1 }], 'ko', theta
+    );
+    expect(hardInBand.weight).toBeGreaterThan(easyInBand.weight);
+  });
+
+  it('moves a word with the reader\'s own evidence', () => {
+    const theta = 0;
+    const row = { surface: '눕다', stem: '눕다', level_rank: 4, stem_count: 1 };
+    const now = Date.parse('2026-10-15T00:00:00Z');
+    const [plain] = buildLevelUnderlineTerms([row], 'ko', theta, { now });
+    const [lookedUp] = buildLevelUnderlineTerms([row], 'ko', theta, {
+      now,
+      evidence: new Map([['눕다', { lookups: 3, lastLookupAt: now, exposures: 0, reviewsGood: 0, reviewsBad: 0, saved: false }]]),
+    });
+    const recalled = buildLevelUnderlineTerms([row], 'ko', theta, {
+      now,
+      evidence: new Map([['눕다', { lookups: 0, lastLookupAt: null, exposures: 0, reviewsGood: 4, reviewsBad: 0, saved: false }]]),
+    });
+    expect(lookedUp.weight).toBeGreaterThan(plain.weight);
+    // Recalled four times in review: known well enough to lose its mark.
+    expect(recalled).toEqual([]);
   });
 });
