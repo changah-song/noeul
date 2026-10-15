@@ -21,7 +21,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import TopSection from '../Read/TopSection/TopSection';
 import FocusControls from '../Read/FocusControls';
 import SavedWordsPanel from '../Read/SavedWordsPanel';
-import ReaderOptionsMenu from '../Read/ReaderOptionsMenu';
+import ReaderSettingsSheet from '../Read/ReaderSettingsSheet';
 import {
     ReaderFocusModeButton,
     ReaderHeaderBar,
@@ -65,6 +65,9 @@ const SONG_READER_SETTINGS_KEY = 'songReaderSettings';
 const SONG_RESTORE_POSITION = { spineIndex: 0, pageIndex: 0 };
 // Stable empty reference so toggling underlines off doesn't churn native.
 const EMPTY_LEVEL_TERMS = [];
+// Lyrics have no read-fade or word-translation support yet, and pinyin has no
+// scope choice: the sheet shows only the rows the song reader acts on.
+const SONG_SHEET_FEATURES = { fadeReadMarks: false, glossAnnotations: false, annotationScope: false };
 
 // Word characters we treat as tappable/lookup-able across supported targets:
 // Hangul (jamo + syllables), Latin letters, digits, and CJK ideographs
@@ -261,6 +264,13 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         });
     }, [updateSettings]);
 
+    const resetSongWordSettings = useCallback(() => {
+        updateSettings({
+            levelMarkStyle: DEFAULT_SONG_READER_SETTINGS.levelMarkStyle,
+            pinyinAnnotations: DEFAULT_SONG_READER_SETTINGS.pinyinAnnotations,
+        });
+    }, [updateSettings]);
+
     const resetFocusSettings = useCallback(() => {
         updateSettings({
             focusSwipe: DEFAULT_SONG_READER_SETTINGS.focusSwipe,
@@ -421,6 +431,11 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     const nativeReaderThemeTokens = useMemo(() => createNativeReaderThemeTokens(colors), [colors]);
 
     const levelMarksEnabled = settings.levelMarkStyle !== 'off';
+    // Pinyin only draws while level marks are on, so the row hides with them.
+    const songSheetFeatures = useMemo(
+        () => ({ ...SONG_SHEET_FEATURES, pinyinAnnotations: levelMarksEnabled }),
+        [levelMarksEnabled]
+    );
     const readerLevelTerms = levelMarksEnabled ? levelUnderlineTerms : EMPTY_LEVEL_TERMS;
     const readerShowPinyin = songLanguage === 'zh' && settings.pinyinAnnotations && levelMarksEnabled;
     const overlay = brightnessOverlay(settings.brightness);
@@ -591,6 +606,23 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
             ]
         );
     }, [onSongDelete, song?.title, t]);
+
+    // Rows above the settings tabs in the sheet.
+    const songSheetActions = useMemo(() => [
+        {
+            key: 'edit',
+            label: t('song.editLyrics'),
+            icon: <Feather name="edit-3" size={19} color={colors.readerBodyInk} />,
+            onPress: openEditModal,
+        },
+        {
+            key: 'delete',
+            label: t('song.deleteTitle'),
+            icon: <Feather name="trash-2" size={19} color={colors.danger} />,
+            onPress: confirmDeleteSong,
+            destructive: true,
+        },
+    ], [colors.danger, colors.readerBodyInk, confirmDeleteSong, openEditModal, t]);
 
     // Hardware back steps out of transient chrome one layer at a time (menu,
     // then lookup panel) before Home's handler closes the song. Registered only
@@ -827,44 +859,21 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                 </View>
             </View>
 
-            <ReaderOptionsMenu
+            <ReaderSettingsSheet
                 visible={isMenuVisible}
                 onClose={() => setIsMenuVisible(false)}
-                top={insets.top + 48}
-                bottom={insets.bottom + 8}
-                styles={chrome}
-                themeColors={colors}
-                sectionTitle={t('song.readerSettings')}
-                settings={settings}
+                colors={colors}
+                insets={insets}
+                title={t('song.readerSettings')}
                 language={songLanguage}
+                settings={settings}
                 onSettingChange={handleSettingChange}
-                onResetSettings={resetSongSettings}
+                onResetTextSettings={resetSongSettings}
+                onResetWordSettings={resetSongWordSettings}
                 onResetFocusSettings={resetFocusSettings}
-            >
-                <TouchableOpacity
-                    style={chrome.checkpointsRow}
-                    onPress={openEditModal}
-                    activeOpacity={0.7}
-                    accessibilityRole="button"
-                >
-                    <View style={chrome.checkpointsRowLeft}>
-                        <Feather name="edit-3" size={19} color={colors.readerBodyInk} />
-                        <Text style={chrome.checkpointsLabel}>{t('song.editLyrics')}</Text>
-                    </View>
-                    <Feather name="chevron-right" size={20} color={colors.readerSubtleInk} />
-                </TouchableOpacity>
-                <TouchableOpacity
-                    style={[chrome.checkpointsRow, styles.menuRowTight]}
-                    onPress={confirmDeleteSong}
-                    activeOpacity={0.7}
-                    accessibilityRole="button"
-                >
-                    <View style={chrome.checkpointsRowLeft}>
-                        <Feather name="trash-2" size={19} color={colors.danger} />
-                        <Text style={[chrome.checkpointsLabel, styles.menuDangerText]}>{t('song.deleteTitle')}</Text>
-                    </View>
-                </TouchableOpacity>
-            </ReaderOptionsMenu>
+                actions={songSheetActions}
+                features={songSheetFeatures}
+            />
 
             <SavedWordsPanel
                 visible={showSavedPanel}
@@ -974,12 +983,6 @@ const createStyles = (colors) => StyleSheet.create({
         letterSpacing: 1.4,
         textTransform: 'uppercase',
         textAlign: 'center',
-    },
-    menuRowTight: {
-        marginTop: 0,
-    },
-    menuDangerText: {
-        color: colors.danger,
     },
     lyricsScroll: {
         flex: 1,
