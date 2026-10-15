@@ -162,6 +162,38 @@ class NativeEpubReaderModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("NativeEpubReader")
 
+    // Listen mode's notification / lock-screen player: { action } with one of
+    // play, pause, toggle, next, previous, stop.
+    Events("onListenControl")
+
+    OnCreate {
+      ListenSessionService.onControl = { action ->
+        sendEvent("onListenControl", mapOf("action" to action))
+      }
+    }
+
+    OnDestroy {
+      ListenSessionService.onControl = null
+    }
+
+    // Start or update the listen session's player (title, subtitle, playing).
+    Function("updateListenSession") { options: Map<String, Any?> ->
+      val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+      ListenSessionService.update(
+        context,
+        options["title"] as? String,
+        options["subtitle"] as? String,
+        options["playing"] as? Boolean,
+        // Empty string clears the art; absent leaves it as it is.
+        options["cover"] as? String
+      )
+    }
+
+    Function("stopListenSession") {
+      val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+      ListenSessionService.stop(context)
+    }
+
     AsyncFunction("extractPdfDocument") { options: Map<String, Any?> ->
       val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
       PdfDocumentExtractor(context).extract(options)
@@ -2195,20 +2227,25 @@ class NativeEpubReaderView(
     beginFocusExposureUnit()
   }
 
-  private fun moveFocus(direction: Int) {
+  // Step the beam. Returns what happened, for the focusNav command: the new
+  // sentence (same payload as the onFocusSentenceChange event) or the edge
+  // that was hit. View events wait for a screen frame, which never comes
+  // while the screen is off; listen mode reads the next sentence from this
+  // return value instead, so it keeps going on a locked phone.
+  private fun moveFocus(direction: Int): Map<String, Any> {
     if (!isFocusMode() || focusSentences.isEmpty()) {
-      return
+      return mapOf("moved" to false)
     }
 
     val maxIndex = (focusSentences.size - focusSpanCount).coerceAtLeast(0)
     val next = focusIndex + direction
     if (next < 0) {
       onChapterStart(mapOf<String, Any>())
-      return
+      return mapOf("moved" to false, "atStart" to true)
     }
     if (next > maxIndex) {
       onChapterEnd(mapOf<String, Any>())
-      return
+      return mapOf("moved" to false, "atEnd" to true)
     }
 
     val now = SystemClock.uptimeMillis()
@@ -2217,6 +2254,20 @@ class NativeEpubReaderView(
 
     clearActiveSelection(dispatchEvent = true, forceEvent = true)
     focusTo(next, animate = true, fast = rapid)
+    return focusStatePayload() + mapOf("moved" to true)
+  }
+
+  private fun focusStatePayload(): Map<String, Any> {
+    val event = mutableMapOf<String, Any>(
+      "index" to focusIndex,
+      "count" to focusSpanCount,
+      "total" to focusSentences.size
+    )
+    focusSpanText()?.let { (text, words) ->
+      event["text"] = text
+      event["levelWords"] = words
+    }
+    return event
   }
 
   fun extendSelection(direction: String): Boolean {
@@ -2233,10 +2284,11 @@ class NativeEpubReaderView(
     return view.extendSelectionBySentence(step)
   }
 
-  fun focusNav(direction: String) {
-    when (direction.lowercase()) {
+  fun focusNav(direction: String): Map<String, Any> {
+    return when (direction.lowercase()) {
       "next" -> moveFocus(1)
       "prev", "previous" -> moveFocus(-1)
+      else -> mapOf("moved" to false)
     }
   }
 
@@ -2453,16 +2505,7 @@ class NativeEpubReaderView(
   }
 
   private fun dispatchFocusState() {
-    val event = mutableMapOf<String, Any>(
-      "index" to focusIndex,
-      "count" to focusSpanCount,
-      "total" to focusSentences.size
-    )
-    focusSpanText()?.let { (text, words) ->
-      event["text"] = text
-      event["levelWords"] = words
-    }
-    onFocusSentenceChange(event)
+    onFocusSentenceChange(focusStatePayload())
   }
 
   // The focused sentences' text and the graded (underlined) words inside

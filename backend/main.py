@@ -9,6 +9,7 @@ import hashlib
 import unicodedata
 import ssl
 import httpx
+import logging
 import asyncio
 import anyio
 import xml.etree.ElementTree as ET
@@ -21,6 +22,16 @@ from functools import partial
 import certifi
 from dotenv import load_dotenv
 
+from song_search import (
+    GENIUS_SEARCH_URL,
+    LRCLIB_SEARCH_URL,
+    LRCLIB_USER_AGENT,
+    SongSearchCache,
+    genius_hit_to_song,
+    lrclib_result_to_song,
+    merge_song_results,
+    normalize_song_query,
+)
 from explain_graph import (
     ExplainGraphError,
     build_grounded_prompt,
@@ -805,6 +816,9 @@ app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_REQUEST_BODY_BYTES)
 KRDICT_CLIENT_ID = os.getenv("KOREAN_DICTIONARY_CLIENT_ID", "").strip()
 # Official Google Cloud Translation (v2) first; the RapidAPI reseller is the fallback.
 GOOGLE_CLOUD_TRANSLATE_API_KEY = os.getenv("GOOGLE_CLOUD_TRANSLATE_API_KEY", "").strip()
+# Optional: lets song search match a line of lyrics (Genius search). Without it
+# the song editor still searches titles and artists through LRCLIB.
+GENIUS_ACCESS_TOKEN = os.getenv("GENIUS_ACCESS_TOKEN", "").strip()
 GOOGLE_TRANSLATE_RAPIDAPI_KEY = os.getenv("GOOGLE_TRANSLATE_RAPIDAPI_KEY", "").strip()
 TRANSLATION_PROVIDERS = configured_translation_providers(
     GOOGLE_CLOUD_TRANSLATE_API_KEY, GOOGLE_TRANSLATE_RAPIDAPI_KEY
@@ -3539,6 +3553,81 @@ async def translate_and_cache_zh_preprocess(results: list[dict], interface_langu
         await asyncio.to_thread(_store_zh_translations, fresh, normalized_lang)
 
     return results
+
+
+_song_search_cache = SongSearchCache()
+_song_search_logger = logging.getLogger("noeul.song_search")
+SONG_SEARCH_PROVIDER_TIMEOUT_SECONDS = 8.0
+
+
+async def _lrclib_search(client: httpx.AsyncClient, params: dict[str, str]) -> list[dict[str, Any]]:
+    response = await client.get(
+        LRCLIB_SEARCH_URL,
+        params=params,
+        headers={"User-Agent": LRCLIB_USER_AGENT},
+        timeout=SONG_SEARCH_PROVIDER_TIMEOUT_SECONDS,
+    )
+    if response.status_code != 200:
+        return []
+    data = response.json()
+    if not isinstance(data, list):
+        return []
+    return [song for song in (lrclib_result_to_song(item) for item in data) if song]
+
+
+async def _genius_search(client: httpx.AsyncClient, query: str) -> list[dict[str, Any]]:
+    if not GENIUS_ACCESS_TOKEN:
+        return []
+    response = await client.get(
+        GENIUS_SEARCH_URL,
+        params={"q": query},
+        headers={"Authorization": f"Bearer {GENIUS_ACCESS_TOKEN}"},
+        timeout=SONG_SEARCH_PROVIDER_TIMEOUT_SECONDS,
+    )
+    if response.status_code != 200:
+        return []
+    hits = (response.json().get("response") or {}).get("hits") or []
+    songs = [song for song in (genius_hit_to_song(hit) for hit in hits) if song]
+    # Genius knows the song but not its lyrics; LRCLIB supplies them when it
+    # has the same title + artist. A few lookups at most per query.
+    completed: list[dict[str, Any]] = []
+    for song in songs[:3]:
+        try:
+            matches = await _lrclib_search(
+                client, {"track_name": song["title"], "artist_name": song["artist"]}
+            )
+        except Exception:
+            matches = []
+        match = next((m for m in matches if m.get("lyrics")), None)
+        if match:
+            completed.append({**song, **{k: match[k] for k in ("album", "duration", "lyrics", "synced")}})
+    return completed
+
+
+# Song editor suggestions: title / artist / (with a Genius token) a line of the
+# lyrics → songs with their full lyrics, so one tap fills the editor. Results
+# are cached per query because LRCLIB rate-limits sharply.
+@app.post("/songs/search/")
+async def search_songs(payload: dict, auth: dict[str, Any] = Depends(verify_supabase_token)):
+    query = normalize_song_query(payload.get("query"))
+    if not query:
+        return {"results": []}
+
+    cached = _song_search_cache.get(query)
+    if cached is not None:
+        return {"results": cached}
+
+    try:
+        async with httpx.AsyncClient() as client:
+            lrclib = await _lrclib_search(client, {"q": query})
+            genius = await _genius_search(client, query) if len(lrclib) < 3 else []
+    except Exception as error:
+        _song_search_logger.warning("song search failed for %r: %s", query, error)
+        raise HTTPException(status_code=503, detail="Song search is unavailable right now")
+
+    results = merge_song_results(lrclib, genius)
+    _song_search_cache.put(query, results)
+    return {"results": results}
 
 
 @app.post("/translate/")
