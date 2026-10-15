@@ -273,3 +273,48 @@ def test_known_lemma_overrides_model_lemma_and_skips_lemma_check():
     assert len(calls) == 1
     assert "<lemma>" not in calls[0]["system"]
     assert "눕다" in calls[0]["system"]
+
+
+def test_failed_refine_keeps_the_draft_usage_for_spend_accounting():
+    draft_usage = {"input_tokens": 100, "output_tokens": 50}
+    calls = []
+
+    def caller(system, user):
+        calls.append(system)
+        if len(calls) == 1:
+            return BAD_GLOSS, draft_usage
+        raise TimeoutError("refine timed out")
+
+    with pytest.raises(g.ExplainGraphError) as excinfo:
+        _run(caller, p_known=0.1)
+    assert excinfo.value.usages == [draft_usage]
+    assert isinstance(excinfo.value.__cause__, TimeoutError)
+
+
+def test_failed_first_call_reports_no_usages():
+    def caller(system, user):
+        raise ConnectionError("down")
+
+    with pytest.raises(g.ExplainGraphError) as excinfo:
+        _run(caller)
+    assert excinfo.value.usages == []
+
+
+class _Snapshot:
+    usage = {"input_tokens": 120, "output_tokens": 7}
+
+
+class _StreamWithSnapshot:
+    current_message_snapshot = _Snapshot()
+
+
+class _StreamBeforeMessageStart:
+    @property
+    def current_message_snapshot(self):
+        raise AssertionError("no message_start yet")
+
+
+def test_stream_snapshot_usage():
+    assert g.stream_snapshot_usage(_StreamWithSnapshot()) == _Snapshot.usage
+    assert g.stream_snapshot_usage(_StreamBeforeMessageStart()) is None
+    assert g.stream_snapshot_usage(None) is None

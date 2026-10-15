@@ -1,5 +1,5 @@
 # Minimal dependencies for the CI test job (.github/workflows/ci.yml).
-# The full requirements.txt pulls in KoNLPy, spaCy and Java-backed taggers that
+# The full requirements.txt pulls in spaCy, Kiwi and other NLP packages that
 # the tests don't need. Keep numpy in sync with requirements.txt.
 pytest==8.3.4
 numpy==2.4.2
