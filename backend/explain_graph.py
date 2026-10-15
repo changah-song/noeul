@@ -191,7 +191,7 @@ _LEMMA_TAG = """<lemma>The dictionary base form of the tapped word, in {target}:
 """
 
 _GLOSS_EXPLANATION_TAGS = """<gloss>A clean standalone definition in {interface}, at most 5 words, no full sentence. This is saved as the learner's flashcard.</gloss>
-<explanation>2-3 short sentences in {interface} on the word as used in this sentence: its specific sense here; if the surface form differs from the base form, what the ending or inflection adds; any nuance it carries. Stay concrete and tied to this sentence — not a generic dictionary entry.</explanation>"""
+<explanation>One or two short sentences in {interface}, 30 words at most: just the main point — what the word means in THIS sentence. Mention the ending or inflection only when it changes the meaning. No preamble, no generic dictionary entry.</explanation>"""
 
 # Full contract (the model supplies the base form), and the short one used when
 # the client already resolved the dictionary form: the model then skips <lemma>,
