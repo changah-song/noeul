@@ -68,10 +68,10 @@ export const sendSeekToPosition = (viewTag, position) => (
 // previous, stop.
 export const supportsListenSession = typeof NativeModule?.updateListenSession === 'function';
 
-export const updateListenSession = ({ title, subtitle, playing } = {}) => {
+export const updateListenSession = ({ title, subtitle, playing, cover } = {}) => {
     if (!supportsListenSession) return;
     try {
-        NativeModule.updateListenSession({ title, subtitle, playing });
+        NativeModule.updateListenSession({ title, subtitle, playing, cover });
     } catch (error) {
         console.warn('[NativeEpubReader] listen session update failed:', error?.message ?? error);
     }

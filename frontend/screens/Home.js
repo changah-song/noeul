@@ -29,6 +29,7 @@ import { IconButton, Screen } from '../components/ui';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
+import { searchSongs } from '../services/api/songSearch';
 import {
     colors,
     elevation,
@@ -1632,6 +1633,11 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     }, [selectedSongId]);
     const [showAddSongModal, setShowAddSongModal] = useState(false);
     const [songDraft, setSongDraft] = useState(EMPTY_SONG_DRAFT);
+    // Song suggestions while the reader types a title, artist or line of
+    // lyrics in the editor; a tap fills the draft, which stays editable.
+    const [songSearch, setSongSearch] = useState({ query: '', results: [], status: 'idle' });
+    const songSearchTimerRef = useRef(null);
+    const songSearchRequestRef = useRef(0);
     const [ocrStatus, setOcrStatus] = useState(EMPTY_OCR_STATUS);
     const [ocrBusy, setOcrBusy] = useState(false);
     // Status / permission / start-failure feedback for the floating OCR toggle,
@@ -3453,17 +3459,68 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         t,
     ]);
 
+    const resetSongSearch = useCallback(() => {
+        if (songSearchTimerRef.current) {
+            clearTimeout(songSearchTimerRef.current);
+            songSearchTimerRef.current = null;
+        }
+        songSearchRequestRef.current += 1;
+        setSongSearch({ query: '', results: [], status: 'idle' });
+    }, []);
+
+    const handleSongSearchChange = useCallback((query) => {
+        if (songSearchTimerRef.current) {
+            clearTimeout(songSearchTimerRef.current);
+            songSearchTimerRef.current = null;
+        }
+        const trimmed = query.trim();
+        if (trimmed.length < 2) {
+            songSearchRequestRef.current += 1;
+            setSongSearch({ query, results: [], status: 'idle' });
+            return;
+        }
+        setSongSearch((prev) => ({ ...prev, query, status: 'loading' }));
+        // Debounced: the lyrics provider rate-limits, and a keystroke is not a query.
+        songSearchTimerRef.current = setTimeout(async () => {
+            const requestId = ++songSearchRequestRef.current;
+            try {
+                const results = await searchSongs({ query: trimmed, language: targetLanguage });
+                if (requestId !== songSearchRequestRef.current) return;
+                setSongSearch((prev) => ({ ...prev, results, status: 'done' }));
+            } catch (error) {
+                if (requestId !== songSearchRequestRef.current) return;
+                console.warn('[Home] song search failed:', error?.message ?? error);
+                setSongSearch((prev) => ({ ...prev, results: [], status: 'error' }));
+            }
+        }, 600);
+    }, [targetLanguage]);
+
+    const handlePickSongSuggestion = useCallback((song) => {
+        setSongDraft({
+            title: String(song?.title || ''),
+            artist: String(song?.artist || ''),
+            lyrics: String(song?.lyrics || ''),
+        });
+        resetSongSearch();
+    }, [resetSongSearch]);
+
+    useEffect(() => () => {
+        if (songSearchTimerRef.current) clearTimeout(songSearchTimerRef.current);
+    }, []);
+
     const handleAddSong = useCallback(() => {
         setSongDraft(EMPTY_SONG_DRAFT);
+        resetSongSearch();
         setShowAddSongModal(true);
-    }, []);
+    }, [resetSongSearch]);
 
     const songEditorCanSave = songDraft.title.trim().length > 0 && songDraft.lyrics.trim().length > 0;
 
     const handleCancelSongAdd = useCallback(() => {
         setShowAddSongModal(false);
         setSongDraft(EMPTY_SONG_DRAFT);
-    }, []);
+        resetSongSearch();
+    }, [resetSongSearch]);
 
     const handleSubmitSong = useCallback(() => {
         const title = songDraft.title.trim();
@@ -4431,6 +4488,53 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
                         keyboardVerticalOffset={safeAreaInsets.top}
                     >
+                        <View style={styles.songSearchRow}>
+                            <Feather name="search" size={16} color={HOME_COLORS.secondary} />
+                            <TextInput
+                                value={songSearch.query}
+                                onChangeText={handleSongSearchChange}
+                                style={styles.songSearchInput}
+                                placeholder={t('home.songSearchPlaceholder')}
+                                placeholderTextColor={HOME_COLORS.faint}
+                                returnKeyType="search"
+                                autoCorrect={false}
+                                multiline={false}
+                                numberOfLines={1}
+                            />
+                            {songSearch.status === 'loading' ? (
+                                <ActivityIndicator size="small" color={HOME_COLORS.secondary} />
+                            ) : null}
+                        </View>
+                        {songSearch.status === 'done' && songSearch.results.length > 0 ? (
+                            <ScrollView
+                                style={styles.songSearchResults}
+                                keyboardShouldPersistTaps="handled"
+                                nestedScrollEnabled
+                            >
+                                {songSearch.results.map((song) => (
+                                    <TouchableOpacity
+                                        key={song.id}
+                                        style={styles.songSearchResult}
+                                        onPress={() => handlePickSongSuggestion(song)}
+                                        activeOpacity={Motion.pressedOpacity}
+                                        accessibilityRole="button"
+                                        accessibilityLabel={t('home.songSearchUse')}
+                                    >
+                                        <Text style={styles.songSearchResultTitle} numberOfLines={1}>{song.title}</Text>
+                                        <Text style={styles.songSearchResultMeta} numberOfLines={1}>
+                                            {[song.artist, song.album].filter(Boolean).join(' · ')}
+                                        </Text>
+                                    </TouchableOpacity>
+                                ))}
+                            </ScrollView>
+                        ) : null}
+                        {songSearch.status === 'done' && songSearch.results.length === 0 ? (
+                            <Text style={styles.songSearchNotice}>{t('home.songSearchEmpty')}</Text>
+                        ) : null}
+                        {songSearch.status === 'error' ? (
+                            <Text style={styles.songSearchNotice}>{t('home.songSearchFailed')}</Text>
+                        ) : null}
+
                         <TextInput
                             value={songDraft.title}
                             onChangeText={(title) => setSongDraft((prev) => ({ ...prev, title }))}
@@ -6035,6 +6139,61 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         flex: 1,
         paddingHorizontal: spacing.xl,
         paddingTop: spacing.sm,
+    },
+    songSearchRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: spacing.sm,
+        paddingHorizontal: spacing.md,
+        paddingVertical: spacing.xs,
+        borderWidth: 1,
+        borderColor: HOME_COLORS.border,
+        borderRadius: radii.pill,
+        backgroundColor: HOME_COLORS.surface,
+        marginBottom: spacing.md,
+    },
+    songSearchInput: {
+        flex: 1,
+        fontFamily: fontFamilies.krSerifRegular,
+        fontSize: 15,
+        lineHeight: 20,
+        color: HOME_COLORS.text,
+        paddingVertical: spacing.xs,
+        includeFontPadding: false,
+    },
+    songSearchResults: {
+        maxHeight: 280,
+        borderWidth: 1,
+        borderColor: HOME_COLORS.border,
+        borderRadius: 14,
+        backgroundColor: HOME_COLORS.surface,
+        marginBottom: spacing.md,
+    },
+    songSearchResult: {
+        paddingHorizontal: spacing.md,
+        paddingVertical: spacing.sm,
+        borderBottomWidth: StyleSheet.hairlineWidth,
+        borderBottomColor: HOME_COLORS.divider,
+    },
+    songSearchResultTitle: {
+        fontFamily: fontFamilies.krSerifSemiBold,
+        fontSize: 16,
+        lineHeight: 22,
+        color: HOME_COLORS.text,
+    },
+    songSearchResultMeta: {
+        fontFamily: fontFamilies.krSerifRegular,
+        fontSize: 13,
+        lineHeight: 18,
+        color: HOME_COLORS.secondary,
+        marginTop: 2,
+    },
+    songSearchNotice: {
+        fontFamily: fontFamilies.krSerifRegular,
+        fontSize: 13,
+        lineHeight: 18,
+        color: HOME_COLORS.secondary,
+        marginBottom: spacing.md,
     },
     songEditorTitleInput: {
         fontFamily: fontFamilies.krSerifSemiBold,

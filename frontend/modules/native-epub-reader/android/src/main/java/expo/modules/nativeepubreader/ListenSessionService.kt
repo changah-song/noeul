@@ -8,7 +8,15 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.util.Base64
+import java.net.URL
+import java.util.concurrent.Executors
 import android.os.IBinder
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
@@ -36,6 +44,13 @@ class ListenSessionService : Service() {
   private var subtitle = ""
   private var playing = false
   private var inForeground = false
+  // The book's cover, shown as the player's art on the shade and the lock
+  // screen. Decoded off the main thread; the source string that produced it
+  // is kept so an update with the same cover does not decode it again.
+  private var coverUri: String? = null
+  private var coverBitmap: Bitmap? = null
+  private val coverExecutor = Executors.newSingleThreadExecutor()
+  private val mainHandler = Handler(Looper.getMainLooper())
 
   override fun onBind(intent: Intent?): IBinder? = null
 
@@ -60,6 +75,7 @@ class ListenSessionService : Service() {
         intent.getStringExtra(EXTRA_TITLE)?.let { title = it }
         intent.getStringExtra(EXTRA_SUBTITLE)?.let { subtitle = it }
         if (intent.hasExtra(EXTRA_PLAYING)) playing = intent.getBooleanExtra(EXTRA_PLAYING, playing)
+        if (intent.hasExtra(EXTRA_COVER)) loadCover(intent.getStringExtra(EXTRA_COVER))
         publish()
       }
       ACTION_CONTROL -> {
@@ -87,7 +103,55 @@ class ListenSessionService : Service() {
     mediaSession?.isActive = false
     mediaSession?.release()
     mediaSession = null
+    coverExecutor.shutdownNow()
     super.onDestroy()
+  }
+
+  // Decode the cover (a file / content URI, a plain path, a data: URI or an
+  // http(s) URL) at a size fit for the player, then republish with it.
+  private fun loadCover(source: String?) {
+    val next = source?.trim().takeUnless { it.isNullOrEmpty() }
+    if (next == coverUri) return
+    coverUri = next
+    coverBitmap = null
+    if (next == null) return
+    coverExecutor.execute {
+      val bitmap = try {
+        decodeCover(next)
+      } catch (_: Exception) {
+        null
+      }
+      mainHandler.post {
+        if (coverUri == next) {
+          coverBitmap = bitmap
+          if (bitmap != null && mediaSession != null) publish()
+        }
+      }
+    }
+  }
+
+  private fun decodeCover(source: String): Bitmap? {
+    val bytes: ByteArray = when {
+      source.startsWith("data:") -> {
+        val comma = source.indexOf(',')
+        if (comma < 0) return null
+        Base64.decode(source.substring(comma + 1), Base64.DEFAULT)
+      }
+      source.startsWith("http://") || source.startsWith("https://") ->
+        URL(source).openStream().use { it.readBytes() }
+      source.startsWith("content://") ->
+        contentResolver.openInputStream(Uri.parse(source))?.use { it.readBytes() } ?: return null
+      else -> {
+        val path = if (source.startsWith("file://")) Uri.parse(source).path ?: return null else source
+        java.io.File(path).takeIf { it.exists() }?.readBytes() ?: return null
+      }
+    }
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    var sample = 1
+    while (bounds.outWidth / sample > COVER_MAX_PX * 2 || bounds.outHeight / sample > COVER_MAX_PX * 2) sample *= 2
+    val options = BitmapFactory.Options().apply { inSampleSize = sample }
+    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
   }
 
   private fun control(action: String) {
@@ -111,6 +175,12 @@ class ListenSessionService : Service() {
       MediaMetadataCompat.Builder()
         .putString(MediaMetadataCompat.METADATA_KEY_TITLE, title)
         .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, subtitle)
+        .apply {
+          coverBitmap?.let {
+            putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, it)
+            putBitmap(MediaMetadataCompat.METADATA_KEY_ART, it)
+          }
+        }
         .build()
     )
     session.setPlaybackState(
@@ -159,6 +229,7 @@ class ListenSessionService : Service() {
 
     return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
       .setSmallIcon(smallIcon)
+      .setLargeIcon(coverBitmap)
       .setContentTitle(title)
       .setContentText(subtitle)
       .setContentIntent(openApp)
@@ -213,16 +284,19 @@ class ListenSessionService : Service() {
     private const val EXTRA_TITLE = "title"
     private const val EXTRA_SUBTITLE = "subtitle"
     private const val EXTRA_PLAYING = "playing"
+    private const val EXTRA_COVER = "cover"
+    private const val COVER_MAX_PX = 640
     private const val EXTRA_CONTROL = "control"
     private const val NOTIFICATION_CHANNEL_ID = "noeul_listen"
     private const val NOTIFICATION_ID = 7421
 
     // Start the session or update its title / subtitle / playing state.
-    fun update(context: Context, title: String?, subtitle: String?, playing: Boolean?) {
+    fun update(context: Context, title: String?, subtitle: String?, playing: Boolean?, cover: String? = null) {
       val intent = Intent(context, ListenSessionService::class.java).setAction(ACTION_UPDATE)
       title?.let { intent.putExtra(EXTRA_TITLE, it) }
       subtitle?.let { intent.putExtra(EXTRA_SUBTITLE, it) }
       playing?.let { intent.putExtra(EXTRA_PLAYING, it) }
+      cover?.let { intent.putExtra(EXTRA_COVER, it) }
       try {
         ContextCompat.startForegroundService(context, intent)
       } catch (_: Exception) {
