@@ -6,9 +6,9 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.net.Uri
@@ -27,6 +27,8 @@ import android.view.animation.PathInterpolator
 import java.text.BreakIterator
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -100,11 +102,10 @@ private data class SelectionHighlightVerticalMetrics(
   val bottom: Float
 )
 
-// Read marks: how long the switch to the "read" style takes, how much of the
-// saved-word box fill remains, and how strong its crosshatch is.
+// How long a mark takes to dissolve into its "read" checkerboard.
 private const val READ_TRANSITION_MS = 700f
-private const val READ_BOX_FILL = 0.18f
-private const val READ_HATCH_ALPHA = 0.5f
+// Opacity the kept checkerboard pixels of a saved-word box end at.
+private const val READ_PIXEL_ALPHA = 0.35f
 // Sliding glosses: pause at each end, then slide at this speed (dp/s).
 private const val MARQUEE_PAUSE_MS = 1400L
 // Parenthesised and bracketed asides in dictionary senses: "(CL:个[ge4])",
@@ -342,6 +343,7 @@ class EpubPageView(context: Context) : View(context) {
   override fun onDraw(canvas: Canvas) {
     marqueeTickScheduled = false
     readAnimationPending = false
+    drawingOnScreen = isShown && getGlobalVisibleRect(visibleRect)
     canvas.drawColor(pageBackgroundColor)
     val contentWidth = width - (paddingH * 2)
     if (contentWidth <= 0) return
@@ -474,25 +476,43 @@ class EpubPageView(context: Context) : View(context) {
   // crosshatch. The change is animated the first time a mark is drawn as read
   // (keyed per range, cleared when the view shows another page), so turning
   // or scrolling back shows the marks settling into their "done" look.
-  private val readTransitions = HashMap<String, Long>()
+  private val readTransitions = HashMap<Long, Long>()
   private var readAnimationPending = false
-  private val readDashEffect by lazy {
-    DashPathEffect(floatArrayOf(dp(2f).toFloat(), dp(3f).toFloat()), 0f)
-  }
+  // Whether this view is actually on screen for the current draw. ViewPager2
+  // records the neighbouring pages' display lists off screen; a transition
+  // started there would finish unseen, so off-screen draws show marks as
+  // unread and the dissolve runs once the page is in front of the reader.
+  private var drawingOnScreen = true
+  private val visibleRect = Rect()
   private val underlinePath = Path()
-  private val hatchPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-    style = Paint.Style.STROKE
-    strokeWidth = dp(1f).toFloat()
+  // Read marks are drawn as a grid of square "pixels" (no anti-aliasing, so
+  // the cells stay crisp). A mark settles into a checkerboard: the odd cells
+  // drop out one by one in a fixed pseudo-random order as the transition runs.
+  private val pixelPaint = Paint().apply { style = Paint.Style.FILL }
+  private val pixelRect = RectF()
+  private val pixelSize: Int by lazy { dp(3f).coerceAtLeast(2) }
+
+  // Whether a grid cell is still drawn at this point of the dissolve. Even
+  // cells (the checkerboard) always stay; odd cells leave in hash order.
+  private fun pixelKept(ix: Int, iy: Int, progress: Float): Boolean {
+    if ((ix + iy) and 1 == 0) return true
+    val hash = ((ix * 73856093) xor (iy * 19349663)) and 0xffff
+    return hash / 65535f >= progress
   }
 
   // 0 = not read, 1 = read and settled, in between while animating.
   private fun readProgress(range: TextRange): Float {
     val read = isRangeRead?.invoke(range) == true
-    val key = "${range.blockId}:${range.sourceStartOffset}:${range.sourceEndOffset}"
+    // Block id hash in the high word, the source span in the low word; no
+    // string building on a path that runs for every mark on every frame.
+    val key = (range.blockId.hashCode().toLong() shl 32) or
+      ((range.sourceStartOffset.toLong() and 0xffff) shl 16) or
+      (range.sourceEndOffset.toLong() and 0xffff)
     if (!read) {
       readTransitions.remove(key)
       return 0f
     }
+    if (!drawingOnScreen && !readTransitions.containsKey(key)) return 0f
     val now = SystemClock.uptimeMillis()
     val startedAt = readTransitions.getOrPut(key) { now }
     val progress = ((now - startedAt).toFloat() / READ_TRANSITION_MS).coerceIn(0f, 1f)
@@ -1921,20 +1941,10 @@ class EpubPageView(context: Context) : View(context) {
       if (paint === levelMarkPaint) {
         if (range.annotationOnly) return@forEach
         applyLevelUnderlineShade(paint, range.levelWeight, range.levelReinforced)
-        val progress = readProgress(range)
-        val baseAlpha = paint.alpha
-        if (progress < 1f) {
-          paint.alpha = (baseAlpha * (1f - progress)).roundToInt()
-          drawLevelUnderline(canvas, layout, localStart, localEnd, blockTextLength, paint)
-        }
-        if (progress > 0f) {
-          // Read past: the same colour as a dotted line.
-          paint.alpha = (baseAlpha * progress).roundToInt()
-          paint.pathEffect = readDashEffect
-          drawLevelUnderline(canvas, layout, localStart, localEnd, blockTextLength, paint)
-          paint.pathEffect = null
-        }
-        paint.alpha = baseAlpha
+        drawLevelUnderline(
+          canvas, layout, localStart, localEnd, blockTextLength, paint,
+          dissolve = readProgress(range)
+        )
         return@forEach
       }
 
@@ -1979,10 +1989,7 @@ class EpubPageView(context: Context) : View(context) {
     val safeStart = localStart.coerceIn(0, textLength)
     val safeEnd = localEnd.coerceIn(safeStart, textLength)
     if (safeStart >= safeEnd || layout.lineCount <= 0) return
-    val baseAlpha = paint.alpha
-    if (readProgress > 0f) {
-      paint.alpha = (baseAlpha * (1f - readProgress * (1f - READ_BOX_FILL))).roundToInt()
-    }
+
 
     val startLine = layout.getLineForOffset(safeStart)
     val endLine = layout.getLineForOffset(max(safeStart, safeEnd - 1))
@@ -2033,29 +2040,36 @@ class EpubPageView(context: Context) : View(context) {
       if (bottom <= top) continue
 
       selectionLineRect.set(left, top, right, bottom)
-      canvas.drawRoundRect(selectionLineRect, cornerRadius, cornerRadius, paint)
       if (readProgress > 0f) {
-        drawCrosshatch(canvas, selectionLineRect, cornerRadius, paint.color, readProgress)
+        drawPixelDissolve(canvas, selectionLineRect, cornerRadius, paint, readProgress)
+      } else {
+        canvas.drawRoundRect(selectionLineRect, cornerRadius, cornerRadius, paint)
       }
     }
-    paint.alpha = baseAlpha
   }
 
-  // Diagonal lines both ways inside a rounded box, in the box's colour.
-  private fun drawCrosshatch(canvas: Canvas, rect: RectF, radius: Float, color: Int, strength: Float) {
-    hatchPaint.color = color
-    hatchPaint.alpha = (READ_HATCH_ALPHA * 255 * strength).roundToInt()
+  // The box as a grid of pixels inside its rounded outline, dissolving into a
+  // checkerboard as progress runs 0 -> 1.
+  private fun drawPixelDissolve(canvas: Canvas, rect: RectF, radius: Float, paint: Paint, progress: Float) {
+    pixelPaint.color = paint.color
+    // The remaining pixels also thin out, so the body text under a dark
+    // saved-word box stays readable once the light text has faded.
+    pixelPaint.alpha = (paint.alpha * (1f - progress * (1f - READ_PIXEL_ALPHA))).roundToInt()
     highlightPath.reset()
     highlightPath.addRoundRect(rect, radius, radius, Path.Direction.CW)
     val save = canvas.save()
     canvas.clipPath(highlightPath)
-    val step = dp(5f).toFloat()
-    val size = max(rect.width(), rect.height())
-    var offset = -size
-    while (offset < rect.width() + size) {
-      canvas.drawLine(rect.left + offset, rect.bottom, rect.left + offset + size, rect.bottom - size, hatchPaint)
-      canvas.drawLine(rect.left + offset, rect.top, rect.left + offset + size, rect.top + size, hatchPaint)
-      offset += step
+    val cell = pixelSize
+    val firstX = floor(rect.left / cell).toInt()
+    val lastX = ceil(rect.right / cell).toInt()
+    val firstY = floor(rect.top / cell).toInt()
+    val lastY = ceil(rect.bottom / cell).toInt()
+    for (iy in firstY until lastY) {
+      for (ix in firstX until lastX) {
+        if (!pixelKept(ix, iy, progress)) continue
+        pixelRect.set(ix * cell.toFloat(), iy * cell.toFloat(), (ix + 1) * cell.toFloat(), (iy + 1) * cell.toFloat())
+        canvas.drawRect(pixelRect, pixelPaint)
+      }
     }
     canvas.restoreToCount(save)
   }
@@ -2248,7 +2262,10 @@ class EpubPageView(context: Context) : View(context) {
     localStart: Int,
     localEnd: Int,
     textLength: Int,
-    paint: Paint
+    paint: Paint,
+    // 0 draws a solid line; above 0 the line is a row of pixels whose odd
+    // cells drop out, ending as a dotted line at 1.
+    dissolve: Float = 0f
   ) {
     val safeStart = localStart.coerceIn(0, textLength)
     val safeEnd = localEnd.coerceIn(safeStart, textLength)
@@ -2267,10 +2284,24 @@ class EpubPageView(context: Context) : View(context) {
       val left = min(startX, endX)
       val right = max(startX, endX)
       val underlineY = layout.getLineBaseline(line).toFloat() + dp(3f)
-      underlinePath.reset()
-      underlinePath.moveTo(left, underlineY)
-      underlinePath.lineTo(right, underlineY)
-      canvas.drawPath(underlinePath, paint)
+      if (dissolve <= 0f) {
+        underlinePath.reset()
+        underlinePath.moveTo(left, underlineY)
+        underlinePath.lineTo(right, underlineY)
+        canvas.drawPath(underlinePath, paint)
+        continue
+      }
+      pixelPaint.color = paint.color
+      pixelPaint.alpha = paint.alpha
+      val cell = pixelSize
+      val top = underlineY - paint.strokeWidth / 2f
+      val bottom = top + paint.strokeWidth
+      val iy = floor(top / cell).toInt()
+      for (ix in floor(left / cell).toInt() until ceil(right / cell).toInt()) {
+        if (!pixelKept(ix, iy, dissolve)) continue
+        pixelRect.set(max(left, ix * cell.toFloat()), top, min(right, (ix + 1) * cell.toFloat()), bottom)
+        canvas.drawRect(pixelRect, pixelPaint)
+      }
     }
   }
 
