@@ -23,6 +23,38 @@ describe('annotationsBySurface fallback', () => {
   });
 });
 
+describe('annotationsBySurface compounds', () => {
+  it('joins the components of a compound in reading order', () => {
+    const compound = [
+      { surface: '공동묘지', stem: '묘지', definition: 'graveyard', interface_language: 'en' },
+      { surface: '공동묘지', stem: '공동', definition: 'joint', interface_language: 'en' },
+      { surface: '근로자문화예술제에서', stem: '근로자', definition: 'worker', interface_language: 'en' },
+      { surface: '근로자문화예술제에서', stem: '예술제', definition: 'arts festival', interface_language: 'en' },
+      { surface: '근로자문화예술제에서', stem: '문화', definition: 'culture', interface_language: 'en' },
+    ];
+    const index = annotationsBySurface(compound, 'en');
+    expect(index.get('공동묘지').gloss).toBe('joint · graveyard');
+    expect(index.get('근로자문화예술제에서').gloss).toBe('worker · culture · arts festival');
+  });
+
+  it('keeps one gloss for alternatives of the same span and for a whole-surface stem', () => {
+    const alternatives = [
+      { surface: '길', stem: '길', definition: 'road', interface_language: 'en' },
+      { surface: '길', stem: '길다', definition: 'to be long', interface_language: 'en' },
+      { surface: '김선희', stem: '김선희', definition: 'Kim Seon-hui', interface_language: 'en' },
+      { surface: '김선희', stem: '김선', definition: 'Kim Seon', interface_language: 'en' },
+      { surface: '김선희', stem: '희', definition: 'hope', interface_language: 'en' },
+      { surface: '날아올랐다', stem: '날다', definition: 'to fly', interface_language: 'en' },
+      { surface: '날아올랐다', stem: '오르다', definition: 'to rise', interface_language: 'en' },
+    ];
+    const index = annotationsBySurface(alternatives, 'en');
+    expect(index.get('길').gloss).toBe('road');
+    expect(index.get('김선희').gloss).toBe('Kim Seon-hui');
+    // Conjugated parts do not appear literally, so no join is attempted.
+    expect(index.get('날아올랐다').gloss).toBe('to fly');
+  });
+});
+
 describe('buildAnnotatedLevelTerms', () => {
   it('passes level terms through untouched when annotations are off', () => {
     expect(buildAnnotatedLevelTerms({ levelTerms, annotationRows: rows })).toBe(levelTerms);

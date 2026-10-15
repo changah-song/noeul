@@ -91,6 +91,8 @@ const NativeEpubReaderView = forwardRef(({
     // open. Underlines before it are drawn faded while fadeReadMarks is on.
     readThrough = null,
     fadeReadMarks = true,
+    // Keep the screen on (listen mode).
+    keepScreenOn = false,
     clearSelectionToken = 0,
     focusSentenceCount = 1,
     focusSwipeEnabled = false,
@@ -206,6 +208,7 @@ const NativeEpubReaderView = forwardRef(({
             showGloss={!!showGloss}
             readThrough={readThrough || {}}
             fadeReadMarks={fadeReadMarks !== false}
+            keepScreenOn={!!keepScreenOn}
             clearSelectionToken={clearSelectionToken}
             focusSentenceCount={focusSentenceCount}
             focusSwipeEnabled={focusSwipeEnabled}

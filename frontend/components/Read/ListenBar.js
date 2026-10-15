@@ -5,20 +5,20 @@ import { useTranslation } from '../../hooks/useTranslation';
 import { LISTEN_RATES } from '../../services/listenPlayer';
 
 // Listen-mode transport: previous / play-pause / next, the speed chip, and the
-// study toggles (stop on underlined words; add the AI meaning). Sits where the
-// focus arrows normally are and lifts with the dictionary panel the same way.
+// study toggles (stop on underlined words; read each sentence's translation).
+// Sits where the focus arrows normally are and lifts with the dictionary
+// panel the same way.
 const ListenBar = ({
     playing,
     rate,
     explainWords,
-    aiMeaning,
-    aiAvailable,
+    translateSentences,
     onTogglePlay,
     onPrevious,
     onNext,
     onCycleRate,
     onToggleExplain,
-    onToggleAi,
+    onToggleTranslate,
     onClose,
     bottom,
     translateY,
@@ -86,22 +86,20 @@ const ListenBar = ({
                         color={explainWords ? themeColors.readerPaper : themeColors.readerBodyInk}
                     />
                 </TouchableOpacity>
-                {explainWords && aiAvailable ? (
-                    <TouchableOpacity
-                        style={[styles.listenChip, aiMeaning ? styles.listenChipActive : null]}
-                        onPress={onToggleAi}
-                        activeOpacity={0.72}
-                        accessibilityRole="switch"
-                        accessibilityState={{ checked: !!aiMeaning }}
-                        accessibilityLabel={t('read.listenAi')}
-                    >
-                        <MaterialIcons
-                            name="auto-awesome"
-                            size={16}
-                            color={aiMeaning ? themeColors.readerPaper : themeColors.readerBodyInk}
-                        />
-                    </TouchableOpacity>
-                ) : null}
+                <TouchableOpacity
+                    style={[styles.listenChip, translateSentences ? styles.listenChipActive : null]}
+                    onPress={onToggleTranslate}
+                    activeOpacity={0.72}
+                    accessibilityRole="switch"
+                    accessibilityState={{ checked: !!translateSentences }}
+                    accessibilityLabel={t('read.listenTranslate')}
+                >
+                    <MaterialIcons
+                        name="translate"
+                        size={16}
+                        color={translateSentences ? themeColors.readerPaper : themeColors.readerBodyInk}
+                    />
+                </TouchableOpacity>
                 <TouchableOpacity
                     style={styles.listenButton}
                     onPress={onClose}

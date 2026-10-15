@@ -22,7 +22,7 @@ import NativeEpubReaderView, {
 } from '../modules/native-epub-reader/src/NativeEpubReaderView';
 import ListenBar from '../components/Read/ListenBar';
 import { createListenPlayer, voiceLocaleFor, LISTEN_RATES } from '../services/listenPlayer';
-import { explainInContext } from '../services/api/explainInContext';
+import { translateText } from '../services/api/googleTranslate';
 import {
     PREPROCESS_VERSION,
     deleteBookBookmark,
@@ -94,7 +94,9 @@ import { createNativeReaderThemeTokens, radii, spacing, textStyles, useTheme } f
 const LOOKUP_HINT_DISMISSED_KEY = 'lookupHintDismissed';
 // Listen mode preferences (speed, stop on underlined words, AI meaning).
 const LISTEN_PREFS_KEY = 'listenPrefs';
-const DEFAULT_LISTEN_PREFS = { rate: 1, explainWords: false, aiMeaning: false };
+const DEFAULT_LISTEN_PREFS = { rate: 1, explainWords: false, translateSentences: false };
+// Engine failures in a row before listen mode gives up (one bad sentence is skipped).
+const LISTEN_MAX_CONSECUTIVE_ERRORS = 3;
 const cleanListenText = (value) => (typeof value === 'string' ? value.trim() : '');
 
 const READER_SETTINGS_KEY = 'readerSettings';
@@ -526,6 +528,7 @@ const Read = ({
     const listenSpokenKeyRef = useRef('');
     const listenRunRef = useRef(0);
     const listenCtxRef = useRef({});
+    const listenErrorsRef = useRef(0);
     const listenSpeakRef = useRef(null);
     const listenPauseRef = useRef(null);
     const sendFocusNavRef = useRef(null);
@@ -982,12 +985,6 @@ const Read = ({
         // A genuine new selection (not a panel dismiss): a whisper-light tick so
         // the lookup feels physical the instant you touch a word.
         tapSelect();
-
-        // Reading aloud stops while the reader looks a word up; play resumes
-        // from the same sentence.
-        if (listenPlayingRef.current) {
-            listenPauseRef.current?.();
-        }
 
         const sentence = typeof event.sentence === 'string' ? event.sentence.trim() : '';
 
@@ -3242,14 +3239,43 @@ const Read = ({
         const ctx = listenCtxRef.current;
         const prefs = listenPrefsRef.current;
         const mine = () => run === listenRunRef.current && listenPlayingRef.current;
+        // One utterance the engine refuses (a lone "*", an odd symbol) is
+        // skipped; only a run of failures means there is no usable voice.
         const failed = () => {
-            pauseListening();
-            ToastAndroid.show(ctx.unavailableNotice, ToastAndroid.SHORT);
+            listenErrorsRef.current += 1;
+            if (listenErrorsRef.current >= LISTEN_MAX_CONSECUTIVE_ERRORS) {
+                pauseListening();
+                ToastAndroid.show(ctx.unavailableNotice, ToastAndroid.SHORT);
+                return false;
+            }
+            return true;
         };
+        const stepOn = () => {
+            listenSpokenKeyRef.current = '';
+            sendFocusNavRef.current?.('next');
+        };
+
+        // The translation request runs while the sentence is being read.
+        const translation = prefs.translateSentences
+            ? translateText({ query: text, source: ctx.language, target: ctx.interfaceLanguage }).catch(() => '')
+            : null;
 
         let outcome = await player.speakSequence([{ text, locale: ctx.targetLocale, rate: prefs.rate }]);
         if (!mine()) return;
-        if (outcome === 'error') { failed(); return; }
+        if (outcome === 'error') {
+            if (failed()) stepOn();
+            return;
+        }
+        listenErrorsRef.current = 0;
+
+        if (translation) {
+            const translated = cleanListenText(await translation);
+            if (!mine()) return;
+            if (translated) {
+                outcome = await player.speakSequence([{ text: translated, locale: ctx.interfaceLocale, rate: prefs.rate }]);
+                if (!mine()) return;
+            }
+        }
 
         if (prefs.explainWords) {
             const words = Array.isArray(event.levelWords) ? event.levelWords : [];
@@ -3268,35 +3294,12 @@ const Read = ({
                 }
                 outcome = await player.speakSequence(parts);
                 if (!mine()) return;
-                if (outcome === 'error') { failed(); return; }
-
-                if (prefs.aiMeaning) {
-                    let explanation = '';
-                    try {
-                        const response = await explainInContext({
-                            word: wordText,
-                            sentence: text,
-                            language: ctx.language,
-                            interfaceLanguage: ctx.interfaceLanguage,
-                        });
-                        explanation = cleanListenText(response?.explanation);
-                    } catch {
-                        explanation = '';
-                    }
-                    if (!mine()) return;
-                    if (explanation) {
-                        outcome = await player.speakSequence([{ text: explanation, locale: ctx.interfaceLocale, rate: prefs.rate }]);
-                        if (!mine()) return;
-                    }
-                }
+                if (outcome === 'error' && !failed()) return;
             }
             setSpokenWord(null);
         }
 
-        if (mine()) {
-            listenSpokenKeyRef.current = '';
-            sendFocusNavRef.current?.('next');
-        }
+        if (mine()) stepOn();
     }, [getListenPlayer, pauseListening, setSpokenWord]);
     listenSpeakRef.current = speakFocusedSentence;
 
@@ -3304,6 +3307,7 @@ const Read = ({
         setListenActive(true);
         setListenPlaying(true);
         listenPlayingRef.current = true;
+        listenErrorsRef.current = 0;
         if (!focusModeRef.current) {
             // Entering focus mode sends the first sentence; that starts the voice.
             toggleFocusMode();
@@ -3345,7 +3349,7 @@ const Read = ({
                 const next = {
                     rate: LISTEN_RATES.includes(parsed?.rate) ? parsed.rate : 1,
                     explainWords: !!parsed?.explainWords,
-                    aiMeaning: !!parsed?.aiMeaning,
+                    translateSentences: !!parsed?.translateSentences,
                 };
                 listenPrefsRef.current = next;
                 setListenPrefs(next);
@@ -3538,6 +3542,7 @@ const Read = ({
                         showPinyin={readerShowPinyin}
                         showGloss={readerShowGloss}
                         readThrough={activeBook?.readThrough}
+                        keepScreenOn={listenPlaying}
                         fadeReadMarks={settings.fadeReadMarks !== false}
                         clearSelectionToken={clearSelectionToken}
                         focusSentenceCount={focusSpan}
@@ -3616,14 +3621,13 @@ const Read = ({
                     playing={listenPlaying}
                     rate={listenPrefs.rate}
                     explainWords={listenPrefs.explainWords}
-                    aiMeaning={listenPrefs.aiMeaning}
-                    aiAvailable
+                    translateSentences={listenPrefs.translateSentences}
                     onTogglePlay={toggleListenPlay}
                     onPrevious={() => sendFocusNav('prev')}
                     onNext={() => sendFocusNav('next')}
                     onCycleRate={cycleListenRate}
                     onToggleExplain={() => updateListenPrefs({ explainWords: !listenPrefsRef.current.explainWords })}
-                    onToggleAi={() => updateListenPrefs({ aiMeaning: !listenPrefsRef.current.aiMeaning })}
+                    onToggleTranslate={() => updateListenPrefs({ translateSentences: !listenPrefsRef.current.translateSentences })}
                     onClose={() => pauseListening({ keepActive: false })}
                     bottom={focusControlsBaseBottom}
                     translateY={focusControlsTranslate}
