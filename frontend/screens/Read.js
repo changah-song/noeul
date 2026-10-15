@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Animated, BackHandler, Easing, PanResponder, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, Pressable, findNodeHandle, ToastAndroid } from 'react-native';
+import { Animated, BackHandler, Easing, PanResponder, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, Pressable, findNodeHandle, ToastAndroid, PermissionsAndroid, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather, MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -19,6 +19,9 @@ import NativeEpubReaderView, {
     supportsSeekToPosition,
     sendSpokenWord,
     supportsSpokenWord,
+    updateListenSession,
+    stopListenSession,
+    addListenControlListener,
 } from '../modules/native-epub-reader/src/NativeEpubReaderView';
 import ListenBar from '../components/Read/ListenBar';
 import { createListenPlayer, voiceLocaleFor, LISTEN_RATES } from '../services/listenPlayer';
@@ -529,6 +532,7 @@ const Read = ({
     const listenRunRef = useRef(0);
     const listenCtxRef = useRef({});
     const listenErrorsRef = useRef(0);
+    const listenChapterEndRef = useRef(null);
     const listenSpeakRef = useRef(null);
     const listenPauseRef = useRef(null);
     const sendFocusNavRef = useRef(null);
@@ -3146,10 +3150,19 @@ const Read = ({
             count: Number.isInteger(event.count) && event.count > 0 ? event.count : 1,
             total: Number.isInteger(event.total) ? event.total : 0,
         });
-        listenFocusRef.current = event;
-        // Repagination re-sends the same sentence; only a new one is read.
+        // While listening, stepping goes through the focusNav command and its
+        // result (see stepOn); events matter for a new chapter or a jump
+        // forward. Events for earlier sentences are the queue flushing after
+        // the screen comes back on (view events wait for a frame) and must
+        // not replay them.
+        const previous = listenFocusRef.current;
+        const sameChapter = previous?.spineIndex === currentSpineIndexRef.current;
+        const behind = sameChapter && Number.isInteger(previous?.index) && event.index <= previous.index;
+        if (!behind) {
+            listenFocusRef.current = { ...event, spineIndex: currentSpineIndexRef.current };
+        }
         const key = `${currentSpineIndexRef.current}:${event.index}:${cleanListenText(event.text)}`;
-        if (listenPlayingRef.current && key !== listenSpokenKeyRef.current) {
+        if (listenPlayingRef.current && !behind && key !== listenSpokenKeyRef.current) {
             listenSpeakRef.current?.(event, key);
         }
     }, [publishFocusInfo]);
@@ -3161,15 +3174,18 @@ const Read = ({
         if (supportsImperativeFocusNav) {
             const viewTag = findNodeHandle(nativeReaderViewRef.current);
             if (viewTag != null) {
-                sendFocusNavCommand(viewTag, direction).catch((error) => {
+                // Resolves with the step's result (the new sentence, or the
+                // chapter edge); listen mode reads it, the arrows ignore it.
+                return sendFocusNavCommand(viewTag, direction).catch((error) => {
                     console.warn('[Read] Focus nav failed:', error?.message ?? error);
+                    return null;
                 });
-                return;
             }
         }
 
         focusNavCounterRef.current += 1;
         setFocusNavToken(`${direction}:${focusNavCounterRef.current}`);
+        return Promise.resolve(null);
     }, []);
 
     const toggleFocusMode = useCallback(() => {
@@ -3186,6 +3202,7 @@ const Read = ({
 
     // ── Listen mode ─────────────────────────────────────────────────────────
     sendFocusNavRef.current = sendFocusNav;
+    listenChapterEndRef.current = handleNativeChapterEnd;
     const listenGlossIndex = useMemo(
         () => annotationsBySurface(annotationRows, interfaceLanguage),
         [annotationRows, interfaceLanguage]
@@ -3250,9 +3267,24 @@ const Read = ({
             }
             return true;
         };
-        const stepOn = () => {
+        // Step the beam and read the result straight from the command. The
+        // onFocusSentenceChange event for the same sentence arrives too (when
+        // the screen is on) and is ignored by its key; with the screen off it
+        // never would, which is why the command's result is what drives this.
+        const stepOn = async () => {
             listenSpokenKeyRef.current = '';
-            sendFocusNavRef.current?.('next');
+            const result = await sendFocusNavRef.current?.('next');
+            if (!listenPlayingRef.current || !result || typeof result !== 'object') return;
+            if (result.atEnd) {
+                listenChapterEndRef.current?.();
+                return;
+            }
+            if (!result.moved || !cleanListenText(result.text)) return;
+            listenFocusRef.current = { ...result, spineIndex: currentSpineIndexRef.current };
+            const nextKey = `${currentSpineIndexRef.current}:${result.index}:${cleanListenText(result.text)}`;
+            if (nextKey !== listenSpokenKeyRef.current) {
+                listenSpeakRef.current?.(result, nextKey);
+            }
         };
 
         // The translation request runs while the sentence is being read.
@@ -3304,6 +3336,10 @@ const Read = ({
     listenSpeakRef.current = speakFocusedSentence;
 
     const resumeListening = useCallback(() => {
+        // The notification player needs this on Android 13+; asked once.
+        if (Platform.OS === 'android' && Number(Platform.Version) >= 33) {
+            PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS).catch(() => {});
+        }
         setListenActive(true);
         setListenPlaying(true);
         listenPlayingRef.current = true;
@@ -3319,6 +3355,25 @@ const Read = ({
             speakFocusedSentence(current, key);
         }
     }, [speakFocusedSentence, toggleFocusMode]);
+
+    // Previous / next from the listen bar or the notification: step the beam
+    // and, while playing, read the sentence the command hands back.
+    const listenNav = useCallback(async (direction) => {
+        const result = await sendFocusNavRef.current?.(direction);
+        if (!listenPlayingRef.current || !result || typeof result !== 'object') return;
+        if (result.atEnd) {
+            listenChapterEndRef.current?.();
+            return;
+        }
+        if (!result.moved || !cleanListenText(result.text)) return;
+        listenFocusRef.current = { ...result, spineIndex: currentSpineIndexRef.current };
+        const key = `${currentSpineIndexRef.current}:${result.index}:${cleanListenText(result.text)}`;
+        if (key !== listenSpokenKeyRef.current) {
+            listenSpeakRef.current?.(result, key);
+        }
+    }, []);
+    const listenNavRef = useRef(null);
+    listenNavRef.current = listenNav;
 
     const toggleListenPlay = useCallback(() => {
         if (listenPlayingRef.current) {
@@ -3373,6 +3428,55 @@ const Read = ({
     useEffect(() => () => {
         listenPlayerRef.current?.destroy();
         listenPlayerRef.current = null;
+    }, []);
+
+    // The foreground service behind the session: keeps the process alive
+    // while the voice reads in the background, and shows a player with the
+    // book's title on the notification shade and lock screen.
+    const listenSessionSubtitle = (typeof activeBook?.author === 'string' && activeBook.author.trim())
+        || activeChapterTitle
+        || '';
+    useEffect(() => {
+        if (!listenActive) {
+            stopListenSession();
+            return;
+        }
+        updateListenSession({ title: headerBookTitle, subtitle: listenSessionSubtitle, playing: listenPlaying });
+    }, [listenActive, listenPlaying, headerBookTitle, listenSessionSubtitle]);
+    useEffect(() => () => stopListenSession(), []);
+
+    const listenResumeRef = useRef(null);
+    listenResumeRef.current = resumeListening;
+    useEffect(() => {
+        const subscription = addListenControlListener(({ action } = {}) => {
+            switch (action) {
+                case 'play':
+                    listenResumeRef.current?.();
+                    break;
+                case 'pause':
+                    listenPauseRef.current?.();
+                    break;
+                case 'toggle':
+                    if (listenPlayingRef.current) {
+                        listenPauseRef.current?.();
+                    } else {
+                        listenResumeRef.current?.();
+                    }
+                    break;
+                case 'next':
+                    listenNavRef.current?.('next');
+                    break;
+                case 'previous':
+                    listenNavRef.current?.('prev');
+                    break;
+                case 'stop':
+                    listenPauseRef.current?.({ keepActive: false });
+                    break;
+                default:
+                    break;
+            }
+        });
+        return () => subscription.remove();
     }, []);
 
 
@@ -3623,8 +3727,8 @@ const Read = ({
                     explainWords={listenPrefs.explainWords}
                     translateSentences={listenPrefs.translateSentences}
                     onTogglePlay={toggleListenPlay}
-                    onPrevious={() => sendFocusNav('prev')}
-                    onNext={() => sendFocusNav('next')}
+                    onPrevious={() => listenNav('prev')}
+                    onNext={() => listenNav('next')}
                     onCycleRate={cycleListenRate}
                     onToggleExplain={() => updateListenPrefs({ explainWords: !listenPrefsRef.current.explainWords })}
                     onToggleTranslate={() => updateListenPrefs({ translateSentences: !listenPrefsRef.current.translateSentences })}

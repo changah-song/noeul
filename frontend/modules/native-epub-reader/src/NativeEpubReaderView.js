@@ -1,6 +1,6 @@
 import React, { forwardRef, useMemo } from 'react';
 import { Platform, Text, View } from 'react-native';
-import { requireNativeModule, requireNativeViewManager } from 'expo-modules-core';
+import { EventEmitter, requireNativeModule, requireNativeViewManager } from 'expo-modules-core';
 import {
     joinKoreanInBlocks,
     joinKoreanInTerms,
@@ -35,8 +35,13 @@ export const renderPdfCover = (options) => (
 // the token prop when running against an older native binary.
 export const supportsImperativeFocusNav = typeof NativeModule?.focusNav === 'function';
 
+// Resolves with the step's result: { moved, index, text, levelWords, ... }
+// for the new sentence, or { moved: false, atEnd | atStart } at a chapter
+// edge. Joiners are stripped like event payloads.
 export const sendFocusNavCommand = (viewTag, direction) => (
-    NativeModule?.focusNav?.(viewTag, direction) ?? androidOnly()
+    NativeModule?.focusNav?.(viewTag, direction)?.then?.(
+        (result) => (result && typeof result === 'object' ? stripJoinersDeep(result) : result)
+    ) ?? androidOnly()
 );
 
 // Grow the long-press selection by one sentence ('previous' | 'next'). The
@@ -55,6 +60,36 @@ export const supportsSeekToPosition = typeof NativeModule?.seekToPosition === 'f
 
 export const sendSeekToPosition = (viewTag, position) => (
     NativeModule?.seekToPosition?.(viewTag, position) ?? androidOnly()
+);
+
+// Listen mode's foreground service: a media player on the notification shade
+// and lock screen that keeps the process alive while the voice reads. The
+// buttons come back as { action } events: play, pause, toggle, next,
+// previous, stop.
+export const supportsListenSession = typeof NativeModule?.updateListenSession === 'function';
+
+export const updateListenSession = ({ title, subtitle, playing } = {}) => {
+    if (!supportsListenSession) return;
+    try {
+        NativeModule.updateListenSession({ title, subtitle, playing });
+    } catch (error) {
+        console.warn('[NativeEpubReader] listen session update failed:', error?.message ?? error);
+    }
+};
+
+export const stopListenSession = () => {
+    if (typeof NativeModule?.stopListenSession !== 'function') return;
+    try {
+        NativeModule.stopListenSession();
+    } catch (error) {
+        console.warn('[NativeEpubReader] listen session stop failed:', error?.message ?? error);
+    }
+};
+
+const listenEmitter = NativeModule ? new EventEmitter(NativeModule) : null;
+
+export const addListenControlListener = (listener) => (
+    listenEmitter?.addListener('onListenControl', listener) ?? { remove: () => {} }
 );
 
 // Listen mode: highlight the word being explained, or clear it with null. The
