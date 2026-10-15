@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
@@ -99,8 +100,11 @@ private data class SelectionHighlightVerticalMetrics(
   val bottom: Float
 )
 
-// Opacity factor for underlines on text the reader has already read past.
-private const val READ_MARK_ALPHA = 0.35f
+// Read marks: how long the switch to the "read" style takes, how much of the
+// saved-word box fill remains, and how strong its crosshatch is.
+private const val READ_TRANSITION_MS = 550f
+private const val READ_BOX_FILL = 0.18f
+private const val READ_HATCH_ALPHA = 0.5f
 // Sliding glosses: pause at each end, then slide at this speed (dp/s).
 private const val MARQUEE_PAUSE_MS = 1400L
 private const val MARQUEE_FRAME_MS = 40L
@@ -258,6 +262,9 @@ class EpubPageView(context: Context) : View(context) {
   ) {
     this.showPinyin = showPinyin
     this.showGloss = showGloss
+    if (this.page?.pageIndex != page.pageIndex || this.page?.spineIndex != page.spineIndex) {
+      readTransitions.clear()
+    }
     this.page = page
     this.paddingH = paddingH
     this.paddingV = paddingV
@@ -331,11 +338,13 @@ class EpubPageView(context: Context) : View(context) {
 
   override fun onDraw(canvas: Canvas) {
     marqueeTickScheduled = false
+    readAnimationPending = false
     canvas.drawColor(pageBackgroundColor)
     val contentWidth = width - (paddingH * 2)
     if (contentWidth <= 0) return
     drawPageBlocks(canvas, contentWidth)
     drawReaderEdgeState(canvas)
+    if (readAnimationPending) postInvalidateOnAnimation()
   }
 
   // In scroll and focus modes this view holds the whole chapter inside a
@@ -454,6 +463,37 @@ class EpubPageView(context: Context) : View(context) {
   private data class GlossItem(val line: Int, val left: Float, val right: Float, val text: String)
 
   private var marqueeTickScheduled = false
+
+  // Marks on text the reader has already read past change style: a level
+  // underline becomes dotted, a saved-word box becomes a translucent
+  // crosshatch. The change is animated the first time a mark is drawn as read
+  // (keyed per range, cleared when the view shows another page), so turning
+  // or scrolling back shows the marks settling into their "done" look.
+  private val readTransitions = HashMap<String, Long>()
+  private var readAnimationPending = false
+  private val readDashEffect by lazy {
+    DashPathEffect(floatArrayOf(dp(2f).toFloat(), dp(3f).toFloat()), 0f)
+  }
+  private val underlinePath = Path()
+  private val hatchPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    style = Paint.Style.STROKE
+    strokeWidth = dp(1f).toFloat()
+  }
+
+  // 0 = not read, 1 = read and settled, in between while animating.
+  private fun readProgress(range: TextRange): Float {
+    val read = isRangeRead?.invoke(range) == true
+    val key = "${range.blockId}:${range.sourceStartOffset}:${range.sourceEndOffset}"
+    if (!read) {
+      readTransitions.remove(key)
+      return 0f
+    }
+    val now = SystemClock.uptimeMillis()
+    val startedAt = readTransitions.getOrPut(key) { now }
+    val progress = ((now - startedAt).toFloat() / READ_TRANSITION_MS).coerceIn(0f, 1f)
+    if (progress < 1f) readAnimationPending = true
+    return progress
+  }
 
   private fun drawAnnotations(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
     if (levelRanges.isEmpty()) return
@@ -1816,7 +1856,8 @@ class EpubPageView(context: Context) : View(context) {
           localStart = localStart,
           localEnd = localEnd,
           textLength = blockTextLength,
-          paint = paint
+          paint = paint,
+          readProgress = readProgress(range)
         )
         return@forEach
       }
@@ -1824,12 +1865,20 @@ class EpubPageView(context: Context) : View(context) {
       if (paint === levelMarkPaint) {
         if (range.annotationOnly) return@forEach
         applyLevelUnderlineShade(paint, range.levelWeight, range.levelReinforced)
-        if (isRangeRead?.invoke(range) == true) {
-          // Already read past: same color, much lighter, so a returning reader
-          // can tell old marks from the ones ahead.
-          paint.alpha = (paint.alpha * READ_MARK_ALPHA).roundToInt()
+        val progress = readProgress(range)
+        val baseAlpha = paint.alpha
+        if (progress < 1f) {
+          paint.alpha = (baseAlpha * (1f - progress)).roundToInt()
+          drawLevelUnderline(canvas, layout, localStart, localEnd, blockTextLength, paint)
         }
-        drawLevelUnderline(canvas, layout, localStart, localEnd, blockTextLength, paint)
+        if (progress > 0f) {
+          // Read past: the same colour as a dotted line.
+          paint.alpha = (baseAlpha * progress).roundToInt()
+          paint.pathEffect = readDashEffect
+          drawLevelUnderline(canvas, layout, localStart, localEnd, blockTextLength, paint)
+          paint.pathEffect = null
+        }
+        paint.alpha = baseAlpha
         return@forEach
       }
 
@@ -1865,12 +1914,19 @@ class EpubPageView(context: Context) : View(context) {
     localStart: Int,
     localEnd: Int,
     textLength: Int,
-    paint: Paint
+    paint: Paint,
+    // Saved-word boxes on read text: the fill thins out and a diagonal
+    // crosshatch fades in (0 = normal box, 1 = fully "read").
+    readProgress: Float = 0f
   ) {
     val text = blockTextForSelection(block)
     val safeStart = localStart.coerceIn(0, textLength)
     val safeEnd = localEnd.coerceIn(safeStart, textLength)
     if (safeStart >= safeEnd || layout.lineCount <= 0) return
+    val baseAlpha = paint.alpha
+    if (readProgress > 0f) {
+      paint.alpha = (baseAlpha * (1f - readProgress * (1f - READ_BOX_FILL))).roundToInt()
+    }
 
     val startLine = layout.getLineForOffset(safeStart)
     val endLine = layout.getLineForOffset(max(safeStart, safeEnd - 1))
@@ -1922,7 +1978,30 @@ class EpubPageView(context: Context) : View(context) {
 
       selectionLineRect.set(left, top, right, bottom)
       canvas.drawRoundRect(selectionLineRect, cornerRadius, cornerRadius, paint)
+      if (readProgress > 0f) {
+        drawCrosshatch(canvas, selectionLineRect, cornerRadius, paint.color, readProgress)
+      }
     }
+    paint.alpha = baseAlpha
+  }
+
+  // Diagonal lines both ways inside a rounded box, in the box's colour.
+  private fun drawCrosshatch(canvas: Canvas, rect: RectF, radius: Float, color: Int, strength: Float) {
+    hatchPaint.color = color
+    hatchPaint.alpha = (READ_HATCH_ALPHA * 255 * strength).roundToInt()
+    highlightPath.reset()
+    highlightPath.addRoundRect(rect, radius, radius, Path.Direction.CW)
+    val save = canvas.save()
+    canvas.clipPath(highlightPath)
+    val step = dp(5f).toFloat()
+    val size = max(rect.width(), rect.height())
+    var offset = -size
+    while (offset < rect.width() + size) {
+      canvas.drawLine(rect.left + offset, rect.bottom, rect.left + offset + size, rect.bottom - size, hatchPaint)
+      canvas.drawLine(rect.left + offset, rect.top, rect.left + offset + size, rect.top + size, hatchPaint)
+      offset += step
+    }
+    canvas.restoreToCount(save)
   }
 
   private fun drawSavedHighlightText(
@@ -1941,6 +2020,7 @@ class EpubPageView(context: Context) : View(context) {
     val textPaint = TextPaint(block.textPaint ?: savedHighlightTextPaint).apply {
       color = savedHighlightTextColor
     }
+    val lightTextAlpha = textPaint.alpha
 
     ranges.forEach { range ->
       if (
@@ -1950,6 +2030,10 @@ class EpubPageView(context: Context) : View(context) {
       ) {
         return@forEach
       }
+      // On read text the box turns translucent, so the light text gives way
+      // to the normal body text underneath.
+      textPaint.alpha = (lightTextAlpha * (1f - readProgress(range))).roundToInt()
+      if (textPaint.alpha == 0) return@forEach
 
       val safeStart = (max(range.sourceStartOffset, sourceStart) - sourceStart).coerceIn(0, textLength)
       val safeEnd = (min(range.sourceEndOffset, sourceEnd) - sourceStart).coerceIn(safeStart, textLength)
@@ -2127,7 +2211,10 @@ class EpubPageView(context: Context) : View(context) {
       val left = min(startX, endX)
       val right = max(startX, endX)
       val underlineY = layout.getLineBaseline(line).toFloat() + dp(3f)
-      canvas.drawLine(left, underlineY, right, underlineY, paint)
+      underlinePath.reset()
+      underlinePath.moveTo(left, underlineY)
+      underlinePath.lineTo(right, underlineY)
+      canvas.drawPath(underlinePath, paint)
     }
   }
 
