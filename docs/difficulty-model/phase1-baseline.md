@@ -95,3 +95,55 @@ cd frontend && node scripts/baselineMetric.js --sqlite /tmp/fluentfable.db
 ```
 
 `@babel/register` is now a dev dependency so the script runs without extra setup.
+
+
+---
+
+# Phases 2 and 3 (2026-10-16)
+
+## Phase 2 — per-word evidence, ungraded words, percentile difficulty
+
+Shipped in PR #77. The underline now uses:
+
+- the word's **difficulty percentile** when known (bands are very uneven);
+- **ungraded words** (outside NIKL/HSK) as the hardest band instead of never;
+- **per-word evidence** (`services/wordEvidence.js`): recent lookups (30-day
+  half-life, diminishing repeats, floor −2.4 logits), read-past exposures
+  (+0.12 each, cap +1.2), graded reviews (±0.8 each, cap ±2.5), saves (−0.4).
+
+Measured with the evaluator's new `--evidence` replay on the same device
+log (now 494 graded behaviour samples):
+
+| | baseline | + evidence |
+|---|---|---|
+| AUC (lookups vs exposures) | 0.261 | **0.305** |
+| mean P(known) of looked-up words | 0.678 | 0.643 |
+| mean P(known) of read-past words | 0.418 | 0.454 |
+| confident misses (looked up, P ≥ 0.85) | 15 | **11** |
+
+Still below chance for the sampling reasons in phase 1 (exposures are only
+credited for underlined words; the hard lookups were unmatched before the
+stem fix), but every number moved the right way. Re-run after a week of
+reading with the stem fix in place:
+
+```bash
+cd frontend
+node scripts/baselineMetric.js --sqlite /tmp/fluentfable.db            # baseline
+node scripts/baselineMetric.js --sqlite /tmp/fluentfable.db --evidence # phase 2
+```
+
+## Phase 3 — cold start
+
+Also in PR #77: the vocabulary-size grids are regenerated on the current
+6-band Korean scale and added for Chinese (HSK 1–7), the picker is reachable
+from Profile → Learning language → Vocabulary level, and it is offered once on
+the first book open for a profile with no history.
+
+## Phase 4 — a trained model (not started)
+
+Blocked on data: one graded review on the only device. With lookups now
+logged by stem, a week of reading gives a few hundred usable lookup/exposure
+pairs; reviews need the flashcard flow to be used. Then: export with
+`scripts/exportFeatureDataset.js`, train with `backend/ml/train_pknown.py`,
+bundle the coefficient JSON and register it with `setActivePknownModel` at
+startup, gated on beating the phase-2 numbers above.
