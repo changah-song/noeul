@@ -12,7 +12,8 @@ const stemWord = async ({ query, language = 'ko' }) => {
 
   try {
       const response = await api.get(endpoint, {
-          params: { text: query }
+          params: { text: query },
+          timeout: 10000,
       });
       return response.data.result;
 

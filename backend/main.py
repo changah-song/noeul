@@ -1,5 +1,4 @@
 from fastapi import Depends, FastAPI, Header, HTTPException
-from konlpy.tag import Okt
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import jwt
@@ -11,27 +10,33 @@ import unicodedata
 import ssl
 import httpx
 import asyncio
+import anyio
 import xml.etree.ElementTree as ET
 from typing import Any, Optional
 import os
 import re
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 import certifi
 from dotenv import load_dotenv
 
 from explain_graph import (
+    ExplainGraphError,
     build_grounded_prompt,
     clean_known_lemma,
     familiarity_from_p_known,
     p_known_for,
     parse_partial_explanation,
     run_explain_graph,
+    stream_snapshot_usage,
     user_message_for,
 )
 from word_lookup import (
     KrdictUnavailableError,
+    is_reusable_cache_row,
     lookup_surface,
+    parse_krdict_first_entry,
     parse_krdict_search_items,
     search_with_english_fallback,
 )
@@ -41,6 +46,24 @@ from translation import (
     configured_providers as configured_translation_providers,
     normalize_language_code as normalize_translate_language,
     translate_texts,
+)
+import limits
+from limits import (
+    BodySizeLimitMiddleware,
+    ENTRY_BODY_HARD_MAX_CHARS,
+    ENTRY_PROMPT_MAX_CHARS,
+    ENTRY_SANDBOX_WORD_MAX_CHARS,
+    EXPLAIN_SENTENCE_HARD_MAX_CHARS,
+    EXPLAIN_SENTENCE_MAX_CHARS,
+    EXPLAIN_WORD_MAX_CHARS,
+    clip_sentence_around_word,
+    count_entry_length,
+    entry_length_bounds,
+    explain_grounding_fingerprint,
+    parse_positive_int_env,
+    preprocess_live_fetch_quota_units,
+    sanitize_hanja,
+    translate_cache_key,
 )
 
 try:
@@ -101,7 +124,6 @@ KRDICT_INTERFACE_LANGUAGES = {
     "zh": "11",
 }
 DEFAULT_INTERFACE_LANGUAGE = "en"
-MAX_TEXT_LENGTH = 500_000
 
 AUTHENTICATED_LIMITS = {
     "max_text_chars_per_request": 500_000,
@@ -185,6 +207,25 @@ def get_db_connection():
     conn = sqlite3.connect(CACHE_DB_PATH)
     conn.row_factory = sqlite3.Row  # Rows accessible as dicts
     return conn
+
+
+def _db_fetchone(sql: str, params=()) -> Optional[sqlite3.Row]:
+    """One-shot cache.db read on a fresh connection (blocking; use asyncio.to_thread)."""
+    conn = get_db_connection()
+    try:
+        return conn.execute(sql, params).fetchone()
+    finally:
+        conn.close()
+
+
+def _db_execute(sql: str, params=()) -> None:
+    """One-shot cache.db write on a fresh connection (blocking; use asyncio.to_thread)."""
+    conn = get_db_connection()
+    try:
+        conn.execute(sql, params)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_kaikki_db_connection():
@@ -731,17 +772,12 @@ def migrate_cache_db():
 
 # ─── App + NLP Setup ──────────────────────────────────────────────────────────
 app = FastAPI()
-okt = Okt()
 nlp_en = None
 kiwi_instance = None
 
 @app.get("/")
 def health():
     return {"status": "ok"}
-
-
-def count_words(text: str) -> int:
-    return len(text.split())
 
 
 app.add_middleware(
@@ -751,6 +787,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Refuse oversized request bodies (413) before anything parses them. The cap sits
+# above the largest real request (a 500k-character chapter for preprocessing).
+MAX_REQUEST_BODY_BYTES = parse_positive_int_env(
+    os.getenv("MAX_REQUEST_BODY_BYTES"), limits.MAX_REQUEST_BODY_BYTES
+)
+app.add_middleware(BodySizeLimitMiddleware, max_bytes=MAX_REQUEST_BODY_BYTES)
 
 KRDICT_CLIENT_ID = os.getenv("KOREAN_DICTIONARY_CLIENT_ID", "").strip()
 # Official Google Cloud Translation (v2) first; the RapidAPI reseller is the fallback.
@@ -775,8 +817,6 @@ supabase_jwks_client = (
 )
 
 ASSESSMENT_DAILY_LIMIT = 5
-ENTRY_MIN_WORDS = 30
-ENTRY_MAX_WORDS = 500
 VALID_CATEGORIES = {"reflective", "persuasive", "creative", "sandbox"}
 VALID_TARGET_LANGUAGES = {"ko", "zh", "en", "ja", "fr", "es", "de", "ru", "ar", "id", "vi", "th", "mn"}
 LANGUAGE_DISPLAY_NAMES = {
@@ -1013,21 +1053,43 @@ EXPLAIN_USE_GRAPH = os.getenv("EXPLAIN_USE_GRAPH", "on").strip().lower() not in 
 
 # One long-lived client each (sync for the checked flow's thread, async for streaming) so
 # lookups reuse pooled HTTPS connections instead of a fresh TLS handshake per call.
+# The SDK default (600 s timeout, 2 retries) would let one stuck call hold a request -- and,
+# for the sync client, a worker thread -- for up to 30 minutes. Explain calls take a few
+# seconds (the timeout is per network read, so a streaming response is not cut off as long
+# as tokens keep arriving), so fail fast and retry once.
+ANTHROPIC_TIMEOUT_SECONDS = float(os.getenv("ANTHROPIC_TIMEOUT_SECONDS", "20"))
+ANTHROPIC_MAX_RETRIES = int(os.getenv("ANTHROPIC_MAX_RETRIES", "1"))
+# /assess_entry/ is non-streaming with max_tokens=2048: the whole answer is one read.
+ASSESSMENT_TIMEOUT_SECONDS = float(os.getenv("ASSESSMENT_TIMEOUT_SECONDS", "60"))
 _anthropic_sync_client = None
 _anthropic_async_client = None
+# The checked explain flow makes blocking model calls; give them their own threads so a
+# burst of slow lookups can't starve the default executor that NLP and SQLite work uses.
+EXPLAIN_FLOW_EXECUTOR = ThreadPoolExecutor(
+    max_workers=int(os.getenv("EXPLAIN_FLOW_THREADS", "16")),
+    thread_name_prefix="explain-flow",
+)
 
 
 def get_anthropic_client():
     global _anthropic_sync_client
     if _anthropic_sync_client is None:
-        _anthropic_sync_client = anthropic_sdk.Anthropic(api_key=ANTHROPIC_API_KEY)
+        _anthropic_sync_client = anthropic_sdk.Anthropic(
+            api_key=ANTHROPIC_API_KEY,
+            timeout=ANTHROPIC_TIMEOUT_SECONDS,
+            max_retries=ANTHROPIC_MAX_RETRIES,
+        )
     return _anthropic_sync_client
 
 
 def get_anthropic_async_client():
     global _anthropic_async_client
     if _anthropic_async_client is None:
-        _anthropic_async_client = anthropic_sdk.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        _anthropic_async_client = anthropic_sdk.AsyncAnthropic(
+            api_key=ANTHROPIC_API_KEY,
+            timeout=ANTHROPIC_TIMEOUT_SECONDS,
+            max_retries=ANTHROPIC_MAX_RETRIES,
+        )
     return _anthropic_async_client
 
 
@@ -1091,6 +1153,16 @@ def create_ops_tables(conn: sqlite3.Connection):
             lemma TEXT,
             gloss TEXT,
             explanation TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            hit_count INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS translate_cache (
+            key_hash TEXT PRIMARY KEY,
+            translated TEXT NOT NULL,
             created_at TEXT NOT NULL,
             hit_count INTEGER NOT NULL DEFAULT 0
         )
@@ -1284,6 +1356,87 @@ def _lookup_cache_put(key_hash: str, parsed: dict[str, str | None]) -> None:
         conn.close()
 
 
+# --- Translation response cache + daily character budget --------------------
+#
+# Every character sent to Google Translate is billed, so identical requests are
+# served from translate_cache (shared across users, bounded by
+# TRANSLATE_CACHE_MAX_ROWS) and the characters actually sent to a provider are
+# counted against a global daily budget. Cache hits are free. The counter lives in
+# daily_usage under a reserved user id, so it is reset/pruned with the other daily
+# counters and reserved atomically before the provider call.
+DAILY_TRANSLATE_CHAR_BUDGET = parse_positive_int_env(
+    os.getenv("DAILY_TRANSLATE_CHAR_BUDGET"), 2_000_000
+)
+TRANSLATE_BUDGET_USER_ID = "__global__"
+TRANSLATE_BUDGET_BUCKET = "translate_chars"
+
+
+class TranslateBudgetExceeded(Exception):
+    """Today's translation character budget is used up."""
+
+
+def _translate_cache_get(key_hash: str) -> str | None:
+    conn = get_db_connection()
+    try:
+        conn.execute("PRAGMA busy_timeout=3000")
+        row = conn.execute(
+            "SELECT translated FROM translate_cache WHERE key_hash=?", (key_hash,)
+        ).fetchone()
+        if not row:
+            return None
+        conn.execute(
+            "UPDATE translate_cache SET hit_count = hit_count + 1 WHERE key_hash=?",
+            (key_hash,),
+        )
+        conn.commit()
+        return row["translated"]
+    finally:
+        conn.close()
+
+
+def _translate_cache_put(key_hash: str, translated: str) -> None:
+    if not translated:
+        return
+    conn = get_db_connection()
+    try:
+        conn.execute("PRAGMA busy_timeout=3000")
+        conn.execute(
+            """
+            INSERT INTO translate_cache (key_hash, translated, created_at, hit_count)
+            VALUES (?, ?, ?, 0)
+            ON CONFLICT(key_hash) DO NOTHING
+            """,
+            (key_hash, translated, datetime.now(timezone.utc).isoformat()),
+        )
+        count = conn.execute("SELECT COUNT(*) AS c FROM translate_cache").fetchone()["c"]
+        if count > limits.TRANSLATE_CACHE_MAX_ROWS:
+            conn.execute(
+                """
+                DELETE FROM translate_cache WHERE key_hash IN (
+                    SELECT key_hash FROM translate_cache ORDER BY created_at ASC LIMIT ?
+                )
+                """,
+                (count - limits.TRANSLATE_CACHE_MAX_ROWS,),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def reserve_translate_chars(char_count: int) -> bool:
+    """Reserve `char_count` characters of today's global translation budget.
+    Returns False (nothing reserved) when it would go over."""
+    if char_count <= 0:
+        return True
+    return await asyncio.to_thread(
+        _usage_check_and_increment,
+        TRANSLATE_BUDGET_USER_ID,
+        TRANSLATE_BUDGET_BUCKET,
+        DAILY_TRANSLATE_CHAR_BUDGET,
+        char_count,
+    )
+
+
 def enforce_text_limit(
     text: str,
     auth: dict[str, Any],
@@ -1297,11 +1450,6 @@ def enforce_text_limit(
             status_code=413,
             detail=f"{field_name} exceeds {limit} characters",
         )
-
-
-def enforce_preprocess_text_limit(text: str):
-    if len(text) > MAX_TEXT_LENGTH:
-        raise HTTPException(status_code=400, detail=f"Text too long: {len(text)} chars")
 
 
 def limited_preprocess_max_stems(max_stems, auth: dict[str, Any]):
@@ -1364,7 +1512,7 @@ def romanize_korean_text(text: str) -> str:
     try:
         return koroman_romanize(text, casing_option="lowercase").strip()
     except Exception as error:
-        print(f"[main] Error romanizing {text!r}: {error}")
+        print(f"[main] Error romanizing text (length={len(text):,}): {error}")
         return ""
 
 
@@ -3062,12 +3210,12 @@ async def get_okt_morphs(text: str, auth: dict[str, Any] = Depends(verify_supaba
     normalized_text = text if isinstance(text, str) else ""
     enforce_text_limit(normalized_text, auth)
     await enforce_daily_quota(auth)
-    print(f"[main] /okt_morphs/ | text: {text!r}")
     loop = asyncio.get_event_loop()
     stems, _surface_index, _pos_by_stem = await loop.run_in_executor(
         None, partial(extract_ko_lookup_tokens, normalized_text)
     )
-    print(f"[main] Kiwi stems (first 20): {stems[:20]}")
+    # Lengths only: the text can be a whole page of the user's book.
+    print(f"[main] /okt_morphs/ | text length={len(normalized_text):,} | stems={len(stems)}")
     return {"result": stems}
 
 
@@ -3076,10 +3224,11 @@ async def get_en_morphs(text: str, auth: dict[str, Any] = Depends(verify_supabas
     normalized_text = text if isinstance(text, str) else ""
     enforce_text_limit(normalized_text, auth)
     await enforce_daily_quota(auth)
-    print(f"[main] /en_morphs/ | text: {text!r}")
-
-    lemmas, _surface_index, _pos_by_lemma = extract_en_lookup_tokens(normalized_text)
-    print(f"[main] English lemmas (first 20): {lemmas[:20]}")
+    # spaCy is CPU-bound; keep it off the event loop.
+    lemmas, _surface_index, _pos_by_lemma = await asyncio.to_thread(
+        extract_en_lookup_tokens, normalized_text
+    )
+    print(f"[main] /en_morphs/ | text length={len(normalized_text):,} | lemmas={len(lemmas)}")
     return {"result": lemmas}
 
 
@@ -3088,10 +3237,11 @@ async def get_zh_morphs(text: str, auth: dict[str, Any] = Depends(verify_supabas
     normalized_text = text if isinstance(text, str) else ""
     enforce_text_limit(normalized_text, auth)
     await enforce_daily_quota(auth)
-    print(f"[main] /zh_morphs/ | text: {text!r}")
-
-    words, _surface_index, _pos_by_word = extract_zh_lookup_tokens(normalized_text)
-    print(f"[main] Chinese tokens (first 20): {words[:20]}")
+    # jieba is CPU-bound; keep it off the event loop.
+    words, _surface_index, _pos_by_word = await asyncio.to_thread(
+        extract_zh_lookup_tokens, normalized_text
+    )
+    print(f"[main] /zh_morphs/ | text length={len(normalized_text):,} | tokens={len(words)}")
     return {"result": words}
 
 
@@ -3107,7 +3257,34 @@ async def romanize_text(text: str, auth: dict[str, Any] = Depends(verify_supabas
     if koroman_romanize is None:
         raise HTTPException(status_code=503, detail="koroman is not installed on the backend")
 
-    return {"romanization": romanize_korean_text(normalized)}
+    return {"romanization": await asyncio.to_thread(romanize_korean_text, normalized)}
+
+
+async def _translate_one_cached(text: str, source: str, target: str, timeout: float) -> str | None:
+    """Translate one string through translate_cache and the daily character budget.
+
+    `source`/`target` must already be normalized. Raises TranslateBudgetExceeded
+    when a cache miss would go over today's budget, and TranslationError when every
+    provider fails.
+    """
+    key = translate_cache_key(text, source, target)
+    cached = await asyncio.to_thread(_translate_cache_get, key)
+    if cached is not None:
+        return cached
+    if not await reserve_translate_chars(len(text)):
+        raise TranslateBudgetExceeded()
+    async with httpx.AsyncClient() as client:
+        [translated] = await translate_texts(
+            client,
+            TRANSLATION_PROVIDERS,
+            [text],
+            source=source,
+            target=target,
+            timeout=timeout,
+        )
+    if translated:
+        await asyncio.to_thread(_translate_cache_put, key, translated)
+    return translated
 
 
 async def _translate_text(text: str, source: str = "en", target: str = "en") -> str | None:
@@ -3119,16 +3296,10 @@ async def _translate_text(text: str, source: str = "en", target: str = "en") -> 
         return None
 
     try:
-        async with httpx.AsyncClient() as client:
-            [translated] = await translate_texts(
-                client,
-                TRANSLATION_PROVIDERS,
-                [cleaned_text],
-                source=normalized_source,
-                target=normalized_target,
-                timeout=8.0,
-            )
-            return translated
+        return await _translate_one_cached(cleaned_text, normalized_source, normalized_target, 8.0)
+    except TranslateBudgetExceeded:
+        print("[main] Internal translation skipped: daily translation budget reached")
+        return None
     except Exception as error:
         print(f"[main] Internal translation failed: {error}")
         return None
@@ -3157,6 +3328,11 @@ async def _translate_batch(
 
     async def translate_chunk(client: httpx.AsyncClient, chunk: list[str]) -> list[str | None]:
         async with semaphore:
+            # Callers keep their own per-word cache (dictionary_cache), so only the
+            # global character budget applies here.
+            if not await reserve_translate_chars(sum(len(text or "") for text in chunk)):
+                print("[main] Batch translation skipped: daily translation budget reached")
+                return [None] * len(chunk)
             try:
                 return await translate_texts(
                     client,
@@ -3240,7 +3416,7 @@ async def translate_and_cache_zh_preprocess(results: list[dict], interface_langu
         return results
 
     stems = [result.get("stem") for result in results]
-    cached = _fetch_cached_zh_translations(stems, normalized_lang)
+    cached = await asyncio.to_thread(_fetch_cached_zh_translations, stems, normalized_lang)
 
     pending_indices: list[int] = []
     for index, result in enumerate(results):
@@ -3282,7 +3458,7 @@ async def translate_and_cache_zh_preprocess(results: list[dict], interface_langu
                     "gloss": new_gloss,
                     "pinyin": result.get("pinyin"),
                 })
-        _store_zh_translations(fresh, normalized_lang)
+        await asyncio.to_thread(_store_zh_translations, fresh, normalized_lang)
 
     return results
 
@@ -3309,15 +3485,17 @@ async def translate_text(payload: dict, auth: dict[str, Any] = Depends(verify_su
         raise HTTPException(status_code=500, detail="No translation provider configured on server")
 
     try:
-        async with httpx.AsyncClient() as client:
-            [translated] = await translate_texts(
-                client,
-                TRANSLATION_PROVIDERS,
-                [cleaned_query],
-                source=normalize_translate_language(source, "ko"),
-                target=normalize_translate_language(target, "en"),
-                timeout=INTERACTIVE_TRANSLATE_TIMEOUT_SECONDS,
-            )
+        translated = await _translate_one_cached(
+            cleaned_query,
+            normalize_translate_language(source, "ko"),
+            normalize_translate_language(target, "en"),
+            INTERACTIVE_TRANSLATE_TIMEOUT_SECONDS,
+        )
+    except TranslateBudgetExceeded:
+        raise HTTPException(
+            status_code=503,
+            detail="Translation is resting for today. Please try again tomorrow.",
+        )
     except TranslationError as error:
         if error.timed_out:
             raise HTTPException(status_code=504, detail="Google Translate request timed out")
@@ -3452,9 +3630,12 @@ async def lookup_stem_in_krdict(
     krdict_key: str
 ) -> Optional[dict]:
     """
-    Call the KRDICT API for a single Korean stem.
-    Parses the XML response and returns the first definition entry.
-    Returns None if the word is not found or the request fails.
+    Call the KRDICT API for a single Korean stem and return its top entry.
+
+    Returns None only when KRDICT answered and has no entry (a genuine miss the
+    caller may cache). Raises KrdictUnavailableError when KRDICT could not
+    answer -- network error, timeout, non-200, bad XML or its quota <error>
+    document -- so the caller never caches a failure as "no entry".
     """
     try:
         response = await client.get(
@@ -3468,44 +3649,17 @@ async def lookup_stem_in_krdict(
             },
             timeout=10.0
         )
+    except Exception as error:
+        raise KrdictUnavailableError(repr(error)) from error
 
-        if response.status_code != 200:
-            print(f"[main] KRDICT returned HTTP {response.status_code} for '{stem}'")
-            return None
-
-        root = ET.fromstring(response.text)
-        item = root.find(".//item")
-
-        if item is None:
-            # Word not in dictionary (proper nouns, slang, etc.)
-            print(f"[main] No KRDICT entry for '{stem}'")
-            return None
-
-        # Extract the top definition fields
-        origin_el  = item.find("origin")
-        trans_el   = item.find(".//trans_word")
-        pos_el     = item.find("pos")
-
-        definition = "N/A"
-        if trans_el is not None and trans_el.text:
-            definition = trans_el.text.strip()
-            # KRDICT appends "^" as a separator artifact — strip it
-            if definition.endswith("^"):
-                definition = definition[:-1].strip()
-
-        result = {
-            "stem":       stem,
-            "hanja":      origin_el.text if origin_el is not None and origin_el.text else "N/A",
-            "definition": definition,
-            "pos":        pos_el.text if pos_el is not None and pos_el.text else "Unknown",
-            "romanization": romanize_korean_text(stem),
-        }
-        print(f"[main] KRDICT '{stem}' → '{result['definition'][:60]}'")
-        return result
-
-    except Exception as e:
-        print(f"[main] Error looking up '{stem}' in KRDICT: {e}")
+    entry = parse_krdict_first_entry(response.status_code, response.text)
+    if entry is None:
         return None
+    return {
+        "stem": stem,
+        **entry,
+        "romanization": romanize_korean_text(stem),
+    }
 
 
 async def search_krdict_entries(
@@ -3623,6 +3777,60 @@ async def search_krdict_live(
     return results
 
 
+def _read_ko_preprocess_cache(stems: list[str]) -> list[dict]:
+    """Cached KRDICT rows for these stems (blocking; run via asyncio.to_thread)."""
+    rows: list[dict] = []
+    conn = get_db_connection()
+    try:
+        for chunk in chunked_values(stems):
+            placeholders = ",".join(["?"] * len(chunk))
+            rows.extend(
+                dict(row)
+                for row in conn.execute(
+                    f"""
+                    SELECT stem, definition, hanja, pos, domain, last_updated
+                    FROM dictionary_cache
+                    WHERE language = 'ko'
+                      AND interface_language = ?
+                      AND stem IN ({placeholders})
+                    """,
+                    [DEFAULT_INTERFACE_LANGUAGE, *chunk],
+                ).fetchall()
+            )
+    finally:
+        conn.close()
+    return rows
+
+
+def _write_ko_preprocess_cache(rows: list[dict]) -> None:
+    """Upsert live-fetched KRDICT rows (blocking; run via asyncio.to_thread).
+
+    Only a NULL-definition row (an expired "no entry") is overwritten, so a
+    concurrent writer's real definition is never replaced by a miss; rewriting
+    a miss refreshes last_updated, restarting its negative-cache clock.
+    """
+    conn = get_db_connection()
+    try:
+        conn.executemany(
+            """
+            INSERT INTO dictionary_cache
+                (stem, language, interface_language, definition, hanja, pos, domain)
+            VALUES (:stem, :language, :interface_language, :definition, :hanja, :pos, :domain)
+            ON CONFLICT(stem, language, interface_language) DO UPDATE SET
+                definition = excluded.definition,
+                hanja = excluded.hanja,
+                pos = excluded.pos,
+                domain = excluded.domain,
+                last_updated = CURRENT_TIMESTAMP
+            WHERE dictionary_cache.definition IS NULL
+            """,
+            rows,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 async def _preprocess_core(text: str, krdict_key: str, max_stems=None, progress_callback=None) -> dict:
     async def report(event: str, **data):
         if progress_callback:
@@ -3658,22 +3866,16 @@ async def _preprocess_core(text: str, krdict_key: str, max_stems=None, progress_
 
     await report("checking_cache", total_stems=len(unique_stems))
 
-    conn = get_db_connection()
-    placeholders = ",".join(["?"] * len(unique_stems))
-    cached_rows = conn.execute(
-        f"""
-        SELECT stem, definition, hanja, pos, domain
-        FROM dictionary_cache
-        WHERE language = 'ko'
-          AND interface_language = ?
-          AND stem IN ({placeholders})
-        """,
-        [DEFAULT_INTERFACE_LANGUAGE, *unique_stems],
-    ).fetchall()
-    conn.close()
-
-    cached_stems = {row["stem"] for row in cached_rows}
-    cached_results = [dict(row) for row in cached_rows]
+    cached_rows = await asyncio.to_thread(_read_ko_preprocess_cache, unique_stems)
+    # Stale "no entry" rows (incl. ones written during past KRDICT outages) are
+    # treated as misses and re-fetched; see word_lookup.is_reusable_cache_row.
+    now = datetime.now(timezone.utc)
+    cached_results = [
+        {key: row[key] for key in ("stem", "definition", "hanja", "pos", "domain")}
+        for row in cached_rows
+        if is_reusable_cache_row(row.get("definition"), row.get("last_updated"), now)
+    ]
+    cached_stems = {row["stem"] for row in cached_results}
     missing_stems = [stem for stem in unique_stems if stem not in cached_stems]
 
     # Offline-first: resolve as many cache misses as possible from the bundled
@@ -3706,6 +3908,7 @@ async def _preprocess_core(text: str, krdict_key: str, max_stems=None, progress_
         await report("fetch_started", missing_stems=len(missing_stems))
         semaphore = asyncio.Semaphore(KRDICT_CONCURRENCY_LIMIT)
         completed_fetches = 0
+        unavailable_stems: set[str] = set()
 
         async def fetch_missing_stem(client: httpx.AsyncClient, stem: str):
             nonlocal completed_fetches
@@ -3713,7 +3916,13 @@ async def _preprocess_core(text: str, krdict_key: str, max_stems=None, progress_
                 if ENABLE_RATE_LIMIT_DELAY:
                     await asyncio.sleep(RATE_LIMIT_DELAY_SECONDS)
 
-                result = await lookup_stem_in_krdict(client, stem, krdict_key)
+                try:
+                    result = await lookup_stem_in_krdict(client, stem, krdict_key)
+                except KrdictUnavailableError as error:
+                    # Not cached: the next preprocess run retries this stem.
+                    unavailable_stems.add(stem)
+                    print(f"[main] KRDICT unavailable for '{stem}': {error}")
+                    result = None
 
                 if ENABLE_RATE_LIMIT_DELAY:
                     await asyncio.sleep(RATE_LIMIT_DELAY_SECONDS)
@@ -3750,7 +3959,8 @@ async def _preprocess_core(text: str, krdict_key: str, max_stems=None, progress_
                 "language": "ko",
                 "interface_language": DEFAULT_INTERFACE_LANGUAGE,
             }
-            for stem in missing_stems if stem not in fetched_stems
+            for stem in missing_stems
+            if stem not in fetched_stems and stem not in unavailable_stems
         ]
 
         rows_to_insert = [
@@ -3766,20 +3976,13 @@ async def _preprocess_core(text: str, krdict_key: str, max_stems=None, progress_
             for row in new_results + no_entry_results
         ]
         if rows_to_insert:
-            conn = get_db_connection()
-            conn.executemany(
-                """INSERT OR IGNORE INTO dictionary_cache
-                   (stem, language, interface_language, definition, hanja, pos, domain)
-                   VALUES (:stem, :language, :interface_language, :definition, :hanja, :pos, :domain)""",
-                rows_to_insert,
-            )
-            conn.commit()
-            conn.close()
+            await asyncio.to_thread(_write_ko_preprocess_cache, rows_to_insert)
 
         await report(
             "cached_inserted",
             new_fetched=len(new_results),
             no_entry_count=len(no_entry_results),
+            unavailable_count=len(unavailable_stems),
         )
 
     unordered_results = cached_results + ko_dict_results + new_results + no_entry_results
@@ -3853,7 +4056,7 @@ async def preprocess_chapter(payload: dict, auth: dict[str, Any] = Depends(verif
             },
         }
 
-    enforce_preprocess_text_limit(text)
+    enforce_text_limit(text, auth)
     await enforce_daily_quota(auth)
 
     if not KRDICT_CLIENT_ID:
@@ -3863,7 +4066,21 @@ async def preprocess_chapter(payload: dict, auth: dict[str, Any] = Depends(verif
         f"[main] /preprocess_chapter/ | spine={spine_index} "
         f"text length={len(text):,} chars | max_stems={max_stems}"
     )
-    result = await preprocess_text_for_dictionary(text, KRDICT_CLIENT_ID, max_stems)
+    # Every chapter costs 1 quota unit (charged above). Stems that must be fetched
+    # live from KRDICT (not in cache.db or the bundled snapshot) cost extra: one
+    # unit per PREPROCESS_STEMS_PER_QUOTA_UNIT, charged once the cache check knows
+    # the count and before any KRDICT call, so a run of all-new text can't fan out
+    # thousands of KRDICT requests for one quota unit.
+    async def charge_live_fetches(event: str, data: dict) -> None:
+        if event != "cache_checked":
+            return
+        extra_units = preprocess_live_fetch_quota_units(data.get("missing_stems", 0))
+        if extra_units:
+            await enforce_daily_quota(auth, amount=extra_units)
+
+    result = await _preprocess_core(
+        text, KRDICT_CLIENT_ID, max_stems, progress_callback=charge_live_fetches
+    )
     return {
         "book_uri": book_uri,
         "spine_index": spine_index,
@@ -3889,8 +4106,8 @@ async def en_dict_search(
     enforce_text_limit(normalized_stem, auth, field_name="stem")
     await enforce_daily_quota(auth)
 
-    conn = get_db_connection()
-    cached = conn.execute(
+    cached = await asyncio.to_thread(
+        _db_fetchone,
         """
         SELECT id, stem, language, interface_language, definition, gloss, hanja, pos, domain,
                ipa, etymology, audio_us, audio_uk, derived, related, word_parts, last_updated
@@ -3901,8 +4118,7 @@ async def en_dict_search(
         LIMIT 1
         """,
         (normalized_stem, normalized_lang),
-    ).fetchone()
-    conn.close()
+    )
 
     if cached:
         cached_result = dict(cached)
@@ -3918,8 +4134,8 @@ async def en_dict_search(
                     else await _translate_text(normalized_stem, source="en", target=normalized_lang)
                 )
                 if cached_result.get("gloss"):
-                    conn = get_db_connection()
-                    conn.execute(
+                    await asyncio.to_thread(
+                        _db_execute,
                         """
                         UPDATE dictionary_cache
                         SET gloss = ?, last_updated = CURRENT_TIMESTAMP
@@ -3927,20 +4143,21 @@ async def en_dict_search(
                         """,
                         (cached_result["gloss"], normalized_stem, normalized_lang),
                     )
-                    conn.commit()
-                    conn.close()
             cached_result["word"] = cached_result.get("stem")
             result = sanitize_en_dictionary_result(cached_result)
-            kaikki_conn = get_kaikki_db_connection()
-            try:
-                attach_en_word_part_related_words(kaikki_conn, [result])
-            finally:
-                kaikki_conn.close()
+
+            def attach_related():
+                kaikki_conn = get_kaikki_db_connection()
+                try:
+                    attach_en_word_part_related_words(kaikki_conn, [result])
+                finally:
+                    kaikki_conn.close()
+
+            await asyncio.to_thread(attach_related)
             return {"result": result}
 
-    results, _found_count = lookup_en_dictionary_entries(
-        [normalized_stem],
-        include_word_part_related=True,
+    results, _found_count = await asyncio.to_thread(
+        partial(lookup_en_dictionary_entries, [normalized_stem], include_word_part_related=True)
     )
     entry = dict(results[0]) if results else None
 
@@ -3965,8 +4182,8 @@ async def en_dict_search(
         entry["gloss"] = build_en_definition_gloss(entry.get("definition"))
 
     if not translation_failed:
-        conn = get_db_connection()
-        conn.execute(
+        await asyncio.to_thread(
+            _db_execute,
             """
             INSERT INTO dictionary_cache
                 (stem, language, interface_language, definition, gloss, hanja, pos, domain,
@@ -4004,8 +4221,6 @@ async def en_dict_search(
                 entry.get("word_parts"),
             ),
         )
-        conn.commit()
-        conn.close()
 
     return {"result": entry}
 
@@ -4035,11 +4250,14 @@ async def zh_dict_search(
             "message": "Chinese dictionary database is not installed",
         }
 
-    result_groups, _found_count = lookup_zh_dictionary_entries(
-        [normalized_stem],
-        script=normalized_script,
-        interface_language=normalized_lang,
-        limit_per_stem=ZH_SEARCH_RESULT_LIMIT,
+    result_groups, _found_count = await asyncio.to_thread(
+        partial(
+            lookup_zh_dictionary_entries,
+            [normalized_stem],
+            script=normalized_script,
+            interface_language=normalized_lang,
+            limit_per_stem=ZH_SEARCH_RESULT_LIMIT,
+        )
     )
     entries = result_groups[0] if result_groups else []
     entries = [entry for entry in entries if entry.get("definition")]
@@ -4048,8 +4266,8 @@ async def zh_dict_search(
 
     cached_result = None
     if normalized_lang != "en":
-        conn = get_db_connection()
-        cached = conn.execute(
+        cached = await asyncio.to_thread(
+            _db_fetchone,
             """
             SELECT id, stem, language, interface_language, definition, gloss, hanja, pos, domain,
                    ipa, etymology, derived, related, last_updated
@@ -4060,8 +4278,7 @@ async def zh_dict_search(
             LIMIT 1
             """,
             (entries[0]["stem"], normalized_lang),
-        ).fetchone()
-        conn.close()
+        )
         if cached and cached["definition"]:
             cached_result = {
                 **entries[0],
@@ -4079,8 +4296,8 @@ async def zh_dict_search(
 
         first_entry = entries[0]
         if first_entry.get("definition"):
-            conn = get_db_connection()
-            conn.execute(
+            await asyncio.to_thread(
+                _db_execute,
                 """
                 INSERT INTO dictionary_cache
                     (stem, language, interface_language, definition, gloss, hanja, pos, domain,
@@ -4112,8 +4329,6 @@ async def zh_dict_search(
                     first_entry.get("related"),
                 ),
             )
-            conn.commit()
-            conn.close()
 
     return {"result": entries[0], "results": entries, "dictionary_available": True}
 
@@ -4153,7 +4368,7 @@ async def preprocess_chapter_en(payload: dict, auth: dict[str, Any] = Depends(ve
             },
         }
 
-    enforce_preprocess_text_limit(text)
+    enforce_text_limit(text, auth)
     await enforce_daily_quota(auth)
 
     print(
@@ -4203,7 +4418,7 @@ async def preprocess_chapter_zh(payload: dict, auth: dict[str, Any] = Depends(ve
             },
         }
 
-    enforce_preprocess_text_limit(text)
+    enforce_text_limit(text, auth)
     await enforce_daily_quota(auth)
 
     print(
@@ -4470,6 +4685,14 @@ async def assess_entry(payload: dict, auth: dict[str, Any] = Depends(verify_supa
     if not isinstance(body, str) or not body.strip():
         raise HTTPException(status_code=400, detail="body is required")
 
+    if len(body) > ENTRY_BODY_HARD_MAX_CHARS:
+        raise HTTPException(status_code=413, detail=f"body exceeds {ENTRY_BODY_HARD_MAX_CHARS} characters")
+
+    if not isinstance(prompt_text, str):
+        prompt_text = ""
+    if len(prompt_text) > ENTRY_PROMPT_MAX_CHARS:
+        raise HTTPException(status_code=413, detail=f"prompt exceeds {ENTRY_PROMPT_MAX_CHARS} characters")
+
     if category not in VALID_CATEGORIES:
         raise HTTPException(status_code=400, detail=f"category must be one of: {', '.join(sorted(VALID_CATEGORIES))}")
 
@@ -4478,13 +4701,21 @@ async def assess_entry(payload: dict, auth: dict[str, Any] = Depends(verify_supa
 
     if not isinstance(sandbox_words, list):
         sandbox_words = []
-    sandbox_words = [str(w) for w in sandbox_words if isinstance(w, str) and w.strip()][:10]
+    sandbox_words = [
+        w.strip()[:ENTRY_SANDBOX_WORD_MAX_CHARS]
+        for w in sandbox_words
+        if isinstance(w, str) and w.strip()
+    ][:10]
 
-    word_count = count_words(body.strip())
-    if word_count < ENTRY_MIN_WORDS:
-        raise HTTPException(status_code=422, detail=f"Entry is too short ({word_count} words). Write at least {ENTRY_MIN_WORDS} words.")
-    if word_count > ENTRY_MAX_WORDS:
-        raise HTTPException(status_code=422, detail=f"Entry is too long ({word_count} words). Keep it under {ENTRY_MAX_WORDS} words.")
+    # Chinese and Japanese have no spaces between words, so they are measured in
+    # characters (see limits.count_entry_length); other languages in words.
+    # The raw code, not language_code: "zh-hant" is coerced to "ko" above.
+    entry_length, length_unit = count_entry_length(body.strip(), str(payload.get("language", "ko")))
+    min_length, max_length = entry_length_bounds(length_unit)
+    if entry_length < min_length:
+        raise HTTPException(status_code=422, detail=f"Entry is too short ({entry_length} {length_unit}). Write at least {min_length} {length_unit}.")
+    if entry_length > max_length:
+        raise HTTPException(status_code=422, detail=f"Entry is too long ({entry_length} {length_unit}). Keep it under {max_length} {length_unit}.")
 
     await enforce_assessment_quota(auth["user_id"])
     await enforce_ai_budget()
@@ -4506,8 +4737,10 @@ async def assess_entry(payload: dict, auth: dict[str, Any] = Depends(verify_supa
     user_message = "\n".join(user_message_parts)
 
     try:
-        client = anthropic_sdk.Anthropic(api_key=ANTHROPIC_API_KEY)
-        message = client.messages.create(
+        # Async client so the 10-30 s assessment doesn't block the event loop. A full
+        # 2048-token answer arrives in one read, so allow longer than the shared 20 s.
+        client = get_anthropic_async_client().with_options(timeout=ASSESSMENT_TIMEOUT_SECONDS)
+        message = await client.messages.create(
             model=ASSESSMENT_MODEL,
             max_tokens=2048,
             system=system_prompt,
@@ -4717,8 +4950,14 @@ async def _prepare_explain_request(payload: dict, auth: dict[str, Any]) -> _Expl
     req.target_language = normalize_scoring_language(payload.get("language", "ko"))
     req.interface_language = normalize_interface_language_code(payload.get("interface_language"))
 
-    enforce_text_limit(req.word, auth, field_name="word")
-    enforce_text_limit(req.sentence, auth, field_name="sentence")
+    # Dedicated limits: a tapped word and its sentence, not a document. An
+    # over-long sentence (old builds can send a whole OCR block) is clipped to a
+    # window around the word; only absurd sizes are refused.
+    if len(req.word) > EXPLAIN_WORD_MAX_CHARS:
+        raise HTTPException(status_code=413, detail=f"word exceeds {EXPLAIN_WORD_MAX_CHARS} characters")
+    if len(req.sentence) > EXPLAIN_SENTENCE_HARD_MAX_CHARS:
+        raise HTTPException(status_code=413, detail=f"sentence exceeds {EXPLAIN_SENTENCE_HARD_MAX_CHARS} characters")
+    req.sentence = clip_sentence_around_word(req.sentence, req.word, EXPLAIN_SENTENCE_MAX_CHARS)
 
     await enforce_daily_quota(auth)
 
@@ -4734,12 +4973,13 @@ async def _prepare_explain_request(payload: dict, auth: dict[str, Any]) -> _Expl
     if p_known is None:
         p_known = p_known_for(req.theta, req.word_difficulty)
     req.p_known = p_known
-    hanja = payload.get("hanja")
-    req.hanja = hanja.strip() if isinstance(hanja, str) and hanja.strip() else None
+    req.hanja = sanitize_hanja(payload.get("hanja"))
     req.anchor_words = _sanitize_anchor_words(payload.get("anchor_words"))
     # The client already looked this word up on-device; reuse that result to
-    # ground the explanation instead of re-querying. Shared across users for the
-    # same word, so — unlike anchor_words — it does not bust the response cache.
+    # ground the explanation instead of re-querying. It goes into the prompt, so
+    # it is fingerprinted into the cache key below; it comes from the bundled
+    # dictionary and is the same for every reader of a word, so (unlike
+    # anchor_words) the cache stays shared across users.
     req.dictionary_found, req.dictionary_senses = _sanitize_dictionary_grounding(payload.get("dictionary"))
     # The dictionary form the client's lookup resolved (e.g. 눕다 for 누워). When
     # sent, it is authoritative: the model is told to use it and the response
@@ -4763,6 +5003,13 @@ async def _prepare_explain_request(payload: dict, auth: dict[str, Any]) -> _Expl
     if req.known_lemma:
         lemma_hash = hashlib.sha256(_normalize_for_cache(req.known_lemma).encode("utf-8")).hexdigest()[:16]
         cache_key = f"{cache_key}:l{lemma_hash}"
+    # Client grounding (hanja + dictionary senses) also shapes the prompt, so a
+    # request carrying crafted grounding must not be able to write an answer that
+    # other readers of the same word+sentence are then served. Requests without
+    # grounding (older builds) get an empty fingerprint and keep their old key.
+    grounding_hash = explain_grounding_fingerprint(req.hanja, req.dictionary_found, req.dictionary_senses)
+    if grounding_hash:
+        cache_key = f"{cache_key}:g{grounding_hash}"
     req.cache_key = cache_key
     return req
 
@@ -4822,24 +5069,30 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
 
     if EXPLAIN_USE_GRAPH:
         try:
-            result = await asyncio.to_thread(
-                run_explain_graph,
-                _explain_model_caller,
-                word=req.word,
-                sentence=req.sentence,
-                target_language_name=target_language_name,
-                interface_language_name=interface_language_name,
-                p_known=req.p_known,
-                theta=req.theta,
-                word_difficulty=req.word_difficulty,
-                hanja=req.hanja,
-                anchor_words=req.anchor_words,
-                dictionary_found=req.dictionary_found,
-                dictionary_senses=req.dictionary_senses,
-                known_lemma=req.known_lemma,
+            result = await asyncio.get_running_loop().run_in_executor(
+                EXPLAIN_FLOW_EXECUTOR,
+                partial(
+                    run_explain_graph,
+                    _explain_model_caller,
+                    word=req.word,
+                    sentence=req.sentence,
+                    target_language_name=target_language_name,
+                    interface_language_name=interface_language_name,
+                    p_known=req.p_known,
+                    theta=req.theta,
+                    word_difficulty=req.word_difficulty,
+                    hanja=req.hanja,
+                    anchor_words=req.anchor_words,
+                    dictionary_found=req.dictionary_found,
+                    dictionary_senses=req.dictionary_senses,
+                    known_lemma=req.known_lemma,
+                ),
             )
         except Exception as error:
             print(f"[explain_in_context] Explain flow error: {error.__class__.__name__}: {error}")
+            # Calls that completed before the failure (e.g. the draft) were billed.
+            for usage in getattr(error, "usages", None) or []:
+                await record_ai_spend(EXPLAIN_MODEL, usage)
             raise HTTPException(status_code=502, detail="AI explanation service is temporarily unavailable")
 
         # One spend record per model call the flow made (draft + any refine).
@@ -4940,6 +5193,7 @@ async def explain_in_context_stream(payload: dict, auth: dict[str, Any] = Depend
         sent_gloss = False
         sent_len = 0
         usage = None
+        stream = None
         try:
             async with get_anthropic_async_client().messages.stream(
                 **explain_model_params(),
@@ -4963,8 +5217,13 @@ async def explain_in_context_stream(payload: dict, auth: dict[str, Any] = Depend
             yield _ndjson({"type": "error", "detail": "AI explanation service is temporarily unavailable"})
             return
         finally:
+            # On an error or client disconnect before get_final_message, bill what
+            # the stream's snapshot saw. Shielded: a disconnect cancels this task.
+            if usage is None:
+                usage = stream_snapshot_usage(stream)
             if usage is not None:
-                await record_ai_spend(EXPLAIN_MODEL, usage)
+                with anyio.CancelScope(shield=True):
+                    await record_ai_spend(EXPLAIN_MODEL, usage)
 
         parsed = parse_contextual_explanation(raw.strip())
         if not parsed["explanation"]:

@@ -6,7 +6,7 @@ import {
   addRelatedKnownWordForEntry,
   removeRelatedKnownWordForEntry,
   removeData,
-  softDeleteVocabContextsForWord,
+  softDeleteVocabContext,
   upsertVocabEntryFromCloud,
   viewData,
 } from './Database';
@@ -19,6 +19,7 @@ import {
   makeUserVocabKey,
   pullUserLearningSync,
   softDeleteRelatedKnownWordsForMainWord,
+  softDeleteUserRelatedKnownWord,
   softDeleteUserVocabContextsForWord,
   softDeleteUserVocabEntry,
   upsertUserVocabContext,
@@ -33,8 +34,14 @@ import {
 import { pushInteractionEvents } from './interactionEventsCloudSync';
 import { pushProfileAbilities } from './profileAbilityCloudSync';
 import { makeScopedStorageKey } from './localDataScope';
+import { getDefaultProfileIdForLanguage, getRuntimeActiveProfileId } from './profileScope';
+import { getRuntimeTargetLanguage } from './interfaceLanguage';
+import { normalizeBookLanguage } from '../constants/languages';
 
-const USER_DATA_SYNC_CURSOR_KEY = 'sync/user-data-cursors-v1';
+// v2: cursors are kept per profile. A profile without v2 cursors (including
+// every profile on first run after upgrading from v1) does a full pull, which is
+// safe: it re-merges every row by key and timestamp.
+const USER_DATA_SYNC_CURSOR_KEY = 'sync/user-data-cursors-v2';
 const SYNC_TABLES = {
   vocab: 'vocab',
   vocabContexts: 'vocabContexts',
@@ -61,7 +68,27 @@ const shouldContinueSync = (generation) => (
   !isCloudSyncPaused() && isCurrentSyncGeneration(generation)
 );
 
-const getCursorStorageKey = (ownerId) => makeScopedStorageKey(ownerId, USER_DATA_SYNC_CURSOR_KEY);
+const getCursorStorageKey = (ownerId, profileId) => makeScopedStorageKey(
+  ownerId,
+  `${USER_DATA_SYNC_CURSOR_KEY}/${encodeURIComponent(profileId)}`
+);
+
+const rowLanguage = (row) => normalizeBookLanguage(row?.language || 'ko');
+
+// The cloud tables hold every language's words for the user and carry no
+// profile id. Local rows live under a profile, and only the active profile's id
+// is known here, so a sync applies just the rows in the active profile's
+// language. Other languages' rows sync when their profile is active (each
+// profile has its own cursors, so nothing is skipped).
+const resolveSyncScope = (ownerId) => {
+  const language = normalizeBookLanguage(getRuntimeTargetLanguage());
+  const profileId = getRuntimeActiveProfileId() || getDefaultProfileIdForLanguage(language);
+  return { ownerId, profileId, language };
+};
+
+const filterToScopeLanguage = (rows, scope) => (
+  (rows ?? []).filter((row) => rowLanguage(row) === scope.language)
+);
 
 const normalizeCursorTimestamp = (value) => {
   if (!value) {
@@ -72,9 +99,9 @@ const normalizeCursorTimestamp = (value) => {
   return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
 };
 
-const readSyncCursors = async (ownerId) => {
+const readSyncCursors = async (ownerId, profileId) => {
   try {
-    const raw = await AsyncStorage.getItem(getCursorStorageKey(ownerId));
+    const raw = await AsyncStorage.getItem(getCursorStorageKey(ownerId, profileId));
     const parsed = raw ? JSON.parse(raw) : {};
     return parsed && typeof parsed === 'object' ? parsed : {};
   } catch (error) {
@@ -83,9 +110,9 @@ const readSyncCursors = async (ownerId) => {
   }
 };
 
-const writeSyncCursors = async (ownerId, cursors) => {
+const writeSyncCursors = async (ownerId, profileId, cursors) => {
   try {
-    await AsyncStorage.setItem(getCursorStorageKey(ownerId), JSON.stringify(cursors));
+    await AsyncStorage.setItem(getCursorStorageKey(ownerId, profileId), JSON.stringify(cursors));
   } catch (error) {
     console.warn('[userDataSync] Failed to persist sync cursors:', error?.message ?? error);
   }
@@ -115,24 +142,24 @@ const rowTimestampValues = (rows, keys = ['updated_at', 'updatedAt']) => (
   (rows ?? []).flatMap((row) => keys.map((key) => row?.[key]).filter(Boolean))
 );
 
-const buildNextTableCursors = (
-  tableCursors,
-  cloudRows,
-  localRows,
-  { localAppliedRows = [] } = {}
-) => ({
+// The cloud cursor is compared against the server's server_updated_at, so it is
+// built only from that column (a client updated_at can be skewed or older than
+// the server write and would make the next delta skip rows). The local cursor is
+// compared against local updated_at, so it is built only from the local rows
+// read for this pass; folding in cloud rows' timestamps could jump it past local
+// edits that haven't been uploaded yet.
+export const buildNextTableCursors = (tableCursors, cloudRows, localRows) => ({
   cloud: maxCursorValue(
     tableCursors.cloud,
-    ...rowTimestampValues(cloudRows, ['server_updated_at', 'serverUpdatedAt', 'updated_at', 'updatedAt'])
+    ...rowTimestampValues(cloudRows, ['server_updated_at', 'serverUpdatedAt'])
   ),
   local: maxCursorValue(
     tableCursors.local,
-    ...rowTimestampValues(localRows),
-    ...rowTimestampValues(localAppliedRows)
+    ...rowTimestampValues(localRows)
   ),
 });
 
-const persistTableCursors = async (ownerId, cursors, table, tableCursors) => {
+const persistTableCursors = async (scope, cursors, table, tableCursors) => {
   const nextCursors = {
     ...cursors,
     [table]: {
@@ -141,7 +168,7 @@ const persistTableCursors = async (ownerId, cursors, table, tableCursors) => {
     },
   };
 
-  await writeSyncCursors(ownerId, nextCursors);
+  await writeSyncCursors(scope.ownerId, scope.profileId, nextCursors);
   return nextCursors;
 };
 
@@ -161,7 +188,8 @@ const softDeleteCloudRelatedKnownWordsForEntry = async ({ user, ownerId, generat
   });
 };
 
-const syncVocabFromCloud = async (user, ownerId, generation, tableCursors, cloudRowsOverride = null) => {
+const syncVocabFromCloud = async (user, scope, generation, tableCursors, cloudRowsOverride = null) => {
+  const { ownerId, profileId, language } = scope;
   const useDelta = canUseDeltaSync(tableCursors);
   const cloudRowsPromise = cloudRowsOverride
     ? Promise.resolve(cloudRowsOverride)
@@ -169,10 +197,12 @@ const syncVocabFromCloud = async (user, ownerId, generation, tableCursors, cloud
         includeDeleted: true,
         updatedAfter: useDelta ? tableCursors.cloud : null,
       });
-  const [cloudRows, localRows] = await Promise.all([
+  const [allCloudRows, localRows] = await Promise.all([
     cloudRowsPromise,
     viewData({
       ownerId,
+      profileId,
+      language,
       includeDeleted: true,
       updatedAfter: useDelta ? tableCursors.local : null,
     }),
@@ -182,18 +212,28 @@ const syncVocabFromCloud = async (user, ownerId, generation, tableCursors, cloud
     return;
   }
 
+  const cloudRows = filterToScopeLanguage(allCloudRows, scope);
+
   const cloudByKey = new Map(
     cloudRows.map((row) => [makeUserVocabKey(row), row])
   );
-  const localByKey = new Map(
-    localRows.map((row) => [makeUserVocabKey({
+  const localByKey = new Map();
+  localRows.forEach((row) => {
+    const key = makeUserVocabKey({
       language: row.language ?? 'ko',
       word: row.word,
       hanja: row.hanja,
       definition: row.def,
-    }), row])
-  );
+    });
+    // A word deleted and saved again leaves a deleted and a live row under one
+    // key; the live row is the one to sync.
+    const existing = localByKey.get(key);
+    if (!existing || (existing.deleted_at && !row.deleted_at)) {
+      localByKey.set(key, row);
+    }
+  });
   const allKeys = new Set([...cloudByKey.keys(), ...localByKey.keys()]);
+  const dbScope = { ownerId, profileId };
 
   for (const key of allKeys) {
     if (!shouldContinueSync(generation)) {
@@ -230,10 +270,10 @@ const syncVocabFromCloud = async (user, ownerId, generation, tableCursors, cloud
           cloudRow.hanja,
           cloudRow.definition,
           cloudRow.language ?? 'ko',
-          { ownerId }
+          dbScope
         );
       } else {
-        await upsertVocabEntryFromCloud(cloudRow, { ownerId });
+        await upsertVocabEntryFromCloud(cloudRow, dbScope);
       }
       continue;
     }
@@ -248,7 +288,7 @@ const syncVocabFromCloud = async (user, ownerId, generation, tableCursors, cloud
     const localDeletedAt = getTimestamp(localRow, ['deleted_at']);
 
     if (cloudDeletedAt && cloudDeletedAt >= localUpdatedAt) {
-      await removeData(localRow.word, localRow.hanja, localRow.def, localRow.language ?? 'ko', { ownerId });
+      await removeData(localRow.word, localRow.hanja, localRow.def, localRow.language ?? 'ko', dbScope);
       continue;
     }
 
@@ -267,7 +307,7 @@ const syncVocabFromCloud = async (user, ownerId, generation, tableCursors, cloud
     }
 
     if (cloudUpdatedAt > localUpdatedAt) {
-      await upsertVocabEntryFromCloud(cloudRow, { ownerId });
+      await upsertVocabEntryFromCloud(cloudRow, dbScope);
       continue;
     }
 
@@ -275,18 +315,18 @@ const syncVocabFromCloud = async (user, ownerId, generation, tableCursors, cloud
     await upsertUserVocabEntry({ user, ownerId, generation, entry: localRow });
   }
 
-  return buildNextTableCursors(tableCursors, cloudRows, localRows, {
-    localAppliedRows: cloudRows,
-  });
+  return buildNextTableCursors(tableCursors, allCloudRows, localRows);
 };
 
 const syncVocabContextsFromCloud = async (
   user,
-  ownerId,
+  scope,
   generation,
   tableCursors,
   cloudContextsOverride = null
 ) => {
+  const { ownerId, profileId, language } = scope;
+  const dbScope = { ownerId, profileId };
   const useDelta = canUseDeltaSync(tableCursors);
   const cloudContextsPromise = cloudContextsOverride
     ? Promise.resolve(cloudContextsOverride)
@@ -294,20 +334,23 @@ const syncVocabContextsFromCloud = async (
         includeDeleted: true,
         updatedAfter: useDelta ? tableCursors.cloud : null,
       });
-  const [cloudContexts, localContexts, localVocabRows] = await Promise.all([
+  const [allCloudContexts, localContexts, localVocabRows] = await Promise.all([
     cloudContextsPromise,
     getAllVocabContexts({
       ownerId,
+      profileId,
+      language,
       includeDeleted: true,
       updatedAfter: useDelta ? tableCursors.local : null,
     }),
-    viewData({ ownerId }),
+    viewData({ ownerId, profileId, language }),
   ]);
 
   if (!shouldContinueSync(generation)) {
     return;
   }
 
+  const cloudContexts = filterToScopeLanguage(allCloudContexts, scope);
   const localVocabKeys = new Set(
     localVocabRows.map((row) => makeUserVocabKey({
       language: row.language ?? 'ko',
@@ -319,9 +362,14 @@ const syncVocabContextsFromCloud = async (
   const cloudByKey = new Map(
     cloudContexts.map((context) => [makeUserVocabContextKey(context), context])
   );
-  const localByKey = new Map(
-    localContexts.map((context) => [makeUserVocabContextKey(context), context])
-  );
+  const localByKey = new Map();
+  localContexts.forEach((context) => {
+    const key = makeUserVocabContextKey(context);
+    const existing = localByKey.get(key);
+    if (!existing || (existing.deleted_at && !context.deleted_at)) {
+      localByKey.set(key, context);
+    }
+  });
   const allKeys = new Set([...cloudByKey.keys(), ...localByKey.keys()]);
 
   for (const key of allKeys) {
@@ -341,13 +389,11 @@ const syncVocabContextsFromCloud = async (
       const localDeletedAt = getTimestamp(localContext, ['deleted_at', 'deletedAt']);
 
       if (!localContext || cloudDeletedAt >= localUpdatedAt) {
-        await softDeleteVocabContextsForWord(
-          cloudContext.word,
-          cloudContext.hanja,
-          cloudContext.definition,
-          cloudContext.language ?? 'ko',
-          { ownerId }
-        );
+        // The tombstone is for one sentence: delete only the local context with
+        // the same sentence and source book (a no-op when there is none), never
+        // the word's other sentences. With delta sync the matching local row may
+        // simply be older than the local cursor, so look it up in the DB.
+        await softDeleteVocabContext(cloudContext, dbScope);
         continue;
       }
 
@@ -414,7 +460,7 @@ const syncVocabContextsFromCloud = async (
       });
 
       if (localVocabKeys.has(vocabKey)) {
-        await insertVocabContextIfMissing(cloudContext, { ownerId });
+        await insertVocabContextIfMissing(cloudContext, dbScope);
       }
       continue;
     }
@@ -450,7 +496,7 @@ const syncVocabContextsFromCloud = async (
     }
 
     if (cloudUpdatedAt > localUpdatedAt) {
-      await insertVocabContextIfMissing(cloudContext, { ownerId });
+      await insertVocabContextIfMissing(cloudContext, dbScope);
       continue;
     }
 
@@ -458,9 +504,7 @@ const syncVocabContextsFromCloud = async (
     await upsertUserVocabContext({ user, ownerId, generation, context: localContext });
   }
 
-  return buildNextTableCursors(tableCursors, cloudContexts, localContexts, {
-    localAppliedRows: cloudContexts,
-  });
+  return buildNextTableCursors(tableCursors, allCloudContexts, localContexts);
 };
 
 const toLocalRelatedKnownRelation = (relation) => ({
@@ -474,15 +518,17 @@ const toLocalRelatedKnownRelation = (relation) => ({
   sourceHanja: relation.source_hanja ?? relation.sourceHanja ?? null,
   markedAt: relation.marked_at ?? relation.markedAt ?? new Date().toISOString(),
   updatedAt: relation.updated_at ?? relation.updatedAt ?? relation.marked_at ?? relation.markedAt,
+  deletedAt: relation.deleted_at ?? relation.deletedAt ?? null,
 });
 
 const syncRelatedKnownWordsFromCloud = async (
   user,
-  ownerId,
+  scope,
   generation,
   tableCursors,
   cloudRelationsOverride = null
 ) => {
+  const { ownerId, profileId, language } = scope;
   const useDelta = canUseDeltaSync(tableCursors);
   const cloudRelationsPromise = cloudRelationsOverride
     ? Promise.resolve(cloudRelationsOverride)
@@ -490,15 +536,21 @@ const syncRelatedKnownWordsFromCloud = async (
         includeDeleted: true,
         updatedAfter: useDelta ? tableCursors.cloud : null,
       });
-  const [cloudRelations, localRelations, localVocabRows, allLocalVocabRows] = await Promise.all([
+  const [allCloudRelations, localRelations, localVocabRows, allLocalVocabRows] = await Promise.all([
     cloudRelationsPromise,
+    // includeDeleted: un-mark tombstones come back as relations with deletedAt.
     getAllRelatedKnownWords({
       ownerId,
+      profileId,
+      language,
+      includeDeleted: true,
       updatedAfter: useDelta ? tableCursors.local : null,
     }),
-    viewData({ ownerId }),
+    viewData({ ownerId, profileId, language }),
     viewData({
       ownerId,
+      profileId,
+      language,
       includeDeleted: true,
       updatedAfter: useDelta ? tableCursors.local : null,
     }),
@@ -506,6 +558,8 @@ const syncRelatedKnownWordsFromCloud = async (
   if (!shouldContinueSync(generation)) {
     return;
   }
+  const cloudRelations = filterToScopeLanguage(allCloudRelations, scope);
+  const localRelationScope = { ownerId, profileId };
   const localVocabKeys = new Set(
     localVocabRows.map((row) => makeUserVocabKey({
       language: row.language ?? 'ko',
@@ -539,6 +593,38 @@ const syncRelatedKnownWordsFromCloud = async (
 
     const cloudRelation = cloudByKey.get(key);
     const localRelation = localByKey.get(key);
+    const localDeletedAt = getTimestamp(localRelation, ['deletedAt', 'deleted_at']);
+
+    if (localRelation && localDeletedAt) {
+      // Local un-mark tombstone.
+      const cloudDeleted = Boolean(cloudRelation?.deleted_at || cloudRelation?.deletedAt);
+      if (cloudDeleted) {
+        continue;
+      }
+
+      if (cloudRelation) {
+        const cloudUpdatedAt = Math.max(
+          getTimestamp(cloudRelation, ['updated_at', 'updatedAt']),
+          getTimestamp(cloudRelation, ['marked_at', 'markedAt'])
+        );
+
+        if (cloudUpdatedAt > localDeletedAt) {
+          // Re-marked on another device after the local un-mark.
+          await addRelatedKnownWordForEntry({
+            ...toLocalRelatedKnownRelation(cloudRelation),
+            ...localRelationScope,
+          });
+          continue;
+        }
+      } else if (!useDelta) {
+        // Full sync with no cloud row: nothing to delete remotely.
+        continue;
+      }
+
+      assertCanUploadForOwner({ ownerId, user });
+      await softDeleteUserRelatedKnownWord({ user, ownerId, generation, relation: localRelation });
+      continue;
+    }
 
     if (!cloudRelation && localRelation) {
       const vocabKey = makeUserVocabKey({
@@ -559,7 +645,7 @@ const syncRelatedKnownWordsFromCloud = async (
       if (cloudRelation.deleted_at || cloudRelation.deletedAt) {
         await removeRelatedKnownWordForEntry({
           ...toLocalRelatedKnownRelation(cloudRelation),
-          ownerId,
+          ...localRelationScope,
         });
       } else {
         const vocabKey = makeUserVocabKey({
@@ -593,7 +679,7 @@ const syncRelatedKnownWordsFromCloud = async (
 
         await addRelatedKnownWordForEntry({
           ...toLocalRelatedKnownRelation(cloudRelation),
-          ownerId,
+          ...localRelationScope,
         });
       }
       continue;
@@ -616,7 +702,7 @@ const syncRelatedKnownWordsFromCloud = async (
     if (cloudDeletedAt && cloudDeletedAt >= localUpdatedAt) {
       await removeRelatedKnownWordForEntry({
         ...toLocalRelatedKnownRelation(cloudRelation),
-        ownerId,
+        ...localRelationScope,
       });
       continue;
     }
@@ -624,7 +710,7 @@ const syncRelatedKnownWordsFromCloud = async (
     if (cloudUpdatedAt > localUpdatedAt) {
       await addRelatedKnownWordForEntry({
         ...toLocalRelatedKnownRelation(cloudRelation),
-        ownerId,
+        ...localRelationScope,
       });
       continue;
     }
@@ -650,9 +736,7 @@ const syncRelatedKnownWordsFromCloud = async (
     }
   }
 
-  return buildNextTableCursors(tableCursors, cloudRelations, localRelations, {
-    localAppliedRows: cloudRelations,
-  });
+  return buildNextTableCursors(tableCursors, allCloudRelations, localRelations);
 };
 
 export const syncUserDataFromCloud = async ({ user, ownerId, generation }) => {
@@ -672,7 +756,10 @@ export const syncUserDataFromCloud = async ({ user, ownerId, generation }) => {
     throw new Error('Refusing user-data sync for mismatched owner');
   }
 
-  let cursors = await readSyncCursors(ownerId);
+  // Capture the profile (and its language) once, so a profile switch mid-sync
+  // can't send the rest of this pass's rows or cursors to the new profile.
+  const scope = resolveSyncScope(ownerId);
+  let cursors = await readSyncCursors(ownerId, scope.profileId);
   const tableCursors = {
     vocab: getTableCursors(cursors, SYNC_TABLES.vocab),
     vocabContexts: getTableCursors(cursors, SYNC_TABLES.vocabContexts),
@@ -696,7 +783,7 @@ export const syncUserDataFromCloud = async ({ user, ownerId, generation }) => {
 
   const vocabCursors = await syncVocabFromCloud(
     user,
-    ownerId,
+    scope,
     generation,
     tableCursors.vocab,
     pulledCloudRows?.vocab
@@ -705,12 +792,12 @@ export const syncUserDataFromCloud = async ({ user, ownerId, generation }) => {
     return;
   }
   if (vocabCursors) {
-    cursors = await persistTableCursors(ownerId, cursors, SYNC_TABLES.vocab, vocabCursors);
+    cursors = await persistTableCursors(scope, cursors, SYNC_TABLES.vocab, vocabCursors);
   }
 
   const contextCursors = await syncVocabContextsFromCloud(
     user,
-    ownerId,
+    scope,
     generation,
     getTableCursors(cursors, SYNC_TABLES.vocabContexts),
     pulledCloudRows?.contexts
@@ -720,7 +807,7 @@ export const syncUserDataFromCloud = async ({ user, ownerId, generation }) => {
   }
   if (contextCursors) {
     cursors = await persistTableCursors(
-      ownerId,
+      scope,
       cursors,
       SYNC_TABLES.vocabContexts,
       contextCursors
@@ -729,7 +816,7 @@ export const syncUserDataFromCloud = async ({ user, ownerId, generation }) => {
 
   const relatedKnownWordCursors = await syncRelatedKnownWordsFromCloud(
     user,
-    ownerId,
+    scope,
     generation,
     getTableCursors(cursors, SYNC_TABLES.relatedKnownWords),
     pulledCloudRows?.relatedKnownWords
@@ -739,7 +826,7 @@ export const syncUserDataFromCloud = async ({ user, ownerId, generation }) => {
   }
   if (relatedKnownWordCursors) {
     await persistTableCursors(
-      ownerId,
+      scope,
       cursors,
       SYNC_TABLES.relatedKnownWords,
       relatedKnownWordCursors

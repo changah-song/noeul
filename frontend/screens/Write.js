@@ -38,6 +38,7 @@ import {
   createMockWritingEntry,
 } from '../services/writingAssessmentMock';
 import { GUEST_OWNER_ID, makeScopedStorageKey } from '../services/localDataScope';
+import { measureEntry } from '../services/entryLength';
 import {
   assertCanUploadForOwner,
   isCurrentSyncGeneration,
@@ -649,6 +650,7 @@ const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 const AnnotationSheet = ({ annotation, onClose }) => {
   const { colors, styles } = useWriteTheme();
+  const { t } = useTranslation();
   const { height: windowHeight } = useWindowDimensions();
 
   // Keep the modal mounted while it animates out, then unmount. The scrim fades
@@ -718,7 +720,12 @@ const AnnotationSheet = ({ annotation, onClose }) => {
                   {shown.original}
                 </Text>
               </View>
-              <TouchableOpacity onPress={onClose} style={styles.sheetCloseButton}>
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel={t('common.close')}
+                onPress={onClose}
+                style={styles.sheetCloseButton}
+              >
                 <Feather name="x" size={18} color={colors.text} />
               </TouchableOpacity>
             </View>
@@ -877,6 +884,9 @@ const Write = ({ user, navigation }) => {
   const [activeEditorType, setActiveEditorType] = useState('reflective');
   const [promptIndex, setPromptIndex] = useState(0);
   const [isAssessing, setIsAssessing] = useState(false);
+  // Synchronous mirror of isAssessing so a double tap or a back press that
+  // lands before the re-render can't start a second submit or save a stale draft.
+  const assessingRef = useRef(false);
   const [loading, setLoading] = useState(true);
   const [assessConfirmVisible, setAssessConfirmVisible] = useState(false);
   const [deleteConfirmVisible, setDeleteConfirmVisible] = useState(false);
@@ -1156,6 +1166,9 @@ const Write = ({ user, navigation }) => {
   // Back from the editor: auto-save as draft if there's any text, titling
   // untitled entries "Untitled"; otherwise just discard the empty draft.
   const handleEditorBack = async () => {
+    // While an assessment is in flight the submit flow owns the entry; saving
+    // here would race it (duplicate entry or a stale overwrite of the review).
+    if (assessingRef.current) return;
     if (canSave) {
       const nextEntry = buildNextEntry();
       await persistAndSyncEntry(nextEntry, entries).catch(() => {});
@@ -1189,6 +1202,8 @@ const Write = ({ user, navigation }) => {
     }
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
       if (mode === 'editor') {
+        // Swallow back while assessing (handleEditorBack is a no-op then) so
+        // the press doesn't fall through and exit the app either.
         handleEditorBack();
         return true;
       }
@@ -1233,7 +1248,7 @@ const Write = ({ user, navigation }) => {
   };
 
   const saveEntry = async () => {
-    if (!canSave) return;
+    if (!canSave || assessingRef.current) return;
     const nextEntry = buildNextEntry();
     await persistAndSyncEntry(nextEntry, entries);
     leaveEditor();
@@ -1245,18 +1260,31 @@ const Write = ({ user, navigation }) => {
       return;
     }
 
-    const wordCount = draft.body.trim().split(/\s+/).filter(Boolean).length;
-    if (wordCount < 30) {
-      Alert.alert('', t('write.assessTooShort'));
+    if (assessingRef.current) return;
+
+    // Chinese/Japanese have no spaces between words, so they're measured in
+    // characters (see services/entryLength.js).
+    const length = measureEntry(draft.body, draft.language ?? targetLanguage);
+    if (length.tooShort) {
+      Alert.alert('', length.unit === 'characters'
+        ? t('write.assessTooShortChars', { count: length.min })
+        : t('write.assessTooShort'));
       return;
     }
-    if (wordCount > 500) {
-      Alert.alert('', t('write.assessTooLong'));
+    if (length.tooLong) {
+      Alert.alert('', length.unit === 'characters'
+        ? t('write.assessTooLongChars', { count: length.max })
+        : t('write.assessTooLong'));
       return;
     }
 
+    assessingRef.current = true;
     setIsAssessing(true);
     const submittedEntry = buildNextEntry({ status: 'submitted' });
+    // Pin the id on the draft so anything that rebuilds the entry from the
+    // draft (e.g. a save after a failed assessment) updates this row instead
+    // of inserting a duplicate.
+    setDraft((current) => (current.id ? current : { ...current, id: submittedEntry.id }));
     let currentEntries = await persistAndSyncEntry(submittedEntry, entries).catch(() => entries);
 
     try {
@@ -1286,6 +1314,7 @@ const Write = ({ user, navigation }) => {
       const isQuota = error?.response?.status === 429;
       Alert.alert('', isQuota ? t('write.assessLimitReached') : (detail || t('write.assessError')));
     } finally {
+      assessingRef.current = false;
       setIsAssessing(false);
     }
   };
@@ -1358,6 +1387,8 @@ const Write = ({ user, navigation }) => {
             </View>
             <TouchableOpacity
               activeOpacity={0.82}
+              accessibilityRole="button"
+              accessibilityLabel={t('write.newEntry')}
               onPress={openNewDraft}
               style={styles.writeHomeNewButton}
             >
@@ -1570,8 +1601,10 @@ const Write = ({ user, navigation }) => {
           <View style={styles.editorTopBar}>
             <TouchableOpacity
               accessibilityLabel={t('write.backList')}
+              accessibilityState={{ disabled: isAssessing }}
+              disabled={isAssessing}
               onPress={handleEditorBack}
-              style={styles.editorBackButton}
+              style={[styles.editorBackButton, isAssessing && styles.editorSaveButtonDisabled]}
             >
               <Feather name="chevron-left" size={22} color={colors.text} />
             </TouchableOpacity>
@@ -1579,11 +1612,11 @@ const Write = ({ user, navigation }) => {
             <View style={styles.editorTopBarSpacer} />
 
             <TouchableOpacity
-              disabled={!canSave}
+              disabled={!canSave || isAssessing}
               onPress={saveEntry}
-              style={[styles.editorSaveButton, !canSave && styles.editorSaveButtonDisabled]}
+              style={[styles.editorSaveButton, (!canSave || isAssessing) && styles.editorSaveButtonDisabled]}
             >
-              <Text style={[styles.editorSaveText, !canSave && styles.editorSaveTextDisabled]}>
+              <Text style={[styles.editorSaveText, (!canSave || isAssessing) && styles.editorSaveTextDisabled]}>
                 {t('common.save')}
               </Text>
             </TouchableOpacity>
@@ -1614,6 +1647,8 @@ const Write = ({ user, navigation }) => {
               <View style={styles.editorPromptHeader}>
                 <Text style={styles.editorPromptHeaderText}>{t('write.choosePrompt')}</Text>
                 <TouchableOpacity
+                  accessibilityRole="button"
+                  accessibilityLabel={t('write.anotherPrompt')}
                   onPress={() => {
                     const next = (promptIndex + 1) % currentPrompts.length;
                     setPromptIndex(next);

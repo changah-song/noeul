@@ -8,6 +8,7 @@ import { Slider } from 'react-native-elements';
 import TopSection from '../components/Read/TopSection/TopSection';
 import TocDrawer from '../components/Read/TocDrawer';
 import FocusControls from '../components/Read/FocusControls';
+import PinnedSentenceTranslation, { PINNED_TRANSLATION_BAR_HEIGHT } from '../components/Read/PinnedSentenceTranslation';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
@@ -104,10 +105,21 @@ const DEFAULT_READER_SETTINGS = {
     glossAnnotations: false,
     // Which words get pinyin / translations: 'underlined' or 'all'.
     annotationScope: 'underlined',
+    // A fixed-height bar under the header that keeps the translation of the
+    // last tapped word's sentence on screen (duChinese-style). Off by default.
+    pinnedSentenceTranslation: false,
     // Draw underlines on text already read past lighter than the ones ahead.
     fadeReadMarks: true,
 };
 const READING_MODES = ['paged', 'scroll'];
+
+const shallowEqualObjects = (a, b) => {
+    const aKeys = Object.keys(a);
+    if (aKeys.length !== Object.keys(b).length) {
+        return false;
+    }
+    return aKeys.every((key) => a[key] === b[key]);
+};
 // Whether graded words get a solid gradient underline. 'off' hides the marks but
 // the model keeps learning from reading.
 const LEVEL_MARK_STYLES = ['off', 'underline'];
@@ -512,6 +524,9 @@ const Read = ({
 
     // ── Focus (sentence beam) mode ───────────────────────────────────────────
     const [focusMode, setFocusMode] = useState(false);
+    // Sentence of the last tapped word, for the pinned translation bar. Outlives
+    // the lookup panel; cleared on a chapter or book change.
+    const [pinnedSentence, setPinnedSentence] = useState('');
     const [focusNavToken, setFocusNavToken] = useState('none:0');
     const [lookupPanelHeight, setLookupPanelHeight] = useState(0);
     // Focus info (sentence index/total) updates on every beam step. It is kept
@@ -603,7 +618,15 @@ const Read = ({
     // Monotonic counter stamped onto a restorePosition that represents a
     // deliberate jump; see handleSelectBookmark.
     const seekTokenRef = useRef(0);
+    const recordedVocabContextsRef = useRef({ book: null, keys: new Set() });
     const updateNativeRestorePosition = useCallback((position) => {
+        // Page changes repeat the same position often (every focus-mode step
+        // resends it); skip the re-render, and the prop round trip to native,
+        // when nothing moved.
+        const previous = nativeRestorePositionRef.current;
+        if (previous && position && shallowEqualObjects(previous, position)) {
+            return;
+        }
         nativeRestorePositionRef.current = position;
         setNativeRestorePosition(position);
     }, []);
@@ -634,14 +657,20 @@ const Read = ({
 
     // Load saved words for highlighting on mount
     useEffect(() => {
+        // Ignore a load that finishes after the language/owner changed, so the
+        // previous book's words don't overwrite the current ones.
+        let isActive = true;
         getSavedWords({ ownerId: activeOwnerId, language: activeBookLanguage })
             .then(words => {
-                setSavedWords(words);
+                if (isActive) setSavedWords(words);
             })
             .catch(err => {
                 console.error('[Read] Failed to load saved words:', err);
-                setSavedWords([]);
+                if (isActive) setSavedWords([]);
             });
+        return () => {
+            isActive = false;
+        };
     }, [activeBookLanguage, activeOwnerId]);
 
     // Words saved from *this* book — drives the top-bar count pill and the saved
@@ -964,6 +993,7 @@ const Read = ({
         setHighlightedWordContext({
             sentence,
         });
+        setPinnedSentence(sentence || text);
         setLookupPlacement(event.placement === 'top' ? 'top' : 'bottom');
 
         recordVocabContextForSurface({
@@ -1124,7 +1154,9 @@ const Read = ({
         }
     };
 
-    const saveSettings = async (newSettings, updatedAt = new Date().toISOString(), options = {}) => {
+    // Stable so the cloud-merge effect below (which lists it as a dependency)
+    // isn't restarted, and its in-flight fetch cancelled, on every render.
+    const saveSettings = useCallback(async (newSettings, updatedAt = new Date().toISOString(), options = {}) => {
         const { syncCloud = true } = options;
         try {
             readerSettingsUpdatedAtRef.current = updatedAt;
@@ -1138,7 +1170,7 @@ const Read = ({
         } catch (error) {
             console.error('[Read] Error saving settings:', error);
         }
-    };
+    }, [scheduleCloudReaderSettingsSync]);
 
     useEffect(() => {
         if (!readerSettingsLoaded) {
@@ -1164,6 +1196,7 @@ const Read = ({
         }
 
         let isMounted = true;
+        let mergeFinished = false;
         readerSettingsCloudUserRef.current = user.id;
         const ownerId = activeOwnerId;
         const generation = syncGeneration;
@@ -1205,9 +1238,12 @@ const Read = ({
 
                     readerSettingsRef.current = nextSettings;
                     setSettings(nextSettings);
+                    mergeFinished = true;
                     await saveSettings(nextSettings, cloudUpdatedAt, { syncCloud: false });
                     return;
                 }
+
+                mergeFinished = true;
 
                 const updatedAt = localUpdatedAt ?? new Date().toISOString();
                 await updateUserPreferenceFields({
@@ -1232,6 +1268,11 @@ const Read = ({
 
         return () => {
             isMounted = false;
+            // A merge cancelled before it applied must run again on the next
+            // pass instead of being treated as done for this user.
+            if (!mergeFinished && readerSettingsCloudUserRef.current === user.id) {
+                readerSettingsCloudUserRef.current = null;
+            }
         };
     }, [activeOwnerId, isDarkMode, readerSettingsLoaded, saveSettings, setIsDarkMode, syncGeneration, syncPaused, user]);
 
@@ -1264,6 +1305,7 @@ const Read = ({
             brightness: DEFAULT_READER_SETTINGS.brightness,
             readingMode: DEFAULT_READER_SETTINGS.readingMode,
             levelMarkStyle: DEFAULT_READER_SETTINGS.levelMarkStyle,
+            pinnedSentenceTranslation: DEFAULT_READER_SETTINGS.pinnedSentenceTranslation,
         });
     };
 
@@ -1395,6 +1437,10 @@ const Read = ({
     const activeSpineIndex = Number.isInteger(currentSpineIndex)
         ? currentSpineIndex
         : spineIndexForReaderPackage(nativeReaderPackage);
+    // The pinned sentence translation belongs to the chapter it came from.
+    useEffect(() => {
+        setPinnedSentence('');
+    }, [activeSpineIndex, currentBook]);
     const activeChapterTitle = useMemo(() => {
         const fallbackTitle = Number.isInteger(activeSpineIndex)
             ? `${t('read.chapter')} ${activeSpineIndex + 1}`
@@ -1498,11 +1544,13 @@ const Read = ({
         const definition = candidate.gloss || '';
         // Optimistically highlight it in the reader like an in-line save.
         handleWordSave(word, { includeSurface: false });
+        let wordStored = false;
         try {
             const createdAt = new Date().toISOString();
             const alreadySaved = await vocabEntryExists(word, hanja, definition, activeBookLanguage, {
                 ownerId: activeOwnerId,
             });
+            wordStored = alreadySaved;
             if (!alreadySaved) {
                 const pKnown = await getCachedPKnown({
                     ownerId: activeOwnerId,
@@ -1520,6 +1568,7 @@ const Read = ({
                     language: activeBookLanguage,
                     pKnown,
                 });
+                wordStored = true;
             }
             if (candidate.exampleSentence) {
                 await recordVocabContext({
@@ -1548,6 +1597,11 @@ const Read = ({
             refreshBookSavedWords();
         } catch (error) {
             console.warn('[Read] Failed to save candidate word:', error?.message ?? error);
+            if (!wordStored) {
+                // The word never reached the deck: undo the optimistic highlight.
+                setSavedWords((prev) => (prev ?? []).filter((w) => w !== word));
+                setOptimisticHighlightTerms((prev) => prev.filter((term) => term !== word));
+            }
         }
     }, [activeOwnerId, activeBookLanguage, currentBook, activeBook, refreshBookSavedWords]);
 
@@ -1604,6 +1658,9 @@ const Read = ({
     // filled/outline for the current page without waiting for the sheet.
     useEffect(() => {
         let isActive = true;
+        // Notes are only read when the checkpoints sheet opens; drop the previous
+        // book's so they can't show under this one.
+        setBookNotes([]);
         if (!currentBook) {
             setBookBookmarks([]);
             return undefined;
@@ -1644,8 +1701,19 @@ const Read = ({
         }
         try {
             if (activeBookmark) {
-                setBookBookmarks((prev) => prev.filter((bookmark) => bookmark.id !== activeBookmark.id));
-                await deleteBookBookmark(activeBookmark.id, { ownerId: activeOwnerId });
+                const removedBookmark = activeBookmark;
+                setBookBookmarks((prev) => prev.filter((bookmark) => bookmark.id !== removedBookmark.id));
+                try {
+                    await deleteBookBookmark(removedBookmark.id, { ownerId: activeOwnerId });
+                } catch (error) {
+                    // Still saved: put it back rather than show it as removed.
+                    setBookBookmarks((prev) => (
+                        prev.some((bookmark) => bookmark.id === removedBookmark.id)
+                            ? prev
+                            : [removedBookmark, ...prev]
+                    ));
+                    throw error;
+                }
                 return;
             }
             // pagesInChapter can be absent on a position that came from a
@@ -1879,14 +1947,21 @@ const Read = ({
                     loadOptions
                 );
 
+        // Switching books replaces both maps; a load still running for the old
+        // book must not land in (or clear entries from) the new book's maps.
+        const chapterCacheAtStart = parsedChapterCacheRef.current;
+        const inflightAtStart = parsedChapterInflightRef.current;
         const loadPromise = packageLoader.then((parsedPackage) => {
+            if (parsedChapterCacheRef.current !== chapterCacheAtStart) {
+                return null;
+            }
             cacheParsedChapterPackage(parsedPackage);
             return parsedPackage;
         }).finally(() => {
-            parsedChapterInflightRef.current.delete(cacheKey);
+            inflightAtStart.delete(cacheKey);
         });
 
-        parsedChapterInflightRef.current.set(cacheKey, loadPromise);
+        inflightAtStart.set(cacheKey, loadPromise);
         return loadPromise;
     }, [
         activeBook?.format,
@@ -2512,7 +2587,8 @@ const Read = ({
         const totalSpineItems = nativeReaderPackageRef.current?.spine?.length ?? nativeChapterTotal;
         const nextProgress = progressForBookPosition(resolvedSpineIndex, totalSpineItems, pageIndex, total);
 
-        setReaderLocationInfo((prev) => ({
+        setReaderLocationInfo((prev) => {
+            const next = {
             ...(prev || {}),
             page: (
                 Number.isInteger(resolvedSpineIndex) && totalSpineItems > 0
@@ -2524,14 +2600,35 @@ const Read = ({
             href: typeof href === 'string' && href.length > 0 ? href : (prev?.href || ''),
             pageInChapter: Number.isInteger(page) ? page + 1 : null,
             pagesInChapter: Number.isInteger(total) ? total : null,
-        }));
+            };
+            // Returning the same object lets React skip re-rendering the reader.
+            return prev && shallowEqualObjects(prev, next) ? prev : next;
+        });
 
         if (!currentBook || !Number.isInteger(pageIndex) || !Number.isInteger(resolvedSpineIndex)) {
             return;
         }
 
-        if (Array.isArray(savedHighlights) && savedHighlights.length > 0) {
-            Promise.all(savedHighlights.map((highlight) => (
+        // Native resends every saved word's context in the chapter on each page
+        // change (each focus-mode step included). Record each (word, sentence)
+        // once per book session instead of rewriting them all every time.
+        const recordedContexts = recordedVocabContextsRef.current;
+        if (recordedContexts.book !== currentBook) {
+            recordedContexts.book = currentBook;
+            recordedContexts.keys = new Set();
+        }
+        const newHighlights = Array.isArray(savedHighlights)
+            ? savedHighlights.filter((highlight) => {
+                const key = `${highlight?.text ?? ''}\u0000${highlight?.sentence ?? ''}`;
+                if (recordedContexts.keys.has(key)) {
+                    return false;
+                }
+                recordedContexts.keys.add(key);
+                return true;
+            })
+            : [];
+        if (newHighlights.length > 0) {
+            Promise.all(newHighlights.map((highlight) => (
                 recordVocabContextForSurface({
                     ownerId: activeOwnerId,
                     surface: typeof highlight?.text === 'string' ? highlight.text : '',
@@ -2586,35 +2683,41 @@ const Read = ({
         }
 
         updateNativeRestorePosition(nextPosition);
-        setBooks((prevBooks) => prevBooks.map((book) => {
-            if (book.uri !== currentBook) {
-                return book;
-            }
+        setBooks((prevBooks) => {
+            let changed = false;
+            const nextBooks = prevBooks.map((book) => {
+                if (book.uri !== currentBook) {
+                    return book;
+                }
 
-            const previousPosition = book.nativePosition || {};
-            const isUnchanged = (
-                previousPosition.spineIndex === nextPosition.spineIndex
-                && previousPosition.pageIndex === nextPosition.pageIndex
-                && previousPosition.pagesInChapter === nextPosition.pagesInChapter
-                && previousPosition.href === nextPosition.href
-                && previousPosition.firstBlockId === nextPosition.firstBlockId
-            );
-
-            const previousRead = readSpine ? Number(book.readThrough?.[readSpine] ?? -1) : -1;
-            const readAdvanced = readSpine != null
-                && Number.isFinite(readPosition)
-                && readPosition > previousRead;
-            if (isUnchanged && !readAdvanced) {
-                return book;
-            }
-            return {
-                ...book,
-                ...nextBookPatch,
-                ...(readAdvanced
-                    ? { readThrough: { ...(book.readThrough || {}), [readSpine]: readPosition } }
-                    : {}),
-            };
-        }));
+                const previousPosition = book.nativePosition || {};
+                const isUnchanged = (
+                    previousPosition.spineIndex === nextPosition.spineIndex
+                    && previousPosition.pageIndex === nextPosition.pageIndex
+                    && previousPosition.pagesInChapter === nextPosition.pagesInChapter
+                    && previousPosition.href === nextPosition.href
+                    && previousPosition.firstBlockId === nextPosition.firstBlockId
+                    && book.progress === nextBookPatch.progress
+                );
+                const previousRead = readSpine ? Number(book.readThrough?.[readSpine] ?? -1) : -1;
+                const readAdvanced = readSpine != null
+                    && Number.isFinite(readPosition)
+                    && readPosition > previousRead;
+                if (isUnchanged && !readAdvanced) {
+                    return book;
+                }
+                changed = true;
+                return {
+                    ...book,
+                    ...nextBookPatch,
+                    ...(readAdvanced
+                        ? { readThrough: { ...(book.readThrough || {}), [readSpine]: readPosition } }
+                        : {}),
+                };
+            });
+            // Same array when nothing moved, so the whole app doesn't re-render.
+            return changed ? nextBooks : prevBooks;
+        });
     }, [
         activeBook,
         activeBookLanguage,
@@ -2991,7 +3094,14 @@ const Read = ({
     // to the bottom sits on top of it. FOCUS_SPAN_TOP_MARGIN_DP in the native
     // module reserves the matching strip of reading surface, so a sentence too
     // tall to fit still stops short of the pill instead of running under it.
-    const focusPillTop = (isFullscreen ? insets.top : insets.top + spacing.xs + 52) + 12;
+    // The pinned translation bar (when shown) pushes the reading surface down by
+    // its fixed height, so everything anchored to the reader's top edge shifts
+    // with it. Hidden in fullscreen, like the header.
+    const showPinnedTranslation = Boolean(settings.pinnedSentenceTranslation)
+        && !isFullscreen
+        && Boolean(currentBook);
+    const pinnedTranslationOffset = showPinnedTranslation ? PINNED_TRANSLATION_BAR_HEIGHT : 0;
+    const focusPillTop = (isFullscreen ? insets.top : insets.top + spacing.xs + 52 + pinnedTranslationOffset) + 12;
     // Arrow controls ride 12dp above the open panel, mirroring the 28 → panel+12
     // bottom shift in the design.
     const focusControlsLiftTarget = focusPanelOpen
@@ -3171,6 +3281,14 @@ const Read = ({
                 </View>
             ) : null}
 
+            {showPinnedTranslation ? (
+                <PinnedSentenceTranslation
+                    sentence={pinnedSentence}
+                    sourceLanguage={activeBookLanguage}
+                    targetLanguage={interfaceLanguage}
+                />
+            ) : null}
+
             <View style={styles.reader}>
                 {bookLoadState === 'error' ? (
                     <View style={styles.readerErrorState}>
@@ -3281,22 +3399,16 @@ const Read = ({
                     }
 
                     setShowToc(false);
-                    const firstPagePosition = {
+                    // Same path as a checkpoint jump: it carries a seek token and
+                    // sends an explicit seek for the chapter already on screen,
+                    // which a bare restore-position update can't do in scroll mode.
+                    handleSelectBookmark({
                         spineIndex: item.spineIndex,
                         pageIndex: 0,
                         pagesInChapter: null,
                         href: item.path || item.href || '',
                         firstBlockId: null,
-                    };
-
-                    if (item.spineIndex !== activeSpineIndex) {
-                        loadNativeReaderPackage(item.spineIndex, {
-                            restorePosition: firstPagePosition,
-                            animateChapterTransition: false,
-                        });
-                    } else {
-                        updateNativeRestorePosition(firstPagePosition);
-                    }
+                    });
                 }}
             />
 
@@ -3319,7 +3431,7 @@ const Read = ({
                     styles.lookupLayer,
                     shouldPlaceLookupAtTop ? styles.lookupLayerTop : styles.lookupLayerBottom,
                     shouldPlaceLookupAtTop
-                        ? { paddingTop: isFullscreen ? 0 : insets.top + spacing.xs + 52 }
+                        ? { paddingTop: isFullscreen ? 0 : insets.top + spacing.xs + 52 + pinnedTranslationOffset }
                         // Focus mode anchors the panel flush to the bottom edge; in
                         // regular reading the reader content already ends at the tab
                         // bar's top edge, so the panel sits flush against that. The
@@ -3361,7 +3473,7 @@ const Read = ({
                         {
                             paddingTop: isFullscreen
                                 ? insets.top + 8
-                                : insets.top + spacing.xs + 60,
+                                : insets.top + spacing.xs + 60 + pinnedTranslationOffset,
                         },
                     ]}
                 >
@@ -3716,6 +3828,33 @@ const Read = ({
                                         </View>
                                     </View>
                                 ) : null}
+
+                                <View style={styles.markStyleBlock}>
+                                    <Text style={styles.fontSettingsLabel}>{t('read.pinnedTranslation')}</Text>
+                                    <View style={styles.segmentGroup}>
+                                        {[false, true].map((value) => {
+                                            const selected = Boolean(settings.pinnedSentenceTranslation) === value;
+                                            return (
+                                                <TouchableOpacity
+                                                    key={String(value)}
+                                                    style={[styles.segmentButton, selected && styles.segmentButtonActive]}
+                                                    onPress={() => handleSettingChange('pinnedSentenceTranslation', value)}
+                                                    activeOpacity={0.7}
+                                                    accessibilityRole="button"
+                                                    accessibilityState={{ selected }}
+                                                >
+                                                    <Text
+                                                        style={[styles.segmentButtonText, selected && styles.segmentButtonTextActive]}
+                                                        numberOfLines={1}
+                                                    >
+                                                        {value ? t('read.pinyinOn') : t('read.pinyinOff')}
+                                                    </Text>
+                                                </TouchableOpacity>
+                                            );
+                                        })}
+                                    </View>
+                                    <Text style={styles.underlineLegendHint}>{t('read.pinnedTranslationHint')}</Text>
+                                </View>
                             </View>
 
                             <View style={styles.optionsSectionHeader}>

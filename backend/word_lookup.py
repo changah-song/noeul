@@ -10,6 +10,7 @@ only requirements-ci.txt, no FastAPI or Kiwi) can test it.
 
 import asyncio
 import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Iterable, Optional
 
 # Mirrors STOP_STEMS in frontend/services/dictionaryLookup.js: grammatical
@@ -145,3 +146,79 @@ async def search_with_english_fallback(
         if on_fallback is not None:
             on_fallback(query, error, len(fallback))
         return fallback
+
+
+# --- Chapter preprocessing: first-entry parse + negative-cache freshness ------
+# /preprocess_chapter/ caches each live-fetched stem in cache.db, including a
+# NULL-definition row for "KRDICT has no entry". That row must only ever record a
+# genuine miss: a timeout, HTTP error or KRDICT's quota <error> document used to
+# be cached the same way, permanently blanking those words for every user. So
+# the first-entry parse raises KrdictUnavailableError on failure (the caller
+# skips caching), and NULL rows expire after NEGATIVE_CACHE_MAX_AGE_DAYS so rows
+# poisoned before this fix -- indistinguishable from genuine misses -- are
+# re-fetched, and genuine misses are re-checked as KRDICT adds words.
+NEGATIVE_CACHE_MAX_AGE_DAYS = 7
+
+
+def parse_krdict_first_entry(status_code: int, text: str) -> Optional[dict]:
+    """Return {hanja, definition, pos} for KRDICT's top search result.
+
+    None means KRDICT answered and has no entry (safe to cache as a miss).
+    Raises KrdictUnavailableError when KRDICT could not answer (never cache).
+    """
+    items = parse_krdict_search_items(status_code, text)
+    if not items:
+        return None
+    item = items[0]
+    origin_el = item.find("origin")
+    trans_el = item.find(".//trans_word")
+    pos_el = item.find("pos")
+
+    definition = "N/A"
+    if trans_el is not None and trans_el.text:
+        definition = trans_el.text.strip()
+        # KRDICT appends "^" as a separator artifact -- strip it
+        if definition.endswith("^"):
+            definition = definition[:-1].strip()
+
+    return {
+        "hanja": origin_el.text if origin_el is not None and origin_el.text else "N/A",
+        "definition": definition,
+        "pos": pos_el.text if pos_el is not None and pos_el.text else "Unknown",
+    }
+
+
+def _parse_sqlite_timestamp(value) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    # SQLite CURRENT_TIMESTAMP is naive UTC.
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def is_reusable_cache_row(
+    definition,
+    last_updated,
+    now: datetime,
+    max_negative_age_days: float = NEGATIVE_CACHE_MAX_AGE_DAYS,
+) -> bool:
+    """Whether a cached preprocessing row can be served instead of re-fetching.
+
+    Rows with a definition are always reusable. A NULL-definition ("no entry")
+    row is reusable only while younger than `max_negative_age_days`; a missing
+    or unparseable timestamp counts as stale.
+    """
+    if definition is not None:
+        return True
+    updated = _parse_sqlite_timestamp(last_updated)
+    if updated is None:
+        return False
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return now - updated < timedelta(days=max_negative_age_days)

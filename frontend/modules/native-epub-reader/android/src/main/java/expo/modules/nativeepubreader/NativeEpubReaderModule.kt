@@ -548,6 +548,7 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
 
   override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
     super.onScrollChanged(l, t, oldl, oldt)
+    (getChildAt(0) as? EpubPageView)?.onViewportScrolled(t, height)
     if (!fingerDown) {
       lastScrollChangeAtMs = SystemClock.uptimeMillis()
     }
