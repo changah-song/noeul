@@ -2,8 +2,14 @@ import axios from 'axios';
 import { BASE_URL } from '../../config';
 import { supabase } from '../supabase';
 
+// Without a timeout a stalled connection leaves callers (e.g. word lookups)
+// waiting forever. Long-running calls such as chapter preprocessing pass
+// their own `timeout`, which overrides this default per request.
+export const DEFAULT_API_TIMEOUT_MS = 15000;
+
 export const api = axios.create({
   baseURL: BASE_URL,
+  timeout: DEFAULT_API_TIMEOUT_MS,
 });
 
 let pendingRefresh = null;

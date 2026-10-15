@@ -60,7 +60,7 @@ const TOGGLE_THUMB = 26;
 const TOGGLE_INSET = 3;
 const TOGGLE_TRAVEL = TOGGLE_WIDTH - TOGGLE_THUMB - TOGGLE_INSET * 2;
 
-const PillToggle = ({ value, onValueChange, theme }) => {
+const PillToggle = ({ value, onValueChange, theme, label }) => {
     const progress = useRef(new Animated.Value(value ? 1 : 0)).current;
 
     useEffect(() => {
@@ -83,7 +83,8 @@ const PillToggle = ({ value, onValueChange, theme }) => {
     return (
         <Pressable
             accessibilityRole="switch"
-            accessibilityState={{ checked: value }}
+            accessibilityLabel={label}
+            accessibilityState={{ checked: !!value }}
             hitSlop={8}
             onPress={() => onValueChange(!value)}
             style={{
@@ -124,7 +125,7 @@ const ToggleRow = ({ label, description, value, onValueChange, isLast, styles, t
             <Text style={styles.rowLabel}>{label}</Text>
             {description ? <Text style={styles.rowDescription}>{description}</Text> : null}
         </View>
-        <PillToggle value={value} onValueChange={onValueChange} theme={theme} />
+        <PillToggle value={value} onValueChange={onValueChange} theme={theme} label={label} />
     </View>
 );
 
@@ -232,12 +233,21 @@ const Profile = ({ user, signOut, updateUsername }) => {
         }
 
         setIsDeletingAccount(true);
+        let profileDeleted = false;
         try {
             await deleteCurrentUserProfile();
+            profileDeleted = true;
             setShowDeleteModal(false);
             await signOut?.();
         } catch (error) {
-            Alert.alert(t('profile.deleteAccountFailed'), error?.message || t('profile.preferenceSoon'));
+            if (profileDeleted) {
+                // The account is gone; only the follow-up sign-out failed.
+                // Don't tell the user the deletion failed.
+                console.warn('[Profile] Sign-out after account deletion failed:', error?.message ?? error);
+                Alert.alert(t('profile.signOutFailed'), t('profile.signOutAfterDeleteFailed'));
+            } else {
+                Alert.alert(t('profile.deleteAccountFailed'), error?.message || t('profile.preferenceSoon'));
+            }
         } finally {
             setIsDeletingAccount(false);
         }

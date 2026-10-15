@@ -24,7 +24,6 @@ jieba
 # Pinyin generation for Chinese lookups / translations (zh_to_pinyin helper).
 pypinyin
 
-konlpy
 koroman
 kiwipiepy
 

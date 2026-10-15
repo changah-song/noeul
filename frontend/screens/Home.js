@@ -87,6 +87,7 @@ import {
     upsertUserSong,
 } from '../services/songCloudSync';
 import {
+    getSongStorageLimitMessage,
     isSongStorageLimitError,
     serializeSongsForStorage,
 } from '../services/songStorageLimits';
@@ -237,7 +238,7 @@ const showSongStorageLimitAlert = (error, t) => {
     Alert.alert(
         t ? t('home.songStorageLimitTitle') : 'Song storage limit reached',
         t
-            ? t('home.songStorageLimitBody', { message: error?.message ?? fallbackMessage })
+            ? t('home.songStorageLimitBody', { message: getSongStorageLimitMessage(error, t) })
             : `${error?.message ?? fallbackMessage} Remove some songs or shorten lyrics before adding more.`
     );
 };
@@ -284,6 +285,18 @@ const normalizeStoredSong = (song, fallbackLanguage = 'ko') => {
         deletedAt: song.deletedAt ?? null,
         language: normalizeBookLanguage(song.language ?? song.targetLanguage ?? song.target_language ?? fallbackLanguage),
     };
+};
+// Service errors are English developer messages (HTTP codes, storage paths);
+// show the user a translated message and keep the raw one in the log.
+const getDownloadErrorMessageKey = (error) => {
+    const message = String(error?.message ?? '').toLowerCase();
+    if (error?.code === 'TIMEOUT' || message.includes('timed out') || message.includes('timeout')) {
+        return 'home.downloadTimedOutBody';
+    }
+    if (message.includes('network') || message.includes('internet') || message.includes('offline')) {
+        return 'home.downloadNetworkBody';
+    }
+    return 'home.downloadFailedBody';
 };
 const getBookTitle = (book, t = null) => book?.title?.trim() || (t ? t('common.untitled') : 'Untitled');
 const getBookAuthor = (book, t = null) => book?.author?.trim() || (t ? t('common.unknownAuthor') : 'Unknown author');
@@ -1194,6 +1207,8 @@ const BookPreview = ({
             <View style={styles.previewTopBar}>
                 <TouchableOpacity
                     activeOpacity={0.82}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('home.backToLibrary')}
                     onPress={onBack}
                     style={styles.previewBackButton}
                 >
@@ -1580,6 +1595,10 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const [songs, setSongs] = useState([]);
     const [songsLoaded, setSongsLoaded] = useState(false);
     const [downloadingBookId, setDownloadingBookId] = useState(null);
+    // Synchronous record of in-flight downloads (keyed by bookKey). The
+    // downloadingBookId state lags a render behind, so two quick taps could
+    // both pass a state check and download the same book twice.
+    const downloadsInFlightRef = useRef(new Set());
     const [selectedSongId, setSelectedSongId] = useState(null);
     const [selectedBookPreview, setSelectedBookPreview] = useState(null);
     const [previewReadingEase, setPreviewReadingEase] = useState(null);
@@ -1615,7 +1634,9 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const [songDraft, setSongDraft] = useState(EMPTY_SONG_DRAFT);
     const [ocrStatus, setOcrStatus] = useState(EMPTY_OCR_STATUS);
     const [ocrBusy, setOcrBusy] = useState(false);
-    const [, setOcrMessage] = useState('');
+    // Status / permission / start-failure feedback for the floating OCR toggle,
+    // shown as a transient line under the top bar.
+    const [ocrMessage, setOcrMessage] = useState('');
     const [ocrSettingsLoaded, setOcrSettingsLoaded] = useState(false);
     const songCloudSyncOwnerRef = useRef(null);
     const songStorageLimitAlertedRef = useRef(false);
@@ -1626,6 +1647,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const loadedSongsStorageKeyRef = useRef(null);
     const activeOwnerIdRef = useRef(activeOwnerId);
     activeOwnerIdRef.current = activeOwnerId;
+    const targetLanguageRef = useRef(targetLanguage);
+    targetLanguageRef.current = targetLanguage;
     const ocrActionInFlightRef = useRef(false);
     const ocrSettingsRef = useRef({ floatingPreferred: false, updatedAt: null });
     const ocrSettingsCloudUserRef = useRef(null);
@@ -2234,39 +2257,43 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             return;
         }
 
-        const cloudRows = await fetchUserSongs(user.id, {
-            includeDeleted: true,
-            targetLanguage,
-        });
-        if (!isCurrentSyncGeneration(generation) || ownerId !== activeOwnerIdRef.current) {
-            return;
-        }
-
-        const normalizedLocalSongs = songs
-            .map((song) => normalizeStoredSong(song, targetLanguage))
-            .filter(Boolean);
-        const { songs: mergedSongs, localOnly } = mergeLocalAndCloudSongs(
-            normalizedLocalSongs,
-            cloudRows,
-            targetLanguage
+        const language = targetLanguage;
+        const isStale = () => (
+            !isCurrentSyncGeneration(generation)
+            || ownerId !== activeOwnerIdRef.current
+            // The user switched target language while the fetch was in flight:
+            // these rows belong to the old language's library.
+            || language !== targetLanguageRef.current
         );
 
-        if (!isCurrentSyncGeneration(generation) || ownerId !== activeOwnerIdRef.current) {
+        const cloudRows = await fetchUserSongs(user.id, {
+            includeDeleted: true,
+            targetLanguage: language,
+        });
+        if (isStale()) {
             return;
         }
 
+        const normalizeLocal = (list) => (list || [])
+            .map((song) => normalizeStoredSong(song, language))
+            .filter(Boolean);
+        // Upload candidates come from the snapshot this sync started with.
+        const { localOnly } = mergeLocalAndCloudSongs(normalizeLocal(songs), cloudRows, language);
+
+        // Merge against the *current* state, not the snapshot, so a song the
+        // user added while the fetch was running isn't dropped.
         setSongs((currentSongs) => (
-            isCurrentSyncGeneration(generation) && ownerId === activeOwnerIdRef.current
-                ? mergedSongs
-                : currentSongs
+            isStale()
+                ? currentSongs
+                : mergeLocalAndCloudSongs(normalizeLocal(currentSongs), cloudRows, language).songs
         ));
 
-        if (!isCurrentSyncGeneration(generation) || ownerId !== activeOwnerIdRef.current) {
+        if (isStale()) {
             return;
         }
 
         for (const song of localOnly) {
-            if (!isCurrentSyncGeneration(generation) || ownerId !== activeOwnerIdRef.current) {
+            if (isStale()) {
                 return;
             }
 
@@ -2667,6 +2694,14 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         };
     }, [navigation, selectedPreviewBook, selectedSong, themedTabBarStyle]);
 
+    useEffect(() => {
+        if (!ocrMessage || ocrBusy) {
+            return undefined;
+        }
+        const timer = setTimeout(() => setOcrMessage(''), 5000);
+        return () => clearTimeout(timer);
+    }, [ocrBusy, ocrMessage]);
+
     const handleFloatingOcrToggle = useCallback(async () => {
         if (ocrBusy || ocrActionInFlightRef.current) {
             return;
@@ -2764,10 +2799,11 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         }
 
         const bookKey = getBookKey(book);
-        if (downloadingBookId) {
+        if (downloadingBookId || downloadsInFlightRef.current.size > 0) {
             return;
         }
 
+        downloadsInFlightRef.current.add(bookKey);
         setDownloadingBookId(bookKey);
         const ownerId = activeOwnerId;
         const generation = syncGeneration;
@@ -2815,9 +2851,10 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             setCurrentBook(localBook.uri);
             navigation.navigate('Read', { returnTo: 'Home' });
         } catch (error) {
-            console.warn('[Home] Failed to download cloud book:', error);
-            Alert.alert(t('home.downloadFailedTitle'), error?.message || t('home.downloadFailedBody'));
+            console.warn('[Home] Failed to download cloud book:', error?.message ?? error);
+            Alert.alert(t('home.downloadFailedTitle'), t(getDownloadErrorMessageKey(error)));
         } finally {
+            downloadsInFlightRef.current.delete(bookKey);
             setDownloadingBookId(null);
         }
     }, [activeOwnerId, downloadingBookId, navigation, setBooks, setCurrentBook, syncGeneration, syncPaused, t, user]);
@@ -2896,10 +2933,12 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         }
 
         const bookKey = getBookKey(book);
-        if (downloadingBookId && downloadingBookId !== bookKey) {
+        // One download at a time, and never the same book twice.
+        if (downloadsInFlightRef.current.size > 0) {
             return null;
         }
 
+        downloadsInFlightRef.current.add(bookKey);
         setDownloadingBookId(bookKey);
         setPublicLibraryDownloadStates((current) => ({
             ...current,
@@ -2953,12 +2992,13 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 ...current,
                 [book.publicLibraryId]: false,
             }));
-            Alert.alert(t('home.downloadFailedTitle'), error?.message || t('home.downloadFailedBody'));
+            Alert.alert(t('home.downloadFailedTitle'), t(getDownloadErrorMessageKey(error)));
             return null;
         } finally {
+            downloadsInFlightRef.current.delete(bookKey);
             setDownloadingBookId((current) => (current === bookKey ? null : current));
         }
-    }, [downloadingBookId, t]);
+    }, [t]);
 
     const handlePublicDomainBookPress = useCallback(async (book) => {
         if (!book) {
@@ -3142,7 +3182,14 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                         }
 
                         if (bookToDelete.uri) {
-                            await deleteBookIndexEntries(bookToDelete.uri, { ownerId: activeOwnerId });
+                            try {
+                                await deleteBookIndexEntries(bookToDelete.uri, { ownerId: activeOwnerId });
+                            } catch (error) {
+                                // Leave the book in the library so the user can retry.
+                                console.warn('[Home] Failed to delete book index entries:', error?.message ?? error);
+                                Alert.alert(t('home.removeBookFailedTitle'), t('home.removeBookFailedBody'));
+                                return;
+                            }
                         }
 
                         setBooks((prevBooks) => {
@@ -3896,6 +3943,15 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                         )}
                     </TouchableOpacity>
                 </View>
+                {ocrMessage ? (
+                    <Text
+                        accessibilityLiveRegion="polite"
+                        numberOfLines={2}
+                        style={styles.ocrStatusText}
+                    >
+                        {ocrMessage}
+                    </Text>
+                ) : null}
 
                 {featuredBooks.length > 0 ? (
                     <FeaturedBookCarousel
@@ -3915,6 +3971,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                 <>
                                     <TouchableOpacity
                                         accessibilityRole="button"
+                                        accessibilityLabel={t('home.gridView')}
                                         accessibilityState={{ selected: effectiveCollectionViewMode === 'grid' }}
                                         activeOpacity={Motion.pressedOpacity}
                                         onPress={() => setCollectionViewMode('grid')}
@@ -3928,6 +3985,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                     </TouchableOpacity>
                                     <TouchableOpacity
                                         accessibilityRole="button"
+                                        accessibilityLabel={t('home.listView')}
                                         accessibilityState={{ selected: effectiveCollectionViewMode === 'list' }}
                                         activeOpacity={Motion.pressedOpacity}
                                         onPress={() => setCollectionViewMode('list')}
@@ -4468,6 +4526,13 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     ocrIconImage: {
         width: Spacing.xl8,
         height: Spacing.xl8,
+    },
+    ocrStatusText: {
+        ...textStyles.caption,
+        color: HOME_COLORS.secondary,
+        textAlign: 'center',
+        paddingHorizontal: Spacing.screenHorizontalDense,
+        paddingVertical: Spacing.sm,
     },
     appTopTitle: {
         flex: 1,

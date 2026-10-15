@@ -208,6 +208,21 @@ const parseStoredJson = (value, fallback = null) => {
     }
 };
 
+// Parses the stored library JSON. `corrupt` is true when a value was stored
+// but could not be read as a book list, so callers can avoid overwriting it.
+export const parseStoredBookList = (raw) => {
+    if (!raw) {
+        return { books: [], corrupt: false };
+    }
+
+    const parsed = parseStoredJson(raw, null);
+    if (!Array.isArray(parsed)) {
+        return { books: [], corrupt: true };
+    }
+
+    return { books: parsed, corrupt: false };
+};
+
 const readCurrentBookMeta = async (ownerId) => {
     const [storedUri, storedMeta] = await Promise.all([
         AsyncStorage.getItem(getCurrentBookStorageKey(ownerId)),
@@ -333,6 +348,10 @@ const useAppSetup = ({ ownerId, ownerReady = true, user = null } = {}) => {
     const currentUserRef = useRef(null);
     const applyingCloudCurrentBookRef = useRef(false);
     const ownerLoadGenerationRef = useRef(0);
+    // Set when startup could not read the saved library. While set, the
+    // persistence effects below must not write, or they would replace the
+    // user's saved book list (and current book) with the empty startup state.
+    const bootstrapFailedRef = useRef(false);
 
     // true when the user presses the download button for a book —
     // tells Read.js to run the preprocessing pipeline on next text extraction
@@ -357,6 +376,7 @@ const useAppSetup = ({ ownerId, ownerReady = true, user = null } = {}) => {
 
         const bootstrap = async () => {
             setLoading(true);
+            bootstrapFailedRef.current = false;
             setBooks([]);
             setCurrentBook(null);
             currentBookMetaRef.current = emptyCurrentBookMeta();
@@ -381,10 +401,13 @@ const useAppSetup = ({ ownerId, ownerReady = true, user = null } = {}) => {
                     return;
                 }
 
-                const storedBooks = storedBooksRaw ? JSON.parse(storedBooksRaw) : [];
-                const nextBooks = Array.isArray(storedBooks)
-                    ? await normalizeStoredBooks(storedBooks)
-                    : [];
+                const { books: storedBooks, corrupt: storedBooksCorrupt } = parseStoredBookList(storedBooksRaw);
+                if (storedBooksCorrupt) {
+                    // Keep the unreadable value on disk instead of overwriting it.
+                    bootstrapFailedRef.current = true;
+                    console.error('[useAppSetup] Stored book list is unreadable; not overwriting it this session.');
+                }
+                const nextBooks = await normalizeStoredBooks(storedBooks);
                 if (!isActive || ownerLoadGenerationRef.current !== loadGeneration) {
                     return;
                 }
@@ -405,6 +428,9 @@ const useAppSetup = ({ ownerId, ownerReady = true, user = null } = {}) => {
                 setBooks(nextBooks);
                 setCurrentBook(hasStoredCurrentBook ? storedCurrentBook : (nextBooks[0]?.uri ?? null));
             } catch (error) {
+                if (isActive && ownerLoadGenerationRef.current === loadGeneration) {
+                    bootstrapFailedRef.current = true;
+                }
                 console.error('[useAppSetup] App setup bootstrap error:', error);
             } finally {
                 if (isActive && ownerLoadGenerationRef.current === loadGeneration && ownerReady && ownerId) {
@@ -422,7 +448,7 @@ const useAppSetup = ({ ownerId, ownerReady = true, user = null } = {}) => {
     }, [ownerId, ownerReady]);
 
     useEffect(() => {
-        if (loading || !ownerReady || !ownerId) {
+        if (loading || !ownerReady || !ownerId || bootstrapFailedRef.current) {
             return;
         }
 
@@ -443,7 +469,7 @@ const useAppSetup = ({ ownerId, ownerReady = true, user = null } = {}) => {
     }, [books, loading, ownerId, ownerReady]);
 
     useEffect(() => {
-        if (loading || !ownerReady || !ownerId) {
+        if (loading || !ownerReady || !ownerId || bootstrapFailedRef.current) {
             return;
         }
 

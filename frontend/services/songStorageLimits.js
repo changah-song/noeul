@@ -8,10 +8,25 @@ const createSongStorageLimitError = (byteLength) => {
   );
   error.code = 'SONG_STORAGE_LIMIT';
   error.byteLength = byteLength;
+  error.limitBytes = MAX_SONGS_STORAGE_BYTES;
   return error;
 };
 
 export const isSongStorageLimitError = (error) => error?.code === 'SONG_STORAGE_LIMIT';
+
+// User-facing sentence for a storage-limit error. error.message is an English
+// developer string (fine for logs); this builds the same sentence via i18n so
+// the alert isn't half English, half the interface language.
+export const getSongStorageLimitMessage = (error, t) => {
+  const byteLength = Number(error?.byteLength);
+  if (!Number.isFinite(byteLength) || byteLength <= 0) {
+    return t('home.songStorageLimitFallback');
+  }
+  return t('home.songStorageLimitUsage', {
+    size: formatStorageSize(byteLength),
+    limit: formatStorageSize(Number(error?.limitBytes) || MAX_SONGS_STORAGE_BYTES),
+  });
+};
 
 export const getUtf8ByteLength = (value) => {
   const text = String(value ?? '');
