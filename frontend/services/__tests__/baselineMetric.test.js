@@ -19,6 +19,8 @@ import {
   brierScore,
   calibrationTable,
   collectSamples,
+  replayProfileBehavior,
+  rocAuc,
   evaluateBaseline,
   replayProfile,
 } from '../baselineMetric';
@@ -222,5 +224,51 @@ describe('collectSamples + evaluateBaseline', () => {
     }
     const result = evaluateBaseline(events);
     expect(result.overall.brier).toBeLessThan(0.25);
+  });
+});
+
+
+describe('rocAuc', () => {
+  it('is 1 when every exposure outranks every lookup, 0.5 at chance, 0 when reversed', () => {
+    const perfect = [
+      { prediction: 0.9, outcome: 1 }, { prediction: 0.8, outcome: 1 },
+      { prediction: 0.2, outcome: 0 }, { prediction: 0.1, outcome: 0 },
+    ];
+    expect(rocAuc(perfect)).toBe(1);
+    expect(rocAuc(perfect.map((s) => ({ ...s, outcome: 1 - s.outcome })))).toBe(0);
+    expect(rocAuc([{ prediction: 0.5, outcome: 1 }, { prediction: 0.5, outcome: 0 }])).toBe(0.5);
+  });
+
+  it('is null without both classes', () => {
+    expect(rocAuc([])).toBeNull();
+    expect(rocAuc([{ prediction: 0.7, outcome: 1 }])).toBeNull();
+  });
+});
+
+describe('behavior samples — lookups vs exposures', () => {
+  const base = { ownerId: 'o', profileId: 'p', language: 'ko', clientEventId: 'e' };
+  it('scores lookups as 0 and exposures as 1, predicted before the event folds in', () => {
+    const behavior = replayProfileBehavior({
+      language: 'ko',
+      events: [
+        { ...base, word: '집', stem: '집', eventType: 'lookup', levelRank: 1, createdAt: '2026-01-01T00:00:00Z', clientEventId: 'a' },
+        { ...base, word: '집', stem: '집', eventType: 'exposure', levelRank: 1, createdAt: '2026-01-01T00:00:01Z', clientEventId: 'b' },
+      ],
+    });
+    expect(behavior.map((s) => s.outcome)).toEqual([0, 1]);
+    expect(behavior[0].cold).toBe(true);
+    expect(behavior[1].cold).toBe(false);
+    // The lookup pushed theta down, so the same word predicts lower afterwards.
+    expect(behavior[1].prediction).toBeLessThan(behavior[0].prediction);
+  });
+
+  it('reports the separation in the evaluation, skipping ungraded words', () => {
+    const result = evaluateBaseline([
+      { ...base, word: '집', stem: '집', eventType: 'exposure', levelRank: 1, createdAt: '2026-01-01T00:00:00Z', clientEventId: 'a' },
+      { ...base, word: '심오하다', stem: '심오하다', eventType: 'lookup', levelRank: 6, createdAt: '2026-01-01T00:00:01Z', clientEventId: 'b' },
+      { ...base, word: '없는말', stem: '없는말', eventType: 'lookup', levelRank: null, createdAt: '2026-01-01T00:00:02Z', clientEventId: 'c' },
+    ]);
+    expect(result.behavior).toMatchObject({ count: 2, lookups: 1, exposures: 1, ungraded: 1, auc: 1, confidentMisses: 0 });
+    expect(result.behavior.meanExposurePrediction).toBeGreaterThan(result.behavior.meanLookupPrediction);
   });
 });
