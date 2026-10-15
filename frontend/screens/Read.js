@@ -3441,8 +3441,14 @@ const Read = ({
             stopListenSession();
             return;
         }
-        updateListenSession({ title: headerBookTitle, subtitle: listenSessionSubtitle, playing: listenPlaying });
-    }, [listenActive, listenPlaying, headerBookTitle, listenSessionSubtitle]);
+        updateListenSession({
+            title: headerBookTitle,
+            subtitle: listenSessionSubtitle,
+            playing: listenPlaying,
+            // The book's cover becomes the player's art ('' = none).
+            cover: typeof activeBook?.cover === 'string' ? activeBook.cover.trim() : '',
+        });
+    }, [listenActive, listenPlaying, headerBookTitle, listenSessionSubtitle, activeBook?.cover]);
     useEffect(() => () => stopListenSession(), []);
 
     const listenResumeRef = useRef(null);

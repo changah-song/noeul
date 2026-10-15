@@ -183,7 +183,9 @@ class NativeEpubReaderModule : Module() {
         context,
         options["title"] as? String,
         options["subtitle"] as? String,
-        options["playing"] as? Boolean
+        options["playing"] as? Boolean,
+        // Empty string clears the art; absent leaves it as it is.
+        options["cover"] as? String
       )
     }
 
