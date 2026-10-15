@@ -228,8 +228,21 @@ describe('resolveDictionaryLookup (Korean)', () => {
 
         await lookup();
         expect(order).toEqual(['index-read', 'log', 'theta']);
+        // The event carries the tapped surface as the word and the resolved
+        // dictionary form as the stem, which is what ability updates match on.
         expect(logInteractionEvent).toHaveBeenCalledWith(expect.objectContaining({
-            word: '갔다', stem: '갔다', eventType: 'lookup', sourceBookUri: 'book-1',
+            word: '갔다', stem: '가다', eventType: 'lookup', sourceBookUri: 'book-1',
+        }));
+        expect(updateThetaFromOutcome).toHaveBeenCalledWith(expect.objectContaining({
+            stem: '가다', outcome: 0,
+        }));
+    });
+
+    test('a lookup that resolves nothing logs the surface itself', async () => {
+        api.post.mockResolvedValue({ data: { stems: [], results: [] } });
+        await lookup({ surface: '없는말' });
+        expect(logInteractionEvent).toHaveBeenCalledWith(expect.objectContaining({
+            word: '없는말', stem: '없는말', eventType: 'lookup',
         }));
     });
 });

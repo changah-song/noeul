@@ -501,12 +501,17 @@ export const resolveDictionaryLookup = async ({
     // once the lookup has resolved: these are SQLite writes, and expo-sqlite runs
     // transactions in order, so starting them first queued them ahead of the
     // lookup's own cache reads.
-    const recordLookupSignals = () => {
+    // `stem` is the dictionary form the lookup resolved (눕다 for 누워). Ability
+    // updates and the event log match words by that stem; logging the tapped
+    // surface instead left most Korean lookups unmatched, so they never moved
+    // theta and could not be evaluated.
+    const recordLookupSignals = (stem) => {
+        const resolvedStem = cleanValue(stem) || normalizedSurface;
         logInteractionEvent({
             ownerId,
             language: normalizedTargetLanguage,
             word: normalizedSurface,
-            stem: normalizedSurface,
+            stem: resolvedStem,
             eventType: 'lookup',
             sourceBookUri: currentBook ?? null,
         }).catch((error) => {
@@ -520,7 +525,7 @@ export const resolveDictionaryLookup = async ({
         updateThetaFromOutcome({
             ownerId,
             language: normalizedTargetLanguage,
-            stem: normalizedSurface,
+            stem: resolvedStem,
             outcome: 0,
             learningRate: LOOKUP_LEARNING_RATE,
         }).catch((error) => {
@@ -728,10 +733,14 @@ export const resolveDictionaryLookup = async ({
         return buildResolved(stems, usableRows, liveStems);
     };
 
+    let resolvedStem = null;
     try {
-        return await resolveNormalizedLookup();
+        const resolved = await resolveNormalizedLookup();
+        // A fully cached lookup carries its stems on the cached rows only.
+        resolvedStem = resolved?.stems?.[0] ?? cleanValue(resolved?.cachedResults?.[0]?.stem) ?? null;
+        return resolved;
     } finally {
-        recordLookupSignals();
+        recordLookupSignals(resolvedStem);
     }
 };
 
