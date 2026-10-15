@@ -8,6 +8,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.net.Uri
@@ -342,6 +343,7 @@ class EpubPageView(context: Context) : View(context) {
   override fun onDraw(canvas: Canvas) {
     marqueeTickScheduled = false
     readAnimationPending = false
+    drawingOnScreen = isShown && getGlobalVisibleRect(visibleRect)
     canvas.drawColor(pageBackgroundColor)
     val contentWidth = width - (paddingH * 2)
     if (contentWidth <= 0) return
@@ -474,8 +476,14 @@ class EpubPageView(context: Context) : View(context) {
   // crosshatch. The change is animated the first time a mark is drawn as read
   // (keyed per range, cleared when the view shows another page), so turning
   // or scrolling back shows the marks settling into their "done" look.
-  private val readTransitions = HashMap<String, Long>()
+  private val readTransitions = HashMap<Long, Long>()
   private var readAnimationPending = false
+  // Whether this view is actually on screen for the current draw. ViewPager2
+  // records the neighbouring pages' display lists off screen; a transition
+  // started there would finish unseen, so off-screen draws show marks as
+  // unread and the dissolve runs once the page is in front of the reader.
+  private var drawingOnScreen = true
+  private val visibleRect = Rect()
   private val underlinePath = Path()
   // Read marks are drawn as a grid of square "pixels" (no anti-aliasing, so
   // the cells stay crisp). A mark settles into a checkerboard: the odd cells
@@ -495,11 +503,16 @@ class EpubPageView(context: Context) : View(context) {
   // 0 = not read, 1 = read and settled, in between while animating.
   private fun readProgress(range: TextRange): Float {
     val read = isRangeRead?.invoke(range) == true
-    val key = "${range.blockId}:${range.sourceStartOffset}:${range.sourceEndOffset}"
+    // Block id hash in the high word, the source span in the low word; no
+    // string building on a path that runs for every mark on every frame.
+    val key = (range.blockId.hashCode().toLong() shl 32) or
+      ((range.sourceStartOffset.toLong() and 0xffff) shl 16) or
+      (range.sourceEndOffset.toLong() and 0xffff)
     if (!read) {
       readTransitions.remove(key)
       return 0f
     }
+    if (!drawingOnScreen && !readTransitions.containsKey(key)) return 0f
     val now = SystemClock.uptimeMillis()
     val startedAt = readTransitions.getOrPut(key) { now }
     val progress = ((now - startedAt).toFloat() / READ_TRANSITION_MS).coerceIn(0f, 1f)
@@ -2323,10 +2336,18 @@ class EpubPageView(context: Context) : View(context) {
       probe -= 1
     }
 
-    if (isCjkIdeograph(text[probe])) {
-      cjkTokenRangeAtOffset(text, probe)?.let { return it }
+    // Korean words carry invisible joiners between syllables; look through
+    // them so a tap on a joiner still lands on the word.
+    if (text[probe] == WORD_JOINER) {
+      var left = probe
+      while (left > 0 && text[left] == WORD_JOINER) left -= 1
+      probe = left
     }
 
+    // A tap on punctuation or a space picks the word next to it. The
+    // neighbour is then segmented like a direct tap, so punctuation after a
+    // Chinese sentence picks its last word rather than the whole run of text
+    // back to the previous mark.
     if (!isReaderTokenChar(text[probe])) {
       probe = when {
         probe > 0 && isReaderTokenChar(text[probe - 1]) -> probe - 1
@@ -2335,15 +2356,21 @@ class EpubPageView(context: Context) : View(context) {
       }
     }
 
-    var start = probe
-    while (start > 0 && isReaderTokenChar(text[start - 1])) {
-      start -= 1
+    if (isCjkIdeograph(text[probe])) {
+      cjkTokenRangeAtOffset(text, probe)?.let { return it }
     }
 
+    var start = probe
+    while (start > 0 && (isReaderTokenChar(text[start - 1]) || text[start - 1] == WORD_JOINER)) {
+      start -= 1
+    }
+    while (start < probe && text[start] == WORD_JOINER) start += 1
+
     var end = probe + 1
-    while (end < text.length && isReaderTokenChar(text[end])) {
+    while (end < text.length && (isReaderTokenChar(text[end]) || text[end] == WORD_JOINER)) {
       end += 1
     }
+    while (end > probe + 1 && text[end - 1] == WORD_JOINER) end -= 1
 
     return if (start < end) LocalTokenRange(start, end) else null
   }
