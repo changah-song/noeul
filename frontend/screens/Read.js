@@ -110,6 +110,8 @@ const DEFAULT_READER_SETTINGS = {
     // A fixed-height bar under the header that keeps the translation of the
     // last tapped word's sentence on screen (duChinese-style). Off by default.
     pinnedSentenceTranslation: false,
+    // Draw underlines on text already read past lighter than the ones ahead.
+    fadeReadMarks: true,
 };
 const READING_MODES = ['paged', 'scroll'];
 
@@ -2597,7 +2599,7 @@ const Read = ({
         });
     }, [activeOwnerId, activeBookLanguage, currentBook]);
 
-    const processNativePageChange = useCallback(({ page, total, spineIndex, href, firstBlockId, savedHighlights } = {}) => {
+    const processNativePageChange = useCallback(({ page, total, spineIndex, href, firstBlockId, savedHighlights, readThrough } = {}) => {
         if (bookCompletionInProgressRef.current) {
             return;
         }
@@ -2695,6 +2697,9 @@ const Read = ({
             location: nextPosition.href || null,
             progress: nextProgress ?? clampProgress(activeBook?.progress ?? 0),
         };
+        // Furthest point read per chapter (for faded marks), kept on the book.
+        const readSpine = Number.isInteger(readThrough?.spineIndex) ? String(readThrough.spineIndex) : null;
+        const readPosition = Number(readThrough?.position);
 
         if (activeBook?.cloudId) {
             scheduleCloudProgressSync({
@@ -2720,11 +2725,21 @@ const Read = ({
                     && previousPosition.firstBlockId === nextPosition.firstBlockId
                     && book.progress === nextBookPatch.progress
                 );
-                if (isUnchanged) {
+                const previousRead = readSpine ? Number(book.readThrough?.[readSpine] ?? -1) : -1;
+                const readAdvanced = readSpine != null
+                    && Number.isFinite(readPosition)
+                    && readPosition > previousRead;
+                if (isUnchanged && !readAdvanced) {
                     return book;
                 }
                 changed = true;
-                return { ...book, ...nextBookPatch };
+                return {
+                    ...book,
+                    ...nextBookPatch,
+                    ...(readAdvanced
+                        ? { readThrough: { ...(book.readThrough || {}), [readSpine]: readPosition } }
+                        : {}),
+                };
             });
             // Same array when nothing moved, so the whole app doesn't re-render.
             return changed ? nextBooks : prevBooks;
@@ -3364,6 +3379,8 @@ const Read = ({
                         levelTerms={readerLevelTerms}
                         showPinyin={readerShowPinyin}
                         showGloss={readerShowGloss}
+                        readThrough={activeBook?.readThrough}
+                        fadeReadMarks={settings.fadeReadMarks !== false}
                         clearSelectionToken={clearSelectionToken}
                         focusSentenceCount={focusSpan}
                         focusSwipeEnabled={focusSwipe}
@@ -3729,6 +3746,34 @@ const Read = ({
                                     ) : null}
                                 </View>
 
+                                {/* Lighter underlines on text already read past. */}
+                                {levelMarksEnabled ? (
+                                    <View style={styles.markStyleBlock}>
+                                        <Text style={styles.fontSettingsLabel}>{t('read.fadeReadMarks')}</Text>
+                                        <View style={styles.segmentGroup}>
+                                            {[false, true].map((value) => {
+                                                const selected = (settings.fadeReadMarks !== false) === value;
+                                                return (
+                                                    <TouchableOpacity
+                                                        key={String(value)}
+                                                        style={[styles.segmentButton, selected && styles.segmentButtonActive]}
+                                                        onPress={() => handleSettingChange('fadeReadMarks', value)}
+                                                        activeOpacity={0.7}
+                                                        accessibilityRole="button"
+                                                        accessibilityState={{ selected }}
+                                                    >
+                                                        <Text
+                                                            style={[styles.segmentButtonText, selected && styles.segmentButtonTextActive]}
+                                                            numberOfLines={1}
+                                                        >
+                                                            {value ? t('read.pinyinOn') : t('read.pinyinOff')}
+                                                        </Text>
+                                                    </TouchableOpacity>
+                                                );
+                                            })}
+                                        </View>
+                                    </View>
+                                ) : null}
                                 {/* Word annotations: pinyin above words (Chinese only) and a
                                     short translation under them, on underlined or all words. */}
                                 {activeBookLanguage === 'zh' ? (

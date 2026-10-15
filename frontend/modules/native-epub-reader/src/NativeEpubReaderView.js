@@ -74,6 +74,10 @@ const NativeEpubReaderView = forwardRef(({
     levelTerms = [],
     showPinyin = false,
     showGloss = false,
+    // { [spineIndex]: position } — furthest point read per chapter, restored on
+    // open. Underlines before it are drawn faded while fadeReadMarks is on.
+    readThrough = null,
+    fadeReadMarks = true,
     clearSelectionToken = 0,
     focusSentenceCount = 1,
     focusSwipeEnabled = false,
@@ -156,6 +160,8 @@ const NativeEpubReaderView = forwardRef(({
             levelTerms={levelTerms || []}
             showPinyin={!!showPinyin}
             showGloss={!!showGloss}
+            readThrough={readThrough || {}}
+            fadeReadMarks={fadeReadMarks !== false}
             clearSelectionToken={clearSelectionToken}
             focusSentenceCount={focusSentenceCount}
             focusSwipeEnabled={focusSwipeEnabled}
