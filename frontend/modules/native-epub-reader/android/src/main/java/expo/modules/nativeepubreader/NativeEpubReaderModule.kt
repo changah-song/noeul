@@ -2673,10 +2673,12 @@ class NativeEpubReaderView(
     (page.spineIndex ?: bookManifest.intValue("currentSpineIndex"))?.let { spineIndex ->
       event["spineIndex"] = spineIndex
     }
-    val topBlockId = event["firstBlockId"] as? String
-    if (!topBlockId.isNullOrEmpty()) {
-      val topBlock = page.blocks.firstOrNull { it.blockId == topBlockId }
-      addReadThrough(event, page.spineIndex, readPosition(page.spineIndex, topBlockId, topBlock?.sourceStartOffset ?: 0))
+    topVisibleTextPosition(page, continuousScrollView.scrollY)?.let { (block, localOffset) ->
+      addReadThrough(
+        event,
+        page.spineIndex,
+        readPosition(page.spineIndex, block.blockId, block.sourceStartOffset + localOffset)
+      )
     }
 
     onPageChange(event)
@@ -2685,6 +2687,31 @@ class NativeEpubReaderView(
   // Topmost block still visible at the given scroll offset — the position
   // anchor for continuous mode, mirroring what the first block of a paged
   // page provides.
+  // The block at the top of the viewport and the offset of its first fully
+  // visible line, so read-through tracking in scroll mode works line by line
+  // even inside a long paragraph. Mirrors firstVisibleBlockId's walk.
+  private fun topVisibleTextPosition(page: ReaderPage, scrollY: Int): Pair<PageBlock, Int>? {
+    var yOffset = pagePaddingV
+    for (block in page.blocks) {
+      yOffset += block.marginTop
+      val layout = block.textLayout
+      val blockHeight = if (block.type == "image") block.imageHeight else layout?.height ?: 0
+      if (yOffset + blockHeight > scrollY) {
+        val localY = scrollY - yOffset
+        if (layout == null || localY <= 0) return block to 0
+        val line = layout.getLineForVertical(localY)
+        // The line straddling the top edge is only partly visible; count from
+        // the next one.
+        val firstFullLine = if (layout.getLineTop(line) < localY) line + 1 else line
+        if (firstFullLine >= layout.lineCount) return block to layout.text.length
+        return block to layout.getLineStart(firstFullLine)
+      }
+      yOffset += blockHeight
+      yOffset += block.marginBottom
+    }
+    return null
+  }
+
   private fun firstVisibleBlockId(page: ReaderPage, scrollY: Int): String {
     var yOffset = pagePaddingV
     for (block in page.blocks) {
