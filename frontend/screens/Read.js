@@ -104,8 +104,10 @@ const DEFAULT_READER_SETTINGS = {
     pinyinAnnotations: false,
     // Short translation under words (any language). Also re-paginates.
     glossAnnotations: false,
-    // Which words get pinyin / translations: 'underlined' or 'all'.
-    annotationScope: 'underlined',
+    // Which words get pinyin / translations: 'underlined' (graded words) or
+    // 'all' (every word in the book), chosen separately for each.
+    pinyinScope: 'underlined',
+    glossScope: 'underlined',
     // Draw underlines on text already read past lighter than the ones ahead.
     fadeReadMarks: true,
 };
@@ -3055,9 +3057,14 @@ const Read = ({
     // pinyin / gloss, and the "all words" scope adds the rest as annotation-only.
     const readerShowPinyin = activeBookLanguage === 'zh' && Boolean(settings.pinyinAnnotations);
     const readerShowGloss = Boolean(settings.glossAnnotations);
-    const annotationScope = ANNOTATION_SCOPES.includes(settings.annotationScope)
-        ? settings.annotationScope
-        : DEFAULT_READER_SETTINGS.annotationScope;
+    // Settings saved before the scopes were split carried one `annotationScope`.
+    const legacyScope = ANNOTATION_SCOPES.includes(settings.annotationScope) ? settings.annotationScope : null;
+    const pinyinScope = ANNOTATION_SCOPES.includes(settings.pinyinScope)
+        ? settings.pinyinScope
+        : (legacyScope || DEFAULT_READER_SETTINGS.pinyinScope);
+    const glossScope = ANNOTATION_SCOPES.includes(settings.glossScope)
+        ? settings.glossScope
+        : (legacyScope || DEFAULT_READER_SETTINGS.glossScope);
     const readerLevelTerms = useMemo(
         () => {
             if (!readerShowPinyin && !readerShowGloss) {
@@ -3069,13 +3076,15 @@ const Read = ({
                 marksEnabled: levelMarksEnabled,
                 pinyin: readerShowPinyin,
                 gloss: readerShowGloss,
-                scope: annotationScope,
+                pinyinScope,
+                glossScope,
                 interfaceLanguage,
             });
         },
         [
             annotationRows,
-            annotationScope,
+            pinyinScope,
+            glossScope,
             interfaceLanguage,
             levelMarksEnabled,
             levelUnderlineTerms,
@@ -3751,6 +3760,7 @@ const Read = ({
                                 {/* Word annotations: pinyin above words (Chinese only) and a
                                     short translation under them, on underlined or all words. */}
                                 {activeBookLanguage === 'zh' ? (
+                                    <>
                                     <View style={styles.markStyleBlock}>
                                         <Text style={styles.fontSettingsLabel}>{t('read.pinyinAnnotations')}</Text>
                                         <View style={styles.segmentGroup}>
@@ -3776,6 +3786,34 @@ const Read = ({
                                             })}
                                         </View>
                                     </View>
+                                    {readerShowPinyin ? (
+                                    <View style={styles.markStyleBlock}>
+                                        <Text style={styles.fontSettingsLabel}>{t('read.annotationScope')}</Text>
+                                        <View style={styles.segmentGroup}>
+                                            {ANNOTATION_SCOPES.map((value) => {
+                                                const selected = pinyinScope === value;
+                                                return (
+                                                    <TouchableOpacity
+                                                        key={String(value)}
+                                                        style={[styles.segmentButton, selected && styles.segmentButtonActive]}
+                                                        onPress={() => handleSettingChange('pinyinScope', value)}
+                                                        activeOpacity={0.7}
+                                                        accessibilityRole="button"
+                                                        accessibilityState={{ selected }}
+                                                    >
+                                                        <Text
+                                                            style={[styles.segmentButtonText, selected && styles.segmentButtonTextActive]}
+                                                            numberOfLines={1}
+                                                        >
+                                                            {value === 'all' ? t('read.annotationScopeAll') : t('read.annotationScopeUnderlined')}
+                                                        </Text>
+                                                    </TouchableOpacity>
+                                                );
+                                            })}
+                                        </View>
+                                    </View>
+                                    ) : null}
+                                    </>
                                 ) : null}
                                     <View style={styles.markStyleBlock}>
                                         <Text style={styles.fontSettingsLabel}>{t('read.glossAnnotations')}</Text>
@@ -3802,17 +3840,17 @@ const Read = ({
                                             })}
                                         </View>
                                     </View>
-                                {(readerShowPinyin || readerShowGloss) ? (
+                                {readerShowGloss ? (
                                     <View style={styles.markStyleBlock}>
                                         <Text style={styles.fontSettingsLabel}>{t('read.annotationScope')}</Text>
                                         <View style={styles.segmentGroup}>
                                             {ANNOTATION_SCOPES.map((value) => {
-                                                const selected = annotationScope === value;
+                                                const selected = glossScope === value;
                                                 return (
                                                     <TouchableOpacity
                                                         key={String(value)}
                                                         style={[styles.segmentButton, selected && styles.segmentButtonActive]}
-                                                        onPress={() => handleSettingChange('annotationScope', value)}
+                                                        onPress={() => handleSettingChange('glossScope', value)}
                                                         activeOpacity={0.7}
                                                         accessibilityRole="button"
                                                         accessibilityState={{ selected }}

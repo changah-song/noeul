@@ -38,7 +38,7 @@ describe('buildAnnotatedLevelTerms', () => {
 
   it('adds every other word as annotation-only with the all scope', () => {
     const terms = buildAnnotatedLevelTerms({
-      levelTerms, annotationRows: rows, gloss: true, scope: 'all',
+      levelTerms, annotationRows: rows, gloss: true, glossScope: 'all',
     });
     expect(terms.find((t) => t.text === '学习').annotationOnly).toBeUndefined();
     expect(terms.find((t) => t.text === '我们')).toEqual({ text: '我们', weight: 0, annotationOnly: true, gloss: 'we' });
@@ -46,7 +46,7 @@ describe('buildAnnotatedLevelTerms', () => {
   });
 
   it('skips words with nothing to show', () => {
-    const terms = buildAnnotatedLevelTerms({ levelTerms, annotationRows: rows, pinyin: true, scope: 'all' });
+    const terms = buildAnnotatedLevelTerms({ levelTerms, annotationRows: rows, pinyin: true, pinyinScope: 'all' });
     expect(terms.map((t) => t.text).sort()).toEqual(['学习', '我们']);
     expect(terms.some((t) => t.text === '소녀가')).toBe(false);
   });
@@ -58,6 +58,15 @@ describe('buildAnnotatedLevelTerms', () => {
     expect(terms).toEqual([
       { text: '学习', weight: 0.6, category: 'study', pinyin: 'xué xí', annotationOnly: true },
     ]);
+  });
+
+  it('applies each scope separately', () => {
+    const terms = buildAnnotatedLevelTerms({
+      levelTerms, annotationRows: rows, pinyin: true, gloss: true, pinyinScope: 'all', glossScope: 'underlined',
+    });
+    const extra = terms.find((t) => t.text === '我们');
+    expect(extra).toEqual({ text: '我们', weight: 0, annotationOnly: true, pinyin: 'wǒ men' });
+    expect(terms.find((t) => t.text === '学习').gloss).toBe('to study');
   });
 
   it('drops pinyin when only glosses are on', () => {
