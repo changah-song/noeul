@@ -102,7 +102,7 @@ private data class SelectionHighlightVerticalMetrics(
 
 // Read marks: how long the switch to the "read" style takes, how much of the
 // saved-word box fill remains, and how strong its crosshatch is.
-private const val READ_TRANSITION_MS = 550f
+private const val READ_TRANSITION_MS = 700f
 private const val READ_BOX_FILL = 0.18f
 private const val READ_HATCH_ALPHA = 0.5f
 // Sliding glosses: pause at each end, then slide at this speed (dp/s).
@@ -2305,10 +2305,18 @@ class EpubPageView(context: Context) : View(context) {
       probe -= 1
     }
 
-    if (isCjkIdeograph(text[probe])) {
-      cjkTokenRangeAtOffset(text, probe)?.let { return it }
+    // Korean words carry invisible joiners between syllables; look through
+    // them so a tap on a joiner still lands on the word.
+    if (text[probe] == WORD_JOINER) {
+      var left = probe
+      while (left > 0 && text[left] == WORD_JOINER) left -= 1
+      probe = left
     }
 
+    // A tap on punctuation or a space picks the word next to it. The
+    // neighbour is then segmented like a direct tap, so punctuation after a
+    // Chinese sentence picks its last word rather than the whole run of text
+    // back to the previous mark.
     if (!isReaderTokenChar(text[probe])) {
       probe = when {
         probe > 0 && isReaderTokenChar(text[probe - 1]) -> probe - 1
@@ -2317,15 +2325,21 @@ class EpubPageView(context: Context) : View(context) {
       }
     }
 
-    var start = probe
-    while (start > 0 && isReaderTokenChar(text[start - 1])) {
-      start -= 1
+    if (isCjkIdeograph(text[probe])) {
+      cjkTokenRangeAtOffset(text, probe)?.let { return it }
     }
 
+    var start = probe
+    while (start > 0 && (isReaderTokenChar(text[start - 1]) || text[start - 1] == WORD_JOINER)) {
+      start -= 1
+    }
+    while (start < probe && text[start] == WORD_JOINER) start += 1
+
     var end = probe + 1
-    while (end < text.length && isReaderTokenChar(text[end])) {
+    while (end < text.length && (isReaderTokenChar(text[end]) || text[end] == WORD_JOINER)) {
       end += 1
     }
+    while (end > probe + 1 && text[end - 1] == WORD_JOINER) end -= 1
 
     return if (start < end) LocalTokenRange(start, end) else null
   }

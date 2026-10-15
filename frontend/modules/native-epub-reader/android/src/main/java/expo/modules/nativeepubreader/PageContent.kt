@@ -116,6 +116,10 @@ internal fun isCjkIdeograph(char: Char): Boolean {
   }
 }
 
+// Inserted by the JavaScript wrapper between the syllables of Korean words so
+// lines break between words. Invisible, zero-width, and never a token boundary.
+internal const val WORD_JOINER = '\u2060'
+
 internal fun isReaderTokenChar(char: Char): Boolean {
   val code = char.code
 
