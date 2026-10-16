@@ -3048,7 +3048,10 @@ const Read = ({
         || Boolean(settings.glossAnnotations)
     );
     useEffect(() => {
-        if (!annotationsWanted || !currentBook || !activeBook?.preprocessed) {
+        // Not gated on the book being fully preprocessed: the rows that exist
+        // (a partly processed long book, or one awaiting a dictionary refresh)
+        // are worth showing now, and the effect re-runs as processing progresses.
+        if (!annotationsWanted || !currentBook) {
             setAnnotationRows([]);
             return undefined;
         }

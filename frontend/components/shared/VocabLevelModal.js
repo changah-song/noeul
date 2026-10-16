@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
     Modal,
     Pressable,
@@ -6,6 +7,7 @@ import {
     StyleSheet,
     Text,
     TouchableOpacity,
+    ToastAndroid,
     TouchableWithoutFeedback,
     View,
 } from 'react-native';
@@ -15,7 +17,21 @@ import { useTranslation } from '../../hooks/useTranslation';
 import { fontFamilies, radii, spacing, useTheme } from '../../theme';
 import { getVocabTiers, thetaForTier } from '../../services/vocabSizeLevels';
 import { nearestRankForTheta } from '../../services/calibrationQuiz';
-import { setProfileAbilityFromVocab } from '../../services/Database';
+import { getProfileAbility, setProfileAbilityFromVocab } from '../../services/Database';
+
+// The tier the reader last picked, per owner / profile / language.
+const pickKey = (ownerId, profileId, language) => `vocabLevelPick:${ownerId || 'guest'}:${profileId || ''}:${language}`;
+
+// Index of the hardest tier at or below this ability: the row the model now
+// thinks the reader knows all of. Null when there is no ability yet.
+export const tierIndexForTheta = (tiers, theta) => {
+    if (!Number.isFinite(Number(theta)) || !tiers.length) return null;
+    let index = null;
+    tiers.forEach((tier, i) => {
+        if (Number(tier.theta) <= Number(theta) + 1e-6) index = i;
+    });
+    return index ?? 0;
+};
 
 /**
  * VocabLevelModal — the "tap the last row where you know all the words" grid.
@@ -41,13 +57,59 @@ const VocabLevelModal = ({ visible, onClose }) => {
     const tiers = useMemo(() => getVocabTiers(targetLanguage), [targetLanguage]);
     const [selectedIndex, setSelectedIndex] = useState(null);
     const [isSaving, setIsSaving] = useState(false);
+    // What the reader picked last time, and where reading has moved the
+    // estimate since — both shown as light highlights when the grid opens.
+    const [lastPickIndex, setLastPickIndex] = useState(null);
+    const [estimateIndex, setEstimateIndex] = useState(null);
+    // Row offsets, so the list can open scrolled to the remembered pick.
+    const listRef = useRef(null);
+    const rowOffsetsRef = useRef({});
+    const scrolledForOpenRef = useRef(false);
+    const scrollToRow = useCallback((index) => {
+        const y = rowOffsetsRef.current[index];
+        if (index == null || y == null || scrolledForOpenRef.current) return;
+        scrolledForOpenRef.current = true;
+        listRef.current?.scrollTo({ y: Math.max(0, y - 120), animated: false });
+    }, []);
 
     useEffect(() => {
-        if (visible) {
-            setSelectedIndex(null);
-            setIsSaving(false);
-        }
-    }, [visible]);
+        if (!visible) return undefined;
+        setSelectedIndex(null);
+        setIsSaving(false);
+        scrolledForOpenRef.current = false;
+        let cancelled = false;
+        (async () => {
+            let pick = null;
+            try {
+                const stored = await AsyncStorage.getItem(pickKey(activeOwnerId, activeProfileId, targetLanguage));
+                const index = tiers.findIndex((tier) => String(tier.threshold) === String(stored));
+                pick = index >= 0 ? index : null;
+            } catch {
+                pick = null;
+            }
+            let estimate = null;
+            try {
+                const ability = await getProfileAbility({
+                    ownerId: activeOwnerId,
+                    profileId: activeProfileId,
+                    language: targetLanguage,
+                });
+                // Only once reading has had a say: a fresh seed equals the pick.
+                const events = Number(ability?.event_count ?? ability?.eventCount ?? 0);
+                if (events > 1) estimate = tierIndexForTheta(tiers, ability?.theta);
+            } catch {
+                estimate = null;
+            }
+            if (cancelled) return;
+            setLastPickIndex(pick);
+            setEstimateIndex(estimate);
+            setSelectedIndex(pick);
+            scrollToRow(pick ?? estimate);
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [visible, activeOwnerId, activeProfileId, targetLanguage, tiers, scrollToRow]);
 
     const handleConfirm = useCallback(async () => {
         if (selectedIndex == null || isSaving) {
@@ -71,13 +133,18 @@ const VocabLevelModal = ({ visible, onClose }) => {
             });
             // Keep the displayed band + fallback seed aligned with the measurement.
             setTargetLanguageLevel(nearestRank);
+            await AsyncStorage.setItem(
+                pickKey(activeOwnerId, activeProfileId, targetLanguage),
+                String(tier.threshold)
+            ).catch(() => {});
+            ToastAndroid.show(t('vocabLevel.saved'), ToastAndroid.SHORT);
         } catch (error) {
             console.warn('[VocabLevel] Failed to save vocab level:', error?.message ?? error);
         } finally {
             setIsSaving(false);
             onClose?.();
         }
-    }, [activeOwnerId, activeProfileId, isSaving, onClose, selectedIndex, setTargetLanguageLevel, targetLanguage, tiers]);
+    }, [activeOwnerId, activeProfileId, isSaving, onClose, selectedIndex, setTargetLanguageLevel, t, targetLanguage, tiers]);
 
     const tierLabel = useCallback((tier) => (
         tier.advanced ? t('vocabLevel.advancedTier') : (tier.label || String(tier.threshold))
@@ -98,6 +165,7 @@ const VocabLevelModal = ({ visible, onClose }) => {
                             <Text style={styles.helper}>{t('vocabLevel.instruction')}</Text>
 
                             <ScrollView
+                                ref={listRef}
                                 style={styles.list}
                                 contentContainerStyle={styles.listContent}
                                 showsVerticalScrollIndicator
@@ -105,14 +173,26 @@ const VocabLevelModal = ({ visible, onClose }) => {
                                 {tiers.map((tier, index) => {
                                     const known = selectedIndex != null && index <= selectedIndex;
                                     const isPick = index === selectedIndex;
+                                    const wasPicked = index === lastPickIndex;
+                                    const isEstimate = estimateIndex != null && index === estimateIndex && estimateIndex !== lastPickIndex;
                                     return (
                                         <TouchableOpacity
                                             key={tier.threshold}
                                             activeOpacity={0.75}
                                             onPress={() => setSelectedIndex(index)}
+                                            onLayout={(event) => {
+                                                rowOffsetsRef.current[index] = event.nativeEvent.layout.y;
+                                                if (index === (lastPickIndex ?? estimateIndex)) scrollToRow(index);
+                                            }}
                                             accessibilityRole="radio"
                                             accessibilityState={{ selected: isPick }}
-                                            style={[styles.row, known && styles.rowKnown, isPick && styles.rowPick]}
+                                            style={[
+                                                styles.row,
+                                                known && styles.rowKnown,
+                                                isPick && styles.rowPick,
+                                                wasPicked && styles.rowLastPick,
+                                                isEstimate && styles.rowEstimate,
+                                            ]}
                                         >
                                             <View style={styles.rowLabelCol}>
                                                 <Text style={[styles.rowLabel, known && styles.rowLabelKnown]}>
@@ -123,14 +203,19 @@ const VocabLevelModal = ({ visible, onClose }) => {
                                                 ) : null}
                                             </View>
                                             <View style={styles.wordsCol}>
-                                                {tier.words.map((word) => (
-                                                    <Text
-                                                        key={word}
-                                                        style={[styles.word, known && styles.wordKnown]}
-                                                    >
-                                                        {word}
-                                                    </Text>
-                                                ))}
+                                                <Text style={[styles.word, known && styles.wordKnown]}>
+                                                    {tier.words.join('  ')}
+                                                </Text>
+                                                {wasPicked || isEstimate ? (
+                                                    <View style={styles.tagRow}>
+                                                        {wasPicked ? (
+                                                            <Text style={[styles.tag, styles.tagPick]}>{t('vocabLevel.yourPick')}</Text>
+                                                        ) : null}
+                                                        {isEstimate ? (
+                                                            <Text style={[styles.tag, styles.tagEstimate]}>{t('vocabLevel.estimateNow')}</Text>
+                                                        ) : null}
+                                                    </View>
+                                                ) : null}
                                             </View>
                                         </TouchableOpacity>
                                     );
@@ -201,9 +286,9 @@ const createStyles = (colors) => StyleSheet.create({
     row: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: spacing.md,
-        paddingVertical: spacing.md,
-        paddingHorizontal: spacing.md,
+        gap: spacing.sm,
+        paddingVertical: 6,
+        paddingHorizontal: spacing.sm,
         borderBottomWidth: StyleSheet.hairlineWidth,
         borderBottomColor: colors.divider,
     },
@@ -213,8 +298,38 @@ const createStyles = (colors) => StyleSheet.create({
     rowPick: {
         backgroundColor: colors.accentMuted,
     },
+    // The tier saved last time: a thin bar on the left that stays while the
+    // reader tries other rows.
+    rowLastPick: {
+        borderLeftWidth: 3,
+        borderLeftColor: colors.readerLevelUnderlineEasy,
+    },
+    // Where reading has moved the estimate since: a light dashed outline.
+    rowEstimate: {
+        borderWidth: 1,
+        borderStyle: 'dashed',
+        borderColor: colors.readerLevelUnderlineMid,
+        borderRadius: 6,
+    },
+    tagRow: {
+        flexDirection: 'row',
+        gap: 6,
+        marginTop: 3,
+    },
+    tag: {
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 10,
+        letterSpacing: 0.6,
+        textTransform: 'uppercase',
+    },
+    tagPick: {
+        color: colors.readerLevelUnderlineEasy,
+    },
+    tagEstimate: {
+        color: colors.readerLevelUnderlineMid,
+    },
     rowLabelCol: {
-        width: 56,
+        width: 48,
         alignItems: 'center',
         gap: spacing.xxs ?? 2,
     },
@@ -230,13 +345,11 @@ const createStyles = (colors) => StyleSheet.create({
     },
     wordsCol: {
         flex: 1,
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        gap: spacing.sm,
     },
     word: {
         fontFamily: fontFamilies.krSerifMedium,
-        fontSize: 16,
+        fontSize: 14,
+        lineHeight: 19,
         color: colors.text,
     },
     wordKnown: {

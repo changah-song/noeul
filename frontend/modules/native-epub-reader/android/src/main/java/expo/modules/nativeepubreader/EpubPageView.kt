@@ -105,7 +105,7 @@ private data class SelectionHighlightVerticalMetrics(
 // How long a mark takes to dissolve into its "read" checkerboard.
 private const val READ_TRANSITION_MS = 700f
 // Opacity the kept checkerboard pixels of a saved-word box end at.
-private const val READ_PIXEL_ALPHA = 0.35f
+private const val READ_PIXEL_ALPHA = 0.15f
 // Sliding glosses: pause at each end, then slide at this speed (dp/s).
 private const val MARQUEE_PAUSE_MS = 1400L
 // Parenthesised and bracketed asides in dictionary senses: "(CL:个[ge4])",
@@ -1467,7 +1467,13 @@ class EpubPageView(context: Context) : View(context) {
 
       val localOffset = layout.getOffsetForHorizontal(line, localX)
       val blockText = blockTextForSelection(block)
-      val tokenRange = tokenRangeAtOffset(blockText, localOffset)
+      // Chinese: the underline and the gloss under a word come from the
+      // server's segmentation of the book (厮杀 is one word); Android's word
+      // breaker splits words it doesn't know (厮 + 杀). A tap inside a marked
+      // or glossed word takes that exact word, so the lookup matches what is
+      // drawn under it.
+      val tokenRange = markedCjkWordAt(block, blockText, localOffset)
+        ?: tokenRangeAtOffset(blockText, localOffset)
 
       if (tokenRange == null) {
         Log.d(
@@ -2324,6 +2330,25 @@ class EpubPageView(context: Context) : View(context) {
           layout.getLineBottom(fallbackLine)
         ) / 2f
     }
+  }
+
+  // The longest level / annotation term on this block that covers a tapped
+  // CJK character, in block-local offsets. Null off CJK text or between terms.
+  private fun markedCjkWordAt(block: PageBlock, text: String, offset: Int): LocalTokenRange? {
+    if (text.isEmpty()) return null
+    val probe = offset.coerceIn(0, text.length - 1)
+    if (!isCjkIdeograph(text[probe])) return null
+    val currentPage = page ?: return null
+    var best: LocalTokenRange? = null
+    rangesForBlock(levelRanges, block.blockId).forEach { range ->
+      if (range.pageIndex != currentPage.pageIndex || range.spineIndex != currentPage.spineIndex) return@forEach
+      val start = range.sourceStartOffset - block.sourceStartOffset
+      val end = range.sourceEndOffset - block.sourceStartOffset
+      if (start < 0 || end > text.length || start >= end) return@forEach
+      if (probe < start || probe >= end) return@forEach
+      if (best == null || end - start > best!!.end - best!!.start) best = LocalTokenRange(start, end)
+    }
+    return best?.takeIf { it.end - it.start > 1 }
   }
 
   private fun tokenRangeAtOffset(text: String, offset: Int): LocalTokenRange? {
