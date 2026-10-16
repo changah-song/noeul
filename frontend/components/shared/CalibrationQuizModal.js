@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useAppContext } from '../../contexts/AppContext';
+import { useLocalOwner } from '../../contexts/LocalOwnerContext';
 import { useTranslation } from '../../hooks/useTranslation';
 import { fontFamilies, radii, spacing, useTheme } from '../../theme';
 import {
@@ -33,12 +34,13 @@ import { getProficiencyLevelForLanguage } from '../../constants/proficiencyLevel
  */
 const CalibrationQuizModal = ({ visible, onClose }) => {
     const {
-        activeOwnerId,
         activeProfileId,
         targetLanguage,
         setTargetLanguageLevel,
         levelsByLanguage,
     } = useAppContext();
+    // The account id lives in the local-owner context (the app context has none).
+    const { activeOwnerId } = useLocalOwner();
     const theme = useTheme();
     const styles = useMemo(() => createStyles(theme.colors), [theme.colors]);
     const { t } = useTranslation();

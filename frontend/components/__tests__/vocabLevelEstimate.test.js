@@ -1,5 +1,6 @@
 jest.mock('@expo/vector-icons', () => ({ Feather: () => null }), { virtual: true });
 jest.mock('../../contexts/AppContext', () => ({ useAppContext: () => ({}) }));
+jest.mock('../../contexts/LocalOwnerContext', () => ({ useLocalOwner: () => ({ activeOwnerId: 'owner-1' }) }));
 jest.mock('../../services/Database', () => ({
   getProfileAbility: jest.fn(),
   setProfileAbilityFromVocab: jest.fn(),

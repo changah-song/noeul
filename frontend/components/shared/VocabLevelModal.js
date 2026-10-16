@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useAppContext } from '../../contexts/AppContext';
+import { useLocalOwner } from '../../contexts/LocalOwnerContext';
 import { useTranslation } from '../../hooks/useTranslation';
 import { fontFamilies, radii, spacing, useTheme } from '../../theme';
 import { getVocabTiers, thetaForTier } from '../../services/vocabSizeLevels';
@@ -45,11 +46,13 @@ export const tierIndexForTheta = (tiers, theta) => {
  */
 const VocabLevelModal = ({ visible, onClose }) => {
     const {
-        activeOwnerId,
         activeProfileId,
         targetLanguage,
         setTargetLanguageLevel,
     } = useAppContext();
+    // The signed-in account's id lives in the local-owner context; the app
+    // context has none, so reading it there saved the level under "guest".
+    const { activeOwnerId } = useLocalOwner();
     const theme = useTheme();
     const styles = useMemo(() => createStyles(theme.colors), [theme.colors]);
     const { t } = useTranslation();
