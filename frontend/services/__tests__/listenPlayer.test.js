@@ -11,8 +11,12 @@ const fakeTts = () => {
     spoken: [],
     languages: [],
     rates: [],
-    addEventListener: jest.fn((name, handler) => { handlers[name] = handler; }),
-    removeEventListener: jest.fn((name) => { delete handlers[name]; }),
+    addEventListener: jest.fn((name, handler) => {
+      handlers[name] = handler;
+      return { remove: () => { delete handlers[name]; } };
+    }),
+    // RN 0.81: the library's removeEventListener throws; it must not be used.
+    removeEventListener: jest.fn(() => { throw new TypeError('this.removeListener is not a function'); }),
     setDefaultLanguage: jest.fn(async (locale) => { this.languages?.push(locale); return 'success'; }),
     setDefaultRate: jest.fn(async () => 'success'),
     speak: jest.fn(async function speak(text) {
@@ -135,5 +139,16 @@ describe('voiceLocaleFor', () => {
 
   it('offers normal speed among the rates', () => {
     expect(LISTEN_RATES).toContain(1);
+  });
+});
+
+
+describe('listenPlayer teardown', () => {
+  it('unhooks through the subscriptions, not removeEventListener', () => {
+    const tts = fakeTts();
+    const player = createListenPlayer({ tts });
+    expect(() => player.destroy()).not.toThrow();
+    expect(tts.removeEventListener).not.toHaveBeenCalled();
+    expect(Object.keys(tts.handlers)).toEqual([]);
   });
 });

@@ -70,9 +70,14 @@ export const createListenPlayer = ({ tts = Tts } = {}) => {
   const onFinish = (event) => settle(event?.utteranceId, 'finish');
   const onCancel = (event) => settle(event?.utteranceId, 'cancel');
   const onError = (event) => settle(event?.utteranceId, 'error');
-  tts.addEventListener('tts-finish', onFinish);
-  tts.addEventListener('tts-cancel', onCancel);
-  tts.addEventListener('tts-error', onError);
+  // Keep the subscriptions: react-native-tts's removeEventListener calls
+  // NativeEventEmitter.removeListener, which React Native 0.81 removed, so
+  // unhooking must go through each subscription's remove() instead.
+  const subscriptions = [
+    tts.addEventListener('tts-finish', onFinish),
+    tts.addEventListener('tts-cancel', onCancel),
+    tts.addEventListener('tts-error', onError),
+  ];
 
   const withTimeout = (promise, ms) => Promise.race([
     Promise.resolve(promise).catch(() => null),
@@ -160,9 +165,13 @@ export const createListenPlayer = ({ tts = Tts } = {}) => {
 
     destroy() {
       this.stop();
-      tts.removeEventListener('tts-finish', onFinish);
-      tts.removeEventListener('tts-cancel', onCancel);
-      tts.removeEventListener('tts-error', onError);
+      subscriptions.forEach((subscription) => {
+        try {
+          subscription?.remove?.();
+        } catch {
+          // Already gone with the engine; nothing to unhook.
+        }
+      });
     },
   };
 };

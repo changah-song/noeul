@@ -226,13 +226,6 @@ class NativeEpubReaderModule : Module() {
       view.extendSelection(direction)
     }.runOnQueue(Queues.MAIN)
 
-    // Listen mode: the sentence the beam would step to ("next" | "previous")
-    // without moving it, so the next utterance can be prepared while the
-    // current one plays. Synchronous and run on the JS thread: it must not
-    // queue behind main-thread work, which is what stalled the step itself.
-    Function("focusPeek") { view: NativeEpubReaderView, direction: String ->
-      view.focusPeek(direction)
-    }
 
     // Listen mode: highlight the word being explained ({ blockId,
     // sourceStartOffset, sourceEndOffset }), or clear it with an empty map.
@@ -2267,7 +2260,11 @@ class NativeEpubReaderView(
     return focusStatePayload() + mapOf("moved" to true)
   }
 
-  private fun focusStatePayload(index: Int = focusIndex): Map<String, Any> {
+  // The focused span's text and graded words, plus (one level deep) the span
+  // the beam would step to next: listen mode starts reading it the moment the
+  // current one ends instead of asking the view, which only answers on the
+  // busy UI thread.
+  private fun focusStatePayload(index: Int = focusIndex, withNext: Boolean = true): Map<String, Any> {
     val sentences = focusSentences
     val event = mutableMapOf<String, Any>(
       "index" to index,
@@ -2278,24 +2275,15 @@ class NativeEpubReaderView(
       event["text"] = text
       event["levelWords"] = words
     }
-    return event
-  }
-
-  // What moveFocus(direction) would land on, without moving. Called from the
-  // JS thread: only snapshot references are read, never mutated state.
-  fun focusPeek(direction: String): Map<String, Any> {
-    val step = when (direction.lowercase()) {
-      "next" -> 1
-      "prev", "previous" -> -1
-      else -> return mapOf("moved" to false)
+    if (withNext) {
+      val maxIndex = (sentences.size - focusSpanCount).coerceAtLeast(0)
+      event["next"] = if (index + 1 <= maxIndex) {
+        focusStatePayload(index + 1, withNext = false) + mapOf("moved" to true)
+      } else {
+        mapOf("moved" to false, "atEnd" to true)
+      }
     }
-    val sentences = focusSentences
-    if (!isFocusMode() || sentences.isEmpty()) return mapOf("moved" to false)
-    val maxIndex = (sentences.size - focusSpanCount).coerceAtLeast(0)
-    val next = focusIndex + step
-    if (next < 0) return mapOf("moved" to false, "atStart" to true)
-    if (next > maxIndex) return mapOf("moved" to false, "atEnd" to true)
-    return focusStatePayload(next) + mapOf("moved" to true, "peek" to true)
+    return event
   }
 
   fun extendSelection(direction: String): Boolean {
