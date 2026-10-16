@@ -695,14 +695,25 @@ class EpubPageView(context: Context) : View(context) {
   // Focus mode: draw the whole block dimmed, then re-draw the focused sentence
   // span(s) at full opacity clipped to their glyph bounds. During a focus shift
   // the outgoing span fades down while the incoming span fades up (300ms).
+  // How far a block's annotations reach outside its text layout: the pinyin
+  // row above the first line and the gloss row below the last. Layers drawn
+  // for a block must cover these, or they clip the first line's pinyin.
+  private fun annotationOverhang(block: PageBlock): Pair<Float, Float> {
+    val bodyTextPx = block.textPaint?.textSize ?: return 0f to 0f
+    val above = if (showPinyin) bodyTextPx * PINYIN_ROW_SCALE + dp(4f) else 0f
+    val below = if (showGloss) bodyTextPx * GLOSS_ROW_SCALE + dp(4f) else 0f
+    return above to below
+  }
+
   private fun drawFocusModeBlock(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
     val layoutWidth = layout.width.toFloat().coerceAtLeast(1f)
     val layoutHeight = layout.height.toFloat().coerceAtLeast(1f)
+    val (above, below) = annotationOverhang(block)
     val dimLayer = canvas.saveLayerAlpha(
-      0f,
-      0f,
-      layoutWidth,
-      layoutHeight,
+      -dp(8f).toFloat(),
+      -above,
+      layoutWidth + dp(8f),
+      layoutHeight + below,
       (FOCUS_DIM_ALPHA * 255).roundToInt()
     )
     drawBlockContent(canvas, block, layout)
@@ -745,13 +756,14 @@ class EpubPageView(context: Context) : View(context) {
 
     val layoutWidth = layout.width.toFloat().coerceAtLeast(1f)
     val layoutHeight = layout.height.toFloat().coerceAtLeast(1f)
+    val (above, below) = annotationOverhang(block)
     val clipSave = canvas.save()
     canvas.clipPath(focusClipPath)
     val overlayLayer = canvas.saveLayerAlpha(
-      0f,
-      0f,
-      layoutWidth,
-      layoutHeight,
+      -dp(8f).toFloat(),
+      -above,
+      layoutWidth + dp(8f),
+      layoutHeight + below,
       (alpha.coerceIn(0f, 1f) * 255).roundToInt()
     )
     drawBlockContent(canvas, block, layout)

@@ -19,7 +19,6 @@ import NativeEpubReaderView, {
     supportsSeekToPosition,
     sendSpokenWord,
     supportsSpokenWord,
-    peekFocusSentence,
     updateListenSession,
     stopListenSession,
     addListenControlListener,
@@ -544,6 +543,16 @@ const Read = ({
     const listenCtxRef = useRef({});
     const listenErrorsRef = useRef(0);
     const listenChapterEndRef = useRef(null);
+    // The sentence after the one the beam is on, as the reader last reported
+    // it (focus events and step results carry it as `next`), and the step in
+    // flight that will report it.
+    const listenNextRef = useRef({ index: null, next: null });
+    const listenMovingRef = useRef(null);
+    const rememberListenNext = (payload) => {
+        if (payload && Number.isInteger(payload.index) && payload.next) {
+            listenNextRef.current = { index: payload.index, next: payload.next };
+        }
+    };
     const listenSpeakRef = useRef(null);
     const listenPauseRef = useRef(null);
     const sendFocusNavRef = useRef(null);
@@ -3194,6 +3203,7 @@ const Read = ({
         if (!behind) {
             listenFocusRef.current = { ...event, spineIndex: currentSpineIndexRef.current };
         }
+        rememberListenNext(event);
         const key = `${currentSpineIndexRef.current}:${event.index}:${cleanListenText(event.text)}`;
         if (listenPlayingRef.current && !behind && key !== listenSpokenKeyRef.current) {
             listenSpeakRef.current?.(event, key);
@@ -3316,14 +3326,17 @@ const Read = ({
         const prefs = listenPrefsRef.current;
         const mine = () => run === listenRunRef.current && listenPlayingRef.current;
 
-        // Look at the sentence after this one now, so it (and its translation)
-        // is ready the moment this one ends. The peek is synchronous and the
-        // beam only moves afterwards, so audio never waits on the main thread.
-        const viewTag = findNodeHandle(nativeReaderViewRef.current);
-        const peek = viewTag != null ? peekFocusSentence(viewTag, 'next') : null;
-        const peekText = peek?.moved ? cleanListenText(peek.text) : '';
-        const nextTranslation = prefs.translateSentences && peekText
-            ? translateText({ query: peekText, source: ctx.language, target: ctx.interfaceLanguage }).catch(() => '')
+        // The sentence after this one, as the reader reported it: on this
+        // sentence's own payload, or on the step result that moved the beam
+        // here (it may still be in flight; see nextSentence below).
+        const knownNext = () => (
+            event?.next
+            || (listenNextRef.current.index === event?.index ? listenNextRef.current.next : null)
+        );
+        const earlyNext = knownNext();
+        const earlyNextText = earlyNext?.moved ? cleanListenText(earlyNext.text) : '';
+        const nextTranslation = prefs.translateSentences && earlyNextText
+            ? translateText({ query: earlyNextText, source: ctx.language, target: ctx.interfaceLanguage }).catch(() => '')
             : null;
         // One utterance the engine refuses (a lone "*", an odd symbol) is
         // skipped; only a run of failures means there is no usable voice.
@@ -3343,6 +3356,7 @@ const Read = ({
         const stepOn = async () => {
             listenSpokenKeyRef.current = '';
             const result = await sendFocusNavRef.current?.('next');
+            rememberListenNext(result);
             if (!listenPlayingRef.current || !result || typeof result !== 'object') return;
             if (result.atEnd) {
                 listenChapterEndRef.current?.();
@@ -3402,22 +3416,36 @@ const Read = ({
         }
 
         if (!mine()) return;
+        // Usually known by now; if the step that brought the beam here has not
+        // reported yet, wait for it rather than starting a slow step of our own.
+        let peek = knownNext();
+        if (!peek && listenMovingRef.current) {
+            await listenMovingRef.current.catch(() => null);
+            if (!mine()) return;
+            peek = knownNext();
+        }
         if (peek?.atEnd) {
             listenChapterEndRef.current?.();
             return;
         }
+        const peekText = peek?.moved ? cleanListenText(peek.text) : '';
         if (!peekText) {
             stepOn();
             return;
         }
         // Read the next sentence straight away and move the beam alongside;
-        // if the move lands somewhere else (the reader stepped meanwhile),
-        // the command's result re-syncs the voice to it.
+        // the step's result carries the sentence after that, and re-syncs
+        // the voice if the move lands somewhere else (the reader stepped).
         const nextKey = `${currentSpineIndexRef.current}:${peek.index}:${peekText}`;
         listenFocusRef.current = { ...peek, spineIndex: currentSpineIndexRef.current };
-        const moving = sendFocusNavRef.current?.('next');
-        listenSpeakRef.current?.(peek, nextKey, { translation: nextTranslation });
-        Promise.resolve(moving).then((result) => {
+        const moving = Promise.resolve(sendFocusNavRef.current?.('next'));
+        listenMovingRef.current = moving;
+        listenSpeakRef.current?.(peek, nextKey, {
+            translation: earlyNextText === peekText ? nextTranslation : null,
+        });
+        moving.then((result) => {
+            if (listenMovingRef.current === moving) listenMovingRef.current = null;
+            rememberListenNext(result);
             if (!listenPlayingRef.current || !result || typeof result !== 'object') return;
             if (result.atEnd) {
                 listenChapterEndRef.current?.();
@@ -3458,6 +3486,7 @@ const Read = ({
     // and, while playing, read the sentence the command hands back.
     const listenNav = useCallback(async (direction) => {
         const result = await sendFocusNavRef.current?.(direction);
+        rememberListenNext(result);
         if (!listenPlayingRef.current || !result || typeof result !== 'object') return;
         if (result.atEnd) {
             listenChapterEndRef.current?.();
