@@ -123,14 +123,9 @@ const VocabLevelModal = ({ visible, onClose }) => {
                                                 ) : null}
                                             </View>
                                             <View style={styles.wordsCol}>
-                                                {tier.words.map((word) => (
-                                                    <Text
-                                                        key={word}
-                                                        style={[styles.word, known && styles.wordKnown]}
-                                                    >
-                                                        {word}
-                                                    </Text>
-                                                ))}
+                                                <Text style={[styles.word, known && styles.wordKnown]}>
+                                                    {tier.words.join('  ')}
+                                                </Text>
                                             </View>
                                         </TouchableOpacity>
                                     );
@@ -201,9 +196,9 @@ const createStyles = (colors) => StyleSheet.create({
     row: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: spacing.md,
-        paddingVertical: spacing.md,
-        paddingHorizontal: spacing.md,
+        gap: spacing.sm,
+        paddingVertical: 6,
+        paddingHorizontal: spacing.sm,
         borderBottomWidth: StyleSheet.hairlineWidth,
         borderBottomColor: colors.divider,
     },
@@ -214,7 +209,7 @@ const createStyles = (colors) => StyleSheet.create({
         backgroundColor: colors.accentMuted,
     },
     rowLabelCol: {
-        width: 56,
+        width: 48,
         alignItems: 'center',
         gap: spacing.xxs ?? 2,
     },
@@ -230,13 +225,11 @@ const createStyles = (colors) => StyleSheet.create({
     },
     wordsCol: {
         flex: 1,
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        gap: spacing.sm,
     },
     word: {
         fontFamily: fontFamilies.krSerifMedium,
-        fontSize: 16,
+        fontSize: 14,
+        lineHeight: 19,
         color: colors.text,
     },
     wordKnown: {
