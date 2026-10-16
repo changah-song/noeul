@@ -90,6 +90,43 @@ class KrdictUnavailableError(Exception):
     miss and must not trigger the English fallback."""
 
 
+class KrdictFetchGuard:
+    """Bounds the live KRDICT fan-out of one chapter preprocess.
+
+    Most of a chapter resolves from the bundled dictionary; only the long tail
+    goes to KRDICT. When KRDICT is slow or unreachable from the server, each of
+    those calls waits out its own timeout and the chapter took over a minute,
+    past the app's request timeout, so the whole chapter was lost. The guard
+    gives the live fetches a time budget and stops calling KRDICT after a few
+    failures in a row. A shared cooldown (``trip_until``, module-level state in
+    the caller) then skips KRDICT for later chapters until it has had time to
+    recover. Skipped stems are not cached, so a later run retries them.
+
+    Pure bookkeeping: the caller passes the clock in.
+    """
+
+    def __init__(self, now: float, budget_seconds: float, max_consecutive_failures: int, cooldown_until: float = 0.0):
+        self.deadline = now + budget_seconds
+        self.max_consecutive_failures = max_consecutive_failures
+        self.cooldown_until = cooldown_until
+        self.consecutive_failures = 0
+        self.tripped = now < cooldown_until
+
+    def remaining(self, now: float) -> float:
+        return max(0.0, self.deadline - now)
+
+    def should_fetch(self, now: float) -> bool:
+        return not self.tripped and now < self.deadline
+
+    def record(self, ok: bool) -> None:
+        if ok:
+            self.consecutive_failures = 0
+            return
+        self.consecutive_failures += 1
+        if self.consecutive_failures >= self.max_consecutive_failures:
+            self.tripped = True
+
+
 def parse_krdict_search_items(status_code: int, text: str) -> list:
     """Return the <item> elements of a KRDICT search response.
 
