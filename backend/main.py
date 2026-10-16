@@ -9,6 +9,7 @@ import hashlib
 import unicodedata
 import ssl
 import httpx
+import time
 import logging
 import asyncio
 import anyio
@@ -50,6 +51,7 @@ from word_lookup import (
     parse_krdict_first_entry,
     parse_krdict_search_items,
     search_with_english_fallback,
+    KrdictFetchGuard,
 )
 from zh_senses import first_meaning_sense, is_reference_only_definition, rank_zh_entries
 from zh_tokens import (
@@ -127,6 +129,13 @@ RATE_LIMIT_DELAY_SECONDS = 0.1  # 100ms between KRDICT calls when enabled
 # by passing max_stems in the request body.
 MAX_STEMS_DEFAULT = None
 KRDICT_CONCURRENCY_LIMIT = 10
+# A chapter preprocess spends at most this long on live KRDICT fetches (the
+# bundled dictionary covers most words); after this many failures in a row it
+# stops calling KRDICT and skips it for the cooldown. See KrdictFetchGuard.
+KRDICT_PREPROCESS_BUDGET_SECONDS = 12.0
+KRDICT_MAX_CONSECUTIVE_FAILURES = 5
+KRDICT_COOLDOWN_SECONDS = 300.0
+_krdict_cooldown_until = 0.0
 JOB_PROGRESS_LOG_INTERVAL = 25
 KRDICT_API_URL = "https://krdict.korean.go.kr/api/search"
 KRDICT_SEARCH_TIMEOUT_SECONDS = 6.0
@@ -4076,19 +4085,41 @@ async def _preprocess_core(text: str, krdict_key: str, max_stems=None, progress_
         semaphore = asyncio.Semaphore(KRDICT_CONCURRENCY_LIMIT)
         completed_fetches = 0
         unavailable_stems: set[str] = set()
+        guard = KrdictFetchGuard(
+            time.monotonic(),
+            KRDICT_PREPROCESS_BUDGET_SECONDS,
+            KRDICT_MAX_CONSECUTIVE_FAILURES,
+            cooldown_until=_krdict_cooldown_until,
+        )
 
         async def fetch_missing_stem(client: httpx.AsyncClient, stem: str):
+            global _krdict_cooldown_until
             nonlocal completed_fetches
             async with semaphore:
+                if not guard.should_fetch(time.monotonic()):
+                    # Out of budget or KRDICT is failing: skip without caching,
+                    # so a later run retries the stem.
+                    unavailable_stems.add(stem)
+                    completed_fetches += 1
+                    return None
+
                 if ENABLE_RATE_LIMIT_DELAY:
                     await asyncio.sleep(RATE_LIMIT_DELAY_SECONDS)
 
                 try:
-                    result = await lookup_stem_in_krdict(client, stem, krdict_key)
-                except KrdictUnavailableError as error:
+                    result = await asyncio.wait_for(
+                        lookup_stem_in_krdict(client, stem, krdict_key),
+                        timeout=max(0.5, guard.remaining(time.monotonic())),
+                    )
+                    guard.record(ok=True)
+                except (KrdictUnavailableError, asyncio.TimeoutError) as error:
                     # Not cached: the next preprocess run retries this stem.
                     unavailable_stems.add(stem)
-                    print(f"[main] KRDICT unavailable for '{stem}': {error}")
+                    guard.record(ok=False)
+                    if guard.tripped and time.monotonic() >= _krdict_cooldown_until:
+                        _krdict_cooldown_until = time.monotonic() + KRDICT_COOLDOWN_SECONDS
+                        print(f"[main] KRDICT failing; skipping live fetches for {KRDICT_COOLDOWN_SECONDS:.0f}s")
+                    print(f"[main] KRDICT unavailable for '{stem}': {error!r}")
                     result = None
 
                 if ENABLE_RATE_LIMIT_DELAY:
