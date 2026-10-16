@@ -3,7 +3,7 @@
     "name": "Noeul",
     "slug": "FluentFable",
     "scheme": "noeul",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "portrait",
     "newArchEnabled": false,
     "icon": "./assets/icon.png",
