@@ -57,7 +57,9 @@ export const buildLevelUnderlineTerms = (rows, language, theta, options = {}) =>
         if (!Number.isFinite(rank) && rank !== OOV_RANK) {
             return;
         }
-        const percentile = Number(row?.difficulty_percentile);
+        // Only a real percentile counts: Number(null) is 0, the easiest word.
+        const rawPercentile = row?.difficulty_percentile;
+        const percentile = rawPercentile == null || rawPercentile === '' ? NaN : Number(rawPercentile);
         const difficulty = Number.isFinite(percentile)
             ? difficultyFromPercentile(percentile)
             : difficultyFromLevelRank(language, rawRank == null ? null : rank);

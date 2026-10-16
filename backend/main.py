@@ -507,11 +507,100 @@ def lookup_korean_nikl_levels(stems: list[str]) -> dict[str, dict]:
     finally:
         conn.close()
 
-    return {
+    levels = {
         stem: payload
         for stem in normalized_stems
         if (payload := korean_nikl_payload(rows_by_term.get(stem)))
     }
+
+    # The reading levels miss the most basic words (있다, 하다, 사람, 손가락…);
+    # KRDICT's learner grade covers them. See scripts/import_krdict_grades.py.
+    missing = [stem for stem in normalized_stems if stem not in levels]
+    if missing:
+        levels.update(lookup_korean_krdict_grades(missing))
+
+    # A verb built on a noun (말하다, 공부되다) is as common as the noun when
+    # neither list has the verb itself: borrow the noun's level.
+    derived = {
+        stem: stem[: -len(suffix)]
+        for stem in normalized_stems
+        if stem not in levels
+        for suffix in KOREAN_DERIVING_SUFFIXES
+        if stem.endswith(suffix) and len(stem) > len(suffix)
+    }
+    if derived:
+        bases = list(set(derived.values()))
+        base_levels = {
+            base: payload
+            for base in bases
+            if (payload := korean_nikl_payload(_korean_nikl_row(base)))
+        }
+        base_levels.update(lookup_korean_krdict_grades([b for b in bases if b not in base_levels]))
+        for stem, base in derived.items():
+            if base in base_levels:
+                levels[stem] = {**base_levels[base], "level_source": "derived_from_base"}
+    return levels
+
+
+KOREAN_DERIVING_SUFFIXES = ("하다", "되다", "시키다", "스럽다", "롭다")
+
+
+def _korean_nikl_row(term: str) -> sqlite3.Row | None:
+    try:
+        conn = get_proficiency_levels_db_connection()
+    except sqlite3.Error:
+        return None
+    try:
+        return conn.execute(
+            """
+            SELECT term, nikl_grade, level_rank, reading_level,
+                   difficulty_rank, difficulty_percentile, frequency_percentile
+            FROM korean_nikl_vocab WHERE term = ?
+            """,
+            (term,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
+def lookup_korean_krdict_grades(stems: list[str]) -> dict[str, dict]:
+    """Level payloads from KRDICT's 초급/중급/고급 grade, for stems the Noeul
+    reading levels lack. Empty when the table is not installed."""
+    if not stems or not is_proficiency_levels_db_installed():
+        return {}
+    try:
+        conn = get_proficiency_levels_db_connection()
+    except sqlite3.Error:
+        return {}
+    payloads: dict[str, dict] = {}
+    try:
+        for batch in chunked_values(stems):
+            placeholders = ",".join(["?"] * len(batch))
+            for row in conn.execute(
+                f"SELECT term, grade, level_rank FROM korean_krdict_grades WHERE term IN ({placeholders})",
+                batch,
+            ).fetchall():
+                rank = int(row["level_rank"])
+                payloads[row["term"]] = {
+                    "nikl_grade": row["grade"],
+                    "korean_level": row["grade"],
+                    "korean_rank": rank,
+                    "reading_level": rank,
+                    "level_rank": rank,
+                    "level_source": "krdict_vocabulary_grade",
+                    "proficiency_system": "Noeul Reading Levels",
+                    "proficiency_level": BOOK_LEVEL_LABELS["ko"].get(rank, row["grade"]),
+                    "proficiency_rank": rank,
+                }
+    except sqlite3.Error as exc:
+        # An older proficiency_levels.db without the table: no fallback.
+        print(f"[main] KRDICT grade lookup unavailable: {exc}")
+        return {}
+    finally:
+        conn.close()
+    return payloads
 
 
 def lookup_english_cefr_levels(

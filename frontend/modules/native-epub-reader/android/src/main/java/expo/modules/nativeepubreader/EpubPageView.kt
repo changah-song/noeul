@@ -105,7 +105,7 @@ private data class SelectionHighlightVerticalMetrics(
 // How long a mark takes to dissolve into its "read" checkerboard.
 private const val READ_TRANSITION_MS = 700f
 // Opacity the kept checkerboard pixels of a saved-word box end at.
-private const val READ_PIXEL_ALPHA = 0.35f
+private const val READ_PIXEL_ALPHA = 0.15f
 // Sliding glosses: pause at each end, then slide at this speed (dp/s).
 private const val MARQUEE_PAUSE_MS = 1400L
 // Parenthesised and bracketed asides in dictionary senses: "(CL:个[ge4])",

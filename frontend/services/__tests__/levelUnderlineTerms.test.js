@@ -65,6 +65,18 @@ describe('buildLevelUnderlineTerms', () => {
     expect(hardestBand.pinyin).toBe('xiè hòu');
   });
 
+  it('falls back to the band when the percentile is null (not "easiest")', () => {
+    const theta = -1;
+    const [nullPercentile] = buildLevelUnderlineTerms(
+      [{ surface: '邂逅', level_rank: 7, difficulty_percentile: null, stem_count: 1 }], 'zh', theta
+    );
+    const [bandOnly] = buildLevelUnderlineTerms(
+      [{ surface: '邂逅', level_rank: 7, stem_count: 1 }], 'zh', theta
+    );
+    expect(nullPercentile).toBeDefined();
+    expect(nullPercentile.weight).toBe(bandOnly.weight);
+  });
+
   it('uses the difficulty percentile over the band when present', () => {
     const theta = 0;
     const [easyInBand] = buildLevelUnderlineTerms(
