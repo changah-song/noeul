@@ -209,6 +209,9 @@ const ReaderSettingsSheet = ({
         : DEFAULT_BOOK_READER_SETTINGS.levelMarkStyle;
     const levelMarksEnabled = levelMarkStyle !== 'off';
     const fadeReadMarks = source.fadeReadMarks !== false;
+    const levelMarkThreshold = Number.isFinite(Number(source.levelMarkThreshold))
+        ? Math.min(1, Math.max(0, Number(source.levelMarkThreshold)))
+        : 0;
     const pinyinOn = Boolean(source.pinyinAnnotations);
     const glossOn = Boolean(source.glossAnnotations);
     // Settings saved before the scopes were split carried one `annotationScope`.
@@ -299,18 +302,37 @@ const ReaderSettingsSheet = ({
         </>
     );
 
+    // The gradient doubles as a slider: the thumb's position is the easiest
+    // shade still marked, so pushing it towards red keeps only harder words.
     const legend = levelMarksEnabled ? (
         <View style={styles.legend}>
-            <View style={styles.legendSwatches}>
-                {underlineLegendColors.map((color, index) => (
-                    <View key={index} style={[styles.legendSwatch, { backgroundColor: color }]} />
-                ))}
+            <View style={styles.legendTrack}>
+                <View style={styles.legendSwatches}>
+                    {underlineLegendColors.map((color, index) => (
+                        <View key={index} style={[styles.legendSwatch, { backgroundColor: color }]} />
+                    ))}
+                </View>
+                <Slider
+                    style={styles.legendSlider}
+                    value={levelMarkThreshold}
+                    onSlidingComplete={(value) => onSettingChange('levelMarkThreshold', Math.round(value * 20) / 20)}
+                    minimumValue={0}
+                    maximumValue={1}
+                    step={0.05}
+                    allowTouchTrack
+                    thumbTintColor={colors.readerPaper}
+                    minimumTrackTintColor="transparent"
+                    maximumTrackTintColor="transparent"
+                    trackStyle={styles.legendSliderTrack}
+                    thumbStyle={styles.legendSliderThumb}
+                    accessibilityLabel={t('read.wordHighlighting')}
+                />
             </View>
             <View style={styles.legendLabels}>
                 <Text style={styles.legendLabel}>{t('read.underlineNearly')}</Text>
                 <Text style={[styles.legendLabel, styles.legendLabelEnd]}>{t('read.underlineHard')}</Text>
             </View>
-            <Text style={styles.legendHint}>{t('read.wordHighlightingHint')}</Text>
+            <Text style={styles.legendHint}>{t('read.wordHighlightingHint')} {t('read.underlineThresholdHint')}</Text>
         </View>
     ) : null;
 
@@ -709,6 +731,32 @@ const createStyles = (colors, insets = { bottom: 0 }, sheetHeight = 520) => Styl
     legend: {
         paddingBottom: 12,
         gap: 5,
+    },
+    legendTrack: {
+        justifyContent: 'center',
+        height: 32,
+    },
+    legendSlider: {
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        height: 32,
+    },
+    legendSliderTrack: {
+        height: 4,
+        borderRadius: 2,
+    },
+    legendSliderThumb: {
+        width: 20,
+        height: 20,
+        borderRadius: 10,
+        borderWidth: 2,
+        borderColor: colors.inkSlate,
+        shadowColor: 'rgba(27, 28, 28, 0.25)',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 1,
+        shadowRadius: 4,
+        elevation: 3,
     },
     legendSwatches: {
         flexDirection: 'row',

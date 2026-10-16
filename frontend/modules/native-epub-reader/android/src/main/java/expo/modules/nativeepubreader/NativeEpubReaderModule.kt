@@ -226,6 +226,14 @@ class NativeEpubReaderModule : Module() {
       view.extendSelection(direction)
     }.runOnQueue(Queues.MAIN)
 
+    // Listen mode: the sentence the beam would step to ("next" | "previous")
+    // without moving it, so the next utterance can be prepared while the
+    // current one plays. Synchronous and run on the JS thread: it must not
+    // queue behind main-thread work, which is what stalled the step itself.
+    Function("focusPeek") { view: NativeEpubReaderView, direction: String ->
+      view.focusPeek(direction)
+    }
+
     // Listen mode: highlight the word being explained ({ blockId,
     // sourceStartOffset, sourceEndOffset }), or clear it with an empty map.
     AsyncFunction("setSpokenWord") { view: NativeEpubReaderView, word: Map<String, Any?> ->
@@ -515,8 +523,10 @@ private const val CONTINUOUS_EDGE_PULL_THRESHOLD_DP = 56f
 // up to 47 ms after the last frame), and 80 ms is still far shorter than anyone
 // reacts, so a real tap on settled text is never mistaken for a catch.
 private const val FLING_STOP_WINDOW_MS = 80L
-// In scroll mode, lines above this fraction of the viewport height count as read.
-private const val READ_LINE_FRACTION = 0.25f
+// In scroll mode, lines above this fraction of the viewport height count as
+// read: the whole viewport, so text that scrolls into view dissolves while the
+// reader is looking at it.
+private const val READ_LINE_FRACTION = 1f
 
 // Space reserved between lines for annotation rows: pinyin sits above a line,
 // the gloss below it. Shared with EpubPageView, which draws into this space.
@@ -2257,17 +2267,35 @@ class NativeEpubReaderView(
     return focusStatePayload() + mapOf("moved" to true)
   }
 
-  private fun focusStatePayload(): Map<String, Any> {
+  private fun focusStatePayload(index: Int = focusIndex): Map<String, Any> {
+    val sentences = focusSentences
     val event = mutableMapOf<String, Any>(
-      "index" to focusIndex,
+      "index" to index,
       "count" to focusSpanCount,
-      "total" to focusSentences.size
+      "total" to sentences.size
     )
-    focusSpanText()?.let { (text, words) ->
+    focusSpanText(index)?.let { (text, words) ->
       event["text"] = text
       event["levelWords"] = words
     }
     return event
+  }
+
+  // What moveFocus(direction) would land on, without moving. Called from the
+  // JS thread: only snapshot references are read, never mutated state.
+  fun focusPeek(direction: String): Map<String, Any> {
+    val step = when (direction.lowercase()) {
+      "next" -> 1
+      "prev", "previous" -> -1
+      else -> return mapOf("moved" to false)
+    }
+    val sentences = focusSentences
+    if (!isFocusMode() || sentences.isEmpty()) return mapOf("moved" to false)
+    val maxIndex = (sentences.size - focusSpanCount).coerceAtLeast(0)
+    val next = focusIndex + step
+    if (next < 0) return mapOf("moved" to false, "atStart" to true)
+    if (next > maxIndex) return mapOf("moved" to false, "atEnd" to true)
+    return focusStatePayload(next) + mapOf("moved" to true, "peek" to true)
   }
 
   fun extendSelection(direction: String): Boolean {
@@ -2510,15 +2538,16 @@ class NativeEpubReaderView(
 
   // The focused sentences' text and the graded (underlined) words inside
   // them, in reading order: what listen mode reads aloud and may stop on.
-  private fun focusSpanText(): Pair<String, List<Map<String, Any>>>? {
-    if (focusSentences.isEmpty()) return null
+  private fun focusSpanText(fromIndex: Int = focusIndex): Pair<String, List<Map<String, Any>>>? {
+    val sentences = focusSentences
+    if (sentences.isEmpty()) return null
     val page = pages.getOrNull(continuousPageIndex) ?: return null
-    val start = focusIndex.coerceIn(0, focusSentences.lastIndex)
-    val end = (start + focusSpanCount).coerceAtMost(focusSentences.size)
+    val start = fromIndex.coerceIn(0, sentences.lastIndex)
+    val end = (start + focusSpanCount).coerceAtMost(sentences.size)
     val levelRanges = levelRangesByPage[page.pageIndex].orEmpty()
     val parts = ArrayList<String>()
     val words = ArrayList<Map<String, Any>>()
-    focusSentences.subList(start, end).forEach { sentence ->
+    sentences.subList(start, end).forEach { sentence ->
       val block = page.blocks.firstOrNull { it.blockId == sentence.blockId } ?: return@forEach
       val text = block.plainText
       val localStart = sentence.startOffset.coerceIn(0, text.length)
@@ -3811,8 +3840,17 @@ class NativeEpubReaderView(
     (page?.spineIndex ?: bookManifest.intValue("currentSpineIndex"))?.let { spineIndex ->
       event["spineIndex"] = spineIndex
     }
-    page?.blocks?.firstOrNull()?.let { first ->
-      addReadThrough(event, page.spineIndex, readPosition(page.spineIndex, first.blockId, first.sourceStartOffset))
+    // Landing on a page counts its text as read: the marks on it dissolve in
+    // front of the reader (after a short delay, see EpubPageView.readProgress)
+    // rather than once the page has been left.
+    page?.blocks?.lastOrNull { it.type == "text" }?.let { last ->
+      // A page slice of a long paragraph keeps its text in styledText only.
+      val sliceLength = last.plainText.ifEmpty { last.styledText?.toString() ?: "" }.length
+      addReadThrough(
+        event,
+        page.spineIndex,
+        readPosition(page.spineIndex, last.blockId, last.sourceStartOffset + sliceLength)
+      )
     }
 
     onPageChange(event)

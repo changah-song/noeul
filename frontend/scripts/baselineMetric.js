@@ -201,7 +201,9 @@ const main = () => {
     return;
   }
 
-  const result = evaluateBaseline(events);
+  // --evidence: replay with the phase-2 per-word adjustments (lookups,
+  // exposures, reviews, saves folded per stem), to compare against the baseline.
+  const result = evaluateBaseline(events, { evidence: process.argv.includes('--evidence') });
   console.log(`\nsource: ${sourceLabel}`);
   console.log(formatReport(result));
 

@@ -19,10 +19,19 @@ import { nearestRankForTheta } from '../calibrationQuiz';
 import { ABILITY_THETA_MAX, ABILITY_THETA_MIN } from '../abilityModel';
 
 describe('vocab-size grid data', () => {
-  it('exposes a grid for Korean but not for English/Chinese', () => {
+  it('exposes a grid for Korean and Chinese but not for English', () => {
     expect(hasVocabSizeGrid('ko')).toBe(true);
+    expect(hasVocabSizeGrid('zh')).toBe(true);
     expect(hasVocabSizeGrid('en')).toBe(false);
-    expect(hasVocabSizeGrid('zh')).toBe(false);
+  });
+
+  it('ships one Chinese tier per HSK level, easiest first, spanning the axis', () => {
+    const tiers = getVocabTiers('zh');
+    expect(tiers).toHaveLength(7);
+    expect(tiers.map((t) => t.label)).toEqual(['HSK 1', 'HSK 2', 'HSK 3', 'HSK 4', 'HSK 5', 'HSK 6', 'HSK 7']);
+    expect(tiers[0].theta).toBe(ABILITY_THETA_MIN);
+    expect(tiers[6].theta).toBe(ABILITY_THETA_MAX);
+    tiers.forEach((tier) => expect(tier.words.length).toBeGreaterThan(0));
   });
 
   it('ships a non-trivial, easiest-first ladder of tiers', () => {

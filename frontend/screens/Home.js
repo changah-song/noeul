@@ -4294,6 +4294,11 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                             pressed && styles.songRowPressed,
                                         ]}
                                     >
+                                        <View style={styles.songTile}>
+                                            <Text style={[styles.songTileText, getSerifFontForText(song.title)]} numberOfLines={1}>
+                                                {String(song.title || '').trim().charAt(0) || '♪'}
+                                            </Text>
+                                        </View>
                                         <View style={styles.songCopy}>
                                             <Text
                                                 style={[
@@ -4308,7 +4313,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                                 {[song.artist, formatSongWordCount(song, t)].filter(Boolean).join(' · ')}
                                             </Text>
                                         </View>
-                                        <Feather name="chevron-right" size={23} color={HOME_COLORS.faint} />
+                                        <Feather name="chevron-right" size={20} color={HOME_COLORS.faint} />
                                     </Pressable>
                                 ))
                             )}
@@ -5881,24 +5886,36 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         color: HOME_COLORS.accent,
     },
     songList: {
-        borderWidth: 0,
-        borderTopWidth: 1,
-        borderBottomWidth: 1,
-        borderColor: HOME_COLORS.border,
-        backgroundColor: HOME_COLORS.surface,
-        overflow: 'hidden',
+        gap: spacing.sm,
     },
     songRow: {
         minHeight: 72,
         flexDirection: 'row',
         alignItems: 'center',
+        gap: spacing.md,
+        paddingVertical: spacing.sm,
         paddingHorizontal: spacing.md,
-        borderBottomWidth: 1,
-        borderBottomColor: HOME_COLORS.divider,
+        borderWidth: 1,
+        borderColor: HOME_COLORS.border,
+        borderRadius: 14,
+        backgroundColor: HOME_COLORS.surface,
     },
-    songRowLast: {
-        borderBottomWidth: 0,
+    songTile: {
+        width: 48,
+        height: 48,
+        borderRadius: 10,
+        backgroundColor: HOME_COLORS.frame,
+        alignItems: 'center',
+        justifyContent: 'center',
     },
+    songTileText: {
+        fontFamily: fontFamilies.krSerifSemiBold,
+        fontSize: 22,
+        lineHeight: 28,
+        color: HOME_COLORS.paper,
+        includeFontPadding: false,
+    },
+    songRowLast: {},
     songRowPressed: {
         backgroundColor: HOME_COLORS.surface2,
     },

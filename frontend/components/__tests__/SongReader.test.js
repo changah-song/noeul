@@ -45,6 +45,7 @@ jest.mock('../../services/Database', () => ({
   getBookWordCandidates: jest.fn(() => Promise.resolve([])),
   getSavedWords: jest.fn(() => Promise.resolve(['사랑'])),
   lookupBookHighlightSurfaces: jest.fn(() => Promise.resolve([{ surface: '사랑해' }])),
+  lookupBookWordEvidence: jest.fn(() => Promise.resolve([])),
   recordVocabContextForSurface: jest.fn(() => Promise.resolve(null)),
   getProfileAbility: jest.fn(() => Promise.resolve({ theta: -2 })),
   lookupBookLevelSurfaces: jest.fn(() => Promise.resolve([

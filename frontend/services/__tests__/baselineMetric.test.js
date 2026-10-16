@@ -272,3 +272,23 @@ describe('behavior samples — lookups vs exposures', () => {
     expect(result.behavior.meanExposurePrediction).toBeGreaterThan(result.behavior.meanLookupPrediction);
   });
 });
+
+
+describe('evidence replay (phase 2)', () => {
+  const base = { ownerId: 'o', profileId: 'p', language: 'ko' };
+  it('a lookup lowers the word\'s next prediction more than theta alone does', () => {
+    const events = [
+      { ...base, word: '집', stem: '집', eventType: 'lookup', levelRank: 2, createdAt: '2026-01-01T00:00:00Z', clientEventId: 'a' },
+      { ...base, word: '집', stem: '집', eventType: 'exposure', levelRank: 2, createdAt: '2026-01-01T00:00:01Z', clientEventId: 'b' },
+    ];
+    const plain = replayProfileBehavior({ language: 'ko', events });
+    const withEvidence = replayProfileBehavior({ language: 'ko', events, evidence: true });
+    expect(withEvidence[0].prediction).toBe(plain[0].prediction); // no history yet
+    expect(withEvidence[1].prediction).toBeLessThan(plain[1].prediction);
+  });
+
+  it('is reported in the evaluation meta', () => {
+    expect(evaluateBaseline([], { evidence: true }).meta.evidence).toBe(true);
+    expect(evaluateBaseline([]).meta.evidence).toBe(false);
+  });
+});

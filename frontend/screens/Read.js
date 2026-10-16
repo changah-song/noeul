@@ -19,11 +19,14 @@ import NativeEpubReaderView, {
     supportsSeekToPosition,
     sendSpokenWord,
     supportsSpokenWord,
+    peekFocusSentence,
     updateListenSession,
     stopListenSession,
     addListenControlListener,
 } from '../modules/native-epub-reader/src/NativeEpubReaderView';
 import ListenBar from '../components/Read/ListenBar';
+import VocabLevelModal from '../components/shared/VocabLevelModal';
+import { hasVocabSizeGrid } from '../services/vocabSizeLevels';
 import { createListenPlayer, voiceLocaleFor, LISTEN_RATES } from '../services/listenPlayer';
 import { translateText } from '../services/api/googleTranslate';
 import {
@@ -55,6 +58,7 @@ import {
     recordVocabContextForSurface,
     scoreWordsForProfile,
     vocabEntryExists,
+    lookupBookWordEvidence,
 } from '../services/Database';
 import { deriveCandidateReason, pickExampleSentence } from '../services/wordCandidates';
 import { findActiveBookmark } from '../services/bookmarks';
@@ -91,6 +95,7 @@ import {
     lowestUnderlinedRank,
 } from '../services/abilityModel';
 import { buildLevelUnderlineTerms } from '../services/levelUnderlineTerms';
+import { summarizeEvidenceRows } from '../services/wordEvidence';
 import { ANNOTATION_SCOPES, annotationsBySurface, buildAnnotatedLevelTerms } from '../services/readerAnnotations';
 import { createNativeReaderThemeTokens, radii, spacing, textStyles, useTheme } from '../theme';
 
@@ -113,6 +118,9 @@ const DEFAULT_READER_SETTINGS = {
     focusSwipe: false,
     readingMode: 'paged',
     levelMarkStyle: 'underline',
+    // 0..1: only words at least this hard on the green→red scale are marked
+    // (0 = every graded word, 1 = only the hardest).
+    levelMarkThreshold: 0,
     // Chinese only: draw pinyin above words. Loosens line spacing when on, so
     // it re-paginates. Ignored for non-Chinese books.
     pinyinAnnotations: false,
@@ -521,6 +529,9 @@ const Read = ({
     const [focusNavToken, setFocusNavToken] = useState('none:0');
     // Listen mode: the phone's text-to-speech reads the focused sentence and
     // steps the beam on; study mode stops on each underlined word first.
+    // Cold start: a profile with no reading history yet is asked for its
+    // vocabulary size once, the first time a book opens.
+    const [showVocabLevelPrompt, setShowVocabLevelPrompt] = useState(false);
     const [listenActive, setListenActive] = useState(false);
     const [listenPlaying, setListenPlaying] = useState(false);
     const [listenPrefs, setListenPrefs] = useState(DEFAULT_LISTEN_PREFS);
@@ -802,10 +813,17 @@ const Read = ({
                 return [];
             }
 
-            const rows = await lookupBookLevelSurfaces(activeOwnerId, currentBook, floorRank, {
-                language: activeBookLanguage,
+            const [rows, evidenceRows] = await Promise.all([
+                lookupBookLevelSurfaces(activeOwnerId, currentBook, floorRank, {
+                    language: activeBookLanguage,
+                }),
+                // Phase 2: the reader's own history with these words.
+                lookupBookWordEvidence(activeOwnerId, currentBook, { language: activeBookLanguage })
+                    .catch(() => []),
+            ]);
+            return buildLevelUnderlineTerms(rows, activeBookLanguage, theta, {
+                evidence: summarizeEvidenceRows(evidenceRows),
             });
-            return buildLevelUnderlineTerms(rows, activeBookLanguage, theta);
         };
 
         loadLevelUnderlineTerms().then((terms) => {
@@ -1336,6 +1354,7 @@ const Read = ({
             brightness: DEFAULT_READER_SETTINGS.brightness,
             readingMode: DEFAULT_READER_SETTINGS.readingMode,
             levelMarkStyle: DEFAULT_READER_SETTINGS.levelMarkStyle,
+            levelMarkThreshold: DEFAULT_READER_SETTINGS.levelMarkThreshold,
         });
     };
 
@@ -3066,13 +3085,24 @@ const Read = ({
     const glossScope = ANNOTATION_SCOPES.includes(settings.glossScope)
         ? settings.glossScope
         : (legacyScope || DEFAULT_READER_SETTINGS.glossScope);
+    // The marks slider: words below the chosen difficulty are not marked (and
+    // count as plain words for the "underlined" annotation scope).
+    const levelMarkThreshold = Number.isFinite(Number(settings.levelMarkThreshold))
+        ? Math.min(1, Math.max(0, Number(settings.levelMarkThreshold)))
+        : 0;
+    const thresholdLevelTerms = useMemo(
+        () => (levelMarkThreshold > 0
+            ? levelUnderlineTerms.filter((term) => Number(term?.weight ?? 0) >= levelMarkThreshold)
+            : levelUnderlineTerms),
+        [levelUnderlineTerms, levelMarkThreshold]
+    );
     const readerLevelTerms = useMemo(
         () => {
             if (!readerShowPinyin && !readerShowGloss) {
-                return levelMarksEnabled ? levelUnderlineTerms : EMPTY_LEVEL_TERMS;
+                return levelMarksEnabled ? thresholdLevelTerms : EMPTY_LEVEL_TERMS;
             }
             return buildAnnotatedLevelTerms({
-                levelTerms: levelUnderlineTerms,
+                levelTerms: thresholdLevelTerms,
                 annotationRows,
                 marksEnabled: levelMarksEnabled,
                 pinyin: readerShowPinyin,
@@ -3088,7 +3118,7 @@ const Read = ({
             glossScope,
             interfaceLanguage,
             levelMarksEnabled,
-            levelUnderlineTerms,
+            thresholdLevelTerms,
             readerShowGloss,
             readerShowPinyin,
         ]
@@ -3200,6 +3230,32 @@ const Read = ({
         setFocusMode((current) => !current);
     }, [flushPendingFocusPageChange]);
 
+    useEffect(() => {
+        if (!currentBook || bookLoadState !== 'ready' || !hasVocabSizeGrid(activeBookLanguage)) {
+            return undefined;
+        }
+        let cancelled = false;
+        const promptKey = `vocabLevelPrompt:${activeOwnerId}:${activeBookLanguage}`;
+        (async () => {
+            try {
+                if (await AsyncStorage.getItem(promptKey)) return;
+                const ability = await getProfileAbility({ ownerId: activeOwnerId, language: activeBookLanguage });
+                const cold = !ability
+                    || (Number(ability.event_count ?? ability.eventCount ?? 0) === 0
+                        && ability.self_report_rank == null && ability.selfReportRank == null);
+                if (!cancelled && cold) {
+                    await AsyncStorage.setItem(promptKey, '1');
+                    setShowVocabLevelPrompt(true);
+                }
+            } catch {
+                // Nothing to ask without the ability row; reading proceeds.
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [currentBook, bookLoadState, activeBookLanguage, activeOwnerId]);
+
     // ── Listen mode ─────────────────────────────────────────────────────────
     sendFocusNavRef.current = sendFocusNav;
     listenChapterEndRef.current = handleNativeChapterEnd;
@@ -3247,7 +3303,7 @@ const Read = ({
     // with its meaning, then step the beam on. Every await re-checks that this
     // run is still the current one, so pause, a tap or a newer sentence stops
     // it between utterances.
-    const speakFocusedSentence = useCallback(async (event, key) => {
+    const speakFocusedSentence = useCallback(async (event, key, prepared = {}) => {
         const text = cleanListenText(event?.text);
         if (!text) return;
         const run = ++listenRunRef.current;
@@ -3256,6 +3312,16 @@ const Read = ({
         const ctx = listenCtxRef.current;
         const prefs = listenPrefsRef.current;
         const mine = () => run === listenRunRef.current && listenPlayingRef.current;
+
+        // Look at the sentence after this one now, so it (and its translation)
+        // is ready the moment this one ends. The peek is synchronous and the
+        // beam only moves afterwards, so audio never waits on the main thread.
+        const viewTag = findNodeHandle(nativeReaderViewRef.current);
+        const peek = viewTag != null ? peekFocusSentence(viewTag, 'next') : null;
+        const peekText = peek?.moved ? cleanListenText(peek.text) : '';
+        const nextTranslation = prefs.translateSentences && peekText
+            ? translateText({ query: peekText, source: ctx.language, target: ctx.interfaceLanguage }).catch(() => '')
+            : null;
         // One utterance the engine refuses (a lone "*", an odd symbol) is
         // skipped; only a run of failures means there is no usable voice.
         const failed = () => {
@@ -3287,9 +3353,10 @@ const Read = ({
             }
         };
 
-        // The translation request runs while the sentence is being read.
+        // The translation request runs while the sentence is being read
+        // (or was already fetched while the previous sentence played).
         const translation = prefs.translateSentences
-            ? translateText({ query: text, source: ctx.language, target: ctx.interfaceLanguage }).catch(() => '')
+            ? (prepared.translation || translateText({ query: text, source: ctx.language, target: ctx.interfaceLanguage }).catch(() => ''))
             : null;
 
         let outcome = await player.speakSequence([{ text, locale: ctx.targetLocale, rate: prefs.rate }]);
@@ -3331,7 +3398,35 @@ const Read = ({
             setSpokenWord(null);
         }
 
-        if (mine()) stepOn();
+        if (!mine()) return;
+        if (peek?.atEnd) {
+            listenChapterEndRef.current?.();
+            return;
+        }
+        if (!peekText) {
+            stepOn();
+            return;
+        }
+        // Read the next sentence straight away and move the beam alongside;
+        // if the move lands somewhere else (the reader stepped meanwhile),
+        // the command's result re-syncs the voice to it.
+        const nextKey = `${currentSpineIndexRef.current}:${peek.index}:${peekText}`;
+        listenFocusRef.current = { ...peek, spineIndex: currentSpineIndexRef.current };
+        const moving = sendFocusNavRef.current?.('next');
+        listenSpeakRef.current?.(peek, nextKey, { translation: nextTranslation });
+        Promise.resolve(moving).then((result) => {
+            if (!listenPlayingRef.current || !result || typeof result !== 'object') return;
+            if (result.atEnd) {
+                listenChapterEndRef.current?.();
+                return;
+            }
+            if (!result.moved || result.index === peek.index) return;
+            const resultKey = `${currentSpineIndexRef.current}:${result.index}:${cleanListenText(result.text)}`;
+            if (resultKey !== listenSpokenKeyRef.current && cleanListenText(result.text)) {
+                listenFocusRef.current = { ...result, spineIndex: currentSpineIndexRef.current };
+                listenSpeakRef.current?.(result, resultKey);
+            }
+        }).catch(() => {});
     }, [getListenPlayer, pauseListening, setSpokenWord]);
     listenSpeakRef.current = speakFocusedSentence;
 
@@ -3844,6 +3939,8 @@ const Read = ({
                 onSaveCandidate={handleSaveCandidate}
                 onClose={() => setShowSavedPanel(false)}
             />
+
+            <VocabLevelModal visible={showVocabLevelPrompt} onClose={() => setShowVocabLevelPrompt(false)} />
 
             <BeforeYouGoSheet
                 visible={showBeforeYouGo}

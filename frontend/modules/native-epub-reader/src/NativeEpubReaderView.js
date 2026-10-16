@@ -44,6 +44,21 @@ export const sendFocusNavCommand = (viewTag, direction) => (
     ) ?? androidOnly()
 );
 
+// Listen mode: the sentence the beam would step to, without moving it.
+// Synchronous (runs on the JS thread), so it never waits for the main thread.
+export const supportsFocusPeek = typeof NativeModule?.focusPeek === 'function';
+
+export const peekFocusSentence = (viewTag, direction) => {
+    if (!supportsFocusPeek) return null;
+    try {
+        const result = NativeModule.focusPeek(viewTag, direction);
+        return result && typeof result === 'object' ? stripJoinersDeep(result) : null;
+    } catch (error) {
+        console.warn('[NativeEpubReader] focus peek failed:', error?.message ?? error);
+        return null;
+    }
+};
+
 // Grow the long-press selection by one sentence ('previous' | 'next'). The
 // native view re-sends onTextSelected with the longer text.
 export const supportsExtendSelection = typeof NativeModule?.extendSelection === 'function';

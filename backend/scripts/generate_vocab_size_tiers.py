@@ -1,45 +1,26 @@
-#!/usr/bin/env python3
-"""Generate the bundled Korean vocabulary-size tiers for the Profile level grid.
+"""Generate the vocabulary-size grids the app seeds a new reader's ability from.
 
-The Profile screen gauges a reader's Korean level with a frequency-tier grid
-(rows: "know the ~100 most common words", "~300", "~700" ...). The reader taps
-the last row where they know ALL the words; that pick seeds their ability
-`theta`. This script builds the data that grid renders and the theta each tier
-maps to.
+The Profile cold-start picker shows frequency-ordered tiers ("I know the ~100
+most common words", "~300", ...) and the reader taps the last row where they
+know every sample word. Each tier carries the `theta` it seeds, computed here
+against the graded bands so the seed lands on the same axis the reader uses
+for word difficulty (frontend/services/abilityModel.js: band k of K maps to
+-3 + (k - 1) * 6 / (K - 1)).
 
-Two data sources are combined:
+Korean: NIKL reading levels 1-6 (korean_nikl_vocab.level_rank), words ordered
+by wordfreq. Chinese: HSK 3.0 levels 1-7 (chinese_hsk.level_rank), one tier
+per level, sample words the most frequent of that level by wordfreq.
 
-  * Word ordering / commonness — the `wordfreq` package's Korean frequency list
-    (bundled offline, built from subtitles / wikipedia / news). Its raw tokens
-    are morpheme-level and noisy (particles, conjugation endings), so we...
-  * ...intersect them with the NIKL graded vocabulary in proficiency_levels.db.
-    That leaves only real dictionary words AND gives every word its NIKL band,
-    which is what lets us compute a theta on the app's NIKL-anchored ability
-    axis (frontend/services/abilityModel.js: band1 -> -3, band2 -> 0, band3 -> +3).
-
-theta bridge — "reader knows the top-N most frequent words" is treated as
-"reader knows the N easiest graded words" (frequency ~ difficulty). N maps to a
-continuous frontier rank r via the cumulative NIKL band boundaries, then to
-theta via the same rankToScale the rest of the model uses:
-
-    G <= C1            : r = 1 + 0.5 * (G / C1)
-    C1 < G <= C2       : r = 1.5 + (G - C1) / (C2 - C1)
-    C2 < G <= C3       : r = 2.5 + 0.5 * (G - C2) / (C3 - C2)
-    theta = -3 + (r - 1) * 3            (clamped to [-3, 3])
-
-So knowing all of band1 (and no more) lands mid-way between the beginner and
-intermediate seeds, etc. — a conservative cold-start prior, refined later by
-reading behavior.
-
-Output: frontend/assets/data/vocab-size/ko.generated.json
-  { "ko": { "system": "frequency", "total": <int>,
-            "tiers": [ { "threshold": 100, "theta": -2.86, "words": [...] }, ... ] } }
-
-Run (wordfreq must be importable):
+Usage (wordfreq is not a backend dependency):
   python3 -m pip install --target /tmp/vocablibs wordfreq
   PYTHONPATH=/tmp/vocablibs python3 backend/scripts/generate_vocab_size_tiers.py
-"""
 
+Output: frontend/assets/data/vocab-size/{ko,zh}.generated.json
+  { "<lang>": { "system": "frequency"|"hsk", "total": <int>,
+                "bandCounts": {"1": n, ...},
+                "tiers": [ { "threshold": N, "theta": t, "words": [...],
+                             "advanced"?: true, "label"?: "HSK 3" } ] } }
+"""
 from __future__ import annotations
 
 import json
@@ -49,150 +30,156 @@ import sqlite3
 import sys
 from pathlib import Path
 
-BACKEND_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = BACKEND_DIR / "proficiency_levels.db"
-OUTPUT_PATH = (
-    BACKEND_DIR.parent
-    / "frontend"
-    / "assets"
-    / "data"
-    / "vocab-size"
-    / "ko.generated.json"
-)
+ROOT = Path(__file__).resolve().parents[2]
+DB_PATH = ROOT / "backend" / "proficiency_levels.db"
+OUTPUT_DIR = ROOT / "frontend" / "assets" / "data" / "vocab-size"
 
-# Frequency-rank boundaries shown as grid rows (cumulative "top-N words"), echoing
-# the reference design. Capped at the available pool size at build time.
-TIER_BOUNDARIES = [100, 200, 300, 500, 700, 1000, 1500, 2000, 3000, 5000, 7000]
-WORDS_PER_TIER = 10           # sample words shown on each row
-FREQ_LIST_DEPTH = 100_000     # how deep into the wordfreq list to read
+THETA_MIN, THETA_MAX = -3.0, 3.0
+KO_BANDS = 6
+ZH_BANDS = 7
+
+# Frequency-rank boundaries shown as Korean grid rows (cumulative "top-N
+# words"), capped at the available pool size at build time.
+KO_TIER_BOUNDARIES = [100, 200, 300, 500, 700, 1000, 1500, 2000, 3000, 5000, 7000]
+WORDS_PER_TIER = 10
+FREQ_LIST_DEPTH = 100_000
 SEED = 20260713
 
-# Clean, self-contained citation forms only: 2-6 Hangul syllables, no affixes or
-# single-syllable fragments (which are mostly particles / homograph noise).
 HANGUL_WORD = re.compile(r"^[가-힣]{2,6}$")
+HAN_WORD = re.compile(r"^[一-鿿]{1,4}$")
 
 
-def load_frequency_rank() -> dict[str, int]:
-    """word -> 1-based rank in the (filtered) Korean frequency list."""
+def band_scale(band: float, band_count: int) -> float:
+    """Position of a (possibly fractional) band on the shared ability axis."""
+    if band_count <= 1:
+        return (THETA_MIN + THETA_MAX) / 2
+    theta = THETA_MIN + (band - 1.0) * (THETA_MAX - THETA_MIN) / (band_count - 1)
+    return round(max(THETA_MIN, min(THETA_MAX, theta)), 3)
+
+
+def theta_for_count(n: int, cumulative: list[int], band_count: int) -> float:
+    """Ability of a reader who knows the N easiest graded words: the band the
+    N-th word sits in, interpolated by how far into that band N reaches."""
+    previous = 0
+    for band, upper in enumerate(cumulative, start=1):
+        if n <= upper or band == band_count:
+            span = max(1, upper - previous)
+            fraction = max(0.0, min(1.0, (n - previous) / span))
+            return band_scale(band + fraction, band_count)
+        previous = upper
+    return THETA_MAX
+
+
+def frequency_rank(language: str, pattern: re.Pattern[str]) -> dict[str, int]:
+    """word -> 1-based rank in the filtered wordfreq list for the language."""
     try:
         import wordfreq
     except ModuleNotFoundError:
         sys.exit(
             "wordfreq not importable. Install it, e.g.:\n"
             "  python3 -m pip install --target /tmp/vocablibs wordfreq\n"
-            "  PYTHONPATH=/tmp/vocablibs python3 "
-            "backend/scripts/generate_vocab_size_tiers.py"
+            "  PYTHONPATH=/tmp/vocablibs python3 backend/scripts/generate_vocab_size_tiers.py"
         )
-
-    freq_rank: dict[str, int] = {}
+    ranks: dict[str, int] = {}
     rank = 0
-    for token in wordfreq.top_n_list("ko", FREQ_LIST_DEPTH):
-        if HANGUL_WORD.fullmatch(token):
+    for token in wordfreq.top_n_list(language, FREQ_LIST_DEPTH):
+        if pattern.fullmatch(token):
             rank += 1
-            freq_rank.setdefault(token, rank)
-    return freq_rank
+            ranks.setdefault(token, rank)
+    return ranks
 
 
-def load_nikl_bands(conn: sqlite3.Connection) -> tuple[dict[str, int], dict[int, int]]:
-    """(term -> best/lowest band) and (band -> distinct-term count)."""
+def cumulative_counts(band_counts: dict[int, int], band_count: int) -> list[int]:
+    totals = []
+    running = 0
+    for band in range(1, band_count + 1):
+        running += band_counts.get(band, 0)
+        totals.append(running)
+    return totals
+
+
+def generate_ko(conn: sqlite3.Connection, rng: random.Random) -> dict:
+    freq = frequency_rank("ko", HANGUL_WORD)
     term_band: dict[str, int] = {}
-    for term, rank in conn.execute(
-        "SELECT term, level_rank FROM korean_nikl_vocab"
-    ):
+    for term, rank in conn.execute("SELECT term, level_rank FROM korean_nikl_vocab WHERE level_rank IS NOT NULL"):
         if term and HANGUL_WORD.fullmatch(term):
-            term_band[term] = min(term_band.get(term, 99), rank)
-
+            term_band[term] = min(term_band.get(term, 99), int(rank))
     band_counts: dict[int, int] = {}
     for band in term_band.values():
         band_counts[band] = band_counts.get(band, 0) + 1
-    return term_band, band_counts
+    cumulative = cumulative_counts(band_counts, KO_BANDS)
 
-
-def theta_for_threshold(n: int, c1: int, c2: int, c3: int) -> float:
-    """Map "knows the top-N graded words" to theta on [-3, 3]."""
-    g = max(0, min(n, c3))
-    if g <= c1:
-        r = 1.0 + 0.5 * (g / c1)
-    elif g <= c2:
-        r = 1.5 + (g - c1) / (c2 - c1)
-    else:
-        r = 2.5 + 0.5 * (g - c2) / (c3 - c2)
-    theta = -3.0 + (r - 1.0) * 3.0
-    return round(max(-3.0, min(3.0, theta)), 3)
-
-
-def generate() -> dict:
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        freq_rank = load_frequency_rank()
-        term_band, band_counts = load_nikl_bands(conn)
-    finally:
-        conn.close()
-
-    # NIKL words that appear in the frequency list, ordered most-frequent first.
-    ranked = sorted(
-        ((term, band, freq_rank[term]) for term, band in term_band.items() if term in freq_rank),
-        key=lambda item: item[2],
-    )
+    # Graded words that appear in the frequency list, most frequent first.
+    ranked = sorted(((t, b, freq[t]) for t, b in term_band.items() if t in freq), key=lambda item: item[2])
     total = len(ranked)
-
-    # Rare graded words that never surface in the frequency list — the tail a
-    # near-native reader knows. Used to build the final "advanced" row so those
-    # readers aren't capped at the top frequency tier's theta.
-    rare_advanced = sorted(
-        term for term, band in term_band.items()
-        if term not in freq_rank and band == 3
-    )
-
-    c1 = band_counts.get(1, 1)
-    c2 = c1 + band_counts.get(2, 0)
-    c3 = c2 + band_counts.get(3, 0)
-
-    rng = random.Random(SEED)
-    boundaries = [n for n in TIER_BOUNDARIES if n < total] + [total]
+    boundaries = [n for n in KO_TIER_BOUNDARIES if n < total] + [total]
 
     tiers = []
-    prev = 0
+    previous = 0
     for threshold in boundaries:
-        segment = [term for term, _band, _r in ranked[prev:threshold]]
+        segment = [t for t, _b, _r in ranked[previous:threshold]]
         sample = sorted(rng.sample(segment, min(WORDS_PER_TIER, len(segment))))
-        tiers.append({
-            "threshold": threshold,
-            "theta": theta_for_threshold(threshold, c1, c2, c3),
-            "words": sample,
-        })
-        prev = threshold
+        tiers.append({"threshold": threshold, "theta": theta_for_count(threshold, cumulative, KO_BANDS), "words": sample})
+        previous = threshold
 
-    # Final "advanced" row: rarer graded words beyond the frequency list, seeding
-    # near-native ability (theta at the c3 ceiling -> +3).
-    if rare_advanced:
-        sample = sorted(rng.sample(rare_advanced, min(WORDS_PER_TIER, len(rare_advanced))))
+    # The rare graded tail that never surfaces in the frequency list: the row a
+    # near-native reader picks, seeding the top of the scale.
+    rare = sorted(t for t, b in term_band.items() if t not in freq and b >= KO_BANDS - 1)
+    if rare:
+        sample = sorted(rng.sample(rare, min(WORDS_PER_TIER, len(rare))))
+        tiers.append({"threshold": cumulative[-1], "theta": THETA_MAX, "words": sample, "advanced": True})
+
+    return {
+        "system": "frequency",
+        "total": total,
+        "bandCounts": {str(k): band_counts.get(k, 0) for k in range(1, KO_BANDS + 1)},
+        "tiers": tiers,
+    }
+
+
+def generate_zh(conn: sqlite3.Connection, rng: random.Random) -> dict:
+    freq = frequency_rank("zh", HAN_WORD)
+    by_band: dict[int, list[str]] = {}
+    for term, rank in conn.execute("SELECT term, level_rank FROM chinese_hsk WHERE level_rank IS NOT NULL"):
+        if term and HAN_WORD.fullmatch(term):
+            by_band.setdefault(int(rank), []).append(term)
+    band_counts = {band: len(set(words)) for band, words in by_band.items()}
+    cumulative = cumulative_counts(band_counts, ZH_BANDS)
+
+    tiers = []
+    for band in range(1, ZH_BANDS + 1):
+        words = sorted(set(by_band.get(band, [])), key=lambda w: freq.get(w, 10**9))
+        # Show common words of the level, but not only the very top ones: a
+        # spread over the most frequent quarter reads as "this level".
+        pool = words[: max(WORDS_PER_TIER, len(words) // 4)] or words
+        sample = sorted(rng.sample(pool, min(WORDS_PER_TIER, len(pool))))
         tiers.append({
-            "threshold": c3,
-            "theta": theta_for_threshold(c3, c1, c2, c3),
+            "threshold": cumulative[band - 1],
+            "theta": band_scale(band, ZH_BANDS),
             "words": sample,
-            "advanced": True,
+            "label": f"HSK {band}",
         })
 
     return {
-        "ko": {
-            "system": "frequency",
-            "total": total,
-            "bandCounts": {"1": band_counts.get(1, 0), "2": band_counts.get(2, 0), "3": band_counts.get(3, 0)},
-            "tiers": tiers,
-        }
+        "system": "hsk",
+        "total": cumulative[-1],
+        "bandCounts": {str(k): band_counts.get(k, 0) for k in range(1, ZH_BANDS + 1)},
+        "tiers": tiers,
     }
 
 
 if __name__ == "__main__":
-    data = generate()
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT_PATH.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    ko = data["ko"]
-    print(f"ko (frequency): {len(ko['tiers'])} tiers over {ko['total']} graded words")
-    for tier in ko["tiers"]:
-        print(f"  top {tier['threshold']:>5}  theta={tier['theta']:>6}  {', '.join(tier['words'])}")
-    print(f"\nwrote -> {OUTPUT_PATH}")
+    rng = random.Random(SEED)
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        outputs = {"ko": generate_ko(conn, rng), "zh": generate_zh(conn, rng)}
+    finally:
+        conn.close()
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    for language, data in outputs.items():
+        path = OUTPUT_DIR / f"{language}.generated.json"
+        path.write_text(json.dumps({language: data}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(f"{language} ({data['system']}): {len(data['tiers'])} tiers over {data['total']} graded words -> {path}")
+        for tier in data["tiers"]:
+            label = tier.get("label") or f"top {tier['threshold']}"
+            print(f"  {label:>9}  theta={tier['theta']:>6}  {', '.join(tier['words'])}")
