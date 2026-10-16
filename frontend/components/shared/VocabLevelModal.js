@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
     Modal,
@@ -61,11 +61,22 @@ const VocabLevelModal = ({ visible, onClose }) => {
     // estimate since — both shown as light highlights when the grid opens.
     const [lastPickIndex, setLastPickIndex] = useState(null);
     const [estimateIndex, setEstimateIndex] = useState(null);
+    // Row offsets, so the list can open scrolled to the remembered pick.
+    const listRef = useRef(null);
+    const rowOffsetsRef = useRef({});
+    const scrolledForOpenRef = useRef(false);
+    const scrollToRow = useCallback((index) => {
+        const y = rowOffsetsRef.current[index];
+        if (index == null || y == null || scrolledForOpenRef.current) return;
+        scrolledForOpenRef.current = true;
+        listRef.current?.scrollTo({ y: Math.max(0, y - 120), animated: false });
+    }, []);
 
     useEffect(() => {
         if (!visible) return undefined;
         setSelectedIndex(null);
         setIsSaving(false);
+        scrolledForOpenRef.current = false;
         let cancelled = false;
         (async () => {
             let pick = null;
@@ -93,11 +104,12 @@ const VocabLevelModal = ({ visible, onClose }) => {
             setLastPickIndex(pick);
             setEstimateIndex(estimate);
             setSelectedIndex(pick);
+            scrollToRow(pick ?? estimate);
         })();
         return () => {
             cancelled = true;
         };
-    }, [visible, activeOwnerId, activeProfileId, targetLanguage, tiers]);
+    }, [visible, activeOwnerId, activeProfileId, targetLanguage, tiers, scrollToRow]);
 
     const handleConfirm = useCallback(async () => {
         if (selectedIndex == null || isSaving) {
@@ -153,6 +165,7 @@ const VocabLevelModal = ({ visible, onClose }) => {
                             <Text style={styles.helper}>{t('vocabLevel.instruction')}</Text>
 
                             <ScrollView
+                                ref={listRef}
                                 style={styles.list}
                                 contentContainerStyle={styles.listContent}
                                 showsVerticalScrollIndicator
@@ -167,6 +180,10 @@ const VocabLevelModal = ({ visible, onClose }) => {
                                             key={tier.threshold}
                                             activeOpacity={0.75}
                                             onPress={() => setSelectedIndex(index)}
+                                            onLayout={(event) => {
+                                                rowOffsetsRef.current[index] = event.nativeEvent.layout.y;
+                                                if (index === (lastPickIndex ?? estimateIndex)) scrollToRow(index);
+                                            }}
                                             accessibilityRole="radio"
                                             accessibilityState={{ selected: isPick }}
                                             style={[
