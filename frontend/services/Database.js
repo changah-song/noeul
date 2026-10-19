@@ -7155,6 +7155,23 @@ export const lookupKnowledgeEvidence = (ownerId, language = 'ko', options = {}) 
   });
 };
 
+/**
+ * getBookLookupWords — the words (as tapped) the reader has looked up in a
+ * book or song, for the reader's dotted "tapped" underlines.
+ */
+export const getBookLookupWords = async ({ ownerId, profileId, language = 'ko', bookUri } = {}) => {
+  if (!bookUri) return [];
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const rows = await runSelect(
+    `SELECT word, MAX(created_at) AS at FROM interaction_events
+     WHERE owner_id = ? AND profile_id = ? AND language = ? AND source_book_uri = ?
+       AND event_type = 'lookup' AND deleted_at IS NULL AND word IS NOT NULL
+     GROUP BY word`,
+    [resolveOwnerId(ownerId), resolveProfileId(profileId, normalizedLanguage), normalizedLanguage, bookUri]
+  );
+  return rows.map((row) => row.word).filter(Boolean);
+};
+
 export const getBookPreprocessMeta = (
   ownerId,
   bookUri,

@@ -102,10 +102,10 @@ private data class SelectionHighlightVerticalMetrics(
   val bottom: Float
 )
 
-// How long a mark takes to dissolve into its "read" checkerboard.
-private const val READ_TRANSITION_MS = 700f
-// Opacity the kept checkerboard pixels of a saved-word box end at.
-private const val READ_PIXEL_ALPHA = 0.15f
+// A fading saved-word box: its pixels' opacity runs from MIN (nearly gone)
+// up to MIN + RANGE (one pass in), so the dark ink stays legible on top.
+private const val FADING_BOX_MIN_ALPHA = 0.15f
+private const val FADING_BOX_ALPHA_RANGE = 0.35f
 // Sliding glosses: pause at each end, then slide at this speed (dp/s).
 private const val MARQUEE_PAUSE_MS = 1400L
 // Parenthesised and bracketed asides in dictionary senses: "(CL:个[ge4])",
@@ -129,9 +129,9 @@ class EpubPageView(context: Context) : View(context) {
   private var showPinyin: Boolean = false
   // When true, draw each annotated word's short translation under it.
   private var showGloss: Boolean = false
-  // True for level ranges behind the furthest point the reader has reached in
-  // this chapter; their underline is drawn faded. Set by the owner.
-  var isRangeRead: ((TextRange) -> Boolean)? = null
+  // How far a level underline has dissolved after the reader tapped the word
+  // (0 = solid, 1 = dotted). Set by the owner.
+  var tapProgress: ((TextRange) -> Float)? = null
   private var activeHighlightColor = themePalette.activeHighlightColor
   private var textSelectionHighlightColor = themePalette.textSelectionHighlightColor
   private var savedHighlightColor = themePalette.savedHighlightColor
@@ -266,9 +266,6 @@ class EpubPageView(context: Context) : View(context) {
   ) {
     this.showPinyin = showPinyin
     this.showGloss = showGloss
-    if (this.page?.pageIndex != page.pageIndex || this.page?.spineIndex != page.spineIndex) {
-      readTransitions.clear()
-    }
     this.page = page
     this.paddingH = paddingH
     this.paddingV = paddingV
@@ -343,7 +340,6 @@ class EpubPageView(context: Context) : View(context) {
   override fun onDraw(canvas: Canvas) {
     marqueeTickScheduled = false
     readAnimationPending = false
-    drawingOnScreen = isShown && getGlobalVisibleRect(visibleRect)
     canvas.drawColor(pageBackgroundColor)
     val contentWidth = width - (paddingH * 2)
     if (contentWidth <= 0) return
@@ -471,52 +467,30 @@ class EpubPageView(context: Context) : View(context) {
   private var selectionDragStarted = false
   private val selectionDragSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
 
-  // Marks on text the reader has already read past change style: a level
-  // underline becomes dotted, a saved-word box becomes a translucent
-  // crosshatch. The change is animated the first time a mark is drawn as read
-  // (keyed per range, cleared when the view shows another page), so turning
-  // or scrolling back shows the marks settling into their "done" look.
-  private val readTransitions = HashMap<Long, Long>()
+  // Set while a tapped underline is still dissolving, to draw the next frame.
   private var readAnimationPending = false
-  // Whether this view is actually on screen for the current draw. ViewPager2
-  // records the neighbouring pages' display lists off screen; a transition
-  // started there would finish unseen, so off-screen draws show marks as
-  // unread and the dissolve runs once the page is in front of the reader.
-  private var drawingOnScreen = true
-  private val visibleRect = Rect()
   private val underlinePath = Path()
-  // Read marks are drawn as a grid of square "pixels" (no anti-aliasing, so
-  // the cells stay crisp). A mark settles into a checkerboard: the odd cells
-  // drop out one by one in a fixed pseudo-random order as the transition runs.
+  // Pixel marks are drawn as a grid of square "pixels" (no anti-aliasing, so
+  // the cells stay crisp): a tapped word's underline dissolves into a dotted
+  // row, and a saved word's box loses pixels as it fades.
   private val pixelPaint = Paint().apply { style = Paint.Style.FILL }
   private val pixelRect = RectF()
   private val pixelSize: Int by lazy { dp(3f).coerceAtLeast(2) }
 
-  // Whether a grid cell is still drawn at this point of the dissolve. Even
-  // cells (the checkerboard) always stay; odd cells leave in hash order.
+  // Pseudo-random, fixed order in which grid cells leave.
+  private fun pixelHash(ix: Int, iy: Int): Float =
+    (((ix * 73856093) xor (iy * 19349663)) and 0xffff) / 65535f
+
+  // Tapped underline: even cells (the dotted row) always stay; odd cells leave
+  // in hash order as progress runs 0 -> 1.
   private fun pixelKept(ix: Int, iy: Int, progress: Float): Boolean {
     if ((ix + iy) and 1 == 0) return true
-    val hash = ((ix * 73856093) xor (iy * 19349663)) and 0xffff
-    return hash / 65535f >= progress
+    return pixelHash(ix, iy) >= progress
   }
 
-  // 0 = not read, 1 = read and settled, in between while animating.
-  private fun readProgress(range: TextRange): Float {
-    val read = isRangeRead?.invoke(range) == true
-    // Block id hash in the high word, the source span in the low word; no
-    // string building on a path that runs for every mark on every frame.
-    val key = (range.blockId.hashCode().toLong() shl 32) or
-      ((range.sourceStartOffset.toLong() and 0xffff) shl 16) or
-      (range.sourceEndOffset.toLong() and 0xffff)
-    if (!read) {
-      readTransitions.remove(key)
-      return 0f
-    }
-    if (!drawingOnScreen && !readTransitions.containsKey(key)) return 0f
-    val now = SystemClock.uptimeMillis()
-    val startedAt = readTransitions.getOrPut(key) { now }
-    val progress = ((now - startedAt).toFloat() / READ_TRANSITION_MS).coerceIn(0f, 1f)
-    if (progress < 1f) readAnimationPending = true
+  private fun tapDissolve(range: TextRange): Float {
+    val progress = tapProgress?.invoke(range) ?: 0f
+    if (progress > 0f && progress < 1f) readAnimationPending = true
     return progress
   }
 
@@ -1943,10 +1917,10 @@ class EpubPageView(context: Context) : View(context) {
       }
 
       if (paint === savedHighlightPaint) {
-        // A saved word the reader keeps passing without looking up fades out.
-        val fullAlpha = paint.alpha
-        paint.alpha = (fullAlpha * range.strength.coerceIn(0f, 1f)).roundToInt()
-        if (paint.alpha > 0) {
+        // A saved word the reader keeps passing without looking up loses
+        // pixels step by step until the box is gone.
+        val strength = range.strength.coerceIn(0f, 1f)
+        if (strength > 0f) {
           drawTextSelectionHighlight(
             canvas = canvas,
             block = block,
@@ -1955,10 +1929,9 @@ class EpubPageView(context: Context) : View(context) {
             localEnd = localEnd,
             textLength = blockTextLength,
             paint = paint,
-            readProgress = readProgress(range)
+            pixelKeep = strength
           )
         }
-        paint.alpha = fullAlpha
         return@forEach
       }
 
@@ -1967,7 +1940,7 @@ class EpubPageView(context: Context) : View(context) {
         applyLevelUnderlineShade(paint, range.levelWeight, range.levelReinforced)
         drawLevelUnderline(
           canvas, layout, localStart, localEnd, blockTextLength, paint,
-          dissolve = readProgress(range)
+          dissolve = tapDissolve(range)
         )
         return@forEach
       }
@@ -2005,9 +1978,9 @@ class EpubPageView(context: Context) : View(context) {
     localEnd: Int,
     textLength: Int,
     paint: Paint,
-    // Saved-word boxes on read text: the fill thins out and a diagonal
-    // crosshatch fades in (0 = normal box, 1 = fully "read").
-    readProgress: Float = 0f
+    // Saved-word boxes: the share of the box's pixels still drawn (1 = solid
+    // box, fading in steps as the reader passes the word without a lookup).
+    pixelKeep: Float = 1f
   ) {
     val text = blockTextForSelection(block)
     val safeStart = localStart.coerceIn(0, textLength)
@@ -2064,21 +2037,21 @@ class EpubPageView(context: Context) : View(context) {
       if (bottom <= top) continue
 
       selectionLineRect.set(left, top, right, bottom)
-      if (readProgress > 0f) {
-        drawPixelDissolve(canvas, selectionLineRect, cornerRadius, paint, readProgress)
+      if (pixelKeep < 1f) {
+        drawPixelBox(canvas, selectionLineRect, cornerRadius, paint, pixelKeep)
       } else {
         canvas.drawRoundRect(selectionLineRect, cornerRadius, cornerRadius, paint)
       }
     }
   }
 
-  // The box as a grid of pixels inside its rounded outline, dissolving into a
-  // checkerboard as progress runs 0 -> 1.
-  private fun drawPixelDissolve(canvas: Canvas, rect: RectF, radius: Float, paint: Paint, progress: Float) {
+  // The box as a grid of pixels inside its rounded outline, keeping only the
+  // `keep` share of them (the rest leave in a fixed pseudo-random order). The
+  // pixels also lighten as they thin out: once a box starts fading, the word
+  // is drawn in normal ink on top of it and must stay readable.
+  private fun drawPixelBox(canvas: Canvas, rect: RectF, radius: Float, paint: Paint, keep: Float) {
     pixelPaint.color = paint.color
-    // The remaining pixels also thin out, so the body text under a dark
-    // saved-word box stays readable once the light text has faded.
-    pixelPaint.alpha = (paint.alpha * (1f - progress * (1f - READ_PIXEL_ALPHA))).roundToInt()
+    pixelPaint.alpha = (paint.alpha * (FADING_BOX_MIN_ALPHA + FADING_BOX_ALPHA_RANGE * keep)).roundToInt()
     highlightPath.reset()
     highlightPath.addRoundRect(rect, radius, radius, Path.Direction.CW)
     val save = canvas.save()
@@ -2090,7 +2063,7 @@ class EpubPageView(context: Context) : View(context) {
     val lastY = ceil(rect.bottom / cell).toInt()
     for (iy in firstY until lastY) {
       for (ix in firstX until lastX) {
-        if (!pixelKept(ix, iy, progress)) continue
+        if (pixelHash(ix, iy) >= keep) continue
         pixelRect.set(ix * cell.toFloat(), iy * cell.toFloat(), (ix + 1) * cell.toFloat(), (iy + 1) * cell.toFloat())
         canvas.drawRect(pixelRect, pixelPaint)
       }
@@ -2126,8 +2099,10 @@ class EpubPageView(context: Context) : View(context) {
       }
       // On read text the box turns translucent, so the light text gives way
       // to the normal body text underneath.
-      // A fading saved word gives way the same way.
-      textPaint.alpha = (lightTextAlpha * (1f - readProgress(range)) * range.strength.coerceIn(0f, 1f)).roundToInt()
+      // Light text only on a full box; once it starts fading the word is read
+      // in the normal body ink drawn underneath.
+      if (range.strength < 1f) return@forEach
+      textPaint.alpha = lightTextAlpha
       if (textPaint.alpha == 0) return@forEach
 
       val safeStart = (max(range.sourceStartOffset, sourceStart) - sourceStart).coerceIn(0, textLength)

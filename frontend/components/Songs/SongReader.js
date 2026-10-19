@@ -42,6 +42,7 @@ import { highlightStrengthsFor } from '../../services/savedWordFade';
 import { exposureDwellIsPlausible } from '../../services/abilityModel';
 import {
     applyExposureBatch,
+    getBookLookupWords,
     getBookSavedWords,
     getBookWordCandidates,
     getSavedWords,
@@ -71,7 +72,7 @@ const SONG_RESTORE_POSITION = { spineIndex: 0, pageIndex: 0 };
 const EMPTY_LEVEL_TERMS = [];
 // Lyrics have no read-fade or word-translation support yet, and pinyin has no
 // scope choice: the sheet shows only the rows the song reader acts on.
-const SONG_SHEET_FEATURES = { fadeReadMarks: false, glossAnnotations: false, annotationScope: false };
+const SONG_SHEET_FEATURES = { glossAnnotations: false, annotationScope: false };
 
 // Word characters we treat as tappable/lookup-able across supported targets:
 // Hangul (jamo + syllables), Latin letters, digits, and CJK ideographs
@@ -162,6 +163,8 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     // In-song surface → saved word, for fading (services/savedWordFade.js).
     const [highlightSurfaceWords, setHighlightSurfaceWords] = useState(() => new Map());
     const [savedWordsVersion, setSavedWordsVersion] = useState(0);
+    // Underlined words tapped in this song: their underline turns dotted.
+    const [tappedTerms, setTappedTerms] = useState([]);
     const [optimisticHighlightTerms, setOptimisticHighlightTerms] = useState([]);
     const [songSavedWords, setSongSavedWords] = useState([]);
     // Bumped when the lyrics finish indexing into book_index, so the level
@@ -220,6 +223,9 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     // ── Lookup panel (shared with the book reader) ───────────────────────────
     const handleWordLookup = useCallback(({ text, sentence }) => {
         recentLookupsRef.current.add(text);
+        setTappedTerms((previous) => (
+            previous.some((term) => term.text === text) ? previous : [...previous, { text, at: Date.now() }]
+        ));
         // Looking a saved word up again brings its faded highlight back.
         if (savedSurfacesRef.current.has(text)) {
             onSavedWordLookedUpRef.current?.(highlightSurfaceWordsRef.current.get(text) || text);
@@ -321,6 +327,19 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     }, [updateSettings]);
 
     // ── Saved words + highlight surfaces ─────────────────────────────────────
+    useEffect(() => {
+        let active = true;
+        setTappedTerms([]);
+        getBookLookupWords({ ownerId: activeOwnerId, language: songLanguage, bookUri: songUri })
+            .then((words) => {
+                if (active) setTappedTerms(words.map((text) => ({ text, at: 0 })));
+            })
+            .catch(() => {});
+        return () => {
+            active = false;
+        };
+    }, [activeOwnerId, songLanguage, songUri]);
+
     useEffect(() => {
         let isMounted = true;
         getSavedWords({ ownerId: activeOwnerId, language: songLanguage })
@@ -793,6 +812,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                         themeTokens={nativeReaderThemeTokens}
                         highlightTerms={readerHighlightTerms}
                         highlightStrengths={highlightStrengths}
+                        tappedTerms={tappedTerms}
                         levelTerms={readerLevelTerms}
                         showPinyin={readerShowPinyin}
                         clearSelectionToken={clearSelectionToken}

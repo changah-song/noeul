@@ -32,7 +32,6 @@ const baseSettings = {
   brightness: 0.62,
   readingMode: 'paged',
   levelMarkStyle: 'underline',
-  fadeReadMarks: true,
   pinyinAnnotations: false,
   glossAnnotations: false,
   pinyinScope: 'underlined',
@@ -98,7 +97,7 @@ describe('ReaderSettingsSheet', () => {
     let json = text(tree);
     expect(json).toContain('Vocabulary marks');
     expect(json).toContain('Almost known');
-    expect(json).toContain('Fade marks you');
+    expect(json).not.toContain('Fade marks');
     expect(json).toContain('Pinyin');
     expect(json).toContain('Translation under words');
     expect(json).not.toContain('Font size');
@@ -152,13 +151,12 @@ describe('ReaderSettingsSheet', () => {
   it('hides pinyin for non-Chinese books and honours feature flags', async () => {
     const { tree } = await renderSheet({
       language: 'ko',
-      features: { fadeReadMarks: false, glossAnnotations: false },
+      features: { glossAnnotations: false },
     });
     await pressTab(tree, 'words');
     const json = text(tree);
     expect(json).toContain('Vocabulary marks');
     expect(json).not.toContain('Pinyin');
-    expect(json).not.toContain('Fade marks');
     expect(json).not.toContain('Translation under words');
     await act(async () => tree.unmount());
   });
