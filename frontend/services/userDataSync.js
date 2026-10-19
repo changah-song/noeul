@@ -33,6 +33,7 @@ import {
 } from './localOwnerCoordinator';
 import { pushInteractionEvents } from './interactionEventsCloudSync';
 import { pushProfileAbilities } from './profileAbilityCloudSync';
+import { pushAbilityLog } from './abilityLogCloudSync';
 import { makeScopedStorageKey } from './localDataScope';
 import { getDefaultProfileIdForLanguage, getRuntimeActiveProfileId } from './profileScope';
 import { getRuntimeTargetLanguage } from './interfaceLanguage';
@@ -851,5 +852,13 @@ export const syncUserDataFromCloud = async ({ user, ownerId, generation }) => {
     await pushProfileAbilities({ user, ownerId, generation });
   } catch (error) {
     console.warn('[userDataSync] Profile ability push failed:', error?.message ?? error);
+  }
+
+  // Push-only mirror of the ability log (why the level moved), for the admin
+  // dashboard. Non-fatal for the same reason.
+  try {
+    await pushAbilityLog({ user, ownerId, generation });
+  } catch (error) {
+    console.warn('[userDataSync] Ability log push failed:', error?.message ?? error);
   }
 };

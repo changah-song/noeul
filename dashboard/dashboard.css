@@ -442,3 +442,50 @@ details.stack pre {
 .signin-foot a { color: var(--accent); }
 
 .hidden { display: none !important; }
+
+/* ─── Level model page ───────────────────────────────────────────────────── */
+
+.topnav { display: flex; gap: 4px; margin-right: 8px; }
+.topnav a {
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 13px;
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+.topnav a:hover { background: var(--surface-2); color: var(--text-primary); }
+.topnav a[aria-current="page"] { color: var(--text-primary); background: var(--surface-2); font-weight: 600; }
+
+.tiles-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 760px) { .tiles-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+tr.clickable { cursor: pointer; }
+tr.clickable:hover td { background: var(--surface-2); }
+tr.clickable:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+tr.selected td { background: var(--surface-2); font-weight: 600; }
+
+.chart-square { height: 300px; max-width: 560px; }
+
+.log-filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.log-filters .search { width: 180px; }
+
+.diverging-list { display: grid; gap: 10px; margin-top: 4px; }
+.div-row {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr) 64px 48px;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+.div-label { color: var(--text-secondary); }
+.div-track { position: relative; height: 12px; }
+.div-axis { position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px; background: var(--baseline); }
+.div-fill { position: absolute; top: 0; height: 100%; min-width: 2px; }
+.div-fill.up { background: var(--series-3); border-radius: 0 4px 4px 0; }
+.div-fill.down { background: var(--series-2); border-radius: 4px 0 0 4px; }
+.div-value { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+.div-count { text-align: right; font-variant-numeric: tabular-nums; font-size: 12px; }
+@media (max-width: 520px) {
+  .div-row { grid-template-columns: 84px minmax(0, 1fr) 56px; }
+  .div-count { display: none; }
+}
