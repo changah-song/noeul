@@ -19,6 +19,8 @@ import { fontFamilies, radii, spacing, useTheme } from '../../theme';
 import { getVocabTiers, thetaForTier } from '../../services/vocabSizeLevels';
 import { nearestRankForTheta } from '../../services/calibrationQuiz';
 import { getProfileAbility, setProfileAbilityFromVocab } from '../../services/Database';
+import { hasWordCheck } from '../../services/wordCheck';
+import WordCheckModal from './WordCheckModal';
 
 // The tier the reader last picked, per owner / profile / language.
 const pickKey = (ownerId, profileId, language) => `vocabLevelPick:${ownerId || 'guest'}:${profileId || ''}:${language}`;
@@ -60,6 +62,8 @@ const VocabLevelModal = ({ visible, onClose }) => {
     const tiers = useMemo(() => getVocabTiers(targetLanguage), [targetLanguage]);
     const [selectedIndex, setSelectedIndex] = useState(null);
     const [isSaving, setIsSaving] = useState(false);
+    // The word check replaces the grid while it runs.
+    const [checking, setChecking] = useState(false);
     // What the reader picked last time, and where reading has moved the
     // estimate since — both shown as light highlights when the grid opens.
     const [lastPickIndex, setLastPickIndex] = useState(null);
@@ -153,6 +157,18 @@ const VocabLevelModal = ({ visible, onClose }) => {
         tier.advanced ? t('vocabLevel.advancedTier') : (tier.label || String(tier.threshold))
     ), [t]);
 
+    if (checking) {
+        return (
+            <WordCheckModal
+                visible={visible}
+                onClose={() => {
+                    setChecking(false);
+                    onClose?.();
+                }}
+            />
+        );
+    }
+
     return (
         <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
             <TouchableWithoutFeedback onPress={onClose}>
@@ -166,6 +182,17 @@ const VocabLevelModal = ({ visible, onClose }) => {
                                 </Pressable>
                             </View>
                             <Text style={styles.helper}>{t('vocabLevel.instruction')}</Text>
+                            {hasWordCheck(targetLanguage) ? (
+                                <TouchableOpacity
+                                    onPress={() => setChecking(true)}
+                                    style={styles.checkLink}
+                                    activeOpacity={0.7}
+                                    accessibilityRole="button"
+                                >
+                                    <Feather name="check-square" size={15} color={theme.colors.textSecondary} />
+                                    <Text style={styles.checkLinkText}>{t('vocabLevel.takeCheck')}</Text>
+                                </TouchableOpacity>
+                            ) : null}
 
                             <ScrollView
                                 ref={listRef}
@@ -276,6 +303,20 @@ const createStyles = (colors) => StyleSheet.create({
         fontSize: 14,
         lineHeight: 20,
         color: colors.textSecondary,
+    },
+    checkLink: {
+        marginTop: spacing.sm,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        alignSelf: 'flex-start',
+        paddingVertical: 4,
+    },
+    checkLinkText: {
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 14,
+        color: colors.textSecondary,
+        textDecorationLine: 'underline',
     },
     list: {
         marginTop: spacing.md,

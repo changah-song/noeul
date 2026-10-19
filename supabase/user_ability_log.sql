@@ -21,7 +21,7 @@ create table if not exists public.user_ability_log (
   profile_id text,
   language text default 'ko',
 
-  -- lookup | pass | review | check | pseudo | seed | check_seed
+  -- lookup | pass | review | check | pseudo | seed | check_start
   signal text not null,
   word text,
   stem text,
@@ -116,7 +116,7 @@ begin
       count(*) filter (where signal = 'pass') as passes,
       count(*) filter (where signal = 'review') as reviews,
       count(*) filter (where signal in ('check', 'pseudo')) as checks,
-      sum(theta_after - theta_before) filter (where signal not in ('seed', 'check_seed')) as drift
+      sum(theta_after - theta_before) filter (where signal not in ('seed', 'check_start')) as drift
     from public.user_ability_log
     where created_at >= v_since
     group by user_id, language

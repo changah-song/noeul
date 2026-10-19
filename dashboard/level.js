@@ -21,7 +21,7 @@
     check: 'Word check',
     pseudo: 'Made-up word',
     seed: 'Level picker',
-    check_seed: 'Word check result',
+    check_start: 'Word check started',
   };
   const LANGUAGES = { ko: 'Korean', zh: 'Chinese', en: 'English' };
   // Bands per language on the −3…+3 scale (frontend/constants/proficiencyLevels).
@@ -299,7 +299,7 @@
       class: 'series-line', stroke: 'var(--series-1)', points: points.map((p) => `${xAt(p.t)},${yAt(p.theta_after)}`).join(' '),
     }));
     // Resets of the level (picker, word check) as hollow markers.
-    points.filter((p) => p.signal === 'seed' || p.signal === 'check_seed').forEach((p) => {
+    points.filter((p) => p.signal === 'seed' || p.signal === 'check_start').forEach((p) => {
       svg.appendChild(svgEl('circle', { cx: xAt(p.t), cy: yAt(p.theta_after), r: 4.5, fill: 'var(--surface-1)', stroke: 'var(--series-1)', 'stroke-width': 2 }));
     });
 
@@ -346,7 +346,7 @@
     card.replaceChildren(cardHead('What moved the level', 'Net change from each kind of signal in the range, and how many there were.'));
     const groups = {};
     log.forEach((row) => {
-      if (row.signal === 'seed' || row.signal === 'check_seed' || row.signal === 'pseudo') return;
+      if (row.signal === 'seed' || row.signal === 'check_start' || row.signal === 'pseudo') return;
       const g = groups[row.signal] || (groups[row.signal] = { signal: row.signal, total: 0, n: 0 });
       g.total += Number(row.theta_after) - Number(row.theta_before);
       g.n += 1;
@@ -437,6 +437,7 @@
     if (d.zipf != null) parts.push(`zipf ${Number(d.zipf).toFixed(1)}`);
     if (d.loanword) parts.push('loanword');
     if (d.dwellSeconds) parts.push(`${Math.round(d.dwellSeconds)} s on page`);
+    if (d.seenBefore) parts.push(`seen ${d.seenBefore}× before`);
     if (d.nearestRank != null) parts.push(`picked rank ${d.nearestRank}`);
     if (d.answered != null) parts.push(`${d.answered} answers`);
     if (row.signal === 'lookup' || row.signal === 'pass') parts.push(`lookup rate ${pct(row.lookup_rate)}`);

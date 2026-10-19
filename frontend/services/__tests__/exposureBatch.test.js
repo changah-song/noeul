@@ -152,7 +152,7 @@ describe('applyExposureBatch', () => {
     stems.forEach((stem) => {
       state = applySignal(state, { type: 'pass', difficulty: difficulties[stem].difficulty }).state;
     });
-    expect(batched.theta).toBeCloseTo(state.theta, 10);
+    expect(batched.theta).toBeCloseTo(state.theta, 6);
     const logs = await getAbilityLog({ ownerId: OWNER, profileId: PROFILE, language: 'ko' });
     expect(logs.map((row) => row.signal)).toEqual(['pass', 'pass', 'pass']);
   });

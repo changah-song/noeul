@@ -39,24 +39,45 @@ describe('reader level', () => {
         expect(unsure.state.variance).toBeLessThan(2);
     });
 
-    it('trusts a read-past word more from a reader who taps everything', () => {
-        const base = seedState(fresh(), { theta: 0 });
-        const tapper = { ...base, lookupHits: 40, lookupExpected: 45 };
-        const skimmer = { ...base, lookupHits: 2, lookupExpected: 30 };
-        expect(lookupRateOf(tapper)).toBeGreaterThan(0.8);
-        expect(lookupRateOf(skimmer)).toBeLessThan(0.2);
-        const fromTapper = applySignal(tapper, { type: 'pass', difficulty: 0 }).log;
-        const fromSkimmer = applySignal(skimmer, { type: 'pass', difficulty: 0 }).log;
-        expect(fromTapper.thetaAfter).toBeGreaterThan(fromSkimmer.thetaAfter);
+    it('learns the reader\'s lookup habit from what they look up', () => {
+        // Same level, different habits: one taps most unknown words, one few.
+        const sigmoid = (x) => 1 / (1 + Math.exp(-x));
+        let seed = 3;
+        const random = () => {
+            seed = (seed * 16807) % 2147483647;
+            return seed / 2147483647;
+        };
+        const read = (rate, checks = 0) => {
+            let state = seedState(fresh(), { theta: 0, variance: 1 });
+            for (let i = 0; i < 600; i += 1) {
+                const difficulty = -3 + 6 * random();
+                const known = random() < sigmoid(0.3 - difficulty);
+                if (checks && i % Math.floor(600 / checks) === 0) {
+                    state = applySignal(state, { type: 'check', difficulty, outcome: known ? 1 : 0 }).state;
+                    continue;
+                }
+                const looked = known ? random() < 0.03 : random() < rate;
+                state = applySignal(state, { type: looked ? 'lookup' : 'pass', difficulty }).state;
+            }
+            return state;
+        };
+        const tapper = read(0.85);
+        const skimmer = read(0.2);
+        expect(lookupRateOf(tapper)).toBeGreaterThan(0.65);
+        expect(lookupRateOf(skimmer)).toBeLessThan(0.35);
+        // A reader who taps most unknown words gives their level away by
+        // reading alone; one who rarely taps needs a few word-check answers.
+        expect(Math.abs(tapper.theta - 0.3)).toBeLessThan(0.4);
+        expect(Math.abs(read(0.2, 15).theta - 0.3)).toBeLessThan(0.4);
     });
 
-    it('learns the lookup rate only from words it was unsure about', () => {
-        const base = seedState(fresh(), { theta: 0 });
-        const unsure = applySignal(base, { type: 'lookup', difficulty: 0.5 }).state;
-        const easy = applySignal(base, { type: 'lookup', difficulty: -3 }).state;
-        expect(unsure.lookupHits).toBe(1);
-        expect(unsure.lookupExpected).toBeGreaterThan(0.5);
-        expect(easy.lookupHits).toBe(0);
+    it('keeps the learned habit when the level is set again', () => {
+        let state = seedState(fresh(), { theta: 0 });
+        for (let i = 0; i < 50; i += 1) state = applySignal(state, { type: 'lookup', difficulty: 2 }).state;
+        const rate = lookupRateOf(state);
+        const reseeded = seedState(state, { theta: 1 });
+        expect(reseeded.theta).toBe(1);
+        expect(lookupRateOf(reseeded)).toBeCloseTo(rate, 10);
     });
 
     it('discounts "I know it" from a reader who claims made-up words', () => {

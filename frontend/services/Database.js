@@ -31,8 +31,11 @@ import {
   guessRateOf,
   lookupRateOf,
   readerState,
+  repeatWeight,
+  CHECK_START_VARIANCE,
   SEED_VARIANCE,
   seedState,
+  serializeHypotheses,
   wordDifficulty,
 } from './levelEngine';
 import { initialFsrsFromPKnown, rankNominations } from './flashcardNomination';
@@ -707,8 +710,7 @@ export const createProfileAbilityTable = () => {
           updated_at        TEXT DEFAULT CURRENT_TIMESTAMP,
           synced_at         TEXT,
           theta_var         REAL,
-          lookup_hits       REAL DEFAULT 0,
-          lookup_expected   REAL DEFAULT 0,
+          lookup_model      TEXT,
           guess_yes         REAL DEFAULT 0,
           guess_total       REAL DEFAULT 0,
           last_event_at     TEXT,
@@ -756,10 +758,10 @@ export const migrateProfileAbilityTable = async () => {
   ensureColumn('updated_at', 'updated_at TEXT');
   ensureColumn('synced_at', 'synced_at TEXT');
   // Level engine (services/levelEngine.js): how sure the level is, the
-  // reader's learned lookup and guess rates, and when the last signal came.
+  // lookup-habit hypotheses (JSON), the guess-rate counts, and when the last
+  // signal came.
   ensureColumn('theta_var', 'theta_var REAL');
-  ensureColumn('lookup_hits', 'lookup_hits REAL DEFAULT 0');
-  ensureColumn('lookup_expected', 'lookup_expected REAL DEFAULT 0');
+  ensureColumn('lookup_model', 'lookup_model TEXT');
   ensureColumn('guess_yes', 'guess_yes REAL DEFAULT 0');
   ensureColumn('guess_total', 'guess_total REAL DEFAULT 0');
   ensureColumn('last_event_at', 'last_event_at TEXT');
@@ -900,17 +902,16 @@ const insertAbilityLogRows = (tx, scope, entries) => {
 const writeReaderStateSql = `
   INSERT INTO profile_ability (
     owner_id, profile_id, language, theta, theta_var, self_report_rank, event_count,
-    lookup_hits, lookup_expected, guess_yes, guess_total, last_event_at,
+    lookup_model, guess_yes, guess_total, last_event_at,
     seeded_at, updated_at, synced_at
   )
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
   ON CONFLICT(owner_id, profile_id, language) DO UPDATE SET
     theta = excluded.theta,
     theta_var = excluded.theta_var,
     self_report_rank = COALESCE(excluded.self_report_rank, profile_ability.self_report_rank),
     event_count = excluded.event_count,
-    lookup_hits = excluded.lookup_hits,
-    lookup_expected = excluded.lookup_expected,
+    lookup_model = excluded.lookup_model,
     guess_yes = excluded.guess_yes,
     guess_total = excluded.guess_total,
     last_event_at = excluded.last_event_at,
@@ -967,8 +968,7 @@ export const updateReaderLevel = ({ ownerId, profileId, language = 'ko' } = {}, 
             state.variance,
             result.selfReportRank ?? null,
             state.eventCount,
-            state.lookupHits,
-            state.lookupExpected,
+            serializeHypotheses(state.hypotheses),
             state.guessYes,
             state.guessTotal,
             state.lastEventAt,
@@ -998,6 +998,61 @@ export const getReaderLevel = async ({ ownerId, profileId, language = 'ko' } = {
     guessRate: guessRateOf(state),
     hasRow: !!row,
   };
+};
+
+/**
+ * applyWordCheckResults — save a word check (services/wordCheck.js): every
+ * answer goes into the interaction log ('check' / 'check_pseudo', the
+ * labelled facts the dashboard's accuracy check uses) and through the level
+ * engine, in the order given. The check starts by widening the level's
+ * uncertainty so a reader the model is already sure about can still move.
+ *
+ * @param {object} args
+ * @param {Array<{word:string, pseudo:boolean, outcome:0|1, difficulty?:number,
+ *                details?:object, at?:string}>} args.answers
+ * @returns {Promise<object|null>} the new engine state
+ */
+export const applyWordCheckResults = async ({ ownerId, profileId, language = 'ko', answers = [] } = {}) => {
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const list = (Array.isArray(answers) ? answers : []).filter((a) => a && typeof a.word === 'string' && a.word);
+  if (list.length === 0) return null;
+
+  await Promise.all(list.map((answer) => logInteractionEvent({
+    ownerId,
+    profileId,
+    language: normalizedLanguage,
+    word: answer.word,
+    stem: answer.pseudo ? null : answer.word,
+    eventType: answer.pseudo ? 'check_pseudo' : 'check',
+    outcome: answer.outcome ? 1 : 0,
+    createdAt: answer.at ?? new Date().toISOString(),
+  }).catch((error) => {
+    console.warn('[Database] Failed to log word check answer:', error);
+  })));
+
+  return updateReaderLevel({ ownerId, profileId, language: normalizedLanguage }, (before) => {
+    const at = list[0].at ?? new Date().toISOString();
+    let current = { ...before, variance: Math.max(before.variance, CHECK_START_VARIANCE) };
+    const logs = [{
+      signal: 'check_start',
+      thetaBefore: before.theta,
+      thetaAfter: before.theta,
+      varianceBefore: before.variance,
+      varianceAfter: current.variance,
+      details: { answered: list.length },
+      at,
+    }];
+    list.forEach((answer) => {
+      const { state: next, log } = applyLevelSignal(current, answer.pseudo
+        ? { type: 'pseudo', outcome: answer.outcome ? 1 : 0, at: answer.at }
+        : { type: 'check', difficulty: Number(answer.difficulty), outcome: answer.outcome ? 1 : 0, at: answer.at });
+      if (!log) return;
+      current = next;
+      logs.push({ ...log, word: answer.word, stem: answer.pseudo ? null : answer.word, details: answer.details ?? null });
+    });
+    current.eventCount = Math.max(current.eventCount, 1);
+    return { state: current, logs, seededAt: new Date().toISOString() };
+  });
 };
 
 export const getUnsyncedAbilityLog = (ownerId, { limit = 500 } = {}) => {
@@ -1292,6 +1347,34 @@ export const markProfileAbilitiesSynced = (rows, syncedAt = new Date().toISOStri
 const NEUTRAL_THETA = (ABILITY_THETA_MIN + ABILITY_THETA_MAX) / 2;
 
 /**
+ * countWordSignals — how many lookups and words-read-past each stem already
+ * has, for the level engine's repeat discount (levelEngine.repeatWeight).
+ */
+const countWordSignals = ({ ownerId, profileId, language }, stems) => new Promise((resolve) => {
+  const list = Array.from(new Set((stems || []).filter(Boolean)));
+  const counts = new Map();
+  if (list.length === 0) {
+    resolve(counts);
+    return;
+  }
+  db.transaction(tx => {
+    chunkValues(list).forEach((chunk) => {
+      tx.executeSql(
+        `SELECT stem, COUNT(*) AS n FROM interaction_events
+         WHERE owner_id = ? AND profile_id = ? AND language = ?
+           AND event_type IN ('lookup', 'exposure') AND deleted_at IS NULL
+           AND stem IN (${chunk.map(() => '?').join(', ')})
+         GROUP BY stem`,
+        [ownerId, profileId, language, ...chunk],
+        (_, result) => {
+          (result.rows._array ?? []).forEach((row) => counts.set(row.stem, Number(row.n) || 0));
+        }
+      );
+    });
+  }, () => resolve(counts), () => resolve(counts));
+});
+
+/**
  * updateThetaFromOutcome — fold one signal about one word (a lookup, a review,
  * a word-check answer) into the profile's level through the level engine, and
  * log the change. Fire-and-forget from the callers: a failure here must never
@@ -1345,11 +1428,25 @@ export const updateThetaFromOutcome = async ({
     details = entry.details ?? null;
   }
 
+  // The lookup itself is already in the event log when this runs, so it is
+  // not counted as its own repeat.
+  let weight = 1;
+  if (type === 'lookup' && cleanStem) {
+    const scope = {
+      ownerId: resolveOwnerId(ownerId),
+      profileId: resolveProfileId(profileId, normalizedLanguage),
+      language: normalizedLanguage,
+    };
+    const counts = await countWordSignals(scope, [cleanStem]);
+    weight = repeatWeight(Math.max(0, (counts.get(cleanStem) || 0) - 1));
+  }
+
   const state = await updateReaderLevel({ ownerId, profileId, language: normalizedLanguage }, (before) => {
     const { state: next, log } = applyLevelSignal(before, {
       type,
       difficulty: wordDifficultyValue,
       outcome: y,
+      weight,
     });
     if (!log) return null;
     return {
@@ -1439,6 +1536,11 @@ export const applyExposureBatch = async ({
     return { theta: null, applied: 0 };
   }
 
+  const previous = await countWordSignals(
+    { ownerId: scopedOwnerId, profileId: scopedProfileId, language: normalizedLanguage },
+    graded.map(({ stem }) => stem)
+  );
+
   // Log BEFORE the derived state is written, matching logInteractionEvent's
   // contract, so the historical outcome survives even if the write below fails.
   await Promise.all(graded.map(({ stem }) => logInteractionEvent({
@@ -1464,6 +1566,7 @@ export const applyExposureBatch = async ({
         const { state: next, log } = applyLevelSignal(current, {
           type: 'pass',
           difficulty: Number(entry.difficulty),
+          weight: repeatWeight(previous.get(stem) || 0),
         });
         if (!log) return;
         current = next;
@@ -1472,7 +1575,11 @@ export const applyExposureBatch = async ({
           word: stem,
           stem,
           sourceBookUri,
-          details: { ...(entry.details || {}), dwellSeconds: Number(dwellSeconds) || null },
+          details: {
+            ...(entry.details || {}),
+            dwellSeconds: Number(dwellSeconds) || null,
+            seenBefore: previous.get(stem) || 0,
+          },
         });
       });
       return logs.length > 0 ? { state: current, logs } : null;

@@ -24,7 +24,7 @@ import {
 //   lookup / read past   observation = "looked it up"
 //                        hit        = P(look up | known)      ≈ 0.03
 //                        falseAlarm = P(look up | unknown)    = the reader's
-//                                     lookup rate, learned per reader
+//                                     lookup habit (see Reader state)
 //   word check           observation = "said I know it"
 //                        hit ≈ 0.97, falseAlarm = guess rate (from made-up words)
 //   flashcard review     observation = "recalled it"
@@ -46,16 +46,18 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // Belief about the reader's level.
 export const PRIOR_VARIANCE = 2.0;        // a reader we know nothing about (sd ≈ 1.4)
 export const SEED_VARIANCE = 0.6;         // after the vocabulary picker (sd ≈ 0.8)
-export const CHECK_SEED_VARIANCE = 0.35;  // after a full word check
+export const CHECK_START_VARIANCE = 1.0;  // a word check starts at least this unsure
 export const MIN_VARIANCE = 0.02;
 export const DRIFT_PER_DAY = 0.004;       // variance regained per day without signals
 export const MAX_STEP = 0.6;              // no single signal moves the level further
+// How far one word's real difficulty for a reader strays from its listed
+// difficulty (variance on the logit scale). The reader's level is learned
+// through that blur, which flattens P(known) by the probit factor below.
+export const ITEM_VARIANCE = 0.6;
+const ITEM_SLOPE = 1 / Math.sqrt(1 + (Math.PI / 8) * ITEM_VARIANCE);
 
 // Observation models (see the header).
 export const LOOKUP_GIVEN_KNOWN = 0.03;
-export const LOOKUP_RATE_PRIOR = { hits: 3, expected: 6 }; // Beta(3, 3): 0.5
-export const LOOKUP_RATE_MIN = 0.1;
-export const LOOKUP_RATE_MAX = 0.95;
 export const CHECK_YES_GIVEN_KNOWN = 0.97;
 export const GUESS_RATE_PRIOR = { yes: 1, total: 20 };     // 0.05
 export const GUESS_RATE_MAX = 0.6;
@@ -65,6 +67,14 @@ export const REVIEW_RECALL_GIVEN_UNKNOWN = 0.35;
 // How far each kind of signal is trusted (a power on its likelihood).
 // Reviews are of words the reader is deliberately studying, so they say less
 // about the reader's general level than about the word.
+/**
+ * repeatWeight — how much a signal about a word the reader has already given
+ * `previous` signals on counts toward their overall level. The level is about
+ * how many words they know, so the same common word read past on every page
+ * shouldn't outvote the rest; its own knowledge still updates fully.
+ */
+export const repeatWeight = (previous) => 1 / (1 + Math.max(0, Number(previous) || 0) / 3);
+
 export const SIGNAL_WEIGHTS = {
     lookup: 1,
     pass: 1,
@@ -82,7 +92,7 @@ export const observationModel = (signal, { lookupRate, guessRate } = {}) => {
     case 'pass':
         return {
             hit: LOOKUP_GIVEN_KNOWN,
-            falseAlarm: clamp(Number(lookupRate) || 0.5, LOOKUP_RATE_MIN, LOOKUP_RATE_MAX),
+            falseAlarm: clamp(Number(lookupRate) || 0.5, 0.05, 0.95),
         };
     case 'check':
         return {
@@ -138,6 +148,9 @@ export const noisyBinaryStep = ({
     falseAlarm,
     weight = 1,
     maxStep = MAX_STEP,
+    // Below 1 flattens the curve: the listed difficulty is only an estimate
+    // of how hard this particular word is (see ITEM_VARIANCE).
+    slope = 1,
 }) => {
     const m = Number(mean);
     const v = Math.max(MIN_VARIANCE, Number(variance));
@@ -152,7 +165,7 @@ export const noisyBinaryStep = ({
         const z = -GRID_SDS + (2 * GRID_SDS * i) / (GRID_POINTS - 1);
         const x = m + z * sd;
         const prior = Math.exp(-0.5 * z * z);
-        const pk = sigmoid(x + offset);
+        const pk = sigmoid(slope * (x + offset));
         const p1 = clamp(hit * pk + falseAlarm * (1 - pk), 1e-9, 1 - 1e-9);
         const likelihood = (observed ? p1 : 1 - p1) ** w;
         const mass = prior * likelihood;
@@ -184,6 +197,63 @@ export const driftVariance = (variance, lastAt, now, perDay = DRIFT_PER_DAY, cap
 };
 
 // ─── Reader state ─────────────────────────────────────────────────────────────
+//
+// From reading alone, "rarely looks words up" can mean "knows more" or "taps
+// less". A single running estimate of the lookup rate locks in its early,
+// wrong guesses and drags the level with it. So the engine keeps one level
+// belief per lookup habit (taps 10%, 20%, … 90% of unknown words), updates
+// every one with each signal, and weighs them by how well each predicted what
+// the reader actually did (habits from 7.5% to 92.5% in steps of 5%). Word checks and reviews don't depend on the habit,
+// so they sort the hypotheses out quickly. The reader's level is the weighted
+// mix.
+
+export const LOOKUP_RATES = Array.from({ length: 18 }, (_, i) => Math.round((0.075 + i * 0.05) * 1000) / 1000);
+// Mild prior preference for middling habits (Beta(1.5, 1.5) at each rate).
+const LOOKUP_RATE_LOG_PRIOR = LOOKUP_RATES.map((r) => 0.5 * Math.log(r * (1 - r)));
+
+const freshHypotheses = (theta, variance) => LOOKUP_RATES.map((rate, i) => ({
+    rate,
+    mean: theta,
+    variance,
+    logWeight: LOOKUP_RATE_LOG_PRIOR[i],
+}));
+
+const normalizedWeights = (hypotheses) => {
+    const max = Math.max(...hypotheses.map((h) => h.logWeight));
+    const raw = hypotheses.map((h) => Math.exp(h.logWeight - max));
+    const total = raw.reduce((a, b) => a + b, 0);
+    return raw.map((w) => w / total);
+};
+
+/** Mixture mean and variance of the hypotheses' level beliefs. */
+const mixture = (hypotheses) => {
+    const w = normalizedWeights(hypotheses);
+    const mean = hypotheses.reduce((sum, h, i) => sum + w[i] * h.mean, 0);
+    const second = hypotheses.reduce((sum, h, i) => sum + w[i] * (h.variance + h.mean * h.mean), 0);
+    const rate = hypotheses.reduce((sum, h, i) => sum + w[i] * h.rate, 0);
+    return { mean, variance: Math.max(MIN_VARIANCE, second - mean * mean), rate };
+};
+
+const parseHypotheses = (raw) => {
+    try {
+        const list = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!Array.isArray(list) || list.length !== LOOKUP_RATES.length) return null;
+        const ok = list.every((h) => [h.rate, h.mean, h.variance, h.logWeight].every((v) => Number.isFinite(Number(v))));
+        return ok ? list.map((h) => ({
+            rate: Number(h.rate), mean: Number(h.mean), variance: Number(h.variance), logWeight: Number(h.logWeight),
+        })) : null;
+    } catch {
+        return null;
+    }
+};
+
+/** The hypotheses as stored in profile_ability.lookup_model (rounded JSON). */
+export const serializeHypotheses = (hypotheses) => JSON.stringify((hypotheses || []).map((h) => ({
+    rate: h.rate,
+    mean: Math.round(h.mean * 1e4) / 1e4,
+    variance: Math.round(h.variance * 1e5) / 1e5,
+    logWeight: Math.round(h.logWeight * 1e3) / 1e3,
+})));
 
 /**
  * readerState — the engine's view of a profile_ability row, with defaults for
@@ -197,11 +267,11 @@ export const readerState = (row) => {
     const variance = Number.isFinite(storedVariance) && storedVariance > 0
         ? storedVariance
         : (row ? Math.max(0.15, PRIOR_VARIANCE / (1 + events / 15)) : PRIOR_VARIANCE);
+    const level = Number.isFinite(theta) ? clamp(theta, ABILITY_THETA_MIN, ABILITY_THETA_MAX) : 0;
     return {
-        theta: Number.isFinite(theta) ? clamp(theta, ABILITY_THETA_MIN, ABILITY_THETA_MAX) : 0,
+        theta: level,
         variance,
-        lookupHits: Number(row?.lookup_hits) || 0,
-        lookupExpected: Number(row?.lookup_expected) || 0,
+        hypotheses: parseHypotheses(row?.lookup_model) || freshHypotheses(level, variance),
         guessYes: Number(row?.guess_yes) || 0,
         guessTotal: Number(row?.guess_total) || 0,
         lastEventAt: row?.last_event_at ?? row?.updated_at ?? null,
@@ -209,12 +279,12 @@ export const readerState = (row) => {
     };
 };
 
-/** The reader's learned lookup rate: P(look up | word unknown). */
-export const lookupRateOf = (state) => clamp(
-    (LOOKUP_RATE_PRIOR.hits + (state?.lookupHits || 0))
-        / (LOOKUP_RATE_PRIOR.expected + (state?.lookupExpected || 0)),
-    LOOKUP_RATE_MIN,
-    LOOKUP_RATE_MAX,
+/**
+ * The reader's lookup rate, P(look up | word unknown): the hypotheses'
+ * rates weighted by how well each has predicted the reader so far.
+ */
+export const lookupRateOf = (state) => (
+    state?.hypotheses?.length ? mixture(state.hypotheses).rate : 0.5
 );
 
 /** The reader's guess rate: how often they claim to know a made-up word. */
@@ -224,10 +294,6 @@ export const guessRateOf = (state) => clamp(
     0.01,
     GUESS_RATE_MAX,
 );
-
-// Only words the model is unsure about teach us the lookup rate: a word it
-// is sure the reader knows says nothing about how often they tap unknown ones.
-const LOOKUP_RATE_UNSURE_BELOW = 0.85;
 
 /**
  * applySignal — fold one signal into the reader's state.
@@ -239,12 +305,13 @@ const LOOKUP_RATE_UNSURE_BELOW = 0.85;
  * @param {0|1}    [signal.outcome]     check: 1 = "know"; review: 1 = recalled;
  *                                      pseudo: 1 = claimed a made-up word
  * @param {string|Date} [signal.at]
+ * @param {number} [signal.weight]  extra trust factor (repeatWeight)
  * @returns {{state:object, log:object|null}}  the new state and the log entry
  *          (null when the signal changes nothing).
  */
 export const applySignal = (state, signal = {}) => {
     const at = signal.at ? new Date(signal.at).toISOString() : new Date().toISOString();
-    const base = { ...state };
+    const base = { ...state, hypotheses: state?.hypotheses || freshHypotheses(state?.theta ?? 0, state?.variance ?? PRIOR_VARIANCE) };
 
     if (signal.type === 'pseudo') {
         const next = {
@@ -268,37 +335,51 @@ export const applySignal = (state, signal = {}) => {
     }
 
     const difficulty = Number(signal.difficulty);
-    const model = observationModel(signal.type, {
-        lookupRate: lookupRateOf(base),
-        guessRate: guessRateOf(base),
-    });
-    if (!model || !Number.isFinite(difficulty)) {
+    if (!observationModel(signal.type, {}) || !Number.isFinite(difficulty)) {
         return { state: base, log: null };
     }
-
-    const drifted = driftVariance(base.variance, base.lastEventAt, at);
+    const guessRate = guessRateOf(base);
     const observed = observedValue(signal.type, signal.outcome);
-    const step = noisyBinaryStep({
-        mean: base.theta,
-        variance: drifted,
-        offset: -difficulty,
-        observed,
-        hit: model.hit,
-        falseAlarm: model.falseAlarm,
-        weight: SIGNAL_WEIGHTS[signal.type] ?? 1,
-    });
+    const extra = Number(signal.weight);
+    const weight = (SIGNAL_WEIGHTS[signal.type] ?? 1) * (Number.isFinite(extra) && extra >= 0 ? extra : 1);
+    const weightsBefore = normalizedWeights(base.hypotheses);
+    let pObserved = 0;
 
+    const hypotheses = base.hypotheses.map((h, i) => {
+        const model = observationModel(signal.type, { lookupRate: h.rate, guessRate });
+        const step = noisyBinaryStep({
+            mean: h.mean,
+            variance: driftVariance(h.variance, base.lastEventAt, at),
+            offset: -difficulty,
+            observed,
+            hit: model.hit,
+            falseAlarm: model.falseAlarm,
+            weight,
+            slope: ITEM_SLOPE,
+        });
+        pObserved += weightsBefore[i] * step.pObserved;
+        const predicted = observed ? step.pObserved : 1 - step.pObserved;
+        return {
+            rate: h.rate,
+            mean: clamp(step.mean, ABILITY_THETA_MIN, ABILITY_THETA_MAX),
+            variance: step.variance,
+            logWeight: h.logWeight + weight * Math.log(Math.max(1e-9, predicted)),
+        };
+    });
+    // Keep the log weights near zero so they never overflow.
+    const top = Math.max(...hypotheses.map((h) => h.logWeight));
+    hypotheses.forEach((h) => { h.logWeight -= top; });
+
+    const before = mixture(base.hypotheses);
+    const after = mixture(hypotheses);
     const next = {
         ...base,
-        theta: clamp(step.mean, ABILITY_THETA_MIN, ABILITY_THETA_MAX),
-        variance: step.variance,
+        hypotheses,
+        theta: after.mean,
+        variance: after.variance,
         lastEventAt: at,
         eventCount: base.eventCount + 1,
     };
-    if ((signal.type === 'lookup' || signal.type === 'pass') && step.pKnown < LOOKUP_RATE_UNSURE_BELOW) {
-        next.lookupExpected = base.lookupExpected + (1 - step.pKnown);
-        if (signal.type === 'lookup') next.lookupHits = base.lookupHits + 1;
-    }
 
     return {
         state: next,
@@ -306,13 +387,13 @@ export const applySignal = (state, signal = {}) => {
             signal: signal.type,
             outcome: observed,
             difficulty,
-            pKnown: step.pKnown,
-            pObserved: step.pObserved,
+            pKnown: sigmoid(base.theta - difficulty),
+            pObserved,
             thetaBefore: base.theta,
             thetaAfter: next.theta,
-            varianceBefore: drifted,
+            varianceBefore: driftVariance(base.variance, base.lastEventAt, at),
             varianceAfter: next.variance,
-            lookupRate: model.falseAlarm,
+            lookupRate: signal.type === 'lookup' || signal.type === 'pass' ? before.rate : null,
             at,
         },
     };
@@ -322,12 +403,19 @@ export const applySignal = (state, signal = {}) => {
  * seedState — set the level from the picker or a word check: the old
  * learned rates stay, the belief restarts at the given mean and variance.
  */
-export const seedState = (state, { theta, variance = SEED_VARIANCE, at } = {}) => ({
-    ...state,
-    theta: clamp(Number(theta) || 0, ABILITY_THETA_MIN, ABILITY_THETA_MAX),
-    variance,
-    lastEventAt: at ? new Date(at).toISOString() : new Date().toISOString(),
-});
+export const seedState = (state, { theta, variance = SEED_VARIANCE, at } = {}) => {
+    const level = clamp(Number(theta) || 0, ABILITY_THETA_MIN, ABILITY_THETA_MAX);
+    const hypotheses = (state?.hypotheses || freshHypotheses(level, variance)).map((h) => ({
+        ...h, mean: level, variance,
+    }));
+    return {
+        ...state,
+        hypotheses,
+        theta: level,
+        variance,
+        lastEventAt: at ? new Date(at).toISOString() : new Date().toISOString(),
+    };
+};
 
 // ─── Word difficulty ──────────────────────────────────────────────────────────
 
