@@ -396,6 +396,55 @@ def attach_proficiency_level(entry: dict, level: dict | None) -> dict:
     return {**entry, **level} if level else entry
 
 
+def lookup_word_features(language: str, terms: list[str]) -> dict[str, dict]:
+    """zipf (how common) and loanword flags per term for the difficulty model.
+    See scripts/import_word_features.py. Empty when the table is missing."""
+    normalized = unique_nonempty_strings(terms)
+    if not normalized or not is_proficiency_levels_db_installed():
+        return {}
+    try:
+        conn = get_proficiency_levels_db_connection()
+    except sqlite3.Error:
+        return {}
+    features: dict[str, dict] = {}
+    try:
+        for batch in chunked_values(normalized):
+            placeholders = ",".join(["?"] * len(batch))
+            for row in conn.execute(
+                f"SELECT term, zipf, loanword FROM word_features WHERE language = ? AND term IN ({placeholders})",
+                [language, *batch],
+            ).fetchall():
+                features[row["term"]] = {"zipf": row["zipf"], "loanword": bool(row["loanword"])}
+    except sqlite3.Error as exc:
+        # An older proficiency_levels.db without the table.
+        print(f"[main] word features unavailable: {exc}")
+        return {}
+    finally:
+        conn.close()
+    return features
+
+
+def attach_word_features(language: str, entries: list[dict]) -> list[dict]:
+    """Add zipf / loanword to each entry by its stem (or surface)."""
+    keys = [
+        (entry.get("stem") or entry.get("surface") or "").strip()
+        for entry in entries
+        if isinstance(entry, dict)
+    ]
+    features = lookup_word_features(language, keys)
+    if not features:
+        return entries
+    out = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            out.append(entry)
+            continue
+        key = (entry.get("stem") or "").strip()
+        found = features.get(key) or features.get((entry.get("surface") or "").strip())
+        out.append({**entry, **found} if found else entry)
+    return out
+
+
 def normalize_scoring_language(language: str | None) -> str:
     normalized = str(language or "ko").strip().lower().replace("_", "-").split("-")[0]
     return normalized if normalized in BOOK_LEVEL_LABELS else "ko"
@@ -3377,6 +3426,8 @@ async def _preprocess_zh_core(
         )
         for entry in surface_index
     ]
+    results = await loop.run_in_executor(None, attach_word_features, "zh", results)
+    surface_index = await loop.run_in_executor(None, attach_word_features, "zh", surface_index)
 
     return {
         "results": results,
@@ -4299,6 +4350,8 @@ async def _preprocess_core(text: str, krdict_key: str, max_stems=None, progress_
         )
         for entry in surface_index
     ]
+    all_results = await loop.run_in_executor(None, attach_word_features, "ko", all_results)
+    surface_index = await loop.run_in_executor(None, attach_word_features, "ko", surface_index)
     return {
         "results": all_results,
         "surface_index": surface_index,
