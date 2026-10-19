@@ -4,8 +4,8 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
 import { LISTEN_RATES } from '../../services/listenPlayer';
 
-// Listen-mode transport: previous / play-pause / next, the speed chip, and the
-// study toggles (stop on underlined words; read each sentence's translation).
+// Listen-mode transport: previous / play-pause / next, the voice chip (shows
+// the speed; opens speed, pitch and voice settings), and the study toggles (stop on underlined words; read each sentence's translation).
 // Sits where the focus arrows normally are and lifts with the dictionary
 // panel the same way.
 const ListenBar = ({
@@ -16,7 +16,7 @@ const ListenBar = ({
     onTogglePlay,
     onPrevious,
     onNext,
-    onCycleRate,
+    onOpenVoice,
     onToggleExplain,
     onToggleTranslate,
     onClose,
@@ -64,12 +64,13 @@ const ListenBar = ({
                 </TouchableOpacity>
                 <View style={styles.listenDivider} />
                 <TouchableOpacity
-                    style={styles.listenChip}
-                    onPress={onCycleRate}
+                    style={[styles.listenChip, styles.listenVoiceChip]}
+                    onPress={onOpenVoice}
                     activeOpacity={0.72}
                     accessibilityRole="button"
-                    accessibilityLabel={t('read.listenSpeed', { rate: rateLabel })}
+                    accessibilityLabel={`${t('read.listenVoiceTitle')}, ${t('read.listenSpeed', { rate: rateLabel })}`}
                 >
+                    <MaterialIcons name="record-voice-over" size={15} color={themeColors.readerBodyInk} />
                     <Text style={styles.listenChipLabel}>{rateLabel}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity

@@ -42,6 +42,72 @@ export const voiceLocaleFor = (code) => {
 
 // Playback rates offered in the listen bar; 1 is the engine's normal speed.
 export const LISTEN_RATES = [0.8, 1, 1.2, 1.5];
+// Voice pitch: lower / normal / higher. 1 is the voice's own pitch.
+export const LISTEN_PITCHES = [0.85, 1, 1.15];
+
+// A short line each voice reads in the picker so the reader can compare them.
+const VOICE_SAMPLES = {
+  ko: '안녕하세요. 오늘도 같이 책을 읽어 볼까요?',
+  zh: '你好，我们今天一起来读这本书吧。',
+  ja: 'こんにちは。今日も一緒に本を読みましょう。',
+  en: 'Hello. Shall we read a few pages together today?',
+};
+export const voiceSampleFor = (locale) => {
+  const language = String(locale || '').split('-')[0].toLowerCase();
+  return VOICE_SAMPLES[language] || VOICE_SAMPLES.en;
+};
+
+// Engines report Mandarin and Cantonese under their ISO 639-3 codes.
+const LANGUAGE_ALIASES = { cmn: 'zh', zho: 'zh', chi: 'zh', kor: 'ko', jpn: 'ja', eng: 'en' };
+const splitLocale = (locale) => {
+  const [language = '', region = ''] = String(locale || '').replace(/_/g, '-').toLowerCase().split('-');
+  return { language: LANGUAGE_ALIASES[language] || language, region };
+};
+
+// Samsung's engine names its voices like ko-KR-SMTf00 / ko-KR-SMTm00.
+const voiceGender = (name) => {
+  const match = /-smt([fm])\d/i.exec(String(name || ''));
+  if (!match) return null;
+  return match[1].toLowerCase() === 'f' ? 'female' : 'male';
+};
+
+// The voices the reader can pick for a locale: on this phone, for the same
+// language and region, already downloaded and working offline. Engines list
+// a "<locale>-language" alias for their default voice; that is the "Phone
+// default" row, so it is left out here. Ordered by name so "Voice 2" stays
+// the same voice between visits.
+export const onDeviceVoicesFor = (voices, locale) => {
+  const target = splitLocale(locale);
+  const seen = new Set();
+  return (Array.isArray(voices) ? voices : [])
+    .filter((voice) => {
+      const id = String(voice?.id || '');
+      if (!id || seen.has(id)) return false;
+      if (voice.networkConnectionRequired || voice.notInstalled) return false;
+      if (/-language$/i.test(id)) return false;
+      const own = splitLocale(voice.language);
+      if (own.language !== target.language) return false;
+      if (target.region && own.region && own.region !== target.region) return false;
+      seen.add(id);
+      return true;
+    })
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+    .map((voice, index) => ({
+      id: String(voice.id),
+      number: index + 1,
+      gender: voiceGender(voice.id),
+      quality: Number(voice.quality) || 0,
+    }));
+};
+
+export const loadOnDeviceVoices = async (locale, tts = Tts) => {
+  try {
+    await tts.getInitStatus();
+    return onDeviceVoicesFor(await tts.voices(), locale);
+  } catch {
+    return [];
+  }
+};
 
 const LANGUAGE_SETTLE_MS = 1500;
 
@@ -51,6 +117,8 @@ export const createListenPlayer = ({ tts = Tts } = {}) => {
   let resolveCurrent = null;
   let currentLocale = null;
   let currentRate = null;
+  let currentVoice = null;
+  let currentPitch = null;
   // A finish event can arrive before speak()'s promise hands back the id for
   // a very short utterance; remember it so the wait does not hang.
   let lastEndedId = null;
@@ -84,25 +152,35 @@ export const createListenPlayer = ({ tts = Tts } = {}) => {
     new Promise((resolve) => setTimeout(resolve, ms)),
   ]);
 
-  const prepare = async (locale, rate) => {
-    if (locale && locale !== currentLocale) {
+  const prepare = async (locale, rate, voice, pitch) => {
+    const wantVoice = voice || null;
+    if ((locale && locale !== currentLocale) || wantVoice !== currentVoice) {
       // Set the voice before speaking; otherwise the first utterance after a
-      // language change is read with the previous voice.
-      await withTimeout(tts.setDefaultLanguage(locale), LANGUAGE_SETTLE_MS);
-      currentLocale = locale;
+      // language change is read with the previous voice. setLanguage resets
+      // the engine to that language's default voice, so a chosen voice goes
+      // on after it; a voice the phone no longer has keeps the default.
+      if (locale) await withTimeout(tts.setDefaultLanguage(locale), LANGUAGE_SETTLE_MS);
+      if (wantVoice) await withTimeout(tts.setDefaultVoice(wantVoice), LANGUAGE_SETTLE_MS);
+      currentLocale = locale || currentLocale;
+      currentVoice = wantVoice;
     }
     if (Number.isFinite(rate) && rate !== currentRate) {
       // skipTransform: pass the engine's own scale, where 1 is normal speed.
       await withTimeout(tts.setDefaultRate(rate, true), LANGUAGE_SETTLE_MS);
       currentRate = rate;
     }
+    const wantPitch = Number.isFinite(pitch) ? pitch : 1;
+    if (wantPitch !== currentPitch) {
+      await withTimeout(tts.setDefaultPitch(wantPitch), LANGUAGE_SETTLE_MS);
+      currentPitch = wantPitch;
+    }
   };
 
   // Speak one utterance; resolves 'finish', 'cancel' or 'error'.
-  const speakOne = async ({ text, locale, rate }, mySession) => {
+  const speakOne = async ({ text, locale, rate, voice, pitch }, mySession) => {
     const utterance = String(text || '').trim();
     if (!utterance) return 'finish';
-    await prepare(locale, rate);
+    await prepare(locale, rate, voice, pitch);
     if (mySession !== session) return 'cancel';
     lastEndedId = null;
     lastEndedWith = null;

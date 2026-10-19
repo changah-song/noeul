@@ -1,6 +1,6 @@
 jest.mock('react-native-tts', () => ({}), { virtual: true });
 
-const { createListenPlayer, voiceLocaleFor, LISTEN_RATES } = require('../listenPlayer');
+const { createListenPlayer, voiceLocaleFor, onDeviceVoicesFor, LISTEN_RATES } = require('../listenPlayer');
 
 // A stand-in engine: speak() hands back an id, and the test fires the finish
 // or cancel events the real engine would.
@@ -19,6 +19,8 @@ const fakeTts = () => {
     removeEventListener: jest.fn(() => { throw new TypeError('this.removeListener is not a function'); }),
     setDefaultLanguage: jest.fn(async (locale) => { this.languages?.push(locale); return 'success'; }),
     setDefaultRate: jest.fn(async () => 'success'),
+    setDefaultVoice: jest.fn(async () => 'success'),
+    setDefaultPitch: jest.fn(async () => 'success'),
     speak: jest.fn(async function speak(text) {
       const id = `u${nextId++}`;
       this.spoken.push({ id, text });
@@ -151,4 +153,74 @@ describe('listenPlayer teardown', () => {
     expect(tts.removeEventListener).not.toHaveBeenCalled();
     expect(Object.keys(tts.handlers)).toEqual([]);
   });
+
+  it('puts a chosen voice on after the language, and again after switching languages', async () => {
+    const tts = fakeTts();
+    const calls = [];
+    tts.setDefaultLanguage.mockImplementation(async (locale) => { calls.push(`lang:${locale}`); });
+    tts.setDefaultVoice.mockImplementation(async (id) => { calls.push(`voice:${id}`); });
+    const player = createListenPlayer({ tts });
+    const done = player.speakSequence([
+      { text: '하나', locale: 'ko-KR', voice: 'ko-kr-x-kod-local' },
+      { text: 'one', locale: 'en-US' },
+      { text: '둘', locale: 'ko-KR', voice: 'ko-kr-x-kod-local' },
+    ]);
+    for (let i = 0; i < 3; i += 1) {
+      await flush();
+      tts.finish(tts.spoken[i].id);
+    }
+    await expect(done).resolves.toBe('done');
+    expect(calls).toEqual([
+      'lang:ko-KR', 'voice:ko-kr-x-kod-local',
+      'lang:en-US',
+      'lang:ko-KR', 'voice:ko-kr-x-kod-local',
+    ]);
+  });
+
+  it('sets the pitch once and only when it changes', async () => {
+    const tts = fakeTts();
+    const player = createListenPlayer({ tts });
+    const done = player.speakSequence([
+      { text: 'a', locale: 'en-US', pitch: 1.15 },
+      { text: 'b', locale: 'en-US', pitch: 1.15 },
+    ]);
+    for (let i = 0; i < 2; i += 1) {
+      await flush();
+      tts.finish(tts.spoken[i].id);
+    }
+    await done;
+    expect(tts.setDefaultPitch.mock.calls).toEqual([[1.15]]);
+  });
 });
+
+describe('onDeviceVoicesFor', () => {
+  const voices = [
+    { id: 'ko-kr-x-kod-local', language: 'ko-KR', networkConnectionRequired: false, notInstalled: false },
+    { id: 'ko-kr-x-ism-local', language: 'ko-KR', networkConnectionRequired: false, notInstalled: false },
+    { id: 'ko-kr-x-ism-network', language: 'ko-KR', networkConnectionRequired: true, notInstalled: false },
+    { id: 'ko-kr-x-kob-local', language: 'ko-KR', networkConnectionRequired: false, notInstalled: true },
+    { id: 'ko-KR-language', language: 'ko-KR', networkConnectionRequired: false, notInstalled: false },
+    { id: 'ko-KR-SMTf00', language: 'ko-KR', networkConnectionRequired: false, notInstalled: false },
+    { id: 'cmn-cn-x-ccc-local', language: 'cmn-CN', networkConnectionRequired: false, notInstalled: false },
+    { id: 'cmn-tw-x-ctc-local', language: 'cmn-TW', networkConnectionRequired: false, notInstalled: false },
+    { id: 'en-us-x-iob-local', language: 'en-US', networkConnectionRequired: false, notInstalled: false },
+  ];
+
+  it('keeps only offline, installed voices of the language, numbered by name', () => {
+    expect(onDeviceVoicesFor(voices, 'ko-KR')).toEqual([
+      { id: 'ko-KR-SMTf00', number: 1, gender: 'female', quality: 0 },
+      { id: 'ko-kr-x-ism-local', number: 2, gender: null, quality: 0 },
+      { id: 'ko-kr-x-kod-local', number: 3, gender: null, quality: 0 },
+    ]);
+  });
+
+  it('matches Mandarin voices reported as cmn, by region', () => {
+    expect(onDeviceVoicesFor(voices, 'zh-CN').map((v) => v.id)).toEqual(['cmn-cn-x-ccc-local']);
+    expect(onDeviceVoicesFor(voices, 'zh-TW').map((v) => v.id)).toEqual(['cmn-tw-x-ctc-local']);
+  });
+
+  it('copes with no voices at all', () => {
+    expect(onDeviceVoicesFor(null, 'ko-KR')).toEqual([]);
+  });
+});
+
