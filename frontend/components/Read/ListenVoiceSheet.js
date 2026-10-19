@@ -1,11 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
     ActivityIndicator,
-    Animated,
-    Easing,
     Linking,
-    Modal,
-    Pressable,
     ScrollView,
     StyleSheet,
     Text,
@@ -17,6 +13,7 @@ import { Feather, MaterialIcons } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
 import { fontFamilies, radii, spacing } from '../../theme';
 import { LISTEN_PITCHES, LISTEN_RATES, loadOnDeviceVoices } from '../../services/listenPlayer';
+import PaperSheet from '../ui/PaperSheet';
 import { SegmentedControl, createReaderSettingsControlStyles } from './ReaderSettingsControls';
 
 const MAX_HEIGHT_RATIO = 0.72;
@@ -62,28 +59,6 @@ const ListenVoiceSheet = ({
     const controlStyles = useMemo(() => createReaderSettingsControlStyles(colors), [colors]);
     const [voices, setVoices] = useState(null);
 
-    const [mounted, setMounted] = useState(visible);
-    const slideAnim = useRef(new Animated.Value(0)).current;
-    useEffect(() => {
-        if (visible) {
-            setMounted(true);
-            Animated.timing(slideAnim, {
-                toValue: 1,
-                duration: 260,
-                easing: Easing.out(Easing.cubic),
-                useNativeDriver: true,
-            }).start();
-        } else {
-            Animated.timing(slideAnim, {
-                toValue: 0,
-                duration: 180,
-                easing: Easing.in(Easing.cubic),
-                useNativeDriver: true,
-            }).start(({ finished }) => {
-                if (finished) setMounted(false);
-            });
-        }
-    }, [visible, slideAnim]);
 
     // Re-read the list on every open: the reader may have just downloaded a
     // voice in the phone's settings.
@@ -98,8 +73,6 @@ const ListenVoiceSheet = ({
             cancelled = true;
         };
     }, [visible, locale]);
-
-    if (!mounted) return null;
 
     const rateOptions = LISTEN_RATES.map((value) => ({ value, label: `${value}×` }));
     const pitchOptions = [
@@ -118,22 +91,15 @@ const ListenVoiceSheet = ({
             detail: voice.gender ? t(voice.gender === 'female' ? 'read.listenVoiceFemale' : 'read.listenVoiceMale') : '',
         })),
     ];
-    const sheetTranslateY = slideAnim.interpolate({ inputRange: [0, 1], outputRange: [windowHeight, 0] });
 
     return (
-        <Modal visible transparent animationType="none" onRequestClose={onClose} statusBarTranslucent>
-            <View style={styles.overlay}>
-                <Animated.View pointerEvents="none" style={[styles.scrim, { opacity: slideAnim }]} />
-                <Pressable
-                    style={styles.backdrop}
-                    onPress={onClose}
-                    accessibilityRole="button"
-                    accessibilityLabel={t('common.close')}
-                />
-                <Animated.View style={[styles.sheet, { transform: [{ translateY: sheetTranslateY }] }]}>
-                    <View style={styles.handleWrap}>
-                        <View style={styles.handle} />
-                    </View>
+        <PaperSheet
+            visible={visible}
+            onClose={onClose}
+            maxHeightRatio={MAX_HEIGHT_RATIO}
+            accessibilityLabel={t('read.listenVoiceTitle')}
+            style={styles.sheet}
+        >
                     <View style={styles.header}>
                         <Text style={styles.title} numberOfLines={1}>{t('read.listenVoiceTitle')}</Text>
                         <TouchableOpacity
@@ -232,45 +198,15 @@ const ListenVoiceSheet = ({
                             <Feather name="external-link" size={16} color={colors.readerMutedInk} />
                         </TouchableOpacity>
                     </ScrollView>
-                </Animated.View>
-            </View>
-        </Modal>
+        </PaperSheet>
     );
 };
 
 const createStyles = (colors, insets = { bottom: 0 }, maxHeight = 560) => StyleSheet.create({
-    overlay: {
-        flex: 1,
-        justifyContent: 'flex-end',
-    },
-    scrim: {
-        ...StyleSheet.absoluteFillObject,
-        backgroundColor: colors.overlay,
-    },
-    backdrop: {
-        ...StyleSheet.absoluteFillObject,
-    },
     sheet: {
         maxHeight,
         backgroundColor: colors.readerSurface,
-        borderTopLeftRadius: radii.xl,
-        borderTopRightRadius: radii.xl,
-        borderWidth: 1,
-        borderBottomWidth: 0,
-        borderColor: colors.readerBorder,
         paddingBottom: (insets?.bottom ?? 0) + spacing.sm,
-        elevation: 16,
-    },
-    handleWrap: {
-        alignItems: 'center',
-        paddingTop: 10,
-        paddingBottom: 4,
-    },
-    handle: {
-        width: 36,
-        height: 4,
-        borderRadius: 2,
-        backgroundColor: colors.readerBorder,
     },
     header: {
         flexDirection: 'row',

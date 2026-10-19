@@ -1,6 +1,7 @@
 import { memo, useEffect, useState } from 'react';
-import { Animated, Text, TouchableOpacity, View } from 'react-native';
+import { Animated, Text, View } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
+import PressableScale from '../ui/PressableScale';
 import { useTranslation } from '../../hooks/useTranslation';
 
 // Focus-mode position pill + sentence arrows.
@@ -72,10 +73,9 @@ const FocusControls = ({
                         },
                     ]}
                 >
-                    <TouchableOpacity
+                    <PressableScale
                         style={styles.focusArrowButtonPrev}
                         onPress={() => sendFocusNav('prev')}
-                        activeOpacity={0.72}
                         accessibilityRole="button"
                         accessibilityLabel={t('read.focusPreviousSentence')}
                     >
@@ -84,11 +84,10 @@ const FocusControls = ({
                             size={23}
                             color={focusAtStart ? '#c5c6cb' : themeColors.readerBodyInk}
                         />
-                    </TouchableOpacity>
-                    <TouchableOpacity
+                    </PressableScale>
+                    <PressableScale
                         style={styles.focusArrowButtonNext}
                         onPress={() => sendFocusNav('next')}
-                        activeOpacity={0.72}
                         accessibilityRole="button"
                         accessibilityLabel={t('read.focusNextSentence')}
                     >
@@ -97,7 +96,7 @@ const FocusControls = ({
                             size={23}
                             color={focusAtEnd ? '#6b7180' : themeColors.readerPaper}
                         />
-                    </TouchableOpacity>
+                    </PressableScale>
                 </Animated.View>
             ) : null}
         </>

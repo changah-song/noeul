@@ -1,23 +1,17 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
     View,
     Text,
-    Modal,
-    Pressable,
-    TouchableOpacity,
     ScrollView,
     StyleSheet,
     ActivityIndicator,
-    Animated,
-    Easing,
-    useWindowDimensions,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
 import { fontFamilies, radii, spacing } from '../../theme';
 import CandidateCard from '../vocab/CandidateCard';
-
-const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
+import PaperSheet from '../ui/PaperSheet';
+import PaperTabs from '../ui/PaperTabs';
 
 /**
  * SavedWordsPanel — the reader's word tracker. Opened from the top-bar count
@@ -43,83 +37,24 @@ const SavedWordsPanel = ({
     const { t } = useTranslation();
     const styles = useMemo(() => createStyles(colors, insets), [colors, insets]);
     const [tab, setTab] = useState(initialTab);
-    const { height: windowHeight } = useWindowDimensions();
-
-    // Keep the modal mounted while it animates out, then unmount.
-    const [mounted, setMounted] = useState(visible);
-    const progress = useRef(new Animated.Value(0)).current;
-    // Sheet height is cached across open/close so the slide distance is exact
-    // after the first layout; falls back to the window height on first open.
-    const sheetHeight = useRef(0);
 
     useEffect(() => {
-        if (visible) {
-            setTab(initialTab);
-            setMounted(true);
-            Animated.timing(progress, {
-                toValue: 1,
-                duration: 260,
-                easing: Easing.out(Easing.cubic),
-                useNativeDriver: true,
-            }).start();
-        } else if (mounted) {
-            Animated.timing(progress, {
-                toValue: 0,
-                duration: 200,
-                easing: Easing.in(Easing.cubic),
-                useNativeDriver: true,
-            }).start(({ finished }) => {
-                if (finished) setMounted(false);
-            });
-        }
-    }, [visible, initialTab, mounted, progress]);
-
-    const translateY = progress.interpolate({
-        inputRange: [0, 1],
-        outputRange: [sheetHeight.current || windowHeight, 0],
-    });
+        if (visible) setTab(initialTab);
+    }, [visible, initialTab]);
 
     const savedSet = savedStems instanceof Set ? savedStems : new Set();
 
     return (
-        <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose}>
-            <View style={styles.overlay}>
-                <AnimatedPressable
-                    style={[styles.backdrop, { opacity: progress }]}
-                    onPress={onClose}
-                />
-                <Animated.View
-                    style={[styles.sheet, { transform: [{ translateY }] }]}
-                    onLayout={(e) => {
-                        sheetHeight.current = e.nativeEvent.layout.height;
-                    }}
-                >
-                    <View style={styles.handleWrap}>
-                        <View style={styles.handle} />
-                    </View>
-
-                    <View style={styles.tabsRow}>
-                        <TouchableOpacity
-                            onPress={() => setTab('saved')}
-                            style={[styles.tab, tab === 'saved' && styles.tabActive]}
-                            accessibilityRole="tab"
-                            accessibilityState={{ selected: tab === 'saved' }}
-                        >
-                            <Text style={[styles.tabText, tab === 'saved' && styles.tabTextActive]}>
-                                {t('read.savedTab', { count: savedWords.length })}
-                            </Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            onPress={() => setTab('suggested')}
-                            style={[styles.tab, tab === 'suggested' && styles.tabActive]}
-                            accessibilityRole="tab"
-                            accessibilityState={{ selected: tab === 'suggested' }}
-                        >
-                            <Text style={[styles.tabText, tab === 'suggested' && styles.tabTextActive]}>
-                                {t('read.suggestedTab')}
-                            </Text>
-                        </TouchableOpacity>
-                    </View>
+        <PaperSheet visible={visible} onClose={onClose} maxHeightRatio={0.82} style={styles.sheet}>
+                    <PaperTabs
+                        style={styles.tabsRow}
+                        value={tab}
+                        onChange={setTab}
+                        tabs={[
+                            { key: 'saved', label: t('read.savedTab', { count: savedWords.length }) },
+                            { key: 'suggested', label: t('read.suggestedTab') },
+                        ]}
+                    />
 
                     {tab === 'saved' ? (
                         savedWords.length === 0 ? (
@@ -188,9 +123,7 @@ const SavedWordsPanel = ({
                             </>
                         )
                     )}
-                </Animated.View>
-            </View>
-        </Modal>
+        </PaperSheet>
     );
 };
 
@@ -204,13 +137,8 @@ const createStyles = (colors, insets = { bottom: 0 }) => StyleSheet.create({
         backgroundColor: colors.overlay,
     },
     sheet: {
-        backgroundColor: colors.surface,
-        borderTopLeftRadius: radii.xl,
-        borderTopRightRadius: radii.xl,
         paddingHorizontal: spacing.xl,
-        paddingTop: spacing.sm,
         paddingBottom: (insets?.bottom ?? 0) + spacing.lg,
-        maxHeight: '86%',
         minHeight: '48%',
     },
     handleWrap: { alignItems: 'center', paddingVertical: spacing.xs },
@@ -221,12 +149,6 @@ const createStyles = (colors, insets = { bottom: 0 }) => StyleSheet.create({
         backgroundColor: colors.borderStrong,
     },
     tabsRow: {
-        flexDirection: 'row',
-        gap: spacing.xs,
-        backgroundColor: colors.surfaceMuted,
-        borderRadius: radii.pill,
-        padding: 4,
-        marginTop: spacing.sm,
         marginBottom: spacing.md,
     },
     tab: {

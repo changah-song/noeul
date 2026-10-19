@@ -1,5 +1,8 @@
-import React, { useMemo } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Animated, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { springs, springTo, useReducedMotion } from '../../theme/motion';
+
+const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from '../../hooks/useTranslation';
 import { colors as defaultColors, elevation, fontFamilies, layout, radii, useTheme } from '../../theme';
@@ -108,6 +111,21 @@ const TocDrawer = ({
         )
         : t('read.chapter');
 
+    // Kept mounted while it springs closed.
+    const [mounted, setMounted] = useState(visible);
+    const drop = useRef(new Animated.Value(0)).current;
+    const reduced = useReducedMotion();
+    useEffect(() => {
+        if (visible) {
+            setMounted(true);
+            springTo(drop, 1, { spring: reduced ? springs.snappy : springs.standard }).start();
+        } else {
+            springTo(drop, 0, { spring: springs.snappy }).start(({ finished }) => {
+                if (finished) setMounted(false);
+            });
+        }
+    }, [drop, reduced, visible]);
+
     const palette = {
         sheet: colors.readerSurface,
         border: colors.readerBorder,
@@ -129,25 +147,33 @@ const TocDrawer = ({
         progressText: colors.readerProgressFill,
     };
 
+    if (!mounted) return null;
+
+    // Drops down from the title that opened it and goes back up the same way.
+    const dropTranslate = drop.interpolate({ inputRange: [0, 1], outputRange: [-16, 0] });
+    const dropScale = drop.interpolate({ inputRange: [0, 1], outputRange: [0.97, 1] });
+
     return (
         <Modal
-            visible={visible}
+            visible
             transparent
-            animationType="fade"
+            animationType="none"
             onRequestClose={onClose}
         >
             <View style={styles.overlay}>
-                <Pressable
-                    style={[styles.backdrop, { backgroundColor: colors.readerTocScrim }]}
+                <AnimatedPressable
+                    style={[styles.backdrop, { backgroundColor: colors.readerTocScrim, opacity: drop }]}
                     onPress={onClose}
                 />
-                <View
+                <Animated.View
                     style={[
                         styles.dropdown,
                         {
                             top: insets.top + layout.readerHeaderHeight - 2,
                             backgroundColor: palette.sheet,
                             borderColor: palette.border,
+                            opacity: drop,
+                            transform: [{ translateY: dropTranslate }, { scale: dropScale }],
                         },
                     ]}
                 >
@@ -248,7 +274,7 @@ const TocDrawer = ({
                             );
                         })}
                     </ScrollView>
-                </View>
+                </Animated.View>
             </View>
         </Modal>
     );

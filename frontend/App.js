@@ -13,13 +13,13 @@ import {
     Inter_700Bold,
 } from '@expo-google-fonts/inter';
 import {
-    Fraunces_400Regular,
-    Fraunces_500Medium,
-    Fraunces_400Regular_Italic,
-    Fraunces_500Medium_Italic,
-    Fraunces_600SemiBold,
-    Fraunces_700Bold,
-} from '@expo-google-fonts/fraunces';
+    Newsreader_400Regular,
+    Newsreader_500Medium,
+    Newsreader_400Regular_Italic,
+    Newsreader_500Medium_Italic,
+    Newsreader_600SemiBold,
+    Newsreader_700Bold,
+} from '@expo-google-fonts/newsreader';
 import {
     NotoSerifKR_400Regular,
     NotoSerifKR_500Medium,
@@ -27,7 +27,7 @@ import {
     NotoSerifKR_700Bold,
 } from '@expo-google-fonts/noto-serif-kr';
 import LocalDataDecisionModal from './components/Auth/LocalDataDecisionModal';
-import { tabScreenOptions } from './components/shared/TabBar';
+import { PaperTabBar, tabScreenOptions } from './components/shared/TabBar';
 import { AppProvider } from './contexts/AppContext';
 import { LocalOwnerProvider, useLocalOwner } from './contexts/LocalOwnerContext';
 import { VocabWordsProvider } from './contexts/VocabWordsContext';
@@ -106,12 +106,13 @@ function AppContent() {
         'FFSans-Medium': Inter_500Medium,
         'FFSans-SemiBold': Inter_600SemiBold,
         'FFSans-Bold': Inter_700Bold,
-        'FFDisplay-Regular': Fraunces_400Regular,
-        'FFDisplay-Medium': Fraunces_500Medium,
-        'FFDisplay-Italic': Fraunces_400Regular_Italic,
-        'FFDisplay-MediumItalic': Fraunces_500Medium_Italic,
-        'FFDisplay-SemiBold': Fraunces_600SemiBold,
-        'FFDisplay-Bold': Fraunces_700Bold,
+        // Display serif (Paper redesign): Newsreader, an editorial text face.
+        'FFDisplay-Regular': Newsreader_400Regular,
+        'FFDisplay-Medium': Newsreader_500Medium,
+        'FFDisplay-Italic': Newsreader_400Regular_Italic,
+        'FFDisplay-MediumItalic': Newsreader_500Medium_Italic,
+        'FFDisplay-SemiBold': Newsreader_600SemiBold,
+        'FFDisplay-Bold': Newsreader_700Bold,
         'FFSerif-Regular': NotoSerifKR_400Regular,
         'FFSerif-Medium': NotoSerifKR_500Medium,
         'FFSerif-SemiBold': NotoSerifKR_600SemiBold,
@@ -563,6 +564,7 @@ function ThemedAppShell({
                 onStateChange={trackScreen}
             >
                 <Tab.Navigator
+                    tabBar={(props) => <PaperTabBar {...props} />}
                     sceneContainerStyle={sceneContainerStyle}
                     screenOptions={(props) => tabScreenOptions(props, {
                         themeColors,

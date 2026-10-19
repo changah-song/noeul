@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     Animated,
-    Easing,
     Modal,
     PanResponder,
     Pressable,
@@ -15,6 +14,7 @@ import {
 import { Feather, MaterialIcons } from '@expo/vector-icons';
 import { Slider } from 'react-native-elements';
 import { useTranslation } from '../../hooks/useTranslation';
+import { project, rubberband, springs, springTo } from '../../theme/motion';
 import { fontFamilies, radii, spacing } from '../../theme';
 import { ANNOTATION_SCOPES } from '../../services/readerAnnotations';
 import {
@@ -48,9 +48,10 @@ import {
 // Share of the window the sheet occupies. Fixed (not content-sized) so every
 // tab opens at the same height and long tabs scroll inside the sheet.
 export const SHEET_HEIGHT_RATIO = 0.68;
-// Drag past this share of the sheet (or flick faster than DISMISS_VELOCITY)
-// dismisses it; anything less springs back.
-const DISMISS_DRAG_RATIO = 0.22;
+// A drag whose projected landing point (release position plus where its
+// velocity is heading) passes this share of the sheet, or a flick faster than
+// DISMISS_VELOCITY, dismisses it; anything less springs back.
+const DISMISS_DRAG_RATIO = 0.4;
 const DISMISS_VELOCITY = 0.6;
 
 export const SETTINGS_TABS = ['text', 'words', 'focus'];
@@ -117,22 +118,14 @@ const ReaderSettingsSheet = ({
     sheetHeightRef.current = sheetHeight;
 
     useEffect(() => {
+        // Springs, not timed tweens: opening or closing starts from wherever
+        // the sheet is, so a quick re-tap re-targets it mid-flight.
         if (visible) {
             setMounted(true);
             dragY.setValue(0);
-            Animated.timing(slideAnim, {
-                toValue: 1,
-                duration: 280,
-                easing: Easing.out(Easing.cubic),
-                useNativeDriver: true,
-            }).start();
+            springTo(slideAnim, 1, { spring: springs.standard }).start();
         } else {
-            Animated.timing(slideAnim, {
-                toValue: 0,
-                duration: 200,
-                easing: Easing.in(Easing.cubic),
-                useNativeDriver: true,
-            }).start(({ finished }) => {
+            springTo(slideAnim, 0, { spring: springs.snappy }).start(({ finished }) => {
                 if (finished) {
                     setMounted(false);
                     dragY.setValue(0);
@@ -151,24 +144,31 @@ const ReaderSettingsSheet = ({
         onMoveShouldSetPanResponder: (_evt, gesture) => (
             gesture.dy > 8 && gesture.dy > Math.abs(gesture.dx) * 1.5
         ),
+        onPanResponderGrant: () => {
+            dragY.stopAnimation();
+        },
         onPanResponderMove: (_evt, gesture) => {
-            dragY.setValue(Math.max(0, gesture.dy));
+            // 1:1 downward; upward it resists instead of stopping dead.
+            dragY.setValue(gesture.dy >= 0 ? gesture.dy : rubberband(gesture.dy, sheetHeightRef.current));
         },
         onPanResponderRelease: (_evt, gesture) => {
-            const shouldDismiss = gesture.dy > sheetHeightRef.current * DISMISS_DRAG_RATIO
-                || gesture.vy > DISMISS_VELOCITY;
-            if (shouldDismiss) {
+            // Decide from where the flick is heading, not where it let go.
+            const projected = gesture.dy + project(gesture.vy);
+            if (projected > sheetHeightRef.current * DISMISS_DRAG_RATIO || gesture.vy > DISMISS_VELOCITY) {
+                springTo(dragY, sheetHeightRef.current, {
+                    spring: springs.flick,
+                    gestureVelocity: gesture.vy,
+                }).start();
                 onCloseRef.current?.();
                 return;
             }
-            Animated.spring(dragY, {
-                toValue: 0,
-                bounciness: 4,
-                useNativeDriver: true,
+            springTo(dragY, 0, {
+                spring: Math.abs(gesture.vy) > 0.3 ? springs.flick : springs.standard,
+                gestureVelocity: gesture.vy,
             }).start();
         },
         onPanResponderTerminate: () => {
-            Animated.spring(dragY, { toValue: 0, bounciness: 4, useNativeDriver: true }).start();
+            springTo(dragY, 0).start();
         },
     }), [dragY]);
 

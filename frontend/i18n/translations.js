@@ -7,6 +7,7 @@
 export const UI_TRANSLATIONS = {
   en: {
     'tabs.home': 'Home',
+    'tabs.library': 'Library',
     'tabs.read': 'Read',
     'tabs.learn': 'Learn',
     'tabs.ocr': 'OCR',
@@ -1012,6 +1013,7 @@ export const UI_TRANSLATIONS = {
   },
   fr: {
     'tabs.home': 'Accueil',
+    'tabs.library': 'Bibliothèque',
     'tabs.read': 'Lire',
     'tabs.learn': 'Apprendre',
     'tabs.ocr': 'OCR',
@@ -2017,6 +2019,7 @@ export const UI_TRANSLATIONS = {
   },
   es: {
     'tabs.home': 'Inicio',
+    'tabs.library': 'Biblioteca',
     'tabs.read': 'Leer',
     'tabs.learn': 'Aprender',
     'tabs.ocr': 'OCR',
@@ -3022,6 +3025,7 @@ export const UI_TRANSLATIONS = {
   },
   ar: {
     'tabs.home': 'الرئيسية',
+    'tabs.library': 'المكتبة',
     'tabs.read': 'اقرأ',
     'tabs.learn': 'تعلّم',
     'tabs.ocr': 'OCR',
@@ -4027,6 +4031,7 @@ export const UI_TRANSLATIONS = {
   },
   mn: {
     'tabs.home': 'Нүүр',
+    'tabs.library': 'Номын сан',
     'tabs.read': 'Унших',
     'tabs.learn': 'Сурах',
     'tabs.ocr': 'OCR',
@@ -5032,6 +5037,7 @@ export const UI_TRANSLATIONS = {
   },
   vi: {
     'tabs.home': 'Trang chủ',
+    'tabs.library': 'Thư viện',
     'tabs.read': 'Đọc',
     'tabs.learn': 'Học',
     'tabs.ocr': 'OCR',
@@ -6037,6 +6043,7 @@ export const UI_TRANSLATIONS = {
   },
   th: {
     'tabs.home': 'หน้าแรก',
+    'tabs.library': 'คลังหนังสือ',
     'tabs.read': 'อ่าน',
     'tabs.learn': 'เรียน',
     'tabs.ocr': 'OCR',
@@ -7042,6 +7049,7 @@ export const UI_TRANSLATIONS = {
   },
   id: {
     'tabs.home': 'Beranda',
+    'tabs.library': 'Pustaka',
     'tabs.read': 'Baca',
     'tabs.learn': 'Belajar',
     'tabs.ocr': 'OCR',
@@ -8047,6 +8055,7 @@ export const UI_TRANSLATIONS = {
   },
   ru: {
     'tabs.home': 'Главная',
+    'tabs.library': 'Библиотека',
     'tabs.read': 'Читать',
     'tabs.learn': 'Учить',
     'tabs.ocr': 'OCR',
@@ -9052,6 +9061,7 @@ export const UI_TRANSLATIONS = {
   },
   zh: {
     'tabs.home': '首页',
+    'tabs.library': '书库',
     'tabs.read': '阅读',
     'tabs.learn': '学习',
     'tabs.ocr': 'OCR',
@@ -10057,6 +10067,7 @@ export const UI_TRANSLATIONS = {
   },
   'zh-Hant': {
     'tabs.home': '首頁',
+    'tabs.library': '書庫',
     'tabs.read': '閱讀',
     'tabs.learn': '學習',
     'tabs.ocr': 'OCR',
@@ -11062,6 +11073,7 @@ export const UI_TRANSLATIONS = {
   },
   ko: {
     'tabs.home': '홈',
+    'tabs.library': '서재',
     'tabs.read': '읽기',
     'tabs.learn': '학습',
     'tabs.ocr': 'OCR',

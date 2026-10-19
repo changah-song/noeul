@@ -92,8 +92,10 @@ import {
 import { loadLevelUnderlineTerms } from '../hooks/useLevelUnderlineTerms';
 import { selectExposureCredits } from '../services/readerExposure';
 import useSavedWordFades from '../hooks/useSavedWordFades';
+import PressableScale from '../components/ui/PressableScale';
 import { highlightStrengthsFor } from '../services/savedWordFade';
 import { exposureDwellIsPlausible } from '../services/abilityModel';
+import { project, rubberband, springs, springTo } from '../theme/motion';
 import { ANNOTATION_SCOPES, annotationsBySurface, buildAnnotatedLevelTerms } from '../services/readerAnnotations';
 import { createNativeReaderThemeTokens, radii, spacing, textStyles, useTheme } from '../theme';
 
@@ -1466,17 +1468,46 @@ const Read = ({
     // Swipe-down anywhere on the lookup panel dismisses it (mirrors the hardware
     // back / close-button paths). Only claims clearly downward drags so it doesn't
     // fight scrolling inside the panel.
+    // The word panel follows a downward drag 1:1 (upward it resists, rubber-
+    // band), and on release projects where the flick is heading: past ~90 px
+    // it closes, carrying the finger's speed into the spring; otherwise it
+    // springs back from wherever it was let go.
+    const lookupDragY = useRef(new Animated.Value(0)).current;
+    const lookupDragDirectionRef = useRef(1);
     const lookupPanResponder = useMemo(() => PanResponder.create({
         onMoveShouldSetPanResponder: (_evt, gesture) => (
-            gesture.dy > 14 && gesture.dy > Math.abs(gesture.dx)
+            Math.abs(gesture.dy) > 8 && Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.3
         ),
+        onPanResponderGrant: () => {
+            lookupDragY.stopAnimation();
+        },
+        onPanResponderMove: (_evt, gesture) => {
+            const away = gesture.dy * lookupDragDirectionRef.current;
+            const shown = away >= 0 ? away : rubberband(away, 400);
+            lookupDragY.setValue(shown * lookupDragDirectionRef.current);
+        },
         onPanResponderRelease: (_evt, gesture) => {
-            if (gesture.dy > 40) {
+            const direction = lookupDragDirectionRef.current;
+            const away = gesture.dy * direction;
+            const projected = away + project(gesture.vy * direction);
+            if (projected > 90) {
+                springTo(lookupDragY, 360 * direction, {
+                    spring: springs.flick,
+                    gestureVelocity: gesture.vy,
+                }).start(() => lookupDragY.setValue(0));
                 dismissLookup();
+                return;
             }
+            springTo(lookupDragY, 0, {
+                spring: Math.abs(gesture.vy) > 0.3 ? springs.flick : springs.standard,
+                gestureVelocity: gesture.vy,
+            }).start();
+        },
+        onPanResponderTerminate: () => {
+            springTo(lookupDragY, 0).start();
         },
         onPanResponderTerminationRequest: () => true,
-    }), [dismissLookup]);
+    }), [dismissLookup, lookupDragY]);
 
     useEffect(() => {
         setSettings((current) => {
@@ -1588,6 +1619,11 @@ const Read = ({
     // chapter, so a short first chapter read "100%" while Home said 50%.)
     const progressPercent = Math.round(bookProgress * 100);
     const progressLabel = `${progressPercent}%`;
+    // The settings button reads in the book's script: 가 for Korean, 文 for
+    // Chinese, Aa otherwise.
+    const readerSettingsGlyph = String(activeBookLanguage || '').startsWith('ko')
+        ? '가'
+        : (String(activeBookLanguage || '').startsWith('zh') ? '文' : 'Aa');
     const progressFillWidth = `${progressPercent}%`;
     const chapterIndexLabel = Number.isInteger(activeSpineIndex)
         ? `${t('read.chapter')} ${activeSpineIndex + 1}`
@@ -3040,6 +3076,8 @@ const Read = ({
     // Focus mode always presents the lookup panel from the bottom so the
     // anchored sentence can lift above it.
     const shouldPlaceLookupAtTop = lookupPlacement === 'top' && !focusMode;
+    // Dragging the panel away: down when it sits at the bottom, up at the top.
+    lookupDragDirectionRef.current = shouldPlaceLookupAtTop ? -1 : 1;
     const readerFontSize = Math.round(clampNumber(
         settings.fontSize,
         FONT_SIZE_MIN,
@@ -3696,7 +3734,7 @@ const Read = ({
             {!isFullscreen && currentBook ? (
                 <View style={[styles.headerBar, { paddingTop: insets.top + spacing.xs }]}>
                     <View style={styles.headerLeft}>
-                        <TouchableOpacity
+                        <PressableScale
                             style={styles.headerIconButton}
                             onPress={toggleBookmark}
                             onLongPress={openBeforeYouGo}
@@ -3706,17 +3744,17 @@ const Read = ({
                         >
                             <MaterialIcons
                                 name={activeBookmark ? 'bookmark' : 'bookmark-border'}
-                                size={20}
-                                color={activeBookmark ? themeColors.inkSlate : themeColors.textSecondary}
+                                size={21}
+                                color={activeBookmark ? themeColors.tint : themeColors.textSecondary}
                             />
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={styles.savedButton}
+                        </PressableScale>
+                        <PressableScale
+                            style={styles.headerIconButton}
                             onPress={() => openSavedPanel('saved')}
                             accessibilityRole="button"
                             accessibilityLabel={t('read.savedTab', { count: bookSavedWords.length })}
                         >
-                            <MaterialCommunityIcons name="cards-outline" size={22} color={themeColors.textSecondary} />
+                            <MaterialCommunityIcons name="cards-outline" size={21} color={themeColors.textSecondary} />
                             {bookSavedWords.length > 0 ? (
                                 <View style={styles.savedBadge}>
                                     <Text style={styles.savedBadgeText}>
@@ -3724,9 +3762,9 @@ const Read = ({
                                     </Text>
                                 </View>
                             ) : null}
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={styles.headerIconButton}
+                        </PressableScale>
+                        <PressableScale
+                            style={[styles.headerIconButton, focusMode && styles.headerIconButtonActive]}
                             onPress={toggleFocusMode}
                             accessibilityRole="button"
                             accessibilityState={{ selected: focusMode }}
@@ -3734,12 +3772,12 @@ const Read = ({
                         >
                             <MaterialIcons
                                 name="visibility"
-                                size={21}
-                                color={focusMode ? themeColors.inkSlate : themeColors.textSecondary}
+                                size={20}
+                                color={focusMode ? themeColors.tint : themeColors.textSecondary}
                             />
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={styles.headerIconButton}
+                        </PressableScale>
+                        <PressableScale
+                            style={[styles.headerIconButton, listenActive && styles.headerIconButtonActive]}
                             onPress={() => (listenActive ? pauseListening({ keepActive: false }) : resumeListening())}
                             accessibilityRole="button"
                             accessibilityState={{ selected: listenActive }}
@@ -3748,44 +3786,49 @@ const Read = ({
                             <MaterialIcons
                                 name="headset"
                                 size={20}
-                                color={listenActive ? themeColors.inkSlate : themeColors.textSecondary}
+                                color={listenActive ? themeColors.tint : themeColors.textSecondary}
                             />
-                        </TouchableOpacity>
+                        </PressableScale>
                     </View>
 
-                    <View style={styles.headerSpacer} />
-
-                    <View style={styles.headerControls}>
-                        <Pressable
-                            disabled={toc.length === 0}
-                            onPress={() => setShowToc(true)}
-                            accessibilityRole="button"
-                            style={({ pressed }) => ([
-                                styles.progressCluster,
-                                toc.length === 0 && styles.progressClusterDisabled,
-                                pressed && toc.length > 0 && styles.progressClusterPressed,
-                            ])}
-                        >
+                    {/* Where am I: the book and how far in. Opens the contents. */}
+                    <PressableScale
+                        disabled={toc.length === 0}
+                        onPress={() => setShowToc(true)}
+                        accessibilityRole="button"
+                        accessibilityLabel={`${activeBook?.title || ''} ${progressLabel}`}
+                        style={styles.headerTitleCluster}
+                        scaleTo={0.98}
+                    >
+                        <Text numberOfLines={1} style={styles.headerTitle}>{activeBook?.title || ''}</Text>
+                        <View style={styles.headerProgressRow}>
                             <View style={styles.progressTrack}>
                                 <View style={[styles.progressFill, { width: progressFillWidth }]} />
                             </View>
                             <Text numberOfLines={1} style={styles.controlLabel}>{progressLabel}</Text>
-                        </Pressable>
-                        <TouchableOpacity
+                        </View>
+                    </PressableScale>
+
+                    <View style={styles.headerControls}>
+                        <PressableScale
                             style={styles.headerIconButton}
                             onPress={() => setIsFullscreen(true)}
                             accessibilityRole="button"
                             accessibilityLabel={t('read.enterFullscreen')}
                         >
-                            <Feather name="maximize" size={19} color={themeColors.textSecondary} />
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={styles.settingsButton}
+                            <Feather name="maximize" size={18} color={themeColors.textSecondary} />
+                        </PressableScale>
+                        <PressableScale
+                            style={[styles.headerIconButton, showMenu && styles.headerIconButtonActive]}
                             onPress={() => setShowMenu((prev) => !prev)}
                             accessibilityRole="button"
+                            accessibilityState={{ expanded: showMenu }}
+                            accessibilityLabel={t('read.settings')}
                         >
-                            <MaterialIcons name="menu" size={22} color={showMenu ? themeColors.inkSlate : themeColors.textSecondary} />
-                        </TouchableOpacity>
+                            <Text style={[styles.settingsGlyph, { color: showMenu ? themeColors.tint : themeColors.text }]}>
+                                {readerSettingsGlyph}
+                            </Text>
+                        </PressableScale>
                     </View>
                 </View>
             ) : null}
@@ -3980,11 +4023,12 @@ const Read = ({
                 ]}
                 pointerEvents="box-none"
             >
-                <View
+                <Animated.View
                     onLayout={(event) => {
                         setLookupPanelHeight(event?.nativeEvent?.layout?.height ?? 0);
                     }}
-                    {...(shouldPlaceLookupAtTop ? {} : lookupPanResponder.panHandlers)}
+                    style={{ transform: [{ translateY: lookupDragY }] }}
+                    {...lookupPanResponder.panHandlers}
                 >
                     <TopSection
                         highlightedWord={highlightedWord}
@@ -4002,7 +4046,7 @@ const Read = ({
                         savedWords={savedWordsList}
                         translationVisualState={translationBannerVisualState}
                     />
-                </View>
+                </Animated.View>
             </View>
 
             {currentBook && !highlightedWord && showLookupHint ? (
@@ -4098,23 +4142,50 @@ const createStyles = (themeColors) => StyleSheet.create({
     headerBar: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 10,
-        paddingHorizontal: 16,
-        paddingBottom: 10,
+        gap: 6,
+        paddingHorizontal: 10,
+        paddingBottom: 6,
         backgroundColor: themeColors.readerPaper,
-        borderBottomWidth: 1,
-        borderBottomColor: themeColors.readerHairline,
     },
     headerLeft: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 4,
+        gap: 0,
     },
     headerIconButton: {
-        width: 30,
-        height: 42,
+        width: 40,
+        height: 44,
+        borderRadius: 20,
         alignItems: 'center',
         justifyContent: 'center',
+    },
+    headerIconButtonActive: {
+        backgroundColor: themeColors.tintSoft,
+    },
+    headerTitleCluster: {
+        flex: 1,
+        minWidth: 0,
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 3,
+        minHeight: 44,
+    },
+    headerTitle: {
+        fontFamily: 'FFSerif-SemiBold',
+        fontSize: 14,
+        lineHeight: 19,
+        color: themeColors.readerBodyInk,
+        maxWidth: '100%',
+    },
+    headerProgressRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+    },
+    settingsGlyph: {
+        fontFamily: 'FFSerif-SemiBold',
+        fontSize: 18,
+        lineHeight: 22,
     },
     savedButton: {
         width: 34,
@@ -4132,7 +4203,7 @@ const createStyles = (themeColors) => StyleSheet.create({
         paddingHorizontal: 4,
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: themeColors.inkSlate,
+        backgroundColor: themeColors.tint,
         borderWidth: 1.5,
         borderColor: themeColors.readerPaper,
     },
@@ -4176,8 +4247,8 @@ const createStyles = (themeColors) => StyleSheet.create({
         backgroundColor: themeColors.transparent,
     },
     progressTrack: {
-        width: 60,
-        height: 3,
+        width: 44,
+        height: 2,
         borderRadius: 2,
         backgroundColor: themeColors.readerProgressTrack,
         overflow: 'hidden',
@@ -4189,11 +4260,10 @@ const createStyles = (themeColors) => StyleSheet.create({
     },
     controlLabel: {
         fontFamily: 'FFSans-Medium',
-        fontSize: 13,
-        lineHeight: 17,
+        fontSize: 11,
+        lineHeight: 14,
         color: themeColors.readerMutedInk,
-        minWidth: 33,
-        textAlign: 'right',
+        textAlign: 'left',
         fontVariant: ['tabular-nums'],
     },
     reader: {

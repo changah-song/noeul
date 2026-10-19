@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Easing, PanResponder, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { springs, springTo } from '../../../theme/motion';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { useTranslation } from '../../../hooks/useTranslation';
@@ -139,16 +140,14 @@ const TopSection = ({
     useEffect(() => {
         if (highlightedWord) {
             setVisibleWord(highlightedWord);
+            // Rises on a critically damped spring from wherever it is (a
+            // new word tapped while the panel is still leaving re-targets it
+            // instead of waiting); the fade is quick so content reads at once.
             Animated.parallel([
-                Animated.timing(translateY, {
-                    toValue: 0,
-                    duration: 240,
-                    easing: Easing.out(Easing.cubic),
-                    useNativeDriver: true,
-                }),
+                springTo(translateY, 0, { spring: springs.standard }),
                 Animated.timing(opacity, {
                     toValue: 1,
-                    duration: 240,
+                    duration: 140,
                     easing: Easing.out(Easing.quad),
                     useNativeDriver: true,
                 }),
@@ -158,12 +157,7 @@ const TopSection = ({
 
         prevWordRef.current = '';
         Animated.parallel([
-            Animated.timing(translateY, {
-                toValue: 24,
-                duration: 180,
-                easing: Easing.in(Easing.cubic),
-                useNativeDriver: true,
-            }),
+            springTo(translateY, 24, { spring: springs.snappy }),
             Animated.timing(opacity, {
                 toValue: 0,
                 duration: 180,
@@ -489,28 +483,28 @@ const createStyles = (colors) => StyleSheet.create({
         paddingHorizontal: 24,
         paddingTop: 12,
         paddingBottom: 26,
-        borderTopLeftRadius: 16,
-        borderTopRightRadius: 16,
+        borderTopLeftRadius: 24,
+        borderTopRightRadius: 24,
         borderBottomLeftRadius: 0,
         borderBottomRightRadius: 0,
         backgroundColor: colors.surfaceElevated,
-        borderWidth: 1,
+        borderWidth: 0,
         borderColor: colors.border,
         borderBottomWidth: 0,
         shadowColor: colors.shadow,
-        shadowOffset: { width: 0, height: -10 },
+        shadowOffset: { width: 0, height: -12 },
         shadowOpacity: 1,
-        shadowRadius: 30,
-        elevation: 10,
+        shadowRadius: 40,
+        elevation: 14,
         overflow: 'hidden',
     },
     sheetTop: {
         borderTopLeftRadius: 0,
         borderTopRightRadius: 0,
-        borderBottomLeftRadius: 16,
-        borderBottomRightRadius: 16,
-        borderBottomWidth: 1,
-        shadowOffset: { width: 0, height: 10 },
+        borderBottomLeftRadius: 24,
+        borderBottomRightRadius: 24,
+        borderBottomWidth: 0,
+        shadowOffset: { width: 0, height: 12 },
     },
     sheetDictionary: {
         paddingHorizontal: 0,
@@ -584,10 +578,8 @@ const createStyles = (colors) => StyleSheet.create({
         marginRight: 3,
     },
     copyLabel: {
-        fontFamily: fontFamilies.sansMedium,
-        fontSize: 10,
-        letterSpacing: 1.6,
-        textTransform: 'uppercase',
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 13,
     },
     content: {
         marginTop: 0,
@@ -627,12 +619,10 @@ const createStyles = (colors) => StyleSheet.create({
         backgroundColor: colors.borderStrong,
     },
     sheetGestureHint: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 8,
-        lineHeight: 13,
-        letterSpacing: 1.6,
-        textTransform: 'uppercase',
-        color: colors.frame,
+        fontFamily: fontFamilies.sansMedium,
+        fontSize: 12,
+        lineHeight: 16,
+        color: colors.textMuted,
     },
     contentFill: {
         flex: 1,

@@ -8,10 +8,10 @@ import {
     ScrollView,
     StyleSheet,
     Animated,
-    Easing,
 } from 'react-native';
 import { Feather, MaterialIcons } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
+import { springs, springTo } from '../../theme/motion';
 import { fontFamilies, radii, spacing } from '../../theme';
 
 const formatNoteDate = (iso, language = null) => {
@@ -63,19 +63,9 @@ const NotesLogSheet = ({
     useEffect(() => {
         if (visible) {
             setMounted(true);
-            Animated.timing(anim, {
-                toValue: 1,
-                duration: 280,
-                easing: Easing.out(Easing.cubic),
-                useNativeDriver: true,
-            }).start();
+            springTo(anim, 1, { spring: springs.standard }).start();
         } else {
-            Animated.timing(anim, {
-                toValue: 0,
-                duration: 200,
-                easing: Easing.in(Easing.cubic),
-                useNativeDriver: true,
-            }).start(({ finished }) => {
+            springTo(anim, 0, { spring: springs.snappy }).start(({ finished }) => {
                 if (finished) {
                     setMounted(false);
                 }

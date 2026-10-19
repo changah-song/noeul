@@ -10,10 +10,10 @@ import {
     KeyboardAvoidingView,
     Platform,
     Animated,
-    Easing,
     useWindowDimensions,
 } from 'react-native';
 import { useTranslation } from '../../hooks/useTranslation';
+import { springs, springTo } from '../../theme/motion';
 import { fontFamilies, radii, spacing } from '../../theme';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
@@ -54,19 +54,9 @@ const BeforeYouGoSheet = ({
             setNote('');
             setSaveFailed(false);
             setMounted(true);
-            Animated.timing(progress, {
-                toValue: 1,
-                duration: 260,
-                easing: Easing.out(Easing.cubic),
-                useNativeDriver: true,
-            }).start();
+            springTo(progress, 1, { spring: springs.standard }).start();
         } else if (mounted) {
-            Animated.timing(progress, {
-                toValue: 0,
-                duration: 200,
-                easing: Easing.in(Easing.cubic),
-                useNativeDriver: true,
-            }).start(({ finished }) => {
+            springTo(progress, 0, { spring: springs.snappy }).start(({ finished }) => {
                 if (finished) setMounted(false);
             });
         }

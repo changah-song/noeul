@@ -4,3 +4,7 @@ export { default as SectionHeader } from './SectionHeader';
 export { default as ProgressBar } from './ProgressBar';
 export { default as StatChip } from './StatChip';
 export { default as IconButton } from './IconButton';
+export { default as PressableScale } from './PressableScale';
+export { default as PaperButton } from './PaperButton';
+export { default as PaperTabs } from './PaperTabs';
+export { default as PaperSheet } from './PaperSheet';
