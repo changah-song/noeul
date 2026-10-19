@@ -24,9 +24,10 @@ import NativeEpubReaderView, {
     addListenControlListener,
 } from '../modules/native-epub-reader/src/NativeEpubReaderView';
 import ListenBar from '../components/Read/ListenBar';
+import ListenVoiceSheet from '../components/Read/ListenVoiceSheet';
 import VocabLevelModal from '../components/shared/VocabLevelModal';
 import { hasVocabSizeGrid } from '../services/vocabSizeLevels';
-import { createListenPlayer, voiceLocaleFor, LISTEN_RATES } from '../services/listenPlayer';
+import { createListenPlayer, voiceLocaleFor, voiceSampleFor, LISTEN_PITCHES, LISTEN_RATES } from '../services/listenPlayer';
 import { translateText } from '../services/api/googleTranslate';
 import {
     PREPROCESS_VERSION,
@@ -101,7 +102,16 @@ import { createNativeReaderThemeTokens, radii, spacing, textStyles, useTheme } f
 const LOOKUP_HINT_DISMISSED_KEY = 'lookupHintDismissed';
 // Listen mode preferences (speed, stop on underlined words, AI meaning).
 const LISTEN_PREFS_KEY = 'listenPrefs';
-const DEFAULT_LISTEN_PREFS = { rate: 1, explainWords: false, translateSentences: false };
+// voices: the chosen on-device voice per engine locale (ko-KR, en-US, ...);
+// a locale without one reads with the phone's default voice.
+const DEFAULT_LISTEN_PREFS = { rate: 1, pitch: 1, voices: {}, explainWords: false, translateSentences: false };
+// How one utterance in `locale` is read under the current listen prefs.
+const listenVoiceFor = (prefs, locale) => ({
+    locale,
+    rate: prefs.rate,
+    pitch: prefs.pitch,
+    voice: prefs.voices?.[locale] || null,
+});
 // Engine failures in a row before listen mode gives up (one bad sentence is skipped).
 const LISTEN_MAX_CONSECUTIVE_ERRORS = 3;
 const cleanListenText = (value) => (typeof value === 'string' ? value.trim() : '');
@@ -3276,8 +3286,9 @@ const Read = ({
         () => annotationsBySurface(annotationRows, interfaceLanguage),
         [annotationRows, interfaceLanguage]
     );
+    const listenTargetLocale = voiceLocaleFor(activeBookLanguage);
     listenCtxRef.current = {
-        targetLocale: voiceLocaleFor(activeBookLanguage),
+        targetLocale: listenTargetLocale,
         interfaceLocale: voiceLocaleFor(interfaceLanguage),
         language: activeBookLanguage,
         interfaceLanguage,
@@ -3376,7 +3387,7 @@ const Read = ({
             ? (prepared.translation || translateText({ query: text, source: ctx.language, target: ctx.interfaceLanguage }).catch(() => ''))
             : null;
 
-        let outcome = await player.speakSequence([{ text, locale: ctx.targetLocale, rate: prefs.rate }]);
+        let outcome = await player.speakSequence([{ text, ...listenVoiceFor(prefs, ctx.targetLocale) }]);
         if (!mine()) return;
         if (outcome === 'error') {
             if (failed()) stepOn();
@@ -3388,7 +3399,7 @@ const Read = ({
             const translated = cleanListenText(await translation);
             if (!mine()) return;
             if (translated) {
-                outcome = await player.speakSequence([{ text: translated, locale: ctx.interfaceLocale, rate: prefs.rate }]);
+                outcome = await player.speakSequence([{ text: translated, ...listenVoiceFor(prefs, ctx.interfaceLocale) }]);
                 if (!mine()) return;
             }
         }
@@ -3401,12 +3412,11 @@ const Read = ({
                 const gloss = ctx.glossIndex.get(wordText)?.gloss || cleanListenText(word?.gloss);
                 const parts = [{
                     text: wordText,
-                    locale: ctx.targetLocale,
-                    rate: prefs.rate,
+                    ...listenVoiceFor(prefs, ctx.targetLocale),
                     before: () => setSpokenWord(word),
                 }];
                 if (gloss) {
-                    parts.push({ text: gloss, locale: ctx.interfaceLocale, rate: prefs.rate });
+                    parts.push({ text: gloss, ...listenVoiceFor(prefs, ctx.interfaceLocale) });
                 }
                 outcome = await player.speakSequence(parts);
                 if (!mine()) return;
@@ -3517,10 +3527,49 @@ const Read = ({
         AsyncStorage.setItem(LISTEN_PREFS_KEY, JSON.stringify(next)).catch(() => {});
     }, []);
 
-    const cycleListenRate = useCallback(() => {
-        const index = LISTEN_RATES.indexOf(listenPrefsRef.current.rate);
-        updateListenPrefs({ rate: LISTEN_RATES[(index + 1) % LISTEN_RATES.length] });
-    }, [updateListenPrefs]);
+    // The voice sheet: opening it pauses the reading so samples can play, and
+    // closing it picks the reading back up with the new settings.
+    const [voiceSheetOpen, setVoiceSheetOpen] = useState(false);
+    const [previewingVoice, setPreviewingVoice] = useState(undefined);
+    const resumeAfterVoiceSheetRef = useRef(false);
+    const openVoiceSheet = useCallback(() => {
+        resumeAfterVoiceSheetRef.current = listenPlayingRef.current;
+        if (listenPlayingRef.current) pauseListening();
+        setVoiceSheetOpen(true);
+    }, [pauseListening]);
+    const closeVoiceSheet = useCallback(() => {
+        setVoiceSheetOpen(false);
+        listenPlayerRef.current?.stop();
+        setPreviewingVoice(undefined);
+        if (resumeAfterVoiceSheetRef.current) {
+            resumeAfterVoiceSheetRef.current = false;
+            resumeListening();
+        }
+    }, [resumeListening]);
+    const previewListenVoice = useCallback(async (voiceId, patch = {}) => {
+        const locale = listenCtxRef.current.targetLocale;
+        const prefs = { ...listenPrefsRef.current, ...patch };
+        setPreviewingVoice(voiceId);
+        await getListenPlayer().speakSequence([{
+            text: voiceSampleFor(locale),
+            ...listenVoiceFor({ ...prefs, voices: { ...prefs.voices, [locale]: voiceId } }, locale),
+        }]);
+        setPreviewingVoice((current) => (current === voiceId ? undefined : current));
+    }, [getListenPlayer]);
+    const currentListenVoice = () => listenPrefsRef.current.voices?.[listenCtxRef.current.targetLocale] || null;
+    const selectListenVoice = useCallback((voiceId) => {
+        const locale = listenCtxRef.current.targetLocale;
+        updateListenPrefs({ voices: { ...listenPrefsRef.current.voices, [locale]: voiceId || undefined } });
+        previewListenVoice(voiceId);
+    }, [previewListenVoice, updateListenPrefs]);
+    const changeListenRate = useCallback((rate) => {
+        updateListenPrefs({ rate });
+        previewListenVoice(currentListenVoice());
+    }, [previewListenVoice, updateListenPrefs]);
+    const changeListenPitch = useCallback((pitch) => {
+        updateListenPrefs({ pitch });
+        previewListenVoice(currentListenVoice());
+    }, [previewListenVoice, updateListenPrefs]);
 
     useEffect(() => {
         let cancelled = false;
@@ -3528,8 +3577,13 @@ const Read = ({
             .then((raw) => {
                 if (cancelled || !raw) return;
                 const parsed = JSON.parse(raw);
+                const voices = parsed?.voices && typeof parsed.voices === 'object' ? parsed.voices : {};
                 const next = {
                     rate: LISTEN_RATES.includes(parsed?.rate) ? parsed.rate : 1,
+                    pitch: LISTEN_PITCHES.includes(parsed?.pitch) ? parsed.pitch : 1,
+                    voices: Object.fromEntries(
+                        Object.entries(voices).filter(([, id]) => typeof id === 'string' && id)
+                    ),
                     explainWords: !!parsed?.explainWords,
                     translateSentences: !!parsed?.translateSentences,
                 };
@@ -3862,7 +3916,7 @@ const Read = ({
                     onTogglePlay={toggleListenPlay}
                     onPrevious={() => listenNav('prev')}
                     onNext={() => listenNav('next')}
-                    onCycleRate={cycleListenRate}
+                    onOpenVoice={openVoiceSheet}
                     onToggleExplain={() => updateListenPrefs({ explainWords: !listenPrefsRef.current.explainWords })}
                     onToggleTranslate={() => updateListenPrefs({ translateSentences: !listenPrefsRef.current.translateSentences })}
                     onClose={() => pauseListening({ keepActive: false })}
@@ -3872,6 +3926,22 @@ const Read = ({
                     themeColors={themeColors}
                 />
             ) : null}
+
+            <ListenVoiceSheet
+                visible={voiceSheetOpen}
+                onClose={closeVoiceSheet}
+                colors={themeColors}
+                insets={insets}
+                locale={listenTargetLocale}
+                rate={listenPrefs.rate}
+                pitch={listenPrefs.pitch}
+                voiceId={listenPrefs.voices?.[listenTargetLocale] || null}
+                previewingId={previewingVoice}
+                onChangeRate={changeListenRate}
+                onChangePitch={changeListenPitch}
+                onSelectVoice={selectListenVoice}
+                onPreviewVoice={previewListenVoice}
+            />
 
             <View
                 style={[
@@ -4386,6 +4456,11 @@ const createStyles = (themeColors) => StyleSheet.create({
         borderColor: themeColors.readerBorder,
         alignItems: 'center',
         justifyContent: 'center',
+    },
+    listenVoiceChip: {
+        flexDirection: 'row',
+        gap: 4,
+        paddingHorizontal: 9,
     },
     listenChipActive: {
         backgroundColor: themeColors.inkSlate,
