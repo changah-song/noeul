@@ -234,7 +234,7 @@ describe('resolveDictionaryLookup (Korean)', () => {
             word: '갔다', stem: '가다', eventType: 'lookup', sourceBookUri: 'book-1',
         }));
         expect(updateThetaFromOutcome).toHaveBeenCalledWith(expect.objectContaining({
-            stem: '가다', outcome: 0,
+            stem: '가다', word: '갔다', signal: 'lookup',
         }));
     });
 

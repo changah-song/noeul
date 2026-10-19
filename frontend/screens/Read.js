@@ -49,7 +49,6 @@ import {
     insertData,
     logInteractionEvent,
     lookupBookHighlightSurfaces,
-    lookupBookLevelSurfaces,
     lookupBookAnnotationSurfaces,
     lookupCacheByStems,
     markBookPreprocessChapter,
@@ -58,7 +57,6 @@ import {
     recordVocabContextForSurface,
     scoreWordsForProfile,
     vocabEntryExists,
-    lookupBookWordEvidence,
 } from '../services/Database';
 import { deriveCandidateReason, pickExampleSentence } from '../services/wordCandidates';
 import { findActiveBookmark } from '../services/bookmarks';
@@ -90,12 +88,8 @@ import {
     normalizeBookLanguage,
     normalizeInterfaceLanguageCode,
 } from '../constants/languages';
-import {
-    exposureDwellIsPlausible,
-    lowestUnderlinedRank,
-} from '../services/abilityModel';
-import { buildLevelUnderlineTerms } from '../services/levelUnderlineTerms';
-import { summarizeEvidenceRows } from '../services/wordEvidence';
+import { loadLevelUnderlineTerms } from '../hooks/useLevelUnderlineTerms';
+import { selectExposureCredits } from '../services/readerExposure';
 import { ANNOTATION_SCOPES, annotationsBySurface, buildAnnotatedLevelTerms } from '../services/readerAnnotations';
 import { createNativeReaderThemeTokens, radii, spacing, textStyles, useTheme } from '../theme';
 
@@ -166,19 +160,6 @@ const FOCUS_SPAN_MAX = 5;
 // (screen state + library patch + AsyncStorage write) is what made beam
 // navigation feel sluggish, so steps coalesce to the trailing event.
 const FOCUS_PAGE_CHANGE_DEBOUNCE_MS = 400;
-
-// ─── Exposure crediting ───────────────────────────────────────────────────────
-// A graded word the reader was SHOWN and moved past without tapping is weak
-// positive evidence that they knew it — the only read-mode signal that can push
-// ability UP (lookups only ever push it down). Native decides what a "unit" is
-// (a page, a focus span, or a scrolled-past block) and times the dwell; this
-// screen applies the intent filters and the plausibility gate below, then batches.
-//
-// The dwell-plausibility gate (exposureDwellIsPlausible) lives in abilityModel.js
-// so it's unit-tested alongside the exposure rate it feeds. Cap per unit so dense
-// typesetting can't move ability further than sparse — a property of the layout,
-// not of the reader.
-const EXPOSURE_MAX_PER_UNIT = 5;
 const LINE_SPACING_STEPS = [
     { value: 1.4, label: 'Compact' },
     { value: 1.65, label: 'Regular' },
@@ -639,6 +620,7 @@ const Read = ({
     // Gradient weights of the current underline snapshot, keyed by surface. Used
     // to rank exposure candidates by how uncertain the model is about them.
     const levelUnderlineWeightsRef = useRef(new Map());
+    const levelUnderlineStemsRef = useRef(new Map());
     // Saved words are excluded from exposure: they're already in the SRS loop and
     // earn graded evidence in Learn, so crediting them again through a far noisier
     // channel would double-count them.
@@ -811,41 +793,13 @@ const Read = ({
 
         let isActive = true;
 
-        const loadLevelUnderlineTerms = async () => {
-            const ability = await getProfileAbility({
-                ownerId: activeOwnerId,
-                language: activeBookLanguage,
-            });
+        const loadTerms = () => loadLevelUnderlineTerms({
+            ownerId: activeOwnerId,
+            bookUri: currentBook,
+            language: activeBookLanguage,
+        });
 
-            // No behavioral history yet → start from a neutral ability estimate
-            // and let reading move it. (Level is no longer self-reported.)
-            let theta = Number(ability?.theta);
-            if (!Number.isFinite(theta)) {
-                theta = 0;
-            }
-
-            // Prune SQL-side to the bands that can actually earn an underline at
-            // this ability, so an easy book doesn't ship its whole vocabulary
-            // across the bridge just to be dropped here.
-            const floorRank = lowestUnderlinedRank(activeBookLanguage, theta);
-            if (floorRank == null) {
-                return [];
-            }
-
-            const [rows, evidenceRows] = await Promise.all([
-                lookupBookLevelSurfaces(activeOwnerId, currentBook, floorRank, {
-                    language: activeBookLanguage,
-                }),
-                // Phase 2: the reader's own history with these words.
-                lookupBookWordEvidence(activeOwnerId, currentBook, { language: activeBookLanguage })
-                    .catch(() => []),
-            ]);
-            return buildLevelUnderlineTerms(rows, activeBookLanguage, theta, {
-                evidence: summarizeEvidenceRows(evidenceRows),
-            });
-        };
-
-        loadLevelUnderlineTerms().then((terms) => {
+        loadTerms().then((terms) => {
             if (isActive) {
                 setLevelUnderlineTerms(terms);
             }
@@ -1505,6 +1459,10 @@ const Read = ({
     );
     levelUnderlineWeightsRef.current = useMemo(
         () => new Map(levelUnderlineTerms.map(({ text, weight }) => [text, weight])),
+        [levelUnderlineTerms]
+    );
+    levelUnderlineStemsRef.current = useMemo(
+        () => new Map(levelUnderlineTerms.filter((term) => term.stem).map(({ text, stem }) => [text, stem])),
         [levelUnderlineTerms]
     );
     const isReaderWaitingForHighlights = !!currentBook && !shouldUseHeuristicHighlights && !highlightTermsReady;
@@ -2606,11 +2564,11 @@ const Read = ({
      *      cancel it
      *   3. saved words — already earning graded evidence through the SRS loop
      *
-     * Survivors are ranked by how UNCERTAIN the model is about them (gradient
-     * weight nearest the midpoint) and the top few are credited. That ordering is
-     * deliberate: skipping a word we already predict you know teaches us nothing,
-     * and skipping a word far above you is at least as likely to mean "gave up and
-     * read on" as "knew it" — the informative skips are the ones in the middle.
+     * Every survivor is credited (services/readerExposure.js): the level engine
+     * weighs each one by how much it says, and learns the reader's lookup habit
+     * by comparing lookups with words read past, so dropping some would make
+     * the reader look like they tap more than they do. Not while listen mode
+     * reads aloud.
      */
     const handleNativeExposure = useCallback(({ terms, chars, dwellMs } = {}) => {
         // Each closed unit ends the window in which a tap could have belonged to
@@ -2621,27 +2579,31 @@ const Read = ({
         if (!currentBook || !Array.isArray(terms) || terms.length === 0) {
             return;
         }
-        if (!exposureDwellIsPlausible(chars, dwellMs)) {
+        // While listen mode reads aloud, the page moves at the voice's pace and
+        // nobody taps; not looking a word up says nothing.
+        if (listenPlayingRef.current) {
             return;
         }
-
-        const weights = levelUnderlineWeightsRef.current;
-        const saved = savedSurfacesRef.current;
-        const skipped = terms
-            .filter((term) => typeof term === 'string' && term && !lookedUp.has(term) && !saved.has(term))
-            .sort((a, b) => (
-                Math.abs((weights.get(a) ?? 1) - 0.5) - Math.abs((weights.get(b) ?? 1) - 0.5)
-            ))
-            .slice(0, EXPOSURE_MAX_PER_UNIT);
+        const skipped = selectExposureCredits({
+            terms,
+            chars,
+            dwellMs,
+            lookedUp,
+            saved: savedSurfacesRef.current,
+            weights: levelUnderlineWeightsRef.current,
+        });
 
         if (skipped.length === 0) {
             return;
         }
 
+        // Credit the dictionary form (소문을 → 소문): the level engine and the
+        // event log match words by stem.
+        const stems = levelUnderlineStemsRef.current;
         applyExposureBatch({
             ownerId: activeOwnerId,
             language: activeBookLanguage,
-            stems: skipped,
+            stems: skipped.map((surface) => stems.get(surface) || surface),
             sourceBookUri: currentBook,
             dwellSeconds: Number(dwellMs) / 1000,
         }).catch((error) => {

@@ -23,7 +23,7 @@ describe('selectExposureCredits', () => {
     expect(result).toEqual(['skipped']);
   });
 
-  it('ranks by model uncertainty (weight nearest 0.5) and caps the unit', () => {
+  it('credits every word, most uncertain first', () => {
     const terms = ['w0', 'w1', 'w2', 'w3', 'w4', 'w5', 'w6'];
     const weights = new Map([
       ['w0', 0.1],
@@ -36,9 +36,18 @@ describe('selectExposureCredits', () => {
     ]);
     const result = selectExposureCredits({ ...READ, terms, weights });
 
-    expect(result).toHaveLength(EXPOSURE_MAX_PER_UNIT);
+    expect(result).toHaveLength(terms.length);
     expect(result.slice(0, 2)).toEqual(['w1', 'w3']);
-    expect(result).not.toContain('w6');
+    expect(result[result.length - 1]).toBe('w6');
+  });
+
+  it('caps a very dense unit, keeping the most uncertain words', () => {
+    const terms = Array.from({ length: EXPOSURE_MAX_PER_UNIT + 10 }, (_, i) => `w${i}`);
+    const weights = new Map(terms.map((term, i) => [term, i === 0 ? 1 : 0.5]));
+    const result = selectExposureCredits({ ...READ, chars: 100000, dwellMs: 10000000, terms, weights });
+
+    expect(result).toHaveLength(EXPOSURE_MAX_PER_UNIT);
+    expect(result).not.toContain('w0');
   });
 
   it('ignores non-strings and duplicates', () => {

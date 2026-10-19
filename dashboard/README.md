@@ -36,6 +36,19 @@ Production view is not polluted by local testing.
    `EXPO_PUBLIC_SUPABASE_ANON_KEY`. `config.js` is gitignored. Never put the
    service-role key here.
 
+## Level model page
+
+`level.html` shows how the app's level engine (`frontend/services/levelEngine.js`)
+tracks each reader: their level over time with its uncertainty band, what moved
+it (lookups, words read past, reviews, word checks), a searchable log of every
+change with the word and why, and an accuracy check across all readers
+(predicted chance against what happened).
+
+It reads `admin_level_model()` from `supabase/user_ability_log.sql`. Apply that
+file once in the SQL editor, after `app_telemetry.sql`. The app keeps its log
+rows on the device until the table exists, then uploads them. Add `?demo=1` to
+preview it with sample data.
+
 ## Running it
 
 Serve the folder with any static server, for example:

@@ -23,6 +23,7 @@ from functools import partial
 import certifi
 from dotenv import load_dotenv
 
+from word_features import attach_word_features
 from song_search import (
     GENIUS_SEARCH_URL,
     LRCLIB_SEARCH_URL,
@@ -3377,6 +3378,8 @@ async def _preprocess_zh_core(
         )
         for entry in surface_index
     ]
+    results = await loop.run_in_executor(None, attach_word_features, "zh", results)
+    surface_index = await loop.run_in_executor(None, attach_word_features, "zh", surface_index)
 
     return {
         "results": results,
@@ -4299,6 +4302,8 @@ async def _preprocess_core(text: str, krdict_key: str, max_stems=None, progress_
         )
         for entry in surface_index
     ]
+    all_results = await loop.run_in_executor(None, attach_word_features, "ko", all_results)
+    surface_index = await loop.run_in_executor(None, attach_word_features, "ko", surface_index)
     return {
         "results": all_results,
         "surface_index": surface_index,

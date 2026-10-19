@@ -559,6 +559,7 @@
     showView('dashboard');
     $('demo-banner').classList.toggle('hidden', !demoMode);
     $('signout-btn').classList.toggle('hidden', demoMode);
+    if (demoMode) $('nav-level').setAttribute('href', 'level.html?demo=1');
     syncFilterControls();
     load();
   }

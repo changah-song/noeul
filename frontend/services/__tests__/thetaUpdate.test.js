@@ -1,6 +1,6 @@
 /**
- * Tests for Phase 3.1 `updateThetaFromOutcome` — the persistence half of the
- * online ability update. See "personalization model implementation plan.md" §3.1.
+ * Tests for `updateThetaFromOutcome` — the persistence half of a level change
+ * through the level engine (services/levelEngine.js).
  *
  * Same in-memory-SQLite setup as the other Database tests (jest.config.js
  * moduleNameMapper swaps expo-sqlite for a real in-memory engine), so the REAL
@@ -8,13 +8,13 @@
  * `hanjaDatabase` is mocked because Database.js loads a binary asset Jest can't
  * bundle.
  *
- * What we lock down here (the math itself is covered purely in abilityModel.test):
+ * What we lock down here (the math itself is covered in levelEngine.test):
  *  - a correct review raises the stored theta and increments event_count;
  *  - a lapse lowers it;
- *  - a word with no graded KB rank is skipped (no write, no re-sync churn);
+ *  - a word we know nothing about is skipped (no write, no re-sync churn);
  *  - an unseeded profile gets a behavior-only row created;
  *  - every write clears synced_at so the row re-pushes to the cloud;
- *  - the lookup channel nudges with its (weaker) learning rate.
+ *  - a lookup lowers the level, and every change leaves an ability_log row.
  */
 
 jest.mock('../hanjaDatabase', () => ({
@@ -23,13 +23,15 @@ jest.mock('../hanjaDatabase', () => ({
 
 import * as SQLite from 'expo-sqlite';
 import {
+  createAbilityLogTable,
   createDictionaryCacheTable,
   createProfileAbilityTable,
   ensureProfileAbilitySeed,
+  getAbilityLog,
   getProfileAbility,
   updateThetaFromOutcome,
 } from '../Database';
-import { LOOKUP_LEARNING_RATE, seedThetaFromRank } from '../abilityModel';
+import { seedThetaFromRank } from '../abilityModel';
 
 const { __resetMockDatabases } = SQLite;
 
@@ -58,6 +60,7 @@ beforeEach(async () => {
   __resetMockDatabases();
   await createProfileAbilityTable();
   await createDictionaryCacheTable();
+  await createAbilityLogTable();
 });
 
 describe('updateThetaFromOutcome', () => {
@@ -101,27 +104,20 @@ describe('updateThetaFromOutcome', () => {
     expect(after.event_count).toBe(1);
   });
 
-  it('ignores the self-report anchor when anchor: false (calibration-quiz path)', async () => {
-    // Seed at beginner (theta0 = -3). A correct answer on a HARD word with the
-    // anchor on gets dragged back toward the seed; with anchor: false (and an
-    // explicit difficulty, as the quiz passes) it takes the full evidence step.
-    await ensureProfileAbilitySeed({ ownerId: OWNER, profileId: PROFILE, language: 'ko', rank: 1 });
-    const before = await getProfileAbility({ ownerId: OWNER, profileId: PROFILE, language: 'ko' });
+  it('takes an explicit difficulty and moves further on a word check than a review', async () => {
+    await ensureProfileAbilitySeed({ ownerId: 'check', profileId: PROFILE, language: 'ko', rank: 3 });
+    await ensureProfileAbilitySeed({ ownerId: 'review', profileId: PROFILE, language: 'ko', rank: 3 });
+    const start = seedThetaFromRank('ko', 3);
 
-    const next = await updateThetaFromOutcome({
-      ownerId: OWNER,
-      profileId: PROFILE,
-      language: 'ko',
-      stem: '결막염',
-      difficulty: 3, // ko band 3 — no dictionary_cache row needed
-      outcome: 1,
-      learningRate: 0.5,
-      anchor: false,
+    const checked = await updateThetaFromOutcome({
+      ownerId: 'check', profileId: PROFILE, language: 'ko', stem: '결막염', difficulty: 2, outcome: 1, signal: 'check',
+    });
+    const reviewed = await updateThetaFromOutcome({
+      ownerId: 'review', profileId: PROFILE, language: 'ko', stem: '결막염', difficulty: 2, outcome: 1, signal: 'review',
     });
 
-    // Pure evidence step: theta + lr·(1 − sigmoid(theta − d)), no anchor term.
-    const expected = before.theta + 0.5 * (1 - 1 / (1 + Math.exp(-(before.theta - 3))));
-    expect(next).toBeCloseTo(expected, 10);
+    expect(checked).toBeGreaterThan(reviewed);
+    expect(reviewed).toBeGreaterThan(start);
   });
 
   it('skips a word with no graded KB rank (no write, no event_count bump)', async () => {
@@ -173,24 +169,29 @@ describe('updateThetaFromOutcome', () => {
     expect(row.event_count).toBe(3);
   });
 
-  it('nudges less on a lookup (weak channel) than on a review', async () => {
-    // Two identical cold profiles, same word/outcome; only the learning rate differs.
-    await cacheStem({ stem: '학교', language: 'ko', levelRank: 1 });
-    await ensureProfileAbilitySeed({ ownerId: 'rev', profileId: PROFILE, language: 'ko', rank: 3 });
-    await ensureProfileAbilitySeed({ ownerId: 'look', profileId: PROFILE, language: 'ko', rank: 3 });
+  it('lowers the level on a lookup and logs why', async () => {
+    await cacheStem({ stem: '소문', levelRank: 3 });
+    await ensureProfileAbilitySeed({ ownerId: OWNER, profileId: PROFILE, language: 'ko', rank: 3 });
     const start = seedThetaFromRank('ko', 3);
 
-    const reviewTheta = await updateThetaFromOutcome({
-      ownerId: 'rev', profileId: PROFILE, language: 'ko', stem: '학교', outcome: 0,
-    });
-    const lookupTheta = await updateThetaFromOutcome({
-      ownerId: 'look', profileId: PROFILE, language: 'ko', stem: '학교', outcome: 0,
-      learningRate: LOOKUP_LEARNING_RATE,
+    const next = await updateThetaFromOutcome({
+      ownerId: OWNER, profileId: PROFILE, language: 'ko', stem: '소문', word: '소문을', signal: 'lookup',
+      sourceBookUri: 'book://gamja',
     });
 
-    // Both drop theta (outcome 0), but the lookup moves it far less from the seed.
-    expect(start - lookupTheta).toBeLessThan(start - reviewTheta);
-    expect(start - lookupTheta).toBeGreaterThan(0);
+    expect(next).toBeLessThan(start);
+    const [log] = await getAbilityLog({ ownerId: OWNER, profileId: PROFILE, language: 'ko' });
+    expect(log).toMatchObject({
+      signal: 'lookup',
+      word: '소문을',
+      stem: '소문',
+      outcome: 1,
+      source_book_uri: 'book://gamja',
+    });
+    expect(log.theta_before).toBeCloseTo(start, 10);
+    expect(log.theta_after).toBeCloseTo(next, 10);
+    expect(log.var_after).toBeLessThan(log.var_before);
+    expect(JSON.parse(log.details)).toMatchObject({ levelRank: 3 });
   });
 
   it('ignores a non-binary outcome', async () => {

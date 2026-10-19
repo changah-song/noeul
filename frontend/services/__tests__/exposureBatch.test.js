@@ -9,8 +9,8 @@
  *
  * What we lock down:
  *  - a batch raises theta and advances event_count by the number of graded words;
- *  - the batched fold equals N sequential single updates (the whole point of the
- *    batch is write amplification, not different math);
+ *  - the batched fold equals the level engine's 'pass' steps in sequence;
+ *  - a word already counted today is not counted again;
  *  - ungraded words are skipped rather than nudged on the OOV fallback;
  *  - exactly ONE ability row write happens regardless of batch size;
  *  - every credited word leaves an exposure event carrying its dwell.
@@ -23,19 +23,21 @@ jest.mock('../hanjaDatabase', () => ({
 import * as SQLite from 'expo-sqlite';
 import {
   applyExposureBatch,
+  createAbilityLogTable,
   createDictionaryCacheTable,
   createInteractionEventsTable,
   createProfileAbilityTable,
   ensureProfileAbilitySeed,
+  getAbilityLog,
   getProfileAbility,
-  updateThetaFromOutcome,
+  getWordDifficulties,
 } from '../Database';
 import {
   EXPOSURE_ABS_FLOOR_MS,
-  EXPOSURE_LEARNING_RATE,
   EXPOSURE_MS_PER_CHAR,
   exposureDwellIsPlausible,
 } from '../abilityModel';
+import { applySignal, readerState } from '../levelEngine';
 
 describe('exposureDwellIsPlausible', () => {
   it('scales the threshold with unit length', () => {
@@ -111,6 +113,7 @@ beforeEach(async () => {
   await createProfileAbilityTable();
   await createDictionaryCacheTable();
   await createInteractionEventsTable();
+  await createAbilityLogTable();
 });
 
 describe('applyExposureBatch', () => {
@@ -136,40 +139,36 @@ describe('applyExposureBatch', () => {
     expect(after.synced_at).toBeNull();
   });
 
-  it('folds to exactly what N sequential single updates would produce', async () => {
+  it('folds to exactly the engine\'s pass steps in sequence, and logs each', async () => {
     const stems = ['학교', '사과', '나무'];
     await Promise.all(stems.map((stem) => cacheStem({ stem, levelRank: 2 })));
-
-    // Batched.
     await ensureProfileAbilitySeed({ ownerId: OWNER, profileId: PROFILE, language: 'ko', rank: 2 });
-    const batched = await applyExposureBatch({
-      ownerId: OWNER,
-      profileId: PROFILE,
-      language: 'ko',
-      stems,
-    });
+    const before = await getProfileAbility({ ownerId: OWNER, profileId: PROFILE, language: 'ko' });
 
-    // Sequential, on a separate but identically seeded profile.
-    const otherOwner = 'user-exposure-seq';
-    await ensureProfileAbilitySeed({ ownerId: otherOwner, profileId: PROFILE, language: 'ko', rank: 2 });
-    for (const stem of stems) {
-      // eslint-disable-next-line no-await-in-loop
-      await updateThetaFromOutcome({
-        ownerId: otherOwner,
-        profileId: PROFILE,
-        language: 'ko',
-        stem,
-        outcome: 1,
-        learningRate: EXPOSURE_LEARNING_RATE,
-      });
-    }
-    const sequential = await getProfileAbility({
-      ownerId: otherOwner,
-      profileId: PROFILE,
-      language: 'ko',
-    });
+    const batched = await applyExposureBatch({ ownerId: OWNER, profileId: PROFILE, language: 'ko', stems });
 
-    expect(batched.theta).toBeCloseTo(sequential.theta, 10);
+    const difficulties = await getWordDifficulties('ko', stems);
+    let state = readerState(before);
+    stems.forEach((stem) => {
+      state = applySignal(state, { type: 'pass', difficulty: difficulties[stem].difficulty }).state;
+    });
+    expect(batched.theta).toBeCloseTo(state.theta, 6);
+    const logs = await getAbilityLog({ ownerId: OWNER, profileId: PROFILE, language: 'ko' });
+    expect(logs.map((row) => row.signal)).toEqual(['pass', 'pass', 'pass']);
+  });
+
+  it('counts a word read past again the same day only once', async () => {
+    await ensureProfileAbilitySeed({ ownerId: OWNER, profileId: PROFILE, language: 'ko', rank: 2 });
+    await cacheStem({ stem: '학교', levelRank: 2 });
+    await cacheStem({ stem: '사과', levelRank: 2 });
+
+    const first = await applyExposureBatch({ ownerId: OWNER, profileId: PROFILE, language: 'ko', stems: ['학교'] });
+    const again = await applyExposureBatch({ ownerId: OWNER, profileId: PROFILE, language: 'ko', stems: ['학교', '사과'] });
+
+    expect(first.applied).toBe(1);
+    expect(again.applied).toBe(1);
+    const events = await readEvents();
+    expect(events.map((event) => event.stem)).toEqual(['학교', '사과']);
   });
 
   it('skips ungraded words instead of nudging on the OOV fallback', async () => {
