@@ -9,9 +9,23 @@ export const getDefaultProfileIdForLanguage = (language = DEFAULT_TARGET_LANGUAG
     : `${normalizedLanguage}_default`;
 };
 
-let runtimeActiveProfileId = DEFAULT_ACTIVE_PROFILE_ID;
+// The language's placeholder profile ('ko_default', 'zh_default', ...): rows
+// live there until the account's real (cloud) profile id is known.
+export const isPlaceholderProfileId = (profileId, language = DEFAULT_TARGET_LANGUAGE) => (
+  profileId === getDefaultProfileIdForLanguage(language)
+);
 
-export const getRuntimeActiveProfileId = () => runtimeActiveProfileId;
+// null until AppContext loads the saved language settings. Until then the getter
+// falls back to the placeholder, but sync must not file pulled rows under it.
+let runtimeActiveProfileId = null;
+
+export const getRuntimeActiveProfileId = () => runtimeActiveProfileId ?? DEFAULT_ACTIVE_PROFILE_ID;
+
+export const isRuntimeActiveProfileLoaded = () => runtimeActiveProfileId !== null;
+
+export const resetRuntimeActiveProfileId = () => {
+  runtimeActiveProfileId = null;
+};
 
 export const setRuntimeActiveProfileId = (profileId, targetLanguage = DEFAULT_TARGET_LANGUAGE) => {
   const fallbackProfileId = getDefaultProfileIdForLanguage(targetLanguage);

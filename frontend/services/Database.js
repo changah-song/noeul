@@ -8,6 +8,7 @@ import {
   DEFAULT_ACTIVE_PROFILE_ID,
   getDefaultProfileIdForLanguage,
   getRuntimeActiveProfileId,
+  isPlaceholderProfileId,
 } from './profileScope';
 import {
   ABILITY_THETA_MAX,
@@ -4958,6 +4959,16 @@ export const upsertVocabEntryFromCloud = (entry, options = {}) => {
   const difficulty = normalizeFsrsValue(entry.difficulty, DEFAULT_DIFFICULTY, 1, 10);
   const ownerId = resolveOwnerId(options.ownerId ?? entry.owner_id ?? entry.ownerId);
   const profileId = resolveProfileId(options.profileId ?? entry.profile_id ?? entry.profileId ?? options, language);
+  // Cloud rows carry no profile, so the same word may already be saved locally
+  // under the other id this language has had: the placeholder ('ko_default')
+  // before the real profile id was known, or the real id when this pull runs
+  // under the placeholder. Match those too so a pull never files a second copy.
+  // A word in the placeholder moves to the real profile; a word in a real
+  // profile stays there. Two real profiles are never merged.
+  const placeholderProfileId = getDefaultProfileIdForLanguage(language);
+  const targetIsPlaceholder = isPlaceholderProfileId(profileId, language);
+  const profileMatchClause = targetIsPlaceholder ? '' : 'AND profile_id IN (?, ?)';
+  const profileMatchParams = targetIsPlaceholder ? [] : [profileId, placeholderProfileId];
   // Cloud vocab rows don't carry related_known_words (those sync through their
   // own table). Bind null when the field is absent so the UPDATE keeps the local
   // list instead of wiping it to '[]'.
@@ -4974,12 +4985,14 @@ export const upsertVocabEntryFromCloud = (entry, options = {}) => {
 
     db.transaction(tx => {
       tx.executeSql(
-        `SELECT id
+        `SELECT id, profile_id
          FROM vocab
-         WHERE owner_id = ? AND profile_id = ? AND word = ? AND COALESCE(hanja, '') = COALESCE(?, '') AND def_key IS ? AND language = ?
-         ORDER BY CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END, id ASC
+         WHERE owner_id = ? ${profileMatchClause} AND word = ? AND COALESCE(hanja, '') = COALESCE(?, '') AND def_key IS ? AND language = ?
+         ORDER BY CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END,
+                  CASE WHEN profile_id = ? THEN 0 WHEN profile_id = ? THEN 2 ELSE 1 END,
+                  id ASC
          LIMIT 1`,
-        [ownerId, profileId, word, hanja, definitionKey, language],
+        [ownerId, ...profileMatchParams, word, hanja, definitionKey, language, profileId, placeholderProfileId],
         (_, result) => {
           const params = [
             ownerId,
@@ -5053,7 +5066,7 @@ export const upsertVocabEntryFromCloud = (entry, options = {}) => {
             [
               word,
               ownerId,
-              profileId,
+              targetIsPlaceholder ? result.rows.item(0).profile_id : profileId,
               hanja,
               definition,
               definitionKey,

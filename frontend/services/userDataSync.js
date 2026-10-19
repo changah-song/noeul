@@ -35,7 +35,11 @@ import { pushInteractionEvents } from './interactionEventsCloudSync';
 import { pushProfileAbilities } from './profileAbilityCloudSync';
 import { pushAbilityLog } from './abilityLogCloudSync';
 import { makeScopedStorageKey } from './localDataScope';
-import { getDefaultProfileIdForLanguage, getRuntimeActiveProfileId } from './profileScope';
+import {
+  getDefaultProfileIdForLanguage,
+  getRuntimeActiveProfileId,
+  isRuntimeActiveProfileLoaded,
+} from './profileScope';
 import { getRuntimeTargetLanguage } from './interfaceLanguage';
 import { normalizeBookLanguage } from '../constants/languages';
 
@@ -755,6 +759,14 @@ export const syncUserDataFromCloud = async ({ user, ownerId, generation }) => {
 
   if (ownerId !== user.id) {
     throw new Error('Refusing user-data sync for mismatched owner');
+  }
+
+  // Cloud rows carry no profile id, so they land in the active profile. Until
+  // AppContext has loaded it, that would be the placeholder ('ko_default'),
+  // filing every pulled word under a profile the user isn't looking at.
+  // AppContext requests a sync once the profile is loaded.
+  if (!isRuntimeActiveProfileLoaded()) {
+    return;
   }
 
   // Capture the profile (and its language) once, so a profile switch mid-sync
