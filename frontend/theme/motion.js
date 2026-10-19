@@ -30,8 +30,11 @@ export const springFrom = ({ response = 0.35, dampingRatio = 1 } = {}) => {
     damping: 4 * Math.PI * dampingRatio / response,
     mass: 1,
     overshootClamping: false,
-    restDisplacementThreshold: 0.5,
-    restSpeedThreshold: 0.5,
+    // Fine enough for unit-range values (scale, opacity). Android's native
+    // spring checks "at rest" before its first step, so a coarse threshold
+    // would leave a 0.97 → 1 press release frozen where it started.
+    restDisplacementThreshold: 0.001,
+    restSpeedThreshold: 0.001,
   };
 };
 
@@ -52,14 +55,23 @@ export const springs = {
  * springTo — animate `value` to `toValue` with a spring. `gestureVelocity`
  * is a PanResponder velocity (vx / vy, px per ms); the spring starts at that
  * speed (it integrates in seconds, so ×1000), leaving no seam between the
- * drag and the animation.
+ * drag and the animation. `precision` sets when it counts as settled: the
+ * default suits unit-range values; pass PX_PRECISION for a pixel offset
+ * whose completion unmounts something, so the invisible tail is skipped.
  */
-export const springTo = (value, toValue, { spring = springs.standard, gestureVelocity = 0, useNativeDriver = true } = {}) => (
+export const PX_PRECISION = 0.5;
+export const springTo = (value, toValue, {
+  spring = springs.standard,
+  gestureVelocity = 0,
+  useNativeDriver = true,
+  precision,
+} = {}) => (
   Animated.spring(value, {
     toValue,
     velocity: (Number(gestureVelocity) || 0) * 1000,
     useNativeDriver,
     ...spring,
+    ...(precision ? { restDisplacementThreshold: precision, restSpeedThreshold: precision } : null),
   })
 );
 

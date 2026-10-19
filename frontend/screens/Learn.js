@@ -2,14 +2,14 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   BackHandler,
-  Modal,
-  Pressable,
+  PanResponder,
   ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -17,7 +17,7 @@ import { Feather, MaterialIcons } from '@expo/vector-icons';
 
 import Flashcard from '../components/Learn/Flashcard';
 import CandidateCard from '../components/vocab/CandidateCard';
-import { Screen } from '../components/ui';
+import { PaperButton, PaperSheet, PaperTabs, PressableScale, Screen } from '../components/ui';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
@@ -49,21 +49,32 @@ import {
 import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
 import { requestUserDataSync } from '../services/userDataSyncQueue';
 import { normalizeBookLanguage } from '../constants/languages';
-import { colors, fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
+import { colors, fontFamilies, spacing, textStyles, useTheme } from '../theme';
+import {
+  fadeTo,
+  project,
+  rubberband,
+  springs,
+  springTo,
+  useReducedMotion,
+} from '../theme/motion';
+import { tapSelect } from '../services/haptics';
 
 const FILTERS = [
-  { key: 'starred', labelKey: 'learn.filters.starred', icon: 'star' },
   { key: 'recent', labelKey: 'learn.filters.recent' },
+  { key: 'starred', labelKey: 'learn.filters.starred' },
   { key: 'maturity', labelKey: 'learn.filters.maturity' },
   { key: 'not-seen', labelKey: 'learn.filters.notSeen' },
 ];
 
+// Stage ink (Paper): new reads warm red, growing amber, familiar the teal
+// tint, mature and graduated green. All theme tokens, so dark mode follows.
 const createProficiencyLevels = (themeColors) => [
   {
     key: 'new',
     labelKey: 'learn.proficiency.new',
     rank: 1,
-    color: themeColors.textSubtle,
+    color: themeColors.danger,
     soft: themeColors.surfaceMuted,
     descriptionKey: 'learn.proficiency.newDescription',
   },
@@ -71,7 +82,7 @@ const createProficiencyLevels = (themeColors) => [
     key: 'growing',
     labelKey: 'learn.proficiency.growing',
     rank: 2,
-    color: themeColors.textTertiary,
+    color: themeColors.warning,
     soft: themeColors.surfaceMuted,
     descriptionKey: 'learn.proficiency.growingDescription',
   },
@@ -79,7 +90,7 @@ const createProficiencyLevels = (themeColors) => [
     key: 'familiar',
     labelKey: 'learn.proficiency.familiar',
     rank: 3,
-    color: themeColors.textMuted,
+    color: themeColors.tint,
     soft: themeColors.surfaceMuted,
     descriptionKey: 'learn.proficiency.familiarDescription',
   },
@@ -87,7 +98,7 @@ const createProficiencyLevels = (themeColors) => [
     key: 'mature',
     labelKey: 'learn.proficiency.mature',
     rank: 4,
-    color: themeColors.accent,
+    color: themeColors.success,
     soft: themeColors.surfaceMuted,
     descriptionKey: 'learn.proficiency.matureDescription',
   },
@@ -95,7 +106,7 @@ const createProficiencyLevels = (themeColors) => [
     key: 'graduated',
     labelKey: 'learn.proficiency.graduated',
     rank: 5,
-    color: themeColors.accent,
+    color: themeColors.success,
     soft: themeColors.surfaceMuted,
     descriptionKey: 'learn.proficiency.graduatedDescription',
   },
@@ -114,11 +125,12 @@ const useLearnTheme = () => (
 );
 
 const HANJA_RE = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/;
-const LEARN_SIDE_PADDING = 16;
-const ENCOUNTER_DOT_COUNT = 4;
+const LEARN_SIDE_PADDING = 24;
+// Horizontal drag (px) before the word page commits to following the finger.
+const DETAIL_DRAG_SLOP = 12;
 const DETAIL_CONTEXT_LIMIT = 2;
 const DETAIL_HANJA_RELATED_PAGE_SIZE = 2;
-const MONTH_SHORT_LABELS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+const MONTH_SHORT_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const MONTH_LONG_LABELS = [
   'January',
   'February',
@@ -154,6 +166,21 @@ const HANGUL_FINALS = [
 ];
 
 const cleanText = (value) => (typeof value === 'string' ? value.trim() : '');
+const capitalizeFirst = (value) => (
+  value ? `${value.charAt(0).toLocaleUpperCase()}${value.slice(1)}` : value
+);
+
+// Paper strings added with the redesign fall back to English until
+// translations.js carries them (translate() returns the bare key otherwise).
+const copyWithFallback = (t, key, fallback, params = {}) => {
+  const value = t(key, params);
+  if (value !== key) {
+    return value;
+  }
+  return fallback.replace(/\{\{(\w+)\}\}/g, (_, name) => (
+    params[name] == null ? '' : String(params[name])
+  ));
+};
 const getHanjaCharacters = (value) => cleanText(value).split('').filter((char) => HANJA_RE.test(char));
 const relatedWordKey = (entry) => `${entry?.korean ?? ''}|${entry?.hanja ?? ''}`;
 
@@ -314,15 +341,6 @@ const formatLongDate = (value, fallback = '') => {
 
   const date = new Date(timestamp);
   return `${MONTH_LONG_LABELS[date.getMonth()] ?? ''} ${date.getDate()}`.trim() || fallback;
-};
-
-const getExposureDotCount = (seenCount) => {
-  const count = Number(seenCount) || 0;
-  if (count >= 8) return 4;
-  if (count >= 5) return 3;
-  if (count >= 3) return 2;
-  if (count >= 2) return 1;
-  return 0;
 };
 
 const getPronunciation = (word) => (
@@ -549,88 +567,62 @@ const getFilteredWords = (rows, filter, levelsByKey = proficiencyByKey) => {
   return sortRecent(rows);
 };
 
-const EncounterDots = ({ seenCount, size = 6 }) => {
-  const { styles } = useLearnTheme();
-  const filledCount = getExposureDotCount(seenCount);
-
-  return (
-    <View style={styles.dotRow}>
-      {Array.from({ length: ENCOUNTER_DOT_COUNT }).map((_, index) => {
-        const filled = index < filledCount;
-        return (
-          <View
-            key={`encounter-dot-${index}`}
-            style={[
-              styles.encounterDot,
-              filled ? styles.encounterDotFilled : styles.encounterDotEmpty,
-              {
-                width: size,
-                height: size,
-                borderRadius: size / 2,
-              },
-            ]}
-          />
-        );
-      })}
-    </View>
-  );
-};
-
-const StatusBadge = ({ label }) => {
-  const { styles } = useLearnTheme();
-
-  return (
-    <View style={styles.badge}>
-      <Text style={styles.badgeText}>{label}</Text>
-    </View>
-  );
-};
-
 const VocabularyRow = ({ word, onPress, onLongPress, selectionMode = false, selected = false }) => {
   const { t } = useTranslation();
-  const { colors, styles } = useLearnTheme();
+  const { colors, styles, proficiencyByKey } = useLearnTheme();
   const seenCount = getSeenCount(word);
   const source = getSourceLabel(word, t);
-  const lastSaw = formatShortDate(getLastSawDate(word), t('learn.notSeenDate').toUpperCase());
+  const lastSaw = formatShortDate(getLastSawDate(word), t('learn.notSeenDate'));
   const showNewBadge = isRecentlySaved(word);
   const showNotSeenBadge = !showNewBadge && isNotSeenLately(word);
+  const proficiency = getProficiency(word, proficiencyByKey);
+  const stageLabel = t(proficiency.labelKey);
+  const definition = word.def || t('learn.noDefinition');
+  const meta = [
+    source,
+    `×${seenCount}`,
+    lastSaw,
+    showNotSeenBadge ? t('learn.filters.notSeen') : null,
+  ].filter(Boolean).join(' · ');
 
   return (
-    <Pressable
+    <PressableScale
       onPress={onPress}
       onLongPress={onLongPress}
       delayLongPress={280}
-      style={({ pressed }) => [
-        styles.wordRow,
-        pressed && styles.wordRowPressed,
-        selected && styles.wordRowSelected,
-      ]}
+      scaleTo={0.98}
+      hitSlop={0}
+      accessibilityRole="button"
+      accessibilityLabel={[
+        word.word,
+        definition,
+        stageLabel,
+        word.is_favorite ? t('learn.filters.starred') : null,
+        showNewBadge && proficiency.key !== 'new' ? t('learn.proficiency.new') : null,
+      ].filter(Boolean).join(', ')}
+      accessibilityState={selectionMode ? { selected } : undefined}
+      style={styles.wordRow}
     >
       {selectionMode ? (
         <View style={[styles.selectionCircle, selected && styles.selectionCircleSelected]}>
-          {selected ? <Feather name="check" size={14} color={colors.white} /> : null}
+          {selected ? <Feather name="check" size={14} color={colors.onInk} /> : null}
         </View>
       ) : null}
       <View style={styles.wordCopy}>
         <View style={styles.wordTitleLine}>
           <Text numberOfLines={1} style={styles.wordText}>{word.word}</Text>
           {word.hanja ? <Text numberOfLines={1} style={styles.wordHanja}>{word.hanja}</Text> : null}
-          {showNewBadge ? <StatusBadge label={t('learn.newBadge')} /> : null}
-          {showNotSeenBadge ? <StatusBadge label={t('learn.notSeenBadge')} tone="amber" /> : null}
-          {word.is_favorite ? <MaterialIcons name="star" size={16} color={colors.inkSlate} /> : null}
+          {showNewBadge ? <View style={styles.newDot} /> : null}
         </View>
-        <Text numberOfLines={1} style={styles.wordDefinition}>{word.def || t('learn.noDefinition')}</Text>
-        <View style={styles.wordMetaLine}>
-          <Text numberOfLines={1} style={styles.wordMetaText}>
-            {source} · ×{seenCount} · {lastSaw}
-          </Text>
-        </View>
+        <Text numberOfLines={2} style={styles.wordDefinition}>{definition}</Text>
+        <Text numberOfLines={1} style={styles.wordMetaText}>{meta}</Text>
       </View>
 
-      <View style={styles.encounterSummary}>
-        <EncounterDots seenCount={seenCount} />
+      <View style={styles.wordAside}>
+        <Text style={[styles.stageText, { color: proficiency.color }]}>{stageLabel}</Text>
+        {word.is_favorite ? <MaterialIcons name="star" size={16} color={colors.tint} /> : null}
       </View>
-    </Pressable>
+    </PressableScale>
   );
 };
 
@@ -874,66 +866,57 @@ const DetailHanjaPanel = ({ word, onKnownWordsChange }) => {
 
   return (
     <View style={styles.detailHanjaPanel}>
+      <Text style={styles.detailSectionTitle}>{t('learn.hanjaCharacter')}</Text>
       <View style={styles.detailHanjaPanelHeader}>
         <Text selectable style={styles.detailHanjaPanelCharacter}>{activeHanja}</Text>
         <View style={styles.detailHanjaPanelCopy}>
-          <Text style={styles.detailHanjaPanelEyebrow}>{t('learn.hanjaCharacter')}</Text>
-          <Text selectable numberOfLines={2} style={styles.detailHanjaPanelMeaning}>
+          <Text selectable numberOfLines={3} style={styles.detailHanjaPanelMeaning}>
             {readingLabel || (isLoading ? t('common.loading') : t('hanja.meaningUnavailable'))}
             {meaningLabel ? ` · ${meaningLabel}` : ''}
           </Text>
         </View>
-        <View style={styles.detailHanjaPanelNav}>
-          <TouchableOpacity
-            accessibilityRole="button"
-            accessibilityLabel={t('hanja.previous')}
-            disabled={!canGoPrevious}
-            onPress={goToPrevious}
-            style={[styles.hanjaPanelArrow, !canGoPrevious && styles.hanjaPanelArrowDisabled]}
-          >
-            <Feather
-              name="chevron-left"
-              size={16}
-              color={canGoPrevious ? colors.textTertiary : colors.textSubtle}
-            />
-          </TouchableOpacity>
-          <Text style={styles.detailHanjaPanelCount}>
-            {t('learn.hanjaCount', { current: safeActiveIndex + 1, total: characters.length })}
-          </Text>
-          <TouchableOpacity
-            accessibilityRole="button"
-            accessibilityLabel={t('hanja.next')}
-            disabled={!canGoNext}
-            onPress={goToNext}
-            style={[styles.hanjaPanelArrow, !canGoNext && styles.hanjaPanelArrowDisabled]}
-          >
-            <Feather
-              name="chevron-right"
-              size={16}
-              color={canGoNext ? colors.textTertiary : colors.textSubtle}
-            />
-          </TouchableOpacity>
-        </View>
+        {characters.length > 1 ? (
+          <View style={styles.detailHanjaPanelNav}>
+            <PressableScale
+              accessibilityRole="button"
+              accessibilityLabel={t('hanja.previous')}
+              disabled={!canGoPrevious}
+              onPress={goToPrevious}
+              hitSlop={0}
+              style={styles.hanjaPanelArrow}
+            >
+              <Feather name="chevron-left" size={20} color={colors.text} />
+            </PressableScale>
+            <Text style={styles.detailHanjaPanelCount}>
+              {t('learn.hanjaCount', { current: safeActiveIndex + 1, total: characters.length })}
+            </Text>
+            <PressableScale
+              accessibilityRole="button"
+              accessibilityLabel={t('hanja.next')}
+              disabled={!canGoNext}
+              onPress={goToNext}
+              hitSlop={0}
+              style={styles.hanjaPanelArrow}
+            >
+              <Feather name="chevron-right" size={20} color={colors.text} />
+            </PressableScale>
+          </View>
+        ) : null}
       </View>
-
-      <View style={styles.detailHanjaDivider} />
 
       {isLoading ? (
         <View style={styles.hanjaPanelEmpty}>
-          <ActivityIndicator size="small" color={colors.accent} />
+          <ActivityIndicator size="small" color={colors.textMuted} />
           <Text style={styles.hanjaPanelEmptyText}>{t('hanja.loading')}</Text>
         </View>
       ) : visibleRelatedWords.length > 0 ? (
-        <>
+        <View>
           {visibleRelatedWords.map((relatedWord, index) => {
             const known = knownKeys.has(relatedWordKey(relatedWord));
             return (
               <View
                 key={`${relatedWord.korean}-${relatedWord.hanja}-${index}`}
-                style={[
-                  styles.detailHanjaRelatedRow,
-                  index > 0 && styles.detailHanjaRelatedRowSeparated,
-                ]}
+                style={styles.detailHanjaRelatedRow}
               >
                 <View style={styles.detailHanjaRelatedCopy}>
                   <Text selectable numberOfLines={1} style={styles.detailHanjaRelatedWord}>{relatedWord.korean}</Text>
@@ -941,37 +924,40 @@ const DetailHanjaPanel = ({ word, onKnownWordsChange }) => {
                     {relatedWord.meaning || t('hanja.meaningUnavailable')}
                   </Text>
                 </View>
-                <TouchableOpacity
+                <PressableScale
                   accessibilityRole="button"
                   accessibilityLabel={known
                     ? t('hanja.markedKnown', { word: relatedWord.korean })
                     : t('hanja.markKnown', { word: relatedWord.korean })}
-                  onPress={() => handleKnownPress(relatedWord)}
+                  accessibilityState={{ checked: known }}
+                  onPress={() => {
+                    tapSelect();
+                    handleKnownPress(relatedWord);
+                  }}
                   style={styles.detailHanjaKnownButton}
                 >
-                  {known ? <Feather name="check" size={14} color={colors.text} /> : null}
+                  {known ? <Feather name="check" size={15} color={colors.text} /> : null}
                   <Text style={[
                     styles.detailHanjaKnownButtonText,
                     !known && styles.detailHanjaKnownButtonTextAction,
                   ]}>
                     {known ? t('learn.known') : t('learn.markKnown')}
                   </Text>
-                </TouchableOpacity>
+                </PressableScale>
               </View>
             );
           })}
           {canShowMoreRelatedWords ? (
-            <TouchableOpacity
-              accessibilityRole="button"
-              accessibilityLabel={t('common.seeMore')}
+            <PaperButton
+              variant="quiet"
+              size="md"
+              label={t('common.seeMore')}
+              icon={<Feather name="chevron-down" size={16} color={colors.tint} />}
               onPress={() => setVisibleRelatedCount((count) => count + DETAIL_HANJA_RELATED_PAGE_SIZE)}
               style={styles.detailHanjaSeeMoreButton}
-            >
-              <Text style={styles.detailHanjaSeeMoreText}>{t('common.seeMore')}</Text>
-              <Feather name="chevron-down" size={16} color={colors.textMuted} />
-            </TouchableOpacity>
+            />
           ) : null}
-        </>
+        </View>
       ) : (
         <View style={styles.hanjaPanelEmpty}>
           <Text style={styles.hanjaPanelEmptyText}>{t('hanja.none')}</Text>
@@ -981,6 +967,20 @@ const DetailHanjaPanel = ({ word, onKnownWordsChange }) => {
   );
 };
 
+/**
+ * WordDetailModal — a word's page, pushed over the list from the right edge
+ * and dismissed back the same way (the list stays mounted underneath, so its
+ * scroll position survives).
+ *
+ * - A horizontal drag to the right follows the finger 1:1; past the left
+ *   bound it resists (rubber-band).
+ * - On release it projects where the flick is heading and closes if that
+ *   lands past half the width, so a short fast flick works as well as a long
+ *   slow drag. The spring that takes over starts at the finger's speed.
+ * - Grabbing it mid-animation catches it where it is.
+ * - Hardware back and the header back button animate out the same path.
+ * - Reduced motion: a short cross-fade instead of the slide.
+ */
 const WordDetailModal = ({
   word,
   contexts = [],
@@ -990,6 +990,95 @@ const WordDetailModal = ({
 }) => {
   const { t } = useTranslation();
   const { colors, styles, proficiencyByKey } = useLearnTheme();
+  const { width } = useWindowDimensions();
+  const reduced = useReducedMotion();
+  const translateX = useRef(new Animated.Value(width)).current;
+  const fade = useRef(new Animated.Value(1)).current;
+  const widthRef = useRef(width);
+  widthRef.current = width;
+  const reducedRef = useRef(reduced);
+  reducedRef.current = reduced;
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const currentXRef = useRef(width);
+  const startXRef = useRef(0);
+  const closingRef = useRef(false);
+
+  useEffect(() => {
+    const id = translateX.addListener(({ value }) => { currentXRef.current = value; });
+    return () => translateX.removeListener(id);
+  }, [translateX]);
+
+  useEffect(() => {
+    if (reducedRef.current) {
+      translateX.setValue(0);
+      fade.setValue(0);
+      fadeTo(fade, 1).start();
+      return;
+    }
+    springTo(translateX, 0, { spring: springs.move }).start();
+  }, [fade, translateX]);
+
+  const requestClose = useCallback((velocity = 0) => {
+    if (closingRef.current) {
+      return;
+    }
+    closingRef.current = true;
+    const done = ({ finished }) => {
+      if (finished) {
+        onCloseRef.current?.();
+      } else {
+        // Caught mid-flight by a new drag: stay open.
+        closingRef.current = false;
+      }
+    };
+    if (reducedRef.current) {
+      fadeTo(fade, 0, { duration: 160 }).start(done);
+      return;
+    }
+    springTo(translateX, widthRef.current, {
+      spring: velocity > 0.3 ? springs.flick : springs.move,
+      gestureVelocity: velocity,
+    }).start(done);
+  }, [fade, translateX]);
+
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      requestClose();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [requestClose]);
+
+  const pan = useMemo(() => PanResponder.create({
+    onMoveShouldSetPanResponder: (_event, g) => (
+      g.dx > DETAIL_DRAG_SLOP && Math.abs(g.dx) > Math.abs(g.dy) * 1.6
+    ),
+    onPanResponderGrant: () => {
+      closingRef.current = false;
+      translateX.stopAnimation((value) => {
+        startXRef.current = value;
+      });
+    },
+    onPanResponderMove: (_event, g) => {
+      const next = startXRef.current + g.dx;
+      translateX.setValue(next < 0 ? rubberband(next, widthRef.current) : next);
+    },
+    onPanResponderRelease: (_event, g) => {
+      const projected = currentXRef.current + project(g.vx);
+      if (projected > widthRef.current * 0.5) {
+        requestClose(g.vx);
+        return;
+      }
+      springTo(translateX, 0, {
+        spring: Math.abs(g.vx) > 0.3 ? springs.flick : springs.standard,
+        gestureVelocity: g.vx,
+      }).start();
+    },
+    onPanResponderTerminate: () => {
+      springTo(translateX, 0).start();
+    },
+  }), [requestClose, translateX]);
 
   if (!word) {
     return null;
@@ -1020,99 +1109,115 @@ const WordDetailModal = ({
   const partOfSpeech = getPartOfSpeechLabel(word, t);
 
   return (
-    <SafeAreaView edges={['top']} style={styles.detailScreen}>
-      <View style={styles.detailHeader}>
-        <TouchableOpacity onPress={onClose} style={styles.detailBackButton}>
-          <Feather name="chevron-left" size={28} color={colors.text} />
-          <Text style={styles.detailBackLabel}>{t('learn.title')}</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          accessibilityRole="button"
-          accessibilityLabel={word.is_favorite ? t('learn.removeFavorite') : t('learn.addFavorite')}
-          accessibilityState={{ selected: Boolean(word.is_favorite) }}
-          onPress={onToggleFavorite}
-          style={styles.detailFavoriteButton}
-        >
-          <MaterialIcons
-            name={word.is_favorite ? 'star' : 'star-outline'}
-            size={28}
-            color={word.is_favorite ? colors.accent : colors.textSubtle}
-          />
-        </TouchableOpacity>
-      </View>
-
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.detailContent}>
-        <View style={styles.detailHero}>
-          <View style={styles.detailWordLine}>
-            <Text selectable style={styles.detailWord}>{word.word}</Text>
-            {isKoreanWord && hanjaCharacters.length > 0 ? (
-              <Text selectable style={styles.detailHanja}>{word.hanja}</Text>
-            ) : null}
-            {pronunciation ? <Text selectable style={styles.detailPronunciation}>{pronunciation}</Text> : null}
+    <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          StyleSheet.absoluteFill,
+          {
+            backgroundColor: colors.overlay,
+            opacity: reduced ? 0 : translateX.interpolate({
+              inputRange: [0, Math.max(1, width)],
+              outputRange: [0.6, 0],
+              extrapolate: 'clamp',
+            }),
+          },
+        ]}
+      />
+      <Animated.View
+        {...pan.panHandlers}
+        style={[styles.detailScreen, { opacity: fade, transform: [{ translateX }] }]}
+      >
+        <SafeAreaView edges={['top']} style={styles.detailSafe}>
+          <View style={styles.detailHeader}>
+            <PressableScale
+              accessibilityRole="button"
+              accessibilityLabel={t('learn.title')}
+              onPress={() => requestClose()}
+              style={styles.detailBackButton}
+            >
+              <Feather name="chevron-left" size={26} color={colors.text} />
+              <Text style={styles.detailBackLabel}>{t('learn.title')}</Text>
+            </PressableScale>
+            <PressableScale
+              accessibilityRole="button"
+              accessibilityLabel={word.is_favorite ? t('learn.removeFavorite') : t('learn.addFavorite')}
+              accessibilityState={{ selected: Boolean(word.is_favorite) }}
+              onPress={() => {
+                tapSelect();
+                onToggleFavorite?.();
+              }}
+              style={styles.detailIconButton}
+            >
+              <MaterialIcons
+                name={word.is_favorite ? 'star' : 'star-outline'}
+                size={26}
+                color={word.is_favorite ? colors.tint : colors.textMuted}
+              />
+            </PressableScale>
           </View>
-          <View style={styles.detailMetaLine}>
-            <View style={styles.detailStatusPill}>
-              <Text style={styles.detailStatusText}>{detailStatus}</Text>
+
+          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.detailContent}>
+            <View style={styles.detailWordLine}>
+              <Text selectable style={styles.detailWord}>{word.word}</Text>
+              {isKoreanWord && hanjaCharacters.length > 0 ? (
+                <Text selectable style={styles.detailHanja}>{word.hanja}</Text>
+              ) : null}
             </View>
-            <Text style={styles.detailEncounterMeta}>×{seenCount} {t('learn.encounters')}</Text>
-          </View>
-          <View style={styles.definitionBlock}>
-            {partOfSpeech ? <Text style={styles.definitionPartOfSpeech}>{partOfSpeech}</Text> : null}
+            {pronunciation ? <Text selectable style={styles.detailPronunciation}>{pronunciation}</Text> : null}
+            <Text style={styles.detailMeta}>
+              <Text style={[styles.detailMetaStage, { color: proficiency.color }]}>{capitalizeFirst(detailStatus)}</Text>
+              {` · ×${seenCount} ${t('learn.encounters')}`}
+              {partOfSpeech ? ` · ${partOfSpeech}` : ''}
+            </Text>
             <Text selectable style={styles.detailDefinition}>{word.def || t('learn.noDefinition')}</Text>
-          </View>
-        </View>
 
-        <View style={styles.contextSection}>
-          <Text style={styles.detailSectionTitle}>{t('learn.seenIn')}</Text>
-          {visibleContexts.length > 0 ? (
-            visibleContexts.map((context, index) => {
-              const sourceLabel = getContextSource(context, source);
-              const dateLabel = formatLongDate(context.seenAt ?? context.seen_at ?? getLastSawDate(word));
-              const translation = getContextTranslation(context);
-              return (
-                <View
-                  key={`${context.sentence}-${context.seenAt ?? context.seen_at ?? ''}-${index}`}
-                  style={styles.contextQuoteRow}
-                >
-                  <Text style={styles.contextQuoteMark}>“</Text>
-                  <View style={styles.contextQuoteCopy}>
-                    <Text selectable style={styles.contextSentence}>{cleanText(context.sentence)}</Text>
-                    {translation ? (
-                      <Text selectable style={styles.contextTranslation}>{translation}</Text>
-                    ) : null}
-                    <Text style={styles.contextAttribution}>
-                      — {sourceLabel}{dateLabel ? ` · ${dateLabel}` : ''}
-                    </Text>
-                  </View>
-                </View>
-              );
-            })
-          ) : (
-            <View style={styles.contextQuoteRow}>
-              <Text style={styles.contextQuoteMark}>“</Text>
-              <View style={styles.contextQuoteCopy}>
+            <View style={styles.detailSection}>
+              <Text style={styles.detailSectionTitle}>{t('learn.seenIn')}</Text>
+              {visibleContexts.length > 0 ? (
+                visibleContexts.map((context, index) => {
+                  const sourceLabel = getContextSource(context, source);
+                  const dateLabel = formatLongDate(context.seenAt ?? context.seen_at ?? getLastSawDate(word));
+                  const translation = getContextTranslation(context);
+                  return (
+                    <View
+                      key={`${context.sentence}-${context.seenAt ?? context.seen_at ?? ''}-${index}`}
+                      style={styles.contextBlock}
+                    >
+                      <Text selectable style={styles.contextSentence}>{cleanText(context.sentence)}</Text>
+                      {translation ? (
+                        <Text selectable style={styles.contextTranslation}>{translation}</Text>
+                      ) : null}
+                      <Text style={styles.contextAttribution}>
+                        — {sourceLabel}{dateLabel ? ` · ${dateLabel}` : ''}
+                      </Text>
+                    </View>
+                  );
+                })
+              ) : (
                 <Text style={styles.emptyContext}>{t('learn.noContext')}</Text>
+              )}
+            </View>
+
+            <View style={styles.detailStats}>
+              <View style={styles.detailStat}>
+                <Text style={styles.detailStatValue}>{seenCount}</Text>
+                <Text style={styles.detailStatLabel}>{t('learn.encounters')}</Text>
+              </View>
+              <View style={styles.detailStatRule} />
+              <View style={styles.detailStat}>
+                <Text style={styles.detailStatValue}>{getDistinctDays(word)}</Text>
+                <Text style={styles.detailStatLabel}>{t('learn.daysTracked')}</Text>
               </View>
             </View>
-          )}
-        </View>
 
-        <View style={styles.detailStatsGrid}>
-          <View style={styles.detailStatCard}>
-            <Text style={styles.detailStatLabel}>{t('learn.encounters')}</Text>
-            <Text style={styles.detailStatValue}>{seenCount}</Text>
-          </View>
-          <View style={styles.detailStatCard}>
-            <Text style={styles.detailStatLabel}>{t('learn.daysTracked')}</Text>
-            <Text style={styles.detailStatValue}>{getDistinctDays(word)}</Text>
-          </View>
-        </View>
-
-        {isKoreanWord ? (
-          <DetailHanjaPanel word={word} onKnownWordsChange={onKnownWordsChange} />
-        ) : null}
-      </ScrollView>
-    </SafeAreaView>
+            {isKoreanWord ? (
+              <DetailHanjaPanel word={word} onKnownWordsChange={onKnownWordsChange} />
+            ) : null}
+          </ScrollView>
+        </SafeAreaView>
+      </Animated.View>
+    </View>
   );
 };
 
@@ -1121,6 +1226,7 @@ const Learn = ({ navigation, user }) => {
   const { targetLanguage, interfaceLanguage } = useAppContext();
   const { activeOwnerId, syncGeneration, syncPaused } = useLocalOwner();
   const { colors } = useTheme();
+  const { height: windowHeight } = useWindowDimensions();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const proficiencyLevels = useMemo(() => createProficiencyLevels(colors), [colors]);
   const proficiencyByKey = useMemo(() => createProficiencyByKey(proficiencyLevels), [proficiencyLevels]);
@@ -1130,6 +1236,9 @@ const Learn = ({ navigation, user }) => {
     proficiencyByKey,
   }), [colors, proficiencyByKey, styles]);
   const [words, setWords] = useState([]);
+  // UI only: the Today headline waits for the first load instead of flashing
+  // the empty-state line.
+  const [wordsLoaded, setWordsLoaded] = useState(false);
   const [mainTab, setMainTab] = useState('saved');
   const [learnedWords, setLearnedWords] = useState([]);
   const [candidateGroups, setCandidateGroups] = useState([]);
@@ -1140,6 +1249,7 @@ const Learn = ({ navigation, user }) => {
   const [practiceDeck, setPracticeDeck] = useState(null);
   const [practiceIndex, setPracticeIndex] = useState(0);
   const markedPracticeIndexRef = useRef(-1);
+  const practiceSnapshotRef = useRef(null);
   const [selectedWord, setSelectedWord] = useState(null);
   const [selectedWordContexts, setSelectedWordContexts] = useState([]);
   const [selectedWordKeys, setSelectedWordKeys] = useState(() => new Set());
@@ -1163,6 +1273,7 @@ const Learn = ({ navigation, user }) => {
         return normalized;
       }
       setWords(normalized);
+      setWordsLoaded(true);
       setLearnedWords(sortRecent(all.filter((row) => row.level === LEARNED_LEVEL)).sort(
         (a, b) => new Date(b.updated_at ?? 0).getTime() - new Date(a.updated_at ?? 0).getTime()
       ));
@@ -1176,6 +1287,9 @@ const Learn = ({ navigation, user }) => {
       return normalized;
     } catch (error) {
       console.error('[Learn] Error fetching vocab data:', error);
+      if (requestId === wordsRequestIdRef.current) {
+        setWordsLoaded(true);
+      }
       return [];
     }
   }, [activeOwnerId, targetLanguage]);
@@ -1192,6 +1306,7 @@ const Learn = ({ navigation, user }) => {
 
   useEffect(() => {
     setWords([]);
+    setWordsLoaded(false);
     setPracticeDeck(null);
     setPracticeIndex(0);
     setSelectedWord(null);
@@ -1341,19 +1456,8 @@ const Learn = ({ navigation, user }) => {
     };
   }, [activeOwnerId, selectedWord?.word, selectedWord?.hanja, selectedWord?.def, selectedWord?.language]);
 
-  // Hardware back closes the word detail view back to the vocabulary list,
-  // mirroring the header back button. Without this, back would fall through to
-  // the tab navigator and leave the tab or exit the app.
-  useEffect(() => {
-    if (!selectedWord) {
-      return undefined;
-    }
-    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
-      setSelectedWord(null);
-      return true;
-    });
-    return () => subscription.remove();
-  }, [selectedWord]);
+  // Hardware back on the word page is handled inside WordDetailModal, so it
+  // slides out the way it came before the list takes over again.
 
   const visibleWords = useMemo(
     () => getFilteredWords(words, activeFilter, proficiencyByKey),
@@ -1617,155 +1721,148 @@ const Learn = ({ navigation, user }) => {
     }
   }, [closePractice, persistPracticeOutcome, practiceDeck, practiceIndex]);
 
-  if (selectedWord) {
-    return (
-      <LearnThemeContext.Provider value={learnThemeValue}>
-        <WordDetailModal
-          word={selectedWord}
-          contexts={selectedWordContexts}
-          onClose={() => setSelectedWord(null)}
-          onToggleFavorite={() => handleToggleFavorite(selectedWord)}
-          onKnownWordsChange={fetchWords}
-        />
-      </LearnThemeContext.Provider>
-    );
+  const copy = useCallback(
+    (key, fallback, params) => copyWithFallback(t, key, fallback, params),
+    [t]
+  );
+
+  // The practice sheet keeps showing the last card while it slides away.
+  const livePracticeVocab = practiceDeck?.words?.[practiceIndex] ?? null;
+  if (livePracticeVocab) {
+    practiceSnapshotRef.current = {
+      vocab: livePracticeVocab,
+      index: practiceIndex,
+      total: practiceDeck.words.length,
+      title: practiceDeck.title,
+    };
   }
+  const practiceView = practiceSnapshotRef.current;
+
+  const dueCount = dueWords.length;
+  const canReview = reviewDeck.length > 0;
+  const headline = dueCount > 0
+    ? (dueCount === 1
+      ? copy('learn.headlineDueOne', '1 word is ready to review.')
+      : copy('learn.headlineDue', '{{count}} words are ready to review.', { count: dueCount }))
+    : (words.length > 0
+      ? copy('learn.headlineCaughtUp', 'You’re all caught up.')
+      : copy('learn.headlineEmpty', 'Save a word while reading to begin.'));
+  const statsLine = [
+    `${maturedCount} ${t('learn.matured')}`,
+    `${waitingCount} ${t('learn.waiting')}`,
+    `${notSeenCount} ${t('learn.notSeen')}`,
+  ].join(' · ');
+  const openReview = () => startPractice(reviewDeck, reviewDeckTitle);
+  const keepReading = () => navigation?.navigate?.('Read', { returnTo: 'Learn' });
+  const tabs = [
+    {
+      key: 'saved',
+      label: words.length > 0 ? `${t('learn.savedTab')} ${words.length}` : t('learn.savedTab'),
+    },
+    { key: 'suggested', label: t('learn.suggestedTab') },
+    {
+      key: 'learned',
+      label: learnedWords.length > 0 ? `${t('learn.learnedTab')} ${learnedWords.length}` : t('learn.learnedTab'),
+    },
+  ];
 
   return (
     <LearnThemeContext.Provider value={learnThemeValue}>
+    <View style={styles.root}>
+    <View
+      style={styles.root}
+      importantForAccessibility={selectedWord ? 'no-hide-descendants' : 'auto'}
+      accessibilityElementsHidden={!!selectedWord}
+    >
     <Screen scroll backgroundColor={colors.bgPage} contentContainerStyle={styles.content}>
-      <View style={styles.appTopBar}>
-        <View style={styles.appTopSide} />
-        <Text style={styles.appTopTitle}>{t('learn.title')}</Text>
-        <View style={styles.appTopSide} />
-      </View>
-
-      <View style={styles.summaryCard}>
-        <View style={styles.summaryStats}>
-          <View style={styles.summaryStat}>
-            <Text style={[styles.summaryValue, styles.summaryValueGreen]}>{maturedCount}</Text>
-            <Text style={styles.summaryLabel}>{t('learn.matured')}</Text>
-          </View>
-          <View style={styles.summaryStatDivider} />
-          <View style={styles.summaryStat}>
-            <Text style={[styles.summaryValue, styles.summaryValueAmber]}>{waitingCount}</Text>
-            <Text style={styles.summaryLabel}>{t('learn.waiting')}</Text>
-          </View>
-          <View style={styles.summaryStatDivider} />
-          <View style={styles.summaryStat}>
-            <Text style={styles.summaryValue}>{notSeenCount}</Text>
-            <Text style={styles.summaryLabel}>{t('learn.notSeen')}</Text>
-          </View>
-        </View>
-
-        <View style={styles.summaryActions}>
-          <TouchableOpacity
-            disabled={reviewDeck.length === 0}
-            onPress={() => startPractice(reviewDeck, reviewDeckTitle)}
-            style={[styles.reviewButton, reviewDeck.length === 0 && styles.reviewButtonDisabled]}
-          >
-            <Text style={[
-              styles.reviewButtonText,
-              reviewDeck.length === 0 && styles.reviewButtonTextDisabled,
-            ]}>
-              {reviewDeck.length > 0 ? t('learn.reviewDueCount', { count: reviewDeck.length }) : t('learn.noReviews')}
-            </Text>
-          </TouchableOpacity>
-          {words.length > 0 ? (
-            <TouchableOpacity
-              onPress={() => navigation?.navigate?.('Read', { returnTo: 'Learn' })}
-              style={[styles.keepReadingButton, words.length === 0 && styles.keepReadingButtonFull]}
-            >
-              <Text style={styles.keepReadingText}>{t('learn.keepReading')}</Text>
-            </TouchableOpacity>
-          ) : null}
+      <View style={styles.hero}>
+        <Text style={styles.eyebrow}>{t('learn.today')}</Text>
+        <Text accessibilityRole="header" style={styles.headline}>{wordsLoaded ? headline : ' '}</Text>
+        <Text style={styles.statsLine}>{statsLine}</Text>
+        <View style={styles.heroActions}>
+          {dueCount > 0 ? (
+            <>
+              <PaperButton
+                label={copy('learn.startReview', 'Start review')}
+                accessibilityLabel={t('learn.reviewDueCount', { count: reviewDeck.length })}
+                onPress={openReview}
+              />
+              <PaperButton variant="secondary" label={t('learn.keepReading')} onPress={keepReading} />
+            </>
+          ) : (
+            <>
+              <PaperButton label={t('learn.keepReading')} onPress={keepReading} />
+              {canReview ? (
+                <PaperButton
+                  variant="secondary"
+                  label={copy('learn.practiceAnyway', 'Practise anyway')}
+                  onPress={openReview}
+                />
+              ) : null}
+            </>
+          )}
         </View>
       </View>
 
-      <View style={styles.mainTabs}>
-        <TouchableOpacity
-          onPress={() => setMainTab('saved')}
-          style={[styles.mainTab, mainTab === 'saved' && styles.mainTabActive]}
-          accessibilityRole="tab"
-          accessibilityState={{ selected: mainTab === 'saved' }}
-        >
-          <Text style={[styles.mainTabText, mainTab === 'saved' && styles.mainTabTextActive]}>
-            {t('learn.savedTab')}
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={() => setMainTab('suggested')}
-          style={[styles.mainTab, mainTab === 'suggested' && styles.mainTabActive]}
-          accessibilityRole="tab"
-          accessibilityState={{ selected: mainTab === 'suggested' }}
-        >
-          <Text style={[styles.mainTabText, mainTab === 'suggested' && styles.mainTabTextActive]}>
-            {t('learn.suggestedTab')}
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={() => setMainTab('learned')}
-          style={[styles.mainTab, mainTab === 'learned' && styles.mainTabActive]}
-          accessibilityRole="tab"
-          accessibilityState={{ selected: mainTab === 'learned' }}
-        >
-          <Text style={[styles.mainTabText, mainTab === 'learned' && styles.mainTabTextActive]}>
-            {learnedWords.length > 0 ? `${t('learn.learnedTab')} ${learnedWords.length}` : t('learn.learnedTab')}
-          </Text>
-        </TouchableOpacity>
-      </View>
+      <PaperTabs
+        tabs={tabs}
+        value={mainTab}
+        onChange={(key) => {
+          if (key !== mainTab) tapSelect();
+          setMainTab(key);
+        }}
+        accessibilityLabel={t('learn.vocabulary')}
+        style={styles.tabs}
+      />
 
       {mainTab === 'saved' ? (
       <>
-      <View style={styles.filters}>
-        {FILTERS.map((filter) => {
-          const active = activeFilter === filter.key;
-          return (
-            <TouchableOpacity
-              key={filter.key}
-              accessibilityRole="button"
-              accessibilityLabel={t(filter.labelKey)}
-              onPress={() => {
-                clearWordSelection();
-                setActiveFilter(filter.key);
-              }}
-              style={[
-                styles.filterChip,
-                filter.icon && styles.filterIconChip,
-                active && styles.filterChipActive,
-              ]}
-            >
-              {filter.icon ? (
-                <MaterialIcons
-                  name={active ? filter.icon : `${filter.icon}-border`}
-                  size={17}
-                  color={active ? colors.textMuted : colors.textSubtle}
-                />
-              ) : (
-                <Text style={[styles.filterText, active && styles.filterTextActive]}>{t(filter.labelKey)}</Text>
-              )}
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-
       {isSelectionMode ? (
         <View style={styles.selectionBar}>
-          <TouchableOpacity onPress={clearWordSelection} style={styles.selectionBarButton}>
-            <Feather name="x" size={17} color={colors.textMuted} />
-            <Text style={styles.selectionBarButtonText}>{t('common.cancel')}</Text>
-          </TouchableOpacity>
-
+          <PaperButton
+            variant="quiet"
+            size="md"
+            label={t('common.cancel')}
+            labelStyle={{ color: colors.text }}
+            onPress={clearWordSelection}
+          />
           <Text style={styles.selectionCount}>
             {t('common.selected', { count: selectedWords.length })}
           </Text>
-
-          <TouchableOpacity onPress={handleBulkDelete} style={[styles.selectionBarButton, styles.selectionDeleteButton]}>
-            <Feather name="trash-2" size={17} color={colors.white} />
-            <Text style={styles.selectionDeleteText}>{t('common.delete')}</Text>
-          </TouchableOpacity>
+          <PaperButton
+            variant="secondary"
+            size="md"
+            label={t('common.delete')}
+            labelStyle={{ color: colors.destructive }}
+            icon={<Feather name="trash-2" size={16} color={colors.destructive} />}
+            onPress={handleBulkDelete}
+            style={styles.selectionDelete}
+          />
         </View>
-      ) : null}
+      ) : (
+        <View style={styles.filters}>
+          {FILTERS.map((filter) => {
+            const active = activeFilter === filter.key;
+            return (
+              <PressableScale
+                key={filter.key}
+                accessibilityRole="button"
+                accessibilityLabel={t(filter.labelKey)}
+                accessibilityState={{ selected: active }}
+                hitSlop={{ top: 0, bottom: 0, left: 2, right: 2 }}
+                onPress={() => {
+                  if (!active) tapSelect();
+                  clearWordSelection();
+                  setActiveFilter(filter.key);
+                }}
+                style={styles.filterButton}
+              >
+                <Text style={[styles.filterText, active && styles.filterTextActive]}>{t(filter.labelKey)}</Text>
+              </PressableScale>
+            );
+          })}
+        </View>
+      )}
 
       <View style={styles.list}>
         {visibleWords.length === 0 ? (
@@ -1789,21 +1886,24 @@ const Learn = ({ navigation, user }) => {
                 }
                 setSelectedWord(word);
               }}
-              onLongPress={() => startWordSelection(word)}
+              onLongPress={() => {
+                tapSelect();
+                startWordSelection(word);
+              }}
             />
           ))
         )}
       </View>
       </>
       ) : mainTab === 'learned' ? (
-        <View style={styles.suggestedWrap}>
+        <View style={styles.panel}>
           {learnedWords.length === 0 ? (
             <View style={styles.emptyState}>
               <Text style={styles.emptyTitle}>{t('learn.learnedEmptyTitle')}</Text>
               <Text style={styles.emptyBody}>{t('learn.learnedEmptyBody')}</Text>
             </View>
           ) : (
-            <View style={styles.candidateGroupList}>
+            <View>
               <Text style={styles.learnedHint}>{t('learn.learnedHint')}</Text>
               {learnedWords.map((row) => (
                 <View key={row.id} style={styles.learnedRow}>
@@ -1811,22 +1911,21 @@ const Learn = ({ navigation, user }) => {
                     <Text style={styles.learnedWord}>{row.word}</Text>
                     {row.def ? <Text style={styles.learnedDef} numberOfLines={2}>{row.def}</Text> : null}
                   </View>
-                  <TouchableOpacity
+                  <PaperButton
+                    variant="secondary"
+                    size="md"
+                    label={t('learn.learnedRestore')}
+                    accessibilityLabel={t('learn.learnedRestoreFor', { word: row.word })}
                     onPress={() => handleRestoreLearned(row)}
                     style={styles.learnedRestore}
-                    activeOpacity={0.7}
-                    accessibilityRole="button"
-                    accessibilityLabel={t('learn.learnedRestoreFor', { word: row.word })}
-                  >
-                    <Text style={styles.learnedRestoreText}>{t('learn.learnedRestore')}</Text>
-                  </TouchableOpacity>
+                  />
                 </View>
               ))}
             </View>
           )}
         </View>
       ) : (
-        <View style={styles.suggestedWrap}>
+        <View style={styles.panel}>
           {candidatesLoading && !candidatesLoaded ? (
             <View style={styles.suggestedLoading}>
               <ActivityIndicator color={colors.textMuted} />
@@ -1839,10 +1938,10 @@ const Learn = ({ navigation, user }) => {
           ) : (
             candidateGroups.map((group) => (
               <View key={group.bookUri} style={styles.candidateGroup}>
-                <Text style={styles.candidateGroupTitle} numberOfLines={1}>
+                <Text style={styles.candidateGroupTitle} numberOfLines={1} accessibilityRole="header">
                   {group.bookTitle || t('learn.untitledBook')}
                 </Text>
-                <View style={styles.candidateGroupList}>
+                <View>
                   {group.candidates.map((candidate) => (
                     <CandidateCard
                       key={`${group.bookUri}::${candidate.stem}`}
@@ -1858,833 +1957,556 @@ const Learn = ({ navigation, user }) => {
           )}
         </View>
       )}
+    </Screen>
+    </View>
 
-      <Modal animationType="slide" visible={!!practiceDeck} onRequestClose={closePractice}>
+    {selectedWord ? (
+      <WordDetailModal
+        word={selectedWord}
+        contexts={selectedWordContexts}
+        onClose={() => setSelectedWord(null)}
+        onToggleFavorite={() => handleToggleFavorite(selectedWord)}
+        onKnownWordsChange={fetchWords}
+      />
+    ) : null}
+
+    <PaperSheet
+      visible={!!practiceDeck}
+      onClose={closePractice}
+      maxHeightRatio={0.94}
+      dragRegion="header"
+      accessibilityLabel={t('learn.practice')}
+      style={[styles.practiceSheet, { height: windowHeight * 0.94 }]}
+    >
+      {practiceView ? (
         <Flashcard
-          vocab={practiceDeck?.words?.[practiceIndex]}
-          title={practiceDeck?.title ?? t('learn.practice')}
-          index={practiceIndex}
-          total={practiceDeck?.words?.length ?? 0}
+          vocab={practiceView.vocab}
+          title={practiceView.title ?? t('learn.practice')}
+          index={practiceView.index}
+          total={practiceView.total}
+          active={!!livePracticeVocab}
           onClose={closePractice}
           onMark={handlePracticeMark}
           user={user}
           ownerId={activeOwnerId}
           syncGeneration={syncGeneration}
         />
-      </Modal>
-    </Screen>
+      ) : null}
+    </PaperSheet>
+    </View>
     </LearnThemeContext.Provider>
   );
 };
 
 const createStyles = (colors) => StyleSheet.create({
-  content: {
-    paddingHorizontal: 0,
-    paddingTop: 0,
-    paddingBottom: 0,
-    gap: 0,
-  },
-  appTopBar: {
-    height: 52,
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.divider,
+  root: {
+    flex: 1,
     backgroundColor: colors.bgPage,
   },
-  appTopSide: {
-    width: 70,
+  content: {
+    paddingHorizontal: LEARN_SIDE_PADDING,
+    paddingTop: 28,
+    paddingBottom: 48,
   },
-  appTopTitle: {
-    flex: 1,
-    textAlign: 'center',
-    ...textStyles.appTitle,
+
+  // Today
+  hero: {
+    gap: 14,
   },
-  summaryCard: {
-    marginHorizontal: 24,
-    marginTop: 22,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    padding: 18,
-    gap: 18,
-  },
-  summaryStats: {
-    flexDirection: 'row',
-    gap: 0,
-  },
-  summaryStat: {
-    flex: 1,
-    alignItems: 'center',
-    gap: 4,
-  },
-  summaryStatDivider: {
-    width: 1,
-    backgroundColor: colors.divider,
-    marginVertical: 0,
-  },
-  summaryValue: {
-    fontFamily: fontFamilies.displayMedium,
-    fontSize: 26,
-    lineHeight: 31,
-    color: colors.text,
-  },
-  summaryValueGreen: {
-    color: colors.text,
-  },
-  summaryValueAmber: {
-    color: colors.text,
-  },
-  summaryLabel: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 9,
-    lineHeight: 12,
-    color: colors.textTertiary,
-    letterSpacing: 1.6,
-    textTransform: 'uppercase',
-  },
-  summaryActions: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  keepReadingButton: {
-    flex: 1,
-    minHeight: 40,
-    borderRadius: 3,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.borderStrong,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  keepReadingButtonFull: {
-    flex: 1,
-  },
-  keepReadingText: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 11,
-    letterSpacing: 1.8,
-    color: colors.text,
-    textTransform: 'uppercase',
-  },
-  reviewButton: {
-    flex: 1,
-    minHeight: 40,
-    borderRadius: 3,
-    borderWidth: 1,
-    borderColor: colors.accent,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 12,
-    backgroundColor: colors.accent,
-  },
-  // Disabled reads as an outline with muted text, not a faded fill: the
-  // faded near-white fill turned into a muddy grey block in dark mode.
-  reviewButtonDisabled: {
-    backgroundColor: 'transparent',
-    borderColor: colors.border,
-  },
-  reviewButtonText: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 11,
-    letterSpacing: 1.8,
-    color: colors.white,
-    textTransform: 'uppercase',
-  },
-  reviewButtonTextDisabled: {
+  eyebrow: {
+    ...textStyles.eyebrow,
     color: colors.textMuted,
   },
-  filters: {
-    marginHorizontal: 24,
-    marginTop: 24,
-    flexDirection: 'row',
-    gap: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.divider,
-  },
-  filterChip: {
-    borderRadius: 0,
-    borderWidth: 0,
-    minHeight: 26,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 0,
-    paddingTop: 0,
-    paddingBottom: 10,
-    backgroundColor: colors.transparent,
-  },
-  filterIconChip: {
-    width: 36,
-    paddingHorizontal: 0,
-  },
-  filterChipActive: {
-    backgroundColor: colors.transparent,
-    borderBottomWidth: 2,
-    borderBottomColor: colors.accent,
-    paddingBottom: 8,
-  },
-  filterText: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 10,
-    lineHeight: 13,
-    letterSpacing: 1.8,
-    color: colors.textSubtle,
-    textTransform: 'uppercase',
-  },
-  filterTextActive: {
+  headline: {
+    fontFamily: fontFamilies.displayRegular,
+    fontSize: 42,
+    lineHeight: 46,
+    letterSpacing: -1,
     color: colors.text,
   },
-  listHeader: {
-    paddingHorizontal: LEARN_SIDE_PADDING,
+  statsLine: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 15,
+    lineHeight: 21,
+    color: colors.textMuted,
+    fontVariant: ['tabular-nums'],
+  },
+  heroActions: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginTop: 4,
   },
-  listEyebrow: {
-    ...textStyles.eyebrow,
-    color: colors.textTertiary,
-    fontSize: 10,
-    letterSpacing: 2,
+
+  // Tabs and filters
+  tabs: {
+    marginTop: 32,
   },
-  listCount: {
-    ...textStyles.caption,
-    color: colors.textSubtle,
+  filters: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginTop: 4,
+    marginLeft: -10,
+  },
+  filterButton: {
+    minHeight: 44,
+    paddingHorizontal: 10,
+    justifyContent: 'center',
+  },
+  filterText: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 14,
+    lineHeight: 19,
+    color: colors.textMuted,
+  },
+  filterTextActive: {
+    fontFamily: fontFamilies.sansSemiBold,
+    color: colors.tint,
   },
   selectionBar: {
-    marginHorizontal: LEARN_SIDE_PADDING,
-    minHeight: 42,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    paddingHorizontal: spacing.sm,
+    marginTop: 4,
+    minHeight: 52,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: spacing.sm,
   },
-  selectionBarButton: {
-    minHeight: 30,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.xs,
-    paddingHorizontal: 10,
-    borderRadius: radii.pill,
-    backgroundColor: colors.surfaceMuted,
-  },
-  selectionBarButtonText: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 12,
-    color: colors.textMuted,
-  },
   selectionCount: {
     flex: 1,
     textAlign: 'center',
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 13,
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 15,
     color: colors.text,
   },
-  selectionDeleteButton: {
-    backgroundColor: colors.accent,
+  selectionDelete: {
+    paddingHorizontal: 16,
   },
-  selectionDeleteText: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 12,
-    color: colors.white,
-  },
+
+  // Word list
   list: {
-    marginHorizontal: 24,
-    backgroundColor: colors.bgPage,
+    marginTop: 2,
   },
   wordRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 0,
-    paddingVertical: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.divider,
+    alignItems: 'flex-start',
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
     gap: 12,
   },
-  wordRowPressed: {
-    backgroundColor: colors.surfaceMuted,
-  },
-  wordRowSelected: {
-    backgroundColor: colors.surfaceMuted,
-  },
   selectionCircle: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    borderWidth: 2,
+    width: 24,
+    height: 24,
+    marginTop: 4,
+    borderRadius: 12,
+    borderWidth: 1.5,
     borderColor: colors.borderStrong,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: colors.surface,
   },
   selectionCircleSelected: {
-    borderColor: colors.accent,
-    backgroundColor: colors.accent,
+    borderColor: colors.tint,
+    backgroundColor: colors.tint,
   },
   wordCopy: {
     flex: 1,
     minWidth: 0,
-    gap: 4,
+    gap: 2,
   },
   wordTitleLine: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
     minWidth: 0,
-    flexWrap: 'wrap',
   },
   wordText: {
+    flexShrink: 1,
     fontFamily: fontFamilies.krSerifSemiBold,
-    fontSize: 17,
-    lineHeight: 24,
+    fontSize: 21,
+    lineHeight: 30,
+    letterSpacing: -0.2,
     color: colors.text,
   },
   wordHanja: {
-    fontFamily: fontFamilies.krSerifMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.textSubtle,
-  },
-  badge: {
-    borderRadius: 2,
-    borderWidth: 1,
-    borderColor: colors.borderStrong,
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-  },
-  badgeText: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 8,
-    lineHeight: 10,
-    letterSpacing: 1,
+    flexShrink: 1,
+    fontFamily: fontFamilies.krSerifRegular,
+    fontSize: 15,
+    lineHeight: 22,
     color: colors.textMuted,
+  },
+  newDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: colors.tint,
   },
   wordDefinition: {
     fontFamily: fontFamilies.sansRegular,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.textMuted,
-  },
-  wordMetaLine: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-    minWidth: 0,
+    fontSize: 15,
+    lineHeight: 21,
+    color: colors.textSecondary,
   },
   wordMetaText: {
-    flex: 1,
-    fontFamily: fontFamilies.sansMedium,
-    fontSize: 10,
-    lineHeight: 13,
+    marginTop: 2,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 13,
+    lineHeight: 18,
     color: colors.textSubtle,
-    letterSpacing: 0.5,
   },
-  encounterSummary: {
-    width: 76,
+  wordAside: {
     alignItems: 'flex-end',
-    justifyContent: 'center',
+    gap: 6,
+    paddingTop: 7,
+    maxWidth: 96,
   },
-  dotRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  encounterDot: {
-    borderWidth: 1,
-  },
-  encounterDotFilled: {
-    backgroundColor: colors.accent,
-    borderColor: colors.accent,
-  },
-  encounterDotEmpty: {
-    backgroundColor: colors.transparent,
-    borderColor: colors.borderStrong,
+  stageText: {
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 12,
+    lineHeight: 16,
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    textAlign: 'right',
   },
   emptyState: {
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.xl,
-    gap: spacing.xs,
+    paddingVertical: 32,
+    gap: 8,
   },
   emptyTitle: {
-    ...textStyles.sectionTitle,
+    fontFamily: fontFamilies.displayRegular,
+    fontSize: 26,
+    lineHeight: 30,
+    letterSpacing: -0.4,
+    color: colors.text,
   },
   emptyBody: {
-    ...textStyles.bodyMuted,
-  },
-  mainTabs: {
-    flexDirection: 'row',
-    gap: spacing.xs,
-    marginHorizontal: 24,
-    marginTop: 20,
-    backgroundColor: colors.surfaceMuted ?? colors.divider,
-    borderRadius: radii.pill,
-    padding: 4,
-  },
-  mainTab: {
-    flex: 1,
-    alignItems: 'center',
-    paddingVertical: spacing.sm,
-    borderRadius: radii.pill,
-  },
-  mainTabActive: {
-    backgroundColor: colors.bgPage,
-  },
-  mainTabText: {
-    fontFamily: fontFamilies.sansSemiBold,
-    fontSize: 14,
-    color: colors.textSubtle,
-  },
-  mainTabTextActive: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 15,
+    lineHeight: 22,
     color: colors.textMuted,
   },
-  suggestedWrap: {
-    paddingHorizontal: 24,
-    paddingTop: spacing.md,
-    gap: spacing.lg,
+
+  // Suggested and Learned
+  panel: {
+    paddingTop: 12,
+    gap: 28,
   },
   suggestedLoading: {
     paddingVertical: spacing.xxl,
     alignItems: 'center',
   },
   candidateGroup: {
-    gap: spacing.sm,
+    gap: 2,
+  },
+  candidateGroupTitle: {
+    fontFamily: fontFamilies.displayRegular,
+    fontSize: 20,
+    lineHeight: 26,
+    color: colors.text,
+    paddingBottom: 4,
   },
   learnedHint: {
-    ...textStyles.bodyMuted,
-    marginBottom: spacing.xs,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 15,
+    lineHeight: 22,
+    color: colors.textMuted,
+    marginBottom: 6,
   },
   learnedRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
-    paddingVertical: spacing.sm,
+    paddingVertical: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.divider,
+    borderBottomColor: colors.border,
   },
   learnedText: {
     flex: 1,
+    minWidth: 0,
     gap: 2,
   },
   learnedWord: {
-    fontFamily: fontFamilies.sansSemiBold,
-    fontSize: 16,
+    fontFamily: fontFamilies.krSerifSemiBold,
+    fontSize: 21,
+    lineHeight: 30,
+    letterSpacing: -0.2,
     color: colors.text,
   },
   learnedDef: {
-    ...textStyles.bodyMuted,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 15,
+    lineHeight: 21,
+    color: colors.textSecondary,
   },
   learnedRestore: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: 8,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: colors.border,
+    paddingHorizontal: 16,
   },
-  learnedRestoreText: {
-    fontFamily: fontFamilies.sansSemiBold,
-    fontSize: 13,
-    color: colors.text,
-  },
-  candidateGroupTitle: {
-    fontFamily: fontFamilies.sansSemiBold,
-    fontSize: 12,
-    letterSpacing: 1.2,
-    textTransform: 'uppercase',
-    color: colors.textSubtle,
-  },
-  candidateGroupList: {
-    gap: spacing.sm,
-  },
-  detailScreen: {
-    flex: 1,
+
+  // Practice sheet
+  practiceSheet: {
     backgroundColor: colors.bgPage,
   },
+
+  // Word detail
+  detailScreen: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: colors.bgPage,
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderLeftColor: colors.border,
+  },
+  detailSafe: {
+    flex: 1,
+  },
   detailHeader: {
-    height: 52,
+    minHeight: 56,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    backgroundColor: colors.bgPage,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.divider,
+    paddingHorizontal: 8,
   },
   detailBackButton: {
-    height: 40,
+    minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 2,
     paddingRight: 12,
   },
   detailBackLabel: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 11,
-    lineHeight: 14,
-    color: colors.textMuted,
-    letterSpacing: 2.4,
+    fontFamily: fontFamilies.sansMedium,
+    fontSize: 16,
+    lineHeight: 21,
+    color: colors.text,
   },
-  detailFavoriteButton: {
-    width: 42,
-    height: 40,
+  detailIconButton: {
+    width: 44,
+    height: 44,
     alignItems: 'center',
-    justifyContent: 'flex-end',
-    flexDirection: 'row',
+    justifyContent: 'center',
   },
   detailContent: {
-    paddingHorizontal: 24,
-    paddingTop: 26,
-    paddingBottom: 0,
-  },
-  detailHero: {
-    backgroundColor: colors.bgPage,
-    paddingHorizontal: 0,
-    paddingTop: 0,
-    paddingBottom: 0,
-    gap: 0,
+    paddingHorizontal: LEARN_SIDE_PADDING,
+    paddingTop: 12,
+    paddingBottom: 48,
   },
   detailWordLine: {
     flexDirection: 'row',
     alignItems: 'baseline',
-    gap: 14,
+    columnGap: 14,
     flexWrap: 'wrap',
   },
   detailWord: {
     fontFamily: fontFamilies.krSerifBold,
-    fontSize: 36,
-    lineHeight: 48,
+    fontSize: 38,
+    lineHeight: 52,
+    letterSpacing: -0.6,
     color: colors.text,
   },
   detailHanja: {
-    fontFamily: fontFamilies.krSerifMedium,
+    fontFamily: fontFamilies.krSerifRegular,
     fontSize: 22,
     lineHeight: 30,
     color: colors.textMuted,
   },
   detailPronunciation: {
     fontFamily: fontFamilies.displayItalic,
-    fontSize: 16,
+    fontSize: 17,
     lineHeight: 22,
     color: colors.textTertiary,
   },
-  detailMetaLine: {
-    marginTop: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
+  detailMeta: {
+    marginTop: 8,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.textMuted,
   },
-  detailStatusPill: {
-    minHeight: 24,
-    borderRadius: radii.pill,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.surfaceMuted,
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-  },
-  detailStatusText: {
-    fontFamily: fontFamilies.sansMedium,
-    fontSize: 11,
-    lineHeight: 14,
-    color: colors.textSecondary,
-  },
-  detailEncounterMeta: {
-    fontFamily: fontFamilies.sansMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.textTertiary,
-  },
-  definitionBlock: {
-    marginTop: 20,
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 12,
-    flexWrap: 'wrap',
-    paddingTop: 0,
-    width: '100%',
-  },
-  definitionPartOfSpeech: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 9,
-    lineHeight: 12,
-    letterSpacing: 1.6,
-    color: '#9a9c9f',
-    textTransform: 'uppercase',
+  detailMetaStage: {
+    fontFamily: fontFamilies.sansSemiBold,
   },
   detailDefinition: {
-    flex: 1,
-    minWidth: 0,
-    fontFamily: fontFamilies.displayMedium,
-    fontSize: 22,
-    lineHeight: 30,
+    marginTop: 18,
+    fontFamily: fontFamilies.displayRegular,
+    fontSize: 23,
+    lineHeight: 31,
     color: colors.text,
-    textAlign: 'left',
+  },
+  detailSection: {
+    marginTop: 28,
+    paddingTop: 18,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    gap: 16,
   },
   detailSectionTitle: {
-    fontFamily: fontFamilies.sansBold,
-    color: colors.textTertiary,
-    fontSize: 10,
-    lineHeight: 13,
-    letterSpacing: 2.2,
-    textTransform: 'uppercase',
+    ...textStyles.eyebrow,
+    color: colors.textMuted,
   },
-  contextSection: {
-    paddingHorizontal: 0,
-    paddingTop: 26,
-    gap: 14,
-  },
-  contextQuoteRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-  },
-  contextQuoteMark: {
-    width: 30,
-    fontFamily: fontFamilies.displayMedium,
-    fontSize: 20,
-    lineHeight: 22,
-    color: colors.textSubtle,
-  },
-  contextQuoteCopy: {
-    flex: 1,
-    gap: 5,
+  contextBlock: {
+    gap: 6,
+    paddingLeft: 14,
+    borderLeftWidth: 2,
+    borderLeftColor: colors.border,
   },
   contextSentence: {
     fontFamily: fontFamilies.krSerifRegular,
-    fontSize: 16,
-    lineHeight: 29,
+    fontSize: 17,
+    lineHeight: 30,
     color: colors.text,
   },
   contextTranslation: {
     fontFamily: fontFamilies.sansRegular,
-    fontSize: 13,
-    lineHeight: 19,
+    fontSize: 14,
+    lineHeight: 20,
     color: colors.textMuted,
   },
   contextAttribution: {
-    fontFamily: fontFamilies.sansMedium,
-    fontSize: 11,
-    lineHeight: 16,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 13,
+    lineHeight: 18,
     color: colors.textSubtle,
   },
   emptyContext: {
     fontFamily: fontFamilies.sansRegular,
-    fontSize: 13,
+    fontSize: 15,
+    lineHeight: 22,
+    color: colors.textMuted,
+  },
+  detailStats: {
+    marginTop: 28,
+    paddingVertical: 16,
+    flexDirection: 'row',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+  },
+  detailStat: {
+    flex: 1,
+    gap: 2,
+  },
+  detailStatRule: {
+    width: StyleSheet.hairlineWidth,
+    backgroundColor: colors.border,
+    marginHorizontal: 16,
+  },
+  detailStatValue: {
+    fontFamily: fontFamilies.displayRegular,
+    fontSize: 30,
+    lineHeight: 34,
+    color: colors.text,
+    fontVariant: ['tabular-nums'],
+  },
+  detailStatLabel: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 14,
     lineHeight: 19,
     color: colors.textMuted,
   },
-  detailStatsGrid: {
-    marginTop: 24,
-    flexDirection: 'row',
-    gap: 12,
-    paddingHorizontal: 0,
-    paddingTop: 0,
-  },
-  detailStatCard: {
-    flex: 1,
-    minHeight: 74,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-    padding: 14,
-  },
-  detailStatLabel: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 9,
-    lineHeight: 12,
-    color: colors.textSubtle,
-    letterSpacing: 1.6,
-    textTransform: 'uppercase',
-    textAlign: 'center',
-  },
-  detailStatValue: {
-    fontFamily: fontFamilies.displayMedium,
-    fontSize: 24,
-    lineHeight: 30,
-    color: colors.text,
-  },
+
+  // Hanja panel
   detailHanjaPanel: {
-    marginHorizontal: 0,
-    marginTop: 20,
-    borderRadius: 6,
-    backgroundColor: colors.surfaceMuted,
-    padding: 18,
+    marginTop: 28,
+    gap: 12,
   },
   detailHanjaPanelHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 14,
+    gap: 16,
   },
   detailHanjaPanelCharacter: {
-    fontFamily: fontFamilies.krSerifBold,
-    fontSize: 38,
-    lineHeight: 44,
+    fontFamily: fontFamilies.krSerifSemiBold,
+    fontSize: 44,
+    lineHeight: 56,
     color: colors.text,
   },
   detailHanjaPanelCopy: {
     flex: 1,
     minWidth: 0,
-    gap: 5,
-  },
-  detailHanjaPanelEyebrow: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 9,
-    lineHeight: 12,
-    color: colors.textTertiary,
-    letterSpacing: 1.8,
-    textTransform: 'uppercase',
   },
   detailHanjaPanelMeaning: {
     fontFamily: fontFamilies.displayRegular,
-    fontSize: 15,
-    lineHeight: 22,
+    fontSize: 17,
+    lineHeight: 24,
     color: colors.text,
   },
   detailHanjaPanelNav: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 2,
-    minHeight: 32,
   },
   detailHanjaPanelCount: {
-    fontFamily: fontFamilies.sansMedium,
-    fontSize: 11,
-    lineHeight: 16,
-    color: colors.textTertiary,
-    minWidth: 38,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.textMuted,
+    minWidth: 40,
     textAlign: 'center',
+    fontVariant: ['tabular-nums'],
   },
   hanjaPanelArrow: {
-    width: 24,
-    height: 28,
+    width: 44,
+    height: 44,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  hanjaPanelArrowDisabled: {
-    opacity: 0.28,
-  },
-  hanjaCharacterRail: {
-    paddingTop: 14,
-    gap: 8,
-  },
-  hanjaCharacterChip: {
-    minWidth: 34,
-    minHeight: 34,
-    borderRadius: 17,
-    borderWidth: 1,
-    borderColor: colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.surface,
-  },
-  hanjaCharacterChipActive: {
-    borderColor: colors.accent,
-    backgroundColor: colors.accent,
-  },
-  hanjaCharacterChipText: {
-    fontFamily: fontFamilies.krSerifMedium,
-    fontSize: 19,
-    lineHeight: 24,
-    color: colors.textMuted,
-  },
-  hanjaCharacterChipTextActive: {
-    color: colors.white,
-  },
-  detailHanjaDivider: {
-    height: 1,
-    backgroundColor: '#ddd9d9',
-    marginTop: 14,
   },
   hanjaPanelEmpty: {
     minHeight: 58,
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
     gap: 8,
   },
   hanjaPanelEmptyText: {
     fontFamily: fontFamilies.sansRegular,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 14,
+    lineHeight: 20,
     color: colors.textMuted,
-    textAlign: 'center',
   },
   detailHanjaRelatedRow: {
-    minHeight: 68,
+    minHeight: 64,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
     paddingVertical: 12,
-  },
-  detailHanjaRelatedRowSeparated: {
-    borderTopWidth: 1,
-    borderTopColor: '#ddd9d9',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
   },
   detailHanjaRelatedCopy: {
     flex: 1,
     minWidth: 0,
-    flexDirection: 'column',
-    alignItems: 'flex-start',
-    justifyContent: 'center',
-    gap: 4,
+    gap: 2,
   },
   detailHanjaRelatedWord: {
-    width: '100%',
     fontFamily: fontFamilies.krSerifSemiBold,
-    fontSize: 16,
-    lineHeight: 22,
+    fontSize: 18,
+    lineHeight: 26,
     color: colors.text,
   },
   detailHanjaRelatedMeaning: {
-    width: '100%',
     flexShrink: 1,
     fontFamily: fontFamilies.sansRegular,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.textMuted,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.textSecondary,
   },
   detailHanjaKnownButton: {
-    minHeight: 32,
+    minHeight: 44,
+    minWidth: 44,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
     gap: 4,
+    paddingLeft: 8,
   },
   detailHanjaKnownButtonText: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 10,
-    lineHeight: 13,
-    letterSpacing: 1.2,
+    fontFamily: fontFamilies.sansMedium,
+    fontSize: 14,
+    lineHeight: 19,
     color: colors.text,
-    textTransform: 'uppercase',
   },
   detailHanjaKnownButtonTextAction: {
-    color: colors.textTertiary,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.frame,
-    paddingBottom: 1,
+    fontFamily: fontFamilies.sansSemiBold,
+    color: colors.tint,
   },
   detailHanjaSeeMoreButton: {
-    minHeight: 28,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-  },
-  detailHanjaSeeMoreText: {
-    ...textStyles.caption,
-    color: colors.textMuted,
+    alignSelf: 'flex-start',
+    marginLeft: -4,
   },
 });
 

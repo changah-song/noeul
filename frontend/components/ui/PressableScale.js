@@ -1,4 +1,4 @@
-import React, { useCallback, useRef } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { Animated, Pressable } from 'react-native';
 import { PRESS_IN_MS, PRESS_SCALE, springs, springTo, useReducedMotion } from '../../theme/motion';
 
@@ -11,7 +11,8 @@ const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
  * tap to finish. With reduced motion it dims instead of scaling.
  *
  * Takes Pressable's props; `style` may be an object, an array or a function
- * of `{ pressed }`, as with Pressable.
+ * of `{ pressed }`. (An animated component cannot take a style function, so
+ * the pressed state is tracked here and the style resolved before render.)
  */
 const PressableScale = ({
     children,
@@ -25,8 +26,10 @@ const PressableScale = ({
 }) => {
     const scale = useRef(new Animated.Value(1)).current;
     const reduced = useReducedMotion();
+    const [pressed, setPressed] = useState(false);
 
     const handlePressIn = useCallback((event) => {
+        setPressed(true);
         Animated.timing(scale, {
             toValue: reduced ? 1 : scaleTo,
             duration: PRESS_IN_MS,
@@ -36,9 +39,12 @@ const PressableScale = ({
     }, [onPressIn, reduced, scale, scaleTo]);
 
     const handlePressOut = useCallback((event) => {
+        setPressed(false);
         springTo(scale, 1, { spring: springs.snappy }).start();
         onPressOut?.(event);
     }, [onPressOut, scale]);
+
+    const resolved = typeof style === 'function' ? style({ pressed }) : style;
 
     return (
         <AnimatedPressable
@@ -47,14 +53,14 @@ const PressableScale = ({
             hitSlop={hitSlop}
             onPressIn={handlePressIn}
             onPressOut={handlePressOut}
-            style={(state) => [
-                typeof style === 'function' ? style(state) : style,
+            style={[
+                resolved,
                 { transform: [{ scale }] },
-                reduced && state.pressed ? { opacity: 0.7 } : null,
+                reduced && pressed ? { opacity: 0.7 } : null,
                 disabled ? { opacity: 0.45 } : null,
             ]}
         >
-            {children}
+            {typeof children === 'function' ? children({ pressed }) : children}
         </AnimatedPressable>
     );
 };

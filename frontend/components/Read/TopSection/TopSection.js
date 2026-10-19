@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Easing, PanResponder, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { springs, springTo } from '../../../theme/motion';
+import { PX_PRECISION, springs, springTo } from '../../../theme/motion';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { useTranslation } from '../../../hooks/useTranslation';
@@ -157,7 +157,7 @@ const TopSection = ({
 
         prevWordRef.current = '';
         Animated.parallel([
-            springTo(translateY, 24, { spring: springs.snappy }),
+            springTo(translateY, 24, { spring: springs.snappy, precision: PX_PRECISION }),
             Animated.timing(opacity, {
                 toValue: 0,
                 duration: 180,

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     Alert,
     Animated,
@@ -9,18 +9,24 @@ import {
     StyleSheet,
     Text,
     TextInput,
-    TouchableOpacity,
-    TouchableWithoutFeedback,
     View,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Constants from 'expo-constants';
 import { Feather } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import Auth from './Auth';
 import { deleteCurrentUserProfile } from '../services/accountDeletion';
-import { Screen } from '../components/ui';
-import VocabLevelModal from '../components/shared/VocabLevelModal';
-import { hasVocabSizeGrid } from '../services/vocabSizeLevels';
+import { getReaderLevel } from '../services/Database';
+import { tapSelect } from '../services/haptics';
+import { getVocabTiers, hasVocabSizeGrid } from '../services/vocabSizeLevels';
+import { hasWordCheck } from '../services/wordCheck';
+import { PaperButton, PaperSheet, PaperTabs, PressableScale, Screen } from '../components/ui';
+import VocabLevelModal, { tierIndexForTheta } from '../components/shared/VocabLevelModal';
+import WordCheckModal from '../components/shared/WordCheckModal';
 import { useAppContext } from '../contexts/AppContext';
+import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
 import {
     getActiveTargetLanguageOptionId,
@@ -34,114 +40,337 @@ import {
     PRIVACY_POLICY_URL,
     TERMS_OF_SERVICE_URL,
 } from '../constants/links';
-import { fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
+import { fontFamilies, useTheme } from '../theme';
+import { springs, springTo, useReducedMotion } from '../theme/motion';
 
-const getProfileColors = (themeColors) => ({
-    bg: themeColors.bgPage,
-    surface: themeColors.surface,
-    muted: themeColors.surfaceMuted,
-    surfaceMuted: themeColors.surfaceMuted,
-    ink: themeColors.text,
-    sub: themeColors.textTertiary,
-    faint: themeColors.textSubtle,
-    border: themeColors.divider,
-    strongBorder: themeColors.borderStrong,
-    accent: themeColors.accent,
-    danger: themeColors.danger,
-    white: themeColors.white,
-});
+// ─── Profile (Paper redesign) ─────────────────────────────────────────────────
+//
+// Paper ground, ink type, hairline rows instead of cards. The page leads with
+// who you are and how much of your target language you know (the level
+// engine's estimate, with its uncertainty drawn as a band), then settings.
+// Every tappable row answers on press-in; switches, the appearance underline
+// and the level marker move on critically damped springs.
+
+const GUTTER = 24;
+const APP_VERSION = Constants.expoConfig?.version ?? null;
 
 const getInitial = (name) => {
     const trimmed = String(name || '').trim();
     return trimmed ? trimmed.charAt(0).toUpperCase() : 'R';
 };
 
-const TOGGLE_WIDTH = 52;
-const TOGGLE_HEIGHT = 32;
-const TOGGLE_THUMB = 26;
-const TOGGLE_INSET = 3;
-const TOGGLE_TRAVEL = TOGGLE_WIDTH - TOGGLE_THUMB - TOGGLE_INSET * 2;
+const clamp01 = (value) => Math.max(0, Math.min(1, value));
 
-const PillToggle = ({ value, onValueChange, theme, label }) => {
+// New strings fall back to their English text until translations.js has them.
+const useCopy = (t) => useCallback((key, english, params = {}) => {
+    const value = t(key, params);
+    if (value !== key) return value;
+    return english.replace(/\{\{(\w+)\}\}/g, (_, name) => (params[name] == null ? '' : String(params[name])));
+}, [t]);
+
+const tierTickLabel = (tier, t) => {
+    if (tier.advanced) return t('vocabLevel.advancedTier');
+    if (tier.label) return tier.label;
+    return Number(tier.threshold).toLocaleString();
+};
+
+// ─── Small pieces ─────────────────────────────────────────────────────────────
+
+const SWITCH_WIDTH = 46;
+const SWITCH_HEIGHT = 28;
+const SWITCH_THUMB = 20;
+const SWITCH_INSET = 4;
+const SWITCH_TRAVEL = SWITCH_WIDTH - SWITCH_THUMB - SWITCH_INSET * 2 - 2;
+
+/**
+ * PaperSwitch — the visual only (the whole row is the control). Off: a
+ * hairline outline with a muted thumb. On: ink fill with a paper thumb.
+ * The thumb springs across; colours cross-fade on the native driver.
+ */
+const PaperSwitch = ({ value, colors, reduced }) => {
     const progress = useRef(new Animated.Value(value ? 1 : 0)).current;
 
     useEffect(() => {
-        Animated.timing(progress, {
-            toValue: value ? 1 : 0,
-            duration: 180,
-            useNativeDriver: false,
-        }).start();
-    }, [value, progress]);
+        if (reduced) {
+            progress.setValue(value ? 1 : 0);
+            return;
+        }
+        springTo(progress, value ? 1 : 0, { spring: springs.snappy }).start();
+    }, [progress, reduced, value]);
 
-    const trackColor = progress.interpolate({
-        inputRange: [0, 1],
-        outputRange: [theme.colors.border, theme.colors.accent],
-    });
-    const translateX = progress.interpolate({
-        inputRange: [0, 1],
-        outputRange: [0, TOGGLE_TRAVEL],
-    });
+    const translateX = progress.interpolate({ inputRange: [0, 1], outputRange: [0, SWITCH_TRAVEL] });
 
     return (
-        <Pressable
-            accessibilityRole="switch"
-            accessibilityLabel={label}
-            accessibilityState={{ checked: !!value }}
-            hitSlop={8}
-            onPress={() => onValueChange(!value)}
-            style={{
-                width: TOGGLE_WIDTH,
-                height: TOGGLE_HEIGHT,
-                justifyContent: 'center',
-            }}
+        <View
+            style={[switchStyles.track, { borderColor: colors.borderStrong }]}
+            importantForAccessibility="no-hide-descendants"
+            accessibilityElementsHidden
         >
-            <Animated.View
-                style={{
-                    ...StyleSheet.absoluteFillObject,
-                    borderRadius: TOGGLE_HEIGHT / 2,
-                    backgroundColor: trackColor,
-                }}
-            />
-            <Animated.View
-                style={{
-                    width: TOGGLE_THUMB,
-                    height: TOGGLE_THUMB,
-                    borderRadius: TOGGLE_THUMB / 2,
-                    backgroundColor: theme.colors.surface,
-                    marginLeft: TOGGLE_INSET,
-                    transform: [{ translateX }],
-                    shadowColor: '#000',
-                    shadowOffset: { width: 0, height: 1 },
-                    shadowOpacity: 0.18,
-                    shadowRadius: 2,
-                    elevation: 2,
-                }}
-            />
-        </Pressable>
+            <Animated.View style={[switchStyles.fill, { backgroundColor: colors.inkSlate, opacity: progress }]} />
+            <Animated.View style={[switchStyles.thumb, { transform: [{ translateX }] }]}>
+                <View style={[switchStyles.thumbFace, { backgroundColor: colors.textMuted }]} />
+                <Animated.View style={[switchStyles.thumbFace, { backgroundColor: colors.onInk, opacity: progress }]} />
+            </Animated.View>
+        </View>
     );
 };
 
-const ToggleRow = ({ label, description, value, onValueChange, isLast, styles, theme }) => (
-    <View style={[styles.row, isLast && styles.rowLast]}>
+const switchStyles = StyleSheet.create({
+    track: {
+        width: SWITCH_WIDTH,
+        height: SWITCH_HEIGHT,
+        borderRadius: SWITCH_HEIGHT / 2,
+        borderWidth: 1,
+        justifyContent: 'center',
+        overflow: 'hidden',
+    },
+    fill: {
+        ...StyleSheet.absoluteFillObject,
+        borderRadius: SWITCH_HEIGHT / 2,
+    },
+    thumb: {
+        width: SWITCH_THUMB,
+        height: SWITCH_THUMB,
+        marginLeft: SWITCH_INSET - 1,
+    },
+    thumbFace: {
+        ...StyleSheet.absoluteFillObject,
+        borderRadius: SWITCH_THUMB / 2,
+    },
+});
+
+/** A hairline settings row. Highlights the instant a finger lands. */
+const RowPressable = ({ children, styles, style, ...rest }) => (
+    <Pressable
+        {...rest}
+        style={({ pressed }) => [styles.rowPressable, pressed && styles.rowPressed, style]}
+    >
+        <View style={styles.rowInner}>{children}</View>
+    </Pressable>
+);
+
+const NavRow = ({ label, value, onPress, icon = 'chevron-right', tone, disabled, styles, colors }) => (
+    <RowPressable
+        styles={styles}
+        onPress={onPress}
+        disabled={disabled}
+        style={disabled ? styles.rowDisabled : null}
+        accessibilityRole="button"
+        accessibilityLabel={value ? `${label}, ${value}` : label}
+        accessibilityState={{ disabled: !!disabled }}
+    >
+        <Text style={[styles.rowLabel, styles.rowLabelFlex, tone === 'danger' && { color: colors.danger }]}>{label}</Text>
+        {value ? <Text style={styles.rowValue} numberOfLines={1}>{value}</Text> : null}
+        {icon ? <Feather name={icon} size={18} color={colors.textSubtle} /> : null}
+    </RowPressable>
+);
+
+const SwitchRow = ({ label, description, value, onValueChange, styles, colors, reduced }) => (
+    <RowPressable
+        styles={styles}
+        onPress={() => {
+            tapSelect();
+            onValueChange(!value);
+        }}
+        accessibilityRole="switch"
+        accessibilityLabel={label}
+        accessibilityHint={description || undefined}
+        accessibilityState={{ checked: !!value }}
+    >
         <View style={styles.rowCopy}>
             <Text style={styles.rowLabel}>{label}</Text>
             {description ? <Text style={styles.rowDescription}>{description}</Text> : null}
         </View>
-        <PillToggle value={value} onValueChange={onValueChange} theme={theme} label={label} />
-    </View>
+        <PaperSwitch value={!!value} colors={colors} reduced={reduced} />
+    </RowPressable>
 );
 
-const NavRow = ({ label, value, onPress, icon = 'chevron-right', isLast, styles, profileColors }) => (
-    <TouchableOpacity
-        activeOpacity={0.7}
+/**
+ * TextRadioGroup — options as plain words; the chosen one is bold with a
+ * tint underline that springs to it from wherever it is.
+ */
+const TextRadioGroup = ({ options, value, onChange, label, colors, styles, reduced }) => {
+    const [layouts, setLayouts] = useState({});
+    const x = useRef(new Animated.Value(0)).current;
+    const width = useRef(new Animated.Value(0)).current;
+    const placed = useRef(false);
+
+    useEffect(() => {
+        const box = layouts[value];
+        if (!box) return;
+        if (!placed.current || reduced) {
+            x.setValue(box.x);
+            width.setValue(box.width);
+            placed.current = true;
+            return;
+        }
+        Animated.parallel([
+            springTo(x, box.x, { spring: springs.snappy, useNativeDriver: false }),
+            springTo(width, box.width, { spring: springs.snappy, useNativeDriver: false }),
+        ]).start();
+    }, [layouts, reduced, value, width, x]);
+
+    return (
+        <View accessibilityRole="radiogroup" accessibilityLabel={label} style={styles.radioGroup}>
+            {options.map((option) => {
+                const selected = option.key === value;
+                return (
+                    <Pressable
+                        key={option.key}
+                        accessibilityRole="radio"
+                        accessibilityLabel={option.label}
+                        accessibilityState={{ checked: selected, selected }}
+                        hitSlop={{ left: 8, right: 8 }}
+                        onPress={() => {
+                            if (selected) return;
+                            tapSelect();
+                            onChange(option.key);
+                        }}
+                        onLayout={(event) => {
+                            const { x: left, width: w } = event.nativeEvent.layout;
+                            setLayouts((previous) => (
+                                previous[option.key]?.x === left && previous[option.key]?.width === w
+                                    ? previous
+                                    : { ...previous, [option.key]: { x: left, width: w } }
+                            ));
+                        }}
+                        style={styles.radioOption}
+                    >
+                        {({ pressed }) => (
+                            <Text
+                                style={[
+                                    styles.radioText,
+                                    selected ? styles.radioTextSelected : null,
+                                    pressed && !selected ? styles.pressedText : null,
+                                ]}
+                            >
+                                {option.label}
+                            </Text>
+                        )}
+                    </Pressable>
+                );
+            })}
+            <Animated.View
+                pointerEvents="none"
+                style={[styles.radioUnderline, { backgroundColor: colors.tint, left: x, width }]}
+            />
+        </View>
+    );
+};
+
+/**
+ * LevelScale — the estimate on a simple line from the easiest tier to the
+ * hardest: an ink fill up to a tint marker, and a soft tint band for ±1 sd
+ * (how sure the engine is). Decorative for screen readers; the sentence
+ * above it says the same thing in words.
+ */
+const LevelScale = ({ view, colors, styles, reduced }) => {
+    const known = view.fraction != null;
+    const position = useRef(new Animated.Value(view.fraction ?? 0)).current;
+    const bandFrom = useRef(new Animated.Value(view.bandFrom ?? 0)).current;
+    const bandWidth = useRef(new Animated.Value((view.bandTo ?? 0) - (view.bandFrom ?? 0))).current;
+
+    useEffect(() => {
+        if (!known) return;
+        const targets = [
+            [position, view.fraction],
+            [bandFrom, view.bandFrom],
+            [bandWidth, view.bandTo - view.bandFrom],
+        ];
+        if (reduced) {
+            targets.forEach(([value, to]) => value.setValue(to));
+            return;
+        }
+        Animated.parallel(targets.map(([value, to]) => (
+            springTo(value, to, { spring: springs.move, useNativeDriver: false })
+        ))).start();
+    }, [bandFrom, bandWidth, known, position, reduced, view.bandFrom, view.bandTo, view.fraction]);
+
+    const percent = (value) => value.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'], extrapolate: 'clamp' });
+
+    return (
+        <View importantForAccessibility="no-hide-descendants" accessibilityElementsHidden style={styles.scale}>
+            <View style={styles.scaleTrackArea}>
+                <View style={[styles.scaleTrack, { backgroundColor: colors.border }]} />
+                {known ? (
+                    <>
+                        <Animated.View
+                            style={[styles.scaleBand, { backgroundColor: colors.tintSoft, left: percent(bandFrom), width: percent(bandWidth) }]}
+                        />
+                        <Animated.View style={[styles.scaleFill, { backgroundColor: colors.inkSlate, width: percent(position) }]} />
+                        <Animated.View
+                            style={[
+                                styles.scaleMarker,
+                                { backgroundColor: colors.tint, borderColor: colors.bgPage, left: percent(position) },
+                            ]}
+                        />
+                    </>
+                ) : null}
+            </View>
+            <View style={styles.scaleTicks}>
+                {view.ticks.map((tick, index) => {
+                    const first = index === 0;
+                    const last = index === view.ticks.length - 1;
+                    const placement = first
+                        ? { left: 0, textAlign: 'left' }
+                        : last
+                            ? { right: 0, textAlign: 'right' }
+                            : { left: `${tick.fraction * 100}%`, marginLeft: -40, width: 80, textAlign: 'center' };
+                    return (
+                        <Text key={tick.key} style={[styles.scaleTick, placement]} numberOfLines={1}>
+                            {tick.label}
+                        </Text>
+                    );
+                })}
+            </View>
+        </View>
+    );
+};
+
+/** A centred Paper dialog for short tasks (confirmations, a name, sign-in). */
+const PaperDialog = ({ visible, onRequestClose, onScrimPress, closeLabel, styles, reduced, cardStyle, children }) => {
+    const scale = useRef(new Animated.Value(1)).current;
+
+    useEffect(() => {
+        if (!visible || reduced) return;
+        scale.setValue(0.96);
+        springTo(scale, 1, { spring: springs.standard }).start();
+    }, [reduced, scale, visible]);
+
+    return (
+        <Modal visible={visible} transparent animationType="fade" onRequestClose={onRequestClose}>
+            <View style={styles.dialogBackdrop}>
+                <Pressable
+                    style={StyleSheet.absoluteFill}
+                    onPress={onScrimPress ?? onRequestClose}
+                    accessibilityRole="button"
+                    accessibilityLabel={closeLabel}
+                />
+                <Animated.View
+                    accessibilityViewIsModal
+                    style={[styles.dialogCard, cardStyle, { transform: [{ scale }] }]}
+                >
+                    {children}
+                </Animated.View>
+            </View>
+        </Modal>
+    );
+};
+
+const OptionRow = ({ label, selected, disabled, onPress, styles, colors }) => (
+    <Pressable
+        accessibilityRole="radio"
+        accessibilityState={{ checked: selected, selected, disabled }}
+        disabled={disabled}
         onPress={onPress}
-        style={[styles.row, isLast && styles.rowLast]}
+        style={({ pressed }) => [styles.optionRow, pressed && styles.rowPressed, disabled && styles.optionDisabled]}
     >
-        <Text style={[styles.rowLabel, styles.rowLabelFlex]}>{label}</Text>
-        {value ? <Text style={styles.rowValue}>{value}</Text> : null}
-        <Feather name={icon} size={18} color={profileColors.faint} />
-    </TouchableOpacity>
+        <Text style={[styles.optionText, selected && styles.optionTextSelected]}>{label}</Text>
+        {selected ? <Feather name="check" size={18} color={colors.tint} /> : null}
+    </Pressable>
 );
+
+// ─── Screen ───────────────────────────────────────────────────────────────────
 
 const Profile = ({ user, signOut, updateUsername }) => {
     const [isSigningOut, setIsSigningOut] = useState(false);
@@ -158,7 +387,11 @@ const Profile = ({ user, signOut, updateUsername }) => {
     const [isSavingName, setIsSavingName] = useState(false);
     const [showTargetLanguagePicker, setShowTargetLanguagePicker] = useState(false);
     const [showVocabLevel, setShowVocabLevel] = useState(false);
+    const [showWordCheck, setShowWordCheck] = useState(false);
+    const [level, setLevel] = useState(null);
+    const [levelLoaded, setLevelLoaded] = useState(false);
     const {
+        activeProfileId,
         interfaceLanguage,
         setInterfaceLanguage,
         targetLanguage,
@@ -172,10 +405,14 @@ const Profile = ({ user, signOut, updateUsername }) => {
         personalizedVocabEnabled,
         setPersonalizedVocabEnabled,
     } = useAppContext();
+    const { activeOwnerId } = useLocalOwner();
     const theme = useTheme();
-    const profileColors = useMemo(() => getProfileColors(theme.colors), [theme.colors]);
-    const styles = useMemo(() => createStyles(profileColors, theme.colors), [profileColors, theme.colors]);
+    const colors = theme.colors;
+    const safeInsets = useSafeAreaInsets();
+    const reduced = useReducedMotion();
+    const styles = useMemo(() => createStyles(colors, safeInsets.bottom), [colors, safeInsets.bottom]);
     const { t } = useTranslation();
+    const copy = useCopy(t);
     const isAnonymous = Boolean(user?.is_anonymous);
     const isGuest = !user?.id || isAnonymous;
 
@@ -213,6 +450,106 @@ const Profile = ({ user, signOut, updateUsername }) => {
             setShowAuthModal(false);
         }
     }, [user?.id]);
+
+    // ── Level estimate ──────────────────────────────────────────────────────
+    // Read from the level engine whenever the tab comes into view and after
+    // the picker or the word check closes (both save before closing).
+    const levelRequestRef = useRef(0);
+    const loadLevel = useCallback(async () => {
+        const request = levelRequestRef.current + 1;
+        levelRequestRef.current = request;
+        let next = null;
+        try {
+            next = await getReaderLevel({ ownerId: activeOwnerId, profileId: activeProfileId, language: targetLanguage });
+        } catch {
+            next = null;
+        }
+        if (levelRequestRef.current !== request) return;
+        setLevel(next);
+        setLevelLoaded(true);
+    }, [activeOwnerId, activeProfileId, targetLanguage]);
+
+    // Another language or profile: don't show the old estimate on new tiers.
+    useEffect(() => {
+        setLevelLoaded(false);
+        setLevel(null);
+    }, [activeOwnerId, activeProfileId, targetLanguage]);
+
+    useFocusEffect(useCallback(() => {
+        loadLevel();
+        return () => {
+            // Drop a read still in flight when the tab loses focus.
+            levelRequestRef.current += 1;
+        };
+    }, [loadLevel]));
+
+    const tiers = useMemo(() => getVocabTiers(targetLanguage), [targetLanguage]);
+    const hasGrid = hasVocabSizeGrid(targetLanguage);
+    const canCheck = hasWordCheck(targetLanguage);
+
+    const levelView = useMemo(() => {
+        if (!tiers.length) return null;
+        const minTheta = Number(tiers[0].theta);
+        const maxTheta = Number(tiers[tiers.length - 1].theta);
+        const span = Math.max(1e-6, maxTheta - minTheta);
+        const toFraction = (theta) => clamp01((Number(theta) - minTheta) / span);
+
+        // Four labels spread along the line, each at its tier's real place.
+        const tickIndexes = [];
+        [0, 1 / 3, 2 / 3, 1].forEach((share) => {
+            const target = minTheta + share * span;
+            let best = 0;
+            tiers.forEach((tier, index) => {
+                if (Math.abs(Number(tier.theta) - target) < Math.abs(Number(tiers[best].theta) - target)) best = index;
+            });
+            if (!tickIndexes.includes(best)) tickIndexes.push(best);
+        });
+        const ticks = tickIndexes.map((index) => ({
+            key: String(tiers[index].threshold),
+            fraction: toFraction(tiers[index].theta),
+            label: tierTickLabel(tiers[index], t),
+        }));
+
+        if (!level?.hasRow || !Number.isFinite(Number(level?.theta))) {
+            return { ticks, fraction: null, sentence: copy('profile.levelUnknown', 'We don’t know your level yet.'), highlight: null };
+        }
+
+        const theta = Number(level.theta);
+        const sd = Math.sqrt(Math.max(0, Number(level.variance) || 0));
+        const tier = tiers[tierIndexForTheta(tiers, theta) ?? 0];
+        let sentence;
+        let highlight = null;
+        if (tier.label) {
+            highlight = tier.label;
+            sentence = t('wordCheck.resultHsk', { level: highlight });
+        } else if (tier.advanced) {
+            sentence = t('wordCheck.resultAdvanced');
+        } else {
+            highlight = Number(tier.threshold).toLocaleString();
+            sentence = t('wordCheck.resultWords', { count: highlight });
+        }
+        return {
+            ticks,
+            fraction: toFraction(theta),
+            bandFrom: toFraction(theta - sd),
+            bandTo: toFraction(theta + sd),
+            sentence,
+            highlight,
+        };
+    }, [copy, level, t, tiers]);
+
+    const renderSentence = (view) => {
+        const { sentence, highlight } = view;
+        const at = highlight ? sentence.indexOf(highlight) : -1;
+        if (at < 0) return sentence;
+        return [
+            sentence.slice(0, at),
+            <Text key="estimate" style={styles.levelSentenceAccent}>{highlight}</Text>,
+            sentence.slice(at + highlight.length),
+        ];
+    };
+
+    // ── Actions (unchanged behaviour) ───────────────────────────────────────
 
     const performSignOut = async () => {
         if (isSigningOut) {
@@ -335,9 +672,12 @@ const Profile = ({ user, signOut, updateUsername }) => {
         }
     };
 
+    const closeDeleteModal = () => (isDeletingAccount ? null : setShowDeleteModal(false));
+    const languageName = t(`language.${activeTargetOptionId}`);
+
     return (
         <Screen
-            backgroundColor={profileColors.bg}
+            backgroundColor={colors.bgPage}
             contentContainerStyle={styles.screenContent}
         >
             <ScrollView
@@ -346,526 +686,450 @@ const Profile = ({ user, signOut, updateUsername }) => {
                 showsVerticalScrollIndicator={false}
                 keyboardShouldPersistTaps="handled"
             >
-                <View style={styles.appTopBar}>
-                    <View style={styles.appTopSide} />
-                    <Text style={styles.appTopTitle}>NOEUL</Text>
-                    <View style={styles.appTopSide} />
-                </View>
-
-                <View style={styles.profileHeader}>
-                    <View style={styles.avatar}>
+                {/* Who you are */}
+                <View style={styles.header}>
+                    <View style={styles.avatar} importantForAccessibility="no-hide-descendants" accessibilityElementsHidden>
                         <Text style={styles.avatarInitial}>{getInitial(displayName)}</Text>
                     </View>
-                    <View style={styles.profileIdentity}>
-                        <Text style={styles.profileName} numberOfLines={1}>{displayName}</Text>
-                        <Text style={styles.profileSubtitle} numberOfLines={1}>{identitySubtitle}</Text>
+                    <View style={styles.identity}>
+                        <Text style={styles.name} numberOfLines={1} accessibilityRole="header">{displayName}</Text>
+                        <Text style={styles.status} numberOfLines={1}>{identitySubtitle}</Text>
                     </View>
-                    {!isGuest ? (
-                        <TouchableOpacity
-                            accessibilityRole="button"
-                            accessibilityLabel={t('profile.editUsername')}
-                            activeOpacity={0.78}
-                            onPress={openNameEditor}
-                            style={styles.editUsernameButton}
-                        >
-                            <Feather name="edit-2" size={16} color={profileColors.sub} />
-                        </TouchableOpacity>
-                    ) : null}
-                </View>
-
-                <View style={styles.section}>
-                    <Text style={styles.groupEyebrow}>{t('profile.appearance')}</Text>
-                    <View style={styles.segmentControl}>
-                        <Pressable
-                            accessibilityRole="button"
-                            accessibilityState={{ selected: !isDarkMode }}
-                            onPress={() => setIsDarkMode(false)}
-                            style={[styles.segmentButton, !isDarkMode && styles.segmentButtonActive]}
-                        >
-                            <Feather name="sun" size={16} color={!isDarkMode ? profileColors.white : profileColors.sub} />
-                            <Text style={[styles.segmentText, !isDarkMode && styles.segmentTextActive]}>
-                                {t('profile.light')}
-                            </Text>
-                        </Pressable>
-                        <Pressable
-                            accessibilityRole="button"
-                            accessibilityState={{ selected: isDarkMode }}
-                            onPress={() => setIsDarkMode(true)}
-                            style={[styles.segmentButton, isDarkMode && styles.segmentButtonActive]}
-                        >
-                            <Feather name="moon" size={16} color={isDarkMode ? profileColors.white : profileColors.sub} />
-                            <Text style={[styles.segmentText, isDarkMode && styles.segmentTextActive]}>
-                                {t('profile.dark')}
-                            </Text>
-                        </Pressable>
-                    </View>
-                </View>
-
-                <View style={styles.section}>
-                    <Text style={styles.groupEyebrow}>{t('profile.learningLanguage')}</Text>
-                    <View style={styles.card}>
-                        <NavRow
-                            label={t('profile.learningLanguage')}
-                            value={activeTargetOption?.label}
-                            onPress={() => setShowTargetLanguagePicker(true)}
-                            isLast={!hasVocabSizeGrid(targetLanguage)}
-                            styles={styles}
-                            profileColors={profileColors}
-                        />
-                        {hasVocabSizeGrid(targetLanguage) ? (
-                            <NavRow
-                                label={t('profile.vocabLevel')}
-                                onPress={() => setShowVocabLevel(true)}
-                                isLast
-                                styles={styles}
-                                profileColors={profileColors}
-                            />
-                        ) : null}
-                    </View>
-                    <Text style={styles.levelHelperText}>
-                        {hasVocabSizeGrid(targetLanguage) ? t('profile.vocabLevelDesc') : t('profile.learningLanguageDesc')}
-                    </Text>
-                </View>
-
-                <View style={styles.section}>
-                    <Text style={styles.groupEyebrow}>{t('profile.preferences')}</Text>
-                    <View style={styles.card}>
-                        <NavRow
-                            label={t('profile.interfaceLanguage')}
-                            onPress={() => setShowInterfaceLanguagePicker(true)}
-                            styles={styles}
-                            profileColors={profileColors}
-                        />
-                        <ToggleRow
-                            label={t('profile.notifications')}
-                            value={notificationsEnabled}
-                            onValueChange={setNotificationsEnabled}
-                            styles={styles}
-                            theme={theme}
-                        />
-                        <ToggleRow
-                            label={t('profile.personalizedVocab')}
-                            description={t('profile.personalizedVocabDesc')}
-                            value={personalizedVocabEnabled}
-                            onValueChange={setPersonalizedVocabEnabled}
-                            isLast
-                            styles={styles}
-                            theme={theme}
-                        />
-                    </View>
-                </View>
-
-                {/* Shown to everyone, guests included: the privacy policy and a way to
-                    reach us shouldn't require an account. */}
-                <View style={styles.section}>
-                    <Text style={styles.groupEyebrow}>{t('profile.about')}</Text>
-                    <View style={styles.card}>
-                        <NavRow
-                            label={t('profile.privacyPolicy')}
-                            onPress={() => openLink(PRIVACY_POLICY_URL)}
-                            styles={styles}
-                            profileColors={profileColors}
-                        />
-                        <NavRow
-                            label={t('profile.termsOfService')}
-                            onPress={() => openLink(TERMS_OF_SERVICE_URL)}
-                            styles={styles}
-                            profileColors={profileColors}
-                        />
-                        <NavRow
-                            label={t('profile.contact')}
-                            onPress={openContactModal}
-                            icon="mail"
-                            isLast
-                            styles={styles}
-                            profileColors={profileColors}
-                        />
-                    </View>
-                </View>
-
-                <View style={styles.section}>
-                    <Text style={styles.groupEyebrow}>{t('profile.account')}</Text>
                     {isGuest ? (
-                        <View style={styles.guestAuthActions}>
-                            <TouchableOpacity
-                                activeOpacity={0.86}
-                                onPress={() => openAuthModal('signin')}
-                                style={[styles.guestAuthButton, styles.guestAuthButtonSecondary]}
-                            >
-                                <Text style={styles.guestAuthButtonSecondaryText}>{t('profile.signIn')}</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                                activeOpacity={0.86}
-                                onPress={() => openAuthModal('signup')}
-                                style={[styles.guestAuthButton, styles.guestAuthButtonPrimary]}
-                            >
-                                <Text style={styles.guestAuthButtonPrimaryText}>{t('profile.signUp')}</Text>
-                            </TouchableOpacity>
-                        </View>
+                        <PaperButton
+                            variant="secondary"
+                            size="md"
+                            label={t('profile.signIn')}
+                            onPress={() => openAuthModal('signin')}
+                            style={styles.headerAction}
+                        />
                     ) : (
-                        <TouchableOpacity
-                            activeOpacity={0.86}
-                            onPress={() => setShowSignOutModal(true)}
-                            disabled={isSigningOut}
-                            style={[styles.logoutButton, isSigningOut && styles.logoutButtonDisabled]}
-                        >
-                            <Text style={styles.logoutText}>
-                                {isSigningOut ? t('profile.loggingOut') : t('profile.logout')}
-                            </Text>
-                        </TouchableOpacity>
+                        <PaperButton
+                            variant="secondary"
+                            size="md"
+                            label={t('common.edit')}
+                            accessibilityLabel={t('profile.editUsername')}
+                            onPress={openNameEditor}
+                            style={styles.headerAction}
+                        />
                     )}
                 </View>
 
+                {/* How much you know */}
+                <View style={styles.levelSection}>
+                    <Text style={styles.eyebrow} accessibilityRole="header">
+                        {copy('profile.yourLanguage', 'Your {{language}}', { language: languageName })}
+                    </Text>
+                    {hasGrid && levelView ? (
+                        levelLoaded ? (
+                            <>
+                                <Text style={styles.levelSentence}>{renderSentence(levelView)}</Text>
+                                <LevelScale view={levelView} colors={colors} styles={styles} reduced={reduced} />
+                                <Text style={styles.note}>
+                                    {levelView.fraction != null
+                                        ? copy('profile.levelBandNote', 'The band is how sure we are. It narrows as you read and look words up.')
+                                        : t('profile.vocabLevelDesc')}
+                                </Text>
+                            </>
+                        ) : (
+                            // Holds the space while the (fast, local) read lands.
+                            <View style={styles.levelPlaceholder} />
+                        )
+                    ) : (
+                        <Text style={styles.note}>{t('profile.learningLanguageDesc')}</Text>
+                    )}
+                    {canCheck || hasGrid ? (
+                        <View style={styles.levelActions}>
+                            {canCheck ? (
+                                <PaperButton
+                                    size="md"
+                                    label={copy('profile.takeWordCheck', 'Take the word check')}
+                                    onPress={() => setShowWordCheck(true)}
+                                    style={styles.levelButton}
+                                />
+                            ) : null}
+                            {hasGrid ? (
+                                <PaperButton
+                                    variant={canCheck ? 'secondary' : 'primary'}
+                                    size="md"
+                                    label={copy('profile.setLevelMyself', 'Set it myself')}
+                                    accessibilityLabel={t('profile.setVocabLevel')}
+                                    onPress={() => setShowVocabLevel(true)}
+                                    style={styles.levelButton}
+                                />
+                            ) : null}
+                        </View>
+                    ) : null}
+                </View>
+
+                {/* Settings */}
+                <View style={styles.group}>
+                    <View style={styles.rowPressable}>
+                        <View style={styles.rowInner}>
+                            <Text style={[styles.rowLabel, styles.rowLabelFlex]}>{t('profile.appearance')}</Text>
+                            <TextRadioGroup
+                                label={t('profile.appearance')}
+                                value={isDarkMode ? 'dark' : 'light'}
+                                onChange={(key) => setIsDarkMode(key === 'dark')}
+                                options={[
+                                    { key: 'light', label: t('profile.light') },
+                                    { key: 'dark', label: t('profile.dark') },
+                                ]}
+                                colors={colors}
+                                styles={styles}
+                                reduced={reduced}
+                            />
+                        </View>
+                    </View>
+                    <NavRow
+                        label={t('profile.learningLanguage')}
+                        value={activeTargetOption?.label}
+                        onPress={() => setShowTargetLanguagePicker(true)}
+                        styles={styles}
+                        colors={colors}
+                    />
+                    <NavRow
+                        label={t('profile.interfaceLanguage')}
+                        value={getInterfaceLanguageLabel(interfaceLanguage)}
+                        onPress={() => setShowInterfaceLanguagePicker(true)}
+                        styles={styles}
+                        colors={colors}
+                    />
+                    <SwitchRow
+                        label={t('profile.notifications')}
+                        value={notificationsEnabled}
+                        onValueChange={setNotificationsEnabled}
+                        styles={styles}
+                        colors={colors}
+                        reduced={reduced}
+                    />
+                    <SwitchRow
+                        label={t('profile.personalizedVocab')}
+                        description={t('profile.personalizedVocabDesc')}
+                        value={personalizedVocabEnabled}
+                        onValueChange={setPersonalizedVocabEnabled}
+                        styles={styles}
+                        colors={colors}
+                        reduced={reduced}
+                    />
+                    {/* Shown to everyone, guests included: a way to reach us
+                        shouldn't require an account. */}
+                    <NavRow
+                        label={t('profile.contact')}
+                        onPress={openContactModal}
+                        icon="mail"
+                        styles={styles}
+                        colors={colors}
+                    />
+                    <View style={styles.groupEnd} />
+                </View>
+
                 {!isGuest ? (
-                    <View style={styles.section}>
-                        <TouchableOpacity
-                            accessibilityRole="button"
-                            activeOpacity={0.86}
+                    <View style={styles.group}>
+                        <NavRow
+                            label={isSigningOut ? t('profile.loggingOut') : t('profile.logout')}
+                            onPress={() => setShowSignOutModal(true)}
+                            disabled={isSigningOut}
+                            icon={null}
+                            styles={styles}
+                            colors={colors}
+                        />
+                        <NavRow
+                            label={isDeletingAccount ? t('profile.deletingAccount') : t('profile.deleteAccount')}
                             onPress={() => setShowDeleteModal(true)}
                             disabled={isDeletingAccount}
-                            style={[styles.deleteAccountButton, isDeletingAccount && styles.deleteAccountButtonDisabled]}
-                        >
-                            <Text style={styles.deleteAccountText}>
-                                {isDeletingAccount ? t('profile.deletingAccount') : t('profile.deleteAccount')}
-                            </Text>
-                        </TouchableOpacity>
+                            icon={null}
+                            tone="danger"
+                            styles={styles}
+                            colors={colors}
+                        />
+                        <View style={styles.groupEnd} />
                     </View>
                 ) : null}
+
+                {/* Privacy policy and terms stay reachable for guests too. */}
+                <View style={styles.footer}>
+                    <Text style={styles.footerText}>{APP_VERSION ? `Noeul ${APP_VERSION}` : 'Noeul'}</Text>
+                    <Text style={styles.footerText}>·</Text>
+                    <Pressable
+                        accessibilityRole="link"
+                        onPress={() => openLink(PRIVACY_POLICY_URL)}
+                        hitSlop={{ left: 6, right: 6 }}
+                        style={styles.footerLinkHit}
+                    >
+                        {({ pressed }) => (
+                            <Text style={[styles.footerLink, pressed && styles.pressedText]}>{t('profile.privacyPolicy')}</Text>
+                        )}
+                    </Pressable>
+                    <Text style={styles.footerText}>·</Text>
+                    <Pressable
+                        accessibilityRole="link"
+                        onPress={() => openLink(TERMS_OF_SERVICE_URL)}
+                        hitSlop={{ left: 6, right: 6 }}
+                        style={styles.footerLinkHit}
+                    >
+                        {({ pressed }) => (
+                            <Text style={[styles.footerLink, pressed && styles.pressedText]}>{t('profile.termsOfService')}</Text>
+                        )}
+                    </Pressable>
+                </View>
             </ScrollView>
 
-            <VocabLevelModal visible={showVocabLevel} onClose={() => setShowVocabLevel(false)} />
+            <VocabLevelModal
+                visible={showVocabLevel}
+                onClose={() => {
+                    setShowVocabLevel(false);
+                    loadLevel();
+                }}
+            />
 
-            <Modal
+            <WordCheckModal
+                visible={showWordCheck}
+                onClose={() => {
+                    setShowWordCheck(false);
+                    loadLevel();
+                }}
+            />
+
+            {/* Learning language */}
+            <PaperSheet
                 visible={showTargetLanguagePicker}
-                animationType="fade"
-                transparent
-                onRequestClose={() => setShowTargetLanguagePicker(false)}
+                onClose={() => setShowTargetLanguagePicker(false)}
+                accessibilityLabel={t('profile.learningLanguage')}
             >
-                <TouchableWithoutFeedback onPress={() => setShowTargetLanguagePicker(false)}>
-                    <View style={styles.modalBackdrop}>
-                        <TouchableWithoutFeedback>
-                            <View style={[styles.modalCard, styles.languageModalCard]}>
-                                <Text style={styles.modalTitle}>{t('profile.learningLanguage')}</Text>
-                                <View style={styles.languageOptions}>
-                                    {TARGET_LANGUAGE_OPTIONS.map((option) => {
-                                        const selected = option.id === activeTargetOptionId;
-
-                                        return (
-                                            <Pressable
-                                                key={option.id}
-                                                accessibilityRole="radio"
-                                                accessibilityState={{ selected }}
-                                                onPress={() => handleTargetLanguageSelect(option)}
-                                                style={[
-                                                    styles.languageOptionRow,
-                                                    selected && styles.languageOptionRowSelected,
-                                                ]}
-                                            >
-                                                <Feather
-                                                    name={selected ? 'check-circle' : 'circle'}
-                                                    size={18}
-                                                    color={selected ? profileColors.accent : profileColors.faint}
-                                                />
-                                                <Text
-                                                    style={[
-                                                        styles.languageOptionText,
-                                                        selected && styles.languageOptionTextSelected,
-                                                    ]}
-                                                >
-                                                    {option.label}
-                                                </Text>
-                                            </Pressable>
-                                        );
-                                    })}
-                                </View>
-                                <Text style={styles.languageDisclaimerText}>
-                                    {t('profile.learningLanguageDesc')}
-                                </Text>
-                            </View>
-                        </TouchableWithoutFeedback>
+                <View style={styles.sheetBody}>
+                    <Text style={styles.sheetTitle} accessibilityRole="header">{t('profile.learningLanguage')}</Text>
+                    <View accessibilityRole="radiogroup" style={styles.optionList}>
+                        {TARGET_LANGUAGE_OPTIONS.map((option) => (
+                            <OptionRow
+                                key={option.id}
+                                label={option.label}
+                                selected={option.id === activeTargetOptionId}
+                                onPress={() => handleTargetLanguageSelect(option)}
+                                styles={styles}
+                                colors={colors}
+                            />
+                        ))}
                     </View>
-                </TouchableWithoutFeedback>
-            </Modal>
+                    <Text style={styles.sheetNote}>{t('profile.learningLanguageDesc')}</Text>
+                </View>
+            </PaperSheet>
 
-            <Modal
+            {/* App language */}
+            <PaperSheet
                 visible={showInterfaceLanguagePicker}
-                animationType="fade"
-                transparent
-                onRequestClose={() => setShowInterfaceLanguagePicker(false)}
+                onClose={() => setShowInterfaceLanguagePicker(false)}
+                dragRegion="header"
+                accessibilityLabel={t('profile.interfaceLanguage')}
             >
-                <TouchableWithoutFeedback onPress={() => setShowInterfaceLanguagePicker(false)}>
-                    <View style={styles.modalBackdrop}>
-                        <TouchableWithoutFeedback>
-                            <View style={[styles.modalCard, styles.languageModalCard]}>
-                                <Text style={styles.modalTitle}>{t('profile.interfaceLanguage')}</Text>
-                                <View style={styles.languageOptions}>
-                                    {interfaceLanguageOptions.map((option) => {
-                                        const selected = option.code === interfaceLanguage;
-                                        const disabled = option.code === targetLanguage;
+                <View style={styles.sheetBody}>
+                    <Text style={styles.sheetTitle} accessibilityRole="header">{t('profile.interfaceLanguage')}</Text>
+                    <ScrollView style={styles.sheetScroll} accessibilityRole="radiogroup">
+                        {interfaceLanguageOptions.map((option) => (
+                            <OptionRow
+                                key={option.code}
+                                label={option.label}
+                                selected={option.code === interfaceLanguage}
+                                disabled={option.code === targetLanguage}
+                                onPress={() => handleInterfaceLanguageSelect(option.code)}
+                                styles={styles}
+                                colors={colors}
+                            />
+                        ))}
+                    </ScrollView>
+                    <Text style={styles.sheetNote}>{t('profile.translationDisclaimer')}</Text>
+                </View>
+            </PaperSheet>
 
-                                        return (
-                                            <Pressable
-                                                key={option.code}
-                                                accessibilityRole="radio"
-                                                accessibilityState={{ selected, disabled }}
-                                                disabled={disabled}
-                                                onPress={() => handleInterfaceLanguageSelect(option.code)}
-                                                style={[
-                                                    styles.languageOptionRow,
-                                                    selected && styles.languageOptionRowSelected,
-                                                    disabled && styles.languageOptionRowDisabled,
-                                                ]}
-                                            >
-                                                <Feather
-                                                    name={selected ? 'check-circle' : 'circle'}
-                                                    size={18}
-                                                    color={selected && !disabled ? profileColors.accent : profileColors.faint}
-                                                />
-                                                <Text
-                                                    style={[
-                                                        styles.languageOptionText,
-                                                        selected && styles.languageOptionTextSelected,
-                                                        disabled && styles.languageOptionTextDisabled,
-                                                    ]}
-                                                >
-                                                    {option.label}
-                                                </Text>
-                                            </Pressable>
-                                        );
-                                    })}
-                                </View>
-                                <Text style={styles.languageDisclaimerText}>
-                                    {t('profile.translationDisclaimer')}
-                                </Text>
-                            </View>
-                        </TouchableWithoutFeedback>
-                    </View>
-                </TouchableWithoutFeedback>
-            </Modal>
-
-            <Modal
+            {/* Contact */}
+            <PaperSheet
                 visible={showContactModal}
-                animationType="fade"
-                transparent
-                onRequestClose={() => setShowContactModal(false)}
+                onClose={() => setShowContactModal(false)}
+                accessibilityLabel={t('profile.contact')}
             >
-                <TouchableWithoutFeedback onPress={() => setShowContactModal(false)}>
-                    <View style={styles.modalBackdrop}>
-                        <TouchableWithoutFeedback>
-                            <View style={styles.modalCard}>
-                                <Text style={styles.modalTitle}>{t('profile.contact')}</Text>
-                                <Text style={styles.modalHelper}>{t('profile.contactBody')}</Text>
-                                <Pressable onPress={handleCopyEmail} style={styles.contactEmailField}>
-                                    <Text style={styles.contactEmailText} selectable>{CONTACT_EMAIL}</Text>
-                                    <Feather
-                                        name={emailCopied ? 'check' : 'copy'}
-                                        size={18}
-                                        color={emailCopied ? profileColors.accent : profileColors.sub}
-                                    />
-                                </Pressable>
-                                <View style={styles.modalActions}>
-                                    <Pressable
-                                        onPress={() => setShowContactModal(false)}
-                                        style={styles.modalButton}
-                                    >
-                                        <Text style={styles.modalButtonText}>{t('common.close')}</Text>
-                                    </Pressable>
-                                    <Pressable
-                                        onPress={handleCopyEmail}
-                                        style={[styles.modalButton, styles.modalPrimaryButton]}
-                                    >
-                                        <Text style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>
-                                            {emailCopied ? t('profile.emailCopied') : t('profile.copyEmail')}
-                                        </Text>
-                                    </Pressable>
-                                </View>
-                            </View>
-                        </TouchableWithoutFeedback>
-                    </View>
-                </TouchableWithoutFeedback>
-            </Modal>
-
-            <Modal
-                visible={showAuthModal}
-                animationType="fade"
-                transparent
-                onRequestClose={() => setShowAuthModal(false)}
-            >
-                <View style={styles.authModalBackdrop}>
-                    <Pressable style={styles.authModalScrim} onPress={() => setShowAuthModal(false)} />
-                    <View style={styles.authModalCard}>
-                        <View style={styles.authModalHeader}>
-                            <View style={styles.authModalCopy}>
-                                <Text style={styles.authModalTitle}>
-                                    {t('profile.authTitle')}
-                                </Text>
-                                <Text style={styles.authModalHelper}>
-                                    {t('profile.authBody')}
-                                </Text>
-                            </View>
-                            <TouchableOpacity
-                                accessibilityRole="button"
-                                accessibilityLabel={t('profile.closeSignIn')}
-                                activeOpacity={0.78}
-                                onPress={() => setShowAuthModal(false)}
-                                style={styles.authModalCloseButton}
-                            >
-                                <Text style={styles.authModalCloseText}>×</Text>
-                            </TouchableOpacity>
-                        </View>
-                        <Auth
-                            key={authMode}
-                            embedded
-                            initialMode={authMode}
-                            showApple={false}
-                            showHeader={false}
-                            showModeToggle={false}
-                            showSectionLabels={false}
-                            title=""
-                            subtitle=""
-                            onAuthenticated={() => setShowAuthModal(false)}
+                <View style={styles.sheetBody}>
+                    <Text style={styles.sheetTitle} accessibilityRole="header">{t('profile.contact')}</Text>
+                    <Text style={styles.sheetHelper}>{t('profile.contactBody')}</Text>
+                    <PressableScale
+                        onPress={handleCopyEmail}
+                        accessibilityRole="button"
+                        accessibilityLabel={`${CONTACT_EMAIL}, ${emailCopied ? t('profile.emailCopied') : t('profile.copyEmail')}`}
+                        style={styles.emailField}
+                    >
+                        <Text style={styles.emailText} selectable>{CONTACT_EMAIL}</Text>
+                        <Feather
+                            name={emailCopied ? 'check' : 'copy'}
+                            size={18}
+                            color={emailCopied ? colors.tint : colors.textMuted}
+                        />
+                    </PressableScale>
+                    <View style={styles.sheetActions}>
+                        <PaperButton
+                            variant="secondary"
+                            label={t('common.close')}
+                            onPress={() => setShowContactModal(false)}
+                            style={styles.flexButton}
+                        />
+                        <PaperButton
+                            label={emailCopied ? t('profile.emailCopied') : t('profile.copyEmail')}
+                            onPress={handleCopyEmail}
+                            style={styles.flexButton}
                         />
                     </View>
                 </View>
-            </Modal>
+            </PaperSheet>
 
-            <Modal
+            {/* Sign in / sign up */}
+            <PaperDialog
+                visible={showAuthModal}
+                onRequestClose={() => setShowAuthModal(false)}
+                closeLabel={t('profile.closeSignIn')}
+                styles={styles}
+                reduced={reduced}
+                cardStyle={styles.authCard}
+            >
+                <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+                    <View style={styles.authHeader}>
+                        <Text style={[styles.dialogTitle, styles.authTitle]} accessibilityRole="header">{t('profile.authTitle')}</Text>
+                        <PressableScale
+                            accessibilityRole="button"
+                            accessibilityLabel={t('profile.closeSignIn')}
+                            onPress={() => setShowAuthModal(false)}
+                            style={styles.closeButton}
+                        >
+                            <Feather name="x" size={20} color={colors.textMuted} />
+                        </PressableScale>
+                    </View>
+                    <Text style={[styles.dialogHelper, styles.authHelper]}>{t('profile.authBody')}</Text>
+                    <PaperTabs
+                        tabs={[
+                            { key: 'signin', label: t('profile.signIn') },
+                            { key: 'signup', label: t('profile.signUp') },
+                        ]}
+                        value={authMode}
+                        onChange={setAuthMode}
+                        style={styles.authTabs}
+                    />
+                    <Auth
+                        key={authMode}
+                        embedded
+                        initialMode={authMode}
+                        showApple={false}
+                        showHeader={false}
+                        showModeToggle={false}
+                        showSectionLabels={false}
+                        title=""
+                        subtitle=""
+                        onAuthenticated={() => setShowAuthModal(false)}
+                    />
+                </ScrollView>
+            </PaperDialog>
+
+            {/* Username */}
+            <PaperDialog
                 visible={showNameEditor}
-                animationType="fade"
-                transparent
                 onRequestClose={() => setShowNameEditor(false)}
+                closeLabel={t('common.cancel')}
+                styles={styles}
+                reduced={reduced}
             >
-                <TouchableWithoutFeedback onPress={() => setShowNameEditor(false)}>
-                    <View style={styles.modalBackdrop}>
-                        <TouchableWithoutFeedback>
-                            <View style={styles.modalCard}>
-                                <Text style={styles.modalTitle}>{t('profile.editUsernameTitle')}</Text>
-                                <TextInput
-                                    value={draftName}
-                                    onChangeText={setDraftName}
-                                    autoCapitalize="none"
-                                    autoCorrect={false}
-                                    editable={!isSavingName}
-                                    placeholder={t('profile.usernamePlaceholder')}
-                                    placeholderTextColor={profileColors.faint}
-                                    style={styles.usernameInput}
-                                />
-                                <View style={styles.modalActions}>
-                                    <Pressable
-                                        onPress={() => setShowNameEditor(false)}
-                                        style={styles.modalButton}
-                                        disabled={isSavingName}
-                                    >
-                                        <Text style={styles.modalButtonText}>{t('common.cancel')}</Text>
-                                    </Pressable>
-                                    <Pressable
-                                        onPress={handleSaveName}
-                                        style={[
-                                            styles.modalButton,
-                                            styles.modalPrimaryButton,
-                                            isSavingName && styles.modalButtonDisabled,
-                                        ]}
-                                        disabled={isSavingName}
-                                    >
-                                        <Text style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>
-                                            {isSavingName ? t('common.working') : t('common.save')}
-                                        </Text>
-                                    </Pressable>
-                                </View>
-                            </View>
-                        </TouchableWithoutFeedback>
-                    </View>
-                </TouchableWithoutFeedback>
-            </Modal>
+                <Text style={styles.dialogTitle} accessibilityRole="header">{t('profile.editUsernameTitle')}</Text>
+                <TextInput
+                    value={draftName}
+                    onChangeText={setDraftName}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    editable={!isSavingName}
+                    placeholder={t('profile.usernamePlaceholder')}
+                    placeholderTextColor={colors.textSubtle}
+                    accessibilityLabel={t('profile.usernamePlaceholder')}
+                    style={styles.input}
+                />
+                <View style={styles.dialogActions}>
+                    <PaperButton
+                        variant="secondary"
+                        size="md"
+                        label={t('common.cancel')}
+                        onPress={() => setShowNameEditor(false)}
+                        disabled={isSavingName}
+                        style={styles.flexButton}
+                    />
+                    <PaperButton
+                        size="md"
+                        label={isSavingName ? t('common.working') : t('common.save')}
+                        onPress={handleSaveName}
+                        disabled={isSavingName}
+                        style={styles.flexButton}
+                    />
+                </View>
+            </PaperDialog>
 
-            <Modal
+            {/* Log out */}
+            <PaperDialog
                 visible={showSignOutModal}
-                animationType="fade"
-                transparent
                 onRequestClose={() => setShowSignOutModal(false)}
+                closeLabel={t('common.cancel')}
+                styles={styles}
+                reduced={reduced}
             >
-                <TouchableWithoutFeedback onPress={() => setShowSignOutModal(false)}>
-                    <View style={styles.modalBackdrop}>
-                        <TouchableWithoutFeedback>
-                            <View style={styles.modalCard}>
-                                <Text style={styles.modalTitle}>{t('profile.logoutTitle')}</Text>
-                                <Text style={styles.modalHelper}>
-                                    {t('profile.logoutBody')}
-                                </Text>
-                                <View style={styles.modalActions}>
-                                    <Pressable
-                                        onPress={() => setShowSignOutModal(false)}
-                                        style={styles.modalButton}
-                                    >
-                                        <Text style={styles.modalButtonText}>{t('common.cancel')}</Text>
-                                    </Pressable>
-                                    <Pressable
-                                        onPress={() => performSignOut()}
-                                        style={[styles.modalButton, styles.modalPrimaryButton]}
-                                    >
-                                        <Text style={[styles.modalButtonText, styles.modalPrimaryButtonText]}>
-                                            {t('profile.logout')}
-                                        </Text>
-                                    </Pressable>
-                                </View>
-                            </View>
-                        </TouchableWithoutFeedback>
-                    </View>
-                </TouchableWithoutFeedback>
-            </Modal>
+                <Text style={styles.dialogTitle} accessibilityRole="header">{t('profile.logoutTitle')}</Text>
+                <Text style={styles.dialogHelper}>{t('profile.logoutBody')}</Text>
+                <View style={styles.dialogActions}>
+                    <PaperButton
+                        variant="secondary"
+                        size="md"
+                        label={t('common.cancel')}
+                        onPress={() => setShowSignOutModal(false)}
+                        style={styles.flexButton}
+                    />
+                    <PaperButton
+                        size="md"
+                        label={t('profile.logout')}
+                        onPress={() => performSignOut()}
+                        style={styles.flexButton}
+                    />
+                </View>
+            </PaperDialog>
 
-            <Modal
+            {/* Delete account */}
+            <PaperDialog
                 visible={showDeleteModal}
-                animationType="fade"
-                transparent
-                onRequestClose={() => (isDeletingAccount ? null : setShowDeleteModal(false))}
+                onRequestClose={closeDeleteModal}
+                closeLabel={t('common.cancel')}
+                styles={styles}
+                reduced={reduced}
             >
-                <TouchableWithoutFeedback onPress={() => (isDeletingAccount ? null : setShowDeleteModal(false))}>
-                    <View style={styles.modalBackdrop}>
-                        <TouchableWithoutFeedback>
-                            <View style={styles.modalCard}>
-                                <Text style={styles.modalTitle}>{t('profile.deleteAccountTitle')}</Text>
-                                <Text style={styles.modalHelper}>
-                                    {t('profile.deleteAccountBody')}
-                                </Text>
-                                <View style={styles.modalActions}>
-                                    <Pressable
-                                        onPress={() => setShowDeleteModal(false)}
-                                        style={styles.modalButton}
-                                        disabled={isDeletingAccount}
-                                    >
-                                        <Text style={styles.modalButtonText}>{t('common.cancel')}</Text>
-                                    </Pressable>
-                                    <Pressable
-                                        onPress={() => performDeleteAccount()}
-                                        style={[
-                                            styles.modalButton,
-                                            styles.modalDangerButton,
-                                            isDeletingAccount && styles.modalButtonDisabled,
-                                        ]}
-                                        disabled={isDeletingAccount}
-                                    >
-                                        <Text style={[styles.modalButtonText, styles.modalDangerButtonText]}>
-                                            {isDeletingAccount ? t('profile.deletingAccount') : t('profile.deleteAccountConfirm')}
-                                        </Text>
-                                    </Pressable>
-                                </View>
-                            </View>
-                        </TouchableWithoutFeedback>
-                    </View>
-                </TouchableWithoutFeedback>
-            </Modal>
+                <Text style={styles.dialogTitle} accessibilityRole="header">{t('profile.deleteAccountTitle')}</Text>
+                <Text style={styles.dialogHelper}>{t('profile.deleteAccountBody')}</Text>
+                <View style={styles.dialogActions}>
+                    <PaperButton
+                        variant="secondary"
+                        size="md"
+                        label={t('common.cancel')}
+                        onPress={() => setShowDeleteModal(false)}
+                        disabled={isDeletingAccount}
+                        style={styles.flexButton}
+                    />
+                    <PaperButton
+                        size="md"
+                        label={isDeletingAccount ? t('profile.deletingAccount') : t('profile.deleteAccountConfirm')}
+                        onPress={() => performDeleteAccount()}
+                        disabled={isDeletingAccount}
+                        style={[styles.flexButton, styles.dangerButton]}
+                    />
+                </View>
+            </PaperDialog>
         </Screen>
     );
 };
 
-const createStyles = (profileColors, themeColors) => StyleSheet.create({
+const createStyles = (colors, bottomInset = 0) => StyleSheet.create({
     screenContent: {
         flex: 1,
         paddingHorizontal: 0,
         paddingTop: 0,
         paddingBottom: 0,
-        backgroundColor: profileColors.bg,
+        backgroundColor: colors.bgPage,
     },
     pageScroller: {
         flex: 1,
@@ -873,438 +1137,423 @@ const createStyles = (profileColors, themeColors) => StyleSheet.create({
     },
     pageScrollerContent: {
         flexGrow: 1,
-        paddingBottom: 28,
+        paddingTop: 28,
+        paddingBottom: 32,
     },
-    appTopBar: {
-        height: 52,
-        flexDirection: 'row',
-        alignItems: 'center',
-        paddingHorizontal: 20,
-        borderBottomWidth: 1,
-        borderBottomColor: profileColors.border,
-        backgroundColor: profileColors.bg,
-    },
-    appTopSide: {
-        width: 70,
-        alignItems: 'flex-start',
-    },
-    appTopTitle: {
-        flex: 1,
-        textAlign: 'center',
-        ...textStyles.appTitle,
-        color: profileColors.ink,
-    },
-    profileHeader: {
-        paddingTop: 24,
-        paddingBottom: 20,
-        paddingHorizontal: 24,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 16,
-    },
-    avatar: {
-        width: 64,
-        height: 64,
-        borderRadius: 32,
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: profileColors.ink,
-    },
-    avatarInitial: {
-        fontFamily: fontFamilies.serifBold,
-        fontSize: 28,
-        lineHeight: 34,
-        color: profileColors.white,
-    },
-    profileIdentity: {
-        flex: 1,
-        minWidth: 0,
-    },
-    profileName: {
-        width: '100%',
-        fontFamily: fontFamilies.displaySemiBold,
-        fontSize: 26,
-        lineHeight: 32,
-        letterSpacing: 0,
-        color: profileColors.ink,
-    },
-    profileSubtitle: {
-        marginTop: 3,
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 14,
-        lineHeight: 19,
-        color: profileColors.sub,
-    },
-    editUsernameButton: {
-        width: 38,
-        height: 38,
-        borderRadius: radii.pill,
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderWidth: 1,
-        borderColor: profileColors.border,
-        backgroundColor: profileColors.bg,
-    },
-    section: {
-        paddingTop: 18,
-        paddingHorizontal: 24,
-    },
-    groupEyebrow: {
-        marginBottom: 10,
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 11.5,
-        lineHeight: 15,
-        letterSpacing: 1.4,
-        textTransform: 'uppercase',
-        color: profileColors.faint,
-    },
-    segmentControl: {
-        flexDirection: 'row',
-        padding: 4,
-        borderRadius: radii.lg,
-        backgroundColor: profileColors.muted,
-        gap: 4,
-    },
-    segmentButton: {
-        flex: 1,
-        minHeight: 44,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 8,
-        borderRadius: radii.md,
-        backgroundColor: themeColors.transparent,
-    },
-    segmentButtonActive: {
-        backgroundColor: profileColors.ink,
-    },
-    segmentText: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 15,
-        lineHeight: 19,
-        color: profileColors.sub,
-    },
-    segmentTextActive: {
-        color: profileColors.white,
-    },
-    card: {
-        width: '100%',
-        borderRadius: radii.lg,
-        borderWidth: 1,
-        borderColor: profileColors.border,
-        backgroundColor: profileColors.surface,
-        overflow: 'hidden',
-    },
-    row: {
-        minHeight: 58,
-        paddingVertical: 16,
-        paddingHorizontal: 18,
+
+    // Header
+    header: {
+        paddingHorizontal: GUTTER,
         flexDirection: 'row',
         alignItems: 'center',
         gap: 14,
-        borderBottomWidth: 1,
-        borderBottomColor: profileColors.border,
     },
-    rowLast: {
-        borderBottomWidth: 0,
+    avatar: {
+        width: 52,
+        height: 52,
+        borderRadius: 26,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: colors.inkSlate,
+    },
+    avatarInitial: {
+        fontFamily: fontFamilies.displayRegular,
+        fontSize: 24,
+        lineHeight: 30,
+        color: colors.onInk,
+    },
+    identity: {
+        flex: 1,
+        minWidth: 0,
+        gap: 2,
+    },
+    name: {
+        fontFamily: fontFamilies.displaySemiBold,
+        fontSize: 26,
+        lineHeight: 30,
+        letterSpacing: -0.4,
+        color: colors.text,
+    },
+    status: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 14,
+        lineHeight: 19,
+        color: colors.textMuted,
+    },
+    headerAction: {
+        paddingHorizontal: 16,
+    },
+
+    // Level
+    levelSection: {
+        marginTop: 30,
+        paddingHorizontal: GUTTER,
+        gap: 14,
+    },
+    eyebrow: {
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 12,
+        lineHeight: 16,
+        letterSpacing: 0.96,
+        textTransform: 'uppercase',
+        color: colors.textMuted,
+    },
+    levelSentence: {
+        fontFamily: fontFamilies.displayRegular,
+        fontSize: 32,
+        lineHeight: 36,
+        letterSpacing: -0.64,
+        color: colors.text,
+    },
+    levelSentenceAccent: {
+        color: colors.tint,
+    },
+    levelPlaceholder: {
+        height: 168,
+    },
+    scale: {
+        gap: 6,
+    },
+    scaleTrackArea: {
+        height: 28,
+        marginHorizontal: 0,
+    },
+    scaleTrack: {
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        top: 13,
+        height: 2,
+        borderRadius: 1,
+    },
+    scaleBand: {
+        position: 'absolute',
+        top: 8,
+        height: 12,
+        borderRadius: 6,
+    },
+    scaleFill: {
+        position: 'absolute',
+        left: 0,
+        top: 13,
+        height: 2,
+        borderRadius: 1,
+    },
+    scaleMarker: {
+        position: 'absolute',
+        top: 0,
+        width: 28,
+        height: 28,
+        marginLeft: -14,
+        borderRadius: 14,
+        borderWidth: 4,
+    },
+    scaleTicks: {
+        height: 16,
+    },
+    scaleTick: {
+        position: 'absolute',
+        top: 0,
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 12,
+        lineHeight: 16,
+        color: colors.textMuted,
+        fontVariant: ['tabular-nums'],
+    },
+    note: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 14,
+        lineHeight: 20,
+        color: colors.textMuted,
+    },
+    levelActions: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 10,
+    },
+    levelButton: {
+        paddingHorizontal: 20,
+    },
+
+    // Rows
+    group: {
+        marginTop: 30,
+    },
+    rowPressable: {
+        paddingHorizontal: GUTTER,
+    },
+    rowPressed: {
+        backgroundColor: colors.accentSoft,
+    },
+    rowInner: {
+        minHeight: 56,
+        paddingVertical: 10,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+        borderTopWidth: StyleSheet.hairlineWidth,
+        borderTopColor: colors.border,
+    },
+    groupEnd: {
+        marginHorizontal: GUTTER,
+        height: StyleSheet.hairlineWidth,
+        backgroundColor: colors.border,
     },
     rowCopy: {
         flex: 1,
         minWidth: 0,
+        gap: 2,
     },
     rowLabel: {
-        fontFamily: fontFamilies.sansMedium,
+        fontFamily: fontFamilies.sansRegular,
         fontSize: 16,
         lineHeight: 21,
-        color: profileColors.ink,
+        color: colors.text,
     },
     rowLabelFlex: {
         flex: 1,
         minWidth: 0,
     },
     rowValue: {
-        fontFamily: fontFamilies.sansMedium,
-        fontSize: 15,
+        flexShrink: 1,
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 16,
         lineHeight: 21,
-        color: profileColors.sub,
-        marginRight: 8,
+        color: colors.textMuted,
     },
     rowDescription: {
-        marginTop: 4,
         fontFamily: fontFamilies.sansRegular,
         fontSize: 13,
         lineHeight: 18,
-        color: profileColors.sub,
+        color: colors.textMuted,
     },
-    guestAuthActions: {
+    rowDisabled: {
+        opacity: 0.55,
+    },
+    pressedText: {
+        opacity: 0.55,
+    },
+
+    // Appearance radios
+    radioGroup: {
         flexDirection: 'row',
-        gap: 10,
+        gap: 18,
+        marginVertical: -10,
     },
-    guestAuthButton: {
-        flex: 1,
-        minHeight: 50,
-        borderRadius: radii.md,
-        alignItems: 'center',
+    radioOption: {
+        height: 56,
         justifyContent: 'center',
-        paddingHorizontal: 14,
-        paddingVertical: 12,
     },
-    guestAuthButtonSecondary: {
-        borderWidth: 1,
-        borderColor: profileColors.border,
-        backgroundColor: profileColors.surface,
-    },
-    guestAuthButtonPrimary: {
-        backgroundColor: profileColors.ink,
-    },
-    guestAuthButtonSecondaryText: {
-        fontFamily: fontFamilies.sansBold,
+    radioText: {
+        fontFamily: fontFamilies.sansRegular,
         fontSize: 15,
-        lineHeight: 19,
-        color: profileColors.ink,
-    },
-    guestAuthButtonPrimaryText: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 15,
-        lineHeight: 19,
-        color: profileColors.white,
-    },
-    logoutButton: {
-        minHeight: 52,
-        paddingVertical: 14,
-        paddingHorizontal: 14,
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderRadius: radii.md,
-        borderWidth: 1,
-        borderColor: profileColors.border,
-        backgroundColor: profileColors.surface,
-    },
-    logoutButtonDisabled: {
-        opacity: 0.62,
-    },
-    logoutText: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 16,
         lineHeight: 20,
-        color: profileColors.danger,
+        color: colors.textMuted,
     },
-    deleteAccountButton: {
-        minHeight: 52,
-        paddingVertical: 14,
-        paddingHorizontal: 14,
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderRadius: radii.md,
-        backgroundColor: profileColors.danger,
-    },
-    deleteAccountButtonDisabled: {
-        opacity: 0.62,
-    },
-    deleteAccountText: {
+    radioTextSelected: {
         fontFamily: fontFamilies.sansBold,
-        fontSize: 16,
-        lineHeight: 20,
-        color: profileColors.white,
+        color: colors.text,
     },
-    languageModalCard: {
-        gap: 14,
+    radioUnderline: {
+        position: 'absolute',
+        bottom: 12,
+        height: 2,
+        borderRadius: 1,
     },
-    languageOptions: {
-        gap: 8,
+
+    // Footer
+    footer: {
+        marginTop: 12,
+        paddingHorizontal: GUTTER,
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        alignItems: 'center',
+        columnGap: 6,
     },
-    languageOptionRow: {
+    footerText: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 13,
+        lineHeight: 18,
+        color: colors.textTertiary,
+    },
+    footerLinkHit: {
         minHeight: 44,
-        paddingHorizontal: 12,
-        paddingVertical: 10,
+        justifyContent: 'center',
+    },
+    footerLink: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 13,
+        lineHeight: 18,
+        color: colors.tint,
+    },
+
+    // Sheets
+    sheetBody: {
+        flexShrink: 1,
+        paddingHorizontal: GUTTER,
+        paddingTop: 4,
+        paddingBottom: 20 + bottomInset,
+        gap: 12,
+    },
+    sheetTitle: {
+        fontFamily: fontFamilies.displaySemiBold,
+        fontSize: 26,
+        lineHeight: 31,
+        letterSpacing: -0.4,
+        color: colors.text,
+    },
+    sheetHelper: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 15,
+        lineHeight: 21,
+        color: colors.textMuted,
+    },
+    sheetNote: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 13,
+        lineHeight: 18,
+        color: colors.textMuted,
+    },
+    sheetScroll: {
+        flexGrow: 0,
+        flexShrink: 1,
+        borderBottomWidth: StyleSheet.hairlineWidth,
+        borderBottomColor: colors.border,
+    },
+    optionList: {
+        borderBottomWidth: StyleSheet.hairlineWidth,
+        borderBottomColor: colors.border,
+    },
+    optionRow: {
+        minHeight: 52,
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 10,
-        borderWidth: 1,
-        borderColor: profileColors.border,
-        backgroundColor: profileColors.surface,
+        gap: 12,
+        borderTopWidth: StyleSheet.hairlineWidth,
+        borderTopColor: colors.border,
     },
-    languageOptionRowSelected: {
-        borderColor: profileColors.strongBorder,
-        backgroundColor: profileColors.surfaceMuted,
+    optionDisabled: {
+        opacity: 0.45,
     },
-    languageOptionRowDisabled: {
-        opacity: 0.56,
-    },
-    languageOptionText: {
+    optionText: {
         flex: 1,
         minWidth: 0,
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 14,
-        lineHeight: 18,
-        color: profileColors.ink,
+        fontSize: 16,
+        lineHeight: 21,
+        color: colors.text,
     },
-    languageOptionTextSelected: {
-        fontFamily: fontFamilies.sansBold,
-        color: profileColors.accent,
+    optionTextSelected: {
+        fontFamily: fontFamilies.sansSemiBold,
     },
-    languageOptionTextDisabled: {
-        color: profileColors.faint,
-    },
-    languageDisclaimerText: {
+    sheetActions: {
+        flexDirection: 'row',
+        gap: 10,
         marginTop: 4,
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 11.5,
-        lineHeight: 16,
-        color: profileColors.sub,
     },
-    authModalBackdrop: {
+    flexButton: {
         flex: 1,
-        justifyContent: 'center',
-        paddingHorizontal: 18,
-        backgroundColor: themeColors.overlay,
+        paddingHorizontal: 12,
     },
-    authModalScrim: {
-        ...StyleSheet.absoluteFillObject,
-    },
-    authModalCard: {
-        maxHeight: '88%',
-        borderRadius: radii.xl,
-        borderWidth: 1,
-        borderColor: profileColors.border,
-        backgroundColor: profileColors.surface,
-        padding: 22,
-    },
-    authModalHeader: {
-        flexDirection: 'row',
-        alignItems: 'flex-start',
-        justifyContent: 'space-between',
-        gap: 12,
-        paddingBottom: 22,
-    },
-    authModalCopy: {
-        flex: 1,
-        gap: 12,
-    },
-    authModalTitle: {
-        fontFamily: fontFamilies.serifBold,
-        fontSize: 24,
-        lineHeight: 30,
-        color: profileColors.ink,
-    },
-    authModalHelper: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 13.5,
-        lineHeight: 20,
-        color: profileColors.sub,
-    },
-    authModalCloseButton: {
-        width: 34,
-        height: 34,
-        borderRadius: radii.pill,
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: profileColors.muted,
-    },
-    authModalCloseText: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 24,
-        lineHeight: 28,
-        color: profileColors.sub,
-    },
-    modalBackdrop: {
-        flex: 1,
-        backgroundColor: themeColors.overlay,
-        justifyContent: 'center',
-        paddingHorizontal: spacing.lg,
-    },
-    modalCard: {
-        backgroundColor: themeColors.surfaceElevated,
-        borderRadius: radii.lg,
-        padding: spacing.lg,
-        borderWidth: 1,
-        borderColor: themeColors.border,
-        gap: spacing.md,
-    },
-    modalTitle: {
-        ...textStyles.sectionTitle,
-        color: profileColors.ink,
-    },
-    modalHelper: {
-        ...textStyles.bodyMuted,
-        lineHeight: 20,
-        color: profileColors.sub,
-    },
-    contactEmailField: {
+    emailField: {
+        minHeight: 52,
         flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'space-between',
         gap: 12,
-        minHeight: 48,
-        paddingHorizontal: spacing.md,
-        paddingVertical: spacing.sm,
-        borderWidth: 1,
-        borderColor: profileColors.border,
-        borderRadius: radii.md,
-        backgroundColor: profileColors.surface,
+        paddingHorizontal: 16,
+        borderRadius: 16,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: colors.borderStrong,
+        backgroundColor: colors.bgPage,
     },
-    contactEmailText: {
+    emailText: {
         flex: 1,
         minWidth: 0,
         fontFamily: fontFamilies.sansMedium,
         fontSize: 15,
         lineHeight: 20,
-        color: profileColors.ink,
+        color: colors.text,
     },
-    modalActions: {
-        flexDirection: 'row',
-        justifyContent: 'flex-end',
-        gap: spacing.sm,
-    },
-    modalButton: {
-        minWidth: 88,
-        minHeight: 40,
-        borderRadius: radii.pill,
-        paddingHorizontal: spacing.md,
-        alignItems: 'center',
+
+    // Dialogs
+    dialogBackdrop: {
+        flex: 1,
         justifyContent: 'center',
-        backgroundColor: themeColors.surfaceMuted,
+        paddingHorizontal: 20,
+        backgroundColor: colors.overlay,
     },
-    modalPrimaryButton: {
-        backgroundColor: themeColors.accentSoft,
+    dialogCard: {
+        width: '100%',
+        maxWidth: 440,
+        alignSelf: 'center',
+        borderRadius: 24,
+        padding: GUTTER,
+        gap: 12,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: colors.border,
+        backgroundColor: colors.surface,
     },
-    modalDangerButton: {
-        backgroundColor: profileColors.danger,
+    dialogTitle: {
+        fontFamily: fontFamilies.displaySemiBold,
+        fontSize: 24,
+        lineHeight: 29,
+        letterSpacing: -0.4,
+        color: colors.text,
     },
-    modalButtonDisabled: {
-        opacity: 0.62,
-    },
-    usernameInput: {
-        minHeight: 46,
-        borderWidth: 1,
-        borderColor: profileColors.border,
-        borderRadius: radii.md,
-        paddingHorizontal: spacing.md,
-        paddingVertical: spacing.sm,
-        backgroundColor: profileColors.surface,
-        color: profileColors.ink,
+    dialogHelper: {
         fontFamily: fontFamilies.sansRegular,
         fontSize: 15,
-        lineHeight: 20,
+        lineHeight: 21,
+        color: colors.textMuted,
     },
-    modalButtonText: {
-        ...textStyles.label,
-        color: themeColors.text,
+    dialogActions: {
+        flexDirection: 'row',
+        gap: 10,
+        marginTop: 8,
     },
-    modalPrimaryButtonText: {
-        color: themeColors.accentStrong,
+    dangerButton: {
+        backgroundColor: colors.danger,
     },
-    modalDangerButtonText: {
-        color: profileColors.white,
+    input: {
+        minHeight: 50,
+        borderWidth: 1,
+        borderColor: colors.border,
+        borderRadius: 16,
+        paddingHorizontal: 16,
+        paddingVertical: 12,
+        backgroundColor: colors.bgPage,
+        color: colors.text,
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 16,
+        lineHeight: 21,
     },
-    levelHelperText: {
-        fontFamily: fontFamilies.regular,
-        fontSize: 12,
-        lineHeight: 17,
-        color: profileColors.faint,
-        paddingHorizontal: spacing.md,
-        paddingTop: spacing.sm,
-        paddingBottom: spacing.xs,
+    authCard: {
+        maxHeight: '88%',
+    },
+    authHeader: {
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        gap: 12,
+    },
+    authTitle: {
+        flex: 1,
+        minWidth: 0,
+    },
+    authHelper: {
+        marginTop: 4,
+    },
+    authTabs: {
+        marginTop: 12,
+        marginBottom: 16,
+    },
+    closeButton: {
+        width: 44,
+        height: 44,
+        marginTop: -8,
+        marginRight: -10,
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: 22,
     },
 });
 

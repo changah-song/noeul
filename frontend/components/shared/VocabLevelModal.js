@@ -1,26 +1,29 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
-    Modal,
     Pressable,
     ScrollView,
     StyleSheet,
     Text,
-    TouchableOpacity,
     ToastAndroid,
-    TouchableWithoutFeedback,
     View,
 } from 'react-native';
+import { initialWindowMetrics } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { useAppContext } from '../../contexts/AppContext';
 import { useLocalOwner } from '../../contexts/LocalOwnerContext';
 import { useTranslation } from '../../hooks/useTranslation';
-import { fontFamilies, radii, spacing, useTheme } from '../../theme';
+import { fontFamilies, useTheme } from '../../theme';
+import { PaperButton, PaperSheet, PressableScale } from '../ui';
 import { getVocabTiers, thetaForTier } from '../../services/vocabSizeLevels';
 import { nearestRankForTheta } from '../../services/calibrationQuiz';
 import { getProfileAbility, setProfileAbilityFromVocab } from '../../services/Database';
 import { hasWordCheck } from '../../services/wordCheck';
 import WordCheckModal from './WordCheckModal';
+
+const GUTTER = 24;
+// Sheets run edge to edge; keep the last control clear of the system bar.
+const BOTTOM_INSET = initialWindowMetrics?.insets?.bottom ?? 0;
 
 // The tier the reader last picked, per owner / profile / language.
 const pickKey = (ownerId, profileId, language) => `vocabLevelPick:${ownerId || 'guest'}:${profileId || ''}:${language}`;
@@ -153,9 +156,11 @@ const VocabLevelModal = ({ visible, onClose }) => {
         }
     }, [activeOwnerId, activeProfileId, isSaving, onClose, selectedIndex, setTargetLanguageLevel, t, targetLanguage, tiers]);
 
-    const tierLabel = useCallback((tier) => (
-        tier.advanced ? t('vocabLevel.advancedTier') : (tier.label || String(tier.threshold))
-    ), [t]);
+    const tierLabel = useCallback((tier) => {
+        if (tier.advanced) return t('vocabLevel.advancedTier');
+        if (tier.label) return tier.label;
+        return Number(tier.threshold).toLocaleString();
+    }, [t]);
 
     if (checking) {
         return (
@@ -169,250 +174,230 @@ const VocabLevelModal = ({ visible, onClose }) => {
         );
     }
 
+    const canConfirm = selectedIndex != null && !isSaving;
+
     return (
-        <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
-            <TouchableWithoutFeedback onPress={onClose}>
-                <View style={styles.backdrop}>
-                    <TouchableWithoutFeedback>
-                        <View style={styles.card}>
-                            <View style={styles.headerRow}>
-                                <Text style={styles.eyebrow}>{t('vocabLevel.title')}</Text>
-                                <Pressable onPress={onClose} hitSlop={12} accessibilityRole="button">
-                                    <Feather name="x" size={20} color={theme.colors.textTertiary} />
-                                </Pressable>
-                            </View>
-                            <Text style={styles.helper}>{t('vocabLevel.instruction')}</Text>
-                            {hasWordCheck(targetLanguage) ? (
-                                <TouchableOpacity
-                                    onPress={() => setChecking(true)}
-                                    style={styles.checkLink}
-                                    activeOpacity={0.7}
-                                    accessibilityRole="button"
-                                >
-                                    <Feather name="check-square" size={15} color={theme.colors.textSecondary} />
-                                    <Text style={styles.checkLinkText}>{t('vocabLevel.takeCheck')}</Text>
-                                </TouchableOpacity>
-                            ) : null}
-
-                            <ScrollView
-                                ref={listRef}
-                                style={styles.list}
-                                contentContainerStyle={styles.listContent}
-                                showsVerticalScrollIndicator
-                            >
-                                {tiers.map((tier, index) => {
-                                    const known = selectedIndex != null && index <= selectedIndex;
-                                    const isPick = index === selectedIndex;
-                                    const wasPicked = index === lastPickIndex;
-                                    const isEstimate = estimateIndex != null && index === estimateIndex && estimateIndex !== lastPickIndex;
-                                    return (
-                                        <TouchableOpacity
-                                            key={tier.threshold}
-                                            activeOpacity={0.75}
-                                            onPress={() => setSelectedIndex(index)}
-                                            onLayout={(event) => {
-                                                rowOffsetsRef.current[index] = event.nativeEvent.layout.y;
-                                                if (index === (lastPickIndex ?? estimateIndex)) scrollToRow(index);
-                                            }}
-                                            accessibilityRole="radio"
-                                            accessibilityState={{ selected: isPick }}
-                                            style={[
-                                                styles.row,
-                                                known && styles.rowKnown,
-                                                isPick && styles.rowPick,
-                                                wasPicked && styles.rowLastPick,
-                                                isEstimate && styles.rowEstimate,
-                                            ]}
-                                        >
-                                            <View style={styles.rowLabelCol}>
-                                                <Text style={[styles.rowLabel, known && styles.rowLabelKnown]}>
-                                                    {tierLabel(tier)}
-                                                </Text>
-                                                {isPick ? (
-                                                    <Feather name="check" size={14} color={theme.colors.readerLevelUnderlineEasy} />
-                                                ) : null}
-                                            </View>
-                                            <View style={styles.wordsCol}>
-                                                <Text style={[styles.word, known && styles.wordKnown]}>
-                                                    {tier.words.join('  ')}
-                                                </Text>
-                                                {wasPicked || isEstimate ? (
-                                                    <View style={styles.tagRow}>
-                                                        {wasPicked ? (
-                                                            <Text style={[styles.tag, styles.tagPick]}>{t('vocabLevel.yourPick')}</Text>
-                                                        ) : null}
-                                                        {isEstimate ? (
-                                                            <Text style={[styles.tag, styles.tagEstimate]}>{t('vocabLevel.estimateNow')}</Text>
-                                                        ) : null}
-                                                    </View>
-                                                ) : null}
-                                            </View>
-                                        </TouchableOpacity>
-                                    );
-                                })}
-                            </ScrollView>
-
-                            <TouchableOpacity
-                                activeOpacity={0.85}
-                                onPress={handleConfirm}
-                                disabled={selectedIndex == null || isSaving}
-                                style={[styles.confirmButton, (selectedIndex == null || isSaving) && styles.confirmButtonDisabled]}
-                                accessibilityRole="button"
-                            >
-                                <Text style={styles.confirmText}>{t('vocabLevel.confirm')}</Text>
-                            </TouchableOpacity>
-                        </View>
-                    </TouchableWithoutFeedback>
+        <PaperSheet visible={visible} onClose={onClose} maxHeightRatio={0.9} dragRegion="header" accessibilityLabel={t('vocabLevel.title')}>
+            <View style={styles.body}>
+                <View style={styles.headerRow}>
+                    <Text style={styles.title} accessibilityRole="header">{t('vocabLevel.title')}</Text>
+                    <PressableScale
+                        onPress={onClose}
+                        accessibilityRole="button"
+                        accessibilityLabel={t('common.close')}
+                        style={styles.closeButton}
+                    >
+                        <Feather name="x" size={20} color={theme.colors.textMuted} />
+                    </PressableScale>
                 </View>
-            </TouchableWithoutFeedback>
-        </Modal>
+                <Text style={styles.helper}>{t('vocabLevel.instruction')}</Text>
+                {hasWordCheck(targetLanguage) ? (
+                    <PaperButton
+                        variant="quiet"
+                        size="md"
+                        label={t('vocabLevel.takeCheck')}
+                        onPress={() => setChecking(true)}
+                        style={styles.checkLink}
+                    />
+                ) : null}
+
+                <ScrollView
+                    ref={listRef}
+                    style={styles.list}
+                    contentContainerStyle={styles.listContent}
+                    showsVerticalScrollIndicator
+                >
+                    {tiers.map((tier, index) => {
+                        const known = selectedIndex != null && index <= selectedIndex;
+                        const isPick = index === selectedIndex;
+                        const wasPicked = index === lastPickIndex;
+                        const isEstimate = estimateIndex != null && index === estimateIndex && estimateIndex !== lastPickIndex;
+                        return (
+                            <Pressable
+                                key={tier.threshold}
+                                onPress={() => setSelectedIndex(index)}
+                                onLayout={(event) => {
+                                    rowOffsetsRef.current[index] = event.nativeEvent.layout.y;
+                                    if (index === (lastPickIndex ?? estimateIndex)) scrollToRow(index);
+                                }}
+                                accessibilityRole="radio"
+                                accessibilityState={{ selected: isPick, checked: isPick }}
+                                style={({ pressed }) => [
+                                    styles.row,
+                                    known && styles.rowKnown,
+                                    pressed && styles.rowPressed,
+                                ]}
+                            >
+                                <View style={[styles.pickBar, isPick && styles.pickBarOn]} />
+                                <Text
+                                    style={[styles.rowLabel, known && styles.rowLabelKnown, isPick && styles.rowLabelPick]}
+                                >
+                                    {tierLabel(tier)}
+                                </Text>
+                                <View style={styles.wordsCol}>
+                                    <Text style={[styles.word, selectedIndex != null && !known && styles.wordUnknown]}>
+                                        {tier.words.join('  ')}
+                                    </Text>
+                                    {wasPicked || isEstimate ? (
+                                        <View style={styles.tagRow}>
+                                            {wasPicked ? (
+                                                <Text style={[styles.tag, styles.tagPick]}>{t('vocabLevel.yourPick')}</Text>
+                                            ) : null}
+                                            {isEstimate ? (
+                                                <Text style={[styles.tag, styles.tagEstimate]}>{t('vocabLevel.estimateNow')}</Text>
+                                            ) : null}
+                                        </View>
+                                    ) : null}
+                                </View>
+                                <View style={styles.checkCol}>
+                                    {isPick ? <Feather name="check" size={18} color={theme.colors.tint} /> : null}
+                                </View>
+                            </Pressable>
+                        );
+                    })}
+                </ScrollView>
+
+                <PaperButton
+                    label={t('vocabLevel.confirm')}
+                    onPress={handleConfirm}
+                    disabled={!canConfirm}
+                    accessibilityState={{ disabled: !canConfirm }}
+                    style={styles.confirmButton}
+                />
+            </View>
+        </PaperSheet>
     );
 };
 
 const createStyles = (colors) => StyleSheet.create({
-    backdrop: {
-        flex: 1,
-        backgroundColor: colors.overlay,
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: spacing.xl,
-    },
-    card: {
-        width: '100%',
-        maxWidth: 460,
-        maxHeight: '82%',
-        backgroundColor: colors.surface,
-        borderRadius: radii.xl ?? 24,
-        padding: spacing.xl,
+    body: {
+        flexShrink: 1,
+        paddingHorizontal: GUTTER,
+        paddingTop: 4,
+        paddingBottom: 20 + BOTTOM_INSET,
     },
     headerRow: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
+        gap: 12,
     },
-    eyebrow: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 12,
-        letterSpacing: 1.4,
-        textTransform: 'uppercase',
-        color: colors.textTertiary,
+    title: {
+        flex: 1,
+        fontFamily: fontFamilies.displaySemiBold,
+        fontSize: 26,
+        lineHeight: 31,
+        letterSpacing: -0.4,
+        color: colors.text,
+    },
+    closeButton: {
+        width: 44,
+        height: 44,
+        marginRight: -10,
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: 22,
     },
     helper: {
-        marginTop: spacing.sm,
+        marginTop: 6,
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 14,
-        lineHeight: 20,
-        color: colors.textSecondary,
+        fontSize: 15,
+        lineHeight: 21,
+        color: colors.textMuted,
     },
     checkLink: {
-        marginTop: spacing.sm,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
         alignSelf: 'flex-start',
-        paddingVertical: 4,
-    },
-    checkLinkText: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 14,
-        color: colors.textSecondary,
-        textDecorationLine: 'underline',
+        marginTop: 2,
+        marginLeft: -4,
     },
     list: {
-        marginTop: spacing.md,
-        borderRadius: radii.lg ?? 16,
-        borderWidth: 1,
-        borderColor: colors.border,
+        flexGrow: 0,
+        flexShrink: 1,
+        marginTop: 12,
+        borderTopWidth: StyleSheet.hairlineWidth,
+        borderTopColor: colors.divider,
     },
     listContent: {
-        paddingVertical: spacing.xs,
+        paddingBottom: 2,
     },
     row: {
+        minHeight: 52,
         flexDirection: 'row',
         alignItems: 'center',
-        gap: spacing.sm,
-        paddingVertical: 6,
-        paddingHorizontal: spacing.sm,
+        gap: 12,
+        paddingVertical: 10,
+        paddingRight: 4,
         borderBottomWidth: StyleSheet.hairlineWidth,
         borderBottomColor: colors.divider,
     },
+    // Every row up to the pick reads as "known": a faint tint wash.
     rowKnown: {
+        backgroundColor: colors.tintSoft,
+    },
+    rowPressed: {
         backgroundColor: colors.accentSoft,
     },
-    rowPick: {
-        backgroundColor: colors.accentMuted,
+    // The picked row: a tint bar on the leading edge and a check.
+    pickBar: {
+        alignSelf: 'stretch',
+        width: 3,
+        marginVertical: -10,
+        backgroundColor: 'transparent',
     },
-    // The tier saved last time: a thin bar on the left that stays while the
-    // reader tries other rows.
-    rowLastPick: {
-        borderLeftWidth: 3,
-        borderLeftColor: colors.readerLevelUnderlineEasy,
-    },
-    // Where reading has moved the estimate since: a light dashed outline.
-    rowEstimate: {
-        borderWidth: 1,
-        borderStyle: 'dashed',
-        borderColor: colors.readerLevelUnderlineMid,
-        borderRadius: 6,
-    },
-    tagRow: {
-        flexDirection: 'row',
-        gap: 6,
-        marginTop: 3,
-    },
-    tag: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 10,
-        letterSpacing: 0.6,
-        textTransform: 'uppercase',
-    },
-    tagPick: {
-        color: colors.readerLevelUnderlineEasy,
-    },
-    tagEstimate: {
-        color: colors.readerLevelUnderlineMid,
-    },
-    rowLabelCol: {
-        width: 48,
-        alignItems: 'center',
-        gap: spacing.xxs ?? 2,
+    pickBarOn: {
+        backgroundColor: colors.tint,
     },
     rowLabel: {
+        // Wide enough for "Advanced"; longer translations wrap.
+        width: 78,
         fontFamily: fontFamilies.sansMedium,
-        fontSize: 13,
-        color: colors.textTertiary,
+        fontSize: 14,
+        lineHeight: 19,
+        color: colors.textMuted,
         fontVariant: ['tabular-nums'],
     },
     rowLabelKnown: {
-        color: colors.readerLevelUnderlineEasy,
-        fontFamily: fontFamilies.sansSemiBold,
+        color: colors.tint,
+    },
+    rowLabelPick: {
+        fontFamily: fontFamilies.sansBold,
     },
     wordsCol: {
         flex: 1,
+        minWidth: 0,
     },
     word: {
         fontFamily: fontFamilies.krSerifMedium,
-        fontSize: 14,
-        lineHeight: 19,
+        fontSize: 15,
+        lineHeight: 22,
         color: colors.text,
     },
-    wordKnown: {
-        color: colors.readerLevelUnderlineEasy,
+    wordUnknown: {
+        color: colors.textMuted,
+    },
+    checkCol: {
+        width: 22,
+        alignItems: 'center',
+    },
+    tagRow: {
+        flexDirection: 'row',
+        gap: 10,
+        marginTop: 2,
+    },
+    tag: {
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 12,
+        lineHeight: 16,
+    },
+    tagPick: {
+        color: colors.tint,
+    },
+    tagEstimate: {
+        color: colors.textMuted,
     },
     confirmButton: {
-        marginTop: spacing.lg,
-        paddingVertical: spacing.md,
-        borderRadius: radii.lg ?? 16,
-        alignItems: 'center',
-        backgroundColor: colors.inkSlate ?? colors.text,
-    },
-    confirmButtonDisabled: {
-        opacity: 0.4,
-    },
-    confirmText: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 15,
-        color: colors.white,
+        marginTop: 16,
+        alignSelf: 'stretch',
     },
 });
 

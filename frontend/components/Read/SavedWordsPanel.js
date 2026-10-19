@@ -45,7 +45,7 @@ const SavedWordsPanel = ({
     const savedSet = savedStems instanceof Set ? savedStems : new Set();
 
     return (
-        <PaperSheet visible={visible} onClose={onClose} maxHeightRatio={0.82} style={styles.sheet}>
+        <PaperSheet visible={visible} onClose={onClose} maxHeightRatio={0.82} dragRegion="header" style={styles.sheet}>
                     <PaperTabs
                         style={styles.tabsRow}
                         value={tab}

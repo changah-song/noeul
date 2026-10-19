@@ -1,9 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
+import { Animated, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
+import { PaperButton, PressableScale } from '../ui';
+import { fadeTo, springs, springTo, useReducedMotion } from '../../theme/motion';
+import { tapSelect } from '../../services/haptics';
 import { getVocabContexts } from '../../services/Database';
 import {
   fetchUserPreferences,
@@ -11,28 +14,13 @@ import {
   updateUserPreferenceFields,
 } from '../../services/preferencesCloudSync';
 import { isCurrentSyncGeneration } from '../../services/localOwnerCoordinator';
-import { colors, fontFamilies, spacing, textStyles, useTheme } from '../../theme';
+import { colors, elevation, fontFamilies, spacing, textStyles, useTheme } from '../../theme';
 
 const STATUS_ACTIONS = [
-  { key: 'bad', labelKey: 'learn.hard', tone: 'danger' },
-  { key: 'mid', labelKey: 'learn.okay', tone: 'warning' },
-  { key: 'good', labelKey: 'learn.easy', tone: 'success' },
+  { key: 'bad', labelKey: 'learn.hard' },
+  { key: 'mid', labelKey: 'learn.okay' },
+  { key: 'good', labelKey: 'learn.easy' },
 ];
-
-const createToneStyles = (themeColors) => ({
-  danger: {
-    backgroundColor: themeColors.surface,
-    color: themeColors.text,
-  },
-  warning: {
-    backgroundColor: themeColors.surface,
-    color: themeColors.text,
-  },
-  success: {
-    backgroundColor: themeColors.surface,
-    color: themeColors.text,
-  },
-});
 
 const FLASHCARD_SETTINGS_KEY = 'flashcardFrontSettings';
 const FLASHCARD_SETTINGS_UPDATED_AT_KEY = 'flashcardFrontSettingsUpdatedAt';
@@ -88,13 +76,30 @@ const normalizeFlashcardSettings = (rawSettings) => {
 
 const cleanText = (value) => (typeof value === 'string' ? value.trim() : '');
 
-const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGeneration }) => {
+/**
+ * Flashcard — one review card in the practice sheet (Paper).
+ *
+ * Tap the card (or "Show answer") to turn it; the face that appears settles in
+ * on a critically damped spring from wherever the last one left off, so rapid
+ * taps re-target instead of queueing. A new card arrives from the right, the
+ * way the deck advances. Reduced motion swaps both for a short fade.
+ *
+ * `active` is false while the sheet is closing on the last card it showed.
+ */
+const Flashcard = ({ vocab, title, index, total, onClose, onMark, user, ownerId, syncGeneration, active = true }) => {
   const { t } = useTranslation();
   const { colors } = useTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
-  const toneStyles = useMemo(() => createToneStyles(colors), [colors]);
+  const reduced = useReducedMotion();
   const [isFlipped, setIsFlipped] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsMounted, setSettingsMounted] = useState(false);
+  const faceAnim = useRef(new Animated.Value(1)).current;
+  const cardEnter = useRef(new Animated.Value(1)).current;
+  const settingsAnim = useRef(new Animated.Value(0)).current;
+  const progressAnim = useRef(new Animated.Value(total > 0 ? (index + 1) / total : 0)).current;
+  const lastVocabRef = useRef(vocab);
+  const firstFaceRef = useRef(true);
   const [flashcardSettings, setFlashcardSettings] = useState(() => createDefaultFlashcardSettings());
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [contextRows, setContextRows] = useState([]);
@@ -105,8 +110,46 @@ const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGe
   useEffect(() => {
     // A new card is a new object, so the guard below re-arms by itself; reset
     // on close too so reopening a deck with the same word objects still grades.
-    if (!vocab) markedVocabRef.current = null;
-  }, [vocab]);
+    if (!vocab || !active) markedVocabRef.current = null;
+  }, [active, vocab]);
+
+  // The face that appears after a flip settles in from slightly smaller.
+  useEffect(() => {
+    if (firstFaceRef.current) {
+      firstFaceRef.current = false;
+      return;
+    }
+    faceAnim.setValue(0);
+    (reduced ? fadeTo(faceAnim, 1, { duration: 140 }) : springTo(faceAnim, 1, { spring: springs.standard })).start();
+  }, [faceAnim, isFlipped, reduced]);
+
+  // A new card comes in from the right, the way the deck moves forward.
+  useEffect(() => {
+    if (!vocab || lastVocabRef.current === vocab) {
+      return;
+    }
+    lastVocabRef.current = vocab;
+    cardEnter.setValue(0);
+    (reduced ? fadeTo(cardEnter, 1) : springTo(cardEnter, 1, { spring: springs.move })).start();
+  }, [cardEnter, reduced, vocab]);
+
+  useEffect(() => {
+    const progress = total > 0 ? Math.min(1, (index + 1) / total) : 0;
+    springTo(progressAnim, progress, { spring: springs.standard, useNativeDriver: false }).start();
+  }, [index, progressAnim, total]);
+
+  // Settings popover: stays mounted while it animates out.
+  useEffect(() => {
+    if (showSettings) {
+      setSettingsMounted(true);
+      (reduced ? fadeTo(settingsAnim, 1, { duration: 140 }) : springTo(settingsAnim, 1, { spring: springs.snappy })).start();
+      return;
+    }
+    (reduced ? fadeTo(settingsAnim, 0, { duration: 120 }) : springTo(settingsAnim, 0, { spring: springs.snappy }))
+      .start(({ finished }) => {
+        if (finished) setSettingsMounted(false);
+      });
+  }, [reduced, settingsAnim, showSettings]);
 
   const hanjaText = useMemo(
     () => (vocab?.hanja && vocab.hanja !== 'N/A' ? vocab.hanja : null),
@@ -354,9 +397,10 @@ const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGe
         <Text style={styles.settingLabel}>{label}</Text>
         <Switch
           value={enabled}
+          accessibilityLabel={label}
           onValueChange={(value) => updateFlashcardSetting(side, key, value)}
-          trackColor={{ false: colors.surfaceStrong, true: colors.accentSoft }}
-          thumbColor={enabled ? colors.accentStrong : colors.surfaceElevated}
+          trackColor={{ false: colors.surfaceStrong, true: colors.tint }}
+          thumbColor={enabled ? colors.glyphCream : colors.frame}
         />
       </View>
     );
@@ -385,7 +429,7 @@ const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGe
               style={styles.relatedText}
             >
               {[entry.korean || t('learn.relatedWord'), entry.hanja].filter(Boolean).join(' / ')}
-              {entry.meaning ? ` - ${entry.meaning}` : ''}
+              {entry.meaning ? ` · ${entry.meaning}` : ''}
             </Text>
           ))}
         </View>
@@ -402,7 +446,7 @@ const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGe
       <View style={styles.contextSection}>
         <Text style={styles.fieldLabel}>{t('learn.contextSentence')}</Text>
         <Text selectable numberOfLines={4} style={styles.contextSentence}>
-          "{contextSentence}"
+          “{contextSentence}”
         </Text>
       </View>
     );
@@ -443,113 +487,156 @@ const Flashcard = ({ vocab, index, total, onClose, onMark, user, ownerId, syncGe
     return null;
   }
 
+  const grade = (status) => {
+    // One grade per card: a double tap must not record twice.
+    if (!active || markedVocabRef.current === vocab) return;
+    markedVocabRef.current = vocab;
+    tapSelect();
+    setShowSettings(false);
+    setIsFlipped(false);
+    onMark(status);
+  };
+
+  const faceStyle = {
+    opacity: faceAnim,
+    transform: reduced ? [] : [{
+      scale: faceAnim.interpolate({ inputRange: [0, 1], outputRange: [0.97, 1] }),
+    }],
+  };
+  const cardStyle = {
+    opacity: cardEnter,
+    transform: reduced ? [] : [{
+      translateX: cardEnter.interpolate({ inputRange: [0, 1], outputRange: [48, 0] }),
+    }],
+  };
+  const settingsStyle = {
+    opacity: settingsAnim,
+    transform: reduced ? [] : [
+      { translateY: settingsAnim.interpolate({ inputRange: [0, 1], outputRange: [-8, 0] }) },
+      { scale: settingsAnim.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) },
+    ],
+  };
+
   return (
-    <SafeAreaView edges={['top', 'bottom']} style={styles.shell}>
+    <SafeAreaView edges={['bottom']} style={styles.shell}>
       <View style={styles.header}>
-        <View style={styles.headerSide}>
-          <TouchableOpacity
-            accessibilityRole="button"
-            accessibilityLabel={t('common.close')}
-            onPress={onClose}
-            style={styles.closeButton}
-          >
-            <Feather name="x" size={28} color={colors.text} />
-          </TouchableOpacity>
+        <PressableScale
+          accessibilityRole="button"
+          accessibilityLabel={t('common.close')}
+          onPress={onClose}
+          style={styles.iconButton}
+        >
+          <Feather name="x" size={22} color={colors.text} />
+        </PressableScale>
+        <View style={styles.headerCopy} accessible>
+          {title ? <Text numberOfLines={1} style={styles.deckTitle}>{title}</Text> : null}
+          <Text style={styles.progress}>
+            {t('learn.progress', { current: index + 1, total })}
+          </Text>
         </View>
-        <Text style={styles.deckTitle}>{t('learn.flashcard')}</Text>
-        <View style={[styles.headerSide, styles.headerRight]}>
-          <Text style={styles.progress}>{index + 1} / {total}</Text>
-          <TouchableOpacity
-            accessibilityRole="button"
-            accessibilityLabel={t('learn.flashcardSettings')}
-            onPress={() => setShowSettings((current) => !current)}
-            style={[styles.settingsButton, showSettings && styles.settingsButtonActive]}
-          >
-            <Feather
-              name="settings"
-              size={19}
-              color={showSettings ? colors.text : colors.textMuted}
-            />
-          </TouchableOpacity>
-        </View>
+        <PressableScale
+          accessibilityRole="button"
+          accessibilityLabel={t('learn.flashcardSettings')}
+          accessibilityState={{ expanded: showSettings }}
+          onPress={() => setShowSettings((current) => !current)}
+          style={[styles.iconButton, showSettings && styles.iconButtonActive]}
+        >
+          <Feather name="sliders" size={19} color={showSettings ? colors.text : colors.textMuted} />
+        </PressableScale>
       </View>
 
-      {showSettings ? (
-        <View style={styles.settingsMenu}>
-          <Text style={styles.settingsTitle}>{t('learn.flashcardSettings')}</Text>
-          {renderSettingSection('front', t('learn.frontCard'), [
-            { key: 'showPronunciation', label: t('learn.showPronunciation') },
-            { key: 'showContext', label: t('learn.showContextSentence') },
-            { key: 'showHanja', label: t('learn.showHanja') },
-            { key: 'showRelated', label: t('learn.showRelatedWords') },
-          ])}
-          {renderSettingSection('back', t('learn.backCard'), [
-            { key: 'showPronunciation', label: t('learn.showPronunciation') },
-            { key: 'showContext', label: t('learn.showContextSentence') },
-            { key: 'showHanja', label: t('learn.showHanja') },
-            { key: 'showRelated', label: t('learn.showRelatedWords') },
-            { key: 'showDefinition', label: t('learn.showDefinition') },
-          ])}
-        </View>
-      ) : null}
+      <View style={styles.progressTrack} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+        <Animated.View
+          style={[
+            styles.progressFill,
+            { width: progressAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] }) },
+          ]}
+        />
+      </View>
 
-      <Pressable onPress={() => setIsFlipped((prev) => !prev)} style={styles.cardArea}>
-        <View style={styles.cardFace}>
-          {!isFlipped ? (
-            <>
-              <ScrollView
-                showsVerticalScrollIndicator={false}
-                contentContainerStyle={styles.frontCenter}
-                style={styles.cardScroll}
-              >
-                <Text selectable style={styles.word}>{vocab.word}</Text>
-                {renderCardDetails('front')}
-              </ScrollView>
-              <Text style={styles.flipHint}>{t('learn.tapToFlip')}</Text>
-            </>
-          ) : (
-            <>
-              <ScrollView
-                showsVerticalScrollIndicator={false}
-                contentContainerStyle={styles.backContent}
-                style={styles.cardScroll}
-              >
-                <Text selectable style={styles.wordSmall}>{vocab.word}</Text>
-                {renderCardDetails('back')}
-              </ScrollView>
-              <Text style={styles.flipHint}>{t('learn.tapAgainHide')}</Text>
-            </>
-          )}
-        </View>
-      </Pressable>
+      <Animated.View style={[styles.cardWrap, cardStyle]}>
+        <PressableScale
+          scaleTo={0.985}
+          hitSlop={0}
+          onPress={() => setIsFlipped((prev) => !prev)}
+          accessibilityRole="button"
+          accessibilityLabel={isFlipped ? t('learn.tapAgainHide') : t('learn.tapToFlip')}
+          style={styles.cardArea}
+        >
+          <Animated.View style={[styles.cardFace, faceStyle]}>
+            {!isFlipped ? (
+              <>
+                <ScrollView
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={styles.frontCenter}
+                  style={styles.cardScroll}
+                >
+                  <Text selectable style={styles.word}>{vocab.word}</Text>
+                  {renderCardDetails('front')}
+                </ScrollView>
+                <Text style={styles.flipHint}>{t('learn.tapToFlip')}</Text>
+              </>
+            ) : (
+              <>
+                <ScrollView
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={styles.backContent}
+                  style={styles.cardScroll}
+                >
+                  <Text selectable style={styles.wordSmall}>{vocab.word}</Text>
+                  {renderCardDetails('back')}
+                </ScrollView>
+                <Text style={styles.flipHint}>{t('learn.tapAgainHide')}</Text>
+              </>
+            )}
+          </Animated.View>
+        </PressableScale>
+      </Animated.View>
 
       <View style={styles.actions}>
         {!isFlipped ? (
-          <TouchableOpacity onPress={() => setIsFlipped(true)} style={styles.showAnswerButton}>
-            <Text style={styles.showAnswerText}>{t('learn.showAnswer')}</Text>
-          </TouchableOpacity>
+          <PaperButton
+            label={t('learn.showAnswer')}
+            onPress={() => setIsFlipped(true)}
+            style={styles.actionFull}
+          />
         ) : STATUS_ACTIONS.map((action) => (
-          <TouchableOpacity
+          <PaperButton
             key={action.key}
-            onPress={() => {
-              // One grade per card: a double tap must not record twice.
-              if (markedVocabRef.current === vocab) return;
-              markedVocabRef.current = vocab;
-              setIsFlipped(false);
-              onMark(action.key);
-            }}
-            style={[
-              styles.actionButton,
-              { backgroundColor: toneStyles[action.tone].backgroundColor },
-            ]}
-          >
-            <Text style={[styles.actionLabel, { color: toneStyles[action.tone].color }]}>
-              {t(action.labelKey)}
-            </Text>
-          </TouchableOpacity>
+            variant="secondary"
+            label={t(action.labelKey)}
+            onPress={() => grade(action.key)}
+            style={styles.actionButton}
+          />
         ))}
       </View>
-      <View style={styles.homeIndicator} />
+
+      {settingsMounted ? (
+        <>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setShowSettings(false)}
+            accessibilityRole="button"
+            accessibilityLabel={t('common.close')}
+          />
+          <Animated.View style={[styles.settingsMenu, settingsStyle]}>
+            <Text style={styles.settingsTitle}>{t('learn.flashcardSettings')}</Text>
+            {renderSettingSection('front', t('learn.frontCard'), [
+              { key: 'showPronunciation', label: t('learn.showPronunciation') },
+              { key: 'showContext', label: t('learn.showContextSentence') },
+              { key: 'showHanja', label: t('learn.showHanja') },
+              { key: 'showRelated', label: t('learn.showRelatedWords') },
+            ])}
+            {renderSettingSection('back', t('learn.backCard'), [
+              { key: 'showPronunciation', label: t('learn.showPronunciation') },
+              { key: 'showContext', label: t('learn.showContextSentence') },
+              { key: 'showHanja', label: t('learn.showHanja') },
+              { key: 'showRelated', label: t('learn.showRelatedWords') },
+              { key: 'showDefinition', label: t('learn.showDefinition') },
+            ])}
+          </Animated.View>
+        </>
+      ) : null}
     </SafeAreaView>
   );
 };
@@ -559,126 +646,110 @@ const createStyles = (colors) => StyleSheet.create({
     flex: 1,
     backgroundColor: colors.bgPage,
   },
-  shellContent: {
-    position: 'relative',
-    padding: 0,
-    gap: 18,
-  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    height: 52,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.divider,
-    paddingHorizontal: 20,
+    minHeight: 56,
+    paddingHorizontal: 12,
   },
-  headerSide: {
-    width: 96,
-    flexDirection: 'row',
+  iconButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  headerRight: {
-    justifyContent: 'flex-end',
-    gap: 8,
+  iconButtonActive: {
+    backgroundColor: colors.surfaceMuted,
   },
   headerCopy: {
     flex: 1,
-    gap: 3,
-  },
-  kicker: {
-    ...textStyles.eyebrow,
+    alignItems: 'center',
+    gap: 1,
   },
   deckTitle: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 12,
-    lineHeight: 15,
-    letterSpacing: 3.2,
-    color: colors.textSecondary,
-    textTransform: 'uppercase',
-    flex: 1,
-    textAlign: 'center',
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 13,
+    lineHeight: 17,
+    color: colors.textMuted,
   },
   progress: {
-    fontFamily: fontFamilies.sansRegular,
-    fontSize: 12,
-    lineHeight: 16,
-    color: colors.textTertiary,
-    textAlign: 'right',
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 15,
+    lineHeight: 20,
+    color: colors.text,
+    fontVariant: ['tabular-nums'],
   },
-  closeButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.transparent,
+  progressTrack: {
+    height: 2,
+    marginHorizontal: 24,
+    borderRadius: 1,
+    backgroundColor: colors.border,
+    overflow: 'hidden',
   },
-  settingsButton: {
-    width: 34,
-    height: 34,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 17,
-    backgroundColor: colors.surfaceMuted,
-  },
-  settingsButtonActive: {
-    backgroundColor: colors.surfaceStrong,
-  },
-  headerActions: {
-    flexDirection: 'row',
-    gap: spacing.xs,
+  progressFill: {
+    height: 2,
+    borderRadius: 1,
+    backgroundColor: colors.tint,
   },
   settingsMenu: {
     position: 'absolute',
-    top: 62,
+    top: 56,
     right: 16,
     zIndex: 5,
-    width: 286,
-    borderRadius: 12,
-    borderWidth: 1,
+    width: 300,
+    maxWidth: '92%',
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
     backgroundColor: colors.surfaceElevated,
-    padding: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
     gap: 12,
-    shadowColor: colors.shadow,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 1,
-    shadowRadius: 18,
-    elevation: 8,
+    ...elevation.sheet,
   },
   settingsTitle: {
-    ...textStyles.label,
+    fontFamily: fontFamilies.displayRegular,
+    fontSize: 20,
+    lineHeight: 26,
     color: colors.text,
   },
   settingSection: {
-    gap: 8,
-    paddingTop: 8,
-    borderTopWidth: 1,
+    gap: 2,
+    paddingTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
   },
   settingsSectionTitle: {
     ...textStyles.eyebrow,
-    color: colors.textTertiary,
+    color: colors.textMuted,
+    marginBottom: 2,
   },
   settingRow: {
+    minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: spacing.md,
   },
   settingLabel: {
-    ...textStyles.caption,
     flex: 1,
-    color: colors.textMuted,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 15,
+    lineHeight: 20,
+    color: colors.text,
+  },
+  cardWrap: {
+    flex: 1,
+    marginHorizontal: 24,
+    marginTop: 20,
   },
   cardArea: {
     flex: 1,
-    marginHorizontal: 24,
-    marginTop: 28,
-    borderRadius: 10,
-    backgroundColor: colors.surfaceCard,
-    borderWidth: 1,
+    borderRadius: 20,
+    backgroundColor: colors.surface,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
     overflow: 'hidden',
   },
@@ -686,7 +757,9 @@ const createStyles = (colors) => StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: 32,
+    paddingHorizontal: 28,
+    paddingTop: 28,
+    paddingBottom: 20,
     gap: 16,
   },
   cardScroll: {
@@ -705,136 +778,117 @@ const createStyles = (colors) => StyleSheet.create({
     width: '100%',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 10,
+    gap: 14,
   },
   word: {
     width: '100%',
-    fontFamily: fontFamilies.krSerifBold,
-    fontSize: 60,
-    lineHeight: 76,
-    letterSpacing: 0,
+    fontFamily: fontFamilies.krSerifSemiBold,
+    fontSize: 56,
+    lineHeight: 74,
+    letterSpacing: -0.5,
     textAlign: 'center',
-    color: colors.accent,
+    color: colors.text,
     includeFontPadding: true,
   },
   pronunciation: {
     fontFamily: fontFamilies.displayItalic,
-    fontSize: 17,
-    lineHeight: 22,
-    letterSpacing: 3,
+    fontSize: 18,
+    lineHeight: 24,
     color: colors.textTertiary,
     textAlign: 'center',
   },
   wordSmall: {
     width: '100%',
-    fontFamily: fontFamilies.krSerifMedium,
-    fontSize: 36,
+    fontFamily: fontFamilies.krSerifSemiBold,
+    fontSize: 34,
     lineHeight: 46,
-    letterSpacing: 0,
+    letterSpacing: -0.3,
     textAlign: 'center',
+    color: colors.text,
     includeFontPadding: true,
   },
   hanja: {
-    ...textStyles.body,
+    fontFamily: fontFamilies.krSerifRegular,
+    fontSize: 18,
+    lineHeight: 26,
     color: colors.textMuted,
     textAlign: 'center',
   },
   definition: {
-    fontFamily: fontFamilies.sansRegular,
-    fontSize: 15,
-    lineHeight: 22,
-    color: colors.textMuted,
+    fontFamily: fontFamilies.displayRegular,
+    fontSize: 20,
+    lineHeight: 28,
+    color: colors.text,
     textAlign: 'center',
   },
   definitionSection: {
     width: '100%',
     alignItems: 'center',
-    gap: 5,
+    gap: 6,
   },
   fieldLabel: {
     ...textStyles.eyebrow,
-    color: colors.textTertiary,
+    color: colors.textMuted,
     textAlign: 'center',
   },
   contextSection: {
     width: '100%',
     alignItems: 'center',
     gap: 6,
+    paddingTop: 14,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.divider,
   },
   contextSentence: {
-    fontFamily: fontFamilies.krSerifMedium,
+    fontFamily: fontFamilies.krSerifRegular,
     fontSize: 16,
-    lineHeight: 25,
-    color: colors.text,
+    lineHeight: 26,
+    color: colors.textSecondary,
     textAlign: 'center',
   },
   relatedSection: {
     width: '100%',
-    gap: spacing.xs,
-    marginTop: spacing.xs,
+    gap: 6,
+    paddingTop: 14,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.divider,
   },
   relatedTitle: {
-    ...textStyles.caption,
-    textAlign: 'center',
+    ...textStyles.eyebrow,
     color: colors.textMuted,
+    textAlign: 'center',
   },
   relatedList: {
     width: '100%',
-    gap: 3,
+    gap: 4,
   },
   relatedText: {
-    ...textStyles.caption,
-    color: colors.textMuted,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.textSecondary,
     textAlign: 'center',
-    lineHeight: 15,
   },
   flipHint: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 10,
-    lineHeight: 13,
-    letterSpacing: 2.6,
-    color: colors.frame,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.textSubtle,
     textAlign: 'center',
   },
   actions: {
     flexDirection: 'row',
-    gap: 8,
+    gap: 10,
     paddingHorizontal: 24,
-    paddingTop: 22,
-    paddingBottom: 14,
+    paddingTop: 20,
+    paddingBottom: 16,
+  },
+  actionFull: {
+    flex: 1,
   },
   actionButton: {
     flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: colors.borderStrong,
-    paddingVertical: 13,
-  },
-  actionLabel: {
-    ...textStyles.label,
-  },
-  showAnswerButton: {
-    flex: 1,
-    minHeight: 48,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 4,
-    backgroundColor: colors.accent,
-  },
-  showAnswerText: {
-    ...textStyles.buttonLabel,
-    fontSize: 12,
-    letterSpacing: 2,
-  },
-  homeIndicator: {
-    alignSelf: 'center',
-    width: 110,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.border,
-    marginBottom: 10,
+    paddingHorizontal: 8,
   },
 });
 

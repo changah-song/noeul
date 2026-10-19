@@ -97,6 +97,7 @@ const ListenVoiceSheet = ({
             visible={visible}
             onClose={onClose}
             maxHeightRatio={MAX_HEIGHT_RATIO}
+            dragRegion="header"
             accessibilityLabel={t('read.listenVoiceTitle')}
             style={styles.sheet}
         >

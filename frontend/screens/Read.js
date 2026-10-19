@@ -95,7 +95,7 @@ import useSavedWordFades from '../hooks/useSavedWordFades';
 import PressableScale from '../components/ui/PressableScale';
 import { highlightStrengthsFor } from '../services/savedWordFade';
 import { exposureDwellIsPlausible } from '../services/abilityModel';
-import { project, rubberband, springs, springTo } from '../theme/motion';
+import { PX_PRECISION, project, rubberband, springs, springTo } from '../theme/motion';
 import { ANNOTATION_SCOPES, annotationsBySurface, buildAnnotatedLevelTerms } from '../services/readerAnnotations';
 import { createNativeReaderThemeTokens, radii, spacing, textStyles, useTheme } from '../theme';
 
@@ -1494,6 +1494,7 @@ const Read = ({
                 springTo(lookupDragY, 360 * direction, {
                     spring: springs.flick,
                     gestureVelocity: gesture.vy,
+                    precision: PX_PRECISION,
                 }).start(() => lookupDragY.setValue(0));
                 dismissLookup();
                 return;
@@ -1508,6 +1509,14 @@ const Read = ({
         },
         onPanResponderTerminationRequest: () => true,
     }), [dismissLookup, lookupDragY]);
+
+    // A word tapped while the last panel is still flying off catches it and
+    // brings it back to rest, rather than waiting for the flick to land.
+    useEffect(() => {
+        if (!highlightedWord) return;
+        lookupDragY.stopAnimation();
+        lookupDragY.setValue(0);
+    }, [highlightedWord, lookupDragY]);
 
     useEffect(() => {
         setSettings((current) => {

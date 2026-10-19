@@ -1,8 +1,10 @@
 import React, { useMemo } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet } from 'react-native';
 import { Feather, MaterialIcons } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
-import { fontFamilies, radii, spacing } from '../../theme';
+import { fontFamilies, spacing } from '../../theme';
+import { PressableScale } from '../ui';
+import { tapCommit } from '../../services/haptics';
 
 // Badge icon per candidate reason (see services/wordCandidates.deriveCandidateReason).
 const REASON_ICON = {
@@ -42,9 +44,10 @@ const ExampleSentence = ({ sentence, surface, styles }) => {
 };
 
 /**
- * CandidateCard — one suggested (unsaved) word the reader can keep on demand.
+ * CandidateCard — one suggested (unsaved) word the reader can keep on demand,
+ * set as a dictionary entry on the paper (hairline below, no box).
  * Shared by the reader's saved-words panel and the vocab screen's Suggested tab.
- * `onSave` fires once; the card then shows a saved (checked) state and disables.
+ * `onSave` fires once; the entry then shows a saved (checked) state and disables.
  */
 const CandidateCard = ({ candidate, colors, saved = false, onSave }) => {
     const { t } = useTranslation();
@@ -55,24 +58,10 @@ const CandidateCard = ({ candidate, colors, saved = false, onSave }) => {
     return (
         <View style={styles.candidateCard}>
             <View style={styles.candidateBody}>
-                <View style={styles.candidateHeaderRow}>
-                    <View style={styles.candidateHeadwordRow}>
-                        <Text style={styles.candidateHeadword}>{headword}</Text>
-                        {candidate.romanization ? (
-                            <Text style={styles.candidateRomanization}>{candidate.romanization}</Text>
-                        ) : null}
-                    </View>
-                    {candidate.reason ? (
-                        <View style={styles.candidateBadge}>
-                            <MaterialIcons
-                                name={REASON_ICON[candidate.reason] ?? 'visibility'}
-                                size={12}
-                                color={colors.textSecondary}
-                            />
-                            <Text style={styles.candidateBadgeText}>
-                                {t(`read.candidateReason.${candidate.reason}`)}
-                            </Text>
-                        </View>
+                <View style={styles.candidateHeadwordRow}>
+                    <Text style={styles.candidateHeadword}>{headword}</Text>
+                    {candidate.romanization ? (
+                        <Text style={styles.candidateRomanization}>{candidate.romanization}</Text>
                     ) : null}
                 </View>
                 {candidate.gloss ? (
@@ -83,26 +72,46 @@ const CandidateCard = ({ candidate, colors, saved = false, onSave }) => {
                     surface={candidate.exampleSurface ?? headword}
                     styles={styles}
                 />
+                {candidate.reason ? (
+                    <View style={styles.candidateReason}>
+                        <MaterialIcons
+                            name={REASON_ICON[candidate.reason] ?? 'visibility'}
+                            size={13}
+                            color={colors.textMuted}
+                        />
+                        <Text style={styles.candidateReasonText}>
+                            {t(`read.candidateReason.${candidate.reason}`)}
+                        </Text>
+                    </View>
+                ) : null}
             </View>
 
-            <TouchableOpacity
-                onPress={saved ? undefined : () => onSave?.(candidate)}
-                disabled={saved}
-                activeOpacity={0.85}
-                accessibilityRole="button"
-                accessibilityState={{ disabled: saved }}
-                accessibilityLabel={saved ? t('vocab.candidateSaved') : t('vocab.candidateSave')}
-                style={[styles.saveButton, saved && styles.saveButtonDone]}
-            >
-                <Feather
-                    name={saved ? 'check' : 'plus'}
-                    size={15}
-                    color={saved ? colors.textSecondary : (colors.readerEdgeButtonText ?? '#ffffff')}
-                />
-                <Text style={[styles.saveButtonText, saved && styles.saveButtonTextDone]}>
-                    {saved ? t('vocab.candidateSaved') : t('vocab.candidateSave')}
-                </Text>
-            </TouchableOpacity>
+            {saved ? (
+                <View
+                    accessible
+                    accessibilityRole="text"
+                    accessibilityLabel={t('vocab.candidateSaved')}
+                    style={[styles.saveButton, styles.saveButtonDone]}
+                >
+                    <Feather name="check" size={15} color={colors.tint} />
+                    <Text style={[styles.saveButtonText, styles.saveButtonTextDone]}>
+                        {t('vocab.candidateSaved')}
+                    </Text>
+                </View>
+            ) : (
+                <PressableScale
+                    onPress={() => {
+                        tapCommit();
+                        onSave?.(candidate);
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('vocab.candidateSave')}
+                    style={styles.saveButton}
+                >
+                    <Feather name="plus" size={15} color={colors.onInk} />
+                    <Text style={styles.saveButtonText}>{t('vocab.candidateSave')}</Text>
+                </PressableScale>
+            )}
         </View>
     );
 };
@@ -110,86 +119,83 @@ const CandidateCard = ({ candidate, colors, saved = false, onSave }) => {
 const createStyles = (colors) => StyleSheet.create({
     candidateCard: {
         flexDirection: 'row',
-        alignItems: 'center',
+        alignItems: 'flex-start',
         gap: spacing.md,
-        padding: spacing.md,
-        borderRadius: 14,
-        borderWidth: 1,
-        borderColor: colors.border,
-        backgroundColor: colors.surfaceCard ?? colors.surface,
+        paddingVertical: 14,
+        borderBottomWidth: StyleSheet.hairlineWidth,
+        borderBottomColor: colors.border,
     },
-    candidateBody: { flex: 1, gap: 3 },
-    candidateHeaderRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: spacing.sm,
-    },
+    candidateBody: { flex: 1, minWidth: 0, gap: 3 },
     candidateHeadwordRow: {
         flexDirection: 'row',
         alignItems: 'baseline',
-        gap: spacing.xs,
-        flexShrink: 1,
+        flexWrap: 'wrap',
+        columnGap: 10,
     },
     candidateHeadword: {
         fontFamily: fontFamilies.krSerifSemiBold,
-        fontSize: 20,
+        fontSize: 21,
+        lineHeight: 30,
+        letterSpacing: -0.2,
         color: colors.text,
     },
     candidateRomanization: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 13,
-        color: colors.textSubtle,
-    },
-    candidateBadge: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 4,
-        paddingVertical: 4,
-        paddingHorizontal: spacing.xs,
-        borderRadius: radii.pill,
-        backgroundColor: colors.surfaceMuted,
-    },
-    candidateBadgeText: {
-        fontFamily: fontFamilies.sansMedium,
-        fontSize: 11,
-        color: colors.textSecondary,
+        fontFamily: fontFamilies.displayItalic,
+        fontSize: 15,
+        lineHeight: 20,
+        color: colors.textTertiary,
     },
     candidateGloss: {
         fontFamily: fontFamilies.sansRegular,
         fontSize: 15,
-        color: colors.text,
+        lineHeight: 21,
+        color: colors.textSecondary,
     },
     candidateSentence: {
         fontFamily: fontFamilies.krSerifRegular ?? fontFamilies.sansRegular,
         fontSize: 14,
-        lineHeight: 21,
-        color: colors.textSubtle,
+        lineHeight: 22,
+        color: colors.textMuted,
         marginTop: 2,
     },
     candidateSentenceMatch: {
-        color: colors.textSecondary,
+        color: colors.text,
         textDecorationLine: 'underline',
+        textDecorationColor: colors.tint,
     },
-    saveButton: {
+    candidateReason: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: spacing.xs,
-        paddingVertical: spacing.xs + 2,
-        paddingHorizontal: spacing.md,
-        borderRadius: radii.pill,
+        gap: 5,
+        marginTop: 4,
+    },
+    candidateReasonText: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 13,
+        lineHeight: 17,
+        color: colors.textMuted,
+    },
+    saveButton: {
+        minHeight: 44,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        paddingHorizontal: 16,
+        borderRadius: 22,
         backgroundColor: colors.inkSlate,
+        marginTop: 2,
     },
     saveButtonDone: {
-        backgroundColor: colors.surfaceMuted,
+        backgroundColor: 'transparent',
+        paddingHorizontal: 8,
     },
     saveButtonText: {
         fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 13,
-        color: colors.readerEdgeButtonText ?? '#ffffff',
+        fontSize: 15,
+        color: colors.onInk,
     },
     saveButtonTextDone: {
-        color: colors.textSecondary,
+        color: colors.tint,
     },
 });
 

@@ -15,7 +15,8 @@ import * as AppleAuthentication from 'expo-apple-authentication';
 import { useTranslation } from '../hooks/useTranslation';
 import { supabase } from '../services/supabase';
 import { PRIVACY_POLICY_URL, TERMS_OF_SERVICE_URL } from '../constants/links';
-import { colors, radii, spacing, textStyles, useTheme } from '../theme';
+import { colors, fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
+import { PaperButton } from '../components/ui';
 
 const openLegalLink = (url, t) => {
   Linking.openURL(url).catch(() => {
@@ -262,28 +263,31 @@ const Auth = ({
           />
           {showModeToggle ? (
             <View style={styles.modeRow}>
-              <TouchableOpacity onPress={() => setMode('signin')}>
+              <TouchableOpacity onPress={() => setMode('signin')} style={styles.modeButton}>
                 <Text style={[styles.modeText, mode === 'signin' && styles.modeActive]}>{t('auth.signIn')}</Text>
               </TouchableOpacity>
-              <TouchableOpacity onPress={() => setMode('signup')}>
+              <TouchableOpacity onPress={() => setMode('signup')} style={styles.modeButton}>
                 <Text style={[styles.modeText, mode === 'signup' && styles.modeActive]}>{t('auth.signUp')}</Text>
               </TouchableOpacity>
             </View>
           ) : null}
-          <TouchableOpacity style={styles.primaryButton} onPress={handleEmailAuth} disabled={loading}>
-            <Text style={styles.primaryButtonText}>
-              {loading ? t('common.working') : mode === 'signin' ? t('auth.signIn') : t('auth.createAccount')}
-            </Text>
-          </TouchableOpacity>
+          <PaperButton
+            label={loading ? t('common.working') : mode === 'signin' ? t('auth.signIn') : t('auth.createAccount')}
+            onPress={handleEmailAuth}
+            disabled={loading}
+            style={styles.fullButton}
+          />
         </View>
 
         <View style={styles.section}>
           {showSectionLabels ? <Text style={styles.sectionTitle}>{t('auth.google')}</Text> : null}
-          <TouchableOpacity style={styles.secondaryButton} onPress={handleGoogleAuth} disabled={loading}>
-            <Text style={styles.secondaryButtonText}>
-              {mode === 'signup' ? t('auth.signUpGoogle') : t('auth.signInGoogle')}
-            </Text>
-          </TouchableOpacity>
+          <PaperButton
+            variant="secondary"
+            label={mode === 'signup' ? t('auth.signUpGoogle') : t('auth.signInGoogle')}
+            onPress={handleGoogleAuth}
+            disabled={loading}
+            style={styles.fullButton}
+          />
         </View>
 
         {showApple && Platform.OS === 'ios' ? (
@@ -351,106 +355,99 @@ const createStyles = (colors) => StyleSheet.create({
     backgroundColor: colors.transparent,
     paddingHorizontal: 0,
   },
+  // Paper: no shadow; a hairline sheet on the full-screen form, and nothing
+  // at all when embedded (the host dialog is the surface).
   card: {
-    backgroundColor: colors.surfaceElevated,
-    borderRadius: radii.lg,
-    padding: spacing.lg,
-    borderWidth: 1,
+    backgroundColor: colors.surface,
+    borderRadius: radii.xxl,
+    padding: spacing.xl,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
-    shadowColor: colors.shadow,
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 1,
-    shadowRadius: 24,
-    elevation: 6,
   },
   embeddedCard: {
-    shadowOpacity: 0,
-    shadowRadius: 0,
-    elevation: 0,
+    backgroundColor: colors.transparent,
+    borderWidth: 0,
+    borderRadius: 0,
+    padding: 0,
   },
   title: {
-    ...textStyles.title,
+    fontFamily: fontFamilies.displaySemiBold,
     fontSize: 28,
+    lineHeight: 32,
+    letterSpacing: -0.5,
+    color: colors.text,
   },
   subtitle: {
     ...textStyles.bodyMuted,
-    marginTop: spacing.xxs,
+    color: colors.textMuted,
+    fontSize: 15,
+    lineHeight: 21,
+    marginTop: spacing.xs,
   },
   section: {
-    marginTop: spacing.lg,
+    marginTop: spacing.md,
   },
   sectionFlush: {
     marginTop: 0,
   },
   sectionTitle: {
     ...textStyles.eyebrow,
+    color: colors.textMuted,
     marginBottom: spacing.sm,
   },
   input: {
+    minHeight: 50,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: radii.md,
+    borderRadius: radii.xl,
     backgroundColor: colors.surface,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    color: colors.text,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     marginBottom: spacing.sm,
-    ...textStyles.body,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 16,
+    lineHeight: 21,
+    color: colors.text,
   },
   modeRow: {
     flexDirection: 'row',
-    gap: spacing.md,
-    marginBottom: spacing.sm,
+    gap: spacing.lg,
+    marginBottom: spacing.xs,
+  },
+  modeButton: {
+    minHeight: 44,
+    justifyContent: 'center',
   },
   modeText: {
-    ...textStyles.label,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 15,
+    lineHeight: 20,
     color: colors.textMuted,
   },
   modeActive: {
-    color: colors.accentStrong,
-  },
-  primaryButton: {
-    backgroundColor: colors.accentSoft,
-    borderRadius: radii.md,
-    paddingVertical: 13,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  primaryButtonText: {
-    ...textStyles.label,
-    color: colors.accentStrong,
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  secondaryButton: {
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    paddingVertical: 13,
-    alignItems: 'center',
-  },
-  secondaryButtonText: {
-    ...textStyles.label,
+    fontFamily: fontFamilies.sansSemiBold,
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 20,
+    textDecorationLine: 'underline',
+    textDecorationColor: colors.tint,
+  },
+  fullButton: {
+    alignSelf: 'stretch',
+    marginTop: spacing.xxs,
   },
   appleButton: {
     width: '100%',
-    height: 48,
+    height: 50,
   },
   legalText: {
-    marginTop: spacing.xs,
-    ...textStyles.bodyMuted,
-    fontSize: 12,
-    lineHeight: 17,
+    marginTop: spacing.lg,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 12.5,
+    lineHeight: 18,
     textAlign: 'center',
-    color: colors.textTertiary,
+    color: colors.textMuted,
   },
   legalLink: {
-    color: colors.accent,
+    color: colors.tint,
     textDecorationLine: 'underline',
   },
 });
