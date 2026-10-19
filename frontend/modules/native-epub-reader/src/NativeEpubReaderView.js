@@ -114,6 +114,9 @@ const NativeEpubReaderView = forwardRef(({
     renderMode = 'paged',
     readerEdgeStateEnabled = true,
     highlightTerms = [],
+    // { [term]: 0..1 } — how strongly each saved word's box is drawn; a word
+    // the reader keeps passing without looking it up fades. Missing = 1.
+    highlightStrengths = null,
     // [{ text, weight }] — weight 0..1 positions the term on the reader's
     // green→amber→red underline gradient. Native owns the colors so the gradient
     // tracks the reader theme without a round trip through JS.
@@ -168,6 +171,16 @@ const NativeEpubReaderView = forwardRef(({
         () => (isKorean ? joinKoreanInTerms(highlightTerms || []) : (highlightTerms || [])),
         [isKorean, highlightTerms]
     );
+    const nativeHighlightStrengths = useMemo(() => {
+        const source = highlightStrengths && typeof highlightStrengths === 'object' ? highlightStrengths : {};
+        if (!isKorean) return source;
+        const out = {};
+        Object.entries(source).forEach(([term, strength]) => {
+            const [joined] = joinKoreanInTerms([term]);
+            out[joined] = strength;
+        });
+        return out;
+    }, [isKorean, highlightStrengths]);
     const nativeLevelTerms = useMemo(
         () => (isKorean ? joinKoreanInTerms(levelTerms || []) : (levelTerms || [])),
         [isKorean, levelTerms]
@@ -238,6 +251,7 @@ const NativeEpubReaderView = forwardRef(({
             renderMode={renderMode}
             readerEdgeStateEnabled={readerEdgeStateEnabled}
             highlightTerms={nativeHighlightTerms}
+            highlightStrengths={nativeHighlightStrengths}
             levelTerms={nativeLevelTerms}
             showPinyin={!!showPinyin}
             showGloss={!!showGloss}

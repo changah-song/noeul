@@ -74,7 +74,10 @@ data class TextRange(
   // Short translation drawn under the word when gloss annotations are on.
   val gloss: String? = null,
   // Annotation-only range: draws pinyin/gloss but no underline.
-  val annotationOnly: Boolean = false
+  val annotationOnly: Boolean = false,
+  // Saved highlights only: how strongly the box is drawn, 1 = full, fading to
+  // 0 as the reader keeps passing the word without looking it up.
+  val strength: Float = 1f
 )
 
 // A focused sentence span in focus (sentence beam) mode. Offsets are local to
