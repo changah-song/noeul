@@ -26,6 +26,7 @@ import {
   remapLegacyKoreanRank,
 } from './bookEase';
 import { getActivePknownModel } from './pknownModel';
+import { LEARNED_LEVEL, SAVED_WORD_FADE_GAP_MS, SAVED_WORD_FADE_STEPS } from './savedWordFade';
 import {
   applySignal as applyLevelSignal,
   guessRateOf,
@@ -2411,6 +2412,16 @@ export const migrateVocabTable = async () => {
     alterations.push('ALTER TABLE vocab ADD COLUMN is_favorite INTEGER DEFAULT 0');
   }
 
+  // Saved-word fading (services/savedWordFade.js): how many times the reader
+  // has passed the word without looking it up since they last did, and when
+  // the last one counted. Device-only; the 'learned' level it leads to syncs.
+  if (!columns.includes('fade_seen')) {
+    alterations.push('ALTER TABLE vocab ADD COLUMN fade_seen INTEGER DEFAULT 0');
+  }
+  if (!columns.includes('fade_seen_at')) {
+    alterations.push('ALTER TABLE vocab ADD COLUMN fade_seen_at TEXT');
+  }
+
   if (!columns.includes('priority')) {
     alterations.push(`ALTER TABLE vocab ADD COLUMN priority TEXT DEFAULT 'normal'`);
   }
@@ -4682,7 +4693,7 @@ export const getBookSavedWords = async ({ ownerId, profileId, language = 'ko', b
     `SELECT id, word, hanja, def, level, source, source_book_title, created_at
      FROM vocab
      WHERE owner_id = ? AND profile_id = ? AND language = ? AND source_book_uri = ?
-       AND deleted_at IS NULL
+       AND deleted_at IS NULL AND COALESCE(level, '') != '${LEARNED_LEVEL}'
      ORDER BY COALESCE(created_at, updated_at) DESC, id DESC`,
     [scopedOwnerId, scopedProfileId, normalizedLanguage, bookUri]
   );
@@ -6309,6 +6320,151 @@ export const removeData = (word, hanja, definition, language = 'ko', options = {
   });
 };
 
+// ─── Saved-word fading ────────────────────────────────────────────────────────
+//
+// A saved word's highlight fades each time the reader passes it without looking
+// it up; looking it up again restores it. Once it has faded out the word is
+// "learned": level 'learned' (cloud status 'learned', so it syncs), out of the
+// highlights, the saved lists and the review queue, but kept with its
+// definition and history in the Learned list. See services/savedWordFade.js.
+
+
+/** word → passes since its last lookup, for saved words that have started fading. */
+export const getSavedWordFades = async ({ ownerId, profileId, language = 'ko' } = {}) => {
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const rows = await runSelect(
+    `SELECT word, MAX(COALESCE(fade_seen, 0)) AS seen FROM vocab
+     WHERE owner_id = ? AND profile_id = ? AND language = ? AND deleted_at IS NULL
+       AND COALESCE(level, '') != '${LEARNED_LEVEL}' AND COALESCE(fade_seen, 0) > 0
+     GROUP BY word`,
+    [resolveOwnerId(ownerId), resolveProfileId(profileId, normalizedLanguage), normalizedLanguage]
+  );
+  return new Map(rows.map((row) => [row.word, Number(row.seen) || 0]));
+};
+
+/**
+ * recordSavedWordSightings — the reader passed these saved words without
+ * looking them up. Each counts once per SAVED_WORD_FADE_GAP_MS; a word that
+ * reaches SAVED_WORD_FADE_STEPS becomes learned.
+ *
+ * @returns {Promise<{faded: Map<string, number>, learned: string[]}>}
+ *          the new counts of the words that moved, and the newly learned words
+ */
+export const recordSavedWordSightings = async ({ ownerId, profileId, language = 'ko', words = [], now = Date.now() } = {}) => {
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
+  const list = Array.from(new Set((words || []).filter((w) => typeof w === 'string' && w.trim()).map((w) => w.trim())));
+  const faded = new Map();
+  const learned = [];
+  if (list.length === 0) return { faded, learned };
+
+  const rows = (await Promise.all(chunkValues(list).map((chunk) => runSelect(
+    `SELECT id, word, COALESCE(fade_seen, 0) AS seen, fade_seen_at FROM vocab
+     WHERE owner_id = ? AND profile_id = ? AND language = ? AND deleted_at IS NULL
+       AND COALESCE(level, '') != '${LEARNED_LEVEL}' AND word IN (${chunk.map(() => '?').join(', ')})`,
+    [scopedOwnerId, scopedProfileId, normalizedLanguage, ...chunk]
+  )))).flat();
+
+  const nowIsoValue = new Date(now).toISOString();
+  const updates = [];
+  rows.forEach((row) => {
+    const last = row.fade_seen_at ? new Date(row.fade_seen_at).getTime() : null;
+    if (last != null && Number.isFinite(last) && now - last < SAVED_WORD_FADE_GAP_MS) return;
+    const seen = (Number(row.seen) || 0) + 1;
+    updates.push({ id: row.id, seen });
+    faded.set(row.word, Math.max(faded.get(row.word) || 0, seen));
+    if (seen >= SAVED_WORD_FADE_STEPS && !learned.includes(row.word)) learned.push(row.word);
+  });
+  if (updates.length === 0) return { faded, learned };
+
+  await new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        updates.forEach(({ id, seen }) => {
+          if (seen >= SAVED_WORD_FADE_STEPS) {
+            // Learned: the level change bumps updated_at so it syncs.
+            tx.executeSql(
+              `UPDATE vocab SET fade_seen = ?, fade_seen_at = ?, level = '${LEARNED_LEVEL}', updated_at = ? WHERE id = ?`,
+              [seen, nowIsoValue, nowIsoValue, id]
+            );
+          } else {
+            tx.executeSql('UPDATE vocab SET fade_seen = ?, fade_seen_at = ? WHERE id = ?', [seen, nowIsoValue, id]);
+          }
+        });
+      },
+      (error) => {
+        console.error('[Database] Error recording saved word sightings:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+  return { faded, learned };
+};
+
+/** The reader looked a saved word up again: its highlight comes back in full. */
+export const resetSavedWordFade = ({ ownerId, profileId, language = 'ko', words = [] } = {}) => {
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const list = Array.from(new Set((words || []).filter((w) => typeof w === 'string' && w.trim()).map((w) => w.trim())));
+  if (list.length === 0) return Promise.resolve(0);
+  return new Promise((resolve, reject) => {
+    let changed = 0;
+    db.transaction(
+      tx => {
+        tx.executeSql(
+          `UPDATE vocab SET fade_seen = 0, fade_seen_at = NULL
+           WHERE owner_id = ? AND profile_id = ? AND language = ? AND deleted_at IS NULL
+             AND COALESCE(level, '') != '${LEARNED_LEVEL}' AND COALESCE(fade_seen, 0) > 0
+             AND word IN (${list.map(() => '?').join(', ')})`,
+          [resolveOwnerId(ownerId), resolveProfileId(profileId, normalizedLanguage), normalizedLanguage, ...list],
+          (_, result) => { changed = result.rowsAffected || 0; }
+        );
+      },
+      (error) => reject(error),
+      () => resolve(changed)
+    );
+  });
+};
+
+/** Learned words, newest first, for the Learned list. */
+export const getLearnedWords = async ({ ownerId, profileId, language = 'ko' } = {}) => {
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const rows = await runSelect(
+    `SELECT id, word, hanja, def, source_book_title, created_at, updated_at FROM vocab
+     WHERE owner_id = ? AND profile_id = ? AND language = ? AND deleted_at IS NULL
+       AND level = '${LEARNED_LEVEL}'
+     ORDER BY updated_at DESC, id DESC`,
+    [resolveOwnerId(ownerId), resolveProfileId(profileId, normalizedLanguage), normalizedLanguage]
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    word: row.word,
+    hanja: row.hanja || '',
+    def: row.def || '',
+    bookTitle: row.source_book_title || '',
+    learnedAt: row.updated_at || null,
+  }));
+};
+
+/** Move a learned word back to the saved words, highlighted in full again. */
+export const restoreLearnedWord = ({ ownerId, profileId, language = 'ko', id } = {}) => {
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  return new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        tx.executeSql(
+          `UPDATE vocab SET level = 'unorganized', fade_seen = 0, fade_seen_at = NULL, updated_at = ?
+           WHERE id = ? AND owner_id = ? AND profile_id = ? AND language = ? AND level = '${LEARNED_LEVEL}'`,
+          [nowIso(), id, resolveOwnerId(ownerId), resolveProfileId(profileId, normalizedLanguage), normalizedLanguage]
+        );
+      },
+      (error) => reject(error),
+      () => resolve()
+    );
+  });
+};
+
 export const getSavedWords = (options = {}) => {
   const normalizedOptions = typeof options === 'string' || options === null
     ? { language: options }
@@ -6320,8 +6476,8 @@ export const getSavedWords = (options = {}) => {
   return new Promise((resolve, reject) => {
     db.transaction(tx => {
       const sql = language == null
-        ? 'SELECT DISTINCT word FROM vocab WHERE owner_id = ? AND profile_id = ? AND deleted_at IS NULL'
-        : 'SELECT DISTINCT word FROM vocab WHERE owner_id = ? AND profile_id = ? AND language = ? AND deleted_at IS NULL';
+        ? `SELECT DISTINCT word FROM vocab WHERE owner_id = ? AND profile_id = ? AND deleted_at IS NULL AND COALESCE(level, '') != '${LEARNED_LEVEL}'`
+        : `SELECT DISTINCT word FROM vocab WHERE owner_id = ? AND profile_id = ? AND language = ? AND deleted_at IS NULL AND COALESCE(level, '') != '${LEARNED_LEVEL}'`;
 
       tx.executeSql(
         sql,

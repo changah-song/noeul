@@ -50,6 +50,9 @@ jest.mock('../../services/Database', () => ({
   getProfileAbility: jest.fn(() => Promise.resolve({ theta: -2 })),
   getReaderLevel: jest.fn(() => Promise.resolve({ theta: -2, variance: 0.3, lookupRate: 0.5, guessRate: 0.05 })),
   lookupKnowledgeEvidence: jest.fn(() => Promise.resolve([])),
+  getSavedWordFades: jest.fn(() => Promise.resolve(new Map())),
+  recordSavedWordSightings: jest.fn(() => Promise.resolve({ faded: new Map(), learned: [] })),
+  resetSavedWordFade: jest.fn(() => Promise.resolve(0)),
   getWordDifficulties: jest.fn(() => Promise.resolve({})),
   lookupBookLevelSurfaces: jest.fn(() => Promise.resolve([
     { surface: '그리움', level_rank: 3, stem_count: 1 },

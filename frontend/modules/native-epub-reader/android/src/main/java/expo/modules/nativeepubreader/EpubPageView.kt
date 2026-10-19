@@ -1943,16 +1943,22 @@ class EpubPageView(context: Context) : View(context) {
       }
 
       if (paint === savedHighlightPaint) {
-        drawTextSelectionHighlight(
-          canvas = canvas,
-          block = block,
-          layout = layout,
-          localStart = localStart,
-          localEnd = localEnd,
-          textLength = blockTextLength,
-          paint = paint,
-          readProgress = readProgress(range)
-        )
+        // A saved word the reader keeps passing without looking up fades out.
+        val fullAlpha = paint.alpha
+        paint.alpha = (fullAlpha * range.strength.coerceIn(0f, 1f)).roundToInt()
+        if (paint.alpha > 0) {
+          drawTextSelectionHighlight(
+            canvas = canvas,
+            block = block,
+            layout = layout,
+            localStart = localStart,
+            localEnd = localEnd,
+            textLength = blockTextLength,
+            paint = paint,
+            readProgress = readProgress(range)
+          )
+        }
+        paint.alpha = fullAlpha
         return@forEach
       }
 
@@ -2120,7 +2126,8 @@ class EpubPageView(context: Context) : View(context) {
       }
       // On read text the box turns translucent, so the light text gives way
       // to the normal body text underneath.
-      textPaint.alpha = (lightTextAlpha * (1f - readProgress(range))).roundToInt()
+      // A fading saved word gives way the same way.
+      textPaint.alpha = (lightTextAlpha * (1f - readProgress(range)) * range.strength.coerceIn(0f, 1f)).roundToInt()
       if (textPaint.alpha == 0) return@forEach
 
       val safeStart = (max(range.sourceStartOffset, sourceStart) - sourceStart).coerceIn(0, textLength)

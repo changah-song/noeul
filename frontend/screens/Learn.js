@@ -34,10 +34,12 @@ import {
   removeData,
   removeRelatedKnownWord,
   updateFavorite,
+  restoreLearnedWord,
   viewData,
   vocabEntryExists,
 } from '../services/Database';
 import { deriveCandidateReason } from '../services/wordCandidates';
+import { LEARNED_LEVEL } from '../services/savedWordFade';
 import { incrementWordsStudied } from '../services/dailyProgress';
 import {
   recordCloudVocabReview,
@@ -1129,6 +1131,7 @@ const Learn = ({ navigation, user }) => {
   }), [colors, proficiencyByKey, styles]);
   const [words, setWords] = useState([]);
   const [mainTab, setMainTab] = useState('saved');
+  const [learnedWords, setLearnedWords] = useState([]);
   const [candidateGroups, setCandidateGroups] = useState([]);
   const [candidatesLoading, setCandidatesLoading] = useState(false);
   const [candidatesLoaded, setCandidatesLoaded] = useState(false);
@@ -1152,11 +1155,17 @@ const Learn = ({ navigation, user }) => {
     const requestId = ++wordsRequestIdRef.current;
     try {
       const data = await viewData({ ownerId: activeOwnerId, language: targetLanguage });
-      const normalized = normalizeRows(data);
+      // Learned words (saved words whose highlight faded out while reading)
+      // have their own tab and leave the saved list and the reviews.
+      const all = normalizeRows(data);
+      const normalized = all.filter((row) => row.level !== LEARNED_LEVEL);
       if (requestId !== wordsRequestIdRef.current) {
         return normalized;
       }
       setWords(normalized);
+      setLearnedWords(sortRecent(all.filter((row) => row.level === LEARNED_LEVEL)).sort(
+        (a, b) => new Date(b.updated_at ?? 0).getTime() - new Date(a.updated_at ?? 0).getTime()
+      ));
       setSelectedWord((current) => {
         if (!current) {
           return null;
@@ -1170,6 +1179,16 @@ const Learn = ({ navigation, user }) => {
       return [];
     }
   }, [activeOwnerId, targetLanguage]);
+
+  const handleRestoreLearned = useCallback(async (row) => {
+    try {
+      await restoreLearnedWord({ ownerId: activeOwnerId, language: targetLanguage, id: row.id });
+      requestUserDataSync('learn-vocab-restore');
+      await fetchWords();
+    } catch (error) {
+      console.warn('[Learn] Failed to restore learned word:', error?.message ?? error);
+    }
+  }, [activeOwnerId, fetchWords, targetLanguage]);
 
   useEffect(() => {
     setWords([]);
@@ -1684,6 +1703,16 @@ const Learn = ({ navigation, user }) => {
             {t('learn.suggestedTab')}
           </Text>
         </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => setMainTab('learned')}
+          style={[styles.mainTab, mainTab === 'learned' && styles.mainTabActive]}
+          accessibilityRole="tab"
+          accessibilityState={{ selected: mainTab === 'learned' }}
+        >
+          <Text style={[styles.mainTabText, mainTab === 'learned' && styles.mainTabTextActive]}>
+            {learnedWords.length > 0 ? `${t('learn.learnedTab')} ${learnedWords.length}` : t('learn.learnedTab')}
+          </Text>
+        </TouchableOpacity>
       </View>
 
       {mainTab === 'saved' ? (
@@ -1766,6 +1795,36 @@ const Learn = ({ navigation, user }) => {
         )}
       </View>
       </>
+      ) : mainTab === 'learned' ? (
+        <View style={styles.suggestedWrap}>
+          {learnedWords.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyTitle}>{t('learn.learnedEmptyTitle')}</Text>
+              <Text style={styles.emptyBody}>{t('learn.learnedEmptyBody')}</Text>
+            </View>
+          ) : (
+            <View style={styles.candidateGroupList}>
+              <Text style={styles.learnedHint}>{t('learn.learnedHint')}</Text>
+              {learnedWords.map((row) => (
+                <View key={row.id} style={styles.learnedRow}>
+                  <View style={styles.learnedText}>
+                    <Text style={styles.learnedWord}>{row.word}</Text>
+                    {row.def ? <Text style={styles.learnedDef} numberOfLines={2}>{row.def}</Text> : null}
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => handleRestoreLearned(row)}
+                    style={styles.learnedRestore}
+                    activeOpacity={0.7}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('learn.learnedRestoreFor', { word: row.word })}
+                  >
+                    <Text style={styles.learnedRestoreText}>{t('learn.learnedRestore')}</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
+          )}
+        </View>
       ) : (
         <View style={styles.suggestedWrap}>
           {candidatesLoading && !candidatesLoaded ? (
@@ -2198,6 +2257,42 @@ const createStyles = (colors) => StyleSheet.create({
   },
   candidateGroup: {
     gap: spacing.sm,
+  },
+  learnedHint: {
+    ...textStyles.bodyMuted,
+    marginBottom: spacing.xs,
+  },
+  learnedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    paddingVertical: spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.divider,
+  },
+  learnedText: {
+    flex: 1,
+    gap: 2,
+  },
+  learnedWord: {
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 16,
+    color: colors.text,
+  },
+  learnedDef: {
+    ...textStyles.bodyMuted,
+  },
+  learnedRestore: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  learnedRestoreText: {
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 13,
+    color: colors.text,
   },
   candidateGroupTitle: {
     fontFamily: fontFamilies.sansSemiBold,

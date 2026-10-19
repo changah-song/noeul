@@ -286,6 +286,11 @@ class NativeEpubReaderModule : Module() {
         view.setHighlightTerms(terms)
       }
 
+      // Saved word -> highlight strength in [0, 1]; words not listed draw fully.
+      Prop("highlightStrengths") { view: NativeEpubReaderView, strengths: Map<String, Any?> ->
+        view.setHighlightStrengths(strengths)
+      }
+
       Prop("levelTerms") { view: NativeEpubReaderView, terms: List<Any?> ->
         view.setLevelTerms(terms)
       }
@@ -798,10 +803,13 @@ class NativeEpubReaderView(
   // Graded words actually rendered on each page, shipped out with onPageChange so
   // JS can credit "shown but not looked up" as weak positive evidence.
   private var levelTermsByPage: Map<Int, List<String>> = emptyMap()
+  private var savedTermsByPage: Map<Int, List<String>> = emptyMap()
+  private var highlightStrengths: Map<String, Float> = emptyMap()
   // Open exposure unit (paged page / focus span). Continuous mode tracks per
   // block instead, in the two maps below.
   private var exposureUnitKey: String? = null
   private var exposureUnitTerms: List<String> = emptyList()
+  private var exposureUnitSavedTerms: List<String> = emptyList()
   private var exposureUnitChars = 0
   private var exposureUnitEnteredAtMs = 0L
   private val blockFirstSeenAtMs = mutableMapOf<String, Long>()
@@ -1201,6 +1209,18 @@ class NativeEpubReaderView(
     highlightMatcher = HighlightMatcher(nextTerms)
     rebuildSavedHighlightRanges()
     refreshEdgeStatesForCurrentPages()
+  }
+
+  fun setHighlightStrengths(strengths: Map<String, Any?>) {
+    val next = strengths.mapNotNull { (term, value) ->
+      val strength = (value as? Number)?.toFloat() ?: return@mapNotNull null
+      term.trim().takeIf { it.isNotEmpty() }?.let { it to strength.coerceIn(0f, 1f) }
+    }.toMap()
+    if (next == highlightStrengths) {
+      return
+    }
+    highlightStrengths = next
+    rebuildSavedHighlightRanges()
   }
 
   fun setLevelTerms(terms: List<Any?>) {
@@ -1714,10 +1734,12 @@ class NativeEpubReaderView(
       sourcePages = nextPages,
       matcher = highlightMatcher,
       label = "saved",
-      collectContexts = true
+      collectContexts = true,
+      strengthForTerm = ::savedStrengthForTerm
     )
     savedHighlightRangesByPage = savedHighlights.rangesByPage
     savedHighlightContextsByPage = savedHighlights.contextsByPage
+    savedTermsByPage = savedHighlights.termsByPage
     rebuildBlockOrdinals(nextPages)
     val levelHighlights = buildHighlightRanges(
       nextPages,
@@ -2923,14 +2945,17 @@ class NativeEpubReaderView(
   //
   // JS applies the intent filters it owns (looked-up, saved, per-unit cap) and
   // the dwell-plausibility gate, using `chars` to scale it to the unit's size.
+  // `savedTerms` are the saved-word highlights in the unit, which fade each
+  // time the reader passes them without looking them up.
 
-  private fun emitExposure(terms: List<String>, chars: Int, dwellMs: Long) {
-    if (terms.isEmpty() || dwellMs <= 0L) {
+  private fun emitExposure(terms: List<String>, savedTerms: List<String>, chars: Int, dwellMs: Long) {
+    if ((terms.isEmpty() && savedTerms.isEmpty()) || dwellMs <= 0L) {
       return
     }
     onExposure(
       mapOf(
         "terms" to terms,
+        "savedTerms" to savedTerms,
         "chars" to chars,
         "dwellMs" to dwellMs.toDouble()
       )
@@ -2946,14 +2971,15 @@ class NativeEpubReaderView(
     page: ReaderPage,
     blockId: String,
     localStart: Int,
-    localEnd: Int
+    localEnd: Int,
+    rangesByPage: Map<Int, List<TextRange>> = levelRangesByPage
   ): List<String> {
     val block = page.blocks.firstOrNull { it.blockId == blockId } ?: return emptyList()
     val text = block.plainText.ifEmpty { block.styledText?.toString() ?: "" }
     if (text.isEmpty()) return emptyList()
 
     val terms = linkedSetOf<String>()
-    levelRangesByPage[page.pageIndex].orEmpty().forEach { range ->
+    rangesByPage[page.pageIndex].orEmpty().forEach { range ->
       if (range.blockId != blockId || range.annotationOnly) return@forEach
       val start = range.sourceStartOffset - block.sourceStartOffset
       val end = range.sourceEndOffset - block.sourceStartOffset
@@ -2972,13 +2998,15 @@ class NativeEpubReaderView(
   /** Ends the open paged/focus exposure unit, emitting it if it earned anything. */
   private fun flushExposureUnit() {
     val terms = exposureUnitTerms
-    if (terms.isEmpty()) {
+    val savedTerms = exposureUnitSavedTerms
+    if (terms.isEmpty() && savedTerms.isEmpty()) {
       exposureUnitKey = null
       return
     }
-    emitExposure(terms, exposureUnitChars, SystemClock.uptimeMillis() - exposureUnitEnteredAtMs)
+    emitExposure(terms, savedTerms, exposureUnitChars, SystemClock.uptimeMillis() - exposureUnitEnteredAtMs)
     exposureUnitKey = null
     exposureUnitTerms = emptyList()
+    exposureUnitSavedTerms = emptyList()
     exposureUnitChars = 0
   }
 
@@ -2988,13 +3016,14 @@ class NativeEpubReaderView(
    * rebinds and highlight refreshes, and restarting the clock on those would
    * quietly starve the signal.
    */
-  private fun beginExposureUnit(key: String, terms: List<String>, chars: Int) {
+  private fun beginExposureUnit(key: String, terms: List<String>, savedTerms: List<String>, chars: Int) {
     if (exposureUnitKey == key) {
       return
     }
     flushExposureUnit()
     exposureUnitKey = key
     exposureUnitTerms = terms
+    exposureUnitSavedTerms = savedTerms
     exposureUnitChars = chars
     exposureUnitEnteredAtMs = SystemClock.uptimeMillis()
   }
@@ -3004,6 +3033,7 @@ class NativeEpubReaderView(
     beginExposureUnit(
       key = "paged:${page.spineIndex}:${page.pageIndex}",
       terms = levelTermsByPage[page.pageIndex].orEmpty(),
+      savedTerms = savedTermsByPage[page.pageIndex].orEmpty(),
       chars = page.blocks.sumOf { blockTextLength(it) }
     )
   }
@@ -3016,15 +3046,20 @@ class NativeEpubReaderView(
 
     val span = focusSentences.subList(focusIndex, lastIndex + 1)
     val terms = linkedSetOf<String>()
+    val savedTerms = linkedSetOf<String>()
     var chars = 0
     span.forEach { sentence ->
       terms.addAll(gradedTermsIn(page, sentence.blockId, sentence.startOffset, sentence.endOffset))
+      savedTerms.addAll(
+        gradedTermsIn(page, sentence.blockId, sentence.startOffset, sentence.endOffset, savedHighlightRangesByPage)
+      )
       chars += (sentence.endOffset - sentence.startOffset).coerceAtLeast(0)
     }
 
     beginExposureUnit(
       key = "focus:${page.spineIndex}:$focusIndex:$focusSpanCount",
       terms = terms.toList(),
+      savedTerms = savedTerms.toList(),
       chars = chars
     )
   }
@@ -3073,6 +3108,7 @@ class NativeEpubReaderView(
         val length = blockTextLength(block)
         emitExposure(
           gradedTermsIn(page, block.blockId, 0, length),
+          gradedTermsIn(page, block.blockId, 0, length, savedHighlightRangesByPage),
           length,
           now - seenAt
         )
@@ -3230,10 +3266,12 @@ class NativeEpubReaderView(
       sourcePages = pages,
       matcher = highlightMatcher,
       label = "saved",
-      collectContexts = true
+      collectContexts = true,
+      strengthForTerm = ::savedStrengthForTerm
     )
     savedHighlightRangesByPage = savedHighlights.rangesByPage
     savedHighlightContextsByPage = savedHighlights.contextsByPage
+    savedTermsByPage = savedHighlights.termsByPage
     pageAdapter?.updateSavedHighlightRanges(savedHighlightRangesByPage)
     invalidateVisiblePageHighlights()
   }
@@ -3254,6 +3292,8 @@ class NativeEpubReaderView(
     pageAdapter?.updateLevelUnderlineRanges(levelRangesByPage)
     invalidateVisiblePageHighlights()
   }
+
+  private fun savedStrengthForTerm(term: String): Float = highlightStrengths[term] ?: 1f
 
   private fun levelWeightForPriority(priority: Int): Float? =
     levelWeights.getOrNull(priority)
@@ -3332,6 +3372,8 @@ class NativeEpubReaderView(
     reinforcedForPriority: ((Int) -> Boolean)? = null,
     // Level terms only: the word's short translation, drawn under it when on.
     glossForPriority: ((Int) -> String?)? = null,
+    // Saved highlights only: the box's strength for a matched term.
+    strengthForTerm: ((String) -> Float)? = null,
     // Level terms only: annotation-only words get no underline and no exposure.
     annotationOnlyForPriority: ((Int) -> Boolean)? = null
   ): HighlightBuildResult {
@@ -3387,7 +3429,8 @@ class NativeEpubReaderView(
                 pinyin = pinyinForPriority?.invoke(match.priority),
                 levelReinforced = reinforcedForPriority?.invoke(match.priority) ?: false,
                 gloss = glossForPriority?.invoke(match.priority),
-                annotationOnly = annotationOnly
+                annotationOnly = annotationOnly,
+                strength = strengthForTerm?.invoke(match.term) ?: 1f
               )
             )
 

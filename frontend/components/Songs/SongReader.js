@@ -14,6 +14,7 @@ import {
     TextInput,
     TouchableOpacity,
     View,
+    ToastAndroid,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather } from '@expo/vector-icons';
@@ -36,6 +37,9 @@ import { useTranslation } from '../../hooks/useTranslation';
 import useReaderLookup from '../../hooks/useReaderLookup';
 import useLevelUnderlineTerms from '../../hooks/useLevelUnderlineTerms';
 import useFocusNavigation from '../../hooks/useFocusNavigation';
+import useSavedWordFades from '../../hooks/useSavedWordFades';
+import { highlightStrengthsFor } from '../../services/savedWordFade';
+import { exposureDwellIsPlausible } from '../../services/abilityModel';
 import {
     applyExposureBatch,
     getBookSavedWords,
@@ -155,6 +159,9 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
 
     const [savedWords, setSavedWords] = useState(null); // null = not yet loaded
     const [highlightSurfaces, setHighlightSurfaces] = useState([]);
+    // In-song surface → saved word, for fading (services/savedWordFade.js).
+    const [highlightSurfaceWords, setHighlightSurfaceWords] = useState(() => new Map());
+    const [savedWordsVersion, setSavedWordsVersion] = useState(0);
     const [optimisticHighlightTerms, setOptimisticHighlightTerms] = useState([]);
     const [songSavedWords, setSongSavedWords] = useState([]);
     // Bumped when the lyrics finish indexing into book_index, so the level
@@ -179,10 +186,44 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     const levelWeightsRef = useRef(new Map());
     const levelStemsRef = useRef(new Map());
     const focusControlsTranslate = useRef(new Animated.Value(0)).current;
+    const highlightSurfaceWordsRef = useRef(highlightSurfaceWords);
+    highlightSurfaceWordsRef.current = highlightSurfaceWords;
+    const songSavedTermsRef = useRef(song?.savedTerms);
+    songSavedTermsRef.current = song?.savedTerms;
+
+    // Saved words fade as the reader passes them without a lookup; once one
+    // fades out it is learned and leaves the highlights.
+    const {
+        fades: savedWordFades,
+        onSavedPassed: onSavedWordsPassed,
+        onLookedUp: onSavedWordLookedUp,
+    } = useSavedWordFades({
+        ownerId: activeOwnerId,
+        language: songLanguage,
+        onLearned: (words) => {
+            const surfaces = new Set(words);
+            highlightSurfaceWordsRef.current.forEach((word, surface) => {
+                if (words.includes(word)) surfaces.add(surface);
+            });
+            setOptimisticHighlightTerms((previous) => previous.filter((term) => !surfaces.has(term)));
+            onSavedTermsChange?.((songSavedTermsRef.current ?? []).filter((term) => !surfaces.has(term)));
+            setSavedWordsVersion((value) => value + 1);
+            ToastAndroid.show(
+                t(words.length === 1 ? 'savedFade.learnedOne' : 'savedFade.learnedMany', { word: words[0], count: words.length }),
+                ToastAndroid.SHORT
+            );
+        },
+    });
+    const onSavedWordLookedUpRef = useRef(onSavedWordLookedUp);
+    onSavedWordLookedUpRef.current = onSavedWordLookedUp;
 
     // ── Lookup panel (shared with the book reader) ───────────────────────────
     const handleWordLookup = useCallback(({ text, sentence }) => {
         recentLookupsRef.current.add(text);
+        // Looking a saved word up again brings its faded highlight back.
+        if (savedSurfacesRef.current.has(text)) {
+            onSavedWordLookedUpRef.current?.(highlightSurfaceWordsRef.current.get(text) || text);
+        }
         recordVocabContextForSurface({
             ownerId: activeOwnerId,
             surface: text,
@@ -297,7 +338,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         return () => {
             isMounted = false;
         };
-    }, [activeOwnerId, songLanguage]);
+    }, [activeOwnerId, songLanguage, savedWordsVersion]);
 
     // Expand saved lemmas into the inflected surfaces that actually appear in
     // the lyrics (book_index), as the book reader does.
@@ -313,6 +354,9 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         }).then((rows) => {
             if (isActive) {
                 setHighlightSurfaces(rows.map((row) => row.surface).filter(Boolean));
+                setHighlightSurfaceWords(new Map(
+                    rows.filter((row) => row.surface && row.stem).map((row) => [row.surface, row.stem])
+                ));
             }
         }).catch((error) => {
             console.warn('[SongReader] Failed to load highlight surfaces:', error?.message ?? error);
@@ -403,6 +447,10 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         ...optimisticHighlightTerms,
     ]), [highlightSurfaces, optimisticHighlightTerms, savedWords, song?.savedTerms]);
     savedSurfacesRef.current = useMemo(() => new Set(readerHighlightTerms), [readerHighlightTerms]);
+    const highlightStrengths = useMemo(
+        () => highlightStrengthsFor(readerHighlightTerms, highlightSurfaceWords, savedWordFades),
+        [readerHighlightTerms, highlightSurfaceWords, savedWordFades]
+    );
     levelWeightsRef.current = useMemo(
         () => new Map(levelUnderlineTerms.map(({ text, weight }) => [text, weight])),
         [levelUnderlineTerms]
@@ -446,11 +494,15 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     const overlay = brightnessOverlay(settings.brightness);
 
     // ── Exposure crediting (same rules as the book reader) ───────────────────
-    const handleNativeExposure = useCallback(({ terms, chars, dwellMs } = {}) => {
+    const handleNativeExposure = useCallback(({ terms, savedTerms, chars, dwellMs } = {}) => {
         const lookedUp = recentLookupsRef.current;
         recentLookupsRef.current = new Set();
         if (!songUri) {
             return;
+        }
+        // Saved words passed without a lookup fade a step.
+        if (Array.isArray(savedTerms) && savedTerms.length > 0 && exposureDwellIsPlausible(chars, dwellMs)) {
+            onSavedWordsPassed({ surfaces: savedTerms, surfaceToWord: highlightSurfaceWordsRef.current, lookedUp });
         }
         const skipped = selectExposureCredits({
             terms,
@@ -740,6 +792,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                         theme={isDarkMode ? 'dark' : 'light'}
                         themeTokens={nativeReaderThemeTokens}
                         highlightTerms={readerHighlightTerms}
+                        highlightStrengths={highlightStrengths}
                         levelTerms={readerLevelTerms}
                         showPinyin={readerShowPinyin}
                         clearSelectionToken={clearSelectionToken}

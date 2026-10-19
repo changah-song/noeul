@@ -90,6 +90,9 @@ import {
 } from '../constants/languages';
 import { loadLevelUnderlineTerms } from '../hooks/useLevelUnderlineTerms';
 import { selectExposureCredits } from '../services/readerExposure';
+import useSavedWordFades from '../hooks/useSavedWordFades';
+import { highlightStrengthsFor } from '../services/savedWordFade';
+import { exposureDwellIsPlausible } from '../services/abilityModel';
 import { ANNOTATION_SCOPES, annotationsBySurface, buildAnnotatedLevelTerms } from '../services/readerAnnotations';
 import { createNativeReaderThemeTokens, radii, spacing, textStyles, useTheme } from '../theme';
 
@@ -495,6 +498,10 @@ const Read = ({
     const [bookBookmarks, setBookBookmarks] = useState([]);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [savedWords, setSavedWords] = useState(null); // null = not yet loaded
+    // Saved-word fading: in-book surface → saved word (소문을 → 소문), and a
+    // counter that reloads the saved words when some become learned.
+    const [highlightSurfaceWords, setHighlightSurfaceWords] = useState(() => new Map());
+    const [savedWordsVersion, setSavedWordsVersion] = useState(0);
     const [highlightTerms, setHighlightTerms] = useState(null);
     const [optimisticHighlightTerms, setOptimisticHighlightTerms] = useState([]);
     const [levelUnderlineTerms, setLevelUnderlineTerms] = useState([]);
@@ -691,7 +698,7 @@ const Read = ({
         return () => {
             isActive = false;
         };
-    }, [activeBookLanguage, activeOwnerId]);
+    }, [activeBookLanguage, activeOwnerId, savedWordsVersion]);
 
     // Words saved from *this* book — drives the top-bar count pill and the saved
     // panel's "Saved" tab. Refreshed on mount and after every save.
@@ -715,6 +722,33 @@ const Read = ({
     useEffect(() => {
         refreshBookSavedWords();
     }, [refreshBookSavedWords]);
+
+    // Saved words fade as the reader passes them without a lookup; once one
+    // fades out it is learned and leaves the highlights and the saved lists.
+    const highlightSurfaceWordsRef = useRef(highlightSurfaceWords);
+    highlightSurfaceWordsRef.current = highlightSurfaceWords;
+    const {
+        fades: savedWordFades,
+        onSavedPassed: onSavedWordsPassed,
+        onLookedUp: onSavedWordLookedUp,
+    } = useSavedWordFades({
+        ownerId: activeOwnerId,
+        language: activeBookLanguage,
+        onLearned: (words) => {
+            const learned = new Set(words);
+            const surfaces = new Set(words);
+            highlightSurfaceWordsRef.current.forEach((word, surface) => {
+                if (learned.has(word)) surfaces.add(surface);
+            });
+            setOptimisticHighlightTerms((previous) => previous.filter((term) => !surfaces.has(term)));
+            setSavedWordsVersion((value) => value + 1);
+            refreshBookSavedWords();
+            ToastAndroid.show(
+                t(words.length === 1 ? 'savedFade.learnedOne' : 'savedFade.learnedMany', { word: words[0], count: words.length }),
+                ToastAndroid.SHORT
+            );
+        },
+    });
 
     useEffect(() => {
         if (savedWords === null) {
@@ -753,6 +787,9 @@ const Read = ({
                     ...surfaceRows.map((row) => row.surface).filter(Boolean),
                 ])];
 
+                setHighlightSurfaceWords(new Map(
+                    surfaceRows.filter((row) => row.surface && row.stem).map((row) => [row.surface, row.stem])
+                ));
                 setHighlightTerms(mergedTerms);
                 setHighlightTermsReady(true);
             } catch (error) {
@@ -986,6 +1023,10 @@ const Read = ({
         // Looking a word up is its own (much stronger) evidence, so this word must
         // not also be credited as a skip when the current exposure unit closes.
         recentLookupsRef.current.add(text);
+        // Looking a saved word up again brings its faded highlight back.
+        if (savedSurfacesRef.current.has(text)) {
+            onSavedWordLookedUp(highlightSurfaceWordsRef.current.get(text) || text);
+        }
 
         setIsNativeSelection(false);
         setHighlightedWord(text);
@@ -1456,6 +1497,10 @@ const Read = ({
     savedSurfacesRef.current = useMemo(
         () => new Set(readerHighlightTerms),
         [readerHighlightTerms]
+    );
+    const highlightStrengths = useMemo(
+        () => highlightStrengthsFor(readerHighlightTerms, highlightSurfaceWords, savedWordFades),
+        [readerHighlightTerms, highlightSurfaceWords, savedWordFades]
     );
     levelUnderlineWeightsRef.current = useMemo(
         () => new Map(levelUnderlineTerms.map(({ text, weight }) => [text, weight])),
@@ -2570,18 +2615,25 @@ const Read = ({
      * the reader look like they tap more than they do. Not while listen mode
      * reads aloud.
      */
-    const handleNativeExposure = useCallback(({ terms, chars, dwellMs } = {}) => {
+    const handleNativeExposure = useCallback(({ terms, savedTerms, chars, dwellMs } = {}) => {
         // Each closed unit ends the window in which a tap could have belonged to
         // it; taps after this point belong to the next unit.
         const lookedUp = recentLookupsRef.current;
         recentLookupsRef.current = new Set();
 
-        if (!currentBook || !Array.isArray(terms) || terms.length === 0) {
+        if (!currentBook) {
             return;
         }
         // While listen mode reads aloud, the page moves at the voice's pace and
         // nobody taps; not looking a word up says nothing.
         if (listenPlayingRef.current) {
+            return;
+        }
+        // Saved words passed without a lookup fade a step.
+        if (Array.isArray(savedTerms) && savedTerms.length > 0 && exposureDwellIsPlausible(chars, dwellMs)) {
+            onSavedWordsPassed({ surfaces: savedTerms, surfaceToWord: highlightSurfaceWordsRef.current, lookedUp });
+        }
+        if (!Array.isArray(terms) || terms.length === 0) {
             return;
         }
         const skipped = selectExposureCredits({
@@ -2609,7 +2661,7 @@ const Read = ({
         }).catch((error) => {
             console.warn('[Read] Failed to apply exposure batch:', error);
         });
-    }, [activeOwnerId, activeBookLanguage, currentBook]);
+    }, [activeOwnerId, activeBookLanguage, currentBook, onSavedWordsPassed]);
 
     const processNativePageChange = useCallback(({ page, total, spineIndex, href, firstBlockId, savedHighlights, readThrough } = {}) => {
         if (bookCompletionInProgressRef.current) {
@@ -3791,6 +3843,7 @@ const Read = ({
                         renderMode={nativeRenderMode}
                         readerEdgeStateEnabled={false}
                         highlightTerms={readerHighlightTerms}
+                        highlightStrengths={highlightStrengths}
                         levelTerms={readerLevelTerms}
                         showPinyin={readerShowPinyin}
                         showGloss={readerShowGloss}
