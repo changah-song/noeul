@@ -23,6 +23,7 @@ from functools import partial
 import certifi
 from dotenv import load_dotenv
 
+from word_features import attach_word_features
 from song_search import (
     GENIUS_SEARCH_URL,
     LRCLIB_SEARCH_URL,
@@ -394,55 +395,6 @@ def korean_nikl_payload(row: sqlite3.Row | None) -> dict | None:
 
 def attach_proficiency_level(entry: dict, level: dict | None) -> dict:
     return {**entry, **level} if level else entry
-
-
-def lookup_word_features(language: str, terms: list[str]) -> dict[str, dict]:
-    """zipf (how common) and loanword flags per term for the difficulty model.
-    See scripts/import_word_features.py. Empty when the table is missing."""
-    normalized = unique_nonempty_strings(terms)
-    if not normalized or not is_proficiency_levels_db_installed():
-        return {}
-    try:
-        conn = get_proficiency_levels_db_connection()
-    except sqlite3.Error:
-        return {}
-    features: dict[str, dict] = {}
-    try:
-        for batch in chunked_values(normalized):
-            placeholders = ",".join(["?"] * len(batch))
-            for row in conn.execute(
-                f"SELECT term, zipf, loanword FROM word_features WHERE language = ? AND term IN ({placeholders})",
-                [language, *batch],
-            ).fetchall():
-                features[row["term"]] = {"zipf": row["zipf"], "loanword": bool(row["loanword"])}
-    except sqlite3.Error as exc:
-        # An older proficiency_levels.db without the table.
-        print(f"[main] word features unavailable: {exc}")
-        return {}
-    finally:
-        conn.close()
-    return features
-
-
-def attach_word_features(language: str, entries: list[dict]) -> list[dict]:
-    """Add zipf / loanword to each entry by its stem (or surface)."""
-    keys = [
-        (entry.get("stem") or entry.get("surface") or "").strip()
-        for entry in entries
-        if isinstance(entry, dict)
-    ]
-    features = lookup_word_features(language, keys)
-    if not features:
-        return entries
-    out = []
-    for entry in entries:
-        if not isinstance(entry, dict):
-            out.append(entry)
-            continue
-        key = (entry.get("stem") or "").strip()
-        found = features.get(key) or features.get((entry.get("surface") or "").strip())
-        out.append({**entry, **found} if found else entry)
-    return out
 
 
 def normalize_scoring_language(language: str | None) -> str:
