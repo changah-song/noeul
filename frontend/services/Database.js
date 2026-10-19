@@ -12,14 +12,10 @@ import {
 import {
   ABILITY_THETA_MAX,
   ABILITY_THETA_MIN,
-  EXPOSURE_LEARNING_RATE,
   OOV_DIFFICULTY,
   LOOKUP_LEARNING_RATE,
-  THETA_LEARNING_RATE,
-  difficultyFromLevelRank,
   pKnown,
   seedThetaFromRank,
-  updateThetaOnline,
 } from './abilityModel';
 import { assembleFeatures } from './featureAssembly';
 import {
@@ -30,6 +26,15 @@ import {
   remapLegacyKoreanRank,
 } from './bookEase';
 import { getActivePknownModel } from './pknownModel';
+import {
+  applySignal as applyLevelSignal,
+  guessRateOf,
+  lookupRateOf,
+  readerState,
+  SEED_VARIANCE,
+  seedState,
+  wordDifficulty,
+} from './levelEngine';
 import { initialFsrsFromPKnown, rankNominations } from './flashcardNomination';
 
 // ─── Database Setup ───────────────────────────────────────────────────────────
@@ -50,7 +55,7 @@ const DICTIONARY_CACHE_ZH_SCRIPTS_MIGRATION_KEY = 'dictionary_cache_zh_scripts_m
 const LOCAL_OWNER_SQLITE_MIGRATION_KEY = 'local_owner_sqlite_migration_v1';
 const PROFILE_SQLITE_MIGRATION_KEY = 'profile_sqlite_migration_v1';
 const VOCAB_EMPTY_HANJA_MIGRATION_KEY = 'vocab_empty_hanja_migration_v1';
-export const PREPROCESS_VERSION = 7;
+export const PREPROCESS_VERSION = 8;
 const SQLITE_BIND_BATCH_SIZE = 450;
 const DEFAULT_STABILITY = 1.0;
 const DEFAULT_DIFFICULTY = 5.0;
@@ -224,10 +229,18 @@ const normalizeDictionaryLevelMetadata = (entry = {}) => {
     ? numericDifficultyPercentile
     : null;
 
+  // How common the word is (Zipf) and the Korean loanword flag, for the
+  // level engine's word difficulty (services/levelEngine.js wordDifficulty).
+  const numericZipf = entry.zipf == null || entry.zipf === '' ? NaN : Number(entry.zipf);
+  const zipf = Number.isFinite(numericZipf) ? numericZipf : null;
+  const loanword = entry.loanword == null ? null : (entry.loanword === true || Number(entry.loanword) === 1 ? 1 : 0);
+
   return {
     levelRank,
     difficultyRank,
     difficultyPercentile,
+    zipf,
+    loanword,
     levelLabel: entry.level_label
       ?? entry.level
       ?? entry.proficiency_level
@@ -412,6 +425,11 @@ const INTERACTION_EVENT_TYPES = new Set([
   // the offline trainer can check whether exposure actually predicts later review
   // outcomes rather than trusting the online rate we guessed.
   'exposure',
+  // An answer in the word check (services/wordCheck.js): outcome 1 = "I know
+  // it". check_pseudo is the same for a made-up word, which a reader should
+  // never claim to know; it measures their guess rate.
+  'check',
+  'check_pseudo',
 ]);
 
 // RN has no crypto.getRandomValues polyfill here, so the `uuid` package would throw.
@@ -688,6 +706,12 @@ export const createProfileAbilityTable = () => {
           seeded_at         TEXT,
           updated_at        TEXT DEFAULT CURRENT_TIMESTAMP,
           synced_at         TEXT,
+          theta_var         REAL,
+          lookup_hits       REAL DEFAULT 0,
+          lookup_expected   REAL DEFAULT 0,
+          guess_yes         REAL DEFAULT 0,
+          guess_total       REAL DEFAULT 0,
+          last_event_at     TEXT,
           UNIQUE(owner_id, profile_id, language)
         )`,
         [],
@@ -731,6 +755,14 @@ export const migrateProfileAbilityTable = async () => {
   ensureColumn('seeded_at', 'seeded_at TEXT');
   ensureColumn('updated_at', 'updated_at TEXT');
   ensureColumn('synced_at', 'synced_at TEXT');
+  // Level engine (services/levelEngine.js): how sure the level is, the
+  // reader's learned lookup and guess rates, and when the last signal came.
+  ensureColumn('theta_var', 'theta_var REAL');
+  ensureColumn('lookup_hits', 'lookup_hits REAL DEFAULT 0');
+  ensureColumn('lookup_expected', 'lookup_expected REAL DEFAULT 0');
+  ensureColumn('guess_yes', 'guess_yes REAL DEFAULT 0');
+  ensureColumn('guess_total', 'guess_total REAL DEFAULT 0');
+  ensureColumn('last_event_at', 'last_event_at TEXT');
 
   if (alterations.length === 0) {
     return;
@@ -771,6 +803,263 @@ export const getProfileAbility = ({ ownerId, profileId, language = 'ko' } = {}) 
           console.error('[Database] Error reading profile ability:', error);
           reject(error);
         }
+      );
+    });
+  });
+};
+
+// ─── Level engine persistence and the ability log ─────────────────────────────
+//
+// Every change to a profile's level goes through services/levelEngine.js and
+// leaves one ability_log row saying what moved it (a lookup of 厮杀, a page read
+// past, a word-check answer, the vocabulary picker) and by how much. The log is
+// pushed to Supabase (user_ability_log) for the admin dashboard's Level model
+// page. Rows are append-only.
+
+export const createAbilityLogTable = () => new Promise((resolve, reject) => {
+  db.transaction(tx => {
+    tx.executeSql(
+      `CREATE TABLE IF NOT EXISTS ability_log (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_log_id  TEXT NOT NULL UNIQUE,
+        owner_id       TEXT NOT NULL DEFAULT 'guest',
+        profile_id     TEXT,
+        language       TEXT,
+        signal         TEXT NOT NULL,
+        word           TEXT,
+        stem           TEXT,
+        outcome        INTEGER,
+        difficulty     REAL,
+        p_known        REAL,
+        p_observed     REAL,
+        theta_before   REAL,
+        theta_after    REAL,
+        var_before     REAL,
+        var_after      REAL,
+        lookup_rate    REAL,
+        guess_rate     REAL,
+        source_book_uri TEXT,
+        details        TEXT,
+        created_at     TEXT NOT NULL,
+        synced_at      TEXT
+      )`,
+      [],
+      () => {
+        tx.executeSql(
+          `CREATE INDEX IF NOT EXISTS idx_ability_log_owner_synced
+           ON ability_log(owner_id, synced_at)`
+        );
+        resolve();
+      },
+      (_, error) => {
+        console.error('[Database] Error creating ability_log table:', error);
+        reject(error);
+      }
+    );
+  });
+});
+
+const generateClientLogId = () => (
+  `lvl_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`
+);
+
+const insertAbilityLogRows = (tx, scope, entries) => {
+  entries.forEach((entry) => {
+    tx.executeSql(
+      `INSERT OR IGNORE INTO ability_log (
+         client_log_id, owner_id, profile_id, language, signal, word, stem, outcome,
+         difficulty, p_known, p_observed, theta_before, theta_after, var_before, var_after,
+         lookup_rate, guess_rate, source_book_uri, details, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        generateClientLogId(),
+        scope.ownerId,
+        scope.profileId,
+        scope.language,
+        entry.signal,
+        entry.word ?? null,
+        entry.stem ?? null,
+        entry.outcome ?? null,
+        entry.difficulty ?? null,
+        entry.pKnown ?? null,
+        entry.pObserved ?? null,
+        entry.thetaBefore ?? null,
+        entry.thetaAfter ?? null,
+        entry.varianceBefore ?? null,
+        entry.varianceAfter ?? null,
+        entry.lookupRate ?? null,
+        entry.guessRate ?? null,
+        entry.sourceBookUri ?? null,
+        entry.details ? JSON.stringify(entry.details) : null,
+        entry.at ?? new Date().toISOString(),
+      ]
+    );
+  });
+};
+
+const writeReaderStateSql = `
+  INSERT INTO profile_ability (
+    owner_id, profile_id, language, theta, theta_var, self_report_rank, event_count,
+    lookup_hits, lookup_expected, guess_yes, guess_total, last_event_at,
+    seeded_at, updated_at, synced_at
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+  ON CONFLICT(owner_id, profile_id, language) DO UPDATE SET
+    theta = excluded.theta,
+    theta_var = excluded.theta_var,
+    self_report_rank = COALESCE(excluded.self_report_rank, profile_ability.self_report_rank),
+    event_count = excluded.event_count,
+    lookup_hits = excluded.lookup_hits,
+    lookup_expected = excluded.lookup_expected,
+    guess_yes = excluded.guess_yes,
+    guess_total = excluded.guess_total,
+    last_event_at = excluded.last_event_at,
+    seeded_at = COALESCE(excluded.seeded_at, profile_ability.seeded_at),
+    updated_at = excluded.updated_at,
+    synced_at = NULL`;
+
+// One level change at a time per profile: every update reads the row, folds
+// signals in, and writes it back, so two at once (a lookup during a page
+// turn) would lose one.
+const abilityQueues = new Map();
+const withAbilityLock = (key, task) => {
+  const previous = abilityQueues.get(key) || Promise.resolve();
+  const run = previous.catch(() => {}).then(task);
+  abilityQueues.set(key, run);
+  run.finally(() => {
+    if (abilityQueues.get(key) === run) abilityQueues.delete(key);
+  }).catch(() => {});
+  return run;
+};
+
+/**
+ * updateReaderLevel — read the profile's level, let `fold(state)` apply
+ * signals through the engine, then write the new state and the log rows in
+ * one transaction.
+ *
+ * `fold` returns { state, logs, selfReportRank?, seededAt? } or null to write
+ * nothing.
+ *
+ * @returns {Promise<object|null>} the new engine state, or null.
+ */
+export const updateReaderLevel = ({ ownerId, profileId, language = 'ko' } = {}, fold) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
+  const scope = { ownerId: scopedOwnerId, profileId: scopedProfileId, language: normalizedLanguage };
+  const key = `${scopedOwnerId}|${scopedProfileId}|${normalizedLanguage}`;
+
+  return withAbilityLock(key, async () => {
+    const row = await getProfileAbility(scope);
+    const before = readerState(row);
+    const result = await fold(before, row);
+    if (!result || !result.state) return null;
+    const { state, logs = [] } = result;
+    const now = new Date().toISOString();
+    await new Promise((resolve, reject) => {
+      db.transaction(
+        tx => {
+          tx.executeSql(writeReaderStateSql, [
+            scopedOwnerId,
+            scopedProfileId,
+            normalizedLanguage,
+            state.theta,
+            state.variance,
+            result.selfReportRank ?? null,
+            state.eventCount,
+            state.lookupHits,
+            state.lookupExpected,
+            state.guessYes,
+            state.guessTotal,
+            state.lastEventAt,
+            result.seededAt ?? null,
+            now,
+          ]);
+          insertAbilityLogRows(tx, scope, logs.filter(Boolean));
+        },
+        (error) => {
+          console.error('[Database] Error writing reader level:', error);
+          reject(error);
+        },
+        () => resolve()
+      );
+    });
+    return state;
+  });
+};
+
+/** The engine's view of a profile: level, how sure, and learned rates. */
+export const getReaderLevel = async ({ ownerId, profileId, language = 'ko' } = {}) => {
+  const row = await getProfileAbility({ ownerId, profileId, language });
+  const state = readerState(row);
+  return {
+    ...state,
+    lookupRate: lookupRateOf(state),
+    guessRate: guessRateOf(state),
+    hasRow: !!row,
+  };
+};
+
+export const getUnsyncedAbilityLog = (ownerId, { limit = 500 } = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT * FROM ability_log
+         WHERE owner_id = ? AND synced_at IS NULL
+         ORDER BY created_at ASC, id ASC
+         LIMIT ?`,
+        [scopedOwnerId, limit],
+        (_, result) => resolve(result.rows._array ?? []),
+        (_, error) => {
+          console.error('[Database] Error reading unsynced ability log:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+export const markAbilityLogSynced = (ids, syncedAt = new Date().toISOString()) => {
+  const targets = (Array.isArray(ids) ? ids : []).filter((id) => id != null);
+  if (targets.length === 0) return Promise.resolve(0);
+  return new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        chunkValues(targets).forEach((chunk) => {
+          tx.executeSql(
+            `UPDATE ability_log SET synced_at = ? WHERE id IN (${chunk.map(() => '?').join(', ')})`,
+            [syncedAt, ...chunk]
+          );
+        });
+      },
+      (error) => {
+        console.error('[Database] Error marking ability log synced:', error);
+        reject(error);
+      },
+      () => resolve(targets.length)
+    );
+  });
+};
+
+/**
+ * getAbilityLog — the newest log rows for a profile, for the on-device
+ * "why did my level move" view and tests.
+ */
+export const getAbilityLog = ({ ownerId, profileId, language = 'ko', limit = 200 } = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT * FROM ability_log
+         WHERE owner_id = ? AND profile_id = ? AND language = ?
+         ORDER BY created_at DESC, id DESC
+         LIMIT ?`,
+        [scopedOwnerId, scopedProfileId, normalizedLanguage, limit],
+        (_, result) => resolve(result.rows._array ?? []),
+        (_, error) => reject(error)
       );
     });
   });
@@ -1003,18 +1292,14 @@ export const markProfileAbilitiesSynced = (rows, syncedAt = new Date().toISOStri
 const NEUTRAL_THETA = (ABILITY_THETA_MIN + ABILITY_THETA_MAX) / 2;
 
 /**
- * updateThetaFromOutcome — the Phase 3.1 online ability update (persistence half).
+ * updateThetaFromOutcome — fold one signal about one word (a lookup, a review,
+ * a word-check answer) into the profile's level through the level engine, and
+ * log the change. Fire-and-forget from the callers: a failure here must never
+ * block or alter the lookup or review itself.
  *
- * Given one graded behavioral outcome for a word, nudge the profile's `theta`
- * with the pure `updateThetaOnline` step and persist it: increment `event_count`
- * (which also fades the self-report anchor) and clear `synced_at` so the mutable
- * row re-pushes to the cloud. Fire-and-forget from the callers — a logging/scoring
- * failure must never block or alter the review itself (plan invariant #4).
- *
- * Difficulty comes from the KB prior (`getWordDifficulties`, Phase 2.2) when not
- * passed in. If the word has no graded-KB rank we SKIP the update rather than
- * nudge on the OOV fallback: an ungradeable word carries almost no ability signal
- * (the step would be negligible) and skipping avoids a pointless re-sync write.
+ * Difficulty comes from getWordDifficulties (level, frequency, loanword) when
+ * not passed in. A word we know nothing about is skipped rather than moving
+ * the level on a guess.
  *
  * @returns {Promise<number|null>} the new theta, or null if the update was skipped.
  */
@@ -1023,27 +1308,31 @@ export const updateThetaFromOutcome = async ({
   profileId,
   language = 'ko',
   stem,
+  word = null,
   difficulty,
   outcome,
-  learningRate = THETA_LEARNING_RATE,
-  // The calibration quiz passes false: a quiz tap IS the measurement the
-  // self-report anchor exists to approximate, so pulling the update back toward
-  // the old seed would only slow convergence.
-  anchor = true,
+  // 'lookup' | 'review' | 'check'. Older callers passed only a learning rate;
+  // map those so they keep working.
+  signal,
+  learningRate,
+  sourceBookUri = null,
 } = {}) => {
-  const scopedOwnerId = resolveOwnerId(ownerId);
   const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
-  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
   const y = outcome === 1 || outcome === true ? 1 : (outcome === 0 || outcome === false ? 0 : null);
-  if (y == null) {
+  const type = signal
+    || (learningRate === LOOKUP_LEARNING_RATE ? 'lookup' : null)
+    || (Number(learningRate) >= 0.5 ? 'check' : 'review');
+  if (y == null && type !== 'lookup') {
     return null;
   }
 
-  // Resolve the word's KB difficulty if the caller didn't supply it. A word with
-  // no graded rank (isFallback) is skipped — see the note above.
-  let wordDifficulty = Number(difficulty);
-  if (!Number.isFinite(wordDifficulty)) {
-    const cleanStem = typeof stem === 'string' ? stem.trim() : '';
+  // Resolve the word's difficulty if the caller didn't supply it. A word we
+  // know nothing about (no level, no frequency) is skipped: it would only
+  // move the level by a guess.
+  const cleanStem = typeof stem === 'string' ? stem.trim() : '';
+  let wordDifficultyValue = Number(difficulty);
+  let details = null;
+  if (!Number.isFinite(wordDifficultyValue)) {
     if (!cleanStem) {
       return null;
     }
@@ -1052,73 +1341,41 @@ export const updateThetaFromOutcome = async ({
     if (!entry || entry.isFallback || !Number.isFinite(Number(entry.difficulty))) {
       return null;
     }
-    wordDifficulty = Number(entry.difficulty);
+    wordDifficultyValue = Number(entry.difficulty);
+    details = entry.details ?? null;
   }
 
-  const row = await getProfileAbility({
-    ownerId: scopedOwnerId,
-    profileId: scopedProfileId,
-    language: normalizedLanguage,
-  });
-  const currentTheta = Number.isFinite(Number(row?.theta)) ? Number(row.theta) : NEUTRAL_THETA;
-  const eventCount = Number.isFinite(Number(row?.event_count)) ? Number(row.event_count) : 0;
-  const theta0 = anchor && row?.self_report_rank != null
-    ? seedThetaFromRank(normalizedLanguage, row.self_report_rank)
-    : null;
-
-  const nextTheta = updateThetaOnline({
-    theta: currentTheta,
-    difficulty: wordDifficulty,
-    outcome: y,
-    eventCount,
-    theta0,
-    learningRate,
-  });
-  const now = new Date().toISOString();
-
-  return new Promise((resolve, reject) => {
-    db.transaction(tx => {
-      // Upsert: create a behavior-only row if the profile was never seeded, else
-      // write the new theta and increment the (SQL-authoritative) event count.
-      tx.executeSql(
-        `INSERT INTO profile_ability (
-           owner_id, profile_id, language, theta, self_report_rank,
-           event_count, seeded_at, updated_at, synced_at
-         )
-         VALUES (?, ?, ?, ?, NULL, 1, NULL, ?, NULL)
-         ON CONFLICT(owner_id, profile_id, language) DO UPDATE SET
-           theta = excluded.theta,
-           event_count = profile_ability.event_count + 1,
-           updated_at = excluded.updated_at,
-           synced_at = NULL`,
-        [scopedOwnerId, scopedProfileId, normalizedLanguage, nextTheta, now],
-        () => resolve(nextTheta),
-        (_, error) => {
-          console.error('[Database] Error updating theta from outcome:', error);
-          reject(error);
-        }
-      );
+  const state = await updateReaderLevel({ ownerId, profileId, language: normalizedLanguage }, (before) => {
+    const { state: next, log } = applyLevelSignal(before, {
+      type,
+      difficulty: wordDifficultyValue,
+      outcome: y,
     });
+    if (!log) return null;
+    return {
+      state: next,
+      logs: [{
+        ...log,
+        word: word ?? cleanStem ?? null,
+        stem: cleanStem || null,
+        sourceBookUri,
+        details,
+      }],
+    };
   });
+  return state ? state.theta : null;
 };
 
 /**
- * applyExposureBatch — fold one page's worth of "shown but not looked up" words
- * into `theta` in a single pass, and append the matching exposure events.
+ * applyExposureBatch — fold one page's worth of underlined words read past
+ * without a lookup into the level, as 'pass' signals, and append the matching
+ * exposure events. One read and one write of the ability row per page.
  *
- * Deliberately NOT a loop over `updateThetaFromOutcome`. That helper reads the
- * ability row, writes it, and clears `synced_at` per call; at exposure volume
- * (every page turn, several words each) that would be a burst of SQLite writes
- * and a re-sync per word. Here the row is read once, the steps are folded in
- * memory with the same pure `updateThetaOnline`, and exactly one row is written —
- * so a page turn costs the same as a single lookup.
- *
- * The steps are applied in sequence (each one's P uses the theta the previous
- * step produced) and `event_count` advances with them, so the result is identical
- * to N sequential updates — just without the write amplification.
- *
- * Ungraded words are skipped, matching updateThetaFromOutcome: a word with no KB
- * rank carries almost no ability signal.
+ * How much a pass counts depends on the reader's learned lookup rate (see
+ * services/levelEngine.js): from a reader who taps most unknown words, a
+ * skipped word is good evidence they knew it; from one who rarely taps, it
+ * says little. A word already counted today is skipped, and so are words we
+ * know nothing about.
  *
  * @param {object}   args
  * @param {string[]} args.stems      words shown and not looked up
@@ -1132,7 +1389,6 @@ export const applyExposureBatch = async ({
   stems = [],
   sourceBookUri = null,
   dwellSeconds = null,
-  learningRate = EXPOSURE_LEARNING_RATE,
 } = {}) => {
   const scopedOwnerId = resolveOwnerId(ownerId);
   const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
@@ -1147,8 +1403,33 @@ export const applyExposureBatch = async ({
     return { theta: null, applied: 0 };
   }
 
-  const difficulties = await getWordDifficulties(normalizedLanguage, cleanStems);
-  const graded = cleanStems
+  // A word read past again the same day (rereading a page, paging back and
+  // forth) says nothing new; count it once a day.
+  const seenToday = await new Promise((resolve) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT DISTINCT stem FROM interaction_events
+         WHERE owner_id = ? AND profile_id = ? AND language = ? AND event_type = 'exposure'
+           AND created_at >= ? AND stem IN (${cleanStems.map(() => '?').join(', ')})`,
+        [
+          scopedOwnerId,
+          scopedProfileId,
+          normalizedLanguage,
+          `${new Date().toISOString().slice(0, 10)}T00:00:00`,
+          ...cleanStems,
+        ],
+        (_, result) => resolve(new Set((result.rows._array ?? []).map((row) => row.stem))),
+        () => resolve(new Set())
+      );
+    });
+  });
+  const fresh = cleanStems.filter((stem) => !seenToday.has(stem));
+  if (fresh.length === 0) {
+    return { theta: null, applied: 0 };
+  }
+
+  const difficulties = await getWordDifficulties(normalizedLanguage, fresh);
+  const graded = fresh
     .map((stem) => ({ stem, entry: difficulties?.[stem] }))
     .filter(({ entry }) => (
       entry && !entry.isFallback && Number.isFinite(Number(entry.difficulty))
@@ -1157,31 +1438,6 @@ export const applyExposureBatch = async ({
   if (graded.length === 0) {
     return { theta: null, applied: 0 };
   }
-
-  const row = await getProfileAbility({
-    ownerId: scopedOwnerId,
-    profileId: scopedProfileId,
-    language: normalizedLanguage,
-  });
-  const startingTheta = Number.isFinite(Number(row?.theta)) ? Number(row.theta) : NEUTRAL_THETA;
-  const startingEventCount = Number.isFinite(Number(row?.event_count))
-    ? Number(row.event_count)
-    : 0;
-  const theta0 = row?.self_report_rank != null
-    ? seedThetaFromRank(normalizedLanguage, row.self_report_rank)
-    : null;
-
-  let theta = startingTheta;
-  graded.forEach(({ entry }, index) => {
-    theta = updateThetaOnline({
-      theta,
-      difficulty: Number(entry.difficulty),
-      outcome: 1,
-      eventCount: startingEventCount + index,
-      theta0,
-      learningRate,
-    });
-  });
 
   // Log BEFORE the derived state is written, matching logInteractionEvent's
   // contract, so the historical outcome survives even if the write below fails.
@@ -1199,37 +1455,30 @@ export const applyExposureBatch = async ({
     console.warn('[Database] Failed to log exposure event:', error);
   })));
 
-  const now = new Date().toISOString();
-  return new Promise((resolve, reject) => {
-    db.transaction(tx => {
-      tx.executeSql(
-        `INSERT INTO profile_ability (
-           owner_id, profile_id, language, theta, self_report_rank,
-           event_count, seeded_at, updated_at, synced_at
-         )
-         VALUES (?, ?, ?, ?, NULL, ?, NULL, ?, NULL)
-         ON CONFLICT(owner_id, profile_id, language) DO UPDATE SET
-           theta = excluded.theta,
-           event_count = profile_ability.event_count + ?,
-           updated_at = excluded.updated_at,
-           synced_at = NULL`,
-        [
-          scopedOwnerId,
-          scopedProfileId,
-          normalizedLanguage,
-          theta,
-          graded.length,
-          now,
-          graded.length,
-        ],
-        () => resolve({ theta, applied: graded.length }),
-        (_, error) => {
-          console.error('[Database] Error applying exposure batch:', error);
-          reject(error);
-        }
-      );
-    });
-  });
+  const state = await updateReaderLevel(
+    { ownerId: scopedOwnerId, profileId: scopedProfileId, language: normalizedLanguage },
+    (before) => {
+      let current = before;
+      const logs = [];
+      graded.forEach(({ stem, entry }) => {
+        const { state: next, log } = applyLevelSignal(current, {
+          type: 'pass',
+          difficulty: Number(entry.difficulty),
+        });
+        if (!log) return;
+        current = next;
+        logs.push({
+          ...log,
+          word: stem,
+          stem,
+          sourceBookUri,
+          details: { ...(entry.details || {}), dwellSeconds: Number(dwellSeconds) || null },
+        });
+      });
+      return logs.length > 0 ? { state: current, logs } : null;
+    }
+  );
+  return { theta: state ? state.theta : null, applied: state ? graded.length : 0 };
 };
 
 /**
@@ -1247,44 +1496,39 @@ export const applyExposureBatch = async ({
  *
  * @returns {Promise<number>} the seeded theta.
  */
-export const setProfileAbilityFromVocab = ({
+export const setProfileAbilityFromVocab = async ({
   ownerId,
   profileId,
   language = 'ko',
   theta,
   nearestRank = null,
+  variance = SEED_VARIANCE,
+  signal = 'seed',
+  details = null,
 } = {}) => {
-  const scopedOwnerId = resolveOwnerId(ownerId);
-  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
-  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
   const seededTheta = Number.isFinite(Number(theta)) ? Number(theta) : NEUTRAL_THETA;
   const rank = Number.isFinite(Number(nearestRank)) ? Math.round(Number(nearestRank)) : null;
   const now = new Date().toISOString();
-
-  return new Promise((resolve, reject) => {
-    db.transaction(tx => {
-      tx.executeSql(
-        `INSERT INTO profile_ability (
-           owner_id, profile_id, language, theta, self_report_rank,
-           event_count, seeded_at, updated_at, synced_at
-         )
-         VALUES (?, ?, ?, ?, ?, 1, ?, ?, NULL)
-         ON CONFLICT(owner_id, profile_id, language) DO UPDATE SET
-           theta = excluded.theta,
-           self_report_rank = excluded.self_report_rank,
-           event_count = MAX(profile_ability.event_count, 1),
-           seeded_at = excluded.seeded_at,
-           updated_at = excluded.updated_at,
-           synced_at = NULL`,
-        [scopedOwnerId, scopedProfileId, normalizedLanguage, seededTheta, rank, now, now],
-        () => resolve(seededTheta),
-        (_, error) => {
-          console.error('[Database] Error seeding ability from vocab grid:', error);
-          reject(error);
-        }
-      );
-    });
+  const state = await updateReaderLevel({ ownerId, profileId, language }, (before) => {
+    const next = seedState(before, { theta: seededTheta, variance, at: now });
+    // At least one event, so the cold-start prompt does not ask again.
+    next.eventCount = Math.max(before.eventCount, 1);
+    return {
+      state: next,
+      selfReportRank: rank,
+      seededAt: now,
+      logs: [{
+        signal,
+        thetaBefore: before.theta,
+        thetaAfter: next.theta,
+        varianceBefore: before.variance,
+        varianceAfter: next.variance,
+        details: { ...(details || {}), nearestRank: rank },
+        at: now,
+      }],
+    };
   });
+  return state ? state.theta : seededTheta;
 };
 
 /**
@@ -1317,20 +1561,21 @@ export const getWordDifficulties = (language, stems) => {
   return new Promise((resolve, reject) => {
     db.transaction(
       tx => {
-        // Accumulate the best (non-null) level_rank per stem across the cache's
-        // per-interface-language rows.
-        const rankByStem = {};
+        // Accumulate the first non-null value of each feature per stem across
+        // the cache's per-interface-language rows.
+        const byStem = {};
         chunkValues(requested).forEach((chunk) => {
           const placeholders = chunk.map(() => '?').join(', ');
           tx.executeSql(
-            `SELECT stem, level_rank FROM dictionary_cache
+            `SELECT stem, level_rank, difficulty_percentile, zipf, loanword FROM dictionary_cache
              WHERE language = ? AND stem IN (${placeholders})`,
             [normalizedLanguage, ...chunk],
             (_, result) => {
               (result.rows._array ?? []).forEach((row) => {
-                if (row.level_rank != null && rankByStem[row.stem] == null) {
-                  rankByStem[row.stem] = row.level_rank;
-                }
+                const cur = byStem[row.stem] || (byStem[row.stem] = {});
+                ['level_rank', 'difficulty_percentile', 'zipf', 'loanword'].forEach((key) => {
+                  if (cur[key] == null && row[key] != null) cur[key] = row[key];
+                });
               });
             }
           );
@@ -1343,11 +1588,25 @@ export const getWordDifficulties = (language, stems) => {
           () => {
             const difficulties = {};
             requested.forEach((stem) => {
-              const levelRank = rankByStem[stem] ?? null;
+              const row = byStem[stem] || {};
+              const levelRank = row.level_rank ?? null;
+              const resolved = wordDifficulty({
+                language: normalizedLanguage,
+                levelRank,
+                percentile: row.difficulty_percentile,
+                zipf: row.zipf,
+                loanword: row.loanword,
+              });
               difficulties[stem] = {
                 levelRank,
-                difficulty: difficultyFromLevelRank(normalizedLanguage, levelRank),
-                isFallback: levelRank == null,
+                difficulty: resolved.difficulty,
+                isFallback: !resolved.graded,
+                details: {
+                  levelRank,
+                  percentile: row.difficulty_percentile ?? null,
+                  zipf: row.zipf ?? null,
+                  loanword: resolved.parts.loanword || undefined,
+                },
               };
             });
             resolve(difficulties);
@@ -2478,6 +2737,8 @@ export const createDictionaryCacheTable = () => {
           level_source TEXT,
           difficulty_rank       INTEGER,
           difficulty_percentile REAL,
+          zipf         REAL,
+          loanword     INTEGER,
           last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           UNIQUE(language, stem, interface_language)
         )`,
@@ -2901,6 +3162,29 @@ export const migrateDictionaryCacheProficiencyLevels = async () => {
   });
 
   await AsyncStorage.setItem(DICTIONARY_CACHE_PROFICIENCY_MIGRATION_KEY, 'done');
+};
+
+// Level engine: how common each word is (Zipf) and the Korean loanword flag,
+// sent by preprocessing (backend word_features). Old rows stay null until the
+// book is preprocessed again (PREPROCESS_VERSION).
+export const migrateDictionaryCacheWordFeatures = async () => {
+  const columns = await getTableColumns('dictionary_cache');
+  const missing = [['zipf', 'REAL'], ['loanword', 'INTEGER']].filter(([column]) => !columns.includes(column));
+  if (missing.length === 0) return;
+  await new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        missing.forEach(([column, type]) => {
+          tx.executeSql(`ALTER TABLE dictionary_cache ADD COLUMN ${column} ${type}`);
+        });
+      },
+      (error) => {
+        console.error('[Database] Error adding dictionary_cache word features:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
 };
 
 // Phase 2 (continuous Korean difficulty): add the difficulty_rank / difficulty_percentile
@@ -4380,6 +4664,7 @@ export const initAllTables = async () => {
   await migrateInteractionEventsTable();
   await createProfileAbilityTable();
   await migrateProfileAbilityTable();
+  await createAbilityLogTable();
   await createWordScoresTable();
   await migrateWordScoresTable();
   await backfillVocabDefinitionKeys();
@@ -4394,6 +4679,7 @@ export const initAllTables = async () => {
   await migrateDictionaryCacheAudio();
   await migrateDictionaryCacheProficiencyLevels();
   await migrateDictionaryCacheDifficulty();
+  await migrateDictionaryCacheWordFeatures();
   await migrateDictionaryCacheRomanization();
   await migrateDictionaryCacheZhScripts();
   await migrateBookIndex();
@@ -5821,7 +6107,8 @@ export const recordReviewOutcome = (word, hanja, definition, _currentLevel, outc
     language,
     stem: wordData.stem ?? word,
     outcome: outcome === 'bad' ? 0 : 1,
-    learningRate: THETA_LEARNING_RATE,
+    signal: 'review',
+    sourceBookUri: options.sourceBookUri ?? null,
   }).catch((error) => {
     console.warn('[Database] Failed to update theta from review:', error);
   });
@@ -6119,8 +6406,8 @@ export const insertCacheEntries = (entries, scopeOrInterfaceLanguage = 'en', opt
           tx.executeSql(
             `INSERT INTO dictionary_cache
                (stem, language, interface_language, definition, gloss, hanja, pos, domain, romanization, ipa, simplified, traditional, audio_us, audio_uk, etymology, derived, related, word_parts,
-                level_rank, level_label, level_system, level_source, difficulty_rank, difficulty_percentile)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                level_rank, level_label, level_system, level_source, difficulty_rank, difficulty_percentile, zipf, loanword)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(stem, language, interface_language) DO UPDATE SET
                definition = COALESCE(excluded.definition, dictionary_cache.definition),
                gloss = COALESCE(excluded.gloss, dictionary_cache.gloss),
@@ -6143,6 +6430,8 @@ export const insertCacheEntries = (entries, scopeOrInterfaceLanguage = 'en', opt
                level_source = COALESCE(excluded.level_source, dictionary_cache.level_source),
                difficulty_rank = COALESCE(excluded.difficulty_rank, dictionary_cache.difficulty_rank),
                difficulty_percentile = COALESCE(excluded.difficulty_percentile, dictionary_cache.difficulty_percentile),
+               zipf = COALESCE(excluded.zipf, dictionary_cache.zipf),
+               loanword = COALESCE(excluded.loanword, dictionary_cache.loanword),
                last_updated = CURRENT_TIMESTAMP`,
             [
               stem,
@@ -6171,6 +6460,8 @@ export const insertCacheEntries = (entries, scopeOrInterfaceLanguage = 'en', opt
               levelMetadata.levelSource,
               levelMetadata.difficultyRank,
               levelMetadata.difficultyPercentile,
+              levelMetadata.zipf,
+              levelMetadata.loanword,
             ]
           );
         });
@@ -6445,6 +6736,8 @@ export const lookupBookLevelSurfaces = (
                 dc.stem,
                 dc.level_rank,
                 dc.difficulty_percentile,
+                dc.zipf,
+                dc.loanword,
                 dc.level_label,
                 dc.level_system,
                 dc.level_source,
@@ -6547,6 +6840,38 @@ export const lookupBookWordEvidence = (ownerId, bookUri, scopeOrInterfaceLanguag
         (_, result) => resolve(result.rows._array),
         (_, error) => {
           console.error('[Database] Error querying word evidence for book:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+/**
+ * lookupKnowledgeEvidence — the reader's signals for every word in a language,
+ * one row per (stem, event type, outcome, day), for the level engine's
+ * per-word knowledge (services/levelEngine.js buildWordKnowledge). All words,
+ * not only the book's: a Korean word family or a Chinese character shares
+ * knowledge with words outside the book.
+ */
+export const lookupKnowledgeEvidence = (ownerId, language = 'ko', options = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedProfileId = resolveProfileId(options.profileId ?? options.profile_id ?? null, normalizedLanguage);
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT stem, event_type, outcome, substr(created_at, 1, 10) AS day,
+                COUNT(*) AS n, MAX(created_at) AS last_at
+         FROM interaction_events
+         WHERE owner_id = ? AND profile_id = ? AND language = ?
+           AND deleted_at IS NULL AND stem IS NOT NULL
+           AND event_type IN ('lookup', 'exposure', 'review', 'check', 'save', 'unsave')
+         GROUP BY stem, event_type, outcome, day`,
+        [scopedOwnerId, scopedProfileId, normalizedLanguage],
+        (_, result) => resolve(result.rows._array ?? []),
+        (_, error) => {
+          console.error('[Database] Error querying knowledge evidence:', error);
           reject(error);
         }
       );

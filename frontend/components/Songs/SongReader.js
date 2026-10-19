@@ -177,6 +177,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     const recentLookupsRef = useRef(new Set());
     const savedSurfacesRef = useRef(new Set());
     const levelWeightsRef = useRef(new Map());
+    const levelStemsRef = useRef(new Map());
     const focusControlsTranslate = useRef(new Animated.Value(0)).current;
 
     // ── Lookup panel (shared with the book reader) ───────────────────────────
@@ -406,6 +407,10 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         () => new Map(levelUnderlineTerms.map(({ text, weight }) => [text, weight])),
         [levelUnderlineTerms]
     );
+    levelStemsRef.current = useMemo(
+        () => new Map(levelUnderlineTerms.filter((term) => term.stem).map(({ text, stem }) => [text, stem])),
+        [levelUnderlineTerms]
+    );
     const songHighlightSet = useMemo(() => new Set(
         readerHighlightTerms.map(normalizeForMatch).filter(Boolean)
     ), [readerHighlightTerms]);
@@ -461,7 +466,8 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         applyExposureBatch({
             ownerId: activeOwnerId,
             language: songLanguage,
-            stems: skipped,
+            // Credit the dictionary form, as the reader does.
+            stems: skipped.map((surface) => levelStemsRef.current.get(surface) || surface),
             sourceBookUri: songUri,
             dwellSeconds: Number(dwellMs) / 1000,
         }).catch((error) => {

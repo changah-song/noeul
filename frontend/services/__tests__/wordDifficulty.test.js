@@ -58,7 +58,7 @@ describe('getWordDifficulties', () => {
     const zh = await getWordDifficulties('zh', ['一']);
     const en = await getWordDifficulties('en', ['abandon']);
 
-    expect(ko['가격']).toEqual({
+    expect(ko['가격']).toMatchObject({
       levelRank: 1,
       difficulty: difficultyFromLevelRank('ko', 1),
       isFallback: false,
@@ -83,7 +83,7 @@ describe('getWordDifficulties', () => {
 
     // Every requested word is present, so callers never guess about gaps.
     expect(Object.keys(result).sort()).toEqual(['coined', 'known']);
-    expect(result.coined).toEqual({
+    expect(result.coined).toMatchObject({
       levelRank: null,
       difficulty: OOV_DIFFICULTY,
       isFallback: true,

@@ -13,7 +13,6 @@ import {
     updateThetaFromOutcome,
     vocabEntryExists,
 } from './Database';
-import { LOOKUP_LEARNING_RATE } from './abilityModel';
 import stemWord from './api/stemWord';
 import { getActiveOwnerId } from './localOwnerCoordinator';
 import {
@@ -518,16 +517,17 @@ export const resolveDictionaryLookup = async ({
             console.warn('[dictionaryLookup] Failed to log lookup interaction event:', error);
         });
 
-        // Phase 3.1: a lookup is a weak "probably didn't know it" signal — nudge theta
-        // down gently (outcome 0, reduced learning rate). Fire-and-forget; profile
-        // scope resolves to the runtime-active profile inside the helper. The helper
-        // self-skips words with no graded KB rank, so this only moves on real signal.
+        // A lookup is evidence the reader didn't know the word; how much it
+        // moves the level depends on how often this reader looks words up
+        // (services/levelEngine.js). Fire-and-forget; the helper skips words
+        // we know nothing about.
         updateThetaFromOutcome({
             ownerId,
             language: normalizedTargetLanguage,
             stem: resolvedStem,
-            outcome: 0,
-            learningRate: LOOKUP_LEARNING_RATE,
+            word: normalizedSurface,
+            signal: 'lookup',
+            sourceBookUri: currentBook ?? null,
         }).catch((error) => {
             console.warn('[dictionaryLookup] Failed to update theta from lookup:', error);
         });

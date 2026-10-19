@@ -49,7 +49,6 @@ import {
     insertData,
     logInteractionEvent,
     lookupBookHighlightSurfaces,
-    lookupBookLevelSurfaces,
     lookupBookAnnotationSurfaces,
     lookupCacheByStems,
     markBookPreprocessChapter,
@@ -58,7 +57,6 @@ import {
     recordVocabContextForSurface,
     scoreWordsForProfile,
     vocabEntryExists,
-    lookupBookWordEvidence,
 } from '../services/Database';
 import { deriveCandidateReason, pickExampleSentence } from '../services/wordCandidates';
 import { findActiveBookmark } from '../services/bookmarks';
@@ -92,10 +90,8 @@ import {
 } from '../constants/languages';
 import {
     exposureDwellIsPlausible,
-    lowestUnderlinedRank,
 } from '../services/abilityModel';
-import { buildLevelUnderlineTerms } from '../services/levelUnderlineTerms';
-import { summarizeEvidenceRows } from '../services/wordEvidence';
+import { loadLevelUnderlineTerms } from '../hooks/useLevelUnderlineTerms';
 import { ANNOTATION_SCOPES, annotationsBySurface, buildAnnotatedLevelTerms } from '../services/readerAnnotations';
 import { createNativeReaderThemeTokens, radii, spacing, textStyles, useTheme } from '../theme';
 
@@ -639,6 +635,7 @@ const Read = ({
     // Gradient weights of the current underline snapshot, keyed by surface. Used
     // to rank exposure candidates by how uncertain the model is about them.
     const levelUnderlineWeightsRef = useRef(new Map());
+    const levelUnderlineStemsRef = useRef(new Map());
     // Saved words are excluded from exposure: they're already in the SRS loop and
     // earn graded evidence in Learn, so crediting them again through a far noisier
     // channel would double-count them.
@@ -811,41 +808,13 @@ const Read = ({
 
         let isActive = true;
 
-        const loadLevelUnderlineTerms = async () => {
-            const ability = await getProfileAbility({
-                ownerId: activeOwnerId,
-                language: activeBookLanguage,
-            });
+        const loadTerms = () => loadLevelUnderlineTerms({
+            ownerId: activeOwnerId,
+            bookUri: currentBook,
+            language: activeBookLanguage,
+        });
 
-            // No behavioral history yet → start from a neutral ability estimate
-            // and let reading move it. (Level is no longer self-reported.)
-            let theta = Number(ability?.theta);
-            if (!Number.isFinite(theta)) {
-                theta = 0;
-            }
-
-            // Prune SQL-side to the bands that can actually earn an underline at
-            // this ability, so an easy book doesn't ship its whole vocabulary
-            // across the bridge just to be dropped here.
-            const floorRank = lowestUnderlinedRank(activeBookLanguage, theta);
-            if (floorRank == null) {
-                return [];
-            }
-
-            const [rows, evidenceRows] = await Promise.all([
-                lookupBookLevelSurfaces(activeOwnerId, currentBook, floorRank, {
-                    language: activeBookLanguage,
-                }),
-                // Phase 2: the reader's own history with these words.
-                lookupBookWordEvidence(activeOwnerId, currentBook, { language: activeBookLanguage })
-                    .catch(() => []),
-            ]);
-            return buildLevelUnderlineTerms(rows, activeBookLanguage, theta, {
-                evidence: summarizeEvidenceRows(evidenceRows),
-            });
-        };
-
-        loadLevelUnderlineTerms().then((terms) => {
+        loadTerms().then((terms) => {
             if (isActive) {
                 setLevelUnderlineTerms(terms);
             }
@@ -1505,6 +1474,10 @@ const Read = ({
     );
     levelUnderlineWeightsRef.current = useMemo(
         () => new Map(levelUnderlineTerms.map(({ text, weight }) => [text, weight])),
+        [levelUnderlineTerms]
+    );
+    levelUnderlineStemsRef.current = useMemo(
+        () => new Map(levelUnderlineTerms.filter((term) => term.stem).map(({ text, stem }) => [text, stem])),
         [levelUnderlineTerms]
     );
     const isReaderWaitingForHighlights = !!currentBook && !shouldUseHeuristicHighlights && !highlightTermsReady;
@@ -2621,6 +2594,11 @@ const Read = ({
         if (!currentBook || !Array.isArray(terms) || terms.length === 0) {
             return;
         }
+        // While listen mode reads aloud, the page moves at the voice's pace and
+        // nobody taps; not looking a word up says nothing.
+        if (listenPlayingRef.current) {
+            return;
+        }
         if (!exposureDwellIsPlausible(chars, dwellMs)) {
             return;
         }
@@ -2638,10 +2616,13 @@ const Read = ({
             return;
         }
 
+        // Credit the dictionary form (소문을 → 소문): the level engine and the
+        // event log match words by stem.
+        const stems = levelUnderlineStemsRef.current;
         applyExposureBatch({
             ownerId: activeOwnerId,
             language: activeBookLanguage,
-            stems: skipped,
+            stems: skipped.map((surface) => stems.get(surface) || surface),
             sourceBookUri: currentBook,
             dwellSeconds: Number(dwellMs) / 1000,
         }).catch((error) => {

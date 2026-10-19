@@ -15,7 +15,6 @@ import { useLocalOwner } from '../../contexts/LocalOwnerContext';
 import { useTranslation } from '../../hooks/useTranslation';
 import { fontFamilies, radii, spacing, useTheme } from '../../theme';
 import {
-    CALIBRATION_LEARNING_RATE,
     nearestRankForTheta,
     selectCalibrationWords,
 } from '../../services/calibrationQuiz';
@@ -77,8 +76,7 @@ const CalibrationQuizModal = ({ visible, onClose }) => {
                 stem: answered.word,
                 difficulty: answered.difficulty,
                 outcome,
-                learningRate: CALIBRATION_LEARNING_RATE,
-                anchor: false,
+                signal: 'check',
             }))
             .then((nextTheta) => {
                 if (Number.isFinite(Number(nextTheta))) {

@@ -1,41 +1,51 @@
 import { useEffect, useState } from 'react';
 import {
-    getProfileAbility,
+    getReaderLevel,
+    getWordDifficulties,
     lookupBookLevelSurfaces,
-    lookupBookWordEvidence,
+    lookupKnowledgeEvidence,
 } from '../services/Database';
-import { lowestUnderlinedRank } from '../services/abilityModel';
-import { buildLevelUnderlineTerms } from '../services/levelUnderlineTerms';
-import { summarizeEvidenceRows } from '../services/wordEvidence';
+import { buildWordKnowledge, signalsFromEvidenceRows } from '../services/levelEngine';
+import { buildLevelUnderlineTerms, rowDifficulty } from '../services/levelUnderlineTerms';
 
 /**
  * Load the graded-word underline snapshot for an indexed text (a book, or a
- * song via its `song:<id>` book_index URI). Same pipeline as Read.js: read
- * theta fresh, prune SQL-side to the ranks that can earn an underline, then
- * shade with buildLevelUnderlineTerms.
+ * song via its `song:<id>` book_index URI): the reader's level, their history
+ * with every word in the language (for word families and Chinese characters),
+ * and each word's difficulty, shaded with buildLevelUnderlineTerms.
  *
  * The snapshot only refreshes when `bookUri`, `language`, `ownerId` or
- * `refreshKey` change — theta moves on every lookup, and re-shading mid-read
- * would make words silently change color under the reader.
+ * `refreshKey` change — the level moves on every lookup, and re-shading
+ * mid-read would make words silently change color under the reader.
  */
 export const loadLevelUnderlineTerms = async ({ ownerId, bookUri, language }) => {
     if (!bookUri) {
         return [];
     }
-    const ability = await getProfileAbility({ ownerId, language });
-    let theta = Number(ability?.theta);
-    if (!Number.isFinite(theta)) {
-        theta = 0;
-    }
-    const floorRank = lowestUnderlinedRank(language, theta);
-    if (floorRank == null) {
-        return [];
-    }
-    const [rows, evidenceRows] = await Promise.all([
-        lookupBookLevelSurfaces(ownerId, bookUri, floorRank, { language }),
-        lookupBookWordEvidence(ownerId, bookUri, { language }).catch(() => []),
+    const [reader, rows, evidenceRows] = await Promise.all([
+        getReaderLevel({ ownerId, language }),
+        lookupBookLevelSurfaces(ownerId, bookUri, 1, { language }),
+        lookupKnowledgeEvidence(ownerId, language).catch(() => []),
     ]);
-    return buildLevelUnderlineTerms(rows, language, theta, { evidence: summarizeEvidenceRows(evidenceRows) });
+
+    const difficulties = new Map();
+    (rows || []).forEach((row) => {
+        const stem = typeof row?.stem === 'string' ? row.stem.trim() : '';
+        if (!stem) return;
+        const difficulty = rowDifficulty(row, language);
+        if (!difficulties.has(stem) || difficulty > difficulties.get(stem)) {
+            difficulties.set(stem, difficulty);
+        }
+    });
+    const { events, saved } = signalsFromEvidenceRows(evidenceRows);
+    const missing = Array.from(new Set(events.map((event) => event.stem))).filter((stem) => !difficulties.has(stem));
+    if (missing.length > 0) {
+        const extra = await getWordDifficulties(language, missing).catch(() => ({}));
+        Object.entries(extra).forEach(([stem, entry]) => difficulties.set(stem, entry.difficulty));
+    }
+
+    const knowledge = buildWordKnowledge({ language, reader, difficulties, events, saved });
+    return buildLevelUnderlineTerms(rows, language, reader.theta, { knowledge });
 };
 
 const useLevelUnderlineTerms = ({ ownerId, bookUri, language, refreshKey }) => {
