@@ -1,8 +1,10 @@
 import { exposureDwellIsPlausible } from './abilityModel';
 
-// Cap per exposure unit so dense typesetting can't move ability further than
-// sparse — a property of the layout, not of the reader. (Same value as Read.js.)
-export const EXPOSURE_MAX_PER_UNIT = 5;
+// Safety cap per exposure unit (a very dense page). Every underlined word read
+// past counts: the level engine learns the reader's lookup habit by comparing
+// lookups with words read past, so crediting only a few per page would make
+// the reader look like they tap far more than they do.
+export const EXPOSURE_MAX_PER_UNIT = 40;
 
 /**
  * selectExposureCredits — pick which graded words in a closed exposure unit (a
@@ -15,7 +17,7 @@ export const EXPOSURE_MAX_PER_UNIT = 5;
  *   3. saved words — already earning graded evidence through the SRS loop
  *
  * Survivors are ranked by how uncertain the model is about them (underline
- * weight nearest 0.5) and the top `max` are returned.
+ * weight nearest 0.5), so the cap, when it bites, keeps the informative ones.
  *
  * @returns {string[]} surfaces to credit (possibly empty)
  */
