@@ -76,7 +76,7 @@ const scopeOrDefault = (value, fallback) => (ANNOTATION_SCOPES.includes(value) ?
  *   scrolling tab body, each ending in a small "Reset to default"
  *
  *   Text  — font size, line spacing, brightness, reading direction
- *   Words — vocabulary marks (+ legend), fade read marks, pinyin (+ scope,
+ *   Words — vocabulary marks (+ legend), pinyin (+ scope,
  *           Chinese only), translation under words (+ scope)
  *   Focus — navigate (swipe / buttons), focus span
  *
@@ -208,7 +208,6 @@ const ReaderSettingsSheet = ({
         ? source.levelMarkStyle
         : DEFAULT_BOOK_READER_SETTINGS.levelMarkStyle;
     const levelMarksEnabled = levelMarkStyle !== 'off';
-    const fadeReadMarks = source.fadeReadMarks !== false;
     const levelMarkThreshold = Number.isFinite(Number(source.levelMarkThreshold))
         ? Math.min(1, Math.max(0, Number(source.levelMarkThreshold)))
         : 0;
@@ -223,7 +222,6 @@ const ReaderSettingsSheet = ({
     ));
     const focusSwipe = !!source.focusSwipe;
 
-    const showFade = features.fadeReadMarks !== false;
     const showGloss = features.glossAnnotations !== false;
     const showScopes = features.annotationScope !== false;
     const showPinyin = language === 'zh' && features.pinyinAnnotations !== false;
@@ -358,21 +356,6 @@ const ReaderSettingsSheet = ({
                 />
             ),
         }];
-        if (showFade && levelMarksEnabled) {
-            rows.push({
-                key: 'fade',
-                label: t('read.fadeReadMarks'),
-                control: (
-                    <ToggleSwitch
-                        styles={controlStyles}
-                        colors={colors}
-                        value={fadeReadMarks}
-                        onChange={(value) => onSettingChange('fadeReadMarks', value)}
-                        accessibilityLabel={t('read.fadeReadMarks')}
-                    />
-                ),
-            });
-        }
         if (showPinyin) {
             rows.push({
                 key: 'pinyin',

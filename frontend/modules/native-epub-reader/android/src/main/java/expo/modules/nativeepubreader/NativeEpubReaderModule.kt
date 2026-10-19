@@ -295,17 +295,15 @@ class NativeEpubReaderModule : Module() {
         view.setLevelTerms(terms)
       }
 
-      Prop("readThrough") { view: NativeEpubReaderView, positions: Map<String, Any?> ->
-        view.setReadThrough(positions)
+      // Level-underlined words the reader has tapped: [{ text, at }] with `at`
+      // the tap time in epoch ms. Their underline dissolves into dots and stays.
+      Prop("tappedTerms") { view: NativeEpubReaderView, terms: List<Any?> ->
+        view.setTappedTerms(terms)
       }
 
       // Listen mode keeps the screen on while the voice reads.
       Prop("keepScreenOn") { view: NativeEpubReaderView, enabled: Boolean ->
         view.keepScreenOn = enabled
-      }
-
-      Prop("fadeReadMarks") { view: NativeEpubReaderView, enabled: Boolean ->
-        view.setFadeReadMarks(enabled)
       }
 
       Prop("showGloss") { view: NativeEpubReaderView, enabled: Boolean ->
@@ -521,10 +519,6 @@ private const val CONTINUOUS_EDGE_PULL_THRESHOLD_DP = 56f
 // up to 47 ms after the last frame), and 80 ms is still far shorter than anyone
 // reacts, so a real tap on settled text is never mistaken for a catch.
 private const val FLING_STOP_WINDOW_MS = 80L
-// In scroll mode, lines above this fraction of the viewport height count as
-// read: the whole viewport, so text that scrolls into view dissolves while the
-// reader is looking at it.
-private const val READ_LINE_FRACTION = 1f
 
 // Space reserved between lines for annotation rows: pinyin sits above a line,
 // the gloss below it. Shared with EpubPageView, which draws into this space.
@@ -536,9 +530,9 @@ internal fun annotationSpacePx(bodyTextPx: Float, pinyin: Boolean, gloss: Boolea
 }
 
 internal const val PINYIN_ROW_SCALE = 0.9f
-// Read positions pack (block ordinal, offset in block) into one comparable Long.
-private const val READ_POSITION_SCALE = 1_000_000L
 internal const val GLOSS_ROW_SCALE = 0.85f
+// How long a tapped word's underline takes to dissolve into dots.
+private const val TAP_DISSOLVE_MS = 700f
 
 private class ContinuousReaderScrollView(context: Context) : ScrollView(context) {
   private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
@@ -790,13 +784,8 @@ class NativeEpubReaderView(
   // Whether short translations are drawn under annotated words.
   private var showGloss: Boolean = false
 
-  // Furthest point read per chapter (spine index -> position), where a position
-  // is blockOrdinal * READ_POSITION_SCALE + offset within the source block.
-  // Level underlines before it are drawn faded when fadeReadMarks is on.
-  private val readThroughBySpine = mutableMapOf<Int, Long>()
-  private var fadeReadMarks: Boolean = true
-  // Reading order of each source block, per spine: "spine|blockId" -> ordinal.
-  private var blockOrdinals: Map<String, Int> = emptyMap()
+  // Level-underlined words the reader has tapped -> tap time (epoch ms).
+  private var tappedTerms: Map<String, Long> = emptyMap()
   private var savedHighlightRangesByPage: Map<Int, List<TextRange>> = emptyMap()
   private var savedHighlightContextsByPage: Map<Int, List<Map<String, Any>>> = emptyMap()
   private var levelRangesByPage: Map<Int, List<TextRange>> = emptyMap()
@@ -915,7 +904,7 @@ class NativeEpubReaderView(
     }
     continuousScrollView.onScrollPositionChanged = { handleContinuousScrollChanged() }
     continuousScrollView.onEdgePull = { direction -> handleContinuousEdgePull(direction) }
-    continuousPageView.isRangeRead = ::isLevelRangeRead
+    continuousPageView.tapProgress = ::levelTapProgress
     continuousScrollView.addView(
       continuousPageView,
       FrameLayout.LayoutParams(
@@ -1252,71 +1241,26 @@ class NativeEpubReaderView(
     repaginate(resetToFirstPage = false)
   }
 
-  fun setReadThrough(positions: Map<String, Any?>) {
-    var changed = false
-    positions.forEach { (key, value) ->
-      val spine = key.toIntOrNull() ?: return@forEach
-      val position = (value as? Number)?.toLong() ?: return@forEach
-      if (position > (readThroughBySpine[spine] ?: -1L)) {
-        readThroughBySpine[spine] = position
-        changed = true
-      }
+  fun setTappedTerms(terms: List<Any?>) {
+    val next = mutableMapOf<String, Long>()
+    terms.forEach { item ->
+      val map = item as? Map<*, *>
+      val text = ((map?.get("text") ?: item) as? String)?.trim()?.takeIf { it.isNotEmpty() } ?: return@forEach
+      val at = (map?.get("at") as? Number)?.toLong() ?: 0L
+      next[text] = maxOf(next[text] ?: 0L, at)
     }
-    if (changed) invalidateVisiblePageHighlights()
-  }
-
-  fun setFadeReadMarks(enabled: Boolean) {
-    if (fadeReadMarks == enabled) return
-    fadeReadMarks = enabled
+    if (next == tappedTerms) return
+    tappedTerms = next
     invalidateVisiblePageHighlights()
   }
 
-  private fun rebuildBlockOrdinals(sourcePages: List<ReaderPage>) {
-    val next = mutableMapOf<String, Int>()
-    val counters = mutableMapOf<Int, Int>()
-    sourcePages.forEach { page ->
-      val spine = page.spineIndex ?: return@forEach
-      page.blocks.forEach { block ->
-        val key = "$spine|${block.blockId}"
-        if (!next.containsKey(key)) {
-          val ordinal = counters[spine] ?: 0
-          next[key] = ordinal
-          counters[spine] = ordinal + 1
-        }
-      }
-    }
-    blockOrdinals = next
-  }
-
-  private fun readPosition(spine: Int?, blockId: String, sourceOffset: Int): Long? {
-    if (spine == null) return null
-    val ordinal = blockOrdinals["$spine|$blockId"] ?: return null
-    return ordinal * READ_POSITION_SCALE + sourceOffset.coerceAtLeast(0)
-  }
-
-  private fun isLevelRangeRead(range: TextRange): Boolean {
-    if (!fadeReadMarks) return false
-    val spine = range.spineIndex ?: return false
-    val readThrough = readThroughBySpine[spine] ?: return false
-    val end = readPosition(spine, range.blockId, range.sourceEndOffset) ?: return false
-    return end <= readThrough
-  }
-
-  // The reader has reached `position` in `spine` (the start of the page, the
-  // topmost visible block, or the focused sentence). Everything before it
-  // counts as read. Returns the chapter's read-through position for the event.
-  private fun noteReadThrough(spine: Int?, position: Long?): Long? {
-    if (spine == null) return null
-    if (position != null && position > (readThroughBySpine[spine] ?: -1L)) {
-      readThroughBySpine[spine] = position
-      invalidateVisiblePageHighlights()
-    }
-    return readThroughBySpine[spine]
-  }
-
-  private fun addReadThrough(event: MutableMap<String, Any>, spine: Int?, position: Long?) {
-    val readThrough = noteReadThrough(spine, position) ?: return
-    event["readThrough"] = mapOf("spineIndex" to spine!!, "position" to readThrough.toDouble())
+  // How far a level underline has dissolved: 0 untapped, rising to 1 over
+  // TAP_DISSOLVE_MS after the tap, then staying dotted.
+  private fun levelTapProgress(range: TextRange): Float {
+    val term = range.term ?: return 0f
+    val at = tappedTerms[term] ?: return 0f
+    val elapsed = System.currentTimeMillis() - at
+    return (elapsed.toFloat() / TAP_DISSOLVE_MS).coerceIn(0f, 1f)
   }
 
   // Toggle short translations under annotated words. Repaginate so the line
@@ -1740,7 +1684,6 @@ class NativeEpubReaderView(
     savedHighlightRangesByPage = savedHighlights.rangesByPage
     savedHighlightContextsByPage = savedHighlights.contextsByPage
     savedTermsByPage = savedHighlights.termsByPage
-    rebuildBlockOrdinals(nextPages)
     val levelHighlights = buildHighlightRanges(
       nextPages,
       levelMatcher,
@@ -1817,7 +1760,7 @@ class NativeEpubReaderView(
         ::handlePageSelectionDragStateChanged,
         ::handlePageEdgeAction
       )
-      pageAdapter?.isRangeRead = ::isLevelRangeRead
+      pageAdapter?.tapProgress = ::levelTapProgress
       viewPager.adapter = pageAdapter
     } else {
       val canAnimateChapterTransition = (
@@ -2636,15 +2579,6 @@ class NativeEpubReaderView(
     (page?.spineIndex ?: bookManifest.intValue("currentSpineIndex"))?.let { spineIndex ->
       event["spineIndex"] = spineIndex
     }
-    if (page != null && sentence != null) {
-      val block = page.blocks.firstOrNull { it.blockId == sentence.blockId }
-      addReadThrough(
-        event,
-        page.spineIndex,
-        readPosition(page.spineIndex, sentence.blockId, (block?.sourceStartOffset ?: 0) + sentence.startOffset)
-      )
-    }
-
     onPageChange(event)
   }
 
@@ -2864,48 +2798,12 @@ class NativeEpubReaderView(
     (page.spineIndex ?: bookManifest.intValue("currentSpineIndex"))?.let { spineIndex ->
       event["spineIndex"] = spineIndex
     }
-    // Text that has scrolled into the top part of the viewport counts as read,
-    // so the reader sees the marks change while the lines are still on screen.
-    val readLineY = continuousScrollView.scrollY + (continuousScrollView.height * READ_LINE_FRACTION).roundToInt()
-    topVisibleTextPosition(page, readLineY)?.let { (block, localOffset) ->
-      addReadThrough(
-        event,
-        page.spineIndex,
-        readPosition(page.spineIndex, block.blockId, block.sourceStartOffset + localOffset)
-      )
-    }
-
     onPageChange(event)
   }
 
   // Topmost block still visible at the given scroll offset — the position
   // anchor for continuous mode, mirroring what the first block of a paged
   // page provides.
-  // The block at the top of the viewport and the offset of its first fully
-  // visible line, so read-through tracking in scroll mode works line by line
-  // even inside a long paragraph. Mirrors firstVisibleBlockId's walk.
-  private fun topVisibleTextPosition(page: ReaderPage, scrollY: Int): Pair<PageBlock, Int>? {
-    var yOffset = pagePaddingV
-    for (block in page.blocks) {
-      yOffset += block.marginTop
-      val layout = block.textLayout
-      val blockHeight = if (block.type == "image") block.imageHeight else layout?.height ?: 0
-      if (yOffset + blockHeight > scrollY) {
-        val localY = scrollY - yOffset
-        if (layout == null || localY <= 0) return block to 0
-        val line = layout.getLineForVertical(localY)
-        // The line straddling the top edge is only partly visible; count from
-        // the next one.
-        val firstFullLine = if (layout.getLineTop(line) < localY) line + 1 else line
-        if (firstFullLine >= layout.lineCount) return block to layout.text.length
-        return block to layout.getLineStart(firstFullLine)
-      }
-      yOffset += blockHeight
-      yOffset += block.marginBottom
-    }
-    return null
-  }
-
   private fun firstVisibleBlockId(page: ReaderPage, scrollY: Int): String {
     var yOffset = pagePaddingV
     for (block in page.blocks) {
@@ -3140,13 +3038,6 @@ class NativeEpubReaderView(
   }
 
   private fun handlePageWordSelected(hit: WordHit) {
-    // Tapping a word means the reader is there: it and everything before it
-    // count as read, so its mark and the ones above it settle into their
-    // read style while the reader watches.
-    noteReadThrough(
-      hit.range.spineIndex,
-      readPosition(hit.range.spineIndex, hit.range.blockId, hit.range.sourceEndOffset)
-    )
     activeSelectionRanges = listOf(hit.range)
     activeSelectionKind = ActiveSelectionKind.WORD
     pageAdapter?.updateActiveSelectionRanges(activeSelectionRanges, activeSelectionKind)
@@ -3430,7 +3321,8 @@ class NativeEpubReaderView(
                 levelReinforced = reinforcedForPriority?.invoke(match.priority) ?: false,
                 gloss = glossForPriority?.invoke(match.priority),
                 annotationOnly = annotationOnly,
-                strength = strengthForTerm?.invoke(match.term) ?: 1f
+                strength = strengthForTerm?.invoke(match.term) ?: 1f,
+                term = match.term
               )
             )
 
@@ -3870,18 +3762,6 @@ class NativeEpubReaderView(
 
     (page?.spineIndex ?: bookManifest.intValue("currentSpineIndex"))?.let { spineIndex ->
       event["spineIndex"] = spineIndex
-    }
-    // Landing on a page counts its text as read: the marks on it dissolve in
-    // front of the reader (after a short delay, see EpubPageView.readProgress)
-    // rather than once the page has been left.
-    page?.blocks?.lastOrNull { it.type == "text" }?.let { last ->
-      // A page slice of a long paragraph keeps its text in styledText only.
-      val sliceLength = last.plainText.ifEmpty { last.styledText?.toString() ?: "" }.length
-      addReadThrough(
-        event,
-        page.spineIndex,
-        readPosition(page.spineIndex, last.blockId, last.sourceStartOffset + sliceLength)
-      )
     }
 
     onPageChange(event)

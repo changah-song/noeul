@@ -125,10 +125,9 @@ const NativeEpubReaderView = forwardRef(({
     levelTerms = [],
     showPinyin = false,
     showGloss = false,
-    // { [spineIndex]: position } — furthest point read per chapter, restored on
-    // open. Underlines before it are drawn faded while fadeReadMarks is on.
-    readThrough = null,
-    fadeReadMarks = true,
+    // [{ text, at }] — underlined words the reader tapped (at = tap time, epoch
+    // ms). Their underline dissolves into dots and stays that way.
+    tappedTerms = null,
     // Keep the screen on (listen mode).
     keepScreenOn = false,
     clearSelectionToken = 0,
@@ -181,6 +180,10 @@ const NativeEpubReaderView = forwardRef(({
         });
         return out;
     }, [isKorean, highlightStrengths]);
+    const nativeTappedTerms = useMemo(
+        () => (isKorean ? joinKoreanInTerms(tappedTerms || []) : (tappedTerms || [])),
+        [isKorean, tappedTerms]
+    );
     const nativeLevelTerms = useMemo(
         () => (isKorean ? joinKoreanInTerms(levelTerms || []) : (levelTerms || [])),
         [isKorean, levelTerms]
@@ -255,8 +258,7 @@ const NativeEpubReaderView = forwardRef(({
             levelTerms={nativeLevelTerms}
             showPinyin={!!showPinyin}
             showGloss={!!showGloss}
-            readThrough={readThrough || {}}
-            fadeReadMarks={fadeReadMarks !== false}
+            tappedTerms={nativeTappedTerms}
             keepScreenOn={!!keepScreenOn}
             clearSelectionToken={clearSelectionToken}
             focusSentenceCount={focusSentenceCount}

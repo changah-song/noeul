@@ -77,7 +77,10 @@ data class TextRange(
   val annotationOnly: Boolean = false,
   // Saved highlights only: how strongly the box is drawn, 1 = full, fading to
   // 0 as the reader keeps passing the word without looking it up.
-  val strength: Float = 1f
+  val strength: Float = 1f,
+  // The matched term's text (saved and level ranges), so per-word state such
+  // as a tapped underline can be looked up.
+  val term: String? = null
 )
 
 // A focused sentence span in focus (sentence beam) mode. Offsets are local to

@@ -36,6 +36,7 @@ import {
     getBookBookmarks,
     getBookNotes,
     getBookPreprocessChapter,
+    getBookLookupWords,
     getBookSavedWords,
     getBookWordCandidates,
     getCachedPKnown,
@@ -136,8 +137,6 @@ const DEFAULT_READER_SETTINGS = {
     // 'all' (every word in the book), chosen separately for each.
     pinyinScope: 'underlined',
     glossScope: 'underlined',
-    // Draw underlines on text already read past lighter than the ones ahead.
-    fadeReadMarks: true,
 };
 const READING_MODES = ['paged', 'scroll'];
 
@@ -502,6 +501,9 @@ const Read = ({
     // counter that reloads the saved words when some become learned.
     const [highlightSurfaceWords, setHighlightSurfaceWords] = useState(() => new Map());
     const [savedWordsVersion, setSavedWordsVersion] = useState(0);
+    // Underlined words tapped in this book ([{ text, at }]): their underline
+    // turns dotted. Earlier lookups load settled (at 0); a new tap animates.
+    const [tappedTerms, setTappedTerms] = useState([]);
     const [highlightTerms, setHighlightTerms] = useState(null);
     const [optimisticHighlightTerms, setOptimisticHighlightTerms] = useState([]);
     const [levelUnderlineTerms, setLevelUnderlineTerms] = useState([]);
@@ -722,6 +724,19 @@ const Read = ({
     useEffect(() => {
         refreshBookSavedWords();
     }, [refreshBookSavedWords]);
+
+    useEffect(() => {
+        let active = true;
+        setTappedTerms([]);
+        getBookLookupWords({ ownerId: activeOwnerId, language: activeBookLanguage, bookUri: currentBook })
+            .then((words) => {
+                if (active) setTappedTerms(words.map((text) => ({ text, at: 0 })));
+            })
+            .catch(() => {});
+        return () => {
+            active = false;
+        };
+    }, [activeOwnerId, activeBookLanguage, currentBook]);
 
     // Saved words fade as the reader passes them without a lookup; once one
     // fades out it is learned and leaves the highlights and the saved lists.
@@ -1023,6 +1038,10 @@ const Read = ({
         // Looking a word up is its own (much stronger) evidence, so this word must
         // not also be credited as a skip when the current exposure unit closes.
         recentLookupsRef.current.add(text);
+        // Its underline dissolves into dots in front of the reader and stays.
+        setTappedTerms((previous) => (
+            previous.some((term) => term.text === text) ? previous : [...previous, { text, at: Date.now() }]
+        ));
         // Looking a saved word up again brings its faded highlight back.
         if (savedSurfacesRef.current.has(text)) {
             onSavedWordLookedUp(highlightSurfaceWordsRef.current.get(text) || text);
@@ -1374,7 +1393,6 @@ const Read = ({
 
     const resetWordSettings = () => {
         updateSettings({
-            fadeReadMarks: DEFAULT_READER_SETTINGS.fadeReadMarks,
             pinyinAnnotations: DEFAULT_READER_SETTINGS.pinyinAnnotations,
             glossAnnotations: DEFAULT_READER_SETTINGS.glossAnnotations,
             pinyinScope: DEFAULT_READER_SETTINGS.pinyinScope,
@@ -2663,7 +2681,7 @@ const Read = ({
         });
     }, [activeOwnerId, activeBookLanguage, currentBook, onSavedWordsPassed]);
 
-    const processNativePageChange = useCallback(({ page, total, spineIndex, href, firstBlockId, savedHighlights, readThrough } = {}) => {
+    const processNativePageChange = useCallback(({ page, total, spineIndex, href, firstBlockId, savedHighlights } = {}) => {
         if (bookCompletionInProgressRef.current) {
             return;
         }
@@ -2761,9 +2779,6 @@ const Read = ({
             location: nextPosition.href || null,
             progress: nextProgress ?? clampProgress(activeBook?.progress ?? 0),
         };
-        // Furthest point read per chapter (for faded marks), kept on the book.
-        const readSpine = Number.isInteger(readThrough?.spineIndex) ? String(readThrough.spineIndex) : null;
-        const readPosition = Number(readThrough?.position);
 
         if (activeBook?.cloudId) {
             scheduleCloudProgressSync({
@@ -2789,20 +2804,13 @@ const Read = ({
                     && previousPosition.firstBlockId === nextPosition.firstBlockId
                     && book.progress === nextBookPatch.progress
                 );
-                const previousRead = readSpine ? Number(book.readThrough?.[readSpine] ?? -1) : -1;
-                const readAdvanced = readSpine != null
-                    && Number.isFinite(readPosition)
-                    && readPosition > previousRead;
-                if (isUnchanged && !readAdvanced) {
+                if (isUnchanged) {
                     return book;
                 }
                 changed = true;
                 return {
                     ...book,
                     ...nextBookPatch,
-                    ...(readAdvanced
-                        ? { readThrough: { ...(book.readThrough || {}), [readSpine]: readPosition } }
-                        : {}),
                 };
             });
             // Same array when nothing moved, so the whole app doesn't re-render.
@@ -3847,9 +3855,8 @@ const Read = ({
                         levelTerms={readerLevelTerms}
                         showPinyin={readerShowPinyin}
                         showGloss={readerShowGloss}
-                        readThrough={activeBook?.readThrough}
+                        tappedTerms={tappedTerms}
                         keepScreenOn={listenPlaying}
-                        fadeReadMarks={settings.fadeReadMarks !== false}
                         clearSelectionToken={clearSelectionToken}
                         focusSentenceCount={focusSpan}
                         focusSwipeEnabled={focusSwipe}

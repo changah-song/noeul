@@ -51,6 +51,7 @@ jest.mock('../../services/Database', () => ({
   getReaderLevel: jest.fn(() => Promise.resolve({ theta: -2, variance: 0.3, lookupRate: 0.5, guessRate: 0.05 })),
   lookupKnowledgeEvidence: jest.fn(() => Promise.resolve([])),
   getSavedWordFades: jest.fn(() => Promise.resolve(new Map())),
+  getBookLookupWords: jest.fn(() => Promise.resolve([])),
   recordSavedWordSightings: jest.fn(() => Promise.resolve({ faded: new Map(), learned: [] })),
   resetSavedWordFade: jest.fn(() => Promise.resolve(0)),
   getWordDifficulties: jest.fn(() => Promise.resolve({})),
