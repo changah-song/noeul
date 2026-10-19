@@ -52,6 +52,7 @@ import {
   upsertUserPreferences,
 } from '../services/preferencesCloudSync';
 import { upsertUserProfile } from '../services/profilesCloudSync';
+import { requestUserDataSync } from '../services/userDataSyncQueue';
 import { ThemeProvider } from '../theme/tokens';
 
 const AppContext = createContext({
@@ -560,6 +561,16 @@ export const AppProvider = ({ children, user }) => {
       console.warn('[AppContext] Failed to merge cloud language preferences:', error?.message ?? error);
     });
   }, [activeOwnerId, languageSettingsReady, syncGeneration, syncLanguagePreferences, syncPaused, user]);
+
+  // User-data sync files pulled cloud words under the active profile and skips
+  // until it is loaded, so sync once it is known and again for each new profile.
+  useEffect(() => {
+    if (!languageSettingsReady) {
+      return;
+    }
+
+    requestUserDataSync('active-profile-changed');
+  }, [languageSettingsReady, languageSettings.activeProfileId]);
 
   // Cold start: give the active profile a neutral, non-null ability row so
   // scoring and reader underlines have a theta to move. Level is no longer
