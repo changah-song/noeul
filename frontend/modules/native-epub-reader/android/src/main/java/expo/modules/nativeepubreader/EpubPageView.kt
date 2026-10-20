@@ -102,15 +102,8 @@ private data class SelectionHighlightVerticalMetrics(
   val bottom: Float
 )
 
-// How a fading saved-word box loses its pixels (6 steps, see savedWordFade.js):
-//   HALFTONE_INVERT  an even ordered-dither pattern in full ink; the word is
-//                    light on the pixels that remain and dark in the gaps
-//   HALFTONE_LIGHT   the same pattern in a soft tint; the word stays dark ink
-//   CRUMBLE          pixels break off from the box's edges inwards; light text
-//                    on what remains
-private enum class SavedFadeStyle { HALFTONE_INVERT, HALFTONE_LIGHT, CRUMBLE }
-private val SAVED_FADE_STYLE = SavedFadeStyle.HALFTONE_INVERT
-// HALFTONE_LIGHT: the pixels' opacity, so dark ink reads on top of them.
+// A fading saved-word box (6 steps, see savedWordFade.js) is an even halftone
+// of pixels in a soft tint, so the word, now in normal dark ink, reads on top.
 private const val FADING_BOX_LIGHT_ALPHA = 0.32f
 // 4x4 Bayer matrix: the order cells leave in, spread evenly over the box.
 private val BAYER_4 = intArrayOf(0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5)
@@ -143,9 +136,6 @@ class EpubPageView(context: Context) : View(context) {
   // A saved box still losing pixels after a fade step: (strength it is
   // leaving, progress 0..1). Null once settled. Set by the owner.
   var savedFade: ((TextRange) -> Pair<Float, Float>?)? = null
-  // This frame's remaining pixels of each pixelated saved box, so the word can
-  // be drawn light on exactly those pixels.
-  private val savedPixelClips = HashMap<TextRange, Path>()
   private var activeHighlightColor = themePalette.activeHighlightColor
   private var textSelectionHighlightColor = themePalette.textSelectionHighlightColor
   private var savedHighlightColor = themePalette.savedHighlightColor
@@ -354,7 +344,6 @@ class EpubPageView(context: Context) : View(context) {
   override fun onDraw(canvas: Canvas) {
     marqueeTickScheduled = false
     readAnimationPending = false
-    savedPixelClips.clear()
     canvas.drawColor(pageBackgroundColor)
     val contentWidth = width - (paddingH * 2)
     if (contentWidth <= 0) return
@@ -1949,8 +1938,7 @@ class EpubPageView(context: Context) : View(context) {
             paint = paint,
             pixelKeep = strength,
             pixelFrom = fade?.first ?: strength,
-            pixelProgress = fade?.second ?: 1f,
-            pixelRange = range
+            pixelProgress = fade?.second ?: 1f
           )
         }
         return@forEach
@@ -2004,8 +1992,7 @@ class EpubPageView(context: Context) : View(context) {
     // and while a step is animating, the share it is leaving and how far.
     pixelKeep: Float = 1f,
     pixelFrom: Float = pixelKeep,
-    pixelProgress: Float = 1f,
-    pixelRange: TextRange? = null
+    pixelProgress: Float = 1f
   ) {
     val text = blockTextForSelection(block)
     val safeStart = localStart.coerceIn(0, textLength)
@@ -2063,8 +2050,7 @@ class EpubPageView(context: Context) : View(context) {
 
       selectionLineRect.set(left, top, right, bottom)
       if (pixelKeep < 1f || pixelFrom > pixelKeep) {
-        val clip = pixelRange?.let { savedPixelClips.getOrPut(it) { Path() } }
-        drawPixelBox(canvas, selectionLineRect, cornerRadius, paint, pixelKeep, pixelFrom, pixelProgress, clip)
+        drawPixelBox(canvas, selectionLineRect, cornerRadius, paint, pixelKeep, pixelFrom, pixelProgress)
       } else {
         canvas.drawRoundRect(selectionLineRect, cornerRadius, cornerRadius, paint)
       }
@@ -2072,10 +2058,9 @@ class EpubPageView(context: Context) : View(context) {
   }
 
   // The box as a grid of pixels inside its rounded outline, keeping the
-  // `keep` share of them in the order SAVED_FADE_STYLE gives. While a step
-  // animates (progress < 1), each pixel between `keep` and `from` leaves at
-  // its own moment, so the reader sees them go one by one. Remaining pixels
-  // are added to `clip` for the light text drawn on them.
+  // `keep` share of them in ordered-dither order. While a step animates
+  // (progress < 1), each pixel between `keep` and `from` leaves at its own
+  // moment, so the reader sees them go one by one.
   private fun drawPixelBox(
     canvas: Canvas,
     rect: RectF,
@@ -2083,13 +2068,10 @@ class EpubPageView(context: Context) : View(context) {
     paint: Paint,
     keep: Float,
     from: Float,
-    progress: Float,
-    clip: Path?
+    progress: Float
   ) {
     pixelPaint.color = paint.color
-    if (SAVED_FADE_STYLE == SavedFadeStyle.HALFTONE_LIGHT) {
-      pixelPaint.alpha = (paint.alpha * FADING_BOX_LIGHT_ALPHA).roundToInt()
-    }
+    pixelPaint.alpha = (paint.alpha * FADING_BOX_LIGHT_ALPHA).roundToInt()
     highlightPath.reset()
     highlightPath.addRoundRect(rect, radius, radius, Path.Direction.CW)
     val save = canvas.save()
@@ -2099,33 +2081,22 @@ class EpubPageView(context: Context) : View(context) {
     val lastX = ceil(rect.right / cell).toInt()
     val firstY = floor(rect.top / cell).toInt()
     val lastY = ceil(rect.bottom / cell).toInt()
-    val cols = lastX - firstX
-    val rows = lastY - firstY
     for (iy in firstY until lastY) {
       for (ix in firstX until lastX) {
-        val order = pixelLeaveOrder(ix - firstX, iy - firstY, cols, rows, ix, iy)
+        val order = pixelLeaveOrder(ix, iy)
         val kept = order < keep || (order < from && progress < pixelHash(iy, ix) * 0.85f)
         if (!kept) continue
         pixelRect.set(ix * cell.toFloat(), iy * cell.toFloat(), (ix + 1) * cell.toFloat(), (iy + 1) * cell.toFloat())
         canvas.drawRect(pixelRect, pixelPaint)
-        clip?.addRect(pixelRect, Path.Direction.CW)
       }
     }
     canvas.restoreToCount(save)
   }
 
   // Where a cell falls in the box's leaving order, 0..1: cells at or above
-  // the box's strength are gone. (x, y) are relative to the box's grid.
-  private fun pixelLeaveOrder(x: Int, y: Int, cols: Int, rows: Int, ix: Int, iy: Int): Float {
-    if (SAVED_FADE_STYLE == SavedFadeStyle.CRUMBLE) {
-      // Edges first: how deep inside the box the cell sits, with a little
-      // noise so the edge breaks up raggedly rather than shrinking evenly.
-      val edgeX = min(x, cols - 1 - x) / (cols / 2f).coerceAtLeast(1f)
-      val edgeY = min(y, rows - 1 - y) / (rows / 2f).coerceAtLeast(1f)
-      val depth = min(min(edgeX * 1.4f, edgeY), 1f)
-      return 1f - (depth * 0.7f + pixelHash(ix, iy) * 0.3f)
-    }
-    // Ordered dither on the page's own grid, so neighbouring boxes line up.
+  // the box's strength are gone. Ordered dither on the page's own grid, so
+  // neighbouring boxes line up.
+  private fun pixelLeaveOrder(ix: Int, iy: Int): Float {
     val bx = ((ix % 4) + 4) % 4
     val by = ((iy % 4) + 4) % 4
     return (BAYER_4[by * 4 + bx] + 0.5f) / 16f
@@ -2157,15 +2128,9 @@ class EpubPageView(context: Context) : View(context) {
       ) {
         return@forEach
       }
-      // A full box carries light text. Once it breaks into pixels the word is
-      // read in the body ink drawn underneath, light only on the pixels that
-      // remain (HALFTONE_LIGHT: dark throughout).
-      val pixelClip = savedPixelClips[range]
-      if (pixelClip != null) {
-        if (SAVED_FADE_STYLE == SavedFadeStyle.HALFTONE_LIGHT) return@forEach
-      } else if (range.strength < 1f) {
-        return@forEach
-      }
+      // Light text only on a full box; once it breaks into pixels (or is
+      // animating its first step) the word is read in the body ink underneath.
+      if (range.strength < 1f || savedFade?.invoke(range) != null) return@forEach
       textPaint.alpha = lightTextAlpha
       if (textPaint.alpha == 0) return@forEach
 
@@ -2194,14 +2159,7 @@ class EpubPageView(context: Context) : View(context) {
 
         val x = layout.getPrimaryHorizontal(lineStart)
         val baseline = layout.getLineBaseline(line).toFloat()
-        if (pixelClip != null) {
-          val save = canvas.save()
-          canvas.clipPath(pixelClip)
-          canvas.drawText(text, lineStart, lineEnd, x, baseline, textPaint)
-          canvas.restoreToCount(save)
-        } else {
-          canvas.drawText(text, lineStart, lineEnd, x, baseline, textPaint)
-        }
+        canvas.drawText(text, lineStart, lineEnd, x, baseline, textPaint)
       }
     }
   }
