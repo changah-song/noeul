@@ -10,25 +10,21 @@ import {
     getInterfaceLanguageLabel,
     getLanguageLabel,
 } from '../../../constants/languages';
-import { fontFamilies, spacing, useTheme } from '../../../theme';
+import { fontFamilies, useTheme } from '../../../theme';
 import TranslationContent from './TranslationContent';
 import DictionaryContent from './DictionaryContent';
 
-const DICTIONARY_COMPACT_HEIGHT = 252;
-const DICTIONARY_NO_ROOT_HEIGHT = 215;
-// Chinese has no related-roots handle, but it does pack multiple readings + numbered
-// senses inline, so it gets a taller compact ceiling to show them at a glance.
-const DICTIONARY_ZH_HEIGHT = 316;
-const DICTIONARY_TRANSLATION_HEIGHT = 332;
-const DICTIONARY_EXPLAIN_HEIGHT = 360;
+// The word panel hugs its content; these are only ceilings. Past them the
+// panel body scrolls inside DictionaryContent while the action row stays put.
+const DICTIONARY_MAX_HEIGHT = 380;
+// Chinese packs several readings + numbered senses inline, so it gets more room.
+const DICTIONARY_ZH_MAX_HEIGHT = 430;
+const DICTIONARY_EXPLAIN_MAX_HEIGHT = 470;
 const DICTIONARY_EXPANDED_MAX_HEIGHT = 548;
-const DICTIONARY_EXTRA_ROW_HEIGHT = 52;
 const TRANSLATION_MAX_SCROLL_HEIGHT = 150;
-const TRANSLATION_PANEL_BOTTOM_PADDING = 22;
+const DICTIONARY_BOTTOM_PADDING = 26;
 const TOP_PLACEMENT_DICTIONARY_TOP_PADDING = 22;
-const TOP_PLACEMENT_DICTIONARY_BOTTOM_PADDING = 8;
-const TOP_PLACEMENT_TRANSLATION_TOP_PADDING = 22;
-const TOP_PLACEMENT_TRANSLATION_BOTTOM_PADDING = 10;
+const TOP_PLACEMENT_DICTIONARY_BOTTOM_PADDING = 4;
 
 const TopSection = ({
     onExtendSelection,
@@ -45,13 +41,14 @@ const TopSection = ({
     sourceBook,
     savedWords,
     translationVisualState = {},
+    // The reader has no tab bar: a bottom panel pads its own way past the
+    // system gesture bar.
+    bottomInset = 0,
 }) => {
     const { t } = useTranslation();
     const { colors: themeColors } = useTheme();
     const styles = useMemo(() => createStyles(themeColors), [themeColors]);
     const { interfaceLanguage, targetLanguage: activeTargetLanguage } = useAppContext();
-    const [dictionaryExpandedRows, setDictionaryExpandedRows] = useState(0);
-    const [dictionaryContentHeight, setDictionaryContentHeight] = useState(0);
     const [visibleWord, setVisibleWord] = useState('');
     // The mode the panel was showing, kept through the fade-out so a closing
     // translation doesn't flip to (and mount) the dictionary for its last frames.
@@ -111,8 +108,6 @@ const TopSection = ({
     useEffect(() => {
         if (highlightedWord && highlightedWord !== prevWordRef.current) {
             prevWordRef.current = highlightedWord;
-            setDictionaryExpandedRows(0);
-            setDictionaryContentHeight(0);
             setTranslationTarget('');
             setIsLookupExpanded(false);
             setIsExplainMode(false);
@@ -183,15 +178,17 @@ const TopSection = ({
         }
     }, [highlightedWord, isNativeSelection]);
 
-    const handleDictionaryExpandedStateChange = useCallback((rowCount) => {
-        const nextRowCount = Number.isFinite(rowCount) ? rowCount : 0;
-        setDictionaryExpandedRows((previousRowCount) => {
-            if (previousRowCount !== nextRowCount) {
-                setDictionaryContentHeight(0);
-            }
+    // Tapping a hanja character (or the grabber) opens the roots section.
+    const handleRequestExpand = useCallback(() => {
+        if (canExpandLookupRef.current) {
+            setIsLookupExpanded(true);
+        }
+    }, []);
 
-            return nextRowCount;
-        });
+    const toggleLookupExpanded = useCallback(() => {
+        if (canExpandLookupRef.current) {
+            setIsLookupExpanded((previous) => !previous);
+        }
     }, []);
 
     const handleTranslationStatusChange = useCallback((nextStatus) => {
@@ -230,43 +227,17 @@ const TopSection = ({
         closeIcon: themeColors.readerSubtleInk,
     };
 
-    const isDictionaryTranslationSheet = dictionaryExpandedRows === -1;
-    const expandedFallbackHeight = DICTIONARY_COMPACT_HEIGHT + (Math.max(dictionaryExpandedRows, 0) * DICTIONARY_EXTRA_ROW_HEIGHT);
-    const expandedContentHeight = dictionaryContentHeight > 0
-        ? Math.ceil(dictionaryContentHeight)
-        : expandedFallbackHeight;
-    const isDictionarySheetTall = isLookupExpanded || dictionaryExpandedRows > 0;
-    // Compact sheets hug their measured content so a short (one-line) definition
-    // doesn't leave dead space above the action buttons. The definition itself is
-    // capped at two rows and scrolls inside DictionaryContent, so the measured
-    // content never grows past the fixed ceiling below. `compactChrome` is the
-    // non-scrolling height around the definition (handle + action row + padding),
-    // which varies with placement and whether the roots handle is shown.
     const dictionaryBookLanguage = normalizeBookLanguage(
         sourceBook?.language ?? activeTargetLanguage ?? 'ko'
     );
     const isChineseDictionarySheet = dictionaryBookLanguage === 'zh';
-    const compactCeiling = isChineseDictionarySheet
-        ? DICTIONARY_ZH_HEIGHT
-        : (canExpandLookup ? DICTIONARY_COMPACT_HEIGHT : DICTIONARY_NO_ROOT_HEIGHT);
-    const compactChrome = isTopPlacement
-        ? (canExpandLookup ? 124 : 104)
-        : (canExpandLookup ? 132 : 112);
-    const compactHeight = dictionaryContentHeight > 0
-        ? Math.min(compactCeiling, Math.ceil(dictionaryContentHeight) + compactChrome)
-        : compactCeiling;
-    const dictionaryHeight = isDictionaryTranslationSheet
-        ? DICTIONARY_TRANSLATION_HEIGHT
-        : isExplainMode
-        // Smart-definition mode uses a fixed, modest height; the body ScrollView
-        // scrolls when the explanation is long, so we never leave dead space.
-        ? DICTIONARY_EXPLAIN_HEIGHT
-        : isDictionarySheetTall
-        ? Math.min(
-            DICTIONARY_EXPANDED_MAX_HEIGHT,
-            Math.max(DICTIONARY_EXPANDED_MAX_HEIGHT, expandedContentHeight)
-        )
-        : compactHeight;
+    // The panel sizes itself to its content (no fixed heights, so a one-line
+    // definition never leaves blank space); each mode only sets a ceiling.
+    const dictionaryMaxHeight = isExplainMode
+        ? DICTIONARY_EXPLAIN_MAX_HEIGHT
+        : isLookupExpanded
+        ? DICTIONARY_EXPANDED_MAX_HEIGHT
+        : (isChineseDictionarySheet ? DICTIONARY_ZH_MAX_HEIGHT : DICTIONARY_MAX_HEIGHT);
     const translationText = translationTarget || visibleWord;
     const translationSourceLanguage = dictionaryBookLanguage;
     const translationTargetLanguage = normalizeInterfaceLanguageCode(interfaceLanguage);
@@ -275,12 +246,11 @@ const TopSection = ({
     // English for any code (like 'ko') that isn't a supported UI language.
     const translationSourceLabel = getLanguageLabel(translationSourceLanguage);
     const translationTargetLabel = getInterfaceLanguageLabel(translationTargetLanguage);
-    const sheetSizeStyle = isTranslationMode
-        ? styles.sheetTranslation
-        : { height: dictionaryHeight };
+    const bottomPanelInset = !isTopPlacement && !isTranslationMode ? bottomInset : 0;
+    const sheetSizeStyle = isTranslationMode ? null : { maxHeight: dictionaryMaxHeight + bottomPanelInset };
     const sheetBottomPadding = isTranslationMode
-        ? (isTopPlacement ? TOP_PLACEMENT_TRANSLATION_BOTTOM_PADDING : TRANSLATION_PANEL_BOTTOM_PADDING)
-        : (isTopPlacement ? TOP_PLACEMENT_DICTIONARY_BOTTOM_PADDING : 26);
+        ? 14
+        : (isTopPlacement ? TOP_PLACEMENT_DICTIONARY_BOTTOM_PADDING : DICTIONARY_BOTTOM_PADDING + bottomPanelInset);
     const forceTranslationLoading = Boolean(translationVisualState.loading);
     const forceTranslationError = Boolean(translationVisualState.error);
     const forceTranslationCopied = Boolean(translationVisualState.copied);
@@ -312,6 +282,56 @@ const TopSection = ({
         }
     };
 
+    const renderGrabber = (position) => {
+        const wrapStyle = position === 'bottom' ? styles.grabberWrapBottom : styles.grabberWrap;
+        if (!canExpandLookup) {
+            return (
+                <View style={wrapStyle}>
+                    <View style={styles.grabber} />
+                </View>
+            );
+        }
+
+        const grabberLabel = isChineseDictionarySheet
+            ? t(isLookupExpanded ? 'lookup.hideCharacters' : 'lookup.showCharacters')
+            : t(isLookupExpanded ? 'lookup.hideRoots' : 'lookup.showRoots');
+
+        return (
+            <View {...panResponder.panHandlers}>
+                <TouchableOpacity
+                    accessibilityRole="button"
+                    accessibilityLabel={grabberLabel}
+                    accessibilityState={{ expanded: isLookupExpanded }}
+                    activeOpacity={0.6}
+                    onPress={toggleLookupExpanded}
+                    style={wrapStyle}
+                >
+                    <View style={styles.grabber} />
+                </TouchableOpacity>
+            </View>
+        );
+    };
+
+    const renderIconButton = ({ icon, label, onPress, disabled = false, color }) => (
+        <TouchableOpacity
+            key={icon}
+            accessibilityRole="button"
+            accessibilityLabel={label}
+            accessibilityState={{ disabled }}
+            activeOpacity={0.6}
+            disabled={disabled}
+            onPress={onPress}
+            hitSlop={{ top: 5, bottom: 5, left: 2, right: 2 }}
+            style={[styles.iconButton, disabled && styles.iconButtonDisabled]}
+        >
+            <MaterialIcons
+                name={icon}
+                size={icon === 'content-copy' || icon === 'check' ? 17 : 21}
+                color={color || themeColors.text}
+            />
+        </TouchableOpacity>
+    );
+
     return (
         <Animated.View
             style={[
@@ -332,46 +352,37 @@ const TopSection = ({
             {isTranslationMode ? (
                 <View style={styles.translationHeader}>
                     <View style={styles.translationHeaderLeft}>
-                        <MaterialIcons name="translate" size={16} color={themeColors.readerSubtleInk} />
-                        <Text numberOfLines={1} style={[styles.translationLangText, { color: themeColors.readerMutedInk }]}>
+                        <MaterialIcons name="translate" size={16} color={themeColors.textTertiary} />
+                        <Text numberOfLines={1} style={[styles.translationLangText, { color: themeColors.textTertiary }]}>
                             {translationSourceLabel} → {translationTargetLabel}
                         </Text>
                     </View>
-                    {canCopyTranslation ? (
-                        <TouchableOpacity
-                            accessibilityRole="button"
-                            accessibilityLabel={isCopyConfirmed ? t('lookup.copied') : t('lookup.copy')}
-                            activeOpacity={0.75}
-                            onPress={handleCopy}
-                            style={styles.copyButton}
-                        >
-                            {isCopyConfirmed ? (
-                                <MaterialIcons name="check" size={13} color={panelColors.closeIcon} style={styles.copyIcon} />
-                            ) : null}
-                            <Text style={[styles.copyLabel, { color: panelColors.closeIcon }]}>
-                                {isCopyConfirmed ? t('lookup.copied') : t('lookup.copy')}
-                            </Text>
-                        </TouchableOpacity>
-                    ) : null}
+                    {isNativeSelection && onExtendSelection ? renderIconButton({
+                        icon: 'chevron-left',
+                        label: t('read.addPreviousSentence'),
+                        onPress: () => onExtendSelection('previous'),
+                    }) : null}
+                    {isNativeSelection && onExtendSelection ? renderIconButton({
+                        icon: 'chevron-right',
+                        label: t('read.addNextSentence'),
+                        onPress: () => onExtendSelection('next'),
+                    }) : null}
+                    {renderIconButton({
+                        icon: isCopyConfirmed ? 'check' : 'content-copy',
+                        label: isCopyConfirmed ? t('lookup.copied') : t('lookup.copy'),
+                        onPress: handleCopy,
+                        disabled: !canCopyTranslation && !isCopyConfirmed,
+                    })}
+                    {onClose ? renderIconButton({
+                        icon: 'close',
+                        label: t('common.close'),
+                        onPress: onClose,
+                        color: themeColors.textMuted,
+                    }) : null}
                 </View>
             ) : null}
 
-            {!isTopPlacement && !isTranslationMode && canExpandLookup ? (
-                <View style={styles.sheetHandleWrap} {...panResponder.panHandlers}>
-                    <View style={styles.sheetHandle} />
-                    {!isLookupExpanded ? (
-                        <Text style={styles.sheetGestureHint}>
-                            {t(isChineseDictionarySheet ? 'read.slideUpForChars' : 'read.slideUpForRoots')}
-                        </Text>
-                    ) : null}
-                </View>
-            ) : null}
-
-            {!isTopPlacement && !isTranslationMode && !canExpandLookup ? (
-                <View style={styles.sheetHandleStatic}>
-                    <View style={styles.sheetHandle} />
-                </View>
-            ) : null}
+            {!isTopPlacement && !isTranslationMode ? renderGrabber('top') : null}
 
             <View style={isTranslationMode ? styles.contentTranslation : styles.content}>
                 {!isTranslationMode ? (
@@ -386,41 +397,15 @@ const TopSection = ({
                             const target = typeof text === 'string' && text.trim() ? text.trim() : visibleWord;
                             setTranslationTarget(target);
                         }}
-                        onExpandedStateChange={handleDictionaryExpandedStateChange}
                         onExplainModeChange={setIsExplainMode}
-                        onContentHeightChange={setDictionaryContentHeight}
                         onCanExpandChange={setCanExpandLookup}
+                        onRequestExpand={handleRequestExpand}
                         isPanelExpanded={isLookupExpanded}
                         currentBook={currentBook}
                         sourceBook={sourceBook}
                         savedWords={savedWords}
                     />
                 ) : (
-                    <>
-                    {isNativeSelection && onExtendSelection ? (
-                        <View style={styles.extendRow}>
-                            <TouchableOpacity
-                                style={styles.extendButton}
-                                onPress={() => onExtendSelection('previous')}
-                                accessibilityRole="button"
-                                accessibilityLabel={t('read.addPreviousSentence')}
-                                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                            >
-                                <MaterialIcons name="chevron-left" size={18} color={themeColors.textSecondary} />
-                                <Text style={styles.extendButtonText} numberOfLines={1}>{t('read.addPreviousSentence')}</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                                style={styles.extendButton}
-                                onPress={() => onExtendSelection('next')}
-                                accessibilityRole="button"
-                                accessibilityLabel={t('read.addNextSentence')}
-                                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                            >
-                                <Text style={styles.extendButtonText} numberOfLines={1}>{t('read.addNextSentence')}</Text>
-                                <MaterialIcons name="chevron-right" size={18} color={themeColors.textSecondary} />
-                            </TouchableOpacity>
-                        </View>
-                    ) : null}
                     <TranslationContent
                         key={`${translationText}-${translationSourceLanguage}-${translationTargetLanguage}-translation`}
                         highlightedWord={translationText}
@@ -433,68 +418,30 @@ const TopSection = ({
                         forceErrorMessage={translationVisualState.errorMessage}
                         forceTranslatedText={translationVisualState.translatedText}
                         maxScrollHeight={TRANSLATION_MAX_SCROLL_HEIGHT}
-                        bottomPadding={spacing.sm}
+                        bottomPadding={0}
                         nestedScrollEnabled
                         onStatusChange={handleTranslationStatusChange}
                     />
-                    </>
                 )}
-
             </View>
-            {isTopPlacement && !isTranslationMode && canExpandLookup ? (
-                <View style={styles.sheetHandleWrapBottom} {...panResponder.panHandlers}>
-                    {!isLookupExpanded ? (
-                        <Text style={styles.sheetGestureHint}>
-                            {t(isChineseDictionarySheet ? 'read.slideDownForChars' : 'read.slideDownForRoots')}
-                        </Text>
-                    ) : null}
-                    <View style={styles.sheetHandle} />
-                </View>
-            ) : null}
 
-            {isTopPlacement && !isTranslationMode && !canExpandLookup ? (
-                <View style={styles.sheetHandleStaticBottom}>
-                    <View style={styles.sheetHandle} />
-                </View>
-            ) : null}
+            {isTopPlacement && !isTranslationMode ? renderGrabber('bottom') : null}
         </Animated.View>
     );
 };
 
 const createStyles = (colors) => StyleSheet.create({
-    extendRow: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        gap: spacing.sm,
-        paddingHorizontal: spacing.md,
-        paddingTop: spacing.xs,
-    },
-    extendButton: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        flexShrink: 1,
-        paddingVertical: 4,
-        paddingHorizontal: 6,
-        borderRadius: 6,
-        borderWidth: StyleSheet.hairlineWidth,
-        borderColor: colors.border,
-    },
-    extendButtonText: {
-        fontSize: 12,
-        color: colors.textSecondary,
-        flexShrink: 1,
-    },
     sheet: {
         marginHorizontal: 0,
         paddingHorizontal: 24,
         paddingTop: 12,
-        paddingBottom: 26,
-        borderTopLeftRadius: 16,
-        borderTopRightRadius: 16,
+        paddingBottom: DICTIONARY_BOTTOM_PADDING,
+        borderTopLeftRadius: 24,
+        borderTopRightRadius: 24,
         borderBottomLeftRadius: 0,
         borderBottomRightRadius: 0,
         backgroundColor: colors.surfaceElevated,
-        borderWidth: 1,
+        borderWidth: StyleSheet.hairlineWidth,
         borderColor: colors.border,
         borderBottomWidth: 0,
         shadowColor: colors.shadow,
@@ -507,136 +454,97 @@ const createStyles = (colors) => StyleSheet.create({
     sheetTop: {
         borderTopLeftRadius: 0,
         borderTopRightRadius: 0,
-        borderBottomLeftRadius: 16,
-        borderBottomRightRadius: 16,
-        borderBottomWidth: 1,
+        borderBottomLeftRadius: 24,
+        borderBottomRightRadius: 24,
+        borderTopWidth: 0,
+        borderBottomWidth: StyleSheet.hairlineWidth,
         shadowOffset: { width: 0, height: 10 },
     },
     sheetDictionary: {
         paddingHorizontal: 0,
         paddingTop: 0,
-        paddingBottom: 0,
     },
     sheetDictionaryTop: {
-        borderTopWidth: 0,
         paddingTop: TOP_PLACEMENT_DICTIONARY_TOP_PADDING,
     },
-    sheetCompact: {
-        height: DICTIONARY_COMPACT_HEIGHT,
-    },
-    sheetExpanded: {
-        height: DICTIONARY_EXPANDED_MAX_HEIGHT,
-    },
-    sheetTranslation: {},
+    // The sentence translation is a floating card, not a sheet.
     sheetTranslationBase: {
-        marginHorizontal: 16,
+        marginHorizontal: 12,
         marginBottom: 16,
         paddingHorizontal: 14,
-        paddingTop: 12,
-        paddingBottom: 12,
-        borderTopLeftRadius: 12,
-        borderTopRightRadius: 12,
-        borderBottomLeftRadius: 12,
-        borderBottomRightRadius: 12,
-        borderBottomWidth: 1,
+        paddingTop: 8,
+        borderTopLeftRadius: 18,
+        borderTopRightRadius: 18,
+        borderBottomLeftRadius: 18,
+        borderBottomRightRadius: 18,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderBottomWidth: StyleSheet.hairlineWidth,
         shadowColor: colors.shadow,
-        shadowOffset: { width: 0, height: 8 },
+        shadowOffset: { width: 0, height: 12 },
         shadowOpacity: 1,
-        shadowRadius: 24,
+        shadowRadius: 32,
     },
     sheetTranslationTop: {
-        marginTop: 0,
+        marginTop: 8,
         marginBottom: 0,
-        paddingTop: TOP_PLACEMENT_TRANSLATION_TOP_PADDING,
-        borderTopLeftRadius: 0,
-        borderTopRightRadius: 0,
-        borderBottomLeftRadius: 12,
-        borderBottomRightRadius: 12,
-        shadowOffset: { width: 0, height: 8 },
+        borderTopWidth: StyleSheet.hairlineWidth,
     },
     translationHeader: {
         flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'space-between',
-        marginBottom: 8,
+        gap: 2,
+        marginBottom: 2,
+        marginRight: -6,
     },
     translationHeaderLeft: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 7,
+        gap: 6,
         flex: 1,
         minWidth: 0,
     },
     translationLangText: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 11,
-        lineHeight: 17,
-        letterSpacing: 0.8,
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 12,
+        lineHeight: 16,
+        flexShrink: 1,
     },
-    copyButton: {
-        flexDirection: 'row',
+    iconButton: {
+        width: 36,
+        height: 36,
+        borderRadius: 18,
         alignItems: 'center',
-        paddingHorizontal: 6,
-        paddingVertical: 4,
-        borderRadius: 4,
+        justifyContent: 'center',
     },
-    copyIcon: {
-        marginRight: 3,
+    iconButtonDisabled: {
+        opacity: 0.35,
     },
-    copyLabel: {
-        fontFamily: fontFamilies.sansMedium,
-        fontSize: 10,
-        letterSpacing: 1.6,
-        textTransform: 'uppercase',
-    },
+    // No flex: 1 here. The sheet has no fixed height, so the body hugs its
+    // content and only shrinks (and scrolls) once it reaches the sheet's ceiling.
     content: {
-        marginTop: 0,
-        flex: 1,
+        flexGrow: 0,
+        flexShrink: 1,
         minHeight: 0,
     },
     contentTranslation: {
         paddingHorizontal: 0,
         paddingTop: 0,
     },
-    sheetHandleWrap: {
+    grabberWrap: {
+        height: 22,
+        paddingTop: 9,
         alignItems: 'center',
-        paddingTop: 12,
-        marginBottom: 16,
-        gap: 6,
     },
-    sheetHandleStatic: {
+    grabberWrapBottom: {
+        height: 22,
+        paddingTop: 9,
         alignItems: 'center',
-        paddingTop: 12,
-        marginBottom: 16,
     },
-    sheetHandleWrapBottom: {
-        alignItems: 'center',
-        paddingBottom: 6,
-        marginTop: 10,
-        gap: 6,
-    },
-    sheetHandleStaticBottom: {
-        alignItems: 'center',
-        paddingBottom: 6,
-        marginTop: 10,
-    },
-    sheetHandle: {
+    grabber: {
         width: 36,
         height: 4,
         borderRadius: 2,
-        backgroundColor: colors.borderStrong,
-    },
-    sheetGestureHint: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 8,
-        lineHeight: 13,
-        letterSpacing: 1.6,
-        textTransform: 'uppercase',
-        color: colors.frame,
-    },
-    contentFill: {
-        flex: 1,
-        minHeight: 0,
+        backgroundColor: colors.border,
     },
 });
 

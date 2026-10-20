@@ -24,6 +24,7 @@ import FocusControls from '../Read/FocusControls';
 import SavedWordsPanel from '../Read/SavedWordsPanel';
 import ReaderSettingsSheet from '../Read/ReaderSettingsSheet';
 import {
+    ReaderBackButton,
     ReaderFocusModeButton,
     ReaderHeaderBar,
     ReaderMenuButton,
@@ -752,14 +753,12 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         <View style={styles.container}>
             <ReaderHeaderBar styles={chrome} topInset={insets.top}>
                 <View style={chrome.headerLeft}>
-                    <TouchableOpacity
-                        style={chrome.headerIconButton}
+                    <ReaderBackButton
+                        styles={chrome}
+                        themeColors={colors}
                         onPress={onClose}
-                        accessibilityRole="button"
                         accessibilityLabel={t('song.back')}
-                    >
-                        <Feather name="chevron-left" size={24} color={colors.textSecondary} />
-                    </TouchableOpacity>
+                    />
                     <ReaderSavedWordsButton
                         styles={chrome}
                         themeColors={colors}
@@ -770,6 +769,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                     <ReaderFocusModeButton
                         styles={chrome}
                         themeColors={colors}
+                        style={chrome.headerGroupGap}
                         active={focusMode}
                         onPress={toggleFocusMode}
                         accessibilityLabel={t('read.focusMode')}
@@ -965,6 +965,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
             />
 
             <SavedWordsPanel
+                title={t('read.savedPanelTitleSong')}
                 visible={showSavedPanel}
                 colors={colors}
                 insets={insets}
@@ -1050,6 +1051,7 @@ const createStyles = (colors) => StyleSheet.create({
         flex: 1,
         minWidth: 0,
         alignItems: 'center',
+        paddingHorizontal: 8,
     },
     headerTitle: {
         maxWidth: '100%',
@@ -1065,12 +1067,10 @@ const createStyles = (colors) => StyleSheet.create({
     },
     headerArtist: {
         maxWidth: '100%',
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 10,
-        lineHeight: 13,
-        color: colors.readerSubtleInk,
-        letterSpacing: 1.4,
-        textTransform: 'uppercase',
+        fontFamily: fontFamilies.sansMedium,
+        fontSize: 12,
+        lineHeight: 16,
+        color: colors.textTertiary,
         textAlign: 'center',
     },
     lyricsScroll: {

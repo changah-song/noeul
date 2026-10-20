@@ -5,6 +5,11 @@ import { TextInput, TouchableOpacity } from 'react-native';
 // The note sheet must stay open (keeping the typed note) when saving fails,
 // and must not save twice on a double tap.
 
+jest.mock('@expo/vector-icons', () => {
+  const icon = () => null;
+  return { Feather: icon, MaterialIcons: icon, MaterialCommunityIcons: icon };
+}, { virtual: true });
+
 jest.mock('../../hooks/useTranslation', () => ({
   useTranslation: () => ({ t: (key) => key }),
 }));

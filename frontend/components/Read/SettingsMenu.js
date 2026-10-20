@@ -1,16 +1,32 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
     View,
     Text,
     Modal,
+    Pressable,
     TouchableOpacity,
     StyleSheet,
     ScrollView,
-    Switch
 } from 'react-native';
 import { useTranslation } from '../../hooks/useTranslation';
-import { colors, elevation, fontFamilies, radii, spacing, textStyles } from '../../theme';
+import { colors, fontFamilies } from '../../theme';
+import {
+    SHEET_PADDING,
+    SettingRow,
+    SheetHandle,
+    SheetHeader,
+    ToggleSwitch,
+    createReaderSettingsControlStyles,
+    createSheetChromeStyles,
+} from './ReaderSettingsControls';
 
+const FONT_SIZES = [12, 14, 16, 18, 20, 24, 28, 32];
+const LINE_SPACINGS = [1.0, 1.2, 1.5, 1.8, 2.0, 2.5];
+
+/**
+ * SettingsMenu — the older, standalone reader settings sheet (font size,
+ * dark mode, line spacing as chip grids). Uses the shared reader sheet chrome.
+ */
 const SettingsMenu = ({
     visible,
     onClose,
@@ -18,8 +34,30 @@ const SettingsMenu = ({
     onSettingChange
 }) => {
     const { t } = useTranslation();
-    const fontSizes = [12, 14, 16, 18, 20, 24, 28, 32];
-    const lineSpacings = [1.0, 1.2, 1.5, 1.8, 2.0, 2.5];
+    const chrome = useMemo(() => createSheetChromeStyles(colors), []);
+    const controlStyles = useMemo(() => createReaderSettingsControlStyles(colors), []);
+
+    const renderChips = (values, selectedValue, key) => (
+        <View style={styles.chips}>
+            {values.map((value) => {
+                const selected = selectedValue === value;
+                return (
+                    <TouchableOpacity
+                        key={value}
+                        style={[styles.chip, selected && styles.chipSelected]}
+                        onPress={() => onSettingChange(key, value)}
+                        activeOpacity={0.7}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected }}
+                    >
+                        <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
+                            {value}
+                        </Text>
+                    </TouchableOpacity>
+                );
+            })}
+        </View>
+    );
 
     return (
         <Modal
@@ -28,79 +66,39 @@ const SettingsMenu = ({
             animationType="slide"
             onRequestClose={onClose}
         >
-            <View style={styles.modalOverlay}>
-                <View style={styles.modalContent}>
-                    <View style={styles.header}>
-                        <Text style={styles.title}>{t('read.readerSettings')}</Text>
-                        <TouchableOpacity onPress={onClose} style={styles.closeButton}>
-                            <Text style={styles.closeButtonText}>✕</Text>
-                        </TouchableOpacity>
-                    </View>
+            <View style={styles.overlay}>
+                <Pressable
+                    style={StyleSheet.absoluteFill}
+                    onPress={onClose}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('common.close')}
+                />
+                <View style={[chrome.sheet, styles.sheet]}>
+                    <SheetHandle styles={chrome} />
+                    <SheetHeader
+                        styles={chrome}
+                        colors={colors}
+                        title={t('read.settings')}
+                        onClose={onClose}
+                        closeLabel={t('common.close')}
+                    />
 
-                    <ScrollView style={styles.settingsContainer}>
-                        {/* Font Size */}
-                        <View style={styles.settingSection}>
-                            <Text style={styles.settingLabel}>{t('read.fontSize')}</Text>
-                            <View style={styles.optionsGrid}>
-                                {fontSizes.map((size) => (
-                                    <TouchableOpacity
-                                        key={size}
-                                        style={[
-                                            styles.optionButton,
-                                            settings.fontSize === size && styles.selectedOption
-                                        ]}
-                                        onPress={() => onSettingChange('fontSize', size)}
-                                    >
-                                        <Text style={[
-                                            styles.optionText,
-                                            settings.fontSize === size && styles.selectedOptionText
-                                        ]}>
-                                            {size}
-                                        </Text>
-                                    </TouchableOpacity>
-                                ))}
-                            </View>
-                        </View>
+                    <ScrollView contentContainerStyle={styles.body}>
+                        <Text style={[chrome.sectionLabel, styles.sectionLabel]}>{t('read.fontSize')}</Text>
+                        {renderChips(FONT_SIZES, settings.fontSize, 'fontSize')}
 
-                        {/* Theme Mode */}
-                        <View style={styles.settingSection}>
-                            <Text style={styles.settingLabel}>{t('read.themeMode')}</Text>
-                            <View style={styles.switchContainer}>
-                                <Text style={styles.switchLabel}>
-                                    {settings.isDarkMode ? t('read.nightMode') : t('read.dayMode')}
-                                </Text>
-                                <Switch
-                                    value={settings.isDarkMode}
-                                    onValueChange={(value) => onSettingChange('isDarkMode', value)}
-                                    trackColor={{ false: colors.borderStrong, true: colors.inkSlate }}
-                                    thumbColor={settings.isDarkMode ? colors.surfaceMuted : colors.surface}
-                                />
-                            </View>
-                        </View>
+                        <SettingRow styles={controlStyles} label={t('read.darkMode')}>
+                            <ToggleSwitch
+                                styles={controlStyles}
+                                colors={colors}
+                                value={!!settings.isDarkMode}
+                                onChange={(value) => onSettingChange('isDarkMode', value)}
+                                accessibilityLabel={t('read.darkMode')}
+                            />
+                        </SettingRow>
 
-                        {/* Line Spacing */}
-                        <View style={styles.settingSection}>
-                            <Text style={styles.settingLabel}>{t('read.lineSpacing')}</Text>
-                            <View style={styles.optionsGrid}>
-                                {lineSpacings.map((spacing) => (
-                                    <TouchableOpacity
-                                        key={spacing}
-                                        style={[
-                                            styles.optionButton,
-                                            settings.lineSpacing === spacing && styles.selectedOption
-                                        ]}
-                                        onPress={() => onSettingChange('lineSpacing', spacing)}
-                                    >
-                                        <Text style={[
-                                            styles.optionText,
-                                            settings.lineSpacing === spacing && styles.selectedOptionText
-                                        ]}>
-                                            {spacing}
-                                        </Text>
-                                    </TouchableOpacity>
-                                ))}
-                            </View>
-                        </View>
+                        <Text style={[chrome.sectionLabel, styles.sectionLabel]}>{t('read.lineSpacing')}</Text>
+                        {renderChips(LINE_SPACINGS, settings.lineSpacing, 'lineSpacing')}
                     </ScrollView>
                 </View>
             </View>
@@ -109,114 +107,51 @@ const SettingsMenu = ({
 };
 
 const styles = StyleSheet.create({
-    modalOverlay: {
+    overlay: {
         flex: 1,
         backgroundColor: colors.overlay,
         justifyContent: 'flex-end',
     },
-    modalContent: {
-        backgroundColor: colors.surface,
-        borderTopLeftRadius: radii.xl,
-        borderTopRightRadius: radii.xl,
-        borderWidth: 1,
-        borderColor: colors.border,
+    sheet: {
         maxHeight: '80%',
-        paddingBottom: spacing.xl,
-        ...elevation.sheet,
     },
-    header: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        padding: spacing.xl,
-        borderBottomWidth: 1,
-        borderBottomColor: colors.divider,
+    body: {
+        paddingHorizontal: SHEET_PADDING,
+        paddingTop: 4,
     },
-    title: {
-        ...textStyles.screenBarTitle,
-        color: colors.text,
+    sectionLabel: {
+        marginTop: 16,
+        marginBottom: 10,
     },
-    closeButton: {
-        padding: spacing.xs,
-    },
-    closeButtonText: {
-        fontSize: 24,
-        color: colors.textMuted,
-    },
-    settingsContainer: {
-        padding: spacing.xl,
-    },
-    settingSection: {
-        marginBottom: spacing.xxl,
-    },
-    settingLabel: {
-        ...textStyles.eyebrow,
-        color: colors.textTertiary,
-        marginBottom: spacing.sm,
-    },
-    optionsGrid: {
+    chips: {
         flexDirection: 'row',
         flexWrap: 'wrap',
-        gap: spacing.sm,
+        gap: 8,
+        marginBottom: 8,
     },
-    optionButton: {
-        paddingVertical: spacing.sm,
-        paddingHorizontal: spacing.lg,
-        borderRadius: radii.xs,
+    chip: {
+        minWidth: 52,
+        height: 40,
+        paddingHorizontal: 14,
+        borderRadius: 10,
         borderWidth: 1,
-        borderColor: colors.borderStrong,
+        borderColor: colors.border,
         backgroundColor: colors.surface,
-        minWidth: 60,
         alignItems: 'center',
+        justifyContent: 'center',
     },
-    selectedOption: {
+    chipSelected: {
         backgroundColor: colors.inkSlate,
         borderColor: colors.inkSlate,
     },
-    optionText: {
+    chipText: {
         fontFamily: fontFamilies.sansMedium,
         fontSize: 14,
         color: colors.text,
     },
-    selectedOptionText: {
+    chipTextSelected: {
+        fontFamily: fontFamilies.sansSemiBold,
         color: colors.surface,
-        fontFamily: fontFamilies.sansBold,
-    },
-    switchContainer: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        padding: spacing.md,
-        backgroundColor: colors.surfaceMuted,
-        borderRadius: radii.sm,
-    },
-    switchLabel: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 16,
-        color: colors.textMuted,
-    },
-    fontFamilyContainer: {
-        gap: spacing.sm,
-    },
-    fontFamilyButton: {
-        padding: spacing.md,
-        borderRadius: radii.xs,
-        borderWidth: 1,
-        borderColor: colors.borderStrong,
-        backgroundColor: colors.surface,
-    },
-    selectedFontFamily: {
-        backgroundColor: colors.inkSlate,
-        borderColor: colors.inkSlate,
-    },
-    fontFamilyText: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 16,
-        color: colors.text,
-    },
-    selectedFontFamilyText: {
-        color: colors.surface,
-        fontFamily: fontFamilies.sansBold,
     },
 });
 

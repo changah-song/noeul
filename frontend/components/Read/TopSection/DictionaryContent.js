@@ -357,7 +357,14 @@ const formatPos = (pos, t) => {
         return toLabel(POS_KEYS[koreanLabel]);
     }
 
-    return /[\uAC00-\uD7A3]/.test(normalized) ? '' : normalized.replace(/_/g, ' ').toUpperCase();
+    return /[\uAC00-\uD7A3]/.test(normalized) ? '' : normalized.replace(/_/g, ' ').toLowerCase();
+};
+
+// Sentence case for labels that come from lowercase keys ("noun" -> "Noun").
+// Scripts without letter case (Hangul, CJK, Arabic, Thai) are unaffected.
+const toSentenceCase = (value) => {
+    const text = typeof value === 'string' ? value : '';
+    return text ? text.charAt(0).toLocaleUpperCase() + text.slice(1) : text;
 };
 
 const getWordPartLabelKey = (type) => {
@@ -422,6 +429,7 @@ const DictionaryContent = ({
     onExplainModeChange,
     onContentHeightChange,
     onCanExpandChange,
+    onRequestExpand,
     isPanelExpanded = false,
     currentBook,
     sourceBook,
@@ -751,11 +759,6 @@ const DictionaryContent = ({
 
         onExplainModeChange?.(false);
 
-        if (translationMode) {
-            onExpandedStateChange?.(-1);
-            return;
-        }
-
         if (!isPanelExpanded) {
             onExpandedStateChange?.(0);
             return;
@@ -781,7 +784,7 @@ const DictionaryContent = ({
         }, 0);
 
         onExpandedStateChange?.(Math.max(expandedCachedCount, expandedLiveCount));
-    }, [dictionaryData, expandedCached, expandedWords, explainMode, extraDefs, isPanelExpanded, onExpandedStateChange, onExplainModeChange, stemWordList, translationMode]);
+    }, [dictionaryData, expandedCached, expandedWords, explainMode, extraDefs, isPanelExpanded, onExpandedStateChange, onExplainModeChange, stemWordList]);
 
     const storeRomanizationPairs = useCallback((pairs) => {
         const normalizedPairs = (pairs || [])
@@ -1384,9 +1387,9 @@ const DictionaryContent = ({
                         style={({ pressed }) => [styles.zhHeadwordChar, pressed && styles.zhHeadwordCharPressed]}
                     >
                         <Text style={textStyle}>{ch}</Text>
-                        <View style={styles.zhHeadwordDots}>
+                        <View style={styles.headwordDots}>
                             {[0, 1, 2, 3, 4].map((dot) => (
-                                <View key={dot} style={[styles.zhHeadwordDot, { backgroundColor: palette.mutedText }]} />
+                                <View key={dot} style={[styles.headwordDot, { backgroundColor: colors.textSubtle }]} />
                             ))}
                         </View>
                     </Pressable>
@@ -1475,7 +1478,7 @@ const DictionaryContent = ({
                 {renderDrilldownBackRow()}
                 {children}
             </ScrollView>
-            {word ? renderActionRow(word, hanja, definition, false) : null}
+            {word ? renderActionRow(word, hanja, definition) : null}
         </View>
     );
 
@@ -1506,16 +1509,28 @@ const DictionaryContent = ({
                     return (
                         <TouchableOpacity
                             key={`${char}-${index}`}
+                            accessibilityRole="button"
+                            accessibilityLabel={`${t('hanja.rootCharacters')}: ${char}`}
                             activeOpacity={0.7}
                             hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
-                            onPress={() => handleHanjaPress(char, sourceWord, {
-                                characters: hanjaCharacters,
-                                index: selectedHanjaIndex,
-                                sourceWordDetails,
-                            })}
+                            onPress={() => {
+                                handleHanjaPress(char, sourceWord, {
+                                    characters: hanjaCharacters,
+                                    index: selectedHanjaIndex,
+                                    sourceWordDetails,
+                                });
+                                onRequestExpand?.();
+                            }}
                             style={styles.hanjaToken}
                         >
                             <Text style={hanjaStyle}>{char}</Text>
+                            {isEntry ? (
+                                <View style={styles.headwordDots}>
+                                    {[0, 1, 2, 3].map((dot) => (
+                                        <View key={dot} style={[styles.headwordDot, { backgroundColor: colors.textSubtle }]} />
+                                    ))}
+                                </View>
+                            ) : null}
                         </TouchableOpacity>
                     );
                 })}
@@ -1577,66 +1592,81 @@ const DictionaryContent = ({
         </TouchableOpacity>
     );
 
-    const renderActionRow = (word, hanja, definition, inTranslationMode) => {
-        const saved = hasSavableDefinition(definition) && isWordSaved(word);
+    // One of the three equal action buttons (Save / Meaning / Translate).
+    // `active` fills it with ink, like a pressed toggle.
+    const renderActionButton = ({
+        icon,
+        label,
+        onPress,
+        active = false,
+        disabled = false,
+        showAiBadge = false,
+        accessibilityLabel,
+        accessibilityState,
+    }) => {
+        const tint = active ? palette.actionText : palette.text;
+        return (
+            <TouchableOpacity
+                style={[
+                    styles.actionButton,
+                    active && styles.actionButtonActive,
+                    disabled && styles.actionButtonDisabled,
+                ]}
+                onPress={disabled ? undefined : onPress}
+                activeOpacity={disabled ? 1 : 0.7}
+                accessibilityRole="button"
+                accessibilityLabel={accessibilityLabel || label}
+                accessibilityState={{ disabled, ...(accessibilityState || {}) }}
+            >
+                <MaterialIcons name={icon} size={16} color={tint} style={styles.actionButtonIcon} />
+                <Text
+                    style={[styles.actionLabel, { color: tint }]}
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.8}
+                >
+                    {label}
+                </Text>
+                {showAiBadge ? (
+                    <Text style={[styles.aiBadge, { color: tint }]}>{t('lookup.aiBadge')}</Text>
+                ) : null}
+            </TouchableOpacity>
+        );
+    };
+
+    const toggleWordTranslation = (word) => {
+        setExplainMode(false);
+        if (!translationMode) {
+            onTranslatePress?.(cleanValue(word) || tappedSurface);
+        }
+        setTranslationMode(!translationMode);
+    };
+
+    const renderTranslateActionButton = (word) => renderActionButton({
+        icon: 'translate',
+        label: t('lookup.translate'),
+        onPress: () => toggleWordTranslation(word),
+        active: translationMode,
+        accessibilityLabel: t('lookup.translateWord', { word: tappedSurface }),
+        accessibilityState: { expanded: translationMode },
+    });
+
+    const renderActionRow = (word, hanja, definition) => {
         const canSave = hasSavableDefinition(definition);
-        const saveLabel = saved ? t('lookup.saved') : t('lookup.save');
-        const translateLabel = inTranslationMode ? t('lookup.dictionary') : t('lookup.translate');
+        const saved = canSave && isWordSaved(word);
 
         return (
             <View style={styles.actionRow}>
-                <View style={styles.actionButtonGroup}>
-                    {!explainMode ? (
-                    <TouchableOpacity
-                        style={[
-                            styles.actionButton,
-                            saved ? styles.actionButtonSaved : null,
-                            !canSave && styles.actionButtonDisabled,
-                        ]}
-                        onPress={() => {
-                            if (!canSave) {
-                                return;
-                            }
-                            saved ? toggleUnSave(word, hanja, definition) : toggleSave(word, hanja, definition);
-                        }}
-                        activeOpacity={canSave ? 0.7 : 1}
-                        accessibilityRole="button"
-                        accessibilityLabel={saveLabel}
-                    >
-                        <MaterialIcons
-                            name={saved ? 'bookmark' : 'bookmark-border'}
-                            size={16}
-                            color={saved ? palette.actionText : palette.text}
-                            style={styles.actionButtonIcon}
-                        />
-                        <Text style={[styles.actionLabel, { color: saved ? palette.actionText : palette.text }]}>
-                            {saveLabel}
-                        </Text>
-                    </TouchableOpacity>
-                    ) : null}
-                    {!inTranslationMode ? renderExplainActionButton() : null}
-                    <TouchableOpacity
-                        style={[
-                            styles.actionButton,
-                            styles.actionButtonRight,
-                            inTranslationMode && styles.actionButtonRightActive,
-                        ]}
-                        onPress={() => { setExplainMode(false); setTranslationMode(!inTranslationMode); }}
-                        activeOpacity={0.7}
-                        accessibilityRole="button"
-                        accessibilityLabel={translateLabel}
-                    >
-                        <MaterialIcons
-                            name={inTranslationMode ? 'menu-book' : 'translate'}
-                            size={15}
-                            color={palette.text}
-                            style={styles.actionButtonIcon}
-                        />
-                        <Text style={[styles.actionLabel, { color: palette.text }]} numberOfLines={1} adjustsFontSizeToFit>
-                            {translateLabel}
-                        </Text>
-                    </TouchableOpacity>
-                </View>
+                {!explainMode ? renderActionButton({
+                    icon: saved ? 'bookmark' : 'bookmark-border',
+                    label: saved ? t('lookup.saved') : t('lookup.save'),
+                    onPress: () => (saved ? toggleUnSave(word, hanja, definition) : toggleSave(word, hanja, definition)),
+                    active: saved,
+                    disabled: !canSave,
+                    accessibilityState: { selected: saved },
+                }) : null}
+                {renderExplainActionButton()}
+                {renderTranslateActionButton(word)}
             </View>
         );
     };
@@ -1646,87 +1676,46 @@ const DictionaryContent = ({
 
         return (
             <View style={styles.actionRow}>
-                <View style={styles.actionButtonGroup}>
-                    {!explainMode ? (
-                    <TouchableOpacity
-                        style={[styles.actionButton, notFoundSaved ? styles.actionButtonSaved : null]}
-                        onPress={() => notFoundSaved ? toggleUnSave(word, '', '') : toggleSave(word, '', '')}
-                        activeOpacity={0.7}
-                        accessibilityRole="button"
-                        accessibilityLabel={notFoundSaved ? t('lookup.saved') : t('lookup.save')}
-                    >
-                        <MaterialIcons
-                            name={notFoundSaved ? 'bookmark' : 'bookmark-border'}
-                            size={16}
-                            color={notFoundSaved ? palette.actionText : palette.text}
-                            style={styles.actionButtonIcon}
-                        />
-                        <Text style={[styles.actionLabel, { color: notFoundSaved ? palette.actionText : palette.text }]}>
-                            {notFoundSaved ? t('lookup.saved') : t('lookup.save')}
-                        </Text>
-                    </TouchableOpacity>
-                    ) : null}
-                    {renderExplainActionButton()}
-                    <TouchableOpacity
-                        style={[styles.actionButton, styles.actionButtonRight]}
-                        onPress={() => { setExplainMode(false); onTranslatePress?.(word); }}
-                        activeOpacity={0.7}
-                        accessibilityRole="button"
-                        accessibilityLabel={t('lookup.translate')}
-                    >
-                        <MaterialIcons
-                            name="translate"
-                            size={15}
-                            color={palette.text}
-                            style={styles.actionButtonIcon}
-                        />
-                        <Text style={[styles.actionLabel, { color: palette.text }]} numberOfLines={1} adjustsFontSizeToFit>{t('lookup.translate')}</Text>
-                    </TouchableOpacity>
-                </View>
+                {!explainMode ? renderActionButton({
+                    icon: notFoundSaved ? 'bookmark' : 'bookmark-border',
+                    label: notFoundSaved ? t('lookup.saved') : t('lookup.save'),
+                    onPress: () => (notFoundSaved ? toggleUnSave(word, '', '') : toggleSave(word, '', '')),
+                    active: notFoundSaved,
+                    accessibilityState: { selected: notFoundSaved },
+                }) : null}
+                {renderExplainActionButton()}
+                {renderTranslateActionButton(word)}
             </View>
         );
     };
 
-    const renderTranslationPanel = ({
-        word,
-        hanja,
-        definition,
-        pos,
-        romanization,
-        ipa,
-        pinyin,
-        simplified,
-        traditional,
-        audioUs,
-        audioUk,
-    }) => {
-        const bookLanguage = normalizeBookLanguage(sourceBook?.language ?? 'ko');
-        const interfaceLanguageCode = normalizeInterfaceLanguageCode(interfaceLanguage);
+    // Translate in the word panel translates just the tapped word and shows it
+    // inline, in a tinted row under the definition, so the panel never jumps.
+    const renderInlineTranslation = () => {
+        if (!translationMode || explainMode || !tappedSurface) {
+            return null;
+        }
 
         return (
-            <View style={[styles.panelContent, styles.dictionaryPanelContent, { backgroundColor: palette.surface }]}>
-                <View style={styles.translationPanelBody}>
-                    {renderEntryHeading({ word, hanja, definition, pos, romanization, ipa, pinyin, simplified, traditional, audioUs, audioUk })}
-                    <Text style={styles.translationSectionTitle}>{t('lookup.translate')}</Text>
-                    <View style={styles.translationContentWrap}>
-                        <TranslationContent
-                            highlightedWord={word}
-                            isDarkMode={isDarkMode}
-                            onContentLoaded={onContentLoaded}
-                            sourceLanguage={bookLanguage}
-                            targetLanguage={interfaceLanguageCode}
-                            compact
-                            forceLoading={translationLoadingPreview}
-                            forceError={translationErrorPreview}
-                            forceErrorMessage={t('lookup.noTranslation')}
-                            forceTranslatedText={translationTextPreview}
-                            maxScrollHeight={176}
-                            bottomPadding={0}
-                            nestedScrollEnabled
-                        />
-                    </View>
+            <View style={[styles.inlineTranslation, { backgroundColor: colors.surfaceMuted }]}>
+                <MaterialIcons name="translate" size={16} color={colors.textMuted} />
+                <View style={styles.inlineTranslationText}>
+                    <TranslationContent
+                        key={`${tappedSurface}-${targetLanguage}-${interfaceLanguage}`}
+                        highlightedWord={tappedSurface}
+                        isDarkMode={isDarkMode}
+                        sourceLanguage={normalizeBookLanguage(sourceBook?.language ?? 'ko')}
+                        targetLanguage={normalizeInterfaceLanguageCode(interfaceLanguage)}
+                        inline
+                        forceLoading={translationLoadingPreview}
+                        forceError={translationErrorPreview}
+                        forceErrorMessage={t('lookup.noTranslation')}
+                        forceTranslatedText={translationTextPreview}
+                    />
                 </View>
-                {renderActionRow(word, hanja, definition, true)}
+                <Text style={[styles.inlineTranslationSurface, { color: colors.textSubtle }]} numberOfLines={1}>
+                    {tappedSurface}
+                </Text>
             </View>
         );
     };
@@ -1849,7 +1838,7 @@ const DictionaryContent = ({
                                 style={[
                                     styles.entryMeta,
                                     isChineseBook && styles.zhHeadingPinyin,
-                                    { color: isChineseBook ? palette.text : palette.mutedText },
+                                    { color: isChineseBook ? palette.text : colors.textTertiary },
                                 ]}
                             >
                                 {pronunciationText}
@@ -1987,7 +1976,7 @@ const DictionaryContent = ({
                                     ) : null}
                                 </View>
                                 <Text style={[styles.wordPartType, { color: palette.mutedText }]}>
-                                    {t(getWordPartLabelKey(part.type))}
+                                    {toSentenceCase(t(getWordPartLabelKey(part.type)))}
                                 </Text>
                                 {part.meaning || part.note ? (
                                     <Text selectable style={[styles.wordPartMeaning, { color: palette.secondaryText }]}>
@@ -2159,7 +2148,7 @@ const DictionaryContent = ({
                             </Text>
                         </View>
                         <TouchableOpacity
-                            style={[styles.aiSaveButton, aiSaved ? styles.actionButtonSaved : null]}
+                            style={[styles.aiSaveButton, aiSaved ? styles.actionButtonActive : null]}
                             onPress={() => saveWithAiDefinition(saveWord, glossText, pinyinText)}
                             activeOpacity={0.7}
                             accessibilityRole="button"
@@ -2171,7 +2160,7 @@ const DictionaryContent = ({
                                 color={aiSaved ? palette.actionText : palette.text}
                                 style={styles.actionButtonIcon}
                             />
-                            <Text style={[styles.actionLabel, { color: aiSaved ? palette.actionText : palette.text }]}>
+                            <Text style={[styles.actionLabel, styles.aiSaveLabel, { color: aiSaved ? palette.actionText : palette.text }]}>
                                 {aiSaved ? t('lookup.saved') : t('lookup.saveAiDefinition')}
                             </Text>
                         </TouchableOpacity>
@@ -2179,7 +2168,7 @@ const DictionaryContent = ({
                 ) : null}
 
                 <View style={[styles.explainBody, { borderTopColor: palette.border }]}>
-                    <Text style={[styles.explainBodyTitle, { color: palette.mutedText }]}>
+                    <Text style={[styles.explainBodyTitle, { color: colors.textTertiary }]}>
                         {t('lookup.explainInThisSentence')}
                     </Text>
                     {data.text && data.notInDictionary ? (
@@ -2197,13 +2186,13 @@ const DictionaryContent = ({
                     ) : null}
                     {isWaitingForText ? (
                         <View style={styles.explainLoadingRow}>
-                            <ActivityIndicator size="small" color={palette.action} />
+                            <ActivityIndicator size="small" color={colors.textTertiary} />
                             <Text style={[styles.explainLoadingText, { color: palette.mutedText }]}>
                                 {t('lookup.explainLoading')}
                             </Text>
                         </View>
                     ) : data.text ? (
-                        <Text selectable style={[styles.explainBodyText, { color: palette.secondaryText }]}>
+                        <Text selectable style={[styles.explainBodyText, { color: palette.text }]}>
                             {data.text}
                         </Text>
                     ) : (
@@ -2228,26 +2217,15 @@ const DictionaryContent = ({
             return null;
         }
 
-        return (
-            <TouchableOpacity
-                style={[styles.actionButton, explainMode ? styles.actionButtonRightActive : null]}
-                onPress={() => handleSmartDefinitionPress(explainKey, getExplainGrounding())}
-                activeOpacity={0.7}
-                accessibilityRole="button"
-                accessibilityState={{ expanded: explainMode }}
-                accessibilityLabel={t('lookup.explainInContext')}
-            >
-                <MaterialIcons
-                    name="auto-awesome"
-                    size={15}
-                    color={palette.action}
-                    style={styles.actionButtonIcon}
-                />
-                <Text style={[styles.actionLabel, { color: palette.text }]} numberOfLines={1} adjustsFontSizeToFit>
-                    {t('lookup.smartDefinition')}
-                </Text>
-            </TouchableOpacity>
-        );
+        return renderActionButton({
+            icon: 'auto-awesome',
+            label: t('lookup.smartDefinition'),
+            onPress: () => handleSmartDefinitionPress(explainKey, getExplainGrounding()),
+            active: explainMode,
+            showAiBadge: true,
+            accessibilityLabel: t('lookup.explainInContext'),
+            accessibilityState: { expanded: explainMode },
+        });
     };
 
     // A reading's senses, either as one line or a numbered list when there are many.
@@ -2447,7 +2425,7 @@ const DictionaryContent = ({
         separated,
         fallbackLanguage = null,
     }) => {
-        const posLabel = formatPos(pos, t);
+        const posLabel = toSentenceCase(formatPos(pos, t));
 
         // In smart-definition mode the title shows the explanation's base form —
         // the dictionary form when the lookup resolved one, else the AI-stemmed
@@ -2500,6 +2478,7 @@ const DictionaryContent = ({
                     isChineseBook ? (
                         <View style={styles.zhBody}>
                             {renderChineseBody(zhData)}
+                            {renderInlineTranslation()}
                             {isPanelExpanded ? renderChineseCharacterBreakdown(cleanValue(word)) : null}
                         </View>
                     ) : (
@@ -2511,14 +2490,14 @@ const DictionaryContent = ({
                         ) : null}
                         <View style={[styles.definitionRow, !posLabel && styles.definitionRowSolo]}>
                             {posLabel ? (
-                                <View style={[styles.posBadge, { borderColor: palette.border }]}>
-                                    <Text style={[styles.posBadgeText, { color: palette.mutedText }]}>
+                                <View style={[styles.posBadge, { borderColor: colors.border }]}>
+                                    <Text style={[styles.posBadgeText, { color: colors.textMuted }]}>
                                         {posLabel}
                                     </Text>
                                 </View>
                             ) : null}
                             {definition ? (
-                                <Text selectable style={[styles.definitionText, { color: palette.secondaryText }]}>
+                                <Text selectable style={[styles.definitionText, { color: palette.text }]}>
                                     {definition}
                                 </Text>
                             ) : (
@@ -2527,6 +2506,7 @@ const DictionaryContent = ({
                                 </Text>
                             )}
                         </View>
+                        {renderInlineTranslation()}
                         {isPanelExpanded && isEnglishBook ? renderWordParts(wordParts, word) : null}
                         {isPanelExpanded && isEnglishBook && !hasRenderableWordParts(wordParts, word) ? renderOrigin(etymology, word) : null}
                         {isPanelExpanded && showLess ? renderExtraDefinitions(extraEntries) : null}
@@ -2561,6 +2541,9 @@ const DictionaryContent = ({
                         />
                     </View>
                 </View>
+                {/* Same height as the action row, so the panel doesn't jump when
+                    the entry arrives. */}
+                <View style={styles.actionRowPlaceholder} />
             </View>
         );
     };
@@ -2601,6 +2584,7 @@ const DictionaryContent = ({
                         <Text style={[styles.notFoundSubtext, { color: colors.textSubtle }]}>
                             {liveError ? t('lookup.dictionaryFailed') : t('lookup.noDefinition')}
                         </Text>
+                        {renderInlineTranslation()}
                     </>
                 )}
             </ScrollView>
@@ -2637,22 +2621,6 @@ const DictionaryContent = ({
         const showLess = isExpanded && Array.isArray(extra) && extra.length > 0;
         const cachedHanja = getEntryHanja(cachedEntry);
         const cachedDefinition = getEntryDefinition(cachedEntry);
-
-        if (translationMode) {
-            return renderTranslationPanel({
-                word: stem,
-                hanja: cachedHanja,
-                definition: cachedDefinition,
-                pos: getEntryPos(cachedEntry) || getEntryPos(liveMeta),
-                romanization: romanizations[stem] || getEntryRomanization(liveMeta),
-                ipa: getEntryIpa(cachedEntry) || getEntryIpa(liveMeta),
-                pinyin: getEntryPinyin(cachedEntry) || getEntryPinyin(liveMeta),
-                simplified: getEntrySimplified(cachedEntry) || getEntrySimplified(liveMeta),
-                traditional: getEntryTraditional(cachedEntry) || getEntryTraditional(liveMeta),
-                audioUs: getEntryAudioUs(cachedEntry) || getEntryAudioUs(liveMeta),
-                audioUk: getEntryAudioUk(cachedEntry) || getEntryAudioUk(liveMeta),
-            });
-        }
 
         return (
             renderDictionaryPanel(
@@ -2708,22 +2676,6 @@ const DictionaryContent = ({
     const liveHanja = getEntryHanja(first);
     const liveDefinition = getEntryDefinition(first);
     const liveWord = first ? (cleanValue(first.word) || word) : word;
-
-    if (translationMode) {
-        return renderTranslationPanel({
-            word: liveWord,
-            hanja: liveHanja,
-            definition: liveDefinition,
-            pos: getEntryPos(first),
-            romanization: romanizations[word] || getEntryRomanization(first),
-            ipa: getEntryIpa(first),
-            pinyin: getEntryPinyin(first),
-            simplified: getEntrySimplified(first),
-            traditional: getEntryTraditional(first),
-            audioUs: getEntryAudioUs(first),
-            audioUk: getEntryAudioUk(first),
-        });
-    }
 
     return renderDictionaryPanel(
         <>
@@ -2790,7 +2742,11 @@ const DictionaryContent = ({
 
 const createStyles = (colors) => StyleSheet.create({
     panelContent: {
-        flex: 1,
+        // No flex: 1. The sheet has no fixed height, so the panel hugs its
+        // content and only shrinks (the body then scrolls) at the sheet's ceiling.
+        flexGrow: 0,
+        flexShrink: 1,
+        minHeight: 0,
         paddingHorizontal: 0,
         paddingTop: 0,
         paddingBottom: 0,
@@ -2802,7 +2758,8 @@ const createStyles = (colors) => StyleSheet.create({
         position: 'relative',
     },
     dictionaryScroll: {
-        flex: 1,
+        flexGrow: 0,
+        flexShrink: 1,
         minHeight: 0,
     },
     dictionaryScrollContent: {
@@ -2814,8 +2771,9 @@ const createStyles = (colors) => StyleSheet.create({
         paddingHorizontal: 0,
     },
     primaryEntry: {
-        gap: 10,
-        paddingHorizontal: 24,
+        gap: 8,
+        paddingHorizontal: 22,
+        paddingTop: 6,
         paddingBottom: 0,
     },
     entryHeading: {
@@ -2824,7 +2782,7 @@ const createStyles = (colors) => StyleSheet.create({
     headwordRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 10,
+        gap: 8,
     },
     headwordChevronButton: {
         width: 24,
@@ -2851,24 +2809,26 @@ const createStyles = (colors) => StyleSheet.create({
         alignItems: 'baseline',
         justifyContent: 'center',
         flexWrap: 'wrap',
-        gap: 12,
+        columnGap: 10,
+        rowGap: 0,
         paddingTop: 0,
     },
     entryWord: {
         fontFamily: fontFamilies.krSerifSemiBold,
-        fontSize: 28,
-        lineHeight: 36,
+        fontSize: 30,
+        lineHeight: 40,
         letterSpacing: 0,
         paddingTop: 0,
         includeFontPadding: true,
     },
     entryHanja: {
         fontFamily: fontFamilies.krSerifMedium,
-        fontSize: 17,
+        fontSize: 18,
         lineHeight: 24,
     },
     entryMeta: {
-        fontFamily: fontFamilies.displayItalic,
+        fontFamily: fontFamilies.sansRegular,
+        fontStyle: 'italic',
         fontSize: 14,
         lineHeight: 20,
         marginTop: 0,
@@ -2900,9 +2860,9 @@ const createStyles = (colors) => StyleSheet.create({
         paddingHorizontal: 6,
     },
     pronunciationAccentText: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 9,
-        lineHeight: 11,
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 11,
+        lineHeight: 13,
         letterSpacing: 0,
     },
     headerActions: {
@@ -2915,8 +2875,10 @@ const createStyles = (colors) => StyleSheet.create({
         marginRight: -4,
     },
     actionRow: {
-        paddingHorizontal: 24,
-        paddingTop: 8,
+        flexDirection: 'row',
+        gap: 8,
+        paddingHorizontal: 16,
+        paddingTop: 16,
         paddingBottom: 0,
     },
     actionButtonGroup: {
@@ -2925,25 +2887,20 @@ const createStyles = (colors) => StyleSheet.create({
     },
     actionButton: {
         flex: 1,
-        height: 44,
+        minWidth: 0,
+        height: 46,
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
         paddingHorizontal: 8,
         backgroundColor: colors.readerSurface,
         borderWidth: 1,
-        borderColor: colors.readerBorder,
-        borderRadius: radii.xs,
+        borderColor: colors.border,
+        borderRadius: 14,
     },
-    actionButtonSaved: {
+    actionButtonActive: {
         backgroundColor: colors.readerTappedWordBg,
         borderColor: colors.readerTappedWordBg,
-    },
-    actionButtonRight: {
-        borderColor: colors.readerBorder,
-    },
-    actionButtonRightActive: {
-        backgroundColor: colors.readerSavedChipBg,
     },
     actionButtonDisabled: {
         opacity: 0.5,
@@ -2952,36 +2909,51 @@ const createStyles = (colors) => StyleSheet.create({
         marginRight: 6,
     },
     actionLabel: {
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 14,
+        lineHeight: 18,
+        letterSpacing: 0,
+        flexShrink: 1,
+    },
+    // Small superscript "AI" after the Meaning label.
+    aiBadge: {
         fontFamily: fontFamilies.sansBold,
-        fontSize: 10,
-        lineHeight: 13,
-        // Longer labels ("translate", "smart definition") ran edge to edge in the
-        // button at 1.8; tightened so the tracking still reads but leaves gutters.
-        letterSpacing: 1.2,
-        textTransform: 'uppercase',
-        flexShrink: 1,
-    },
-    translationPanelBody: {
-        paddingHorizontal: 24,
-        paddingTop: 0,
-    },
-    translationSectionTitle: {
-        ...textStyles.eyebrow,
         fontSize: 9,
-        lineHeight: 13,
-        letterSpacing: 1.8,
-        marginTop: 14,
-        marginBottom: 9,
-        color: colors.textSubtle,
+        lineHeight: 11,
+        letterSpacing: 0.3,
+        opacity: 0.7,
+        marginLeft: 2,
+        alignSelf: 'flex-start',
+        marginTop: 11,
     },
-    translationContentWrap: {
-        flexGrow: 0,
-        flexShrink: 1,
+    actionRowPlaceholder: {
+        height: 62,
+    },
+    inlineTranslation: {
+        alignSelf: 'stretch',
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 10,
+        paddingVertical: 10,
+        paddingHorizontal: 12,
+        borderRadius: 12,
+        marginTop: 4,
+    },
+    inlineTranslationText: {
+        flex: 1,
+        minWidth: 0,
+    },
+    inlineTranslationSurface: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 12,
+        lineHeight: 16,
+        maxWidth: 110,
+        flexShrink: 0,
     },
     definitionLoadingContent: {
-        paddingHorizontal: 24,
-        paddingTop: 0,
-        gap: 14,
+        paddingHorizontal: 22,
+        paddingTop: 6,
+        gap: 12,
     },
     definitionLoadingHeadword: {
         alignItems: 'center',
@@ -2991,28 +2963,26 @@ const createStyles = (colors) => StyleSheet.create({
         textAlign: 'center',
     },
     definitionLoadingArea: {
-        minHeight: 56,
+        minHeight: 36,
     },
     posBadge: {
-        borderRadius: 3,
-        paddingHorizontal: 14,
-        paddingVertical: 6,
+        borderRadius: 6,
+        paddingHorizontal: 7,
+        paddingVertical: 3,
         borderWidth: 1,
-        borderColor: colors.readerBorder,
+        borderColor: colors.border,
         backgroundColor: colors.transparent,
     },
     posBadgeText: {
-        ...textStyles.caption,
-        fontFamily: fontFamilies.sansBold,
+        fontFamily: fontFamilies.sansSemiBold,
         fontSize: 12,
         lineHeight: 15,
-        letterSpacing: 2.2,
-        textTransform: 'uppercase',
+        letterSpacing: 0,
     },
     definitionText: {
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 15,
-        lineHeight: 23,
+        fontSize: 17,
+        lineHeight: 24,
         letterSpacing: 0,
         textAlign: 'center',
         // No flexShrink: when the definition can't share the badge's line it wraps
@@ -3027,13 +2997,9 @@ const createStyles = (colors) => StyleSheet.create({
         flexWrap: 'wrap',
         alignItems: 'center',
         justifyContent: 'center',
-        gap: 8,
+        gap: 10,
         paddingHorizontal: 0,
-        paddingVertical: 8,
-        // Sized to hug a single-line definition. A fixed 44 here padded the row
-        // enough that word + pronunciation + a one-line definition overflowed the
-        // compact sheet and turned it into a scroll view.
-        minHeight: 26,
+        paddingVertical: 2,
     },
     definitionRowSolo: {
         justifyContent: 'center',
@@ -3144,13 +3110,11 @@ const createStyles = (colors) => StyleSheet.create({
         borderTopWidth: StyleSheet.hairlineWidth,
     },
     zhCharSectionTitle: {
-        ...textStyles.caption,
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 10,
-        lineHeight: 13,
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 13,
+        lineHeight: 17,
         letterSpacing: 0,
-        textAlign: 'center',
-        textTransform: 'uppercase',
+        color: colors.textTertiary,
         marginBottom: 2,
     },
     zhHeadwordChars: {
@@ -3170,14 +3134,14 @@ const createStyles = (colors) => StyleSheet.create({
     },
     // A dotted underline under each tappable character (Android draws
     // textDecorationStyle 'dotted' solid, so the dots are views).
-    zhHeadwordDots: {
+    headwordDots: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignSelf: 'stretch',
         marginHorizontal: 3,
         marginTop: -2,
     },
-    zhHeadwordDot: {
+    headwordDot: {
         width: 2.5,
         height: 2.5,
         borderRadius: 1.25,
@@ -3211,7 +3175,7 @@ const createStyles = (colors) => StyleSheet.create({
     },
     explainSection: {
         width: '100%',
-        marginTop: spacing.sm,
+        marginTop: 4,
     },
     explainGlossRow: {
         flexDirection: 'row',
@@ -3234,22 +3198,21 @@ const createStyles = (colors) => StyleSheet.create({
         lineHeight: 24,
     },
     explainBody: {
-        marginTop: spacing.md,
-        paddingTop: spacing.md,
+        marginTop: 12,
+        paddingTop: 12,
         borderTopWidth: StyleSheet.hairlineWidth,
-        gap: 8,
+        gap: 6,
     },
     explainBodyTitle: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 12,
-        lineHeight: 15,
-        letterSpacing: 2,
-        textTransform: 'uppercase',
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 13,
+        lineHeight: 17,
+        letterSpacing: 0,
     },
     explainBodyText: {
         fontFamily: fontFamilies.sansRegular,
         fontSize: 15,
-        lineHeight: 23,
+        lineHeight: 22,
         letterSpacing: 0,
     },
     notInDictionaryBadge: {
@@ -3268,13 +3231,14 @@ const createStyles = (colors) => StyleSheet.create({
     },
     notInDictionaryText: {
         fontFamily: fontFamilies.sansMedium,
-        fontSize: 10,
-        letterSpacing: 0.3,
+        fontSize: 11,
+        letterSpacing: 0,
     },
     explainLoadingRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 10,
+        gap: 8,
+        minHeight: 22,
     },
     explainLoadingText: {
         fontFamily: fontFamilies.sansRegular,
@@ -3290,12 +3254,15 @@ const createStyles = (colors) => StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
-        paddingVertical: 9,
+        height: 40,
         paddingHorizontal: 14,
         backgroundColor: colors.readerSurface,
         borderWidth: 1,
-        borderColor: colors.readerBorder,
-        borderRadius: radii.xs,
+        borderColor: colors.border,
+        borderRadius: 12,
+    },
+    aiSaveLabel: {
+        fontSize: 13,
     },
     originSection: {
         gap: 6,
@@ -3304,13 +3271,11 @@ const createStyles = (colors) => StyleSheet.create({
         borderTopWidth: StyleSheet.hairlineWidth,
     },
     originTitle: {
-        ...textStyles.caption,
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 10,
-        lineHeight: 13,
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 13,
+        lineHeight: 17,
         letterSpacing: 0,
         textAlign: 'center',
-        textTransform: 'uppercase',
     },
     originText: {
         fontFamily: fontFamilies.sansRegular,
@@ -3333,22 +3298,18 @@ const createStyles = (colors) => StyleSheet.create({
         gap: 6,
     },
     wordPartsTitle: {
-        ...textStyles.caption,
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 10,
-        lineHeight: 13,
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 13,
+        lineHeight: 17,
         letterSpacing: 0,
         textAlign: 'center',
-        textTransform: 'uppercase',
     },
     wordPartsConfidence: {
-        ...textStyles.caption,
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 9,
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 10,
         lineHeight: 12,
         letterSpacing: 0,
         textAlign: 'center',
-        textTransform: 'uppercase',
         borderWidth: StyleSheet.hairlineWidth,
         borderRadius: 5,
         paddingHorizontal: 5,
@@ -3369,13 +3330,11 @@ const createStyles = (colors) => StyleSheet.create({
         borderTopWidth: StyleSheet.hairlineWidth,
     },
     relatedRootsTitle: {
-        ...textStyles.caption,
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 10,
-        lineHeight: 13,
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 13,
+        lineHeight: 17,
         letterSpacing: 0,
         textAlign: 'center',
-        textTransform: 'uppercase',
     },
     relatedRootGroup: {
         gap: 6,
@@ -3479,13 +3438,11 @@ const createStyles = (colors) => StyleSheet.create({
         textAlign: 'center',
     },
     wordPartType: {
-        ...textStyles.caption,
         fontFamily: fontFamilies.sans,
-        fontSize: 10,
-        lineHeight: 12,
+        fontSize: 11,
+        lineHeight: 13,
         letterSpacing: 0,
         textAlign: 'center',
-        textTransform: 'uppercase',
     },
     wordPartMeaning: {
         fontFamily: fontFamilies.sansRegular,
@@ -3604,8 +3561,8 @@ const createStyles = (colors) => StyleSheet.create({
         textAlign: 'center',
     },
     notFoundScrollContent: {
-        flexGrow: 1,
-        paddingHorizontal: 24,
+        paddingHorizontal: 22,
+        paddingTop: 6,
         gap: 6,
     },
     notFoundScrollContentCentered: {

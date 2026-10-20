@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   BackHandler,
   Modal,
   Pressable,
@@ -49,7 +50,7 @@ import {
 import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
 import { requestUserDataSync } from '../services/userDataSyncQueue';
 import { normalizeBookLanguage } from '../constants/languages';
-import { colors, fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
+import { colors, fontFamilies, radii, spacing, useTheme } from '../theme';
 
 const FILTERS = [
   { key: 'starred', labelKey: 'learn.filters.starred', icon: 'star' },
@@ -118,7 +119,9 @@ const LEARN_SIDE_PADDING = 16;
 const ENCOUNTER_DOT_COUNT = 4;
 const DETAIL_CONTEXT_LIMIT = 2;
 const DETAIL_HANJA_RELATED_PAGE_SIZE = 2;
-const MONTH_SHORT_LABELS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+const MONTH_SHORT_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const SEGMENT_TRACK_PADDING = 3;
+const MS_PER_DAY = 1000 * 60 * 60 * 24;
 const MONTH_LONG_LABELS = [
   'January',
   'February',
@@ -296,24 +299,114 @@ const getLastSawDate = (word) => (
   || null
 );
 
-const formatShortDate = (value, fallback = 'NOT SEEN') => {
-  const timestamp = new Date(value).getTime();
-  if (!Number.isFinite(timestamp)) {
-    return fallback;
+// Month/day in the interface language when the runtime has Intl date
+// support; the English labels are the fallback.
+const formatLocalizedDate = (date, language, month) => {
+  if (language && language !== 'en') {
+    try {
+      const label = date.toLocaleDateString(language, { month, day: 'numeric' });
+      if (label) {
+        return label;
+      }
+    } catch {
+      // fall through to the English labels
+    }
   }
 
-  const date = new Date(timestamp);
-  return `${MONTH_SHORT_LABELS[date.getMonth()] ?? ''} ${date.getDate()}`.trim() || fallback;
+  const labels = month === 'long' ? MONTH_LONG_LABELS : MONTH_SHORT_LABELS;
+  return `${labels[date.getMonth()] ?? ''} ${date.getDate()}`.trim();
 };
 
-const formatLongDate = (value, fallback = '') => {
+const formatShortDate = (value, fallback = 'not seen', language = 'en') => {
   const timestamp = new Date(value).getTime();
   if (!Number.isFinite(timestamp)) {
     return fallback;
   }
 
+  return formatLocalizedDate(new Date(timestamp), language, 'short') || fallback;
+};
+
+const formatLongDate = (value, fallback = '', language = 'en') => {
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) {
+    return fallback;
+  }
+
+  return formatLocalizedDate(new Date(timestamp), language, 'long') || fallback;
+};
+
+const capitalizeFirst = (value) => {
+  const text = cleanText(value);
+  return text ? `${text.charAt(0).toUpperCase()}${text.slice(1)}` : '';
+};
+
+const startOfDay = (timestamp) => {
   const date = new Date(timestamp);
-  return `${MONTH_LONG_LABELS[date.getMonth()] ?? ''} ${date.getDate()}`.trim() || fallback;
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+};
+
+// Whole calendar days from `now` until `timestamp` (0 = later today).
+const calendarDaysUntil = (timestamp, now = Date.now()) => (
+  Math.round((startOfDay(timestamp) - startOfDay(now)) / MS_PER_DAY)
+);
+
+const formatNextReview = (word, t, now = Date.now()) => {
+  const nextReviewAt = getNextReviewTimestamp(word);
+  if (nextReviewAt === null || nextReviewAt <= now) {
+    return t('learn.when.today');
+  }
+
+  const days = calendarDaysUntil(nextReviewAt, now);
+  if (days <= 0) {
+    return t('learn.when.today');
+  }
+  if (days === 1) {
+    return t('learn.when.tomorrow');
+  }
+  if (days < 45) {
+    return t('learn.when.inDays', { count: days });
+  }
+  return t('learn.when.inMonths', { count: Math.round(days / 30) });
+};
+
+const WORD_BOUNDARY_RE = /[\s.,!?;:"'“”‘’()[\]{}…·「」『』<>~-]/;
+
+// Finds the saved word inside a context sentence so it can be underlined. A
+// Korean word usually appears inflected (정직 → 정직한, 아름답다 → 아름다운),
+// so try shrinking prefixes of the stem and extend the match to the end of
+// the written word.
+const findWordInSentence = (sentence, word, isKorean) => {
+  const text = cleanText(sentence);
+  const target = cleanText(word);
+  if (!text || !target) {
+    return null;
+  }
+
+  const stem = isKorean && target.length > 1 && target.endsWith('다') ? target.slice(0, -1) : target;
+  const minLength = isKorean && stem.length >= 3 ? Math.ceil(stem.length / 2) : stem.length;
+
+  for (let length = stem.length; length >= minLength; length -= 1) {
+    const index = text.indexOf(stem.slice(0, length));
+    if (index === -1) {
+      continue;
+    }
+
+    let end = index + length;
+    if (isKorean) {
+      while (end < text.length && !WORD_BOUNDARY_RE.test(text[end])) {
+        end += 1;
+      }
+    }
+
+    return {
+      before: text.slice(0, index),
+      match: text.slice(index, end),
+      after: text.slice(end),
+    };
+  }
+
+  return null;
 };
 
 const getExposureDotCount = (seenCount) => {
@@ -410,21 +503,6 @@ const getContextSource = (context, fallbackSource) => (
   || fallbackSource
 );
 
-const getDistinctDays = (word) => {
-  const dates = [word?.created_at, word?.last_reviewed_at]
-    .map((value) => {
-      const timestamp = new Date(value).getTime();
-      if (!Number.isFinite(timestamp)) {
-        return null;
-      }
-
-      return new Date(timestamp).toISOString().slice(0, 10);
-    })
-    .filter(Boolean);
-
-  return Math.max(1, new Set(dates).size);
-};
-
 const getProficiency = (word, levelsByKey = proficiencyByKey) => {
   const seen = getSeenCount(word);
   let key = 'new';
@@ -462,6 +540,13 @@ const isNotSeenLately = (word) => {
   return Date.now() - timestamp > 1000 * 60 * 60 * 24 * 7;
 };
 
+// Never graded in a review: a newly saved word. It counts as "not seen yet"
+// and, since nothing schedules it for later, as due.
+const isNeverReviewed = (word) => (
+  !cleanText(word?.last_reviewed_at)
+  && numericValue(word?.correct_count) + numericValue(word?.wrong_count) === 0
+);
+
 const isRecentlySaved = (word) => {
   const timestamp = new Date(word?.created_at).getTime();
   if (!Number.isFinite(timestamp)) {
@@ -478,11 +563,6 @@ const getNextReviewTimestamp = (word) => {
 
   const timestamp = new Date(word?.next_review_at).getTime();
   return Number.isFinite(timestamp) ? timestamp : null;
-};
-
-const isReviewDue = (word, now = Date.now()) => {
-  const nextReviewAt = getNextReviewTimestamp(word);
-  return nextReviewAt !== null && nextReviewAt <= now && word?.level !== 'unorganized';
 };
 
 const isReviewCoolingDown = (word, now = Date.now()) => {
@@ -550,11 +630,16 @@ const getFilteredWords = (rows, filter, levelsByKey = proficiencyByKey) => {
 };
 
 const EncounterDots = ({ seenCount, size = 6 }) => {
+  const { t } = useTranslation();
   const { styles } = useLearnTheme();
   const filledCount = getExposureDotCount(seenCount);
 
   return (
-    <View style={styles.dotRow}>
+    <View
+      accessible
+      accessibilityLabel={t('learn.maturityA11y', { count: filledCount, total: ENCOUNTER_DOT_COUNT })}
+      style={styles.dotRow}
+    >
       {Array.from({ length: ENCOUNTER_DOT_COUNT }).map((_, index) => {
         const filled = index < filledCount;
         return (
@@ -587,11 +672,14 @@ const StatusBadge = ({ label }) => {
 };
 
 const VocabularyRow = ({ word, onPress, onLongPress, selectionMode = false, selected = false }) => {
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   const { colors, styles } = useLearnTheme();
   const seenCount = getSeenCount(word);
   const source = getSourceLabel(word, t);
-  const lastSaw = formatShortDate(getLastSawDate(word), t('learn.notSeenDate').toUpperCase());
+  const lastSaw = formatShortDate(getLastSawDate(word), t('learn.notSeenDate'), language);
+  const seenLabel = seenCount === 1
+    ? t('learn.rowSeenOnce')
+    : t('learn.rowSeenTimes', { count: seenCount });
   const showNewBadge = isRecentlySaved(word);
   const showNotSeenBadge = !showNewBadge && isNotSeenLately(word);
 
@@ -616,15 +704,13 @@ const VocabularyRow = ({ word, onPress, onLongPress, selectionMode = false, sele
           <Text numberOfLines={1} style={styles.wordText}>{word.word}</Text>
           {word.hanja ? <Text numberOfLines={1} style={styles.wordHanja}>{word.hanja}</Text> : null}
           {showNewBadge ? <StatusBadge label={t('learn.newBadge')} /> : null}
-          {showNotSeenBadge ? <StatusBadge label={t('learn.notSeenBadge')} tone="amber" /> : null}
-          {word.is_favorite ? <MaterialIcons name="star" size={16} color={colors.inkSlate} /> : null}
+          {showNotSeenBadge ? <StatusBadge label={t('learn.notSeenBadge')} /> : null}
+          {word.is_favorite ? <MaterialIcons name="star" size={15} color={colors.inkSlate} /> : null}
         </View>
         <Text numberOfLines={1} style={styles.wordDefinition}>{word.def || t('learn.noDefinition')}</Text>
-        <View style={styles.wordMetaLine}>
-          <Text numberOfLines={1} style={styles.wordMetaText}>
-            {source} · ×{seenCount} · {lastSaw}
-          </Text>
-        </View>
+        <Text numberOfLines={1} style={styles.wordMetaText}>
+          {[source, seenLabel, lastSaw].filter(Boolean).join(' · ')}
+        </Text>
       </View>
 
       <View style={styles.encounterSummary}>
@@ -634,14 +720,88 @@ const VocabularyRow = ({ word, onPress, onLongPress, selectionMode = false, sele
   );
 };
 
-const DetailHanjaPanel = ({ word, onKnownWordsChange }) => {
+const SegmentedTabs = ({ tabs, value, onChange }) => {
+  const { styles } = useLearnTheme();
+  const [trackWidth, setTrackWidth] = useState(0);
+  const activeIndex = Math.max(0, tabs.findIndex((tab) => tab.key === value));
+  const position = useRef(new Animated.Value(activeIndex)).current;
+
+  useEffect(() => {
+    Animated.timing(position, {
+      toValue: activeIndex,
+      duration: 180,
+      useNativeDriver: true,
+    }).start();
+  }, [activeIndex, position]);
+
+  const segmentWidth = trackWidth > 0 ? (trackWidth - SEGMENT_TRACK_PADDING * 2) / tabs.length : 0;
+
+  return (
+    <View
+      accessibilityRole="tablist"
+      style={styles.mainTabs}
+      onLayout={(event) => setTrackWidth(event.nativeEvent.layout.width)}
+    >
+      {segmentWidth > 0 ? (
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.mainTabIndicator,
+            {
+              width: segmentWidth,
+              transform: [{ translateX: Animated.multiply(position, segmentWidth) }],
+            },
+          ]}
+        />
+      ) : null}
+      {tabs.map((tab) => {
+        const active = tab.key === value;
+        return (
+          <TouchableOpacity
+            key={tab.key}
+            onPress={() => onChange(tab.key)}
+            activeOpacity={0.7}
+            style={styles.mainTab}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: active }}
+          >
+            <Text numberOfLines={1} style={[styles.mainTabText, active && styles.mainTabTextActive]}>
+              {tab.label}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+};
+
+const DottedUnderline = ({ color }) => {
+  const { styles } = useLearnTheme();
+
+  return (
+    <View style={styles.dottedUnderline}>
+      {Array.from({ length: 5 }).map((_, index) => (
+        <View key={`dot-${index}`} style={[styles.dottedUnderlineDot, { backgroundColor: color }]} />
+      ))}
+    </View>
+  );
+};
+
+const DetailHanjaPanel = ({
+  word,
+  onKnownWordsChange,
+  activeIndex: controlledIndex,
+  onActiveIndexChange,
+}) => {
   const { interfaceLanguage } = useAppContext();
   const { activeOwnerId, syncGeneration, syncPaused } = useLocalOwner();
   const { t } = useTranslation();
   const { colors, styles } = useLearnTheme();
   const characters = useMemo(() => getHanjaCharacters(word?.hanja), [word?.hanja]);
   const charactersKey = characters.join('|');
-  const [activeIndex, setActiveIndex] = useState(0);
+  const [localIndex, setLocalIndex] = useState(0);
+  const activeIndex = controlledIndex ?? localIndex;
+  const setActiveIndex = onActiveIndexChange ?? setLocalIndex;
   const [lookupByCharacter, setLookupByCharacter] = useState({});
   const [isLoadingLookup, setIsLoadingLookup] = useState(false);
   const [knownKeys, setKnownKeys] = useState(new Set());
@@ -650,7 +810,7 @@ const DetailHanjaPanel = ({ word, onKnownWordsChange }) => {
   const language = word?.language ?? 'ko';
 
   useEffect(() => {
-    setActiveIndex(0);
+    setLocalIndex(0);
   }, [charactersKey]);
 
   useEffect(() => {
@@ -742,6 +902,7 @@ const DetailHanjaPanel = ({ word, onKnownWordsChange }) => {
   ))).join(', ');
   const canGoPrevious = safeActiveIndex > 0;
   const canGoNext = safeActiveIndex < characters.length - 1;
+  const hasSeveralCharacters = characters.length > 1;
 
   const sourceWordDetails = {
     hanja: word.hanja ?? null,
@@ -875,44 +1036,45 @@ const DetailHanjaPanel = ({ word, onKnownWordsChange }) => {
   return (
     <View style={styles.detailHanjaPanel}>
       <View style={styles.detailHanjaPanelHeader}>
-        <Text selectable style={styles.detailHanjaPanelCharacter}>{activeHanja}</Text>
+        <View style={styles.detailHanjaCharBox}>
+          <Text selectable style={styles.detailHanjaPanelCharacter}>{activeHanja}</Text>
+        </View>
         <View style={styles.detailHanjaPanelCopy}>
-          <Text style={styles.detailHanjaPanelEyebrow}>{t('learn.hanjaCharacter')}</Text>
-          <Text selectable numberOfLines={2} style={styles.detailHanjaPanelMeaning}>
+          <Text selectable numberOfLines={1} style={styles.detailHanjaReading}>
             {readingLabel || (isLoading ? t('common.loading') : t('hanja.meaningUnavailable'))}
-            {meaningLabel ? ` · ${meaningLabel}` : ''}
           </Text>
+          {meaningLabel ? (
+            <Text selectable numberOfLines={2} style={styles.detailHanjaMeaning}>{meaningLabel}</Text>
+          ) : null}
         </View>
         <View style={styles.detailHanjaPanelNav}>
-          <TouchableOpacity
-            accessibilityRole="button"
-            accessibilityLabel={t('hanja.previous')}
-            disabled={!canGoPrevious}
-            onPress={goToPrevious}
-            style={[styles.hanjaPanelArrow, !canGoPrevious && styles.hanjaPanelArrowDisabled]}
-          >
-            <Feather
-              name="chevron-left"
-              size={16}
-              color={canGoPrevious ? colors.textTertiary : colors.textSubtle}
-            />
-          </TouchableOpacity>
+          {hasSeveralCharacters ? (
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel={t('hanja.previous')}
+              disabled={!canGoPrevious}
+              onPress={goToPrevious}
+              hitSlop={{ top: 10, bottom: 10, left: 8, right: 4 }}
+              style={[styles.hanjaPanelArrow, !canGoPrevious && styles.hanjaPanelArrowDisabled]}
+            >
+              <Feather name="chevron-left" size={16} color={colors.textTertiary} />
+            </TouchableOpacity>
+          ) : null}
           <Text style={styles.detailHanjaPanelCount}>
             {t('learn.hanjaCount', { current: safeActiveIndex + 1, total: characters.length })}
           </Text>
-          <TouchableOpacity
-            accessibilityRole="button"
-            accessibilityLabel={t('hanja.next')}
-            disabled={!canGoNext}
-            onPress={goToNext}
-            style={[styles.hanjaPanelArrow, !canGoNext && styles.hanjaPanelArrowDisabled]}
-          >
-            <Feather
-              name="chevron-right"
-              size={16}
-              color={canGoNext ? colors.textTertiary : colors.textSubtle}
-            />
-          </TouchableOpacity>
+          {hasSeveralCharacters ? (
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel={t('hanja.next')}
+              disabled={!canGoNext}
+              onPress={goToNext}
+              hitSlop={{ top: 10, bottom: 10, left: 4, right: 8 }}
+              style={[styles.hanjaPanelArrow, !canGoNext && styles.hanjaPanelArrowDisabled]}
+            >
+              <Feather name="chevron-right" size={16} color={colors.textTertiary} />
+            </TouchableOpacity>
+          ) : null}
         </View>
       </View>
 
@@ -920,7 +1082,7 @@ const DetailHanjaPanel = ({ word, onKnownWordsChange }) => {
 
       {isLoading ? (
         <View style={styles.hanjaPanelEmpty}>
-          <ActivityIndicator size="small" color={colors.accent} />
+          <ActivityIndicator size="small" color={colors.textMuted} />
           <Text style={styles.hanjaPanelEmptyText}>{t('hanja.loading')}</Text>
         </View>
       ) : visibleRelatedWords.length > 0 ? (
@@ -930,13 +1092,15 @@ const DetailHanjaPanel = ({ word, onKnownWordsChange }) => {
             return (
               <View
                 key={`${relatedWord.korean}-${relatedWord.hanja}-${index}`}
-                style={[
-                  styles.detailHanjaRelatedRow,
-                  index > 0 && styles.detailHanjaRelatedRowSeparated,
-                ]}
+                style={styles.detailHanjaRelatedRow}
               >
                 <View style={styles.detailHanjaRelatedCopy}>
-                  <Text selectable numberOfLines={1} style={styles.detailHanjaRelatedWord}>{relatedWord.korean}</Text>
+                  <Text selectable numberOfLines={1} style={styles.detailHanjaRelatedWord}>
+                    {relatedWord.korean}
+                    {relatedWord.hanja ? (
+                      <Text style={styles.detailHanjaRelatedHanja}>{`  ${relatedWord.hanja}`}</Text>
+                    ) : null}
+                  </Text>
                   <Text selectable style={styles.detailHanjaRelatedMeaning}>
                     {relatedWord.meaning || t('hanja.meaningUnavailable')}
                   </Text>
@@ -946,15 +1110,14 @@ const DetailHanjaPanel = ({ word, onKnownWordsChange }) => {
                   accessibilityLabel={known
                     ? t('hanja.markedKnown', { word: relatedWord.korean })
                     : t('hanja.markKnown', { word: relatedWord.korean })}
+                  accessibilityState={{ selected: known }}
                   onPress={() => handleKnownPress(relatedWord)}
-                  style={styles.detailHanjaKnownButton}
+                  hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  style={[styles.knownPill, known && styles.knownPillActive]}
                 >
-                  {known ? <Feather name="check" size={14} color={colors.text} /> : null}
-                  <Text style={[
-                    styles.detailHanjaKnownButtonText,
-                    !known && styles.detailHanjaKnownButtonTextAction,
-                  ]}>
-                    {known ? t('learn.known') : t('learn.markKnown')}
+                  {known ? <Feather name="check" size={13} color={colors.textSecondary} /> : null}
+                  <Text style={styles.knownPillText}>
+                    {known ? t('learn.known') : t('learn.iKnowIt')}
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -988,24 +1151,24 @@ const WordDetailModal = ({
   onToggleFavorite,
   onKnownWordsChange,
 }) => {
-  const { t } = useTranslation();
-  const { colors, styles, proficiencyByKey } = useLearnTheme();
+  const { t, language } = useTranslation();
+  const { colors, styles } = useLearnTheme();
+  const [hanjaIndex, setHanjaIndex] = useState(0);
+  const hanjaKey = word?.hanja ?? '';
+
+  useEffect(() => {
+    setHanjaIndex(0);
+  }, [hanjaKey]);
 
   if (!word) {
     return null;
   }
 
-  const proficiency = getProficiency(word, proficiencyByKey);
   const seenCount = getSeenCount(word);
   const source = getSourceLabel(word, t);
   const isKoreanWord = normalizeBookLanguage(word.language ?? 'ko') === 'ko';
   const hanjaCharacters = getHanjaCharacters(word.hanja);
   const pronunciation = getPronunciation(word);
-  const detailStatus = proficiency.rank >= proficiencyByKey.mature.rank
-    ? t('learn.detailStatus.mature')
-    : (proficiency.rank === proficiencyByKey.new.rank
-      ? t('learn.detailStatus.new')
-      : t('learn.detailStatus.waiting'));
   const contextRows = contexts.length > 0
     ? contexts
     : (cleanText(word.context_sentence)
@@ -1017,26 +1180,34 @@ const WordDetailModal = ({
       }]
       : []);
   const visibleContexts = contextRows.slice(0, DETAIL_CONTEXT_LIMIT);
-  const partOfSpeech = getPartOfSpeechLabel(word, t);
+  const partOfSpeech = capitalizeFirst(getPartOfSpeechLabel(word, t));
+  const seenValue = seenCount === 1
+    ? t('learn.seenTimesOnce')
+    : t('learn.seenTimesOther', { count: seenCount });
+  const nextReviewValue = formatNextReview(word, t);
 
   return (
     <SafeAreaView edges={['top']} style={styles.detailScreen}>
       <View style={styles.detailHeader}>
-        <TouchableOpacity onPress={onClose} style={styles.detailBackButton}>
-          <Feather name="chevron-left" size={28} color={colors.text} />
-          <Text style={styles.detailBackLabel}>{t('learn.title')}</Text>
+        <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel={t('learn.backToLearn')}
+          onPress={onClose}
+          style={styles.headerIconButton}
+        >
+          <Feather name="chevron-left" size={24} color={colors.inkSlate} />
         </TouchableOpacity>
         <TouchableOpacity
           accessibilityRole="button"
           accessibilityLabel={word.is_favorite ? t('learn.removeFavorite') : t('learn.addFavorite')}
           accessibilityState={{ selected: Boolean(word.is_favorite) }}
           onPress={onToggleFavorite}
-          style={styles.detailFavoriteButton}
+          style={styles.headerIconButton}
         >
           <MaterialIcons
             name={word.is_favorite ? 'star' : 'star-outline'}
-            size={28}
-            color={word.is_favorite ? colors.accent : colors.textSubtle}
+            size={24}
+            color={colors.inkSlate}
           />
         </TouchableOpacity>
       </View>
@@ -1046,70 +1217,93 @@ const WordDetailModal = ({
           <View style={styles.detailWordLine}>
             <Text selectable style={styles.detailWord}>{word.word}</Text>
             {isKoreanWord && hanjaCharacters.length > 0 ? (
-              <Text selectable style={styles.detailHanja}>{word.hanja}</Text>
+              <View style={styles.detailHanjaChars}>
+                {hanjaCharacters.map((character, index) => {
+                  const active = index === hanjaIndex;
+                  return (
+                    <Pressable
+                      key={`${character}-${index}`}
+                      accessibilityRole="button"
+                      accessibilityLabel={t('learn.hanjaA11y', { char: character })}
+                      accessibilityState={{ selected: active }}
+                      onPress={() => setHanjaIndex(index)}
+                      hitSlop={{ top: 12, bottom: 12, left: 4, right: 4 }}
+                      style={styles.detailHanjaCharButton}
+                    >
+                      <Text style={[styles.detailHanja, active && styles.detailHanjaActive]}>{character}</Text>
+                      <DottedUnderline color={active ? colors.textMuted : colors.textSubtle} />
+                    </Pressable>
+                  );
+                })}
+              </View>
             ) : null}
             {pronunciation ? <Text selectable style={styles.detailPronunciation}>{pronunciation}</Text> : null}
           </View>
-          <View style={styles.detailMetaLine}>
-            <View style={styles.detailStatusPill}>
-              <Text style={styles.detailStatusText}>{detailStatus}</Text>
-            </View>
-            <Text style={styles.detailEncounterMeta}>×{seenCount} {t('learn.encounters')}</Text>
-          </View>
           <View style={styles.definitionBlock}>
-            {partOfSpeech ? <Text style={styles.definitionPartOfSpeech}>{partOfSpeech}</Text> : null}
+            {partOfSpeech ? (
+              <View style={styles.posBadge}>
+                <Text style={styles.posBadgeText}>{partOfSpeech}</Text>
+              </View>
+            ) : null}
             <Text selectable style={styles.detailDefinition}>{word.def || t('learn.noDefinition')}</Text>
           </View>
         </View>
 
+        <View style={styles.detailStatsGrid}>
+          <View style={styles.detailStatCard}>
+            <Text style={styles.detailStatLabel}>{t('learn.seenLabel')}</Text>
+            <Text style={styles.detailStatValue}>{seenValue}</Text>
+          </View>
+          <View style={styles.detailStatCard}>
+            <Text style={styles.detailStatLabel}>{t('learn.nextReview')}</Text>
+            <Text style={styles.detailStatValue}>{nextReviewValue}</Text>
+          </View>
+        </View>
+
         <View style={styles.contextSection}>
-          <Text style={styles.detailSectionTitle}>{t('learn.seenIn')}</Text>
+          <Text style={styles.detailSectionTitle}>{t('learn.whereYouSawIt')}</Text>
           {visibleContexts.length > 0 ? (
             visibleContexts.map((context, index) => {
+              const sentence = cleanText(context.sentence);
+              const parts = findWordInSentence(sentence, word.word, isKoreanWord);
               const sourceLabel = getContextSource(context, source);
-              const dateLabel = formatLongDate(context.seenAt ?? context.seen_at ?? getLastSawDate(word));
+              const dateLabel = formatLongDate(context.seenAt ?? context.seen_at ?? getLastSawDate(word), '', language);
               const translation = getContextTranslation(context);
               return (
                 <View
                   key={`${context.sentence}-${context.seenAt ?? context.seen_at ?? ''}-${index}`}
-                  style={styles.contextQuoteRow}
+                  style={styles.contextItem}
                 >
-                  <Text style={styles.contextQuoteMark}>“</Text>
-                  <View style={styles.contextQuoteCopy}>
-                    <Text selectable style={styles.contextSentence}>{cleanText(context.sentence)}</Text>
-                    {translation ? (
-                      <Text selectable style={styles.contextTranslation}>{translation}</Text>
-                    ) : null}
-                    <Text style={styles.contextAttribution}>
-                      — {sourceLabel}{dateLabel ? ` · ${dateLabel}` : ''}
-                    </Text>
-                  </View>
+                  <Text selectable style={styles.contextSentence}>
+                    {parts ? (
+                      <>
+                        {parts.before}
+                        <Text style={styles.contextSentenceMatch}>{parts.match}</Text>
+                        {parts.after}
+                      </>
+                    ) : sentence}
+                  </Text>
+                  {translation ? (
+                    <Text selectable style={styles.contextTranslation}>{translation}</Text>
+                  ) : null}
+                  <Text style={styles.contextAttribution}>
+                    {sourceLabel}{dateLabel ? ` · ${dateLabel}` : ''}
+                  </Text>
                 </View>
               );
             })
           ) : (
-            <View style={styles.contextQuoteRow}>
-              <Text style={styles.contextQuoteMark}>“</Text>
-              <View style={styles.contextQuoteCopy}>
-                <Text style={styles.emptyContext}>{t('learn.noContext')}</Text>
-              </View>
-            </View>
+            <Text style={styles.emptyContext}>{t('learn.noContext')}</Text>
           )}
         </View>
 
-        <View style={styles.detailStatsGrid}>
-          <View style={styles.detailStatCard}>
-            <Text style={styles.detailStatLabel}>{t('learn.encounters')}</Text>
-            <Text style={styles.detailStatValue}>{seenCount}</Text>
-          </View>
-          <View style={styles.detailStatCard}>
-            <Text style={styles.detailStatLabel}>{t('learn.daysTracked')}</Text>
-            <Text style={styles.detailStatValue}>{getDistinctDays(word)}</Text>
-          </View>
-        </View>
-
         {isKoreanWord ? (
-          <DetailHanjaPanel word={word} onKnownWordsChange={onKnownWordsChange} />
+          <DetailHanjaPanel
+            word={word}
+            activeIndex={hanjaIndex}
+            onActiveIndexChange={setHanjaIndex}
+            onKnownWordsChange={onKnownWordsChange}
+          />
         ) : null}
       </ScrollView>
     </SafeAreaView>
@@ -1139,12 +1333,21 @@ const Learn = ({ navigation, user }) => {
   const [activeFilter, setActiveFilter] = useState('recent');
   const [practiceDeck, setPracticeDeck] = useState(null);
   const [practiceIndex, setPracticeIndex] = useState(0);
+  const [practiceDone, setPracticeDone] = useState(false);
   const markedPracticeIndexRef = useRef(-1);
   const [selectedWord, setSelectedWord] = useState(null);
   const [selectedWordContexts, setSelectedWordContexts] = useState([]);
   const [selectedWordKeys, setSelectedWordKeys] = useState(() => new Set());
 
   const isSelectionMode = selectedWordKeys.size > 0;
+  const avatarInitial = useMemo(() => {
+    const name = user?.user_metadata?.username
+      || user?.user_metadata?.display_name
+      || user?.user_metadata?.name
+      || '';
+    const trimmed = String(name).trim();
+    return trimmed ? trimmed.charAt(0).toUpperCase() : 'R';
+  }, [user?.user_metadata]);
 
   // Request ids: a fetch started for the previous language/owner can resolve
   // after the switch; only the latest request may write state.
@@ -1379,27 +1582,36 @@ const Learn = ({ navigation, user }) => {
     () => words.filter((word) => getProficiency(word, proficiencyByKey).rank >= proficiencyByKey.mature.rank).length,
     [proficiencyByKey, words]
   );
-  const waitingCount = useMemo(
-    () => words.filter((word) => {
-      const rank = getProficiency(word, proficiencyByKey).rank;
-      return rank > proficiencyByKey.new.rank && rank < proficiencyByKey.mature.rank;
-    }).length,
-    [proficiencyByKey, words]
-  );
-  const notSeenCount = useMemo(() => words.filter(isNotSeenLately).length, [words]);
-  const dueWords = useMemo(
-    () => sortDueReviews(words.filter((word) => isReviewDue(word))),
-    [words]
-  );
-  const availableVisibleWords = useMemo(
+  // The "Due today" counter, the review button and the review deck all read
+  // this one list, so they can never disagree: every saved word that is not
+  // scheduled for later, i.e. overdue words plus never-reviewed new words.
+  const reviewDeck = useMemo(
     () => {
       const now = Date.now();
-      return visibleWords.filter((word) => isReviewAvailable(word, now));
+      return sortDueReviews(words.filter((word) => isReviewAvailable(word, now)));
     },
-    [visibleWords]
+    [words]
   );
-  const reviewDeck = dueWords.length > 0 ? dueWords : availableVisibleWords;
-  const reviewDeckTitle = dueWords.length > 0 ? t('learn.dueReview') : t('learn.savedWords');
+  const notSeenYetCount = useMemo(() => words.filter(isNeverReviewed).length, [words]);
+  // "The next one comes back …" on the all-caught-up screen: the soonest
+  // review scheduled after now.
+  const nextComebackNote = useMemo(() => {
+    if (!practiceDone) {
+      return '';
+    }
+    const now = Date.now();
+    const upcoming = words
+      .map(getNextReviewTimestamp)
+      .filter((timestamp) => timestamp !== null && timestamp > now);
+    if (upcoming.length === 0) {
+      return '';
+    }
+    const days = calendarDaysUntil(Math.min(...upcoming), now);
+    if (days <= 0) {
+      return '';
+    }
+    return days === 1 ? t('learn.nextBackTomorrow') : t('learn.nextBackInDays', { count: days });
+  }, [practiceDone, t, words]);
 
   const syncFieldsToCloud = useCallback(async () => {
     requestUserDataSync('learn-vocab-fields');
@@ -1513,6 +1725,7 @@ const Learn = ({ navigation, user }) => {
     }
 
     markedPracticeIndexRef.current = -1;
+    setPracticeDone(false);
     setPracticeDeck({
       title,
       words: availableDeckWords,
@@ -1525,6 +1738,7 @@ const Learn = ({ navigation, user }) => {
     // on the last card still sees the old deck in its closure.
     setPracticeDeck(null);
     setPracticeIndex(0);
+    setPracticeDone(false);
   }, []);
 
   const persistPracticeOutcome = useCallback(async (currentWord, status) => {
@@ -1604,8 +1818,9 @@ const Learn = ({ navigation, user }) => {
 
     const currentWord = practiceDeck.words[practiceIndex];
     // Advance before the slow DB/cloud work so the next card shows at once.
+    // After the last card the deck stays open on the all-caught-up screen.
     if (practiceIndex >= practiceDeck.words.length - 1) {
-      closePractice();
+      setPracticeDone(true);
     } else {
       setPracticeIndex(practiceIndex + 1);
     }
@@ -1615,7 +1830,7 @@ const Learn = ({ navigation, user }) => {
     } catch (error) {
       console.warn('[Learn] Failed to record flashcard review:', error?.message ?? error);
     }
-  }, [closePractice, persistPracticeOutcome, practiceDeck, practiceIndex]);
+  }, [persistPracticeOutcome, practiceDeck, practiceIndex]);
 
   if (selectedWord) {
     return (
@@ -1631,89 +1846,80 @@ const Learn = ({ navigation, user }) => {
     );
   }
 
+  const reviewCount = reviewDeck.length;
+  const reviewLabel = reviewCount === 0
+    ? t('learn.noReviews')
+    : (reviewCount === 1 ? t('learn.reviewWordsOne') : t('learn.reviewWordsOther', { count: reviewCount }));
+  const mainTabs = [
+    { key: 'saved', label: t('learn.savedTab') },
+    { key: 'suggested', label: t('learn.suggestedTab') },
+    {
+      key: 'learned',
+      label: learnedWords.length > 0 ? `${t('learn.learnedTab')} ${learnedWords.length}` : t('learn.learnedTab'),
+    },
+  ];
+
   return (
     <LearnThemeContext.Provider value={learnThemeValue}>
     <Screen scroll backgroundColor={colors.bgPage} contentContainerStyle={styles.content}>
       <View style={styles.appTopBar}>
-        <View style={styles.appTopSide} />
         <Text style={styles.appTopTitle}>{t('learn.title')}</Text>
-        <View style={styles.appTopSide} />
+        <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel={t('tabs.profile')}
+          onPress={() => navigation?.navigate?.('Profile')}
+          style={styles.avatarButton}
+        >
+          <View style={styles.avatar}>
+            <Text style={styles.avatarText}>{avatarInitial}</Text>
+          </View>
+        </TouchableOpacity>
       </View>
 
       <View style={styles.summaryCard}>
         <View style={styles.summaryStats}>
           <View style={styles.summaryStat}>
-            <Text style={[styles.summaryValue, styles.summaryValueGreen]}>{maturedCount}</Text>
-            <Text style={styles.summaryLabel}>{t('learn.matured')}</Text>
+            <Text style={styles.summaryValue}>{maturedCount}</Text>
+            <Text style={styles.summaryLabel}>{t('learn.statMatured')}</Text>
           </View>
-          <View style={styles.summaryStatDivider} />
-          <View style={styles.summaryStat}>
-            <Text style={[styles.summaryValue, styles.summaryValueAmber]}>{waitingCount}</Text>
-            <Text style={styles.summaryLabel}>{t('learn.waiting')}</Text>
+          <View style={[styles.summaryStat, styles.summaryStatMiddle]}>
+            <Text style={styles.summaryValue}>{reviewCount}</Text>
+            <Text style={styles.summaryLabel}>{t('learn.statDueToday')}</Text>
           </View>
-          <View style={styles.summaryStatDivider} />
           <View style={styles.summaryStat}>
-            <Text style={styles.summaryValue}>{notSeenCount}</Text>
-            <Text style={styles.summaryLabel}>{t('learn.notSeen')}</Text>
+            <Text style={styles.summaryValue}>{notSeenYetCount}</Text>
+            <Text style={styles.summaryLabel}>{t('learn.statNotSeenYet')}</Text>
           </View>
         </View>
 
         <View style={styles.summaryActions}>
           <TouchableOpacity
-            disabled={reviewDeck.length === 0}
-            onPress={() => startPractice(reviewDeck, reviewDeckTitle)}
-            style={[styles.reviewButton, reviewDeck.length === 0 && styles.reviewButtonDisabled]}
+            disabled={reviewCount === 0}
+            onPress={() => startPractice(reviewDeck, t('learn.dueReview'))}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: reviewCount === 0 }}
+            style={[styles.reviewButton, reviewCount === 0 && styles.reviewButtonDisabled]}
           >
-            <Text style={[
-              styles.reviewButtonText,
-              reviewDeck.length === 0 && styles.reviewButtonTextDisabled,
-            ]}>
-              {reviewDeck.length > 0 ? t('learn.reviewDueCount', { count: reviewDeck.length }) : t('learn.noReviews')}
+            <Text
+              numberOfLines={1}
+              style={[styles.reviewButtonText, reviewCount === 0 && styles.reviewButtonTextDisabled]}
+            >
+              {reviewLabel}
             </Text>
           </TouchableOpacity>
           {words.length > 0 ? (
             <TouchableOpacity
+              accessibilityRole="button"
               onPress={() => navigation?.navigate?.('Read', { returnTo: 'Learn' })}
-              style={[styles.keepReadingButton, words.length === 0 && styles.keepReadingButtonFull]}
+              style={styles.keepReadingButton}
             >
-              <Text style={styles.keepReadingText}>{t('learn.keepReading')}</Text>
+              <Text numberOfLines={1} style={styles.keepReadingText}>{t('learn.keepReading')}</Text>
             </TouchableOpacity>
           ) : null}
         </View>
       </View>
 
-      <View style={styles.mainTabs}>
-        <TouchableOpacity
-          onPress={() => setMainTab('saved')}
-          style={[styles.mainTab, mainTab === 'saved' && styles.mainTabActive]}
-          accessibilityRole="tab"
-          accessibilityState={{ selected: mainTab === 'saved' }}
-        >
-          <Text style={[styles.mainTabText, mainTab === 'saved' && styles.mainTabTextActive]}>
-            {t('learn.savedTab')}
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={() => setMainTab('suggested')}
-          style={[styles.mainTab, mainTab === 'suggested' && styles.mainTabActive]}
-          accessibilityRole="tab"
-          accessibilityState={{ selected: mainTab === 'suggested' }}
-        >
-          <Text style={[styles.mainTabText, mainTab === 'suggested' && styles.mainTabTextActive]}>
-            {t('learn.suggestedTab')}
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={() => setMainTab('learned')}
-          style={[styles.mainTab, mainTab === 'learned' && styles.mainTabActive]}
-          accessibilityRole="tab"
-          accessibilityState={{ selected: mainTab === 'learned' }}
-        >
-          <Text style={[styles.mainTabText, mainTab === 'learned' && styles.mainTabTextActive]}>
-            {learnedWords.length > 0 ? `${t('learn.learnedTab')} ${learnedWords.length}` : t('learn.learnedTab')}
-          </Text>
-        </TouchableOpacity>
-      </View>
+      <SegmentedTabs tabs={mainTabs} value={mainTab} onChange={setMainTab} />
 
       {mainTab === 'saved' ? (
       <>
@@ -1725,10 +1931,12 @@ const Learn = ({ navigation, user }) => {
               key={filter.key}
               accessibilityRole="button"
               accessibilityLabel={t(filter.labelKey)}
+              accessibilityState={{ selected: active }}
               onPress={() => {
                 clearWordSelection();
                 setActiveFilter(filter.key);
               }}
+              hitSlop={{ top: 6, bottom: 6 }}
               style={[
                 styles.filterChip,
                 filter.icon && styles.filterIconChip,
@@ -1738,8 +1946,8 @@ const Learn = ({ navigation, user }) => {
               {filter.icon ? (
                 <MaterialIcons
                   name={active ? filter.icon : `${filter.icon}-border`}
-                  size={17}
-                  color={active ? colors.textMuted : colors.textSubtle}
+                  size={16}
+                  color={active ? colors.white : colors.textMuted}
                 />
               ) : (
                 <Text style={[styles.filterText, active && styles.filterTextActive]}>{t(filter.labelKey)}</Text>
@@ -1803,7 +2011,7 @@ const Learn = ({ navigation, user }) => {
               <Text style={styles.emptyBody}>{t('learn.learnedEmptyBody')}</Text>
             </View>
           ) : (
-            <View style={styles.candidateGroupList}>
+            <View>
               <Text style={styles.learnedHint}>{t('learn.learnedHint')}</Text>
               {learnedWords.map((row) => (
                 <View key={row.id} style={styles.learnedRow}>
@@ -1840,7 +2048,7 @@ const Learn = ({ navigation, user }) => {
             candidateGroups.map((group) => (
               <View key={group.bookUri} style={styles.candidateGroup}>
                 <Text style={styles.candidateGroupTitle} numberOfLines={1}>
-                  {group.bookTitle || t('learn.untitledBook')}
+                  {t('learn.suggestedFrom', { title: group.bookTitle || t('learn.untitledBook') })}
                 </Text>
                 <View style={styles.candidateGroupList}>
                   {group.candidates.map((candidate) => (
@@ -1867,6 +2075,13 @@ const Learn = ({ navigation, user }) => {
           total={practiceDeck?.words?.length ?? 0}
           onClose={closePractice}
           onMark={handlePracticeMark}
+          completed={practiceDone}
+          completionNote={nextComebackNote}
+          onKeepReading={() => {
+            closePractice();
+            navigation?.navigate?.('Read', { returnTo: 'Learn' });
+          }}
+          onBackToLearn={closePractice}
           user={user}
           ownerId={activeOwnerId}
           syncGeneration={syncGeneration}
@@ -1881,183 +2096,202 @@ const createStyles = (colors) => StyleSheet.create({
   content: {
     paddingHorizontal: 0,
     paddingTop: 0,
-    paddingBottom: 0,
+    paddingBottom: 28,
     gap: 0,
   },
   appTopBar: {
-    height: 52,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.divider,
-    backgroundColor: colors.bgPage,
-  },
-  appTopSide: {
-    width: 70,
+    paddingTop: 12,
+    paddingLeft: 20,
+    paddingRight: 12,
   },
   appTopTitle: {
     flex: 1,
-    textAlign: 'center',
-    ...textStyles.appTitle,
+    fontFamily: fontFamilies.displaySemiBold,
+    fontSize: 30,
+    lineHeight: 38,
+    letterSpacing: -0.4,
+    color: colors.text,
+  },
+  avatarButton: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatar: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: colors.inkSlate,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarText: {
+    // Same serif initial as the Read home avatar.
+    fontFamily: fontFamilies.displaySemiBold,
+    fontSize: 16,
+    lineHeight: 20,
+    color: colors.white,
   },
   summaryCard: {
-    marginHorizontal: 24,
-    marginTop: 22,
-    borderRadius: 4,
+    marginHorizontal: LEARN_SIDE_PADDING,
+    marginTop: 14,
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: colors.divider,
     backgroundColor: colors.surface,
-    padding: 18,
-    gap: 18,
+    padding: 16,
+    gap: 14,
   },
   summaryStats: {
     flexDirection: 'row',
-    gap: 0,
   },
   summaryStat: {
     flex: 1,
     alignItems: 'center',
-    gap: 4,
+    gap: 2,
   },
-  summaryStatDivider: {
-    width: 1,
-    backgroundColor: colors.divider,
-    marginVertical: 0,
+  summaryStatMiddle: {
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: colors.divider,
   },
   summaryValue: {
-    fontFamily: fontFamilies.displayMedium,
-    fontSize: 26,
-    lineHeight: 31,
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 24,
+    lineHeight: 30,
     color: colors.text,
-  },
-  summaryValueGreen: {
-    color: colors.text,
-  },
-  summaryValueAmber: {
-    color: colors.text,
+    fontVariant: ['tabular-nums'],
   },
   summaryLabel: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 9,
-    lineHeight: 12,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 12,
+    lineHeight: 16,
     color: colors.textTertiary,
-    letterSpacing: 1.6,
-    textTransform: 'uppercase',
+    textAlign: 'center',
   },
   summaryActions: {
     flexDirection: 'row',
-    gap: 10,
-  },
-  keepReadingButton: {
-    flex: 1,
-    minHeight: 40,
-    borderRadius: 3,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.borderStrong,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
     gap: 8,
   },
-  keepReadingButtonFull: {
-    flex: 1,
-  },
-  keepReadingText: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 11,
-    letterSpacing: 1.8,
-    color: colors.text,
-    textTransform: 'uppercase',
-  },
   reviewButton: {
-    flex: 1,
-    minHeight: 40,
-    borderRadius: 3,
-    borderWidth: 1,
-    borderColor: colors.accent,
+    flex: 1.3,
+    height: 46,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 12,
-    backgroundColor: colors.accent,
+    backgroundColor: colors.inkSlate,
   },
-  // Disabled reads as an outline with muted text, not a faded fill: the
-  // faded near-white fill turned into a muddy grey block in dark mode.
+  // Disabled reads as a quiet muted block with muted text, never a faded
+  // ink fill (that turned into a muddy grey block in dark mode).
   reviewButtonDisabled: {
-    backgroundColor: 'transparent',
-    borderColor: colors.border,
+    backgroundColor: colors.surfaceMuted,
   },
   reviewButtonText: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 11,
-    letterSpacing: 1.8,
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 15,
     color: colors.white,
-    textTransform: 'uppercase',
   },
   reviewButtonTextDisabled: {
-    color: colors.textMuted,
+    color: colors.textTertiary,
   },
-  filters: {
-    marginHorizontal: 24,
-    marginTop: 24,
-    flexDirection: 'row',
-    gap: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.divider,
-  },
-  filterChip: {
-    borderRadius: 0,
-    borderWidth: 0,
-    minHeight: 26,
+  keepReadingButton: {
+    flex: 1,
+    height: 46,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 0,
-    paddingTop: 0,
-    paddingBottom: 10,
-    backgroundColor: colors.transparent,
+    paddingHorizontal: 12,
+  },
+  keepReadingText: {
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 15,
+    color: colors.text,
+  },
+  mainTabs: {
+    flexDirection: 'row',
+    marginHorizontal: LEARN_SIDE_PADDING,
+    marginTop: 18,
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: 12,
+    padding: SEGMENT_TRACK_PADDING,
+  },
+  mainTabIndicator: {
+    position: 'absolute',
+    top: SEGMENT_TRACK_PADDING,
+    bottom: SEGMENT_TRACK_PADDING,
+    left: SEGMENT_TRACK_PADDING,
+    borderRadius: 10,
+    backgroundColor: colors.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    shadowColor: '#1b1c1c',
+    shadowOpacity: 0.12,
+    shadowRadius: 3,
+    shadowOffset: { width: 0, height: 1 },
+  },
+  mainTab: {
+    flex: 1,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+  },
+  mainTabText: {
+    fontFamily: fontFamilies.sansMedium,
+    fontSize: 14,
+    color: colors.textMuted,
+  },
+  mainTabTextActive: {
+    fontFamily: fontFamilies.sansSemiBold,
+    color: colors.text,
+  },
+  filters: {
+    marginHorizontal: LEARN_SIDE_PADDING,
+    marginTop: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  filterChip: {
+    height: 32,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   filterIconChip: {
-    width: 36,
+    width: 34,
     paddingHorizontal: 0,
   },
   filterChipActive: {
-    backgroundColor: colors.transparent,
-    borderBottomWidth: 2,
-    borderBottomColor: colors.accent,
-    paddingBottom: 8,
+    borderColor: colors.inkSlate,
+    backgroundColor: colors.inkSlate,
   },
   filterText: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 10,
-    lineHeight: 13,
-    letterSpacing: 1.8,
-    color: colors.textSubtle,
-    textTransform: 'uppercase',
+    fontFamily: fontFamilies.sansMedium,
+    fontSize: 13,
+    color: colors.textSecondary,
   },
   filterTextActive: {
-    color: colors.text,
-  },
-  listHeader: {
-    paddingHorizontal: LEARN_SIDE_PADDING,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  listEyebrow: {
-    ...textStyles.eyebrow,
-    color: colors.textTertiary,
-    fontSize: 10,
-    letterSpacing: 2,
-  },
-  listCount: {
-    ...textStyles.caption,
-    color: colors.textSubtle,
+    fontFamily: fontFamilies.sansSemiBold,
+    color: colors.white,
   },
   selectionBar: {
     marginHorizontal: LEARN_SIDE_PADDING,
-    minHeight: 42,
-    borderRadius: 4,
+    marginTop: 10,
+    minHeight: 44,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surface,
@@ -2068,44 +2302,43 @@ const createStyles = (colors) => StyleSheet.create({
     gap: spacing.sm,
   },
   selectionBarButton: {
-    minHeight: 30,
+    minHeight: 32,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: spacing.xs,
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     borderRadius: radii.pill,
     backgroundColor: colors.surfaceMuted,
   },
   selectionBarButtonText: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 12,
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 13,
     color: colors.textMuted,
   },
   selectionCount: {
     flex: 1,
     textAlign: 'center',
-    fontFamily: fontFamilies.sansBold,
+    fontFamily: fontFamilies.sansSemiBold,
     fontSize: 13,
     color: colors.text,
   },
   selectionDeleteButton: {
-    backgroundColor: colors.accent,
+    backgroundColor: colors.inkSlate,
   },
   selectionDeleteText: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 12,
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 13,
     color: colors.white,
   },
   list: {
-    marginHorizontal: 24,
-    backgroundColor: colors.bgPage,
+    marginTop: 6,
+    marginHorizontal: 20,
   },
   wordRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 0,
-    paddingVertical: 16,
+    paddingVertical: 14,
     borderBottomWidth: 1,
     borderBottomColor: colors.divider,
     gap: 12,
@@ -2127,13 +2360,13 @@ const createStyles = (colors) => StyleSheet.create({
     backgroundColor: colors.surface,
   },
   selectionCircleSelected: {
-    borderColor: colors.accent,
-    backgroundColor: colors.accent,
+    borderColor: colors.inkSlate,
+    backgroundColor: colors.inkSlate,
   },
   wordCopy: {
     flex: 1,
     minWidth: 0,
-    gap: 4,
+    gap: 3,
   },
   wordTitleLine: {
     flexDirection: 'row',
@@ -2144,468 +2377,394 @@ const createStyles = (colors) => StyleSheet.create({
   },
   wordText: {
     fontFamily: fontFamilies.krSerifSemiBold,
-    fontSize: 17,
-    lineHeight: 24,
+    fontSize: 20,
+    lineHeight: 28,
     color: colors.text,
   },
   wordHanja: {
-    fontFamily: fontFamilies.krSerifMedium,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.textSubtle,
+    fontFamily: fontFamilies.krSerifRegular,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.textTertiary,
   },
   badge: {
-    borderRadius: 2,
-    borderWidth: 1,
-    borderColor: colors.borderStrong,
-    paddingHorizontal: 5,
-    paddingVertical: 1,
+    borderRadius: 5,
+    backgroundColor: colors.surfaceMuted,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
   },
   badgeText: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 8,
-    lineHeight: 10,
-    letterSpacing: 1,
-    color: colors.textMuted,
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 11,
+    lineHeight: 14,
+    color: colors.textSecondary,
   },
   wordDefinition: {
     fontFamily: fontFamilies.sansRegular,
-    fontSize: 13,
-    lineHeight: 18,
-    color: colors.textMuted,
-  },
-  wordMetaLine: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-    minWidth: 0,
+    fontSize: 15,
+    lineHeight: 21,
+    color: colors.textSecondary,
   },
   wordMetaText: {
-    flex: 1,
-    fontFamily: fontFamilies.sansMedium,
-    fontSize: 10,
-    lineHeight: 13,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 12,
+    lineHeight: 16,
     color: colors.textSubtle,
-    letterSpacing: 0.5,
   },
   encounterSummary: {
-    width: 76,
     alignItems: 'flex-end',
     justifyContent: 'center',
   },
   dotRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 3,
   },
   encounterDot: {
     borderWidth: 1,
   },
   encounterDotFilled: {
-    backgroundColor: colors.accent,
-    borderColor: colors.accent,
+    backgroundColor: colors.inkSlate,
+    borderColor: colors.inkSlate,
   },
   encounterDotEmpty: {
     backgroundColor: colors.transparent,
     borderColor: colors.borderStrong,
   },
   emptyState: {
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.xl,
-    gap: spacing.xs,
+    marginTop: 40,
+    paddingHorizontal: 20,
+    alignItems: 'center',
+    gap: 8,
   },
   emptyTitle: {
-    ...textStyles.sectionTitle,
+    fontFamily: fontFamilies.displaySemiBold,
+    fontSize: 21,
+    lineHeight: 28,
+    color: colors.text,
+    textAlign: 'center',
   },
   emptyBody: {
-    ...textStyles.bodyMuted,
-  },
-  mainTabs: {
-    flexDirection: 'row',
-    gap: spacing.xs,
-    marginHorizontal: 24,
-    marginTop: 20,
-    backgroundColor: colors.surfaceMuted ?? colors.divider,
-    borderRadius: radii.pill,
-    padding: 4,
-  },
-  mainTab: {
-    flex: 1,
-    alignItems: 'center',
-    paddingVertical: spacing.sm,
-    borderRadius: radii.pill,
-  },
-  mainTabActive: {
-    backgroundColor: colors.bgPage,
-  },
-  mainTabText: {
-    fontFamily: fontFamilies.sansSemiBold,
-    fontSize: 14,
-    color: colors.textSubtle,
-  },
-  mainTabTextActive: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 15,
+    lineHeight: 22,
     color: colors.textMuted,
+    textAlign: 'center',
   },
   suggestedWrap: {
-    paddingHorizontal: 24,
-    paddingTop: spacing.md,
-    gap: spacing.lg,
+    paddingHorizontal: LEARN_SIDE_PADDING,
+    paddingTop: 14,
+    gap: 18,
   },
   suggestedLoading: {
     paddingVertical: spacing.xxl,
     alignItems: 'center',
   },
   candidateGroup: {
-    gap: spacing.sm,
+    gap: 8,
+  },
+  candidateGroupTitle: {
+    paddingHorizontal: 4,
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.textTertiary,
+  },
+  candidateGroupList: {
+    gap: 8,
   },
   learnedHint: {
-    ...textStyles.bodyMuted,
-    marginBottom: spacing.xs,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.textMuted,
+    paddingHorizontal: 4,
+    marginBottom: 4,
   },
   learnedRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.md,
-    paddingVertical: spacing.sm,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
     borderBottomColor: colors.divider,
   },
   learnedText: {
     flex: 1,
-    gap: 2,
+    gap: 3,
   },
   learnedWord: {
-    fontFamily: fontFamilies.sansSemiBold,
-    fontSize: 16,
+    fontFamily: fontFamilies.krSerifSemiBold,
+    fontSize: 19,
+    lineHeight: 26,
     color: colors.text,
   },
   learnedDef: {
-    ...textStyles.bodyMuted,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.textSecondary,
   },
   learnedRestore: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: 8,
-    borderRadius: 999,
+    height: 36,
+    paddingHorizontal: 14,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: colors.border,
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   learnedRestoreText: {
     fontFamily: fontFamilies.sansSemiBold,
     fontSize: 13,
-    color: colors.text,
-  },
-  candidateGroupTitle: {
-    fontFamily: fontFamilies.sansSemiBold,
-    fontSize: 12,
-    letterSpacing: 1.2,
-    textTransform: 'uppercase',
-    color: colors.textSubtle,
-  },
-  candidateGroupList: {
-    gap: spacing.sm,
+    color: colors.textSecondary,
   },
   detailScreen: {
     flex: 1,
     backgroundColor: colors.bgPage,
   },
   detailHeader: {
-    height: 52,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
+    paddingTop: 4,
+    paddingHorizontal: 12,
     backgroundColor: colors.bgPage,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.divider,
   },
-  detailBackButton: {
-    height: 40,
-    flexDirection: 'row',
+  headerIconButton: {
+    width: 44,
+    height: 44,
     alignItems: 'center',
-    gap: 12,
-    paddingRight: 12,
-  },
-  detailBackLabel: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 11,
-    lineHeight: 14,
-    color: colors.textMuted,
-    letterSpacing: 2.4,
-  },
-  detailFavoriteButton: {
-    width: 42,
-    height: 40,
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    flexDirection: 'row',
+    justifyContent: 'center',
   },
   detailContent: {
-    paddingHorizontal: 24,
-    paddingTop: 26,
-    paddingBottom: 0,
+    paddingTop: 6,
+    paddingBottom: 32,
   },
   detailHero: {
-    backgroundColor: colors.bgPage,
-    paddingHorizontal: 0,
-    paddingTop: 0,
-    paddingBottom: 0,
-    gap: 0,
+    paddingHorizontal: 24,
+    gap: 6,
   },
   detailWordLine: {
     flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 14,
+    alignItems: 'flex-end',
+    columnGap: 12,
     flexWrap: 'wrap',
   },
   detailWord: {
-    fontFamily: fontFamilies.krSerifBold,
-    fontSize: 36,
-    lineHeight: 48,
+    fontFamily: fontFamilies.krSerifSemiBold,
+    fontSize: 42,
+    lineHeight: 56,
     color: colors.text,
   },
+  detailHanjaChars: {
+    flexDirection: 'row',
+    gap: 3,
+    marginBottom: 9,
+  },
+  detailHanjaCharButton: {
+    alignItems: 'center',
+    paddingHorizontal: 1,
+  },
   detailHanja: {
-    fontFamily: fontFamilies.krSerifMedium,
+    fontFamily: fontFamilies.krSerifRegular,
     fontSize: 22,
-    lineHeight: 30,
+    lineHeight: 28,
     color: colors.textMuted,
   },
-  detailPronunciation: {
-    fontFamily: fontFamilies.displayItalic,
-    fontSize: 16,
-    lineHeight: 22,
-    color: colors.textTertiary,
+  detailHanjaActive: {
+    color: colors.text,
   },
-  detailMetaLine: {
-    marginTop: 10,
+  dottedUnderline: {
+    alignSelf: 'stretch',
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
+    justifyContent: 'space-between',
+    marginTop: 1,
   },
-  detailStatusPill: {
-    minHeight: 24,
-    borderRadius: radii.pill,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.surfaceMuted,
-    paddingHorizontal: 12,
-    paddingVertical: 4,
+  dottedUnderlineDot: {
+    width: 2,
+    height: 2,
+    borderRadius: 1,
   },
-  detailStatusText: {
-    fontFamily: fontFamilies.sansMedium,
-    fontSize: 11,
-    lineHeight: 14,
-    color: colors.textSecondary,
-  },
-  detailEncounterMeta: {
-    fontFamily: fontFamilies.sansMedium,
-    fontSize: 12,
-    lineHeight: 16,
+  detailPronunciation: {
+    marginBottom: 12,
+    fontFamily: fontFamilies.sansRegular,
+    fontStyle: 'italic',
+    fontSize: 15,
+    lineHeight: 20,
     color: colors.textTertiary,
   },
   definitionBlock: {
-    marginTop: 20,
     flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 12,
-    flexWrap: 'wrap',
-    paddingTop: 0,
-    width: '100%',
+    alignItems: 'flex-start',
+    gap: 10,
   },
-  definitionPartOfSpeech: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 9,
-    lineHeight: 12,
-    letterSpacing: 1.6,
-    color: '#9a9c9f',
-    textTransform: 'uppercase',
+  posBadge: {
+    marginTop: 4,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 6,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+  },
+  posBadgeText: {
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 12,
+    lineHeight: 16,
+    color: colors.textMuted,
   },
   detailDefinition: {
     flex: 1,
     minWidth: 0,
-    fontFamily: fontFamilies.displayMedium,
-    fontSize: 22,
-    lineHeight: 30,
+    fontFamily: fontFamilies.sansMedium,
+    fontSize: 20,
+    lineHeight: 28,
     color: colors.text,
-    textAlign: 'left',
+  },
+  detailStatsGrid: {
+    marginTop: 20,
+    marginHorizontal: 24,
+    flexDirection: 'row',
+    gap: 8,
+  },
+  detailStatCard: {
+    flex: 1,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.divider,
+    backgroundColor: colors.surface,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    gap: 2,
+  },
+  detailStatLabel: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 12,
+    lineHeight: 16,
+    color: colors.textTertiary,
+  },
+  detailStatValue: {
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 20,
+    lineHeight: 27,
+    color: colors.text,
   },
   detailSectionTitle: {
-    fontFamily: fontFamilies.sansBold,
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 13,
+    lineHeight: 18,
     color: colors.textTertiary,
-    fontSize: 10,
-    lineHeight: 13,
-    letterSpacing: 2.2,
-    textTransform: 'uppercase',
   },
   contextSection: {
-    paddingHorizontal: 0,
-    paddingTop: 26,
-    gap: 14,
+    marginTop: 22,
+    paddingHorizontal: 24,
+    gap: 8,
   },
-  contextQuoteRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-  },
-  contextQuoteMark: {
-    width: 30,
-    fontFamily: fontFamilies.displayMedium,
-    fontSize: 20,
-    lineHeight: 22,
-    color: colors.textSubtle,
-  },
-  contextQuoteCopy: {
-    flex: 1,
-    gap: 5,
+  contextItem: {
+    gap: 6,
   },
   contextSentence: {
     fontFamily: fontFamilies.krSerifRegular,
     fontSize: 16,
-    lineHeight: 29,
+    lineHeight: 27,
     color: colors.text,
+  },
+  contextSentenceMatch: {
+    fontFamily: fontFamilies.krSerifSemiBold,
+    textDecorationLine: 'underline',
+    textDecorationColor: colors.readerLevelUnderlineMid,
   },
   contextTranslation: {
     fontFamily: fontFamilies.sansRegular,
-    fontSize: 13,
-    lineHeight: 19,
+    fontSize: 14,
+    lineHeight: 20,
     color: colors.textMuted,
   },
   contextAttribution: {
-    fontFamily: fontFamilies.sansMedium,
-    fontSize: 11,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 12,
     lineHeight: 16,
     color: colors.textSubtle,
   },
   emptyContext: {
     fontFamily: fontFamilies.sansRegular,
-    fontSize: 13,
-    lineHeight: 19,
+    fontSize: 14,
+    lineHeight: 20,
     color: colors.textMuted,
   },
-  detailStatsGrid: {
-    marginTop: 24,
-    flexDirection: 'row',
-    gap: 12,
-    paddingHorizontal: 0,
-    paddingTop: 0,
-  },
-  detailStatCard: {
-    flex: 1,
-    minHeight: 74,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-    padding: 14,
-  },
-  detailStatLabel: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 9,
-    lineHeight: 12,
-    color: colors.textSubtle,
-    letterSpacing: 1.6,
-    textTransform: 'uppercase',
-    textAlign: 'center',
-  },
-  detailStatValue: {
-    fontFamily: fontFamilies.displayMedium,
-    fontSize: 24,
-    lineHeight: 30,
-    color: colors.text,
-  },
   detailHanjaPanel: {
-    marginHorizontal: 0,
-    marginTop: 20,
-    borderRadius: 6,
-    backgroundColor: colors.surfaceMuted,
-    padding: 18,
+    marginHorizontal: LEARN_SIDE_PADDING,
+    marginTop: 22,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: colors.divider,
+    backgroundColor: colors.surface,
+    padding: 16,
   },
   detailHanjaPanelHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 14,
+    gap: 12,
+  },
+  detailHanjaCharBox: {
+    width: 52,
+    height: 52,
+    borderRadius: 12,
+    backgroundColor: colors.surfaceMuted,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   detailHanjaPanelCharacter: {
-    fontFamily: fontFamilies.krSerifBold,
-    fontSize: 38,
-    lineHeight: 44,
+    fontFamily: fontFamilies.krSerifRegular,
+    fontSize: 30,
+    lineHeight: 38,
     color: colors.text,
   },
   detailHanjaPanelCopy: {
     flex: 1,
     minWidth: 0,
-    gap: 5,
+    gap: 1,
   },
-  detailHanjaPanelEyebrow: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 9,
-    lineHeight: 12,
-    color: colors.textTertiary,
-    letterSpacing: 1.8,
-    textTransform: 'uppercase',
-  },
-  detailHanjaPanelMeaning: {
-    fontFamily: fontFamilies.displayRegular,
-    fontSize: 15,
+  detailHanjaReading: {
+    fontFamily: fontFamilies.krSerifSemiBold,
+    fontSize: 16,
     lineHeight: 22,
     color: colors.text,
+  },
+  detailHanjaMeaning: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.textMuted,
   },
   detailHanjaPanelNav: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 2,
-    minHeight: 32,
   },
   detailHanjaPanelCount: {
-    fontFamily: fontFamilies.sansMedium,
-    fontSize: 11,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 12,
     lineHeight: 16,
-    color: colors.textTertiary,
-    minWidth: 38,
+    color: colors.textSubtle,
     textAlign: 'center',
   },
   hanjaPanelArrow: {
     width: 24,
-    height: 28,
+    height: 32,
     alignItems: 'center',
     justifyContent: 'center',
   },
   hanjaPanelArrowDisabled: {
-    opacity: 0.28,
-  },
-  hanjaCharacterRail: {
-    paddingTop: 14,
-    gap: 8,
-  },
-  hanjaCharacterChip: {
-    minWidth: 34,
-    minHeight: 34,
-    borderRadius: 17,
-    borderWidth: 1,
-    borderColor: colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.surface,
-  },
-  hanjaCharacterChipActive: {
-    borderColor: colors.accent,
-    backgroundColor: colors.accent,
-  },
-  hanjaCharacterChipText: {
-    fontFamily: fontFamilies.krSerifMedium,
-    fontSize: 19,
-    lineHeight: 24,
-    color: colors.textMuted,
-  },
-  hanjaCharacterChipTextActive: {
-    color: colors.white,
+    opacity: 0.3,
   },
   detailHanjaDivider: {
     height: 1,
-    backgroundColor: '#ddd9d9',
-    marginTop: 14,
+    backgroundColor: colors.divider,
+    marginTop: 12,
+    marginBottom: 4,
   },
   hanjaPanelEmpty: {
     minHeight: 58,
@@ -2621,69 +2780,64 @@ const createStyles = (colors) => StyleSheet.create({
     textAlign: 'center',
   },
   detailHanjaRelatedRow: {
-    minHeight: 68,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    paddingVertical: 12,
-  },
-  detailHanjaRelatedRowSeparated: {
-    borderTopWidth: 1,
-    borderTopColor: '#ddd9d9',
+    gap: 10,
+    paddingVertical: 10,
   },
   detailHanjaRelatedCopy: {
     flex: 1,
     minWidth: 0,
-    flexDirection: 'column',
-    alignItems: 'flex-start',
-    justifyContent: 'center',
-    gap: 4,
+    gap: 1,
   },
   detailHanjaRelatedWord: {
-    width: '100%',
-    fontFamily: fontFamilies.krSerifSemiBold,
+    fontFamily: fontFamilies.krSerifRegular,
     fontSize: 16,
     lineHeight: 22,
     color: colors.text,
   },
+  detailHanjaRelatedHanja: {
+    fontFamily: fontFamilies.krSerifRegular,
+    fontSize: 14,
+    color: colors.textTertiary,
+  },
   detailHanjaRelatedMeaning: {
-    width: '100%',
-    flexShrink: 1,
     fontFamily: fontFamilies.sansRegular,
     fontSize: 13,
     lineHeight: 18,
     color: colors.textMuted,
   },
-  detailHanjaKnownButton: {
-    minHeight: 32,
+  knownPill: {
+    height: 32,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'flex-end',
+    justifyContent: 'center',
     gap: 4,
   },
-  detailHanjaKnownButtonText: {
-    fontFamily: fontFamilies.sansBold,
-    fontSize: 10,
-    lineHeight: 13,
-    letterSpacing: 1.2,
-    color: colors.text,
-    textTransform: 'uppercase',
+  knownPillActive: {
+    backgroundColor: colors.surfaceMuted,
+    borderColor: colors.surfaceMuted,
   },
-  detailHanjaKnownButtonTextAction: {
-    color: colors.textTertiary,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.frame,
-    paddingBottom: 1,
+  knownPillText: {
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 12,
+    color: colors.textSecondary,
   },
   detailHanjaSeeMoreButton: {
-    minHeight: 28,
+    minHeight: 40,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
   },
   detailHanjaSeeMoreText: {
-    ...textStyles.caption,
+    fontFamily: fontFamilies.sansMedium,
+    fontSize: 13,
     color: colors.textMuted,
   },
 });

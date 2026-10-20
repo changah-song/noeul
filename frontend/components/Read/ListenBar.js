@@ -1,13 +1,14 @@
 import { memo } from 'react';
 import { Animated, Text, TouchableOpacity, View } from 'react-native';
-import { MaterialIcons } from '@expo/vector-icons';
+import { Feather, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
 import { LISTEN_RATES } from '../../services/listenPlayer';
 
-// Listen-mode transport: previous / play-pause / next, the voice chip (shows
-// the speed; opens speed, pitch and voice settings), and the study toggles (stop on underlined words; read each sentence's translation).
-// Sits where the focus arrows normally are and lifts with the dictionary
-// panel the same way.
+// Listen-mode transport, a floating rounded bar: previous / play-pause /
+// next, the speed chip (opens speed, pitch and voice settings), the two study
+// toggles (dictionary mode: stop on underlined words; translation mode: read
+// each sentence's translation), then close. Sits where the focus arrows
+// normally are and lifts with the dictionary panel the same way.
 const ListenBar = ({
     playing,
     rate,
@@ -41,7 +42,7 @@ const ListenBar = ({
                     accessibilityRole="button"
                     accessibilityLabel={t('read.focusPreviousSentence')}
                 >
-                    <MaterialIcons name="skip-previous" size={22} color={themeColors.readerBodyInk} />
+                    <MaterialIcons name="skip-previous" size={24} color={themeColors.inkSlate} />
                 </TouchableOpacity>
                 <TouchableOpacity
                     style={styles.listenPlayButton}
@@ -60,55 +61,59 @@ const ListenBar = ({
                     accessibilityRole="button"
                     accessibilityLabel={t('read.focusNextSentence')}
                 >
-                    <MaterialIcons name="skip-next" size={22} color={themeColors.readerBodyInk} />
+                    <MaterialIcons name="skip-next" size={24} color={themeColors.inkSlate} />
                 </TouchableOpacity>
                 <View style={styles.listenDivider} />
                 <TouchableOpacity
-                    style={[styles.listenChip, styles.listenVoiceChip]}
+                    style={styles.listenSpeedChip}
                     onPress={onOpenVoice}
                     activeOpacity={0.72}
+                    hitSlop={{ top: 4, bottom: 4 }}
                     accessibilityRole="button"
                     accessibilityLabel={`${t('read.listenVoiceTitle')}, ${t('read.listenSpeed', { rate: rateLabel })}`}
                 >
-                    <MaterialIcons name="record-voice-over" size={15} color={themeColors.readerBodyInk} />
-                    <Text style={styles.listenChipLabel}>{rateLabel}</Text>
+                    <MaterialCommunityIcons name="waveform" size={15} color={themeColors.inkSlate} />
+                    <Text style={styles.listenSpeedLabel}>{rateLabel}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                    style={[styles.listenChip, explainWords ? styles.listenChipActive : null]}
+                    style={[styles.listenToggle, explainWords ? styles.listenToggleActive : null]}
                     onPress={onToggleExplain}
                     activeOpacity={0.72}
+                    hitSlop={{ top: 4, bottom: 4 }}
                     accessibilityRole="switch"
                     accessibilityState={{ checked: !!explainWords }}
                     accessibilityLabel={t('read.listenExplain')}
                 >
                     <MaterialIcons
                         name="school"
-                        size={16}
-                        color={explainWords ? themeColors.readerPaper : themeColors.readerBodyInk}
+                        size={17}
+                        color={explainWords ? themeColors.readerPaper : themeColors.inkSlate}
                     />
                 </TouchableOpacity>
                 <TouchableOpacity
-                    style={[styles.listenChip, translateSentences ? styles.listenChipActive : null]}
+                    style={[styles.listenToggle, translateSentences ? styles.listenToggleActive : null]}
                     onPress={onToggleTranslate}
                     activeOpacity={0.72}
+                    hitSlop={{ top: 4, bottom: 4 }}
                     accessibilityRole="switch"
                     accessibilityState={{ checked: !!translateSentences }}
                     accessibilityLabel={t('read.listenTranslate')}
                 >
                     <MaterialIcons
                         name="translate"
-                        size={16}
-                        color={translateSentences ? themeColors.readerPaper : themeColors.readerBodyInk}
+                        size={17}
+                        color={translateSentences ? themeColors.readerPaper : themeColors.inkSlate}
                     />
                 </TouchableOpacity>
+                <View style={styles.listenSpacer} />
                 <TouchableOpacity
-                    style={styles.listenButton}
+                    style={styles.listenCloseButton}
                     onPress={onClose}
                     activeOpacity={0.72}
                     accessibilityRole="button"
                     accessibilityLabel={t('read.listenStop')}
                 >
-                    <MaterialIcons name="close" size={20} color={themeColors.readerSubtleInk} />
+                    <Feather name="x" size={20} color={themeColors.textTertiary} />
                 </TouchableOpacity>
             </View>
         </Animated.View>

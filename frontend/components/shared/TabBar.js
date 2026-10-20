@@ -1,4 +1,6 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { useEffect, useRef } from 'react';
+import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Feather } from '@expo/vector-icons';
 import { colors, fontFamilies } from '../../theme';
 import { useTranslation } from '../../hooks/useTranslation';
 
@@ -95,6 +97,35 @@ const styles = StyleSheet.create({
         paddingBottom: 5,
         borderBottomWidth: 2,
     },
+    pillBar: {
+        alignItems: 'center',
+        paddingTop: 8,
+        paddingBottom: 14,
+    },
+    pill: {
+        flexDirection: 'row',
+        gap: 4,
+        padding: 4,
+        borderRadius: 26,
+        borderWidth: StyleSheet.hairlineWidth,
+        elevation: 6,
+        shadowColor: '#000',
+        shadowOpacity: 0.1,
+        shadowRadius: 12,
+        shadowOffset: { width: 0, height: 6 },
+    },
+    pillTab: {
+        height: 44,
+        paddingHorizontal: 18,
+        borderRadius: 22,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+    },
+    pillLabel: {
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 14,
+    },
     tabBarHidden: {
         height: 0,
         minHeight: 0,
@@ -110,3 +141,89 @@ const styles = StyleSheet.create({
 });
 
 export const tabBarBaseStyle = createTabBarBaseStyle(colors);
+
+// The two destinations in the floating pill. The reader (Read) and Profile are
+// reached from inside the app (a book, the avatar) and show no tab bar.
+const PILL_ROUTES = [
+    { name: 'Home', labelKey: 'tabs.read', icon: 'book-open' },
+    { name: 'Learn', labelKey: 'tabs.learn', icon: 'layers' },
+];
+
+const PillTab = ({ route, labelKey, icon, focused, onPress, themeColors }) => {
+    const { t } = useTranslation();
+    const progress = useRef(new Animated.Value(focused ? 1 : 0)).current;
+    useEffect(() => {
+        Animated.timing(progress, {
+            toValue: focused ? 1 : 0,
+            duration: 200,
+            useNativeDriver: false,
+        }).start();
+    }, [focused, progress]);
+    const background = progress.interpolate({
+        inputRange: [0, 1],
+        outputRange: ['rgba(0,0,0,0)', themeColors.inkSlate],
+    });
+    const ink = focused ? themeColors.white : themeColors.textSecondary;
+    return (
+        <Pressable
+            onPress={onPress}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: focused }}
+            accessibilityLabel={t(labelKey)}
+            testID={`tab-${route}`}
+        >
+            <Animated.View style={[styles.pillTab, { backgroundColor: background }]}>
+                <Feather name={icon} size={17} color={ink} />
+                <Text style={[styles.pillLabel, { color: ink }]}>{t(labelKey)}</Text>
+            </Animated.View>
+        </Pressable>
+    );
+};
+
+/**
+ * PillTabBar — the bottom navigation: a small floating pill with Read and
+ * Learn. Hidden on the reader and Profile routes, and whenever a screen hides
+ * its tab bar (focus/fullscreen, OCR, an editor) through tabBarStyle.
+ */
+export const PillTabBar = ({ state, navigation, descriptors, themeColors = colors }) => {
+    const current = state.routes[state.index];
+    const options = descriptors[current.key]?.options ?? {};
+    const hiddenStyle = StyleSheet.flatten(options.tabBarStyle) || {};
+    if (
+        current.name === 'Read'
+        || current.name === 'Profile'
+        || hiddenStyle.display === 'none'
+        || hiddenStyle.height === 0
+    ) {
+        return null;
+    }
+    return (
+        <View style={[styles.pillBar, { backgroundColor: themeColors.bgPage }]}>
+            <View
+                accessibilityRole="tablist"
+                style={[styles.pill, { backgroundColor: themeColors.surface, borderColor: themeColors.border }]}
+            >
+                {PILL_ROUTES.map((item) => {
+                    const route = state.routes.find((r) => r.name === item.name);
+                    if (!route) return null;
+                    const focused = current.name === item.name;
+                    const onPress = () => {
+                        const event = navigation.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
+                        if (!focused && !event.defaultPrevented) navigation.navigate(route.name);
+                    };
+                    return (
+                        <PillTab
+                            key={item.name}
+                            route={item.name}
+                            labelKey={item.labelKey}
+                            icon={item.icon}
+                            focused={focused}
+                            onPress={onPress}
+                            themeColors={themeColors}
+                        />
+                    );
+                })}
+            </View>
+        </View>
+    );
+};

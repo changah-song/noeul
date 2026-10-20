@@ -12,7 +12,14 @@ import {
 } from 'react-native';
 import { Feather, MaterialIcons } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
-import { fontFamilies, radii, spacing } from '../../theme';
+import { fontFamilies } from '../../theme';
+import {
+    SHEET_PADDING,
+    SheetEmptyState,
+    SheetHandle,
+    SheetHeader,
+    createSheetChromeStyles,
+} from './ReaderSettingsControls';
 
 const formatNoteDate = (iso, language = null) => {
     const date = new Date(iso);
@@ -50,7 +57,8 @@ const NotesLogSheet = ({
     onClose,
 }) => {
     const { t, language } = useTranslation();
-    const styles = useMemo(() => createStyles(colors, insets), [colors, insets]);
+    const styles = useMemo(() => createStyles(colors), [colors]);
+    const chrome = useMemo(() => createSheetChromeStyles(colors, insets), [colors, insets]);
     const [pendingDeleteId, setPendingDeleteId] = useState(null);
 
     // Keep the sheet mounted through its exit animation, then unmount.
@@ -110,30 +118,26 @@ const NotesLogSheet = ({
                 />
                 <Pressable style={styles.backdrop} onPress={onClose} />
                 <Animated.View
-                    style={[styles.sheet, { transform: [{ translateY: sheetTranslateY }] }]}
+                    style={[chrome.sheet, styles.sheet, { transform: [{ translateY: sheetTranslateY }] }]}
                     onLayout={(event) => setSheetHeight(event.nativeEvent.layout.height)}
                 >
-                    <View style={styles.handleWrap}>
-                        <View style={styles.handle} />
-                    </View>
-
-                    <View style={styles.header}>
-                        <Text style={styles.title}>{t('read.checkpoints')}</Text>
-                        <TouchableOpacity
-                            onPress={onClose}
-                            style={styles.closeButton}
-                            accessibilityRole="button"
-                            accessibilityLabel={t('common.close')}
-                        >
-                            <Feather name="x" size={20} color={colors.textMuted} />
-                        </TouchableOpacity>
-                    </View>
+                    <SheetHandle styles={chrome} />
+                    <SheetHeader
+                        styles={chrome}
+                        colors={colors}
+                        title={t('read.checkpoints')}
+                        onClose={onClose}
+                        closeLabel={t('common.close')}
+                    />
 
                     {bookmarks.length === 0 && notes.length === 0 ? (
-                        <View style={styles.emptyState}>
-                            <MaterialIcons name="bookmark-border" size={24} color={colors.textSubtle} />
-                            <Text style={styles.emptyText}>{t('read.checkpointsEmpty')}</Text>
-                        </View>
+                        <SheetEmptyState
+                            styles={chrome}
+                            colors={colors}
+                            icon="bookmark"
+                            title={t('read.checkpointsEmptyTitle')}
+                            body={t('read.checkpointsEmptyBody')}
+                        />
                     ) : (
                         <ScrollView
                             style={styles.scroll}
@@ -142,7 +146,7 @@ const NotesLogSheet = ({
                         >
                             {bookmarks.length > 0 ? (
                                 <View>
-                                    <Text style={styles.sectionLabel}>{t('read.bookmarksSection')}</Text>
+                                    <Text style={[chrome.sectionLabel, styles.sectionLabel]}>{t('read.bookmarksSection')}</Text>
                                     {bookmarks.map((bookmark) => (
                                         <TouchableOpacity
                                             key={bookmark.id}
@@ -169,11 +173,11 @@ const NotesLogSheet = ({
                                             </View>
                                             <TouchableOpacity
                                                 onPress={() => onDeleteBookmark?.(bookmark.id)}
-                                                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                                style={styles.rowAction}
                                                 accessibilityRole="button"
                                                 accessibilityLabel={t('read.removeBookmark')}
                                             >
-                                                <MaterialIcons name="bookmark" size={20} color={colors.inkSlate ?? colors.text} />
+                                                <MaterialIcons name="bookmark" size={20} color={colors.inkSlate} />
                                             </TouchableOpacity>
                                         </TouchableOpacity>
                                     ))}
@@ -182,7 +186,7 @@ const NotesLogSheet = ({
 
                             {notes.length > 0 ? (
                                 <View style={bookmarks.length > 0 ? styles.notesSection : null}>
-                                    <Text style={styles.sectionLabel}>{t('read.notesSection')}</Text>
+                                    <Text style={[chrome.sectionLabel, styles.sectionLabel]}>{t('read.notesSection')}</Text>
                                     {notes.map((item) => (
                                         <View key={item.id} style={styles.noteRow}>
                                             <View style={styles.noteMetaRow}>
@@ -194,7 +198,7 @@ const NotesLogSheet = ({
                                                 {onDelete ? (
                                                     <TouchableOpacity
                                                         onPress={() => setPendingDeleteId(item.id)}
-                                                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                                        style={styles.rowAction}
                                                         accessibilityRole="button"
                                                         accessibilityLabel={t('read.deleteNote')}
                                                     >
@@ -241,7 +245,7 @@ const NotesLogSheet = ({
     );
 };
 
-const createStyles = (colors, insets = { bottom: 0 }) => StyleSheet.create({
+const createStyles = (colors) => StyleSheet.create({
     overlay: {
         flex: 1,
         justifyContent: 'flex-end',
@@ -255,7 +259,7 @@ const createStyles = (colors, insets = { bottom: 0 }) => StyleSheet.create({
         ...StyleSheet.absoluteFillObject,
         alignItems: 'center',
         justifyContent: 'center',
-        paddingHorizontal: spacing.xl,
+        paddingHorizontal: 24,
     },
     confirmBackdrop: {
         ...StyleSheet.absoluteFillObject,
@@ -263,16 +267,15 @@ const createStyles = (colors, insets = { bottom: 0 }) => StyleSheet.create({
     },
     confirmCard: {
         width: '100%',
-        maxWidth: 320,
+        maxWidth: 340,
         backgroundColor: colors.surface,
-        borderRadius: radii.lg,
-        borderWidth: 1,
-        borderColor: colors.border,
-        padding: spacing.xl,
+        borderRadius: 20,
+        padding: SHEET_PADDING,
     },
     confirmTitle: {
         fontFamily: fontFamilies.displaySemiBold,
-        fontSize: 18,
+        fontSize: 21,
+        lineHeight: 28,
         color: colors.text,
     },
     confirmBody: {
@@ -280,95 +283,56 @@ const createStyles = (colors, insets = { bottom: 0 }) => StyleSheet.create({
         fontSize: 14,
         lineHeight: 20,
         color: colors.textMuted,
-        marginTop: spacing.xs,
+        marginTop: 6,
     },
     confirmActions: {
         flexDirection: 'row',
-        justifyContent: 'flex-end',
-        gap: spacing.sm,
-        marginTop: spacing.lg,
+        gap: 10,
+        marginTop: 20,
     },
     confirmButton: {
-        minHeight: 40,
-        paddingHorizontal: spacing.lg,
-        borderRadius: radii.sm,
+        flex: 1,
+        height: 46,
+        borderRadius: 14,
         alignItems: 'center',
         justifyContent: 'center',
     },
     confirmCancelButton: {
         borderWidth: 1,
-        borderColor: colors.borderStrong,
+        borderColor: colors.border,
         backgroundColor: colors.surface,
     },
     confirmCancelText: {
-        fontFamily: fontFamilies.sansMedium,
-        fontSize: 14,
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 15,
         color: colors.text,
     },
     confirmDeleteButton: {
-        backgroundColor: colors.danger ?? '#c0392b',
+        backgroundColor: colors.danger,
     },
     confirmDeleteText: {
         fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 14,
-        color: '#ffffff',
+        fontSize: 15,
+        color: colors.surface,
     },
     sheet: {
-        backgroundColor: colors.surface,
-        borderTopLeftRadius: radii.xl,
-        borderTopRightRadius: radii.xl,
-        paddingHorizontal: spacing.xl,
-        paddingTop: spacing.sm,
-        paddingBottom: (insets?.bottom ?? 0) + spacing.lg,
         maxHeight: '80%',
     },
-    handleWrap: { alignItems: 'center', paddingVertical: spacing.xs },
-    handle: {
-        width: 36,
-        height: 4,
-        borderRadius: 2,
-        backgroundColor: colors.borderStrong,
-    },
-    header: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        marginTop: spacing.xs,
-        marginBottom: spacing.md,
-    },
-    title: {
-        fontFamily: fontFamilies.displaySemiBold,
-        fontSize: 22,
-        color: colors.text,
-    },
-    closeButton: { padding: spacing.xs },
-    emptyState: {
-        alignItems: 'center',
-        gap: spacing.sm,
-        paddingVertical: spacing.xxl,
-    },
-    emptyText: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 15,
-        color: colors.textSubtle,
-        textAlign: 'center',
-    },
     scroll: { flexGrow: 0 },
-    scrollContent: { paddingBottom: spacing.sm },
+    scrollContent: {
+        paddingHorizontal: SHEET_PADDING,
+        paddingTop: 8,
+    },
     sectionLabel: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 11,
-        letterSpacing: 0.8,
-        textTransform: 'uppercase',
-        color: colors.textSubtle,
-        marginBottom: spacing.xs,
+        marginTop: 8,
+        marginBottom: 2,
     },
     bookmarkRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: spacing.md,
-        paddingVertical: spacing.md,
+        gap: 12,
+        minHeight: 60,
+        paddingVertical: 8,
         borderBottomWidth: 1,
         borderBottomColor: colors.divider,
     },
@@ -379,21 +343,30 @@ const createStyles = (colors, insets = { bottom: 0 }) => StyleSheet.create({
     bookmarkLabel: {
         fontFamily: fontFamilies.sansMedium,
         fontSize: 15,
+        lineHeight: 20,
         color: colors.text,
     },
     bookmarkMeta: {
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 12,
-        color: colors.textSubtle,
+        fontSize: 13,
+        lineHeight: 18,
+        color: colors.textTertiary,
+    },
+    rowAction: {
+        width: 44,
+        height: 44,
+        marginRight: -10,
+        alignItems: 'center',
+        justifyContent: 'center',
     },
     notesSection: {
-        marginTop: spacing.lg,
+        marginTop: 16,
     },
     noteRow: {
-        paddingVertical: spacing.md,
+        paddingTop: 4,
+        paddingBottom: 12,
         borderBottomWidth: 1,
         borderBottomColor: colors.divider,
-        gap: spacing.xs,
     },
     noteMetaRow: {
         flexDirection: 'row',
@@ -401,11 +374,11 @@ const createStyles = (colors, insets = { bottom: 0 }) => StyleSheet.create({
         justifyContent: 'space-between',
     },
     noteMeta: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 11,
-        letterSpacing: 0.8,
-        textTransform: 'uppercase',
-        color: colors.textSubtle,
+        flex: 1,
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 13,
+        lineHeight: 18,
+        color: colors.textTertiary,
     },
     noteText: {
         fontFamily: fontFamilies.krSerifRegular ?? fontFamilies.sansRegular,

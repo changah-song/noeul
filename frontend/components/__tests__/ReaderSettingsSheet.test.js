@@ -81,9 +81,10 @@ describe('ReaderSettingsSheet', () => {
     expect(json).toContain('Book settings');
     expect(json).toContain('Checkpoints');
     expect(json).toContain('Font size');
-    expect(json).toContain('Reading');
-    expect(json).not.toContain('Vocabulary marks');
-    expect(json).not.toContain('Navigate');
+    expect(json).toContain('Page turns');
+    expect(json).toContain('Line spacing');
+    expect(json).not.toContain('Difficulty underlines');
+    expect(json).not.toContain('Move between sentences');
 
     await press(tree, 'Checkpoints');
     expect(props.actions[0].onPress).toHaveBeenCalled();
@@ -95,8 +96,8 @@ describe('ReaderSettingsSheet', () => {
 
     await pressTab(tree, 'words');
     let json = text(tree);
-    expect(json).toContain('Vocabulary marks');
-    expect(json).toContain('Almost known');
+    expect(json).toContain('Difficulty underlines');
+    expect(json).toContain('Underline almost-known words too');
     expect(json).not.toContain('Fade marks');
     expect(json).toContain('Pinyin');
     expect(json).toContain('Translation under words');
@@ -105,9 +106,10 @@ describe('ReaderSettingsSheet', () => {
 
     await pressTab(tree, 'focus');
     json = text(tree);
-    expect(json).toContain('Navigate');
+    expect(json).toContain('Move between sentences');
+    expect(json).toContain('Sentences at a time');
     expect(json).toContain('Swipe');
-    expect(json).not.toContain('Vocabulary marks');
+    expect(json).not.toContain('Difficulty underlines');
     await act(async () => tree.unmount());
   });
 
@@ -116,6 +118,12 @@ describe('ReaderSettingsSheet', () => {
 
     await press(tree, 'Increase font size');
     expect(props.onSettingChange).toHaveBeenCalledWith('fontSize', 19);
+
+    // Line spacing is a three-way segmented control.
+    await press(tree, 'Tight');
+    expect(props.onSettingChange).toHaveBeenCalledWith('lineSpacing', 1.65);
+    await press(tree, 'Vertical');
+    expect(props.onSettingChange).toHaveBeenCalledWith('readingMode', 'scroll');
 
     await pressTab(tree, 'words');
     const glossSwitch = findByLabel(tree, 'Translation under words')[0];
@@ -126,6 +134,12 @@ describe('ReaderSettingsSheet', () => {
 
     await press(tree, 'Pinyin');
     expect(props.onSettingChange).toHaveBeenCalledWith('pinyinAnnotations', true);
+
+    // The difficulty underline switch maps onto levelMarkStyle.
+    const marksSwitch = findByLabel(tree, 'Difficulty underlines')[0];
+    expect(marksSwitch.props.accessibilityState).toEqual({ checked: true });
+    await press(tree, 'Difficulty underlines');
+    expect(props.onSettingChange).toHaveBeenCalledWith('levelMarkStyle', 'off');
 
     await pressTab(tree, 'focus');
     await press(tree, 'Swipe');
@@ -155,7 +169,7 @@ describe('ReaderSettingsSheet', () => {
     });
     await pressTab(tree, 'words');
     const json = text(tree);
-    expect(json).toContain('Vocabulary marks');
+    expect(json).toContain('Difficulty underlines');
     expect(json).not.toContain('Pinyin');
     expect(json).not.toContain('Translation under words');
     await act(async () => tree.unmount());

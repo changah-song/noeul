@@ -71,7 +71,7 @@ export const colorPairs = {
   readerTappedWordBg: pair('#202631', '#f0eded'),
   readerTappedWordText: pair('#ffffff', '#1b1c1c'),
   readerTappedWordHighlight: pair('#40202631', '#40f0eded'),
-  readerTextSelectionHighlight: pair('#2e202631', '#2ef0eded'),
+  readerTextSelectionHighlight: pair('#12202631', '#1af0eded'),
   readerSavedChipBg: pair('#f0eded', '#202631'),
   readerSavedChipText: pair('#202631', '#f0eded'),
   readerProgressTrack: pair('#eceaea', '#202631'),
@@ -119,7 +119,8 @@ export const createNativeReaderThemeTokens = (themeColors) => ({
   levelUnderlineEasy: themeColors.readerLevelUnderlineEasy,
   levelUnderlineMid: themeColors.readerLevelUnderlineMid,
   levelUnderlineHard: themeColors.readerLevelUnderlineHard,
-  selectionHandle: themeColors.readerProgressFill,
+  // Muted grey, so the handles stay quieter than the text they select.
+  selectionHandle: themeColors.textTertiary,
   placeholder: themeColors.readerPlaceholder,
 });
 

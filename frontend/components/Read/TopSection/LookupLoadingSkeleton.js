@@ -54,15 +54,15 @@ const LookupLoadingSkeleton = ({
 };
 
 const createStyles = (colors, isDarkMode) => {
-    const baseColor = isDarkMode ? colors.surfaceMuted : '#f0eded';
-    const edgeColor = isDarkMode ? colors.border : '#ebe8e8';
-    const coreColor = isDarkMode ? colors.frame : '#e6e3e3';
+    const baseColor = colors.surfaceMuted;
+    const edgeColor = isDarkMode ? colors.border : colors.divider;
+    const coreColor = isDarkMode ? colors.frame : colors.border;
 
     return StyleSheet.create({
         line: {
             width: '100%',
-            height: 13,
-            borderRadius: 2,
+            height: 12,
+            borderRadius: 6,
             backgroundColor: baseColor,
             overflow: 'hidden',
         },

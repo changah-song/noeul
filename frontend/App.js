@@ -1,7 +1,7 @@
 import { DefaultTheme, NavigationContainer, useNavigationContainerRef } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert } from 'react-native';
+import { Alert, View } from 'react-native';
 import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
@@ -27,7 +27,14 @@ import {
     NotoSerifKR_700Bold,
 } from '@expo-google-fonts/noto-serif-kr';
 import LocalDataDecisionModal from './components/Auth/LocalDataDecisionModal';
-import { tabScreenOptions } from './components/shared/TabBar';
+import { PillTabBar, tabScreenOptions } from './components/shared/TabBar';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+import Onboarding, {
+    ONBOARDING_FLOW_SEEN_KEY,
+    hasCompletedOnboarding,
+    markOnboardingCompleted,
+} from './screens/Onboarding';
 import { AppProvider } from './contexts/AppContext';
 import { LocalOwnerProvider, useLocalOwner } from './contexts/LocalOwnerContext';
 import { VocabWordsProvider } from './contexts/VocabWordsContext';
@@ -549,6 +556,57 @@ function ThemedAppShell({
         SystemUI.setBackgroundColorAsync(appBackground).catch(() => {});
     }, [appBackground]);
 
+    // First run: onboarding before the app. Someone who already has books
+    // (an existing install updating) is marked done and never sees it.
+    const [showOnboarding, setShowOnboarding] = useState(null);
+    const hasBooks = Array.isArray(books) && books.length > 0;
+    useEffect(() => {
+        let active = true;
+        (async () => {
+            if (await hasCompletedOnboarding()) {
+                if (active) setShowOnboarding(false);
+                return;
+            }
+            if (hasBooks) {
+                await markOnboardingCompleted();
+                if (active) setShowOnboarding(false);
+                return;
+            }
+            if (active) setShowOnboarding(true);
+        })();
+        return () => {
+            active = false;
+        };
+        // Decided once per launch.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+    const finishOnboarding = useCallback(() => {
+        // The reader skips its first-book level prompt for people who went
+        // through onboarding: the level step already covered it.
+        AsyncStorage.setItem(ONBOARDING_FLOW_SEEN_KEY, '1').catch(() => {});
+        setShowOnboarding(false);
+    }, []);
+
+    if (showOnboarding === null) {
+        // One storage read; the page colour avoids a black flash meanwhile.
+        return <View style={{ flex: 1, backgroundColor: appBackground }} />;
+    }
+    if (showOnboarding) {
+        return (
+            <>
+                <StatusBar
+                    style={isDarkMode ? 'light' : 'dark'}
+                    backgroundColor={appBackground}
+                    translucent={false}
+                />
+                {/* Outside the navigator, which otherwise provides the insets. */}
+                <SafeAreaProvider>
+                    <Onboarding onDone={finishOnboarding} />
+                </SafeAreaProvider>
+            </>
+        );
+    }
+
     return (
         <>
             <StatusBar
@@ -564,6 +622,8 @@ function ThemedAppShell({
             >
                 <Tab.Navigator
                     sceneContainerStyle={sceneContainerStyle}
+                    backBehavior="history"
+                    tabBar={(props) => <PillTabBar {...props} themeColors={themeColors} />}
                     screenOptions={(props) => tabScreenOptions(props, {
                         themeColors,
                     })}

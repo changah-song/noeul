@@ -5,17 +5,16 @@ import {
     Modal,
     PanResponder,
     Pressable,
-    ScrollView,
     StyleSheet,
     Text,
     TouchableOpacity,
     View,
     useWindowDimensions,
 } from 'react-native';
-import { Feather, MaterialIcons } from '@expo/vector-icons';
+import { Feather } from '@expo/vector-icons';
 import { Slider } from 'react-native-elements';
 import { useTranslation } from '../../hooks/useTranslation';
-import { fontFamilies, radii, spacing } from '../../theme';
+import { fontFamilies } from '../../theme';
 import { ANNOTATION_SCOPES } from '../../services/readerAnnotations';
 import {
     DEFAULT_BOOK_READER_SETTINGS,
@@ -25,24 +24,25 @@ import {
     READER_FOCUS_SPAN_MIN,
     READER_FONT_SIZE_MAX,
     READER_FONT_SIZE_MIN,
-    READER_LEVEL_MARK_OPTIONS,
     READER_LEVEL_MARK_STYLES,
-    READER_LINE_SPACING_STEPS,
     READER_READING_MODES,
     buildLegendGradient,
     clampNumber,
-    nearestLineSpacingIndex,
     stepFocusSpan,
     stepFontSize,
-    stepLineSpacing,
 } from '../../services/readerSettings';
 import {
     ResetLink,
+    SHEET_PADDING,
     SegmentedControl,
+    SegmentedTabs,
     SettingRow,
+    SheetHandle,
+    SheetHeader,
     Stepper,
     ToggleSwitch,
     createReaderSettingsControlStyles,
+    createSheetChromeStyles,
 } from './ReaderSettingsControls';
 
 // Share of the window the sheet occupies. Fixed (not content-sized) so every
@@ -61,6 +61,23 @@ const TAB_LABEL_KEYS = {
     focus: 'read.settingsTabFocus',
 };
 
+// Line spacing is offered as three named choices (values from
+// READER_LINE_SPACING_STEPS; Relaxed is the book default, Normal the song
+// default). A stored value between steps shows as the nearest choice.
+export const LINE_SPACING_CHOICES = [
+    { value: 1.65, labelKey: 'read.lineSpacingTight' },
+    { value: 1.85, labelKey: 'read.lineSpacingNormal' },
+    { value: 2.05, labelKey: 'read.lineSpacingRelaxed' },
+];
+
+const nearestLineSpacingChoice = (value) => {
+    const numeric = Number(value);
+    const target = Number.isFinite(numeric) ? numeric : DEFAULT_BOOK_READER_SETTINGS.lineSpacing;
+    return LINE_SPACING_CHOICES.reduce((best, choice) => (
+        Math.abs(choice.value - target) < Math.abs(best.value - target) ? choice : best
+    ), LINE_SPACING_CHOICES[0]).value;
+};
+
 const scopeOrDefault = (value, fallback) => (ANNOTATION_SCOPES.includes(value) ? value : fallback);
 
 /**
@@ -70,15 +87,15 @@ const scopeOrDefault = (value, fallback) => (ANNOTATION_SCOPES.includes(value) ?
  * hang off the ☰ button.
  *
  * Layout, top to bottom:
- *   drag handle · title + close
+ *   grabber · serif title + close X (the shared sheet chrome)
  *   `actions` (surface-specific rows such as Checkpoints or Edit lyrics)
- *   tab strip: Text | Words | Focus
+ *   segmented tabs: Text | Words | Focus
  *   scrolling tab body, each ending in a small "Reset to default"
  *
- *   Text  — font size, line spacing, brightness, reading direction
- *   Words — vocabulary marks (+ legend), pinyin (+ scope,
+ *   Text  — font size, line spacing, brightness, page turns
+ *   Words — difficulty underlines (+ threshold legend), pinyin (+ scope,
  *           Chinese only), translation under words (+ scope)
- *   Focus — navigate (swipe / buttons), focus span
+ *   Focus — move between sentences (swipe / buttons), sentences at a time
  *
  * `settings` is the raw stored object; values are clamped here with the
  * shared helpers in services/readerSettings so the sheet never shows an
@@ -105,9 +122,23 @@ const ReaderSettingsSheet = ({
     const { t } = useTranslation();
     const { height: windowHeight } = useWindowDimensions();
     const sheetHeight = Math.round(windowHeight * SHEET_HEIGHT_RATIO);
-    const styles = useMemo(() => createStyles(colors, insets, sheetHeight), [colors, insets, sheetHeight]);
+    const styles = useMemo(() => createStyles(colors, sheetHeight), [colors, sheetHeight]);
+    const chrome = useMemo(() => createSheetChromeStyles(colors, insets), [colors, insets]);
     const controlStyles = useMemo(() => createReaderSettingsControlStyles(colors), [colors]);
     const [activeTab, setActiveTab] = useState(SETTINGS_TABS.includes(initialTab) ? initialTab : 'text');
+
+    // A short fade as the tab body swaps, so switching tabs doesn't jump.
+    const tabFade = useRef(new Animated.Value(1)).current;
+    const selectTab = useCallback((tab) => {
+        setActiveTab(tab);
+        tabFade.setValue(0.35);
+        Animated.timing(tabFade, {
+            toValue: 1,
+            duration: 180,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+        }).start();
+    }, [tabFade]);
 
     // Keep the sheet mounted through its exit animation, then unmount.
     const [mounted, setMounted] = useState(visible);
@@ -196,8 +227,7 @@ const ReaderSettingsSheet = ({
     const fontSize = Math.round(clampNumber(
         source.fontSize, READER_FONT_SIZE_MIN, READER_FONT_SIZE_MAX, DEFAULT_BOOK_READER_SETTINGS.fontSize
     ));
-    const lineSpacingStep = READER_LINE_SPACING_STEPS[nearestLineSpacingIndex(source.lineSpacing)];
-    const lineSpacingIndex = nearestLineSpacingIndex(source.lineSpacing);
+    const lineSpacingChoice = nearestLineSpacingChoice(source.lineSpacing);
     const brightness = clampNumber(
         source.brightness, READER_BRIGHTNESS_MIN, READER_BRIGHTNESS_MAX, DEFAULT_BOOK_READER_SETTINGS.brightness
     );
@@ -251,52 +281,46 @@ const ReaderSettingsSheet = ({
                 />
             </SettingRow>
             <SettingRow styles={controlStyles} label={t('read.lineSpacing')}>
-                <Stepper
+                <SegmentedControl
                     styles={controlStyles}
                     colors={colors}
-                    value={t(lineSpacingStep.labelKey)}
-                    valueStyle={controlStyles.stepperValueSmall}
-                    onStep={(direction) => onSettingChange('lineSpacing', stepLineSpacing(source.lineSpacing, direction))}
-                    atMin={lineSpacingIndex <= 0}
-                    atMax={lineSpacingIndex >= READER_LINE_SPACING_STEPS.length - 1}
-                    decreaseLabel={t('read.decreaseLineSpacing')}
-                    increaseLabel={t('read.increaseLineSpacing')}
+                    value={lineSpacingChoice}
+                    onChange={(value) => onSettingChange('lineSpacing', value)}
+                    accessibilityLabel={t('read.lineSpacing')}
+                    options={LINE_SPACING_CHOICES.map(({ value, labelKey }) => ({ value, label: t(labelKey) }))}
                 />
             </SettingRow>
             <SettingRow styles={controlStyles} label={t('read.brightness')}>
-                <View style={styles.brightnessGroup}>
-                    <MaterialIcons name="light-mode" size={17} color={colors.readerSubtleInk} />
-                    <Slider
-                        style={styles.brightnessSlider}
-                        value={brightness}
-                        onValueChange={handleBrightness}
-                        minimumValue={READER_BRIGHTNESS_MIN}
-                        maximumValue={READER_BRIGHTNESS_MAX}
-                        step={0.01}
-                        allowTouchTrack
-                        thumbTintColor={colors.readerProgressFill}
-                        minimumTrackTintColor={colors.readerProgressFill}
-                        maximumTrackTintColor={colors.readerHairline}
-                        trackStyle={styles.sliderTrack}
-                        thumbStyle={styles.sliderThumb}
-                        accessibilityLabel={t('read.readerBrightness')}
-                    />
-                </View>
+                <Slider
+                    style={styles.brightnessSlider}
+                    value={brightness}
+                    onValueChange={handleBrightness}
+                    minimumValue={READER_BRIGHTNESS_MIN}
+                    maximumValue={READER_BRIGHTNESS_MAX}
+                    step={0.01}
+                    allowTouchTrack
+                    thumbTintColor={colors.inkSlate}
+                    minimumTrackTintColor={colors.inkSlate}
+                    maximumTrackTintColor={colors.border}
+                    trackStyle={styles.sliderTrack}
+                    thumbStyle={styles.sliderThumb}
+                    accessibilityLabel={t('read.readerBrightness')}
+                />
             </SettingRow>
-            <SettingRow styles={controlStyles} label={t('read.readingDirection')} last>
+            <SettingRow styles={controlStyles} label={t('read.settingsPageTurns')} last>
                 <SegmentedControl
                     styles={controlStyles}
                     colors={colors}
                     value={readingMode}
                     onChange={(value) => onSettingChange('readingMode', value)}
-                    accessibilityLabel={t('read.readingDirection')}
+                    accessibilityLabel={t('read.settingsPageTurns')}
                     options={[
-                        { value: 'paged', icon: 'swap-horiz', label: t('read.readingHorizontal') },
-                        { value: 'scroll', icon: 'swap-vert', label: t('read.readingVertical') },
+                        { value: 'paged', label: t('read.readingHorizontal') },
+                        { value: 'scroll', label: t('read.readingVertical') },
                     ]}
                 />
             </SettingRow>
-            <ResetLink styles={controlStyles} colors={colors} label={t('read.resetSection')} onPress={onResetTextSettings} />
+            <ResetLink styles={controlStyles} label={t('read.resetSection')} onPress={onResetTextSettings} />
         </>
     );
 
@@ -318,17 +342,17 @@ const ReaderSettingsSheet = ({
                     maximumValue={1}
                     step={0.05}
                     allowTouchTrack
-                    thumbTintColor={colors.readerPaper}
+                    thumbTintColor={colors.surface}
                     minimumTrackTintColor="transparent"
                     maximumTrackTintColor="transparent"
                     trackStyle={styles.legendSliderTrack}
                     thumbStyle={styles.legendSliderThumb}
-                    accessibilityLabel={t('read.wordHighlighting')}
+                    accessibilityLabel={t('read.settingsDifficultyUnderlines')}
                 />
             </View>
             <View style={styles.legendLabels}>
-                <Text style={styles.legendLabel}>{t('read.underlineNearly')}</Text>
-                <Text style={[styles.legendLabel, styles.legendLabelEnd]}>{t('read.underlineHard')}</Text>
+                <Text style={styles.legendLabel}>{t('read.settingsUnderlineNearly')}</Text>
+                <Text style={[styles.legendLabel, styles.legendLabelEnd]}>{t('read.settingsUnderlineHard')}</Text>
             </View>
             <Text style={styles.legendHint}>{t('read.wordHighlightingHint')} {t('read.underlineThresholdHint')}</Text>
         </View>
@@ -339,20 +363,15 @@ const ReaderSettingsSheet = ({
         // reset link sits clean underneath.
         const rows = [{
             key: 'marks',
-            label: t('read.wordHighlighting'),
+            label: t('read.settingsDifficultyUnderlines'),
             below: legend,
             control: (
-                <SegmentedControl
+                <ToggleSwitch
                     styles={controlStyles}
                     colors={colors}
-                    value={levelMarkStyle}
-                    onChange={(value) => onSettingChange('levelMarkStyle', value)}
-                    accessibilityLabel={t('read.wordHighlighting')}
-                    options={READER_LEVEL_MARK_OPTIONS.map(({ value, icon, labelKey }) => ({
-                        value,
-                        icon,
-                        label: t(labelKey),
-                    }))}
+                    value={levelMarksEnabled}
+                    onChange={(value) => onSettingChange('levelMarkStyle', value ? 'underline' : 'off')}
+                    accessibilityLabel={t('read.settingsDifficultyUnderlines')}
                 />
             ),
         }];
@@ -434,27 +453,27 @@ const ReaderSettingsSheet = ({
                         {row.control}
                     </SettingRow>
                 ))}
-                <ResetLink styles={controlStyles} colors={colors} label={t('read.resetSection')} onPress={onResetWordSettings} />
+                <ResetLink styles={controlStyles} label={t('read.resetSection')} onPress={onResetWordSettings} />
             </>
         );
     };
 
     const renderFocusTab = () => (
         <>
-            <SettingRow styles={controlStyles} label={t('read.focusNavigate')}>
+            <SettingRow styles={controlStyles} label={t('read.settingsMoveBetweenSentences')}>
                 <SegmentedControl
                     styles={controlStyles}
                     colors={colors}
                     value={focusSwipe ? 'swipe' : 'buttons'}
                     onChange={(value) => onSettingChange('focusSwipe', value === 'swipe')}
-                    accessibilityLabel={t('read.focusNavigate')}
+                    accessibilityLabel={t('read.settingsMoveBetweenSentences')}
                     options={[
-                        { value: 'swipe', icon: 'gesture', label: t('read.focusNavSwipe') },
-                        { value: 'buttons', icon: 'touch-app', label: t('read.focusNavButtons') },
+                        { value: 'swipe', label: t('read.focusNavSwipe') },
+                        { value: 'buttons', label: t('read.focusNavButtons') },
                     ]}
                 />
             </SettingRow>
-            <SettingRow styles={controlStyles} label={t('read.focusSpan')} last>
+            <SettingRow styles={controlStyles} label={t('read.settingsSentencesAtATime')} last>
                 <Stepper
                     styles={controlStyles}
                     colors={colors}
@@ -466,7 +485,7 @@ const ReaderSettingsSheet = ({
                     increaseLabel={t('read.increaseFocusSpan')}
                 />
             </SettingRow>
-            <ResetLink styles={controlStyles} colors={colors} label={t('read.resetSection')} onPress={onResetFocusSettings} />
+            <ResetLink styles={controlStyles} label={t('read.resetSection')} onPress={onResetFocusSettings} />
         </>
     );
 
@@ -480,23 +499,16 @@ const ReaderSettingsSheet = ({
                     accessibilityRole="button"
                     accessibilityLabel={t('common.close')}
                 />
-                <Animated.View style={[styles.sheet, { transform: [{ translateY: sheetTranslateY }] }]}>
+                <Animated.View style={[chrome.sheet, styles.sheet, { transform: [{ translateY: sheetTranslateY }] }]}>
                     <View {...panResponder.panHandlers}>
-                        <View style={styles.handleWrap}>
-                            <View style={styles.handle} />
-                        </View>
-                        <View style={styles.header}>
-                            <Text style={styles.title} numberOfLines={1}>{title}</Text>
-                            <TouchableOpacity
-                                onPress={onClose}
-                                style={styles.closeButton}
-                                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                                accessibilityRole="button"
-                                accessibilityLabel={t('common.close')}
-                            >
-                                <Feather name="x" size={20} color={colors.readerMutedInk} />
-                            </TouchableOpacity>
-                        </View>
+                        <SheetHandle styles={chrome} />
+                        <SheetHeader
+                            styles={chrome}
+                            colors={colors}
+                            title={title}
+                            onClose={onClose}
+                            closeLabel={t('common.close')}
+                        />
 
                         {actions.length > 0 ? (
                             <View style={styles.actions}>
@@ -519,38 +531,28 @@ const ReaderSettingsSheet = ({
                                             </Text>
                                         </View>
                                         {action.destructive ? null : (
-                                            <Feather name="chevron-right" size={18} color={colors.readerSubtleInk} />
+                                            <Feather name="chevron-right" size={18} color={colors.textSubtle} />
                                         )}
                                     </TouchableOpacity>
                                 ))}
                             </View>
                         ) : null}
 
-                        <View style={styles.tabStrip} accessibilityRole="tablist">
-                            {SETTINGS_TABS.map((tab) => {
-                                const selected = tab === activeTab;
-                                return (
-                                    <Pressable
-                                        key={tab}
-                                        style={styles.tab}
-                                        onPress={() => setActiveTab(tab)}
-                                        accessibilityRole="tab"
-                                        accessibilityLabel={t(TAB_LABEL_KEYS[tab])}
-                                        accessibilityState={{ selected }}
-                                        testID={`reader-settings-tab-${tab}`}
-                                    >
-                                        <Text style={[styles.tabLabel, selected && styles.tabLabelActive]} numberOfLines={1}>
-                                            {t(TAB_LABEL_KEYS[tab])}
-                                        </Text>
-                                        <View style={[styles.tabUnderline, selected && styles.tabUnderlineActive]} />
-                                    </Pressable>
-                                );
-                            })}
-                        </View>
+                        <SegmentedTabs
+                            styles={controlStyles}
+                            style={styles.tabs}
+                            value={activeTab}
+                            onChange={selectTab}
+                            options={SETTINGS_TABS.map((tab) => ({
+                                value: tab,
+                                label: t(TAB_LABEL_KEYS[tab]),
+                                testID: `reader-settings-tab-${tab}`,
+                            }))}
+                        />
                     </View>
 
-                    <ScrollView
-                        style={styles.body}
+                    <Animated.ScrollView
+                        style={[styles.body, { opacity: tabFade }]}
                         contentContainerStyle={styles.bodyContent}
                         showsVerticalScrollIndicator
                         bounces={false}
@@ -559,14 +561,14 @@ const ReaderSettingsSheet = ({
                         {activeTab === 'text' ? renderTextTab() : null}
                         {activeTab === 'words' ? renderWordsTab() : null}
                         {activeTab === 'focus' ? renderFocusTab() : null}
-                    </ScrollView>
+                    </Animated.ScrollView>
                 </Animated.View>
             </View>
         </Modal>
     );
 };
 
-const createStyles = (colors, insets = { bottom: 0 }, sheetHeight = 520) => StyleSheet.create({
+const createStyles = (colors, sheetHeight = 520) => StyleSheet.create({
     overlay: {
         flex: 1,
         justifyContent: 'flex-end',
@@ -580,62 +582,18 @@ const createStyles = (colors, insets = { bottom: 0 }, sheetHeight = 520) => Styl
     },
     sheet: {
         height: sheetHeight,
-        backgroundColor: colors.readerSurface,
-        borderTopLeftRadius: radii.xl,
-        borderTopRightRadius: radii.xl,
-        borderWidth: 1,
-        borderBottomWidth: 0,
-        borderColor: colors.readerBorder,
-        paddingBottom: (insets?.bottom ?? 0),
-        shadowColor: 'rgba(27, 28, 28, 0.18)',
-        shadowOffset: { width: 0, height: -8 },
-        shadowOpacity: 1,
-        shadowRadius: 24,
-        elevation: 16,
-    },
-    handleWrap: {
-        alignItems: 'center',
-        paddingTop: 10,
-        paddingBottom: 4,
-    },
-    handle: {
-        width: 36,
-        height: 4,
-        borderRadius: 2,
-        backgroundColor: colors.readerBorder,
-    },
-    header: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        paddingLeft: spacing.lg,
-        paddingRight: spacing.sm,
-        paddingTop: 2,
-        paddingBottom: 6,
-    },
-    title: {
-        flex: 1,
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 16,
-        lineHeight: 21,
-        color: colors.readerBodyInk,
-    },
-    closeButton: {
-        width: 36,
-        height: 36,
-        alignItems: 'center',
-        justifyContent: 'center',
     },
     actions: {
-        paddingHorizontal: spacing.lg,
+        marginTop: 4,
+        paddingHorizontal: SHEET_PADDING,
     },
     actionRow: {
-        height: 46,
+        minHeight: 52,
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        borderTopWidth: 1,
-        borderTopColor: colors.readerHairline,
+        borderBottomWidth: 1,
+        borderBottomColor: colors.divider,
     },
     actionLeft: {
         flex: 1,
@@ -648,72 +606,39 @@ const createStyles = (colors, insets = { bottom: 0 }, sheetHeight = 520) => Styl
         fontFamily: fontFamilies.sansMedium,
         fontSize: 15,
         lineHeight: 20,
-        color: colors.readerBodyInk,
+        color: colors.text,
     },
     actionLabelDanger: {
         color: colors.danger,
     },
-    tabStrip: {
-        flexDirection: 'row',
-        marginTop: 4,
-        paddingHorizontal: spacing.lg,
-        borderBottomWidth: 1,
-        borderBottomColor: colors.readerHairline,
-    },
-    tab: {
-        flex: 1,
-        alignItems: 'center',
-        paddingTop: 10,
-    },
-    tabLabel: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 13,
-        lineHeight: 17,
-        letterSpacing: 0.4,
-        color: colors.readerMutedInk,
-        paddingBottom: 9,
-    },
-    tabLabelActive: {
-        color: colors.readerBodyInk,
-    },
-    tabUnderline: {
-        alignSelf: 'stretch',
-        height: 2,
-        borderRadius: 1,
-        backgroundColor: 'transparent',
-    },
-    tabUnderlineActive: {
-        backgroundColor: colors.inkSlate,
+    tabs: {
+        marginTop: 12,
+        marginHorizontal: SHEET_PADDING,
     },
     body: {
         flex: 1,
     },
     bodyContent: {
-        paddingHorizontal: spacing.lg,
-        paddingTop: 4,
-        paddingBottom: spacing.lg,
-    },
-    brightnessGroup: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
+        paddingHorizontal: SHEET_PADDING,
+        paddingTop: 6,
+        paddingBottom: SHEET_PADDING,
     },
     brightnessSlider: {
-        width: 148,
-        height: 32,
+        width: 150,
+        height: 36,
     },
     sliderTrack: {
         height: 4,
         borderRadius: 2,
     },
     sliderThumb: {
-        width: 18,
-        height: 18,
-        borderRadius: 9,
+        width: 20,
+        height: 20,
+        borderRadius: 10,
     },
     legend: {
-        paddingBottom: 12,
-        gap: 5,
+        paddingBottom: 14,
+        gap: 6,
     },
     legendTrack: {
         justifyContent: 'center',
@@ -726,13 +651,13 @@ const createStyles = (colors, insets = { bottom: 0 }, sheetHeight = 520) => Styl
         height: 32,
     },
     legendSliderTrack: {
-        height: 4,
-        borderRadius: 2,
+        height: 6,
+        borderRadius: 3,
     },
     legendSliderThumb: {
-        width: 20,
-        height: 20,
-        borderRadius: 10,
+        width: 22,
+        height: 22,
+        borderRadius: 11,
         borderWidth: 2,
         borderColor: colors.inkSlate,
         shadowColor: 'rgba(27, 28, 28, 0.25)',
@@ -743,8 +668,8 @@ const createStyles = (colors, insets = { bottom: 0 }, sheetHeight = 520) => Styl
     },
     legendSwatches: {
         flexDirection: 'row',
-        height: 4,
-        borderRadius: 2,
+        height: 6,
+        borderRadius: 3,
         overflow: 'hidden',
     },
     legendSwatch: {
@@ -754,21 +679,23 @@ const createStyles = (colors, insets = { bottom: 0 }, sheetHeight = 520) => Styl
     legendLabels: {
         flexDirection: 'row',
         justifyContent: 'space-between',
+        gap: 12,
     },
     legendLabel: {
+        flexShrink: 1,
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 11,
-        lineHeight: 15,
-        color: colors.readerSubtleInk,
+        fontSize: 12,
+        lineHeight: 16,
+        color: colors.textTertiary,
     },
     legendLabelEnd: {
         textAlign: 'right',
     },
     legendHint: {
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 11,
-        lineHeight: 15,
-        color: colors.readerMutedInk,
+        fontSize: 12,
+        lineHeight: 17,
+        color: colors.textTertiary,
     },
 });
 

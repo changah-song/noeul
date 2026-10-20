@@ -364,7 +364,7 @@ const HanjaDetails = ({
                                     styles.card,
                                     {
                                         width: cardWidth,
-                                        borderColor: palette.border,
+                                        borderColor: palette.divider,
                                         backgroundColor: palette.cardBg,
                                     },
                                 ]}
@@ -372,12 +372,11 @@ const HanjaDetails = ({
                                 {/* Character tile + meaning */}
                                 <View style={styles.cardHeader}>
                                     <View style={[styles.hanjaTile, { backgroundColor: palette.tileBg }]}>
-                                        <Text style={[styles.hanjaChar, { color: palette.accent }]}>
+                                        <Text style={[styles.hanjaChar, { color: palette.text }]}>
                                             {char}
                                         </Text>
                                     </View>
                                     <View style={styles.cardCopy}>
-                                        <Text style={styles.cardEyebrow}>{t('hanja.meaning')}</Text>
                                         {charIsLoading ? (
                                             <View style={styles.shimmerLine} />
                                         ) : (
@@ -497,21 +496,20 @@ const HanjaDetails = ({
 
 const createStyles = (colors) => StyleSheet.create({
     section: {
-        marginTop: 18,
-        gap: 12,
-        paddingHorizontal: 24,
+        marginTop: 16,
+        gap: 10,
+        paddingHorizontal: 16,
     },
     sectionHeader: {
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
+        paddingHorizontal: 6,
     },
     sectionEyebrow: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 10,
-        lineHeight: 13,
-        letterSpacing: 2.2,
-        textTransform: 'uppercase',
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 13,
+        lineHeight: 17,
         color: colors.textTertiary,
     },
     dots: {
@@ -529,85 +527,73 @@ const createStyles = (colors) => StyleSheet.create({
         backgroundColor: colors.readerTappedWordBg,
     },
     carousel: {
-        marginHorizontal: -24,
+        marginHorizontal: -16,
     },
     carouselContent: {
         gap: CARD_GAP,
-        paddingHorizontal: 24,
+        paddingHorizontal: 16,
         paddingBottom: 2,
     },
     card: {
         borderWidth: 1,
-        borderRadius: 4,
-        padding: 16,
+        borderRadius: 16,
+        paddingHorizontal: 14,
+        paddingVertical: 12,
     },
     cardHeader: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 14,
+        gap: 12,
     },
     hanjaTile: {
-        width: 54,
-        height: 54,
+        width: 48,
+        height: 48,
         flexShrink: 0,
-        borderWidth: 1,
-        borderColor: colors.border,
-        borderRadius: 3,
+        borderRadius: 12,
         alignItems: 'center',
         justifyContent: 'center',
     },
     hanjaChar: {
         fontFamily: fontFamilies.krSerifMedium,
-        fontSize: 32,
-        lineHeight: 39,
+        fontSize: 28,
+        lineHeight: 36,
     },
     cardCopy: {
         flex: 1,
         minWidth: 0,
     },
-    cardEyebrow: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 9,
-        lineHeight: 12,
-        letterSpacing: 1.8,
-        textTransform: 'uppercase',
-        color: colors.textSubtle,
-    },
     cardTitle: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 17,
+        fontFamily: fontFamilies.krSerifSemiBold,
+        fontSize: 16,
         lineHeight: 22,
-        marginTop: 3,
     },
     cardSubheader: {
         fontFamily: fontFamilies.sansRegular,
         fontSize: 13,
-        lineHeight: 17,
-        marginTop: 2,
+        lineHeight: 18,
+        marginTop: 1,
     },
     shimmerLine: {
-        height: 16,
+        height: 14,
         width: '58%',
-        borderRadius: 2,
+        borderRadius: 7,
         backgroundColor: colors.surfaceMuted,
-        marginTop: 5,
+        marginTop: 4,
     },
     cardDivider: {
         borderTopWidth: 1,
-        marginTop: 14,
-        marginBottom: 13,
+        marginTop: 12,
+        marginBottom: 10,
     },
     relatedEyebrow: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 9,
-        lineHeight: 12,
-        letterSpacing: 1.8,
-        textTransform: 'uppercase',
-        color: colors.textSubtle,
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 12,
+        lineHeight: 16,
+        color: colors.textTertiary,
         marginBottom: 2,
     },
     loadingRow: {
-        paddingVertical: 14,
+        paddingVertical: 12,
         alignItems: 'center',
     },
     emptyText: {
@@ -615,13 +601,13 @@ const createStyles = (colors) => StyleSheet.create({
         fontSize: 13,
         lineHeight: 18,
         fontStyle: 'italic',
-        marginTop: 10,
+        marginTop: 8,
     },
     relatedRow: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: 10,
-        marginTop: 12,
+        marginTop: 10,
     },
     relatedInfo: {
         flex: 1,
@@ -630,7 +616,7 @@ const createStyles = (colors) => StyleSheet.create({
     },
     relatedKorean: {
         fontFamily: fontFamilies.krSerifRegular,
-        fontSize: 16,
+        fontSize: 15,
         lineHeight: 21,
     },
     relatedHanja: {
@@ -641,7 +627,7 @@ const createStyles = (colors) => StyleSheet.create({
     relatedMeaning: {
         fontFamily: fontFamilies.sansRegular,
         fontSize: 13,
-        lineHeight: 17,
+        lineHeight: 18,
     },
     // Circle toggle: two states only — filled (known) and empty (unknown)
     circle: {
@@ -663,8 +649,10 @@ const createStyles = (colors) => StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'flex-end',
+        alignSelf: 'flex-end',
         gap: 2,
-        marginTop: 13,
+        marginTop: 10,
+        minHeight: 32,
     },
     seeMoreText: {
         fontFamily: fontFamilies.sansSemiBold,
