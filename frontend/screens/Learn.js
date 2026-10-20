@@ -18,6 +18,7 @@ import { Feather, MaterialIcons } from '@expo/vector-icons';
 
 import Flashcard from '../components/Learn/Flashcard';
 import ProfileAvatar from '../components/shared/ProfileAvatar';
+import { PILL_TAB_BAR_CLEARANCE } from '../components/shared/TabBar';
 import CandidateCard from '../components/vocab/CandidateCard';
 import { Screen } from '../components/ui';
 import { useAppContext } from '../contexts/AppContext';
@@ -2087,7 +2088,8 @@ const createStyles = (colors) => StyleSheet.create({
   content: {
     paddingHorizontal: 0,
     paddingTop: 0,
-    paddingBottom: 28,
+    // The floating Read/Learn pill sits over the bottom of the list.
+    paddingBottom: PILL_TAB_BAR_CLEARANCE,
     gap: 0,
   },
   appTopBar: {

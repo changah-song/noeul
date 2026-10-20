@@ -98,9 +98,13 @@ const styles = StyleSheet.create({
         borderBottomWidth: 2,
     },
     pillBar: {
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        bottom: 0,
         alignItems: 'center',
-        paddingTop: 8,
         paddingBottom: 14,
+        backgroundColor: 'transparent',
     },
     pill: {
         flexDirection: 'row',
@@ -141,6 +145,10 @@ const styles = StyleSheet.create({
 });
 
 export const tabBarBaseStyle = createTabBarBaseStyle(colors);
+
+// Room screens leave at the bottom of their scroll content so the last row
+// can scroll clear of the floating pill.
+export const PILL_TAB_BAR_CLEARANCE = 96;
 
 // The two destinations in the floating pill. The reader (Read) and Profile are
 // reached from inside the app (a book, the avatar) and show no tab bar.
@@ -198,7 +206,8 @@ export const PillTabBar = ({ state, navigation, descriptors, themeColors = color
         return null;
     }
     return (
-        <View style={[styles.pillBar, { backgroundColor: themeColors.bgPage }]}>
+        // Floats over the screen: the books scroll behind it.
+        <View style={styles.pillBar} pointerEvents="box-none">
             <View
                 accessibilityRole="tablist"
                 style={[styles.pill, { backgroundColor: themeColors.surface, borderColor: themeColors.border }]}
