@@ -22,12 +22,12 @@ import {
     fadeStrength,
     highlightStrengthsFor,
     savedWordsForSurfaces,
+    unseenShownTerms,
 } from '../savedWordFade';
 
 const { __resetMockDatabases } = SQLite;
 const OWNER = 'fade-owner';
 const scope = { ownerId: OWNER, language: 'ko' };
-const HOUR = 60 * 60 * 1000;
 
 describe('saved word fade helpers', () => {
     it('fades linearly to nothing over the steps', () => {
@@ -67,8 +67,8 @@ describe('saved word fading in the database', () => {
         const first = await recordSavedWordSightings({ ...scope, words: ['소문'], now });
         expect(first.faded.get('소문')).toBe(1);
 
-        // Paging back an hour later doesn't count again.
-        const again = await recordSavedWordSightings({ ...scope, words: ['소문'], now: now + HOUR });
+        // A flick past it again a few seconds later doesn't count again.
+        const again = await recordSavedWordSightings({ ...scope, words: ['소문'], now: now + 5000 });
         expect(again.faded.size).toBe(0);
 
         let result;
@@ -115,5 +115,18 @@ describe('saved word fading in the database', () => {
         const result = await recordSavedWordSightings({ ...scope, words: ['없는말'], now: Date.now() });
         expect(result.faded.size).toBe(0);
         expect(result.learned).toEqual([]);
+    });
+});
+
+describe('unseenShownTerms', () => {
+    test('counts each saved word once per page per session', () => {
+        const counted = new Set();
+        expect(unseenShownTerms(counted, 'book', 'paged:0:3', ['소문', '감자'])).toEqual(['소문', '감자']);
+        // Paging back to the same page.
+        expect(unseenShownTerms(counted, 'book', 'paged:0:3', ['소문', '감자'])).toEqual([]);
+        // The next page.
+        expect(unseenShownTerms(counted, 'book', 'paged:0:4', ['소문'])).toEqual(['소문']);
+        // Another book's page with the same index.
+        expect(unseenShownTerms(counted, 'other', 'paged:0:3', ['소문'])).toEqual(['소문']);
     });
 });

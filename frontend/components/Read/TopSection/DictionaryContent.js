@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Text, View, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator } from 'react-native';
+import { Text, View, StyleSheet, TouchableOpacity, Pressable, ScrollView, ActivityIndicator } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { api } from '../../../services/api/client';
 import { streamExplainInContext } from '../../../services/api/explainInContext';
@@ -1349,6 +1349,54 @@ const DictionaryContent = ({
         setDrilldownStack(prev => prev.slice(0, -1));
     };
 
+    // Chinese: look up one character of a longer word (先 of 先生), with a
+    // back row to the word.
+    const handleChineseCharacterPress = (character) => {
+        const next = cleanValue(character);
+        if (!next || next === cleanValue(lookupWord)) {
+            return;
+        }
+        setCurrentHanja(null);
+        setDrilldownStack(prev => [...prev, next]);
+    };
+
+    const chineseCharactersOf = (rawWord) => (
+        isChineseBook ? Array.from(cleanValue(rawWord)).filter((ch) => HANJA_RE.test(ch)) : []
+    );
+
+    // A Chinese headword of 2+ characters: each character is its own button
+    // (dotted underline) opening that character's entry, with a back row to
+    // the word. Anything else renders as plain text.
+    const renderHeadwordText = (text, textStyle) => {
+        const value = cleanValue(text);
+        if (chineseCharactersOf(value).length < 2 || explainMode) {
+            return <Text selectable style={textStyle}>{text}</Text>;
+        }
+        return (
+            <View style={styles.zhHeadwordChars}>
+                {Array.from(value).map((ch, index) => (HANJA_RE.test(ch) ? (
+                    <Pressable
+                        key={`${ch}-${index}`}
+                        accessibilityRole="button"
+                        accessibilityLabel={`${t('lookup.characters')}: ${ch}`}
+                        hitSlop={{ top: 6, bottom: 8, left: 1, right: 1 }}
+                        onPress={() => handleChineseCharacterPress(ch)}
+                        style={({ pressed }) => [styles.zhHeadwordChar, pressed && styles.zhHeadwordCharPressed]}
+                    >
+                        <Text style={textStyle}>{ch}</Text>
+                        <View style={styles.zhHeadwordDots}>
+                            {[0, 1, 2, 3, 4].map((dot) => (
+                                <View key={dot} style={[styles.zhHeadwordDot, { backgroundColor: palette.mutedText }]} />
+                            ))}
+                        </View>
+                    </Pressable>
+                ) : (
+                    <Text key={`${ch}-${index}`} style={[textStyle, styles.zhHeadwordGap]}>{ch}</Text>
+                )))}
+            </View>
+        );
+    };
+
     const goToPreviousWord = () => {
         if (lookupItemCount <= 1 || currentLookupIndex <= 0) {
             return;
@@ -1790,9 +1838,10 @@ const DictionaryContent = ({
                 <View style={styles.headwordRow}>
                     {renderHeadwordChevron('previous')}
                     <View style={styles.wordLine}>
-                        <Text selectable style={[styles.entryWord, isChineseBook && styles.zhEntryWord, { color: palette.text }]}>
-                            {headwordText}
-                        </Text>
+                        {renderHeadwordText(
+                            headwordText,
+                            [styles.entryWord, isChineseBook && styles.zhEntryWord, { color: palette.text }]
+                        )}
                         {hanjaElement}
                         {pronunciationText ? (
                             <Text
@@ -2339,8 +2388,12 @@ const DictionaryContent = ({
                     const senses = primary ? resolveZhVariantSenses(primary.senses) : [];
                     const isLoading = raw === 'loading' || raw === undefined;
                     return (
-                        <View
+                        <TouchableOpacity
                             key={`${ch}-${index}`}
+                            accessibilityRole="button"
+                            accessibilityLabel={`${t('lookup.characters')}: ${ch}`}
+                            activeOpacity={0.7}
+                            onPress={() => handleChineseCharacterPress(ch)}
                             style={[
                                 styles.zhCharRow,
                                 index > 0 && { borderTopColor: palette.border, borderTopWidth: StyleSheet.hairlineWidth },
@@ -2363,7 +2416,7 @@ const DictionaryContent = ({
                                     </Text>
                                 )}
                             </View>
-                        </View>
+                        </TouchableOpacity>
                     );
                 })}
             </View>
@@ -2538,9 +2591,17 @@ const DictionaryContent = ({
                     onContentHeightChange?.(height);
                 }}
             >
-                <Text style={[styles.entryWord, styles.notFoundWord, { color: palette.text }]}>{explainMode ? explainHeadword : lookupWord}</Text>
+                {renderDrilldownBackRow()}
+                {explainMode ? (
+                    <Text style={[styles.entryWord, styles.notFoundWord, { color: palette.text }]}>{explainHeadword}</Text>
+                ) : renderHeadwordText(lookupWord, [styles.entryWord, styles.notFoundWord, { color: palette.text }])}
                 {explainMode ? renderExplainBodySection() : (
-                    <Text style={[styles.notFoundSubtext, { color: colors.textSubtle }]}>{t('lookup.noDefinition')}</Text>
+                    <>
+                        {/* A failed request is not the same as "no entry": say so. */}
+                        <Text style={[styles.notFoundSubtext, { color: colors.textSubtle }]}>
+                            {liveError ? t('lookup.dictionaryFailed') : t('lookup.noDefinition')}
+                        </Text>
+                    </>
                 )}
             </ScrollView>
             {renderNotFoundActionRow(lookupWord)}
@@ -3091,6 +3152,35 @@ const createStyles = (colors) => StyleSheet.create({
         textAlign: 'center',
         textTransform: 'uppercase',
         marginBottom: 2,
+    },
+    zhHeadwordChars: {
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        flexWrap: 'wrap',
+        gap: 3,
+    },
+    zhHeadwordChar: {
+        alignItems: 'center',
+    },
+    zhHeadwordCharPressed: {
+        opacity: 0.5,
+    },
+    zhHeadwordGap: {
+        marginHorizontal: 2,
+    },
+    // A dotted underline under each tappable character (Android draws
+    // textDecorationStyle 'dotted' solid, so the dots are views).
+    zhHeadwordDots: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignSelf: 'stretch',
+        marginHorizontal: 3,
+        marginTop: -2,
+    },
+    zhHeadwordDot: {
+        width: 2.5,
+        height: 2.5,
+        borderRadius: 1.25,
     },
     zhCharRow: {
         flexDirection: 'row',

@@ -343,7 +343,8 @@ class NativeEpubReaderModule : Module() {
         "onTextSelected",
         "onSelectionCleared",
         "onFocusSentenceChange",
-        "onExposure"
+        "onExposure",
+        "onSavedTermsShown"
       )
     }
   }
@@ -533,6 +534,10 @@ internal const val PINYIN_ROW_SCALE = 0.9f
 internal const val GLOSS_ROW_SCALE = 0.85f
 // How long a tapped word's underline takes to dissolve into dots.
 private const val TAP_DISSOLVE_MS = 700f
+// Saved words on a page fade a step once the page has settled this long, and
+// the box's pixels then leave over SAVED_FADE_MS, in front of the reader.
+private const val SAVED_SHOWN_HOLD_MS = 600L
+private const val SAVED_FADE_MS = 900f
 
 private class ContinuousReaderScrollView(context: Context) : ScrollView(context) {
   private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
@@ -730,6 +735,7 @@ class NativeEpubReaderView(
   private val onSelectionCleared by EventDispatcher()
   private val onFocusSentenceChange by EventDispatcher()
   private val onExposure by EventDispatcher()
+  private val onSavedTermsShown by EventDispatcher()
   private val viewPager = ViewPager2(context)
   private val continuousScrollView = ContinuousReaderScrollView(context)
   private val continuousPageView = EpubPageView(context)
@@ -786,6 +792,12 @@ class NativeEpubReaderView(
 
   // Level-underlined words the reader has tapped -> tap time (epoch ms).
   private var tappedTerms: Map<String, Long> = emptyMap()
+  // Saved word -> (strength it was drawn at, when it started fading to its
+  // current strength), while the box is losing pixels.
+  private val savedFadeFrom = mutableMapOf<String, Pair<Float, Long>>()
+  // The unit (page or focus span) whose saved words are waiting out the hold.
+  private var pendingSavedShown: Pair<String, List<String>>? = null
+  private val savedShownRunnable = Runnable { emitSavedTermsShown() }
   private var savedHighlightRangesByPage: Map<Int, List<TextRange>> = emptyMap()
   private var savedHighlightContextsByPage: Map<Int, List<Map<String, Any>>> = emptyMap()
   private var levelRangesByPage: Map<Int, List<TextRange>> = emptyMap()
@@ -905,6 +917,7 @@ class NativeEpubReaderView(
     continuousScrollView.onScrollPositionChanged = { handleContinuousScrollChanged() }
     continuousScrollView.onEdgePull = { direction -> handleContinuousEdgePull(direction) }
     continuousPageView.tapProgress = ::levelTapProgress
+    continuousPageView.savedFade = ::savedFadeProgress
     continuousScrollView.addView(
       continuousPageView,
       FrameLayout.LayoutParams(
@@ -1208,8 +1221,25 @@ class NativeEpubReaderView(
     if (next == highlightStrengths) {
       return
     }
+    // A word whose strength dropped loses pixels from where it was drawn; one
+    // that came back (looked up again) is simply drawn in full.
+    val now = System.currentTimeMillis()
+    next.forEach { (term, strength) ->
+      val drawn = highlightStrengths[term] ?: 1f
+      if (strength < drawn - 0.001f) savedFadeFrom[term] = drawn to now
+    }
+    savedFadeFrom.keys.retainAll { term -> next.containsKey(term) }
     highlightStrengths = next
     rebuildSavedHighlightRanges()
+  }
+
+  // A saved box still losing pixels: (strength it is leaving, progress 0..1).
+  private fun savedFadeProgress(range: TextRange): Pair<Float, Float>? {
+    val term = range.term ?: return null
+    val (from, at) = savedFadeFrom[term] ?: return null
+    val progress = (System.currentTimeMillis() - at) / SAVED_FADE_MS
+    if (progress >= 1f) return null
+    return from to progress.coerceAtLeast(0f)
   }
 
   fun setLevelTerms(terms: List<Any?>) {
@@ -1761,6 +1791,7 @@ class NativeEpubReaderView(
         ::handlePageEdgeAction
       )
       pageAdapter?.tapProgress = ::levelTapProgress
+      pageAdapter?.savedFade = ::savedFadeProgress
       viewPager.adapter = pageAdapter
     } else {
       val canAnimateChapterTransition = (
@@ -2924,6 +2955,28 @@ class NativeEpubReaderView(
     exposureUnitSavedTerms = savedTerms
     exposureUnitChars = chars
     exposureUnitEnteredAtMs = SystemClock.uptimeMillis()
+    scheduleSavedTermsShown(key, savedTerms)
+  }
+
+  /**
+   * The saved words in a page or focus span that has just come on screen.
+   * Once it has stayed put for SAVED_SHOWN_HOLD_MS (not flicked past), JS
+   * fades each a step and the box loses pixels while the reader watches.
+   */
+  private fun scheduleSavedTermsShown(key: String, savedTerms: List<String>) {
+    mainHandler.removeCallbacks(savedShownRunnable)
+    pendingSavedShown = if (savedTerms.isEmpty()) null else key to savedTerms
+    if (pendingSavedShown != null) {
+      mainHandler.postDelayed(savedShownRunnable, SAVED_SHOWN_HOLD_MS)
+    }
+  }
+
+  private fun emitSavedTermsShown() {
+    val (key, terms) = pendingSavedShown ?: return
+    pendingSavedShown = null
+    // Scrolled blocks are keyed on their own; pages and spans must still be current.
+    if (!key.startsWith("block:") && exposureUnitKey != key) return
+    onSavedTermsShown(mapOf("terms" to terms, "unitKey" to key))
   }
 
   private fun beginPagedExposureUnit(page: ReaderPage?) {
@@ -2995,7 +3048,12 @@ class NativeEpubReaderView(
       }
 
       if (bottom > scrollY && top < viewportBottom) {
-        blockFirstSeenAtMs.putIfAbsent(block.blockId, now)
+        if (blockFirstSeenAtMs.putIfAbsent(block.blockId, now) == null) {
+          val saved = gradedTermsIn(page, block.blockId, 0, blockTextLength(block), savedHighlightRangesByPage)
+          if (saved.isNotEmpty()) {
+            scheduleSavedTermsShown("block:${page.spineIndex}:${block.blockId}", saved)
+          }
+        }
         continue
       }
 

@@ -38,8 +38,7 @@ import useReaderLookup from '../../hooks/useReaderLookup';
 import useLevelUnderlineTerms from '../../hooks/useLevelUnderlineTerms';
 import useFocusNavigation from '../../hooks/useFocusNavigation';
 import useSavedWordFades from '../../hooks/useSavedWordFades';
-import { highlightStrengthsFor } from '../../services/savedWordFade';
-import { exposureDwellIsPlausible } from '../../services/abilityModel';
+import { highlightStrengthsFor, unseenShownTerms } from '../../services/savedWordFade';
 import {
     applyExposureBatch,
     getBookLookupWords,
@@ -513,15 +512,11 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     const overlay = brightnessOverlay(settings.brightness);
 
     // ── Exposure crediting (same rules as the book reader) ───────────────────
-    const handleNativeExposure = useCallback(({ terms, savedTerms, chars, dwellMs } = {}) => {
+    const handleNativeExposure = useCallback(({ terms, chars, dwellMs } = {}) => {
         const lookedUp = recentLookupsRef.current;
         recentLookupsRef.current = new Set();
         if (!songUri) {
             return;
-        }
-        // Saved words passed without a lookup fade a step.
-        if (Array.isArray(savedTerms) && savedTerms.length > 0 && exposureDwellIsPlausible(chars, dwellMs)) {
-            onSavedWordsPassed({ surfaces: savedTerms, surfaceToWord: highlightSurfaceWordsRef.current, lookedUp });
         }
         const skipped = selectExposureCredits({
             terms,
@@ -545,6 +540,20 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
             console.warn('[SongReader] Failed to apply exposure batch:', error);
         });
     }, [activeOwnerId, songLanguage, songUri]);
+
+    // Saved words fade a step each time their part of the song settles on
+    // screen, once per part per session (as in the book reader).
+    const savedShownCountedRef = useRef(new Set());
+    const handleSavedTermsShown = useCallback(({ terms, unitKey } = {}) => {
+        if (!songUri) {
+            return;
+        }
+        const fresh = unseenShownTerms(savedShownCountedRef.current, songUri, unitKey, terms);
+        if (fresh.length === 0) {
+            return;
+        }
+        onSavedWordsPassed({ surfaces: fresh, surfaceToWord: highlightSurfaceWordsRef.current });
+    }, [onSavedWordsPassed, songUri]);
 
     // ── Focus mode ───────────────────────────────────────────────────────────
     const toggleFocusMode = useCallback(() => {
@@ -825,6 +834,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                         onSelectionCleared={handleNativeSelectionCleared}
                         onFocusSentenceChange={handleFocusSentenceChange}
                         onExposure={handleNativeExposure}
+                        onSavedTermsShown={handleSavedTermsShown}
                     />
                 ) : (
                     <ScrollView

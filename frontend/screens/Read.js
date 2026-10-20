@@ -92,8 +92,7 @@ import {
 import { loadLevelUnderlineTerms } from '../hooks/useLevelUnderlineTerms';
 import { selectExposureCredits } from '../services/readerExposure';
 import useSavedWordFades from '../hooks/useSavedWordFades';
-import { highlightStrengthsFor } from '../services/savedWordFade';
-import { exposureDwellIsPlausible } from '../services/abilityModel';
+import { highlightStrengthsFor, unseenShownTerms } from '../services/savedWordFade';
 import { ANNOTATION_SCOPES, annotationsBySurface, buildAnnotatedLevelTerms } from '../services/readerAnnotations';
 import { createNativeReaderThemeTokens, radii, spacing, textStyles, useTheme } from '../theme';
 
@@ -2633,7 +2632,7 @@ const Read = ({
      * the reader look like they tap more than they do. Not while listen mode
      * reads aloud.
      */
-    const handleNativeExposure = useCallback(({ terms, savedTerms, chars, dwellMs } = {}) => {
+    const handleNativeExposure = useCallback(({ terms, chars, dwellMs } = {}) => {
         // Each closed unit ends the window in which a tap could have belonged to
         // it; taps after this point belong to the next unit.
         const lookedUp = recentLookupsRef.current;
@@ -2646,10 +2645,6 @@ const Read = ({
         // nobody taps; not looking a word up says nothing.
         if (listenPlayingRef.current) {
             return;
-        }
-        // Saved words passed without a lookup fade a step.
-        if (Array.isArray(savedTerms) && savedTerms.length > 0 && exposureDwellIsPlausible(chars, dwellMs)) {
-            onSavedWordsPassed({ surfaces: savedTerms, surfaceToWord: highlightSurfaceWordsRef.current, lookedUp });
         }
         if (!Array.isArray(terms) || terms.length === 0) {
             return;
@@ -2679,7 +2674,24 @@ const Read = ({
         }).catch((error) => {
             console.warn('[Read] Failed to apply exposure batch:', error);
         });
-    }, [activeOwnerId, activeBookLanguage, currentBook, onSavedWordsPassed]);
+    }, [activeOwnerId, activeBookLanguage, currentBook]);
+
+    /**
+     * A page (or focus span, or scrolled paragraph) with saved words has
+     * settled on screen: each fades a step, and the reader watches its box
+     * lose pixels. Once per page per session; not while listen mode reads.
+     */
+    const savedShownCountedRef = useRef(new Set());
+    const handleSavedTermsShown = useCallback(({ terms, unitKey } = {}) => {
+        if (!currentBook || listenPlayingRef.current) {
+            return;
+        }
+        const fresh = unseenShownTerms(savedShownCountedRef.current, currentBook, unitKey, terms);
+        if (fresh.length === 0) {
+            return;
+        }
+        onSavedWordsPassed({ surfaces: fresh, surfaceToWord: highlightSurfaceWordsRef.current });
+    }, [currentBook, onSavedWordsPassed]);
 
     const processNativePageChange = useCallback(({ page, total, spineIndex, href, firstBlockId, savedHighlights } = {}) => {
         if (bookCompletionInProgressRef.current) {
@@ -3871,6 +3883,7 @@ const Read = ({
                         onSelectionCleared={handleNativeSelectionCleared}
                         onFocusSentenceChange={handleFocusSentenceChange}
                         onExposure={handleNativeExposure}
+                        onSavedTermsShown={handleSavedTermsShown}
                     />
                 )}
                 {readerBrightnessOverlayOpacity > 0 ? (

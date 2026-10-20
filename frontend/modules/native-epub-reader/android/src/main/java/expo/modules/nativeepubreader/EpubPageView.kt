@@ -102,10 +102,11 @@ private data class SelectionHighlightVerticalMetrics(
   val bottom: Float
 )
 
-// A fading saved-word box: its pixels' opacity runs from MIN (nearly gone)
-// up to MIN + RANGE (one pass in), so the dark ink stays legible on top.
-private const val FADING_BOX_MIN_ALPHA = 0.15f
-private const val FADING_BOX_ALPHA_RANGE = 0.35f
+// A fading saved-word box (6 steps, see savedWordFade.js) is an even halftone
+// of pixels in a soft tint, so the word, now in normal dark ink, reads on top.
+private const val FADING_BOX_LIGHT_ALPHA = 0.32f
+// 4x4 Bayer matrix: the order cells leave in, spread evenly over the box.
+private val BAYER_4 = intArrayOf(0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5)
 // Sliding glosses: pause at each end, then slide at this speed (dp/s).
 private const val MARQUEE_PAUSE_MS = 1400L
 // Parenthesised and bracketed asides in dictionary senses: "(CL:个[ge4])",
@@ -132,6 +133,9 @@ class EpubPageView(context: Context) : View(context) {
   // How far a level underline has dissolved after the reader tapped the word
   // (0 = solid, 1 = dotted). Set by the owner.
   var tapProgress: ((TextRange) -> Float)? = null
+  // A saved box still losing pixels after a fade step: (strength it is
+  // leaving, progress 0..1). Null once settled. Set by the owner.
+  var savedFade: ((TextRange) -> Pair<Float, Float>?)? = null
   private var activeHighlightColor = themePalette.activeHighlightColor
   private var textSelectionHighlightColor = themePalette.textSelectionHighlightColor
   private var savedHighlightColor = themePalette.savedHighlightColor
@@ -1917,10 +1921,13 @@ class EpubPageView(context: Context) : View(context) {
       }
 
       if (paint === savedHighlightPaint) {
-        // A saved word the reader keeps passing without looking up loses
-        // pixels step by step until the box is gone.
+        // A saved word loses pixels a step each time it comes on screen
+        // without a lookup, the leaving pixels going one by one, until the
+        // box is gone.
         val strength = range.strength.coerceIn(0f, 1f)
-        if (strength > 0f) {
+        val fade = savedFade?.invoke(range)
+        if (fade != null) readAnimationPending = true
+        if (strength > 0f || fade != null) {
           drawTextSelectionHighlight(
             canvas = canvas,
             block = block,
@@ -1929,7 +1936,9 @@ class EpubPageView(context: Context) : View(context) {
             localEnd = localEnd,
             textLength = blockTextLength,
             paint = paint,
-            pixelKeep = strength
+            pixelKeep = strength,
+            pixelFrom = fade?.first ?: strength,
+            pixelProgress = fade?.second ?: 1f
           )
         }
         return@forEach
@@ -1979,8 +1988,11 @@ class EpubPageView(context: Context) : View(context) {
     textLength: Int,
     paint: Paint,
     // Saved-word boxes: the share of the box's pixels still drawn (1 = solid
-    // box, fading in steps as the reader passes the word without a lookup).
-    pixelKeep: Float = 1f
+    // box, fading in steps as the reader passes the word without a lookup),
+    // and while a step is animating, the share it is leaving and how far.
+    pixelKeep: Float = 1f,
+    pixelFrom: Float = pixelKeep,
+    pixelProgress: Float = 1f
   ) {
     val text = blockTextForSelection(block)
     val safeStart = localStart.coerceIn(0, textLength)
@@ -2037,21 +2049,29 @@ class EpubPageView(context: Context) : View(context) {
       if (bottom <= top) continue
 
       selectionLineRect.set(left, top, right, bottom)
-      if (pixelKeep < 1f) {
-        drawPixelBox(canvas, selectionLineRect, cornerRadius, paint, pixelKeep)
+      if (pixelKeep < 1f || pixelFrom > pixelKeep) {
+        drawPixelBox(canvas, selectionLineRect, cornerRadius, paint, pixelKeep, pixelFrom, pixelProgress)
       } else {
         canvas.drawRoundRect(selectionLineRect, cornerRadius, cornerRadius, paint)
       }
     }
   }
 
-  // The box as a grid of pixels inside its rounded outline, keeping only the
-  // `keep` share of them (the rest leave in a fixed pseudo-random order). The
-  // pixels also lighten as they thin out: once a box starts fading, the word
-  // is drawn in normal ink on top of it and must stay readable.
-  private fun drawPixelBox(canvas: Canvas, rect: RectF, radius: Float, paint: Paint, keep: Float) {
+  // The box as a grid of pixels inside its rounded outline, keeping the
+  // `keep` share of them in ordered-dither order. While a step animates
+  // (progress < 1), each pixel between `keep` and `from` leaves at its own
+  // moment, so the reader sees them go one by one.
+  private fun drawPixelBox(
+    canvas: Canvas,
+    rect: RectF,
+    radius: Float,
+    paint: Paint,
+    keep: Float,
+    from: Float,
+    progress: Float
+  ) {
     pixelPaint.color = paint.color
-    pixelPaint.alpha = (paint.alpha * (FADING_BOX_MIN_ALPHA + FADING_BOX_ALPHA_RANGE * keep)).roundToInt()
+    pixelPaint.alpha = (paint.alpha * FADING_BOX_LIGHT_ALPHA).roundToInt()
     highlightPath.reset()
     highlightPath.addRoundRect(rect, radius, radius, Path.Direction.CW)
     val save = canvas.save()
@@ -2063,12 +2083,23 @@ class EpubPageView(context: Context) : View(context) {
     val lastY = ceil(rect.bottom / cell).toInt()
     for (iy in firstY until lastY) {
       for (ix in firstX until lastX) {
-        if (pixelHash(ix, iy) >= keep) continue
+        val order = pixelLeaveOrder(ix, iy)
+        val kept = order < keep || (order < from && progress < pixelHash(iy, ix) * 0.85f)
+        if (!kept) continue
         pixelRect.set(ix * cell.toFloat(), iy * cell.toFloat(), (ix + 1) * cell.toFloat(), (iy + 1) * cell.toFloat())
         canvas.drawRect(pixelRect, pixelPaint)
       }
     }
     canvas.restoreToCount(save)
+  }
+
+  // Where a cell falls in the box's leaving order, 0..1: cells at or above
+  // the box's strength are gone. Ordered dither on the page's own grid, so
+  // neighbouring boxes line up.
+  private fun pixelLeaveOrder(ix: Int, iy: Int): Float {
+    val bx = ((ix % 4) + 4) % 4
+    val by = ((iy % 4) + 4) % 4
+    return (BAYER_4[by * 4 + bx] + 0.5f) / 16f
   }
 
   private fun drawSavedHighlightText(
@@ -2097,11 +2128,9 @@ class EpubPageView(context: Context) : View(context) {
       ) {
         return@forEach
       }
-      // On read text the box turns translucent, so the light text gives way
-      // to the normal body text underneath.
-      // Light text only on a full box; once it starts fading the word is read
-      // in the normal body ink drawn underneath.
-      if (range.strength < 1f) return@forEach
+      // Light text only on a full box; once it breaks into pixels (or is
+      // animating its first step) the word is read in the body ink underneath.
+      if (range.strength < 1f || savedFade?.invoke(range) != null) return@forEach
       textPaint.alpha = lightTextAlpha
       if (textPaint.alpha == 0) return@forEach
 
@@ -2841,8 +2870,13 @@ class EpubPageView(context: Context) : View(context) {
     val fontMetrics = textPaint?.fontMetrics
     val contentTop = fontMetrics?.let { baseline + it.ascent } ?: lineTop
     val contentBottom = fontMetrics?.let { baseline + it.descent } ?: lineBottom
-    val top = max(lineTop - dp(6f), contentTop - topPad)
-    val bottom = min(lineBottom - dp(1f), contentBottom + bottomPad)
+    var top = max(lineTop - dp(6f), contentTop - topPad)
+    var bottom = min(lineBottom - dp(1f), contentBottom + bottomPad)
+    // With pinyin above the line or translations under it (drawAnnotations
+    // puts them just outside the ascent and descent), the box stays inside
+    // the glyph band so it never covers them.
+    if (showPinyin) top = max(top, contentTop)
+    if (showGloss) bottom = min(bottom, contentBottom)
 
     return if (bottom > top) {
       SelectionHighlightVerticalMetrics(top = top, bottom = bottom)
