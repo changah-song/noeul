@@ -1397,6 +1397,38 @@ const DictionaryContent = ({
         );
     };
 
+    const goToPreviousWord = () => {
+        if (lookupItemCount <= 1 || currentLookupIndex <= 0) {
+            return;
+        }
+
+        setExpandedCached({});
+        setExpandedWords([]);
+        onExpandedStateChange?.(0);
+        setActiveWordIndex((currentIndex) => (
+            Math.max(0, currentIndex - 1)
+        ));
+        handleHanjaPress(null);
+    };
+
+    const goToNextWord = () => {
+        if (lookupItemCount <= 1 || currentLookupIndex >= lookupItemCount - 1) {
+            return;
+        }
+
+        setExpandedCached({});
+        setExpandedWords([]);
+        onExpandedStateChange?.(0);
+        setActiveWordIndex((currentIndex) => (
+            Math.min(lookupItemCount - 1, currentIndex + 1)
+        ));
+        handleHanjaPress(null);
+    };
+
+    const scrollDictionaryToTop = useCallback(() => {
+        dictionaryScrollRef.current?.scrollTo?.({ y: 0, animated: true });
+    }, []);
+
     const renderDrilldownBackRow = () => {
         if (drilldownStack.length === 0) {
             return null;
