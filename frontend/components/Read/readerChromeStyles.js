@@ -7,7 +7,8 @@ import { fontFamilies, radii } from '../../theme';
 export const READER_HEADER_BUTTON_HEIGHT = 44;
 // Space separating the focus (eye) and listen (headphones) buttons from the
 // icons before them.
-export const READER_HEADER_GROUP_GAP = 10;
+// Bookmark, saved words, focus and listen sit evenly spaced (no extra gap).
+export const READER_HEADER_GROUP_GAP = 0;
 
 export const createReaderChromeStyles = (themeColors) => StyleSheet.create({
     // ── Header ───────────────────────────────────────────────────────────────
@@ -24,6 +25,7 @@ export const createReaderChromeStyles = (themeColors) => StyleSheet.create({
     headerLeft: {
         flexDirection: 'row',
         alignItems: 'center',
+        gap: 4,
     },
     headerBackButton: {
         width: 42,

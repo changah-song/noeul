@@ -24,6 +24,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import { Feather, Ionicons, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 import { createTabBarBaseStyle } from '../components/shared/TabBar';
 import Book3D from '../components/Home/Book3D';
+import ProfileAvatar from '../components/shared/ProfileAvatar';
 import SongReader from '../components/Songs/SongReader';
 import { IconButton, Screen } from '../components/ui';
 import { useAppContext } from '../contexts/AppContext';
@@ -1637,13 +1638,6 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const { activeOwnerId, syncPaused, syncGeneration } = useLocalOwner();
     const { colors: themeColors } = useTheme();
     const colors = themeColors;
-    const profileInitial = useMemo(() => {
-        const name = user?.user_metadata?.username
-            || user?.user_metadata?.display_name
-            || user?.user_metadata?.name;
-        const trimmed = String(name || '').trim();
-        return trimmed ? trimmed.charAt(0).toUpperCase() : 'R';
-    }, [user?.user_metadata]);
     const safeAreaInsets = useSafeAreaInsets();
     const HOME_COLORS = useMemo(() => createHomeColors(colors), [colors]);
     const styles = useMemo(() => createStyles(HOME_COLORS, colors), [HOME_COLORS, colors]);
@@ -4077,9 +4071,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                         onPress={() => navigation?.navigate?.('Profile')}
                         style={styles.appTopIconButton}
                     >
-                        <View style={styles.appTopAvatar}>
-                            <Text style={styles.appTopAvatarText}>{profileInitial}</Text>
-                        </View>
+                        <ProfileAvatar user={user} size={34} />
                     </TouchableOpacity>
                 </View>
                 {ocrMessage ? (
@@ -5673,8 +5665,6 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     },
     defaultCover: {
         overflow: 'hidden',
-        borderWidth: 1,
-        borderColor: HOME_COLORS.border,
         borderRadius: 2,
         alignItems: 'center',
         justifyContent: 'center',

@@ -17,6 +17,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Feather, MaterialIcons } from '@expo/vector-icons';
 
 import Flashcard from '../components/Learn/Flashcard';
+import ProfileAvatar from '../components/shared/ProfileAvatar';
 import CandidateCard from '../components/vocab/CandidateCard';
 import { Screen } from '../components/ui';
 import { useAppContext } from '../contexts/AppContext';
@@ -1340,14 +1341,6 @@ const Learn = ({ navigation, user }) => {
   const [selectedWordKeys, setSelectedWordKeys] = useState(() => new Set());
 
   const isSelectionMode = selectedWordKeys.size > 0;
-  const avatarInitial = useMemo(() => {
-    const name = user?.user_metadata?.username
-      || user?.user_metadata?.display_name
-      || user?.user_metadata?.name
-      || '';
-    const trimmed = String(name).trim();
-    return trimmed ? trimmed.charAt(0).toUpperCase() : 'R';
-  }, [user?.user_metadata]);
 
   // Request ids: a fetch started for the previous language/owner can resolve
   // after the switch; only the latest request may write state.
@@ -1870,9 +1863,7 @@ const Learn = ({ navigation, user }) => {
           onPress={() => navigation?.navigate?.('Profile')}
           style={styles.avatarButton}
         >
-          <View style={styles.avatar}>
-            <Text style={styles.avatarText}>{avatarInitial}</Text>
-          </View>
+          <ProfileAvatar user={user} size={34} />
         </TouchableOpacity>
       </View>
 
