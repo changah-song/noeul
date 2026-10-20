@@ -1,12 +1,24 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Animated, BackHandler, Easing, PanResponder, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, Pressable, findNodeHandle, ToastAndroid, PermissionsAndroid, Platform } from 'react-native';
+import { Animated, BackHandler, Easing, PanResponder, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, findNodeHandle, ToastAndroid, PermissionsAndroid, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Feather, MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Feather, MaterialIcons } from '@expo/vector-icons';
 
 import TopSection from '../components/Read/TopSection/TopSection';
 import TocDrawer from '../components/Read/TocDrawer';
 import FocusControls from '../components/Read/FocusControls';
+import {
+    ReaderBackButton,
+    ReaderCheckpointButton,
+    ReaderFocusModeButton,
+    ReaderFullscreenButton,
+    ReaderHeaderBar,
+    ReaderListenButton,
+    ReaderMenuButton,
+    ReaderProgressButton,
+    ReaderSavedWordsButton,
+} from '../components/Read/ReaderHeaderBar';
+import { createReaderChromeStyles } from '../components/Read/readerChromeStyles';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
@@ -66,7 +78,6 @@ import BeforeYouGoSheet from '../components/Read/BeforeYouGoSheet';
 import SavedWordsPanel from '../components/Read/SavedWordsPanel';
 import NotesLogSheet from '../components/Read/NotesLogSheet';
 import ReaderSettingsSheet from '../components/Read/ReaderSettingsSheet';
-import { createTabBarBaseStyle } from '../components/shared/TabBar';
 import preprocessChapter from '../services/api/preprocessChapter';
 import { withNormalizedSurfaceIndex } from '../services/dictionaryLookup';
 import { updateUserBookProgress } from '../services/bookCloudSync';
@@ -92,9 +103,11 @@ import {
 import { loadLevelUnderlineTerms } from '../hooks/useLevelUnderlineTerms';
 import { selectExposureCredits } from '../services/readerExposure';
 import useSavedWordFades from '../hooks/useSavedWordFades';
+import { ONBOARDING_FLOW_SEEN_KEY } from './Onboarding';
+import { useFocusEffect } from '@react-navigation/native';
 import { highlightStrengthsFor, unseenShownTerms } from '../services/savedWordFade';
 import { ANNOTATION_SCOPES, annotationsBySurface, buildAnnotatedLevelTerms } from '../services/readerAnnotations';
-import { createNativeReaderThemeTokens, radii, spacing, textStyles, useTheme } from '../theme';
+import { createNativeReaderThemeTokens, fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
 
 const LOOKUP_HINT_DISMISSED_KEY = 'lookupHintDismissed';
 // Listen mode preferences (speed, stop on underlined words, AI meaning).
@@ -466,6 +479,7 @@ const Read = ({
     const { targetLanguage, isDarkMode, setIsDarkMode } = useAppContext();
     const { colors: themeColors } = useTheme();
     const styles = useMemo(() => createStyles(themeColors), [themeColors]);
+    const chrome = useMemo(() => createReaderChromeStyles(themeColors), [themeColors]);
     const nativeReaderThemeTokens = useMemo(
         () => createNativeReaderThemeTokens(themeColors),
         [themeColors]
@@ -1406,17 +1420,8 @@ const Read = ({
         });
     };
 
-    // Hide the bottom tab bar whenever the reader is fullscreen; restore the
-    // themed base style otherwise.
-    useEffect(() => {
-        navigation?.setOptions?.({
-            tabBarStyle: isFullscreen
-                ? { display: 'none' }
-                : createTabBarBaseStyle(themeColors),
-        });
-    }, [isFullscreen, navigation, themeColors]);
-
-    // Leaving the reader should never strand the tab bar in a hidden state.
+    // Fullscreen is a per-visit state: leaving the reader drops it, so coming
+    // back always shows the header again.
     useEffect(() => {
         const unsubscribeBlur = navigation?.addListener?.('blur', () => {
             setIsFullscreen(false);
@@ -1424,6 +1429,15 @@ const Read = ({
         return () => {
             unsubscribeBlur?.();
         };
+    }, [navigation]);
+
+    // The reader has no tab bar, so the header's back chevron is the way out.
+    const goBackFromReader = useCallback(() => {
+        if (navigation?.canGoBack?.()) {
+            navigation.goBack();
+        } else {
+            navigation?.navigate?.('Home');
+        }
     }, [navigation]);
 
     const dismissLookup = useCallback(() => {
@@ -1461,6 +1475,18 @@ const Read = ({
         });
         return () => subscription.remove();
     }, [showMenu, isFullscreen, highlightedWord, dismissLookup]);
+
+    // Last resort while the reader is on screen: back returns to Read home
+    // rather than closing the app (there is no tab bar here, and the history
+    // can hold only this screen when Android restores the app into a book).
+    // Registered on focus, so the layer handler above (added later) runs first.
+    useFocusEffect(useCallback(() => {
+        const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+            navigation.navigate('Home');
+            return true;
+        });
+        return () => subscription.remove();
+    }, [navigation]));
 
     // Swipe-down anywhere on the lookup panel dismisses it (mirrors the hardware
     // back / close-button paths). Only claims clearly downward drags so it doesn't
@@ -3296,6 +3322,8 @@ const Read = ({
         (async () => {
             try {
                 if (await AsyncStorage.getItem(promptKey)) return;
+                // Onboarding's level step already asked.
+                if ((await AsyncStorage.getItem(ONBOARDING_FLOW_SEEN_KEY)) === '1') return;
                 const ability = await getProfileAbility({ ownerId: activeOwnerId, language: activeBookLanguage });
                 const cold = !ability
                     || (Number(ability.event_count ?? ability.eventCount ?? 0) === 0
@@ -3706,100 +3734,66 @@ const Read = ({
             {/* With no book open, the bookmark, focus, progress and menu
                 controls have nothing to act on, so hide the header. */}
             {!isFullscreen && currentBook ? (
-                <View style={[styles.headerBar, { paddingTop: insets.top + spacing.xs }]}>
-                    <View style={styles.headerLeft}>
-                        <TouchableOpacity
-                            style={styles.headerIconButton}
-                            onPress={toggleBookmark}
-                            onLongPress={openBeforeYouGo}
-                            accessibilityRole="button"
-                            accessibilityState={{ selected: !!activeBookmark }}
-                            accessibilityLabel={activeBookmark ? t('read.removeBookmark') : t('read.addBookmark')}
-                        >
-                            <MaterialIcons
-                                name={activeBookmark ? 'bookmark' : 'bookmark-border'}
-                                size={20}
-                                color={activeBookmark ? themeColors.inkSlate : themeColors.textSecondary}
-                            />
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={styles.savedButton}
-                            onPress={() => openSavedPanel('saved')}
-                            accessibilityRole="button"
-                            accessibilityLabel={t('read.savedTab', { count: bookSavedWords.length })}
-                        >
-                            <MaterialCommunityIcons name="cards-outline" size={22} color={themeColors.textSecondary} />
-                            {bookSavedWords.length > 0 ? (
-                                <View style={styles.savedBadge}>
-                                    <Text style={styles.savedBadgeText}>
-                                        {bookSavedWords.length > 99 ? '99+' : bookSavedWords.length}
-                                    </Text>
-                                </View>
-                            ) : null}
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={styles.headerIconButton}
-                            onPress={toggleFocusMode}
-                            accessibilityRole="button"
-                            accessibilityState={{ selected: focusMode }}
-                            accessibilityLabel={t('read.focusMode')}
-                        >
-                            <MaterialIcons
-                                name="visibility"
-                                size={21}
-                                color={focusMode ? themeColors.inkSlate : themeColors.textSecondary}
-                            />
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={styles.headerIconButton}
-                            onPress={() => (listenActive ? pauseListening({ keepActive: false }) : resumeListening())}
-                            accessibilityRole="button"
-                            accessibilityState={{ selected: listenActive }}
-                            accessibilityLabel={listenActive ? t('read.listenStop') : t('read.listen')}
-                        >
-                            <MaterialIcons
-                                name="headset"
-                                size={20}
-                                color={listenActive ? themeColors.inkSlate : themeColors.textSecondary}
-                            />
-                        </TouchableOpacity>
-                    </View>
-
-                    <View style={styles.headerSpacer} />
-
-                    <View style={styles.headerControls}>
-                        <Pressable
-                            disabled={toc.length === 0}
-                            onPress={() => setShowToc(true)}
-                            accessibilityRole="button"
-                            style={({ pressed }) => ([
-                                styles.progressCluster,
-                                toc.length === 0 && styles.progressClusterDisabled,
-                                pressed && toc.length > 0 && styles.progressClusterPressed,
-                            ])}
-                        >
-                            <View style={styles.progressTrack}>
-                                <View style={[styles.progressFill, { width: progressFillWidth }]} />
-                            </View>
-                            <Text numberOfLines={1} style={styles.controlLabel}>{progressLabel}</Text>
-                        </Pressable>
-                        <TouchableOpacity
-                            style={styles.headerIconButton}
-                            onPress={() => setIsFullscreen(true)}
-                            accessibilityRole="button"
-                            accessibilityLabel={t('read.enterFullscreen')}
-                        >
-                            <Feather name="maximize" size={19} color={themeColors.textSecondary} />
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={styles.settingsButton}
-                            onPress={() => setShowMenu((prev) => !prev)}
-                            accessibilityRole="button"
-                        >
-                            <MaterialIcons name="menu" size={22} color={showMenu ? themeColors.inkSlate : themeColors.textSecondary} />
-                        </TouchableOpacity>
-                    </View>
-                </View>
+                <ReaderHeaderBar styles={chrome} topInset={insets.top}>
+                    <ReaderBackButton
+                        styles={chrome}
+                        themeColors={themeColors}
+                        onPress={goBackFromReader}
+                        accessibilityLabel={t('home.backToLibrary')}
+                    />
+                    <ReaderCheckpointButton
+                        styles={chrome}
+                        themeColors={themeColors}
+                        active={!!activeBookmark}
+                        onPress={toggleBookmark}
+                        onLongPress={openBeforeYouGo}
+                        accessibilityLabel={activeBookmark ? t('read.removeBookmark') : t('read.addBookmark')}
+                    />
+                    <ReaderSavedWordsButton
+                        styles={chrome}
+                        themeColors={themeColors}
+                        count={bookSavedWords.length}
+                        onPress={() => openSavedPanel('saved')}
+                        accessibilityLabel={t('read.savedTab', { count: bookSavedWords.length })}
+                    />
+                    <ReaderFocusModeButton
+                        styles={chrome}
+                        themeColors={themeColors}
+                        style={chrome.headerGroupGap}
+                        active={focusMode}
+                        onPress={toggleFocusMode}
+                        accessibilityLabel={t('read.focusMode')}
+                    />
+                    <ReaderListenButton
+                        styles={chrome}
+                        themeColors={themeColors}
+                        style={chrome.headerGroupGap}
+                        active={listenActive}
+                        onPress={() => (listenActive ? pauseListening({ keepActive: false }) : resumeListening())}
+                        accessibilityLabel={listenActive ? t('read.listenStop') : t('read.listen')}
+                    />
+                    <ReaderProgressButton
+                        styles={chrome}
+                        fillWidth={progressFillWidth}
+                        label={progressLabel}
+                        disabled={toc.length === 0}
+                        onPress={() => setShowToc(true)}
+                        accessibilityLabel={`${t('read.contents')}, ${progressLabel}`}
+                    />
+                    <ReaderFullscreenButton
+                        styles={chrome}
+                        themeColors={themeColors}
+                        onPress={() => setIsFullscreen(true)}
+                        accessibilityLabel={t('read.enterFullscreen')}
+                    />
+                    <ReaderMenuButton
+                        styles={chrome}
+                        themeColors={themeColors}
+                        open={showMenu}
+                        onPress={() => setShowMenu((prev) => !prev)}
+                        accessibilityLabel={t('read.bookSettings')}
+                    />
+                </ReaderHeaderBar>
             ) : null}
 
             <View style={styles.reader}>
@@ -3937,7 +3931,7 @@ const Read = ({
                     focusControlsTranslate={focusControlsTranslate}
                     focusControlsBaseBottom={focusControlsBaseBottom}
                     focusPillTop={focusPillTop}
-                    styles={styles}
+                    styles={chrome}
                     themeColors={themeColors}
                 />
             ) : null}
@@ -3957,7 +3951,7 @@ const Read = ({
                     onClose={() => pauseListening({ keepActive: false })}
                     bottom={focusControlsBaseBottom}
                     translateY={focusControlsTranslate}
-                    styles={styles}
+                    styles={chrome}
                     themeColors={themeColors}
                 />
             ) : null}
@@ -4005,6 +3999,7 @@ const Read = ({
                         isNativeSelection={isNativeSelection}
                         onExtendSelection={supportsExtendSelection ? handleExtendSelection : undefined}
                         placement={shouldPlaceLookupAtTop ? 'top' : 'bottom'}
+                        bottomInset={focusMode ? 0 : insets.bottom}
                         isDarkMode={isDarkMode}
                         onClose={dismissLookup}
                         onWordSave={handleWordSave}
@@ -4018,32 +4013,33 @@ const Read = ({
                 </View>
             </View>
 
-            {currentBook && !highlightedWord && showLookupHint ? (
+            {/* First-run tip. Floats above the bottom edge so it never covers
+                the book title or the header (in fullscreen the header is gone
+                and the top of the page is the title). Focus mode has its own
+                position pill and controls, so the tip stays out of the way
+                there. */}
+            {currentBook && !highlightedWord && showLookupHint && !focusMode ? (
                 <View
                     pointerEvents="box-none"
-                    style={[
-                        styles.hintLayer,
-                        {
-                            paddingTop: isFullscreen
-                                ? insets.top + 8
-                                : insets.top + spacing.xs + 60,
-                        },
-                    ]}
+                    style={[styles.hintLayer, { bottom: insets.bottom + 16 }]}
                 >
                     <View style={styles.hintCard}>
-                        <View style={styles.hintCopy}>
-                            <Feather name="corner-down-left" size={16} color={themeColors.textSubtle} />
-                            <View style={styles.hintTextStack}>
-                                <Text style={styles.hintText}>
-                                    {t('read.tapHint')}
-                                </Text>
-                                <Text style={styles.hintSubtext}>
-                                    {t('read.longPressHint')}
-                                </Text>
-                            </View>
+                        <Feather name="info" size={16} color={themeColors.textTertiary} style={styles.hintIcon} />
+                        <View style={styles.hintTextStack}>
+                            <Text style={styles.hintText}>
+                                {t('read.tapHint')}
+                            </Text>
+                            <Text style={styles.hintSubtext}>
+                                {t('read.longPressHint')}
+                            </Text>
                         </View>
-                        <TouchableOpacity onPress={dismissLookupHint} style={styles.hintCloseButton}>
-                            <Feather name="x" size={14} color={themeColors.textSubtle} />
+                        <TouchableOpacity
+                            onPress={dismissLookupHint}
+                            style={styles.hintCloseButton}
+                            accessibilityRole="button"
+                            accessibilityLabel={t('common.close')}
+                        >
+                            <Feather name="x" size={16} color={themeColors.textTertiary} />
                         </TouchableOpacity>
                     </View>
                 </View>
@@ -4107,107 +4103,6 @@ const createStyles = (themeColors) => StyleSheet.create({
     container: {
         flex: 1,
         backgroundColor: themeColors.readerPaper,
-    },
-    headerBar: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 10,
-        paddingHorizontal: 16,
-        paddingBottom: 10,
-        backgroundColor: themeColors.readerPaper,
-        borderBottomWidth: 1,
-        borderBottomColor: themeColors.readerHairline,
-    },
-    headerLeft: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 4,
-    },
-    headerIconButton: {
-        width: 30,
-        height: 42,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    savedButton: {
-        width: 34,
-        height: 42,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    savedBadge: {
-        position: 'absolute',
-        top: 3,
-        right: -1,
-        minWidth: 16,
-        height: 16,
-        borderRadius: 8,
-        paddingHorizontal: 4,
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: themeColors.inkSlate,
-        borderWidth: 1.5,
-        borderColor: themeColors.readerPaper,
-    },
-    savedBadgeText: {
-        fontFamily: 'FFSans-Bold',
-        fontSize: 10,
-        lineHeight: 12,
-        color: themeColors.readerPaper,
-    },
-    headerSpacer: {
-        flex: 1,
-    },
-    headerControls: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-    },
-    progressCluster: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-        minHeight: 42,
-        borderRadius: radii.pill,
-    },
-    progressClusterPressed: {
-        opacity: 0.7,
-    },
-    progressClusterDisabled: {
-        opacity: 1,
-    },
-    fullscreenToggleLayer: {
-        position: 'absolute',
-        right: spacing.lg,
-    },
-    fullscreenToggleButton: {
-        width: 44,
-        height: 44,
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderRadius: 22,
-        backgroundColor: themeColors.transparent,
-    },
-    progressTrack: {
-        width: 60,
-        height: 3,
-        borderRadius: 2,
-        backgroundColor: themeColors.readerProgressTrack,
-        overflow: 'hidden',
-    },
-    progressFill: {
-        height: '100%',
-        borderRadius: 2,
-        backgroundColor: themeColors.readerProgressFill,
-    },
-    controlLabel: {
-        fontFamily: 'FFSans-Medium',
-        fontSize: 13,
-        lineHeight: 17,
-        color: themeColors.readerMutedInk,
-        minWidth: 33,
-        textAlign: 'right',
-        fontVariant: ['tabular-nums'],
     },
     reader: {
         flex: 1,
@@ -4290,284 +4185,55 @@ const createStyles = (themeColors) => StyleSheet.create({
     lookupLayerBottom: {
         justifyContent: 'flex-end',
     },
-    lookupDismissZone: {
-        ...StyleSheet.absoluteFillObject,
-    },
     hintLayer: {
         position: 'absolute',
         left: 0,
         right: 0,
-        top: 0,
-        paddingHorizontal: spacing.md,
+        paddingHorizontal: 16,
     },
     hintCard: {
-        borderRadius: radii.pill,
-        backgroundColor: themeColors.surfaceElevated,
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        gap: 10,
+        borderRadius: 14,
+        backgroundColor: themeColors.surface,
         borderWidth: 1,
-        borderColor: themeColors.border,
-        paddingLeft: spacing.md,
-        paddingRight: spacing.sm,
-        paddingVertical: spacing.sm,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: spacing.sm,
+        borderColor: themeColors.divider,
+        paddingLeft: 14,
+        paddingRight: 4,
+        paddingVertical: 4,
+        shadowColor: 'rgba(27, 28, 28, 0.08)',
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 1,
+        shadowRadius: 18,
+        elevation: 3,
     },
-    hintCopy: {
-        flex: 1,
-        minWidth: 0,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: spacing.xs,
-    },
-    hintText: {
-        ...textStyles.caption,
-        color: themeColors.textSubtle,
-        flexShrink: 1,
+    hintIcon: {
+        marginTop: 12,
     },
     hintTextStack: {
         flex: 1,
         minWidth: 0,
         gap: 2,
+        paddingVertical: 9,
     },
-    hintSubtext: {
-        ...textStyles.caption,
-        color: themeColors.textSubtle,
-        flexShrink: 1,
-    },
-    hintCloseButton: {
-        width: 24,
-        height: 24,
-        borderRadius: 12,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    settingsButton: {
-        width: 20,
-        height: 42,
-        borderRadius: 0,
-        backgroundColor: themeColors.transparent,
-        justifyContent: 'center',
-        alignItems: 'center',
-    },
-    menuDropdown: {
-        position: 'absolute',
-        width: 184,
-        backgroundColor: themeColors.surface,
-        borderWidth: 1,
-        borderColor: themeColors.border,
-        borderRadius: 4,
-        overflow: 'hidden',
-    },
-    menuItem: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 11,
-        paddingVertical: 13,
-        paddingHorizontal: 16,
-    },
-    menuItemBorder: {
-        borderBottomWidth: 1,
-        borderBottomColor: themeColors.divider,
-    },
-    menuItemLabel: {
-        fontFamily: textStyles.body.fontFamily,
+    hintText: {
+        fontFamily: fontFamilies.sansMedium,
         fontSize: 14,
+        lineHeight: 19,
         color: themeColors.text,
     },
-    menuItemLabelActive: {
-        color: themeColors.inkSlate,
-        fontFamily: 'FFSans-SemiBold',
-    },
-    focusControlsLeft: {
-        position: 'absolute',
-        left: 22,
-        zIndex: 12,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-    },
-    focusPositionPill: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-        backgroundColor: `${themeColors.readerPaper}EB`,
-        paddingVertical: 4,
-        paddingHorizontal: 10,
-        borderRadius: radii.pill,
-    },
-    focusPositionLabel: {
-        fontFamily: 'FFSans-SemiBold',
-        fontSize: 10,
-        lineHeight: 14,
-        letterSpacing: 1.4,
-        color: themeColors.readerSubtleInk,
-    },
-    focusArrowControls: {
-        position: 'absolute',
-        right: 16,
-        zIndex: 12,
-        flexDirection: 'column',
-        gap: 9,
-    },
-    focusArrowButtonPrev: {
-        width: 44,
-        height: 44,
-        borderRadius: 22,
-        backgroundColor: themeColors.readerSurface,
-        borderWidth: 1,
-        borderColor: themeColors.readerBorder,
-        alignItems: 'center',
-        justifyContent: 'center',
-        shadowColor: 'rgba(27, 28, 28, 0.12)',
-        shadowOffset: { width: 0, height: 6 },
-        shadowOpacity: 1,
-        shadowRadius: 16,
-        elevation: 4,
-    },
-    focusArrowButtonNext: {
-        width: 44,
-        height: 44,
-        borderRadius: 22,
-        backgroundColor: themeColors.inkSlate,
-        alignItems: 'center',
-        justifyContent: 'center',
-        shadowColor: 'rgba(27, 28, 28, 0.20)',
-        shadowOffset: { width: 0, height: 6 },
-        shadowOpacity: 1,
-        shadowRadius: 16,
-        elevation: 5,
-    },
-    listenBarWrap: {
-        position: 'absolute',
-        left: 16,
-        right: 16,
-        zIndex: 12,
-        alignItems: 'center',
-    },
-    listenBar: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 4,
-        paddingVertical: 6,
-        paddingHorizontal: 8,
-        borderRadius: 30,
-        backgroundColor: themeColors.readerSurface,
-        borderWidth: 1,
-        borderColor: themeColors.readerBorder,
-        shadowColor: 'rgba(27, 28, 28, 0.14)',
-        shadowOffset: { width: 0, height: 6 },
-        shadowOpacity: 1,
-        shadowRadius: 16,
-        elevation: 5,
-    },
-    listenButton: {
-        width: 40,
-        height: 40,
-        borderRadius: 20,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    listenPlayButton: {
-        width: 46,
-        height: 46,
-        borderRadius: 23,
-        backgroundColor: themeColors.inkSlate,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    listenDivider: {
-        width: 1,
-        height: 24,
-        marginHorizontal: 4,
-        backgroundColor: themeColors.readerBorder,
-    },
-    listenChip: {
-        minWidth: 40,
-        height: 32,
-        paddingHorizontal: 10,
-        borderRadius: 16,
-        borderWidth: 1,
-        borderColor: themeColors.readerBorder,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    listenVoiceChip: {
-        flexDirection: 'row',
-        gap: 4,
-        paddingHorizontal: 9,
-    },
-    listenChipActive: {
-        backgroundColor: themeColors.inkSlate,
-        borderColor: themeColors.inkSlate,
-    },
-    listenChipLabel: {
-        fontFamily: 'FFSans-SemiBold',
-        fontSize: 12,
-        color: themeColors.readerBodyInk,
-    },
-    focusSwipeTrack: {
-        width: 44,
-        height: 26,
-        borderRadius: radii.pill,
-    },
-    focusSwipeKnob: {
-        position: 'absolute',
-        top: 3,
-        width: 20,
-        height: 20,
-        borderRadius: 10,
-        backgroundColor: '#ffffff',
-        shadowColor: 'rgba(27, 28, 28, 0.25)',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 1,
-        shadowRadius: 3,
-        elevation: 2,
-    },
-    focusStepperDisabled: {
-        opacity: 0.35,
-    },
-    fontSettingsSheetFrame: {
-        position: 'absolute',
-        left: 0,
-        right: 0,
-        bottom: 0,
-        alignItems: 'center',
-        paddingHorizontal: 14,
-    },
-    fontSettingsSheet: {
-        width: '100%',
-        maxWidth: 360,
-        backgroundColor: themeColors.readerSurface,
-        borderWidth: 1,
-        borderColor: themeColors.readerBorder,
-        borderRadius: radii.xl,
-        paddingTop: 14,
-        paddingHorizontal: 24,
-        paddingBottom: 26,
-        shadowColor: 'rgba(27, 28, 28, 0.08)',
-        shadowOffset: { width: 0, height: -10 },
-        shadowOpacity: 1,
-        shadowRadius: 30,
-        elevation: 8,
-    },
-    fontSettingsHandleWrap: {
-        alignItems: 'center',
-    },
-    fontSettingsHandle: {
-        width: 36,
-        height: 4,
-        borderRadius: 2,
-        backgroundColor: themeColors.readerBorder,
-    },
-    fontSettingsTitle: {
-        marginTop: 18,
-        fontFamily: 'FFDisplay-Regular',
+    hintSubtext: {
+        fontFamily: fontFamilies.sansRegular,
         fontSize: 13,
-        lineHeight: 17,
-        letterSpacing: 3,
-        color: themeColors.textSecondary,
-        textAlign: 'center',
+        lineHeight: 18,
+        color: themeColors.textTertiary,
+    },
+    hintCloseButton: {
+        width: 44,
+        height: 44,
+        alignItems: 'center',
+        justifyContent: 'center',
     },
 });
 

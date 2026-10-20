@@ -1,21 +1,25 @@
-import { useMemo, useState } from 'react';
+import { useContext, useMemo, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
   Linking,
+  Modal,
   Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
+import { SafeAreaInsetsContext } from 'react-native-safe-area-context';
+import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import { useTranslation } from '../hooks/useTranslation';
 import { supabase } from '../services/supabase';
 import { PRIVACY_POLICY_URL, TERMS_OF_SERVICE_URL } from '../constants/links';
-import { colors, radii, spacing, textStyles, useTheme } from '../theme';
+import { fontFamilies, useTheme } from '../theme';
 
 const openLegalLink = (url, t) => {
   Linking.openURL(url).catch(() => {
@@ -42,6 +46,18 @@ const getCurrentSession = async () => {
   return session;
 };
 
+/**
+ * Auth — the full-screen sign-in / create-account page: close (X), title,
+ * subtitle, "Continue with Google", an "or with email" divider, labelled email
+ * and password fields, the submit button, a text button that switches between
+ * signing in and creating an account, and the legal line at the bottom.
+ *
+ * Present it with <AuthModal> (a full-screen Modal). `title` / `subtitle`
+ * override the mode's default copy; `showHeader={false}` hides them;
+ * `showModeToggle={false}` hides the switch-mode button; `showApple` adds
+ * Apple sign-in on iOS. `embedded` only stops the page from stretching to the
+ * full height; `showSectionLabels` is accepted for compatibility.
+ */
 const Auth = ({
   embedded = false,
   title = null,
@@ -50,16 +66,22 @@ const Auth = ({
   showApple = true,
   showHeader = true,
   showModeToggle = true,
+  // eslint-disable-next-line no-unused-vars
   showSectionLabels = true,
   onAuthenticated,
+  onClose,
 }) => {
   const { t } = useTranslation();
   const { colors } = useTheme();
+  const safeInsets = useContext(SafeAreaInsetsContext);
+  const insetTop = safeInsets?.top ?? 0;
+  const insetBottom = safeInsets?.bottom ?? 0;
   const styles = useMemo(() => createStyles(colors), [colors]);
   const [mode, setMode] = useState(initialMode === 'signup' ? 'signup' : 'signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [focusedField, setFocusedField] = useState(null);
 
   const trimmedEmail = email.trim();
 
@@ -230,74 +252,137 @@ const Auth = ({
     }
   };
 
-  const content = (
-      <View style={[styles.card, embedded && styles.embeddedCard]}>
+
+  const isSignup = mode === 'signup';
+  const heading = title || (isSignup ? t('auth.createTitle') : t('auth.signInTitle'));
+  const subheading = subtitle || t('auth.signInSubtitle');
+
+  return (
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      style={[styles.container, embedded && styles.containerEmbedded]}
+    >
+      <ScrollView
+        style={styles.scroller}
+        contentContainerStyle={[
+          styles.content,
+          { paddingTop: 12 + insetTop, paddingBottom: 24 + insetBottom },
+          embedded && styles.contentEmbedded,
+        ]}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        {onClose ? (
+          <View style={styles.topBar}>
+            <TouchableOpacity
+              onPress={onClose}
+              style={styles.closeButton}
+              accessibilityRole="button"
+              accessibilityLabel={t('profile.closeSignIn')}
+            >
+              <Feather name="x" size={22} color={colors.inkSlate} />
+            </TouchableOpacity>
+          </View>
+        ) : null}
+
         {showHeader ? (
           <>
-            <Text style={styles.title}>{title ?? t('auth.defaultTitle')}</Text>
-            <Text style={styles.subtitle}>{subtitle ?? t('auth.defaultSubtitle')}</Text>
+            <Text style={styles.title} accessibilityRole="header">{heading}</Text>
+            <Text style={styles.subtitle}>{subheading}</Text>
           </>
         ) : null}
 
-        <View style={[styles.section, !showSectionLabels && styles.sectionFlush]}>
-          {showSectionLabels ? <Text style={styles.sectionTitle}>{t('auth.email')}</Text> : null}
-          <TextInput
-            autoCapitalize="none"
-            autoComplete="email"
-            keyboardType="email-address"
-            placeholder={t('auth.emailPlaceholder')}
-            placeholderTextColor={colors.textSubtle}
-            style={styles.input}
-            value={email}
-            onChangeText={setEmail}
-          />
-          <TextInput
-            autoCapitalize="none"
-            placeholder={t('auth.passwordPlaceholder')}
-            placeholderTextColor={colors.textSubtle}
-            secureTextEntry
-            style={styles.input}
-            value={password}
-            onChangeText={setPassword}
-          />
-          {showModeToggle ? (
-            <View style={styles.modeRow}>
-              <TouchableOpacity onPress={() => setMode('signin')}>
-                <Text style={[styles.modeText, mode === 'signin' && styles.modeActive]}>{t('auth.signIn')}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => setMode('signup')}>
-                <Text style={[styles.modeText, mode === 'signup' && styles.modeActive]}>{t('auth.signUp')}</Text>
-              </TouchableOpacity>
-            </View>
-          ) : null}
-          <TouchableOpacity style={styles.primaryButton} onPress={handleEmailAuth} disabled={loading}>
-            <Text style={styles.primaryButtonText}>
-              {loading ? t('common.working') : mode === 'signin' ? t('auth.signIn') : t('auth.createAccount')}
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.section}>
-          {showSectionLabels ? <Text style={styles.sectionTitle}>{t('auth.google')}</Text> : null}
-          <TouchableOpacity style={styles.secondaryButton} onPress={handleGoogleAuth} disabled={loading}>
-            <Text style={styles.secondaryButtonText}>
-              {mode === 'signup' ? t('auth.signUpGoogle') : t('auth.signInGoogle')}
-            </Text>
-          </TouchableOpacity>
-        </View>
+        <TouchableOpacity
+          style={[styles.googleButton, loading && styles.buttonDisabled]}
+          onPress={handleGoogleAuth}
+          disabled={loading}
+          activeOpacity={0.8}
+          accessibilityRole="button"
+        >
+          <MaterialCommunityIcons name="google" size={18} color={colors.text} />
+          <Text style={styles.googleButtonText}>{t('auth.continueGoogle')}</Text>
+        </TouchableOpacity>
 
         {showApple && Platform.OS === 'ios' ? (
-          <View style={styles.section}>
-            {showSectionLabels ? <Text style={styles.sectionTitle}>{t('auth.apple')}</Text> : null}
-            <AppleAuthentication.AppleAuthenticationButton
-              buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
-              buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
-              cornerRadius={12}
-              style={styles.appleButton}
-              onPress={handleAppleAuth}
+          <AppleAuthentication.AppleAuthenticationButton
+            buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
+            buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+            cornerRadius={14}
+            style={styles.appleButton}
+            onPress={handleAppleAuth}
+          />
+        ) : null}
+
+        <View style={styles.dividerRow}>
+          <View style={styles.dividerLine} />
+          <Text style={styles.dividerText}>{t('auth.orWithEmail')}</Text>
+          <View style={styles.dividerLine} />
+        </View>
+
+        <View style={styles.fields}>
+          <View style={styles.field}>
+            <Text style={styles.fieldLabel} nativeID="auth-email-label">{t('auth.email')}</Text>
+            <TextInput
+              accessibilityLabel={t('auth.email')}
+              accessibilityLabelledBy="auth-email-label"
+              autoCapitalize="none"
+              autoComplete="email"
+              autoCorrect={false}
+              keyboardType="email-address"
+              placeholder="you@example.com"
+              placeholderTextColor={colors.textSubtle}
+              style={[styles.input, focusedField === 'email' && styles.inputFocused]}
+              value={email}
+              onChangeText={setEmail}
+              onFocus={() => setFocusedField('email')}
+              onBlur={() => setFocusedField(null)}
+              returnKeyType="next"
             />
           </View>
+          <View style={styles.field}>
+            <Text style={styles.fieldLabel} nativeID="auth-password-label">{t('auth.password')}</Text>
+            <TextInput
+              accessibilityLabel={t('auth.password')}
+              accessibilityLabelledBy="auth-password-label"
+              autoCapitalize="none"
+              autoComplete={isSignup ? 'new-password' : 'current-password'}
+              secureTextEntry
+              style={[styles.input, focusedField === 'password' && styles.inputFocused]}
+              value={password}
+              onChangeText={setPassword}
+              onFocus={() => setFocusedField('password')}
+              onBlur={() => setFocusedField(null)}
+              onSubmitEditing={handleEmailAuth}
+              returnKeyType="go"
+            />
+          </View>
+        </View>
+
+        <TouchableOpacity
+          style={[styles.primaryButton, loading && styles.buttonDisabled]}
+          onPress={handleEmailAuth}
+          disabled={loading}
+          activeOpacity={0.85}
+          accessibilityRole="button"
+        >
+          <Text style={styles.primaryButtonText}>
+            {loading ? t('common.working') : isSignup ? t('auth.createAccount') : t('auth.signIn')}
+          </Text>
+        </TouchableOpacity>
+
+        {showModeToggle ? (
+          <TouchableOpacity
+            style={styles.switchButton}
+            onPress={() => setMode(isSignup ? 'signin' : 'signup')}
+            accessibilityRole="button"
+          >
+            <Text style={styles.switchButtonText}>
+              {isSignup ? t('auth.haveAccount') : t('auth.newHere')}
+            </Text>
+          </TouchableOpacity>
         ) : null}
+
+        <View style={styles.spacer} />
 
         <Text style={styles.legalText}>
           {t('auth.legalPrefix')}{' '}
@@ -316,22 +401,31 @@ const Auth = ({
           </Text>
           .
         </Text>
-      </View>
-  );
-
-  if (embedded) {
-    return content;
-  }
-
-  return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      style={[styles.container, embedded && styles.embeddedContainer]}
-    >
-      {content}
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 };
+
+/**
+ * AuthModal — <Auth> as a full-screen modal that slides up. Used by Profile's
+ * "Sign in" / "Create account" and onboarding's "I already have an account".
+ */
+export const AuthModal = ({ visible, mode = 'signin', onClose, onAuthenticated, showApple = false }) => (
+  <Modal
+    visible={visible}
+    animationType="slide"
+    onRequestClose={onClose}
+    statusBarTranslucent
+  >
+    <Auth
+      key={mode}
+      initialMode={mode}
+      showApple={showApple}
+      onClose={onClose}
+      onAuthenticated={onAuthenticated}
+    />
+  </Modal>
+);
 
 GoogleSignin.configure({
   iosClientId: GOOGLE_IOS_CLIENT_ID || undefined,
@@ -341,120 +435,151 @@ GoogleSignin.configure({
 const createStyles = (colors) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.backgroundWarm,
-    justifyContent: 'center',
-    paddingHorizontal: spacing.lg,
+    backgroundColor: colors.bgPage,
   },
-  embeddedContainer: {
+  containerEmbedded: {
     flex: 0,
-    justifyContent: 'flex-start',
-    backgroundColor: colors.transparent,
-    paddingHorizontal: 0,
   },
-  card: {
-    backgroundColor: colors.surfaceElevated,
-    borderRadius: radii.lg,
-    padding: spacing.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
-    shadowColor: colors.shadow,
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 1,
-    shadowRadius: 24,
-    elevation: 6,
+  scroller: {
+    flexGrow: 1,
   },
-  embeddedCard: {
-    shadowOpacity: 0,
-    shadowRadius: 0,
-    elevation: 0,
+  content: {
+    flexGrow: 1,
+    paddingHorizontal: 24,
+  },
+  contentEmbedded: {
+    flexGrow: 0,
+  },
+  topBar: {
+    flexDirection: 'row',
+    marginLeft: -12,
+  },
+  closeButton: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   title: {
-    ...textStyles.title,
-    fontSize: 28,
+    marginTop: 18,
+    marginBottom: 8,
+    fontFamily: fontFamilies.displayMedium,
+    fontSize: 32,
+    lineHeight: 38,
+    letterSpacing: -0.4,
+    color: colors.text,
   },
   subtitle: {
-    ...textStyles.bodyMuted,
-    marginTop: spacing.xxs,
-  },
-  section: {
-    marginTop: spacing.lg,
-  },
-  sectionFlush: {
-    marginTop: 0,
-  },
-  sectionTitle: {
-    ...textStyles.eyebrow,
-    marginBottom: spacing.sm,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radii.md,
-    backgroundColor: colors.surface,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    color: colors.text,
-    marginBottom: spacing.sm,
-    ...textStyles.body,
-  },
-  modeRow: {
-    flexDirection: 'row',
-    gap: spacing.md,
-    marginBottom: spacing.sm,
-  },
-  modeText: {
-    ...textStyles.label,
+    marginBottom: 26,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 15,
+    lineHeight: 22,
     color: colors.textMuted,
   },
-  modeActive: {
-    color: colors.accentStrong,
-  },
-  primaryButton: {
-    backgroundColor: colors.accentSoft,
-    borderRadius: radii.md,
-    paddingVertical: 13,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  primaryButtonText: {
-    ...textStyles.label,
-    color: colors.accentStrong,
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  secondaryButton: {
-    borderRadius: radii.md,
+  googleButton: {
+    minHeight: 52,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surface,
-    paddingVertical: 13,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
   },
-  secondaryButtonText: {
-    ...textStyles.label,
+  googleButtonText: {
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 15,
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 20,
   },
   appleButton: {
+    marginTop: 10,
     width: '100%',
-    height: 48,
+    height: 52,
+  },
+  dividerRow: {
+    marginVertical: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: colors.border,
+  },
+  dividerText: {
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 13,
+    color: colors.textTertiary,
+  },
+  fields: {
+    gap: 12,
+  },
+  field: {
+    gap: 6,
+  },
+  fieldLabel: {
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 13,
+    color: colors.textSecondary,
+  },
+  input: {
+    height: 50,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    paddingHorizontal: 14,
+    fontFamily: fontFamilies.sansRegular,
+    fontSize: 15,
+    color: colors.text,
+  },
+  inputFocused: {
+    borderColor: colors.borderStrong,
+  },
+  primaryButton: {
+    marginTop: 18,
+    minHeight: 52,
+    borderRadius: 14,
+    backgroundColor: colors.inkSlate,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  primaryButtonText: {
+    fontFamily: fontFamilies.sansSemiBold,
+    fontSize: 16,
+    color: colors.white,
+  },
+  buttonDisabled: {
+    opacity: 0.6,
+  },
+  switchButton: {
+    marginTop: 10,
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  switchButtonText: {
+    fontFamily: fontFamilies.sansMedium,
+    fontSize: 14,
+    color: colors.textSecondary,
+  },
+  spacer: {
+    flexGrow: 1,
+    minHeight: 24,
   },
   legalText: {
-    marginTop: spacing.xs,
-    ...textStyles.bodyMuted,
+    fontFamily: fontFamilies.sansRegular,
     fontSize: 12,
-    lineHeight: 17,
+    lineHeight: 18,
     textAlign: 'center',
     color: colors.textTertiary,
   },
   legalLink: {
-    color: colors.accent,
+    color: colors.textSecondary,
     textDecorationLine: 'underline',
   },
 });
-
-const styles = createStyles(colors);
 
 export default Auth;

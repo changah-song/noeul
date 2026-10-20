@@ -13,8 +13,15 @@ import {
     Easing,
     useWindowDimensions,
 } from 'react-native';
+import { Feather } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
-import { fontFamilies, radii, spacing } from '../../theme';
+import { fontFamilies } from '../../theme';
+import {
+    SHEET_PADDING,
+    SheetHandle,
+    SheetHeader,
+    createSheetChromeStyles,
+} from './ReaderSettingsControls';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -33,7 +40,8 @@ const BeforeYouGoSheet = ({
     onClose,
 }) => {
     const { t } = useTranslation();
-    const styles = useMemo(() => createStyles(colors, insets), [colors, insets]);
+    const styles = useMemo(() => createStyles(colors), [colors]);
+    const chrome = useMemo(() => createSheetChromeStyles(colors, insets), [colors, insets]);
     const { height: windowHeight } = useWindowDimensions();
 
     const [note, setNote] = useState('');
@@ -118,54 +126,64 @@ const BeforeYouGoSheet = ({
                         onPress={onClose}
                     />
                     <Animated.View
-                        style={[styles.sheet, { transform: [{ translateY }] }]}
+                        style={[chrome.sheet, styles.sheet, { transform: [{ translateY }] }]}
                         onLayout={(e) => {
                             sheetHeight.current = e.nativeEvent.layout.height;
                         }}
                     >
-                        <View style={styles.handleWrap}>
-                            <View style={styles.handle} />
-                        </View>
-
-                        <Text style={styles.title}>{t('read.notePromptTitle')}</Text>
-                        <Text style={styles.subtitle}>{t('read.notePromptSubtitle')}</Text>
-
-                        <TextInput
-                            style={styles.noteInput}
-                            value={note}
-                            onChangeText={(text) => {
-                                setNote(text);
-                                if (saveFailed) setSaveFailed(false);
-                            }}
-                            placeholder={t('read.notePlaceholder')}
-                            placeholderTextColor={colors.textSubtle}
-                            multiline
-                            textAlignVertical="top"
-                            autoFocus
+                        <SheetHandle styles={chrome} />
+                        <SheetHeader
+                            styles={chrome}
+                            colors={colors}
+                            title={t('read.notePromptTitle')}
+                            onClose={onClose}
+                            closeLabel={t('common.close')}
                         />
 
-                        {saveFailed ? (
-                            <Text style={styles.errorText} accessibilityRole="alert">
-                                {t('lookup.saveFailed')}
-                            </Text>
-                        ) : null}
+                        <View style={styles.body}>
+                            <Text style={styles.subtitle}>{t('read.notePromptSubtitle')}</Text>
 
-                        <View style={styles.footer}>
-                            <TouchableOpacity
-                                onPress={onClose}
-                                style={styles.secondaryButton}
-                                activeOpacity={0.7}
-                            >
-                                <Text style={styles.secondaryButtonText}>{t('common.close')}</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                                onPress={saveNote}
-                                disabled={!note.trim() || saving}
-                                style={[styles.primaryButton, (!note.trim() || saving) && styles.primaryButtonDisabled]}
-                                activeOpacity={0.85}
-                            >
-                                <Text style={styles.primaryButtonText}>{t('common.save')}</Text>
-                            </TouchableOpacity>
+                            <TextInput
+                                style={styles.noteInput}
+                                value={note}
+                                onChangeText={(text) => {
+                                    setNote(text);
+                                    if (saveFailed) setSaveFailed(false);
+                                }}
+                                placeholder={t('read.notePlaceholder')}
+                                placeholderTextColor={colors.textSubtle}
+                                multiline
+                                textAlignVertical="top"
+                                autoFocus
+                            />
+
+                            {saveFailed ? (
+                                <Text style={styles.errorText} accessibilityRole="alert">
+                                    {t('lookup.saveFailed')}
+                                </Text>
+                            ) : null}
+
+                            <View style={styles.footer}>
+                                <TouchableOpacity
+                                    onPress={onClose}
+                                    style={styles.secondaryButton}
+                                    activeOpacity={0.7}
+                                    accessibilityRole="button"
+                                >
+                                    <Text style={styles.secondaryButtonText}>{t('common.close')}</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                    onPress={saveNote}
+                                    disabled={!note.trim() || saving}
+                                    style={[styles.primaryButton, (!note.trim() || saving) && styles.primaryButtonDisabled]}
+                                    activeOpacity={0.85}
+                                    accessibilityRole="button"
+                                    accessibilityState={{ disabled: !note.trim() || saving }}
+                                >
+                                    <Feather name="check" size={17} color={colors.surface} />
+                                    <Text style={styles.primaryButtonText}>{t('common.save')}</Text>
+                                </TouchableOpacity>
+                            </View>
                         </View>
                     </Animated.View>
                 </View>
@@ -174,7 +192,7 @@ const BeforeYouGoSheet = ({
     );
 };
 
-const createStyles = (colors, insets = { bottom: 0 }) => StyleSheet.create({
+const createStyles = (colors) => StyleSheet.create({
     flex: { flex: 1 },
     overlay: {
         flex: 1,
@@ -185,88 +203,77 @@ const createStyles = (colors, insets = { bottom: 0 }) => StyleSheet.create({
         backgroundColor: colors.overlay,
     },
     sheet: {
-        backgroundColor: colors.surface,
-        borderTopLeftRadius: radii.xl,
-        borderTopRightRadius: radii.xl,
-        paddingHorizontal: spacing.xl,
-        paddingTop: spacing.sm,
-        paddingBottom: (insets?.bottom ?? 0) + spacing.lg,
         maxHeight: '86%',
     },
-    handleWrap: { alignItems: 'center', paddingVertical: spacing.xs },
-    handle: {
-        width: 36,
-        height: 4,
-        borderRadius: 2,
-        backgroundColor: colors.borderStrong,
-    },
-    title: {
-        fontFamily: fontFamilies.displaySemiBold,
-        fontSize: 26,
-        color: colors.text,
-        marginTop: spacing.xs,
+    body: {
+        paddingHorizontal: SHEET_PADDING,
     },
     subtitle: {
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 15,
-        lineHeight: 22,
+        fontSize: 14,
+        lineHeight: 20,
         color: colors.textMuted,
-        marginTop: spacing.xs,
-        marginBottom: spacing.md,
+        marginTop: 4,
+        marginBottom: 14,
     },
     noteInput: {
         minHeight: 120,
         borderWidth: 1,
         borderColor: colors.border,
-        borderRadius: 12,
-        padding: spacing.md,
+        borderRadius: 14,
+        padding: 14,
         fontFamily: fontFamilies.sansRegular,
         fontSize: 16,
         lineHeight: 24,
         color: colors.text,
-        backgroundColor: colors.surfaceCard,
-        marginBottom: spacing.md,
+        backgroundColor: colors.surface,
+        marginBottom: 12,
     },
     errorText: {
         fontFamily: fontFamilies.sansRegular,
         fontSize: 14,
-        color: colors.danger ?? '#c0362c',
-        marginTop: -spacing.xs,
-        marginBottom: spacing.xs,
+        lineHeight: 20,
+        color: colors.danger,
+        marginTop: -4,
+        marginBottom: 6,
     },
     footer: {
         flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: spacing.md,
-        marginTop: spacing.sm,
+        gap: 10,
+        marginTop: 6,
     },
     secondaryButton: {
-        paddingVertical: spacing.md,
-        paddingHorizontal: spacing.md,
+        height: 48,
+        paddingHorizontal: 20,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: colors.border,
+        backgroundColor: colors.surface,
+        alignItems: 'center',
+        justifyContent: 'center',
     },
     secondaryButtonText: {
         fontFamily: fontFamilies.sansSemiBold,
         fontSize: 15,
-        color: colors.textMuted,
+        color: colors.text,
     },
     primaryButton: {
         flex: 1,
+        height: 48,
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
-        gap: spacing.xs,
-        paddingVertical: spacing.md,
-        paddingHorizontal: spacing.lg,
-        borderRadius: 12,
+        gap: 8,
+        paddingHorizontal: 18,
+        borderRadius: 14,
         backgroundColor: colors.inkSlate,
     },
-    primaryButtonDisabled: { opacity: 0.45 },
+    primaryButtonDisabled: { opacity: 0.4 },
     primaryButtonText: {
-        fontFamily: fontFamilies.sansBold,
+        fontFamily: fontFamilies.sansSemiBold,
         fontSize: 15,
-        letterSpacing: 0.4,
-        color: colors.readerEdgeButtonText ?? '#ffffff',
+        color: colors.surface,
     },
 });
 

@@ -1,33 +1,31 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
-    Modal,
-    Pressable,
     ScrollView,
     StyleSheet,
     Text,
     TouchableOpacity,
     ToastAndroid,
-    TouchableWithoutFeedback,
     View,
 } from 'react-native';
-import { Feather } from '@expo/vector-icons';
 import { useAppContext } from '../../contexts/AppContext';
 import { useLocalOwner } from '../../contexts/LocalOwnerContext';
 import { useTranslation } from '../../hooks/useTranslation';
-import { fontFamilies, radii, spacing, useTheme } from '../../theme';
+import { fontFamilies, useTheme } from '../../theme';
 import { getVocabTiers, thetaForTier } from '../../services/vocabSizeLevels';
 import { nearestRankForTheta } from '../../services/calibrationQuiz';
 import { getProfileAbility, setProfileAbilityFromVocab } from '../../services/Database';
 import { hasWordCheck } from '../../services/wordCheck';
-import WordCheckModal from './WordCheckModal';
+import { SheetFrame, WordCheckBody, useWordCheck } from './WordCheckModal';
 
 // The tier the reader last picked, per owner / profile / language.
-const pickKey = (ownerId, profileId, language) => `vocabLevelPick:${ownerId || 'guest'}:${profileId || ''}:${language}`;
+export const vocabLevelPickKey = (ownerId, profileId, language) => `vocabLevelPick:${ownerId || 'guest'}:${profileId || ''}:${language}`;
+const pickKey = vocabLevelPickKey;
 
 // Index of the hardest tier at or below this ability: the row the model now
 // thinks the reader knows all of. Null when there is no ability yet.
 export const tierIndexForTheta = (tiers, theta) => {
+    if (theta === null || theta === undefined || theta === '') return null;
     if (!Number.isFinite(Number(theta)) || !tiers.length) return null;
     let index = null;
     tiers.forEach((tier, i) => {
@@ -36,17 +34,26 @@ export const tierIndexForTheta = (tiers, theta) => {
     return index ?? 0;
 };
 
+// Rgba tint of a #rrggbb token (falls back to the token itself).
+const tint = (hex, alpha) => {
+    const match = /^#([0-9a-f]{6})$/i.exec(String(hex || ''));
+    if (!match) return hex;
+    const value = parseInt(match[1], 16);
+    return `rgba(${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255}, ${alpha})`;
+};
+
 /**
- * VocabLevelModal — the "tap the last row where you know all the words" grid.
+ * VocabLevelModal — the "tap the last row where you know all the words" grid,
+ * as a bottom sheet.
  *
- * Replaces the manual level chips and the word-by-word quiz for Korean. Each row
- * is a frequency tier (the ~100 / ~300 / ~700 ... most common words); selecting a
- * row treats every row up to it as known and seeds ability `theta` from the tier's
- * baked value (see services/vocabSizeLevels.js). The seed is written through
- * `setProfileAbilityFromVocab` (clobber-safe) and the displayed level is aligned
- * to the nearest band via `setTargetLanguageLevel`.
+ * Each row is a frequency tier (the ~100 / ~300 / ~700 ... most common words);
+ * selecting a row treats every row up to it as known and seeds ability `theta`
+ * from the tier's baked value (see services/vocabSizeLevels.js). The seed is
+ * written through `setProfileAbilityFromVocab` (clobber-safe) and the
+ * displayed level is aligned to the nearest band via `setTargetLanguageLevel`.
+ * The word check runs inside the same sheet (back chevron returns to the list).
  */
-const VocabLevelModal = ({ visible, onClose }) => {
+const VocabLevelModal = ({ visible, onClose, initialMode = 'list' }) => {
     const {
         activeProfileId,
         targetLanguage,
@@ -56,7 +63,8 @@ const VocabLevelModal = ({ visible, onClose }) => {
     // context has none, so reading it there saved the level under "guest".
     const { activeOwnerId } = useLocalOwner();
     const theme = useTheme();
-    const styles = useMemo(() => createStyles(theme.colors), [theme.colors]);
+    const colors = theme.colors;
+    const styles = useMemo(() => createStyles(colors), [colors]);
     const { t } = useTranslation();
 
     const tiers = useMemo(() => getVocabTiers(targetLanguage), [targetLanguage]);
@@ -65,7 +73,7 @@ const VocabLevelModal = ({ visible, onClose }) => {
     // The word check replaces the grid while it runs.
     const [checking, setChecking] = useState(false);
     // What the reader picked last time, and where reading has moved the
-    // estimate since — both shown as light highlights when the grid opens.
+    // estimate since.
     const [lastPickIndex, setLastPickIndex] = useState(null);
     const [estimateIndex, setEstimateIndex] = useState(null);
     // Row offsets, so the list can open scrolled to the remembered pick.
@@ -79,8 +87,17 @@ const VocabLevelModal = ({ visible, onClose }) => {
         listRef.current?.scrollTo({ y: Math.max(0, y - 120), animated: false });
     }, []);
 
+    const wordCheck = useWordCheck({
+        active: visible && checking,
+        onClose: () => {
+            setChecking(false);
+            onClose?.();
+        },
+    });
+
     useEffect(() => {
         if (!visible) return undefined;
+        setChecking(initialMode === 'check' && hasWordCheck(targetLanguage));
         setSelectedIndex(null);
         setIsSaving(false);
         scrolledForOpenRef.current = false;
@@ -116,7 +133,7 @@ const VocabLevelModal = ({ visible, onClose }) => {
         return () => {
             cancelled = true;
         };
-    }, [visible, activeOwnerId, activeProfileId, targetLanguage, tiers, scrollToRow]);
+    }, [visible, initialMode, activeOwnerId, activeProfileId, targetLanguage, tiers, scrollToRow]);
 
     const handleConfirm = useCallback(async () => {
         if (selectedIndex == null || isSaving) {
@@ -154,264 +171,228 @@ const VocabLevelModal = ({ visible, onClose }) => {
     }, [activeOwnerId, activeProfileId, isSaving, onClose, selectedIndex, setTargetLanguageLevel, t, targetLanguage, tiers]);
 
     const tierLabel = useCallback((tier) => (
-        tier.advanced ? t('vocabLevel.advancedTier') : (tier.label || String(tier.threshold))
+        tier.advanced ? t('vocabLevel.advancedTier') : (tier.label || Number(tier.threshold).toLocaleString())
     ), [t]);
+
+    // The "Now" marker: where reading has moved the estimate, else the pick.
+    const nowIndex = estimateIndex ?? lastPickIndex;
 
     if (checking) {
         return (
-            <WordCheckModal
+            <SheetFrame
                 visible={visible}
-                onClose={() => {
+                onClose={wordCheck.close}
+                title={t('wordCheck.title')}
+                onBack={async () => {
+                    await wordCheck.stop();
                     setChecking(false);
-                    onClose?.();
                 }}
-            />
+                backLabel={t('vocabLevel.backToList')}
+            >
+                <WordCheckBody
+                    check={wordCheck}
+                    onDone={() => {
+                        setChecking(false);
+                        onClose?.();
+                    }}
+                />
+            </SheetFrame>
         );
     }
 
+    const confirmDisabled = selectedIndex == null || isSaving;
+
     return (
-        <Modal visible={visible} animationType="fade" transparent onRequestClose={onClose}>
-            <TouchableWithoutFeedback onPress={onClose}>
-                <View style={styles.backdrop}>
-                    <TouchableWithoutFeedback>
-                        <View style={styles.card}>
-                            <View style={styles.headerRow}>
-                                <Text style={styles.eyebrow}>{t('vocabLevel.title')}</Text>
-                                <Pressable onPress={onClose} hitSlop={12} accessibilityRole="button">
-                                    <Feather name="x" size={20} color={theme.colors.textTertiary} />
-                                </Pressable>
-                            </View>
-                            <Text style={styles.helper}>{t('vocabLevel.instruction')}</Text>
-                            {hasWordCheck(targetLanguage) ? (
+        <SheetFrame visible={visible} onClose={onClose} title={t('vocabLevel.title')} fillRatio={0.86}>
+            <View style={styles.body}>
+                <Text style={styles.helper}>{t('vocabLevel.instruction')}</Text>
+                {hasWordCheck(targetLanguage) ? (
+                    <TouchableOpacity
+                        onPress={() => setChecking(true)}
+                        style={styles.checkLink}
+                        activeOpacity={0.7}
+                        accessibilityRole="link"
+                    >
+                        <Text style={styles.checkLinkText}>{t('vocabLevel.takeCheck')}</Text>
+                    </TouchableOpacity>
+                ) : null}
+
+                <View style={styles.listFrame}>
+                    <ScrollView
+                        ref={listRef}
+                        style={styles.list}
+                        showsVerticalScrollIndicator
+                        accessibilityRole="radiogroup"
+                        accessibilityLabel={t('vocabLevel.title')}
+                    >
+                        {tiers.map((tier, index) => {
+                            const known = selectedIndex != null && index <= selectedIndex;
+                            const isPick = index === selectedIndex;
+                            const isNow = index === nowIndex;
+                            const wasPicked = index === lastPickIndex && lastPickIndex !== nowIndex;
+                            return (
                                 <TouchableOpacity
-                                    onPress={() => setChecking(true)}
-                                    style={styles.checkLink}
-                                    activeOpacity={0.7}
-                                    accessibilityRole="button"
+                                    key={tier.threshold}
+                                    activeOpacity={0.75}
+                                    onPress={() => setSelectedIndex(index)}
+                                    onLayout={(event) => {
+                                        rowOffsetsRef.current[index] = event.nativeEvent.layout.y;
+                                        if (index === (lastPickIndex ?? estimateIndex)) scrollToRow(index);
+                                    }}
+                                    accessibilityRole="radio"
+                                    accessibilityState={{ selected: isPick }}
+                                    style={[
+                                        styles.row,
+                                        index > 0 && styles.rowDivider,
+                                        known && styles.rowKnown,
+                                        isPick && styles.rowPick,
+                                    ]}
                                 >
-                                    <Feather name="check-square" size={15} color={theme.colors.textSecondary} />
-                                    <Text style={styles.checkLinkText}>{t('vocabLevel.takeCheck')}</Text>
+                                    <View style={styles.rowLabelCol}>
+                                        <Text style={[styles.rowLabel, known && styles.rowLabelKnown]} numberOfLines={1}>
+                                            {tierLabel(tier)}
+                                        </Text>
+                                        {isNow ? (
+                                            <Text style={styles.tagNow}>{t('vocabLevel.estimateNow')}</Text>
+                                        ) : null}
+                                        {wasPicked ? (
+                                            <Text style={styles.tagPick} numberOfLines={1}>{t('vocabLevel.yourPick')}</Text>
+                                        ) : null}
+                                    </View>
+                                    <Text style={[styles.word, known && styles.wordKnown]}>
+                                        {tier.words.join(' ')}
+                                    </Text>
                                 </TouchableOpacity>
-                            ) : null}
-
-                            <ScrollView
-                                ref={listRef}
-                                style={styles.list}
-                                contentContainerStyle={styles.listContent}
-                                showsVerticalScrollIndicator
-                            >
-                                {tiers.map((tier, index) => {
-                                    const known = selectedIndex != null && index <= selectedIndex;
-                                    const isPick = index === selectedIndex;
-                                    const wasPicked = index === lastPickIndex;
-                                    const isEstimate = estimateIndex != null && index === estimateIndex && estimateIndex !== lastPickIndex;
-                                    return (
-                                        <TouchableOpacity
-                                            key={tier.threshold}
-                                            activeOpacity={0.75}
-                                            onPress={() => setSelectedIndex(index)}
-                                            onLayout={(event) => {
-                                                rowOffsetsRef.current[index] = event.nativeEvent.layout.y;
-                                                if (index === (lastPickIndex ?? estimateIndex)) scrollToRow(index);
-                                            }}
-                                            accessibilityRole="radio"
-                                            accessibilityState={{ selected: isPick }}
-                                            style={[
-                                                styles.row,
-                                                known && styles.rowKnown,
-                                                isPick && styles.rowPick,
-                                                wasPicked && styles.rowLastPick,
-                                                isEstimate && styles.rowEstimate,
-                                            ]}
-                                        >
-                                            <View style={styles.rowLabelCol}>
-                                                <Text style={[styles.rowLabel, known && styles.rowLabelKnown]}>
-                                                    {tierLabel(tier)}
-                                                </Text>
-                                                {isPick ? (
-                                                    <Feather name="check" size={14} color={theme.colors.readerLevelUnderlineEasy} />
-                                                ) : null}
-                                            </View>
-                                            <View style={styles.wordsCol}>
-                                                <Text style={[styles.word, known && styles.wordKnown]}>
-                                                    {tier.words.join('  ')}
-                                                </Text>
-                                                {wasPicked || isEstimate ? (
-                                                    <View style={styles.tagRow}>
-                                                        {wasPicked ? (
-                                                            <Text style={[styles.tag, styles.tagPick]}>{t('vocabLevel.yourPick')}</Text>
-                                                        ) : null}
-                                                        {isEstimate ? (
-                                                            <Text style={[styles.tag, styles.tagEstimate]}>{t('vocabLevel.estimateNow')}</Text>
-                                                        ) : null}
-                                                    </View>
-                                                ) : null}
-                                            </View>
-                                        </TouchableOpacity>
-                                    );
-                                })}
-                            </ScrollView>
-
-                            <TouchableOpacity
-                                activeOpacity={0.85}
-                                onPress={handleConfirm}
-                                disabled={selectedIndex == null || isSaving}
-                                style={[styles.confirmButton, (selectedIndex == null || isSaving) && styles.confirmButtonDisabled]}
-                                accessibilityRole="button"
-                            >
-                                <Text style={styles.confirmText}>{t('vocabLevel.confirm')}</Text>
-                            </TouchableOpacity>
-                        </View>
-                    </TouchableWithoutFeedback>
+                            );
+                        })}
+                    </ScrollView>
                 </View>
-            </TouchableWithoutFeedback>
-        </Modal>
+
+                <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={handleConfirm}
+                    disabled={confirmDisabled}
+                    style={[styles.confirmButton, confirmDisabled && styles.confirmButtonDisabled]}
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: confirmDisabled }}
+                >
+                    <Text style={styles.confirmText}>{t('vocabLevel.confirm')}</Text>
+                </TouchableOpacity>
+            </View>
+        </SheetFrame>
     );
 };
 
 const createStyles = (colors) => StyleSheet.create({
-    backdrop: {
+    body: {
         flex: 1,
-        backgroundColor: colors.overlay,
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: spacing.xl,
-    },
-    card: {
-        width: '100%',
-        maxWidth: 460,
-        maxHeight: '82%',
-        backgroundColor: colors.surface,
-        borderRadius: radii.xl ?? 24,
-        padding: spacing.xl,
-    },
-    headerRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-    },
-    eyebrow: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 12,
-        letterSpacing: 1.4,
-        textTransform: 'uppercase',
-        color: colors.textTertiary,
+        minHeight: 0,
     },
     helper: {
-        marginTop: spacing.sm,
+        marginTop: 2,
+        marginHorizontal: 20,
         fontFamily: fontFamilies.sansRegular,
         fontSize: 14,
         lineHeight: 20,
-        color: colors.textSecondary,
+        color: colors.textMuted,
     },
     checkLink: {
-        marginTop: spacing.sm,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
+        marginTop: 4,
+        marginHorizontal: 20,
         alignSelf: 'flex-start',
-        paddingVertical: 4,
+        minHeight: 36,
+        justifyContent: 'center',
     },
     checkLinkText: {
         fontFamily: fontFamilies.sansSemiBold,
         fontSize: 14,
-        color: colors.textSecondary,
+        lineHeight: 20,
+        color: colors.inkSlate,
         textDecorationLine: 'underline',
     },
-    list: {
-        marginTop: spacing.md,
-        borderRadius: radii.lg ?? 16,
+    listFrame: {
+        flex: 1,
+        minHeight: 0,
+        marginTop: 10,
+        marginHorizontal: 16,
+        borderRadius: 16,
         borderWidth: 1,
-        borderColor: colors.border,
+        borderColor: colors.divider,
+        overflow: 'hidden',
     },
-    listContent: {
-        paddingVertical: spacing.xs,
+    list: {
+        flex: 1,
     },
     row: {
+        minHeight: 52,
         flexDirection: 'row',
         alignItems: 'center',
-        gap: spacing.sm,
-        paddingVertical: 6,
-        paddingHorizontal: spacing.sm,
-        borderBottomWidth: StyleSheet.hairlineWidth,
-        borderBottomColor: colors.divider,
+        gap: 10,
+        paddingVertical: 8,
+        paddingHorizontal: 14,
+        backgroundColor: colors.surface,
+    },
+    rowDivider: {
+        borderTopWidth: 1,
+        borderTopColor: colors.divider,
     },
     rowKnown: {
-        backgroundColor: colors.accentSoft,
+        backgroundColor: tint(colors.readerLevelUnderlineEasy, 0.05),
     },
     rowPick: {
-        backgroundColor: colors.accentMuted,
-    },
-    // The tier saved last time: a thin bar on the left that stays while the
-    // reader tries other rows.
-    rowLastPick: {
-        borderLeftWidth: 3,
-        borderLeftColor: colors.readerLevelUnderlineEasy,
-    },
-    // Where reading has moved the estimate since: a light dashed outline.
-    rowEstimate: {
-        borderWidth: 1,
-        borderStyle: 'dashed',
-        borderColor: colors.readerLevelUnderlineMid,
-        borderRadius: 6,
-    },
-    tagRow: {
-        flexDirection: 'row',
-        gap: 6,
-        marginTop: 3,
-    },
-    tag: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 10,
-        letterSpacing: 0.6,
-        textTransform: 'uppercase',
-    },
-    tagPick: {
-        color: colors.readerLevelUnderlineEasy,
-    },
-    tagEstimate: {
-        color: colors.readerLevelUnderlineMid,
+        backgroundColor: tint(colors.readerLevelUnderlineEasy, 0.12),
     },
     rowLabelCol: {
-        width: 48,
-        alignItems: 'center',
-        gap: spacing.xxs ?? 2,
+        width: 64,
+        alignItems: 'flex-start',
+        gap: 2,
     },
     rowLabel: {
-        fontFamily: fontFamilies.sansMedium,
+        fontFamily: fontFamilies.sansSemiBold,
         fontSize: 13,
         color: colors.textTertiary,
         fontVariant: ['tabular-nums'],
     },
     rowLabelKnown: {
         color: colors.readerLevelUnderlineEasy,
-        fontFamily: fontFamilies.sansSemiBold,
     },
-    wordsCol: {
-        flex: 1,
+    tagNow: {
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 10,
+        lineHeight: 13,
+        color: colors.readerLevelUnderlineMid,
+    },
+    tagPick: {
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 10,
+        lineHeight: 13,
+        color: colors.textTertiary,
     },
     word: {
-        fontFamily: fontFamilies.krSerifMedium,
+        flex: 1,
+        fontFamily: fontFamilies.krSerifRegular,
         fontSize: 14,
-        lineHeight: 19,
+        lineHeight: 20,
         color: colors.text,
     },
     wordKnown: {
         color: colors.readerLevelUnderlineEasy,
     },
     confirmButton: {
-        marginTop: spacing.lg,
-        paddingVertical: spacing.md,
-        borderRadius: radii.lg ?? 16,
+        marginTop: 14,
+        marginHorizontal: 16,
+        minHeight: 52,
+        borderRadius: 14,
         alignItems: 'center',
-        backgroundColor: colors.inkSlate ?? colors.text,
+        justifyContent: 'center',
+        backgroundColor: colors.inkSlate,
     },
     confirmButtonDisabled: {
-        opacity: 0.4,
+        opacity: 0.35,
     },
     confirmText: {
         fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 15,
+        fontSize: 16,
         color: colors.white,
     },
 });

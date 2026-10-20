@@ -4,7 +4,6 @@ import {
     Text,
     Modal,
     Pressable,
-    TouchableOpacity,
     ScrollView,
     StyleSheet,
     ActivityIndicator,
@@ -12,10 +11,30 @@ import {
     Easing,
     useWindowDimensions,
 } from 'react-native';
-import { Feather } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
-import { fontFamilies, radii, spacing } from '../../theme';
+import { fontFamilies } from '../../theme';
 import CandidateCard from '../vocab/CandidateCard';
+import {
+    SHEET_PADDING,
+    SegmentedTabs,
+    SheetEmptyState,
+    SheetHandle,
+    SheetHeader,
+    createReaderSettingsControlStyles,
+    createSheetChromeStyles,
+} from './ReaderSettingsControls';
+
+// A short saved date for the row's status column ("Oct 20").
+const formatSavedDate = (value, language) => {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    try {
+        return date.toLocaleDateString(language ?? undefined, { month: 'short', day: 'numeric' });
+    } catch {
+        return '';
+    }
+};
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -26,7 +45,8 @@ const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
  *   • Suggested — unsaved words worth keeping (from the candidate model), each
  *                 saveable on the spot.
  * This is the on-demand home for candidates; the "before you go" exit sheet now
- * only handles the note-to-self.
+ * only handles the note-to-self. `title` overrides the sheet title (defaults to
+ * "Saved in this book").
  */
 const SavedWordsPanel = ({
     visible,
@@ -39,9 +59,12 @@ const SavedWordsPanel = ({
     onSaveCandidate,
     onClose,
     initialTab = 'saved',
+    title,
 }) => {
-    const { t } = useTranslation();
-    const styles = useMemo(() => createStyles(colors, insets), [colors, insets]);
+    const { t, language } = useTranslation();
+    const styles = useMemo(() => createStyles(colors), [colors]);
+    const chrome = useMemo(() => createSheetChromeStyles(colors, insets), [colors, insets]);
+    const controlStyles = useMemo(() => createReaderSettingsControlStyles(colors), [colors]);
     const [tab, setTab] = useState(initialTab);
     const { height: windowHeight } = useWindowDimensions();
 
@@ -89,90 +112,90 @@ const SavedWordsPanel = ({
                     onPress={onClose}
                 />
                 <Animated.View
-                    style={[styles.sheet, { transform: [{ translateY }] }]}
+                    style={[chrome.sheet, styles.sheet, { transform: [{ translateY }] }]}
                     onLayout={(e) => {
                         sheetHeight.current = e.nativeEvent.layout.height;
                     }}
                 >
-                    <View style={styles.handleWrap}>
-                        <View style={styles.handle} />
-                    </View>
+                    <SheetHandle styles={chrome} />
+                    <SheetHeader
+                        styles={chrome}
+                        colors={colors}
+                        title={title ?? t('read.savedPanelTitle')}
+                        onClose={onClose}
+                        closeLabel={t('common.close')}
+                    />
 
-                    <View style={styles.tabsRow}>
-                        <TouchableOpacity
-                            onPress={() => setTab('saved')}
-                            style={[styles.tab, tab === 'saved' && styles.tabActive]}
-                            accessibilityRole="tab"
-                            accessibilityState={{ selected: tab === 'saved' }}
-                        >
-                            <Text style={[styles.tabText, tab === 'saved' && styles.tabTextActive]}>
-                                {t('read.savedTab', { count: savedWords.length })}
-                            </Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            onPress={() => setTab('suggested')}
-                            style={[styles.tab, tab === 'suggested' && styles.tabActive]}
-                            accessibilityRole="tab"
-                            accessibilityState={{ selected: tab === 'suggested' }}
-                        >
-                            <Text style={[styles.tabText, tab === 'suggested' && styles.tabTextActive]}>
-                                {t('read.suggestedTab')}
-                            </Text>
-                        </TouchableOpacity>
-                    </View>
+                    <SegmentedTabs
+                        styles={controlStyles}
+                        style={styles.tabs}
+                        value={tab}
+                        onChange={setTab}
+                        options={[
+                            { value: 'saved', label: t('read.savedTab', { count: savedWords.length }) },
+                            { value: 'suggested', label: t('read.suggestedTab') },
+                        ]}
+                    />
 
                     {tab === 'saved' ? (
                         savedWords.length === 0 ? (
-                            <View style={styles.emptyWrap}>
-                                <Feather name="bookmark" size={26} color={colors.textSubtle} />
-                                <Text style={styles.emptyTitle}>{t('read.savedEmptyTitle')}</Text>
-                                <Text style={styles.emptyBody}>{t('read.savedEmptyBody')}</Text>
-                            </View>
+                            <SheetEmptyState
+                                styles={chrome}
+                                colors={colors}
+                                icon="bookmark"
+                                title={t('read.savedEmptyTitle')}
+                                body={t('read.savedEmptyBody')}
+                            />
                         ) : (
                             <ScrollView
                                 style={styles.scroll}
                                 contentContainerStyle={styles.scrollContent}
                                 showsVerticalScrollIndicator={false}
                             >
-                                {savedWords.map((entry) => (
-                                    <View key={entry.id ?? entry.word} style={styles.savedRow}>
-                                        <View style={styles.savedHeadwordRow}>
-                                            <Text style={styles.savedWord}>{entry.word}</Text>
-                                            {entry.hanja ? (
-                                                <Text style={styles.savedHanja}>{entry.hanja}</Text>
-                                            ) : null}
-                                            {entry.source === 'ai' ? (
-                                                <View style={styles.savedSourceTag}>
-                                                    <Text style={styles.savedSourceTagText}>
-                                                        {t('read.aiExplainedTag')}
-                                                    </Text>
+                                {savedWords.map((entry) => {
+                                    const status = entry.source === 'ai'
+                                        ? t('read.aiExplainedTag')
+                                        : formatSavedDate(entry.createdAt, language);
+                                    return (
+                                        <View key={entry.id ?? entry.word} style={styles.savedRow}>
+                                            <View style={styles.savedBody}>
+                                                <View style={styles.savedHeadwordRow}>
+                                                    <Text style={styles.savedWord}>{entry.word}</Text>
+                                                    {entry.hanja ? (
+                                                        <Text style={styles.savedHanja}>{entry.hanja}</Text>
+                                                    ) : null}
                                                 </View>
+                                                {entry.def ? (
+                                                    <Text style={styles.savedDef} numberOfLines={2}>{entry.def}</Text>
+                                                ) : null}
+                                            </View>
+                                            {status ? (
+                                                <Text style={styles.savedStatus} numberOfLines={1}>{status}</Text>
                                             ) : null}
                                         </View>
-                                        {entry.def ? (
-                                            <Text style={styles.savedDef} numberOfLines={2}>{entry.def}</Text>
-                                        ) : null}
-                                    </View>
-                                ))}
+                                    );
+                                })}
                             </ScrollView>
                         )
                     ) : (
                         candidatesLoading ? (
-                            <View style={styles.emptyWrap}>
-                                <ActivityIndicator color={colors.textMuted} />
+                            <View style={styles.loadingWrap}>
+                                <ActivityIndicator color={colors.textTertiary} />
                             </View>
                         ) : candidates.length === 0 ? (
-                            <View style={styles.emptyWrap}>
-                                <Feather name="feather" size={26} color={colors.textSubtle} />
-                                <Text style={styles.emptyTitle}>{t('read.suggestedEmptyTitle')}</Text>
-                                <Text style={styles.emptyBody}>{t('read.suggestedEmptyBody')}</Text>
-                            </View>
+                            <SheetEmptyState
+                                styles={chrome}
+                                colors={colors}
+                                icon="feather"
+                                title={t('read.suggestedEmptyTitle')}
+                                body={t('read.suggestedEmptyBody')}
+                            />
                         ) : (
                             <>
                                 <Text style={styles.suggestedHint}>{t('read.suggestedHint')}</Text>
                                 <ScrollView
                                     style={styles.scroll}
-                                    contentContainerStyle={styles.scrollContent}
+                                    contentContainerStyle={[styles.scrollContent, styles.suggestedContent]}
                                     showsVerticalScrollIndicator={false}
                                 >
                                     {candidates.map((candidate) => (
@@ -194,7 +217,7 @@ const SavedWordsPanel = ({
     );
 };
 
-const createStyles = (colors, insets = { bottom: 0 }) => StyleSheet.create({
+const createStyles = (colors) => StyleSheet.create({
     overlay: {
         flex: 1,
         justifyContent: 'flex-end',
@@ -204,114 +227,75 @@ const createStyles = (colors, insets = { bottom: 0 }) => StyleSheet.create({
         backgroundColor: colors.overlay,
     },
     sheet: {
-        backgroundColor: colors.surface,
-        borderTopLeftRadius: radii.xl,
-        borderTopRightRadius: radii.xl,
-        paddingHorizontal: spacing.xl,
-        paddingTop: spacing.sm,
-        paddingBottom: (insets?.bottom ?? 0) + spacing.lg,
         maxHeight: '86%',
         minHeight: '48%',
     },
-    handleWrap: { alignItems: 'center', paddingVertical: spacing.xs },
-    handle: {
-        width: 36,
-        height: 4,
-        borderRadius: 2,
-        backgroundColor: colors.borderStrong,
-    },
-    tabsRow: {
-        flexDirection: 'row',
-        gap: spacing.xs,
-        backgroundColor: colors.surfaceMuted,
-        borderRadius: radii.pill,
-        padding: 4,
-        marginTop: spacing.sm,
-        marginBottom: spacing.md,
-    },
-    tab: {
-        flex: 1,
-        alignItems: 'center',
-        paddingVertical: spacing.sm,
-        borderRadius: radii.pill,
-    },
-    tabActive: {
-        backgroundColor: colors.surface,
-    },
-    tabText: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 14,
-        color: colors.textSubtle,
-    },
-    tabTextActive: {
-        color: colors.text,
+    tabs: {
+        marginTop: 12,
+        marginHorizontal: SHEET_PADDING,
     },
     scroll: { flexGrow: 0 },
-    scrollContent: { paddingBottom: spacing.md, gap: spacing.sm },
+    scrollContent: {
+        paddingHorizontal: SHEET_PADDING,
+        paddingTop: 6,
+        paddingBottom: 8,
+    },
+    suggestedContent: {
+        gap: 10,
+    },
     savedRow: {
-        paddingVertical: spacing.sm,
-        borderBottomWidth: StyleSheet.hairlineWidth,
-        borderBottomColor: colors.border,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+        paddingVertical: 12,
+        borderBottomWidth: 1,
+        borderBottomColor: colors.divider,
+    },
+    savedBody: {
+        flex: 1,
         gap: 2,
     },
     savedHeadwordRow: {
         flexDirection: 'row',
         alignItems: 'baseline',
-        gap: spacing.xs,
+        gap: 6,
     },
     savedWord: {
         fontFamily: fontFamilies.krSerifSemiBold,
-        fontSize: 19,
+        fontSize: 18,
+        lineHeight: 26,
         color: colors.text,
     },
     savedHanja: {
         fontFamily: fontFamilies.sansRegular,
         fontSize: 14,
-        color: colors.textSubtle,
-    },
-    savedSourceTag: {
-        paddingHorizontal: 6,
-        paddingVertical: 1,
-        borderRadius: radii.sm,
-        backgroundColor: colors.surfaceMuted,
-        alignSelf: 'center',
-    },
-    savedSourceTagText: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 10,
-        letterSpacing: 0.4,
-        color: colors.textSubtle,
+        color: colors.textTertiary,
     },
     savedDef: {
         fontFamily: fontFamilies.sansRegular,
         fontSize: 14,
+        lineHeight: 20,
         color: colors.textMuted,
+    },
+    savedStatus: {
+        maxWidth: '35%',
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 12,
+        lineHeight: 16,
+        color: colors.textTertiary,
     },
     suggestedHint: {
         fontFamily: fontFamilies.sansRegular,
         fontSize: 13,
-        color: colors.textSubtle,
-        marginBottom: spacing.sm,
+        lineHeight: 18,
+        color: colors.textTertiary,
+        marginTop: 12,
+        paddingHorizontal: SHEET_PADDING,
     },
-    emptyWrap: {
+    loadingWrap: {
         alignItems: 'center',
         justifyContent: 'center',
-        paddingVertical: spacing.xxl,
-        gap: spacing.sm,
-    },
-    emptyTitle: {
-        fontFamily: fontFamilies.displaySemiBold,
-        fontSize: 18,
-        color: colors.text,
-        marginTop: spacing.xs,
-    },
-    emptyBody: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 14,
-        lineHeight: 20,
-        color: colors.textMuted,
-        textAlign: 'center',
-        paddingHorizontal: spacing.lg,
+        paddingVertical: 40,
     },
 });
 

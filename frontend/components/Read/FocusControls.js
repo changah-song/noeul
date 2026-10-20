@@ -1,6 +1,6 @@
 import { memo, useEffect, useState } from 'react';
 import { Animated, Text, TouchableOpacity, View } from 'react-native';
-import { MaterialIcons } from '@expo/vector-icons';
+import { Feather } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
 
 // Focus-mode position pill + sentence arrows.
@@ -53,11 +53,6 @@ const FocusControls = ({
                 style={[styles.focusControlsLeft, { top: focusPillTop }]}
             >
                 <View style={styles.focusPositionPill}>
-                    <MaterialIcons
-                        name="wb-iridescent"
-                        size={15}
-                        color={themeColors.readerSubtleInk}
-                    />
                     <Text style={styles.focusPositionLabel}>{focusPositionLabel}</Text>
                 </View>
             </View>
@@ -73,30 +68,24 @@ const FocusControls = ({
                     ]}
                 >
                     <TouchableOpacity
-                        style={styles.focusArrowButtonPrev}
+                        style={[styles.focusArrowButtonPrev, focusAtStart && styles.focusStepperDisabled]}
                         onPress={() => sendFocusNav('prev')}
                         activeOpacity={0.72}
                         accessibilityRole="button"
+                        accessibilityState={{ disabled: focusAtStart }}
                         accessibilityLabel={t('read.focusPreviousSentence')}
                     >
-                        <MaterialIcons
-                            name="keyboard-arrow-up"
-                            size={23}
-                            color={focusAtStart ? '#c5c6cb' : themeColors.readerBodyInk}
-                        />
+                        <Feather name="chevron-up" size={22} color={themeColors.inkSlate} />
                     </TouchableOpacity>
                     <TouchableOpacity
-                        style={styles.focusArrowButtonNext}
+                        style={[styles.focusArrowButtonNext, focusAtEnd && styles.focusStepperDisabled]}
                         onPress={() => sendFocusNav('next')}
                         activeOpacity={0.72}
                         accessibilityRole="button"
+                        accessibilityState={{ disabled: focusAtEnd }}
                         accessibilityLabel={t('read.focusNextSentence')}
                     >
-                        <MaterialIcons
-                            name="keyboard-arrow-down"
-                            size={23}
-                            color={focusAtEnd ? '#6b7180' : themeColors.readerPaper}
-                        />
+                        <Feather name="chevron-down" size={22} color={themeColors.readerPaper} />
                     </TouchableOpacity>
                 </Animated.View>
             ) : null}

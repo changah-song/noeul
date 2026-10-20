@@ -15,9 +15,17 @@ import {
 } from 'react-native';
 import { Feather, MaterialIcons } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
-import { fontFamilies, radii, spacing } from '../../theme';
+import { fontFamilies } from '../../theme';
 import { LISTEN_PITCHES, LISTEN_RATES, loadOnDeviceVoices } from '../../services/listenPlayer';
-import { SegmentedControl, createReaderSettingsControlStyles } from './ReaderSettingsControls';
+import {
+    SHEET_PADDING,
+    SegmentedControl,
+    SettingRow,
+    SheetHandle,
+    SheetHeader,
+    createReaderSettingsControlStyles,
+    createSheetChromeStyles,
+} from './ReaderSettingsControls';
 
 const MAX_HEIGHT_RATIO = 0.72;
 
@@ -56,9 +64,10 @@ const ListenVoiceSheet = ({
     const { t } = useTranslation();
     const { height: windowHeight } = useWindowDimensions();
     const styles = useMemo(
-        () => createStyles(colors, insets, Math.round(windowHeight * MAX_HEIGHT_RATIO)),
-        [colors, insets, windowHeight]
+        () => createStyles(colors, Math.round(windowHeight * MAX_HEIGHT_RATIO)),
+        [colors, windowHeight]
     );
+    const chrome = useMemo(() => createSheetChromeStyles(colors, insets), [colors, insets]);
     const controlStyles = useMemo(() => createReaderSettingsControlStyles(colors), [colors]);
     const [voices, setVoices] = useState(null);
 
@@ -130,25 +139,17 @@ const ListenVoiceSheet = ({
                     accessibilityRole="button"
                     accessibilityLabel={t('common.close')}
                 />
-                <Animated.View style={[styles.sheet, { transform: [{ translateY: sheetTranslateY }] }]}>
-                    <View style={styles.handleWrap}>
-                        <View style={styles.handle} />
-                    </View>
-                    <View style={styles.header}>
-                        <Text style={styles.title} numberOfLines={1}>{t('read.listenVoiceTitle')}</Text>
-                        <TouchableOpacity
-                            onPress={onClose}
-                            style={styles.closeButton}
-                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                            accessibilityRole="button"
-                            accessibilityLabel={t('common.close')}
-                        >
-                            <Feather name="x" size={20} color={colors.readerMutedInk} />
-                        </TouchableOpacity>
-                    </View>
+                <Animated.View style={[chrome.sheet, styles.sheet, { transform: [{ translateY: sheetTranslateY }] }]}>
+                    <SheetHandle styles={chrome} />
+                    <SheetHeader
+                        styles={chrome}
+                        colors={colors}
+                        title={t('read.listenVoiceTitle')}
+                        onClose={onClose}
+                        closeLabel={t('common.close')}
+                    />
                     <ScrollView style={styles.body} contentContainerStyle={styles.bodyContent}>
-                        <View style={styles.settingRow}>
-                            <Text style={styles.settingLabel}>{t('read.listenSpeedLabel')}</Text>
+                        <SettingRow styles={controlStyles} label={t('read.listenSpeedLabel')}>
                             <SegmentedControl
                                 styles={controlStyles}
                                 colors={colors}
@@ -157,9 +158,8 @@ const ListenVoiceSheet = ({
                                 onChange={onChangeRate}
                                 accessibilityLabel={t('read.listenSpeedLabel')}
                             />
-                        </View>
-                        <View style={styles.settingRow}>
-                            <Text style={styles.settingLabel}>{t('read.listenPitchLabel')}</Text>
+                        </SettingRow>
+                        <SettingRow styles={controlStyles} label={t('read.listenPitchLabel')}>
                             <SegmentedControl
                                 styles={controlStyles}
                                 colors={colors}
@@ -168,10 +168,14 @@ const ListenVoiceSheet = ({
                                 onChange={onChangePitch}
                                 accessibilityLabel={t('read.listenPitchLabel')}
                             />
-                        </View>
+                        </SettingRow>
 
                         <Text style={styles.sectionLabel}>{t('read.listenVoiceLabel')}</Text>
-                        <View style={styles.voiceList} accessibilityRole="radiogroup">
+                        <View
+                            style={styles.voiceList}
+                            accessibilityRole="radiogroup"
+                            accessibilityLabel={t('read.listenVoiceLabel')}
+                        >
                             {rows.map((row, index) => {
                                 const selected = row.id === selectedId;
                                 const previewing = previewingId !== undefined && previewingId === row.id;
@@ -185,11 +189,7 @@ const ListenVoiceSheet = ({
                                         accessibilityState={{ checked: selected }}
                                         accessibilityLabel={row.detail ? `${row.label}, ${row.detail}` : row.label}
                                     >
-                                        <MaterialIcons
-                                            name={selected ? 'radio-button-checked' : 'radio-button-unchecked'}
-                                            size={20}
-                                            color={selected ? colors.inkSlate : colors.readerMutedInk}
-                                        />
+                                        <View style={[styles.radio, selected && styles.radioSelected]} />
                                         <Text style={styles.voiceLabel} numberOfLines={1}>{row.label}</Text>
                                         {row.detail ? <Text style={styles.voiceDetail}>{row.detail}</Text> : null}
                                         <TouchableOpacity
@@ -202,7 +202,7 @@ const ListenVoiceSheet = ({
                                             <MaterialIcons
                                                 name={previewing ? 'graphic-eq' : 'play-circle-outline'}
                                                 size={24}
-                                                color={colors.readerBodyInk}
+                                                color={colors.inkSlate}
                                             />
                                         </TouchableOpacity>
                                     </TouchableOpacity>
@@ -210,7 +210,7 @@ const ListenVoiceSheet = ({
                             })}
                             {voices == null ? (
                                 <View style={styles.loadingRow}>
-                                    <ActivityIndicator size="small" color={colors.readerMutedInk} />
+                                    <ActivityIndicator size="small" color={colors.textTertiary} />
                                 </View>
                             ) : null}
                         </View>
@@ -222,14 +222,14 @@ const ListenVoiceSheet = ({
                             style={styles.moreRow}
                             onPress={openTtsSettings}
                             activeOpacity={0.7}
-                            accessibilityRole="button"
+                            accessibilityRole="link"
+                            accessibilityLabel={t('read.listenVoiceMore')}
                         >
-                            <MaterialIcons name="download" size={18} color={colors.readerBodyInk} />
                             <View style={styles.moreText}>
                                 <Text style={styles.moreLabel}>{t('read.listenVoiceMore')}</Text>
                                 <Text style={styles.moreHint}>{t('read.listenVoiceMoreHint')}</Text>
                             </View>
-                            <Feather name="external-link" size={16} color={colors.readerMutedInk} />
+                            <Feather name="external-link" size={16} color={colors.textSubtle} />
                         </TouchableOpacity>
                     </ScrollView>
                 </Animated.View>
@@ -238,7 +238,7 @@ const ListenVoiceSheet = ({
     );
 };
 
-const createStyles = (colors, insets = { bottom: 0 }, maxHeight = 560) => StyleSheet.create({
+const createStyles = (colors, maxHeight = 560) => StyleSheet.create({
     overlay: {
         flex: 1,
         justifyContent: 'flex-end',
@@ -252,84 +252,26 @@ const createStyles = (colors, insets = { bottom: 0 }, maxHeight = 560) => StyleS
     },
     sheet: {
         maxHeight,
-        backgroundColor: colors.readerSurface,
-        borderTopLeftRadius: radii.xl,
-        borderTopRightRadius: radii.xl,
-        borderWidth: 1,
-        borderBottomWidth: 0,
-        borderColor: colors.readerBorder,
-        paddingBottom: (insets?.bottom ?? 0) + spacing.sm,
-        elevation: 16,
-    },
-    handleWrap: {
-        alignItems: 'center',
-        paddingTop: 10,
-        paddingBottom: 4,
-    },
-    handle: {
-        width: 36,
-        height: 4,
-        borderRadius: 2,
-        backgroundColor: colors.readerBorder,
-    },
-    header: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        paddingLeft: spacing.lg,
-        paddingRight: spacing.sm,
-        paddingTop: 2,
-        paddingBottom: 6,
-    },
-    title: {
-        flex: 1,
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 16,
-        lineHeight: 21,
-        color: colors.readerBodyInk,
-    },
-    closeButton: {
-        width: 36,
-        height: 36,
-        alignItems: 'center',
-        justifyContent: 'center',
     },
     body: {
         flexGrow: 0,
     },
     bodyContent: {
-        paddingHorizontal: spacing.lg,
-        paddingBottom: spacing.md,
-    },
-    settingRow: {
-        minHeight: 52,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 12,
-        borderBottomWidth: 1,
-        borderBottomColor: colors.readerHairline,
-    },
-    settingLabel: {
-        flex: 1,
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 15,
-        lineHeight: 20,
-        color: colors.readerBodyInk,
+        paddingHorizontal: SHEET_PADDING,
+        paddingTop: 4,
     },
     sectionLabel: {
-        marginTop: spacing.lg,
-        marginBottom: 6,
+        marginTop: 16,
+        marginBottom: 8,
         fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 12,
-        lineHeight: 16,
-        letterSpacing: 0.4,
-        textTransform: 'uppercase',
-        color: colors.readerMutedInk,
+        fontSize: 13,
+        lineHeight: 18,
+        color: colors.textTertiary,
     },
     voiceList: {
-        borderRadius: radii.md,
+        borderRadius: 16,
         borderWidth: 1,
-        borderColor: colors.readerBorder,
+        borderColor: colors.divider,
         overflow: 'hidden',
     },
     voiceRow: {
@@ -338,28 +280,40 @@ const createStyles = (colors, insets = { bottom: 0 }, maxHeight = 560) => StyleS
         alignItems: 'center',
         gap: 12,
         paddingLeft: 14,
-        paddingRight: 8,
+        paddingRight: 6,
     },
     voiceRowDivider: {
         borderTopWidth: 1,
-        borderTopColor: colors.readerHairline,
+        borderTopColor: colors.divider,
+    },
+    radio: {
+        width: 20,
+        height: 20,
+        borderRadius: 10,
+        borderWidth: 1.5,
+        borderColor: colors.borderStrong,
+        backgroundColor: colors.surface,
+    },
+    radioSelected: {
+        borderWidth: 6,
+        borderColor: colors.inkSlate,
     },
     voiceLabel: {
         flex: 1,
         fontFamily: fontFamilies.sansMedium,
         fontSize: 15,
         lineHeight: 20,
-        color: colors.readerBodyInk,
+        color: colors.text,
     },
     voiceDetail: {
         fontFamily: fontFamilies.sansRegular,
         fontSize: 13,
         lineHeight: 17,
-        color: colors.readerMutedInk,
+        color: colors.textTertiary,
     },
     previewButton: {
-        width: 40,
-        height: 40,
+        width: 44,
+        height: 44,
         alignItems: 'center',
         justifyContent: 'center',
     },
@@ -368,21 +322,21 @@ const createStyles = (colors, insets = { bottom: 0 }, maxHeight = 560) => StyleS
         alignItems: 'center',
         justifyContent: 'center',
         borderTopWidth: 1,
-        borderTopColor: colors.readerHairline,
+        borderTopColor: colors.divider,
     },
     note: {
         marginTop: 8,
         fontFamily: fontFamilies.sansRegular,
         fontSize: 13,
         lineHeight: 18,
-        color: colors.readerMutedInk,
+        color: colors.textTertiary,
     },
     moreRow: {
-        marginTop: spacing.md,
-        minHeight: 56,
+        marginTop: 12,
+        minHeight: 52,
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 12,
+        gap: 10,
     },
     moreText: {
         flex: 1,
@@ -391,13 +345,13 @@ const createStyles = (colors, insets = { bottom: 0 }, maxHeight = 560) => StyleS
         fontFamily: fontFamilies.sansMedium,
         fontSize: 15,
         lineHeight: 20,
-        color: colors.readerBodyInk,
+        color: colors.text,
     },
     moreHint: {
         fontFamily: fontFamilies.sansRegular,
         fontSize: 12,
         lineHeight: 16,
-        color: colors.readerMutedInk,
+        color: colors.textTertiary,
     },
 });
 

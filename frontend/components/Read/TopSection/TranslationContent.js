@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Text, View, ScrollView, StyleSheet } from 'react-native';
+import { ActivityIndicator, Text, View, ScrollView, StyleSheet } from 'react-native';
 import { translateWithPinyin } from '../../../services/api/googleTranslate';
 import { useTranslation } from '../../../hooks/useTranslation';
 import { spacing, textStyles, useTheme } from '../../../theme';
@@ -11,6 +11,7 @@ const TranslationContent = ({
     sourceLanguage = 'ko',
     targetLanguage = 'en',
     compact = false,
+    inline = false,
     maxScrollHeight = null,
     bottomPadding = spacing.md,
     nestedScrollEnabled = false,
@@ -96,6 +97,27 @@ const TranslationContent = ({
             translatedText: effectiveTranslatedText,
         });
     }, [effectiveErrorMessage, effectiveIsLoading, effectiveTranslatedText, onStatusChange]);
+
+    // One compact line for the word panel's inline translation row.
+    if (inline) {
+        if (effectiveIsLoading) {
+            return (
+                <View style={styles.inlineLoading}>
+                    <ActivityIndicator size="small" color={colors.textTertiary} />
+                </View>
+            );
+        }
+        return (
+            <Text
+                selectable
+                style={effectiveErrorMessage
+                    ? [styles.inlineError, { color: palette.muted }]
+                    : [styles.inlineText, { color: palette.text }]}
+            >
+                {effectiveErrorMessage || effectiveTranslatedText}
+            </Text>
+        );
+    }
 
     if (compact) {
         const compactContent = (
@@ -199,13 +221,31 @@ const createStyles = (colors) => StyleSheet.create({
         flexShrink: 1,
         fontFamily: textStyles.body.fontFamily,
         fontSize: 15,
-        lineHeight: 24,
+        lineHeight: 22,
         color: colors.text,
     },
     translationErrorText: {
         fontFamily: textStyles.body.fontFamily,
         fontSize: 14,
         lineHeight: 22,
+        fontStyle: 'italic',
+        color: colors.textTertiary,
+    },
+    inlineLoading: {
+        height: 21,
+        alignItems: 'flex-start',
+        justifyContent: 'center',
+    },
+    inlineText: {
+        fontFamily: textStyles.body.fontFamily,
+        fontSize: 15,
+        lineHeight: 21,
+        color: colors.text,
+    },
+    inlineError: {
+        fontFamily: textStyles.body.fontFamily,
+        fontSize: 14,
+        lineHeight: 21,
         fontStyle: 'italic',
         color: colors.textTertiary,
     },

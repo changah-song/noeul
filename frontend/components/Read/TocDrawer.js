@@ -2,7 +2,7 @@ import React, { useMemo } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from '../../hooks/useTranslation';
-import { colors as defaultColors, elevation, fontFamilies, layout, radii, useTheme } from '../../theme';
+import { colors as defaultColors, elevation, fontFamilies, layout, useTheme } from '../../theme';
 
 const stripHref = (href) => {
     if (!href) return '';
@@ -103,30 +103,31 @@ const TocDrawer = ({
     const chapterSummaryLabel = Number.isInteger(currentSpineIndex)
         ? (
             totalSpineItems > 0
-                ? `Chapter ${currentSpineIndex + 1} of ${totalSpineItems}`
-                : `Chapter ${currentSpineIndex + 1}`
+                ? t('read.chapterOfTotal', { current: currentSpineIndex + 1, total: totalSpineItems })
+                : `${t('read.chapter')} ${currentSpineIndex + 1}`
         )
         : t('read.chapter');
 
     const palette = {
         sheet: colors.readerSurface,
         border: colors.readerBorder,
-        headerText: colors.readerSubtleInk,
-        activeBg: colors.readerSavedChipBg,
+        headerText: colors.textTertiary,
+        summaryText: colors.textSubtle,
+        activeBg: colors.surfaceAssist,
         numberRead: colors.readerSubtleInk,
-        numberCurrent: colors.readerProgressFill,
+        numberCurrent: colors.readerBodyInk,
         numberUnread: colors.readerMutedInk,
-        titleRead: colors.readerSubtleInk,
+        titleRead: colors.readerMutedInk,
         titleCurrent: colors.readerBodyInk,
         titleUnread: colors.readerBodyInk,
-        pageRead: colors.readerSubtleInk,
-        pageCurrent: colors.readerMutedInk,
-        pageUnread: colors.readerSubtleInk,
+        pageRead: colors.textSubtle,
+        pageCurrent: colors.textTertiary,
+        pageUnread: colors.textSubtle,
         disabledText: colors.readerSubtleInk,
-        pressedBg: colors.readerSavedChipBg,
+        pressedBg: colors.surfaceMuted,
         progressTrack: colors.readerProgressTrack,
         progressFill: colors.readerProgressFill,
-        progressText: colors.readerProgressFill,
+        progressText: colors.readerBodyInk,
     };
 
     return (
@@ -145,7 +146,7 @@ const TocDrawer = ({
                     style={[
                         styles.dropdown,
                         {
-                            top: insets.top + layout.readerHeaderHeight - 2,
+                            top: insets.top + layout.readerHeaderHeight + 2,
                             backgroundColor: palette.sheet,
                             borderColor: palette.border,
                         },
@@ -154,7 +155,7 @@ const TocDrawer = ({
                     <View style={styles.progressHeader}>
                         <View style={styles.metaRow}>
                             <Text style={[styles.headerTitle, { color: palette.headerText }]}>{t('read.contents')}</Text>
-                            <Text style={[styles.chapterSummary, { color: palette.headerText }]}>
+                            <Text style={[styles.chapterSummary, { color: palette.summaryText }]}>
                                 {chapterSummaryLabel}
                             </Text>
                         </View>
@@ -187,7 +188,9 @@ const TocDrawer = ({
                             const normalizedDepth = Math.min(1, Math.max(0, (item?.depth ?? 0) - minDepth));
                             const isDisabled = item?.disabled || !Number.isInteger(item?.spineIndex);
                             const title = String(item?.title || item?.label || t('read.untitledSection')).trim() || t('read.untitledSection');
-                            const positionLabel = fractionLabelForItem(item, totalSpineItems);
+                            const positionLabel = isActive
+                                ? t('read.youAreHere')
+                                : fractionLabelForItem(item, totalSpineItems);
                             const chapterNumber = chapterNumberForItem(item);
                             const isRead = (
                                 !isActive
@@ -210,6 +213,8 @@ const TocDrawer = ({
                                 <Pressable
                                     key={`${item?.id || item?.href || item?.label || 'toc'}-${index}`}
                                     disabled={isDisabled}
+                                    accessibilityRole="button"
+                                    accessibilityState={{ selected: isActive, disabled: isDisabled }}
                                     onPress={() => {
                                         if (isDisabled) return;
                                         onSelect?.(item);
@@ -267,37 +272,36 @@ const styles = StyleSheet.create({
         position: 'absolute',
         right: 12,
         width: 272,
-        maxHeight: 600,
-        borderRadius: radii.md,
-        borderWidth: 1,
+        maxHeight: 520,
+        borderRadius: 16,
+        borderWidth: StyleSheet.hairlineWidth,
         overflow: 'hidden',
+        paddingTop: 14,
+        paddingBottom: 8,
         ...elevation.readerToc,
     },
     progressHeader: {
         flexShrink: 0,
         paddingHorizontal: 16,
-        paddingVertical: 13,
-        borderBottomWidth: 1,
-        borderBottomColor: defaultColors.divider,
+        paddingBottom: 10,
     },
     metaRow: {
         flexDirection: 'row',
-        alignItems: 'center',
+        alignItems: 'baseline',
         justifyContent: 'space-between',
         gap: 12,
-        marginBottom: 9,
+        marginBottom: 10,
     },
     headerTitle: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 9,
-        lineHeight: 12,
-        textTransform: 'uppercase',
-        letterSpacing: 2.2,
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 13,
+        lineHeight: 17,
     },
     chapterSummary: {
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 10,
-        lineHeight: 14,
+        fontSize: 12,
+        lineHeight: 16,
+        fontVariant: ['tabular-nums'],
     },
     bookProgressRow: {
         flexDirection: 'row',
@@ -315,39 +319,40 @@ const styles = StyleSheet.create({
         borderRadius: 2,
     },
     bookProgressText: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 12,
-        lineHeight: 16,
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 13,
+        lineHeight: 17,
         minWidth: 34,
         textAlign: 'right',
         fontVariant: ['tabular-nums'],
     },
     listContent: {
-        paddingVertical: 4,
+        paddingBottom: 0,
     },
     row: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: 11,
-        minHeight: 34,
+        minHeight: 44,
         paddingRight: 16,
-        paddingVertical: 7,
+        paddingVertical: 8,
     },
     chapterNumber: {
         width: 18,
         flexShrink: 0,
         textAlign: 'center',
-        fontFamily: fontFamilies.displayMedium,
+        fontFamily: fontFamilies.sansMedium,
         fontSize: 13,
         lineHeight: 18,
         includeFontPadding: false,
+        fontVariant: ['tabular-nums'],
     },
     chapterTitle: {
         flex: 1,
         minWidth: 0,
         fontFamily: fontFamilies.krSerifRegular,
-        fontSize: 14,
-        lineHeight: 20,
+        fontSize: 15,
+        lineHeight: 21,
         includeFontPadding: false,
     },
     chapterTitleActive: {
@@ -356,9 +361,8 @@ const styles = StyleSheet.create({
     positionText: {
         flexShrink: 0,
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 11,
-        lineHeight: 15,
-        minWidth: 44,
+        fontSize: 12,
+        lineHeight: 16,
         textAlign: 'right',
         fontVariant: ['tabular-nums'],
     },
