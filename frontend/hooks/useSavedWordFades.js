@@ -4,7 +4,11 @@ import {
     recordSavedWordSightings,
     resetSavedWordFade,
 } from '../services/Database';
-import { savedWordsForSurfaces } from '../services/savedWordFade';
+import {
+    SAVED_WORD_FADE_STEPS,
+    SAVED_WORD_LAST_FADE_MS,
+    savedWordsForSurfaces,
+} from '../services/savedWordFade';
 import { requestUserDataSync } from '../services/userDataSyncQueue';
 
 /**
@@ -36,15 +40,23 @@ const useSavedWordFades = ({ ownerId, language, onLearned }) => {
             if (faded.size > 0) {
                 setFades((previous) => {
                     const next = new Map(previous);
-                    faded.forEach((seen, word) => next.set(word, seen));
-                    learned.forEach((word) => next.delete(word));
+                    faded.forEach((seen, word) => next.set(word, Math.min(seen, SAVED_WORD_FADE_STEPS)));
                     return next;
                 });
             }
             if (learned.length > 0) {
                 // The 'learned' level syncs like any other vocab change.
                 requestUserDataSync('saved-word-learned');
-                onLearnedRef.current?.(learned);
+                // Its box loses its last pixels first (strength 0 still draws
+                // while animating), then the word leaves the highlights.
+                setTimeout(() => {
+                    setFades((previous) => {
+                        const next = new Map(previous);
+                        learned.forEach((word) => next.delete(word));
+                        return next;
+                    });
+                    onLearnedRef.current?.(learned);
+                }, SAVED_WORD_LAST_FADE_MS);
             }
         } catch (error) {
             console.warn('[useSavedWordFades] Failed to record saved word sightings:', error?.message ?? error);

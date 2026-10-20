@@ -1349,6 +1349,47 @@ const DictionaryContent = ({
         setDrilldownStack(prev => prev.slice(0, -1));
     };
 
+    // Chinese: look up one character of a longer word (先 of 先生), with a
+    // back row to the word.
+    const handleChineseCharacterPress = (character) => {
+        const next = cleanValue(character);
+        if (!next || next === cleanValue(lookupWord)) {
+            return;
+        }
+        setCurrentHanja(null);
+        setDrilldownStack(prev => [...prev, next]);
+    };
+
+    const chineseCharactersOf = (rawWord) => (
+        isChineseBook ? Array.from(cleanValue(rawWord)).filter((ch) => HANJA_RE.test(ch)) : []
+    );
+
+    // The word's characters as small buttons under it, each opening that
+    // character's own entry. (Expanded, the per-character rows do the same.)
+    const renderChineseCharacterChips = (rawWord) => {
+        const chars = chineseCharactersOf(rawWord);
+        if (chars.length < 2) {
+            return null;
+        }
+        return (
+            <View style={styles.zhCharChips} accessibilityLabel={t('lookup.characters')}>
+                {chars.map((ch, index) => (
+                    <TouchableOpacity
+                        key={`${ch}-${index}`}
+                        accessibilityRole="button"
+                        accessibilityLabel={`${t('lookup.characters')}: ${ch}`}
+                        activeOpacity={0.7}
+                        hitSlop={{ top: 6, bottom: 6, left: 2, right: 2 }}
+                        onPress={() => handleChineseCharacterPress(ch)}
+                        style={[styles.zhCharChip, { borderColor: palette.border }]}
+                    >
+                        <Text style={[styles.zhCharChipText, { color: palette.secondaryText }]}>{ch}</Text>
+                    </TouchableOpacity>
+                ))}
+            </View>
+        );
+    };
+
     const goToPreviousWord = () => {
         if (lookupItemCount <= 1 || currentLookupIndex <= 0) {
             return;
@@ -2339,8 +2380,12 @@ const DictionaryContent = ({
                     const senses = primary ? resolveZhVariantSenses(primary.senses) : [];
                     const isLoading = raw === 'loading' || raw === undefined;
                     return (
-                        <View
+                        <TouchableOpacity
                             key={`${ch}-${index}`}
+                            accessibilityRole="button"
+                            accessibilityLabel={`${t('lookup.characters')}: ${ch}`}
+                            activeOpacity={0.7}
+                            onPress={() => handleChineseCharacterPress(ch)}
                             style={[
                                 styles.zhCharRow,
                                 index > 0 && { borderTopColor: palette.border, borderTopWidth: StyleSheet.hairlineWidth },
@@ -2363,7 +2408,7 @@ const DictionaryContent = ({
                                     </Text>
                                 )}
                             </View>
-                        </View>
+                        </TouchableOpacity>
                     );
                 })}
             </View>
@@ -2447,7 +2492,9 @@ const DictionaryContent = ({
                     isChineseBook ? (
                         <View style={styles.zhBody}>
                             {renderChineseBody(zhData)}
-                            {isPanelExpanded ? renderChineseCharacterBreakdown(cleanValue(word)) : null}
+                            {isPanelExpanded
+                                ? renderChineseCharacterBreakdown(cleanValue(word))
+                                : renderChineseCharacterChips(word)}
                         </View>
                     ) : (
                     <>
@@ -2538,9 +2585,16 @@ const DictionaryContent = ({
                     onContentHeightChange?.(height);
                 }}
             >
+                {renderDrilldownBackRow()}
                 <Text style={[styles.entryWord, styles.notFoundWord, { color: palette.text }]}>{explainMode ? explainHeadword : lookupWord}</Text>
                 {explainMode ? renderExplainBodySection() : (
-                    <Text style={[styles.notFoundSubtext, { color: colors.textSubtle }]}>{t('lookup.noDefinition')}</Text>
+                    <>
+                        {/* A failed request is not the same as "no entry": say so. */}
+                        <Text style={[styles.notFoundSubtext, { color: colors.textSubtle }]}>
+                            {liveError ? t('lookup.dictionaryFailed') : t('lookup.noDefinition')}
+                        </Text>
+                        {renderChineseCharacterChips(lookupWord)}
+                    </>
                 )}
             </ScrollView>
             {renderNotFoundActionRow(lookupWord)}
@@ -3091,6 +3145,25 @@ const createStyles = (colors) => StyleSheet.create({
         textAlign: 'center',
         textTransform: 'uppercase',
         marginBottom: 2,
+    },
+    zhCharChips: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 6,
+        marginTop: spacing.sm,
+    },
+    zhCharChip: {
+        minWidth: 34,
+        height: 34,
+        paddingHorizontal: 8,
+        borderRadius: 17,
+        borderWidth: StyleSheet.hairlineWidth,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    zhCharChipText: {
+        fontSize: 17,
+        lineHeight: 22,
     },
     zhCharRow: {
         flexDirection: 'row',

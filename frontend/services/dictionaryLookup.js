@@ -627,6 +627,27 @@ export const resolveDictionaryLookup = async ({
         };
     };
 
+    // A Chinese compound with no dictionary entry (one of jieba's own words
+    // like 看着, or a name) is looked up by its parts rather than showing an
+    // empty panel: the server's splitter first, then character by character.
+    const isChineseCompound = normalizedTargetLanguage === 'zh' && Array.from(normalizedSurface).length > 1;
+    const rowHasDefinition = (row) => Boolean(cleanValue(row?.definition) || cleanValue(row?.gloss));
+    const lacksDefinition = (result) => (
+        isChineseCompound
+        && Boolean(result)
+        && !(result.cachedResults || []).some(rowHasDefinition)
+        && !(result.dictionaryData || []).some((entries) => Array.isArray(entries) && entries.length > 0)
+    );
+    const resolveByCharacters = async () => {
+        const characters = uniqueValues(Array.from(normalizedSurface));
+        const rows = await lookupCacheByStems(characters, cacheScope);
+        const { usableRows, staleStems } = splitCacheRows(rows, usableCachedEntry);
+        const usableStemSet = new Set(usableRows.map((row) => cleanValue(row?.stem)).filter(Boolean));
+        const staleStemSet = new Set(staleStems);
+        const liveStems = characters.filter((stem) => staleStemSet.has(stem) || !usableStemSet.has(stem));
+        return buildResolved(characters, usableRows, liveStems);
+    };
+
     const resolveNormalizedLookup = async () => {
         if (currentBook) {
             const indexRows = await lookupBookIndexBySurface(
@@ -636,7 +657,7 @@ export const resolveDictionaryLookup = async ({
                 cacheScope
             );
             const indexedResult = await buildCacheResolved(indexRows);
-            if (indexedResult) {
+            if (indexedResult && !lacksDefinition(indexedResult)) {
                 return indexedResult;
             }
 
@@ -656,7 +677,7 @@ export const resolveDictionaryLookup = async ({
 
         const directCacheRows = await lookupCacheByStems([normalizedSurface], cacheScope);
         const directResult = await buildCacheResolved(directCacheRows);
-        if (directResult) {
+        if (directResult && !lacksDefinition(directResult)) {
             return directResult;
         }
 
@@ -730,7 +751,14 @@ export const resolveDictionaryLookup = async ({
         const staleStemSet = new Set(staleStems);
         const liveStems = stems.filter((stem) => staleStemSet.has(stem) || !usableStemSet.has(stem));
 
-        return buildResolved(stems, usableRows, liveStems);
+        const resolved = await buildResolved(stems, usableRows, liveStems);
+        // Still nothing for the whole compound (offline, or the splitter kept
+        // it whole): show its characters.
+        if (lacksDefinition(resolved) && stems.length === 1 && stems[0] === normalizedSurface) {
+            const byCharacters = await resolveByCharacters();
+            if (!lacksDefinition(byCharacters)) return byCharacters;
+        }
+        return resolved;
     };
 
     let resolvedStem = null;

@@ -342,3 +342,40 @@ describe('withNormalizedSurfaceIndex', () => {
         ]);
     });
 });
+
+describe('Chinese compounds with no dictionary entry', () => {
+    const zhLookup = (overrides = {}) => lookup({ surface: '看着', targetLanguage: 'zh', ...overrides });
+    const KAN = { id: 11, stem: '看', definition: 'to look at' };
+    const ZHE = { id: 12, stem: '着', definition: '(aspect particle)' };
+    const cachedParts = async (stems) => [KAN, ZHE].filter((row) => stems.includes(row.stem));
+
+    test('an indexed compound with no entry is looked up by its parts', async () => {
+        lookupBookIndexBySurface.mockResolvedValue([{ id: 10, stem: '看着', definition: null }]);
+        lookupCacheByStems.mockImplementation(cachedParts);
+        stemWord.mockResolvedValue(['看', '着']);
+
+        const result = await zhLookup();
+        expect(stemWord).toHaveBeenCalledTimes(1);
+        expect(result.stems).toEqual(['看', '着']);
+        expect(result.cachedResults).toEqual([KAN, ZHE]);
+    });
+
+    test('offline, it falls back to its characters', async () => {
+        lookupBookIndexBySurface.mockResolvedValue([{ id: 10, stem: '看着', definition: null }]);
+        lookupCacheByStems.mockImplementation(cachedParts);
+        stemWord.mockResolvedValue([]);
+
+        const result = await zhLookup();
+        expect(result.stems).toEqual(['看', '着']);
+        expect(result.cachedResults).toEqual([KAN, ZHE]);
+    });
+
+    test('a compound with an entry is shown as before', async () => {
+        const row = { id: 20, stem: '先生', definition: 'teacher; Mr.' };
+        lookupBookIndexBySurface.mockResolvedValue([row]);
+
+        const result = await zhLookup({ surface: '先生' });
+        expect(result.cachedResults).toEqual([row]);
+        expect(stemWord).not.toHaveBeenCalled();
+    });
+});

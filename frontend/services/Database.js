@@ -6426,11 +6426,13 @@ export const resetSavedWordFade = ({ ownerId, profileId, language = 'ko', words 
     db.transaction(
       tx => {
         tx.executeSql(
-          `UPDATE vocab SET fade_seen = 0, fade_seen_at = NULL
+          // Stamped with the lookup's time, so the word doesn't fade again on
+          // the very next page (SAVED_WORD_FADE_GAP_MS).
+          `UPDATE vocab SET fade_seen = 0, fade_seen_at = ?
            WHERE owner_id = ? AND profile_id = ? AND language = ? AND deleted_at IS NULL
-             AND COALESCE(level, '') != '${LEARNED_LEVEL}' AND COALESCE(fade_seen, 0) > 0
+             AND COALESCE(level, '') != '${LEARNED_LEVEL}'
              AND word IN (${list.map(() => '?').join(', ')})`,
-          [resolveOwnerId(ownerId), resolveProfileId(profileId, normalizedLanguage), normalizedLanguage, ...list],
+          [new Date().toISOString(), resolveOwnerId(ownerId), resolveProfileId(profileId, normalizedLanguage), normalizedLanguage, ...list],
           (_, result) => { changed = result.rowsAffected || 0; }
         );
       },
@@ -7026,6 +7028,16 @@ export const lookupBookLevelSurfaces = (
            AND bi.owner_id = ?
            AND bi.profile_id = ?
            AND bi.book_uri = ?
+           -- Only words the dictionary can explain: a word with no entry (a
+           -- name, a jieba compound like 看着, a stem KRDICT does not
+           -- know) would be underlined as hardest and open an empty
+           -- panel. Any interface language counts; the tap looks it up live.
+           AND EXISTS (
+             SELECT 1 FROM dictionary_cache d2
+             WHERE d2.language = dc.language
+               AND d2.stem = dc.stem
+               AND (TRIM(COALESCE(d2.definition, '')) != '' OR TRIM(COALESCE(d2.gloss, '')) != '')
+           )
          ORDER BY LENGTH(bi.surface) DESC, bi.surface ASC`,
         [scope.language, numericRank, scopedOwnerId, scopedProfileId, bookUri],
         (_, result) => {

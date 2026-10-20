@@ -144,6 +144,7 @@ const NativeEpubReaderView = forwardRef(({
     onSelectionCleared,
     onFocusSentenceChange,
     onExposure,
+    onSavedTermsShown,
     style,
 }, ref) => {
     const { t } = useTranslation();
@@ -237,6 +238,10 @@ const NativeEpubReaderView = forwardRef(({
         onExposure?.(payloadOf(event));
     };
 
+    const handleSavedTermsShown = (event) => {
+        onSavedTermsShown?.(payloadOf(event));
+    };
+
     return (
         <NativeView
             ref={ref}
@@ -274,6 +279,7 @@ const NativeEpubReaderView = forwardRef(({
             onSelectionCleared={handleSelectionCleared}
             onFocusSentenceChange={handleFocusSentenceChange}
             onExposure={handleExposure}
+            onSavedTermsShown={handleSavedTermsShown}
         />
     );
 });

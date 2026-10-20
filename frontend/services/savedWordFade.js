@@ -1,15 +1,21 @@
-// Saved-word fading: each time the reader passes a saved word without looking
-// it up, its highlight fades a step; after SAVED_WORD_FADE_STEPS passes it is
-// gone and the word moves to the Learned list (Database.js
-// recordSavedWordSightings). Looking it up again brings it back in full.
+// Saved-word fading: each time a page with a saved word settles on screen, its
+// highlight fades a step (the box visibly loses pixels); after
+// SAVED_WORD_FADE_STEPS such pages it is gone and the word moves to the
+// Learned list (Database.js recordSavedWordSightings). Looking it up again
+// brings it back in full.
 // Shared by the book reader and the song reader.
 
 // The vocab level a word gets once it has faded out (cloud status 'learned').
 export const LEARNED_LEVEL = 'learned';
-// Passes without a lookup that fade a saved word out completely.
+// Pages without a lookup that fade a saved word out completely.
 export const SAVED_WORD_FADE_STEPS = 6;
-// Passes closer together than this count once (paging back and forth).
-export const SAVED_WORD_FADE_GAP_MS = 2 * 60 * 60 * 1000;
+// Sightings closer together than this count once: a flick through pages, or
+// the page right after looking the word up. (Paging back to a page already
+// counted this session is skipped by the reader itself.)
+export const SAVED_WORD_FADE_GAP_MS = 30 * 1000;
+// How long the last step's pixels take to leave before a learned word's box
+// is removed (the native SAVED_FADE_MS, plus a frame or two).
+export const SAVED_WORD_LAST_FADE_MS = 1000;
 
 /** Highlight strength for a word passed `seen` times since its last lookup. */
 export const fadeStrength = (seen, steps = SAVED_WORD_FADE_STEPS) => {
@@ -36,6 +42,25 @@ export const highlightStrengthsFor = (terms, surfaceToWord, fades) => {
         if (seen > 0) out[term] = fadeStrength(seen);
     });
     return out;
+};
+
+/**
+ * unseenShownTerms — the saved surfaces shown in a page (or focus span, or
+ * scrolled paragraph) that haven't been counted for that unit yet, recording
+ * them in `counted` (a Set the reader keeps for the session), so paging back
+ * to a page doesn't fade its words again.
+ */
+export const unseenShownTerms = (counted, scope, unitKey, terms) => {
+    if (!(counted instanceof Set) || !Array.isArray(terms)) return [];
+    const fresh = [];
+    terms.forEach((term) => {
+        if (typeof term !== 'string' || !term) return;
+        const key = `${scope}|${unitKey}|${term}`;
+        if (counted.has(key)) return;
+        counted.add(key);
+        fresh.push(term);
+    });
+    return fresh;
 };
 
 /** The saved words behind a list of surfaces, without duplicates. */
