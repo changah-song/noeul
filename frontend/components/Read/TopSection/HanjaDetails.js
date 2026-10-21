@@ -5,6 +5,7 @@ import { useAppContext } from '../../../contexts/AppContext';
 import { useTranslation } from '../../../hooks/useTranslation';
 import { useLocalOwner } from '../../../contexts/LocalOwnerContext';
 import { fetchHanjaRelated } from '../../../services/api/hanjaRelated';
+import { englishFallbackLabel } from '../../../i18n/contentStrings';
 import { addRelatedKnownWord, getRelatedKnownWords, removeRelatedKnownWord } from '../../../services/Database';
 import {
     supabase,
@@ -286,6 +287,12 @@ const HanjaDetails = ({
         return null;
     }
 
+    // Meanings that couldn't be translated into the interface language are
+    // shown in English; say so (see services/api/hanjaRelated.js).
+    const englishFallbackReason = Object.values(hanjaLookupByCharacter)
+        .map((lookup) => lookup?.englishFallback)
+        .find(Boolean);
+
     return (
         <View
             style={styles.section}
@@ -305,6 +312,12 @@ const HanjaDetails = ({
                     </View>
                 ) : null}
             </View>
+
+            {englishFallbackReason ? (
+                <Text style={[styles.englishFallbackNote, { color: palette.muted }]}>
+                    {englishFallbackLabel(interfaceLanguage, englishFallbackReason)}
+                </Text>
+            ) : null}
 
             {/* Horizontal carousel — only render once we have a measured width */}
             {containerWidth > 0 ? (
@@ -495,6 +508,11 @@ const HanjaDetails = ({
 };
 
 const createStyles = (colors) => StyleSheet.create({
+    englishFallbackNote: {
+        fontSize: 12,
+        lineHeight: 16,
+        marginBottom: 8,
+    },
     section: {
         marginTop: 16,
         gap: 10,
