@@ -2,6 +2,9 @@ import * as SQLite from './legacySqlite';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Asset } from 'expo-asset';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { normalizeInterfaceLanguageCode } from '../constants/languages';
+import { localizedEtymologyType } from '../i18n/contentStrings';
+import { translateContentTexts } from './contentTranslation';
 
 const ZH_CHARACTER_DB_NAME = 'zh_characters.db';
 const ZH_CHARACTER_DB_ASSET = require('../assets/data/zh_characters.db');
@@ -162,7 +165,66 @@ const normalizeCharacterRow = (row = {}, fallbackCharacter = '') => ({
   missingEtymology: false,
 });
 
-export const fetchChineseWordBreakdown = async (word) => {
+// zh_characters.db is English-only. For other interface languages the
+// definition, hint, phonetic-component definition and radical names are
+// machine-translated through the backend (cached on device and server); the
+// formation type comes from i18n/contentStrings.js and Korean radical names
+// from the db's korean_name. Strings that can't be translated stay English
+// and the row carries `englishFallback` ('offline' | 'unavailable').
+export const localizeChineseCharacterRows = async (rows, interfaceLanguage) => {
+  const language = normalizeInterfaceLanguageCode(interfaceLanguage);
+  if (language === 'en' || !Array.isArray(rows) || rows.length === 0) {
+    return rows;
+  }
+  const present = rows.filter((row) => row && !row.missingEtymology);
+  const collect = (field) => present.map((row) => row[field]).filter(Boolean);
+  const useKoreanRadicalNames = language === 'ko';
+  const [definitions, hints, radicals] = await Promise.all([
+    translateContentTexts(
+      [...collect('definition'), ...collect('phonetic_definition')],
+      language,
+      { kind: 'zh_character_definition' }
+    ),
+    translateContentTexts(collect('hint'), language, { kind: 'zh_character_hint' }),
+    useKoreanRadicalNames
+      ? Promise.resolve({ translations: new Map(), fallback: null })
+      : translateContentTexts(
+        [...collect('semantic_radical_english_name'), ...collect('primary_radical_english_name')],
+        language,
+        { kind: 'radical_name' }
+      ),
+  ]);
+  const fallbackReason = [definitions, hints, radicals].some((result) => result.fallback === 'offline')
+    ? 'offline'
+    : 'unavailable';
+
+  return rows.map((row) => {
+    if (!row || row.missingEtymology) return row;
+    let usedEnglish = false;
+    const pick = (value, table) => {
+      if (!value) return value;
+      const translated = table.translations.get(String(value).trim());
+      if (translated) return translated;
+      usedEnglish = true;
+      return value;
+    };
+    const radicalName = (englishName, koreanName) => (
+      useKoreanRadicalNames ? (koreanName || englishName) : pick(englishName, radicals)
+    );
+    return {
+      ...row,
+      definition: pick(row.definition, definitions),
+      phonetic_definition: pick(row.phonetic_definition, definitions),
+      hint: pick(row.hint, hints),
+      semantic_radical_english_name: radicalName(row.semantic_radical_english_name, row.semantic_radical_korean_name),
+      primary_radical_english_name: radicalName(row.primary_radical_english_name, row.primary_radical_korean_name),
+      etymology_type: localizedEtymologyType(row.etymology_type, language),
+      englishFallback: usedEnglish ? fallbackReason : null,
+    };
+  });
+};
+
+export const fetchChineseWordBreakdown = async (word, options = {}) => {
   const characters = extractChineseCharacters(word);
   if (characters.length === 0) {
     return [];
@@ -210,12 +272,15 @@ export const fetchChineseWordBreakdown = async (word) => {
     characters
   );
 
-  return characters.map((character) => {
+  const breakdown = characters.map((character) => {
     const row = rows.find(item => item.character === character);
     return row
       ? normalizeCharacterRow(row, character)
       : { character, missingEtymology: true };
   });
+  return options.interfaceLanguage
+    ? localizeChineseCharacterRows(breakdown, options.interfaceLanguage)
+    : breakdown;
 };
 
 export const fetchRelatedPhoneticChinese = async (phoneticComponent, options = {}) => {

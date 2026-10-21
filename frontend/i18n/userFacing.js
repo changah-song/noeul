@@ -187,12 +187,3 @@ export const localizeBookLevelLabel = (value, t) => {
   const text = String(value ?? '').trim();
   return KOREAN_GRADE_KEYS[text] ? t(KOREAN_GRADE_KEYS[text]) : localizeStoredPlaceholder(text, t);
 };
-
-// Reading-level options (constants/proficiencyLevels.js): Korean levels carry
-// a labelKey; HSK and CEFR names are the same in every language.
-export const getProficiencyLevelLabel = (option, t) => {
-  if (!option) {
-    return '';
-  }
-  return option.labelKey ? t(option.labelKey) : option.label;
-};

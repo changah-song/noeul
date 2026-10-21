@@ -197,7 +197,9 @@ MAX_REQUEST_BODY_BYTES = 3 * 1024 * 1024
 
 
 async def _send_413(send, limit: int) -> None:
-    body = json.dumps({"detail": f"Request body exceeds {limit} bytes"}).encode("utf-8")
+    body = json.dumps(
+        {"detail": f"Request body exceeds {limit} bytes", "code": "request_too_large"}
+    ).encode("utf-8")
     await send(
         {
             "type": "http.response.start",

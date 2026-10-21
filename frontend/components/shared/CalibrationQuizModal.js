@@ -13,7 +13,6 @@ import { Feather } from '@expo/vector-icons';
 import { useAppContext } from '../../contexts/AppContext';
 import { useLocalOwner } from '../../contexts/LocalOwnerContext';
 import { useTranslation } from '../../hooks/useTranslation';
-import { getProficiencyLevelLabel } from '../../i18n/userFacing';
 import { fontFamilies, radii, spacing, useTheme } from '../../theme';
 import {
     nearestRankForTheta,
@@ -21,6 +20,7 @@ import {
 } from '../../services/calibrationQuiz';
 import { updateThetaFromOutcome } from '../../services/Database';
 import { getProficiencyLevelForLanguage } from '../../constants/proficiencyLevels';
+import { localizedLevelLabel } from '../../i18n/contentStrings';
 
 /**
  * CalibrationQuizModal — the cold-start "check the words you know" flow.
@@ -43,7 +43,7 @@ const CalibrationQuizModal = ({ visible, onClose }) => {
     const { activeOwnerId } = useLocalOwner();
     const theme = useTheme();
     const styles = useMemo(() => createStyles(theme.colors), [theme.colors]);
-    const { t } = useTranslation();
+    const { t, language } = useTranslation();
 
     const [words, setWords] = useState([]);
     const [index, setIndex] = useState(0);
@@ -167,7 +167,12 @@ const CalibrationQuizModal = ({ visible, onClose }) => {
                                 <>
                                     <Text style={styles.eyebrow}>{t('calibration.resultEyebrow')}</Text>
                                     <Text style={styles.resultLevel}>
-                                        {getProficiencyLevelLabel(measuredOption ?? currentOption, t)}
+                                        {localizedLevelLabel(
+                                            targetLanguage,
+                                            measuredOption?.rank ?? currentOption?.rank,
+                                            language,
+                                            measuredOption?.label ?? currentOption?.label ?? ''
+                                        )}
                                     </Text>
                                     <Text style={styles.helper}>{t('calibration.resultNote')}</Text>
                                     <TouchableOpacity

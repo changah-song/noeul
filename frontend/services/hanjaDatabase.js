@@ -12,8 +12,12 @@ const HANJA_DB_VERSION_KEY = '@ff/hanja-db-version';
 const SQLITE_DIR = `${FileSystem.documentDirectory}SQLite`;
 const HANJA_DB_PATH = `${SQLITE_DIR}/${HANJA_DB_NAME}`;
 const DEFAULT_RELATED_WORD_LIMIT = 8;
-// Interface languages with their own hun_* / definition_* columns. Others
-// (ja, pt) read the English columns until hanja.db gains hun_ja / hun_pt.
+// Interface languages with their own hun_* / definition_* columns. A NULL
+// value in those columns (hun_zh entirely, plus broken values cleared by
+// backend/scripts/clean_hanja_translations.py) and every other language
+// (ja, pt, zh-Hant, ko) come back with an empty *_display, and
+// services/api/hanjaRelated.js machine-translates the English through the
+// backend (or shows the English, labelled, when offline).
 const MULTILINGUAL_HANJA_LANGUAGES = new Set(['fr', 'es', 'zh', 'ar', 'mn', 'vi', 'th', 'id', 'ru']);
 
 let hanjaDb = null;
@@ -21,29 +25,30 @@ let initializationPromise = null;
 
 const normalizeString = (value) => (value == null ? '' : String(value).trim());
 
-const getHanjaDisplayLanguage = (interfaceLanguage = 'en') => {
+// 'en', a language with its own columns, or null (no column: translate).
+// Traditional Chinese is translated rather than shown in the Simplified column.
+export const getHanjaDisplayLanguage = (interfaceLanguage = 'en') => {
   const normalized = normalizeInterfaceLanguageCode(interfaceLanguage);
-  // The hanja DB has per-language columns keyed by short code only;
-  // Traditional Chinese reads the zh (Simplified) columns.
-  const language = normalized === 'zh-Hant' ? 'zh' : normalized;
-  return MULTILINGUAL_HANJA_LANGUAGES.has(language) ? language : 'en';
+  if (normalized === 'en') return 'en';
+  return MULTILINGUAL_HANJA_LANGUAGES.has(normalized) ? normalized : null;
 };
 
 const getHunColumn = (interfaceLanguage = 'en') => {
   const language = getHanjaDisplayLanguage(interfaceLanguage);
-  return language === 'en' ? 'hun_english' : `hun_${language}`;
+  return language && language !== 'en' ? `hun_${language}` : 'hun_english';
 };
 
 const getDefinitionColumn = (interfaceLanguage = 'en') => {
   const language = getHanjaDisplayLanguage(interfaceLanguage);
-  return language === 'en' ? 'definition_english' : `definition_${language}`;
+  return language && language !== 'en' ? `definition_${language}` : 'definition_english';
 };
 
-const getDisplayExpression = (column, englishColumn, alias, interfaceLanguage = 'en') => (
-  getHanjaDisplayLanguage(interfaceLanguage) === 'en'
-    ? `${englishColumn} AS ${alias}`
-    : `NULLIF(${column}, '') AS ${alias}`
-);
+const getDisplayExpression = (column, englishColumn, alias, interfaceLanguage = 'en') => {
+  const language = getHanjaDisplayLanguage(interfaceLanguage);
+  if (language === 'en') return `${englishColumn} AS ${alias}`;
+  if (!language) return `NULL AS ${alias}`;
+  return `NULLIF(${column}, '') AS ${alias}`;
+};
 
 const normalizeLimit = (limit) => {
   if (limit === 'all' || limit === null) {
