@@ -25,11 +25,16 @@ import { getRuntimeInterfaceLanguage, getRuntimeTargetLanguage } from './interfa
 import { getActiveOwnerId } from './localOwnerCoordinator';
 import { getRuntimeActiveProfileId } from './profileScope';
 import { translate } from '../i18n/translations';
+import { getUserFacingErrorMessage } from '../i18n/userFacing';
 
 let subscriptions = [];
 let isInitialized = false;
 
 const tRuntime = (key, params = {}) => translate(getRuntimeInterfaceLanguage(), key, params);
+// Raw service/network errors are English; show a translated message instead.
+const userFacingError = (error, fallbackKey) => (
+    getUserFacingErrorMessage(error, tRuntime, fallbackKey, getRuntimeInterfaceLanguage())
+);
 
 const HANJA_CHARACTER_PATTERN = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/u;
 const HANGUL_PATTERN = /[\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]/u;
@@ -311,7 +316,7 @@ const getCachedOverlayLookup = ({ selectedText, selectedLineText }) => {
     const cacheKey = lookupCacheKey({ selectedText, selectedLineText });
 
     if (!cleanValue(selectedText)) {
-        return Promise.reject(new Error('No text selected.'));
+        return Promise.reject(new Error(tRuntime('lookup.noTextSelected')));
     }
 
     const cachedLookup = overlayLookupCache.get(cacheKey);
@@ -335,7 +340,7 @@ const getCachedOverlayLookupEnrichment = ({ selectedText, selectedLineText }) =>
     const cacheKey = lookupCacheKey({ selectedText, selectedLineText });
 
     if (!cleanValue(selectedText)) {
-        return Promise.reject(new Error('No text selected.'));
+        return Promise.reject(new Error(tRuntime('lookup.noTextSelected')));
     }
 
     const cachedLookup = overlayLookupEnrichmentCache.get(cacheKey);
@@ -561,7 +566,7 @@ export const initializeOverlayLookupBridge = () => {
                 selectedLineText,
             });
         } catch (error) {
-            await rejectOverlayLookup(requestId, error?.message || tRuntime('lookup.lookupFailed'));
+            await rejectOverlayLookup(requestId, userFacingError(error, 'lookup.lookupFailed'));
         }
     });
 
@@ -617,7 +622,7 @@ export const initializeOverlayLookupBridge = () => {
             console.warn(`[overlayLookup] explanation failed for "${word}":`, error?.message ?? error);
             await updateOverlayLookup(requestId, {
                 requestId,
-                explanation: error?.message || tRuntime('lookup.explainFailed'),
+                explanation: userFacingError(error, 'lookup.explainFailed'),
             });
         }
     });
@@ -647,7 +652,7 @@ export const initializeOverlayLookupBridge = () => {
                 ...result,
             });
         } catch (error) {
-            await rejectOverlaySave(requestId, error?.message || tRuntime('lookup.saveFailed'));
+            await rejectOverlaySave(requestId, userFacingError(error, 'lookup.saveFailed'));
         }
     });
 
@@ -669,7 +674,7 @@ export const initializeOverlayLookupBridge = () => {
                 result,
             }));
         } catch (error) {
-            await rejectOverlayHanja(requestId, error?.message || tRuntime('hanja.lookupFailed'));
+            await rejectOverlayHanja(requestId, userFacingError(error, 'hanja.lookupFailed'));
         }
     });
 

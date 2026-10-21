@@ -139,10 +139,10 @@ export const MOCK_WRITING_ASSESSMENT = {
 };
 
 export const ANNOTATION_LEGEND = [
-  { type: 'GRAMMAR', label: 'Grammar', color: colors.inkSlate },
-  { type: 'DICTION', label: 'Word choice', color: colors.textMuted },
-  { type: 'NATIVE_INSERT', label: 'Translation', color: colors.textTertiary },
-  { type: 'UNNATURAL', label: 'Unnatural', color: colors.textSubtle },
+  { type: 'GRAMMAR', labelKey: 'write.annotation.grammar', color: colors.inkSlate },
+  { type: 'DICTION', labelKey: 'write.annotation.wordChoice', color: colors.textMuted },
+  { type: 'NATIVE_INSERT', labelKey: 'write.annotation.translation', color: colors.textTertiary },
+  { type: 'UNNATURAL', labelKey: 'write.annotation.unnatural', color: colors.textSubtle },
 ];
 
 export const ANNOTATION_COLORS = ANNOTATION_LEGEND.reduce((acc, item) => {
@@ -150,11 +150,43 @@ export const ANNOTATION_COLORS = ANNOTATION_LEGEND.reduce((acc, item) => {
   return acc;
 }, {});
 
+// Stored with the entry in English; shown via write.sample.prompt.
+export const MOCK_WRITING_PROMPT = 'What does true rest mean in modern life?';
+
+// The sample's English feedback above is the source text of the
+// write.sample.* keys; this swaps in the interface-language versions.
+export const localizeMockWritingEntry = (entry, t) => {
+  const assessment = entry?.assessment ?? MOCK_WRITING_ASSESSMENT;
+  const summary = assessment.summary ?? {};
+  return {
+    ...entry,
+    assessment: {
+      ...assessment,
+      annotations: (assessment.annotations ?? []).map((annotation) => ({
+        ...annotation,
+        explanation: t(`write.sample.annotation${annotation.id}.explanation`),
+        suggestion_notes: (annotation.suggestion_notes ?? []).map((_, index) => (
+          t(`write.sample.annotation${annotation.id}.note${index + 1}`)
+        )),
+      })),
+      summary: {
+        ...summary,
+        patterns: (summary.patterns ?? []).map((_, index) => t(`write.sample.pattern${index + 1}`)),
+        strengths: (summary.strengths ?? []).map((_, index) => t(`write.sample.strength${index + 1}`)),
+        vocab_items: (summary.vocab_items ?? []).map((item, index) => ({
+          ...item,
+          meaning: t(`write.sample.vocab${index + 1}`),
+        })),
+      },
+    },
+  };
+};
+
 export const createMockWritingEntry = () => ({
   id: MOCK_WRITING_ENTRY_ID,
   title: '진정한 휴식의 의미',
   body: MOCK_WRITING_ENTRY_BODY,
-  prompt: 'What does true rest mean in modern life?',
+  prompt: MOCK_WRITING_PROMPT,
   date: '2026-04-20T09:00:00.000+09:00',
   createdAt: '2026-04-20T09:00:00.000+09:00',
   updatedAt: '2026-04-20T09:00:00.000+09:00',

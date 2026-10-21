@@ -1,6 +1,14 @@
+import { formatNumber } from './interfaceLanguage';
+
 export const MAX_SONGS_STORAGE_BYTES = 4 * 1024 * 1024;
 
+// Developer-facing (error.message, logs).
 export const formatStorageSize = (bytes) => `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+
+// User-facing: localized number and unit.
+const formatLocalizedStorageSize = (bytes, t) => t('common.sizeMegabytes', {
+  value: formatNumber(bytes / (1024 * 1024), { minimumFractionDigits: 1, maximumFractionDigits: 1 }),
+});
 
 const createSongStorageLimitError = (byteLength) => {
   const error = new Error(
@@ -23,8 +31,8 @@ export const getSongStorageLimitMessage = (error, t) => {
     return t('home.songStorageLimitFallback');
   }
   return t('home.songStorageLimitUsage', {
-    size: formatStorageSize(byteLength),
-    limit: formatStorageSize(Number(error?.limitBytes) || MAX_SONGS_STORAGE_BYTES),
+    size: formatLocalizedStorageSize(byteLength, t),
+    limit: formatLocalizedStorageSize(Number(error?.limitBytes) || MAX_SONGS_STORAGE_BYTES, t),
   });
 };
 

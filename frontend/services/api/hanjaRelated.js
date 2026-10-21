@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 
 import { lookupHanjaCharacter } from '../hanjaDatabase';
+import { isEnglishInterface, translateContentTexts } from '../contentTranslation';
 
 const cleanValue = (value) => (typeof value === 'string' ? value.trim() : '');
 
@@ -33,8 +34,63 @@ const mapRelatedWordRow = (word) => ({
     hanja: cleanValue(word?.hanja),
     korean: cleanValue(word?.hangul),
     meaning: cleanValue(word?.definition_display || word?.definition_english || word?.definition_korean),
+    definition_english: cleanValue(word?.definition_english),
+    definition_display: cleanValue(word?.definition_display),
     word_grade: cleanValue(word?.word_grade),
 });
+
+// Fill meanings hanja.db has no value for in the interface language (no
+// column for ja/pt/zh-Hant/ko, cleared placeholder values) by machine-
+// translating the English. What can't be translated stays English and is
+// flagged: rows get meaning_language 'en', the result gets englishFallback
+// ('offline' | 'unavailable') so the UI can say the text is English.
+export const localizeHanjaResult = async (result, interfaceLanguage) => {
+    const { firstTableData, similarWordsTableData } = result;
+    if (isEnglishInterface(interfaceLanguage)) {
+        return { ...result, englishFallback: null };
+    }
+    const meaningTexts = firstTableData
+        .filter((row) => !row.hun_display && row.hun_english)
+        .map((row) => row.hun_english);
+    const definitionTexts = similarWordsTableData
+        .filter((row) => !row.definition_display && row.definition_english)
+        .map((row) => row.definition_english);
+    if (meaningTexts.length === 0 && definitionTexts.length === 0) {
+        return { ...result, englishFallback: null };
+    }
+
+    const [meanings, definitions] = await Promise.all([
+        translateContentTexts(meaningTexts, interfaceLanguage, { kind: 'hanja_meaning' }),
+        translateContentTexts(definitionTexts, interfaceLanguage, { kind: 'hanja_word_definition' }),
+    ]);
+    let usedEnglish = false;
+    const localizedMeanings = firstTableData.map((row) => {
+        if (row.hun_display || !row.hun_english) return row;
+        const translated = meanings.translations.get(row.hun_english);
+        if (translated) {
+            return { ...row, meaning: translated, hun_display: translated, meaning_language: 'machine' };
+        }
+        usedEnglish = true;
+        return { ...row, meaning: row.hun_english, hun_display: row.hun_english, meaning_language: 'en' };
+    });
+    const localizedWords = similarWordsTableData.map((row) => {
+        if (row.definition_display || !row.definition_english) return row;
+        const translated = definitions.translations.get(row.definition_english);
+        if (translated) {
+            return { ...row, meaning: translated, definition_display: translated, meaning_language: 'machine' };
+        }
+        usedEnglish = true;
+        return { ...row, meaning: row.definition_english, meaning_language: 'en' };
+    });
+    const englishFallback = usedEnglish
+        ? (meanings.fallback === 'offline' || definitions.fallback === 'offline' ? 'offline' : 'unavailable')
+        : null;
+    return {
+        firstTableData: localizedMeanings,
+        similarWordsTableData: localizedWords,
+        englishFallback,
+    };
+};
 
 const getUniqueRelatedWords = (meanings) => {
     const seen = new Set();
@@ -76,13 +132,10 @@ export const fetchHanjaRelated = async (query, options = {}) => {
 
     const firstTableData = meanings
         .map(mapMeaningRow)
-        .filter(row => row.hanja || row.reading || row.meaning);
+        .filter(row => row.hanja || row.reading || row.meaning || row.hun_english);
     const similarWordsTableData = getUniqueRelatedWords(meanings);
 
-    return {
-        firstTableData,
-        similarWordsTableData,
-    };
+    return localizeHanjaResult({ firstTableData, similarWordsTableData }, options.interfaceLanguage);
 };
 
 const hanjaRelated = ({ query, interfaceLanguage = 'en' }) => {

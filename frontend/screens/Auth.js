@@ -17,6 +17,7 @@ import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import { useTranslation } from '../hooks/useTranslation';
+import { getAuthErrorMessage } from '../i18n/userFacing';
 import { supabase } from '../services/supabase';
 import { PRIVACY_POLICY_URL, TERMS_OF_SERVICE_URL } from '../constants/links';
 import { fontFamilies, useTheme } from '../theme';
@@ -71,7 +72,7 @@ const Auth = ({
   onAuthenticated,
   onClose,
 }) => {
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   const { colors } = useTheme();
   const safeInsets = useContext(SafeAreaInsetsContext);
   const insetTop = safeInsets?.top ?? 0;
@@ -136,7 +137,7 @@ const Auth = ({
       }
       onAuthenticated?.();
     } catch (error) {
-      Alert.alert(t('auth.failedTitle'), error.message);
+      Alert.alert(t('auth.failedTitle'), getAuthErrorMessage(error, t, language));
     } finally {
       setLoading(false);
     }
@@ -204,7 +205,7 @@ const Auth = ({
         return;
       }
 
-      Alert.alert(t('auth.googleFailedTitle'), error.message);
+      Alert.alert(t('auth.googleFailedTitle'), getAuthErrorMessage(error, t, language));
     } finally {
       setLoading(false);
     }
@@ -246,7 +247,7 @@ const Auth = ({
         return;
       }
 
-      Alert.alert(t('auth.appleFailedTitle'), error.message);
+      Alert.alert(t('auth.appleFailedTitle'), getAuthErrorMessage(error, t, language));
     } finally {
       setLoading(false);
     }
@@ -329,7 +330,7 @@ const Auth = ({
               autoComplete="email"
               autoCorrect={false}
               keyboardType="email-address"
-              placeholder="you@example.com"
+              placeholder={t('auth.emailExample')}
               placeholderTextColor={colors.textSubtle}
               style={[styles.input, focusedField === 'email' && styles.inputFocused]}
               value={email}

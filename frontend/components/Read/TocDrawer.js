@@ -2,6 +2,8 @@ import React, { useMemo } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from '../../hooks/useTranslation';
+import { localizeGeneratedSectionLabel } from '../../i18n/userFacing';
+import { formatNumber } from '../../services/interfaceLanguage';
 import { colors as defaultColors, elevation, fontFamilies, layout, useTheme } from '../../theme';
 
 const stripHref = (href) => {
@@ -46,7 +48,7 @@ const chapterNumberForItem = (item = {}) => {
     return chapterNumber;
 };
 
-const fractionLabelForItem = (item = {}, totalSpineItems = 0) => {
+const fractionLabelForItem = (item = {}, totalSpineItems = 0, t) => {
     const explicitLabel = String(item?.positionLabel || '').trim();
     if (/^\d+\s*\/\s*\d+$/.test(explicitLabel)) {
         return explicitLabel.replace(/\s+/g, '');
@@ -56,7 +58,8 @@ const fractionLabelForItem = (item = {}, totalSpineItems = 0) => {
         return `${item.spineIndex + 1}/${totalSpineItems}`;
     }
 
-    return explicitLabel;
+    // PDF sections carry generated "Page 3" / "Pages 3-5" labels.
+    return localizeGeneratedSectionLabel(explicitLabel, t);
 };
 
 const TocDrawer = ({
@@ -104,7 +107,7 @@ const TocDrawer = ({
         ? (
             totalSpineItems > 0
                 ? t('read.chapterOfTotal', { current: currentSpineIndex + 1, total: totalSpineItems })
-                : `${t('read.chapter')} ${currentSpineIndex + 1}`
+                : t('read.chapterNumber', { number: formatNumber(currentSpineIndex + 1) })
         )
         : t('read.chapter');
 
@@ -172,7 +175,7 @@ const TocDrawer = ({
                                 />
                             </View>
                             <Text style={[styles.bookProgressText, { color: palette.progressText }]}>
-                                {bookProgressPercent}%
+                                {t('common.percent', { value: formatNumber(bookProgressPercent) })}
                             </Text>
                         </View>
                     </View>
@@ -187,10 +190,10 @@ const TocDrawer = ({
                                 : Boolean(activeHref && stripHref(item?.href) === activeHref);
                             const normalizedDepth = Math.min(1, Math.max(0, (item?.depth ?? 0) - minDepth));
                             const isDisabled = item?.disabled || !Number.isInteger(item?.spineIndex);
-                            const title = String(item?.title || item?.label || t('read.untitledSection')).trim() || t('read.untitledSection');
+                            const title = localizeGeneratedSectionLabel(item?.title || item?.label, t) || t('read.untitledSection');
                             const positionLabel = isActive
                                 ? t('read.youAreHere')
-                                : fractionLabelForItem(item, totalSpineItems);
+                                : fractionLabelForItem(item, totalSpineItems, t);
                             const chapterNumber = chapterNumberForItem(item);
                             const isRead = (
                                 !isActive

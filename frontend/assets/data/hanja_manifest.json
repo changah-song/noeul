@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-09T13:05:29Z",
+  "generated_at": "2026-10-21T06:32:38Z",
   "inputs": {
     "characters": "scripts/hanja_translated_multilingual.json",
     "words": "scripts/hanja_words_multilingual.json"
@@ -14,5 +14,25 @@
     "words_with_hanja": 22451,
     "skipped_words_missing_id_or_hangul": 0
   },
-  "db_file_size_bytes": 15187968
+  "db_file_size_bytes": 14888960,
+  "cleaned_by": "backend/scripts/clean_hanja_translations.py",
+  "cleared_values": {
+    "hanja_characters.hun_zh": 6183,
+    "hanja_characters.hun_es": 1,
+    "hanja_characters.hun_ar": 13,
+    "hanja_characters.hun_mn": 214,
+    "hanja_characters.hun_vi": 41,
+    "hanja_characters.hun_th": 172,
+    "hanja_characters.hun_id": 3,
+    "hanja_characters.hun_ru": 8,
+    "hanja_words.definition_fr": 38,
+    "hanja_words.definition_es": 17,
+    "hanja_words.definition_zh": 105,
+    "hanja_words.definition_ar": 129,
+    "hanja_words.definition_mn": 552,
+    "hanja_words.definition_vi": 285,
+    "hanja_words.definition_th": 957,
+    "hanja_words.definition_id": 46,
+    "hanja_words.definition_ru": 249
+  }
 }

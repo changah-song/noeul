@@ -6,6 +6,7 @@ import {
     fetchRelatedPhoneticChinese,
 } from '../../../services/chineseCharacterDatabase';
 import { useTranslation } from '../../../hooks/useTranslation';
+import { englishFallbackLabel } from '../../../i18n/contentStrings';
 import { fontFamilies, spacing, textStyles, useTheme } from '../../../theme';
 
 const parseJsonArray = (value) => {
@@ -62,7 +63,7 @@ const uniquePinyinValues = (rows = []) => {
 };
 
 const ChineseCharacterDetails = ({ word }) => {
-    const { t } = useTranslation();
+    const { t, language } = useTranslation();
     const { colors } = useTheme();
     const styles = useMemo(() => createStyles(colors), [colors]);
     const [breakdown, setBreakdown] = useState([]);
@@ -99,7 +100,9 @@ const ChineseCharacterDetails = ({ word }) => {
         }
 
         setIsLoading(true);
-        fetchChineseWordBreakdown(normalizedWord)
+        // Definitions/hints/radical names in the interface language (machine-
+        // translated; English, labelled, when that isn't available).
+        fetchChineseWordBreakdown(normalizedWord, { interfaceLanguage: language })
             .then((rows) => {
                 if (!isCancelled) {
                     setBreakdown(rows);
@@ -121,7 +124,7 @@ const ChineseCharacterDetails = ({ word }) => {
         return () => {
             isCancelled = true;
         };
-    }, [t, word]);
+    }, [language, t, word]);
 
     const activeCharacter = breakdown[activeIndex] ?? null;
     const pinyin = useMemo(
@@ -265,6 +268,11 @@ const ChineseCharacterDetails = ({ word }) => {
                 </Text>
             ) : (
                 <View style={styles.content}>
+                    {activeCharacter.englishFallback ? (
+                        <Text style={[styles.englishFallbackNote, { color: palette.mutedText }]}>
+                            {englishFallbackLabel(language, activeCharacter.englishFallback)}
+                        </Text>
+                    ) : null}
                     <View style={styles.glyphRow}>
                         <Text selectable style={[styles.largeGlyph, { color: palette.text }]}>
                             {activeCharacter.character}
@@ -391,6 +399,10 @@ const DetailRow = ({ label, value, palette, showComponentIcon = false }) => {
 };
 
 const createStyles = (colors) => StyleSheet.create({
+    englishFallbackNote: {
+        fontSize: 12,
+        lineHeight: 16,
+    },
     section: {
         borderTopWidth: StyleSheet.hairlineWidth,
         gap: 10,

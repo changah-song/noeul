@@ -22,6 +22,12 @@ import { createReaderChromeStyles } from '../components/Read/readerChromeStyles'
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
+import { formatNumber } from '../services/interfaceLanguage';
+import {
+    getUserFacingErrorMessage,
+    localizeGeneratedSectionLabel,
+    stripStoredPlaceholder,
+} from '../i18n/userFacing';
 import NativeEpubReaderView, {
     sendFocusNavCommand,
     sendExtendSelection,
@@ -174,13 +180,15 @@ const FOCUS_SPAN_MAX = 5;
 // (screen state + library patch + AsyncStorage write) is what made beam
 // navigation feel sluggish, so steps coalesce to the trailing event.
 const FOCUS_PAGE_CHANGE_DEBOUNCE_MS = 400;
+// Only the values are used here; the settings sheet labels its choices with
+// read.lineSpacing* keys (LINE_SPACING_CHOICES).
 const LINE_SPACING_STEPS = [
-    { value: 1.4, label: 'Compact' },
-    { value: 1.65, label: 'Regular' },
-    { value: 1.85, label: 'Open' },
-    { value: 2.05, label: 'Relaxed' },
-    { value: 2.3, label: 'Airy' },
-    { value: 2.6, label: 'Wide' },
+    { value: 1.4 },
+    { value: 1.65 },
+    { value: 1.85 },
+    { value: 2.05 },
+    { value: 2.3 },
+    { value: 2.6 },
 ];
 const BRIGHTNESS_MIN = 0.2;
 const BRIGHTNESS_MAX = 1;
@@ -1563,7 +1571,7 @@ const Read = ({
         : spineIndexForReaderPackage(nativeReaderPackage);
     const activeChapterTitle = useMemo(() => {
         const fallbackTitle = Number.isInteger(activeSpineIndex)
-            ? `${t('read.chapter')} ${activeSpineIndex + 1}`
+            ? t('read.chapterNumber', { number: formatNumber(activeSpineIndex + 1) })
             : t('read.defaultTitle');
 
         if (Number.isInteger(activeSpineIndex) && flattenedToc.length > 0) {
@@ -1580,16 +1588,16 @@ const Read = ({
             }, null);
             const tocTitle = titleForTocItem(tocItem);
             if (tocTitle) {
-                return tocTitle;
+                return localizeGeneratedSectionLabel(tocTitle, t);
             }
         }
 
-        return titleForSpineItem(nativeReaderPackage?.loadedSpineItem) || fallbackTitle;
+        return localizeGeneratedSectionLabel(titleForSpineItem(nativeReaderPackage?.loadedSpineItem), t) || fallbackTitle;
     }, [activeSpineIndex, flattenedToc, nativeReaderPackage?.loadedSpineItem, t]);
     const headerBookTitle = (
-        activeBook?.title
-        || nativeReaderPackage?.metadata?.title
-        || nativeReaderPackage?.bookManifest?.title
+        stripStoredPlaceholder(activeBook?.title)
+        || stripStoredPlaceholder(nativeReaderPackage?.metadata?.title)
+        || stripStoredPlaceholder(nativeReaderPackage?.bookManifest?.title)
         || t('read.defaultTitle')
     );
     // Memoized so a new object reference isn't serialized across the native
@@ -1612,10 +1620,10 @@ const Read = ({
     // and the book page show. (It used to show progress through the current
     // chapter, so a short first chapter read "100%" while Home said 50%.)
     const progressPercent = Math.round(bookProgress * 100);
-    const progressLabel = `${progressPercent}%`;
+    const progressLabel = t('common.percent', { value: formatNumber(progressPercent) });
     const progressFillWidth = `${progressPercent}%`;
     const chapterIndexLabel = Number.isInteger(activeSpineIndex)
-        ? `${t('read.chapter')} ${activeSpineIndex + 1}`
+        ? t('read.chapterNumber', { number: formatNumber(activeSpineIndex + 1) })
         : t('read.defaultTitle');
     // ─── Note-to-self panel ──────────────────────────────────────────────────
     // Reached by long-pressing the header bookmark icon. Saving keeps the book
@@ -2058,7 +2066,7 @@ const Read = ({
         const fallbackName = activeBook?.originalFilename
             || activeBook?.title
             || currentBook.split('/').pop()
-            || t('common.untitled');
+            || '';
         const packageLoader = isPublicDomainBookUri(currentBook)
             ? readPublicDomainTextPackage(currentBook, loadOptions)
             : isPdfBook(activeBook, currentBook)
@@ -2602,17 +2610,18 @@ const Read = ({
             console.error('[Read] Native reader load failed:', error);
             if (canKeepCurrentReader && nativeReaderPackageRef.current) {
                 setBookLoadState('ready');
-                setBookLoadError(error?.message || t('read.nativeChapterUnsupported'));
+                setBookLoadError(getUserFacingErrorMessage(error, t, 'read.nativeChapterUnsupported', interfaceLanguage));
                 setChapterTransitionDirection('none:0');
                 return;
             }
 
             setBookLoadState('error');
-            setBookLoadError(error?.message || t('read.nativeUnsupported'));
+            setBookLoadError(getUserFacingErrorMessage(error, t, 'read.nativeUnsupported', interfaceLanguage));
             setChapterTransitionDirection('none:0');
         }
     }, [
         currentBook,
+        interfaceLanguage,
         loadParsedChapterPackage,
         prefetchAdjacentChapters,
         startChapterPreprocessing,
@@ -3676,7 +3685,7 @@ const Read = ({
     // The foreground service behind the session: keeps the process alive
     // while the voice reads in the background, and shows a player with the
     // book's title on the notification shade and lock screen.
-    const listenSessionSubtitle = (typeof activeBook?.author === 'string' && activeBook.author.trim())
+    const listenSessionSubtitle = stripStoredPlaceholder(activeBook?.author)
         || activeChapterTitle
         || '';
     useEffect(() => {
@@ -3803,7 +3812,7 @@ const Read = ({
                         <Text style={styles.readerErrorBody}>{bookLoadError}</Text>
                         {typeof activeBookSizeMb === 'number' ? (
                             <Text style={styles.readerErrorMeta}>
-                                {t('common.fileSize', { size: activeBookSizeMb.toFixed(1) })}
+                                {t('common.fileSize', { size: formatNumber(activeBookSizeMb, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}
                             </Text>
                         ) : null}
                         <TouchableOpacity style={styles.retryButton} onPress={retryBookLoad}>

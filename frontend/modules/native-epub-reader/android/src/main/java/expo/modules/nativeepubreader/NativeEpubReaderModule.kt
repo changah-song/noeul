@@ -19,6 +19,7 @@ import android.widget.ScrollView
 import androidx.recyclerview.widget.RecyclerView
 import androidx.viewpager2.widget.ViewPager2
 import expo.modules.kotlin.AppContext
+import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.functions.Queues
 import expo.modules.kotlin.modules.Module
@@ -167,6 +168,7 @@ class NativeEpubReaderModule : Module() {
     Events("onListenControl")
 
     OnCreate {
+      appContext.reactContext?.let { ReaderText.ensureLoaded(it) }
       ListenSessionService.onControl = { action ->
         sendEvent("onListenControl", mapOf("action" to action))
       }
@@ -174,6 +176,18 @@ class NativeEpubReaderModule : Module() {
 
     OnDestroy {
       ListenSessionService.onControl = null
+    }
+
+    // Strings for native-drawn text (book-finished page, listen notification)
+    // in the in-app interface language; see i18n/nativeStrings.js. Persisted so
+    // the listen service keeps them without JS.
+    Function("setInterfaceStrings") { language: String, strings: Map<String, Any?> ->
+      val context = appContext.reactContext
+      val changed = ReaderText.setStrings(context, language, strings)
+      if (changed && context != null) {
+        ListenSessionService.refreshStrings(context)
+      }
+      changed
     }
 
     // Start or update the listen session's player (title, subtitle, playing).
@@ -196,7 +210,14 @@ class NativeEpubReaderModule : Module() {
 
     AsyncFunction("extractPdfDocument") { options: Map<String, Any?> ->
       val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
-      PdfDocumentExtractor(context).extract(options)
+      try {
+        PdfDocumentExtractor(context).extract(options)
+      } catch (error: Exception) {
+        // The import alert shows this message as is, and PdfRenderer's own
+        // messages (or ours below) are English and technical. The cause keeps
+        // the detail for logs.
+        throw CodedException("ERR_PDF_IMPORT", ReaderText.t("pdfImportFailed"), error)
+      }
     }
 
     AsyncFunction("renderPdfCover") { options: Map<String, Any?> ->
@@ -272,6 +293,12 @@ class NativeEpubReaderModule : Module() {
 
       Prop("themeTokens") { view: NativeEpubReaderView, tokens: Map<String, Any?> ->
         view.setThemeTokens(tokens)
+      }
+
+      // Same strings as setInterfaceStrings plus a "language" entry. As a prop
+      // it reaches the view with its first render, like themeTokens.
+      Prop("interfaceStrings") { view: NativeEpubReaderView, strings: Map<String, Any?> ->
+        view.setInterfaceStrings(strings)
       }
 
       Prop("renderMode") { view: NativeEpubReaderView, mode: String ->
@@ -1189,6 +1216,20 @@ class NativeEpubReaderView(
     return readerRenderMode == "continuous" || readerRenderMode == "focus"
   }
 
+  fun setInterfaceStrings(strings: Map<String, Any?>) {
+    val language = strings["language"] as? String
+    val changed = ReaderText.setStrings(context, language, strings - "language")
+    if (changed) {
+      ListenSessionService.refreshStrings(context)
+    }
+    // Only the book-finished page draws ReaderText inside the view, and its
+    // chapter fallback is baked in at pagination, so repaginate when it shows.
+    if (changed && readerEdgeStateEnabled && pages.isNotEmpty()) {
+      chapterTransitionDirection = "none"
+      repaginate(resetToFirstPage = false)
+    }
+  }
+
   fun setReaderEdgeStateEnabled(enabled: Boolean) {
     if (readerEdgeStateEnabled == enabled) {
       return
@@ -1553,7 +1594,7 @@ class NativeEpubReaderView(
       return null
     }
 
-    val chapterTitle = chapter.title.ifBlank { "Chapter ${chapter.spineIndex + 1}" }
+    val chapterTitle = chapter.title.ifBlank { ReaderText.chapterNumber(chapter.spineIndex + 1) }
     val bookTitle = bookManifest.stringValue("title")
       ?: bookManifest.stringValue("currentBookTitle")
       ?: ""

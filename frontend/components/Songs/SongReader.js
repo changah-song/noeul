@@ -35,6 +35,7 @@ import NativeEpubReaderView from '../../modules/native-epub-reader/src/NativeEpu
 import { useAppContext } from '../../contexts/AppContext';
 import { useLocalOwner } from '../../contexts/LocalOwnerContext';
 import { useTranslation } from '../../hooks/useTranslation';
+import { localizeStoredPlaceholder } from '../../i18n/userFacing';
 import useReaderLookup from '../../hooks/useReaderLookup';
 import useLevelUnderlineTerms from '../../hooks/useLevelUnderlineTerms';
 import useFocusNavigation from '../../hooks/useFocusNavigation';
@@ -661,7 +662,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
 
     const submitSongEdit = useCallback(() => {
         const title = editDraft.title.trim();
-        const artist = editDraft.artist.trim() || t('common.unknownArtist');
+        const artist = editDraft.artist.trim();
         const lyrics = editDraft.lyrics.trim();
 
         if (!title || !lyrics) {
@@ -682,7 +683,7 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         setIsMenuVisible(false);
         Alert.alert(
             t('song.deleteTitle'),
-            t('song.deleteBody', { title: song?.title || t('song.untitled') }),
+            t('song.deleteBody', { title: localizeStoredPlaceholder(song?.title, t) || t('song.untitled') }),
             [
                 { text: t('common.cancel'), style: 'cancel' },
                 {
@@ -784,10 +785,10 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                         ]}
                         numberOfLines={1}
                     >
-                        {song?.title || t('song.untitled')}
+                        {localizeStoredPlaceholder(song?.title, t) || t('song.untitled')}
                     </Text>
                     <Text style={styles.headerArtist} numberOfLines={1}>
-                        {song?.artist || t('common.unknownArtist')}
+                        {localizeStoredPlaceholder(song?.artist, t) || t('common.unknownArtist')}
                     </Text>
                 </View>
 

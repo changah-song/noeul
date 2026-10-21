@@ -12,6 +12,7 @@ import {
     useWindowDimensions,
 } from 'react-native';
 import { useTranslation } from '../../hooks/useTranslation';
+import { formatDate } from '../../services/interfaceLanguage';
 import { fontFamilies } from '../../theme';
 import CandidateCard from '../vocab/CandidateCard';
 import {
@@ -27,13 +28,7 @@ import {
 // A short saved date for the row's status column ("Oct 20").
 const formatSavedDate = (value, language) => {
     if (!value) return '';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return '';
-    try {
-        return date.toLocaleDateString(language ?? undefined, { month: 'short', day: 'numeric' });
-    } catch {
-        return '';
-    }
+    return formatDate(value, { month: 'short', day: 'numeric' }, language);
 };
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);

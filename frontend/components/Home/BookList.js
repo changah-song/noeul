@@ -1,5 +1,6 @@
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useTranslation } from '../../hooks/useTranslation';
+import { localizeStoredPlaceholder } from '../../i18n/userFacing';
 import { colors, fontFamilies, layout, radii, spacing, textStyles } from '../../theme';
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
@@ -32,19 +33,19 @@ const BookList = ({ books, onOpenBook }) => {
                             item.coverTone === 'dark' && styles.coverTitleDark,
                             item.coverTone === 'mid' && styles.coverTitleDark,
                         ]} numberOfLines={2}>
-                            {item.title || t('common.untitled')}
+                            {localizeStoredPlaceholder(item.title, t) || t('common.untitled')}
                         </Text>
                         <Text style={[
                             styles.coverAuthor,
                             item.coverTone === 'dark' && styles.coverAuthorDark,
                             item.coverTone === 'mid' && styles.coverAuthorDark,
                         ]} numberOfLines={1}>
-                            {item.author || item.creator || ''}
+                            {localizeStoredPlaceholder(item.author || item.creator, t)}
                         </Text>
                         <View style={styles.coverRule} />
                     </View>
                     <Text style={styles.title} numberOfLines={2}>
-                        {item.title || t('common.untitled')}
+                        {localizeStoredPlaceholder(item.title, t) || t('common.untitled')}
                     </Text>
                     <View style={styles.progressRail}>
                         <View style={styles.progressTrack} />

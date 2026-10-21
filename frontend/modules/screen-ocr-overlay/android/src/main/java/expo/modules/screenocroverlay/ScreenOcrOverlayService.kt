@@ -49,6 +49,7 @@ class ScreenOcrOverlayService : Service() {
 
   override fun onCreate() {
     super.onCreate()
+    OverlayText.ensureLoaded(this)
     activeInstance = this
     widgetController = FloatingWidgetController(
       context = this,
@@ -112,6 +113,8 @@ class ScreenOcrOverlayService : Service() {
   fun handleInterfaceLanguageChanged() {
     mainHandler.post {
       widgetController?.handleInterfaceLanguageChanged()
+      // Re-creating the channel renames it in the app's notification settings.
+      ensureNotificationChannel()
       if (isForeground) {
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.notify(NOTIFICATION_ID, buildNotification())

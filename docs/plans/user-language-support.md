@@ -110,6 +110,12 @@ here now, so the RTL work (1–2 weeks) moves up, ahead of new languages.
 ## What is not done (gaps)
 
 ### Content language
+*Status (2026-10-21, branch `loc/backend`): writing feedback, backend error
+messages (stable codes), catalog blurbs, hanja meanings (placeholder `hun_zh`
+cleared), Chinese character data and level names are now in the user's
+language. Details and what stays English:
+[`content-localization.md`](content-localization.md).*
+
 - **Writing feedback is always English.** `_ASSESSMENT_SYSTEM_BASE`
   (`backend/main.py:4858`) ends with "All explanations and notes should be
   written in English", and `build_assessment_system_prompt` takes no interface

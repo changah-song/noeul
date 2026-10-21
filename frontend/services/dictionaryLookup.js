@@ -23,6 +23,7 @@ import {
 import { requestUserDataSync } from './userDataSyncQueue';
 import { normalizeBookLanguage, normalizeInterfaceLanguageCode } from '../constants/languages';
 import { translate } from '../i18n/translations';
+import { getUserFacingErrorMessage } from '../i18n/userFacing';
 
 const STOP_STEMS = new Set([
     '하다',
@@ -36,6 +37,10 @@ const STOP_STEMS = new Set([
 ]);
 
 const tRuntime = (key, params = {}) => translate(getRuntimeInterfaceLanguage(), key, params);
+// Raw service/network errors are English; show a translated message instead.
+const userFacingError = (error, fallbackKey) => (
+    getUserFacingErrorMessage(error, tRuntime, fallbackKey, getRuntimeInterfaceLanguage())
+);
 
 const KOREAN_RE = /[^\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]/g;
 const ENGLISH_EDGE_RE = /^[^A-Za-z]+|[^A-Za-z]+$/g;
@@ -570,7 +575,7 @@ export const resolveDictionaryLookup = async ({
                 cachedResults,
                 dictionaryData: uniqueStems.map(() => []),
                 needsLiveFetch: false,
-                liveError: error?.message || tRuntime('lookup.dictionaryFailed'),
+                liveError: userFacingError(error, 'lookup.dictionaryFailed'),
             };
         }
     };
@@ -908,7 +913,7 @@ export const lookupWordForOverlay = async ({
     const cachedRows = resolved.cachedResults;
 
     if (!normalizedSurface) {
-        throw new Error('No text selected.');
+        throw new Error(tRuntime('lookup.noTextSelected'));
     }
 
     if (cachedRows.length > 0) {

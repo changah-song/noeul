@@ -12,6 +12,8 @@ import {
 } from 'react-native';
 import { Feather, MaterialIcons } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
+import { localizeGeneratedSectionLabel } from '../../i18n/userFacing';
+import { formatDate, formatNumber } from '../../services/interfaceLanguage';
 import { fontFamilies } from '../../theme';
 import {
     SHEET_PADDING,
@@ -21,11 +23,9 @@ import {
     createSheetChromeStyles,
 } from './ReaderSettingsControls';
 
-const formatNoteDate = (iso, language = null) => {
-    const date = new Date(iso);
-    if (Number.isNaN(date.getTime())) return '';
-    return date.toLocaleDateString(language ?? undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-};
+const formatNoteDate = (iso, language = undefined) => (
+    formatDate(iso, { month: 'short', day: 'numeric', year: 'numeric' }, language)
+);
 
 // Bookmarks store a 0-based page index within the chapter; readers count from 1.
 // The chapter's page count is only known when the bookmark was taken from a page
@@ -158,7 +158,7 @@ const NotesLogSheet = ({
                                             <View style={styles.bookmarkBody}>
                                                 <Text style={styles.bookmarkLabel} numberOfLines={1}>
                                                     {[
-                                                        bookmark.chapterLabel,
+                                                        localizeGeneratedSectionLabel(bookmark.chapterLabel, t),
                                                         pageLabel(t, bookmark),
                                                     ].filter(Boolean).join('  ·  ')}
                                                 </Text>
@@ -166,7 +166,7 @@ const NotesLogSheet = ({
                                                     {[
                                                         formatNoteDate(bookmark.createdAt, language),
                                                         typeof bookmark.progress === 'number'
-                                                            ? `${Math.round(bookmark.progress * 100)}%`
+                                                            ? t('common.percent', { value: formatNumber(Math.round(bookmark.progress * 100)) })
                                                             : null,
                                                     ].filter(Boolean).join('  ·  ')}
                                                 </Text>
@@ -191,7 +191,7 @@ const NotesLogSheet = ({
                                         <View key={item.id} style={styles.noteRow}>
                                             <View style={styles.noteMetaRow}>
                                                 <Text style={styles.noteMeta}>
-                                                    {[formatNoteDate(item.createdAt, language), item.chapterLabel]
+                                                    {[formatNoteDate(item.createdAt, language), localizeGeneratedSectionLabel(item.chapterLabel, t)]
                                                         .filter(Boolean)
                                                         .join('  ·  ')}
                                                 </Text>

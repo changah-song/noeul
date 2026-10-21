@@ -99,7 +99,8 @@ const stats = (tree) => {
   const labels = ['learn.statMatured', 'learn.statDueToday', 'learn.statNotSeenYet'];
   const texts = tree.root.findAll((node) => node.type === 'Text').map((node) => node.props.children);
   // Each value is the text right before its label.
-  return labels.map((label) => texts[texts.indexOf(label) - 1]);
+  // Values are formatted for the interface language (formatNumber), so compare as numbers.
+  return labels.map((label) => Number(texts[texts.indexOf(label) - 1]));
 };
 // The label of the review button: the only button whose accessibilityState
 // carries a boolean `disabled`.

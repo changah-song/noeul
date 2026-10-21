@@ -1,6 +1,7 @@
 jest.mock('../api/client', () => ({
   api: { post: jest.fn() },
   getAccessToken: jest.fn(async () => 'test-token'),
+  INTERFACE_LANGUAGE_HEADER: 'X-Interface-Language',
 }));
 jest.mock('../../config', () => ({ BASE_URL: 'https://api.test' }));
 

@@ -253,8 +253,8 @@ const toUserBookRow = ({
 }) => ({
   id: cloudBookId,
   user_id: userId,
-  title: sanitizeText(localBook?.title, 'Untitled'),
-  author: sanitizeText(localBook?.author, 'Unknown author'),
+  title: sanitizeText(localBook?.title),
+  author: sanitizeText(localBook?.author),
   original_filename: sanitizeText(
     pickedAsset?.name || localBook?.originalFilename || localBook?.title,
     null
@@ -281,10 +281,10 @@ export const cloudBookToLocalBook = (cloudBook = {}, overrides = {}) => ({
   uri: overrides.uri ?? null,
   size: cloudBook.size_bytes ?? null,
   wordCount: getBookWordCount(cloudBook),
-  title: sanitizeText(cloudBook.title, 'Untitled'),
-  author: sanitizeText(cloudBook.author, 'Unknown author'),
-  originalTitle: sanitizeText(cloudBook.title, 'Untitled'),
-  originalAuthor: sanitizeText(cloudBook.author, 'Unknown author'),
+  title: sanitizeText(cloudBook.title),
+  author: sanitizeText(cloudBook.author),
+  originalTitle: sanitizeText(cloudBook.title),
+  originalAuthor: sanitizeText(cloudBook.author),
   originalCover: overrides.cover ?? null,
   originalFilename: cloudBook.original_filename ?? null,
   cover: overrides.cover ?? null,
@@ -388,8 +388,8 @@ export const updateUserBookMetadata = async ({ user, ownerId, generation, book }
   });
   const updatedAt = book.updatedAt || new Date().toISOString();
   const patch = {
-    title: sanitizeText(book.title, 'Untitled'),
-    author: sanitizeText(book.author, 'Unknown author'),
+    title: sanitizeText(book.title),
+    author: sanitizeText(book.author),
     updated_at: updatedAt,
   };
 

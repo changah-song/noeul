@@ -109,7 +109,17 @@ import {
     startFloatingWidget,
     stopFloatingWidget,
 } from '../modules/screen-ocr-overlay/src';
-import { getLanguageLabel, normalizeBookLanguage } from '../constants/languages';
+import { normalizeBookLanguage } from '../constants/languages';
+import { formatDate, formatNumber, tRuntime } from '../services/interfaceLanguage';
+import {
+    getLocalizedLanguageName,
+    getUserFacingErrorMessage,
+    localizeBookLevelLabel,
+    localizeStoredPlaceholder,
+    stripStoredPlaceholder,
+} from '../i18n/userFacing';
+import { localizePublicDomainBook } from '../assets/data/public-domain/catalogI18n';
+import { localizedLevelLabel } from '../i18n/contentStrings';
 
 const BOOK_GRID_COLUMNS = 4;
 const BOOK_GRID_GAP = Spacing.lg;
@@ -179,15 +189,17 @@ const makePublicLibraryDiagnostics = (patch = {}) => ({
     ...patch,
 });
 
-const getPublicLibraryDiagnosticLines = (diagnostics = {}, t = null) => [
+// Developer diagnostics (internal stage names, raw service errors): dev builds
+// only, never shown to readers.
+const getPublicLibraryDiagnosticLines = (diagnostics = {}, t = tRuntime) => (__DEV__ ? [
     diagnostics.detail,
-    diagnostics.stage ? (t ? t('home.diagnosticStage', { value: diagnostics.stage }) : `Stage: ${diagnostics.stage}`) : null,
-    diagnostics.targetLanguage ? (t ? t('home.diagnosticTargetLanguage', { value: diagnostics.targetLanguage }) : `Target language: ${diagnostics.targetLanguage}`) : null,
-    diagnostics.rowCount != null ? (t ? t('home.diagnosticRows', { count: diagnostics.rowCount }) : `Rows: ${diagnostics.rowCount}`) : null,
-    diagnostics.checkedCount != null ? (t ? t('home.diagnosticLocalChecks', { count: diagnostics.checkedCount }) : `Local checks: ${diagnostics.checkedCount}`) : null,
-    diagnostics.downloadedCount != null ? (t ? t('home.diagnosticDownloadedLocally', { count: diagnostics.downloadedCount }) : `Downloaded locally: ${diagnostics.downloadedCount}`) : null,
-    diagnostics.errorMessage ? (t ? t('home.diagnosticError', { message: diagnostics.errorMessage }) : `Error: ${diagnostics.errorMessage}`) : null,
-].filter(Boolean);
+    diagnostics.stage ? t('home.diagnosticStage', { value: diagnostics.stage }) : null,
+    diagnostics.targetLanguage ? t('home.diagnosticTargetLanguage', { value: diagnostics.targetLanguage }) : null,
+    diagnostics.rowCount != null ? t('home.diagnosticRows', { count: diagnostics.rowCount }) : null,
+    diagnostics.checkedCount != null ? t('home.diagnosticLocalChecks', { count: diagnostics.checkedCount }) : null,
+    diagnostics.downloadedCount != null ? t('home.diagnosticDownloadedLocally', { count: diagnostics.downloadedCount }) : null,
+    diagnostics.errorMessage ? t('home.diagnosticError', { message: diagnostics.errorMessage }) : null,
+].filter(Boolean) : []);
 
 const createHomeColors = (themeColors) => ({
     bg: themeColors.bgPage,
@@ -234,13 +246,10 @@ const DEFAULT_COVER_REF_HEIGHT = Layout.bookPreviewCoverHeight;
 const KOREAN_TEXT_PATTERN = /[\u3131-\u318e\uac00-\ud7a3]/;
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
-const showSongStorageLimitAlert = (error, t) => {
-    const fallbackMessage = t ? t('home.songStorageLimitFallback') : 'Saved songs are too large to store locally.';
+const showSongStorageLimitAlert = (error, t = tRuntime) => {
     Alert.alert(
-        t ? t('home.songStorageLimitTitle') : 'Song storage limit reached',
-        t
-            ? t('home.songStorageLimitBody', { message: getSongStorageLimitMessage(error, t) })
-            : `${error?.message ?? fallbackMessage} Remove some songs or shorten lyrics before adding more.`
+        t('home.songStorageLimitTitle'),
+        t('home.songStorageLimitBody', { message: getSongStorageLimitMessage(error, t) })
     );
 };
 const countSongLines = (lyrics) => String(lyrics || '')
@@ -299,8 +308,8 @@ const getDownloadErrorMessageKey = (error) => {
     }
     return 'home.downloadFailedBody';
 };
-const getBookTitle = (book, t = null) => book?.title?.trim() || (t ? t('common.untitled') : 'Untitled');
-const getBookAuthor = (book, t = null) => book?.author?.trim() || (t ? t('common.unknownAuthor') : 'Unknown author');
+const getBookTitle = (book, t = tRuntime) => localizeStoredPlaceholder(book?.title, t) || t('common.untitled');
+const getBookAuthor = (book, t = tRuntime) => localizeStoredPlaceholder(book?.author, t) || t('common.unknownAuthor');
 const hasKoreanText = (value) => KOREAN_TEXT_PATTERN.test(String(value || ''));
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const isPdfBook = (book) => (
@@ -474,23 +483,25 @@ const getBookRecentTimestamp = (book) => {
     return 0;
 };
 
-const formatFileSize = (bytes, t = null) => {
+const FILE_SIZE_UNIT_KEYS = ['common.sizeBytes', 'common.sizeKilobytes', 'common.sizeMegabytes', 'common.sizeGigabytes'];
+
+const formatFileSize = (bytes, t = tRuntime) => {
     const value = Number(bytes);
     if (!Number.isFinite(value) || value <= 0) {
-        return t ? t('common.unknown') : 'Unknown';
+        return t('common.unknown');
     }
 
-    const units = ['B', 'KB', 'MB', 'GB'];
     let size = value;
     let unitIndex = 0;
 
-    while (size >= 1024 && unitIndex < units.length - 1) {
+    while (size >= 1024 && unitIndex < FILE_SIZE_UNIT_KEYS.length - 1) {
         size /= 1024;
         unitIndex += 1;
     }
 
     const precision = unitIndex === 0 || size >= 10 ? 0 : 1;
-    return `${size.toFixed(precision)} ${units[unitIndex]}`;
+    const formatted = formatNumber(size, { minimumFractionDigits: precision, maximumFractionDigits: precision });
+    return t(FILE_SIZE_UNIT_KEYS[unitIndex], { value: formatted });
 };
 
 const getBookWordCount = (book) => {
@@ -508,10 +519,10 @@ const getBookWordCount = (book) => {
     return null;
 };
 
-const formatWordCount = (wordCount, t = null) => (
+const formatWordCount = (wordCount, t = tRuntime, language = undefined) => (
     wordCount
-        ? (t ? t('home.words', { count: wordCount.toLocaleString() }) : `${wordCount.toLocaleString()} words`)
-        : (t ? t('common.unknown') : 'Unknown')
+        ? t('home.words', { count: formatNumber(wordCount, {}, language) })
+        : t('common.unknown')
 );
 
 const estimateBookPages = (book) => {
@@ -566,21 +577,16 @@ const compareSortText = (a, b) => (
     })
 );
 
-const formatPreviewDateTime = (value, t = null, language = null) => {
+const formatPreviewDateTime = (value, t = tRuntime, language = undefined) => {
     if (!value) {
-        return t ? t('home.notOpened') : 'Not opened yet';
+        return t('home.notOpened');
     }
 
-    const date = new Date(value);
-    if (!Number.isFinite(date.getTime())) {
-        return t ? t('home.notOpened') : 'Not opened yet';
-    }
-
-    return date.toLocaleDateString(language ?? undefined, {
+    return formatDate(value, {
         year: 'numeric',
         month: 'short',
         day: 'numeric',
-    });
+    }, language) || t('home.notOpened');
 };
 
 
@@ -590,23 +596,19 @@ const getSongWordCount = (song) => String(song?.lyrics || '')
     .filter(Boolean)
     .length;
 
-const formatSongWordCount = (song, t = null) => {
+const formatSongWordCount = (song, t = tRuntime) => {
     const count = getSongWordCount(song);
-    return t ? t('home.songWords', { count }) : `${count} words`;
+    return t('home.songWords', { count: formatNumber(count) });
 };
 
-const formatBookLanguage = (language, t = null) => {
-    const raw = String(language || '').trim();
-    if (!raw) {
-        return t ? t('common.unknown') : 'Unknown';
-    }
+// Full-sentence count labels: `${base}One` / `${base}Other` keys, never a
+// noun glued onto a number.
+const formatBookCount = (t, base, count) => (
+    t(count === 1 ? `${base}One` : `${base}Other`, { count: formatNumber(count) })
+);
 
-    const shortCode = raw.toLowerCase().split(/[-_]/)[0];
-    if (shortCode === 'ko' || shortCode === 'en' || shortCode === 'zh') {
-        return t ? t(`language.${shortCode}`) : getLanguageLabel(shortCode);
-    }
-
-    return raw.toUpperCase();
+const formatBookLanguage = (language, t = tRuntime) => {
+    return getLocalizedLanguageName(language, t);
 };
 
 const getCoverColorLuminance = (value) => {
@@ -947,7 +949,7 @@ const buildPublicDomainLocalBook = (book, patch = {}) => {
     };
 };
 
-const readPublicLibraryBookMetadataPatch = async (book, uri, t = null) => {
+const readPublicLibraryBookMetadataPatch = async (book, uri) => {
     if (!uri) {
         return {};
     }
@@ -958,7 +960,7 @@ const readPublicLibraryBookMetadataPatch = async (book, uri, t = null) => {
         || book?.storagePath?.split('/').pop()
         || book?.publicLibraryStoragePath?.split('/').pop()
         || book?.title
-        || (t ? t('common.untitled') : 'Untitled');
+        || '';
     const metadata = format === 'pdf'
         ? await readPdfMetadata(uri, fallbackName)
         : await readEpubMetadata(uri, fallbackName);
@@ -975,26 +977,27 @@ const readPublicLibraryBookMetadataPatch = async (book, uri, t = null) => {
         cover,
         ...coverColors,
         originalCover: cover ?? book?.originalCover ?? null,
-        title: book?.title || metadata?.title || (t ? t('common.untitled') : 'Untitled'),
-        author: book?.author || metadata?.author || (t ? t('common.unknownAuthor') : 'Unknown author'),
+        // Missing values are stored empty; getBookTitle/getBookAuthor show the translated label.
+        title: book?.title || metadata?.title || '',
+        author: book?.author || metadata?.author || '',
         wordCount: book?.wordCount ?? metadata?.wordCount ?? null,
         language: normalizeBookLanguage(metadata?.language ?? book?.language ?? book?.targetLanguage ?? 'en'),
     };
 };
 
-const getBookStatusLabel = (book, t = null) => {
+const getBookStatusLabel = (book, t = tRuntime) => {
     if (book?.publicDomain) {
         return isBookDownloaded(book)
-            ? (t ? t('home.readyToRead') : 'Ready to read')
-            : (t ? t('home.availableToDownload') : 'Available to download');
+            ? t('home.readyToRead')
+            : t('home.availableToDownload');
     }
 
-    return t ? t('home.progress') : 'Progress';
+    return t('home.progress');
 };
 
-const getBookFormatLabel = (book, t = null) => {
+const getBookFormatLabel = (book, t = tRuntime) => {
     if (book?.publicDomain && !isPublicLibraryBook(book)) {
-        return t ? t('home.publicDomainText') : 'Public domain text';
+        return t('home.publicDomainText');
     }
 
     return String(book?.format || 'epub').toUpperCase();
@@ -1170,8 +1173,16 @@ const BookPreview = ({
             : t('home.notOnDeviceTag');
     const showDownloadCta = bookState === 'notdl' && !isPublicDomain;
     const showDownloadingCta = bookState === 'downloading';
-    const genreValue = book?.genre || (isPublicDomain ? t('common.unknown') : t('home.autoDetectionSoon'));
-    const levelValue = book?.difficulty || book?.bookLevel?.level || book?.bookLevel?.proficiency_level || t('common.unknown');
+    // Bundled books: title/genre/blurb in the interface language (catalogI18n).
+    const localizedCopy = localizePublicDomainBook(book, language);
+    const genreValue = localizedCopy?.genre || (isPublicDomain ? t('common.unknown') : t('home.autoDetectionSoon'));
+    // Six-level names via contentStrings; the 3-grade Korean names the reader
+    // stores (초급/중급/고급) via localizeBookLevelLabel.
+    const levelValue = localizeBookLevelLabel(localizedLevelLabel(
+        book?.language,
+        book?.difficulty || book?.bookLevel?.level || book?.bookLevel?.proficiency_level,
+        language
+    ), t) || t('common.unknown');
     const hasKnownDownloadSize = Number(book?.size) > 0;
     const downloadNote = hasKnownDownloadSize
         ? t('home.availableOfflineWithSize', { size: formatFileSize(book?.size, t) })
@@ -1183,7 +1194,7 @@ const BookPreview = ({
     );
     const downloadFillWidth = `${Math.round(normalizedDownloadProgress * 100)}%`;
     const descriptionText = String(book?.description || book?.summary || '').trim();
-    const snippetText = canReadBook || isPublicDomain ? String(book?.snippet || '').trim() : '';
+    const snippetText = canReadBook || isPublicDomain ? String(localizedCopy?.snippet || '').trim() : '';
     const aboutText = descriptionText || snippetText;
     const showAbout = !!aboutText;
     const canStartReading = (canReadBook || isPublicDomain) && !actionBusy;
@@ -1657,7 +1668,8 @@ const ShelfTabs = ({ tabs, activeId }) => {
 };
 
 const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpen, navigation, user }) => {
-    const { t } = useTranslation();
+    const { t, language } = useTranslation();
+    const interfaceLanguage = language;
     const { languageSettingsReady, targetLanguage, setTargetLanguage, switchProfile, activeProfileId } = useAppContext();
     const { activeOwnerId, syncPaused, syncGeneration } = useLocalOwner();
     const { colors: themeColors } = useTheme();
@@ -2172,19 +2184,10 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const showingEmptySongs = activeLibraryTab === 'Songs' && songsLoaded && songs.length === 0;
     const effectiveCollectionViewMode = activeLibraryTab === 'Songs' ? 'grid' : collectionViewMode;
     const bookSectionLabel = showingPublicDomainBooks
-        ? t('home.publicDomainCount', {
-            count: sortedPublicDomainBookRows.length,
-            noun: sortedPublicDomainBookRows.length === 1 ? t('home.bookSingular') : t('home.bookPlural'),
-        })
+        ? formatBookCount(t, 'home.publicDomainCount', sortedPublicDomainBookRows.length)
         : activeBookFilter === 'favorites'
-            ? t('home.favoriteCount', {
-                count: favoriteBooks.length,
-                noun: favoriteBooks.length === 1 ? t('home.bookSingular') : t('home.bookPlural'),
-            })
-            : t('home.bookCount', {
-                count: languageFilteredBooks.length,
-                noun: languageFilteredBooks.length === 1 ? t('home.bookSingular') : t('home.bookPlural'),
-            });
+            ? formatBookCount(t, 'home.favoriteCount', favoriteBooks.length)
+            : formatBookCount(t, 'home.bookCount', languageFilteredBooks.length);
     const bookSectionHint = showingPublicDomainBooks
         ? t('home.publicDomainHint')
         : null;
@@ -2585,14 +2588,14 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         });
 
         const errorSubscription = addOverlayErrorListener((error = {}) => {
-            setOcrMessage(error.message || t('home.ocrFailed'));
+            setOcrMessage(getUserFacingErrorMessage(error, t, 'home.ocrFailed', language));
         });
 
         return () => {
             statusSubscription.remove();
             errorSubscription.remove();
         };
-    }, [mergeOcrStatus, t]);
+    }, [language, mergeOcrStatus, t]);
 
     useEffect(() => {
         let isMounted = true;
@@ -2863,14 +2866,14 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             persistOcrSettings({ floatingPreferred: visible });
             setOcrMessage(visible ? t('home.ocrTapBubble') : t('home.ocrBubbleFailed'));
         } catch (error) {
-            const message = error?.message || t('home.ocrFailed');
+            const message = getUserFacingErrorMessage(error, t, 'home.ocrFailed', language);
             setOcrMessage(message);
             Alert.alert(t('home.ocrScanner'), message);
         } finally {
             ocrActionInFlightRef.current = false;
             setOcrBusy(false);
         }
-    }, [isFloatingOcrActive, mergeOcrStatus, ocrBusy, persistOcrSettings, t, waitForScreenCapture]);
+    }, [isFloatingOcrActive, language, mergeOcrStatus, ocrBusy, persistOcrSettings, t, waitForScreenCapture]);
 
     const updateBookRecord = useCallback((bookToUpdate, patch) => {
         setBooks((prevBooks) => prevBooks.map((book) => (
@@ -3330,8 +3333,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         setActiveBookMenuKey(null);
         setEditBook(book);
         setEditDraft({
-            title: book.title || '',
-            author: book.author || '',
+            title: stripStoredPlaceholder(book.title),
+            author: stripStoredPlaceholder(book.author),
             cover: book.cover || '',
         });
     }, []);
@@ -3423,8 +3426,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 };
 
             updateBookRecord(book, {
-                title: String(book.originalTitle || book.title || t('common.untitled')).trim() || t('common.untitled'),
-                author: String(book.originalAuthor || book.author || t('common.unknownAuthor')).trim() || t('common.unknownAuthor'),
+                title: stripStoredPlaceholder(book.originalTitle || book.title),
+                author: stripStoredPlaceholder(book.originalAuthor || book.author),
                 cover,
                 ...coverColors,
             });
@@ -3437,12 +3440,13 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         }
 
         try {
-            const fallbackName = book.originalFilename || book.title || t('common.untitled');
+            const fallbackName = book.originalFilename || book.title || '';
             const metadata = isPdfBook(book)
                 ? await readPdfMetadata(book.uri, fallbackName)
                 : await readEpubMetadata(book.uri, fallbackName);
-            const title = String(metadata?.title || book.title || t('common.untitled')).trim() || t('common.untitled');
-            const author = String(metadata?.author || book.author || t('common.unknownAuthor')).trim() || t('common.unknownAuthor');
+            // Missing values are stored empty; getBookTitle/getBookAuthor show the translated label.
+            const title = String(metadata?.title || book.title || '').trim() || '';
+            const author = String(metadata?.author || book.author || '').trim() || '';
             const cover = metadata?.cover ?? null;
             const coverColors = cover
                 ? await extractBookCoverColors({
@@ -3467,9 +3471,9 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             });
         } catch (error) {
             console.warn('[Home] Failed to reset book metadata:', error);
-            Alert.alert(t('home.resetFailedTitle'), error?.message || t('home.resetFailedBody'));
+            Alert.alert(t('home.resetFailedTitle'), getUserFacingErrorMessage(error, t, 'home.resetFailedBody', language));
         }
-    }, [publicDomainBooks, t, updateBookRecord]);
+    }, [language, publicDomainBooks, t, updateBookRecord]);
 
     const handlePickCover = useCallback(async () => {
         try {
@@ -3507,8 +3511,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
         const updatedAt = new Date().toISOString();
         const patch = {
-            title: editDraft.title.trim() || t('common.untitled'),
-            author: editDraft.author.trim() || t('common.unknownAuthor'),
+            title: editDraft.title.trim(),
+            author: editDraft.author.trim(),
             cover,
             ...coverColors,
             updatedAt,
@@ -3614,7 +3618,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
     const handleSubmitSong = useCallback(() => {
         const title = songDraft.title.trim();
-        const artist = songDraft.artist.trim() || t('common.unknownArtist');
+        const artist = songDraft.artist.trim();
         const lyrics = songDraft.lyrics.trim();
 
         if (!title || !lyrics) {
@@ -3744,13 +3748,13 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const getCollectionBookMeta = useCallback((book, sourceLabel) => {
         const parts = [
             formatBookLanguage(book?.language || targetLanguage, t),
-            book?.difficulty,
+            localizedLevelLabel(book?.language || targetLanguage, book?.difficulty, interfaceLanguage),
             formatWordCount(getBookWordCount(book), t),
             sourceLabel,
         ];
 
         return parts.filter(Boolean).join(' · ');
-    }, [targetLanguage, t]);
+    }, [interfaceLanguage, targetLanguage, t]);
 
     const renderCollectionEmptyState = ({
         icon,
@@ -3798,7 +3802,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const renderStarterBookCard = (book) => {
         const title = getBookTitle(book, t);
         const author = getBookAuthor(book, t);
-        const translatedTitle = typeof book.titleTranslation === 'string' ? book.titleTranslation.trim() : '';
+        const localizedTitle = localizePublicDomainBook(book, interfaceLanguage)?.titleTranslation;
+        const translatedTitle = typeof localizedTitle === 'string' ? localizedTitle.trim() : '';
         const wordCount = getBookWordCount(book);
         const meta = [
             wordCount ? formatWordCount(wordCount, t) : null,
@@ -3872,7 +3877,15 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                             onPress={confirmAddBook}
                             style={styles.starterSecondary}
                         >
-                            <Text style={styles.starterSecondaryText} numberOfLines={1}>{t('home.importEpub')}</Text>
+                            <Text
+                                style={styles.starterSecondaryText}
+                                numberOfLines={1}
+                                // Two half-width buttons: longer languages shrink to fit.
+                                adjustsFontSizeToFit
+                                minimumFontScale={0.75}
+                            >
+                                {t('home.importEpub')}
+                            </Text>
                         </TouchableOpacity>
                         <TouchableOpacity
                             accessibilityRole="button"
@@ -4231,7 +4244,10 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                         setActiveBookMenuKey(null);
                                         setActiveBookFilter(filter.id);
                                     }}
-                                    accessibilityLabel={`${t(filter.labelKey)}, ${count} ${t('home.bookPlural')}`}
+                                    accessibilityLabel={t('home.filterWithCount', {
+                                        filter: t(filter.labelKey),
+                                        books: formatBookCount(t, 'home.bookCount', count),
+                                    })}
                                     style={[
                                         styles.bookFilterChip,
                                         filter.iconOnly && styles.bookFilterIconChip,
@@ -4379,10 +4395,10 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                                 ]}
                                                 numberOfLines={1}
                                             >
-                                                {song.title}
+                                                {localizeStoredPlaceholder(song.title, t)}
                                             </Text>
                                             <Text style={styles.songMeta} numberOfLines={1}>
-                                                {[song.artist, formatSongWordCount(song, t)].filter(Boolean).join(' · ')}
+                                                {[localizeStoredPlaceholder(song.artist, t), formatSongWordCount(song, t)].filter(Boolean).join(' · ')}
                                             </Text>
                                         </View>
                                         <Feather name="chevron-right" size={20} color={HOME_COLORS.faint} />
@@ -4602,7 +4618,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                     >
                                         <Text style={styles.songSearchResultTitle} numberOfLines={1}>{song.title}</Text>
                                         <Text style={styles.songSearchResultMeta} numberOfLines={1}>
-                                            {[song.artist, song.album].filter(Boolean).join(' · ')}
+                                            {[localizeStoredPlaceholder(song.artist, t), song.album].filter(Boolean).join(' · ')}
                                         </Text>
                                     </TouchableOpacity>
                                 ))}

@@ -24,6 +24,9 @@ import { Card, IconButton, Screen, SectionHeader } from '../components/ui';
 import { createTabBarBaseStyle } from '../components/shared/TabBar';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
+import { UI_TRANSLATIONS } from '../i18n/translations';
+import { getUserFacingErrorMessage, localizeStoredPlaceholder } from '../i18n/userFacing';
+import { formatNumber, getInterfaceLocale } from '../services/interfaceLanguage';
 import {
   cloudWritingRowToEntry,
   fetchUserWritingEntries,
@@ -34,8 +37,10 @@ import {
 import {
   ANNOTATION_LEGEND,
   MOCK_WRITING_ENTRY_ID,
+  MOCK_WRITING_PROMPT,
   buildAnnotatedSpans,
   createMockWritingEntry,
+  localizeMockWritingEntry,
 } from '../services/writingAssessmentMock';
 import { GUEST_OWNER_ID, makeScopedStorageKey } from '../services/localDataScope';
 import { measureEntry } from '../services/entryLength';
@@ -50,6 +55,7 @@ import {
   normalizeBookLanguage,
 } from '../constants/languages';
 import { assessEntry } from '../services/api/assessEntry';
+import { translateContent } from '../i18n/contentStrings';
 
 const LEGACY_STORAGE_KEY = 'writing_entries_v1';
 const getWritingStorageKey = (ownerId) => makeScopedStorageKey(ownerId, 'writing-entries-v1');
@@ -237,6 +243,29 @@ const EDITOR_PROMPTS = Object.fromEntries(
   ])
 );
 
+// Entries store a prompt's English text (its identity: category inference and
+// the assessment request use it). On screen it shows through
+// write.prompt.<category>.<n>, or a legacy write.prompts.* key for entries
+// written with the older prompt set.
+const PROMPT_KEY_BY_TEXT = (() => {
+  const keys = new Map();
+  Object.entries(EDITOR_PROMPTS).forEach(([category, prompts]) => {
+    prompts.forEach((prompt, index) => keys.set(prompt, `write.prompt.${category}.${index + 1}`));
+  });
+  Object.entries(UI_TRANSLATIONS.en).forEach(([key, value]) => {
+    if (key.startsWith('write.prompts.') && !keys.has(value)) {
+      keys.set(value, key);
+    }
+  });
+  keys.set(MOCK_WRITING_PROMPT, 'write.sample.prompt');
+  return keys;
+})();
+
+const localizePrompt = (prompt, t) => {
+  const key = PROMPT_KEY_BY_TEXT.get(String(prompt ?? '').trim());
+  return key ? t(key) : prompt;
+};
+
 const makeEmptyDraft = () => ({
   id: null,
   title: '',
@@ -263,7 +292,7 @@ const formatEntryDate = (value, language = 'en') => {
   if (!value) return '';
 
   try {
-    return new Intl.DateTimeFormat(language, {
+    return new Intl.DateTimeFormat(getInterfaceLocale(language), {
       month: 'short',
       day: 'numeric',
       year: 'numeric',
@@ -285,8 +314,8 @@ const getEntryDateParts = (value, language = 'en') => {
   }
 
   return {
-    day: new Intl.DateTimeFormat(language, { day: '2-digit' }).format(date),
-    month: new Intl.DateTimeFormat(language, { month: 'short' }).format(date).toUpperCase(),
+    day: new Intl.DateTimeFormat(getInterfaceLocale(language), { day: '2-digit' }).format(date),
+    month: new Intl.DateTimeFormat(getInterfaceLocale(language), { month: 'short' }).format(date).toUpperCase(),
   };
 };
 
@@ -409,11 +438,12 @@ const WritingEntryRow = ({ entry, onPress }) => {
 
       <View style={styles.writeEntryMain}>
         <Text numberOfLines={1} style={styles.writeEntryTitle}>
-          {entry.title || t('common.untitled')}
+          {localizeStoredPlaceholder(entry.title, t) || t('common.untitled')}
         </Text>
         <View style={styles.writeEntryMeta}>
-          <Text style={styles.writeEntryMetaText}>{getEntryCharacterCount(entry)}</Text>
-          <Text style={styles.writeEntryMetaText}>{t('write.chars', { count: '' }).trim() || 'chars'}</Text>
+          <Text style={styles.writeEntryMetaText}>
+            {t('write.chars', { count: formatNumber(getEntryCharacterCount(entry)) })}
+          </Text>
           <Text style={styles.writeEntryMetaDot}>·</Text>
           <Text numberOfLines={1} style={styles.writeEntryType}>
             {filter?.labelKey ? t(filter.labelKey) : t('write.free')}
@@ -538,22 +568,26 @@ const ensureMockEntry = (entries) => {
   });
 };
 
-const getAnnotationLabel = (type) =>
-  ANNOTATION_LEGEND.find((item) => item.type === type)?.label ?? type;
+const getAnnotationLabel = (type, t) => {
+  const labelKey = ANNOTATION_LEGEND.find((item) => item.type === type)?.labelKey;
+  return labelKey ? t(labelKey) : t('write.annotation.other');
+};
 
 const TypeBadge = ({ type }) => {
+  const { t } = useTranslation();
   const { colors, styles, annotationColors } = useWriteTheme();
   const color = annotationColors[type] ?? colors.textMuted;
 
   return (
     <View style={[styles.typeBadge, { borderColor: color }]}>
       <View style={[styles.typeBadgeDot, { backgroundColor: color }]} />
-      <Text style={[styles.typeBadgeText, { color }]}>{getAnnotationLabel(type)}</Text>
+      <Text style={[styles.typeBadgeText, { color }]}>{getAnnotationLabel(type, t)}</Text>
     </View>
   );
 };
 
 const AnnotationLegend = () => {
+  const { t } = useTranslation();
   const { styles, annotationLegend } = useWriteTheme();
 
   return (
@@ -561,7 +595,7 @@ const AnnotationLegend = () => {
       {annotationLegend.map((item) => (
         <View key={item.type} style={styles.legendItem}>
           <View style={[styles.legendDot, { backgroundColor: item.color }]} />
-          <Text style={styles.legendLabel}>{item.label}</Text>
+          <Text style={styles.legendLabel}>{t(item.labelKey)}</Text>
         </View>
       ))}
     </View>
@@ -602,6 +636,7 @@ const AnnotatedEntry = ({ text, annotations, onAnnotationPress, style }) => {
 };
 
 const InlineCorrectionList = ({ annotations = [], onAnnotationPress }) => {
+  const { t } = useTranslation();
   const { colors, styles, annotationColors } = useWriteTheme();
 
   if (!annotations.length) {
@@ -627,7 +662,7 @@ const InlineCorrectionList = ({ annotations = [], onAnnotationPress }) => {
             <View style={styles.inlineCorrectionHeader}>
               <View style={[styles.inlineCorrectionDot, { backgroundColor: color }]} />
               <Text style={[styles.inlineCorrectionType, { color }]}>
-                {getAnnotationLabel(annotation.type)}
+                {getAnnotationLabel(annotation.type, t)}
               </Text>
             </View>
             <Text selectable style={styles.inlineCorrectionText}>
@@ -1103,10 +1138,11 @@ const Write = ({ user, navigation }) => {
     ? currentPrompts[promptIndex % currentPrompts.length]
     : null;
 
-  const selectedEntry = useMemo(
-    () => entries.find((entry) => entry.id === selectedEntryId),
-    [entries, selectedEntryId]
-  );
+  const selectedEntry = useMemo(() => {
+    const entry = entries.find((item) => item.id === selectedEntryId);
+    // The built-in sample's feedback is shown in the interface language.
+    return isMockWritingEntry(entry) ? localizeMockWritingEntry(entry, t) : entry;
+  }, [entries, selectedEntryId, t]);
   const selectedEntryIsReviewed = Boolean(
     selectedEntry?.assessment || String(selectedEntry?.status || '').toLowerCase() === 'reviewed'
   );
@@ -1223,7 +1259,7 @@ const Write = ({ user, navigation }) => {
       assessment ?? (draft.assessment && existingEntry?.body === draft.body ? draft.assessment : null);
     return {
       id: draft.id ?? `entry-${Date.now()}`,
-      title: draft.title.trim() || t('common.untitled'),
+      title: draft.title.trim(),
       body: draft.body,
       prompt: draft.prompt,
       category: activeEditorType,
@@ -1312,7 +1348,9 @@ const Write = ({ user, navigation }) => {
       leaveEditor();
       const detail = error?.response?.data?.detail ?? '';
       const isQuota = error?.response?.status === 429;
-      Alert.alert('', isQuota ? t('write.assessLimitReached') : (detail || t('write.assessError')));
+      Alert.alert('', isQuota
+        ? t('write.assessLimitReached')
+        : getUserFacingErrorMessage({ message: detail }, t, 'write.assessError', language));
     } finally {
       assessingRef.current = false;
       setIsAssessing(false);
@@ -1494,14 +1532,14 @@ const Write = ({ user, navigation }) => {
                 <Text style={styles.editorPromptHeaderText}>{t('write.choosePrompt')}</Text>
               </View>
               <View style={[styles.editorPromptOption, styles.editorPromptOptionLast, styles.editorPromptOptionSelected]}>
-                <Text style={styles.editorPromptOptionTextSelected}>{selectedEntry.prompt}</Text>
+                <Text style={styles.editorPromptOptionTextSelected}>{localizePrompt(selectedEntry.prompt, t)}</Text>
               </View>
             </View>
           ) : null}
 
           <View style={styles.reviewTitleBlock}>
             <Text selectable style={styles.reviewTitleText}>
-              {selectedEntry.title}
+              {localizeStoredPlaceholder(selectedEntry.title, t) || t('common.untitled')}
             </Text>
             <View style={styles.reviewTitleMetaRow}>
               <View style={styles.reviewStatusPill}>
@@ -1569,7 +1607,7 @@ const Write = ({ user, navigation }) => {
             {selectedEntryNativeInsertWords.length > 0 ? (
               <View style={styles.reviewEnglishWords}>
                 <Text style={styles.reviewEnglishWordsLabel}>
-                  {t('write.englishWords')}
+                  {translateContent(language, 'write.otherLanguageWords')}
                 </Text>
                 <View style={styles.reviewEnglishWordChips}>
                   {selectedEntryNativeInsertWords.map((word) => (
@@ -1661,7 +1699,7 @@ const Write = ({ user, navigation }) => {
               </View>
               <View style={[styles.editorPromptOption, styles.editorPromptOptionLast]}>
                 <Text style={styles.editorPromptOptionText}>
-                  {draft.prompt || currentPromptText}
+                  {localizePrompt(draft.prompt || currentPromptText, t)}
                 </Text>
               </View>
             </View>

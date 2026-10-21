@@ -1,5 +1,7 @@
 import { BASE_URL } from '../../config';
-import { api, getAccessToken } from './client';
+import { api, getAccessToken, INTERFACE_LANGUAGE_HEADER } from './client';
+import { getRuntimeInterfaceLanguage } from '../interfaceLanguage';
+import { translateContent } from '../../i18n/contentStrings';
 
 const buildExplainBody = ({
   word,
@@ -163,6 +165,7 @@ export const streamExplainInContext = async ({
     xhr.timeout = timeout;
     xhr.setRequestHeader('Content-Type', 'application/json');
     xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
+    xhr.setRequestHeader(INTERFACE_LANGUAGE_HEADER, params.interfaceLanguage || getRuntimeInterfaceLanguage());
     xhr.send(JSON.stringify(body));
   });
 
@@ -170,7 +173,9 @@ export const streamExplainInContext = async ({
     return streamed.result;
   }
   if (streamed.timedOut) {
-    throw new Error('Request timed out');
+    const timeoutError = new Error(translateContent(params.interfaceLanguage || getRuntimeInterfaceLanguage(), 'error.timeout'));
+    timeoutError.code = 'ETIMEDOUT';
+    throw timeoutError;
   }
   return fallback();
 };
