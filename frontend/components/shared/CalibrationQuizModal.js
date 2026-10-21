@@ -13,6 +13,7 @@ import { Feather } from '@expo/vector-icons';
 import { useAppContext } from '../../contexts/AppContext';
 import { useLocalOwner } from '../../contexts/LocalOwnerContext';
 import { useTranslation } from '../../hooks/useTranslation';
+import { getProficiencyLevelLabel } from '../../i18n/userFacing';
 import { fontFamilies, radii, spacing, useTheme } from '../../theme';
 import {
     nearestRankForTheta,
@@ -166,7 +167,7 @@ const CalibrationQuizModal = ({ visible, onClose }) => {
                                 <>
                                     <Text style={styles.eyebrow}>{t('calibration.resultEyebrow')}</Text>
                                     <Text style={styles.resultLevel}>
-                                        {measuredOption?.label ?? currentOption?.label ?? ''}
+                                        {getProficiencyLevelLabel(measuredOption ?? currentOption, t)}
                                     </Text>
                                     <Text style={styles.helper}>{t('calibration.resultNote')}</Text>
                                     <TouchableOpacity

@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { Feather, MaterialIcons } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
+import { formatNumber } from '../../services/interfaceLanguage';
 import { fontFamilies } from '../../theme';
 import { LISTEN_PITCHES, LISTEN_RATES, loadOnDeviceVoices } from '../../services/listenPlayer';
 import {
@@ -110,7 +111,7 @@ const ListenVoiceSheet = ({
 
     if (!mounted) return null;
 
-    const rateOptions = LISTEN_RATES.map((value) => ({ value, label: `${value}×` }));
+    const rateOptions = LISTEN_RATES.map((value) => ({ value, label: t('read.listenRateValue', { rate: formatNumber(value) }) }));
     const pitchOptions = [
         { value: LISTEN_PITCHES[0], label: t('read.listenPitchLower') },
         { value: LISTEN_PITCHES[1], label: t('read.listenPitchNormal') },

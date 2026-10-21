@@ -3112,7 +3112,7 @@ const parseOpfMetadata = async (zip, packagePath, fallbackName, sourceUri = '') 
     if (!opfFile) {
         return {
             title: cleanFallbackTitle(fallbackName),
-            author: 'Unknown author',
+            author: '',
             cover: null,
             language: null,
             wordCount: null,
@@ -3279,7 +3279,7 @@ export const readEpubMetadata = async (uri, fallbackName = '') => {
         if (!containerFile) {
             return {
                 title: cleanFallbackTitle(fallbackName),
-                author: 'Unknown author',
+                author: '',
                 cover: null,
                 language: null,
                 wordCount: null,
@@ -3292,7 +3292,7 @@ export const readEpubMetadata = async (uri, fallbackName = '') => {
         if (!packagePath) {
             return {
                 title: cleanFallbackTitle(fallbackName),
-                author: 'Unknown author',
+                author: '',
                 cover: null,
                 language: null,
                 wordCount: null,
@@ -3304,7 +3304,7 @@ export const readEpubMetadata = async (uri, fallbackName = '') => {
         console.error('[epubMetadata] Failed to read EPUB metadata:', error);
         return {
             title: cleanFallbackTitle(fallbackName),
-            author: 'Unknown author',
+            author: '',
             cover: null,
             language: null,
             wordCount: null,

@@ -216,8 +216,8 @@ export const publicLibraryRowToBook = (row = {}, overrides = {}) => {
   );
   const id = cleanString(row.id ?? row.public_library_id ?? storagePath, storagePath);
   const format = inferFormat(row.format, row.mime_type, row.content_type, storagePath);
-  const title = cleanString(row.title ?? row.name, 'Untitled');
-  const author = cleanString(row.author ?? row.creator, 'Unknown author');
+  const title = cleanString(row.title ?? row.name);
+  const author = cleanString(row.author ?? row.creator);
   const coverStoragePath = cleanNullableString(row.cover_path ?? row.cover_storage_path);
   const cover = row.cover_url
     ?? row.cover

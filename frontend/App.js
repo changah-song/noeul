@@ -58,6 +58,7 @@ import { applyOwnershipDecision } from './services/localOwnershipDecisions';
 import { hasLocalUserData } from './services/localUserData';
 import { getRuntimeInterfaceLanguage, loadRuntimeInterfaceLanguage } from './services/interfaceLanguage';
 import { translate } from './i18n/translations';
+import { getUserFacingErrorMessage } from './i18n/userFacing';
 import { initializeOverlayLookupBridge } from './services/overlayLookup';
 import {
     installCrashReporting,
@@ -389,7 +390,12 @@ function AppContent() {
         } catch (error) {
             Alert.alert(
                 translate(getRuntimeInterfaceLanguage(), 'localData.decisionFailedTitle'),
-                error?.message || translate(getRuntimeInterfaceLanguage(), 'localData.decisionFailedBody')
+                getUserFacingErrorMessage(
+                    error,
+                    (key) => translate(getRuntimeInterfaceLanguage(), key),
+                    'localData.decisionFailedBody',
+                    getRuntimeInterfaceLanguage()
+                )
             );
         } finally {
             setLocalDataDecisionBusy(false);

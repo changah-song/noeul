@@ -18,6 +18,7 @@ import { Feather } from '@expo/vector-icons';
 import { useAppContext } from '../../contexts/AppContext';
 import { useLocalOwner } from '../../contexts/LocalOwnerContext';
 import { useTranslation } from '../../hooks/useTranslation';
+import { formatNumber } from '../../services/interfaceLanguage';
 import { fontFamilies, useTheme } from '../../theme';
 import { applyWordCheckResults, getReaderLevel } from '../../services/Database';
 import { createWordCheck } from '../../services/wordCheck';
@@ -418,7 +419,7 @@ export const WordCheckBody = ({ check, onDone }) => {
         if (!tier) return null;
         if (tier.label) return { text: t('wordCheck.resultHsk', { level: tier.label }), strong: tier.label };
         if (tier.advanced) return { text: t('wordCheck.resultAdvanced'), strong: null };
-        const count = Number(tier.threshold).toLocaleString();
+        const count = formatNumber(tier.threshold);
         return { text: t('wordCheck.resultWords', { count }), strong: count };
     }, [result, t, tiers]);
 

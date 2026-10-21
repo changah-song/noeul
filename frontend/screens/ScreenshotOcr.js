@@ -19,6 +19,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import TopSection from '../components/Read/TopSection/TopSection';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
+import { getUserFacingErrorMessage } from '../i18n/userFacing';
 import { translate } from '../i18n/translations';
 import { getRuntimeInterfaceLanguage } from '../services/interfaceLanguage';
 import { recognizeImage } from '../modules/screen-ocr/src';
@@ -534,7 +535,7 @@ const buildWordTargetsForResult = (ocrResult) => {
 };
 
 const ScreenshotOcr = ({ navigation, route }) => {
-    const { t } = useTranslation();
+    const { t, language } = useTranslation();
     const { activeOwnerId } = useLocalOwner();
     const safeAreaInsets = useSafeAreaInsets();
     const { width } = useWindowDimensions();
@@ -593,7 +594,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
                 : null;
             const overlayErrorSubscription = Platform.OS === 'android'
                 ? addOverlayErrorListener((status) => {
-                    setFloatingError(status?.message || t('ocr.failedFloating'));
+                    setFloatingError(getUserFacingErrorMessage(status, t, 'ocr.failedFloating', language));
                 })
                 : null;
             const ocrResultSubscription = Platform.OS === 'android'
@@ -602,10 +603,10 @@ const ScreenshotOcr = ({ navigation, route }) => {
                     const targetCount = normalizedResult.targets.length
                         || buildWordTargetsForResult(normalizedResult).length
                         || buildLineTargetsForResult(normalizedResult).length;
-                    setFloatingMessage(t('ocr.foundItems', {
-                        count: targetCount,
-                        noun: targetCount === 1 ? t('ocr.itemSingular') : t('ocr.itemPlural'),
-                    }));
+                    setFloatingMessage(t(
+                        targetCount === 1 ? 'ocr.foundItemsOne' : 'ocr.foundItemsOther',
+                        { count: targetCount }
+                    ));
                 })
                 : null;
 
@@ -727,7 +728,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
             console.error('[ScreenshotOcr] OCR failed:', recognitionError);
             if (recognitionRunRef.current === runId) {
                 setOcrResult(null);
-                setError(recognitionError?.message || t('ocr.failedImage'));
+                setError(getUserFacingErrorMessage(recognitionError, t, 'ocr.failedImage', language));
             }
         } finally {
             if (recognitionRunRef.current === runId) {
@@ -765,7 +766,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
             await runRecognition(asset.uri);
         } catch (pickError) {
             console.error('[ScreenshotOcr] Failed to pick image:', pickError);
-            setError(pickError?.message || t('ocr.openImageFailed'));
+            setError(getUserFacingErrorMessage(pickError, t, 'ocr.openImageFailed', language));
         }
     }, [runRecognition, t]);
 
@@ -830,7 +831,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
             return await action();
         } catch (floatingActionError) {
             console.error('[ScreenshotOcr] Floating OCR action failed:', floatingActionError);
-            setFloatingError(floatingActionError?.message || t('ocr.failedFloating'));
+            setFloatingError(getUserFacingErrorMessage(floatingActionError, t, 'ocr.failedFloating', language));
             return null;
         } finally {
             setFloatingBusy('');
@@ -885,10 +886,10 @@ const ScreenshotOcr = ({ navigation, route }) => {
             const targetCount = normalizedResult.targets.length
                 || buildWordTargetsForResult(normalizedResult).length
                 || buildLineTargetsForResult(normalizedResult).length;
-            setFloatingMessage(t('ocr.testFoundItems', {
-                count: targetCount,
-                noun: targetCount === 1 ? t('ocr.itemSingular') : t('ocr.itemPlural'),
-            }));
+            setFloatingMessage(t(
+                targetCount === 1 ? 'ocr.testFoundItemsOne' : 'ocr.testFoundItemsOther',
+                { count: targetCount }
+            ));
         }
     }, [runFloatingAction, t]);
 
@@ -937,7 +938,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
                 </TouchableOpacity>
 
                 <View style={styles.titleBlock}>
-                    <Text style={styles.eyebrow}>LAB</Text>
+                    <Text style={styles.eyebrow}>{t('ocr.labEyebrow')}</Text>
                     <Text style={styles.title} numberOfLines={1}>{t('ocr.screenshotTitle')}</Text>
                 </View>
 

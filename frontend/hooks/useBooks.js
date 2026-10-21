@@ -8,7 +8,8 @@ import { uploadUserBook } from '../services/bookCloudSync';
 import { readEpubMetadata } from '../services/epubMetadata';
 import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
 import { readPdfMetadata, renderPdfCover } from '../services/pdfMetadata';
-import { SUPPORTED_BOOK_LANGUAGES, getLanguageLabel, normalizeBookLanguage } from '../constants/languages';
+import { SUPPORTED_BOOK_LANGUAGES, normalizeBookLanguage } from '../constants/languages';
+import { getLocalizedLanguageName, getUserFacingErrorMessage } from '../i18n/userFacing';
 import { useTranslation } from './useTranslation';
 
 const createBookId = () => {
@@ -37,13 +38,10 @@ const useBooks = ({
     const pdfCoverChoiceResolverRef = useRef(null);
 
     const navigation = useNavigation();
-    const { t } = useTranslation();
+    const { t, language } = useTranslation();
     const activeTargetLanguage = normalizeBookLanguage(targetLanguage);
 
-    // language.* keys only cover the book languages the app supports.
-    const localizedLanguageName = (code) => (
-        ['ko', 'en', 'zh'].includes(code) ? t(`language.${code}`) : getLanguageLabel(code)
-    );
+    const localizedLanguageName = (code) => getLocalizedLanguageName(code, t);
 
     const getAssetFormat = (asset) => {
         const name = String(asset?.name || '').toLowerCase();
@@ -176,7 +174,7 @@ const useBooks = ({
             const format = pickedAsset.format || 'epub';
             setIsImporting(true);
 
-            const fallbackName = pickedAsset?.name || uri.split('/').pop() || t('common.untitled');
+            const fallbackName = pickedAsset?.name || uri.split('/').pop() || '';
             const metadata = format === 'pdf'
                 ? await readPdfMetadata(uri, fallbackName)
                 : await readEpubMetadata(uri, fallbackName);
@@ -237,7 +235,9 @@ const useBooks = ({
                 && (
                     book.uri === uri
                     || (
-                        book.title === title
+                        // Untitled books (empty title) never match by metadata.
+                        title
+                        && book.title === title
                         && book.author === author
                         && String(book.format || 'epub').toLowerCase() === format
                     )
@@ -358,7 +358,7 @@ const useBooks = ({
             console.error("[useBooks] Error in addBook:", error);
             Alert.alert(
                 t('books.importFailedTitle'),
-                error?.message || t('books.importFailedBody')
+                getUserFacingErrorMessage(error, t, 'books.importFailedBody', language)
             );
             setIsImporting(false);
         }

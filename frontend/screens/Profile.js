@@ -24,6 +24,8 @@ import { getProfileAbility } from '../services/Database';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
+import { getUserFacingErrorMessage } from '../i18n/userFacing';
+import { formatDate, formatNumber } from '../services/interfaceLanguage';
 import {
     getActiveTargetLanguageOptionId,
     getInterfaceLanguageLabel,
@@ -63,7 +65,7 @@ export const vocabEstimateLabel = (tier, t) => {
     if (!tier) return null;
     if (tier.advanced) return t('vocabLevel.advancedTier');
     if (tier.label) return tier.label;
-    return t('profile.vocabEstimateWords', { count: Number(tier.threshold).toLocaleString() });
+    return t('profile.vocabEstimateWords', { count: formatNumber(tier.threshold) });
 };
 
 // One settings row: small leading icon, label, optional value, trailing chevron.
@@ -117,7 +119,7 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
     const theme = useTheme();
     const profileColors = useMemo(() => getProfileColors(theme.colors), [theme.colors]);
     const styles = useMemo(() => createStyles(profileColors, theme.colors), [profileColors, theme.colors]);
-    const { t } = useTranslation();
+    const { t, language } = useTranslation();
     const isAnonymous = Boolean(user?.is_anonymous);
     const isGuest = !user?.id || isAnonymous;
     const showVocabRow = hasVocabSizeGrid(targetLanguage);
@@ -131,18 +133,19 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
             return String(metadataName).trim();
         }
 
-        return 'Reader';
+        return null;
     }, [user?.user_metadata]);
+    const shownName = displayName ?? t('profile.defaultName');
 
     const learningSince = useMemo(() => {
         if (!user?.created_at) {
             return t('profile.recently');
         }
 
-        return new Date(user.created_at).toLocaleDateString(normalizeInterfaceLanguageCode(interfaceLanguage), {
+        return formatDate(user.created_at, {
             month: 'short',
             year: 'numeric',
-        });
+        }, normalizeInterfaceLanguageCode(interfaceLanguage)) || t('profile.recently');
     }, [interfaceLanguage, t, user?.created_at]);
 
     const identitySubtitle = isGuest
@@ -205,7 +208,7 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
         try {
             await signOut?.();
         } catch (error) {
-            Alert.alert(t('profile.signOutFailed'), error.message || t('profile.preferenceSoon'));
+            Alert.alert(t('profile.signOutFailed'), getUserFacingErrorMessage(error, t, 'common.genericError', language));
         } finally {
             setIsSigningOut(false);
             setShowSignOutModal(false);
@@ -231,7 +234,7 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
                 console.warn('[Profile] Sign-out after account deletion failed:', error?.message ?? error);
                 Alert.alert(t('profile.signOutFailed'), t('profile.signOutAfterDeleteFailed'));
             } else {
-                Alert.alert(t('profile.deleteAccountFailed'), error?.message || t('profile.preferenceSoon'));
+                Alert.alert(t('profile.deleteAccountFailed'), getUserFacingErrorMessage(error, t, 'common.genericError', language));
             }
         } finally {
             setIsDeletingAccount(false);
@@ -270,7 +273,7 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
     };
 
     const openNameEditor = () => {
-        setDraftName(displayName === 'Reader' ? '' : displayName);
+        setDraftName(displayName ?? '');
         setShowNameEditor(true);
     };
 
@@ -311,7 +314,7 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
             await updateUsername(nextName);
             setShowNameEditor(false);
         } catch (error) {
-            Alert.alert(t('profile.saveFailed'), error?.message || t('profile.preferenceSoon'));
+            Alert.alert(t('profile.saveFailed'), getUserFacingErrorMessage(error, t, 'common.genericError', language));
         } finally {
             setIsSavingName(false);
         }
@@ -347,7 +350,7 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
                 <View style={styles.profileHeader}>
                     <ProfileAvatar user={user} size={56} />
                     <View style={styles.profileIdentity}>
-                        <Text style={styles.profileName} numberOfLines={1}>{displayName}</Text>
+                        <Text style={styles.profileName} numberOfLines={1}>{shownName}</Text>
                         <Text style={styles.profileSubtitle} numberOfLines={1}>{identitySubtitle}</Text>
                     </View>
                     {!isGuest ? (

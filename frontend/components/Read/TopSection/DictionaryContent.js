@@ -6,6 +6,7 @@ import { streamExplainInContext } from '../../../services/api/explainInContext';
 import { logTiming } from '../../../services/appTelemetry';
 import { useAppContext } from '../../../contexts/AppContext';
 import { useTranslation } from '../../../hooks/useTranslation';
+import { getUserFacingErrorMessage } from '../../../i18n/userFacing';
 import { useLocalOwner } from '../../../contexts/LocalOwnerContext';
 import {
     getCachedPKnown,
@@ -441,7 +442,7 @@ const DictionaryContent = ({
     savedWords = [],
 }) => {
     const { interfaceLanguage, activeProfileId } = useAppContext();
-    const { t } = useTranslation();
+    const { t, language } = useTranslation();
     const { colors } = useTheme();
     const styles = useMemo(() => createStyles(colors), [colors]);
     const { activeOwnerId } = useLocalOwner();
@@ -578,7 +579,7 @@ const DictionaryContent = ({
             if (isStale()) return;
             setExplainData((prev) => ({
                 ...prev,
-                [cacheKey]: { loading: false, text: '', error: error?.message || t('lookup.explainFailed') },
+                [cacheKey]: { loading: false, text: '', error: getUserFacingErrorMessage(error, t, 'lookup.explainFailed', language) },
             }));
         }
     }, [contextSentence, targetLanguage, interfaceLanguage, activeOwnerId, activeProfileId, t]);
@@ -736,7 +737,7 @@ const DictionaryContent = ({
                 setStemWordList([]);
                 setNeedsLiveFetch(false);
                 setDictionaryData([]);
-                setLiveError(error?.message || t('lookup.dictionaryFailed'));
+                setLiveError(getUserFacingErrorMessage(error, t, 'lookup.dictionaryFailed', language));
             } finally {
                 if (!isCancelled) {
                     setIsLiveLoading(false);
@@ -1746,8 +1747,8 @@ const DictionaryContent = ({
         return (
             <View style={styles.pronunciationControls}>
                 {[
-                    ['us', 'US', t('lookup.playUsPronunciation', { word })],
-                    ['uk', 'UK', t('lookup.playUkPronunciation', { word })],
+                    ['us', t('lookup.accentUs'), t('lookup.playUsPronunciation', { word })],
+                    ['uk', t('lookup.accentUk'), t('lookup.playUkPronunciation', { word })],
                 ].map(([accent, label, accessibilityLabel]) => (
                     <TouchableOpacity
                         key={accent}
@@ -2268,7 +2269,7 @@ const DictionaryContent = ({
         const target = Array.isArray(zhReadings[reference]) ? dedupeZhReadings(zhReadings[reference]) : null;
         if (target && target.length > 0 && target[0].senses.length > 0) {
             return target[0].senses.map((targetSense, index) => (
-                index === 0 ? `variant of ${reference}: ${targetSense}` : targetSense
+                index === 0 ? t('lookup.variantOf', { reference, sense: targetSense }) : targetSense
             ));
         }
         return [sense];

@@ -24,7 +24,9 @@ import { Screen } from '../components/ui';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
+import { stripStoredPlaceholder } from '../i18n/userFacing';
 import { fetchHanjaRelated } from '../services/api/hanjaRelated';
+import { formatDate, formatNumber, tRuntime } from '../services/interfaceLanguage';
 import {
   addRelatedKnownWord,
   getAllBooksWordCandidates,
@@ -121,23 +123,8 @@ const LEARN_SIDE_PADDING = 16;
 const ENCOUNTER_DOT_COUNT = 4;
 const DETAIL_CONTEXT_LIMIT = 2;
 const DETAIL_HANJA_RELATED_PAGE_SIZE = 2;
-const MONTH_SHORT_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const SEGMENT_TRACK_PADDING = 3;
 const MS_PER_DAY = 1000 * 60 * 60 * 24;
-const MONTH_LONG_LABELS = [
-  'January',
-  'February',
-  'March',
-  'April',
-  'May',
-  'June',
-  'July',
-  'August',
-  'September',
-  'October',
-  'November',
-  'December',
-];
 const EMPTY_HANJA_LOOKUP = {
   firstTableData: [],
   similarWordsTableData: [],
@@ -289,10 +276,10 @@ const getSeenCount = (word) => {
   return Math.max(1, numericValue(word?.correct_count) + numericValue(word?.wrong_count) + 1);
 };
 
-const getSourceLabel = (word, t = null) => (
-  cleanText(word?.source_book_title)
+const getSourceLabel = (word, t = tRuntime) => (
+  stripStoredPlaceholder(word?.source_book_title)
   || cleanText(word?.source_book_uri)
-  || (t ? t('learn.savedWord') : 'saved word')
+  || t('learn.savedWord')
 );
 
 const getLastSawDate = (word) => (
@@ -301,25 +288,12 @@ const getLastSawDate = (word) => (
   || null
 );
 
-// Month/day in the interface language when the runtime has Intl date
-// support; the English labels are the fallback.
-const formatLocalizedDate = (date, language, month) => {
-  if (language && language !== 'en') {
-    try {
-      const label = date.toLocaleDateString(language, { month, day: 'numeric' });
-      if (label) {
-        return label;
-      }
-    } catch {
-      // fall through to the English labels
-    }
-  }
+// Month/day in the interface language (never the phone's locale).
+const formatLocalizedDate = (date, language, month) => (
+  formatDate(date, { month, day: 'numeric' }, language)
+);
 
-  const labels = month === 'long' ? MONTH_LONG_LABELS : MONTH_SHORT_LABELS;
-  return `${labels[date.getMonth()] ?? ''} ${date.getDate()}`.trim();
-};
-
-const formatShortDate = (value, fallback = 'not seen', language = 'en') => {
+const formatShortDate = (value, fallback = '', language = undefined) => {
   const timestamp = new Date(value).getTime();
   if (!Number.isFinite(timestamp)) {
     return fallback;
@@ -328,7 +302,7 @@ const formatShortDate = (value, fallback = 'not seen', language = 'en') => {
   return formatLocalizedDate(new Date(timestamp), language, 'short') || fallback;
 };
 
-const formatLongDate = (value, fallback = '', language = 'en') => {
+const formatLongDate = (value, fallback = '', language = undefined) => {
   const timestamp = new Date(value).getTime();
   if (!Number.isFinite(timestamp)) {
     return fallback;
@@ -497,8 +471,8 @@ const getContextTranslation = (context) => (
 );
 
 const getContextSource = (context, fallbackSource) => (
-  cleanText(context?.sourceBookTitle)
-  || cleanText(context?.source_book_title)
+  stripStoredPlaceholder(context?.sourceBookTitle)
+  || stripStoredPlaceholder(context?.source_book_title)
   || cleanText(context?.sourceTitle)
   || cleanText(context?.sourceBookUri)
   || cleanText(context?.source_book_uri)
@@ -1849,7 +1823,7 @@ const Learn = ({ navigation, user }) => {
     { key: 'suggested', label: t('learn.suggestedTab') },
     {
       key: 'learned',
-      label: learnedWords.length > 0 ? `${t('learn.learnedTab')} ${learnedWords.length}` : t('learn.learnedTab'),
+      label: learnedWords.length > 0 ? t('learn.learnedTabCount', { count: formatNumber(learnedWords.length) }) : t('learn.learnedTab'),
     },
   ];
 
@@ -1871,15 +1845,15 @@ const Learn = ({ navigation, user }) => {
       <View style={styles.summaryCard}>
         <View style={styles.summaryStats}>
           <View style={styles.summaryStat}>
-            <Text style={styles.summaryValue}>{maturedCount}</Text>
+            <Text style={styles.summaryValue}>{formatNumber(maturedCount)}</Text>
             <Text style={styles.summaryLabel}>{t('learn.statMatured')}</Text>
           </View>
           <View style={[styles.summaryStat, styles.summaryStatMiddle]}>
-            <Text style={styles.summaryValue}>{reviewCount}</Text>
+            <Text style={styles.summaryValue}>{formatNumber(reviewCount)}</Text>
             <Text style={styles.summaryLabel}>{t('learn.statDueToday')}</Text>
           </View>
           <View style={styles.summaryStat}>
-            <Text style={styles.summaryValue}>{notSeenYetCount}</Text>
+            <Text style={styles.summaryValue}>{formatNumber(notSeenYetCount)}</Text>
             <Text style={styles.summaryLabel}>{t('learn.statNotSeenYet')}</Text>
           </View>
         </View>
@@ -2040,7 +2014,7 @@ const Learn = ({ navigation, user }) => {
             candidateGroups.map((group) => (
               <View key={group.bookUri} style={styles.candidateGroup}>
                 <Text style={styles.candidateGroupTitle} numberOfLines={1}>
-                  {t('learn.suggestedFrom', { title: group.bookTitle || t('learn.untitledBook') })}
+                  {t('learn.suggestedFrom', { title: stripStoredPlaceholder(group.bookTitle) || t('learn.untitledBook') })}
                 </Text>
                 <View style={styles.candidateGroupList}>
                   {group.candidates.map((candidate) => (

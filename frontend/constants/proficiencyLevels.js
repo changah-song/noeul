@@ -4,10 +4,13 @@ export const PROFICIENCY_LEVEL_OPTIONS = {
   // Six "Noeul Reading Levels": the three NIKL grades (초급/중급/고급), each split
   // Lower/Upper by corpus frequency. rank here MUST match korean_nikl_vocab.reading_level
   // (backend BOOK_LEVEL_LABELS.ko) so level_rank normalizes across the full 1..6 span.
+  // `label`/`description` are English identifiers (alias matching, logs); the UI
+  // shows `labelKey` through getProficiencyLevelLabel (i18n/userFacing.js).
   ko: [
     {
       rank: 1,
       value: 'lower_elementary',
+      labelKey: 'proficiencyLevel.ko.lower_elementary',
       label: 'Lower Elementary',
       shortLabel: '초급 하',
       description: 'Most frequent beginner (초급) vocabulary',
@@ -16,6 +19,7 @@ export const PROFICIENCY_LEVEL_OPTIONS = {
     {
       rank: 2,
       value: 'upper_elementary',
+      labelKey: 'proficiencyLevel.ko.upper_elementary',
       label: 'Upper Elementary',
       shortLabel: '초급 상',
       description: 'Less frequent beginner (초급) vocabulary',
@@ -24,6 +28,7 @@ export const PROFICIENCY_LEVEL_OPTIONS = {
     {
       rank: 3,
       value: 'lower_intermediate',
+      labelKey: 'proficiencyLevel.ko.lower_intermediate',
       label: 'Lower Intermediate',
       shortLabel: '중급 하',
       description: 'Most frequent intermediate (중급) vocabulary',
@@ -32,6 +37,7 @@ export const PROFICIENCY_LEVEL_OPTIONS = {
     {
       rank: 4,
       value: 'upper_intermediate',
+      labelKey: 'proficiencyLevel.ko.upper_intermediate',
       label: 'Upper Intermediate',
       shortLabel: '중급 상',
       description: 'Less frequent intermediate (중급) vocabulary',
@@ -40,6 +46,7 @@ export const PROFICIENCY_LEVEL_OPTIONS = {
     {
       rank: 5,
       value: 'lower_advanced',
+      labelKey: 'proficiencyLevel.ko.lower_advanced',
       label: 'Lower Advanced',
       shortLabel: '고급 하',
       description: 'Most frequent advanced (고급) vocabulary',
@@ -48,6 +55,7 @@ export const PROFICIENCY_LEVEL_OPTIONS = {
     {
       rank: 6,
       value: 'upper_advanced',
+      labelKey: 'proficiencyLevel.ko.upper_advanced',
       label: 'Upper Advanced',
       shortLabel: '고급 상',
       description: 'Less frequent advanced (고급) vocabulary',

@@ -11,6 +11,7 @@ import {
 import { useAppContext } from '../../contexts/AppContext';
 import { useLocalOwner } from '../../contexts/LocalOwnerContext';
 import { useTranslation } from '../../hooks/useTranslation';
+import { formatNumber } from '../../services/interfaceLanguage';
 import { fontFamilies, useTheme } from '../../theme';
 import { getVocabTiers, thetaForTier } from '../../services/vocabSizeLevels';
 import { nearestRankForTheta } from '../../services/calibrationQuiz';
@@ -171,7 +172,7 @@ const VocabLevelModal = ({ visible, onClose, initialMode = 'list' }) => {
     }, [activeOwnerId, activeProfileId, isSaving, onClose, selectedIndex, setTargetLanguageLevel, t, targetLanguage, tiers]);
 
     const tierLabel = useCallback((tier) => (
-        tier.advanced ? t('vocabLevel.advancedTier') : (tier.label || Number(tier.threshold).toLocaleString())
+        tier.advanced ? t('vocabLevel.advancedTier') : (tier.label || formatNumber(tier.threshold))
     ), [t]);
 
     // The "Now" marker: where reading has moved the estimate, else the pick.

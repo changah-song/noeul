@@ -12,9 +12,14 @@ const EXTRACTED_PDF_META_FILE = '.ff-pdf-extraction.json';
 const PDF_PACKAGE_CACHE = new Map();
 const SYNTHETIC_SECTION_PAGE_COUNT = 12;
 
+// Missing titles/authors stay empty: the UI shows a translated "Untitled" /
+// "Unknown author" at display time (i18n/userFacing.js). Never store English.
+const PLACEHOLDER_TITLE_PATTERN = /^untitled$/i;
+const PLACEHOLDER_AUTHOR_PATTERN = /^unknown( author)?$/i;
+
 const cleanFallbackTitle = (rawName = '') => {
     if (!rawName) {
-        return 'Untitled';
+        return '';
     }
 
     const decodedName = (() => {
@@ -189,7 +194,8 @@ const cleanDocumentTitle = (title, fallbackName) => {
     const cleanedFallback = cleanFallbackTitle(fallbackName);
     const cleanedTitle = cleanFallbackTitle(title || '');
 
-    return cleanedTitle === 'Untitled' ? cleanedFallback : cleanedTitle;
+    const title = cleanedTitle && !PLACEHOLDER_TITLE_PATTERN.test(cleanedTitle) ? cleanedTitle : cleanedFallback;
+    return PLACEHOLDER_TITLE_PATTERN.test(title) ? '' : title;
 };
 
 const normalizeLine = (line = {}, index = 0) => {
@@ -259,7 +265,8 @@ const normalizeExtraction = (extraction = {}, uri, fallbackName = '') => {
         ? extraction.pages.map(normalizePage)
         : [];
     const title = cleanDocumentTitle(extraction.title, fallbackName);
-    const author = String(extraction.author || '').trim();
+    const rawAuthor = String(extraction.author || '').trim();
+    const author = PLACEHOLDER_AUTHOR_PATTERN.test(rawAuthor) ? '' : rawAuthor;
     const wordCount = pages.reduce((total, page) => total + countReadableTextWords(page.text), 0);
 
     return {

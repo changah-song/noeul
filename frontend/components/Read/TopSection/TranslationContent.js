@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { ActivityIndicator, Text, View, ScrollView, StyleSheet } from 'react-native';
 import { translateWithPinyin } from '../../../services/api/googleTranslate';
 import { useTranslation } from '../../../hooks/useTranslation';
+import { getUserFacingErrorMessage } from '../../../i18n/userFacing';
 import { spacing, textStyles, useTheme } from '../../../theme';
 import LookupLoadingSkeleton from './LookupLoadingSkeleton';
 
@@ -21,7 +22,7 @@ const TranslationContent = ({
     forceTranslatedText = '',
     onStatusChange,
 }) => {
-    const { t } = useTranslation();
+    const { t, language } = useTranslation();
     const { colors } = useTheme();
     const styles = useMemo(() => createStyles(colors), [colors]);
     const [translatedText, setTranslatedText] = useState('');
@@ -63,7 +64,7 @@ const TranslationContent = ({
                 if (isCancelled) {
                     return;
                 }
-                setErrorMessage(error?.message || t('lookup.internetRequired'));
+                setErrorMessage(getUserFacingErrorMessage(error, t, 'lookup.internetRequired', language));
             })
             .finally(() => {
                 if (isCancelled) {

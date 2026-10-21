@@ -4,11 +4,10 @@ import { MaterialIcons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { useTranslation } from '../../../hooks/useTranslation';
 import { useAppContext } from '../../../contexts/AppContext';
+import { getLocalizedLanguageName } from '../../../i18n/userFacing';
 import {
     normalizeBookLanguage,
     normalizeInterfaceLanguageCode,
-    getInterfaceLanguageLabel,
-    getLanguageLabel,
 } from '../../../constants/languages';
 import { fontFamilies, useTheme } from '../../../theme';
 import TranslationContent from './TranslationContent';
@@ -241,11 +240,9 @@ const TopSection = ({
     const translationText = translationTarget || visibleWord;
     const translationSourceLanguage = dictionaryBookLanguage;
     const translationTargetLanguage = normalizeInterfaceLanguageCode(interfaceLanguage);
-    // The source is the book/target language (ko, zh) — use the target-language
-    // label map, not the interface-language one, which would fall back to
-    // English for any code (like 'ko') that isn't a supported UI language.
-    const translationSourceLabel = getLanguageLabel(translationSourceLanguage);
-    const translationTargetLabel = getInterfaceLanguageLabel(translationTargetLanguage);
+    // Both ends named in the interface language ("Coréen → Français").
+    const translationSourceLabel = getLocalizedLanguageName(translationSourceLanguage, t);
+    const translationTargetLabel = getLocalizedLanguageName(translationTargetLanguage, t);
     const bottomPanelInset = !isTopPlacement && !isTranslationMode ? bottomInset : 0;
     const sheetSizeStyle = isTranslationMode ? null : { maxHeight: dictionaryMaxHeight + bottomPanelInset };
     const sheetBottomPadding = isTranslationMode

@@ -3,6 +3,7 @@ import { Animated, Text, TouchableOpacity, View } from 'react-native';
 import { Feather, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
 import { LISTEN_RATES } from '../../services/listenPlayer';
+import { formatNumber } from '../../services/interfaceLanguage';
 
 // Listen-mode transport, a floating rounded bar: previous / play-pause /
 // next, the speed chip (opens speed, pitch and voice settings), the two study
@@ -27,7 +28,7 @@ const ListenBar = ({
     themeColors,
 }) => {
     const { t } = useTranslation();
-    const rateLabel = `${(LISTEN_RATES.includes(rate) ? rate : 1).toString().replace(/\.0$/, '')}×`;
+    const rateLabel = t('read.listenRateValue', { rate: formatNumber(LISTEN_RATES.includes(rate) ? rate : 1) });
 
     return (
         <Animated.View
