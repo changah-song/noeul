@@ -50,6 +50,7 @@ import {
   normalizeBookLanguage,
 } from '../constants/languages';
 import { assessEntry } from '../services/api/assessEntry';
+import { translateContent } from '../i18n/contentStrings';
 
 const LEGACY_STORAGE_KEY = 'writing_entries_v1';
 const getWritingStorageKey = (ownerId) => makeScopedStorageKey(ownerId, 'writing-entries-v1');
@@ -1569,7 +1570,7 @@ const Write = ({ user, navigation }) => {
             {selectedEntryNativeInsertWords.length > 0 ? (
               <View style={styles.reviewEnglishWords}>
                 <Text style={styles.reviewEnglishWordsLabel}>
-                  {t('write.englishWords')}
+                  {translateContent(language, 'write.otherLanguageWords')}
                 </Text>
                 <View style={styles.reviewEnglishWordChips}>
                   {selectedEntryNativeInsertWords.map((word) => (

@@ -20,6 +20,7 @@ import {
 } from '../../services/calibrationQuiz';
 import { updateThetaFromOutcome } from '../../services/Database';
 import { getProficiencyLevelForLanguage } from '../../constants/proficiencyLevels';
+import { localizedLevelLabel } from '../../i18n/contentStrings';
 
 /**
  * CalibrationQuizModal — the cold-start "check the words you know" flow.
@@ -42,7 +43,7 @@ const CalibrationQuizModal = ({ visible, onClose }) => {
     const { activeOwnerId } = useLocalOwner();
     const theme = useTheme();
     const styles = useMemo(() => createStyles(theme.colors), [theme.colors]);
-    const { t } = useTranslation();
+    const { t, language } = useTranslation();
 
     const [words, setWords] = useState([]);
     const [index, setIndex] = useState(0);
@@ -166,7 +167,12 @@ const CalibrationQuizModal = ({ visible, onClose }) => {
                                 <>
                                     <Text style={styles.eyebrow}>{t('calibration.resultEyebrow')}</Text>
                                     <Text style={styles.resultLevel}>
-                                        {measuredOption?.label ?? currentOption?.label ?? ''}
+                                        {localizedLevelLabel(
+                                            targetLanguage,
+                                            measuredOption?.rank ?? currentOption?.rank,
+                                            language,
+                                            measuredOption?.label ?? currentOption?.label ?? ''
+                                        )}
                                     </Text>
                                     <Text style={styles.helper}>{t('calibration.resultNote')}</Text>
                                     <TouchableOpacity

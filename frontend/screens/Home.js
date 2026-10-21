@@ -110,6 +110,8 @@ import {
     stopFloatingWidget,
 } from '../modules/screen-ocr-overlay/src';
 import { getLanguageLabel, normalizeBookLanguage } from '../constants/languages';
+import { localizePublicDomainBook } from '../assets/data/public-domain/catalogI18n';
+import { localizedLevelLabel } from '../i18n/contentStrings';
 
 const BOOK_GRID_COLUMNS = 4;
 const BOOK_GRID_GAP = Spacing.lg;
@@ -1170,8 +1172,14 @@ const BookPreview = ({
             : t('home.notOnDeviceTag');
     const showDownloadCta = bookState === 'notdl' && !isPublicDomain;
     const showDownloadingCta = bookState === 'downloading';
-    const genreValue = book?.genre || (isPublicDomain ? t('common.unknown') : t('home.autoDetectionSoon'));
-    const levelValue = book?.difficulty || book?.bookLevel?.level || book?.bookLevel?.proficiency_level || t('common.unknown');
+    // Bundled books: title/genre/blurb in the interface language (catalogI18n).
+    const localizedCopy = localizePublicDomainBook(book, language);
+    const genreValue = localizedCopy?.genre || (isPublicDomain ? t('common.unknown') : t('home.autoDetectionSoon'));
+    const levelValue = localizedLevelLabel(
+        book?.language,
+        book?.difficulty || book?.bookLevel?.level || book?.bookLevel?.proficiency_level,
+        language
+    ) || t('common.unknown');
     const hasKnownDownloadSize = Number(book?.size) > 0;
     const downloadNote = hasKnownDownloadSize
         ? t('home.availableOfflineWithSize', { size: formatFileSize(book?.size, t) })
@@ -1183,7 +1191,7 @@ const BookPreview = ({
     );
     const downloadFillWidth = `${Math.round(normalizedDownloadProgress * 100)}%`;
     const descriptionText = String(book?.description || book?.summary || '').trim();
-    const snippetText = canReadBook || isPublicDomain ? String(book?.snippet || '').trim() : '';
+    const snippetText = canReadBook || isPublicDomain ? String(localizedCopy?.snippet || '').trim() : '';
     const aboutText = descriptionText || snippetText;
     const showAbout = !!aboutText;
     const canStartReading = (canReadBook || isPublicDomain) && !actionBusy;
@@ -1657,7 +1665,7 @@ const ShelfTabs = ({ tabs, activeId }) => {
 };
 
 const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpen, navigation, user }) => {
-    const { t } = useTranslation();
+    const { t, language: interfaceLanguage } = useTranslation();
     const { languageSettingsReady, targetLanguage, setTargetLanguage, switchProfile, activeProfileId } = useAppContext();
     const { activeOwnerId, syncPaused, syncGeneration } = useLocalOwner();
     const { colors: themeColors } = useTheme();
@@ -3744,13 +3752,13 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const getCollectionBookMeta = useCallback((book, sourceLabel) => {
         const parts = [
             formatBookLanguage(book?.language || targetLanguage, t),
-            book?.difficulty,
+            localizedLevelLabel(book?.language || targetLanguage, book?.difficulty, interfaceLanguage),
             formatWordCount(getBookWordCount(book), t),
             sourceLabel,
         ];
 
         return parts.filter(Boolean).join(' · ');
-    }, [targetLanguage, t]);
+    }, [interfaceLanguage, targetLanguage, t]);
 
     const renderCollectionEmptyState = ({
         icon,
@@ -3798,7 +3806,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const renderStarterBookCard = (book) => {
         const title = getBookTitle(book, t);
         const author = getBookAuthor(book, t);
-        const translatedTitle = typeof book.titleTranslation === 'string' ? book.titleTranslation.trim() : '';
+        const localizedTitle = localizePublicDomainBook(book, interfaceLanguage)?.titleTranslation;
+        const translatedTitle = typeof localizedTitle === 'string' ? localizedTitle.trim() : '';
         const wordCount = getBookWordCount(book);
         const meta = [
             wordCount ? formatWordCount(wordCount, t) : null,

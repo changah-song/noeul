@@ -1,6 +1,8 @@
 import axios from 'axios';
 import { BASE_URL } from '../../config';
 import { supabase } from '../supabase';
+import { getRuntimeInterfaceLanguage } from '../interfaceLanguage';
+import { localizeApiError } from '../../i18n/contentStrings';
 
 // Without a timeout a stalled connection leaves callers (e.g. word lookups)
 // waiting forever. Long-running calls such as chapter preprocessing pass
@@ -66,13 +68,39 @@ export const getAccessToken = async ({ refresh = false } = {}) => {
   return session.access_token;
 };
 
+// The learner's interface language rides on every request, so endpoints that
+// produce user-facing text (AI feedback, explanations, content translations)
+// know it even when the request body doesn't carry `interface_language`.
+export const INTERFACE_LANGUAGE_HEADER = 'X-Interface-Language';
+
 const withAuthHeader = (config, accessToken) => {
   config.headers = {
     ...(config.headers ?? {}),
+    [INTERFACE_LANGUAGE_HEADER]: getRuntimeInterfaceLanguage(),
     Authorization: `Bearer ${accessToken}`,
   };
 
   return config;
+};
+
+// Backend errors carry a stable `code` (backend/content_i18n.py); their
+// `detail` is English. Swap in text in the learner's language so every caller
+// that shows `error.message` or `response.data.detail` shows translated text.
+// The English stays available as `error.originalMessage` / `data.detail_en`.
+export const localizeErrorInPlace = (error, language = getRuntimeInterfaceLanguage()) => {
+  if (!error || typeof error !== 'object' || error.localizedMessage) {
+    return error;
+  }
+  const localized = localizeApiError(error, language);
+  error.localizedMessage = localized;
+  error.originalMessage = error.message;
+  error.message = localized;
+  const data = error.response?.data;
+  if (data && typeof data === 'object' && data.code && typeof data.detail === 'string') {
+    data.detail_en = data.detail;
+    data.detail = localized;
+  }
+  return error;
 };
 
 api.interceptors.request.use(async (config) => {
@@ -101,5 +129,5 @@ api.interceptors.response.use(undefined, async (error) => {
     }
   }
 
-  return Promise.reject(error);
+  return Promise.reject(localizeErrorInPlace(error));
 });
