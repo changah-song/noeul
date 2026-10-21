@@ -9,11 +9,12 @@ import {
   normalizeInterfaceLanguageCode,
   normalizeInterfaceLanguageForTarget,
 } from '../constants/languages';
+import { getDeviceInterfaceLanguage } from './deviceLocale';
 
 export const LANGUAGE_SETTINGS_KEY = '@ff/language-settings';
 
 let runtimeTargetLanguage = DEFAULT_TARGET_LANGUAGE;
-let runtimeInterfaceLanguage = DEFAULT_INTERFACE_LANGUAGE;
+let runtimeInterfaceLanguage = getDeviceInterfaceLanguage() ?? DEFAULT_INTERFACE_LANGUAGE;
 let runtimeChineseScript = DEFAULT_CHINESE_SCRIPT;
 
 export const getRuntimeTargetLanguage = () => runtimeTargetLanguage;
@@ -49,8 +50,9 @@ export const readStoredLanguageSettings = async () => {
     );
     return {
       targetLanguage,
+      // Until the user picks one, follow the phone's language.
       interfaceLanguage: normalizeInterfaceLanguageForTarget(
-        parsed.interfaceLanguage ?? parsed.interface_language,
+        parsed.interfaceLanguage ?? parsed.interface_language ?? getDeviceInterfaceLanguage(),
         targetLanguage
       ),
       chineseScript: normalizeChineseScript(

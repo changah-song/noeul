@@ -314,11 +314,19 @@
   function renderBreakdowns(data) {
     const langs = data.target_languages || [];
     const plats = data.platforms || [];
+    const deviceLangs = data.device_languages || [];
+    const uiLangs = data.interface_languages || [];
     const body = el('div', {}, [
       langs.length ? barList(langs, 'language', 'users') : el('div', { className: 'empty-state', text: 'No language preferences synced yet.' }),
       el('h3', { className: 'card-title', style: 'margin:20px 0 8px', text: 'Platforms' }),
       el('p', { className: 'card-sub', style: 'margin:-6px 0 10px', text: 'Users who opened the app in this range' }),
       plats.length ? barList(plats, 'platform', 'users') : el('div', { className: 'empty-state', text: 'No app launches recorded yet.' }),
+      el('h3', { className: 'card-title', style: 'margin:20px 0 8px', text: 'Phone languages' }),
+      el('p', { className: 'card-sub', style: 'margin:-6px 0 10px', text: 'System language of users who opened the app in this range' }),
+      deviceLangs.length ? barList(deviceLangs, 'language', 'users') : el('div', { className: 'empty-state', text: 'No phone languages recorded yet.' }),
+      el('h3', { className: 'card-title', style: 'margin:20px 0 8px', text: 'App languages' }),
+      el('p', { className: 'card-sub', style: 'margin:-6px 0 10px', text: 'Interface language saved on each account' }),
+      uiLangs.length ? barList(uiLangs, 'language', 'users') : el('div', { className: 'empty-state', text: 'No interface languages synced yet.' }),
     ]);
     sectionCard($('languages'), 'Target languages', 'Language each user is learning', body);
   }

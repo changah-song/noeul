@@ -180,6 +180,13 @@
         { language: 'ko', users: 1710 }, { language: 'en', users: 690 }, { language: 'zh', users: 310 }, { language: '(unset)', users: 130 },
       ],
       platforms: [{ platform: 'android', users: 1760 }, { platform: 'ios', users: 1080 }],
+      device_languages: [
+        { language: 'en', users: 820 }, { language: 'vi', users: 410 }, { language: 'pt', users: 260 },
+        { language: 'id', users: 240 }, { language: 'ja', users: 180 }, { language: 'es', users: 150 },
+      ],
+      interface_languages: [
+        { language: 'en', users: 1490 }, { language: 'vi', users: 410 }, { language: 'id', users: 240 }, { language: 'es', users: 150 },
+      ],
       crash_groups: crashGroups,
       stall_screens: stallScreens,
       versions,

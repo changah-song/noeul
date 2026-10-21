@@ -14,6 +14,8 @@ export const KRDICT_INTERFACE_LANGUAGE_OPTIONS = [
   { code: 'en', label: 'English' },
   { code: 'zh', label: '简体中文' },
   { code: 'zh-Hant', label: '繁體中文' },
+  // For Korean speakers learning Chinese; disabled while Korean is the target.
+  { code: 'ko', label: '한국어' },
   { code: 'fr', label: 'Français' },
   { code: 'es', label: 'Español' },
   { code: 'ar', label: 'العربية' },

@@ -351,6 +351,30 @@ begin
         group by coalesce(platform, '(unknown)')
       ) p
     ), '[]'::jsonb),
+    -- Phone language from each user's latest launch in range (app_start
+    -- metadata), including languages Noeul doesn't offer yet.
+    'device_languages', coalesce((
+      select jsonb_agg(jsonb_build_object('language', language, 'users', users) order by users desc)
+      from (
+        select language, count(*) as users
+        from (
+          select distinct on (user_id)
+            coalesce(nullif(metadata->>'device_language', ''), '(unknown)') as language
+          from ev
+          where event_type = 'app_start'
+          order by user_id, occurred_at desc
+        ) latest
+        group by language
+      ) d
+    ), '[]'::jsonb),
+    'interface_languages', coalesce((
+      select jsonb_agg(jsonb_build_object('language', language, 'users', users) order by users desc)
+      from (
+        select interface_language as language, count(*) as users
+        from public.users
+        group by interface_language
+      ) i
+    ), '[]'::jsonb),
     'crash_groups', coalesce((select jsonb_agg(to_jsonb(c)) from crash_groups c), '[]'::jsonb),
     'stall_screens', coalesce((select jsonb_agg(to_jsonb(s)) from stall_screens s), '[]'::jsonb),
     'versions', coalesce((select jsonb_agg(to_jsonb(v)) from versions v), '[]'::jsonb),
