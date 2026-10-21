@@ -56,6 +56,8 @@ class ListenSessionService : Service() {
 
   override fun onCreate() {
     super.onCreate()
+    running = true
+    ReaderText.ensureLoaded(this)
     ensureNotificationChannel()
     mediaSession = MediaSessionCompat(this, "NoeulListen").apply {
       setCallback(object : MediaSessionCompat.Callback() {
@@ -77,6 +79,12 @@ class ListenSessionService : Service() {
         if (intent.hasExtra(EXTRA_PLAYING)) playing = intent.getBooleanExtra(EXTRA_PLAYING, playing)
         if (intent.hasExtra(EXTRA_COVER)) loadCover(intent.getStringExtra(EXTRA_COVER))
         publish()
+      }
+      ACTION_REFRESH_STRINGS -> {
+        // The interface language changed: rename the channel and redraw the
+        // player's buttons.
+        ensureNotificationChannel()
+        if (inForeground) publish()
       }
       ACTION_CONTROL -> {
         // A notification button. Pressing play/pause toggles; the state
@@ -100,6 +108,7 @@ class ListenSessionService : Service() {
   }
 
   override fun onDestroy() {
+    running = false
     mediaSession?.isActive = false
     mediaSession?.release()
     mediaSession = null
@@ -238,14 +247,14 @@ class ListenSessionService : Service() {
       .setOngoing(playing)
       .setOnlyAlertOnce(true)
       .setSilent(true)
-      .addAction(android.R.drawable.ic_media_previous, "Previous", controlIntent(CONTROL_PREVIOUS, 1))
+      .addAction(android.R.drawable.ic_media_previous, ReaderText.t("listenPrevious"), controlIntent(CONTROL_PREVIOUS, 1))
       .addAction(
         if (playing) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
-        if (playing) "Pause" else "Play",
+        ReaderText.t(if (playing) "listenPause" else "listenPlay"),
         controlIntent(CONTROL_TOGGLE, 2)
       )
-      .addAction(android.R.drawable.ic_media_next, "Next", controlIntent(CONTROL_NEXT, 3))
-      .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", controlIntent(CONTROL_STOP, 4))
+      .addAction(android.R.drawable.ic_media_next, ReaderText.t("listenNext"), controlIntent(CONTROL_NEXT, 3))
+      .addAction(android.R.drawable.ic_menu_close_clear_cancel, ReaderText.t("listenStop"), controlIntent(CONTROL_STOP, 4))
       .setStyle(
         androidx.media.app.NotificationCompat.MediaStyle()
           .setMediaSession(session.sessionToken)
@@ -257,9 +266,10 @@ class ListenSessionService : Service() {
   private fun ensureNotificationChannel() {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
     val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-    if (manager.getNotificationChannel(NOTIFICATION_CHANNEL_ID) != null) return
+    // Re-creating an existing channel only updates its name (shown in the
+    // app's notification settings), so this also follows language changes.
     manager.createNotificationChannel(
-      NotificationChannel(NOTIFICATION_CHANNEL_ID, "Listen", NotificationManager.IMPORTANCE_LOW).apply {
+      NotificationChannel(NOTIFICATION_CHANNEL_ID, ReaderText.t("listenChannel"), NotificationManager.IMPORTANCE_LOW).apply {
         setShowBadge(false)
         setSound(null, null)
       }
@@ -271,6 +281,9 @@ class ListenSessionService : Service() {
     @Volatile
     var onControl: ((String) -> Unit)? = null
 
+    @Volatile
+    private var running = false
+
     const val CONTROL_PLAY = "play"
     const val CONTROL_PAUSE = "pause"
     const val CONTROL_TOGGLE = "toggle"
@@ -281,6 +294,7 @@ class ListenSessionService : Service() {
     private const val ACTION_UPDATE = "expo.modules.nativeepubreader.LISTEN_UPDATE"
     private const val ACTION_CONTROL = "expo.modules.nativeepubreader.LISTEN_CONTROL"
     private const val ACTION_STOP = "expo.modules.nativeepubreader.LISTEN_STOP"
+    private const val ACTION_REFRESH_STRINGS = "expo.modules.nativeepubreader.LISTEN_REFRESH_STRINGS"
     private const val EXTRA_TITLE = "title"
     private const val EXTRA_SUBTITLE = "subtitle"
     private const val EXTRA_PLAYING = "playing"
@@ -302,6 +316,18 @@ class ListenSessionService : Service() {
       } catch (_: Exception) {
         // Starting from the background without a running session is refused
         // on newer Android; the next foreground start brings the player up.
+      }
+    }
+
+    // Redraw a running session in the current ReaderText strings. A plain
+    // startService (not startForegroundService), and only while a session is
+    // up: with nothing showing there is nothing to refresh.
+    fun refreshStrings(context: Context) {
+      if (!running) return
+      try {
+        context.startService(Intent(context, ListenSessionService::class.java).setAction(ACTION_REFRESH_STRINGS))
+      } catch (_: Exception) {
+        // Background start refused: the next update redraws anyway.
       }
     }
 

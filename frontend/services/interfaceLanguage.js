@@ -30,8 +30,27 @@ export const setRuntimeTargetLanguage = (language) => {
   return runtimeTargetLanguage;
 };
 
+// Native modules that draw their own text (i18n/nativeStrings.js) subscribe here
+// so they get the new strings as soon as the interface language changes.
+const interfaceLanguageListeners = new Set();
+
+export const subscribeRuntimeInterfaceLanguage = (listener) => {
+  interfaceLanguageListeners.add(listener);
+  return () => interfaceLanguageListeners.delete(listener);
+};
+
 export const setRuntimeInterfaceLanguage = (language) => {
+  const previous = runtimeInterfaceLanguage;
   runtimeInterfaceLanguage = normalizeInterfaceLanguageCode(language);
+  if (runtimeInterfaceLanguage !== previous) {
+    interfaceLanguageListeners.forEach((listener) => {
+      try {
+        listener(runtimeInterfaceLanguage);
+      } catch (error) {
+        console.warn('[interfaceLanguage] Listener failed:', error?.message ?? error);
+      }
+    });
+  }
   return runtimeInterfaceLanguage;
 };
 

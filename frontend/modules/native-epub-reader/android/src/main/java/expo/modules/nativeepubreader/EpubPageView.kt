@@ -974,7 +974,7 @@ class EpubPageView(context: Context) : View(context) {
       typeface = edgeSansBoldTypeface,
       letterSpacingEm = 0.16f
     )
-    drawCenteredButtonTextWithBookIcon(canvas, "BACK TO LIBRARY", buttonRect, buttonLabelPaint)
+    drawCenteredButtonTextWithBookIcon(canvas, ReaderText.t("backToLibrary").uppercase(), buttonRect, buttonLabelPaint)
 
     val metaPaint = edgeTextPaint(
       sizeSp = 13f,
@@ -1000,7 +1000,7 @@ class EpubPageView(context: Context) : View(context) {
     val centerX = width / 2f
 
     drawBookFinishedIcon(canvas, centerX, iconCenterY, dp(54f).toFloat())
-    drawCenteredText(canvas, "BOOK FINISHED", labelCenterY, labelPaint, width - dp(48f))
+    drawCenteredText(canvas, ReaderText.t("bookFinished").uppercase(), labelCenterY, labelPaint, width - dp(48f))
     drawCenteredText(canvas, edgeState.bookTitle.ifBlank { edgeState.chapterTitle }, titleCenterY, titlePaint, width - dp(64f))
     drawCenteredText(
       canvas,
@@ -1206,15 +1206,12 @@ class EpubPageView(context: Context) : View(context) {
   private fun bookFinishedMeta(chapterCount: Int, savedWordCount: Int): String {
     val safeChapterCount = chapterCount.coerceAtLeast(0)
     val safeSavedWordCount = savedWordCount.coerceAtLeast(0)
-    val chapterNoun = if (safeChapterCount == 1) "chapter" else "chapters"
-    val wordNoun = if (safeSavedWordCount == 1) "word" else "words"
-    return "$safeChapterCount $chapterNoun · $safeSavedWordCount $wordNoun saved"
+    return "${ReaderText.chapterCount(safeChapterCount)} · ${ReaderText.wordsSaved(safeSavedWordCount)}"
   }
 
   private fun bookReviewLabel(savedWordCount: Int): String {
     val safeSavedWordCount = savedWordCount.coerceAtLeast(0)
-    val wordNoun = if (safeSavedWordCount == 1) "WORD" else "WORDS"
-    return "REVIEW $safeSavedWordCount $wordNoun"
+    return ReaderText.reviewWords(safeSavedWordCount).uppercase()
   }
 
   private fun readerEdgeTextColor(): Int {

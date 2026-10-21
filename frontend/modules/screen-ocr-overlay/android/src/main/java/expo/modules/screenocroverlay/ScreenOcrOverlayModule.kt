@@ -61,6 +61,7 @@ class ScreenOcrOverlayModule : Module() {
       OverlayText.setLanguage(language)
       if (strings != null) {
         OverlayText.setStrings(strings)
+        appContext.reactContext?.let { OverlayText.persist(it) }
       }
       ScreenOcrOverlayService.getActiveInstance()?.handleInterfaceLanguageChanged()
       OverlayText.currentLanguage()
