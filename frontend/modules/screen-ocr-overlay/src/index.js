@@ -1,7 +1,12 @@
 import { Platform } from 'react-native';
 import { EventEmitter, requireNativeModule } from 'expo-modules-core';
 import { translate, UI_TRANSLATIONS } from '../../../i18n/translations';
-import { getRuntimeInterfaceLanguage, getRuntimeTargetLanguage } from '../../../services/interfaceLanguage';
+import { buildOverlayNativeExtras } from '../../../i18n/nativeStrings';
+import {
+    getRuntimeInterfaceLanguage,
+    getRuntimeTargetLanguage,
+    subscribeRuntimeInterfaceLanguage,
+} from '../../../services/interfaceLanguage';
 
 const NativeScreenOcrOverlay = Platform.OS === 'android'
     ? requireNativeModule('ScreenOcrOverlay')
@@ -57,6 +62,10 @@ const buildOverlayStrings = (language) => {
         strings[`languageName.${code}`] = translate(language, `language.${code}`);
     }
 
+    // Native-only overlay text and the remaining interface-language names
+    // (the translation header can target any interface language).
+    Object.assign(strings, buildOverlayNativeExtras(language));
+
     return strings;
 };
 
@@ -78,6 +87,18 @@ export const setOverlayInterfaceLanguage = (language = getRuntimeInterfaceLangua
     NativeScreenOcrOverlay.setInterfaceLanguage(language, buildOverlayStrings(language));
     lastPushedLanguage = language;
 };
+
+// A running overlay (bubble + notification) should switch language right away,
+// not on the next native call.
+if (NativeScreenOcrOverlay?.setInterfaceLanguage && typeof subscribeRuntimeInterfaceLanguage === 'function') {
+    subscribeRuntimeInterfaceLanguage((language) => {
+        try {
+            setOverlayInterfaceLanguage(language);
+        } catch (error) {
+            console.warn('[ScreenOcrOverlay] Failed to push interface strings:', error?.message ?? error);
+        }
+    });
+}
 
 // The overlay Service picks its OCR recognizer from the target language it last
 // received, so push the current one (mirrors the Profile page) before every native

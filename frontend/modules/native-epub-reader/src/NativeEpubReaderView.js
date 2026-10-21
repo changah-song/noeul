@@ -8,7 +8,11 @@ import {
 } from './koreanLineBreak';
 import { useTranslation } from '../../../hooks/useTranslation';
 import { translate } from '../../../i18n/translations';
-import { getRuntimeInterfaceLanguage } from '../../../services/interfaceLanguage';
+import { buildReaderNativeStrings } from '../../../i18n/nativeStrings';
+import {
+    getRuntimeInterfaceLanguage,
+    subscribeRuntimeInterfaceLanguage,
+} from '../../../services/interfaceLanguage';
 
 const NativeView = Platform.OS === 'android'
     ? requireNativeViewManager('NativeEpubReader')
@@ -21,9 +25,11 @@ const translateRuntime = (key, params) => translate(getRuntimeInterfaceLanguage(
 
 const androidOnly = () => Promise.reject(new Error(translateRuntime('read.nativePdfAndroidOnly')));
 
-export const extractPdfDocument = (options) => (
-    NativeModule?.extractPdfDocument(options) ?? androidOnly()
-);
+export const extractPdfDocument = (options) => {
+    // Its failure message is localized natively (ReaderText.pdfImportFailed).
+    pushReaderInterfaceStrings();
+    return NativeModule?.extractPdfDocument(options) ?? androidOnly();
+};
 
 export const renderPdfCover = (options) => (
     NativeModule?.renderPdfCover(options) ?? androidOnly()
@@ -68,9 +74,32 @@ export const sendSeekToPosition = (viewTag, position) => (
 // previous, stop.
 export const supportsListenSession = typeof NativeModule?.updateListenSession === 'function';
 
+// Native-drawn text (the listen notification's buttons and channel, the
+// book-finished page) in the in-app interface language. Native persists the
+// map, so the listen service keeps it without JS. Only re-sent when the
+// language changes; a JS reload resets the cache, so a fresh push follows.
+let lastPushedReaderLanguage = null;
+
+export const pushReaderInterfaceStrings = (language = getRuntimeInterfaceLanguage()) => {
+    if (typeof NativeModule?.setInterfaceStrings !== 'function' || language === lastPushedReaderLanguage) {
+        return;
+    }
+    try {
+        NativeModule.setInterfaceStrings(language, buildReaderNativeStrings(language));
+        lastPushedReaderLanguage = language;
+    } catch (error) {
+        console.warn('[NativeEpubReader] interface strings push failed:', error?.message ?? error);
+    }
+};
+
+if (typeof NativeModule?.setInterfaceStrings === 'function' && typeof subscribeRuntimeInterfaceLanguage === 'function') {
+    subscribeRuntimeInterfaceLanguage((language) => pushReaderInterfaceStrings(language));
+}
+
 export const updateListenSession = ({ title, subtitle, playing, cover } = {}) => {
     if (!supportsListenSession) return;
     try {
+        pushReaderInterfaceStrings();
         NativeModule.updateListenSession({ title, subtitle, playing, cover });
     } catch (error) {
         console.warn('[NativeEpubReader] listen session update failed:', error?.message ?? error);
@@ -147,7 +176,13 @@ const NativeEpubReaderView = forwardRef(({
     onSavedTermsShown,
     style,
 }, ref) => {
-    const { t } = useTranslation();
+    const { t, language } = useTranslation();
+    // Strings for text the native view draws itself (ReaderText.kt), passed
+    // like themeTokens so they arrive with the first render.
+    const interfaceStrings = useMemo(
+        () => ({ ...buildReaderNativeStrings(language), language }),
+        [language]
+    );
 
     // Korean books: join each word's syllables so lines break only at spaces
     // (see koreanLineBreak.js). Terms get the same treatment so they still
@@ -256,6 +291,7 @@ const NativeEpubReaderView = forwardRef(({
             lineHeight={lineHeight}
             theme={theme}
             themeTokens={themeTokens || {}}
+            interfaceStrings={interfaceStrings}
             renderMode={renderMode}
             readerEdgeStateEnabled={readerEdgeStateEnabled}
             highlightTerms={nativeHighlightTerms}
