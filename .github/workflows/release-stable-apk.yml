@@ -1,0 +1,63 @@
+# Keeps the website's download link working across releases.
+#
+# noeul.app's "Download the Android APK" button links to
+#   https://github.com/changah-song/noeul/releases/latest/download/noeul.apk
+# which only resolves if the release marked Latest has an asset named exactly
+# noeul.apk. When a release is published, this copies its versioned APK
+# (e.g. noeul-1.2.0.apk) to noeul.apk on the same release.
+#
+# Run it by hand (Actions → Stable APK name → Run workflow) to add the copy to
+# an existing release.
+name: Stable APK name
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to add noeul.apk to (e.g. v1.2.0)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  stable-apk:
+    name: Add noeul.apk to the release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Find the release's APK
+        id: find
+        run: |
+          # `gh release create` can publish before its uploads finish,
+          # so wait up to ~5 minutes for an APK to appear.
+          for attempt in $(seq 1 30); do
+            apks=$(gh release view "$TAG" -R "$REPO" --json assets \
+              -q '.assets[] | select(.name | endswith(".apk")) | select(.name != "noeul.apk") | .name')
+            if [ -n "$apks" ]; then break; fi
+            sleep 10
+          done
+          if [ -z "$apks" ]; then
+            echo "::error::Release $TAG has no .apk asset to copy."
+            exit 1
+          fi
+          count=$(printf '%s\n' "$apks" | wc -l)
+          if [ "$count" -gt 1 ]; then
+            echo "::error::Release $TAG has more than one APK, so the one to publish as noeul.apk is unclear: $(echo $apks)"
+            exit 1
+          fi
+          echo "apk=$apks" >> "$GITHUB_OUTPUT"
+
+      - name: Upload it again as noeul.apk
+        run: |
+          mkdir -p dl
+          gh release download "$TAG" -R "$REPO" -p "${{ steps.find.outputs.apk }}" -D dl
+          cp "dl/${{ steps.find.outputs.apk }}" dl/noeul.apk
+          gh release upload "$TAG" dl/noeul.apk -R "$REPO" --clobber
+          echo "Copied ${{ steps.find.outputs.apk }} to noeul.apk on $TAG" >> "$GITHUB_STEP_SUMMARY"
