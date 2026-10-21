@@ -12,7 +12,7 @@ update public.users
 set interface_language = 'en'
 where interface_language is null
    or btrim(interface_language) = ''
-   or interface_language not in ('en', 'ko', 'fr', 'es', 'ar', 'mn', 'vi', 'th', 'id', 'ru', 'zh', 'zh-Hant');
+   or interface_language not in ('en', 'ko', 'fr', 'es', 'ar', 'mn', 'vi', 'th', 'id', 'ru', 'zh', 'zh-Hant', 'ja', 'pt');
 
 alter table public.users
 alter column interface_language set default 'en',
@@ -23,7 +23,7 @@ drop constraint if exists users_interface_language_supported;
 
 alter table public.users
 add constraint users_interface_language_supported
-check (interface_language in ('en', 'ko', 'fr', 'es', 'ar', 'mn', 'vi', 'th', 'id', 'ru', 'zh', 'zh-Hant'));
+check (interface_language in ('en', 'ko', 'fr', 'es', 'ar', 'mn', 'vi', 'th', 'id', 'ru', 'zh', 'zh-Hant', 'ja', 'pt'));
 
 do $$
 begin
@@ -40,7 +40,7 @@ begin
     select
       user_id,
       case
-        when interface_language in ('en', 'ko', 'fr', 'es', 'ar', 'mn', 'vi', 'th', 'id', 'ru', 'zh', 'zh-Hant')
+        when interface_language in ('en', 'ko', 'fr', 'es', 'ar', 'mn', 'vi', 'th', 'id', 'ru', 'zh', 'zh-Hant', 'ja', 'pt')
           then interface_language
         else 'en'
       end,

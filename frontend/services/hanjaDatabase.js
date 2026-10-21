@@ -12,6 +12,8 @@ const HANJA_DB_VERSION_KEY = '@ff/hanja-db-version';
 const SQLITE_DIR = `${FileSystem.documentDirectory}SQLite`;
 const HANJA_DB_PATH = `${SQLITE_DIR}/${HANJA_DB_NAME}`;
 const DEFAULT_RELATED_WORD_LIMIT = 8;
+// Interface languages with their own hun_* / definition_* columns. Others
+// (ja, pt) read the English columns until hanja.db gains hun_ja / hun_pt.
 const MULTILINGUAL_HANJA_LANGUAGES = new Set(['fr', 'es', 'zh', 'ar', 'mn', 'vi', 'th', 'id', 'ru']);
 
 let hanjaDb = null;

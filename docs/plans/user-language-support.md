@@ -50,6 +50,12 @@ already done, and Korean was the top language on Duolingo there.
   Portuguese is in Duolingo's top 10, English proficiency is low. Glosses are
   machine-translated.
 
+*Status (2026-10-21): Japanese and Portuguese (Brazil) added — full UI
+tables, KRDICT `trans_lang=2` for Japanese, machine-translated Korean glosses
+for Portuguese (`MACHINE_TRANSLATED_KO_INTERFACE_LANGUAGES`), Supabase check
+in `supabase/users_interface_language_ja_pt.sql`. Hanja meanings and Chinese
+character data still show English for both (no `hun_ja` / `hun_pt`).*
+
 **Add second**
 - **Turkish**: a large K-drama audience, Android-heavy, low English. Machine-translated.
 - **German**, **Italian**, **Polish**: places where Korean is growing on

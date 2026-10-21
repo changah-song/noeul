@@ -52,6 +52,7 @@ from word_lookup import (
     parse_krdict_first_entry,
     parse_krdict_search_items,
     search_with_english_fallback,
+    translate_entry_glosses,
     KrdictFetchGuard,
 )
 from zh_senses import first_meaning_sense, is_reference_only_definition, rank_zh_entries
@@ -140,8 +141,10 @@ _krdict_cooldown_until = 0.0
 JOB_PROGRESS_LOG_INTERVAL = 25
 KRDICT_API_URL = "https://krdict.korean.go.kr/api/search"
 KRDICT_SEARCH_TIMEOUT_SECONDS = 6.0
+# KRDICT's trans_lang codes (1 English ... 11 Chinese).
 KRDICT_INTERFACE_LANGUAGES = {
     "en": "1",
+    "ja": "2",
     "fr": "3",
     "es": "4",
     "ar": "5",
@@ -152,6 +155,10 @@ KRDICT_INTERFACE_LANGUAGES = {
     "ru": "10",
     "zh": "11",
 }
+# Interface languages KRDICT does not translate into: Korean entries are
+# fetched in English and their glosses machine-translated (and cached by the
+# translate cache), like Chinese definitions. See translate_entry_glosses.
+MACHINE_TRANSLATED_KO_INTERFACE_LANGUAGES = {"pt"}
 DEFAULT_INTERFACE_LANGUAGE = "en"
 
 AUTHENTICATED_LIMITS = {
@@ -955,6 +962,7 @@ LANGUAGE_DISPLAY_NAMES = {
     "vi": "Vietnamese",
     "th": "Thai",
     "mn": "Mongolian",
+    "pt": "Brazilian Portuguese",
 }
 LOOKUP_ALLOWED_POS = {"Noun", "Verb", "Adverb", "Adjective"}
 EN_LOOKUP_ALLOWED_POS = {"NOUN", "PROPN", "VERB", "ADJ", "ADV", "NUM"}
@@ -2581,6 +2589,13 @@ def is_likely_untranslated_english_definition(definition: str | None, interface_
         has_cjk = any("\u4e00" <= char <= "\u9fff" for char in text)
         return not has_cjk
 
+    if normalized_language == "ja":
+        has_japanese = any(
+            "\u3040" <= char <= "\u30ff" or "\u4e00" <= char <= "\u9fff"
+            for char in text
+        )
+        return not has_japanese
+
     return False
 
 
@@ -3936,6 +3951,16 @@ async def search_krdict_entries(
     krdict_key: str,
     interface_language: str = DEFAULT_INTERFACE_LANGUAGE,
 ) -> list[dict]:
+    if interface_language in MACHINE_TRANSLATED_KO_INTERFACE_LANGUAGES:
+        english_entries = await search_krdict_entries(
+            client, query, krdict_key, DEFAULT_INTERFACE_LANGUAGE
+        )
+        return await translate_entry_glosses(
+            english_entries,
+            interface_language,
+            lambda text: _translate_text(text, source="en", target=interface_language),
+        )
+
     # Offline-first: the bundled snapshot is English-only, so it can only serve
     # requests at the default (English) interface language. On a hit we skip the
     # network entirely; on a miss we fall through to the live API below.
@@ -4740,7 +4765,10 @@ def krdict_interface_language_from_payload(payload: dict) -> str:
         .replace("_", "-")
         .split("-")[0]
     )
-    if interface_language not in KRDICT_INTERFACE_LANGUAGES:
+    if (
+        interface_language not in KRDICT_INTERFACE_LANGUAGES
+        and interface_language not in MACHINE_TRANSLATED_KO_INTERFACE_LANGUAGES
+    ):
         interface_language = DEFAULT_INTERFACE_LANGUAGE
     return interface_language
 

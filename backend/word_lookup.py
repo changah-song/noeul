@@ -185,6 +185,64 @@ async def search_with_english_fallback(
         return fallback
 
 
+# --- Machine-translated Korean glosses -----------------------------------------
+# KRDICT only translates into its 11 languages. For an interface language it
+# does not cover (Portuguese), Korean entries are fetched in English and their
+# glosses machine-translated, the way Chinese and English-target definitions
+# already are. A gloss that cannot be translated (no provider, budget, error)
+# stays English and is marked fallback_language="en", so the app labels it and
+# does not cache it under the interface language.
+MACHINE_TRANSLATED_FIELD = "machine_translated"
+_UNTRANSLATABLE_GLOSSES = {"", "N/A"}
+
+
+async def translate_entry_glosses(
+    entries: Iterable[dict],
+    interface_language: str,
+    translate: Callable[[str], Awaitable[Optional[str]]],
+) -> list[dict]:
+    """Translate each entry's English `transWord` into `interface_language`.
+
+    `translate` maps one English string to its translation (or None on
+    failure); each distinct gloss is translated once. Entries that already
+    carry fallback_language="en" (KRDICT down, snapshot senses) are still
+    translated: English is what they hold either way.
+    """
+    entries = [entry for entry in entries or [] if isinstance(entry, dict)]
+    glosses = list(dict.fromkeys(
+        (entry.get("transWord") or "").strip()
+        for entry in entries
+        if (entry.get("transWord") or "").strip() not in _UNTRANSLATABLE_GLOSSES
+    ))
+
+    async def safe_translate(text: str) -> Optional[str]:
+        try:
+            translated = await translate(text)
+        except Exception:  # noqa: BLE001 - a failed translation keeps English
+            return None
+        return translated.strip() if isinstance(translated, str) and translated.strip() else None
+
+    translations = dict(zip(glosses, await asyncio.gather(*(safe_translate(g) for g in glosses))))
+
+    out: list[dict] = []
+    for entry in entries:
+        gloss = (entry.get("transWord") or "").strip()
+        translated = translations.get(gloss)
+        base = {key: value for key, value in entry.items() if key != FALLBACK_LANGUAGE_FIELD}
+        if translated:
+            out.append({
+                **base,
+                "transWord": translated,
+                "interface_language": interface_language,
+                MACHINE_TRANSLATED_FIELD: True,
+            })
+        elif gloss in _UNTRANSLATABLE_GLOSSES:
+            out.append(dict(entry))
+        else:
+            out.append({**base, FALLBACK_LANGUAGE_FIELD: ENGLISH_FALLBACK_LANGUAGE})
+    return out
+
+
 # --- Chapter preprocessing: first-entry parse + negative-cache freshness ------
 # /preprocess_chapter/ caches each live-fetched stem in cache.db, including a
 # NULL-definition row for "KRDICT has no entry". That row must only ever record a
