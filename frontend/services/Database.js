@@ -7097,6 +7097,73 @@ export const lookupBookAnnotationSurfaces = (
   });
 };
 
+// How many of the book's indexed words have dictionary rows in one interface
+// language. Zero after a language switch means the book's translations were
+// all fetched in another language and should be fetched again.
+export const countBookRowsInInterfaceLanguage = (
+  ownerId,
+  bookUri,
+  scopeOrInterfaceLanguage = 'en',
+  options = {}
+) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const scope = normalizeDictionaryCacheScope(scopeOrInterfaceLanguage, options);
+  const scopedProfileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, scope.language);
+
+  return new Promise((resolve, reject) => {
+    if (!bookUri) {
+      resolve(0);
+      return;
+    }
+
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT COUNT(*) AS n
+         FROM dictionary_cache dc
+         JOIN book_index bi ON bi.stem_id = dc.id
+         WHERE dc.language = ?
+           AND dc.interface_language = ?
+           AND bi.owner_id = ?
+           AND bi.profile_id = ?
+           AND bi.book_uri = ?`,
+        [scope.language, scope.interfaceLanguage, scopedOwnerId, scopedProfileId, bookUri],
+        (_, result) => resolve(Number(result.rows.item(0)?.n) || 0),
+        (_, error) => {
+          console.error('[Database] Error counting book rows by interface language:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
+// Forget which chapters were preprocessed, so they run again (e.g. in a new
+// interface language). The book's word index stays, so underlines remain
+// while the chapters are fetched again.
+export const resetBookPreprocessChapters = (ownerId, bookUri, options = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const scopedProfileId = resolveProfileId(options.profileId ?? options.profile_id ?? options, options.language ?? 'ko');
+
+  return new Promise((resolve, reject) => {
+    if (!bookUri) {
+      resolve(0);
+      return;
+    }
+
+    db.transaction(tx => {
+      tx.executeSql(
+        'DELETE FROM book_preprocess_chapters WHERE owner_id = ? AND profile_id = ? AND book_uri = ?',
+        [scopedOwnerId, scopedProfileId, bookUri],
+        (_, result) => resolve(result.rowsAffected),
+        (_, error) => {
+          console.error(`[Database] Error resetting preprocess chapters for "${bookUri}":`, error);
+          reject(error);
+        }
+      );
+    });
+  });
+};
+
 // Difficulty phase 2: what the reader has done with each of a book's words —
 // lookups (count + latest), exposures, graded reviews, saves — grouped per
 // stem, for services/wordEvidence.js. Only this profile's events for stems

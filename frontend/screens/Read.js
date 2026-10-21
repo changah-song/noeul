@@ -69,6 +69,8 @@ import {
     logInteractionEvent,
     lookupBookHighlightSurfaces,
     lookupBookAnnotationSurfaces,
+    countBookRowsInInterfaceLanguage,
+    resetBookPreprocessChapters,
     lookupCacheByStems,
     markBookPreprocessChapter,
     markBookPreprocessMeta,
@@ -504,6 +506,9 @@ const Read = ({
     const [translationBannerCopiedPreview] = useState(false);
     const [translationBannerTextPreview] = useState('');
     const [showLookupHint, setShowLookupHint] = useState(true);
+    // The open chapter's words (underlines, translations, levels) are still
+    // being fetched: the reader shows a short "getting ready" note meanwhile.
+    const [currentChapterPreparing, setCurrentChapterPreparing] = useState(false);
     const [showMenu, setShowMenu] = useState(false);
     const [showBeforeYouGo, setShowBeforeYouGo] = useState(false);
     const [showSavedPanel, setShowSavedPanel] = useState(false);
@@ -909,6 +914,7 @@ const Read = ({
         flushPendingFocusPageChange();
 
         setPreprocessStatus('idle');
+        setCurrentChapterPreparing(false);
         extractedTextRef.current = null;
         preprocessingInFlightRef.current = false;
         activeChapterPreprocessRef.current = { bookUri: null, centerSpineIndex: null };
@@ -2237,6 +2243,26 @@ const Read = ({
         preprocessingInFlightRef.current = true;
         activeChapterPreprocessRef.current = { bookUri: currentBook, centerSpineIndex };
 
+        // Translations (the words' glosses and definitions) are fetched in the
+        // app language. A book processed in another language has none in this
+        // one, so process its chapters again; the old rows stay as a fallback
+        // until the new ones arrive.
+        try {
+            const rowsInLanguage = await countBookRowsInInterfaceLanguage(
+                activeOwnerId,
+                currentBook,
+                { language: activeBookLanguage, interfaceLanguage }
+            );
+            if (rowsInLanguage === 0) {
+                await resetBookPreprocessChapters(activeOwnerId, currentBook, { language: activeBookLanguage });
+            }
+        } catch (error) {
+            console.warn('[Read] Could not check the book\'s translation language:', error);
+        }
+        if (chapterPreprocessTokenRef.current !== preprocessToken) {
+            return;
+        }
+
         setBooks((prevBooks) => prevBooks.map((book) => (
             book.uri === currentBook ? { ...book, preprocessed: false, preprocessing: true } : book
         )));
@@ -2280,6 +2306,7 @@ const Read = ({
                     totalSurfaceCount += Number(existingChapter.surface_count) || 0;
                     if (isCurrentChapter) {
                         setPreprocessStatus('done');
+                        setCurrentChapterPreparing(false);
                     }
                     continue;
                 }
@@ -2297,6 +2324,9 @@ const Read = ({
                 }
 
                 setPreprocessStatus('preprocessing');
+                if (isCurrentChapter) {
+                    setCurrentChapterPreparing(true);
+                }
 
                 try {
                     const chapterPackage = (
@@ -2370,6 +2400,7 @@ const Read = ({
 
                     if (isCurrentChapter) {
                         setPreprocessStatus('done');
+                        setCurrentChapterPreparing(false);
                     }
 
                     const visibleSpineIndex = currentSpineIndexRef.current;
@@ -2398,6 +2429,7 @@ const Read = ({
 
                     if (isCurrentChapter) {
                         setPreprocessStatus('error');
+                        setCurrentChapterPreparing(false);
                     }
                 }
             }
@@ -3122,6 +3154,26 @@ const Read = ({
     const readingMode = READING_MODES.includes(settings.readingMode)
         ? settings.readingMode
         : DEFAULT_READER_SETTINGS.readingMode;
+    // Switching the app language while a book is open: fetch the open book's
+    // translations again in the new language. An in-flight run for the old
+    // language is cancelled first, or it would win the in-flight check.
+    const preprocessLanguageRef = useRef(interfaceLanguage);
+    useEffect(() => {
+        if (preprocessLanguageRef.current === interfaceLanguage) {
+            return;
+        }
+        preprocessLanguageRef.current = interfaceLanguage;
+        const spineIndex = currentSpineIndexRef.current;
+        const totalSpineItems = nativeReaderPackageRef.current?.spine?.length ?? 0;
+        if (!currentBook || !Number.isInteger(spineIndex) || totalSpineItems <= 0) {
+            return;
+        }
+        chapterPreprocessTokenRef.current += 1;
+        preprocessingInFlightRef.current = false;
+        activeChapterPreprocessRef.current = { bookUri: null, centerSpineIndex: null };
+        startChapterPreprocessing(spineIndex, totalSpineItems, null);
+    }, [currentBook, interfaceLanguage, startChapterPreprocessing]);
+
     const isScrollMode = readingMode === 'scroll';
     const nativeRenderMode = focusMode ? 'focus' : (isScrollMode ? 'continuous' : 'paged');
     // 'off' hides the marks only; exposure/lookup evidence keeps flowing, since
@@ -4027,30 +4079,45 @@ const Read = ({
                 and the top of the page is the title). Focus mode has its own
                 position pill and controls, so the tip stays out of the way
                 there. */}
-            {currentBook && !highlightedWord && showLookupHint && !focusMode ? (
+            {currentBook && !highlightedWord && !focusMode && (showLookupHint || currentChapterPreparing) ? (
                 <View
                     pointerEvents="box-none"
                     style={[styles.hintLayer, { bottom: insets.bottom + 16 }]}
                 >
-                    <View style={styles.hintCard}>
-                        <Feather name="info" size={16} color={themeColors.textTertiary} style={styles.hintIcon} />
-                        <View style={styles.hintTextStack}>
-                            <Text style={styles.hintText}>
-                                {t('read.tapHint')}
-                            </Text>
-                            <Text style={styles.hintSubtext}>
-                                {t('read.longPressHint')}
-                            </Text>
-                        </View>
-                        <TouchableOpacity
-                            onPress={dismissLookupHint}
-                            style={styles.hintCloseButton}
-                            accessibilityRole="button"
-                            accessibilityLabel={t('common.close')}
+                    {currentChapterPreparing ? (
+                        <View
+                            style={[styles.hintCard, styles.preparingCard]}
+                            accessibilityLiveRegion="polite"
+                            accessibilityRole="progressbar"
                         >
-                            <Feather name="x" size={16} color={themeColors.textTertiary} />
-                        </TouchableOpacity>
-                    </View>
+                            <ActivityIndicator size="small" color={themeColors.textTertiary} style={styles.hintIcon} />
+                            <View style={styles.hintTextStack}>
+                                <Text style={styles.hintText}>{t('read.preparingWords')}</Text>
+                                <Text style={styles.hintSubtext}>{t('read.preparingWordsDetail')}</Text>
+                            </View>
+                        </View>
+                    ) : null}
+                    {showLookupHint ? (
+                        <View style={styles.hintCard}>
+                            <Feather name="info" size={16} color={themeColors.textTertiary} style={styles.hintIcon} />
+                            <View style={styles.hintTextStack}>
+                                <Text style={styles.hintText}>
+                                    {t('read.tapHint')}
+                                </Text>
+                                <Text style={styles.hintSubtext}>
+                                    {t('read.longPressHint')}
+                                </Text>
+                            </View>
+                            <TouchableOpacity
+                                onPress={dismissLookupHint}
+                                style={styles.hintCloseButton}
+                                accessibilityRole="button"
+                                accessibilityLabel={t('common.close')}
+                            >
+                                <Feather name="x" size={16} color={themeColors.textTertiary} />
+                            </TouchableOpacity>
+                        </View>
+                    ) : null}
                 </View>
             ) : null}
 
@@ -4219,6 +4286,11 @@ const createStyles = (themeColors) => StyleSheet.create({
     },
     hintIcon: {
         marginTop: 12,
+    },
+    preparingCard: {
+        // No close button: leave the same room on the right as the text's left.
+        paddingRight: 14,
+        marginBottom: 8,
     },
     hintTextStack: {
         flex: 1,
