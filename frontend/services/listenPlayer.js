@@ -24,6 +24,7 @@ const VOICE_LOCALES = {
   th: 'th-TH',
   ar: 'ar-SA',
   mn: 'mn-MN',
+  pt: 'pt-BR',
 };
 
 export const voiceLocaleFor = (code) => {
@@ -51,6 +52,7 @@ const VOICE_SAMPLES = {
   zh: '你好，我们今天一起来读这本书吧。',
   ja: 'こんにちは。今日も一緒に本を読みましょう。',
   en: 'Hello. Shall we read a few pages together today?',
+  pt: 'Olá! Vamos ler algumas páginas juntos hoje?',
 };
 export const voiceSampleFor = (locale) => {
   const language = String(locale || '').split('-')[0].toLowerCase();

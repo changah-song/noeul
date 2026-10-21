@@ -24,6 +24,8 @@ export const KRDICT_INTERFACE_LANGUAGE_OPTIONS = [
   { code: 'th', label: 'ไทย' },
   { code: 'id', label: 'Bahasa Indonesia' },
   { code: 'ru', label: 'Русский' },
+  { code: 'ja', label: '日本語' },
+  { code: 'pt', label: 'Português (Brasil)' },
 ];
 
 export const SUPPORTED_INTERFACE_LANGUAGES = KRDICT_INTERFACE_LANGUAGE_OPTIONS.reduce(

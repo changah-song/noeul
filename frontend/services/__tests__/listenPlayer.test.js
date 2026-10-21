@@ -1,6 +1,8 @@
 jest.mock('react-native-tts', () => ({}), { virtual: true });
 
-const { createListenPlayer, voiceLocaleFor, onDeviceVoicesFor, LISTEN_RATES } = require('../listenPlayer');
+const {
+  createListenPlayer, voiceLocaleFor, voiceSampleFor, onDeviceVoicesFor, LISTEN_RATES,
+} = require('../listenPlayer');
 
 // A stand-in engine: speak() hands back an id, and the test fires the finish
 // or cancel events the real engine would.
@@ -133,10 +135,18 @@ describe('voiceLocaleFor', () => {
     expect(voiceLocaleFor('ko')).toBe('ko-KR');
     expect(voiceLocaleFor('zh')).toBe('zh-CN');
     expect(voiceLocaleFor('zh-Hant')).toBe('zh-TW');
+    expect(voiceLocaleFor('ja')).toBe('ja-JP');
+    expect(voiceLocaleFor('pt')).toBe('pt-BR');
     expect(voiceLocaleFor('ko-KR')).toBe('ko-KR');
     expect(voiceLocaleFor('ko_kr')).toBe('ko-KR');
     expect(voiceLocaleFor('')).toBe('en-US');
     expect(voiceLocaleFor('xx')).toBe('en-US');
+  });
+
+  it('has a sample line for Japanese and Portuguese voices', () => {
+    expect(voiceSampleFor('ja-JP')).toMatch(/本を読み/);
+    expect(voiceSampleFor('pt-BR')).toMatch(/Vamos ler/);
+    expect(voiceSampleFor('de-DE')).toBe(voiceSampleFor('en-US'));
   });
 
   it('offers normal speed among the rates', () => {

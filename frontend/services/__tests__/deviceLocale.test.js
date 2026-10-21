@@ -31,7 +31,10 @@ describe('deviceLocale', () => {
     expect(deviceInterfaceLanguageOf('zh-Hant-TW')).toBe('zh-Hant');
     expect(deviceInterfaceLanguageOf('zh-CN')).toBe('zh');
     expect(deviceInterfaceLanguageOf('ko-KR')).toBe('ko');
-    expect(deviceInterfaceLanguageOf('pt-BR')).toBeNull();
+    expect(deviceInterfaceLanguageOf('ja-JP')).toBe('ja');
+    expect(deviceInterfaceLanguageOf('pt-BR')).toBe('pt');
+    expect(deviceInterfaceLanguageOf('pt-PT')).toBe('pt');
+    expect(deviceInterfaceLanguageOf('de-DE')).toBeNull();
     expect(deviceInterfaceLanguageOf(null)).toBeNull();
   });
 });

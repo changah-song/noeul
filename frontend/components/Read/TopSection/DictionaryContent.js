@@ -36,6 +36,7 @@ const HANJA_RE = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/;
 const LATIN_RE = /[A-Za-z]/;
 const HANGUL_RE = /[\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]/;
 const CJK_RE = /[\u4E00-\u9FFF]/;
+const KANA_RE = /[\u3040-\u30FF]/;
 // Maps raw POS strings (English or Korean, as the dictionaries emit them) to
 // pos.* translation keys. Empty string = deliberately show no badge.
 const POS_KEYS = {
@@ -314,6 +315,10 @@ const isLikelyUntranslatedEnglishDefinition = (definition, interfaceLanguage) =>
 
     if (String(interfaceLanguage || '').startsWith('zh')) {
         return !CJK_RE.test(text);
+    }
+
+    if (interfaceLanguage === 'ja') {
+        return !KANA_RE.test(text) && !CJK_RE.test(text);
     }
 
     return false;
