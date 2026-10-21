@@ -11,8 +11,6 @@ const placeholders = (value) => [...String(value).matchAll(/\{\{(\w+)\}\}/g)]
 const ALLOWED_PLACEHOLDER_OMISSIONS = {
   ko: [
     'home.sortPublicDomain',
-    'home.publicDomainCount',
-    'home.favoriteCount',
     'home.pdfReady',
     'home.pdfPageCount',
     'home.songStorageLimitBody',
