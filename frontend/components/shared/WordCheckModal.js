@@ -23,6 +23,8 @@ import { applyWordCheckResults, getReaderLevel } from '../../services/Database';
 import { createWordCheck } from '../../services/wordCheck';
 import { nearestRankForTheta } from '../../services/calibrationQuiz';
 import { getVocabTiers } from '../../services/vocabSizeLevels';
+import { rtlIcon } from '../../services/layoutDirection';
+import { formatNumber } from '../../services/interfaceLanguage';
 
 // Fewer answers than this are not worth saving when the reader stops early.
 const MIN_ANSWERS_TO_SAVE = 10;
@@ -119,7 +121,7 @@ export const SheetFrame = ({
                                 accessibilityRole="button"
                                 accessibilityLabel={backLabel || t('common.back')}
                             >
-                                <Feather name="chevron-left" size={22} color={colors.inkSlate} />
+                                <Feather name={rtlIcon('chevron-left')} size={22} color={colors.inkSlate} />
                             </TouchableOpacity>
                         ) : null}
                         <Text style={styles.title} numberOfLines={1} accessibilityRole="header">{title}</Text>
@@ -286,6 +288,9 @@ const createSheetStyles = (colors) => StyleSheet.create({
     },
     optionLabel: {
         flex: 1,
+        // Align every option to the start edge, whatever script its label is
+        // in; React Native turns 'left' into right in an RTL layout.
+        textAlign: 'left',
         fontFamily: fontFamilies.sansRegular,
         fontSize: 15,
         lineHeight: 20,
@@ -418,7 +423,7 @@ export const WordCheckBody = ({ check, onDone }) => {
         if (!tier) return null;
         if (tier.label) return { text: t('wordCheck.resultHsk', { level: tier.label }), strong: tier.label };
         if (tier.advanced) return { text: t('wordCheck.resultAdvanced'), strong: null };
-        const count = Number(tier.threshold).toLocaleString();
+        const count = formatNumber(tier.threshold);
         return { text: t('wordCheck.resultWords', { count }), strong: count };
     }, [result, t, tiers]);
 

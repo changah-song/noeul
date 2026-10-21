@@ -110,6 +110,8 @@ import {
     stopFloatingWidget,
 } from '../modules/screen-ocr-overlay/src';
 import { getLanguageLabel, normalizeBookLanguage } from '../constants/languages';
+import { rtlIcon, startOffset } from '../services/layoutDirection';
+import { formatNumber } from '../services/interfaceLanguage';
 
 const BOOK_GRID_COLUMNS = 4;
 const BOOK_GRID_GAP = Spacing.lg;
@@ -510,7 +512,7 @@ const getBookWordCount = (book) => {
 
 const formatWordCount = (wordCount, t = null) => (
     wordCount
-        ? (t ? t('home.words', { count: wordCount.toLocaleString() }) : `${wordCount.toLocaleString()} words`)
+        ? (t ? t('home.words', { count: formatNumber(wordCount) }) : `${formatNumber(wordCount)} words`)
         : (t ? t('common.unknown') : 'Unknown')
 );
 
@@ -1210,7 +1212,7 @@ const BookPreview = ({
                     onPress={onBack}
                     style={styles.previewIconButton}
                 >
-                    <Feather name="chevron-left" size={24} color={HOME_COLORS.accent} />
+                    <Feather name={rtlIcon('chevron-left')} size={24} color={HOME_COLORS.accent} />
                 </TouchableOpacity>
                 <View style={styles.previewTopSpacer} />
                 {!isPublicDomain && canReadBook ? (
@@ -1575,7 +1577,7 @@ const FeaturedBookCarousel = ({ books, screenWidth, onResumeBook, onPressBook })
                         style={styles.heroResumeButton}
                     >
                         <Text style={styles.heroResumeText}>{t('home.resume')}</Text>
-                        <Feather name="arrow-right" size={17} color={HOME_COLORS.onAccent} />
+                        <Feather name={rtlIcon('arrow-right')} size={17} color={HOME_COLORS.onAccent} />
                     </TouchableOpacity>
                 </View>
             </View>
@@ -1589,6 +1591,7 @@ const FeaturedBookCarousel = ({ books, screenWidth, onResumeBook, onPressBook })
 const ShelfTabs = ({ tabs, activeId }) => {
     const { styles } = useHomeTheme();
     const [layouts, setLayouts] = useState({});
+    const [rowWidth, setRowWidth] = useState(0);
     const indicatorX = useRef(new Animated.Value(0)).current;
     const indicatorWidth = useRef(new Animated.Value(0)).current;
     const hasPositioned = useRef(false);
@@ -1596,15 +1599,16 @@ const ShelfTabs = ({ tabs, activeId }) => {
 
     useEffect(() => {
         if (!activeLayout) return;
+        const targetX = startOffset(activeLayout.x, activeLayout.width, rowWidth);
         if (!hasPositioned.current) {
             hasPositioned.current = true;
-            indicatorX.setValue(activeLayout.x);
+            indicatorX.setValue(targetX);
             indicatorWidth.setValue(activeLayout.width);
             return;
         }
         Animated.parallel([
             Animated.timing(indicatorX, {
-                toValue: activeLayout.x,
+                toValue: targetX,
                 duration: Motion.tabTransitionDuration,
                 useNativeDriver: false,
             }),
@@ -1614,10 +1618,14 @@ const ShelfTabs = ({ tabs, activeId }) => {
                 useNativeDriver: false,
             }),
         ]).start();
-    }, [activeLayout, indicatorWidth, indicatorX]);
+    }, [activeLayout, indicatorWidth, indicatorX, rowWidth]);
 
     return (
-        <View style={styles.libraryTabs} accessibilityRole="tablist">
+        <View
+            style={styles.libraryTabs}
+            accessibilityRole="tablist"
+            onLayout={(event) => setRowWidth(event.nativeEvent.layout.width)}
+        >
             {tabs.map((tab) => {
                 const selected = tab.id === activeId;
                 return (
@@ -3999,7 +4007,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                 {isDownloadingBook ? t('home.downloading') : getCollectionBookMeta(book, sourceLabel)}
                             </Text>
                         </View>
-                        <Feather name="chevron-right" size={16} color={HOME_COLORS.faint} />
+                        <Feather name={rtlIcon('chevron-right')} size={16} color={HOME_COLORS.faint} />
                     </Pressable>
                 );
             })}
@@ -4385,7 +4393,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                                 {[song.artist, formatSongWordCount(song, t)].filter(Boolean).join(' · ')}
                                             </Text>
                                         </View>
-                                        <Feather name="chevron-right" size={20} color={HOME_COLORS.faint} />
+                                        <Feather name={rtlIcon('chevron-right')} size={20} color={HOME_COLORS.faint} />
                                     </Pressable>
                                 ))
                             )}

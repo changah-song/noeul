@@ -3,6 +3,7 @@ import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { colors, fontFamilies } from '../../theme';
 import { useTranslation } from '../../hooks/useTranslation';
+import { isLayoutRtl, startOffset } from '../../services/layoutDirection';
 
 const TAB_LABEL_KEYS = {
     Home: 'tabs.home',
@@ -213,9 +214,11 @@ const PillTabs = ({ state, navigation, themeColors }) => {
     const rightEdge = useRef(new Animated.Value(0)).current;
     const appear = useRef(new Animated.Value(0)).current;
     const [layouts, setLayouts] = useState({});
+    const [pillWidth, setPillWidth] = useState(0);
     const placed = useRef(false);
     const lastIndex = useRef(activeIndex);
-    const measured = items.every((item) => layouts[item.name]);
+    // In RTL the pill must be measured too, to turn layout x into a `left`.
+    const measured = items.every((item) => layouts[item.name]) && (!isLayoutRtl() || pillWidth > 0);
 
     // Rise in when the pill comes back (e.g. leaving the reader).
     useEffect(() => {
@@ -225,24 +228,28 @@ const PillTabs = ({ state, navigation, themeColors }) => {
     useEffect(() => {
         if (!measured) return;
         const target = layouts[items[activeIndex].name];
+        // leftEdge/rightEdge are the highlight's start and end edges, as offsets
+        // from the pill's start (its right edge in RTL).
+        const start = startOffset(target.x, target.width, pillWidth);
         if (!placed.current) {
             // First measure: put the highlight under the current tab, no slide.
-            leftEdge.setValue(target.x);
-            rightEdge.setValue(target.x + target.width);
+            leftEdge.setValue(start);
+            rightEdge.setValue(start + target.width);
             progress.setValue(activeIndex);
             placed.current = true;
             lastIndex.current = activeIndex;
             return;
         }
+        // Moving toward the end (right in LTR, left in RTL): the end edge leads.
         const movingRight = activeIndex >= lastIndex.current;
         lastIndex.current = activeIndex;
         Animated.parallel([
-            Animated.spring(leftEdge, { toValue: target.x, ...(movingRight ? TRAIL_SPRING : SLIDE_SPRING) }),
-            Animated.spring(rightEdge, { toValue: target.x + target.width, ...(movingRight ? SLIDE_SPRING : TRAIL_SPRING) }),
+            Animated.spring(leftEdge, { toValue: start, ...(movingRight ? TRAIL_SPRING : SLIDE_SPRING) }),
+            Animated.spring(rightEdge, { toValue: start + target.width, ...(movingRight ? SLIDE_SPRING : TRAIL_SPRING) }),
             Animated.spring(progress, { toValue: activeIndex, ...SLIDE_SPRING }),
         ]).start();
         // items is derived from props each render; layouts/activeIndex cover its changes.
-    }, [activeIndex, layouts, measured, leftEdge, rightEdge, progress]);
+    }, [activeIndex, layouts, measured, leftEdge, rightEdge, progress, pillWidth]);
 
     const setLayout = (name) => ({ nativeEvent }) => {
         const { x, width } = nativeEvent.layout;
@@ -256,6 +263,7 @@ const PillTabs = ({ state, navigation, themeColors }) => {
     return (
         <Animated.View
             accessibilityRole="tablist"
+            onLayout={(event) => setPillWidth(event.nativeEvent.layout.width)}
             style={[
                 styles.pill,
                 { backgroundColor: themeColors.surface, borderColor: themeColors.border },

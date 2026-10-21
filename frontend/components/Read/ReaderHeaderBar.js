@@ -2,6 +2,7 @@ import { memo } from 'react';
 import { Pressable, Text, TouchableOpacity, View } from 'react-native';
 import { Feather, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 import { spacing } from '../../theme';
+import { rtlIcon } from '../../services/layoutDirection';
 
 // Building blocks of the reader top bar, shared by the book reader
 // (screens/Read.js) and the song reader so both headers look the same.
@@ -23,7 +24,7 @@ export const ReaderBackButton = memo(({ styles, themeColors, onPress, accessibil
         accessibilityRole="button"
         accessibilityLabel={accessibilityLabel}
     >
-        <Feather name="chevron-left" size={24} color={themeColors.inkSlate} />
+        <Feather name={rtlIcon('chevron-left')} size={24} color={themeColors.inkSlate} />
     </TouchableOpacity>
 ));
 ReaderBackButton.displayName = 'ReaderBackButton';

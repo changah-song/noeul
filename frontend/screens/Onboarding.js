@@ -27,6 +27,7 @@ import {
 import { hasVocabSizeGrid } from '../services/vocabSizeLevels';
 import { hasWordCheck } from '../services/wordCheck';
 import { fontFamilies, useTheme } from '../theme';
+import { ltrRow, rtlIcon } from '../services/layoutDirection';
 
 // ─── Completion flag ──────────────────────────────────────────────────────────
 
@@ -376,7 +377,7 @@ const Onboarding = ({ onDone }) => {
             >
                 <Text style={styles.languageRowLabel}>{t('profile.interfaceLanguage')}</Text>
                 <Text style={styles.languageRowValue}>{getInterfaceLanguageLabel(interfaceLanguage)}</Text>
-                <Feather name="chevron-right" size={16} color={colors.textSubtle} />
+                <Feather name={rtlIcon('chevron-right')} size={16} color={colors.textSubtle} />
             </TouchableOpacity>
             <Text style={styles.note}>{t('profile.interfaceLanguageDesc')}</Text>
         </View>
@@ -465,7 +466,7 @@ const Onboarding = ({ onDone }) => {
                             accessibilityRole="button"
                             accessibilityLabel={t('common.back')}
                         >
-                            <Feather name="chevron-left" size={24} color={colors.inkSlate} />
+                            <Feather name={rtlIcon('chevron-left')} size={24} color={colors.inkSlate} />
                         </TouchableOpacity>
                     ) : null}
                 </View>
@@ -762,7 +763,8 @@ const createStyles = (colors) => StyleSheet.create({
         paddingTop: 14,
         paddingBottom: 10,
         paddingHorizontal: 18,
-        flexDirection: 'row',
+        // The demo is Korean/Chinese text: left to right even in Arabic.
+        flexDirection: ltrRow(),
         flexWrap: 'wrap',
         alignItems: 'flex-end',
         rowGap: 10,

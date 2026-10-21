@@ -17,6 +17,7 @@ import { nearestRankForTheta } from '../../services/calibrationQuiz';
 import { getProfileAbility, setProfileAbilityFromVocab } from '../../services/Database';
 import { hasWordCheck } from '../../services/wordCheck';
 import { SheetFrame, WordCheckBody, useWordCheck } from './WordCheckModal';
+import { formatNumber } from '../../services/interfaceLanguage';
 
 // The tier the reader last picked, per owner / profile / language.
 export const vocabLevelPickKey = (ownerId, profileId, language) => `vocabLevelPick:${ownerId || 'guest'}:${profileId || ''}:${language}`;
@@ -171,7 +172,7 @@ const VocabLevelModal = ({ visible, onClose, initialMode = 'list' }) => {
     }, [activeOwnerId, activeProfileId, isSaving, onClose, selectedIndex, setTargetLanguageLevel, t, targetLanguage, tiers]);
 
     const tierLabel = useCallback((tier) => (
-        tier.advanced ? t('vocabLevel.advancedTier') : (tier.label || Number(tier.threshold).toLocaleString())
+        tier.advanced ? t('vocabLevel.advancedTier') : (tier.label || formatNumber(tier.threshold))
     ), [t]);
 
     // The "Now" marker: where reading has moved the estimate, else the pick.

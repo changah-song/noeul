@@ -25,6 +25,20 @@ export const getRuntimeInterfaceLanguage = () => runtimeInterfaceLanguage;
 // Traditional users see Traditional headwords without every call site passing it.
 export const getRuntimeChineseScript = () => runtimeChineseScript;
 
+// Numbers in the app's language, not the phone's: toLocaleString() with no
+// locale would show Arabic digits in an English UI on an Arabic phone.
+export const formatNumber = (value) => {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return String(value ?? '');
+  }
+  try {
+    return number.toLocaleString(runtimeInterfaceLanguage);
+  } catch {
+    return number.toLocaleString('en');
+  }
+};
+
 export const setRuntimeTargetLanguage = (language) => {
   runtimeTargetLanguage = normalizeBookLanguage(language, DEFAULT_TARGET_LANGUAGE);
   return runtimeTargetLanguage;

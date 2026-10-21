@@ -37,6 +37,7 @@ import {
   setRuntimeTargetLanguage,
 } from '../services/interfaceLanguage';
 import { getDeviceInterfaceLanguage } from '../services/deviceLocale';
+import { applyLayoutDirection } from '../services/layoutDirection';
 import {
   DEFAULT_ACTIVE_PROFILE_ID,
   getDefaultProfileIdForLanguage,
@@ -596,6 +597,22 @@ export const AppProvider = ({ children, user }) => {
       console.warn('[AppContext] Failed to merge cloud language preferences:', error?.message ?? error);
     });
   }, [activeOwnerId, languageSettingsReady, syncGeneration, syncLanguagePreferences, syncPaused, user]);
+
+  // Arabic lays the app out right to left. The direction is fixed when the app
+  // starts, so a change reloads the app once (after saving the new language).
+  useEffect(() => {
+    if (!languageSettingsReady) {
+      return;
+    }
+    applyLayoutDirection(languageSettings.interfaceLanguage, {
+      reload: async (reason) => {
+        await persistLocalLanguageSettings(latestLanguageSettingsRef.current);
+        await require('expo').reloadAppAsync(reason);
+      },
+    }).catch((error) => {
+      console.warn('[AppContext] Failed to apply layout direction:', error?.message ?? error);
+    });
+  }, [languageSettings.interfaceLanguage, languageSettingsReady, persistLocalLanguageSettings]);
 
   // User-data sync files pulled cloud words under the active profile and skips
   // until it is loaded, so sync once it is known and again for each new profile.

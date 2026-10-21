@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Feather, MaterialIcons } from '@expo/vector-icons';
 import { fontFamilies } from '../../theme';
+import { isLayoutRtl } from '../../services/layoutDirection';
 
 // Building blocks shared by the reader's bottom sheets (settings, checkpoints,
 // saved words, voice, note): the sheet chrome (grabber, serif title + close X,
@@ -185,7 +186,8 @@ export const SegmentedTabs = ({ styles, options, value, onChange, style }) => {
                         {
                             width: segmentWidth,
                             transform: [{
-                                translateX: Animated.multiply(position, segmentWidth),
+                                // translateX is physical; in RTL the segments run right to left.
+                                translateX: Animated.multiply(position, isLayoutRtl() ? -segmentWidth : segmentWidth),
                             }],
                         },
                     ]}

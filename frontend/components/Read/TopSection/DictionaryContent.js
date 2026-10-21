@@ -30,6 +30,7 @@ import {
     normalizeSurfaceWordForLanguage,
     resolveDictionaryLookup,
 } from '../../../services/dictionaryLookup';
+import { ltrRow, rtlIcon } from '../../../services/layoutDirection';
 
 const ENGLISH_EDGE_RE = /^[^A-Za-z]+|[^A-Za-z]+$/g;
 const HANJA_RE = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/;
@@ -1445,7 +1446,7 @@ const DictionaryContent = ({
                 onPress={goBackFromDrilldown}
                 style={[styles.drilldownBackRow, { borderBottomColor: palette.border }]}
             >
-                <MaterialIcons name="chevron-left" size={18} color={palette.mutedText} />
+                <MaterialIcons name={rtlIcon('chevron-left')} size={18} color={palette.mutedText} />
                 <Text style={[styles.drilldownBackText, { color: palette.mutedText }]}>
                     {parentLookupWord}
                 </Text>
@@ -1791,7 +1792,7 @@ const DictionaryContent = ({
             >
                 {hasWordNavigation ? (
                     <MaterialIcons
-                        name={isPrevious ? 'chevron-left' : 'chevron-right'}
+                        name={rtlIcon(isPrevious ? 'chevron-left' : 'chevron-right')}
                         size={24}
                         color={disabled ? colors.frame : colors.textSecondary}
                     />
@@ -1972,7 +1973,7 @@ const DictionaryContent = ({
                                         {part.text}
                                     </Text>
                                     {canDrillDown ? (
-                                        <MaterialIcons name="chevron-right" size={14} color={palette.mutedText} />
+                                        <MaterialIcons name={rtlIcon('chevron-right')} size={14} color={palette.mutedText} />
                                     ) : null}
                                 </View>
                                 <Text style={[styles.wordPartType, { color: palette.mutedText }]}>
@@ -3317,7 +3318,8 @@ const createStyles = (colors) => StyleSheet.create({
         overflow: 'hidden',
     },
     wordPartsRow: {
-        flexDirection: 'row',
+        // Parts of a Korean/Chinese word keep their reading order in RTL.
+        flexDirection: ltrRow(),
         flexWrap: 'wrap',
         alignItems: 'center',
         justifyContent: 'center',

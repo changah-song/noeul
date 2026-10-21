@@ -13,6 +13,7 @@ import {
 import { fontFamilies, useTheme } from '../../../theme';
 import TranslationContent from './TranslationContent';
 import DictionaryContent from './DictionaryContent';
+import { isLayoutRtl, rtlIcon } from '../../../services/layoutDirection';
 
 // The word panel hugs its content; these are only ceilings. Past them the
 // panel body scrolls inside DictionaryContent while the action row stays put.
@@ -354,16 +355,16 @@ const TopSection = ({
                     <View style={styles.translationHeaderLeft}>
                         <MaterialIcons name="translate" size={16} color={themeColors.textTertiary} />
                         <Text numberOfLines={1} style={[styles.translationLangText, { color: themeColors.textTertiary }]}>
-                            {translationSourceLabel} → {translationTargetLabel}
+                            {translationSourceLabel} {isLayoutRtl() ? '←' : '→'} {translationTargetLabel}
                         </Text>
                     </View>
                     {isNativeSelection && onExtendSelection ? renderIconButton({
-                        icon: 'chevron-left',
+                        icon: rtlIcon('chevron-left'),
                         label: t('read.addPreviousSentence'),
                         onPress: () => onExtendSelection('previous'),
                     }) : null}
                     {isNativeSelection && onExtendSelection ? renderIconButton({
-                        icon: 'chevron-right',
+                        icon: rtlIcon('chevron-right'),
                         label: t('read.addNextSentence'),
                         onPress: () => onExtendSelection('next'),
                     }) : null}
