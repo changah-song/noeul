@@ -38,6 +38,8 @@ import {
 } from '../constants/links';
 import { fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
 import ProfileAvatar from '../components/shared/ProfileAvatar';
+import { rtlIcon } from '../services/layoutDirection';
+import { formatNumber } from '../services/interfaceLanguage';
 
 const getProfileColors = (themeColors) => ({
     bg: themeColors.bgPage,
@@ -63,7 +65,7 @@ export const vocabEstimateLabel = (tier, t) => {
     if (!tier) return null;
     if (tier.advanced) return t('vocabLevel.advancedTier');
     if (tier.label) return tier.label;
-    return t('profile.vocabEstimateWords', { count: Number(tier.threshold).toLocaleString() });
+    return t('profile.vocabEstimateWords', { count: formatNumber(tier.threshold) });
 };
 
 // One settings row: small leading icon, label, optional value, trailing chevron.
@@ -80,7 +82,7 @@ const NavRow = ({ icon, label, value, valueStyle, onPress, trailingIcon = 'chevr
             {icon ? <Feather name={icon} size={18} color={profileColors.body} /> : null}
             <Text style={[styles.rowLabel, styles.rowLabelFlex]} numberOfLines={1}>{label}</Text>
             {value ? <Text style={[styles.rowValue, valueStyle]} numberOfLines={1}>{value}</Text> : null}
-            {trailingIcon ? <Feather name={trailingIcon} size={16} color={profileColors.faint} /> : null}
+            {trailingIcon ? <Feather name={rtlIcon(trailingIcon)} size={16} color={profileColors.faint} /> : null}
         </TouchableOpacity>
     </>
 );
@@ -131,8 +133,8 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
             return String(metadataName).trim();
         }
 
-        return 'Reader';
-    }, [user?.user_metadata]);
+        return t('profile.defaultName');
+    }, [t, user?.user_metadata]);
 
     const learningSince = useMemo(() => {
         if (!user?.created_at) {
@@ -270,7 +272,7 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
     };
 
     const openNameEditor = () => {
-        setDraftName(displayName === 'Reader' ? '' : displayName);
+        setDraftName(displayName === t('profile.defaultName') ? '' : displayName);
         setShowNameEditor(true);
     };
 
@@ -340,7 +342,7 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
                         accessibilityRole="button"
                         accessibilityLabel={t('common.back')}
                     >
-                        <Feather name="chevron-left" size={24} color={profileColors.inkSlate} />
+                        <Feather name={rtlIcon('chevron-left')} size={24} color={profileColors.inkSlate} />
                     </TouchableOpacity>
                 </View>
 

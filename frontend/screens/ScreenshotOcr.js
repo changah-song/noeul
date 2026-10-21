@@ -36,6 +36,7 @@ import {
 } from '../modules/screen-ocr-overlay/src';
 import { getSavedWords } from '../services/Database';
 import { colors, fontFamilies, insets, layout, radii, spacing, textStyles } from '../theme';
+import { rtlIcon, startOffset } from '../services/layoutDirection';
 
 const OCR_MODES = [
     { id: 'lines', labelKey: 'ocr.lines' },
@@ -911,7 +912,9 @@ const ScreenshotOcr = ({ navigation, route }) => {
                 style={({ pressed }) => [
                     styles.ocrBox,
                     {
-                        left: target.box.x * scaleX,
+                        // Image pixels are measured from the left; `left` counts
+                        // from the right in RTL.
+                        left: startOffset(target.box.x * scaleX, target.box.width * scaleX, renderedImageLayout.width),
                         top: target.box.y * scaleY,
                         width: target.box.width * scaleX,
                         height: target.box.height * scaleY,
@@ -933,7 +936,7 @@ const ScreenshotOcr = ({ navigation, route }) => {
                     onPress={() => navigation?.goBack()}
                     style={styles.iconButton}
                 >
-                    <Feather name="chevron-left" size={30} color={colors.textMuted} />
+                    <Feather name={rtlIcon('chevron-left')} size={30} color={colors.textMuted} />
                 </TouchableOpacity>
 
                 <View style={styles.titleBlock}>

@@ -53,6 +53,7 @@ import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
 import { requestUserDataSync } from '../services/userDataSyncQueue';
 import { normalizeBookLanguage } from '../constants/languages';
 import { colors, fontFamilies, radii, spacing, useTheme } from '../theme';
+import { isLayoutRtl, rtlIcon } from '../services/layoutDirection';
 
 const FILTERS = [
   { key: 'starred', labelKey: 'learn.filters.starred', icon: 'star' },
@@ -751,7 +752,8 @@ const SegmentedTabs = ({ tabs, value, onChange }) => {
             styles.mainTabIndicator,
             {
               width: segmentWidth,
-              transform: [{ translateX: Animated.multiply(position, segmentWidth) }],
+              // translateX is physical; in RTL the segments run right to left.
+              transform: [{ translateX: Animated.multiply(position, isLayoutRtl() ? -segmentWidth : segmentWidth) }],
             },
           ]}
         />
@@ -1059,7 +1061,7 @@ const DetailHanjaPanel = ({
               hitSlop={{ top: 10, bottom: 10, left: 8, right: 4 }}
               style={[styles.hanjaPanelArrow, !canGoPrevious && styles.hanjaPanelArrowDisabled]}
             >
-              <Feather name="chevron-left" size={16} color={colors.textTertiary} />
+              <Feather name={rtlIcon('chevron-left')} size={16} color={colors.textTertiary} />
             </TouchableOpacity>
           ) : null}
           <Text style={styles.detailHanjaPanelCount}>
@@ -1074,7 +1076,7 @@ const DetailHanjaPanel = ({
               hitSlop={{ top: 10, bottom: 10, left: 4, right: 8 }}
               style={[styles.hanjaPanelArrow, !canGoNext && styles.hanjaPanelArrowDisabled]}
             >
-              <Feather name="chevron-right" size={16} color={colors.textTertiary} />
+              <Feather name={rtlIcon('chevron-right')} size={16} color={colors.textTertiary} />
             </TouchableOpacity>
           ) : null}
         </View>
@@ -1197,7 +1199,7 @@ const WordDetailModal = ({
           onPress={onClose}
           style={styles.headerIconButton}
         >
-          <Feather name="chevron-left" size={24} color={colors.inkSlate} />
+          <Feather name={rtlIcon('chevron-left')} size={24} color={colors.inkSlate} />
         </TouchableOpacity>
         <TouchableOpacity
           accessibilityRole="button"

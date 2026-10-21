@@ -44,6 +44,7 @@ import {
     createReaderSettingsControlStyles,
     createSheetChromeStyles,
 } from './ReaderSettingsControls';
+import { rtlIcon } from '../../services/layoutDirection';
 
 // Share of the window the sheet occupies. Fixed (not content-sized) so every
 // tab opens at the same height and long tabs scroll inside the sheet.
@@ -531,7 +532,7 @@ const ReaderSettingsSheet = ({
                                             </Text>
                                         </View>
                                         {action.destructive ? null : (
-                                            <Feather name="chevron-right" size={18} color={colors.textSubtle} />
+                                            <Feather name={rtlIcon('chevron-right')} size={18} color={colors.textSubtle} />
                                         )}
                                     </TouchableOpacity>
                                 ))}

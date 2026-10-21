@@ -50,6 +50,7 @@ import {
   normalizeBookLanguage,
 } from '../constants/languages';
 import { assessEntry } from '../services/api/assessEntry';
+import { rtlIcon } from '../services/layoutDirection';
 
 const LEGACY_STORAGE_KEY = 'writing_entries_v1';
 const getWritingStorageKey = (ownerId) => makeScopedStorageKey(ownerId, 'writing-entries-v1');
@@ -431,7 +432,7 @@ const WritingEntryRow = ({ entry, onPress }) => {
         </Text>
       </View>
 
-      <Feather name="chevron-right" size={16} color={colors.textSubtle} />
+      <Feather name={rtlIcon('chevron-right')} size={16} color={colors.textSubtle} />
     </Pressable>
   );
 };
@@ -1452,7 +1453,7 @@ const Write = ({ user, navigation }) => {
               onPress={leaveDetail}
               style={styles.editorBackButton}
             >
-              <Feather name="chevron-left" size={18} color={colors.text} />
+              <Feather name={rtlIcon('chevron-left')} size={18} color={colors.text} />
             </TouchableOpacity>
 
             {selectedEntryIsReviewed ? (
@@ -1606,7 +1607,7 @@ const Write = ({ user, navigation }) => {
               onPress={handleEditorBack}
               style={[styles.editorBackButton, isAssessing && styles.editorSaveButtonDisabled]}
             >
-              <Feather name="chevron-left" size={22} color={colors.text} />
+              <Feather name={rtlIcon('chevron-left')} size={22} color={colors.text} />
             </TouchableOpacity>
 
             <View style={styles.editorTopBarSpacer} />
