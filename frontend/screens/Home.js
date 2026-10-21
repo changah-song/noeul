@@ -3877,7 +3877,15 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                             onPress={confirmAddBook}
                             style={styles.starterSecondary}
                         >
-                            <Text style={styles.starterSecondaryText} numberOfLines={1}>{t('home.importEpub')}</Text>
+                            <Text
+                                style={styles.starterSecondaryText}
+                                numberOfLines={1}
+                                // Two half-width buttons: longer languages shrink to fit.
+                                adjustsFontSizeToFit
+                                minimumFontScale={0.75}
+                            >
+                                {t('home.importEpub')}
+                            </Text>
                         </TouchableOpacity>
                         <TouchableOpacity
                             accessibilityRole="button"

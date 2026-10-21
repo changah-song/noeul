@@ -102,7 +102,9 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
     const [isSavingName, setIsSavingName] = useState(false);
     const [showTargetLanguagePicker, setShowTargetLanguagePicker] = useState(false);
     const [showVocabLevel, setShowVocabLevel] = useState(false);
-    const [vocabEstimate, setVocabEstimate] = useState(null);
+    // The estimated tier; its label is built at render so it follows the
+    // app language when that changes.
+    const [vocabTier, setVocabTier] = useState(null);
     // Notifications and personalized vocabulary keep their stored settings
     // (AppContext) but no longer have rows here.
     const {
@@ -163,7 +165,7 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
     // The current level estimate for the "Vocabulary level" row.
     const loadVocabEstimate = useCallback(async () => {
         if (!hasVocabSizeGrid(targetLanguage)) {
-            setVocabEstimate(null);
+            setVocabTier(null);
             return;
         }
         try {
@@ -174,11 +176,11 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
             });
             const tiers = getVocabTiers(targetLanguage);
             const index = tierIndexForTheta(tiers, ability?.theta);
-            setVocabEstimate(index == null ? null : vocabEstimateLabel(tiers[index], t));
+            setVocabTier(index == null ? null : tiers[index]);
         } catch {
-            setVocabEstimate(null);
+            setVocabTier(null);
         }
-    }, [activeOwnerId, activeProfileId, t, targetLanguage]);
+    }, [activeOwnerId, activeProfileId, targetLanguage]);
 
     useEffect(() => {
         if (!showVocabLevel) {
@@ -381,7 +383,7 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
                         <NavRow
                             icon="bar-chart-2"
                             label={t('profile.vocabLevel')}
-                            value={vocabEstimate}
+                            value={vocabEstimateLabel(vocabTier, t)}
                             onPress={() => setShowVocabLevel(true)}
                             showDivider
                             styles={styles}
