@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
@@ -24,6 +24,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import { Feather, Ionicons, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 import { createTabBarBaseStyle } from '../components/shared/TabBar';
 import Book3D from '../components/Home/Book3D';
+import ProfileAvatar from '../components/shared/ProfileAvatar';
 import SongReader from '../components/Songs/SongReader';
 import { IconButton, Screen } from '../components/ui';
 import { useAppContext } from '../contexts/AppContext';
@@ -724,6 +725,8 @@ const BookCover = ({ book, width, height, style, titleStyle }) => {
             <Image
                 source={{ uri: coverUri }}
                 accessibilityLabel={getBookTitle(book, t)}
+                // No Android fade-in: a cover that mounts mid-swipe shows at once.
+                fadeDuration={0}
                 onError={() => setFailedCoverUri(coverUri)}
                 style={[styles.coverImage, style, { width, height }]}
             />
@@ -1374,6 +1377,69 @@ const BookPreview = ({
     );
 };
 
+// Copies of the featured books laid end to end. The carousel starts in the
+// middle copy and quietly jumps back to it whenever a swipe settles, so a fast
+// fling in either direction never runs out of books.
+const HERO_LOOP_COPIES = 9;
+
+// One cover in the featured carousel. Memoized so the active-book state
+// changing mid-swipe doesn't re-render every cover.
+const FeaturedCarouselItem = memo(({
+    book,
+    index,
+    isLast,
+    scrollX,
+    snapInterval,
+    coverWidth,
+    coverHeight,
+    onPressRef,
+}) => {
+    const { t } = useTranslation();
+    const { styles } = useHomeTheme();
+    const inputRange = [
+        (index - 1) * snapInterval,
+        index * snapInterval,
+        (index + 1) * snapInterval,
+    ];
+    const scale = scrollX.interpolate({
+        inputRange,
+        outputRange: [HERO_SIDE_BOOK_SCALE, 1, HERO_SIDE_BOOK_SCALE],
+        extrapolate: 'clamp',
+    });
+    const emphasis = scrollX.interpolate({
+        inputRange,
+        outputRange: [0, 1, 0],
+        extrapolate: 'clamp',
+    });
+    return (
+        <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={getBookTitle(book, t)}
+            onPress={() => onPressRef.current?.(book, index)}
+            style={[
+                styles.heroItem,
+                { width: coverWidth, marginRight: isLast ? 0 : HERO_ITEM_GAP },
+            ]}
+        >
+            <Animated.View style={{ transform: [{ scale }] }}>
+                <Book3D
+                    width={coverWidth}
+                    height={coverHeight}
+                    radius={6}
+                    shadowOpacity={emphasis}
+                >
+                    <BookCover
+                        book={book}
+                        width={coverWidth}
+                        height={coverHeight}
+                        style={styles.heroCover}
+                    />
+                </Book3D>
+            </Animated.View>
+        </Pressable>
+    );
+});
+
 const FeaturedBookCarousel = ({ books, screenWidth, onResumeBook, onPressBook }) => {
     const { t } = useTranslation();
     const { homeColors: HOME_COLORS, styles } = useHomeTheme();
@@ -1385,55 +1451,52 @@ const FeaturedBookCarousel = ({ books, screenWidth, onResumeBook, onPressBook })
     const snapInterval = coverWidth + HERO_ITEM_GAP;
     const sidePadding = Math.max(0, Math.round((screenWidth - coverWidth) / 2));
 
-    const isLooping = books.length > 1;
-    const loopOffset = isLooping ? 1 : 0;
-    const loopedBooks = isLooping
-        ? [books[books.length - 1], ...books, books[0]]
-        : books;
+    const count = books.length;
+    const isLooping = count > 1;
+    const copies = isLooping ? HERO_LOOP_COPIES : 1;
+    const middleStart = Math.floor(copies / 2) * count;
+    const loopedBooks = useMemo(
+        () => Array.from({ length: copies * count }, (_, i) => books[i % count]),
+        [books, copies, count],
+    );
+    const realIndexOf = (loopedIndex) => ((loopedIndex % count) + count) % count;
 
-    const scrollX = useRef(new Animated.Value(isLooping ? snapInterval : 0)).current;
+    const scrollX = useRef(new Animated.Value(middleStart * snapInterval)).current;
 
     useEffect(() => {
         if (isLooping) {
-            scrollRef.current?.scrollTo({ x: loopOffset * snapInterval, animated: false });
+            scrollRef.current?.scrollTo({ x: middleStart * snapInterval, animated: false });
         }
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-    const clampedIndex = clamp(activeIndex, 0, books.length - 1);
+    const clampedIndex = clamp(activeIndex, 0, count - 1);
     const activeBook = books[clampedIndex];
     const progressPercent = Math.round(getBookProgress(activeBook) * 100);
     const wordCount = getBookWordCount(activeBook);
 
     const handleScroll = (event) => {
         const offset = event.nativeEvent.contentOffset.x;
-        const rawIndex = Math.round(offset / snapInterval);
-        const total = loopedBooks.length;
-        let realIndex;
-        if (rawIndex <= 0) {
-            realIndex = books.length - 1;
-        } else if (rawIndex >= total - 1) {
-            realIndex = 0;
-        } else {
-            realIndex = rawIndex - loopOffset;
-        }
+        const realIndex = realIndexOf(Math.round(offset / snapInterval));
         setActiveIndex((current) => (current === realIndex ? current : realIndex));
     };
 
     const handleMomentumScrollEnd = (event) => {
         if (!isLooping) return;
-        const offset = event.nativeEvent.contentOffset.x;
-        const index = Math.round(offset / snapInterval);
-        const total = loopedBooks.length;
-        if (index === 0) {
-            scrollRef.current?.scrollTo({ x: books.length * snapInterval, animated: false });
-        } else if (index === total - 1) {
-            scrollRef.current?.scrollTo({ x: loopOffset * snapInterval, animated: false });
+        const index = Math.round(event.nativeEvent.contentOffset.x / snapInterval);
+        // Back to the same book in the middle copy; it looks identical.
+        if (index < middleStart || index >= middleStart + count) {
+            scrollRef.current?.scrollTo({
+                x: (middleStart + realIndexOf(index)) * snapInterval,
+                animated: false,
+            });
         }
     };
 
-    const handleItemPress = (book, loopedIndex, realIndex) => {
-        if (realIndex === clampedIndex) {
-            onPressBook(book, realIndex);
+    // Read through a ref so the memoized covers keep a stable prop.
+    const onPressRef = useRef(null);
+    onPressRef.current = (book, loopedIndex) => {
+        if (realIndexOf(loopedIndex) === clampedIndex) {
+            onPressBook(book, clampedIndex);
             return;
         }
         scrollRef.current?.scrollTo({ x: loopedIndex * snapInterval, animated: true });
@@ -1460,57 +1523,19 @@ const FeaturedBookCarousel = ({ books, screenWidth, onResumeBook, onPressBook })
                 onMomentumScrollEnd={handleMomentumScrollEnd}
                 scrollEventThrottle={16}
             >
-                {loopedBooks.map((book, index) => {
-                    const realBookIndex = (index - loopOffset + books.length) % books.length;
-                    const inputRange = [
-                        (index - 1) * snapInterval,
-                        index * snapInterval,
-                        (index + 1) * snapInterval,
-                    ];
-                    const scale = scrollX.interpolate({
-                        inputRange,
-                        outputRange: [HERO_SIDE_BOOK_SCALE, 1, HERO_SIDE_BOOK_SCALE],
-                        extrapolate: 'clamp',
-                    });
-                    const emphasis = scrollX.interpolate({
-                        inputRange,
-                        outputRange: [0, 1, 0],
-                        extrapolate: 'clamp',
-                    });
-
-                    return (
-                        <Pressable
-                            key={`looped-${index}-${getBookKey(book, index)}`}
-                            accessibilityRole="button"
-                            accessibilityLabel={getBookTitle(book, t)}
-                            onPress={() => handleItemPress(book, index, realBookIndex)}
-                            style={[
-                                styles.heroItem,
-                                {
-                                    width: coverWidth,
-                                    marginRight: index === loopedBooks.length - 1 ? 0 : HERO_ITEM_GAP,
-                                },
-                            ]}
-                        >
-                            <Animated.View style={{ transform: [{ scale }] }}>
-                                <Book3D
-                                    width={coverWidth}
-                                    height={coverHeight}
-                                    radius={6}
-                                    glossOpacity={emphasis}
-                                    shadowOpacity={emphasis}
-                                >
-                                    <BookCover
-                                        book={book}
-                                        width={coverWidth}
-                                        height={coverHeight}
-                                        style={styles.heroCover}
-                                    />
-                                </Book3D>
-                            </Animated.View>
-                        </Pressable>
-                    );
-                })}
+                {loopedBooks.map((book, index) => (
+                    <FeaturedCarouselItem
+                        key={`looped-${index}`}
+                        book={book}
+                        index={index}
+                        isLast={index === loopedBooks.length - 1}
+                        scrollX={scrollX}
+                        snapInterval={snapInterval}
+                        coverWidth={coverWidth}
+                        coverHeight={coverHeight}
+                        onPressRef={onPressRef}
+                    />
+                ))}
             </Animated.ScrollView>
 
             <View style={styles.heroMeta}>
@@ -1637,13 +1662,6 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const { activeOwnerId, syncPaused, syncGeneration } = useLocalOwner();
     const { colors: themeColors } = useTheme();
     const colors = themeColors;
-    const profileInitial = useMemo(() => {
-        const name = user?.user_metadata?.username
-            || user?.user_metadata?.display_name
-            || user?.user_metadata?.name;
-        const trimmed = String(name || '').trim();
-        return trimmed ? trimmed.charAt(0).toUpperCase() : 'R';
-    }, [user?.user_metadata]);
     const safeAreaInsets = useSafeAreaInsets();
     const HOME_COLORS = useMemo(() => createHomeColors(colors), [colors]);
     const styles = useMemo(() => createStyles(HOME_COLORS, colors), [HOME_COLORS, colors]);
@@ -4077,9 +4095,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                         onPress={() => navigation?.navigate?.('Profile')}
                         style={styles.appTopIconButton}
                     >
-                        <View style={styles.appTopAvatar}>
-                            <Text style={styles.appTopAvatarText}>{profileInitial}</Text>
-                        </View>
+                        <ProfileAvatar user={user} size={34} />
                     </TouchableOpacity>
                 </View>
                 {ocrMessage ? (
@@ -5673,8 +5689,6 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     },
     defaultCover: {
         overflow: 'hidden',
-        borderWidth: 1,
-        borderColor: HOME_COLORS.border,
         borderRadius: 2,
         alignItems: 'center',
         justifyContent: 'center',

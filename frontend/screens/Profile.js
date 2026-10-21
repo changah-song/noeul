@@ -37,6 +37,7 @@ import {
     TERMS_OF_SERVICE_URL,
 } from '../constants/links';
 import { fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
+import ProfileAvatar from '../components/shared/ProfileAvatar';
 
 const getProfileColors = (themeColors) => ({
     bg: themeColors.bgPage,
@@ -56,11 +57,6 @@ const getProfileColors = (themeColors) => ({
     white: themeColors.white,
     cream: themeColors.glyphCream,
 });
-
-const getInitial = (name) => {
-    const trimmed = String(name || '').trim();
-    return trimmed ? trimmed.charAt(0).toUpperCase() : 'R';
-};
 
 // The reader-facing label of a vocabulary tier ("About 3,000 words", "HSK 3").
 export const vocabEstimateLabel = (tier, t) => {
@@ -349,9 +345,7 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
                 </View>
 
                 <View style={styles.profileHeader}>
-                    <View style={styles.avatar}>
-                        <Text style={styles.avatarInitial}>{getInitial(displayName)}</Text>
-                    </View>
+                    <ProfileAvatar user={user} size={56} />
                     <View style={styles.profileIdentity}>
                         <Text style={styles.profileName} numberOfLines={1}>{displayName}</Text>
                         <Text style={styles.profileSubtitle} numberOfLines={1}>{identitySubtitle}</Text>
