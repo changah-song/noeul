@@ -69,6 +69,8 @@ import {
     logInteractionEvent,
     lookupBookHighlightSurfaces,
     lookupBookAnnotationSurfaces,
+    countBookRowsInInterfaceLanguage,
+    resetBookPreprocessChapters,
     lookupCacheByStems,
     markBookPreprocessChapter,
     markBookPreprocessMeta,
@@ -2237,6 +2239,26 @@ const Read = ({
         preprocessingInFlightRef.current = true;
         activeChapterPreprocessRef.current = { bookUri: currentBook, centerSpineIndex };
 
+        // Translations (the words' glosses and definitions) are fetched in the
+        // app language. A book processed in another language has none in this
+        // one, so process its chapters again; the old rows stay as a fallback
+        // until the new ones arrive.
+        try {
+            const rowsInLanguage = await countBookRowsInInterfaceLanguage(
+                activeOwnerId,
+                currentBook,
+                { language: activeBookLanguage, interfaceLanguage }
+            );
+            if (rowsInLanguage === 0) {
+                await resetBookPreprocessChapters(activeOwnerId, currentBook, { language: activeBookLanguage });
+            }
+        } catch (error) {
+            console.warn('[Read] Could not check the book\'s translation language:', error);
+        }
+        if (chapterPreprocessTokenRef.current !== preprocessToken) {
+            return;
+        }
+
         setBooks((prevBooks) => prevBooks.map((book) => (
             book.uri === currentBook ? { ...book, preprocessed: false, preprocessing: true } : book
         )));
@@ -3122,6 +3144,26 @@ const Read = ({
     const readingMode = READING_MODES.includes(settings.readingMode)
         ? settings.readingMode
         : DEFAULT_READER_SETTINGS.readingMode;
+    // Switching the app language while a book is open: fetch the open book's
+    // translations again in the new language. An in-flight run for the old
+    // language is cancelled first, or it would win the in-flight check.
+    const preprocessLanguageRef = useRef(interfaceLanguage);
+    useEffect(() => {
+        if (preprocessLanguageRef.current === interfaceLanguage) {
+            return;
+        }
+        preprocessLanguageRef.current = interfaceLanguage;
+        const spineIndex = currentSpineIndexRef.current;
+        const totalSpineItems = nativeReaderPackageRef.current?.spine?.length ?? 0;
+        if (!currentBook || !Number.isInteger(spineIndex) || totalSpineItems <= 0) {
+            return;
+        }
+        chapterPreprocessTokenRef.current += 1;
+        preprocessingInFlightRef.current = false;
+        activeChapterPreprocessRef.current = { bookUri: null, centerSpineIndex: null };
+        startChapterPreprocessing(spineIndex, totalSpineItems, null);
+    }, [currentBook, interfaceLanguage, startChapterPreprocessing]);
+
     const isScrollMode = readingMode === 'scroll';
     const nativeRenderMode = focusMode ? 'focus' : (isScrollMode ? 'continuous' : 'paged');
     // 'off' hides the marks only; exposure/lookup evidence keeps flowing, since

@@ -3702,6 +3702,74 @@ async def translate_and_cache_zh_preprocess(results: list[dict], interface_langu
     return results
 
 
+def _translate_cache_get_many(key_hashes: list[str]) -> dict[str, str]:
+    """translate_cache hits for many keys in one connection (blocking)."""
+    unique_keys = [key for key in dict.fromkeys(key_hashes) if key]
+    if not unique_keys:
+        return {}
+    found: dict[str, str] = {}
+    conn = get_db_connection()
+    try:
+        conn.execute("PRAGMA busy_timeout=3000")
+        for chunk in chunked_values(unique_keys):
+            placeholders = ",".join(["?"] * len(chunk))
+            for row in conn.execute(
+                f"SELECT key_hash, translated FROM translate_cache WHERE key_hash IN ({placeholders})",
+                chunk,
+            ).fetchall():
+                if row["translated"]:
+                    found[row["key_hash"]] = row["translated"]
+    finally:
+        conn.close()
+    return found
+
+
+async def translate_ko_preprocess_results(results: list[dict], interface_language: str) -> list[dict]:
+    """Korean preprocessing reads English KRDICT senses (the bundled snapshot and
+    server cache are English). Translate each chapter's definitions into the
+    interface language so the reader's under-word translations and taps are in the
+    learner's language. Translations live in translate_cache (keyed by text and
+    language), not dictionary_cache, so they never stand in for KRDICT's own
+    per-language senses. Untranslated ones stay English and are labelled so."""
+    normalized_lang = normalize_short_language_code(interface_language, "en")
+    if normalized_lang == "en":
+        return results
+
+    texts = [
+        result["definition"]
+        for result in results
+        if isinstance(result, dict) and isinstance(result.get("definition"), str) and result["definition"].strip()
+    ]
+    unique_texts = list(dict.fromkeys(texts))
+    if not unique_texts:
+        return results
+
+    keys = {text: translate_cache_key(text, "en", normalized_lang) for text in unique_texts}
+    cached = await asyncio.to_thread(_translate_cache_get_many, list(keys.values()))
+    translated_by_text = {text: cached[key] for text, key in keys.items() if key in cached}
+
+    pending = [text for text in unique_texts if text not in translated_by_text]
+    if pending:
+        fresh = await _translate_batch(pending, source="en", target=normalized_lang)
+        for text, translated in zip(pending, fresh):
+            if translated:
+                translated_by_text[text] = translated
+                await asyncio.to_thread(_translate_cache_put, keys[text], translated)
+
+    out: list[dict] = []
+    for result in results:
+        definition = result.get("definition") if isinstance(result, dict) else None
+        if not isinstance(definition, str) or not definition.strip():
+            out.append(result)
+            continue
+        translated = translated_by_text.get(definition)
+        if translated:
+            out.append({**result, "definition": translated, "interface_language": normalized_lang})
+        else:
+            out.append({**result, "interface_language": "en", "fallback_language": "en"})
+    return out
+
+
 _song_search_cache = SongSearchCache()
 _song_search_logger = logging.getLogger("noeul.song_search")
 SONG_SEARCH_PROVIDER_TIMEOUT_SECONDS = 8.0
@@ -4534,6 +4602,11 @@ async def preprocess_chapter(payload: dict, auth: dict[str, Any] = Depends(verif
     result = await _preprocess_core(
         text, KRDICT_CLIENT_ID, max_stems, progress_callback=charge_live_fetches
     )
+    interface_language = normalize_short_language_code(
+        request_interface_language(payload.get("interface_language")),
+        "en",
+    )
+    result["results"] = await translate_ko_preprocess_results(result.get("results") or [], interface_language)
     return {
         "book_uri": book_uri,
         "spine_index": spine_index,
