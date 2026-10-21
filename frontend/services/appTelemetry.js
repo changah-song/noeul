@@ -281,6 +281,23 @@ export const setTelemetryScreen = (name) => getTelemetry().setScreen(name);
 
 let started = false;
 
+// Which language the phone is set to and which one Noeul is showing, so the
+// dashboard can show demand for languages Noeul doesn't offer yet.
+const getLanguageMetadata = () => {
+  try {
+    const { getDeviceLocaleTag, deviceLanguageOf } = require('./deviceLocale');
+    const { getRuntimeInterfaceLanguage } = require('./interfaceLanguage');
+    const deviceLocale = getDeviceLocaleTag();
+    return {
+      device_locale: deviceLocale,
+      device_language: deviceLanguageOf(deviceLocale),
+      interface_language: getRuntimeInterfaceLanguage(),
+    };
+  } catch {
+    return {};
+  }
+};
+
 // Call once, when the first screen is ready to show.
 export const startTelemetry = () => {
   if (started) {
@@ -289,7 +306,10 @@ export const startTelemetry = () => {
   started = true;
   const t = getTelemetry();
 
-  t.record('app_start', { durationMs: Date.now() - JS_START_MS });
+  t.record('app_start', {
+    durationMs: Date.now() - JS_START_MS,
+    metadata: getLanguageMetadata(),
+  });
 
   let appState = AppState.currentState;
   let expectedAt = Date.now() + STALL_TICK_MS;

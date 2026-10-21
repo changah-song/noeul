@@ -36,6 +36,7 @@ import {
   setRuntimeInterfaceLanguage,
   setRuntimeTargetLanguage,
 } from '../services/interfaceLanguage';
+import { getDeviceInterfaceLanguage } from '../services/deviceLocale';
 import {
   DEFAULT_ACTIVE_PROFILE_ID,
   getDefaultProfileIdForLanguage,
@@ -198,6 +199,20 @@ const toCloudAccountLanguagePatch = (settings) => ({
   updated_at: settings.updatedAt,
 });
 
+// A new account's row is created by a server trigger holding the default
+// interface language, stamped at sign-up. Within this window of the account's
+// creation it is that untouched default, not a choice the user made.
+const DEFAULT_ACCOUNT_ROW_WINDOW_MS = 2 * 60 * 1000;
+
+const isUntouchedDefaultAccount = (account, user, localSettings) => Boolean(
+  account
+  && user?.created_at
+  && account.interface_language === DEFAULT_LANGUAGE_SETTINGS.interfaceLanguage
+  && localSettings.interfaceLanguage !== DEFAULT_LANGUAGE_SETTINGS.interfaceLanguage
+  && Math.abs(getTimestampMs(account.updated_at) - getTimestampMs(user.created_at))
+    < DEFAULT_ACCOUNT_ROW_WINDOW_MS
+);
+
 const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 
 const hasLearningLanguagePatch = (patch = {}) => (
@@ -223,6 +238,7 @@ export const AppProvider = ({ children, user }) => {
   const [dictMode, setDictMode] = useState(true);
   const [languageSettings, setLanguageSettings] = useState({
     ...DEFAULT_LANGUAGE_SETTINGS,
+    interfaceLanguage: getDeviceInterfaceLanguage() ?? DEFAULT_LANGUAGE_SETTINGS.interfaceLanguage,
     levelsByLanguage: DEFAULT_PROFICIENCY_LEVELS_BY_LANGUAGE,
     activeProfileId: DEFAULT_ACTIVE_PROFILE_ID,
     isDarkMode: false,
@@ -346,10 +362,11 @@ export const AppProvider = ({ children, user }) => {
     const ownerId = activeOwnerId;
     const generation = syncGeneration;
     const localSettings = latestLanguageSettingsRef.current;
-    const [cloudPreferences, cloudAccount] = await Promise.all([
+    const [cloudPreferences, fetchedCloudAccount] = await Promise.all([
       fetchUserPreferences(nextUser.id),
       fetchUserAccountSettings(nextUser.id),
     ]);
+    let cloudAccount = fetchedCloudAccount;
     if (!isCurrentSyncGeneration(generation)) {
       return;
     }
@@ -366,6 +383,21 @@ export const AppProvider = ({ children, user }) => {
     );
     if (!localWithTimestamp) {
       return;
+    }
+
+    // A fresh install starts in the phone's language; don't let a brand-new
+    // account's default English override it. Save the phone language instead.
+    if (isUntouchedDefaultAccount(cloudAccount, nextUser, localSettings)) {
+      await updateUserAccountSettingsFields({
+        user: nextUser,
+        ownerId,
+        generation,
+        patch: toCloudAccountLanguagePatch(localWithTimestamp),
+      });
+      if (!isCurrentSyncGeneration(generation)) {
+        return;
+      }
+      cloudAccount = null;
     }
 
     if (!cloudPreferences && !cloudAccount) {
@@ -511,6 +543,9 @@ export const AppProvider = ({ children, user }) => {
         const parsed = stored ? JSON.parse(stored) : {};
         const nextSettings = normalizeLanguageSettings({
           ...DEFAULT_LANGUAGE_SETTINGS,
+          // A fresh install starts in the phone's language when Noeul offers
+          // it. updatedAt stays null, so a signed-in account's choice still wins.
+          interfaceLanguage: getDeviceInterfaceLanguage() ?? DEFAULT_LANGUAGE_SETTINGS.interfaceLanguage,
           ...parsed,
           updatedAt: parsed.updatedAt ?? parsed.updated_at ?? null,
         });
