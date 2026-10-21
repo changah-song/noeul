@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { colors, fontFamilies } from '../../theme';
@@ -126,6 +126,12 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         gap: 8,
     },
+    pillHighlight: {
+        position: 'absolute',
+        top: 4,
+        height: 44,
+        borderRadius: 22,
+    },
     pillLabel: {
         fontFamily: fontFamilies.sansSemiBold,
         fontSize: 14,
@@ -157,41 +163,151 @@ const PILL_ROUTES = [
     { name: 'Learn', labelKey: 'tabs.learn', icon: 'layers' },
 ];
 
-const PillTab = ({ route, labelKey, icon, focused, onPress, themeColors }) => {
-    const { t } = useTranslation();
-    const progress = useRef(new Animated.Value(focused ? 1 : 0)).current;
-    useEffect(() => {
-        Animated.timing(progress, {
-            toValue: focused ? 1 : 0,
-            duration: 200,
-            useNativeDriver: false,
-        }).start();
-    }, [focused, progress]);
-    const background = progress.interpolate({
-        inputRange: [0, 1],
-        outputRange: ['rgba(0,0,0,0)', themeColors.inkSlate],
+// Spring for the sliding highlight: quick, settles without a visible wobble.
+const SLIDE_SPRING = { stiffness: 320, damping: 30, mass: 1, useNativeDriver: false };
+// The trailing edge follows a little looser, so the highlight stretches
+// toward the new tab and then catches up.
+const TRAIL_SPRING = { stiffness: 190, damping: 26, mass: 1, useNativeDriver: false };
+
+const PillTabContent = ({ icon, label, color }) => (
+    <View style={styles.pillTab}>
+        <Feather name={icon} size={17} color={color} />
+        <Text style={[styles.pillLabel, { color }]}>{label}</Text>
+    </View>
+);
+
+const PillTab = ({ route, label, icon, index, focused, progress, onPress, onLayout, themeColors }) => {
+    // The white ink fades in as the highlight arrives under this tab.
+    const activeOpacity = progress.interpolate({
+        inputRange: [index - 1, index, index + 1],
+        outputRange: [0, 1, 0],
+        extrapolate: 'clamp',
     });
-    const ink = focused ? themeColors.white : themeColors.textSecondary;
     return (
         <Pressable
             onPress={onPress}
+            onLayout={onLayout}
             accessibilityRole="tab"
             accessibilityState={{ selected: focused }}
-            accessibilityLabel={t(labelKey)}
+            accessibilityLabel={label}
             testID={`tab-${route}`}
         >
-            <Animated.View style={[styles.pillTab, { backgroundColor: background }]}>
-                <Feather name={icon} size={17} color={ink} />
-                <Text style={[styles.pillLabel, { color: ink }]}>{t(labelKey)}</Text>
+            <PillTabContent icon={icon} label={label} color={themeColors.textSecondary} />
+            <Animated.View style={[StyleSheet.absoluteFill, { opacity: activeOpacity }]} pointerEvents="none">
+                <PillTabContent icon={icon} label={label} color={themeColors.white} />
             </Animated.View>
         </Pressable>
     );
 };
 
+const PillTabs = ({ state, navigation, themeColors }) => {
+    const { t } = useTranslation();
+    const current = state.routes[state.index];
+    const items = PILL_ROUTES
+        .map((item) => ({ ...item, route: state.routes.find((r) => r.name === item.name) }))
+        .filter((item) => item.route);
+    const activeIndex = Math.max(0, items.findIndex((item) => item.name === current.name));
+
+    const progress = useRef(new Animated.Value(activeIndex)).current;
+    const leftEdge = useRef(new Animated.Value(0)).current;
+    const rightEdge = useRef(new Animated.Value(0)).current;
+    const appear = useRef(new Animated.Value(0)).current;
+    const [layouts, setLayouts] = useState({});
+    const placed = useRef(false);
+    const lastIndex = useRef(activeIndex);
+    const measured = items.every((item) => layouts[item.name]);
+
+    // Rise in when the pill comes back (e.g. leaving the reader).
+    useEffect(() => {
+        Animated.spring(appear, { toValue: 1, stiffness: 240, damping: 24, mass: 1, useNativeDriver: true }).start();
+    }, [appear]);
+
+    useEffect(() => {
+        if (!measured) return;
+        const target = layouts[items[activeIndex].name];
+        if (!placed.current) {
+            // First measure: put the highlight under the current tab, no slide.
+            leftEdge.setValue(target.x);
+            rightEdge.setValue(target.x + target.width);
+            progress.setValue(activeIndex);
+            placed.current = true;
+            lastIndex.current = activeIndex;
+            return;
+        }
+        const movingRight = activeIndex >= lastIndex.current;
+        lastIndex.current = activeIndex;
+        Animated.parallel([
+            Animated.spring(leftEdge, { toValue: target.x, ...(movingRight ? TRAIL_SPRING : SLIDE_SPRING) }),
+            Animated.spring(rightEdge, { toValue: target.x + target.width, ...(movingRight ? SLIDE_SPRING : TRAIL_SPRING) }),
+            Animated.spring(progress, { toValue: activeIndex, ...SLIDE_SPRING }),
+        ]).start();
+        // items is derived from props each render; layouts/activeIndex cover its changes.
+    }, [activeIndex, layouts, measured, leftEdge, rightEdge, progress]);
+
+    const setLayout = (name) => ({ nativeEvent }) => {
+        const { x, width } = nativeEvent.layout;
+        setLayouts((prev) => (
+            prev[name] && prev[name].x === x && prev[name].width === width
+                ? prev
+                : { ...prev, [name]: { x, width } }
+        ));
+    };
+
+    return (
+        <Animated.View
+            accessibilityRole="tablist"
+            style={[
+                styles.pill,
+                { backgroundColor: themeColors.surface, borderColor: themeColors.border },
+                {
+                    opacity: appear,
+                    transform: [{ translateY: appear.interpolate({ inputRange: [0, 1], outputRange: [24, 0] }) }],
+                },
+            ]}
+        >
+            {measured ? (
+                <Animated.View
+                    pointerEvents="none"
+                    style={[
+                        styles.pillHighlight,
+                        {
+                            backgroundColor: themeColors.inkSlate,
+                            left: leftEdge,
+                            width: Animated.subtract(rightEdge, leftEdge),
+                        },
+                    ]}
+                />
+            ) : null}
+            {items.map((item, index) => {
+                const focused = index === activeIndex;
+                const onPress = () => {
+                    const event = navigation.emit({ type: 'tabPress', target: item.route.key, canPreventDefault: true });
+                    if (!focused && !event.defaultPrevented) navigation.navigate(item.route.name);
+                };
+                return (
+                    <PillTab
+                        key={item.name}
+                        route={item.name}
+                        label={t(item.labelKey)}
+                        icon={item.icon}
+                        index={index}
+                        focused={focused}
+                        progress={progress}
+                        onPress={onPress}
+                        onLayout={setLayout(item.name)}
+                        themeColors={themeColors}
+                    />
+                );
+            })}
+        </Animated.View>
+    );
+};
+
 /**
  * PillTabBar — the bottom navigation: a small floating pill with Read and
- * Learn. Hidden on the reader and Profile routes, and whenever a screen hides
- * its tab bar (focus/fullscreen, OCR, an editor) through tabBarStyle.
+ * Learn. A dark highlight slides between the tabs. Hidden on the reader and
+ * Profile routes, and whenever a screen hides its tab bar (focus/fullscreen,
+ * OCR, an editor) through tabBarStyle.
  */
 export const PillTabBar = ({ state, navigation, descriptors, themeColors = colors }) => {
     const current = state.routes[state.index];
@@ -208,31 +324,7 @@ export const PillTabBar = ({ state, navigation, descriptors, themeColors = color
     return (
         // Floats over the screen: the books scroll behind it.
         <View style={styles.pillBar} pointerEvents="box-none">
-            <View
-                accessibilityRole="tablist"
-                style={[styles.pill, { backgroundColor: themeColors.surface, borderColor: themeColors.border }]}
-            >
-                {PILL_ROUTES.map((item) => {
-                    const route = state.routes.find((r) => r.name === item.name);
-                    if (!route) return null;
-                    const focused = current.name === item.name;
-                    const onPress = () => {
-                        const event = navigation.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
-                        if (!focused && !event.defaultPrevented) navigation.navigate(route.name);
-                    };
-                    return (
-                        <PillTab
-                            key={item.name}
-                            route={item.name}
-                            labelKey={item.labelKey}
-                            icon={item.icon}
-                            focused={focused}
-                            onPress={onPress}
-                            themeColors={themeColors}
-                        />
-                    );
-                })}
-            </View>
+            <PillTabs state={state} navigation={navigation} themeColors={themeColors} />
         </View>
     );
 };
