@@ -194,8 +194,8 @@ const cleanDocumentTitle = (title, fallbackName) => {
     const cleanedFallback = cleanFallbackTitle(fallbackName);
     const cleanedTitle = cleanFallbackTitle(title || '');
 
-    const title = cleanedTitle && !PLACEHOLDER_TITLE_PATTERN.test(cleanedTitle) ? cleanedTitle : cleanedFallback;
-    return PLACEHOLDER_TITLE_PATTERN.test(title) ? '' : title;
+    const chosen = cleanedTitle && !PLACEHOLDER_TITLE_PATTERN.test(cleanedTitle) ? cleanedTitle : cleanedFallback;
+    return PLACEHOLDER_TITLE_PATTERN.test(chosen) ? '' : chosen;
 };
 
 const normalizeLine = (line = {}, index = 0) => {
