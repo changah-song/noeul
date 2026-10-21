@@ -506,6 +506,9 @@ const Read = ({
     const [translationBannerCopiedPreview] = useState(false);
     const [translationBannerTextPreview] = useState('');
     const [showLookupHint, setShowLookupHint] = useState(true);
+    // The open chapter's words (underlines, translations, levels) are still
+    // being fetched: the reader shows a short "getting ready" note meanwhile.
+    const [currentChapterPreparing, setCurrentChapterPreparing] = useState(false);
     const [showMenu, setShowMenu] = useState(false);
     const [showBeforeYouGo, setShowBeforeYouGo] = useState(false);
     const [showSavedPanel, setShowSavedPanel] = useState(false);
@@ -911,6 +914,7 @@ const Read = ({
         flushPendingFocusPageChange();
 
         setPreprocessStatus('idle');
+        setCurrentChapterPreparing(false);
         extractedTextRef.current = null;
         preprocessingInFlightRef.current = false;
         activeChapterPreprocessRef.current = { bookUri: null, centerSpineIndex: null };
@@ -2302,6 +2306,7 @@ const Read = ({
                     totalSurfaceCount += Number(existingChapter.surface_count) || 0;
                     if (isCurrentChapter) {
                         setPreprocessStatus('done');
+                        setCurrentChapterPreparing(false);
                     }
                     continue;
                 }
@@ -2319,6 +2324,9 @@ const Read = ({
                 }
 
                 setPreprocessStatus('preprocessing');
+                if (isCurrentChapter) {
+                    setCurrentChapterPreparing(true);
+                }
 
                 try {
                     const chapterPackage = (
@@ -2392,6 +2400,7 @@ const Read = ({
 
                     if (isCurrentChapter) {
                         setPreprocessStatus('done');
+                        setCurrentChapterPreparing(false);
                     }
 
                     const visibleSpineIndex = currentSpineIndexRef.current;
@@ -2420,6 +2429,7 @@ const Read = ({
 
                     if (isCurrentChapter) {
                         setPreprocessStatus('error');
+                        setCurrentChapterPreparing(false);
                     }
                 }
             }
@@ -4069,30 +4079,45 @@ const Read = ({
                 and the top of the page is the title). Focus mode has its own
                 position pill and controls, so the tip stays out of the way
                 there. */}
-            {currentBook && !highlightedWord && showLookupHint && !focusMode ? (
+            {currentBook && !highlightedWord && !focusMode && (showLookupHint || currentChapterPreparing) ? (
                 <View
                     pointerEvents="box-none"
                     style={[styles.hintLayer, { bottom: insets.bottom + 16 }]}
                 >
-                    <View style={styles.hintCard}>
-                        <Feather name="info" size={16} color={themeColors.textTertiary} style={styles.hintIcon} />
-                        <View style={styles.hintTextStack}>
-                            <Text style={styles.hintText}>
-                                {t('read.tapHint')}
-                            </Text>
-                            <Text style={styles.hintSubtext}>
-                                {t('read.longPressHint')}
-                            </Text>
-                        </View>
-                        <TouchableOpacity
-                            onPress={dismissLookupHint}
-                            style={styles.hintCloseButton}
-                            accessibilityRole="button"
-                            accessibilityLabel={t('common.close')}
+                    {currentChapterPreparing ? (
+                        <View
+                            style={[styles.hintCard, styles.preparingCard]}
+                            accessibilityLiveRegion="polite"
+                            accessibilityRole="progressbar"
                         >
-                            <Feather name="x" size={16} color={themeColors.textTertiary} />
-                        </TouchableOpacity>
-                    </View>
+                            <ActivityIndicator size="small" color={themeColors.textTertiary} style={styles.hintIcon} />
+                            <View style={styles.hintTextStack}>
+                                <Text style={styles.hintText}>{t('read.preparingWords')}</Text>
+                                <Text style={styles.hintSubtext}>{t('read.preparingWordsDetail')}</Text>
+                            </View>
+                        </View>
+                    ) : null}
+                    {showLookupHint ? (
+                        <View style={styles.hintCard}>
+                            <Feather name="info" size={16} color={themeColors.textTertiary} style={styles.hintIcon} />
+                            <View style={styles.hintTextStack}>
+                                <Text style={styles.hintText}>
+                                    {t('read.tapHint')}
+                                </Text>
+                                <Text style={styles.hintSubtext}>
+                                    {t('read.longPressHint')}
+                                </Text>
+                            </View>
+                            <TouchableOpacity
+                                onPress={dismissLookupHint}
+                                style={styles.hintCloseButton}
+                                accessibilityRole="button"
+                                accessibilityLabel={t('common.close')}
+                            >
+                                <Feather name="x" size={16} color={themeColors.textTertiary} />
+                            </TouchableOpacity>
+                        </View>
+                    ) : null}
                 </View>
             ) : null}
 
@@ -4261,6 +4286,11 @@ const createStyles = (themeColors) => StyleSheet.create({
     },
     hintIcon: {
         marginTop: 12,
+    },
+    preparingCard: {
+        // No close button: leave the same room on the right as the text's left.
+        paddingRight: 14,
+        marginBottom: 8,
     },
     hintTextStack: {
         flex: 1,
