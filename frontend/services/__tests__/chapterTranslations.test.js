@@ -1,3 +1,19 @@
+// The service's defaults talk to the API and the phone's database; every test
+// passes its own fakes, so keep the real modules (and Supabase config) out.
+jest.mock('../api/googleTranslate', () => ({
+    normalizeTranslationLanguageCode: (language, fallback) => {
+        const raw = String(language || fallback || '').trim().toLowerCase().replace('_', '-');
+        if (['zh-hant', 'zh-tw', 'zh-hk', 'zh-mo'].includes(raw)) return 'zh-TW';
+        return raw.split(/[-_]/)[0] || fallback;
+    },
+    translateSentences: jest.fn(),
+    translateText: jest.fn(),
+}));
+jest.mock('../Database', () => ({
+    getSentenceTranslations: jest.fn(async () => ({})),
+    saveSentenceTranslations: jest.fn(async () => 0),
+}));
+
 import { chapterSentences, normalizeSentence, sentencesOf, splitSentences } from '../sentenceSplit';
 import { createChapterTranslations } from '../chapterTranslations';
 
