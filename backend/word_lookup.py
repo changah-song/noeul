@@ -73,8 +73,9 @@ async def lookup_surface(
 
 
 # --- English fallback when KRDICT is unavailable -----------------------------
-# The bundled ko_dict.db snapshot only carries English senses, so a non-English
-# interface language always needs the live KRDICT API. When KRDICT is slow or
+# The bundled ko_dict.db snapshot carries English plus most of KRDICT's other
+# languages, but a word it lacks in the interface language (or a language it
+# lacks, like Chinese) still needs the live KRDICT API. When KRDICT is slow or
 # down those users used to get "No definition found"; instead they now get the
 # snapshot's English senses, each marked `fallback_language: "en"` so the app
 # can label them and keep them out of its per-language definition cache (once

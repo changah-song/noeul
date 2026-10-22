@@ -57,6 +57,7 @@ const DICTIONARY_CACHE_PROFICIENCY_MIGRATION_KEY = 'dictionary_cache_proficiency
 const DICTIONARY_CACHE_ROMANIZATION_MIGRATION_KEY = 'dictionary_cache_romanization_migration_v1';
 const DICTIONARY_CACHE_DIFFICULTY_MIGRATION_KEY = 'dictionary_cache_difficulty_migration_v1';
 const DICTIONARY_CACHE_ZH_SCRIPTS_MIGRATION_KEY = 'dictionary_cache_zh_scripts_migration_v1';
+const DICTIONARY_CACHE_KO_LANGUAGE_PURGE_KEY = 'dictionary_cache_ko_language_purge_v1';
 const LOCAL_OWNER_SQLITE_MIGRATION_KEY = 'local_owner_sqlite_migration_v1';
 const PROFILE_SQLITE_MIGRATION_KEY = 'profile_sqlite_migration_v1';
 const VOCAB_EMPTY_HANJA_MIGRATION_KEY = 'vocab_empty_hanja_migration_v1';
@@ -3436,6 +3437,39 @@ export const migrateDictionaryCacheZhScripts = async () => {
   await AsyncStorage.setItem(DICTIONARY_CACHE_ZH_SCRIPTS_MIGRATION_KEY, 'done');
 };
 
+// Chapter preprocessing used to save Korean words' English definitions under
+// the app language (vi, es, …), and a Korean book's cache rows are always
+// trusted, so those English rows were shown forever. Drop every non-English
+// Korean row once, with the book_index rows that point at them. The reader
+// then sees no rows in the app language and preprocesses the book again, now
+// in that language; tapped words are fetched again on their next tap.
+export const purgeKoreanNonEnglishCacheRows = async () => {
+  if (await AsyncStorage.getItem(DICTIONARY_CACHE_KO_LANGUAGE_PURGE_KEY) === 'done') return;
+
+  await new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        tx.executeSql(
+          `DELETE FROM book_index
+           WHERE stem_id IN (
+             SELECT id FROM dictionary_cache WHERE language = 'ko' AND interface_language <> 'en'
+           )`
+        );
+        tx.executeSql(
+          `DELETE FROM dictionary_cache WHERE language = 'ko' AND interface_language <> 'en'`
+        );
+      },
+      (error) => {
+        console.error('[Database] Error purging non-English Korean cache rows:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+
+  await AsyncStorage.setItem(DICTIONARY_CACHE_KO_LANGUAGE_PURGE_KEY, 'done');
+};
+
 /**
  * createBookIndexTable
  * Creates the `book_index` table if it doesn't exist.
@@ -4803,6 +4837,7 @@ export const initAllTables = async () => {
   await migrateDictionaryCacheZhScripts();
   await migrateBookIndex();
   await createBookIndexTable();
+  await purgeKoreanNonEnglishCacheRows();
   await createBookNotesTable();
   await migrateBookNotesTable();
   await createBookBookmarksTable();

@@ -82,3 +82,44 @@ def test_homograph_senses_stay_reachable(conn):
     ]
     assert definitions[0] == "price"
     assert any("hitting" in d for d in definitions[1:])
+
+
+def test_translations_cover_krdicts_other_languages(conn):
+    languages = {
+        row[0]
+        for row in conn.execute("SELECT DISTINCT interface_language FROM ko_dictionary_translations")
+    }
+    assert {"ja", "fr", "es", "ar", "mn", "vi", "th", "id", "ru"} <= languages
+    assert "en" not in languages  # English lives in ko_dictionary
+
+
+def test_translations_share_ko_dictionary_sense_numbers(conn):
+    orphans = conn.execute(
+        """
+        SELECT COUNT(*) FROM ko_dictionary_translations t
+        LEFT JOIN ko_dictionary d ON d.stem = t.stem AND d.sense_no = t.sense_no
+        WHERE d.stem IS NULL
+        """
+    ).fetchone()[0]
+    assert orphans == 0
+
+
+@pytest.mark.parametrize(
+    "stem, language, expected",
+    [
+        ("가격", "vi", "giá"),  # sense 1 is 價格 "price", as in English
+        ("사람", "vi", "người"),
+        ("학교", "ja", "学校"),
+        ("학교", "fr", "école"),
+    ],
+)
+def test_primary_sense_is_translated(conn, stem, language, expected):
+    row = conn.execute(
+        """
+        SELECT definition FROM ko_dictionary_translations
+        WHERE stem = ? AND interface_language = ? AND sense_no = 1
+        """,
+        (stem, language),
+    ).fetchone()
+    assert row is not None, f"{stem} has no {language} gloss"
+    assert expected in row[0]

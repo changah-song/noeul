@@ -55,11 +55,14 @@ span file boundaries, so ordering happens after all files are read.
 
 Scope
 -----
-English glosses only (the Equivalent block whose language == 영어). The live KO
-path already runs English-only (DEFAULT_INTERFACE_LANGUAGE == "en",
-lookup_stem_in_krdict passes trans_lang="1"), so an English snapshot is a faithful
-match and keeps the file small. To add the other languages later, keep every
-Equivalent and add an `interface_language` column keyed on its language val.
+Every translation language in the dump. ko_dictionary holds the English gloss
+(the Equivalent whose language == 영어) plus the entry's pos/hanja/domain, and
+its sense_no numbering is the one the app has always used. The other
+languages' glosses go in ko_dictionary_translations, keyed on the same
+(stem, sense_no) plus an interface_language code (KRDICT_LANGUAGE_CODES), so a
+Vietnamese or Japanese user gets their language offline instead of a live
+KRDICT call. Senses with no English equivalent are skipped in every language,
+which keeps the numbering identical across the two tables.
 
 Usage
 -----
@@ -74,13 +77,27 @@ import re
 import sqlite3
 import xml.etree.ElementTree as ET
 
-# The Equivalent block whose language feat holds this value is the English one.
-ENGLISH_TRANS_LANG = "영어"
+# Equivalent language name in the dump -> the app's interface language code.
+# The 2023+ dumps carry no Chinese (중국어) equivalents; it is mapped anyway so a
+# dump that has them is picked up.
+KRDICT_LANGUAGE_CODES = {
+    "영어": "en",
+    "일본어": "ja",
+    "프랑스어": "fr",
+    "스페인어": "es",
+    "아랍어": "ar",
+    "몽골어": "mn",
+    "베트남어": "vi",
+    "타이어": "th",
+    "인도네시아어": "id",
+    "러시아어": "ru",
+    "중국어": "zh",
+}
 
 # XML 1.0 forbids the C0 control chars (everything below 0x20 except tab/LF/CR).
 # Some KRDICT files embed a stray \x08 backspace inside non-English (e.g. Arabic)
 # definitions, which makes expat reject the whole file. Strip them before parsing;
-# they never touch the English glosses we keep, so no data we care about is lost.
+# they are never part of a gloss, so no data we keep is lost.
 INVALID_XML_CHARS = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 # Some non-English glosses contain raw "<" / ">" inside attribute values (e.g. a
@@ -110,6 +127,15 @@ CREATE TABLE ko_dictionary (
     domain     TEXT,               -- 전문 분야 / semantic category, nullable
     PRIMARY KEY (stem, sense_no)
 );
+
+DROP TABLE IF EXISTS ko_dictionary_translations;
+CREATE TABLE ko_dictionary_translations (
+    stem               TEXT NOT NULL,     -- same headword as ko_dictionary
+    sense_no           INTEGER NOT NULL,  -- same numbering as ko_dictionary
+    interface_language TEXT NOT NULL,     -- vi, ja, fr, … (never en)
+    definition         TEXT NOT NULL,     -- that language's trans_word gloss
+    PRIMARY KEY (interface_language, stem, sense_no)
+) WITHOUT ROWID;
 """
 
 
@@ -132,13 +158,17 @@ def feat_any(node: ET.Element | None, atts: tuple[str, ...]) -> str | None:
     return None
 
 
-def english_gloss(sense: ET.Element) -> str | None:
-    """The English Equivalent's lemma (e.g. 'edge; verge'), matching the live
-    path's trans_word. None if this sense has no English equivalent."""
+def sense_glosses(sense: ET.Element) -> dict[str, str]:
+    """{interface_language: lemma} for every Equivalent on this sense, e.g.
+    {"en": "edge; verge", "vi": "mép, rìa", …}. The lemma matches what the live
+    API returns as trans_word for that trans_lang."""
+    glosses = {}
     for equivalent in sense.findall("Equivalent"):
-        if feat(equivalent, "language") == ENGLISH_TRANS_LANG:
-            return feat(equivalent, "lemma")
-    return None
+        code = KRDICT_LANGUAGE_CODES.get(feat(equivalent, "language"))
+        lemma = feat(equivalent, "lemma")
+        if code and lemma and code not in glosses:
+            glosses[code] = lemma
+    return glosses
 
 
 # Learner vocabulary grade per LexicalEntry: basic words first. Anything else
@@ -153,8 +183,9 @@ def vocabulary_rank(entry: ET.Element) -> int:
 
 def iter_entries(xml_path: str):
     """Yield (stem, rank, senses) per LexicalEntry in one LMF file, where senses
-    is a list of (pos, hanja, definition, domain) in dictionary order — one per
-    sense with an English equivalent; senses without one are skipped. Entries
+    is a list of (pos, hanja, glosses, domain) in dictionary order — one per
+    sense with an English equivalent (glosses maps language code to lemma, see
+    sense_glosses); senses without English are skipped. Entries
     with no English sense at all are still yielded (with an empty list) so the
     caller sees every entry; they contribute no rows.
     """
@@ -173,23 +204,23 @@ def iter_entries(xml_path: str):
 
         senses = []
         for sense in entry.findall("Sense"):
-            gloss = english_gloss(sense)
-            if gloss:
-                senses.append((pos, hanja, gloss, domain))
+            glosses = sense_glosses(sense)
+            if glosses.get("en"):
+                senses.append((pos, hanja, glosses, domain))
         yield stem, vocabulary_rank(entry), senses
 
 
 def number_senses(entries_by_stem: dict[str, list[tuple[int, list]]]):
-    """Yield (stem, sense_no, pos, hanja, definition, domain) rows. Each
+    """Yield (stem, sense_no, pos, hanja, glosses, domain) rows. Each
     headword's entries (homographs) are stably sorted by vocabulary grade, then
     sense_no runs across them so sense 1 is the first sense of the most basic
     entry."""
     for stem, entries in entries_by_stem.items():
         sense_no = 0
         for _rank, senses in sorted(entries, key=lambda item: item[0]):
-            for pos, hanja, gloss, domain in senses:
+            for pos, hanja, glosses, domain in senses:
                 sense_no += 1
-                yield (stem, sense_no, pos, hanja, gloss, domain)
+                yield (stem, sense_no, pos, hanja, glosses, domain)
 
 
 def main() -> None:
@@ -229,10 +260,24 @@ def main() -> None:
                 entries_by_stem.setdefault(stem, []).append((rank, senses))
             print(f"[import] {os.path.basename(xml_path)}: {len(entries)} entries")
 
+        dictionary_rows = []
+        translation_rows = []
+        for stem, sense_no, pos, hanja, glosses, domain in number_senses(entries_by_stem):
+            dictionary_rows.append((stem, sense_no, pos, hanja, glosses["en"], domain))
+            translation_rows.extend(
+                (stem, sense_no, code, gloss)
+                for code, gloss in glosses.items()
+                if code != "en"
+            )
         conn.executemany(
             "INSERT INTO ko_dictionary "
             "(stem, sense_no, pos, hanja, definition, domain) VALUES (?,?,?,?,?,?)",
-            number_senses(entries_by_stem),
+            dictionary_rows,
+        )
+        conn.executemany(
+            "INSERT INTO ko_dictionary_translations "
+            "(stem, sense_no, interface_language, definition) VALUES (?,?,?,?)",
+            translation_rows,
         )
         conn.commit()
         total = conn.execute("SELECT COUNT(*) FROM ko_dictionary").fetchone()[0]
@@ -244,6 +289,12 @@ def main() -> None:
             "SELECT COUNT(DISTINCT stem) FROM ko_dictionary"
         ).fetchone()[0]
         print(f"[import] done — {total} sense rows across {headwords} headwords → {args.out}")
+        for code, count in conn.execute(
+            "SELECT interface_language, COUNT(*) FROM ko_dictionary_translations "
+            "GROUP BY interface_language ORDER BY interface_language"
+        ):
+            print(f"[import]   {code}: {count} translated senses")
+        conn.execute("VACUUM")
         if skipped:
             print(f"[import] WARNING: skipped {len(skipped)} unparseable file(s): {', '.join(skipped)}")
     finally:
