@@ -6373,7 +6373,10 @@ export const recordSavedWordSightings = async ({ ownerId, profileId, language = 
   if (list.length === 0) return { faded, learned };
 
   const rows = (await Promise.all(chunkValues(list).map((chunk) => runSelect(
-    `SELECT id, word, COALESCE(fade_seen, 0) AS seen, fade_seen_at FROM vocab
+    // A word saved moments ago has no fade_seen_at yet; its save time
+    // (updated_at) starts the gap, so it doesn't fade on the very next page or
+    // focus sentence.
+    `SELECT id, word, COALESCE(fade_seen, 0) AS seen, COALESCE(fade_seen_at, updated_at) AS fade_seen_at FROM vocab
      WHERE owner_id = ? AND profile_id = ? AND language = ? AND deleted_at IS NULL
        AND COALESCE(level, '') != '${LEARNED_LEVEL}' AND word IN (${chunk.map(() => '?').join(', ')})`,
     [scopedOwnerId, scopedProfileId, normalizedLanguage, ...chunk]
@@ -6383,7 +6386,9 @@ export const recordSavedWordSightings = async ({ ownerId, profileId, language = 
   const updates = [];
   rows.forEach((row) => {
     const last = row.fade_seen_at ? new Date(row.fade_seen_at).getTime() : null;
-    if (last != null && Number.isFinite(last) && now - last < SAVED_WORD_FADE_GAP_MS) return;
+    // Only a recent past mark holds the word back (a clock that moved back
+    // must not freeze its fade).
+    if (last != null && Number.isFinite(last) && now >= last && now - last < SAVED_WORD_FADE_GAP_MS) return;
     const seen = (Number(row.seen) || 0) + 1;
     updates.push({ id: row.id, seen });
     faded.set(row.word, Math.max(faded.get(row.word) || 0, seen));

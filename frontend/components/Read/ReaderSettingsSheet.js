@@ -243,6 +243,7 @@ const ReaderSettingsSheet = ({
         : 0;
     const pinyinOn = Boolean(source.pinyinAnnotations);
     const glossOn = Boolean(source.glossAnnotations);
+    const hideSavedOn = source.hideSavedAnnotations !== false;
     // Settings saved before the scopes were split carried one `annotationScope`.
     const legacyScope = scopeOrDefault(source.annotationScope, null);
     const pinyinScope = scopeOrDefault(source.pinyinScope, legacyScope || 'underlined');
@@ -255,6 +256,8 @@ const ReaderSettingsSheet = ({
     const showGloss = features.glossAnnotations !== false;
     const showScopes = features.annotationScope !== false;
     const showPinyin = language === 'zh' && features.pinyinAnnotations !== false;
+    const showHideSaved = features.hideSavedAnnotations !== false
+        && ((showPinyin && pinyinOn) || (showGloss && glossOn));
 
     const scopeOptions = ANNOTATION_SCOPES.map((value) => ({
         value,
@@ -438,6 +441,22 @@ const ReaderSettingsSheet = ({
                     ),
                 });
             }
+        }
+        if (showHideSaved) {
+            rows.push({
+                key: 'hideSaved',
+                label: t('read.hideSavedAnnotations'),
+                below: <Text style={styles.legendHint}>{t('read.hideSavedAnnotationsHint')}</Text>,
+                control: (
+                    <ToggleSwitch
+                        styles={controlStyles}
+                        colors={colors}
+                        value={hideSavedOn}
+                        onChange={(value) => onSettingChange('hideSavedAnnotations', value)}
+                        accessibilityLabel={t('read.hideSavedAnnotations')}
+                    />
+                ),
+            });
         }
         return (
             <>

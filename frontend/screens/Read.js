@@ -157,6 +157,9 @@ const DEFAULT_READER_SETTINGS = {
     // 'all' (every word in the book), chosen separately for each.
     pinyinScope: 'underlined',
     glossScope: 'underlined',
+    // No pinyin / translation on saved (highlighted) words, so the reader can
+    // try to recall a word they looked up before.
+    hideSavedAnnotations: true,
 };
 const READING_MODES = ['paged', 'scroll'];
 
@@ -1424,6 +1427,7 @@ const Read = ({
             glossAnnotations: DEFAULT_READER_SETTINGS.glossAnnotations,
             pinyinScope: DEFAULT_READER_SETTINGS.pinyinScope,
             glossScope: DEFAULT_READER_SETTINGS.glossScope,
+            hideSavedAnnotations: DEFAULT_READER_SETTINGS.hideSavedAnnotations,
         });
     };
 
@@ -3220,6 +3224,7 @@ const Read = ({
     // pinyin / gloss, and the "all words" scope adds the rest as annotation-only.
     const readerShowPinyin = activeBookLanguage === 'zh' && Boolean(settings.pinyinAnnotations);
     const readerShowGloss = Boolean(settings.glossAnnotations);
+    const hideSavedAnnotations = settings.hideSavedAnnotations !== false;
     // Settings saved before the scopes were split carried one `annotationScope`.
     const legacyScope = ANNOTATION_SCOPES.includes(settings.annotationScope) ? settings.annotationScope : null;
     const pinyinScope = ANNOTATION_SCOPES.includes(settings.pinyinScope)
@@ -3253,10 +3258,13 @@ const Read = ({
                 pinyinScope,
                 glossScope,
                 interfaceLanguage,
+                hiddenSurfaces: hideSavedAnnotations ? savedSurfacesRef.current : null,
             });
         },
         [
             annotationRows,
+            hideSavedAnnotations,
+            readerHighlightTerms,
             pinyinScope,
             glossScope,
             interfaceLanguage,

@@ -73,7 +73,7 @@ const SONG_RESTORE_POSITION = { spineIndex: 0, pageIndex: 0 };
 const EMPTY_LEVEL_TERMS = [];
 // Lyrics have no read-fade or word-translation support yet, and pinyin has no
 // scope choice: the sheet shows only the rows the song reader acts on.
-const SONG_SHEET_FEATURES = { glossAnnotations: false, annotationScope: false };
+const SONG_SHEET_FEATURES = { glossAnnotations: false, annotationScope: false, hideSavedAnnotations: false };
 
 // Word characters we treat as tappable/lookup-able across supported targets:
 // Hangul (jamo + syllables), Latin letters, digits, and CJK ideographs
