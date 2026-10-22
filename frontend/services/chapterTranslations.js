@@ -108,6 +108,9 @@ export const createChapterTranslations = ({
                     });
                     await save({ source, target, entries }).catch(() => {});
                 })
+                .catch((error) => {
+                    console.warn('[chapterTranslations] Batch translation failed:', error?.message ?? error);
+                })
                 .finally(() => {
                     batch.forEach((sentence) => pending.delete(keyOf(source, target, sentence)));
                 });
@@ -141,7 +144,10 @@ export const createChapterTranslations = ({
         if (stillMissing.length > 0 && stillMissing.length <= SINGLE_FALLBACK_MAX) {
             const entries = [];
             await Promise.allSettled(stillMissing.map(async (sentence) => {
-                const translated = String(await translateOne({ query: sentence, source, target }) || '').trim();
+                const translated = String(await translateOne({ query: sentence, source, target }).catch((error) => {
+                    console.warn('[chapterTranslations] Sentence translation failed:', error?.message ?? error);
+                    return '';
+                }) || '').trim();
                 if (translated) {
                     remember(source, target, sentence, translated);
                     entries.push([sentence, translated]);
