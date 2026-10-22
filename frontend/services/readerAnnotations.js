@@ -35,15 +35,18 @@ const compoundComponents = (surface, stems) => {
   return covered * 2 >= surface.length ? picked.map(({ stem }) => stem) : null;
 };
 
-// One { pinyin, gloss } per surface. Glosses prefer the interface language,
-// then English, then anything; pinyin comes from any row that has it. A
-// compound surface gets its components' glosses joined in reading order, so
-// the label under 공동묘지 reads "joint · graveyard" rather than just "joint".
+// One { pinyin, gloss } per surface. Glosses come in the interface language,
+// or English when that is all there is, never a third language: rows saved
+// under a previous app language (a word looked up before switching) would
+// otherwise show under words in that old language. Pinyin comes from any row
+// that has it. A compound surface gets its components' glosses joined in
+// reading order, so the label under 공동묘지 reads "joint · graveyard" rather
+// than just "joint".
 export const annotationsBySurface = (rows, interfaceLanguage = 'en') => {
   const rank = (language) => {
     if (language === interfaceLanguage) return 0;
     if (language === 'en') return 1;
-    return 2;
+    return null;
   };
   const bySurface = new Map();
   (rows || []).forEach((row) => {
@@ -54,8 +57,9 @@ export const annotationsBySurface = (rows, interfaceLanguage = 'en') => {
     if (pinyin && !entry.pinyin) entry.pinyin = pinyin;
     // Korean preprocessing fills `definition` (the short dictionary sense) but
     // usually not `gloss`; either works as the label under the word.
-    const gloss = cleanText(row?.gloss) || cleanText(row?.definition);
     const glossRank = rank(cleanText(row?.interface_language) || 'en');
+    // A row in another language still contributes its pinyin, never its gloss.
+    const gloss = glossRank == null ? '' : (cleanText(row?.gloss) || cleanText(row?.definition));
     if (gloss && glossRank < entry.glossRank) {
       entry.gloss = gloss;
       entry.glossRank = glossRank;
@@ -88,6 +92,8 @@ export const annotationsBySurface = (rows, interfaceLanguage = 'en') => {
  *   are returned as they are (or empty when marks are off).
  * - `pinyinScope` / `glossScope`: 'underlined' (graded words only) or 'all'
  *   (every word in the book), chosen separately for each annotation.
+ * - `hiddenSurfaces`: surfaces that get no pinyin or gloss (the learner's saved
+ *   words, so they can try to recall them). Their underline is unaffected.
  */
 export const buildAnnotatedLevelTerms = ({
   levelTerms = [],
@@ -98,15 +104,22 @@ export const buildAnnotatedLevelTerms = ({
   pinyinScope = 'underlined',
   glossScope = 'underlined',
   interfaceLanguage = 'en',
+  hiddenSurfaces = null,
 } = {}) => {
   if (!pinyin && !gloss) {
     return marksEnabled ? levelTerms : [];
   }
 
   const annotations = annotationsBySurface(annotationRows, interfaceLanguage);
+  const isHidden = (surface) => Boolean(hiddenSurfaces && hiddenSurfaces.has(surface));
   const annotate = (term) => {
-    const found = annotations.get(term.text);
     const next = { ...term };
+    if (isHidden(term.text)) {
+      delete next.pinyin;
+      delete next.gloss;
+      return next;
+    }
+    const found = annotations.get(term.text);
     if (pinyin) {
       const reading = cleanText(term.pinyin) || found?.pinyin || '';
       if (reading) next.pinyin = reading;
@@ -130,7 +143,7 @@ export const buildAnnotatedLevelTerms = ({
   if (pinyinForAll || glossForAll) {
     const seen = new Set(result.map((term) => term.text));
     annotations.forEach((entry, surface) => {
-      if (seen.has(surface)) return;
+      if (seen.has(surface) || isHidden(surface)) return;
       const hasPinyin = pinyinForAll && entry.pinyin;
       const hasGloss = glossForAll && entry.gloss;
       if (!hasPinyin && !hasGloss) return;

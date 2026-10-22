@@ -17,6 +17,24 @@ describe('annotationsBySurface', () => {
   });
 });
 
+describe('annotationsBySurface after a language switch', () => {
+  it('never shows a gloss saved under a previous app language', () => {
+    const switched = [
+      { surface: '원래', stem: '원래', ipa: '', gloss: '元々', interface_language: 'ja' },
+      { surface: '가난', stem: '가난', gloss: '貧しさ', interface_language: 'ja' },
+      { surface: '가난', stem: '가난', gloss: 'pobreza', interface_language: 'es' },
+      { surface: '学习', ipa: 'xué xí', gloss: '学ぶ', interface_language: 'ja' },
+    ];
+    const index = annotationsBySurface(switched, 'es');
+    expect(index.get('가난').gloss).toBe('pobreza');
+    // Only the old language: no gloss rather than the wrong language.
+    expect(index.get('원래').gloss).toBe('');
+    // The old row still gives its pinyin.
+    expect(index.get('学习').gloss).toBe('');
+    expect(index.get('学习').pinyin).toBe('xué xí');
+  });
+});
+
 describe('annotationsBySurface fallback', () => {
   it('uses the definition when there is no gloss', () => {
     expect(annotationsBySurface(rows, 'en').get('소녀가').gloss).toBe('girl');
@@ -109,3 +127,29 @@ describe('buildAnnotatedLevelTerms', () => {
     expect(terms[0].gloss).toBe('to study');
   });
 });
+
+describe('buildAnnotatedLevelTerms hidden saved words', () => {
+  it('gives saved words no pinyin or gloss, underlined or not', () => {
+    const terms = buildAnnotatedLevelTerms({
+      levelTerms,
+      annotationRows: rows,
+      pinyin: true,
+      gloss: true,
+      pinyinScope: 'all',
+      glossScope: 'all',
+      interfaceLanguage: 'en',
+      hiddenSurfaces: new Set(['学习', '我们']),
+    });
+    const studied = terms.find((term) => term.text === '学习');
+    // Still underlined, just unannotated.
+    expect(studied).toBeTruthy();
+    expect(studied.annotationOnly).toBeUndefined();
+    expect(studied.pinyin).toBeUndefined();
+    expect(studied.gloss).toBeUndefined();
+    // Not added as an annotation-only word either.
+    expect(terms.find((term) => term.text === '我们')).toBeUndefined();
+    // Other words keep theirs.
+    expect(terms.find((term) => term.text === '中文').gloss).toBe('Chinese');
+  });
+});
+

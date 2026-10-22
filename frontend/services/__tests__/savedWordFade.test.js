@@ -87,6 +87,15 @@ describe('saved word fading in the database', () => {
         expect(rows.find((row) => row.word === '소문').level).toBe('learned');
     });
 
+    it('does not fade a word on the page or sentence right after it was saved', async () => {
+        await insertData('처녀', null, 'maiden', { ...scope });
+        const savedAt = Date.now();
+        const right = await recordSavedWordSightings({ ...scope, words: ['처녀'], now: savedAt + 2000 });
+        expect(right.faded.size).toBe(0);
+        const later = await recordSavedWordSightings({ ...scope, words: ['처녀'], now: savedAt + SAVED_WORD_FADE_GAP_MS + 1000 });
+        expect(later.faded.get('처녀')).toBe(1);
+    });
+
     it('brings a fading word back in full when it is looked up', async () => {
         const now = Date.UTC(2026, 9, 19, 9);
         await recordSavedWordSightings({ ...scope, words: ['감자'], now });
