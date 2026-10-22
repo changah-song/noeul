@@ -41,6 +41,7 @@ import {
     SheetHeader,
     Stepper,
     ToggleSwitch,
+    Checkbox,
     createReaderSettingsControlStyles,
     createSheetChromeStyles,
 } from './ReaderSettingsControls';
@@ -448,7 +449,7 @@ const ReaderSettingsSheet = ({
                 label: t('read.hideSavedAnnotations'),
                 below: <Text style={styles.legendHint}>{t('read.hideSavedAnnotationsHint')}</Text>,
                 control: (
-                    <ToggleSwitch
+                    <Checkbox
                         styles={controlStyles}
                         colors={colors}
                         value={hideSavedOn}

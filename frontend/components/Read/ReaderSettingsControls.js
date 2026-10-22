@@ -7,7 +7,7 @@ import { fontFamilies } from '../../theme';
 // saved words, voice, note): the sheet chrome (grabber, serif title + close X,
 // empty state) and one compact row per setting (label left, control right)
 // with the control kinds the reader uses — a −/value/+ stepper, a segmented
-// control, full-width segmented tabs and an on/off switch. Styles come from
+// control, full-width segmented tabs, an on/off switch and a checkbox. Styles come from
 // createReaderSettingsControlStyles(colors) and createSheetChromeStyles(colors)
 // so every sheet shares one look.
 
@@ -256,6 +256,29 @@ export const ToggleSwitch = ({ styles, colors, value, onChange, accessibilityLab
 };
 
 /**
+ * Checkbox — a small square that fills in with a check when on. For options
+ * that refine the setting above them, where a full switch would read as a
+ * setting of its own.
+ */
+export const Checkbox = ({ styles, colors, value, onChange, accessibilityLabel }) => (
+    <Pressable
+        onPress={() => onChange(!value)}
+        hitSlop={STEPPER_HIT_SLOP}
+        accessibilityRole="checkbox"
+        accessibilityLabel={accessibilityLabel}
+        accessibilityState={{ checked: !!value }}
+        style={[
+            styles.checkbox,
+            value
+                ? { backgroundColor: colors.inkSlate, borderColor: colors.inkSlate }
+                : { backgroundColor: 'transparent', borderColor: colors.borderStrong },
+        ]}
+    >
+        {value ? <Feather name="check" size={15} color={colors.white} /> : null}
+    </Pressable>
+);
+
+/**
  * ResetLink — the small "Reset to default" text button that closes each tab.
  */
 export const ResetLink = ({ styles, label, onPress }) => (
@@ -485,6 +508,14 @@ export const createReaderSettingsControlStyles = (colors) => StyleSheet.create({
     tabsTextActive: {
         fontFamily: fontFamilies.sansSemiBold,
         color: colors.text,
+    },
+    checkbox: {
+        width: 22,
+        height: 22,
+        borderRadius: 6,
+        borderWidth: 1.5,
+        alignItems: 'center',
+        justifyContent: 'center',
     },
     switchTrack: {
         width: 46,
