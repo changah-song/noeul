@@ -4774,6 +4774,80 @@ export const getAllBooksWordCandidates = async ({
     .sort((a, b) => b.candidates.length - a.candidates.length);
 };
 
+// ─── Sentence translations ────────────────────────────────────────────────────
+// Translations of book sentences, fetched a chapter at a time
+// (services/chapterTranslations.js) for listen mode and the pinned translation
+// bar. Content, not personal data: shared by every profile on the phone and
+// keyed on the normalized sentence (services/sentenceSplit.js). Capped so a
+// heavy listener's phone doesn't grow it without bound.
+const SENTENCE_TRANSLATIONS_MAX_ROWS = 40000;
+
+export const createSentenceTranslationsTable = () => new Promise((resolve, reject) => {
+  db.transaction(tx => {
+    tx.executeSql(
+      `CREATE TABLE IF NOT EXISTS sentence_translations (
+        source     TEXT NOT NULL,
+        target     TEXT NOT NULL,
+        sentence   TEXT NOT NULL,
+        translated TEXT NOT NULL,
+        created_at TEXT,
+        PRIMARY KEY (source, target, sentence)
+      )`,
+      [],
+      () => resolve(),
+      (_, error) => {
+        console.error('[Database] Error creating sentence_translations table:', error);
+        reject(error);
+      }
+    );
+  });
+});
+
+/** { sentence: translation } for the ones already saved. */
+export const getSentenceTranslations = async ({ source, target, sentences = [] } = {}) => {
+  const list = Array.from(new Set((sentences || []).filter((s) => typeof s === 'string' && s)));
+  if (!source || !target || list.length === 0) return {};
+  const rows = (await Promise.all(chunkValues(list).map((chunk) => runSelect(
+    `SELECT sentence, translated FROM sentence_translations
+     WHERE source = ? AND target = ? AND sentence IN (${chunk.map(() => '?').join(', ')})`,
+    [source, target, ...chunk]
+  )))).flat();
+  const out = {};
+  rows.forEach((row) => { if (row.translated) out[row.sentence] = row.translated; });
+  return out;
+};
+
+export const saveSentenceTranslations = ({ source, target, entries = [] } = {}) => {
+  const list = (entries || []).filter(([sentence, translated]) => sentence && translated);
+  if (!source || !target || list.length === 0) return Promise.resolve(0);
+  const now = new Date().toISOString();
+  return new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        list.forEach(([sentence, translated]) => {
+          tx.executeSql(
+            `INSERT OR REPLACE INTO sentence_translations (source, target, sentence, translated, created_at)
+             VALUES (?, ?, ?, ?, ?)`,
+            [source, target, sentence, translated, now]
+          );
+        });
+        // Oldest first out once over the cap.
+        tx.executeSql(
+          `DELETE FROM sentence_translations WHERE rowid IN (
+             SELECT rowid FROM sentence_translations ORDER BY created_at DESC LIMIT -1 OFFSET ?
+           )`,
+          [SENTENCE_TRANSLATIONS_MAX_ROWS]
+        );
+      },
+      (error) => {
+        console.error('[Database] Error saving sentence translations:', error);
+        reject(error);
+      },
+      () => resolve(list.length)
+    );
+  });
+};
+
 export const initAllTables = async () => {
   await createTable();
   await migrateVocabTable();
@@ -4808,6 +4882,7 @@ export const initAllTables = async () => {
   await createBookBookmarksTable();
   await createBookPreprocessTables();
   await migrateBookPreprocessLevelColumns();
+  await createSentenceTranslationsTable();
   await migrateLocalOwnerSqlite();
   await migrateProfileSqlite();
   await createOwnerIndexes();

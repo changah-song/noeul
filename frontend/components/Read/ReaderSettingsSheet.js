@@ -245,6 +245,7 @@ const ReaderSettingsSheet = ({
     const pinyinOn = Boolean(source.pinyinAnnotations);
     const glossOn = Boolean(source.glossAnnotations);
     const hideSavedOn = source.hideSavedAnnotations !== false;
+    const pinnedTranslationOn = Boolean(source.pinnedSentenceTranslation);
     // Settings saved before the scopes were split carried one `annotationScope`.
     const legacyScope = scopeOrDefault(source.annotationScope, null);
     const pinyinScope = scopeOrDefault(source.pinyinScope, legacyScope || 'underlined');
@@ -257,6 +258,7 @@ const ReaderSettingsSheet = ({
     const showGloss = features.glossAnnotations !== false;
     const showScopes = features.annotationScope !== false;
     const showPinyin = language === 'zh' && features.pinyinAnnotations !== false;
+    const showPinnedTranslation = features.pinnedSentenceTranslation !== false;
     const showHideSaved = features.hideSavedAnnotations !== false
         && ((showPinyin && pinyinOn) || (showGloss && glossOn));
 
@@ -455,6 +457,22 @@ const ReaderSettingsSheet = ({
                         value={hideSavedOn}
                         onChange={(value) => onSettingChange('hideSavedAnnotations', value)}
                         accessibilityLabel={t('read.hideSavedAnnotations')}
+                    />
+                ),
+            });
+        }
+        if (showPinnedTranslation) {
+            rows.push({
+                key: 'pinnedTranslation',
+                label: t('read.pinnedTranslation'),
+                below: <Text style={styles.legendHint}>{t('read.pinnedTranslationHint')}</Text>,
+                control: (
+                    <ToggleSwitch
+                        styles={controlStyles}
+                        colors={colors}
+                        value={pinnedTranslationOn}
+                        onChange={(value) => onSettingChange('pinnedSentenceTranslation', value)}
+                        accessibilityLabel={t('read.pinnedTranslation')}
                     />
                 ),
             });

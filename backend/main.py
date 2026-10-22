@@ -3896,6 +3896,95 @@ async def translate_text(payload: dict, auth: dict[str, Any] = Depends(verify_su
     return {"translatedText": translated_text, "pinyin": pinyin}
 
 
+# A chapter's sentences in a few requests instead of one per sentence (listen
+# mode's sentence translations, the reader's pinned translation bar). Billing is
+# per character either way; batching keeps a long listening session under the
+# per-user request quota and makes each sentence instant once its chapter is in.
+# Every sentence goes through translate_cache, so a book already read in this
+# language costs nothing.
+TRANSLATE_SENTENCES_MAX_ITEMS = 128
+TRANSLATE_SENTENCES_MAX_CHARS = 12_000
+
+
+@app.post("/translate_sentences/")
+async def translate_sentences(payload: dict, auth: dict[str, Any] = Depends(verify_supabase_token)):
+    texts = payload.get("texts")
+    if not isinstance(texts, list):
+        raise ApiError(400, "invalid_request", "texts must be an array")
+    if len(texts) > TRANSLATE_SENTENCES_MAX_ITEMS:
+        raise ApiError(
+            413,
+            "too_many_items",
+            f"At most {TRANSLATE_SENTENCES_MAX_ITEMS} sentences per request",
+            {"limit": TRANSLATE_SENTENCES_MAX_ITEMS},
+        )
+    cleaned = [text.strip() if isinstance(text, str) else "" for text in texts]
+    for text in cleaned:
+        enforce_text_limit(
+            text,
+            auth,
+            field_name="texts",
+            limit_key="max_translate_chars_per_request",
+        )
+    if sum(len(text) for text in cleaned) > TRANSLATE_SENTENCES_MAX_CHARS:
+        raise ApiError(
+            413,
+            "request_too_large",
+            f"At most {TRANSLATE_SENTENCES_MAX_CHARS} characters per request",
+            {"limit": TRANSLATE_SENTENCES_MAX_CHARS},
+        )
+
+    source = normalize_translate_language(payload.get("source", "ko"), "ko")
+    target = normalize_translate_language(payload.get("target", "en"), "en")
+    if not any(cleaned) or source == target:
+        return {"translations": [text if source == target and text else None for text in cleaned]}
+
+    await enforce_daily_quota(auth)
+    if not TRANSLATION_PROVIDERS:
+        raise ApiError(500, "service_unavailable", "No translation provider configured on server")
+
+    keys = [translate_cache_key(text, source, target) if text else None for text in cleaned]
+    cached = await asyncio.to_thread(_translate_cache_get_many, [key for key in keys if key])
+    results: list[str | None] = [cached.get(key) if key else None for key in keys]
+
+    # Distinct sentences still missing (a chapter repeats lines like dialogue tags).
+    missing = list(dict.fromkeys(
+        text for text, result in zip(cleaned, results) if text and result is None
+    ))
+    if missing:
+        if not await reserve_translate_chars(sum(len(text) for text in missing)):
+            raise ApiError(
+                503,
+                "translate_budget_exhausted",
+                "Translation is resting for today. Please try again tomorrow.",
+            )
+        try:
+            async with httpx.AsyncClient() as client:
+                fresh = await translate_texts(
+                    client,
+                    TRANSLATION_PROVIDERS,
+                    missing,
+                    source=source,
+                    target=target,
+                    timeout=30.0,
+                )
+        except TranslationError as error:
+            if error.timed_out:
+                raise ApiError(504, "translate_timeout", "Google Translate request timed out")
+            raise ApiError(502, "translate_failed", "Google Translate request failed")
+        fresh_by_text = {}
+        for text, translated in zip(missing, fresh):
+            if translated:
+                fresh_by_text[text] = translated
+                await asyncio.to_thread(_translate_cache_put, translate_cache_key(text, source, target), translated)
+        results = [
+            result if result is not None else (fresh_by_text.get(text) if text else None)
+            for text, result in zip(cleaned, results)
+        ]
+
+    return {"translations": results}
+
+
 # ─── Content translation (bundled English content -> interface language) ─────
 # Bundled content the app ships only in English -- hanja meanings for interface
 # languages hanja.db has no column for (ja, pt, zh-Hant; zh after its
