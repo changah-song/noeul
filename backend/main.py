@@ -56,6 +56,7 @@ from word_lookup import (
     KrdictFetchGuard,
 )
 from zh_senses import first_meaning_sense, is_reference_only_definition, rank_zh_entries
+import en_learner_dict
 from zh_tokens import (
     ZH_LOOKUP_CONTENT_POS_PREFIXES,
     ZH_LOOKUP_MULTI_CHAR_ONLY_POS_PREFIXES,
@@ -209,7 +210,6 @@ DAILY_LOOKUP_LIMIT = 250
 # This SQLite database lives on the backend server and persists across app restarts.
 # It prevents re-calling KRDICT for words that have already been looked up in any book.
 CACHE_DB_PATH = os.path.join(os.path.dirname(__file__), "cache.db")
-EN_DICT_DB_PATH = os.path.join(os.path.dirname(__file__), "en_dict.db")
 ZH_DICT_DB_PATH = os.path.join(os.path.dirname(__file__), "zh_dict.db")
 # Bundled KRDICT (한국어기초사전) snapshot, English glosses only. When present it
 # serves Korean lookups locally and the live KRDICT API is only hit for the long
@@ -280,16 +280,6 @@ def _db_execute(sql: str, params=()) -> None:
         conn.commit()
     finally:
         conn.close()
-
-
-def get_kaikki_db_connection():
-    """Open a read-only connection to the local Kaikki English dictionary DB."""
-    if not os.path.exists(EN_DICT_DB_PATH):
-        raise ApiError(503, "service_unavailable", "English dictionary database is not installed")
-
-    conn = sqlite3.connect(f"file:{EN_DICT_DB_PATH}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 def get_zh_dict_db_connection():
@@ -1005,6 +995,12 @@ VALID_TARGET_LANGUAGES = {"ko", "zh", "en", "ja", "fr", "es", "de", "ru", "ar", 
 # LANGUAGE_DISPLAY_NAMES lives in writing_assessment.py (shared with the prompts).
 LOOKUP_ALLOWED_POS = {"Noun", "Verb", "Adverb", "Adjective"}
 EN_LOOKUP_ALLOWED_POS = {"NOUN", "PROPN", "VERB", "ADJ", "ADV", "NUM"}
+# Basic words never worth an underline. spaCy's own stop-word list is far
+# broader and drops verbs learners do look up (make, take, give, keep, show).
+EN_LOOKUP_SKIP_LEMMAS = {
+    "be", "have", "do", "not", "so", "then", "there", "here", "now", "very",
+    "too", "also", "just", "how", "when", "where", "why", "what",
+}
 # Which jieba POS flags become Chinese lookup tokens lives in zh_tokens.py
 # (ZH_LOOKUP_CONTENT_POS_PREFIXES: n/v/a/r/m/q/t/s/f/z/b/i/l/j, any length;
 # ZH_LOOKUP_MULTI_CHAR_ONLY_POS_PREFIXES: d, two+ characters only). Kept as
@@ -2048,7 +2044,7 @@ def extract_en_lookup_tokens(text: str) -> tuple[list[str], list[dict], dict[str
 
         if (
             token.pos_ not in EN_LOOKUP_ALLOWED_POS
-            or (token.is_stop and token.pos_ != "NUM")
+            or lemma in EN_LOOKUP_SKIP_LEMMAS
             or token.is_punct
             or token.is_space
             or len(lemma) <= 1
@@ -2092,621 +2088,6 @@ def en_dictionary_no_entry(stem: str) -> dict:
         "language": "en",
         "interface_language": "en",
     }
-
-
-def build_en_definition_gloss(definition: str | None) -> str | None:
-    raw_definition = definition.strip() if isinstance(definition, str) else ""
-    if not raw_definition:
-        return None
-
-    short = raw_definition.split(",")[0].split(";")[0].strip()
-    return short if short and len(short) <= 40 else None
-
-
-EN_DISPLAY_WORD_PART_ALLOWED_TYPES = {
-    "base",
-    "blend_component",
-    "bound_root",
-    "combining_form",
-    "compound_component",
-    "prefix",
-    "suffix",
-}
-EN_DISPLAY_WORD_PART_TYPES_REQUIRING_MEANING = {
-    "bound_root",
-    "combining_form",
-    "prefix",
-    "suffix",
-}
-EN_DISPLAY_VISIBLE_WORD_PART_CONFIDENCE = "high"
-EN_DISPLAY_VISIBLE_WORD_PART_SOURCE = "curated_morpheme"
-EN_DISPLAY_HIDDEN_WORD_PART_CONFIDENCE = {"low"}
-EN_DISPLAY_OPAQUE_BREAKDOWN_WORDS = {
-    "because",
-    "understand",
-}
-EN_DISPLAY_MAX_WORD_PARTS = 4
-EN_DISPLAY_MAX_PART_TEXT_LENGTH = 36
-EN_DISPLAY_MAX_PART_MEANING_LENGTH = 48
-EN_DISPLAY_MAX_ORIGIN_LENGTH = 130
-EN_DISPLAY_RELATED_ROOT_LIMIT = 2
-EN_DISPLAY_RELATED_WORDS_PER_ROOT = 6
-EN_DISPLAY_RELATED_QUERY_LIMIT = 200
-EN_DISPLAY_RELATED_DEFINITION_LENGTH = 72
-EN_DISPLAY_ORIGIN_BLOCKLIST_RE = re.compile(
-    r"Etymology tree|PIE word|Proto-|possibly|unknown|uncertain",
-    re.IGNORECASE,
-)
-EN_DISPLAY_ORIGIN_START_RE = re.compile(
-    r"^(?:From|Borrowed from|Inherited from|Equivalent to|By surface analysis|Compound of)\b",
-    re.IGNORECASE,
-)
-EN_DISPLAY_SHORT_PART_MEANINGS = {
-    "a-": "not; without",
-    "ab-": "away from",
-    "ad-": "to; toward",
-    "after-": "after",
-    "anti-": "against",
-    "auto-": "self",
-    "be-": "make; cause",
-    "bio-": "life",
-    "co-": "together",
-    "com-": "together",
-    "con-": "together",
-    "contra-": "against",
-    "counter-": "opposite",
-    "de-": "down; away",
-    "dis-": "apart; not",
-    "en-": "make; put in",
-    "em-": "make; put in",
-    "ex-": "out; former",
-    "fore-": "before",
-    "geo-": "earth",
-    "hyper-": "over; excessive",
-    "in-": "in; into",
-    "im-": "in; into",
-    "inter-": "between",
-    "intra-": "within",
-    "ir-": "not",
-    "il-": "not",
-    "mal-": "bad; wrong",
-    "micro-": "small",
-    "mid-": "middle",
-    "mis-": "wrongly",
-    "multi-": "many",
-    "neo-": "new",
-    "non-": "not",
-    "out-": "beyond; more",
-    "over-": "too much; above",
-    "post-": "after",
-    "pre-": "before",
-    "pro-": "for; forward",
-    "re-": "again; back",
-    "semi-": "half",
-    "sub-": "under",
-    "super-": "above",
-    "tele-": "distant",
-    "trans-": "across",
-    "tri-": "three",
-    "un-": "not; reverse",
-    "under-": "under; too little",
-    "up-": "up; higher",
-    "-ability": "ability",
-    "-able": "able to be",
-    "-age": "act; result",
-    "-al": "relating to",
-    "-ation": "action; process",
-    "-dom": "state; realm",
-    "-ed": "past; having",
-    "-ee": "person affected",
-    "-er": "person; thing",
-    "-ess": "female person",
-    "-ful": "full of",
-    "-hood": "state; group",
-    "-ial": "relating to",
-    "-ibility": "ability",
-    "-ible": "able to be",
-    "-ical": "relating to",
-    "-ing": "ongoing action",
-    "-ion": "action; result",
-    "-ish": "somewhat like",
-    "-ism": "belief; system",
-    "-ist": "person",
-    "-ity": "state; quality",
-    "-ive": "tending to",
-    "-ize": "make; become",
-    "-ization": "process",
-    "-less": "without",
-    "-like": "similar to",
-    "-ly": "in a way",
-    "-ment": "result; process",
-    "-ness": "state; quality",
-    "-ology": "study of",
-    "-ous": "full of",
-    "-phone": "sound; voice",
-    "-ren": "plural",
-    "-ship": "state; skill",
-    "-ward": "toward",
-    "-wards": "toward",
-    "-wise": "in the manner of",
-}
-
-
-def clean_en_display_text(value: Any) -> str:
-    if not isinstance(value, str):
-        return ""
-    return re.sub(r"\s+", " ", value).strip()
-
-
-def compact_en_part_meaning(value: Any) -> str | None:
-    cleaned = clean_en_display_text(value)
-    if not cleaned:
-        return None
-
-    cleaned = re.sub(r"\([^()]*\)", "", cleaned)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    cleaned = re.split(
-        r";|\.|,|:|\s+-\s+|\bespecially\b|\busually\b|\bparticularly\b",
-        cleaned,
-        maxsplit=1,
-        flags=re.IGNORECASE,
-    )[0]
-    cleaned = re.sub(r"^(?:a|an|the)\s+", "", cleaned, flags=re.IGNORECASE)
-    cleaned = cleaned.strip(" .;,:")
-    if not cleaned:
-        return None
-
-    if (
-        len(cleaned) > EN_DISPLAY_MAX_PART_MEANING_LENGTH
-        or len(cleaned.split()) > 8
-    ):
-        return None
-    return cleaned
-
-
-def compact_en_word_part(part: Any) -> dict | None:
-    if not isinstance(part, dict):
-        return None
-
-    part_type = clean_en_display_text(part.get("type"))
-    if part_type not in EN_DISPLAY_WORD_PART_ALLOWED_TYPES:
-        return None
-
-    text = clean_en_display_text(part.get("text"))
-    display = clean_en_display_text(part.get("display")) or text
-    if not text or len(display) > EN_DISPLAY_MAX_PART_TEXT_LENGTH:
-        return None
-
-    compact_part = {
-        "text": text,
-        "display": display,
-        "type": part_type,
-    }
-
-    glossary_key = text.lower()
-    meaning = EN_DISPLAY_SHORT_PART_MEANINGS.get(glossary_key)
-    if not meaning:
-        meaning = compact_en_part_meaning(part.get("meaning"))
-
-    if meaning:
-        compact_part["meaning"] = meaning
-    elif part_type in EN_DISPLAY_WORD_PART_TYPES_REQUIRING_MEANING:
-        return None
-
-    return compact_part
-
-
-def sanitize_en_word_parts(
-    raw_word_parts: Any,
-    word: str | None = None,
-    etymology: str | None = None,
-) -> str | None:
-    if not raw_word_parts:
-        return None
-
-    try:
-        parsed = json.loads(raw_word_parts) if isinstance(raw_word_parts, str) else raw_word_parts
-    except (TypeError, json.JSONDecodeError):
-        return None
-
-    if not isinstance(parsed, dict):
-        return None
-
-    normalized_word = clean_en_display_text(word).lower()
-    if normalized_word in EN_DISPLAY_OPAQUE_BREAKDOWN_WORDS:
-        return None
-
-    confidence = clean_en_display_text(parsed.get("confidence")).lower()
-    source = clean_en_display_text(parsed.get("source"))
-    if (
-        confidence != EN_DISPLAY_VISIBLE_WORD_PART_CONFIDENCE
-        or source != EN_DISPLAY_VISIBLE_WORD_PART_SOURCE
-        or confidence in EN_DISPLAY_HIDDEN_WORD_PART_CONFIDENCE
-    ):
-        return None
-
-    parts = parsed.get("parts")
-    if not isinstance(parts, list) or not (2 <= len(parts) <= EN_DISPLAY_MAX_WORD_PARTS):
-        return None
-
-    compact_parts = []
-    for part in parts:
-        compact_part = compact_en_word_part(part)
-        if not compact_part:
-            return None
-        compact_parts.append(compact_part)
-
-    if not any(part["type"] != "base" for part in compact_parts):
-        return None
-
-    compact = {
-        "parts": compact_parts,
-        "confidence": confidence or "medium",
-        "source": source or "sanitized",
-        "meta": {
-            "display_sanitized": True,
-        },
-    }
-    source_text = clean_en_display_text(parsed.get("source_text"))
-    if source_text and len(source_text) <= 80:
-        compact["source_text"] = source_text
-
-    return json.dumps(compact, ensure_ascii=False)
-
-
-def parse_sanitized_en_word_parts(value: Any) -> dict | None:
-    if not value:
-        return None
-    if isinstance(value, dict):
-        return value
-    if not isinstance(value, str):
-        return None
-    try:
-        parsed = json.loads(value)
-    except (TypeError, json.JSONDecodeError):
-        return None
-    return parsed if isinstance(parsed, dict) else None
-
-
-def compact_en_related_definition(definition: str | None) -> str | None:
-    text = clean_en_display_text(definition)
-    if not text:
-        return None
-    first = text.split(";")[0].split(".")[0].split(",")[0].strip()
-    if not first:
-        return None
-    if len(first) <= EN_DISPLAY_RELATED_DEFINITION_LENGTH:
-        return first
-    return f"{first[:EN_DISPLAY_RELATED_DEFINITION_LENGTH].rsplit(' ', 1)[0].rstrip()}..."
-
-
-def en_word_part_bound_roots(word_parts: dict | None) -> list[dict]:
-    if not isinstance(word_parts, dict) or not isinstance(word_parts.get("parts"), list):
-        return []
-
-    roots = []
-    seen = set()
-    for part in word_parts["parts"]:
-        if not isinstance(part, dict) or part.get("type") != "bound_root":
-            continue
-        text = clean_en_display_text(part.get("text")).lower()
-        display = clean_en_display_text(part.get("display")) or text
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        roots.append({
-            "text": text,
-            "display": display,
-            "meaning": compact_en_part_meaning(part.get("meaning")),
-        })
-        if len(roots) >= EN_DISPLAY_RELATED_ROOT_LIMIT:
-            break
-    return roots
-
-
-def english_cefr_fallback_levels(words: list[str]) -> dict[str, dict]:
-    normalized_words = [
-        word.strip().lower()
-        for word in words
-        if isinstance(word, str) and word.strip()
-    ]
-    if not normalized_words or not is_proficiency_levels_db_installed():
-        return {}
-
-    try:
-        conn = get_proficiency_levels_db_connection()
-    except sqlite3.Error:
-        return {}
-
-    levels: dict[str, dict] = {}
-    try:
-        for batch in chunked_values(sorted(set(normalized_words))):
-            placeholders = ",".join(["?"] * len(batch))
-            rows = conn.execute(
-                f"""
-                SELECT word, cefr_level, level_rank
-                FROM english_cefr_fallback
-                WHERE word IN ({placeholders})
-                """,
-                batch,
-            ).fetchall()
-            for row in rows:
-                levels[row["word"]] = {
-                    "cefr_level": row["cefr_level"],
-                    "level_rank": int(row["level_rank"]),
-                }
-    except sqlite3.Error:
-        return {}
-    finally:
-        conn.close()
-
-    return levels
-
-
-def strict_en_related_words_for_root(conn: sqlite3.Connection, root_text: str) -> list[dict]:
-    root = clean_en_display_text(root_text).lower()
-    if not root:
-        return []
-
-    rows = conn.execute(
-        """
-        SELECT wp.word, d.pos, d.definition
-        FROM en_word_parts wp
-        JOIN en_dictionary d ON d.word = wp.word
-        JOIN json_each(wp.parts_json, '$.parts') part
-        WHERE wp.confidence = ?
-          AND wp.source = ?
-          AND json_extract(part.value, '$.type') = 'bound_root'
-          AND lower(json_extract(part.value, '$.text')) = ?
-          AND d.definition IS NOT NULL
-          AND trim(d.definition) != ''
-          AND d.pos IN ('noun', 'verb', 'adj', 'adv')
-        ORDER BY length(wp.word), wp.word
-        LIMIT ?
-        """,
-        (
-            EN_DISPLAY_VISIBLE_WORD_PART_CONFIDENCE,
-            EN_DISPLAY_VISIBLE_WORD_PART_SOURCE,
-            root,
-            EN_DISPLAY_RELATED_QUERY_LIMIT,
-        ),
-    ).fetchall()
-
-    candidates = []
-    seen = set()
-    for row in rows:
-        word = clean_en_display_text(row["word"]).lower()
-        if not word or word in seen:
-            continue
-        seen.add(word)
-        candidates.append({
-            "word": word,
-            "pos": row["pos"],
-            "definition": compact_en_related_definition(row["definition"]),
-        })
-
-    levels_by_word = english_cefr_fallback_levels([candidate["word"] for candidate in candidates])
-    cefr_candidates = [
-        {
-            **candidate,
-            **levels_by_word[candidate["word"]],
-        }
-        for candidate in candidates
-        if candidate["word"] in levels_by_word
-    ]
-    ranked = cefr_candidates or candidates
-    ranked.sort(key=lambda candidate: (
-        candidate.get("level_rank", 99),
-        len(candidate["word"]),
-        candidate["word"],
-    ))
-    return ranked
-
-
-def attach_en_word_part_related_words(conn: sqlite3.Connection, entries: list[dict]) -> None:
-    root_cache: dict[str, list[dict]] = {}
-    for entry in entries:
-        word_parts = parse_sanitized_en_word_parts(entry.get("word_parts"))
-        roots = en_word_part_bound_roots(word_parts)
-        if not word_parts or not roots:
-            continue
-
-        current_word = clean_en_display_text(entry.get("word") or entry.get("stem")).lower()
-        related_roots = []
-        for root in roots:
-            root_text = root["text"]
-            if root_text not in root_cache:
-                root_cache[root_text] = strict_en_related_words_for_root(conn, root_text)
-
-            words = [
-                related
-                for related in root_cache[root_text]
-                if related.get("word") and related["word"] != current_word
-            ][:EN_DISPLAY_RELATED_WORDS_PER_ROOT]
-            if not words:
-                continue
-
-            related_root = {
-                "text": root_text,
-                "display": root.get("display") or root_text,
-                "words": words,
-            }
-            if root.get("meaning"):
-                related_root["meaning"] = root["meaning"]
-            related_roots.append(related_root)
-
-        if related_roots:
-            word_parts["related_roots"] = related_roots
-            entry["word_parts"] = json.dumps(word_parts, ensure_ascii=False)
-
-
-def clean_en_origin_for_display(etymology: str | None) -> str | None:
-    origin = clean_en_display_text(etymology)
-    if not origin:
-        return None
-    if "\n" in etymology:
-        return None
-    if len(origin) > EN_DISPLAY_MAX_ORIGIN_LENGTH:
-        return None
-    if EN_DISPLAY_ORIGIN_BLOCKLIST_RE.search(origin):
-        return None
-    if not EN_DISPLAY_ORIGIN_START_RE.match(origin):
-        return None
-    return origin
-
-
-def sanitize_en_dictionary_result(entry: dict) -> dict:
-    raw_etymology = entry.get("etymology")
-    word = entry.get("word") or entry.get("stem")
-    normalized_word = clean_en_display_text(word).lower()
-    word_parts = sanitize_en_word_parts(
-        entry.get("word_parts"),
-        word=word,
-        etymology=raw_etymology,
-    )
-    return {
-        **entry,
-        "etymology": (
-            None
-            if word_parts or normalized_word in EN_DISPLAY_OPAQUE_BREAKDOWN_WORDS
-            else clean_en_origin_for_display(raw_etymology)
-        ),
-        "word_parts": word_parts,
-    }
-
-
-def en_dictionary_row_to_result(row: sqlite3.Row) -> dict:
-    data = dict(row)
-    word = (data.get("word") or "").strip().lower()
-    return sanitize_en_dictionary_result({
-        "stem": word,
-        "word": word,
-        "definition": data.get("definition"),
-        "gloss": build_en_definition_gloss(data.get("definition")),
-        "hanja": None,
-        "pos": data.get("pos"),
-        "domain": None,
-        "ipa": data.get("ipa"),
-        "etymology": data.get("etymology"),
-        "audio_us": data.get("audio_us"),
-        "audio_uk": data.get("audio_uk"),
-        "derived": data.get("derived") or "[]",
-        "related": data.get("related") or "[]",
-        "word_parts": data.get("word_parts"),
-        "language": "en",
-        "interface_language": "en",
-    })
-
-
-def en_word_parts_table_exists(conn: sqlite3.Connection) -> bool:
-    return conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'en_word_parts' LIMIT 1"
-    ).fetchone() is not None
-
-
-def en_dictionary_columns(conn: sqlite3.Connection) -> set[str]:
-    return {row[1] for row in conn.execute("PRAGMA table_info(en_dictionary)").fetchall()}
-
-
-def is_likely_untranslated_english_definition(definition: str | None, interface_language: str) -> bool:
-    text = definition.strip() if isinstance(definition, str) else ""
-    normalized_language = (
-        interface_language.strip().lower().replace("_", "-").split("-")[0]
-        if isinstance(interface_language, str)
-        else ""
-    )
-    has_latin = any(("a" <= char.lower() <= "z") for char in text)
-
-    if not text or not has_latin:
-        return False
-
-    if normalized_language == "ko":
-        has_korean = any(
-            "\uac00" <= char <= "\ud7a3"
-            or "\u1100" <= char <= "\u11ff"
-            or "\u3130" <= char <= "\u318f"
-            for char in text
-        )
-        return not has_korean
-
-    if normalized_language == "zh":
-        has_cjk = any("\u4e00" <= char <= "\u9fff" for char in text)
-        return not has_cjk
-
-    if normalized_language == "ja":
-        has_japanese = any(
-            "\u3040" <= char <= "\u30ff" or "\u4e00" <= char <= "\u9fff"
-            for char in text
-        )
-        return not has_japanese
-
-    return False
-
-
-def lookup_en_dictionary_entries(
-    stems: list[str],
-    include_word_part_related: bool = False,
-) -> tuple[list[dict], int]:
-    normalized_stems = [
-        stem.strip().lower()
-        for stem in stems
-        if isinstance(stem, str) and stem.strip()
-    ]
-    if not normalized_stems:
-        return [], 0
-
-    conn = get_kaikki_db_connection()
-    placeholders = ",".join(["?"] * len(normalized_stems))
-    dictionary_columns = en_dictionary_columns(conn)
-    select_audio_us = "d.audio_us" if "audio_us" in dictionary_columns else "NULL"
-    select_audio_uk = "d.audio_uk" if "audio_uk" in dictionary_columns else "NULL"
-    if en_word_parts_table_exists(conn):
-        rows = conn.execute(
-            f"""
-            SELECT d.word, d.pos, d.ipa, d.definition, d.etymology, d.derived, d.related,
-                   {select_audio_us} AS audio_us,
-                   {select_audio_uk} AS audio_uk,
-                   wp.parts_json AS word_parts
-            FROM en_dictionary d
-            LEFT JOIN en_word_parts wp ON wp.word = d.word
-              AND wp.confidence = 'high'
-              AND wp.source = 'curated_morpheme'
-            WHERE d.word IN ({placeholders})
-            """,
-            normalized_stems,
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            f"""
-            SELECT word, pos, ipa, definition, etymology, derived, related,
-                   {'audio_us' if 'audio_us' in dictionary_columns else 'NULL'} AS audio_us,
-                   {'audio_uk' if 'audio_uk' in dictionary_columns else 'NULL'} AS audio_uk,
-                   NULL AS word_parts
-            FROM en_dictionary
-            WHERE word IN ({placeholders})
-            """,
-            normalized_stems,
-        ).fetchall()
-    row_results = [
-        en_dictionary_row_to_result(row)
-        for row in rows
-        if row["word"]
-    ]
-    if include_word_part_related:
-        attach_en_word_part_related_words(conn, row_results)
-    conn.close()
-
-    rows_by_word = {
-        result["word"].strip().lower(): result
-        for result in row_results
-        if result.get("word")
-    }
-
-    results = [
-        rows_by_word.get(stem, en_dictionary_no_entry(stem))
-        for stem in normalized_stems
-    ]
-    return results, len(rows_by_word)
 
 
 def zh_pos_label(flag: str | None) -> str | None:
@@ -3260,6 +2641,78 @@ async def translate_zh_results(results: list[dict], interface_language: str) -> 
     return await asyncio.gather(*(translate_entry(entry) for entry in results))
 
 
+def en_learner_result(stem: str, entry: dict | None, interface_language: str) -> dict:
+    """One /preprocess_chapter_en/ or /en_dict_search/ result for a stem."""
+    if not entry:
+        return {
+            **en_dictionary_no_entry(stem),
+            "senses": [],
+            "equivalents": [],
+            "interface_language": interface_language,
+        }
+    return {
+        "stem": stem,
+        "word": entry["word"],
+        "definition": entry.get("definition"),
+        "senses": entry.get("senses") or [],
+        "equivalents": entry.get("equivalents") or [],
+        "gloss": entry.get("gloss"),
+        "pos": entry.get("pos"),
+        "ipa": entry.get("ipa"),
+        "audio_us": entry.get("audio_us"),
+        "audio_uk": entry.get("audio_uk"),
+        "hanja": None,
+        "domain": None,
+        "language": "en",
+        "interface_language": interface_language,
+    }
+
+
+def lookup_en_learner_results(stems: list[str], interface_language: str) -> tuple[list[dict], int]:
+    """(one result per stem, how many had an entry). The entry shown is the most
+    common one with an equivalent in the learner's language."""
+    entries_by_stem = en_learner_dict.lookup_entries(stems, interface_language)
+    results = [
+        en_learner_result(stem, en_learner_dict.best_entry(entries_by_stem.get(stem, [])), interface_language)
+        for stem in (en_learner_dict.normalize_word(stem) for stem in stems)
+        if stem
+    ]
+    return results, sum(1 for result in results if result.get("definition"))
+
+
+async def translate_en_missing_glosses(results: list[dict], interface_language: str) -> list[dict]:
+    """Words Wiktionary has no equivalent for in the learner's language get a
+    machine translation of the headword as their gloss (the under-word
+    translation), cached in translate_cache. Definitions stay English."""
+    if interface_language == "en":
+        return results
+    target = normalize_translate_language(interface_language, "en")
+    pending_words = list(dict.fromkeys(
+        result["word"] for result in results
+        if result.get("definition") and not result.get("gloss") and result.get("word")
+    ))
+    if not pending_words:
+        return results
+
+    keys = {word: translate_cache_key(word, "en", target) for word in pending_words}
+    cached = await asyncio.to_thread(_translate_cache_get_many, list(keys.values()))
+    gloss_by_word = {word: cached[key] for word, key in keys.items() if key in cached}
+    fresh_words = [word for word in pending_words if word not in gloss_by_word]
+    if fresh_words:
+        fresh = await _translate_batch(fresh_words, source="en", target=target)
+        for word, translated in zip(fresh_words, fresh):
+            if translated and translated.strip().lower() != word.lower():
+                gloss_by_word[word] = translated.strip()
+                await asyncio.to_thread(_translate_cache_put, keys[word], translated.strip())
+
+    return [
+        {**result, "gloss": gloss_by_word[result["word"]], "gloss_source": "machine"}
+        if not result.get("gloss") and result.get("word") in gloss_by_word
+        else result
+        for result in results
+    ]
+
+
 async def _preprocess_en_core(
     text: str,
     max_stems=None,
@@ -3301,24 +2754,20 @@ async def _preprocess_en_core(
             },
         }
 
-    results, found_count = await loop.run_in_executor(None, lookup_en_dictionary_entries, unique_stems)
+    normalized_interface_language = normalize_interface_language_code(interface_language)
+    results, found_count = await loop.run_in_executor(
+        None,
+        lookup_en_learner_results,
+        unique_stems,
+        normalized_interface_language,
+    )
+    results = await translate_en_missing_glosses(results, normalized_interface_language)
     level_by_stem = await loop.run_in_executor(
         None,
         lookup_english_cefr_levels,
         unique_stems,
         pos_by_stem,
     )
-    normalized_interface_language = normalize_interface_language_code(interface_language)
-    if normalized_interface_language != "en":
-        results = [
-            {
-                **result,
-                "definition": None,
-                "gloss": None,
-                "interface_language": normalized_interface_language,
-            }
-            for result in results
-        ]
     results = [
         attach_proficiency_level(
             result,
@@ -4824,133 +4273,42 @@ async def en_dict_search(
     interface_language: str = "en",
     auth: dict[str, Any] = Depends(verify_supabase_token),
 ):
-    normalized_stem = stem.strip().lower() if isinstance(stem, str) else ""
+    """Every entry for an English word (bank: the money one, then the river
+    one), with English senses and the learner's-language equivalents. Read from
+    the bundled en_learner.db; only a word with no equivalent in that language
+    costs a (cached) machine translation of the headword."""
+    normalized_stem = en_learner_dict.normalize_word(stem if isinstance(stem, str) else "")
     normalized_lang = normalize_interface_language_code(interface_language)
     if not normalized_stem:
-        return {"result": None}
+        return {"result": None, "results": []}
 
     enforce_text_limit(normalized_stem, auth, field_name="stem")
     await enforce_daily_quota(auth)
 
-    cached = await asyncio.to_thread(
-        _db_fetchone,
-        """
-        SELECT id, stem, language, interface_language, definition, gloss, hanja, pos, domain,
-               ipa, etymology, audio_us, audio_uk, derived, related, word_parts, last_updated
-        FROM dictionary_cache
-        WHERE stem = ?
-          AND language = 'en'
-          AND interface_language = ?
-        LIMIT 1
-        """,
-        (normalized_stem, normalized_lang),
+    if not en_learner_dict.is_installed():
+        print("[main] /en_dict_search/ called before the English dictionary is installed")
+        return {
+            "result": None,
+            "results": [],
+            "dictionary_available": False,
+            "code": "service_unavailable",
+            "message": "English dictionary database is not installed",
+        }
+
+    entries_by_stem = await asyncio.to_thread(
+        en_learner_dict.lookup_entries, [normalized_stem], normalized_lang
     )
+    entries = entries_by_stem.get(normalized_stem, [])
+    if not entries:
+        return {"result": None, "results": []}
 
-    if cached:
-        cached_result = dict(cached)
-        is_stale_fallback = is_likely_untranslated_english_definition(
-            cached_result.get("definition"),
-            normalized_lang,
-        )
-        if not is_stale_fallback:
-            if not cached_result.get("gloss"):
-                cached_result["gloss"] = (
-                    build_en_definition_gloss(cached_result.get("definition"))
-                    if normalized_lang == "en"
-                    else await _translate_text(normalized_stem, source="en", target=normalized_lang)
-                )
-                if cached_result.get("gloss"):
-                    await asyncio.to_thread(
-                        _db_execute,
-                        """
-                        UPDATE dictionary_cache
-                        SET gloss = ?, last_updated = CURRENT_TIMESTAMP
-                        WHERE stem = ? AND language = 'en' AND interface_language = ?
-                        """,
-                        (cached_result["gloss"], normalized_stem, normalized_lang),
-                    )
-            cached_result["word"] = cached_result.get("stem")
-            result = sanitize_en_dictionary_result(cached_result)
-
-            def attach_related():
-                kaikki_conn = get_kaikki_db_connection()
-                try:
-                    attach_en_word_part_related_words(kaikki_conn, [result])
-                finally:
-                    kaikki_conn.close()
-
-            await asyncio.to_thread(attach_related)
-            return {"result": result}
-
-    results, _found_count = await asyncio.to_thread(
-        partial(lookup_en_dictionary_entries, [normalized_stem], include_word_part_related=True)
-    )
-    entry = dict(results[0]) if results else None
-
-    if not entry or not entry.get("definition"):
-        return {"result": None}
-
-    entry["language"] = "en"
-    entry["interface_language"] = normalized_lang
-
-    translation_failed = False
-    if normalized_lang != "en":
-        translated, translated_gloss = await asyncio.gather(
-            _translate_text(entry["definition"], source="en", target=normalized_lang),
-            _translate_text(normalized_stem, source="en", target=normalized_lang),
-        )
-        if translated:
-            entry["definition"] = translated
-        else:
-            translation_failed = True
-            entry["interface_language"] = "en"
-            entry["fallback_language"] = "en"
-        entry["gloss"] = translated_gloss
-    else:
-        entry["gloss"] = build_en_definition_gloss(entry.get("definition"))
-
-    if not translation_failed:
-        await asyncio.to_thread(
-            _db_execute,
-            """
-            INSERT INTO dictionary_cache
-                (stem, language, interface_language, definition, gloss, hanja, pos, domain,
-                 ipa, etymology, audio_us, audio_uk, derived, related, word_parts)
-            VALUES (?, 'en', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(stem, language, interface_language) DO UPDATE SET
-                definition = excluded.definition,
-                gloss = excluded.gloss,
-                hanja = excluded.hanja,
-                pos = excluded.pos,
-                domain = excluded.domain,
-                ipa = excluded.ipa,
-                etymology = excluded.etymology,
-                audio_us = excluded.audio_us,
-                audio_uk = excluded.audio_uk,
-                derived = excluded.derived,
-                related = excluded.related,
-                word_parts = excluded.word_parts,
-                last_updated = CURRENT_TIMESTAMP
-            """,
-            (
-                normalized_stem,
-                normalized_lang,
-                entry.get("definition"),
-                entry.get("gloss"),
-                entry.get("hanja"),
-                entry.get("pos"),
-                entry.get("domain"),
-                entry.get("ipa"),
-                entry.get("etymology"),
-                entry.get("audio_us"),
-                entry.get("audio_uk"),
-                entry.get("derived"),
-                entry.get("related"),
-                entry.get("word_parts"),
-            ),
-        )
-
-    return {"result": entry}
+    first = en_learner_dict.best_entry(entries)
+    ordered = [first, *[entry for entry in entries if entry is not first]]
+    results = [en_learner_result(normalized_stem, entry, normalized_lang) for entry in ordered]
+    # Equivalents belong to one meaning, so only the entry shown first borrows
+    # a machine-translated headword when it has none.
+    results[:1] = await translate_en_missing_glosses(results[:1], normalized_lang)
+    return {"result": results[0], "results": results}
 
 
 @app.get("/zh_dict_search/")
