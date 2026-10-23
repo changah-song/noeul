@@ -2406,13 +2406,19 @@ class EpubPageView(context: Context) : View(context) {
     }
 
     var start = probe
-    while (start > 0 && (isReaderTokenChar(text[start - 1]) || text[start - 1] == WORD_JOINER)) {
+    while (
+      start > 0 &&
+      (isReaderTokenChar(text[start - 1]) || text[start - 1] == WORD_JOINER || isInWordPunctuationAt(text, start - 1))
+    ) {
       start -= 1
     }
     while (start < probe && text[start] == WORD_JOINER) start += 1
 
     var end = probe + 1
-    while (end < text.length && (isReaderTokenChar(text[end]) || text[end] == WORD_JOINER)) {
+    while (
+      end < text.length &&
+      (isReaderTokenChar(text[end]) || text[end] == WORD_JOINER || isInWordPunctuationAt(text, end))
+    ) {
       end += 1
     }
     while (end > probe + 1 && text[end - 1] == WORD_JOINER) end -= 1

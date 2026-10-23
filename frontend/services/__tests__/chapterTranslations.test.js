@@ -28,6 +28,13 @@ describe('sentenceSplit', () => {
         expect(sentencesOf('他说：“好。”我们走吧')).toEqual(['他说：“好。', '我们走吧']);
     });
 
+    it('does not end English sentences at abbreviations or initials', () => {
+        expect(sentencesOf('Mr. Darcy bowed. J. K. Rowling wrote it, e.g. in cafés. It was 3.5 km away!'))
+            .toEqual(['Mr. Darcy bowed.', 'J. K. Rowling wrote it, e.g. in cafés.', 'It was 3.5 km away!']);
+        expect(sentencesOf('He lives in the U.S. now. And so did I. Then we left.'))
+            .toEqual(['He lives in the U.S. now.', 'And so did I.', 'Then we left.']);
+    });
+
     it('normalizes the way the reader hands sentences back', () => {
         expect(normalizeSentence('  “소⁠녀가   웃었다.”  ')).toBe('소녀가 웃었다.');
     });

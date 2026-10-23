@@ -60,6 +60,7 @@ const STEPS = ['welcome', 'languages', 'level', 'tour'];
 const LANGUAGE_CARDS = [
     { id: 'ko', glyph: '한', nameKey: 'onboarding.korean', detailKey: 'onboarding.koreanDetail' },
     { id: 'zh', glyph: '中', nameKey: 'onboarding.chinese', detailKey: 'onboarding.chineseDetail' },
+    { id: 'en', glyph: 'A', nameKey: 'onboarding.english', detailKey: 'onboarding.englishDetail' },
 ];
 
 const LEVEL_OPTIONS = [
@@ -105,6 +106,19 @@ const DEMO = {
         ],
         headword: '诚实',
         glossKey: 'onboarding.demoGlossZh',
+    },
+    en: {
+        tokens: [
+            { text: 'He was ' },
+            { text: 'always', mark: 'easy' },
+            { text: ' an ' },
+            { text: 'honest', mark: 'tapped' },
+            { text: ' ' },
+            { text: 'farmer', mark: 'saved' },
+            { text: '.' },
+        ],
+        headword: 'honest',
+        glossKey: 'onboarding.demoGlossEn',
     },
 };
 
@@ -247,6 +261,14 @@ const Onboarding = ({ onDone }) => {
     const stepName = STEPS[step];
     const isLast = step === STEPS.length - 1;
     const canCheck = hasWordCheck(targetLanguage);
+    // English has no word check or vocabulary grid yet: only "new" is offered.
+    const canPick = hasVocabSizeGrid(targetLanguage);
+    const levelOptions = LEVEL_OPTIONS.filter((option) => (
+        (option.id !== 'check' || canCheck) && (option.id !== 'pick' || canPick)
+    ));
+    const activeLevelChoice = levelOptions.some((option) => option.id === levelChoice)
+        ? levelChoice
+        : levelOptions[0]?.id;
 
     // Step content fades/slides in on each change.
     const enter = useRef(new Animated.Value(1)).current;
@@ -307,11 +329,11 @@ const Onboarding = ({ onDone }) => {
             return;
         }
         if (stepName === 'level' && hasVocabSizeGrid(targetLanguage)) {
-            if (levelChoice === 'check' && canCheck) {
+            if (activeLevelChoice === 'check' && canCheck) {
                 setShowWordCheck(true);
                 return;
             }
-            if (levelChoice === 'pick') {
+            if (activeLevelChoice === 'pick') {
                 setShowLevelPicker(true);
                 return;
             }
@@ -389,10 +411,10 @@ const Onboarding = ({ onDone }) => {
             </Text>
             <Text style={styles.lead}>{t('onboarding.levelBody')}</Text>
             <View style={styles.cards} accessibilityRole="radiogroup">
-                {LEVEL_OPTIONS.filter((option) => option.id !== 'check' || canCheck).map((option) => (
+                {levelOptions.map((option) => (
                     <ChoiceCard
                         key={option.id}
-                        selected={levelChoice === option.id}
+                        selected={activeLevelChoice === option.id}
                         onPress={() => setLevelChoice(option.id)}
                         styles={styles}
                         minHeight={72}

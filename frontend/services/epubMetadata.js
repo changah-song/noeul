@@ -2,6 +2,7 @@ import JSZip from 'jszip';
 import { DOMParser } from '@xmldom/xmldom';
 import * as FileSystem from 'expo-file-system/legacy';
 import { normalizeBookLanguage } from '../constants/languages';
+import { addScriptCounts, dominantScriptLanguage, emptyScriptCounts } from './textScript';
 
 // xmldom parses in strict XML mode, so any prefixed tag/attribute (e.g.
 // `epub:type`, `xlink:href`) whose prefix isn't declared with an in-scope
@@ -1625,8 +1626,10 @@ export const countReadableTextWords = (text = '') => {
     return tokens?.length ?? 0;
 };
 
-const countEpubSpineWords = async (zip, parsedPackage) => {
+// The book's word count and the language its text is written in (by script).
+const readEpubSpineText = async (zip, parsedPackage) => {
     let total = 0;
+    const scripts = emptyScriptCounts();
 
     for (const spineItem of parsedPackage.spine || []) {
         if (spineItemSkipReason(spineItem) || spineItemAutoSkipReason(spineItem)) {
@@ -1639,10 +1642,15 @@ const countEpubSpineWords = async (zip, parsedPackage) => {
         }
 
         const chapterXml = await chapterFile.async('string');
-        total += countReadableTextWords(extractBodyText(chapterXml));
+        const text = extractBodyText(chapterXml);
+        total += countReadableTextWords(text);
+        addScriptCounts(scripts, text);
     }
 
-    return total > 0 ? total : null;
+    return {
+        wordCount: total > 0 ? total : null,
+        scriptLanguage: dominantScriptLanguage(scripts),
+    };
 };
 
 const blockTags = new Set([
@@ -3130,10 +3138,14 @@ const parseOpfMetadata = async (zip, packagePath, fallbackName, sourceUri = '') 
     const author = parsedPackage.metadata.author;
     const packageDir = parsedPackage.packageDir;
     const manifestItems = parsedPackage.manifest;
-    const wordCount = await countEpubSpineWords(zip, parsedPackage).catch((error) => {
+    const { wordCount, scriptLanguage } = await readEpubSpineText(zip, parsedPackage).catch((error) => {
         console.warn('[epubMetadata] Failed to count EPUB words:', error);
-        return null;
+        return { wordCount: null, scriptLanguage: null };
     });
+    // The text's own script wins over the package's language tag, which is
+    // often wrong (Korean ebooks tagged "en"). 'ja' stays as is so import can
+    // say Japanese isn't supported.
+    const language = scriptLanguage ?? parsedPackage.metadata.language;
 
     const isImageItem = (item) => (
         String(item?.mediaType || '').toLowerCase().startsWith('image/') ||
@@ -3247,7 +3259,7 @@ const parseOpfMetadata = async (zip, packagePath, fallbackName, sourceUri = '') 
         }
 
         if (!isImageItem({ path: coverPath, mediaType: coverType })) {
-            return { title, author, cover: null, language: parsedPackage.metadata.language, wordCount };
+            return { title, author, cover: null, language, wordCount };
         }
 
         const coverFile = findZipFile(zip, coverPath);
@@ -3268,7 +3280,7 @@ const parseOpfMetadata = async (zip, packagePath, fallbackName, sourceUri = '') 
         }
     }
 
-    return { title, author, cover, language: parsedPackage.metadata.language, wordCount };
+    return { title, author, cover, language, wordCount };
 };
 
 export const readEpubMetadata = async (uri, fallbackName = '') => {

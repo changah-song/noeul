@@ -134,8 +134,21 @@ internal fun isReaderTokenChar(char: Char): Boolean {
     code in 0x1100..0x11FF -> true // Hangul Jamo
     code in 0x3130..0x318F -> true // Hangul Compatibility Jamo
     isCjkIdeograph(char) -> true
-    char in 'A'..'Z' || char in 'a'..'z' -> true
+    isLatinLetter(char) -> true
     char.isDigit() -> true
     else -> false
   }
+}
+
+// Basic Latin plus accented Latin letters (café, naïve).
+internal fun isLatinLetter(char: Char): Boolean =
+  char in 'A'..'Z' || char in 'a'..'z' || (char.code in 0x00C0..0x024F && char.isLetter())
+
+// An apostrophe or hyphen inside an English word (don't, well-known) belongs
+// to the word: a tap on either half picks the whole word.
+internal fun isInWordPunctuationAt(text: CharSequence, index: Int): Boolean {
+  if (index <= 0 || index >= text.length - 1) return false
+  val char = text[index]
+  if (char != '\'' && char != '\u2019' && char != '-') return false
+  return isLatinLetter(text[index - 1]) && isLatinLetter(text[index + 1])
 }

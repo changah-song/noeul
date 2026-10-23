@@ -32,6 +32,11 @@ fun splitSentences(text: String): List<IntRange> {
           continue
         }
 
+        if (c == '.' && isAbbreviationPeriod(text, i)) {
+          i++
+          continue
+        }
+
         // Consume any consecutive terminal punctuation and closing delimiters
         var end = i + 1
         while (end < text.length &&
@@ -66,6 +71,29 @@ private val CLOSING_DELIMITERS = setOf(
   // CJK quotes and brackets that close after the full stop: 。』 。」 。）
   '』', '」', '）', '】', '》', '〉'
 )
+
+// English titles and abbreviations whose period doesn't end a sentence
+// ("Mr. Darcy", "e.g. this"). Keep in step with services/sentenceSplit.js.
+private val ABBREVIATIONS = setOf("mr", "mrs", "ms", "dr", "st", "sr", "jr", "prof", "rev", "hon", "capt", "col", "gen", "lt", "sgt", "mt", "vs", "e.g", "i.e", "cf", "fig", "no", "vol", "approx")
+
+private fun isAsciiLetter(c: Char) = c in 'a'..'z' || c in 'A'..'Z'
+
+// A period inside a word (e.g., U.S.), after a known abbreviation, or after a
+// single capital initial (J. K. Rowling).
+private fun isAbbreviationPeriod(text: String, index: Int): Boolean {
+  if (index + 1 < text.length && isAsciiLetter(text[index + 1])) return true
+  // An English sentence starts with a capital; "the U.S. now" goes on.
+  var next = index + 1
+  while (next < text.length && text[next] == ' ') next++
+  if (next > index + 1 && next < text.length && text[next] in 'a'..'z') return true
+  var start = index
+  while (start > 0 && (isAsciiLetter(text[start - 1]) || text[start - 1] == '.')) start--
+  val word = text.substring(start, index)
+  if (word.isEmpty()) return false
+  if (word.lowercase() in ABBREVIATIONS) return true
+  // "I" is a word, not an initial ("and so did I.").
+  return word.length == 1 && word[0].isUpperCase() && word != "I" && (start == 0 || text[start - 1] == ' ')
+}
 
 private fun skipLeadingSpace(text: String, start: Int): Int {
   var i = start
