@@ -46,6 +46,20 @@ const POS_KEYS = {
     Adjective: 'pos.adjective',
     Modifier: 'pos.modifier',
     Determiner: 'pos.determiner',
+    // English dictionary entries (en_learner.db) use lowercase names.
+    noun: 'pos.noun',
+    verb: 'pos.verb',
+    adverb: 'pos.adverb',
+    adjective: 'pos.adjective',
+    pronoun: 'pos.pronoun',
+    determiner: 'pos.determiner',
+    interjection: 'pos.interjection',
+    numeral: 'pos.numeral',
+    particle: 'pos.particle',
+    preposition: 'pos.preposition',
+    conjunction: 'pos.conjunction',
+    article: 'pos.article',
+    name: 'pos.noun',
     명사: 'pos.noun',
     동사: 'pos.verb',
     형용사: 'pos.adjective',
@@ -1629,7 +1643,7 @@ const DictionaryContent = ({
                             [styles.entryWord, isChineseBook && styles.zhEntryWord, { color: palette.text }]
                         )}
                         {hanjaElement}
-                        {pronunciationText ? (
+                        {pronunciationText && !isEnglishBook ? (
                             <Text
                                 selectable
                                 style={[
@@ -1644,8 +1658,13 @@ const DictionaryContent = ({
                     </View>
                     {renderHeadwordChevron('next')}
                 </View>
-                {pronunciationControls ? (
+                {pronunciationControls || (isEnglishBook && pronunciationText) ? (
                     <View style={styles.entryMetaRow}>
+                        {isEnglishBook && pronunciationText ? (
+                            <Text selectable style={[styles.ipaText, { color: colors.textTertiary }]}>
+                                {pronunciationText}
+                            </Text>
+                        ) : null}
                         {pronunciationControls}
                     </View>
                 ) : null}
@@ -2135,12 +2154,32 @@ const DictionaryContent = ({
                             {isPanelExpanded ? renderChineseCharacterBreakdown(cleanValue(word)) : null}
                         </View>
                     ) : (
+                    isEnglishBook ? (
+                        <>
+                            <View style={[styles.definitionRow, !posLabel && styles.definitionRowSolo]}>
+                                {posLabel ? (
+                                    <View style={[styles.posBadge, { borderColor: colors.border }]}>
+                                        <Text style={[styles.posBadgeText, { color: colors.textMuted }]}>
+                                            {posLabel}
+                                        </Text>
+                                    </View>
+                                ) : null}
+                                {gloss ? (
+                                    <Text selectable style={[styles.definitionText, { color: palette.text }]}>
+                                        {gloss}
+                                    </Text>
+                                ) : null}
+                            </View>
+                            {definition ? renderEnglishSenses(definition) : (
+                                <Text selectable style={[styles.emptyDefinition, { color: palette.emptyText }]}>
+                                    {t('lookup.noDictionaryEntry')}
+                                </Text>
+                            )}
+                            {renderInlineTranslation()}
+                            {isPanelExpanded && showLess ? renderExtraDefinitions(extraEntries) : null}
+                        </>
+                    ) : (
                     <>
-                        {isEnglishBook && gloss ? (
-                            <Text selectable style={[styles.glossText, { color: palette.text }]}>
-                                {gloss}
-                            </Text>
-                        ) : null}
                         <View style={[styles.definitionRow, !posLabel && styles.definitionRowSolo]}>
                             {posLabel ? (
                                 <View style={[styles.posBadge, { borderColor: colors.border }]}>
@@ -2149,9 +2188,7 @@ const DictionaryContent = ({
                                     </Text>
                                 </View>
                             ) : null}
-                            {definition && isEnglishBook ? (
-                                renderEnglishSenses(definition)
-                            ) : definition ? (
+                            {definition ? (
                                 <Text selectable style={[styles.definitionText, { color: palette.text }]}>
                                     {definition}
                                 </Text>
@@ -2164,7 +2201,7 @@ const DictionaryContent = ({
                         {renderInlineTranslation()}
                         {isPanelExpanded && showLess ? renderExtraDefinitions(extraEntries) : null}
                     </>
-                    )
+                    ))
                 )}
             </View>
         );
@@ -2172,7 +2209,7 @@ const DictionaryContent = ({
 
     // An English entry's senses arrive one per line; numbered when there are
     // several, like a learner's dictionary.
-    const renderEnglishSenses = (definition, style = styles.definitionText, color = palette.text) => {
+    const renderEnglishSenses = (definition, style = styles.englishSenseText, color = palette.secondaryText) => {
         const senses = String(definition).split('\n').map(cleanValue).filter(Boolean);
         if (senses.length <= 1) {
             return (
@@ -2503,6 +2540,14 @@ const createStyles = (colors) => StyleSheet.create({
         marginTop: 0,
         textAlign: 'left',
     },
+    // Upright: IPA symbols (ˈ ɛ ɹ) fall back to another font, and Android
+    // measures an italic fallback run too narrow and clips it.
+    ipaText: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 14,
+        lineHeight: 20,
+        marginRight: 4,
+    },
     entryMetaRow: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -2672,14 +2717,6 @@ const createStyles = (colors) => StyleSheet.create({
     },
     definitionRowSolo: {
         justifyContent: 'center',
-    },
-    glossText: {
-        fontFamily: fontFamilies.sans,
-        fontSize: 18,
-        lineHeight: 23,
-        fontWeight: '600',
-        marginBottom: spacing.xs,
-        letterSpacing: 0,
     },
     // --- Chinese readings body ---
     // Keep the characters intact (never break between them) so the pinyin, not the
@@ -2952,8 +2989,16 @@ const createStyles = (colors) => StyleSheet.create({
         letterSpacing: 0,
     },
     englishSenses: {
-        flex: 1,
+        alignSelf: 'stretch',
         gap: 4,
+        marginTop: spacing.xs,
+    },
+    englishSenseText: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 15,
+        lineHeight: 21,
+        letterSpacing: 0,
+        textAlign: 'left',
     },
     emptyDefinition: {
         ...textStyles.body,
