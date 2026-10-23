@@ -107,9 +107,9 @@ import { requestUserDataSync } from '../services/userDataSyncQueue';
 import {
     SUPPORTED_BOOK_LANGUAGES,
     normalizeBookLanguage,
-    normalizeInterfaceLanguageCode,
 } from '../constants/languages';
 import { loadLevelUnderlineTerms } from '../hooks/useLevelUnderlineTerms';
+import { bookIndexLanguages, tagPreprocessCacheEntries } from '../services/preprocessCacheEntries';
 import { selectExposureCredits } from '../services/readerExposure';
 import useSavedWordFades from '../hooks/useSavedWordFades';
 import { ONBOARDING_FLOW_SEEN_KEY } from './Onboarding';
@@ -2164,24 +2164,7 @@ const Read = ({
     }) => {
         const normalizedLanguage = normalizeBookLanguage(language);
         const cacheScope = { language: normalizedLanguage, interfaceLanguage };
-        const normalizedInterfaceLanguage = normalizeInterfaceLanguageCode(interfaceLanguage);
-        const cacheEntries = (results || [])
-            .filter((entry) => entry?.stem)
-            .map((entry) => {
-                const entryInterfaceLanguage = normalizeInterfaceLanguageCode(
-                    entry.interfaceLanguage ?? entry.interface_language ?? normalizedInterfaceLanguage
-                );
-
-                if (
-                    ['en', 'zh'].includes(normalizedLanguage)
-                    && normalizedInterfaceLanguage !== 'en'
-                    && entryInterfaceLanguage !== normalizedInterfaceLanguage
-                ) {
-                    return { ...entry, definition: null };
-                }
-
-                return entry;
-            });
+        const cacheEntries = tagPreprocessCacheEntries(results, cacheScope);
         await insertCacheEntries(cacheEntries, cacheScope);
 
         const stems = [...new Set(cacheEntries.map((entry) => entry.stem).filter(Boolean))];
@@ -2189,9 +2172,20 @@ const Read = ({
             return 0;
         }
 
-        const cachedRows = await lookupCacheByStems(stems, cacheScope);
+        // Index each stem by its row in the app language, or failing that the
+        // English row a Korean word fell back to.
         const stemToId = {};
-        cachedRows.forEach(row => { stemToId[row.stem] = row.id; });
+        for (const indexLanguage of bookIndexLanguages(cacheScope)) {
+            const cachedRows = await lookupCacheByStems(stems, {
+                language: normalizedLanguage,
+                interfaceLanguage: indexLanguage,
+            });
+            cachedRows.forEach((row) => {
+                if (stemToId[row.stem] == null) {
+                    stemToId[row.stem] = row.id;
+                }
+            });
+        }
 
         const seenSurfaceStem = new Set();
         const bookIndexEntries = withNormalizedSurfaceIndex(surfaceIndex, normalizedLanguage)

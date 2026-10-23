@@ -19,7 +19,7 @@ import os
 import re
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
-from functools import partial
+from functools import lru_cache, partial
 import certifi
 from dotenv import load_dotenv
 
@@ -152,6 +152,10 @@ KRDICT_PREPROCESS_BUDGET_SECONDS = 12.0
 KRDICT_MAX_CONSECUTIVE_FAILURES = 5
 KRDICT_COOLDOWN_SECONDS = 300.0
 _krdict_cooldown_until = 0.0
+# Tap lookups trip a shorter cooldown after KRDICT_MAX_CONSECUTIVE_FAILURES
+# failures in a row: a single user is waiting, so retry sooner.
+KRDICT_TAP_COOLDOWN_SECONDS = 60.0
+_krdict_tap_failures = 0
 JOB_PROGRESS_LOG_INTERVAL = 25
 KRDICT_API_URL = "https://krdict.korean.go.kr/api/search"
 KRDICT_SEARCH_TIMEOUT_SECONDS = 6.0
@@ -314,6 +318,31 @@ def get_ko_dict_db_connection():
 
 def is_ko_dict_db_installed() -> bool:
     return os.path.exists(KO_DICT_DB_PATH)
+
+
+@lru_cache(maxsize=1)
+def ko_dict_translated_languages() -> frozenset[str]:
+    """Interface languages ko_dict.db carries glosses for besides English
+    (ko_dictionary_translations). Empty for an older English-only snapshot."""
+    if not is_ko_dict_db_installed():
+        return frozenset()
+    conn = get_ko_dict_db_connection()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT interface_language FROM ko_dictionary_translations"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return frozenset()
+    finally:
+        conn.close()
+    return frozenset(row[0] for row in rows)
+
+
+def ko_dict_covers_language(interface_language: str) -> bool:
+    return (
+        interface_language == DEFAULT_INTERFACE_LANGUAGE
+        or interface_language in ko_dict_translated_languages()
+    )
 
 
 def is_proficiency_levels_db_installed() -> bool:
@@ -3726,20 +3755,25 @@ def _translate_cache_get_many(key_hashes: list[str]) -> dict[str, str]:
 
 async def translate_ko_preprocess_results(results: list[dict], interface_language: str) -> list[dict]:
     """Korean preprocessing reads English KRDICT senses (the bundled snapshot and
-    server cache are English). Translate each chapter's definitions into the
-    interface language so the reader's under-word translations and taps are in the
-    learner's language. Translations live in translate_cache (keyed by text and
+    server cache are English); apply_ko_dict_translations then swaps in KRDICT's
+    own gloss where the snapshot has the interface language. Machine-translate
+    the definitions still in English so the reader's under-word translations and
+    taps are in the learner's language. Translations live in translate_cache (keyed by text and
     language), not dictionary_cache, so they never stand in for KRDICT's own
     per-language senses. Untranslated ones stay English and are labelled so."""
     normalized_lang = normalize_short_language_code(interface_language, "en")
     if normalized_lang == "en":
         return results
 
-    texts = [
-        result["definition"]
-        for result in results
-        if isinstance(result, dict) and isinstance(result.get("definition"), str) and result["definition"].strip()
-    ]
+    def needs_translation(result) -> bool:
+        return (
+            isinstance(result, dict)
+            and isinstance(result.get("definition"), str)
+            and bool(result["definition"].strip())
+            and result.get("interface_language") != normalized_lang
+        )
+
+    texts = [result["definition"] for result in results if needs_translation(result)]
     unique_texts = list(dict.fromkeys(texts))
     if not unique_texts:
         return results
@@ -3758,10 +3792,10 @@ async def translate_ko_preprocess_results(results: list[dict], interface_languag
 
     out: list[dict] = []
     for result in results:
-        definition = result.get("definition") if isinstance(result, dict) else None
-        if not isinstance(definition, str) or not definition.strip():
+        if not needs_translation(result):
             out.append(result)
             continue
+        definition = result["definition"]
         translated = translated_by_text.get(definition)
         if translated:
             out.append({**result, "definition": translated, "interface_language": normalized_lang})
@@ -4091,11 +4125,12 @@ async def translate_content(payload: dict, auth: dict[str, Any] = Depends(verify
 
 # ─── Bundled KRDICT Snapshot (offline) ────────────────────────────────────────
 # When ko_dict.db is installed these functions resolve Korean words locally,
-# mirroring the English/Chinese offline paths. They only cover the English gloss
-# (the snapshot is imported English-only), which matches the live KO path today:
-# both _preprocess_core's cache query and lookup_stem_in_krdict already operate
-# solely at DEFAULT_INTERFACE_LANGUAGE. Anything the snapshot misses still falls
-# through to the live KRDICT API.
+# mirroring the English/Chinese offline paths. ko_dictionary holds the English
+# gloss; ko_dictionary_translations holds KRDICT's own glosses in its other
+# languages (vi, ja, fr, …) on the same sense numbering. Chapter preprocessing
+# resolves in English and then swaps in the interface language's gloss
+# (apply_ko_dict_translations); tap lookups read the interface language
+# directly. Anything the snapshot misses still falls through to the live API.
 def ko_dictionary_no_entry(stem: str) -> dict:
     return {
         "stem": stem,
@@ -4160,11 +4195,61 @@ def lookup_ko_dictionary_entries(stems: list[str]) -> tuple[list[dict], int]:
     return hits, len(rows_by_stem)
 
 
-def lookup_ko_dictionary_search(query: str) -> list[dict]:
+def lookup_ko_dictionary_translations(stems: list[str], interface_language: str) -> dict[str, str]:
+    """{stem: primary-sense gloss} in a non-English interface language, for the
+    stems the snapshot translates. Missing stems are left out."""
+    normalized = unique_nonempty_strings(stems)
+    if not normalized or interface_language not in ko_dict_translated_languages():
+        return {}
+
+    conn = get_ko_dict_db_connection()
+    glosses: dict[str, str] = {}
+    try:
+        for chunk in chunked_values(normalized):
+            placeholders = ",".join(["?"] * len(chunk))
+            rows = conn.execute(
+                f"""
+                SELECT stem, definition
+                FROM ko_dictionary_translations
+                WHERE interface_language = ? AND sense_no = 1 AND stem IN ({placeholders})
+                """,
+                [interface_language, *chunk],
+            ).fetchall()
+            for row in rows:
+                if row["definition"]:
+                    glosses[row["stem"]] = row["definition"]
+    finally:
+        conn.close()
+    return glosses
+
+
+def apply_ko_dict_translations(results: list[dict], interface_language: str) -> list[dict]:
+    """Swap each preprocessed English definition for KRDICT's own gloss in the
+    interface language, where the snapshot has one, and tag it with that
+    language. The rest are returned unchanged for machine translation."""
+    glosses = lookup_ko_dictionary_translations(
+        [result.get("stem") for result in results if isinstance(result, dict) and result.get("definition")],
+        interface_language,
+    )
+    if not glosses:
+        return results
+    return [
+        {**result, "definition": glosses[result["stem"]], "interface_language": interface_language}
+        if isinstance(result, dict) and result.get("definition") and result.get("stem") in glosses
+        else result
+        for result in results
+    ]
+
+
+def lookup_ko_dictionary_search(query: str, interface_language: str = DEFAULT_INTERFACE_LANGUAGE) -> list[dict]:
     """Resolve a single tapped word against the snapshot, in the shape
     search_krdict_entries returns (word/origin/pos/pronunciation/romanization/
     transWord). Returns every sense, ordered, or [] on a miss so the caller can
     fall back to the live API. Pronunciation isn't in the snapshot, so it's None.
+
+    For a non-English interface language only the senses translated into it are
+    returned, so an entry KRDICT never translated still goes to the live API
+    (and from there to the English fallback).
     """
     normalized = query.strip() if isinstance(query, str) else ""
     if not normalized:
@@ -4172,15 +4257,28 @@ def lookup_ko_dictionary_search(query: str) -> list[dict]:
 
     conn = get_ko_dict_db_connection()
     try:
-        rows = conn.execute(
-            """
-            SELECT stem, pos, hanja, definition, domain
-            FROM ko_dictionary
-            WHERE stem = ?
-            ORDER BY sense_no
-            """,
-            [normalized],
-        ).fetchall()
+        if interface_language == DEFAULT_INTERFACE_LANGUAGE:
+            rows = conn.execute(
+                """
+                SELECT stem, pos, hanja, definition, domain
+                FROM ko_dictionary
+                WHERE stem = ?
+                ORDER BY sense_no
+                """,
+                [normalized],
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT d.stem, d.pos, d.hanja, t.definition, d.domain
+                FROM ko_dictionary d
+                JOIN ko_dictionary_translations t
+                  ON t.stem = d.stem AND t.sense_no = d.sense_no
+                WHERE d.stem = ? AND t.interface_language = ?
+                ORDER BY d.sense_no
+                """,
+                [normalized, interface_language],
+            ).fetchall()
     finally:
         conn.close()
 
@@ -4254,16 +4352,13 @@ async def search_krdict_entries(
             lambda text: _translate_text(text, source="en", target=interface_language),
         )
 
-    # Offline-first: the bundled snapshot is English-only, so it can only serve
-    # requests at the default (English) interface language. On a hit we skip the
-    # network entirely; on a miss we fall through to the live API below.
-    if (
-        interface_language == DEFAULT_INTERFACE_LANGUAGE
-        and is_ko_dict_db_installed()
-    ):
+    # Offline-first: the bundled snapshot carries English plus KRDICT's other
+    # translation languages. On a hit we skip the network entirely; on a miss
+    # (or a language it lacks, like zh) we fall through to the live API below.
+    if is_ko_dict_db_installed() and ko_dict_covers_language(interface_language):
         loop = asyncio.get_event_loop()
         bundle_results = await loop.run_in_executor(
-            None, lookup_ko_dictionary_search, query
+            None, lookup_ko_dictionary_search, query, interface_language
         )
         if bundle_results:
             return bundle_results
@@ -4274,7 +4369,22 @@ async def search_krdict_entries(
     )
 
     async def live_search(q: str) -> list[dict]:
-        return await search_krdict_live(client, q, krdict_key, trans_lang)
+        global _krdict_tap_failures, _krdict_cooldown_until
+        # While KRDICT is failing, answer from the fallback at once instead of
+        # making every tap wait out the timeout.
+        if time.monotonic() < _krdict_cooldown_until:
+            raise KrdictUnavailableError("KRDICT cooling down after repeated failures")
+        try:
+            results = await search_krdict_live(client, q, krdict_key, trans_lang)
+        except KrdictUnavailableError:
+            _krdict_tap_failures += 1
+            if _krdict_tap_failures >= KRDICT_MAX_CONSECUTIVE_FAILURES:
+                _krdict_tap_failures = 0
+                _krdict_cooldown_until = time.monotonic() + KRDICT_TAP_COOLDOWN_SECONDS
+                print(f"[main] KRDICT failing on lookups; skipping it for {KRDICT_TAP_COOLDOWN_SECONDS:.0f}s")
+            raise
+        _krdict_tap_failures = 0
+        return results
 
     async def english_search(q: str) -> list[dict]:
         # Non-English interface + KRDICT unavailable: the snapshot's English
@@ -4695,7 +4805,12 @@ async def preprocess_chapter(payload: dict, auth: dict[str, Any] = Depends(verif
         request_interface_language(payload.get("interface_language")),
         "en",
     )
-    result["results"] = await translate_ko_preprocess_results(result.get("results") or [], interface_language)
+    # KRDICT's own gloss from the snapshot first; machine translation only for
+    # the words it doesn't translate.
+    translated_results = await asyncio.to_thread(
+        apply_ko_dict_translations, result.get("results") or [], interface_language
+    )
+    result["results"] = await translate_ko_preprocess_results(translated_results, interface_language)
     return {
         "book_uri": book_uri,
         "spine_index": spine_index,
