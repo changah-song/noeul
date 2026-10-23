@@ -2935,6 +2935,12 @@ async def get_en_morphs(text: str, auth: dict[str, Any] = Depends(verify_supabas
     lemmas, _surface_index, _pos_by_lemma = await asyncio.to_thread(
         extract_en_lookup_tokens, normalized_text
     )
+    # A tapped hyphenated word (well-known) is a headword of its own; spaCy
+    # would only return its halves.
+    whole_word = en_learner_dict.normalize_word(normalized_text).strip(".,;:!?\"()[]")
+    if whole_word and " " not in whole_word and "-" in whole_word:
+        if await asyncio.to_thread(en_learner_dict.lookup_entries, [whole_word]):
+            lemmas = [whole_word, *[lemma for lemma in lemmas if lemma != whole_word]]
     print(f"[main] /en_morphs/ | text length={len(normalized_text):,} | lemmas={len(lemmas)}")
     return {"result": lemmas}
 

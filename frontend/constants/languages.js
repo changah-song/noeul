@@ -1,12 +1,14 @@
 export const SUPPORTED_LANGUAGES = {
   ko: 'Korean',
   zh: 'Chinese',
+  en: 'English',
 };
 
 // Book/reading languages the app can actually open and look up words for today.
 // A book whose language falls outside this set can't be imported yet. Keep in
-// sync with the dictionaries that ship on the backend (ko_dict / zh_dict).
-export const SUPPORTED_BOOK_LANGUAGES = ['ko', 'zh'];
+// sync with the dictionaries that ship on the backend (ko_dict / zh_dict /
+// en_learner).
+export const SUPPORTED_BOOK_LANGUAGES = ['ko', 'zh', 'en'];
 
 export const DEFAULT_CHINESE_SCRIPT = 'zh-Hans';
 
@@ -50,8 +52,13 @@ export const normalizeChineseScript = (script, fallback = 'zh-Hans') => {
   return fallback;
 };
 
+// The app language to fall back to when the stored one is the language being
+// learned. English learners are Korean speakers first.
+const TARGET_INTERFACE_FALLBACKS = { en: 'ko' };
+
 export const getInterfaceLanguageFallbackForTarget = (targetLanguage = DEFAULT_TARGET_LANGUAGE) => (
-  KRDICT_INTERFACE_LANGUAGE_OPTIONS.find((option) => option.code !== targetLanguage)?.code
+  TARGET_INTERFACE_FALLBACKS[targetLanguage]
+    ?? KRDICT_INTERFACE_LANGUAGE_OPTIONS.find((option) => option.code !== targetLanguage)?.code
     ?? DEFAULT_INTERFACE_LANGUAGE
 );
 
@@ -118,6 +125,7 @@ export const isKoreanLanguage = (language) => normalizeBookLanguage(language) ==
 export const TARGET_LANGUAGE_OPTIONS = [
   { id: 'ko', targetLanguage: 'ko', label: '한국어' },
   { id: 'zh', targetLanguage: 'zh', label: '中文' },
+  { id: 'en', targetLanguage: 'en', label: 'English' },
 ];
 
 // Which picker row is currently active, given the stored target language.

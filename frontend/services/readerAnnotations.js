@@ -56,10 +56,15 @@ export const annotationsBySurface = (rows, interfaceLanguage = 'en') => {
     const pinyin = cleanText(row?.ipa);
     if (pinyin && !entry.pinyin) entry.pinyin = pinyin;
     // Korean preprocessing fills `definition` (the short dictionary sense) but
-    // usually not `gloss`; either works as the label under the word.
+    // usually not `gloss`; either works as the label under the word. English
+    // definitions are full English senses, so an English word shows only its
+    // gloss (the equivalents in the learner's language, e.g. 달리다).
     const glossRank = rank(cleanText(row?.interface_language) || 'en');
+    const isEnglishWord = cleanText(row?.language) === 'en';
     // A row in another language still contributes its pinyin, never its gloss.
-    const gloss = glossRank == null ? '' : (cleanText(row?.gloss) || cleanText(row?.definition));
+    const gloss = glossRank == null
+      ? ''
+      : (cleanText(row?.gloss) || (isEnglishWord ? '' : cleanText(row?.definition)));
     if (gloss && glossRank < entry.glossRank) {
       entry.gloss = gloss;
       entry.glossRank = glossRank;

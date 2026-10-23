@@ -67,7 +67,7 @@ def lookup_entries(
     """stem -> its entries, most common first. Stems with no entry are absent.
 
     Each entry: word, pos, ipa, audio_us, audio_uk, senses (English),
-    definition (the first sense), equivalents (in interface_language, possibly
+    definition (the senses, one per line), equivalents (in interface_language, possibly
     empty) and gloss (the equivalents joined, or None).
     """
     if not is_installed():
@@ -100,7 +100,7 @@ def lookup_entries(
                 "audio_us": row["audio_us"],
                 "audio_uk": row["audio_uk"],
                 "senses": senses,
-                "definition": senses[0] if senses else None,
+                "definition": "\n".join(senses) or None,
                 "equivalents": [],
                 "gloss": None,
             })

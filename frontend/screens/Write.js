@@ -60,6 +60,8 @@ import { translateContent } from '../i18n/contentStrings';
 const LEGACY_STORAGE_KEY = 'writing_entries_v1';
 const getWritingStorageKey = (ownerId) => makeScopedStorageKey(ownerId, 'writing-entries-v1');
 const WRITE_SIDE_PADDING = 18;
+// Empty-editor placeholder per writing language; Korean is the default.
+const WRITE_PLACEHOLDER_KEYS = { zh: 'write.startZh', en: 'write.startEn' };
 const WRITING_FILTERS = [
   { key: 'all', labelKey: 'write.filters.all' },
   { key: 'sandbox', labelKey: 'write.filters.sandbox' },
@@ -1159,11 +1161,9 @@ const Write = ({ user, navigation }) => {
     code,
     label: t(`language.${code}`),
   }));
-  const bodyPlaceholder = t(entryLanguage === 'zh' ? 'write.startZh' : 'write.startKorean');
+  const bodyPlaceholder = t(WRITE_PLACEHOLDER_KEYS[entryLanguage] ?? 'write.startKorean');
   const selectedEntryPlaceholder = t(
-    normalizeBookLanguage(selectedEntry?.language ?? targetLanguage) === 'zh'
-      ? 'write.startZh'
-      : 'write.startKorean'
+    WRITE_PLACEHOLDER_KEYS[normalizeBookLanguage(selectedEntry?.language ?? targetLanguage)] ?? 'write.startKorean'
   );
 
   const openNewDraft = () => {

@@ -19,7 +19,7 @@ def test_entries_carry_senses_and_korean_equivalents():
     first = entries[0]
     assert first["pos"] == "verb"
     assert first["ipa"]
-    assert first["senses"] and first["definition"] == first["senses"][0]
+    assert first["senses"] and first["definition"].split("\n") == first["senses"]
     assert "달리다" in first["equivalents"]
     assert first["gloss"].startswith("달리다")
 
