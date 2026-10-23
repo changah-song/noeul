@@ -5,6 +5,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather, MaterialIcons } from '@expo/vector-icons';
 
 import TopSection from '../components/Read/TopSection/TopSection';
+import PinnedSentenceTranslation, { PINNED_TRANSLATION_BAR_HEIGHT } from '../components/Read/PinnedSentenceTranslation';
+import { chapterTranslations } from '../services/chapterTranslations';
 import TocDrawer from '../components/Read/TocDrawer';
 import FocusControls from '../components/Read/FocusControls';
 import {
@@ -46,7 +48,6 @@ import ListenVoiceSheet from '../components/Read/ListenVoiceSheet';
 import VocabLevelModal from '../components/shared/VocabLevelModal';
 import { hasVocabSizeGrid } from '../services/vocabSizeLevels';
 import { createListenPlayer, voiceLocaleFor, voiceSampleFor, LISTEN_PITCHES, LISTEN_RATES } from '../services/listenPlayer';
-import { translateText } from '../services/api/googleTranslate';
 import {
     PREPROCESS_VERSION,
     deleteBookBookmark,
@@ -160,6 +161,10 @@ const DEFAULT_READER_SETTINGS = {
     // No pinyin / translation on saved (highlighted) words, so the reader can
     // try to recall a word they looked up before.
     hideSavedAnnotations: true,
+    // A fixed-height bar under the header that keeps the translation of the
+    // last tapped word's sentence on screen. The open chapter's sentences are
+    // translated ahead, so it shows at once. Off by default.
+    pinnedSentenceTranslation: false,
 };
 const READING_MODES = ['paged', 'scroll'];
 
@@ -561,6 +566,9 @@ const Read = ({
     // vocabulary size once, the first time a book opens.
     const [showVocabLevelPrompt, setShowVocabLevelPrompt] = useState(false);
     const [listenActive, setListenActive] = useState(false);
+    // Sentence of the last tapped word, for the pinned translation bar. Outlives
+    // the lookup panel; cleared on a chapter or book change.
+    const [pinnedSentence, setPinnedSentence] = useState('');
     const [listenPlaying, setListenPlaying] = useState(false);
     const [listenPrefs, setListenPrefs] = useState(DEFAULT_LISTEN_PREFS);
     const listenPrefsRef = useRef(DEFAULT_LISTEN_PREFS);
@@ -1082,6 +1090,7 @@ const Read = ({
         setHighlightedWordContext({
             sentence,
         });
+        setPinnedSentence(sentence || text);
         setLookupPlacement(event.placement === 'top' ? 'top' : 'bottom');
 
         recordVocabContextForSurface({
@@ -1428,6 +1437,7 @@ const Read = ({
             pinyinScope: DEFAULT_READER_SETTINGS.pinyinScope,
             glossScope: DEFAULT_READER_SETTINGS.glossScope,
             hideSavedAnnotations: DEFAULT_READER_SETTINGS.hideSavedAnnotations,
+            pinnedSentenceTranslation: DEFAULT_READER_SETTINGS.pinnedSentenceTranslation,
         });
     };
 
@@ -3178,6 +3188,67 @@ const Read = ({
         startChapterPreprocessing(spineIndex, totalSpineItems, null);
     }, [currentBook, interfaceLanguage, startChapterPreprocessing]);
 
+    // The pinned translation belongs to the chapter it came from.
+    useEffect(() => {
+        setPinnedSentence('');
+    }, [activeSpineIndex, currentBook]);
+
+    // Translate the open chapter's sentences in a few requests, ahead of time,
+    // while something will read them: the pinned translation bar, or listen
+    // mode's translation mode (which also takes the next chapter, so the turn
+    // between chapters doesn't wait). Each chapter is fetched once per language
+    // and kept on the phone (services/chapterTranslations.js).
+    const listenTranslating = listenActive && Boolean(listenPrefs.translateSentences);
+    const chapterTranslationsWanted = Boolean(settings.pinnedSentenceTranslation) || listenTranslating;
+    useEffect(() => {
+        if (
+            !chapterTranslationsWanted
+            || !currentBook
+            || !Number.isInteger(currentSpineIndex)
+            // Same language (or just another script of it): nothing to translate.
+            || normalizeBookLanguage(activeBookLanguage) === String(interfaceLanguage || '').split('-')[0]
+        ) {
+            return undefined;
+        }
+        let active = true;
+        const prefetch = async (spineIndex) => {
+            const chapterPackage = await loadParsedChapterPackage(spineIndex, `translate:${spineIndex}`);
+            if (!active || !chapterPackage) return;
+            const paragraphs = chapterBlocksForReaderPackage(chapterPackage)
+                .filter((block) => !block?.excludeFromText)
+                .map((block) => (typeof block?.text === 'string' ? block.text : ''))
+                .filter(Boolean);
+            await chapterTranslations.prefetchChapter({
+                key: `${currentBook}#${spineIndex}`,
+                paragraphs,
+                source: activeBookLanguage,
+                target: interfaceLanguage,
+            });
+        };
+        const totalSpineItems = nativeReaderPackageRef.current?.spine?.length ?? 0;
+        prefetch(currentSpineIndex)
+            .then(() => {
+                if (active && listenTranslating && currentSpineIndex + 1 < totalSpineItems) {
+                    return prefetch(currentSpineIndex + 1);
+                }
+                return null;
+            })
+            .catch((error) => {
+                console.warn('[Read] Could not translate the chapter ahead:', error?.message ?? error);
+            });
+        return () => {
+            active = false;
+        };
+    }, [
+        activeBookLanguage,
+        chapterTranslationsWanted,
+        currentBook,
+        currentSpineIndex,
+        interfaceLanguage,
+        listenTranslating,
+        loadParsedChapterPackage,
+    ]);
+
     const isScrollMode = readingMode === 'scroll';
     const nativeRenderMode = focusMode ? 'focus' : (isScrollMode ? 'continuous' : 'paged');
     // 'off' hides the marks only; exposure/lookup evidence keeps flowing, since
@@ -3293,7 +3364,14 @@ const Read = ({
     // to the bottom sits on top of it. FOCUS_SPAN_TOP_MARGIN_DP in the native
     // module reserves the matching strip of reading surface, so a sentence too
     // tall to fit still stops short of the pill instead of running under it.
-    const focusPillTop = (isFullscreen ? insets.top : insets.top + spacing.xs + 52) + 12;
+    // The pinned translation bar (when shown) pushes the reading surface down by
+    // its fixed height, so everything anchored to the reader's top edge shifts
+    // with it. Hidden in fullscreen, like the header.
+    const showPinnedTranslation = Boolean(settings.pinnedSentenceTranslation)
+        && !isFullscreen
+        && Boolean(currentBook);
+    const pinnedTranslationOffset = showPinnedTranslation ? PINNED_TRANSLATION_BAR_HEIGHT : 0;
+    const focusPillTop = (isFullscreen ? insets.top : insets.top + spacing.xs + 52 + pinnedTranslationOffset) + 12;
     // Arrow controls ride 12dp above the open panel, mirroring the 28 → panel+12
     // bottom shift in the design.
     const focusControlsLiftTarget = focusPanelOpen
@@ -3478,7 +3556,7 @@ const Read = ({
         const earlyNext = knownNext();
         const earlyNextText = earlyNext?.moved ? cleanListenText(earlyNext.text) : '';
         const nextTranslation = prefs.translateSentences && earlyNextText
-            ? translateText({ query: earlyNextText, source: ctx.language, target: ctx.interfaceLanguage }).catch(() => '')
+            ? chapterTranslations.translate(earlyNextText, ctx.language, ctx.interfaceLanguage).catch(() => '')
             : null;
         // One utterance the engine refuses (a lone "*", an odd symbol) is
         // skipped; only a run of failures means there is no usable voice.
@@ -3515,7 +3593,7 @@ const Read = ({
         // The translation request runs while the sentence is being read
         // (or was already fetched while the previous sentence played).
         const translation = prefs.translateSentences
-            ? (prepared.translation || translateText({ query: text, source: ctx.language, target: ctx.interfaceLanguage }).catch(() => ''))
+            ? (prepared.translation || chapterTranslations.translate(text, ctx.language, ctx.interfaceLanguage).catch(() => ''))
             : null;
 
         let outcome = await player.speakSequence([{ text, ...listenVoiceFor(prefs, ctx.targetLocale) }]);
@@ -3865,6 +3943,14 @@ const Read = ({
                 </ReaderHeaderBar>
             ) : null}
 
+            {showPinnedTranslation ? (
+                <PinnedSentenceTranslation
+                    sentence={pinnedSentence}
+                    sourceLanguage={activeBookLanguage}
+                    targetLanguage={interfaceLanguage}
+                />
+            ) : null}
+
             <View style={styles.reader}>
                 {bookLoadState === 'error' ? (
                     <View style={styles.readerErrorState}>
@@ -4046,7 +4132,7 @@ const Read = ({
                     styles.lookupLayer,
                     shouldPlaceLookupAtTop ? styles.lookupLayerTop : styles.lookupLayerBottom,
                     shouldPlaceLookupAtTop
-                        ? { paddingTop: isFullscreen ? 0 : insets.top + spacing.xs + 52 }
+                        ? { paddingTop: isFullscreen ? 0 : insets.top + spacing.xs + 52 + pinnedTranslationOffset }
                         // Focus mode anchors the panel flush to the bottom edge; in
                         // regular reading the reader content already ends at the tab
                         // bar's top edge, so the panel sits flush against that. The

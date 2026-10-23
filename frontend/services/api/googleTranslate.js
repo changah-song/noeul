@@ -5,7 +5,7 @@ import {
 } from '../interfaceLanguage';
 import { api } from './client';
 
-const normalizeTranslationLanguageCode = (language, fallback) => {
+export const normalizeTranslationLanguageCode = (language, fallback) => {
   const raw = String(language || fallback || '').trim().toLowerCase().replace('_', '-');
 
   // Google Translate distinguishes scripts for Chinese; keep Traditional intact.
@@ -54,6 +54,27 @@ export const translateWithPinyin = async ({
     translatedText: response.data?.translatedText?.trim?.() ?? '',
     pinyin: response.data?.pinyin?.trim?.() ?? null,
   };
+};
+
+// Many sentences in one request (a chapter's worth, in chunks): returns a list
+// aligned to `texts`, null where a sentence couldn't be translated. The server
+// caches each sentence, so text already translated once costs nothing.
+export const translateSentences = async ({
+  texts = [],
+  source = 'ko',
+  target = 'en',
+  timeout = 45000,
+} = {}) => {
+  const response = await api.post('/translate_sentences/', {
+    texts,
+    source: normalizeTranslationLanguageCode(source, 'ko'),
+    target: normalizeTranslationLanguageCode(target, 'en'),
+  }, { timeout });
+  const translations = Array.isArray(response.data?.translations) ? response.data.translations : [];
+  return texts.map((_, index) => {
+    const value = translations[index];
+    return typeof value === 'string' && value.trim() ? value.trim() : null;
+  });
 };
 
 export const translateText = async (params = {}) => {
