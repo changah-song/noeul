@@ -7192,7 +7192,8 @@ export const lookupBookAnnotationSurfaces = (
                 dc.ipa,
                 dc.gloss,
                 dc.definition,
-                dc.interface_language
+                dc.interface_language,
+                dc.language
          FROM dictionary_cache dc
          JOIN book_index bi ON bi.stem_id = dc.id
          WHERE dc.language = ?

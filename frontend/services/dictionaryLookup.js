@@ -189,10 +189,10 @@ const liveEntryToCacheEntry = (
     traditional: normalizeBookLanguage(targetLanguage) === 'zh' ? nullableValue(entry?.traditional) : null,
     audio_us: normalizeBookLanguage(targetLanguage) === 'en' ? nullableValue(entry?.audio_us) : null,
     audio_uk: normalizeBookLanguage(targetLanguage) === 'en' ? nullableValue(entry?.audio_uk) : null,
-    etymology: normalizeBookLanguage(targetLanguage) === 'en' ? nullableValue(entry?.etymology) : null,
-    derived: normalizeBookLanguage(targetLanguage) === 'en' ? entry?.derived : null,
-    related: normalizeBookLanguage(targetLanguage) === 'en' ? entry?.related : null,
-    word_parts: normalizeBookLanguage(targetLanguage) === 'en' ? (entry?.word_parts ?? entry?.wordParts ?? null) : null,
+    etymology: null,
+    derived: null,
+    related: null,
+    word_parts: null,
     interfaceLanguage,
 });
 
@@ -207,7 +207,6 @@ const cacheEntryToDefinitionEntry = (entry, fallbackWord) => ({
     traditional: nullableValue(entry?.traditional),
     audio_us: nullableValue(entry?.audio_us),
     audio_uk: nullableValue(entry?.audio_uk),
-    wordParts: entry?.word_parts ?? entry?.wordParts ?? null,
     saved: false,
 });
 
@@ -224,7 +223,6 @@ const liveEntryToDefinitionEntry = (entry, fallbackWord, targetLanguage = getRun
     traditional: nullableValue(entry?.traditional),
     audio_us: nullableValue(entry?.audio_us),
     audio_uk: nullableValue(entry?.audio_uk),
-    wordParts: entry?.word_parts ?? entry?.wordParts ?? null,
     fallbackLanguage: nullableValue(entry?.fallback_language ?? entry?.fallbackLanguage),
     saved: false,
 });
@@ -273,6 +271,11 @@ const fetchLiveDictionary = async (
                 params: { stem, interface_language: normalizedInterfaceLanguage },
                 timeout: 10000,
             });
+            // Every entry of the word (bank: money, then river), most common first.
+            const resultList = response.data?.results;
+            if (Array.isArray(resultList)) {
+                return resultList;
+            }
             const result = response.data?.result;
             return result ? [result] : [];
         }));

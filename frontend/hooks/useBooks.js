@@ -180,9 +180,12 @@ const useBooks = ({
                 : await readEpubMetadata(uri, fallbackName);
             const { title, author, language, wordCount } = metadata;
             // Book-driven import: keep the book's own language when we can read it.
-            // metadata.language is already ko/zh/en or null (unknown / untagged, e.g.
-            // most PDFs) — fall back to the learner's current target for untagged books.
-            const taggedLanguage = normalizeBookLanguage(language, null);
+            // metadata.language is ko/zh/en, another language the text is written
+            // in ('ja'), or null (unknown / untagged, e.g. most PDFs) — fall back to
+            // the learner's current target for untagged books.
+            const taggedLanguage = language
+                ? (normalizeBookLanguage(language, null) ?? String(language))
+                : null;
             const detectedLanguage = taggedLanguage ?? activeTargetLanguage;
             if (!SUPPORTED_BOOK_LANGUAGES.includes(detectedLanguage)) {
                 Alert.alert(

@@ -32,7 +32,6 @@ import {
     resolveDictionaryLookup,
 } from '../../../services/dictionaryLookup';
 
-const ENGLISH_EDGE_RE = /^[^A-Za-z]+|[^A-Za-z]+$/g;
 const HANJA_RE = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/;
 const LATIN_RE = /[A-Za-z]/;
 const HANGUL_RE = /[\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]/;
@@ -47,6 +46,20 @@ const POS_KEYS = {
     Adjective: 'pos.adjective',
     Modifier: 'pos.modifier',
     Determiner: 'pos.determiner',
+    // English dictionary entries (en_learner.db) use lowercase names.
+    noun: 'pos.noun',
+    verb: 'pos.verb',
+    adverb: 'pos.adverb',
+    adjective: 'pos.adjective',
+    pronoun: 'pos.pronoun',
+    determiner: 'pos.determiner',
+    interjection: 'pos.interjection',
+    numeral: 'pos.numeral',
+    particle: 'pos.particle',
+    preposition: 'pos.preposition',
+    conjunction: 'pos.conjunction',
+    article: 'pos.article',
+    name: 'pos.noun',
     명사: 'pos.noun',
     동사: 'pos.verb',
     형용사: 'pos.adjective',
@@ -80,7 +93,6 @@ const cleanValue = (value) => {
 // (word, sentence) pair rather than per word.
 export const makeExplainCacheKey = (word, sentence) => `${cleanValue(sentence)}\u0000${cleanValue(word)}`;
 
-const normalizeEnglishSurfaceWord = (word) => cleanValue(word).replace(ENGLISH_EDGE_RE, '').toLowerCase();
 
 const hasSavableDefinition = (definition) => {
     const normalized = cleanValue(definition);
@@ -150,159 +162,8 @@ const dedupeZhReadings = (entries) => {
     });
     return readings;
 };
-const getEntryEtymology = (entry) => cleanValue(entry?.etymology);
 const getEntryAudioUs = (entry) => cleanValue(entry?.audio_us ?? entry?.audioUs);
 const getEntryAudioUk = (entry) => cleanValue(entry?.audio_uk ?? entry?.audioUk);
-const parseWordParts = (value) => {
-    if (!value) {
-        return null;
-    }
-
-    if (typeof value === 'string') {
-        try {
-            return parseWordParts(JSON.parse(value));
-        } catch {
-            return null;
-        }
-    }
-
-    if (Array.isArray(value)) {
-        return value.length > 0 ? { parts: value } : null;
-    }
-
-    if (typeof value === 'object' && Array.isArray(value.parts) && value.parts.length > 0) {
-        return value;
-    }
-
-    return null;
-};
-const getEntryWordParts = (entry) => parseWordParts(entry?.word_parts ?? entry?.wordParts);
-const mergeWordParts = (...values) => {
-    const parsedValues = values.map(parseWordParts).filter(Boolean);
-    if (parsedValues.length === 0) {
-        return null;
-    }
-
-    return parsedValues.slice(1).reduce((merged, current) => {
-        if (!merged.related_roots && current.related_roots) {
-            return { ...merged, related_roots: current.related_roots };
-        }
-        if (!merged.relatedRoots && current.relatedRoots) {
-            return { ...merged, relatedRoots: current.relatedRoots };
-        }
-        return merged;
-    }, parsedValues[0]);
-};
-const getMergedEntryWordParts = (...entries) => mergeWordParts(
-    ...entries.map((entry) => entry?.word_parts ?? entry?.wordParts)
-);
-const WORD_PART_TYPES_REQUIRING_MEANING = new Set(['prefix', 'suffix', 'bound_root', 'combining_form']);
-const HIDDEN_WORD_PART_CONFIDENCE = new Set(['low']);
-const VISIBLE_WORD_PART_CONFIDENCE = 'high';
-const VISIBLE_WORD_PART_SOURCE = 'curated_morpheme';
-const MAX_RENDERED_WORD_PARTS = 4;
-const MAX_WORD_PART_TEXT_LENGTH = 36;
-const MAX_WORD_PART_MEANING_LENGTH = 48;
-const MAX_RELATED_ROOT_GROUPS = 2;
-const MAX_RELATED_WORDS_PER_ROOT = 6;
-const MAX_ORIGIN_LENGTH = 130;
-const OPAQUE_WORD_PART_WORDS = new Set(['because', 'understand']);
-const ORIGIN_BLOCKLIST_RE = /Etymology tree|PIE word|Proto-|possibly|unknown|uncertain/i;
-const ORIGIN_START_RE = /^(From|Borrowed from|Inherited from|Equivalent to|By surface analysis|Compound of)\b/i;
-const getRenderableWordPartItems = (wordParts) => (
-    Array.isArray(wordParts?.parts)
-        ? wordParts.parts
-            .map((part) => ({
-                text: cleanValue(part?.display) || cleanValue(part?.text),
-                lookupText: cleanValue(part?.text) || cleanValue(part?.display),
-                type: cleanValue(part?.type),
-                meaning: cleanValue(part?.meaning),
-                note: cleanValue(part?.note),
-            }))
-            .filter(part => part.text)
-        : []
-);
-const hasExplainedRootParts = (parts) => (
-    parts.every((part) => (
-        !WORD_PART_TYPES_REQUIRING_MEANING.has(part.type) || !!part.meaning
-    ))
-);
-const hasCompactWordParts = (parts) => (
-    parts.length >= 2
-    && parts.length <= MAX_RENDERED_WORD_PARTS
-    && parts.every((part) => (
-        part.text.length <= MAX_WORD_PART_TEXT_LENGTH
-        && (!part.meaning || part.meaning.length <= MAX_WORD_PART_MEANING_LENGTH)
-        && (!part.note || part.note.length <= MAX_WORD_PART_MEANING_LENGTH)
-    ))
-);
-const isDrilldownWordPart = (part) => (
-    part?.type === 'base' && Boolean(normalizeEnglishSurfaceWord(part?.lookupText))
-);
-const hasRenderableWordParts = (wordParts, word = '') => {
-    if (OPAQUE_WORD_PART_WORDS.has(normalizeEnglishSurfaceWord(word))) {
-        return false;
-    }
-
-    if (HIDDEN_WORD_PART_CONFIDENCE.has(cleanValue(wordParts?.confidence).toLowerCase())) {
-        return false;
-    }
-
-    if (
-        cleanValue(wordParts?.confidence).toLowerCase() !== VISIBLE_WORD_PART_CONFIDENCE
-        || cleanValue(wordParts?.source) !== VISIBLE_WORD_PART_SOURCE
-    ) {
-        return false;
-    }
-
-    const parts = getRenderableWordPartItems(wordParts);
-    return hasCompactWordParts(parts) && hasExplainedRootParts(parts);
-};
-const getRenderableRelatedRootGroups = (wordParts, currentWord = '') => {
-    if (!hasRenderableWordParts(wordParts, currentWord)) {
-        return [];
-    }
-
-    const current = normalizeEnglishSurfaceWord(currentWord);
-    const groups = Array.isArray(wordParts?.related_roots)
-        ? wordParts.related_roots
-        : (Array.isArray(wordParts?.relatedRoots) ? wordParts.relatedRoots : []);
-
-    return groups
-        .map((group) => {
-            const root = cleanValue(group?.display) || cleanValue(group?.text);
-            const words = (Array.isArray(group?.words) ? group.words : [])
-                .map((entry) => ({
-                    word: normalizeEnglishSurfaceWord(entry?.word),
-                    definition: cleanValue(entry?.definition),
-                }))
-                .filter((entry) => entry.word && entry.word !== current)
-                .slice(0, MAX_RELATED_WORDS_PER_ROOT);
-
-            return {
-                root,
-                meaning: cleanValue(group?.meaning),
-                words,
-            };
-        })
-        .filter((group) => group.root && group.words.length > 0)
-        .slice(0, MAX_RELATED_ROOT_GROUPS);
-};
-const isSafeOrigin = (etymology, word = '') => {
-    if (OPAQUE_WORD_PART_WORDS.has(normalizeEnglishSurfaceWord(word))) {
-        return false;
-    }
-
-    const rawOrigin = cleanValue(etymology);
-    const origin = rawOrigin.replace(/\s+/g, ' ');
-    return Boolean(
-        origin
-        && origin.length <= MAX_ORIGIN_LENGTH
-        && !rawOrigin.includes('\n')
-        && !ORIGIN_BLOCKLIST_RE.test(origin)
-        && ORIGIN_START_RE.test(origin)
-    );
-};
 const isLikelyUntranslatedEnglishDefinition = (definition, interfaceLanguage) => {
     const text = cleanValue(definition);
 
@@ -373,41 +234,6 @@ const toSentenceCase = (value) => {
     return text ? text.charAt(0).toLocaleUpperCase() + text.slice(1) : text;
 };
 
-const getWordPartLabelKey = (type) => {
-    switch (cleanValue(type)) {
-        case 'prefix':
-            return 'lookup.wordPart.prefix';
-        case 'suffix':
-            return 'lookup.wordPart.suffix';
-        case 'base':
-            return 'lookup.wordPart.base';
-        case 'bound_root':
-            return 'lookup.wordPart.boundRoot';
-        case 'compound_component':
-            return 'lookup.wordPart.component';
-        case 'blend_component':
-            return 'lookup.wordPart.blendComponent';
-        case 'combining_form':
-            return 'lookup.wordPart.combiningForm';
-        default:
-            return 'lookup.wordPart.part';
-    }
-};
-
-const getWordPartsTitleKey = (parts) => {
-    const types = new Set((parts || []).map(part => cleanValue(part?.type)).filter(Boolean));
-    if (types.has('blend_component')) {
-        return 'lookup.wordBlend';
-    }
-    if (types.has('compound_component')) {
-        return 'lookup.wordComponents';
-    }
-    if (types.has('combining_form')) {
-        return 'lookup.combiningForms';
-    }
-    return 'lookup.wordAnatomy';
-};
-
 const uniqueEntriesByWord = (entries, excludedWord = '') => {
     const seen = new Set(cleanValue(excludedWord) ? [cleanValue(excludedWord)] : []);
 
@@ -471,6 +297,11 @@ const DictionaryContent = ({
     const isUsableCachedEntry = useCallback((entry) => {
         if ((!isEnglishBook && !isChineseBook) || interfaceLanguage === 'en') {
             return true;
+        }
+        // English entries keep their English senses; the learner's language
+        // is in the gloss (the Wiktionary equivalents).
+        if (isEnglishBook) {
+            return Boolean(getEntryDefinition(entry));
         }
 
         const definition = getEntryDefinition(entry);
@@ -901,13 +732,12 @@ const DictionaryContent = ({
                     params: { stem, interface_language: interfaceLanguage },
                     timeout: 10000,
                 });
-                const entry = response.data?.result;
-                if (entry) {
-                    setLiveEntryMeta(prev => ({ ...prev, [stem]: entry }));
+                const entries = response.data?.results ?? [];
+                if (entries[0]) {
+                    setLiveEntryMeta(prev => ({ ...prev, [stem]: entries[0] }));
                 }
+                setExtraDefs(prev => ({ ...prev, [stem]: entries.slice(1) }));
             } catch {
-                // Root-related links are optional; keep the expanded panel usable if enrichment fails.
-            } finally {
                 setExtraDefs(prev => ({ ...prev, [stem]: [] }));
             }
             return;
@@ -1008,12 +838,10 @@ const DictionaryContent = ({
             ? (liveEntryMeta[cachedEntry.stem] || firstLiveEntry || {})
             : {};
         const word = getEntryWord(entry, stem || lookupWord);
-        const wordParts = getMergedEntryWordParts(cachedEntry, liveMeta, firstLiveEntry);
 
         return {
             hanja: getEntryHanja(entry),
             word,
-            wordParts,
         };
     }, [activeLookupItem, liveEntryMeta, lookupWord]);
     const activeLookupHanja = activeLookupDetails.hanja;
@@ -1048,7 +876,8 @@ const DictionaryContent = ({
     }, [activeLookupItem]);
     const canExpandCurrentLookup = (
         (isKoreanBook && hasHanja(activeLookupHanja))
-        || (isEnglishBook && hasRenderableWordParts(activeLookupDetails.wordParts, activeLookupDetails.word))
+        // English: expanding lists the word's other entries (bank: the river one).
+        || (isEnglishBook && Boolean(activeLookupDetails.word))
         // Chinese: expanding loads the word's other pronunciations (heteronyms); the
         // collapsed panel already shows the primary reading from cache.
         || (isChineseBook && Boolean(activeLookupDetails.word))
@@ -1328,30 +1157,6 @@ const DictionaryContent = ({
     };
 
     const isWordSaved = (word) => savedWords.includes(word);
-
-    const handleWordPartPress = (part) => {
-        if (!isDrilldownWordPart(part)) {
-            return;
-        }
-
-        const nextWord = normalizeEnglishSurfaceWord(part.lookupText);
-        if (!nextWord || nextWord === normalizeEnglishSurfaceWord(lookupWord)) {
-            return;
-        }
-
-        setCurrentHanja(null);
-        setDrilldownStack(prev => [...prev, nextWord]);
-    };
-
-    const handleRelatedRootWordPress = (word) => {
-        const nextWord = normalizeEnglishSurfaceWord(word);
-        if (!nextWord || nextWord === normalizeEnglishSurfaceWord(lookupWord)) {
-            return;
-        }
-
-        setCurrentHanja(null);
-        setDrilldownStack(prev => [...prev, nextWord]);
-    };
 
     const goBackFromDrilldown = () => {
         setCurrentHanja(null);
@@ -1838,7 +1643,7 @@ const DictionaryContent = ({
                             [styles.entryWord, isChineseBook && styles.zhEntryWord, { color: palette.text }]
                         )}
                         {hanjaElement}
-                        {pronunciationText ? (
+                        {pronunciationText && !isEnglishBook ? (
                             <Text
                                 selectable
                                 style={[
@@ -1853,8 +1658,13 @@ const DictionaryContent = ({
                     </View>
                     {renderHeadwordChevron('next')}
                 </View>
-                {pronunciationControls ? (
+                {pronunciationControls || (isEnglishBook && pronunciationText) ? (
                     <View style={styles.entryMetaRow}>
+                        {isEnglishBook && pronunciationText ? (
+                            <Text selectable style={[styles.ipaText, { color: colors.textTertiary }]}>
+                                {pronunciationText}
+                            </Text>
+                        ) : null}
                         {pronunciationControls}
                     </View>
                 ) : null}
@@ -1900,9 +1710,20 @@ const DictionaryContent = ({
                                         {pinyin}
                                     </Text>
                                 ) : null}
-                                <Text selectable style={[styles.extraDefinition, { color: palette.secondaryText }]}>
-                                    {definition || t('lookup.noEnglishDefinition')}
-                                </Text>
+                                {isEnglishBook && (getEntryPos(entry) || getEntryGloss(entry)) ? (
+                                    <Text selectable style={[styles.extraMeta, { color: palette.mutedText }]}>
+                                        {[toSentenceCase(formatPos(getEntryPos(entry), t)), getEntryGloss(entry)]
+                                            .filter(Boolean)
+                                            .join(' · ')}
+                                    </Text>
+                                ) : null}
+                                {isEnglishBook && definition ? (
+                                    renderEnglishSenses(definition, styles.extraDefinition, palette.secondaryText)
+                                ) : (
+                                    <Text selectable style={[styles.extraDefinition, { color: palette.secondaryText }]}>
+                                        {definition || t('lookup.noEnglishDefinition')}
+                                    </Text>
+                                )}
                             </View>
                             {hasSavableDefinition(definition) ? (
                                 <TouchableOpacity
@@ -1935,159 +1756,6 @@ const DictionaryContent = ({
                     );
                 })}
             </ScrollView>
-        );
-    };
-
-    const renderWordParts = (wordParts, word) => {
-        const confidence = cleanValue(wordParts?.confidence);
-        const parts = getRenderableWordPartItems(wordParts);
-        const relatedRootGroups = getRenderableRelatedRootGroups(wordParts, word);
-
-        if (!isEnglishBook || !hasRenderableWordParts(wordParts, word)) {
-            return null;
-        }
-
-        return (
-            <View style={[styles.wordPartsSection, { borderTopColor: palette.border }]}>
-                <View style={styles.wordPartsHeader}>
-                    <Text style={[styles.wordPartsTitle, { color: palette.mutedText }]}>
-                        {t(getWordPartsTitleKey(parts))}
-                    </Text>
-                    {confidence === 'low' ? (
-                        <Text
-                            style={[
-                                styles.wordPartsConfidence,
-                                {
-                                    color: palette.mutedText,
-                                    borderColor: palette.border,
-                                    backgroundColor: palette.secondaryButtonBg,
-                                },
-                            ]}
-                        >
-                            {t('lookup.wordParts.inferred')}
-                        </Text>
-                    ) : null}
-                </View>
-                <View style={styles.wordPartsRow}>
-                    {parts.map((part, index) => {
-                        const canDrillDown = isDrilldownWordPart(part);
-                        const itemContent = (
-                            <>
-                                <View style={styles.wordPartTextRow}>
-                                    <Text selectable={!canDrillDown} style={[styles.wordPartText, { color: palette.text }]}>
-                                        {part.text}
-                                    </Text>
-                                    {canDrillDown ? (
-                                        <MaterialIcons name="chevron-right" size={14} color={palette.mutedText} />
-                                    ) : null}
-                                </View>
-                                <Text style={[styles.wordPartType, { color: palette.mutedText }]}>
-                                    {toSentenceCase(t(getWordPartLabelKey(part.type)))}
-                                </Text>
-                                {part.meaning || part.note ? (
-                                    <Text selectable style={[styles.wordPartMeaning, { color: palette.secondaryText }]}>
-                                        {part.meaning || part.note}
-                                    </Text>
-                                ) : null}
-                            </>
-                        );
-
-                        return (
-                            <React.Fragment key={`${part.text}-${part.type}-${index}`}>
-                                {index > 0 ? (
-                                    <Text style={[styles.wordPartJoiner, { color: palette.mutedText }]}>+</Text>
-                                ) : null}
-                                {canDrillDown ? (
-                                    <TouchableOpacity
-                                        accessibilityRole="button"
-                                        accessibilityLabel={t('lookup.openWordPart', { word: part.lookupText })}
-                                        activeOpacity={0.82}
-                                        onPress={() => handleWordPartPress(part)}
-                                        style={[
-                                            styles.wordPartItem,
-                                            styles.wordPartItemInteractive,
-                                            { borderColor: palette.border },
-                                        ]}
-                                    >
-                                        {itemContent}
-                                    </TouchableOpacity>
-                                ) : (
-                                    <View style={[styles.wordPartItem, { borderColor: palette.border }]}>
-                                        {itemContent}
-                                    </View>
-                                )}
-                            </React.Fragment>
-                        );
-                    })}
-                </View>
-                {relatedRootGroups.length > 0 ? (
-                    <View style={[styles.relatedRootsSection, { borderTopColor: palette.border }]}>
-                        <Text style={[styles.relatedRootsTitle, { color: palette.mutedText }]}>
-                            {t('lookup.relatedRoots')}
-                        </Text>
-                        {relatedRootGroups.map((group) => (
-                            <View key={group.root} style={styles.relatedRootGroup}>
-                                <View style={styles.relatedRootHeader}>
-                                    <Text selectable style={[styles.relatedRootName, { color: palette.text }]}>
-                                        {group.root}
-                                    </Text>
-                                    {group.meaning ? (
-                                        <Text
-                                            selectable
-                                            style={[styles.relatedRootMeaning, { color: palette.secondaryText }]}
-                                            numberOfLines={1}
-                                        >
-                                            {group.meaning}
-                                        </Text>
-                                    ) : null}
-                                </View>
-                                <View style={styles.relatedWordRow}>
-                                    {group.words.map((entry) => (
-                                        <TouchableOpacity
-                                            key={`${group.root}-${entry.word}`}
-                                            accessibilityRole="button"
-                                            accessibilityLabel={t('lookup.openRelatedWord', { word: entry.word })}
-                                            activeOpacity={0.82}
-                                            onPress={() => handleRelatedRootWordPress(entry.word)}
-                                            style={[styles.relatedWordChip, { borderColor: palette.border }]}
-                                        >
-                                            <Text style={[styles.relatedWordText, { color: palette.text }]}>
-                                                {entry.word}
-                                            </Text>
-                                            {entry.definition ? (
-                                                <Text
-                                                    style={[styles.relatedWordDefinition, { color: palette.secondaryText }]}
-                                                    numberOfLines={1}
-                                                >
-                                                    {entry.definition}
-                                                </Text>
-                                            ) : null}
-                                        </TouchableOpacity>
-                                    ))}
-                                </View>
-                            </View>
-                        ))}
-                    </View>
-                ) : null}
-            </View>
-        );
-    };
-
-    const renderOrigin = (etymology, word) => {
-        const origin = cleanValue(etymology).replace(/\s+/g, ' ');
-        if (!isEnglishBook || !isSafeOrigin(etymology, word)) {
-            return null;
-        }
-
-        return (
-            <View style={[styles.originSection, { borderTopColor: palette.border }]}>
-                <Text style={[styles.originTitle, { color: palette.mutedText }]}>
-                    {t('lookup.origin')}
-                </Text>
-                <Text selectable style={[styles.originText, { color: palette.secondaryText }]}>
-                    {origin}
-                </Text>
-            </View>
         );
     };
 
@@ -2421,8 +2089,6 @@ const DictionaryContent = ({
         traditional,
         audioUs,
         audioUk,
-        etymology,
-        wordParts,
         showMore,
         showLess,
         onMore,
@@ -2488,12 +2154,32 @@ const DictionaryContent = ({
                             {isPanelExpanded ? renderChineseCharacterBreakdown(cleanValue(word)) : null}
                         </View>
                     ) : (
+                    isEnglishBook ? (
+                        <>
+                            <View style={[styles.definitionRow, !posLabel && styles.definitionRowSolo]}>
+                                {posLabel ? (
+                                    <View style={[styles.posBadge, { borderColor: colors.border }]}>
+                                        <Text style={[styles.posBadgeText, { color: colors.textMuted }]}>
+                                            {posLabel}
+                                        </Text>
+                                    </View>
+                                ) : null}
+                                {gloss ? (
+                                    <Text selectable style={[styles.definitionText, { color: palette.text }]}>
+                                        {gloss}
+                                    </Text>
+                                ) : null}
+                            </View>
+                            {definition ? renderEnglishSenses(definition) : (
+                                <Text selectable style={[styles.emptyDefinition, { color: palette.emptyText }]}>
+                                    {t('lookup.noDictionaryEntry')}
+                                </Text>
+                            )}
+                            {renderInlineTranslation()}
+                            {isPanelExpanded && showLess ? renderExtraDefinitions(extraEntries) : null}
+                        </>
+                    ) : (
                     <>
-                        {isPanelExpanded && isEnglishBook && gloss ? (
-                            <Text selectable style={[styles.glossText, { color: palette.text }]}>
-                                {gloss}
-                            </Text>
-                        ) : null}
                         <View style={[styles.definitionRow, !posLabel && styles.definitionRowSolo]}>
                             {posLabel ? (
                                 <View style={[styles.posBadge, { borderColor: colors.border }]}>
@@ -2513,12 +2199,32 @@ const DictionaryContent = ({
                             )}
                         </View>
                         {renderInlineTranslation()}
-                        {isPanelExpanded && isEnglishBook ? renderWordParts(wordParts, word) : null}
-                        {isPanelExpanded && isEnglishBook && !hasRenderableWordParts(wordParts, word) ? renderOrigin(etymology, word) : null}
                         {isPanelExpanded && showLess ? renderExtraDefinitions(extraEntries) : null}
                     </>
-                    )
+                    ))
                 )}
+            </View>
+        );
+    };
+
+    // An English entry's senses arrive one per line; numbered when there are
+    // several, like a learner's dictionary.
+    const renderEnglishSenses = (definition, style = styles.englishSenseText, color = palette.secondaryText) => {
+        const senses = String(definition).split('\n').map(cleanValue).filter(Boolean);
+        if (senses.length <= 1) {
+            return (
+                <Text selectable style={[style, { color }]}>
+                    {senses[0] || definition}
+                </Text>
+            );
+        }
+        return (
+            <View style={styles.englishSenses}>
+                {senses.map((sense, index) => (
+                    <Text key={`${index}-${sense}`} selectable style={[style, { color }]}>
+                        {`${index + 1}. ${sense}`}
+                    </Text>
+                ))}
             </View>
         );
     };
@@ -2645,8 +2351,6 @@ const DictionaryContent = ({
                     traditional: getEntryTraditional(cachedEntry) || getEntryTraditional(liveMeta),
                     audioUs: getEntryAudioUs(cachedEntry) || getEntryAudioUs(liveMeta),
                     audioUk: getEntryAudioUk(cachedEntry) || getEntryAudioUk(liveMeta),
-                    etymology: getEntryEtymology(cachedEntry) || getEntryEtymology(liveMeta),
-                    wordParts: getMergedEntryWordParts(cachedEntry, liveMeta),
                     showMore,
                     showLess,
                     onMore: () => setExpandedCached(prev => ({ ...prev, [cachedEntry.stem]: true })),
@@ -2699,8 +2403,6 @@ const DictionaryContent = ({
                 traditional: getEntryTraditional(first),
                 audioUs: getEntryAudioUs(first),
                 audioUk: getEntryAudioUk(first),
-                etymology: getEntryEtymology(first),
-                wordParts: getEntryWordParts(first),
                 showMore: extraEntries.length > 0 && !isExpanded,
                 showLess: extraEntries.length > 0 && isExpanded,
                 onMore: () => setExpandedWords(prev => [...prev, word]),
@@ -2720,8 +2422,6 @@ const DictionaryContent = ({
                 pinyin: '',
                 audioUs: '',
                 audioUk: '',
-                etymology: '',
-                wordParts: null,
                 showMore: false,
                 showLess: false,
                 separated: false,
@@ -2839,6 +2539,14 @@ const createStyles = (colors) => StyleSheet.create({
         lineHeight: 20,
         marginTop: 0,
         textAlign: 'left',
+    },
+    // Upright: IPA symbols (ˈ ɛ ɹ) fall back to another font, and Android
+    // measures an italic fallback run too narrow and clips it.
+    ipaText: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 14,
+        lineHeight: 20,
+        marginRight: 4,
     },
     entryMetaRow: {
         flexDirection: 'row',
@@ -3009,14 +2717,6 @@ const createStyles = (colors) => StyleSheet.create({
     },
     definitionRowSolo: {
         justifyContent: 'center',
-    },
-    glossText: {
-        fontFamily: fontFamilies.sans,
-        fontSize: 18,
-        lineHeight: 23,
-        fontWeight: '600',
-        marginBottom: spacing.xs,
-        letterSpacing: 0,
     },
     // --- Chinese readings body ---
     // Keep the characters intact (never break between them) so the pinyin, not the
@@ -3270,130 +2970,6 @@ const createStyles = (colors) => StyleSheet.create({
     aiSaveLabel: {
         fontSize: 13,
     },
-    originSection: {
-        gap: 6,
-        paddingTop: spacing.sm,
-        marginTop: spacing.xs,
-        borderTopWidth: StyleSheet.hairlineWidth,
-    },
-    originTitle: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 13,
-        lineHeight: 17,
-        letterSpacing: 0,
-        textAlign: 'center',
-    },
-    originText: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 12,
-        lineHeight: 17,
-        letterSpacing: 0,
-        textAlign: 'center',
-    },
-    wordPartsSection: {
-        gap: 8,
-        paddingTop: spacing.sm,
-        marginTop: spacing.xs,
-        borderTopWidth: StyleSheet.hairlineWidth,
-    },
-    wordPartsHeader: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 6,
-    },
-    wordPartsTitle: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 13,
-        lineHeight: 17,
-        letterSpacing: 0,
-        textAlign: 'center',
-    },
-    wordPartsConfidence: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 10,
-        lineHeight: 12,
-        letterSpacing: 0,
-        textAlign: 'center',
-        borderWidth: StyleSheet.hairlineWidth,
-        borderRadius: 5,
-        paddingHorizontal: 5,
-        paddingVertical: 2,
-        overflow: 'hidden',
-    },
-    wordPartsRow: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 6,
-    },
-    relatedRootsSection: {
-        gap: 8,
-        paddingTop: spacing.sm,
-        marginTop: spacing.xs,
-        borderTopWidth: StyleSheet.hairlineWidth,
-    },
-    relatedRootsTitle: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 13,
-        lineHeight: 17,
-        letterSpacing: 0,
-        textAlign: 'center',
-    },
-    relatedRootGroup: {
-        gap: 6,
-    },
-    relatedRootHeader: {
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 2,
-    },
-    relatedRootName: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 13,
-        lineHeight: 17,
-        letterSpacing: 0,
-    },
-    relatedRootMeaning: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 11,
-        lineHeight: 14,
-        letterSpacing: 0,
-        textAlign: 'center',
-        maxWidth: 220,
-    },
-    relatedWordRow: {
-        flexDirection: 'row',
-        flexWrap: 'wrap',
-        justifyContent: 'center',
-        gap: 6,
-    },
-    relatedWordChip: {
-        minWidth: 82,
-        maxWidth: 146,
-        borderWidth: StyleSheet.hairlineWidth,
-        borderRadius: 6,
-        paddingHorizontal: 8,
-        paddingVertical: 6,
-        gap: 2,
-        alignItems: 'center',
-    },
-    relatedWordText: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 12,
-        lineHeight: 16,
-        letterSpacing: 0,
-        textAlign: 'center',
-    },
-    relatedWordDefinition: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 10,
-        lineHeight: 13,
-        letterSpacing: 0,
-        textAlign: 'center',
-    },
     drilldownBackRow: {
         alignSelf: 'center',
         flexDirection: 'row',
@@ -3412,50 +2988,17 @@ const createStyles = (colors) => StyleSheet.create({
         lineHeight: 14,
         letterSpacing: 0,
     },
-    wordPartJoiner: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 13,
-        lineHeight: 18,
+    englishSenses: {
+        alignSelf: 'stretch',
+        gap: 4,
+        marginTop: spacing.xs,
     },
-    wordPartItem: {
-        minWidth: 68,
-        maxWidth: 145,
-        borderWidth: StyleSheet.hairlineWidth,
-        borderRadius: 6,
-        paddingHorizontal: 8,
-        paddingVertical: 6,
-        alignItems: 'center',
-        gap: 2,
-    },
-    wordPartItemInteractive: {
-        paddingRight: 5,
-    },
-    wordPartTextRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 2,
-    },
-    wordPartText: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 14,
-        lineHeight: 18,
-        letterSpacing: 0,
-        textAlign: 'center',
-    },
-    wordPartType: {
-        fontFamily: fontFamilies.sans,
-        fontSize: 11,
-        lineHeight: 13,
-        letterSpacing: 0,
-        textAlign: 'center',
-    },
-    wordPartMeaning: {
+    englishSenseText: {
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 11,
-        lineHeight: 14,
+        fontSize: 15,
+        lineHeight: 21,
         letterSpacing: 0,
-        textAlign: 'center',
+        textAlign: 'left',
     },
     emptyDefinition: {
         ...textStyles.body,

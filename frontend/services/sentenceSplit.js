@@ -16,6 +16,28 @@ const CLOSING_DELIMITERS = new Set([
 ]);
 
 const isDigit = (char) => char >= '0' && char <= '9';
+const isAsciiLetter = (char) => (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z');
+
+// English titles and abbreviations whose period doesn't end a sentence
+// ("Mr. Darcy", "e.g. this").
+const ABBREVIATIONS = new Set(['mr', 'mrs', 'ms', 'dr', 'st', 'sr', 'jr', 'prof', 'rev', 'hon', 'capt', 'col', 'gen', 'lt', 'sgt', 'mt', 'vs', 'e.g', 'i.e', 'cf', 'fig', 'no', 'vol', 'approx']);
+
+// A period inside a word (e.g., U.S.), after a known abbreviation, or after a
+// single capital initial (J. K. Rowling).
+const isAbbreviationPeriod = (text, index) => {
+    if (index + 1 < text.length && isAsciiLetter(text[index + 1])) return true;
+    // An English sentence starts with a capital; "the U.S. now" goes on.
+    let next = index + 1;
+    while (next < text.length && text[next] === ' ') next += 1;
+    if (next > index + 1 && next < text.length && text[next] >= 'a' && text[next] <= 'z') return true;
+    let start = index;
+    while (start > 0 && (isAsciiLetter(text[start - 1]) || text[start - 1] === '.')) start -= 1;
+    const word = text.slice(start, index);
+    if (!word) return false;
+    if (ABBREVIATIONS.has(word.toLowerCase())) return true;
+    // "I" is a word, not an initial ("and so did I.").
+    return word.length === 1 && word === word.toUpperCase() && word !== 'I' && (start === 0 || text[start - 1] === ' ');
+};
 
 const skipLeadingSpace = (text, start) => {
     let i = start;
@@ -39,6 +61,10 @@ export const splitSentences = (text) => {
         } else if (TERMINAL_PUNCTUATION.has(c)) {
             // A period between digits is a decimal point (3.14), not an end.
             if (c === '.' && i > 0 && isDigit(text[i - 1]) && i + 1 < text.length && isDigit(text[i + 1])) {
+                i += 1;
+                continue;
+            }
+            if (c === '.' && isAbbreviationPeriod(text, i)) {
                 i += 1;
                 continue;
             }

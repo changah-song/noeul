@@ -3,6 +3,37 @@
 *Brainstorm, 2026-10-21. Adding English as a language to learn, mainly for
 Korean and Chinese speakers. Paths are relative to the repo root.*
 
+## Status (2026-10-23, branch `feat/english-target`)
+
+Decisions: Korean speakers first, then every other app language; single
+words only (phrasal verbs and idioms later); no word-roots or etymology
+layer — a lookup is the word, its definition and the learner's-language
+equivalents.
+
+Done:
+- `backend/en_learner.db` (19 MB, committed; built by
+  `backend/scripts/build_en_learner_dict.py` from Wiktionary + wordfreq):
+  28k words, up to four entries each, three everyday senses per entry,
+  human-written equivalents in all 13 other app languages (Korean for 9.7k
+  words), spelling-variant aliases. Covers 99.4% of the single-word CEFR list.
+- `/en_dict_search/` returns every entry; `/preprocess_chapter_en/` keeps
+  definitions and glosses for every app language; words without an
+  equivalent get a cached machine translation of the headword. Old
+  word-parts / etymology code removed. Tokenizer keeps common verbs.
+- App: English selectable (onboarding, profile, Write); English learners fall
+  back to a Korean UI; lookup panel shows POS + equivalents, then numbered
+  English senses, IPA and US/UK audio; under-word glosses are the
+  equivalents; import checks the text's script over the EPUB tag; taps keep
+  don't / well-known / café whole; sentence splitting handles Mr. / e.g. /
+  initials / U.S. (needs a native rebuild).
+- The remote public library already serves ~20 English classics.
+
+Still to do: English word frequency in the difficulty model, an English
+word check and vocabulary grid, confirm the CEFR list's license, the
+illustrated Alice EPUB (26 MB of SVGs) stalls the reader, and the
+production translation provider is failing (machine-translated glosses and
+sentence translations).
+
 ## Recommendation / first step
 
 - **English was half-built once and then hidden.** PR #18 ("English target
