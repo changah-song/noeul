@@ -5,6 +5,7 @@ import pytest
 from zh_tokens import (
     ZH_LOOKUP_CONTENT_POS_PREFIXES,
     ZH_LOOKUP_MULTI_CHAR_ONLY_POS_PREFIXES,
+    compound_index_plan,
     expand_unknown_compounds,
     is_zh_lookup_token,
     split_into_known_parts,
@@ -119,3 +120,32 @@ def test_expand_unknown_compounds_only_touches_words_missing_from_the_dictionary
     assert "人" not in expansions
     # compounds with no recoverable part are omitted rather than mapped to []
     assert "XY" not in expansions
+
+
+# jieba's own tags for the fake parts (word_tag_tab); None = untagged.
+FAKE_TAGS = {"脸": "n", "涨红": "v", "了": "ul", "的": "uj", "额": "n", "上": "f",
+             "十二": "m", "岁": "q", "年": "m"}
+
+
+def test_fully_covered_unknown_compound_indexes_only_its_content_parts():
+    whole, parts = compound_index_plan("涨红了脸", "n", ["涨红", "了", "脸"], FAKE_TAGS.get)
+    assert whole is False
+    assert parts == ["涨红", "脸"]
+    whole, parts = compound_index_plan("额上的", "nr", ["额", "上", "的"], FAKE_TAGS.get)
+    assert (whole, parts) == (False, ["额", "上"])
+
+
+def test_numeral_compound_keeps_the_counted_word_not_the_number():
+    whole, parts = compound_index_plan("十二岁", "m", ["十二", "岁"], FAKE_TAGS.get)
+    assert (whole, parts) == (False, ["岁"])
+
+
+def test_compound_with_uncovered_characters_is_kept():
+    # 咖 is in no dictionary word here, so the compound stays tappable whole.
+    whole, parts = compound_index_plan("咖脸", "n", ["脸"], FAKE_TAGS.get)
+    assert whole is True
+    assert parts == ["脸"]
+
+
+def test_untagged_part_counts_as_content():
+    assert compound_index_plan("鲁镇", "ns", ["鲁", "镇"], lambda part: None) == (False, ["鲁", "镇"])
