@@ -191,3 +191,13 @@ def test_missing_senses_are_translated_and_english_never_mixes_in(monkeypatch, b
     # Nothing translated: English, labelled so the app doesn't cache it as Vietnamese.
     assert out["definition"] == "C."
     assert out["interface_language"] == "en" and out["fallback_language"] == "en"
+
+
+def test_these_and_those_show_their_singular_determiner():
+    if not en_learner_dict.is_installed():
+        pytest.skip("en_learner.db not built")
+    entries = en_learner_dict.lookup_entries(["these", "those"], "en")
+    assert entries["these"][0]["word"] == "this"
+    assert entries["those"][0]["word"] == "that"
+    assert entries["those"][0]["pos"] == "determiner"
+

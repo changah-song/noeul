@@ -45,6 +45,10 @@ def _json_list(raw) -> list[str]:
     return [str(item) for item in value if item] if isinstance(value, list) else []
 
 
+# Aliased words that only stand for one part of speech of their headword.
+ALIAS_PREFERRED_POS = {"these": "determiner", "those": "determiner"}
+
+
 def resolve_aliases(words: list[str]) -> dict[str, str]:
     """word -> the headword to look up: itself, or its main spelling
     (apologise -> apologize) when only that has an entry."""
@@ -137,6 +141,10 @@ def lookup_entries(
         entries = entries_by_word.get(headword_of[stem])
         if not entries:
             continue
+        preferred_pos = ALIAS_PREFERRED_POS.get(stem)
+        if preferred_pos:
+            # "those" is the determiner "that", not its conjunction.
+            entries = sorted(entries, key=lambda entry: entry.get("pos") != preferred_pos)
         limited = entries[:max_entries] if max_entries else entries
         out[stem] = [
             {**entry, "stem": stem, "language": "en", "interface_language": interface_language}

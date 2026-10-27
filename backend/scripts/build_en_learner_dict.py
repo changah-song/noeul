@@ -50,6 +50,9 @@ DEFAULT_OUT = os.path.join(BACKEND_DIR, "en_learner.db")
 DEFAULT_LEVELS_DB = os.path.join(BACKEND_DIR, "proficiency_levels.db")
 
 MAX_ENTRIES = 4
+# Plural determiners Wiktionary files only as forms of their singular (so they
+# have no entry of their own): a tap on "these" shows "this".
+EXTRA_ALIASES = {"these": "this", "those": "that"}
 MAX_SENSES = 3
 MAX_EQUIVALENTS = 4
 # Translation groups (one per meaning) an entry's equivalents may come from.
@@ -328,6 +331,7 @@ def build(src: str, out: str, levels_db: str, top: int) -> None:
         """
     )
     conn.executemany("INSERT OR IGNORE INTO en_sense_translations VALUES (?, ?, ?)", kept_translations)
+    aliases = {**EXTRA_ALIASES, **aliases}
     alias_rows = [(word, target) for word, target in sorted(aliases.items())
                   if target in collected and word not in collected]
     conn.executemany("INSERT INTO en_aliases VALUES (?, ?)", alias_rows)
