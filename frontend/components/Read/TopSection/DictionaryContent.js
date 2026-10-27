@@ -79,6 +79,18 @@ const POS_KEYS = {
     '품사 없음': '',
 };
 
+// The first sense of an English definition, cut to its first clause: what the
+// panel shows when a word has no short equivalent in the learner's language.
+const SHORT_SENSE_MAX = 60;
+const shortEnglishSense = (definition) => {
+    const first = String(definition || '').split('\n').map((line) => line.trim()).find(Boolean) || '';
+    const clause = first.split(/[;；]/)[0].replace(/\s*\([^)]*\)\s*/g, ' ').replace(/\s+/g, ' ').trim();
+    if (clause.length <= SHORT_SENSE_MAX) return clause;
+    const cut = clause.slice(0, SHORT_SENSE_MAX);
+    const lastBreak = Math.max(cut.lastIndexOf(','), cut.lastIndexOf('，'), cut.lastIndexOf(' '));
+    return `${(lastBreak > 20 ? cut.slice(0, lastBreak) : cut).trim()}…`;
+};
+
 const cleanValue = (value) => {
     if (typeof value !== 'string') {
         return '';
@@ -1630,33 +1642,7 @@ const DictionaryContent = ({
                             {isPanelExpanded ? renderChineseCharacterBreakdown(cleanValue(word)) : null}
                         </View>
                     ) : (
-                    isEnglishBook ? (
-                        <>
-                            <View style={[styles.definitionRow, !posLabel && styles.definitionRowSolo]}>
-                                {posLabel ? (
-                                    <View style={[styles.posBadge, { borderColor: colors.border }]}>
-                                        <Text style={[styles.posBadgeText, { color: colors.textMuted }]}>
-                                            {posLabel}
-                                        </Text>
-                                    </View>
-                                ) : null}
-                                {gloss ? (
-                                    <Text selectable style={[styles.definitionText, { color: palette.text }]}>
-                                        {gloss}
-                                    </Text>
-                                ) : null}
-                            </View>
-                            {definition ? renderEnglishSenses(definition) : (
-                                // A name is complete with its transliteration.
-                                cleanValue(pos) === 'name' && gloss ? null : (
-                                    <Text selectable style={[styles.emptyDefinition, { color: palette.emptyText }]}>
-                                        {t('lookup.noDictionaryEntry')}
-                                    </Text>
-                                )
-                            )}
-                            {isPanelExpanded && showLess ? renderExtraDefinitions(extraEntries) : null}
-                        </>
-                    ) : (
+                    isEnglishBook ? renderEnglishBody({ definition, gloss, pos, posLabel, showLess, extraEntries }) : (
                     <>
                         <View style={[styles.definitionRow, !posLabel && styles.definitionRowSolo]}>
                             {posLabel ? (
@@ -1680,6 +1666,58 @@ const DictionaryContent = ({
                     </>
                     ))}
             </View>
+        );
+    };
+
+    // English: the short meaning first (the learner-language equivalents, or
+    // the first sense cut to its first clause). The full senses and the word's
+    // other entries wait behind "More meanings" (the expanded panel).
+    const renderEnglishBody = ({ definition, gloss, pos, posLabel, showLess, extraEntries }) => {
+        const shortMeaning = cleanValue(gloss) || shortEnglishSense(definition);
+        const isName = cleanValue(pos) === 'name';
+        const hasMore = !isName && (
+            (Boolean(cleanValue(definition)) && cleanValue(definition) !== shortMeaning)
+            || (Array.isArray(extraEntries) && extraEntries.length > 0)
+        );
+        return (
+            <>
+                <View style={[styles.definitionRow, !posLabel && styles.definitionRowSolo]}>
+                    {posLabel ? (
+                        <View style={[styles.posBadge, { borderColor: colors.border }]}>
+                            <Text style={[styles.posBadgeText, { color: colors.textMuted }]}>
+                                {posLabel}
+                            </Text>
+                        </View>
+                    ) : null}
+                    {shortMeaning ? (
+                        <Text selectable style={[styles.definitionText, { color: palette.text }]}>
+                            {shortMeaning}
+                        </Text>
+                    ) : (
+                        <Text selectable style={[styles.emptyDefinition, { color: palette.emptyText }]}>
+                            {t('lookup.noDictionaryEntry')}
+                        </Text>
+                    )}
+                </View>
+                {isPanelExpanded ? (
+                    <>
+                        {definition ? renderEnglishSenses(definition) : null}
+                        {showLess ? renderExtraDefinitions(extraEntries) : null}
+                    </>
+                ) : hasMore ? (
+                    <TouchableOpacity
+                        onPress={() => onRequestExpand?.()}
+                        style={styles.moreMeaningsButton}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        accessibilityRole="button"
+                    >
+                        <Text style={[styles.moreMeaningsText, { color: palette.mutedText }]}>
+                            {t('lookup.moreMeanings')}
+                        </Text>
+                        <MaterialIcons name="expand-more" size={16} color={palette.mutedText} />
+                    </TouchableOpacity>
+                ) : null}
+            </>
         );
     };
 
@@ -2057,6 +2095,18 @@ const createStyles = (colors) => StyleSheet.create({
         gap: 2,
         paddingTop: 0,
         marginRight: -4,
+    },
+    moreMeaningsButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        alignSelf: 'center',
+        gap: 2,
+        marginTop: 2,
+    },
+    moreMeaningsText: {
+        fontFamily: fontFamilies.sansMedium,
+        fontSize: 13,
+        lineHeight: 18,
     },
     saveIconButton: {
         width: 36,
