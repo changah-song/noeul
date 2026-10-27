@@ -26,8 +26,8 @@ const koreanBooks = CATALOG.split(/\n  \{\n/).slice(1)
 const read = (file) => fs.readFileSync(path.join(BOOKS_DIR, file), 'utf8');
 
 describe('bundled Korean public-domain texts', () => {
-  it('covers all 22 Korean books', () => {
-    expect(koreanBooks).toHaveLength(22);
+  it('covers all 24 Korean books', () => {
+    expect(koreanBooks).toHaveLength(24);
   });
 
   it.each(koreanBooks.map((book) => [book.file, book]))('%s is one line per paragraph', (file, book) => {

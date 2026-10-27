@@ -99,6 +99,37 @@ const normalizeParagraphs = (text) => normalizeText(text)
     .trim())
   .filter(Boolean);
 
+// A collection marks each piece with a "# Title" paragraph: every piece starts
+// its own chapter under that title. Text without markers is one section.
+const CHAPTER_MARKER = /^#\s+/;
+
+const splitIntoSections = (paragraphs) => {
+  const sections = [];
+  let current = { title: null, paragraphs: [] };
+  paragraphs.forEach((paragraph) => {
+    if (CHAPTER_MARKER.test(paragraph)) {
+      if (current.title || current.paragraphs.length > 0) sections.push(current);
+      current = { title: paragraph.replace(CHAPTER_MARKER, '').trim(), paragraphs: [] };
+      return;
+    }
+    current.paragraphs.push(paragraph);
+  });
+  if (current.title || current.paragraphs.length > 0) sections.push(current);
+  return sections;
+};
+
+// Chapters: each section, split further when it runs past MAX_CHAPTER_CHARS.
+// The first chapter of a titled section carries the title.
+export const splitTextIntoChapters = (text) => {
+  const chapters = [];
+  splitIntoSections(normalizeParagraphs(text)).forEach((section) => {
+    splitParagraphsIntoChapters(section.paragraphs).forEach((paragraphs, index) => {
+      chapters.push({ title: index === 0 ? section.title : null, paragraphs });
+    });
+  });
+  return chapters.length > 0 ? chapters : [{ title: null, paragraphs: [] }];
+};
+
 const splitParagraphsIntoChapters = (paragraphs) => {
   const chapters = [];
   let current = [];
@@ -134,6 +165,22 @@ const textBlockForParagraph = (paragraph, chapterIndex, paragraphIndex) => ({
   spans: [{ text: paragraph }],
 });
 
+const sectionHeadingBlock = (title, chapterIndex) => {
+  const text = normalizeDisplayText(title);
+  return {
+    id: `txt-${chapterIndex}-section`,
+    type: 'text',
+    tag: 'h2',
+    attrs: {},
+    styleTokens: {
+      textAlign: 'center',
+      marginBottom: 14,
+    },
+    text,
+    spans: [{ text }],
+  };
+};
+
 const headingBlockForChapter = (book, chapterIndex) => {
   if (chapterIndex > 0) {
     return null;
@@ -157,19 +204,21 @@ const headingBlockForChapter = (book, chapterIndex) => {
   };
 };
 
-const buildChapterBlocks = (book, chapterParagraphs, chapterIndex) => [
+const buildChapterBlocks = (book, chapter, chapterIndex) => [
   headingBlockForChapter(book, chapterIndex),
-  ...chapterParagraphs.map((paragraph, paragraphIndex) => (
+  chapter?.title ? sectionHeadingBlock(chapter.title, chapterIndex) : null,
+  ...(chapter?.paragraphs ?? []).map((paragraph, paragraphIndex) => (
     textBlockForParagraph(paragraph, chapterIndex, paragraphIndex)
   )),
 ].filter(Boolean);
 
-const spineItemForChapter = (book, chapterIndex) => ({
+const spineItemForChapter = (book, chapter, chapterIndex) => ({
   index: chapterIndex,
   idref: `${book.id}-chapter-${chapterIndex}`,
   href: `chapter-${chapterIndex + 1}.txt`,
   path: `${book.id}/chapter-${chapterIndex + 1}.txt`,
-  title: chapterIndex === 0 ? book.title : `${book.title} ${chapterIndex + 1}`,
+  title: chapter?.title
+    || (chapterIndex === 0 ? book.title : `${book.title} ${chapterIndex + 1}`),
   mediaType: 'text/plain',
   linear: 'yes',
 });
@@ -181,9 +230,8 @@ export const readPublicDomainTextPackage = async (uri, options = {}) => {
   }
 
   const text = await readAssetText(book.textAsset);
-  const paragraphs = normalizeParagraphs(text);
-  const chapterParagraphs = splitParagraphsIntoChapters(paragraphs);
-  const spine = chapterParagraphs.map((_, index) => spineItemForChapter(book, index));
+  const chapters = splitTextIntoChapters(text);
+  const spine = chapters.map((chapter, index) => spineItemForChapter(book, chapter, index));
   const requestedSpineIndex = Number.isInteger(options?.spineIndex)
     ? options.spineIndex
     : 0;
@@ -194,7 +242,7 @@ export const readPublicDomainTextPackage = async (uri, options = {}) => {
   const loadedSpineItem = spine[currentSpineIndex] ?? spine[0];
   const loadedChapterBlocks = buildChapterBlocks(
     book,
-    chapterParagraphs[currentSpineIndex] ?? [],
+    chapters[currentSpineIndex],
     currentSpineIndex
   );
 
