@@ -2302,11 +2302,20 @@ class EpubPageView(context: Context) : View(context) {
 
     for (line in startLine..endLine) {
       val lineStart = max(safeStart, layout.getLineStart(line))
-      val lineEnd = min(safeEnd, layout.getLineEnd(line))
+      val visibleLineEnd = layout.getLineVisibleEnd(line)
+      val lineEnd = min(safeEnd, visibleLineEnd)
       if (lineStart >= lineEnd) continue
 
       val startX = layout.getPrimaryHorizontal(lineStart)
-      val endX = layout.getPrimaryHorizontal(lineEnd)
+      // A word that wraps (Chinese breaks between any two characters) ends
+      // this line's part at the line break, and the x of that offset is the
+      // start of the NEXT line: the underline ran from the margin under the
+      // whole line. Take the line's right edge instead, as the annotations do.
+      val endX = if (lineEnd >= visibleLineEnd) {
+        layout.getLineRight(line)
+      } else {
+        layout.getPrimaryHorizontal(lineEnd)
+      }
       val left = min(startX, endX)
       val right = max(startX, endX)
       val underlineY = layout.getLineBaseline(line).toFloat() + dp(3f)
