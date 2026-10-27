@@ -18,7 +18,7 @@ Two policies live here:
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable
+from collections.abc import Callable, Collection, Iterable
 
 # jieba (ICTCLAS) flag prefixes that may become lookup tokens even when the
 # token is a single character. These are the "content" classes: nouns (n*,
@@ -162,3 +162,41 @@ def expand_unknown_compounds(
         if parts:
             expansions[normalized] = parts
     return expansions
+
+
+# Characters that only write a number (一九一九, 二十多, 两三). Inside a numeral
+# compound they are not vocabulary; the counted word after them (年, 岁, 天,
+# 个) is.
+ZH_NUMERAL_CHARS = frozenset("〇零一二三四五六七八九十百千万亿两几多半")
+
+
+def is_zh_numeral(word: str) -> bool:
+    return bool(word) and all(char in ZH_NUMERAL_CHARS for char in word)
+
+
+def compound_index_plan(
+    word: str,
+    flag: str | None,
+    parts: list[str],
+    part_flag: Callable[[str], str | None],
+) -> tuple[bool, list[str]]:
+    """How to index a jieba compound CC-CEDICT doesn't know, given its
+    dictionary-known ``parts``: (index the compound itself, parts to index).
+
+    A compound the parts cover completely (涨红了脸 → 涨红 + 了 + 脸) is not
+    indexed itself: it has no definition or level, and as the longest match it
+    would hide its known parts from underlines and taps. One with characters
+    no dictionary word covers is kept, as before. Parts pass the same POS
+    policy as jieba tokens, so 的 and 了 inside a compound stay out (a part
+    with no jieba tag counts as a noun), and a numeral compound (一九一九年,
+    十二岁) keeps its counted word but not the bare number.
+    """
+    covered = "".join(parts) == word
+    numeral_compound = normalize_zh_pos_flag(flag).startswith("m")
+    kept = [
+        part
+        for part in parts
+        if is_zh_lookup_token(part, part_flag(part) or "n")
+        and not (numeral_compound and is_zh_numeral(part))
+    ]
+    return (not covered, kept)

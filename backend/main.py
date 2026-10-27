@@ -59,6 +59,7 @@ from zh_senses import first_meaning_sense, is_reference_only_definition, rank_zh
 import en_learner_dict
 from zh_tokens import (
     ZH_LOOKUP_CONTENT_POS_PREFIXES,
+    compound_index_plan,
     ZH_LOOKUP_MULTI_CHAR_ONLY_POS_PREFIXES,
     expand_unknown_compounds,
     is_zh_lookup_token,
@@ -2153,8 +2154,9 @@ def extract_zh_lookup_tokens_with_jieba(text: str) -> tuple[list[str], list[dict
     # can't annotate the parts. Batch-check the multi-character tokens against
     # the dictionary once, then split the unknown ones into dictionary-known
     # parts (greedy longest-match from the left, like the dictionary-only
-    # tokenizer below) and index those parts as their own surfaces. The
-    # compound itself is still indexed so a tap on the whole word resolves.
+    # tokenizer below) and index those parts as their own surfaces. A
+    # compound its parts fully cover is then dropped (see
+    # zh_tokens.compound_index_plan); one with uncovered characters stays.
     compounds = {word for word, _flag in tokens if len(word) > 1}
     expansions: dict[str, list[str]] = {}
     if compounds:
@@ -2170,19 +2172,28 @@ def extract_zh_lookup_tokens_with_jieba(text: str) -> tuple[list[str], list[dict
                 max_part_len=ZH_FALLBACK_MAX_WORD_LEN,
             )
 
+    def part_flag(part: str) -> str | None:
+        # jieba's own dictionary tag for the part, when it has one.
+        return segmenter.dt.word_tag_tab.get(part) if hasattr(segmenter, "dt") else None
+
     for word, flag in tokens:
-        append_zh_lookup_token(
-            word,
-            zh_pos_label(flag),
-            seen_words=seen_words,
-            seen_surface_pairs=seen_surface_pairs,
-            words=words,
-            surface_index=surface_index,
-            pos_by_word=pos_by_word,
-        )
+        parts = expansions.get(word)
+        index_whole = True
+        if parts:
+            index_whole, parts = compound_index_plan(word, flag, parts, part_flag)
+        if index_whole:
+            append_zh_lookup_token(
+                word,
+                zh_pos_label(flag),
+                seen_words=seen_words,
+                seen_surface_pairs=seen_surface_pairs,
+                words=words,
+                surface_index=surface_index,
+                pos_by_word=pos_by_word,
+            )
         # Parts go right after their compound so the index keeps text order.
         # They carry no POS: jieba tagged the compound, not the pieces.
-        for part in expansions.get(word, ()):
+        for part in parts or ():
             append_zh_lookup_token(
                 part,
                 None,
