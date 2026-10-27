@@ -29,7 +29,9 @@ const SelectionExplainPanel = ({
     const { colors, isDarkMode } = useTheme();
     const styles = useMemo(() => createStyles(colors, isDarkMode), [colors, isDarkMode]);
     const phrase = clean(text);
-    const [state, setState] = useState({ loading: true, gloss: '', text: '', error: null });
+    // `expression`: what the explanation is about — the selection completed to
+    // whole words (or a whole idiom), as the backend reports it.
+    const [state, setState] = useState({ loading: true, gloss: '', text: '', expression: '', error: null });
     const generationRef = useRef(0);
 
     useEffect(() => {
@@ -37,12 +39,13 @@ const SelectionExplainPanel = ({
         generationRef.current += 1;
         const generation = generationRef.current;
         const stale = () => generationRef.current !== generation;
-        setState({ loading: true, gloss: '', text: '', error: null });
+        setState({ loading: true, gloss: '', text: '', expression: '', error: null });
         streamExplainInContext({
             word: phrase,
             sentence: clean(sentence) || phrase,
             language,
             interfaceLanguage,
+            mode: 'selection',
             onGloss: (gloss) => {
                 if (!stale()) setState((prev) => ({ ...prev, gloss: clean(gloss) }));
             },
@@ -54,8 +57,14 @@ const SelectionExplainPanel = ({
                 if (stale()) return;
                 const explanation = clean(response?.explanation);
                 setState(explanation
-                    ? { loading: false, gloss: clean(response?.gloss), text: explanation, error: null }
-                    : { loading: false, gloss: '', text: '', error: t('lookup.explainFailed') });
+                    ? {
+                        loading: false,
+                        gloss: clean(response?.gloss),
+                        text: explanation,
+                        expression: clean(response?.lemma),
+                        error: null,
+                    }
+                    : { loading: false, gloss: '', text: '', expression: '', error: t('lookup.explainFailed') });
             })
             .catch((error) => {
                 if (stale()) return;
@@ -63,6 +72,7 @@ const SelectionExplainPanel = ({
                     loading: false,
                     gloss: '',
                     text: '',
+                    expression: '',
                     error: getUserFacingErrorMessage(error, t, 'lookup.explainFailed', interfaceLanguage),
                 });
             });
@@ -72,6 +82,8 @@ const SelectionExplainPanel = ({
     }, [interfaceLanguage, language, phrase, sentence, t]);
 
     const canSave = !state.loading && Boolean(state.gloss) && !saved;
+    // A cut-off selection ("Gabl") is shown and saved as the word it belongs to.
+    const heading = state.expression || phrase;
 
     return (
         <View style={[styles.panel, placement === 'top' ? styles.panelTop : styles.panelBottom]}>
@@ -87,7 +99,7 @@ const SelectionExplainPanel = ({
                     <Feather name="x" size={20} color={colors.textTertiary} />
                 </TouchableOpacity>
             </View>
-            <Text style={styles.phrase} selectable numberOfLines={3}>{phrase}</Text>
+            <Text style={styles.phrase} selectable numberOfLines={3}>{heading}</Text>
             <ScrollView style={styles.body} contentContainerStyle={styles.bodyContent} nestedScrollEnabled>
                 {state.gloss ? <Text style={styles.gloss} selectable>{state.gloss}</Text> : null}
                 {state.text ? <Text style={styles.explanation} selectable>{state.text}</Text> : null}
@@ -102,7 +114,7 @@ const SelectionExplainPanel = ({
             <TouchableOpacity
                 style={[styles.saveButton, !canSave && styles.saveButtonDisabled]}
                 disabled={!canSave}
-                onPress={() => onSave?.({ text: phrase, gloss: state.gloss, sentence })}
+                onPress={() => onSave?.({ text: heading, gloss: state.gloss, sentence })}
                 accessibilityRole="button"
             >
                 <Feather name={saved ? 'check' : 'bookmark'} size={16} color={colors.text} />

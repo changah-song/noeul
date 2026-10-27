@@ -15,6 +15,9 @@ import unicodedata
 # A tapped word is a single token; 64 characters covers long compounds and
 # German-style words with plenty of room.
 EXPLAIN_WORD_MAX_CHARS = 64
+# A long-press selection (mode "selection") can be a phrase, a clause or a whole
+# sentence, so it gets more room than a tapped word.
+EXPLAIN_SELECTION_MAX_CHARS = 400
 # The context the model sees. Real sentences are far shorter; anything longer is
 # clipped to a window around the word (see clip_sentence_around_word) so old app
 # builds that send a whole OCR block or an unpunctuated paragraph keep working.

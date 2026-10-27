@@ -211,3 +211,25 @@ def test_explain_uses_header_language(monkeypatch):
     # The explanation cache key carries the interface language.
     assert req.cache_key.startswith(main.lookup_cache_key("물", "물을 마셔요.", "ko", "id"))
     assert not req.cache_key.startswith(main.lookup_cache_key("물", "물을 마셔요.", "ko", "en"))
+
+
+def test_explain_selection_mode_allows_longer_text_and_separate_cache(monkeypatch):
+    async def no_quota(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(main, "anthropic_sdk", object())
+    monkeypatch.setattr(main, "ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(main, "enforce_daily_quota", no_quota)
+    phrase = "a Canadian author best known for a series of novels beginning with Anne"
+    sentence = f"L.M. Montgomery was {phrase} of Green Gables."
+    assert len(phrase) > main.EXPLAIN_WORD_MAX_CHARS
+
+    req = asyncio.run(main._prepare_explain_request(
+        {"word": phrase, "sentence": sentence, "language": "en", "mode": "selection"}, USER
+    ))
+    assert req.mode == "selection"
+    assert req.cache_key.endswith(":sel")
+
+    # The same text as a tapped word is still refused.
+    with pytest.raises(main.ApiError):
+        asyncio.run(main._prepare_explain_request({"word": phrase, "sentence": sentence, "language": "en"}, USER))
