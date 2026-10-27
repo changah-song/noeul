@@ -143,11 +143,21 @@ def test_capitalized_words_inside_a_sentence_are_names():
     assert pos["Dickens"] == "name" and pos["London"] == "name"
     assert {"surface": "Dickens", "stem": "Dickens"} in surfaces
     assert not any(entry["surface"] == "dickens" for entry in surfaces)
-    # The first word of a sentence (after an opening quote) is not a name;
-    # "Will" the person and "will" the verb stay apart.
-    assert "Charles" not in pos or pos["Charles"] != "name"
+    # A proper noun opening a sentence is a name too; "Will" the person and
+    # "will" the verb stay apart.
+    assert pos["Charles"] == "name"
     assert pos.get("Will") == "name"
     assert pos.get("I") is None
+
+
+def test_sentence_initial_names_match_their_mid_sentence_uses():
+    _lemmas, _surfaces, pos = main.extract_en_lookup_tokens(
+        "Marilla was surprised. Then she looked at Marilla again. Will you come? The book is green."
+    )
+    assert pos["Marilla"] == "name"
+    # An ordinary capitalized first word is not a name.
+    assert "The" not in pos and pos.get("book") == "NOUN"
+    assert "marilla" not in pos
 
 
 def test_names_keep_their_stem_and_are_not_graded(monkeypatch, batch_cache):

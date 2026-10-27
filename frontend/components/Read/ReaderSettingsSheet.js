@@ -250,7 +250,6 @@ const ReaderSettingsSheet = ({
     const pinyinOn = Boolean(source.pinyinAnnotations);
     const glossOn = Boolean(source.glossAnnotations);
     const hideSavedOn = source.hideSavedAnnotations !== false;
-    const pinnedTranslationOn = Boolean(source.pinnedSentenceTranslation);
     const pinnedFontSize = clampPinnedTranslationFontSize(source.pinnedTranslationFontSize);
     // Settings saved before the scopes were split carried one `annotationScope`.
     const legacyScope = scopeOrDefault(source.annotationScope, null);
@@ -473,37 +472,21 @@ const ReaderSettingsSheet = ({
                 label: t('read.pinnedTranslation'),
                 below: <Text style={styles.legendHint}>{t('read.pinnedTranslationHint')}</Text>,
                 control: (
-                    <ToggleSwitch
+                    <Stepper
                         styles={controlStyles}
                         colors={colors}
-                        value={pinnedTranslationOn}
-                        onChange={(value) => onSettingChange('pinnedSentenceTranslation', value)}
-                        accessibilityLabel={t('read.pinnedTranslation')}
+                        value={pinnedFontSize}
+                        onStep={(direction) => onSettingChange(
+                            'pinnedTranslationFontSize',
+                            clampPinnedTranslationFontSize(pinnedFontSize + direction)
+                        )}
+                        atMin={pinnedFontSize <= PINNED_TRANSLATION_FONT_MIN}
+                        atMax={pinnedFontSize >= PINNED_TRANSLATION_FONT_MAX}
+                        decreaseLabel={t('read.decreaseFontSize')}
+                        increaseLabel={t('read.increaseFontSize')}
                     />
                 ),
             });
-            if (pinnedTranslationOn) {
-                rows.push({
-                    key: 'pinnedTranslationSize',
-                    label: t('read.pinnedTranslationSize'),
-                    indent: true,
-                    control: (
-                        <Stepper
-                            styles={controlStyles}
-                            colors={colors}
-                            value={pinnedFontSize}
-                            onStep={(direction) => onSettingChange(
-                                'pinnedTranslationFontSize',
-                                clampPinnedTranslationFontSize(pinnedFontSize + direction)
-                            )}
-                            atMin={pinnedFontSize <= PINNED_TRANSLATION_FONT_MIN}
-                            atMax={pinnedFontSize >= PINNED_TRANSLATION_FONT_MAX}
-                            decreaseLabel={t('read.decreaseFontSize')}
-                            increaseLabel={t('read.increaseFontSize')}
-                        />
-                    ),
-                });
-            }
         }
         return (
             <>

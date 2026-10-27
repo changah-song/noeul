@@ -10,11 +10,7 @@ import {
     PINNED_TRANSLATION_FONT_DEFAULT,
     pinnedTranslationBarHeight,
 } from '../components/Read/pinnedTranslationSize';
-import SelectionToolbar from '../components/Read/SelectionToolbar';
 import SelectionExplainPanel from '../components/Read/SelectionExplainPanel';
-import HighlightNoteSheet from '../components/Read/HighlightNoteSheet';
-import { DEFAULT_HIGHLIGHT_COLOR, highlightColorFor } from '../components/Read/highlightColors';
-import * as Clipboard from 'expo-clipboard';
 import { chapterTranslations } from '../services/chapterTranslations';
 import TocDrawer from '../components/Read/TocDrawer';
 import FocusControls from '../components/Read/FocusControls';
@@ -60,13 +56,8 @@ import { createListenPlayer, voiceLocaleFor, voiceSampleFor, LISTEN_PITCHES, LIS
 import {
     PREPROCESS_VERSION,
     deleteBookBookmark,
-    deleteBookHighlight,
     deleteBookNote,
     getBookBookmarks,
-    getBookHighlights,
-    insertBookHighlight,
-    updateBookHighlightColor,
-    updateBookHighlightNote,
     getBookNotes,
     getBookPreprocessChapter,
     getBookLookupWords,
@@ -175,10 +166,10 @@ const DEFAULT_READER_SETTINGS = {
     // No pinyin / translation on saved (highlighted) words, so the reader can
     // try to recall a word they looked up before.
     hideSavedAnnotations: true,
-    // A fixed-height bar under the header that keeps the translation of the
-    // last tapped word's sentence on screen. The open chapter's sentences are
-    // translated ahead, so it shows at once. On by default: it is where
-    // sentence translations live (a long press no longer translates).
+    // The bar under the header that keeps the translation of the last tapped
+    // word's sentence on screen. The open chapter's sentences are translated
+    // ahead, so it shows at once. It is always there; this is whether it is
+    // open (true) or folded to a thin strip by its chevron.
     pinnedSentenceTranslation: true,
     // That bar's text size. The bar's height follows it (re-paginates).
     pinnedTranslationFontSize: PINNED_TRANSLATION_FONT_DEFAULT,
@@ -524,19 +515,13 @@ const Read = ({
     const [highlightedWordContext, setHighlightedWordContext] = useState(null);
     const [isNativeSelection, setIsNativeSelection] = useState(false);
     // A long-press selection: { text, sentence, spineIndex, blockId, start,
-    // end }. It opens the selection toolbar (copy, highlight, note, AI) rather
-    // than the lookup panel; `selectionView` switches it to the AI explanation.
+    // end }. It opens the AI explanation in a bottom panel (in place of the
+    // lookup panel).
     const [textSelection, setTextSelection] = useState(null);
-    const [selectionView, setSelectionView] = useState('toolbar');
-    // The toolbar's row of highlight colors is open.
-    const [selectionColorsOpen, setSelectionColorsOpen] = useState(false);
-    // Where the reader was before jumping to a bookmark or highlight from the
-    // notes log; a pill offers the way back.
+    // Where the reader was before jumping to a bookmark from the notes log; a
+    // pill offers the way back.
     const [returnPosition, setReturnPosition] = useState(null);
-    const [selectionCopied, setSelectionCopied] = useState(false);
     const [selectionPhraseSaved, setSelectionPhraseSaved] = useState(false);
-    const [noteDraft, setNoteDraft] = useState(null);
-    const [bookHighlights, setBookHighlights] = useState([]);
     const [lookupPlacement, setLookupPlacement] = useState('bottom');
     const [clearSelectionToken, setClearSelectionToken] = useState(0);
     // Temporary handoff QA toggles for the long-press translation banner.
@@ -1173,15 +1158,10 @@ const Read = ({
             start: Number.isInteger(event.sourceStartOffset) ? event.sourceStartOffset : null,
             end: Number.isInteger(event.sourceEndOffset) ? event.sourceEndOffset : null,
         });
-        setSelectionColorsOpen(false);
-        setSelectionCopied(false);
         setSelectionPhraseSaved(false);
-        // Growing an open selection keeps the panel where it is.
-        if (extendingSelectionRef.current) {
-            extendingSelectionRef.current = false;
-            return;
-        }
-        setLookupPlacement(event.placement === 'top' ? 'top' : 'bottom');
+        extendingSelectionRef.current = false;
+        // The explanation always opens at the bottom, like a sheet.
+        setLookupPlacement('bottom');
     }, []);
 
     const extendingSelectionRef = useRef(false);
@@ -1526,178 +1506,16 @@ const Read = ({
         setClearSelectionToken((value) => value + 1);
     }, []);
 
-    // ── Highlights, notes and the selection toolbar ──────────────────────────
-    const reloadBookHighlights = useCallback(() => {
-        if (!currentBook) {
-            setBookHighlights([]);
-            return Promise.resolve();
-        }
-        return getBookHighlights(currentBook, { ownerId: activeOwnerId, language: activeBookLanguage })
-            .then(setBookHighlights)
-            .catch((error) => console.warn('[Read] Failed to load highlights:', error?.message ?? error));
-    }, [activeBookLanguage, activeOwnerId, currentBook]);
-    useEffect(() => {
-        reloadBookHighlights();
-    }, [reloadBookHighlights]);
-    const userHighlights = useMemo(() => {
-        const mode = isDarkMode ? 'dark' : 'light';
-        return bookHighlights.map((highlight) => ({
-            spineIndex: highlight.spineIndex,
-            blockId: highlight.blockId,
-            sourceStartOffset: highlight.startOffset,
-            sourceEndOffset: highlight.endOffset,
-            color: highlightColorFor(highlight.color).fill[mode],
-            // A note puts a comment icon in the margin beside its first line.
-            noteId: highlight.note ? highlight.id : null,
-        }));
-    }, [bookHighlights, isDarkMode]);
-    // The highlight the current selection sits in, if any.
-    const selectedHighlight = useMemo(() => {
-        if (!textSelection || textSelection.start == null || textSelection.end == null) return null;
-        return bookHighlights.find((highlight) => (
-            highlight.spineIndex === textSelection.spineIndex
-            && highlight.blockId === textSelection.blockId
-            && highlight.startOffset < textSelection.end
-            && highlight.endOffset > textSelection.start
-        )) || null;
-    }, [bookHighlights, textSelection]);
-    const canAnchorSelection = Boolean(
-        textSelection
-        && textSelection.blockId
-        && Number.isInteger(textSelection.spineIndex)
-        && Number.isInteger(textSelection.start)
-        && Number.isInteger(textSelection.end)
-    );
-
-    const handleSelectionCopy = useCallback(async () => {
-        if (!textSelection?.text) return;
-        try {
-            await Clipboard.setStringAsync(textSelection.text);
-            setSelectionCopied(true);
-            setTimeout(() => setSelectionCopied(false), 1500);
-        } catch (error) {
-            console.warn('[Read] Copy failed:', error?.message ?? error);
-        }
-    }, [textSelection]);
-
-    // The toolbar stays up after every action, so a passage can be
-    // highlighted, annotated and explained in one go.
-    const addSelectionHighlight = async (color, note = null) => {
-        tapCommit();
-        await insertBookHighlight({
-            ownerId: activeOwnerId,
-            language: activeBookLanguage,
-            bookUri: currentBook,
-            spineIndex: textSelection.spineIndex,
-            blockId: textSelection.blockId,
-            startOffset: textSelection.start,
-            endOffset: textSelection.end,
-            text: textSelection.text,
-            color,
-            note,
-            chapterLabel: activeChapterTitle || null,
-        });
-    };
-
-    // The highlight button: on a plain selection it highlights in the default
-    // color straight away; either way it opens the color row.
-    const handleSelectionHighlight = async () => {
-        setSelectionColorsOpen((open) => !open || !selectedHighlight);
-        if (selectedHighlight || !canAnchorSelection) return;
-        try {
-            await addSelectionHighlight(DEFAULT_HIGHLIGHT_COLOR);
-            await reloadBookHighlights();
-        } catch (error) {
-            console.warn('[Read] Highlight failed:', error?.message ?? error);
-        }
-    };
-
-    const handlePickHighlightColor = async (color) => {
-        try {
-            if (selectedHighlight) {
-                await updateBookHighlightColor(selectedHighlight.id, color, { ownerId: activeOwnerId });
-            } else if (canAnchorSelection) {
-                await addSelectionHighlight(color);
-            }
-            await reloadBookHighlights();
-        } catch (error) {
-            console.warn('[Read] Changing the highlight color failed:', error?.message ?? error);
-        }
-    };
-
-    const handleRemoveHighlight = async () => {
-        if (!selectedHighlight) return;
-        try {
-            await deleteBookHighlight(selectedHighlight.id, { ownerId: activeOwnerId });
-            await reloadBookHighlights();
-        } catch (error) {
-            console.warn('[Read] Removing the highlight failed:', error?.message ?? error);
-        }
-        setSelectionColorsOpen(false);
-    };
-
-    const handleSelectionNote = useCallback(() => {
-        if (!textSelection) return;
-        setNoteDraft({
-            quote: selectedHighlight?.text || textSelection.text,
-            highlightId: selectedHighlight?.id ?? null,
-            initialNote: selectedHighlight?.note ?? '',
-            selection: textSelection,
-        });
-    }, [selectedHighlight, textSelection]);
-
-    // The comment icon beside a noted passage: opens its note.
-    const handleHighlightNotePress = useCallback((event = {}) => {
-        const highlight = bookHighlights.find((item) => item.id === event.id);
-        if (!highlight) return;
-        setNoteDraft({
-            quote: highlight.text,
-            highlightId: highlight.id,
-            initialNote: highlight.note ?? '',
-            selection: null,
-        });
-    }, [bookHighlights]);
-
-    const handleNoteSave = async (note) => {
-        const draft = noteDraft;
-        setNoteDraft(null);
-        if (!draft) return;
-        try {
-            if (draft.highlightId) {
-                await updateBookHighlightNote(draft.highlightId, note, { ownerId: activeOwnerId });
-            } else if (String(note || '').trim() && draft.selection) {
-                const selection = draft.selection;
-                tapCommit();
-                await insertBookHighlight({
-                    ownerId: activeOwnerId,
-                    language: activeBookLanguage,
-                    bookUri: currentBook,
-                    spineIndex: selection.spineIndex,
-                    blockId: selection.blockId,
-                    startOffset: selection.start,
-                    endOffset: selection.end,
-                    text: selection.text,
-                    color: DEFAULT_HIGHLIGHT_COLOR,
-                    note,
-                    chapterLabel: activeChapterTitle || null,
-                });
-            }
-            await reloadBookHighlights();
-        } catch (error) {
-            console.warn('[Read] Saving the note failed:', error?.message ?? error);
-        }
-    };
-
+    // ── The long-press AI explanation ────────────────────────────────────────
     const renderSelectionExplain = () => (
         <SelectionExplainPanel
             text={textSelection.text}
             sentence={textSelection.sentence}
             language={activeBookLanguage}
             interfaceLanguage={interfaceLanguage}
-            placement={shouldPlaceLookupAtTop ? 'top' : 'bottom'}
+            bottomInset={focusMode ? 0 : insets.bottom}
             saved={selectionPhraseSaved}
             onSave={handleSelectionPhraseSave}
-            onClose={() => setSelectionView('toolbar')}
         />
     );
 
@@ -3649,16 +3467,22 @@ const Read = ({
     // to the bottom sits on top of it. FOCUS_SPAN_TOP_MARGIN_DP in the native
     // module reserves the matching strip of reading surface, so a sentence too
     // tall to fit still stops short of the pill instead of running under it.
-    // The pinned translation bar (when shown) pushes the reading surface down by
-    // its fixed height, so everything anchored to the reader's top edge shifts
-    // with it. Hidden in fullscreen, like the header.
-    const showPinnedTranslation = Boolean(settings.pinnedSentenceTranslation)
-        && !isFullscreen
-        && Boolean(currentBook);
+    // The pinned translation bar pushes the reading surface down by its fixed
+    // height (open or folded), so everything anchored to the reader's top edge
+    // shifts with it. It stays in fullscreen, where it sits under the status bar.
+    const showPinnedTranslation = Boolean(currentBook);
+    const pinnedTranslationOpen = settings.pinnedSentenceTranslation !== false;
     const pinnedTranslationOffset = showPinnedTranslation
-        ? pinnedTranslationBarHeight(settings.pinnedTranslationFontSize)
+        ? pinnedTranslationBarHeight(settings.pinnedTranslationFontSize, pinnedTranslationOpen)
         : 0;
-    const focusPillTop = (isFullscreen ? insets.top : insets.top + spacing.xs + 52 + pinnedTranslationOffset) + 12;
+    // Top of the reading surface in fullscreen: below the bar (which carries
+    // the status-bar inset), or the inset alone.
+    const fullscreenTop = showPinnedTranslation ? insets.top + pinnedTranslationOffset : insets.top;
+    const focusPillTop = (isFullscreen ? fullscreenTop : insets.top + spacing.xs + 52 + pinnedTranslationOffset) + 12;
+    const togglePinnedTranslation = () => updateSettings(
+        { pinnedSentenceTranslation: !pinnedTranslationOpen },
+        { keepSelection: true }
+    );
     // Arrow controls ride 12dp above the open panel, mirroring the 28 → panel+12
     // bottom shift in the design.
     const focusControlsLiftTarget = focusPanelOpen
@@ -4236,6 +4060,9 @@ const Read = ({
                     sourceLanguage={activeBookLanguage}
                     targetLanguage={interfaceLanguage}
                     fontSize={settings.pinnedTranslationFontSize}
+                    open={pinnedTranslationOpen}
+                    onToggle={togglePinnedTranslation}
+                    topInset={isFullscreen ? insets.top : 0}
                 />
             ) : null}
 
@@ -4301,7 +4128,6 @@ const Read = ({
                         readerEdgeStateEnabled={false}
                         highlightTerms={readerHighlightTerms}
                         highlightStrengths={highlightStrengths}
-                        userHighlights={userHighlights}
                         levelTerms={readerLevelTerms}
                         showPinyin={readerShowPinyin}
                         showGloss={readerShowGloss}
@@ -4322,7 +4148,6 @@ const Read = ({
                         onFocusSentenceChange={handleFocusSentenceChange}
                         onExposure={handleNativeExposure}
                         onSavedTermsShown={handleSavedTermsShown}
-                        onHighlightNotePress={handleHighlightNotePress}
                     />
                 )}
                 {readerBrightnessOverlayOpacity > 0 ? (
@@ -4422,7 +4247,7 @@ const Read = ({
                     styles.lookupLayer,
                     shouldPlaceLookupAtTop ? styles.lookupLayerTop : styles.lookupLayerBottom,
                     shouldPlaceLookupAtTop
-                        ? { paddingTop: isFullscreen ? 0 : insets.top + spacing.xs + 52 + pinnedTranslationOffset }
+                        ? { paddingTop: isFullscreen ? fullscreenTop : insets.top + spacing.xs + 52 + pinnedTranslationOffset }
                         // Focus mode anchors the panel flush to the bottom edge; in
                         // regular reading the reader content already ends at the tab
                         // bar's top edge, so the panel sits flush against that. The
@@ -4455,36 +4280,9 @@ const Read = ({
                         savedWords={savedWordsList}
                         translationVisualState={translationBannerVisualState}
                     />
-                    {/* The toolbar sits next to the text; the explanation (when
-                        open) goes on its far side. */}
-                    {textSelection && selectionView === 'explain' && !shouldPlaceLookupAtTop ? renderSelectionExplain() : null}
-                    {textSelection ? (
-                        <SelectionToolbar
-                            placement={shouldPlaceLookupAtTop ? 'top' : 'bottom'}
-                            highlightColor={selectedHighlight ? (selectedHighlight.color || DEFAULT_HIGHLIGHT_COLOR) : null}
-                            hasNote={Boolean(selectedHighlight?.note)}
-                            copied={selectionCopied}
-                            explaining={selectionView === 'explain'}
-                            colorsOpen={selectionColorsOpen}
-                            onCopy={handleSelectionCopy}
-                            onHighlight={canAnchorSelection || selectedHighlight ? handleSelectionHighlight : undefined}
-                            onPickColor={handlePickHighlightColor}
-                            onRemoveHighlight={handleRemoveHighlight}
-                            onNote={canAnchorSelection || selectedHighlight ? handleSelectionNote : undefined}
-                            onExplain={() => setSelectionView((view) => (view === 'explain' ? 'toolbar' : 'explain'))}
-                        />
-                    ) : null}
-                    {textSelection && selectionView === 'explain' && shouldPlaceLookupAtTop ? renderSelectionExplain() : null}
+                    {textSelection ? renderSelectionExplain() : null}
                 </View>
             </View>
-
-            <HighlightNoteSheet
-                visible={Boolean(noteDraft)}
-                quote={noteDraft?.quote ?? ''}
-                initialNote={noteDraft?.initialNote ?? ''}
-                onSave={handleNoteSave}
-                onClose={() => setNoteDraft(null)}
-            />
 
             {returnPosition && currentBook && !highlightedWord && !textSelection ? (
                 <View pointerEvents="box-none" style={[styles.hintLayer, styles.returnLayer, { bottom: insets.bottom + 20 }]}>
@@ -4516,7 +4314,7 @@ const Read = ({
                 and the top of the page is the title). Focus mode has its own
                 position pill and controls, so the tip stays out of the way
                 there. */}
-            {currentBook && !highlightedWord && !focusMode && (showLookupHint || currentChapterPreparing) ? (
+            {currentBook && !highlightedWord && !textSelection && !focusMode && (showLookupHint || currentChapterPreparing) ? (
                 <View
                     pointerEvents="box-none"
                     style={[styles.hintLayer, { bottom: insets.bottom + 16 }]}
@@ -4602,20 +4400,8 @@ const Read = ({
                 insets={insets}
                 bookmarks={bookBookmarks}
                 notes={bookNotes}
-                highlights={bookHighlights}
                 onSelectBookmark={jumpFromNotesLog}
                 onDeleteBookmark={handleDeleteBookmark}
-                // A highlight jumps like a bookmark, to its block.
-                onSelectHighlight={(highlight) => jumpFromNotesLog({
-                    spineIndex: highlight.spineIndex,
-                    pageIndex: 0,
-                    firstBlockId: highlight.blockId,
-                })}
-                onDeleteHighlight={(id) => {
-                    deleteBookHighlight(id, { ownerId: activeOwnerId })
-                        .then(reloadBookHighlights)
-                        .catch((error) => console.warn('[Read] Removing the highlight failed:', error?.message ?? error));
-                }}
                 onDelete={handleDeleteNote}
                 onClose={() => setShowNotesLog(false)}
             />

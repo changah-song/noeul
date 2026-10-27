@@ -61,7 +61,9 @@ const DICTIONARY_CACHE_KO_LANGUAGE_PURGE_KEY = 'dictionary_cache_ko_language_pur
 const LOCAL_OWNER_SQLITE_MIGRATION_KEY = 'local_owner_sqlite_migration_v1';
 const PROFILE_SQLITE_MIGRATION_KEY = 'profile_sqlite_migration_v1';
 const VOCAB_EMPTY_HANJA_MIGRATION_KEY = 'vocab_empty_hanja_migration_v1';
-export const PREPROCESS_VERSION = 8;
+// 9: English names (also at the start of a sentence) come back as names and are
+// no longer graded, so books analysed before that are analysed again.
+export const PREPROCESS_VERSION = 9;
 const SQLITE_BIND_BATCH_SIZE = 450;
 const DEFAULT_STABILITY = 1.0;
 const DEFAULT_DIFFICULTY = 5.0;
@@ -7368,6 +7370,18 @@ export const lookupBookLevelSurfaces = (
            )
            -- English names (Dickens, London) can be tapped but are not graded.
            AND COALESCE(dc.pos, '') != 'name'
+           -- Nor through another word: a name that once opened a sentence
+           -- was also indexed as a common noun ("Rachel" -> rachel), and that
+           -- entry must not underline the name.
+           AND NOT EXISTS (
+             SELECT 1 FROM book_index bn
+             JOIN dictionary_cache dn ON dn.id = bn.stem_id
+             WHERE bn.owner_id = bi.owner_id
+               AND bn.profile_id = bi.profile_id
+               AND bn.book_uri = bi.book_uri
+               AND bn.surface = bi.surface
+               AND dn.pos = 'name'
+           )
          ORDER BY LENGTH(bi.surface) DESC, bi.surface ASC`,
         [scope.language, numericRank, scopedOwnerId, scopedProfileId, bookUri],
         (_, result) => {

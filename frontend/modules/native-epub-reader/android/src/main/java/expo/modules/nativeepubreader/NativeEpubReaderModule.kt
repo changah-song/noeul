@@ -564,7 +564,10 @@ internal fun annotationSpacePx(bodyTextPx: Float, pinyin: Boolean, gloss: Boolea
 }
 
 internal const val PINYIN_ROW_SCALE = 0.9f
-internal const val GLOSS_ROW_SCALE = 0.85f
+internal const val GLOSS_ROW_SCALE = 0.95f
+// Gloss text size, as a share of the body text size (see EpubPageView).
+internal const val GLOSS_TEXT_SCALE_COMPACT = 0.66f
+internal const val GLOSS_TEXT_SCALE_LATIN = 0.58f
 // How long a tapped word's underline takes to dissolve into dots.
 private const val TAP_DISSOLVE_MS = 700f
 // Saved words on a page fade a step once the page has settled this long, and
