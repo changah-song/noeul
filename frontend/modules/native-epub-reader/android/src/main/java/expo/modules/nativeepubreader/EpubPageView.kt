@@ -394,11 +394,17 @@ class EpubPageView(context: Context) : View(context) {
 
   // ── Text selection: tight rounded boxes and iOS-style handles ─────────────
 
-  private fun selectionAccentColor(): Int {
-    return if (Color.luminance(themePalette.backgroundColor) < 0.4f) {
-      Color.rgb(0x5A, 0xA2, 0xFF)
+  private fun isDarkPage(): Boolean = Color.luminance(themePalette.backgroundColor) < 0.4f
+
+  // The selection wears the app's ink: grey boxes and ink handles on a light
+  // page; on a dark page a lighter, stronger box so it stands out.
+  private fun selectionAccentColor(): Int = themePalette.selectionHandleColor
+
+  private fun selectionBoxColor(): Int {
+    return if (isDarkPage()) {
+      Color.argb(0x52, 0xF0, 0xED, 0xED)
     } else {
-      Color.rgb(0x2F, 0x7B, 0xF6)
+      Color.argb(0x30, 0x20, 0x26, 0x31)
     }
   }
 
@@ -409,7 +415,9 @@ class EpubPageView(context: Context) : View(context) {
     if (activeSelectionKind != ActiveSelectionKind.TEXT || activeSelectionRanges.isEmpty()) return emptyList()
     if (geometryDirty) rebuildGeometry()
     val currentPage = page ?: return emptyList()
-    val pad = dp(2f).toFloat()
+    val padX = dp(2f).toFloat()
+    val padTop = dp(1f).toFloat()
+    val padBottom = dp(2f).toFloat()
     val boxes = mutableListOf<SelectionBox>()
     sortedActiveTextSelectionRanges().forEach { range ->
       if (range.pageIndex != currentPage.pageIndex || range.spineIndex != currentPage.spineIndex) return@forEach
@@ -441,10 +449,10 @@ class EpubPageView(context: Context) : View(context) {
           SelectionBox(
             key = (renderedIndex.toLong() shl 32) or line.toLong(),
             rect = RectF(
-              rendered.x + min(x1, x2) - pad,
-              rendered.y + top - pad,
-              rendered.x + max(x1, x2) + pad,
-              rendered.y + bottom + pad
+              rendered.x + min(x1, x2) - padX,
+              rendered.y + top - padTop,
+              rendered.x + max(x1, x2) + padX,
+              rendered.y + bottom + padBottom
             )
           )
         )
@@ -535,8 +543,7 @@ class EpubPageView(context: Context) : View(context) {
     }
     selectionBoxesShown = shown.filter { it.rect.width() > 0.5f }
     val radius = dp(5f).toFloat()
-    selectionBoxPaint.color = selectionAccentColor()
-    selectionBoxPaint.alpha = 0x48
+    selectionBoxPaint.color = selectionBoxColor()
     selectionBoxesShown.forEach { box -> canvas.drawRoundRect(box.rect, radius, radius, selectionBoxPaint) }
   }
 
@@ -2361,9 +2368,11 @@ class EpubPageView(context: Context) : View(context) {
     val startLine = layout.getLineForOffset(safeStart)
     val endLine = layout.getLineForOffset(max(safeStart, safeEnd - 1))
     val horizontalPad = dp(1f).toFloat()
-    val topPad = dp(12f).toFloat()
-    val bottomPad = dp(5f).toFloat()
-    val cornerRadius = dp(2f).toFloat()
+    // Snug to the glyphs: the font's ascent already leaves room above the
+    // letters, so only a hair of padding is added.
+    val topPad = dp(1f).toFloat()
+    val bottomPad = dp(2f).toFloat()
+    val cornerRadius = dp(3f).toFloat()
 
     for (line in startLine..endLine) {
       val rawLineStart = layout.getLineStart(line).coerceIn(0, textLength)
@@ -2379,14 +2388,10 @@ class EpubPageView(context: Context) : View(context) {
       }
       if (lineStart >= lineEnd) continue
 
-      val selectedThroughLineStart = safeStart <= rawLineStart
-      val selectedThroughLineEnd = safeEnd >= rawLineEnd
-      val startX = if (selectedThroughLineStart) {
-        layout.getLineLeft(line)
-      } else {
-        layout.getPrimaryHorizontal(lineStart)
-      }
-      val endX = if (selectedThroughLineEnd) {
+      // From the first selected glyph, never the line's left edge: a
+      // paragraph's first line starts with an indent that must stay clear.
+      val startX = layout.getPrimaryHorizontal(lineStart)
+      val endX = if (lineEnd >= rawLineEnd) {
         layout.getLineRight(line)
       } else {
         layout.getPrimaryHorizontal(lineEnd)

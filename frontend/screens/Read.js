@@ -168,8 +168,7 @@ const DEFAULT_READER_SETTINGS = {
     hideSavedAnnotations: true,
     // The bar under the header that keeps the translation of the last tapped
     // word's sentence on screen. The open chapter's sentences are translated
-    // ahead, so it shows at once. It is always there; this is whether it is
-    // open (true) or folded to a thin strip by its chevron.
+    // ahead, so it shows at once. On by default; the reader menu turns it off.
     pinnedSentenceTranslation: true,
     // That bar's text size. The bar's height follows it (re-paginates).
     pinnedTranslationFontSize: PINNED_TRANSLATION_FONT_DEFAULT,
@@ -3468,21 +3467,17 @@ const Read = ({
     // module reserves the matching strip of reading surface, so a sentence too
     // tall to fit still stops short of the pill instead of running under it.
     // The pinned translation bar pushes the reading surface down by its fixed
-    // height (open or folded), so everything anchored to the reader's top edge
-    // shifts with it. It stays in fullscreen, where it sits under the status bar.
-    const showPinnedTranslation = Boolean(currentBook);
-    const pinnedTranslationOpen = settings.pinnedSentenceTranslation !== false;
+    // height, so everything anchored to the reader's top edge shifts with it.
+    // It stays in fullscreen, where it sits under the status bar.
+    const showPinnedTranslation = Boolean(currentBook) && settings.pinnedSentenceTranslation !== false;
     const pinnedTranslationOffset = showPinnedTranslation
-        ? pinnedTranslationBarHeight(settings.pinnedTranslationFontSize, pinnedTranslationOpen)
+        ? pinnedTranslationBarHeight(settings.pinnedTranslationFontSize)
         : 0;
     // Top of the reading surface in fullscreen: below the bar (which carries
     // the status-bar inset), or the inset alone.
     const fullscreenTop = showPinnedTranslation ? insets.top + pinnedTranslationOffset : insets.top;
     const focusPillTop = (isFullscreen ? fullscreenTop : insets.top + spacing.xs + 52 + pinnedTranslationOffset) + 12;
-    const togglePinnedTranslation = () => updateSettings(
-        { pinnedSentenceTranslation: !pinnedTranslationOpen },
-        { keepSelection: true }
-    );
+
     // Arrow controls ride 12dp above the open panel, mirroring the 28 → panel+12
     // bottom shift in the design.
     const focusControlsLiftTarget = focusPanelOpen
@@ -4060,8 +4055,6 @@ const Read = ({
                     sourceLanguage={activeBookLanguage}
                     targetLanguage={interfaceLanguage}
                     fontSize={settings.pinnedTranslationFontSize}
-                    open={pinnedTranslationOpen}
-                    onToggle={togglePinnedTranslation}
                     topInset={isFullscreen ? insets.top : 0}
                 />
             ) : null}
