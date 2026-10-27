@@ -51,7 +51,14 @@ import {
 } from '../theme';
 import useBooks from '../hooks/useBooks';
 import { deleteBookIndexEntries, estimateBookReadingEase, getLatestBookNote, getProfileAbility } from '../services/Database';
-import { formatEasePercent, getEaseBandKey } from '../services/bookEase';
+import {
+    EASE_BANDS,
+    bookEaseFromDistribution,
+    bookEaseFromLevel,
+    formatEasePercent,
+    getEaseBandKey,
+    normalizeLegacyKoreanStats,
+} from '../services/bookEase';
 import {
     darkenHex,
     extractBookCoverColors,
@@ -172,6 +179,8 @@ const BOOK_FILTERS = [
 ];
 
 const PUBLIC_DOMAIN_SORTS = [
+    // Default: grouped by how easy each book is for this reader (bookEase.js).
+    { id: 'ease', labelKey: 'home.sortEase' },
     { id: 'title', labelKey: 'home.alphabetical' },
     { id: 'author', labelKey: 'common.author' },
     { id: 'length', labelKey: 'home.length' },
@@ -1687,7 +1696,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const [activeLibraryTab, setActiveLibraryTab] = useState('Books');
     const [activeBookFilter, setActiveBookFilter] = useState('all');
     const [collectionViewMode, setCollectionViewMode] = useState('grid');
-    const [activePublicDomainSort, setActivePublicDomainSort] = useState('title');
+    const [activePublicDomainSort, setActivePublicDomainSort] = useState('ease');
     const [publicDomainSortDirection, setPublicDomainSortDirection] = useState('asc');
     const [publicLibraryBooks, setPublicLibraryBooks] = useState([]);
     const [publicLibraryLoading, setPublicLibraryLoading] = useState(false);
@@ -2043,12 +2052,55 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 };
         })
     ), [languageFilteredBooks, publicDomainBooks, publicLibraryDownloadStates]);
+    const [libraryTheta, setLibraryTheta] = useState(null);
+    useEffect(() => {
+        if (!languageSettingsReady) {
+            return undefined;
+        }
+        let active = true;
+        getProfileAbility({ ownerId: activeOwnerId, profileId: activeProfileId, language: targetLanguage })
+            .then((ability) => {
+                if (active) setLibraryTheta(starterThetaFromAbility(ability));
+            })
+            .catch(() => {
+                if (active) setLibraryTheta(null);
+            });
+        return () => {
+            active = false;
+        };
+    }, [activeOwnerId, activeProfileId, languageSettingsReady, targetLanguage]);
+    // Expected share of each book's vocabulary this reader knows: from the
+    // book's per-level word counts when it has them, else from its level.
+    const publicDomainEase = useMemo(() => {
+        const easeByKey = new Map();
+        publicDomainBookRows.forEach((book, index) => {
+            const stats = normalizeLegacyKoreanStats(book?.bookLevel, targetLanguage);
+            const ease = bookEaseFromDistribution({
+                theta: libraryTheta,
+                language: targetLanguage,
+                distribution: stats?.distribution,
+            }) ?? bookEaseFromLevel({
+                theta: libraryTheta,
+                language: targetLanguage,
+                levelRank: stats?.level_rank ?? stats?.proficiency_rank,
+            });
+            easeByKey.set(getBookKey(book, `${index}`), ease);
+        });
+        return easeByKey;
+    }, [libraryTheta, publicDomainBookRows, targetLanguage]);
     const sortedPublicDomainBookRows = useMemo(() => (
         publicDomainBookRows
             .map((book, index) => ({ book, index }))
             .sort((a, b) => {
                 const direction = publicDomainSortDirection === 'desc' ? -1 : 1;
                 let sortResult = 0;
+
+                if (activePublicDomainSort === 'ease') {
+                    const easeA = publicDomainEase.get(getBookKey(a.book, `${a.index}`)) ?? -1;
+                    const easeB = publicDomainEase.get(getBookKey(b.book, `${b.index}`)) ?? -1;
+                    sortResult = (easeB - easeA) || compareSortText(getBookTitle(a.book), getBookTitle(b.book));
+                    return sortResult ? sortResult * direction : a.index - b.index;
+                }
 
                 if (activePublicDomainSort === 'author') {
                     sortResult = (
@@ -2083,7 +2135,29 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 return sortResult ? sortResult * direction : a.index - b.index;
             })
             .map(({ book }) => book)
-    ), [activePublicDomainSort, publicDomainBookRows, publicDomainSortDirection]);
+    ), [activePublicDomainSort, publicDomainBookRows, publicDomainEase, publicDomainSortDirection]);
+    // The ease sort shows the books in sections: comfortable, approachable,
+    // challenging, a stretch, then any book with no estimate yet.
+    const publicDomainEaseSections = useMemo(() => {
+        if (activePublicDomainSort !== 'ease') {
+            return null;
+        }
+        const sections = [...EASE_BANDS.map((band) => ({ key: band.key, books: [] })), { key: 'unknown', books: [] }];
+        const byKey = new Map(sections.map((section) => [section.key, section]));
+        sortedPublicDomainBookRows.forEach((book) => {
+            const index = publicDomainBookRows.indexOf(book);
+            const ease = publicDomainEase.get(getBookKey(book, `${index}`));
+            byKey.get(Number.isFinite(ease) ? getEaseBandKey(ease) : 'unknown').books.push(book);
+        });
+        const ordered = publicDomainSortDirection === 'desc' ? sections.slice(0, -1).reverse().concat(sections.slice(-1)) : sections;
+        return ordered.filter((section) => section.books.length > 0);
+    }, [
+        activePublicDomainSort,
+        publicDomainBookRows,
+        publicDomainEase,
+        publicDomainSortDirection,
+        sortedPublicDomainBookRows,
+    ]);
     const favoriteBooks = useMemo(() => languageFilteredBooks.filter(isBookFavorite), [languageFilteredBooks]);
     const recentBooks = useMemo(() => (
         languageFilteredBooks
@@ -3904,8 +3978,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         );
     };
 
-    const renderBookGrid = (items) => (
-        <View style={styles.bookGrid}>
+    const renderBookGrid = (items, style = null) => (
+        <View style={[styles.bookGrid, style]}>
             {items.map((book, index) => {
                 const bookKey = getBookKey(book, `${index}`);
                 const isDownloadingBook = downloadingBookId === bookKey;
@@ -4342,10 +4416,26 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                     primaryLabel: t('home.clearFilters'),
                                     primaryIcon: 'rotate-ccw',
                                     onPrimaryPress: () => {
-                                        setActivePublicDomainSort('title');
+                                        setActivePublicDomainSort('ease');
                                         setPublicDomainSortDirection('asc');
                                     },
                                 })
+                            ) : publicDomainEaseSections ? (
+                                publicDomainEaseSections.map((section) => (
+                                    <View key={section.key} style={styles.easeSection}>
+                                        <View style={styles.easeSectionHeader}>
+                                            <Text style={styles.easeSectionTitle}>
+                                                {section.key === 'unknown'
+                                                    ? t('home.easeNotEstimated')
+                                                    : t(`home.readingEaseBand.${section.key}`)}
+                                            </Text>
+                                            <Text style={styles.easeSectionCount}>{formatNumber(section.books.length)}</Text>
+                                        </View>
+                                        {effectiveCollectionViewMode === 'grid'
+                                            ? renderBookGrid(section.books, styles.bookGridInSection)
+                                            : renderBookRows(section.books, t('home.publicDomain'))}
+                                    </View>
+                                ))
                             ) : (
                                 effectiveCollectionViewMode === 'grid'
                                     ? renderBookGrid(sortedPublicDomainBookRows)
@@ -5600,6 +5690,38 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         fontSize: 14,
         lineHeight: 19,
         color: HOME_COLORS.text,
+    },
+    // Library ease groups: a small header over each group's books.
+    easeSection: {
+        paddingTop: Spacing.xl,
+    },
+    easeSectionHeader: {
+        flexDirection: 'row',
+        alignItems: 'baseline',
+        gap: Spacing.sm,
+        paddingHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
+        paddingBottom: Spacing.xs,
+        borderBottomWidth: 1,
+        borderBottomColor: HOME_COLORS.divider,
+        marginHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
+        paddingLeft: 0,
+        paddingRight: 0,
+    },
+    easeSectionTitle: {
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 15,
+        lineHeight: 20,
+        color: HOME_COLORS.text,
+    },
+    easeSectionCount: {
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 13,
+        lineHeight: 18,
+        color: HOME_COLORS.tertiary,
+    },
+    bookGridInSection: {
+        paddingTop: Spacing.lg,
+        paddingBottom: Spacing.md,
     },
     bookGrid: {
         flexDirection: 'row',

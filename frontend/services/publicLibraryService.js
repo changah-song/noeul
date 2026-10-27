@@ -5,6 +5,10 @@ import { translate } from '../i18n/translations';
 import { getRuntimeInterfaceLanguage } from './interfaceLanguage';
 import { supabase } from './supabase';
 
+// Generated levels (with per-band distributions) for the library's books, keyed
+// by public_library.id: backend/scripts/generate_public_library_levels.py.
+const LIBRARY_LEVELS = require('../assets/data/public-domain/library-levels.generated.json');
+
 export const PUBLIC_LIBRARY_BUCKET = 'public-library';
 export const PUBLIC_LIBRARY_DIR = `${FileSystem.documentDirectory}public-library/`;
 
@@ -249,7 +253,8 @@ export const publicLibraryRowToBook = (row = {}, overrides = {}) => {
     language: targetLanguage,
     targetLanguage,
     genre: cleanNullableString(row.genre ?? row.category),
-    difficulty: cleanDifficulty(row.difficulty ?? row.level),
+    difficulty: cleanDifficulty(row.difficulty ?? row.level ?? LIBRARY_LEVELS[id]?.level),
+    bookLevel: LIBRARY_LEVELS[id] ?? null,
     snippet: cleanNullableString(row.description ?? row.summary ?? row.snippet),
     source: cleanNullableString(
         row.source ?? row.publisher ?? translate(getRuntimeInterfaceLanguage(), 'home.publicLibrarySource')
