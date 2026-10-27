@@ -59,7 +59,7 @@ const POS_KEYS = {
     preposition: 'pos.preposition',
     conjunction: 'pos.conjunction',
     article: 'pos.article',
-    name: 'pos.noun',
+    name: 'pos.properNoun',
     명사: 'pos.noun',
     동사: 'pos.verb',
     형용사: 'pos.adjective',
@@ -298,10 +298,16 @@ const DictionaryContent = ({
         if ((!isEnglishBook && !isChineseBook) || interfaceLanguage === 'en') {
             return true;
         }
-        // English entries keep their English senses; the learner's language
-        // is in the gloss (the Wiktionary equivalents).
+        // English: the senses come in the learner's language. A name may have
+        // no definition (just its transliterated gloss). A row cached before
+        // definitions were translated still holds English senses: refetch it.
         if (isEnglishBook) {
-            return Boolean(getEntryDefinition(entry));
+            if (getEntryPos(entry) === 'name') {
+                return Boolean(getEntryGloss(entry) || getEntryDefinition(entry));
+            }
+            const englishDefinition = getEntryDefinition(entry);
+            return Boolean(englishDefinition)
+                && !isLikelyUntranslatedEnglishDefinition(englishDefinition, interfaceLanguage);
         }
 
         const definition = getEntryDefinition(entry);
@@ -2171,9 +2177,12 @@ const DictionaryContent = ({
                                 ) : null}
                             </View>
                             {definition ? renderEnglishSenses(definition) : (
-                                <Text selectable style={[styles.emptyDefinition, { color: palette.emptyText }]}>
-                                    {t('lookup.noDictionaryEntry')}
-                                </Text>
+                                // A name is complete with its transliteration.
+                                cleanValue(pos) === 'name' && gloss ? null : (
+                                    <Text selectable style={[styles.emptyDefinition, { color: palette.emptyText }]}>
+                                        {t('lookup.noDictionaryEntry')}
+                                    </Text>
+                                )
                             )}
                             {renderInlineTranslation()}
                             {isPanelExpanded && showLess ? renderExtraDefinitions(extraEntries) : null}

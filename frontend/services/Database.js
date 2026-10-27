@@ -7153,6 +7153,8 @@ export const lookupBookLevelSurfaces = (
                AND d2.stem = dc.stem
                AND (TRIM(COALESCE(d2.definition, '')) != '' OR TRIM(COALESCE(d2.gloss, '')) != '')
            )
+           -- English names (Dickens, London) can be tapped but are not graded.
+           AND COALESCE(dc.pos, '') != 'name'
          ORDER BY LENGTH(bi.surface) DESC, bi.surface ASC`,
         [scope.language, numericRank, scopedOwnerId, scopedProfileId, bookUri],
         (_, result) => {

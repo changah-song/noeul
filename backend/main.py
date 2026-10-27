@@ -2030,6 +2030,20 @@ def build_surface_index(
     return surface_index
 
 
+EN_NAME_POS = "name"
+
+
+def is_en_name_token(token) -> bool:
+    """A capitalized word that isn't the first word of its sentence (opening
+    quotes and brackets don't count) is a name: Dickens, London, Mr, English.
+    "I" is not; an all-caps run in a heading is not either."""
+    text = token.text
+    if not text[:1].isupper() or text == "I" or (len(text) > 1 and text.isupper()):
+        return False
+    sentence_start = token.sent.start
+    return any(not (t.is_punct or t.is_space) for t in token.doc[sentence_start:token.i])
+
+
 def extract_en_lookup_tokens(text: str) -> tuple[list[str], list[dict], dict[str, str]]:
     doc = get_en_nlp()(text)
     seen_lemmas: set[str] = set()
@@ -2052,12 +2066,23 @@ def extract_en_lookup_tokens(text: str) -> tuple[list[str], list[dict], dict[str
         ):
             continue
 
+        if is_en_name_token(token):
+            # A name keeps its capital as its own stem ("Will" the person is
+            # not "will"), is indexed only as written, and is tagged so the
+            # app shows it but doesn't grade it.
+            lemma = raw_surface
+            surfaces = [raw_surface]
+            pos = EN_NAME_POS
+        else:
+            surfaces = list(dict.fromkeys([raw_surface, lower_surface]))
+            pos = token.pos_
+
         if lemma not in seen_lemmas:
             seen_lemmas.add(lemma)
             lemmas.append(lemma)
-            pos_by_lemma[lemma] = token.pos_
+            pos_by_lemma[lemma] = pos
 
-        for surface in dict.fromkeys([raw_surface, lower_surface]):
+        for surface in surfaces:
             if len(surface) > 1:
                 pair = (surface, lemma)
                 if pair not in seen_surface_pairs:
@@ -2666,6 +2691,7 @@ def en_learner_result(stem: str, entry: dict | None, interface_language: str) ->
         "word": entry["word"],
         "definition": entry.get("definition"),
         "senses": entry.get("senses") or [],
+        "translated_senses": entry.get("translated_senses") or [],
         "equivalents": entry.get("equivalents") or [],
         "gloss": entry.get("gloss"),
         "pos": entry.get("pos"),
@@ -2679,16 +2705,85 @@ def en_learner_result(stem: str, entry: dict | None, interface_language: str) ->
     }
 
 
-def lookup_en_learner_results(stems: list[str], interface_language: str) -> tuple[list[dict], int]:
+def lookup_en_learner_results(
+    stems: list[str],
+    interface_language: str,
+    pos_by_stem: dict[str, str] | None = None,
+) -> tuple[list[dict], int]:
     """(one result per stem, how many had an entry). The entry shown is the most
-    common one with an equivalent in the learner's language."""
+    common one with an equivalent in the learner's language. A name (tagged by
+    the tokenizer) keeps its capitalized stem and uses the dictionary's name
+    entry when there is one (London, April), else no definition."""
+    pos_by_stem = pos_by_stem or {}
     entries_by_stem = en_learner_dict.lookup_entries(stems, interface_language)
-    results = [
-        en_learner_result(stem, en_learner_dict.best_entry(entries_by_stem.get(stem, [])), interface_language)
-        for stem in (en_learner_dict.normalize_word(stem) for stem in stems)
-        if stem
-    ]
+    results = []
+    for raw_stem in stems:
+        stem = en_learner_dict.normalize_word(raw_stem)
+        if not stem:
+            continue
+        entries = entries_by_stem.get(stem, [])
+        if pos_by_stem.get(raw_stem) == EN_NAME_POS:
+            name_entry = next((entry for entry in entries if entry.get("pos") == EN_NAME_POS), None)
+            result = en_learner_result(raw_stem.strip(), name_entry, interface_language)
+            results.append({**result, "stem": raw_stem.strip(), "word": raw_stem.strip(), "pos": EN_NAME_POS})
+            continue
+        results.append(en_learner_result(stem, en_learner_dict.best_entry(entries), interface_language))
     return results, sum(1 for result in results if result.get("definition"))
+
+
+async def translate_en_missing_senses(results: list[dict], interface_language: str) -> list[dict]:
+    """Fill in senses the bundled dictionary has no stored translation for
+    (en_sense_translations covers the main sense of common words in Korean),
+    through translate_cache, so the definition is in the learner's language.
+    A result with no translated sense at all falls back to its English senses,
+    tagged English so the app never caches it as the learner's language."""
+    if interface_language == "en":
+        return results
+    target = normalize_translate_language(interface_language, "en")
+    pending = list(dict.fromkeys(
+        sense
+        for result in results
+        for sense, translated in zip(result.get("senses") or [], result.get("translated_senses") or [])
+        if sense and not translated
+    ))
+    translated_by_sense: dict[str, str] = {}
+    if pending:
+        keys = {sense: translate_cache_key(sense, "en", target) for sense in pending}
+        cached = await asyncio.to_thread(_translate_cache_get_many, list(keys.values()))
+        translated_by_sense = {sense: cached[key] for sense, key in keys.items() if key in cached}
+        fresh = [sense for sense in pending if sense not in translated_by_sense]
+        if fresh:
+            for sense, text in zip(fresh, await _translate_batch(fresh, source="en", target=target)):
+                if text and text.strip():
+                    translated_by_sense[sense] = text.strip()
+                    await asyncio.to_thread(_translate_cache_put, keys[sense], text.strip())
+
+    out = []
+    for result in results:
+        senses = result.get("senses") or []
+        if not senses:
+            out.append(result)
+            continue
+        translated = [
+            existing or translated_by_sense.get(sense)
+            for sense, existing in zip(senses, result.get("translated_senses") or [None] * len(senses))
+        ]
+        if any(translated):
+            out.append({
+                **result,
+                "translated_senses": translated,
+                "definition": "\n".join(text for text in translated if text),
+                "interface_language": interface_language,
+            })
+        else:
+            out.append({
+                **result,
+                "translated_senses": translated,
+                "definition": "\n".join(senses),
+                "interface_language": "en",
+                "fallback_language": "en",
+            })
+    return out
 
 
 async def translate_en_missing_glosses(results: list[dict], interface_language: str) -> list[dict]:
@@ -2700,7 +2795,8 @@ async def translate_en_missing_glosses(results: list[dict], interface_language: 
     target = normalize_translate_language(interface_language, "en")
     pending_words = list(dict.fromkeys(
         result["word"] for result in results
-        if result.get("definition") and not result.get("gloss") and result.get("word")
+        if (result.get("definition") or result.get("pos") == EN_NAME_POS)
+        and not result.get("gloss") and result.get("word")
     ))
     if not pending_words:
         return results
@@ -2768,26 +2864,27 @@ async def _preprocess_en_core(
     normalized_interface_language = normalize_interface_language_code(interface_language)
     results, found_count = await loop.run_in_executor(
         None,
-        lookup_en_learner_results,
-        unique_stems,
-        normalized_interface_language,
+        partial(lookup_en_learner_results, unique_stems, normalized_interface_language, pos_by_stem),
     )
+    results = await translate_en_missing_senses(results, normalized_interface_language)
     results = await translate_en_missing_glosses(results, normalized_interface_language)
     level_by_stem = await loop.run_in_executor(
         None,
         lookup_english_cefr_levels,
-        unique_stems,
+        # Names aren't graded ("Will" must not take the level of "will").
+        [stem for stem in unique_stems if pos_by_stem.get(stem) != EN_NAME_POS],
         pos_by_stem,
     )
+    name_stems = {stem for stem, pos in pos_by_stem.items() if pos == EN_NAME_POS}
     results = [
-        attach_proficiency_level(
+        result if result.get("stem") in name_stems else attach_proficiency_level(
             result,
             level_by_stem.get(((result.get("stem") or result.get("word") or "").strip().lower())),
         )
         for result in results
     ]
     surface_index = [
-        attach_proficiency_level(
+        entry if entry.get("stem") in name_stems else attach_proficiency_level(
             entry,
             level_by_stem.get((entry.get("stem") or "").strip().lower()),
         )
@@ -4322,6 +4419,7 @@ async def en_dict_search(
     first = en_learner_dict.best_entry(entries)
     ordered = [first, *[entry for entry in entries if entry is not first]]
     results = [en_learner_result(normalized_stem, entry, normalized_lang) for entry in ordered]
+    results = await translate_en_missing_senses(results, normalized_lang)
     # Equivalents belong to one meaning, so only the entry shown first borrows
     # a machine-translated headword when it has none.
     results[:1] = await translate_en_missing_glosses(results[:1], normalized_lang)
