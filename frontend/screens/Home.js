@@ -52,9 +52,7 @@ import {
 import useBooks from '../hooks/useBooks';
 import { deleteBookIndexEntries, estimateBookReadingEase, getLatestBookNote, getProfileAbility } from '../services/Database';
 import {
-    EASE_BANDS,
     bookEaseFromDistribution,
-    bookEaseFromLevel,
     formatEasePercent,
     getEaseBandKey,
     normalizeLegacyKoreanStats,
@@ -127,6 +125,7 @@ import {
 } from '../i18n/userFacing';
 import { localizePublicDomainBook } from '../assets/data/public-domain/catalogI18n';
 import { localizedLevelLabel } from '../i18n/contentStrings';
+import { getProficiencyLevelOptions } from '../constants/proficiencyLevels';
 
 const BOOK_GRID_COLUMNS = 4;
 const BOOK_GRID_GAP = Spacing.lg;
@@ -179,8 +178,9 @@ const BOOK_FILTERS = [
 ];
 
 const PUBLIC_DOMAIN_SORTS = [
-    // Default: grouped by how easy each book is for this reader (bookEase.js).
-    { id: 'ease', labelKey: 'home.sortEase' },
+    // Default: grouped by each book's level on the language's standard scale
+    // (CEFR, HSK, Korean reading levels), easiest first.
+    { id: 'ease', labelKey: 'home.level' },
     { id: 'title', labelKey: 'home.alphabetical' },
     { id: 'author', labelKey: 'common.author' },
     { id: 'length', labelKey: 'home.length' },
@@ -2052,42 +2052,26 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 };
         })
     ), [languageFilteredBooks, publicDomainBooks, publicLibraryDownloadStates]);
-    const [libraryTheta, setLibraryTheta] = useState(null);
-    useEffect(() => {
-        if (!languageSettingsReady) {
-            return undefined;
-        }
-        let active = true;
-        getProfileAbility({ ownerId: activeOwnerId, profileId: activeProfileId, language: targetLanguage })
-            .then((ability) => {
-                if (active) setLibraryTheta(starterThetaFromAbility(ability));
-            })
-            .catch(() => {
-                if (active) setLibraryTheta(null);
-            });
-        return () => {
-            active = false;
-        };
-    }, [activeOwnerId, activeProfileId, languageSettingsReady, targetLanguage]);
-    // Expected share of each book's vocabulary this reader knows: from the
-    // book's per-level word counts when it has them, else from its level.
-    const publicDomainEase = useMemo(() => {
-        const easeByKey = new Map();
+    // Each book's level on the standard scale (rank, 1 = easiest) and, to
+    // order books within a level, the share of its vocabulary a reader of
+    // neutral ability knows. Neither depends on this reader.
+    const publicDomainLevels = useMemo(() => {
+        const levelsByKey = new Map();
         publicDomainBookRows.forEach((book, index) => {
             const stats = normalizeLegacyKoreanStats(book?.bookLevel, targetLanguage);
+            const rank = Number(stats?.level_rank ?? stats?.proficiency_rank);
             const ease = bookEaseFromDistribution({
-                theta: libraryTheta,
+                theta: 0,
                 language: targetLanguage,
                 distribution: stats?.distribution,
-            }) ?? bookEaseFromLevel({
-                theta: libraryTheta,
-                language: targetLanguage,
-                levelRank: stats?.level_rank ?? stats?.proficiency_rank,
             });
-            easeByKey.set(getBookKey(book, `${index}`), ease);
+            levelsByKey.set(getBookKey(book, `${index}`), {
+                rank: Number.isFinite(rank) && rank > 0 ? rank : null,
+                ease: Number.isFinite(ease) ? ease : null,
+            });
         });
-        return easeByKey;
-    }, [libraryTheta, publicDomainBookRows, targetLanguage]);
+        return levelsByKey;
+    }, [publicDomainBookRows, targetLanguage]);
     const sortedPublicDomainBookRows = useMemo(() => (
         publicDomainBookRows
             .map((book, index) => ({ book, index }))
@@ -2096,9 +2080,11 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 let sortResult = 0;
 
                 if (activePublicDomainSort === 'ease') {
-                    const easeA = publicDomainEase.get(getBookKey(a.book, `${a.index}`)) ?? -1;
-                    const easeB = publicDomainEase.get(getBookKey(b.book, `${b.index}`)) ?? -1;
-                    sortResult = (easeB - easeA) || compareSortText(getBookTitle(a.book), getBookTitle(b.book));
+                    const levelA = publicDomainLevels.get(getBookKey(a.book, `${a.index}`)) ?? {};
+                    const levelB = publicDomainLevels.get(getBookKey(b.book, `${b.index}`)) ?? {};
+                    sortResult = ((levelA.rank ?? 99) - (levelB.rank ?? 99))
+                        || ((levelB.ease ?? -1) - (levelA.ease ?? -1))
+                        || compareSortText(getBookTitle(a.book), getBookTitle(b.book));
                     return sortResult ? sortResult * direction : a.index - b.index;
                 }
 
@@ -2135,28 +2121,44 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 return sortResult ? sortResult * direction : a.index - b.index;
             })
             .map(({ book }) => book)
-    ), [activePublicDomainSort, publicDomainBookRows, publicDomainEase, publicDomainSortDirection]);
-    // The ease sort shows the books in sections: comfortable, approachable,
-    // challenging, a stretch, then any book with no estimate yet.
+    ), [activePublicDomainSort, publicDomainBookRows, publicDomainLevels, publicDomainSortDirection]);
+    // The level sort shows the books in sections, one per level (A1, A2, ...;
+    // HSK 1, 2, ...), then any book with no level yet.
     const publicDomainEaseSections = useMemo(() => {
         if (activePublicDomainSort !== 'ease') {
             return null;
         }
-        const sections = [...EASE_BANDS.map((band) => ({ key: band.key, books: [] })), { key: 'unknown', books: [] }];
-        const byKey = new Map(sections.map((section) => [section.key, section]));
+        const levelOptions = getProficiencyLevelOptions(targetLanguage);
+        const sections = new Map();
         sortedPublicDomainBookRows.forEach((book) => {
             const index = publicDomainBookRows.indexOf(book);
-            const ease = publicDomainEase.get(getBookKey(book, `${index}`));
-            byKey.get(Number.isFinite(ease) ? getEaseBandKey(ease) : 'unknown').books.push(book);
+            const rank = publicDomainLevels.get(getBookKey(book, `${index}`))?.rank ?? null;
+            const key = rank == null ? 'unknown' : String(rank);
+            if (!sections.has(key)) {
+                const option = levelOptions.find((level) => level.rank === rank);
+                sections.set(key, {
+                    key,
+                    title: rank == null
+                        ? t('home.easeNotEstimated')
+                        : localizedLevelLabel(targetLanguage, option?.label ?? rank, interfaceLanguage, option?.label ?? String(rank)),
+                    books: [],
+                });
+            }
+            sections.get(key).books.push(book);
         });
-        const ordered = publicDomainSortDirection === 'desc' ? sections.slice(0, -1).reverse().concat(sections.slice(-1)) : sections;
-        return ordered.filter((section) => section.books.length > 0);
+        // Books arrive sorted by level (either direction), so the sections are
+        // already in order; the unleveled ones always go last.
+        const ordered = [...sections.values()];
+        return ordered.filter((section) => section.key !== 'unknown')
+            .concat(ordered.filter((section) => section.key === 'unknown'));
     }, [
         activePublicDomainSort,
+        interfaceLanguage,
         publicDomainBookRows,
-        publicDomainEase,
-        publicDomainSortDirection,
+        publicDomainLevels,
         sortedPublicDomainBookRows,
+        t,
+        targetLanguage,
     ]);
     const favoriteBooks = useMemo(() => languageFilteredBooks.filter(isBookFavorite), [languageFilteredBooks]);
     const recentBooks = useMemo(() => (
@@ -4424,11 +4426,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                 publicDomainEaseSections.map((section) => (
                                     <View key={section.key} style={styles.easeSection}>
                                         <View style={styles.easeSectionHeader}>
-                                            <Text style={styles.easeSectionTitle}>
-                                                {section.key === 'unknown'
-                                                    ? t('home.easeNotEstimated')
-                                                    : t(`home.readingEaseBand.${section.key}`)}
-                                            </Text>
+                                            <Text style={styles.easeSectionTitle}>{section.title}</Text>
                                             <Text style={styles.easeSectionCount}>{formatNumber(section.books.length)}</Text>
                                         </View>
                                         {effectiveCollectionViewMode === 'grid'
