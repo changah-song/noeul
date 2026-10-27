@@ -6,6 +6,10 @@ import { Feather, MaterialIcons } from '@expo/vector-icons';
 
 import TopSection from '../components/Read/TopSection/TopSection';
 import PinnedSentenceTranslation, { PINNED_TRANSLATION_BAR_HEIGHT } from '../components/Read/PinnedSentenceTranslation';
+import SelectionToolbar from '../components/Read/SelectionToolbar';
+import SelectionExplainPanel from '../components/Read/SelectionExplainPanel';
+import HighlightNoteSheet from '../components/Read/HighlightNoteSheet';
+import * as Clipboard from 'expo-clipboard';
 import { chapterTranslations } from '../services/chapterTranslations';
 import TocDrawer from '../components/Read/TocDrawer';
 import FocusControls from '../components/Read/FocusControls';
@@ -51,8 +55,12 @@ import { createListenPlayer, voiceLocaleFor, voiceSampleFor, LISTEN_PITCHES, LIS
 import {
     PREPROCESS_VERSION,
     deleteBookBookmark,
+    deleteBookHighlight,
     deleteBookNote,
     getBookBookmarks,
+    getBookHighlights,
+    insertBookHighlight,
+    updateBookHighlightNote,
     getBookNotes,
     getBookPreprocessChapter,
     getBookLookupWords,
@@ -163,10 +171,16 @@ const DEFAULT_READER_SETTINGS = {
     hideSavedAnnotations: true,
     // A fixed-height bar under the header that keeps the translation of the
     // last tapped word's sentence on screen. The open chapter's sentences are
-    // translated ahead, so it shows at once. Off by default.
-    pinnedSentenceTranslation: false,
+    // translated ahead, so it shows at once. On by default: it is where
+    // sentence translations live (a long press no longer translates).
+    pinnedSentenceTranslation: true,
 };
 const READING_MODES = ['paged', 'scroll'];
+// The reader's own highlights: a plain highlight and one carrying a note.
+const USER_HIGHLIGHT_COLORS = {
+    light: { yellow: '#66FFCF40', note: '#4D74A7FF' },
+    dark: { yellow: '#5CB88A12', note: '#5C3F6FD6' },
+};
 
 const shallowEqualObjects = (a, b) => {
     const aKeys = Object.keys(a);
@@ -506,6 +520,15 @@ const Read = ({
     const [highlightedWord, setHighlightedWord] = useState('');
     const [highlightedWordContext, setHighlightedWordContext] = useState(null);
     const [isNativeSelection, setIsNativeSelection] = useState(false);
+    // A long-press selection: { text, sentence, spineIndex, blockId, start,
+    // end }. It opens the selection toolbar (copy, highlight, note, AI) rather
+    // than the lookup panel; `selectionView` switches it to the AI explanation.
+    const [textSelection, setTextSelection] = useState(null);
+    const [selectionView, setSelectionView] = useState('toolbar');
+    const [selectionCopied, setSelectionCopied] = useState(false);
+    const [selectionPhraseSaved, setSelectionPhraseSaved] = useState(false);
+    const [noteDraft, setNoteDraft] = useState(null);
+    const [bookHighlights, setBookHighlights] = useState([]);
     const [lookupPlacement, setLookupPlacement] = useState('bottom');
     const [clearSelectionToken, setClearSelectionToken] = useState(0);
     // Temporary handoff QA toggles for the long-press translation banner.
@@ -1113,6 +1136,7 @@ const Read = ({
         setHighlightedWord('');
         setHighlightedWordContext(null);
         setIsNativeSelection(false);
+        setTextSelection(null);
     }, []);
 
     const dismissPanelRef = useRef(null);
@@ -1120,6 +1144,7 @@ const Read = ({
         setHighlightedWord('');
         setHighlightedWordContext(null);
         setIsNativeSelection(false);
+        setTextSelection(null);
         setClearSelectionToken((v) => v + 1);
     };
 
@@ -1130,8 +1155,19 @@ const Read = ({
         }
 
         setIsNativeSelection(true);
-        setHighlightedWord(text);
+        setHighlightedWord('');
         setHighlightedWordContext(null);
+        setTextSelection({
+            text,
+            sentence: typeof event.sentence === 'string' ? event.sentence.trim() : '',
+            spineIndex: Number.isInteger(event.spineIndex) ? event.spineIndex : null,
+            blockId: typeof event.blockId === 'string' ? event.blockId : null,
+            start: Number.isInteger(event.sourceStartOffset) ? event.sourceStartOffset : null,
+            end: Number.isInteger(event.sourceEndOffset) ? event.sourceEndOffset : null,
+        });
+        setSelectionView('toolbar');
+        setSelectionCopied(false);
+        setSelectionPhraseSaved(false);
         // Growing an open selection keeps the panel where it is.
         if (extendingSelectionRef.current) {
             extendingSelectionRef.current = false;
@@ -1472,8 +1508,169 @@ const Read = ({
         setHighlightedWord('');
         setHighlightedWordContext(null);
         setIsNativeSelection(false);
+        setTextSelection(null);
         setClearSelectionToken((value) => value + 1);
     }, []);
+
+    // ── Highlights, notes and the selection toolbar ──────────────────────────
+    const reloadBookHighlights = useCallback(() => {
+        if (!currentBook) {
+            setBookHighlights([]);
+            return Promise.resolve();
+        }
+        return getBookHighlights(currentBook, { ownerId: activeOwnerId, language: activeBookLanguage })
+            .then(setBookHighlights)
+            .catch((error) => console.warn('[Read] Failed to load highlights:', error?.message ?? error));
+    }, [activeBookLanguage, activeOwnerId, currentBook]);
+    useEffect(() => {
+        reloadBookHighlights();
+    }, [reloadBookHighlights]);
+    const userHighlights = useMemo(() => {
+        const palette = USER_HIGHLIGHT_COLORS[isDarkMode ? 'dark' : 'light'];
+        return bookHighlights.map((highlight) => ({
+            spineIndex: highlight.spineIndex,
+            blockId: highlight.blockId,
+            sourceStartOffset: highlight.startOffset,
+            sourceEndOffset: highlight.endOffset,
+            color: highlight.note ? palette.note : (palette[highlight.color] || palette.yellow),
+        }));
+    }, [bookHighlights, isDarkMode]);
+    // The highlight the current selection sits in, if any.
+    const selectedHighlight = useMemo(() => {
+        if (!textSelection || textSelection.start == null || textSelection.end == null) return null;
+        return bookHighlights.find((highlight) => (
+            highlight.spineIndex === textSelection.spineIndex
+            && highlight.blockId === textSelection.blockId
+            && highlight.startOffset < textSelection.end
+            && highlight.endOffset > textSelection.start
+        )) || null;
+    }, [bookHighlights, textSelection]);
+    const canAnchorSelection = Boolean(
+        textSelection
+        && textSelection.blockId
+        && Number.isInteger(textSelection.spineIndex)
+        && Number.isInteger(textSelection.start)
+        && Number.isInteger(textSelection.end)
+    );
+
+    const handleSelectionCopy = useCallback(async () => {
+        if (!textSelection?.text) return;
+        try {
+            await Clipboard.setStringAsync(textSelection.text);
+            setSelectionCopied(true);
+            setTimeout(() => setSelectionCopied(false), 1500);
+        } catch (error) {
+            console.warn('[Read] Copy failed:', error?.message ?? error);
+        }
+    }, [textSelection]);
+
+    const handleSelectionHighlight = async () => {
+        try {
+            if (selectedHighlight) {
+                await deleteBookHighlight(selectedHighlight.id, { ownerId: activeOwnerId });
+            } else if (canAnchorSelection) {
+                tapCommit();
+                await insertBookHighlight({
+                    ownerId: activeOwnerId,
+                    language: activeBookLanguage,
+                    bookUri: currentBook,
+                    spineIndex: textSelection.spineIndex,
+                    blockId: textSelection.blockId,
+                    startOffset: textSelection.start,
+                    endOffset: textSelection.end,
+                    text: textSelection.text,
+                    color: 'yellow',
+                    chapterLabel: activeChapterTitle || null,
+                });
+            }
+            await reloadBookHighlights();
+        } catch (error) {
+            console.warn('[Read] Highlight failed:', error?.message ?? error);
+        }
+        dismissLookup();
+    };
+
+    const handleSelectionNote = useCallback(() => {
+        if (!textSelection) return;
+        setNoteDraft({
+            quote: selectedHighlight?.text || textSelection.text,
+            highlightId: selectedHighlight?.id ?? null,
+            initialNote: selectedHighlight?.note ?? '',
+            selection: textSelection,
+        });
+    }, [selectedHighlight, textSelection]);
+
+    const handleNoteSave = async (note) => {
+        const draft = noteDraft;
+        setNoteDraft(null);
+        if (!draft) return;
+        try {
+            if (draft.highlightId) {
+                await updateBookHighlightNote(draft.highlightId, note, { ownerId: activeOwnerId });
+            } else if (String(note || '').trim()) {
+                const selection = draft.selection;
+                await insertBookHighlight({
+                    ownerId: activeOwnerId,
+                    language: activeBookLanguage,
+                    bookUri: currentBook,
+                    spineIndex: selection.spineIndex,
+                    blockId: selection.blockId,
+                    startOffset: selection.start,
+                    endOffset: selection.end,
+                    text: selection.text,
+                    color: 'yellow',
+                    note,
+                    chapterLabel: activeChapterTitle || null,
+                });
+            }
+            tapCommit();
+            await reloadBookHighlights();
+        } catch (error) {
+            console.warn('[Read] Saving the note failed:', error?.message ?? error);
+        }
+        dismissLookup();
+    };
+
+    // Save a phrase from the AI explanation as a vocab card, with its short
+    // meaning as the definition (like saving a word from the lookup panel).
+    const handleSelectionPhraseSave = async ({ text, gloss, sentence }) => {
+        const word = String(text || '').trim();
+        const definition = String(gloss || '').trim();
+        if (!word || !definition) return;
+        handleWordSave(word, { includeSurface: false });
+        try {
+            const alreadySaved = await vocabEntryExists(word, '', definition, activeBookLanguage, { ownerId: activeOwnerId });
+            if (!alreadySaved) {
+                const createdAt = new Date().toISOString();
+                await insertData(word, '', definition, {
+                    ownerId: activeOwnerId,
+                    level: 'unorganized',
+                    sourceBookUri: currentBook ?? null,
+                    sourceBookTitle: activeBook?.title ?? null,
+                    contextSentence: sentence || null,
+                    createdAt,
+                    updatedAt: createdAt,
+                    language: activeBookLanguage,
+                    source: 'ai',
+                });
+            }
+            await recordVocabContext({
+                ownerId: activeOwnerId,
+                word,
+                hanja: '',
+                definition,
+                sentence: sentence || '',
+                sourceBookUri: currentBook ?? null,
+                sourceBookTitle: activeBook?.title ?? null,
+                language: activeBookLanguage,
+            });
+            requestUserDataSync('reader-phrase-save');
+            setSelectionPhraseSaved(true);
+            refreshBookSavedWords?.();
+        } catch (error) {
+            console.warn('[Read] Saving the phrase failed:', error?.message ?? error);
+        }
+    };
 
     // Hardware back steps out of transient reader chrome one layer at a time:
     // the options dropdown, then the open lookup panel, then fullscreen. Focus
@@ -4007,6 +4204,7 @@ const Read = ({
                         readerEdgeStateEnabled={false}
                         highlightTerms={readerHighlightTerms}
                         highlightStrengths={highlightStrengths}
+                        userHighlights={userHighlights}
                         levelTerms={readerLevelTerms}
                         showPinyin={readerShowPinyin}
                         showGloss={readerShowGloss}
@@ -4159,8 +4357,40 @@ const Read = ({
                         savedWords={savedWordsList}
                         translationVisualState={translationBannerVisualState}
                     />
+                    {textSelection && selectionView === 'toolbar' ? (
+                        <SelectionToolbar
+                            placement={shouldPlaceLookupAtTop ? 'top' : 'bottom'}
+                            highlighted={Boolean(selectedHighlight)}
+                            hasNote={Boolean(selectedHighlight?.note)}
+                            copied={selectionCopied}
+                            onCopy={handleSelectionCopy}
+                            onHighlight={canAnchorSelection || selectedHighlight ? handleSelectionHighlight : undefined}
+                            onNote={canAnchorSelection || selectedHighlight ? handleSelectionNote : undefined}
+                            onExplain={() => setSelectionView('explain')}
+                        />
+                    ) : null}
+                    {textSelection && selectionView === 'explain' ? (
+                        <SelectionExplainPanel
+                            text={textSelection.text}
+                            sentence={textSelection.sentence}
+                            language={activeBookLanguage}
+                            interfaceLanguage={interfaceLanguage}
+                            placement={shouldPlaceLookupAtTop ? 'top' : 'bottom'}
+                            saved={selectionPhraseSaved}
+                            onSave={handleSelectionPhraseSave}
+                            onClose={dismissLookup}
+                        />
+                    ) : null}
                 </View>
             </View>
+
+            <HighlightNoteSheet
+                visible={Boolean(noteDraft)}
+                quote={noteDraft?.quote ?? ''}
+                initialNote={noteDraft?.initialNote ?? ''}
+                onSave={handleNoteSave}
+                onClose={() => setNoteDraft(null)}
+            />
 
             {/* First-run tip. Floats above the bottom edge so it never covers
                 the book title or the header (in fullscreen the header is gone
@@ -4253,8 +4483,20 @@ const Read = ({
                 insets={insets}
                 bookmarks={bookBookmarks}
                 notes={bookNotes}
+                highlights={bookHighlights}
                 onSelectBookmark={handleSelectBookmark}
                 onDeleteBookmark={handleDeleteBookmark}
+                // A highlight jumps like a bookmark, to its block.
+                onSelectHighlight={(highlight) => handleSelectBookmark({
+                    spineIndex: highlight.spineIndex,
+                    pageIndex: 0,
+                    firstBlockId: highlight.blockId,
+                })}
+                onDeleteHighlight={(id) => {
+                    deleteBookHighlight(id, { ownerId: activeOwnerId })
+                        .then(reloadBookHighlights)
+                        .catch((error) => console.warn('[Read] Removing the highlight failed:', error?.message ?? error));
+                }}
                 onDelete={handleDeleteNote}
                 onClose={() => setShowNotesLog(false)}
             />

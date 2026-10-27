@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Text, View, StyleSheet, TouchableOpacity, Pressable, ScrollView, ActivityIndicator } from 'react-native';
+import { Text, View, StyleSheet, TouchableOpacity, Pressable, ScrollView } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { api } from '../../../services/api/client';
-import { streamExplainInContext } from '../../../services/api/explainInContext';
 import { logTiming } from '../../../services/appTelemetry';
 import { useAppContext } from '../../../contexts/AppContext';
 import { useTranslation } from '../../../hooks/useTranslation';
@@ -19,9 +18,8 @@ import {
     vocabEntryExists,
 } from '../../../services/Database';
 import HanjaDetails from './HanjaDetails';
-import TranslationContent from './TranslationContent';
 import LookupLoadingSkeleton from './LookupLoadingSkeleton';
-import { normalizeBookLanguage, normalizeInterfaceLanguageCode } from '../../../constants/languages';
+import { normalizeBookLanguage } from '../../../constants/languages';
 import { fontFamilies, radii, spacing, textStyles, useTheme } from '../../../theme';
 import { playEnglishPronunciation } from '../../../services/pronunciationAudio';
 import { getRuntimeChineseScript } from '../../../services/interfaceLanguage';
@@ -88,10 +86,6 @@ const cleanValue = (value) => {
     const trimmed = value.trim();
     return trimmed === 'N/A' || trimmed === 'Unknown' ? '' : trimmed;
 };
-
-// Smart-definition results depend on the sentence, so they are cached per
-// (word, sentence) pair rather than per word.
-export const makeExplainCacheKey = (word, sentence) => `${cleanValue(sentence)}\u0000${cleanValue(word)}`;
 
 
 const hasSavableDefinition = (definition) => {
@@ -187,19 +181,6 @@ const isLikelyUntranslatedEnglishDefinition = (definition, interfaceLanguage) =>
 };
 const getRelatedKnownWordKey = (entry) => `${entry?.korean ?? ''}|${entry?.hanja ?? ''}`;
 
-// Shape a learner's related-known-words into the backend's anchor_words contract
-// ({ word, gloss }) for the agentic explanation workflow. These are words the
-// learner has confirmed they know that share a hanja with the tapped word — the
-// cross-language bridge the grounded prompt can anchor an analogy to.
-const toAnchorWords = (relatedKnownWords = []) => (
-    (Array.isArray(relatedKnownWords) ? relatedKnownWords : [])
-        .map((entry) => ({
-            word: cleanValue(entry?.korean) || cleanValue(entry?.word),
-            gloss: cleanValue(entry?.definition) || cleanValue(entry?.gloss),
-        }))
-        .filter((entry) => entry.word)
-);
-
 const formatPos = (pos, t) => {
     const normalized = cleanValue(pos).replace(/\s+/g, ' ');
     if (!normalized) {
@@ -256,9 +237,7 @@ const DictionaryContent = ({
     onWordSave,
     onWordUnsave,
     onSavedWordsChanged,
-    onTranslatePress,
     onExpandedStateChange,
-    onExplainModeChange,
     onContentHeightChange,
     onCanExpandChange,
     onRequestExpand,
@@ -267,7 +246,7 @@ const DictionaryContent = ({
     sourceBook,
     savedWords = [],
 }) => {
-    const { interfaceLanguage, activeProfileId } = useAppContext();
+    const { interfaceLanguage } = useAppContext();
     const { t, language } = useTranslation();
     const { colors } = useTheme();
     const styles = useMemo(() => createStyles(colors), [colors]);
@@ -309,136 +288,6 @@ const DictionaryContent = ({
             && !isLikelyUntranslatedEnglishDefinition(definition, interfaceLanguage);
     }, [interfaceLanguage, isChineseBook, isEnglishBook]);
     const contextSentence = cleanValue(sourceSentence);
-    const [translationMode, setTranslationMode] = useState(false);
-    // Smart-definition ("what it means here") mode. When active, the panel is
-    // replaced by the AI explanation view (short gloss + save on top, longer
-    // explanation below) and the sheet is expanded to make room. explainData
-    // caches results keyed by tapped surface: { loading, text, gloss, lemma, error }.
-    const [explainMode, setExplainMode] = useState(false);
-    const [explainData, setExplainData] = useState({});
-    // Bumped whenever the word/sentence context changes; a response that
-    // arrives after that belongs to the old context and is dropped.
-    const explainGenerationRef = useRef(0);
-
-    // Reset smart-definition state whenever a new word/sentence context is opened so
-    // we never show an explanation fetched for a different sentence.
-    useEffect(() => {
-        explainGenerationRef.current += 1;
-        setExplainMode(false);
-        setExplainData({});
-    }, [highlightedWord, contextSentence]);
-
-    const fetchExplanation = useCallback(async (key, grounding = {}) => {
-        // explainData is keyed by word AND sentence: the same word in another
-        // sentence means something else and must not reuse this result.
-        const cacheKey = makeExplainCacheKey(key, contextSentence);
-        const generation = explainGenerationRef.current;
-        const isStale = () => explainGenerationRef.current !== generation;
-        setExplainData((prev) => ({ ...prev, [cacheKey]: { loading: true, text: '', error: null } }));
-        const explainStartedAt = Date.now();
-        let firstTextLogged = false;
-        const logFirstText = () => {
-            if (!firstTextLogged) {
-                firstTextLogged = true;
-                logTiming('explain_first_text', Date.now() - explainStartedAt);
-            }
-        };
-
-        // Grounding for the agentic backend workflow. The tapped word's hanja and
-        // known-word anchors are gathered at the call site (they depend on
-        // later-declared render values); P(known) is read here from the cache.
-        let pKnown;
-        try {
-            const cached = await getCachedPKnown({
-                ownerId: activeOwnerId,
-                profileId: activeProfileId,
-                language: targetLanguage,
-                word: key,
-            });
-            if (Number.isFinite(cached)) {
-                pKnown = cached;
-            }
-        } catch (pKnownError) {
-            // Grounding is best-effort; a missing P(known) just means a neutral prompt.
-            console.warn('[DictionaryContent] getCachedPKnown failed:', pKnownError?.message ?? pKnownError);
-        }
-
-        // Partial results stream in while the request is open: the short gloss
-        // first, then the explanation as it is written. Both only ever update an
-        // entry that is still loading, so a late chunk can't clobber a final result.
-        const updateStreaming = (patch) => {
-            if (isStale()) return;
-            setExplainData((prev) => (
-                prev[cacheKey]?.loading ? { ...prev, [cacheKey]: { ...prev[cacheKey], ...patch } } : prev
-            ));
-        };
-
-        try {
-            const response = await streamExplainInContext({
-                word: key,
-                sentence: contextSentence,
-                language: targetLanguage,
-                interfaceLanguage,
-                pKnown,
-                hanja: grounding.hanja,
-                anchorWords: grounding.anchorWords,
-                dictionary: grounding.dictionary,
-                lemma: grounding.lemma,
-                onGloss: (gloss) => { logFirstText(); updateStreaming({ gloss: cleanValue(gloss) }); },
-                onText: (text) => { logFirstText(); updateStreaming({ text }); },
-            });
-            logFirstText();
-            logTiming('explain_done', Date.now() - explainStartedAt);
-            const text = cleanValue(response?.explanation);
-            const gloss = cleanValue(response?.gloss);
-            const lemma = cleanValue(response?.lemma);
-            const pinyin = cleanValue(response?.pinyin);
-            // Prefer the client's own dictionary signal: it is authoritative
-            // (our bundled dictionary) and, unlike the server's echoed flag,
-            // survives a lookup_cache hit — the cache only stores lemma/gloss/
-            // explanation, so response.not_in_dictionary is dropped on hits.
-            const notInDictionary = grounding?.dictionary?.found === false
-                || response?.not_in_dictionary === true;
-            if (isStale()) return;
-            setExplainData((prev) => ({
-                ...prev,
-                [cacheKey]: text
-                    ? { loading: false, text, gloss, lemma, pinyin, notInDictionary, error: null }
-                    : { loading: false, text: '', gloss: '', lemma: '', pinyin: '', error: t('lookup.explainFailed') },
-            }));
-        } catch (error) {
-            if (isStale()) return;
-            setExplainData((prev) => ({
-                ...prev,
-                [cacheKey]: { loading: false, text: '', error: getUserFacingErrorMessage(error, t, 'lookup.explainFailed', language) },
-            }));
-        }
-    }, [contextSentence, targetLanguage, interfaceLanguage, activeOwnerId, activeProfileId, t]);
-
-    // Toggle the smart-definition panel mode. Entering it kicks off the fetch (if
-    // not already cached/in-flight) and leaves translation mode. `grounding`
-    // ({ hanja, anchorWords }) is gathered by the caller from render-time values.
-    const handleSmartDefinitionPress = useCallback((word, grounding = {}) => {
-        const key = cleanValue(word);
-        if (!key || !contextSentence) {
-            return;
-        }
-
-        if (explainMode) {
-            setExplainMode(false);
-            return;
-        }
-
-        setTranslationMode(false);
-        setExplainMode(true);
-
-        const existing = explainData[makeExplainCacheKey(key, contextSentence)];
-        if (existing && (existing.loading || existing.text)) {
-            return; // already fetched or in flight
-        }
-        fetchExplanation(key, grounding);
-    }, [explainMode, explainData, contextSentence, fetchExplanation]);
-
     const [drilldownStack, setDrilldownStack] = useState([]);
     const lookupWord = drilldownStack.length > 0 ? drilldownStack[drilldownStack.length - 1] : highlightedWord;
     const rootLookupWord = cleanValue(normalizeSurfaceWordForLanguage(highlightedWord, targetLanguage)) || cleanValue(highlightedWord);
@@ -471,10 +320,6 @@ const DictionaryContent = ({
     const [dictionaryViewportHeight, setDictionaryViewportHeight] = useState(0);
     const [dictionaryContentHeight, setDictionaryContentHeight] = useState(0);
     const dictionaryScrollRef = useRef(null);
-    // Temporary handoff QA toggles for dictionary translation panel states.
-    const [translationLoadingPreview] = useState(false);
-    const [translationErrorPreview] = useState(false);
-    const [translationTextPreview] = useState('');
     useEffect(() => {
         romanizationsRef.current = romanizations;
     }, [romanizations]);
@@ -507,7 +352,6 @@ const DictionaryContent = ({
     };
 
     useEffect(() => {
-        setTranslationMode(false);
         setDrilldownStack([]);
     }, [highlightedWord, targetLanguage]);
 
@@ -585,17 +429,6 @@ const DictionaryContent = ({
     }, [activeOwnerId, currentBook, interfaceLanguage, isUsableCachedEntry, lookupWord, onContentLoaded, targetLanguage]);
 
     useEffect(() => {
-        // Smart-definition mode expands the sheet to full height (any positive row
-        // count makes the parent size it to DICTIONARY_EXPANDED_MAX_HEIGHT) so the
-        // gloss, save button, and longer explanation all have room.
-        if (explainMode) {
-            onExplainModeChange?.(true);
-            onExpandedStateChange?.(1);
-            return;
-        }
-
-        onExplainModeChange?.(false);
-
         if (!isPanelExpanded) {
             onExpandedStateChange?.(0);
             return;
@@ -621,7 +454,7 @@ const DictionaryContent = ({
         }, 0);
 
         onExpandedStateChange?.(Math.max(expandedCachedCount, expandedLiveCount));
-    }, [dictionaryData, expandedCached, expandedWords, explainMode, extraDefs, isPanelExpanded, onExpandedStateChange, onExplainModeChange, stemWordList]);
+    }, [dictionaryData, expandedCached, expandedWords, extraDefs, isPanelExpanded, onExpandedStateChange, stemWordList]);
 
     const storeRomanizationPairs = useCallback((pairs) => {
         const normalizedPairs = (pairs || [])
@@ -845,35 +678,6 @@ const DictionaryContent = ({
         };
     }, [activeLookupItem, liveEntryMeta, lookupWord]);
     const activeLookupHanja = activeLookupDetails.hanja;
-    // The dictionary result already on screen, reshaped as grounding for the
-    // in-context AI. `found` is false when we have no definition to show — that
-    // is the authoritative "not in dictionary" signal, since it is our own
-    // bundled dictionary. Deduped by definition so repeated senses don't bloat
-    // the prompt.
-    const activeDictionaryGrounding = useMemo(() => {
-        const item = activeLookupItem;
-        if (!item) {
-            return { found: false, senses: [] };
-        }
-        const entries = [];
-        if (item.cachedEntry) entries.push(item.cachedEntry);
-        if (Array.isArray(item.liveEntries)) entries.push(...item.liveEntries);
-        const senses = [];
-        const seen = new Set();
-        entries.forEach((entry) => {
-            const definition = getEntryDefinition(entry);
-            if (!definition) return;
-            const dedupeKey = definition.toLowerCase();
-            if (seen.has(dedupeKey)) return;
-            seen.add(dedupeKey);
-            senses.push({
-                headword: getEntryWord(entry, ''),
-                pos: getEntryPos(entry),
-                definition,
-            });
-        });
-        return { found: senses.length > 0, senses };
-    }, [activeLookupItem]);
     const canExpandCurrentLookup = (
         (isKoreanBook && hasHanja(activeLookupHanja))
         // English: expanding lists the word's other entries (bank: the river one).
@@ -1048,7 +852,6 @@ const DictionaryContent = ({
     };
 
     const toggleSave = async (word, origin, definition, options = {}) => {
-        const { source = null } = options;
         onWordSave?.(word, options);
         const createdAt = new Date().toISOString();
         const relatedKnownWords = relatedKnownByWord[word] ?? [];
@@ -1073,7 +876,6 @@ const DictionaryContent = ({
                 language: targetLanguage,
                 relatedKnownWords,
                 pKnown,
-                source,
             });
         }
         const recordedContext = await recordVocabContext({
@@ -1134,28 +936,6 @@ const DictionaryContent = ({
         });
     };
 
-    // Save a word using the AI's short contextual gloss as its definition. Used
-    // for OOV / force-decomposed words the dictionary can't resolve (e.g. archaic
-    // contractions like 설워하다). The caller passes the AI-stemmed base form (with a
-    // surface fallback) as the headword, and we tag it `source: 'ai'` so the
-    // saved-words list can badge it as AI-explained.
-    const saveWithAiDefinition = async (headword, gloss, pinyin = '') => {
-        const wordToSave = cleanValue(headword);
-        const def = cleanValue(gloss);
-        if (!wordToSave || !def) {
-            return;
-        }
-        // For Chinese we carry the pinyin in the origin/hanja slot (zh has no hanja),
-        // so the saved card keeps both the reading and the definition — the vocab
-        // list, flashcard, and saved panel all render that slot under the headword.
-        const origin = isChineseBook ? cleanValue(pinyin) : '';
-        if (isWordSaved(wordToSave)) {
-            await toggleUnSave(wordToSave, origin, def);
-        } else {
-            await toggleSave(wordToSave, origin, def, { source: 'ai' });
-        }
-    };
-
     const isWordSaved = (word) => savedWords.includes(word);
 
     const goBackFromDrilldown = () => {
@@ -1183,7 +963,7 @@ const DictionaryContent = ({
     // the word. Anything else renders as plain text.
     const renderHeadwordText = (text, textStyle) => {
         const value = cleanValue(text);
-        if (chineseCharactersOf(value).length < 2 || explainMode) {
+        if (chineseCharactersOf(value).length < 2) {
             return <Text selectable style={textStyle}>{text}</Text>;
         }
         return (
@@ -1350,60 +1130,7 @@ const DictionaryContent = ({
         );
     };
 
-
-    const renderBookmarkButton = (word, hanja, definition) => {
-        if (!hasSavableDefinition(definition)) {
-            return null;
-        }
-
-        const saved = isWordSaved(word);
-
-        return (
-            <TouchableOpacity
-                accessibilityRole="button"
-                accessibilityLabel={saved
-                    ? t('lookup.removeWord', { word })
-                    : t('lookup.saveWord', { word })}
-                activeOpacity={0.8}
-                onPress={() =>
-                    saved
-                        ? toggleUnSave(word, hanja, definition)
-                        : toggleSave(word, hanja, definition)
-                }
-                style={[
-                    styles.bookmarkButton,
-                    {
-                        backgroundColor: colors.transparent,
-                        borderColor: colors.transparent,
-                    },
-                ]}
-            >
-                <MaterialIcons
-                    name={saved ? 'bookmark' : 'bookmark-border'}
-                    size={25}
-                    color={saved ? palette.action : palette.mutedText}
-                />
-            </TouchableOpacity>
-        );
-    };
-
-    const renderTranslateButton = (word) => (
-        <TouchableOpacity
-            accessibilityRole="button"
-            accessibilityLabel={t('lookup.translateWord', { word })}
-            activeOpacity={0.8}
-            onPress={() => onTranslatePress?.(cleanValue(word) || tappedSurface)}
-            style={styles.translateButton}
-        >
-            <MaterialIcons
-                name="translate"
-                size={21}
-                color={palette.mutedText}
-            />
-        </TouchableOpacity>
-    );
-
-    // One of the three equal action buttons (Save / Meaning / Translate).
+    // An action-row button (Save).
     // `active` fills it with ink, like a pressed toggle.
     const renderActionButton = ({
         icon,
@@ -1411,7 +1138,6 @@ const DictionaryContent = ({
         onPress,
         active = false,
         disabled = false,
-        showAiBadge = false,
         accessibilityLabel,
         accessibilityState,
     }) => {
@@ -1438,29 +1164,9 @@ const DictionaryContent = ({
                 >
                     {label}
                 </Text>
-                {showAiBadge ? (
-                    <Text style={[styles.aiBadge, { color: tint }]}>{t('lookup.aiBadge')}</Text>
-                ) : null}
             </TouchableOpacity>
         );
     };
-
-    const toggleWordTranslation = (word) => {
-        setExplainMode(false);
-        if (!translationMode) {
-            onTranslatePress?.(cleanValue(word) || tappedSurface);
-        }
-        setTranslationMode(!translationMode);
-    };
-
-    const renderTranslateActionButton = (word) => renderActionButton({
-        icon: 'translate',
-        label: t('lookup.translate'),
-        onPress: () => toggleWordTranslation(word),
-        active: translationMode,
-        accessibilityLabel: t('lookup.translateWord', { word: tappedSurface }),
-        accessibilityState: { expanded: translationMode },
-    });
 
     const renderActionRow = (word, hanja, definition) => {
         const canSave = hasSavableDefinition(definition);
@@ -1468,16 +1174,14 @@ const DictionaryContent = ({
 
         return (
             <View style={styles.actionRow}>
-                {!explainMode ? renderActionButton({
+                {renderActionButton({
                     icon: saved ? 'bookmark' : 'bookmark-border',
                     label: saved ? t('lookup.saved') : t('lookup.save'),
                     onPress: () => (saved ? toggleUnSave(word, hanja, definition) : toggleSave(word, hanja, definition)),
                     active: saved,
                     disabled: !canSave,
                     accessibilityState: { selected: saved },
-                }) : null}
-                {renderExplainActionButton()}
-                {renderTranslateActionButton(word)}
+                })}
             </View>
         );
     };
@@ -1487,46 +1191,13 @@ const DictionaryContent = ({
 
         return (
             <View style={styles.actionRow}>
-                {!explainMode ? renderActionButton({
+                {renderActionButton({
                     icon: notFoundSaved ? 'bookmark' : 'bookmark-border',
                     label: notFoundSaved ? t('lookup.saved') : t('lookup.save'),
                     onPress: () => (notFoundSaved ? toggleUnSave(word, '', '') : toggleSave(word, '', '')),
                     active: notFoundSaved,
                     accessibilityState: { selected: notFoundSaved },
-                }) : null}
-                {renderExplainActionButton()}
-                {renderTranslateActionButton(word)}
-            </View>
-        );
-    };
-
-    // Translate in the word panel translates just the tapped word and shows it
-    // inline, in a tinted row under the definition, so the panel never jumps.
-    const renderInlineTranslation = () => {
-        if (!translationMode || explainMode || !tappedSurface) {
-            return null;
-        }
-
-        return (
-            <View style={[styles.inlineTranslation, { backgroundColor: colors.surfaceMuted }]}>
-                <MaterialIcons name="translate" size={16} color={colors.textMuted} />
-                <View style={styles.inlineTranslationText}>
-                    <TranslationContent
-                        key={`${tappedSurface}-${targetLanguage}-${interfaceLanguage}`}
-                        highlightedWord={tappedSurface}
-                        isDarkMode={isDarkMode}
-                        sourceLanguage={normalizeBookLanguage(sourceBook?.language ?? 'ko')}
-                        targetLanguage={normalizeInterfaceLanguageCode(interfaceLanguage)}
-                        inline
-                        forceLoading={translationLoadingPreview}
-                        forceError={translationErrorPreview}
-                        forceErrorMessage={t('lookup.noTranslation')}
-                        forceTranslatedText={translationTextPreview}
-                    />
-                </View>
-                <Text style={[styles.inlineTranslationSurface, { color: colors.textSubtle }]} numberOfLines={1}>
-                    {tappedSurface}
-                </Text>
+                })}
             </View>
         );
     };
@@ -1759,149 +1430,6 @@ const DictionaryContent = ({
         );
     };
 
-    // Smart-definition is keyed on the tapped SURFACE form (tappedSurface) rather
-    // than any single dictionary stem — so an eojeol Kiwi shattered into fragments
-    // (설워하는 → 설/워/하다) is explained and saved as one word (lemma 설워하다).
-    const explainKey = cleanValue(tappedSurface);
-    const canExplain = !!explainKey && !!contextSentence;
-    // The AI returns a stemmed base form (lemma) for the tapped surface — Kiwi
-    // often can't lemmatize the words that land here (archaic/dialectal). Once the
-    // fetch resolves we show and save that base form; until then (or if the model
-    // returns none) we fall back to the tapped surface itself.
-    //
-    // When our own dictionary resolved the tap to a single entry (누워 → 눕다), that
-    // dictionary form is authoritative: it is sent with the request (the backend
-    // then uses it instead of guessing) and shown as the headword, so the title,
-    // its romanization, the explanation and the saved card all name one form.
-    // Multi-fragment lookups (Kiwi shattering an archaic eojeol) have no single
-    // dictionary form and keep using the AI's base form.
-    const explainDictionaryLemma = activeDictionaryGrounding.found && lookupItemCount === 1
-        ? cleanValue(activeLookupDetails.word)
-        : '';
-    const explainEntry = explainData[makeExplainCacheKey(explainKey, contextSentence)];
-    const explainLemma = cleanValue(explainEntry?.lemma);
-    const explainHeadword = explainDictionaryLemma || explainLemma || explainKey;
-    const getExplainGrounding = () => ({
-        hanja: activeLookupHanja || null,
-        anchorWords: toAnchorWords(relatedKnownByWord[explainKey]),
-        dictionary: activeDictionaryGrounding,
-        lemma: explainDictionaryLemma || undefined,
-    });
-
-    // Body-only smart-definition content: the short gloss + save button on top
-    // (immediately visible and saveable), then the longer contextual explanation
-    // underneath. It REPLACES the dictionary definition body while keeping the
-    // entry's title (word + hanja + pronunciation) rendered above it by the caller.
-    const renderExplainBodySection = () => {
-        const data = explainEntry || {};
-        // Save the AI-stemmed base form (falling back to the tapped surface when the
-        // model returns none), so title and flashcard both show a clean headword.
-        const saveWord = explainHeadword;
-        const glossText = cleanValue(data.gloss);
-        // Chinese: the AI-attached pinyin sits next to the definition and is saved
-        // alongside it (empty for other target languages).
-        const pinyinText = isChineseBook ? cleanValue(data.pinyin) : '';
-        // The gloss streams in complete (the server only sends it once its tag
-        // closes), so it is shown and saveable while the explanation still loads.
-        const hasGloss = !data.error && !!glossText;
-        const isWaitingForText = data.loading && !data.text;
-        const aiSaved = hasGloss && isWordSaved(saveWord);
-
-        return (
-            <View style={styles.explainSection}>
-                {hasGloss ? (
-                    <View style={styles.explainGlossRow}>
-                        <View style={styles.explainGlossTextWrap}>
-                            {pinyinText ? (
-                                <Text selectable style={[styles.explainGlossPinyin, { color: palette.mutedText }]}>
-                                    {pinyinText}
-                                </Text>
-                            ) : null}
-                            <Text selectable style={[styles.explainGloss, { color: palette.text }]}>
-                                {glossText}
-                            </Text>
-                        </View>
-                        <TouchableOpacity
-                            style={[styles.aiSaveButton, aiSaved ? styles.actionButtonActive : null]}
-                            onPress={() => saveWithAiDefinition(saveWord, glossText, pinyinText)}
-                            activeOpacity={0.7}
-                            accessibilityRole="button"
-                            accessibilityLabel={aiSaved ? t('lookup.saved') : t('lookup.saveAiDefinition')}
-                        >
-                            <MaterialIcons
-                                name={aiSaved ? 'bookmark' : 'bookmark-border'}
-                                size={16}
-                                color={aiSaved ? palette.actionText : palette.text}
-                                style={styles.actionButtonIcon}
-                            />
-                            <Text style={[styles.actionLabel, styles.aiSaveLabel, { color: aiSaved ? palette.actionText : palette.text }]}>
-                                {aiSaved ? t('lookup.saved') : t('lookup.saveAiDefinition')}
-                            </Text>
-                        </TouchableOpacity>
-                    </View>
-                ) : null}
-
-                <View style={[styles.explainBody, { borderTopColor: palette.border }]}>
-                    <Text style={[styles.explainBodyTitle, { color: colors.textTertiary }]}>
-                        {t('lookup.explainInThisSentence')}
-                    </Text>
-                    {data.text && data.notInDictionary ? (
-                        <View style={[styles.notInDictionaryBadge, { borderColor: palette.border }]}>
-                            <MaterialIcons
-                                name="info-outline"
-                                size={11}
-                                color={palette.mutedText}
-                                style={styles.notInDictionaryIcon}
-                            />
-                            <Text style={[styles.notInDictionaryText, { color: palette.mutedText }]}>
-                                {t('lookup.notInDictionary')}
-                            </Text>
-                        </View>
-                    ) : null}
-                    {isWaitingForText ? (
-                        <View style={styles.explainLoadingRow}>
-                            <ActivityIndicator size="small" color={colors.textTertiary} />
-                            <Text style={[styles.explainLoadingText, { color: palette.mutedText }]}>
-                                {t('lookup.explainLoading')}
-                            </Text>
-                        </View>
-                    ) : data.text ? (
-                        <Text selectable style={[styles.explainBodyText, { color: palette.text }]}>
-                            {data.text}
-                        </Text>
-                    ) : (
-                        <TouchableOpacity
-                            accessibilityRole="button"
-                            activeOpacity={0.85}
-                            onPress={() => fetchExplanation(explainKey, getExplainGrounding())}
-                        >
-                            <Text style={[styles.explainErrorText, { color: palette.emptyText }]}>
-                                {data.error || t('lookup.explainFailed')}
-                            </Text>
-                        </TouchableOpacity>
-                    )}
-                </View>
-            </View>
-        );
-    };
-
-    // The middle button in the action row that toggles smart-definition mode.
-    const renderExplainActionButton = () => {
-        if (!canExplain) {
-            return null;
-        }
-
-        return renderActionButton({
-            icon: 'auto-awesome',
-            label: t('lookup.smartDefinition'),
-            onPress: () => handleSmartDefinitionPress(explainKey, getExplainGrounding()),
-            active: explainMode,
-            showAiBadge: true,
-            accessibilityLabel: t('lookup.explainInContext'),
-            accessibilityState: { expanded: explainMode },
-        });
-    };
-
     // A reading's senses, either as one line or a numbered list when there are many.
     const renderZhSenses = (senses, color) => {
         if (!Array.isArray(senses) || senses.length === 0) {
@@ -2099,20 +1627,10 @@ const DictionaryContent = ({
     }) => {
         const posLabel = toSentenceCase(formatPos(pos, t));
 
-        // In smart-definition mode the title shows the explanation's base form —
-        // the dictionary form when the lookup resolved one, else the AI-stemmed
-        // form (surface fallback until the fetch resolves) — matching what "Save
-        // this" keeps. If that differs from this entry's word, the entry's
-        // pronunciation, hanja and audio describe a different word, so they are
-        // left out rather than shown under the wrong headword.
-        const headingWord = explainMode ? explainHeadword : word;
-        const headingIsEntryWord = cleanValue(headingWord) === cleanValue(word);
-        const keepEntryDetails = !explainMode || headingIsEntryWord;
-
         // Chinese keeps pinyin in the heading (to the right of the character); when a
         // word has several readings with different meanings, each reading carries its
         // own pinyin in the body rows instead, so the heading shows none.
-        const zhData = isChineseBook && !explainMode
+        const zhData = isChineseBook
             ? getChineseReadingsData(cleanValue(word), pinyin, definition)
             : null;
         const zhHeadingPinyin = zhData && !zhData.rowLayout
@@ -2123,19 +1641,19 @@ const DictionaryContent = ({
         return (
             <View key={key} style={[styles.primaryEntry, separated && { borderTopColor: palette.border, borderTopWidth: StyleSheet.hairlineWidth }]}>
                 {renderEntryHeading({
-                    word: headingWord,
-                    hanja: keepEntryDetails ? hanja : '',
+                    word,
+                    hanja,
                     definition,
-                    pos: keepEntryDetails ? pos : '',
-                    romanization: keepEntryDetails ? romanization : null,
-                    ipa: keepEntryDetails ? ipa : '',
-                    pinyin: keepEntryDetails ? headingPinyin : null,
-                    simplified: explainMode ? null : simplified,
-                    traditional: explainMode ? null : traditional,
-                    audioUs: keepEntryDetails ? audioUs : '',
-                    audioUk: keepEntryDetails ? audioUk : '',
+                    pos,
+                    romanization,
+                    ipa,
+                    pinyin: headingPinyin,
+                    simplified,
+                    traditional,
+                    audioUs,
+                    audioUk,
                 })}
-                {fallbackLanguage && !explainMode ? (
+                {fallbackLanguage ? (
                     // KRDICT was unavailable for the interface language, so these
                     // are the bundled English senses (not cached; a later lookup
                     // fetches the real translation).
@@ -2146,11 +1664,9 @@ const DictionaryContent = ({
                         {t('lookup.englishFallbackNotice')}
                     </Text>
                 ) : null}
-                {explainMode ? renderExplainBodySection() : (
-                    isChineseBook ? (
+                {isChineseBook ? (
                         <View style={styles.zhBody}>
                             {renderChineseBody(zhData)}
-                            {renderInlineTranslation()}
                             {isPanelExpanded ? renderChineseCharacterBreakdown(cleanValue(word)) : null}
                         </View>
                     ) : (
@@ -2175,7 +1691,6 @@ const DictionaryContent = ({
                                     {t('lookup.noDictionaryEntry')}
                                 </Text>
                             )}
-                            {renderInlineTranslation()}
                             {isPanelExpanded && showLess ? renderExtraDefinitions(extraEntries) : null}
                         </>
                     ) : (
@@ -2198,11 +1713,9 @@ const DictionaryContent = ({
                                 </Text>
                             )}
                         </View>
-                        {renderInlineTranslation()}
                         {isPanelExpanded && showLess ? renderExtraDefinitions(extraEntries) : null}
                     </>
-                    ))
-                )}
+                    ))}
             </View>
         );
     };
@@ -2260,9 +1773,8 @@ const DictionaryContent = ({
         );
     };
 
-    // Not-found panel. Mirrors renderDictionaryPanel's structure so the header +
-    // (in smart-definition mode) the explanation live inside a ScrollView while the
-    // action row stays pinned below. Without this the content overflowed the fixed
+    // Not-found panel. Mirrors renderDictionaryPanel's structure so the header
+    // lives inside a ScrollView while the action row stays pinned below. Without this the content overflowed the fixed
     // sheet height, clipping the word header at the top with no way to scroll.
     const renderNotFoundPanel = () => (
         <View style={[styles.panelContent, styles.dictionaryPanelContent, { backgroundColor: palette.surface }]}>
@@ -2271,7 +1783,7 @@ const DictionaryContent = ({
                 style={styles.dictionaryScroll}
                 contentContainerStyle={[
                     styles.notFoundScrollContent,
-                    explainMode ? styles.notFoundScrollContentExplain : styles.notFoundScrollContentCentered,
+                    styles.notFoundScrollContentCentered,
                 ]}
                 keyboardShouldPersistTaps="handled"
                 nestedScrollEnabled={isDictionaryScrollable}
@@ -2287,18 +1799,11 @@ const DictionaryContent = ({
                 }}
             >
                 {renderDrilldownBackRow()}
-                {explainMode ? (
-                    <Text style={[styles.entryWord, styles.notFoundWord, { color: palette.text }]}>{explainHeadword}</Text>
-                ) : renderHeadwordText(lookupWord, [styles.entryWord, styles.notFoundWord, { color: palette.text }])}
-                {explainMode ? renderExplainBodySection() : (
-                    <>
-                        {/* A failed request is not the same as "no entry": say so. */}
-                        <Text style={[styles.notFoundSubtext, { color: colors.textSubtle }]}>
-                            {liveError ? t('lookup.dictionaryFailed') : t('lookup.noDefinition')}
-                        </Text>
-                        {renderInlineTranslation()}
-                    </>
-                )}
+                {renderHeadwordText(lookupWord, [styles.entryWord, styles.notFoundWord, { color: palette.text }])}
+                {/* A failed request is not the same as "no entry": say so. */}
+                <Text style={[styles.notFoundSubtext, { color: colors.textSubtle }]}>
+                    {liveError ? t('lookup.dictionaryFailed') : t('lookup.noDefinition')}
+                </Text>
             </ScrollView>
             {renderNotFoundActionRow(lookupWord)}
         </View>
@@ -2359,7 +1864,7 @@ const DictionaryContent = ({
                     separated: false,
                 })}
 
-                {isKoreanBook && isPanelExpanded && !explainMode ? (
+                {isKoreanBook && isPanelExpanded ? (
                 <HanjaDetails
                     hanja={currentHanja?.character ?? getHanjaCharacters(cachedHanja)[0] ?? null}
                     hanjaCharacters={currentHanja?.characters?.length ? currentHanja.characters : getHanjaCharacters(cachedHanja)}
@@ -2427,7 +1932,7 @@ const DictionaryContent = ({
                 separated: false,
             })}
 
-            {isKoreanBook && isPanelExpanded && !explainMode ? (
+            {isKoreanBook && isPanelExpanded ? (
             <HanjaDetails
                 hanja={currentHanja?.character ?? getHanjaCharacters(liveHanja)[0] ?? null}
                 hanjaCharacters={currentHanja?.characters?.length ? currentHanja.characters : getHanjaCharacters(liveHanja)}
@@ -2629,40 +2134,8 @@ const createStyles = (colors) => StyleSheet.create({
         letterSpacing: 0,
         flexShrink: 1,
     },
-    // Small superscript "AI" after the Meaning label.
-    aiBadge: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 9,
-        lineHeight: 11,
-        letterSpacing: 0.3,
-        opacity: 0.7,
-        marginLeft: 2,
-        alignSelf: 'flex-start',
-        marginTop: 11,
-    },
     actionRowPlaceholder: {
         height: 62,
-    },
-    inlineTranslation: {
-        alignSelf: 'stretch',
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 10,
-        paddingVertical: 10,
-        paddingHorizontal: 12,
-        borderRadius: 12,
-        marginTop: 4,
-    },
-    inlineTranslationText: {
-        flex: 1,
-        minWidth: 0,
-    },
-    inlineTranslationSurface: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 12,
-        lineHeight: 16,
-        maxWidth: 110,
-        flexShrink: 0,
     },
     definitionLoadingContent: {
         paddingHorizontal: 22,
@@ -2879,97 +2352,6 @@ const createStyles = (colors) => StyleSheet.create({
     zhCharSenses: {
         flex: 1,
     },
-    explainSection: {
-        width: '100%',
-        marginTop: 4,
-    },
-    explainGlossRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 12,
-    },
-    explainGlossTextWrap: {
-        flex: 1,
-        gap: 2,
-    },
-    explainGlossPinyin: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 14,
-        lineHeight: 20,
-    },
-    explainGloss: {
-        fontFamily: fontFamilies.sansBold,
-        fontSize: 17,
-        lineHeight: 24,
-    },
-    explainBody: {
-        marginTop: 12,
-        paddingTop: 12,
-        borderTopWidth: StyleSheet.hairlineWidth,
-        gap: 6,
-    },
-    explainBodyTitle: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 13,
-        lineHeight: 17,
-        letterSpacing: 0,
-    },
-    explainBodyText: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 15,
-        lineHeight: 22,
-        letterSpacing: 0,
-    },
-    notInDictionaryBadge: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        alignSelf: 'flex-start',
-        gap: 4,
-        marginBottom: 8,
-        paddingVertical: 2,
-        paddingHorizontal: 7,
-        borderWidth: StyleSheet.hairlineWidth,
-        borderRadius: 10,
-    },
-    notInDictionaryIcon: {
-        opacity: 0.8,
-    },
-    notInDictionaryText: {
-        fontFamily: fontFamilies.sansMedium,
-        fontSize: 11,
-        letterSpacing: 0,
-    },
-    explainLoadingRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-        minHeight: 22,
-    },
-    explainLoadingText: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 14,
-        lineHeight: 20,
-    },
-    explainErrorText: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 14,
-        lineHeight: 20,
-    },
-    aiSaveButton: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        height: 40,
-        paddingHorizontal: 14,
-        backgroundColor: colors.readerSurface,
-        borderWidth: 1,
-        borderColor: colors.border,
-        borderRadius: 12,
-    },
-    aiSaveLabel: {
-        fontSize: 13,
-    },
     drilldownBackRow: {
         alignSelf: 'center',
         flexDirection: 'row',
@@ -3003,22 +2385,6 @@ const createStyles = (colors) => StyleSheet.create({
     emptyDefinition: {
         ...textStyles.body,
         fontStyle: 'italic',
-    },
-    bookmarkButton: {
-        width: 34,
-        height: 34,
-        borderRadius: 17,
-        borderWidth: 0,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    translateButton: {
-        width: 34,
-        height: 34,
-        borderRadius: 17,
-        borderWidth: 0,
-        alignItems: 'center',
-        justifyContent: 'center',
     },
     extraList: {
         flexGrow: 0,
@@ -3117,11 +2483,6 @@ const createStyles = (colors) => StyleSheet.create({
     notFoundScrollContentCentered: {
         justifyContent: 'center',
         alignItems: 'center',
-    },
-    notFoundScrollContentExplain: {
-        justifyContent: 'flex-start',
-        paddingTop: spacing.sm,
-        paddingBottom: spacing.sm,
     },
     notFoundWord: {
         textAlign: 'center',

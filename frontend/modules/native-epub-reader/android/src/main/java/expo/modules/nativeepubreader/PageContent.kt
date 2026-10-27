@@ -80,7 +80,20 @@ data class TextRange(
   val strength: Float = 1f,
   // The matched term's text (saved and level ranges), so per-word state such
   // as a tapped underline can be looked up.
-  val term: String? = null
+  val term: String? = null,
+  // A reader's own highlight (long press → Highlight), drawn as a box of this
+  // color behind the text. Travels with the saved-word ranges but never fades.
+  val userColor: Int? = null
+)
+
+// A highlight the reader made, by position: spine item, block and source
+// offsets, as the selection reported them.
+data class UserHighlight(
+  val spineIndex: Int,
+  val blockId: String,
+  val sourceStartOffset: Int,
+  val sourceEndOffset: Int,
+  val color: Int
 )
 
 // A focused sentence span in focus (sentence beam) mode. Offsets are local to
