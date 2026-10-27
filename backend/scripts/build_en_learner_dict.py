@@ -254,7 +254,20 @@ def build(src: str, out: str, levels_db: str, top: int) -> None:
                 "equivalents": equivalents_for(raw, senses),
             }))
 
+    # Machine-translated senses (scripts/translate_en_senses.py) cost money;
+    # keep them across rebuilds. They're keyed by the English sense text, so
+    # an unchanged sense keeps its translation.
+    kept_translations: list[tuple] = []
     if os.path.exists(out):
+        old = sqlite3.connect(out)
+        try:
+            kept_translations = old.execute(
+                "SELECT interface_language, source, text FROM en_sense_translations"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            pass
+        finally:
+            old.close()
         os.remove(out)
     conn = sqlite3.connect(out)
     conn.executescript(
@@ -304,6 +317,17 @@ def build(src: str, out: str, levels_db: str, top: int) -> None:
                     (language, word, entry_no, json.dumps(words, ensure_ascii=False)),
                 )
                 equivalent_rows += 1
+    conn.execute(
+        """
+        CREATE TABLE en_sense_translations (
+            interface_language TEXT NOT NULL,
+            source             TEXT NOT NULL,  -- the English sense, as in en_entries.senses
+            text               TEXT NOT NULL,
+            PRIMARY KEY (interface_language, source)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.executemany("INSERT OR IGNORE INTO en_sense_translations VALUES (?, ?, ?)", kept_translations)
     alias_rows = [(word, target) for word, target in sorted(aliases.items())
                   if target in collected and word not in collected]
     conn.executemany("INSERT INTO en_aliases VALUES (?, ?)", alias_rows)

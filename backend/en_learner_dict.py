@@ -67,8 +67,10 @@ def lookup_entries(
     """stem -> its entries, most common first. Stems with no entry are absent.
 
     Each entry: word, pos, ipa, audio_us, audio_uk, senses (English),
-    definition (the senses, one per line), equivalents (in interface_language, possibly
-    empty) and gloss (the equivalents joined, or None).
+    translated_senses (aligned with senses: the stored translation into
+    interface_language, or None), definition (see localized_definition),
+    equivalents (in interface_language, possibly empty) and gloss (the
+    equivalents joined, or None).
     """
     if not is_installed():
         return {}
@@ -100,6 +102,7 @@ def lookup_entries(
                 "audio_us": row["audio_us"],
                 "audio_uk": row["audio_uk"],
                 "senses": senses,
+                "translated_senses": [None] * len(senses),
                 "definition": "\n".join(senses) or None,
                 "equivalents": [],
                 "gloss": None,
@@ -120,6 +123,15 @@ def lookup_entries(
                         entry["equivalents"] = _json_list(row["words"])
                         entry["gloss"] = ", ".join(entry["equivalents"]) or None
 
+        translations = sense_translations(
+            [sense for entries in entries_by_word.values() for entry in entries for sense in entry["senses"]],
+            interface_language,
+        )
+        for entries in entries_by_word.values():
+            for entry in entries:
+                entry["translated_senses"] = [translations.get(sense) for sense in entry["senses"]]
+                entry["definition"] = localized_definition(entry, interface_language)
+
     out: dict[str, list[dict]] = {}
     for stem in normalized:
         entries = entries_by_word.get(headword_of[stem])
@@ -131,6 +143,40 @@ def lookup_entries(
             for entry in limited
         ]
     return out
+
+
+def sense_translations(senses: list[str], interface_language: str) -> dict[str, str]:
+    """English sense -> its stored translation (scripts/translate_en_senses.py)."""
+    unique = list(dict.fromkeys(sense for sense in senses if sense))
+    if not unique or not interface_language or interface_language == "en":
+        return {}
+    conn = _connection()
+    try:
+        out: dict[str, str] = {}
+        for chunk in _chunks(unique):
+            placeholders = ",".join("?" * len(chunk))
+            for row in conn.execute(
+                f"""
+                SELECT source, text FROM en_sense_translations
+                WHERE interface_language = ? AND source IN ({placeholders})
+                """,
+                [interface_language, *chunk],
+            ):
+                out[row["source"]] = row["text"]
+        return out
+    except sqlite3.OperationalError:
+        # A dictionary built before the table existed.
+        return {}
+
+
+def localized_definition(entry: dict, interface_language: str) -> str | None:
+    """The entry's senses in the learner's language, one per line: only the
+    translated ones, never mixed with English. None when no sense has a
+    translation yet. An English interface gets the English senses."""
+    if not interface_language or interface_language == "en":
+        return "\n".join(entry.get("senses") or []) or None
+    translated = [text for text in entry.get("translated_senses") or [] if text]
+    return "\n".join(translated) or None
 
 
 def best_entry(entries: list[dict]) -> dict | None:
