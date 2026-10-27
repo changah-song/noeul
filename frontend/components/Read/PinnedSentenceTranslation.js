@@ -1,18 +1,17 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Feather, MaterialIcons } from '@expo/vector-icons';
+import { MaterialIcons } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
 import { chapterTranslations } from '../../services/chapterTranslations';
-import { normalizeSentence } from '../../services/sentenceSplit';
-import { fontFamilies, lineHeights, spacing, typeScale, useTheme } from '../../theme';
-
-// Height the bar reserves under the header. It is part of the reader's layout,
-// so it never changes: any change would re-paginate the chapter. Collapsed, the
-// bar is a pill inside this strip; expanded, a card drops over the top of the
-// page from it (an overlay, so the text never moves).
-export const PINNED_TRANSLATION_BAR_HEIGHT = 40;
-// The expanded card's text area scrolls past this.
-const CARD_MAX_TEXT_HEIGHT = 168;
+import { fontFamilies, spacing, useTheme } from '../../theme';
+import {
+    PINNED_TRANSLATION_FONT_DEFAULT,
+    PINNED_TRANSLATION_PILL_PADDING_V as PILL_PADDING_V,
+    PINNED_TRANSLATION_STRIP_PADDING_V as STRIP_PADDING_V,
+    clampPinnedTranslationFontSize,
+    pinnedTranslationBarHeight,
+    pinnedTranslationLineHeight as lineHeightFor,
+} from './pinnedTranslationSize';
 
 /**
  * PinnedSentenceTranslation — the translation of the last tapped word's
@@ -20,22 +19,19 @@ const CARD_MAX_TEXT_HEIGHT = 168;
  * (services/chapterTranslations.js), so a tap normally shows its translation
  * at once; a sentence the chapter didn't cover is fetched on the spot.
  *
- * Collapsed: a pill with a one-line preview. Expanded: a card with the source
- * sentence and the full translation. `onExpandedChange` persists the choice;
- * `onCardHeightChange` reports how far the card reaches below the strip so the
- * lookup panel and focus pill can sit under it.
+ * A fixed-height pill showing two lines; a longer translation scrolls inside
+ * it. It is turned on and off, and sized, from the reader settings.
  */
 const PinnedSentenceTranslation = ({
     sentence,
     sourceLanguage,
     targetLanguage,
-    expanded = true,
-    onExpandedChange,
-    onCardHeightChange,
+    fontSize = PINNED_TRANSLATION_FONT_DEFAULT,
 }) => {
     const { t } = useTranslation();
-    const { colors, isDarkMode: isDark } = useTheme();
-    const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
+    const { colors } = useTheme();
+    const size = clampPinnedTranslationFontSize(fontSize);
+    const styles = useMemo(() => createStyles(colors, size), [colors, size]);
     const cleanedSentence = typeof sentence === 'string' ? sentence.trim() : '';
     const [state, setState] = useState({ status: 'idle', text: '' });
     const [retryToken, setRetryToken] = useState(0);
@@ -70,12 +66,7 @@ const PinnedSentenceTranslation = ({
         scrollRef.current?.scrollTo?.({ y: 0, animated: false });
     }, [state.text]);
 
-    useEffect(() => {
-        if (!expanded) onCardHeightChange?.(0);
-    }, [expanded, onCardHeightChange]);
-
     const retry = useCallback(() => setRetryToken((value) => value + 1), []);
-    const toggle = useCallback(() => onExpandedChange?.(!expanded), [expanded, onExpandedChange]);
 
     const statusText = state.status === 'loading'
         ? t('read.pinnedTranslationLoading')
@@ -84,178 +75,80 @@ const PinnedSentenceTranslation = ({
             : t('read.pinnedTranslationPlaceholder');
     const hasTranslation = state.status === 'ok' && Boolean(state.text);
 
-    const renderChevron = (name) => (
-        <Feather name={name} size={18} color={colors.readerSubtleInk} />
-    );
-
     return (
-        <View style={styles.strip} pointerEvents="box-none">
-            {expanded ? (
-                <View
-                    style={styles.card}
-                    onLayout={(event) => onCardHeightChange?.(Math.ceil(event.nativeEvent.layout.height))}
-                    accessibilityLiveRegion="polite"
+        <View style={styles.strip}>
+            <View style={styles.pill} accessibilityLiveRegion="polite">
+                <MaterialIcons name="translate" size={16} color={colors.readerSubtleInk} style={styles.icon} />
+                <ScrollView
+                    ref={scrollRef}
+                    style={styles.scroll}
+                    nestedScrollEnabled
+                    showsVerticalScrollIndicator={false}
                 >
-                    <View style={styles.cardHeader}>
-                        <MaterialIcons name="translate" size={16} color={colors.readerSubtleInk} />
-                        <Text style={styles.cardLabel} numberOfLines={1}>{t('read.pinnedTranslation')}</Text>
-                        <TouchableOpacity
-                            onPress={toggle}
-                            style={styles.chevronButton}
-                            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                            accessibilityRole="button"
-                            accessibilityLabel={t('read.pinnedTranslationCollapse')}
-                        >
-                            {renderChevron('chevron-up')}
+                    {hasTranslation ? (
+                        <Text style={styles.translationText} selectable>{state.text}</Text>
+                    ) : state.status === 'error' ? (
+                        <TouchableOpacity onPress={retry} accessibilityRole="button">
+                            <Text style={styles.mutedText}>
+                                {statusText}
+                                {'  '}
+                                <Text style={styles.retryText}>{t('common.tryAgain')}</Text>
+                            </Text>
                         </TouchableOpacity>
-                    </View>
-                    <ScrollView
-                        ref={scrollRef}
-                        style={styles.cardScroll}
-                        contentContainerStyle={styles.cardScrollContent}
-                        nestedScrollEnabled
-                        showsVerticalScrollIndicator
-                    >
-                        {hasTranslation ? (
-                            <Text style={styles.translationText} selectable>{state.text}</Text>
-                        ) : state.status === 'error' ? (
-                            <TouchableOpacity onPress={retry} accessibilityRole="button">
-                                <Text style={styles.mutedText}>
-                                    {statusText}
-                                    {'  '}
-                                    <Text style={styles.retryText}>{t('common.tryAgain')}</Text>
-                                </Text>
-                            </TouchableOpacity>
-                        ) : (
-                            <Text style={styles.mutedText}>{statusText}</Text>
-                        )}
-                        {/* The sentence it translates, under the translation: it is
-                            on the page too, so it comes second. */}
-                        {cleanedSentence ? (
-                            <Text style={styles.sourceText} selectable>{normalizeSentence(cleanedSentence)}</Text>
-                        ) : null}
-                    </ScrollView>
-                </View>
-            ) : (
-                <TouchableOpacity
-                    style={styles.pill}
-                    onPress={toggle}
-                    activeOpacity={0.8}
-                    accessibilityRole="button"
-                    accessibilityLabel={t('read.pinnedTranslationExpand')}
-                >
-                    <MaterialIcons name="translate" size={15} color={colors.readerSubtleInk} />
-                    <Text
-                        style={hasTranslation ? styles.pillText : styles.pillMutedText}
-                        numberOfLines={1}
-                    >
-                        {hasTranslation ? state.text : statusText}
-                    </Text>
-                    {renderChevron('chevron-down')}
-                </TouchableOpacity>
-            )}
+                    ) : (
+                        <Text style={styles.mutedText}>{statusText}</Text>
+                    )}
+                </ScrollView>
+            </View>
         </View>
     );
 };
 
-const createStyles = (colors, isDark) => StyleSheet.create({
-    // The reserved strip: its height is fixed; the card overflows it.
-    strip: {
-        height: PINNED_TRANSLATION_BAR_HEIGHT,
-        paddingHorizontal: 12,
-        justifyContent: 'center',
-        backgroundColor: colors.readerPaper,
-        zIndex: 20,
-        elevation: 20,
-    },
-    pill: {
-        height: 32,
-        borderRadius: 16,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: spacing.xs,
-        paddingHorizontal: 12,
-        backgroundColor: colors.surfaceMuted,
-    },
-    pillText: {
-        flex: 1,
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: typeScale.bodySm,
-        color: colors.readerBodyInk,
-    },
-    pillMutedText: {
-        flex: 1,
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: typeScale.bodySm,
-        color: colors.readerMutedInk,
-    },
-    card: {
-        position: 'absolute',
-        top: 4,
-        left: 12,
-        right: 12,
-        borderRadius: 16,
-        paddingHorizontal: 16,
-        paddingTop: 10,
-        paddingBottom: 12,
-        backgroundColor: colors.surface,
-        borderWidth: StyleSheet.hairlineWidth,
-        borderColor: colors.readerHairline,
-        shadowColor: '#000',
-        shadowOpacity: isDark ? 0.4 : 0.12,
-        shadowRadius: 14,
-        shadowOffset: { width: 0, height: 6 },
-        elevation: 8,
-    },
-    cardHeader: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: spacing.xs,
-        marginBottom: 6,
-    },
-    cardLabel: {
-        flex: 1,
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 12,
-        lineHeight: 16,
-        color: colors.readerSubtleInk,
-    },
-    chevronButton: {
-        width: 28,
-        height: 28,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    cardScroll: {
-        maxHeight: CARD_MAX_TEXT_HEIGHT,
-    },
-    cardScrollContent: {
-        gap: 6,
-    },
-    sourceText: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: typeScale.bodySm,
-        lineHeight: lineHeights.bodySm,
-        color: colors.readerMutedInk,
-    },
-    translationText: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 17,
-        lineHeight: 25,
-        color: colors.readerBodyInk,
-    },
-    mutedText: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: typeScale.bodySm,
-        lineHeight: lineHeights.bodySm,
-        color: colors.readerMutedInk,
-    },
-    retryText: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: typeScale.bodySm,
-        color: colors.readerBodyInk,
-        textDecorationLine: 'underline',
-    },
-});
+const createStyles = (colors, fontSize) => {
+    const lineHeight = lineHeightFor(fontSize);
+    return StyleSheet.create({
+        // The reserved strip: its height is fixed for a given text size.
+        strip: {
+            height: pinnedTranslationBarHeight(fontSize),
+            paddingHorizontal: 12,
+            paddingVertical: STRIP_PADDING_V,
+            backgroundColor: colors.readerPaper,
+        },
+        pill: {
+            flex: 1,
+            borderRadius: 18,
+            flexDirection: 'row',
+            alignItems: 'flex-start',
+            gap: spacing.sm,
+            paddingHorizontal: 14,
+            paddingVertical: PILL_PADDING_V,
+            backgroundColor: colors.surfaceMuted,
+        },
+        icon: {
+            // Centered on the first line of text.
+            marginTop: Math.max(0, (lineHeight - 16) / 2),
+        },
+        scroll: {
+            flex: 1,
+        },
+        translationText: {
+            fontFamily: fontFamilies.sansRegular,
+            fontSize,
+            lineHeight,
+            color: colors.readerBodyInk,
+        },
+        mutedText: {
+            fontFamily: fontFamilies.sansRegular,
+            fontSize: Math.max(14, fontSize - 2),
+            lineHeight,
+            color: colors.readerMutedInk,
+        },
+        retryText: {
+            fontFamily: fontFamilies.sansRegular,
+            color: colors.readerBodyInk,
+            textDecorationLine: 'underline',
+        },
+    });
+};
 
 export default memo(PinnedSentenceTranslation);

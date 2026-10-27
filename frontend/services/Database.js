@@ -4816,6 +4816,29 @@ export const updateBookHighlightNote = (id, note, { ownerId } = {}) => {
   });
 };
 
+export const updateBookHighlightColor = (id, color, { ownerId } = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  return new Promise((resolve, reject) => {
+    if (!id || !color) {
+      return resolve(false);
+    }
+    const updatedAt = new Date().toISOString();
+    db.transaction(tx => {
+      tx.executeSql(
+        `UPDATE book_highlights SET color = ?, updated_at = ?, synced_at = NULL
+         WHERE id = ? AND owner_id = ?`,
+        [color, updatedAt, id, scopedOwnerId],
+        (_, result) => resolve((result.rowsAffected ?? 0) > 0),
+        (_, error) => {
+          console.error('[Database] Error updating book highlight color:', error);
+          reject(error);
+          return true;
+        }
+      );
+    });
+  });
+};
+
 export const deleteBookHighlight = (id, { ownerId } = {}) => {
   const scopedOwnerId = resolveOwnerId(ownerId);
   return new Promise((resolve, reject) => {

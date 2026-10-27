@@ -1050,7 +1050,7 @@ const DictionaryContent = ({
         );
     };
 
-    const renderDictionaryPanel = (children, { word, hanja, definition } = {}) => (
+    const renderDictionaryPanel = (children) => (
         <View style={[styles.panelContent, styles.dictionaryPanelContent, { backgroundColor: palette.surface }]}>
             <ScrollView
                 ref={dictionaryScrollRef}
@@ -1075,7 +1075,6 @@ const DictionaryContent = ({
                 {renderDrilldownBackRow()}
                 {children}
             </ScrollView>
-            {word ? renderActionRow(word, hanja, definition) : null}
         </View>
     );
 
@@ -1136,75 +1135,28 @@ const DictionaryContent = ({
         );
     };
 
-    // An action-row button (Save).
-    // `active` fills it with ink, like a pressed toggle.
-    const renderActionButton = ({
-        icon,
-        label,
-        onPress,
-        active = false,
-        disabled = false,
-        accessibilityLabel,
-        accessibilityState,
-    }) => {
-        const tint = active ? palette.actionText : palette.text;
+    // The Save toggle: an icon in the heading's top-right corner.
+    const renderSaveIcon = ({ word, hanja = '', definition = '', requireDefinition = true }) => {
+        const canSave = !requireDefinition || hasSavableDefinition(definition);
+        const saved = canSave && isWordSaved(word);
         return (
             <TouchableOpacity
-                style={[
-                    styles.actionButton,
-                    active && styles.actionButtonActive,
-                    disabled && styles.actionButtonDisabled,
-                ]}
-                onPress={disabled ? undefined : onPress}
-                activeOpacity={disabled ? 1 : 0.7}
+                style={[styles.saveIconButton, !canSave && styles.saveIconButtonDisabled]}
+                onPress={canSave
+                    ? () => (saved ? toggleUnSave(word, hanja, definition) : toggleSave(word, hanja, definition))
+                    : undefined}
+                activeOpacity={canSave ? 0.7 : 1}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 accessibilityRole="button"
-                accessibilityLabel={accessibilityLabel || label}
-                accessibilityState={{ disabled, ...(accessibilityState || {}) }}
+                accessibilityLabel={saved ? t('lookup.saved') : t('lookup.save')}
+                accessibilityState={{ disabled: !canSave, selected: saved }}
             >
-                <MaterialIcons name={icon} size={16} color={tint} style={styles.actionButtonIcon} />
-                <Text
-                    style={[styles.actionLabel, { color: tint }]}
-                    numberOfLines={1}
-                    adjustsFontSizeToFit
-                    minimumFontScale={0.8}
-                >
-                    {label}
-                </Text>
+                <MaterialIcons
+                    name={saved ? 'bookmark' : 'bookmark-border'}
+                    size={26}
+                    color={saved ? palette.text : palette.mutedText}
+                />
             </TouchableOpacity>
-        );
-    };
-
-    const renderActionRow = (word, hanja, definition) => {
-        const canSave = hasSavableDefinition(definition);
-        const saved = canSave && isWordSaved(word);
-
-        return (
-            <View style={styles.actionRow}>
-                {renderActionButton({
-                    icon: saved ? 'bookmark' : 'bookmark-border',
-                    label: saved ? t('lookup.saved') : t('lookup.save'),
-                    onPress: () => (saved ? toggleUnSave(word, hanja, definition) : toggleSave(word, hanja, definition)),
-                    active: saved,
-                    disabled: !canSave,
-                    accessibilityState: { selected: saved },
-                })}
-            </View>
-        );
-    };
-
-    const renderNotFoundActionRow = (word) => {
-        const notFoundSaved = isWordSaved(word);
-
-        return (
-            <View style={styles.actionRow}>
-                {renderActionButton({
-                    icon: notFoundSaved ? 'bookmark' : 'bookmark-border',
-                    label: notFoundSaved ? t('lookup.saved') : t('lookup.save'),
-                    onPress: () => (notFoundSaved ? toggleUnSave(word, '', '') : toggleSave(word, '', '')),
-                    active: notFoundSaved,
-                    accessibilityState: { selected: notFoundSaved },
-                })}
-            </View>
         );
     };
 
@@ -1313,6 +1265,7 @@ const DictionaryContent = ({
         return (
             <View style={styles.entryHeading}>
                 <View style={styles.headwordRow}>
+                    <View style={styles.saveIconSpacer} />
                     {renderHeadwordChevron('previous')}
                     <View style={styles.wordLine}>
                         {renderHeadwordText(
@@ -1334,6 +1287,7 @@ const DictionaryContent = ({
                         ) : null}
                     </View>
                     {renderHeadwordChevron('next')}
+                    {renderSaveIcon({ word, hanja, definition })}
                 </View>
                 {pronunciationControls || (isEnglishBook && pronunciationText) ? (
                     <View style={styles.entryMetaRow}>
@@ -1775,9 +1729,6 @@ const DictionaryContent = ({
                         />
                     </View>
                 </View>
-                {/* Same height as the action row, so the panel doesn't jump when
-                    the entry arrives. */}
-                <View style={styles.actionRowPlaceholder} />
             </View>
         );
     };
@@ -1808,13 +1759,18 @@ const DictionaryContent = ({
                 }}
             >
                 {renderDrilldownBackRow()}
-                {renderHeadwordText(lookupWord, [styles.entryWord, styles.notFoundWord, { color: palette.text }])}
+                <View style={styles.headwordRow}>
+                    <View style={styles.saveIconSpacer} />
+                    <View style={styles.notFoundWordLine}>
+                        {renderHeadwordText(lookupWord, [styles.entryWord, styles.notFoundWord, { color: palette.text }])}
+                    </View>
+                    {renderSaveIcon({ word: lookupWord, requireDefinition: false })}
+                </View>
                 {/* A failed request is not the same as "no entry": say so. */}
                 <Text style={[styles.notFoundSubtext, { color: colors.textSubtle }]}>
                     {liveError ? t('lookup.dictionaryFailed') : t('lookup.noDefinition')}
                 </Text>
             </ScrollView>
-            {renderNotFoundActionRow(lookupWord)}
         </View>
     );
 
@@ -2102,49 +2058,25 @@ const createStyles = (colors) => StyleSheet.create({
         paddingTop: 0,
         marginRight: -4,
     },
-    actionRow: {
-        flexDirection: 'row',
-        gap: 8,
-        paddingHorizontal: 16,
-        paddingTop: 16,
-        paddingBottom: 0,
-    },
-    actionButtonGroup: {
-        flexDirection: 'row',
-        gap: 8,
-    },
-    actionButton: {
-        flex: 1,
-        minWidth: 0,
-        height: 46,
-        flexDirection: 'row',
+    saveIconButton: {
+        width: 36,
+        height: 36,
         alignItems: 'center',
         justifyContent: 'center',
-        paddingHorizontal: 8,
-        backgroundColor: colors.readerSurface,
-        borderWidth: 1,
-        borderColor: colors.border,
-        borderRadius: 14,
+        flexShrink: 0,
+        marginRight: -8,
     },
-    actionButtonActive: {
-        backgroundColor: colors.readerTappedWordBg,
-        borderColor: colors.readerTappedWordBg,
+    saveIconButtonDisabled: {
+        opacity: 0.4,
     },
-    actionButtonDisabled: {
-        opacity: 0.5,
+    // Balances the save icon so the headword stays centred.
+    saveIconSpacer: {
+        width: 28,
+        flexShrink: 0,
     },
-    actionButtonIcon: {
-        marginRight: 6,
-    },
-    actionLabel: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 14,
-        lineHeight: 18,
-        letterSpacing: 0,
-        flexShrink: 1,
-    },
-    actionRowPlaceholder: {
-        height: 62,
+    notFoundWordLine: {
+        flex: 1,
+        minWidth: 0,
     },
     definitionLoadingContent: {
         paddingHorizontal: 22,

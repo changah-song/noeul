@@ -15,6 +15,7 @@ import { useTranslation } from '../../hooks/useTranslation';
 import { localizeGeneratedSectionLabel } from '../../i18n/userFacing';
 import { formatDate, formatNumber } from '../../services/interfaceLanguage';
 import { fontFamilies } from '../../theme';
+import { highlightColorFor } from './highlightColors';
 import {
     SHEET_PADDING,
     SheetEmptyState,
@@ -201,7 +202,7 @@ const NotesLogSheet = ({
                                         >
                                             <View style={[
                                                 styles.highlightBar,
-                                                { backgroundColor: highlight.note ? '#74A7FF' : '#F5B82E' },
+                                                { backgroundColor: highlightColorFor(highlight.color).swatch.light },
                                             ]}
                                             />
                                             <View style={styles.bookmarkBody}>

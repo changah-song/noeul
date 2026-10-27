@@ -17,6 +17,11 @@ import { useTranslation } from '../../hooks/useTranslation';
 import { fontFamilies } from '../../theme';
 import { ANNOTATION_SCOPES } from '../../services/readerAnnotations';
 import {
+    PINNED_TRANSLATION_FONT_MAX,
+    PINNED_TRANSLATION_FONT_MIN,
+    clampPinnedTranslationFontSize,
+} from './pinnedTranslationSize';
+import {
     DEFAULT_BOOK_READER_SETTINGS,
     READER_BRIGHTNESS_MAX,
     READER_BRIGHTNESS_MIN,
@@ -246,6 +251,7 @@ const ReaderSettingsSheet = ({
     const glossOn = Boolean(source.glossAnnotations);
     const hideSavedOn = source.hideSavedAnnotations !== false;
     const pinnedTranslationOn = Boolean(source.pinnedSentenceTranslation);
+    const pinnedFontSize = clampPinnedTranslationFontSize(source.pinnedTranslationFontSize);
     // Settings saved before the scopes were split carried one `annotationScope`.
     const legacyScope = scopeOrDefault(source.annotationScope, null);
     const pinyinScope = scopeOrDefault(source.pinyinScope, legacyScope || 'underlined');
@@ -476,6 +482,28 @@ const ReaderSettingsSheet = ({
                     />
                 ),
             });
+            if (pinnedTranslationOn) {
+                rows.push({
+                    key: 'pinnedTranslationSize',
+                    label: t('read.pinnedTranslationSize'),
+                    indent: true,
+                    control: (
+                        <Stepper
+                            styles={controlStyles}
+                            colors={colors}
+                            value={pinnedFontSize}
+                            onStep={(direction) => onSettingChange(
+                                'pinnedTranslationFontSize',
+                                clampPinnedTranslationFontSize(pinnedFontSize + direction)
+                            )}
+                            atMin={pinnedFontSize <= PINNED_TRANSLATION_FONT_MIN}
+                            atMax={pinnedFontSize >= PINNED_TRANSLATION_FONT_MAX}
+                            decreaseLabel={t('read.decreaseFontSize')}
+                            increaseLabel={t('read.increaseFontSize')}
+                        />
+                    ),
+                });
+            }
         }
         return (
             <>

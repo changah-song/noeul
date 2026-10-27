@@ -20,6 +20,7 @@ import android.text.TextUtils
 import android.text.TextPaint
 import android.util.Log
 import android.util.TypedValue
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -133,6 +134,12 @@ class EpubPageView(context: Context) : View(context) {
   // How far a level underline has dissolved after the reader tapped the word
   // (0 = solid, 1 = dotted). Set by the owner.
   var tapProgress: ((TextRange) -> Float)? = null
+  // Called with a highlight's id when its note icon (in the margin) is tapped.
+  var noteIconTapped: ((String) -> Unit)? = null
+  // Where the note icons were drawn this frame, in view coordinates.
+  private val noteIconHits = mutableListOf<Pair<RectF, String>>()
+  private val noteIconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+  private val noteIconPath = Path()
   // A saved box still losing pixels after a fade step: (strength it is
   // leaving, progress 0..1). Null once settled. Set by the owner.
   var savedFade: ((TextRange) -> Pair<Float, Float>?)? = null
@@ -177,6 +184,15 @@ class EpubPageView(context: Context) : View(context) {
   private var isSelectionMode = false
   private var activeSelectionHandle: SelectionHandle? = null
   private var handleDragStartRanges: List<TextRange> = emptyList()
+  // While a handle is dragged: the selection end that stays put, and where the
+  // finger sits relative to the dragged handle's text position (so the text
+  // under the handle, not under the fingertip, follows the finger).
+  private var handleFixedPosition: TextPosition? = null
+  private var handleTouchOffsetX = 0f
+  private var handleTouchOffsetY = 0f
+  // Last character offset a drag landed on: a tick (haptic) per character, and
+  // no redraw while the finger stays inside one character.
+  private var lastSelectionFocusKey: Long = Long.MIN_VALUE
   private var selectionAnchor: SelectionAnchor? = null
   private val highlightPath = Path()
   private val highlightBounds = RectF()
@@ -383,6 +399,7 @@ class EpubPageView(context: Context) : View(context) {
 
   private fun drawPageBlocks(canvas: Canvas, contentWidth: Int) {
     var yOffset = paddingV.toFloat()
+    noteIconHits.clear()
     val viewport = scrollViewport()
     val windowTop: Float
     val windowBottom: Float
@@ -443,12 +460,59 @@ class EpubPageView(context: Context) : View(context) {
         }
         drawSelectionHandles(canvas, block, layout)
         canvas.restore()
+        drawNoteIcons(canvas, block, layout, yOffset)
 
         yOffset += layout.height
       }
 
       yOffset += block.marginBottom
     }
+  }
+
+  // A small speech bubble in the right margin, level with the first line of
+  // each highlight that has a note. `top` is the block's top in view space.
+  private fun drawNoteIcons(canvas: Canvas, block: PageBlock, layout: StaticLayout, top: Float) {
+    val currentPage = page ?: return
+    if (savedHighlightRanges.none { it.noteId != null }) return
+    val textLength = blockTextForSelection(block).length
+    if (textLength <= 0 || layout.lineCount <= 0) return
+    val size = min(dp(15f).toFloat(), max(dp(9f).toFloat(), paddingH * 0.62f))
+    val centerX = width - paddingH / 2f
+    val metrics = block.textPaint?.fontMetrics
+    noteIconPaint.color = themePalette.mutedTextColor
+    savedHighlightRanges.forEach { range ->
+      val noteId = range.noteId ?: return@forEach
+      if (
+        range.blockId != block.blockId ||
+        range.pageIndex != currentPage.pageIndex ||
+        range.spineIndex != currentPage.spineIndex
+      ) return@forEach
+      val localStart = (range.sourceStartOffset - block.sourceStartOffset).coerceIn(0, textLength)
+      val line = layout.getLineForOffset(localStart).coerceIn(0, layout.lineCount - 1)
+      val baseline = layout.getLineBaseline(line).toFloat()
+      val centerY = top + (metrics?.let { baseline + (it.ascent + it.descent) / 2f }
+        ?: ((layout.getLineTop(line) + layout.getLineBottom(line)) / 2f))
+      val left = centerX - size / 2f
+      val bubbleTop = centerY - size * 0.45f
+      val bubbleBottom = centerY + size * 0.3f
+      val radius = size * 0.22f
+      noteIconPath.reset()
+      noteIconPath.addRoundRect(left, bubbleTop, left + size, bubbleBottom, radius, radius, Path.Direction.CW)
+      noteIconPath.moveTo(left + size * 0.22f, bubbleBottom - 1f)
+      noteIconPath.lineTo(left + size * 0.22f, bubbleBottom + size * 0.28f)
+      noteIconPath.lineTo(left + size * 0.5f, bubbleBottom - 1f)
+      noteIconPath.close()
+      canvas.drawPath(noteIconPath, noteIconPaint)
+      noteIconHits.add(RectF(left, bubbleTop, left + size, bubbleBottom + size * 0.28f) to noteId)
+    }
+  }
+
+  private fun noteIconAt(x: Float, y: Float): String? {
+    if (noteIconHits.isEmpty()) return null
+    val slop = dp(14f).toFloat()
+    return noteIconHits.firstOrNull { (rect, _) ->
+      x >= rect.left - slop && x <= rect.right + slop && y >= rect.top - slop && y <= rect.bottom + slop
+    }?.second
   }
 
   private fun drawBlockContent(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
@@ -509,10 +573,17 @@ class EpubPageView(context: Context) : View(context) {
     if (blockTextLength <= 0) return
     val bodyPaint = block.textPaint ?: return
 
+    // Small type needs more contrast than the subtle ink gives it on a dark
+    // page, so dark themes use the (brighter) muted ink for pinyin and glosses.
+    val annotationColor = if (Color.luminance(themePalette.backgroundColor) < 0.4f) {
+      themePalette.mutedTextColor
+    } else {
+      themePalette.subtleTextColor
+    }
     pinyinPaint.textSize = bodyPaint.textSize * 0.55f
-    pinyinPaint.color = themePalette.subtleTextColor
+    pinyinPaint.color = annotationColor
     glossPaint.textSize = bodyPaint.textSize * 0.5f
-    glossPaint.color = themePalette.subtleTextColor
+    glossPaint.color = annotationColor
     val ascent = bodyPaint.fontMetrics.ascent
     val descent = bodyPaint.fontMetrics.descent
     val glosses = mutableListOf<GlossItem>()
@@ -775,14 +846,36 @@ class EpubPageView(context: Context) : View(context) {
       val x2 = if (to >= layout.getLineEnd(line)) layout.getLineRight(line) else layout.getPrimaryHorizontal(to)
       val baseline = layout.getLineBaseline(line).toFloat()
       val metrics = block.textPaint!!.fontMetrics
-      focusClipPath.addRect(
-        min(x1, x2) - dp(8f),
-        baseline + metrics.ascent - above,
-        max(x1, x2) + dp(8f),
-        baseline + metrics.descent + below,
-        Path.Direction.CW
-      )
+      // Only the annotation rows are added here (the glyphs come from the
+      // selection path). A word's pinyin or gloss can be wider than the word,
+      // so a row may reach past the span, but only over a line edge, a space
+      // or punctuation: never over the next sentence's first character, which
+      // would light half of it (and half its pinyin).
+      val left = min(x1, x2) - annotationReach(layout, line, from, towardStart = true)
+      val right = max(x1, x2) + annotationReach(layout, line, to, towardStart = false)
+      if (above > 0f) {
+        focusClipPath.addRect(left, baseline + metrics.ascent - above, right, baseline + metrics.ascent, Path.Direction.CW)
+      }
+      if (below > 0f) {
+        focusClipPath.addRect(left, baseline + metrics.descent, right, baseline + metrics.descent + below, Path.Direction.CW)
+      }
     }
+  }
+
+  // How far a focused span's annotation row may reach past `offset` (its start
+  // or end on `line`): the full slack at the line's edge, the width of a
+  // neighbouring space or punctuation mark, otherwise nothing.
+  private fun annotationReach(layout: StaticLayout, line: Int, offset: Int, towardStart: Boolean): Float {
+    val text = layout.text
+    val lineStart = layout.getLineStart(line)
+    val lineEnd = layout.getLineEnd(line)
+    val neighbour = if (towardStart) offset - 1 else offset
+    if (neighbour < lineStart || neighbour >= lineEnd) return dp(8f).toFloat()
+    val ch = text[neighbour]
+    if (!ch.isWhitespace() && Character.isLetterOrDigit(ch)) return 0f
+    val a = layout.getPrimaryHorizontal(neighbour)
+    val b = if (neighbour + 1 >= lineEnd) layout.getLineRight(line) else layout.getPrimaryHorizontal(neighbour + 1)
+    return min(abs(b - a), dp(8f).toFloat())
   }
 
   fun setFocusHighlight(ranges: List<FocusRange>, animate: Boolean, fast: Boolean = false) {
@@ -822,6 +915,7 @@ class EpubPageView(context: Context) : View(context) {
         hitTestSelectionHandle(event.x, event.y)?.let { handle ->
           activeSelectionHandle = handle
           handleDragStartRanges = activeSelectionRanges
+          beginHandleDrag(handle, event.x, event.y)
           isTapCandidate = false
           cancelPendingLongPress()
           parent?.requestDisallowInterceptTouchEvent(true)
@@ -883,6 +977,11 @@ class EpubPageView(context: Context) : View(context) {
 
         if (isTapCandidate) {
           performClick()
+          noteIconAt(event.x, event.y)?.let { noteId ->
+            noteIconTapped?.invoke(noteId)
+            isTapCandidate = false
+            return true
+          }
           page?.edgeState?.let { edgeState ->
             if (edgeActionBoundsForKind(edgeState.kind).contains(event.x, event.y)) {
               onEdgeAction?.invoke(edgeState.kind)
@@ -1291,6 +1390,7 @@ class EpubPageView(context: Context) : View(context) {
     isTapCandidate = false
     isSelectionMode = true
     selectionDragStarted = false
+    lastSelectionFocusKey = Long.MIN_VALUE
     parent?.requestDisallowInterceptTouchEvent(true)
     onSelectionDragStateChanged?.invoke(true)
     selectionAnchor = SelectionAnchor(
@@ -1313,6 +1413,7 @@ class EpubPageView(context: Context) : View(context) {
   private fun updateDragSelection(x: Float, y: Float) {
     val anchor = selectionAnchor ?: return
     val focus = hitTestTextPosition(x, y, allowClosest = true) ?: return
+    if (!selectionFocusMoved(focus)) return
     val ranges = buildSelectionRanges(anchor, focus)
 
     if (ranges.isNotEmpty()) {
@@ -1324,16 +1425,45 @@ class EpubPageView(context: Context) : View(context) {
     }
   }
 
-  private fun updateHandleSelection(handle: SelectionHandle, x: Float, y: Float) {
-    val endpoints = activeTextSelectionEndpoints() ?: return
-    // Snap to whole words, like the long-press drag does (never "best known fo").
-    val focus = hitTestTextPosition(x, y, allowClosest = true)
-      ?.let { snappedPositionForHandle(it, handle) }
-      ?: return
-    val ranges = when (handle) {
-      SelectionHandle.START -> buildSelectionRangesBetween(focus, endpoints.second)
-      SelectionHandle.END -> buildSelectionRangesBetween(endpoints.first, focus)
+  private fun beginHandleDrag(handle: SelectionHandle, touchX: Float, touchY: Float) {
+    val endpoints = activeTextSelectionEndpoints()
+    handleFixedPosition = when (handle) {
+      SelectionHandle.START -> endpoints?.second
+      SelectionHandle.END -> endpoints?.first
     }
+    val geometry = selectionHandleGeometries().firstOrNull { it.handle == handle }
+    if (geometry != null) {
+      handleTouchOffsetX = geometry.x - touchX
+      handleTouchOffsetY = (geometry.lineTop + geometry.lineBottom) / 2f - touchY
+    } else {
+      handleTouchOffsetX = 0f
+      handleTouchOffsetY = 0f
+    }
+    lastSelectionFocusKey = Long.MIN_VALUE
+  }
+
+  // Whether `focus` is a different character from the last drag step. The
+  // first step of a drag only records it; later steps tick once per character.
+  private fun selectionFocusMoved(focus: TextPosition): Boolean {
+    val key = (focus.renderedIndex.toLong() shl 32) or (focus.localOffset.toLong() and 0xffffffffL)
+    if (key == lastSelectionFocusKey) return false
+    if (lastSelectionFocusKey != Long.MIN_VALUE) {
+      performHapticFeedback(HapticFeedbackConstants.TEXT_HANDLE_MOVE)
+    }
+    lastSelectionFocusKey = key
+    return true
+  }
+
+  private fun updateHandleSelection(handle: SelectionHandle, x: Float, y: Float) {
+    // Character by character: the handle lands between any two letters. The
+    // other end stays where it was when the drag began, so the handles may
+    // cross without the selection jumping.
+    val fixed = handleFixedPosition ?: activeTextSelectionEndpoints()?.let { endpoints ->
+      if (handle == SelectionHandle.START) endpoints.second else endpoints.first
+    } ?: return
+    val focus = hitTestTextPosition(x + handleTouchOffsetX, y + handleTouchOffsetY, allowClosest = true) ?: return
+    if (!selectionFocusMoved(focus)) return
+    val ranges = buildSelectionRangesBetween(fixed, focus)
 
     if (ranges.isNotEmpty()) {
       activeSelectionRanges = ranges
@@ -1404,6 +1534,7 @@ class EpubPageView(context: Context) : View(context) {
 
     activeSelectionHandle = null
     handleDragStartRanges = emptyList()
+    handleFixedPosition = null
     isTapCandidate = false
   }
 
@@ -1757,38 +1888,6 @@ class EpubPageView(context: Context) : View(context) {
       first.sourceOffset != second.sourceOffset -> first.sourceOffset.compareTo(second.sourceOffset)
       else -> first.localOffset.compareTo(second.localOffset)
     }
-  }
-
-  private fun snapFocusForAnchor(position: TextPosition, anchor: SelectionAnchor): TextPosition {
-    val isForward = position.renderedIndex > anchor.renderedIndex ||
-      (position.renderedIndex == anchor.renderedIndex && position.sourceOffset >= anchor.sourceStartOffset)
-
-    return snappedPositionForHandle(
-      position = position,
-      handle = if (isForward) SelectionHandle.END else SelectionHandle.START
-    )
-  }
-
-  private fun snappedPositionForHandle(position: TextPosition, handle: SelectionHandle): TextPosition {
-    val text = blockTextForSelection(position.block)
-    if (text.isEmpty()) {
-      return position
-    }
-
-    val probeOffset = when (handle) {
-      SelectionHandle.START -> position.localOffset
-      SelectionHandle.END -> max(0, position.localOffset - 1)
-    }.coerceIn(0, text.length)
-    val tokenRange = tokenRangeAtOffset(text, probeOffset) ?: return position
-    val snappedLocalOffset = when (handle) {
-      SelectionHandle.START -> tokenRange.start
-      SelectionHandle.END -> tokenRange.end
-    }.coerceIn(0, text.length)
-
-    return position.copy(
-      localOffset = snappedLocalOffset,
-      sourceOffset = position.block.sourceStartOffset + snappedLocalOffset
-    )
   }
 
   private fun placementForRanges(ranges: List<TextRange>): String {
@@ -2778,7 +2877,7 @@ class EpubPageView(context: Context) : View(context) {
     val metrics = selectionHandleLineMetrics(layout, localOffset, handle, block.textPaint) ?: return
 
     canvas.drawLine(metrics.x, metrics.stemTop, metrics.x, metrics.stemBottom, selectionHandlePaint)
-    canvas.drawCircle(metrics.x, metrics.knobCenterY, dp(5f).toFloat(), selectionHandleKnobPaint)
+    canvas.drawCircle(metrics.x, metrics.knobCenterY, dp(7f).toFloat(), selectionHandleKnobPaint)
   }
 
   private fun hitTestSelectionHandle(tapX: Float, tapY: Float): SelectionHandle? {
@@ -2860,8 +2959,8 @@ class EpubPageView(context: Context) : View(context) {
     val stemTop = verticalMetrics.top
     val stemBottom = verticalMetrics.bottom
     val knobCenterY = when (handle) {
-      SelectionHandle.START -> stemTop - dp(2f)
-      SelectionHandle.END -> stemBottom + dp(2f)
+      SelectionHandle.START -> stemTop - dp(4f)
+      SelectionHandle.END -> stemBottom + dp(4f)
     }
 
     return SelectionHandleLineMetrics(

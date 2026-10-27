@@ -83,7 +83,10 @@ data class TextRange(
   val term: String? = null,
   // A reader's own highlight (long press → Highlight), drawn as a box of this
   // color behind the text. Travels with the saved-word ranges but never fades.
-  val userColor: Int? = null
+  val userColor: Int? = null,
+  // Set on the first piece of a highlight that carries a note: a comment icon
+  // is drawn in the margin beside that line, and tapping it reports this id.
+  val noteId: String? = null
 )
 
 // A highlight the reader made, by position: spine item, block and source
@@ -93,7 +96,8 @@ data class UserHighlight(
   val blockId: String,
   val sourceStartOffset: Int,
   val sourceEndOffset: Int,
-  val color: Int
+  val color: Int,
+  val noteId: String? = null
 )
 
 // A focused sentence span in focus (sentence beam) mode. Offsets are local to
