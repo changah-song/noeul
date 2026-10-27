@@ -15,7 +15,6 @@ import { useTranslation } from '../../hooks/useTranslation';
 import { localizeGeneratedSectionLabel } from '../../i18n/userFacing';
 import { formatDate, formatNumber } from '../../services/interfaceLanguage';
 import { fontFamilies } from '../../theme';
-import { highlightColorFor } from './highlightColors';
 import {
     SHEET_PADDING,
     SheetEmptyState,
@@ -44,8 +43,7 @@ const pageLabel = (t, bookmark) => {
  * notes-to-self left in a book, newest first, reached from the reader menu's
  * "Checkpoints" row. Tapping a bookmark jumps the reader back to that spot;
  * pressing its bookmark icon removes it. Notes are view + delete; new notes are
- * written by long-pressing the header bookmark icon. Highlights (long press →
- * Highlight / Note) list their passage and note; tapping one jumps there.
+ * written by long-pressing the header bookmark icon.
  */
 const NotesLogSheet = ({
     visible,
@@ -53,11 +51,8 @@ const NotesLogSheet = ({
     insets,
     bookmarks = [],
     notes = [],
-    highlights = [],
     onSelectBookmark,
     onDeleteBookmark,
-    onSelectHighlight,
-    onDeleteHighlight,
     onDelete,
     onClose,
 }) => {
@@ -135,7 +130,7 @@ const NotesLogSheet = ({
                         closeLabel={t('common.close')}
                     />
 
-                    {bookmarks.length === 0 && notes.length === 0 && highlights.length === 0 ? (
+                    {bookmarks.length === 0 && notes.length === 0 ? (
                         <SheetEmptyState
                             styles={chrome}
                             colors={colors}
@@ -189,48 +184,8 @@ const NotesLogSheet = ({
                                 </View>
                             ) : null}
 
-                            {highlights.length > 0 ? (
-                                <View style={bookmarks.length > 0 ? styles.notesSection : null}>
-                                    <Text style={[chrome.sectionLabel, styles.sectionLabel]}>{t('read.highlightsSection')}</Text>
-                                    {highlights.map((highlight) => (
-                                        <TouchableOpacity
-                                            key={highlight.id}
-                                            style={styles.highlightRow}
-                                            onPress={() => onSelectHighlight?.(highlight)}
-                                            activeOpacity={0.7}
-                                            accessibilityRole="button"
-                                        >
-                                            <View style={[
-                                                styles.highlightBar,
-                                                { backgroundColor: highlightColorFor(highlight.color).swatch.light },
-                                            ]}
-                                            />
-                                            <View style={styles.bookmarkBody}>
-                                                <Text style={styles.highlightQuote} numberOfLines={3}>{highlight.text}</Text>
-                                                {highlight.note ? (
-                                                    <Text style={styles.noteText}>{highlight.note}</Text>
-                                                ) : null}
-                                                <Text style={styles.bookmarkMeta}>
-                                                    {[formatNoteDate(highlight.createdAt, language), localizeGeneratedSectionLabel(highlight.chapterLabel, t)]
-                                                        .filter(Boolean)
-                                                        .join('  ·  ')}
-                                                </Text>
-                                            </View>
-                                            <TouchableOpacity
-                                                onPress={() => onDeleteHighlight?.(highlight.id)}
-                                                style={styles.rowAction}
-                                                accessibilityRole="button"
-                                                accessibilityLabel={t('selection.removeHighlight')}
-                                            >
-                                                <Feather name="trash-2" size={16} color={colors.textSubtle} />
-                                            </TouchableOpacity>
-                                        </TouchableOpacity>
-                                    ))}
-                                </View>
-                            ) : null}
-
                             {notes.length > 0 ? (
-                                <View style={bookmarks.length > 0 || highlights.length > 0 ? styles.notesSection : null}>
+                                <View style={bookmarks.length > 0 ? styles.notesSection : null}>
                                     <Text style={[chrome.sectionLabel, styles.sectionLabel]}>{t('read.notesSection')}</Text>
                                     {notes.map((item) => (
                                         <View key={item.id} style={styles.noteRow}>
@@ -371,23 +326,6 @@ const createStyles = (colors) => StyleSheet.create({
     sectionLabel: {
         marginTop: 8,
         marginBottom: 2,
-    },
-    highlightRow: {
-        flexDirection: 'row',
-        alignItems: 'flex-start',
-        gap: 12,
-        paddingVertical: 12,
-    },
-    highlightBar: {
-        width: 3,
-        alignSelf: 'stretch',
-        borderRadius: 2,
-    },
-    highlightQuote: {
-        fontFamily: fontFamilies.krSerifRegular,
-        fontSize: 15,
-        lineHeight: 22,
-        color: colors.text,
     },
     bookmarkRow: {
         flexDirection: 'row',

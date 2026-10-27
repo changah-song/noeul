@@ -43,9 +43,16 @@ private const val FOCUS_TRANSITION_DURATION_MS = 300L
 // Shortened transition used while the reader is stepping rapidly through
 // sentences, so consecutive beam moves don't queue up behind slow animations.
 private const val FOCUS_TRANSITION_FAST_DURATION_MS = 140L
+// How long the text selection's boxes take to slide to a new word.
+private const val SELECTION_SLIDE_MS = 160L
 // Slight second draw offset (dp) that emulates the focused sentence's heavier
 // font weight without re-laying out the text.
 private const val FOCUS_EMPHASIS_OFFSET_DP = 0.3f
+
+// One line's piece of the text selection, in view coordinates. `key` is the
+// (block, line) it sits on, so an animation can pair a line's old box with its
+// new one.
+private data class SelectionBox(val key: Long, val rect: RectF)
 
 private data class RenderedTextBlock(
   val block: PageBlock,
@@ -190,9 +197,20 @@ class EpubPageView(context: Context) : View(context) {
   private var handleFixedPosition: TextPosition? = null
   private var handleTouchOffsetX = 0f
   private var handleTouchOffsetY = 0f
-  // Last character offset a drag landed on: a tick (haptic) per character, and
-  // no redraw while the finger stays inside one character.
+  // Last word boundary a drag landed on: a tick (haptic) per word, and no
+  // redraw while the finger stays inside one word.
   private var lastSelectionFocusKey: Long = Long.MIN_VALUE
+  // The text selection is drawn as one rounded box per line, hugging the
+  // selected words. When the selection changes, the boxes slide from where they
+  // were to where they now belong (iOS-like), rather than jumping.
+  private var selectionBoxesShown: List<SelectionBox> = emptyList()
+  private var selectionBoxesFrom: List<SelectionBox> = emptyList()
+  private var selectionBoxesTarget: List<SelectionBox> = emptyList()
+  private var selectionBoxProgress = 1f
+  private var selectionBoxAnimator: ValueAnimator? = null
+  private var lastSelectionTargetSnapshot: List<Pair<Long, RectF>> = emptyList()
+  private val selectionBoxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+  private val selectionHandleBarPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
   private var selectionAnchor: SelectionAnchor? = null
   private val highlightPath = Path()
   private val highlightBounds = RectF()
@@ -367,9 +385,178 @@ class EpubPageView(context: Context) : View(context) {
     canvas.drawColor(pageBackgroundColor)
     val contentWidth = width - (paddingH * 2)
     if (contentWidth <= 0) return
+    drawSelectionBoxes(canvas)
     drawPageBlocks(canvas, contentWidth)
+    drawSelectionHandleMarks(canvas)
     drawReaderEdgeState(canvas)
     if (readAnimationPending) postInvalidateOnAnimation()
+  }
+
+  // ── Text selection: tight rounded boxes and iOS-style handles ─────────────
+
+  private fun selectionAccentColor(): Int {
+    return if (Color.luminance(themePalette.backgroundColor) < 0.4f) {
+      Color.rgb(0x5A, 0xA2, 0xFF)
+    } else {
+      Color.rgb(0x2F, 0x7B, 0xF6)
+    }
+  }
+
+  // One box per line of the selection, from the first selected glyph to the
+  // last on that line (never the paragraph indent or a trailing space), and
+  // from the line's ascent to its descent.
+  private fun computeSelectionBoxes(): List<SelectionBox> {
+    if (activeSelectionKind != ActiveSelectionKind.TEXT || activeSelectionRanges.isEmpty()) return emptyList()
+    if (geometryDirty) rebuildGeometry()
+    val currentPage = page ?: return emptyList()
+    val pad = dp(2f).toFloat()
+    val boxes = mutableListOf<SelectionBox>()
+    sortedActiveTextSelectionRanges().forEach { range ->
+      if (range.pageIndex != currentPage.pageIndex || range.spineIndex != currentPage.spineIndex) return@forEach
+      val renderedIndex = renderedTextBlocks.indexOfFirst { it.block.blockId == range.blockId }
+      if (renderedIndex < 0) return@forEach
+      val rendered = renderedTextBlocks[renderedIndex]
+      val layout = rendered.layout
+      val text = layout.text
+      val textLength = blockTextForSelection(rendered.block).length.coerceAtMost(text.length)
+      val localStart = (range.sourceStartOffset - rendered.block.sourceStartOffset).coerceIn(0, textLength)
+      val localEnd = (range.sourceEndOffset - rendered.block.sourceStartOffset).coerceIn(localStart, textLength)
+      if (localStart >= localEnd || layout.lineCount <= 0) return@forEach
+      val metrics = rendered.block.textPaint?.fontMetrics
+      val firstLine = layout.getLineForOffset(localStart)
+      val lastLine = layout.getLineForOffset(max(localStart, localEnd - 1))
+      for (line in firstLine..lastLine) {
+        val lineEnd = layout.getLineEnd(line)
+        var from = max(localStart, layout.getLineStart(line))
+        var to = min(localEnd, layout.getLineVisibleEnd(line))
+        while (from < to && text[from].isWhitespace()) from++
+        while (to > from && text[to - 1].isWhitespace()) to--
+        if (from >= to) continue
+        val x1 = layout.getPrimaryHorizontal(from)
+        val x2 = if (to >= lineEnd) layout.getLineRight(line) else layout.getPrimaryHorizontal(to)
+        val baseline = layout.getLineBaseline(line).toFloat()
+        val top = metrics?.let { baseline + it.ascent } ?: layout.getLineTop(line).toFloat()
+        val bottom = metrics?.let { baseline + it.descent } ?: layout.getLineBottom(line).toFloat()
+        boxes.add(
+          SelectionBox(
+            key = (renderedIndex.toLong() shl 32) or line.toLong(),
+            rect = RectF(
+              rendered.x + min(x1, x2) - pad,
+              rendered.y + top - pad,
+              rendered.x + max(x1, x2) + pad,
+              rendered.y + bottom + pad
+            )
+          )
+        )
+      }
+    }
+    return boxes
+  }
+
+  // Starts a slide from what is on screen now to `target`. A line that only
+  // the new selection has grows out of the edge nearest the old selection; a
+  // line it no longer has shrinks into that edge.
+  private fun animateSelectionBoxesTo(target: List<SelectionBox>) {
+    val current = selectionBoxesShown
+    selectionBoxAnimator?.cancel()
+    selectionBoxesTarget = target
+    if (current.isEmpty() || target.isEmpty()) {
+      selectionBoxesFrom = target
+      selectionBoxesShown = target
+      selectionBoxProgress = 1f
+      return
+    }
+    val currentKeys = current.associateBy { it.key }
+    val targetKeys = target.associateBy { it.key }
+    val firstKey = current.first().key
+    fun collapsedAt(box: SelectionBox, atRight: Boolean): RectF {
+      val x = if (atRight) box.rect.right else box.rect.left
+      return RectF(x, box.rect.top, x, box.rect.bottom)
+    }
+    val keys = (current.map { it.key } + target.map { it.key }).distinct().sorted()
+    val from = mutableListOf<SelectionBox>()
+    val to = mutableListOf<SelectionBox>()
+    keys.forEach { key ->
+      val old = currentKeys[key]
+      val new = targetKeys[key]
+      // Lines before the old selection open from their right edge (they join
+      // its start); lines after it from their left edge.
+      val beforeOld = key < firstKey
+      from.add(SelectionBox(key, old?.rect?.let(::RectF) ?: collapsedAt(new!!, atRight = beforeOld)))
+      to.add(SelectionBox(key, new?.rect?.let(::RectF) ?: collapsedAt(old!!, atRight = beforeOld)))
+    }
+    selectionBoxesFrom = from
+    selectionBoxesTarget = to
+    selectionBoxProgress = 0f
+    selectionBoxAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+      duration = SELECTION_SLIDE_MS
+      interpolator = PathInterpolator(0.2f, 0f, 0f, 1f)
+      addUpdateListener { animator ->
+        selectionBoxProgress = animator.animatedValue as Float
+        invalidate()
+      }
+      addListener(object : android.animation.AnimatorListenerAdapter() {
+        override fun onAnimationEnd(animation: android.animation.Animator) {
+          selectionBoxesTarget = target
+          selectionBoxesShown = target
+        }
+      })
+      start()
+    }
+  }
+
+  private fun drawSelectionBoxes(canvas: Canvas) {
+    val target = computeSelectionBoxes()
+    val snapshot = target.map { it.key to it.rect }
+    if (snapshot != lastSelectionTargetSnapshot) {
+      lastSelectionTargetSnapshot = snapshot
+      animateSelectionBoxesTo(target)
+    }
+    if (target.isEmpty() && selectionBoxProgress >= 1f) {
+      selectionBoxesShown = emptyList()
+      return
+    }
+    val t = selectionBoxProgress.coerceIn(0f, 1f)
+    val shown = if (t >= 1f) {
+      selectionBoxesTarget
+    } else {
+      selectionBoxesTarget.mapIndexed { index, end ->
+        val start = selectionBoxesFrom.getOrNull(index)?.rect ?: end.rect
+        SelectionBox(
+          end.key,
+          RectF(
+            start.left + (end.rect.left - start.left) * t,
+            start.top + (end.rect.top - start.top) * t,
+            start.right + (end.rect.right - start.right) * t,
+            start.bottom + (end.rect.bottom - start.bottom) * t
+          )
+        )
+      }
+    }
+    selectionBoxesShown = shown.filter { it.rect.width() > 0.5f }
+    val radius = dp(5f).toFloat()
+    selectionBoxPaint.color = selectionAccentColor()
+    selectionBoxPaint.alpha = 0x48
+    selectionBoxesShown.forEach { box -> canvas.drawRoundRect(box.rect, radius, radius, selectionBoxPaint) }
+  }
+
+  // iOS-style handles: a thin bar the height of the selection's first (or last)
+  // line, with a round knob above the start and below the end.
+  private fun drawSelectionHandleMarks(canvas: Canvas) {
+    if (activeSelectionKind != ActiveSelectionKind.TEXT) return
+    val boxes = selectionBoxesShown
+    if (boxes.isEmpty()) return
+    val accent = selectionAccentColor()
+    selectionHandleBarPaint.color = accent
+    selectionHandleKnobPaint.color = accent
+    val barWidth = dp(2f).toFloat()
+    val knob = dp(5.5f).toFloat()
+    val first = boxes.first().rect
+    val last = boxes.last().rect
+    canvas.drawRoundRect(first.left - barWidth / 2f, first.top, first.left + barWidth / 2f, first.bottom, barWidth, barWidth, selectionHandleBarPaint)
+    canvas.drawCircle(first.left, first.top - knob + dp(1f), knob, selectionHandleKnobPaint)
+    canvas.drawRoundRect(last.right - barWidth / 2f, last.top, last.right + barWidth / 2f, last.bottom, barWidth, barWidth, selectionHandleBarPaint)
+    canvas.drawCircle(last.right, last.bottom + knob - dp(1f), knob, selectionHandleKnobPaint)
   }
 
   // In scroll and focus modes this view holds the whole chapter inside a
@@ -458,7 +645,6 @@ class EpubPageView(context: Context) : View(context) {
         } else {
           drawBlockContent(canvas, block, layout)
         }
-        drawSelectionHandles(canvas, block, layout)
         canvas.restore()
         drawNoteIcons(canvas, block, layout, yOffset)
 
@@ -517,7 +703,10 @@ class EpubPageView(context: Context) : View(context) {
 
   private fun drawBlockContent(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
     activeHighlightPaint.color = activePaintColor()
-    drawTextHighlights(canvas, block, layout, activeSelectionRanges, activeHighlightPaint)
+    // A text selection is drawn for the whole page at once (drawSelectionBoxes).
+    if (activeSelectionKind != ActiveSelectionKind.TEXT) {
+      drawTextHighlights(canvas, block, layout, activeSelectionRanges, activeHighlightPaint)
+    }
     drawTextHighlights(canvas, block, layout, levelRanges, levelMarkPaint)
     drawTextHighlights(canvas, block, layout, savedHighlightRanges, savedHighlightPaint)
     layout.draw(canvas)
@@ -582,7 +771,6 @@ class EpubPageView(context: Context) : View(context) {
     }
     pinyinPaint.textSize = bodyPaint.textSize * 0.55f
     pinyinPaint.color = annotationColor
-    glossPaint.textSize = bodyPaint.textSize * 0.5f
     glossPaint.color = annotationColor
     val ascent = bodyPaint.fontMetrics.ascent
     val descent = bodyPaint.fontMetrics.descent
@@ -668,6 +856,10 @@ class EpubPageView(context: Context) : View(context) {
     }
 
     if (glosses.isEmpty()) return
+    // Hangul and CJK glosses are short and dense, so they can be larger than
+    // a Latin-script gloss (which is longer and slides when it doesn't fit).
+    val compactScript = glosses.any { item -> item.text.any(::isCompactScriptChar) }
+    glossPaint.textSize = bodyPaint.textSize * (if (compactScript) GLOSS_TEXT_SCALE_COMPACT else GLOSS_TEXT_SCALE_LATIN)
     val gap = dp(3f).toFloat()
     val edgeSlack = dp(24f).toFloat()
     val now = SystemClock.uptimeMillis()
@@ -729,6 +921,16 @@ class EpubPageView(context: Context) : View(context) {
       t < 2 * MARQUEE_PAUSE_MS + slideMs -> overflow to (2 * MARQUEE_PAUSE_MS + slideMs - t)
       else -> (overflow * (1f - (t - 2 * MARQUEE_PAUSE_MS - slideMs).toFloat() / slideMs)) to MARQUEE_FRAME_MS
     }
+  }
+
+  private fun isCompactScriptChar(ch: Char): Boolean {
+    val block = Character.UnicodeBlock.of(ch) ?: return false
+    return block == Character.UnicodeBlock.HANGUL_SYLLABLES ||
+      block == Character.UnicodeBlock.HANGUL_JAMO ||
+      block == Character.UnicodeBlock.HANGUL_COMPATIBILITY_JAMO ||
+      block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS ||
+      block == Character.UnicodeBlock.HIRAGANA ||
+      block == Character.UnicodeBlock.KATAKANA
   }
 
   // The gloss's first sense, without the dictionary's asides: "(located) at;
@@ -1412,7 +1614,10 @@ class EpubPageView(context: Context) : View(context) {
 
   private fun updateDragSelection(x: Float, y: Float) {
     val anchor = selectionAnchor ?: return
-    val focus = hitTestTextPosition(x, y, allowClosest = true) ?: return
+    // Whole words only: the drag widens the selection a word at a time.
+    val focus = hitTestTextPosition(x, y, allowClosest = true)
+      ?.let { snapFocusForAnchor(it, anchor) }
+      ?: return
     if (!selectionFocusMoved(focus)) return
     val ranges = buildSelectionRanges(anchor, focus)
 
@@ -1455,13 +1660,17 @@ class EpubPageView(context: Context) : View(context) {
   }
 
   private fun updateHandleSelection(handle: SelectionHandle, x: Float, y: Float) {
-    // Character by character: the handle lands between any two letters. The
+    // Word by word: the handle snaps to the edge of the word under it. The
     // other end stays where it was when the drag began, so the handles may
     // cross without the selection jumping.
     val fixed = handleFixedPosition ?: activeTextSelectionEndpoints()?.let { endpoints ->
       if (handle == SelectionHandle.START) endpoints.second else endpoints.first
     } ?: return
-    val focus = hitTestTextPosition(x + handleTouchOffsetX, y + handleTouchOffsetY, allowClosest = true) ?: return
+    val raw = hitTestTextPosition(x + handleTouchOffsetX, y + handleTouchOffsetY, allowClosest = true) ?: return
+    val focus = snappedPositionForHandle(
+      raw,
+      if (compareTextPositions(raw, fixed) >= 0) SelectionHandle.END else SelectionHandle.START
+    )
     if (!selectionFocusMoved(focus)) return
     val ranges = buildSelectionRangesBetween(fixed, focus)
 
@@ -1888,6 +2097,40 @@ class EpubPageView(context: Context) : View(context) {
       first.sourceOffset != second.sourceOffset -> first.sourceOffset.compareTo(second.sourceOffset)
       else -> first.localOffset.compareTo(second.localOffset)
     }
+  }
+
+  private fun snapFocusForAnchor(position: TextPosition, anchor: SelectionAnchor): TextPosition {
+    val isForward = position.renderedIndex > anchor.renderedIndex ||
+      (position.renderedIndex == anchor.renderedIndex && position.sourceOffset >= anchor.sourceStartOffset)
+
+    return snappedPositionForHandle(
+      position = position,
+      handle = if (isForward) SelectionHandle.END else SelectionHandle.START
+    )
+  }
+
+  // The nearest word edge: a start snaps to the start of the word under it, an
+  // end to the end of the word before it.
+  private fun snappedPositionForHandle(position: TextPosition, handle: SelectionHandle): TextPosition {
+    val text = blockTextForSelection(position.block)
+    if (text.isEmpty()) {
+      return position
+    }
+
+    val probeOffset = when (handle) {
+      SelectionHandle.START -> position.localOffset
+      SelectionHandle.END -> max(0, position.localOffset - 1)
+    }.coerceIn(0, text.length)
+    val tokenRange = tokenRangeAtOffset(text, probeOffset) ?: return position
+    val snappedLocalOffset = when (handle) {
+      SelectionHandle.START -> tokenRange.start
+      SelectionHandle.END -> tokenRange.end
+    }.coerceIn(0, text.length)
+
+    return position.copy(
+      localOffset = snappedLocalOffset,
+      sourceOffset = position.block.sourceStartOffset + snappedLocalOffset
+    )
   }
 
   private fun placementForRanges(ranges: List<TextRange>): String {
@@ -2837,47 +3080,6 @@ class EpubPageView(context: Context) : View(context) {
     }
 
     return "outside text"
-  }
-
-  private fun drawSelectionHandles(
-    canvas: Canvas,
-    block: PageBlock,
-    layout: StaticLayout
-  ) {
-    if (activeSelectionKind != ActiveSelectionKind.TEXT || activeSelectionRanges.isEmpty()) {
-      return
-    }
-
-    val ranges = sortedActiveTextSelectionRanges()
-    val startRange = ranges.firstOrNull()
-    val endRange = ranges.lastOrNull()
-    val blockTextLength = blockTextForSelection(block).length
-    if (blockTextLength <= 0) return
-
-    if (startRange?.blockId == block.blockId) {
-      val localStart = (startRange.sourceStartOffset - block.sourceStartOffset)
-        .coerceIn(0, blockTextLength)
-      drawSelectionHandle(canvas, block, layout, localStart, SelectionHandle.START)
-    }
-
-    if (endRange?.blockId == block.blockId) {
-      val localEnd = (endRange.sourceEndOffset - block.sourceStartOffset)
-        .coerceIn(0, blockTextLength)
-      drawSelectionHandle(canvas, block, layout, localEnd, SelectionHandle.END)
-    }
-  }
-
-  private fun drawSelectionHandle(
-    canvas: Canvas,
-    block: PageBlock,
-    layout: StaticLayout,
-    localOffset: Int,
-    handle: SelectionHandle
-  ) {
-    val metrics = selectionHandleLineMetrics(layout, localOffset, handle, block.textPaint) ?: return
-
-    canvas.drawLine(metrics.x, metrics.stemTop, metrics.x, metrics.stemBottom, selectionHandlePaint)
-    canvas.drawCircle(metrics.x, metrics.knobCenterY, dp(7f).toFloat(), selectionHandleKnobPaint)
   }
 
   private fun hitTestSelectionHandle(tapX: Float, tapY: Float): SelectionHandle? {

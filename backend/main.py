@@ -2047,6 +2047,25 @@ def is_en_name_token(token) -> bool:
     return any(not (t.is_punct or t.is_space) for t in token.doc[sentence_start:token.i])
 
 
+# Entity types that name someone or something; a capitalized word tagged with
+# one is a name even at the start of a sentence.
+EN_NAME_ENTITY_TYPES = {"PERSON", "GPE", "LOC", "ORG", "NORP", "FAC", "WORK_OF_ART", "EVENT", "PRODUCT"}
+
+
+def is_en_sentence_initial_name(token, names_mid_sentence: set[str]) -> bool:
+    """A capitalized first word of a sentence is a name when the same word is
+    capitalized mid-sentence elsewhere in the text ("Marilla said..." next to
+    "...asked Marilla"), or when it is a proper noun the tagger places in a
+    named entity ("Avonlea was..."). "I" and all-caps runs are not."""
+    text = token.text
+    if not text[:1].isupper() or text == "I" or (len(text) > 1 and text.isupper()):
+        return False
+    # Only as a noun or adjective: "Will you come?" next to "asked Will" is the verb.
+    if text in names_mid_sentence and token.pos_ in ("PROPN", "NOUN", "ADJ"):
+        return True
+    return token.pos_ == "PROPN" and token.ent_type_ in EN_NAME_ENTITY_TYPES
+
+
 def extract_en_lookup_tokens(text: str) -> tuple[list[str], list[dict], dict[str, str]]:
     doc = get_en_nlp()(text)
     seen_lemmas: set[str] = set()
@@ -2054,6 +2073,9 @@ def extract_en_lookup_tokens(text: str) -> tuple[list[str], list[dict], dict[str
     lemmas: list[str] = []
     surface_index: list[dict] = []
     pos_by_lemma: dict[str, str] = {}
+    # Words capitalized mid-sentence anywhere in the text: the same word opening
+    # a sentence is the same name.
+    names_mid_sentence = {token.text for token in doc if is_en_name_token(token)}
 
     for token in doc:
         lemma = token.lemma_.strip().lower()
@@ -2069,7 +2091,7 @@ def extract_en_lookup_tokens(text: str) -> tuple[list[str], list[dict], dict[str
         ):
             continue
 
-        if is_en_name_token(token):
+        if is_en_name_token(token) or is_en_sentence_initial_name(token, names_mid_sentence):
             # A name keeps its capital as its own stem ("Will" the person is
             # not "will"), is indexed only as written, and is tagged so the
             # app shows it but doesn't grade it.

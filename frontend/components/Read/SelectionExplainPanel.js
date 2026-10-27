@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Feather, MaterialIcons } from '@expo/vector-icons';
+import { MaterialIcons } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
 import { streamExplainInContext } from '../../services/api/explainInContext';
 import { getUserFacingErrorMessage } from '../../i18n/userFacing';
@@ -9,25 +9,25 @@ import { fontFamilies, spacing, useTheme } from '../../theme';
 const clean = (value) => (typeof value === 'string' ? value.trim() : '');
 
 /**
- * SelectionExplainPanel — the AI explanation of a selected phrase (long press →
- * toolbar → AI explain): idioms, phrases and archaic words the dictionary
- * doesn't cover, explained in the sentence they appear in. The short meaning
- * streams in first, then the longer explanation. "Save" keeps the phrase with
- * that short meaning as a vocab card.
+ * SelectionExplainPanel — the AI explanation of a long-pressed selection, in a
+ * bottom sheet like the definition panel: idioms, phrases and archaic words the
+ * dictionary doesn't cover, explained in the sentence they appear in. The short
+ * meaning streams in first, then the longer explanation. The bookmark in the
+ * corner keeps the expression with that short meaning as a vocab card. Tapping
+ * the page (or swiping the sheet down) closes it.
  */
 const SelectionExplainPanel = ({
     text,
     sentence,
     language,
     interfaceLanguage,
-    placement = 'bottom',
+    bottomInset = 0,
     saved = false,
     onSave,
-    onClose,
 }) => {
     const { t } = useTranslation();
-    const { colors, isDarkMode } = useTheme();
-    const styles = useMemo(() => createStyles(colors, isDarkMode), [colors, isDarkMode]);
+    const { colors } = useTheme();
+    const styles = useMemo(() => createStyles(colors), [colors]);
     const phrase = clean(text);
     // `expression`: what the explanation is about — the selection completed to
     // whole words (or a whole idiom), as the backend reports it.
@@ -86,17 +86,24 @@ const SelectionExplainPanel = ({
     const heading = state.expression || phrase;
 
     return (
-        <View style={[styles.panel, placement === 'top' ? styles.panelTop : styles.panelBottom]}>
+        <View style={[styles.sheet, { paddingBottom: 18 + bottomInset }]}>
             <View style={styles.header}>
-                <MaterialIcons name="auto-awesome" size={16} color={colors.textTertiary} />
+                <MaterialIcons name="auto-awesome" size={15} color={colors.textTertiary} />
                 <Text style={styles.headerLabel}>{t('selection.aiExplain')}</Text>
                 <TouchableOpacity
-                    onPress={onClose}
-                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    style={[styles.saveIcon, !canSave && !saved && styles.saveIconDisabled]}
+                    disabled={!canSave}
+                    onPress={() => onSave?.({ text: heading, gloss: state.gloss, sentence })}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                     accessibilityRole="button"
-                    accessibilityLabel={t('common.close')}
+                    accessibilityLabel={saved ? t('selection.saved') : t('lookup.save')}
+                    accessibilityState={{ disabled: !canSave, selected: saved }}
                 >
-                    <Feather name="x" size={20} color={colors.textTertiary} />
+                    <MaterialIcons
+                        name={saved ? 'bookmark' : 'bookmark-border'}
+                        size={26}
+                        color={saved ? colors.text : colors.textTertiary}
+                    />
                 </TouchableOpacity>
             </View>
             <Text style={styles.phrase} selectable numberOfLines={3}>{heading}</Text>
@@ -111,41 +118,37 @@ const SelectionExplainPanel = ({
                 ) : null}
                 {state.error ? <Text style={styles.muted}>{state.error}</Text> : null}
             </ScrollView>
-            <TouchableOpacity
-                style={[styles.saveButton, !canSave && styles.saveButtonDisabled]}
-                disabled={!canSave}
-                onPress={() => onSave?.({ text: heading, gloss: state.gloss, sentence })}
-                accessibilityRole="button"
-            >
-                <Feather name={saved ? 'check' : 'bookmark'} size={16} color={colors.text} />
-                <Text style={styles.saveText}>{saved ? t('selection.saved') : t('lookup.save')}</Text>
-            </TouchableOpacity>
         </View>
     );
 };
 
-const createStyles = (colors, isDarkMode) => StyleSheet.create({
-    panel: {
-        marginHorizontal: 12,
-        borderRadius: 18,
-        paddingHorizontal: 18,
-        paddingTop: 12,
-        paddingBottom: 14,
-        backgroundColor: colors.surface,
+const createStyles = (colors) => StyleSheet.create({
+    // Matches the definition panel's bottom sheet (TopSection).
+    sheet: {
+        paddingHorizontal: 24,
+        paddingTop: 14,
+        borderTopLeftRadius: 24,
+        borderTopRightRadius: 24,
+        backgroundColor: colors.surfaceElevated,
         borderWidth: StyleSheet.hairlineWidth,
+        borderBottomWidth: 0,
         borderColor: colors.border,
-        shadowColor: '#000',
-        shadowOpacity: isDarkMode ? 0.4 : 0.14,
-        shadowRadius: 16,
-        shadowOffset: { width: 0, height: 6 },
+        shadowColor: colors.shadow,
+        shadowOffset: { width: 0, height: -10 },
+        shadowOpacity: 1,
+        shadowRadius: 30,
         elevation: 10,
-        maxHeight: 420,
+        maxHeight: 460,
     },
-    panelTop: {
-        marginTop: 8,
+    saveIcon: {
+        width: 36,
+        height: 36,
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginRight: -8,
     },
-    panelBottom: {
-        marginBottom: 12,
+    saveIconDisabled: {
+        opacity: 0.4,
     },
     header: {
         flexDirection: 'row',
@@ -195,25 +198,6 @@ const createStyles = (colors, isDarkMode) => StyleSheet.create({
         fontSize: 14,
         lineHeight: 20,
         color: colors.textTertiary,
-    },
-    saveButton: {
-        marginTop: 12,
-        height: 44,
-        borderRadius: 14,
-        borderWidth: 1,
-        borderColor: colors.border,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: spacing.xs,
-    },
-    saveButtonDisabled: {
-        opacity: 0.45,
-    },
-    saveText: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 15,
-        color: colors.text,
     },
 });
 
