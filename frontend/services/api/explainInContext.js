@@ -13,6 +13,7 @@ const buildExplainBody = ({
   anchorWords,
   dictionary,
   lemma,
+  mode,
 }) => ({
   word,
   sentence,
@@ -28,6 +29,9 @@ const buildExplainBody = ({
   // backend uses it as the base form instead of guessing its own, so the
   // explanation and the panel heading always agree. Older backends ignore it.
   ...(lemma ? { lemma } : {}),
+  // 'selection': a long-press selection (part of a word up to a sentence),
+  // explained with its own prompt. Older backends ignore it.
+  ...(mode === 'selection' ? { mode } : {}),
 });
 
 export const explainInContext = async ({
@@ -46,11 +50,13 @@ export const explainInContext = async ({
   dictionary,
   // The lookup's dictionary form for the tapped word, when it has one.
   lemma,
+  // 'selection' for a long-press selection; omitted for a tapped word.
+  mode,
   timeout = 30000,
 } = {}) => {
   const response = await api.post(
     '/explain_in_context/',
-    buildExplainBody({ word, sentence, language, interfaceLanguage, pKnown, hanja, anchorWords, dictionary, lemma }),
+    buildExplainBody({ word, sentence, language, interfaceLanguage, pKnown, hanja, anchorWords, dictionary, lemma, mode }),
     {
       timeout,
       headers: { 'Content-Type': 'application/json' },

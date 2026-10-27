@@ -37,6 +37,7 @@ from song_search import (
 from explain_graph import (
     ExplainGraphError,
     build_grounded_prompt,
+    build_selection_prompt,
     clean_known_lemma,
     familiarity_from_p_known,
     p_known_for,
@@ -44,6 +45,7 @@ from explain_graph import (
     run_explain_graph,
     stream_snapshot_usage,
     user_message_for,
+    user_message_for_selection,
 )
 from word_lookup import (
     KrdictUnavailableError,
@@ -93,6 +95,7 @@ from limits import (
     ENTRY_PROMPT_MAX_CHARS,
     ENTRY_SANDBOX_WORD_MAX_CHARS,
     EXPLAIN_SENTENCE_HARD_MAX_CHARS,
+    EXPLAIN_SELECTION_MAX_CHARS,
     EXPLAIN_SENTENCE_MAX_CHARS,
     EXPLAIN_WORD_MAX_CHARS,
     clip_sentence_around_word,
@@ -5038,7 +5041,7 @@ class _ExplainRequest:
     __slots__ = (
         "word", "sentence", "target_language", "interface_language", "p_known",
         "theta", "word_difficulty", "hanja", "anchor_words", "dictionary_found",
-        "dictionary_senses", "known_lemma", "personalized", "cache_key",
+        "dictionary_senses", "known_lemma", "personalized", "cache_key", "mode",
     )
 
 
@@ -5061,14 +5064,19 @@ async def _prepare_explain_request(payload: dict, auth: dict[str, Any]) -> _Expl
     req = _ExplainRequest()
     req.word = word.strip()
     req.sentence = sentence.strip()
+    # "selection": a long-press selection (the selection toolbar's AI explain),
+    # anything from part of a word to a whole sentence. Everything else is a
+    # tapped word.
+    req.mode = "selection" if payload.get("mode") == "selection" else "word"
     req.target_language = normalize_scoring_language(payload.get("language", "ko"))
     req.interface_language = request_interface_language(payload.get("interface_language"))
 
     # Dedicated limits: a tapped word and its sentence, not a document. An
     # over-long sentence (old builds can send a whole OCR block) is clipped to a
     # window around the word; only absurd sizes are refused.
-    if len(req.word) > EXPLAIN_WORD_MAX_CHARS:
-        raise ApiError(413, "text_too_long", f"word exceeds {EXPLAIN_WORD_MAX_CHARS} characters", {"limit": EXPLAIN_WORD_MAX_CHARS})
+    word_limit = EXPLAIN_SELECTION_MAX_CHARS if req.mode == "selection" else EXPLAIN_WORD_MAX_CHARS
+    if len(req.word) > word_limit:
+        raise ApiError(413, "text_too_long", f"word exceeds {word_limit} characters", {"limit": word_limit})
     if len(req.sentence) > EXPLAIN_SENTENCE_HARD_MAX_CHARS:
         raise ApiError(413, "text_too_long", f"sentence exceeds {EXPLAIN_SENTENCE_HARD_MAX_CHARS} characters", {"limit": EXPLAIN_SENTENCE_HARD_MAX_CHARS})
     req.sentence = clip_sentence_around_word(req.sentence, req.word, EXPLAIN_SENTENCE_MAX_CHARS)
@@ -5117,6 +5125,9 @@ async def _prepare_explain_request(payload: dict, auth: dict[str, Any]) -> _Expl
     if req.known_lemma:
         lemma_hash = hashlib.sha256(_normalize_for_cache(req.known_lemma).encode("utf-8")).hexdigest()[:16]
         cache_key = f"{cache_key}:l{lemma_hash}"
+    # A selection gets its own prompt, so it never shares a tapped word's entry.
+    if req.mode == "selection":
+        cache_key = f"{cache_key}:sel"
     # Client grounding (hanja + dictionary senses) also shapes the prompt, so a
     # request carrying crafted grounding must not be able to write an answer that
     # other readers of the same word+sentence are then served. Requests without
@@ -5181,7 +5192,7 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
 
     target_language_name, interface_language_name = _explain_language_names(req)
 
-    if EXPLAIN_USE_GRAPH:
+    if EXPLAIN_USE_GRAPH and req.mode != "selection":
         try:
             result = await asyncio.get_running_loop().run_in_executor(
                 EXPLAIN_FLOW_EXECUTOR,
@@ -5219,8 +5230,15 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
             "lemma": result.get("lemma"),
         }
     else:
-        system_prompt = build_contextual_explanation_prompt(target_language_name, interface_language_name)
-        user_message = f"Word: {req.word}\n\nSentence: {req.sentence}"
+        if req.mode == "selection":
+            system_prompt = build_selection_prompt(
+                target_language_name=target_language_name,
+                interface_language_name=interface_language_name,
+            )
+            user_message = user_message_for_selection(req.word, req.sentence)
+        else:
+            system_prompt = build_contextual_explanation_prompt(target_language_name, interface_language_name)
+            user_message = f"Word: {req.word}\n\nSentence: {req.sentence}"
 
         try:
             message = await get_anthropic_async_client().messages.create(
@@ -5289,18 +5307,25 @@ async def explain_in_context_stream(payload: dict, auth: dict[str, Any] = Depend
     await _charge_explain_miss(auth)
 
     target_language_name, interface_language_name = _explain_language_names(req)
-    familiarity = familiarity_from_p_known(req.p_known)
-    system_prompt = build_grounded_prompt(
-        target_language_name=target_language_name,
-        interface_language_name=interface_language_name,
-        familiarity=familiarity,
-        hanja=req.hanja,
-        anchor_words=req.anchor_words,
-        dictionary_found=req.dictionary_found,
-        dictionary_senses=req.dictionary_senses,
-        known_lemma=req.known_lemma,
-    )
-    user_message = user_message_for(req.word, req.sentence)
+    if req.mode == "selection":
+        system_prompt = build_selection_prompt(
+            target_language_name=target_language_name,
+            interface_language_name=interface_language_name,
+        )
+        user_message = user_message_for_selection(req.word, req.sentence)
+    else:
+        familiarity = familiarity_from_p_known(req.p_known)
+        system_prompt = build_grounded_prompt(
+            target_language_name=target_language_name,
+            interface_language_name=interface_language_name,
+            familiarity=familiarity,
+            hanja=req.hanja,
+            anchor_words=req.anchor_words,
+            dictionary_found=req.dictionary_found,
+            dictionary_senses=req.dictionary_senses,
+            known_lemma=req.known_lemma,
+        )
+        user_message = user_message_for(req.word, req.sentence)
 
     async def _events():
         raw = ""

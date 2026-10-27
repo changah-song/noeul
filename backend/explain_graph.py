@@ -380,6 +380,39 @@ def user_message_for(word: str, sentence: str) -> str:
     return f"Word: {word}\n\nSentence: {sentence}"
 
 
+def user_message_for_selection(selection: str, sentence: str) -> str:
+    return f"Selected text: {selection}\n\nSentence: {sentence}"
+
+
+def build_selection_prompt(*, target_language_name: str, interface_language_name: str) -> str:
+    """System prompt for a long-press selection (the reader's selection toolbar).
+
+    Unlike a tapped word, a selection can be anything from part of a word to a
+    whole sentence, chosen character by character. The model first decides what
+    the reader is pointing at (completing a cut-off word), then explains it at
+    the right size: a word's sense, an idiom's figurative meaning, a clause's
+    translation. The tags match the word contract, so parsing and streaming are
+    shared; <lemma> carries the expression explained (what the panel shows and
+    a saved card keeps).
+    """
+    target = target_language_name
+    interface = interface_language_name
+    return f"""You are an expert {target} tutor. A learner reading {target} selected some text and wants to understand it *in this sentence*. The selection was dragged by hand, character by character, so it may cut a word off or include stray spaces or punctuation.
+
+First decide what the learner is pointing at:
+- Part of a word (e.g. "Gabl" in "Gables"): the whole word it belongs to.
+- A single word: that word as used here.
+- An idiom, fixed expression, phrasal verb or collocation (the selection may be part of one): the whole expression.
+- A name (a person, place, title): the name.
+- A longer phrase, clause or sentence: the selection itself.
+
+Reply with exactly these three tags in this order and nothing else — no preamble, labels, quotes, or markdown:
+
+<lemma>The text you are explaining, in {target}, exactly as it appears in the sentence: the selection, completed to whole words (and to the whole expression when it is part of an idiom or fixed phrase). No base form, no translation.</lemma>
+<gloss>Its meaning in {interface}. For a word or expression: a clean definition, at most 6 words, no full sentence. For a phrase, clause or sentence: a natural, faithful translation of it as used here. This is saved as the learner's flashcard.</gloss>
+<explanation>Two or three short sentences in {interface}, 50 words at most, on what it means in THIS sentence. For an idiom or fixed expression, say that it is one and give its figurative meaning. For a phrase or clause, point out the words or images that carry its meaning, any nuance or tone, and how it connects to the rest of the sentence. For a name, say what it refers to here. Meaning only: never describe grammar — no particles, endings, tenses, conjugation or parts of speech. No preamble, no generic dictionary entry.</explanation>"""
+
+
 def _user_message(state: ExplainState) -> str:
     return user_message_for(state.get("word", ""), state.get("sentence", ""))
 

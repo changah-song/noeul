@@ -318,3 +318,22 @@ def test_stream_snapshot_usage():
     assert g.stream_snapshot_usage(_StreamWithSnapshot()) == _Snapshot.usage
     assert g.stream_snapshot_usage(_StreamBeforeMessageStart()) is None
     assert g.stream_snapshot_usage(None) is None
+
+
+def test_selection_prompt_covers_partial_words_and_phrases():
+    prompt = g.build_selection_prompt(target_language_name="English", interface_language_name="Korean")
+    # It asks the model to complete a cut-off word and to scale to clauses.
+    assert "Part of a word" in prompt
+    assert "translation" in prompt
+    assert "<lemma>" in prompt and "<gloss>" in prompt and "<explanation>" in prompt
+    assert "Korean" in prompt and "English" in prompt
+
+
+def test_selection_user_message_names_the_selection():
+    assert g.user_message_for_selection("Gabl", "Anne of Green Gables").startswith("Selected text: Gabl")
+
+
+def test_selection_reply_parses_like_a_word_reply():
+    raw = "<lemma>Gables</lemma><gloss>박공지붕</gloss><explanation>집 이름의 일부입니다.</explanation>"
+    parsed = g.parse_contextual_explanation(raw)
+    assert parsed == {"lemma": "Gables", "gloss": "박공지붕", "explanation": "집 이름의 일부입니다."}
