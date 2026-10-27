@@ -20,7 +20,7 @@ import {
     PINNED_TRANSLATION_FONT_MAX,
     PINNED_TRANSLATION_FONT_MIN,
     clampPinnedTranslationFontSize,
-} from './PinnedSentenceTranslation';
+} from './pinnedTranslationSize';
 import {
     DEFAULT_BOOK_READER_SETTINGS,
     READER_BRIGHTNESS_MAX,

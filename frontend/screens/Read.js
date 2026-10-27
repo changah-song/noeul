@@ -5,10 +5,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather, MaterialIcons } from '@expo/vector-icons';
 
 import TopSection from '../components/Read/TopSection/TopSection';
-import PinnedSentenceTranslation, {
+import PinnedSentenceTranslation from '../components/Read/PinnedSentenceTranslation';
+import {
     PINNED_TRANSLATION_FONT_DEFAULT,
     pinnedTranslationBarHeight,
-} from '../components/Read/PinnedSentenceTranslation';
+} from '../components/Read/pinnedTranslationSize';
 import SelectionToolbar from '../components/Read/SelectionToolbar';
 import SelectionExplainPanel from '../components/Read/SelectionExplainPanel';
 import HighlightNoteSheet from '../components/Read/HighlightNoteSheet';

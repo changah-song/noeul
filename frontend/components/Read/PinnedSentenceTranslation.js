@@ -4,31 +4,14 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
 import { chapterTranslations } from '../../services/chapterTranslations';
 import { fontFamilies, spacing, useTheme } from '../../theme';
-
-// The translation's text size (Settings → Words → Text size).
-export const PINNED_TRANSLATION_FONT_MIN = 14;
-export const PINNED_TRANSLATION_FONT_MAX = 24;
-export const PINNED_TRANSLATION_FONT_DEFAULT = 17;
-// Lines of translation the bar shows; a longer one scrolls inside it.
-const VISIBLE_LINES = 2;
-const PILL_PADDING_V = 8;
-const STRIP_PADDING_V = 4;
-
-export const clampPinnedTranslationFontSize = (value) => {
-    const numeric = Math.round(Number(value));
-    if (!Number.isFinite(numeric)) return PINNED_TRANSLATION_FONT_DEFAULT;
-    return Math.min(PINNED_TRANSLATION_FONT_MAX, Math.max(PINNED_TRANSLATION_FONT_MIN, numeric));
-};
-
-const lineHeightFor = (fontSize) => Math.round(fontSize * 1.4);
-
-// Height the bar reserves under the header. It is part of the reader's layout,
-// so it only changes with the text size (which re-paginates, like the book's
-// own font size): two lines of translation plus padding.
-export const pinnedTranslationBarHeight = (fontSize) => {
-    const size = clampPinnedTranslationFontSize(fontSize);
-    return VISIBLE_LINES * lineHeightFor(size) + 2 * PILL_PADDING_V + 2 * STRIP_PADDING_V;
-};
+import {
+    PINNED_TRANSLATION_FONT_DEFAULT,
+    PINNED_TRANSLATION_PILL_PADDING_V as PILL_PADDING_V,
+    PINNED_TRANSLATION_STRIP_PADDING_V as STRIP_PADDING_V,
+    clampPinnedTranslationFontSize,
+    pinnedTranslationBarHeight,
+    pinnedTranslationLineHeight as lineHeightFor,
+} from './pinnedTranslationSize';
 
 /**
  * PinnedSentenceTranslation — the translation of the last tapped word's
