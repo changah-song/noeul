@@ -19,10 +19,18 @@ import { nearestRankForTheta } from '../calibrationQuiz';
 import { ABILITY_THETA_MAX, ABILITY_THETA_MIN } from '../abilityModel';
 
 describe('vocab-size grid data', () => {
-  it('exposes a grid for Korean and Chinese but not for English', () => {
+  it('exposes a grid for Korean, Chinese and English', () => {
     expect(hasVocabSizeGrid('ko')).toBe(true);
     expect(hasVocabSizeGrid('zh')).toBe(true);
-    expect(hasVocabSizeGrid('en')).toBe(false);
+    expect(hasVocabSizeGrid('en')).toBe(true);
+  });
+
+  it('ships one English tier per CEFR level, A1 to C2, spanning the axis', () => {
+    const tiers = getVocabTiers('en');
+    expect(tiers.map((tier) => tier.label)).toEqual(['A1', 'A2', 'B1', 'B2', 'C1', 'C2']);
+    expect(tiers[0].theta).toBe(ABILITY_THETA_MIN);
+    expect(tiers[tiers.length - 1].theta).toBe(ABILITY_THETA_MAX);
+    tiers.forEach((tier) => expect(tier.words.length).toBe(10));
   });
 
   it('ships one Chinese tier per HSK level, easiest first, spanning the axis', () => {

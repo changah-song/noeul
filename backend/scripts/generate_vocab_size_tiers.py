@@ -10,13 +10,15 @@ for word difficulty (frontend/services/abilityModel.js: band k of K maps to
 Korean: NIKL reading levels 1-6 (korean_nikl_vocab.level_rank), words ordered
 by wordfreq. Chinese: HSK 3.0 levels 1-7 (chinese_hsk.level_rank), one tier
 per level, sample words the most frequent of that level by wordfreq.
+English: CEFR A1-C2 (english_cefr.level_rank 1-6), one tier per level like
+Chinese.
 
 Usage (wordfreq is not a backend dependency):
   python3 -m pip install --target /tmp/vocablibs wordfreq
   PYTHONPATH=/tmp/vocablibs python3 backend/scripts/generate_vocab_size_tiers.py
 
-Output: frontend/assets/data/vocab-size/{ko,zh}.generated.json
-  { "<lang>": { "system": "frequency"|"hsk", "total": <int>,
+Output: frontend/assets/data/vocab-size/{ko,zh,en}.generated.json
+  { "<lang>": { "system": "frequency"|"hsk"|"cefr", "total": <int>,
                 "bandCounts": {"1": n, ...},
                 "tiers": [ { "threshold": N, "theta": t, "words": [...],
                              "advanced"?: true, "label"?: "HSK 3" } ] } }
@@ -32,11 +34,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 DB_PATH = ROOT / "backend" / "proficiency_levels.db"
+EN_DICT_PATH = ROOT / "backend" / "en_learner.db"
 OUTPUT_DIR = ROOT / "frontend" / "assets" / "data" / "vocab-size"
 
 THETA_MIN, THETA_MAX = -3.0, 3.0
 KO_BANDS = 6
 ZH_BANDS = 7
+EN_BANDS = 6
+EN_LEVEL_LABELS = ["A1", "A2", "B1", "B2", "C1", "C2"]
 
 # Frequency-rank boundaries shown as Korean grid rows (cumulative "top-N
 # words"), capped at the available pool size at build time.
@@ -47,6 +52,7 @@ SEED = 20260713
 
 HANGUL_WORD = re.compile(r"^[가-힣]{2,6}$")
 HAN_WORD = re.compile(r"^[一-鿿]{1,4}$")
+EN_WORD = re.compile(r"^[a-z]{3,14}$")
 
 
 def band_scale(band: float, band_count: int) -> float:
@@ -137,6 +143,56 @@ def generate_ko(conn: sqlite3.Connection, rng: random.Random) -> dict:
     }
 
 
+def generate_level_tiers(
+    by_band: dict[int, list[str]],
+    freq: dict[str, int],
+    band_total: int,
+    labels: list[str],
+    system: str,
+    rng: random.Random,
+) -> dict:
+    """One tier per graded level (HSK 1-7, CEFR A1-C2): sample words are
+    common words of that level, seeding the level's theta."""
+    band_counts = {band: len(set(words)) for band, words in by_band.items()}
+    cumulative = cumulative_counts(band_counts, band_total)
+    tiers = []
+    for band in range(1, band_total + 1):
+        words = sorted(set(by_band.get(band, [])), key=lambda w: freq.get(w, 10**9))
+        # Show common words of the level, but not only the very top ones: a
+        # spread over the most frequent quarter reads as "this level".
+        pool = words[: max(WORDS_PER_TIER, len(words) // 4)] or words
+        sample = sorted(rng.sample(pool, min(WORDS_PER_TIER, len(pool))))
+        tiers.append({
+            "threshold": cumulative[band - 1],
+            "theta": band_scale(band, band_total),
+            "words": sample,
+            "label": labels[band - 1],
+        })
+    return {
+        "system": system,
+        "total": cumulative[-1],
+        "bandCounts": {str(k): band_counts.get(k, 0) for k in range(1, band_total + 1)},
+        "tiers": tiers,
+    }
+
+
+def generate_en(conn: sqlite3.Connection, rng: random.Random) -> dict:
+    freq = frequency_rank("en", EN_WORD)
+    # Sample only words the learner dictionary has as ordinary words, not as
+    # names (amazon, nazi) or not at all.
+    common_words: set[str] = set()
+    if EN_DICT_PATH.exists():
+        with sqlite3.connect(EN_DICT_PATH) as en:
+            common_words = {word for (word,) in en.execute("SELECT DISTINCT word FROM en_entries WHERE pos != 'name'")}
+    by_band: dict[int, list[str]] = {}
+    for term, rank in conn.execute("SELECT word, level_rank FROM english_cefr WHERE level_rank IS NOT NULL"):
+        term = (term or "").strip().lower()
+        # Only words common enough to be recognisable as that level's words.
+        if EN_WORD.fullmatch(term) and term in freq and (not common_words or term in common_words):
+            by_band.setdefault(int(rank), []).append(term)
+    return generate_level_tiers(by_band, freq, EN_BANDS, EN_LEVEL_LABELS, "cefr", rng)
+
+
 def generate_zh(conn: sqlite3.Connection, rng: random.Random) -> dict:
     freq = frequency_rank("zh", HAN_WORD)
     by_band: dict[int, list[str]] = {}
@@ -172,7 +228,7 @@ if __name__ == "__main__":
     rng = random.Random(SEED)
     conn = sqlite3.connect(DB_PATH)
     try:
-        outputs = {"ko": generate_ko(conn, rng), "zh": generate_zh(conn, rng)}
+        outputs = {"ko": generate_ko(conn, rng), "zh": generate_zh(conn, rng), "en": generate_en(conn, rng)}
     finally:
         conn.close()
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
