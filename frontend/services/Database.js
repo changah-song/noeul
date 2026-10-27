@@ -4650,6 +4650,195 @@ export const deleteBookBookmark = (id, { ownerId } = {}) => {
   });
 };
 
+// ─── Highlights and notes (long press → toolbar) ──────────────────────────────
+//
+// A highlight is a passage the reader marked, kept by position (spine item,
+// block, source offsets: what the native selection reports) with its text.
+// A note is a highlight with the reader's words attached (`note`), shown in
+// the book's notes list. Kept on this device for now, like bookmarks.
+
+const makeBookHighlightId = () => (
+  `bh_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+);
+
+export const createBookHighlightsTable = () => {
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `CREATE TABLE IF NOT EXISTS book_highlights (
+          id             TEXT PRIMARY KEY,
+          owner_id       TEXT NOT NULL DEFAULT 'guest',
+          profile_id     TEXT DEFAULT 'ko_default',
+          book_uri       TEXT NOT NULL,
+          language       TEXT NOT NULL DEFAULT 'ko',
+          spine_index    INTEGER NOT NULL,
+          block_id       TEXT NOT NULL,
+          start_offset   INTEGER NOT NULL,
+          end_offset     INTEGER NOT NULL,
+          text           TEXT NOT NULL,
+          color          TEXT NOT NULL DEFAULT 'yellow',
+          note           TEXT,
+          chapter_label  TEXT,
+          progress       REAL,
+          created_at     TEXT NOT NULL,
+          updated_at     TEXT,
+          deleted_at     TEXT,
+          synced_at      TEXT
+        )`,
+        [],
+        () => {
+          tx.executeSql(
+            `CREATE INDEX IF NOT EXISTS idx_book_highlights_owner_book
+             ON book_highlights(owner_id, profile_id, book_uri, spine_index)`,
+            [],
+            () => resolve(),
+            (_, error) => {
+              console.error('[Database] Error indexing book_highlights:', error);
+              reject(error);
+              return true;
+            }
+          );
+        },
+        (_, error) => {
+          console.error('[Database] Error creating book_highlights table:', error);
+          reject(error);
+          return true;
+        }
+      );
+    });
+  });
+};
+
+export const insertBookHighlight = ({
+  ownerId,
+  profileId,
+  bookUri,
+  language = 'ko',
+  spineIndex,
+  blockId,
+  startOffset,
+  endOffset,
+  text,
+  color = 'yellow',
+  note = null,
+  chapterLabel = null,
+  progress = null,
+} = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
+
+  return new Promise((resolve, reject) => {
+    if (!bookUri || !Number.isInteger(spineIndex) || !blockId
+      || !Number.isInteger(startOffset) || !Number.isInteger(endOffset) || endOffset <= startOffset) {
+      return resolve(null);
+    }
+    const id = makeBookHighlightId();
+    const createdAt = new Date().toISOString();
+    const cleanText = String(text || '').trim();
+    const cleanNote = typeof note === 'string' && note.trim() ? note.trim() : null;
+    db.transaction(tx => {
+      tx.executeSql(
+        `INSERT INTO book_highlights
+           (id, owner_id, profile_id, book_uri, language, spine_index, block_id, start_offset,
+            end_offset, text, color, note, chapter_label, progress, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id, scopedOwnerId, scopedProfileId, bookUri, normalizedLanguage, spineIndex, blockId,
+          startOffset, endOffset, cleanText, color, cleanNote, chapterLabel,
+          typeof progress === 'number' ? progress : null, createdAt, createdAt,
+        ],
+        () => resolve({
+          id, spineIndex, blockId, startOffset, endOffset, text: cleanText, color, note: cleanNote,
+          chapterLabel, progress: typeof progress === 'number' ? progress : null, createdAt,
+        }),
+        (_, error) => {
+          console.error('[Database] Error inserting book highlight:', error);
+          reject(error);
+          return true;
+        }
+      );
+    });
+  });
+};
+
+export const getBookHighlights = (bookUri, { ownerId, profileId, language = 'ko' } = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
+
+  return new Promise((resolve, reject) => {
+    if (!bookUri) {
+      return resolve([]);
+    }
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT id, spine_index AS spineIndex, block_id AS blockId, start_offset AS startOffset,
+                end_offset AS endOffset, text, color, note, chapter_label AS chapterLabel,
+                progress, created_at AS createdAt
+         FROM book_highlights
+         WHERE owner_id = ? AND profile_id = ? AND book_uri = ? AND language = ?
+           AND deleted_at IS NULL
+         ORDER BY spine_index ASC, start_offset ASC`,
+        [scopedOwnerId, scopedProfileId, bookUri, normalizedLanguage],
+        (_, result) => resolve(result.rows._array),
+        (_, error) => {
+          console.error('[Database] Error reading book highlights:', error);
+          reject(error);
+          return true;
+        }
+      );
+    });
+  });
+};
+
+export const updateBookHighlightNote = (id, note, { ownerId } = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  return new Promise((resolve, reject) => {
+    if (!id) {
+      return resolve(false);
+    }
+    const updatedAt = new Date().toISOString();
+    const cleanNote = typeof note === 'string' && note.trim() ? note.trim() : null;
+    db.transaction(tx => {
+      tx.executeSql(
+        `UPDATE book_highlights SET note = ?, updated_at = ?, synced_at = NULL
+         WHERE id = ? AND owner_id = ?`,
+        [cleanNote, updatedAt, id, scopedOwnerId],
+        (_, result) => resolve((result.rowsAffected ?? 0) > 0),
+        (_, error) => {
+          console.error('[Database] Error updating book highlight note:', error);
+          reject(error);
+          return true;
+        }
+      );
+    });
+  });
+};
+
+export const deleteBookHighlight = (id, { ownerId } = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  return new Promise((resolve, reject) => {
+    if (!id) {
+      return resolve(false);
+    }
+    const deletedAt = new Date().toISOString();
+    db.transaction(tx => {
+      tx.executeSql(
+        `UPDATE book_highlights SET deleted_at = ?, updated_at = ?, synced_at = NULL
+         WHERE id = ? AND owner_id = ?`,
+        [deletedAt, deletedAt, id, scopedOwnerId],
+        (_, result) => resolve((result.rowsAffected ?? 0) > 0),
+        (_, error) => {
+          console.error('[Database] Error deleting book highlight:', error);
+          reject(error);
+          return true;
+        }
+      );
+    });
+  });
+};
+
 // ─── Word candidates for the "before you go" panel ────────────────────────────
 //
 // Reuses the Phase 4.4 flashcard nominator (uncertain AND rare-in-book words the
@@ -4915,6 +5104,7 @@ export const initAllTables = async () => {
   await createBookNotesTable();
   await migrateBookNotesTable();
   await createBookBookmarksTable();
+  await createBookHighlightsTable();
   await createBookPreprocessTables();
   await migrateBookPreprocessLevelColumns();
   await createSentenceTranslationsTable();

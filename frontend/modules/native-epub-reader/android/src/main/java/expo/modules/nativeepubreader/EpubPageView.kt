@@ -184,6 +184,10 @@ class EpubPageView(context: Context) : View(context) {
     color = savedHighlightColor
     style = Paint.Style.FILL
   }
+  // The reader's own highlights; the color comes from each range.
+  private val userHighlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    style = Paint.Style.FILL
+  }
   private val savedHighlightTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
     color = savedHighlightTextColor
     style = Paint.Style.FILL
@@ -1275,14 +1279,12 @@ class EpubPageView(context: Context) : View(context) {
     }
 
     val block = renderedTextBlocks[renderedIndex].block
-    // Default the long-press selection to the whole sentence the word sits in,
-    // so the reader immediately sees the entire sentence translated. The drag
-    // handles still let them narrow or widen the range afterward. Falls back to
-    // just the tapped word if no sentence bounds can be resolved.
-    val sentenceBounds = sentenceBoundsAtOffset(block, hit.localStartOffset, hit.localEndOffset)
+    // A long press selects the word under the finger; dragging or the handles
+    // widen it word by word into a phrase (for the selection toolbar: copy,
+    // highlight, note, AI explanation).
     val sliceLength = blockTextForSelection(block).length
-    val srcStart = sentenceBounds?.first ?: hit.range.sourceStartOffset
-    val srcEnd = sentenceBounds?.second ?: hit.range.sourceEndOffset
+    val srcStart = hit.range.sourceStartOffset
+    val srcEnd = hit.range.sourceEndOffset
     val selStart = (srcStart - block.sourceStartOffset).coerceIn(0, sliceLength)
     val selEnd = (srcEnd - block.sourceStartOffset).coerceIn(selStart, sliceLength)
 
@@ -1324,7 +1326,10 @@ class EpubPageView(context: Context) : View(context) {
 
   private fun updateHandleSelection(handle: SelectionHandle, x: Float, y: Float) {
     val endpoints = activeTextSelectionEndpoints() ?: return
-    val focus = hitTestTextPosition(x, y, allowClosest = true) ?: return
+    // Snap to whole words, like the long-press drag does (never "best known fo").
+    val focus = hitTestTextPosition(x, y, allowClosest = true)
+      ?.let { snappedPositionForHandle(it, handle) }
+      ?: return
     val ranges = when (handle) {
       SelectionHandle.START -> buildSelectionRangesBetween(focus, endpoints.second)
       SelectionHandle.END -> buildSelectionRangesBetween(endpoints.first, focus)
@@ -1917,6 +1922,20 @@ class EpubPageView(context: Context) : View(context) {
         return@forEach
       }
 
+      if (paint === savedHighlightPaint && range.userColor != null) {
+        userHighlightPaint.color = range.userColor
+        drawTextSelectionHighlight(
+          canvas = canvas,
+          block = block,
+          layout = layout,
+          localStart = localStart,
+          localEnd = localEnd,
+          textLength = blockTextLength,
+          paint = userHighlightPaint
+        )
+        return@forEach
+      }
+
       if (paint === savedHighlightPaint) {
         // A saved word loses pixels a step each time it comes on screen
         // without a lookup, the leaving pixels going one by one, until the
@@ -2125,6 +2144,8 @@ class EpubPageView(context: Context) : View(context) {
       ) {
         return@forEach
       }
+      // A reader's highlight keeps the body ink on its light box.
+      if (range.userColor != null) return@forEach
       // Light text only on a full box; once it breaks into pixels (or is
       // animating its first step) the word is read in the body ink underneath.
       if (range.strength < 1f || savedFade?.invoke(range) != null) return@forEach

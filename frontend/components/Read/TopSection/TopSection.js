@@ -18,7 +18,6 @@ import DictionaryContent from './DictionaryContent';
 const DICTIONARY_MAX_HEIGHT = 380;
 // Chinese packs several readings + numbered senses inline, so it gets more room.
 const DICTIONARY_ZH_MAX_HEIGHT = 430;
-const DICTIONARY_EXPLAIN_MAX_HEIGHT = 470;
 const DICTIONARY_EXPANDED_MAX_HEIGHT = 548;
 const TRANSLATION_MAX_SCROLL_HEIGHT = 150;
 const DICTIONARY_BOTTOM_PADDING = 26;
@@ -52,11 +51,9 @@ const TopSection = ({
     // The mode the panel was showing, kept through the fade-out so a closing
     // translation doesn't flip to (and mount) the dictionary for its last frames.
     const [visibleIsNativeSelection, setVisibleIsNativeSelection] = useState(false);
-    const [translationTarget, setTranslationTarget] = useState('');
     const [isCopied, setIsCopied] = useState(false);
     const [isCopying, setIsCopying] = useState(false);
     const [isLookupExpanded, setIsLookupExpanded] = useState(false);
-    const [isExplainMode, setIsExplainMode] = useState(false);
     const [canExpandLookup, setCanExpandLookup] = useState(false);
     const [translationStatus, setTranslationStatus] = useState({
         isLoading: false,
@@ -107,9 +104,7 @@ const TopSection = ({
     useEffect(() => {
         if (highlightedWord && highlightedWord !== prevWordRef.current) {
             prevWordRef.current = highlightedWord;
-            setTranslationTarget('');
             setIsLookupExpanded(false);
-            setIsExplainMode(false);
             setCanExpandLookup(false);
             setTranslationStatus({ isLoading: false, hasError: false, hasText: false, translatedText: '' });
             setIsCopied(false);
@@ -232,12 +227,10 @@ const TopSection = ({
     const isChineseDictionarySheet = dictionaryBookLanguage === 'zh';
     // The panel sizes itself to its content (no fixed heights, so a one-line
     // definition never leaves blank space); each mode only sets a ceiling.
-    const dictionaryMaxHeight = isExplainMode
-        ? DICTIONARY_EXPLAIN_MAX_HEIGHT
-        : isLookupExpanded
+    const dictionaryMaxHeight = isLookupExpanded
         ? DICTIONARY_EXPANDED_MAX_HEIGHT
         : (isChineseDictionarySheet ? DICTIONARY_ZH_MAX_HEIGHT : DICTIONARY_MAX_HEIGHT);
-    const translationText = translationTarget || visibleWord;
+    const translationText = visibleWord;
     const translationSourceLanguage = dictionaryBookLanguage;
     const translationTargetLanguage = normalizeInterfaceLanguageCode(interfaceLanguage);
     // Both ends named in the interface language ("Coréen → Français").
@@ -390,11 +383,6 @@ const TopSection = ({
                         onWordSave={onWordSave}
                         onWordUnsave={onWordUnsave}
                         onSavedWordsChanged={onSavedWordsChanged}
-                        onTranslatePress={(text) => {
-                            const target = typeof text === 'string' && text.trim() ? text.trim() : visibleWord;
-                            setTranslationTarget(target);
-                        }}
-                        onExplainModeChange={setIsExplainMode}
                         onCanExpandChange={setCanExpandLookup}
                         onRequestExpand={handleRequestExpand}
                         isPanelExpanded={isLookupExpanded}

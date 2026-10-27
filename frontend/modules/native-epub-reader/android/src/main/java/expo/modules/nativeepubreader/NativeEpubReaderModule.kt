@@ -28,6 +28,7 @@ import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
 import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import java.util.ArrayDeque
@@ -314,6 +315,10 @@ class NativeEpubReaderModule : Module() {
       }
 
       // Saved word -> highlight strength in [0, 1]; words not listed draw fully.
+      Prop("userHighlights") { view: NativeEpubReaderView, highlights: List<Any?> ->
+        view.setUserHighlights(highlights)
+      }
+
       Prop("highlightStrengths") { view: NativeEpubReaderView, strengths: Map<String, Any?> ->
         view.setHighlightStrengths(strengths)
       }
@@ -826,6 +831,7 @@ class NativeEpubReaderView(
   private var pendingSavedShown: Pair<String, List<String>>? = null
   private val savedShownRunnable = Runnable { emitSavedTermsShown() }
   private var savedHighlightRangesByPage: Map<Int, List<TextRange>> = emptyMap()
+  private var userHighlights: List<UserHighlight> = emptyList()
   private var savedHighlightContextsByPage: Map<Int, List<Map<String, Any>>> = emptyMap()
   private var levelRangesByPage: Map<Int, List<TextRange>> = emptyMap()
   // Graded words actually rendered on each page, shipped out with onPageChange so
@@ -1752,7 +1758,7 @@ class NativeEpubReaderView(
       collectContexts = true,
       strengthForTerm = ::savedStrengthForTerm
     )
-    savedHighlightRangesByPage = savedHighlights.rangesByPage
+    savedHighlightRangesByPage = withUserHighlights(savedHighlights.rangesByPage, nextPages)
     savedHighlightContextsByPage = savedHighlights.contextsByPage
     savedTermsByPage = savedHighlights.termsByPage
     val levelHighlights = buildHighlightRanges(
@@ -2950,7 +2956,7 @@ class NativeEpubReaderView(
 
     val terms = linkedSetOf<String>()
     rangesByPage[page.pageIndex].orEmpty().forEach { range ->
-      if (range.blockId != blockId || range.annotationOnly) return@forEach
+      if (range.blockId != blockId || range.annotationOnly || range.userColor != null) return@forEach
       val start = range.sourceStartOffset - block.sourceStartOffset
       val end = range.sourceEndOffset - block.sourceStartOffset
       if (start >= localStart && end <= localEnd && start in 0 until end && end <= text.length) {
@@ -3175,9 +3181,22 @@ class NativeEpubReaderView(
       event["pageIndex"] = firstRange.pageIndex
       event["blockId"] = firstRange.blockId
       event["sourceStartOffset"] = firstRange.sourceStartOffset
-      event["sourceEndOffset"] = firstRange.sourceEndOffset
+      event["sourceEndOffset"] = selection.ranges.last().sourceEndOffset
       firstRange.spineIndex?.let { spineIndex ->
         event["spineIndex"] = spineIndex
+      }
+      // The sentence the selection starts in, for the AI explanation.
+      pages.firstNotNullOfOrNull { page ->
+        page.blocks.firstOrNull { block ->
+          block.blockId == firstRange.blockId && page.spineIndex == firstRange.spineIndex
+        }
+      }?.let { block ->
+        val text = block.plainText.ifEmpty { block.styledText?.toString() ?: "" }
+        val start = firstRange.sourceStartOffset - block.sourceStartOffset
+        val end = selection.ranges.last().sourceEndOffset - block.sourceStartOffset
+        if (text.isNotEmpty() && start in 0..text.length) {
+          event["sentence"] = sentenceForOffsets(text, start, end.coerceIn(start, text.length))
+        }
       }
     }
 
@@ -3259,11 +3278,61 @@ class NativeEpubReaderView(
       collectContexts = true,
       strengthForTerm = ::savedStrengthForTerm
     )
-    savedHighlightRangesByPage = savedHighlights.rangesByPage
+    savedHighlightRangesByPage = withUserHighlights(savedHighlights.rangesByPage, pages)
     savedHighlightContextsByPage = savedHighlights.contextsByPage
     savedTermsByPage = savedHighlights.termsByPage
     pageAdapter?.updateSavedHighlightRanges(savedHighlightRangesByPage)
     invalidateVisiblePageHighlights()
+  }
+
+  fun setUserHighlights(highlights: List<Any?>) {
+    val next = highlights.mapNotNull { raw ->
+      val map = raw as? Map<*, *> ?: return@mapNotNull null
+      val spineIndex = (map["spineIndex"] as? Number)?.toInt() ?: return@mapNotNull null
+      val blockId = map["blockId"] as? String ?: return@mapNotNull null
+      val start = (map["sourceStartOffset"] as? Number)?.toInt() ?: return@mapNotNull null
+      val end = (map["sourceEndOffset"] as? Number)?.toInt() ?: return@mapNotNull null
+      val color = (map["color"] as? String)?.let { runCatching { Color.parseColor(it) }.getOrNull() }
+        ?: return@mapNotNull null
+      if (end <= start) null else UserHighlight(spineIndex, blockId, start, end, color)
+    }
+    if (next == userHighlights) return
+    userHighlights = next
+    rebuildSavedHighlightRanges()
+  }
+
+  // The reader's highlights on each page, added to that page's saved-word
+  // ranges (they draw in the same pass, as plain colored boxes).
+  private fun withUserHighlights(
+    rangesByPage: Map<Int, List<TextRange>>,
+    sourcePages: List<ReaderPage>
+  ): Map<Int, List<TextRange>> {
+    if (userHighlights.isEmpty()) return rangesByPage
+    val merged = rangesByPage.mapValues { (_, ranges) -> ranges.toMutableList() }.toMutableMap()
+    sourcePages.forEach { page ->
+      page.blocks.forEach blockLoop@{ block ->
+        if (block.type != "text") return@blockLoop
+        val blockStart = block.sourceStartOffset
+        val blockEnd = blockStart + block.plainText.ifEmpty { block.styledText?.toString() ?: "" }.length
+        userHighlights.forEach { highlight ->
+          if (highlight.spineIndex != page.spineIndex || highlight.blockId != block.blockId) return@forEach
+          val start = max(highlight.sourceStartOffset, blockStart)
+          val end = min(highlight.sourceEndOffset, blockEnd)
+          if (start >= end) return@forEach
+          merged.getOrPut(page.pageIndex) { mutableListOf() }.add(
+            TextRange(
+              pageIndex = page.pageIndex,
+              spineIndex = page.spineIndex,
+              blockId = block.blockId,
+              sourceStartOffset = start,
+              sourceEndOffset = end,
+              userColor = highlight.color
+            )
+          )
+        }
+      }
+    }
+    return merged
   }
 
   private fun rebuildLevelUnderlineRanges() {
