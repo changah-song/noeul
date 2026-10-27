@@ -165,6 +165,9 @@ const DEFAULT_READER_SETTINGS = {
     // last tapped word's sentence on screen. The open chapter's sentences are
     // translated ahead, so it shows at once. Off by default.
     pinnedSentenceTranslation: false,
+    // Whether that bar shows its full card (over the top of the page) or just
+    // a one-line pill. Either way the bar's reserved height stays the same.
+    pinnedTranslationExpanded: true,
 };
 const READING_MODES = ['paged', 'scroll'];
 
@@ -1397,7 +1400,9 @@ const Read = ({
         };
     }, [activeOwnerId, isDarkMode, readerSettingsLoaded, saveSettings, setIsDarkMode, syncGeneration, syncPaused, user]);
 
-    const updateSettings = (patch) => {
+    // `keepSelection`: a setting that doesn't change the page (the translation
+    // card's collapsed state) leaves the open lookup alone.
+    const updateSettings = (patch, { keepSelection = false } = {}) => {
         if ('isDarkMode' in patch) {
             setIsDarkMode(patch.isDarkMode);
         }
@@ -1406,10 +1411,12 @@ const Read = ({
             isDarkMode,
             ...patch,
         };
-        setHighlightedWord('');
-        setHighlightedWordContext(null);
-        setIsNativeSelection(false);
-        setClearSelectionToken((current) => current + 1);
+        if (!keepSelection) {
+            setHighlightedWord('');
+            setHighlightedWordContext(null);
+            setIsNativeSelection(false);
+            setClearSelectionToken((current) => current + 1);
+        }
         setSettings(newSettings);
         readerSettingsRef.current = newSettings;
         saveSettings(newSettings);
@@ -3361,10 +3368,19 @@ const Read = ({
     // The pinned translation bar (when shown) pushes the reading surface down by
     // its fixed height, so everything anchored to the reader's top edge shifts
     // with it. Hidden in fullscreen, like the header.
+    const [pinnedCardHeight, setPinnedCardHeight] = useState(0);
+    const handlePinnedExpandedChange = (value) => updateSettings(
+        { pinnedTranslationExpanded: value },
+        { keepSelection: true }
+    );
     const showPinnedTranslation = Boolean(settings.pinnedSentenceTranslation)
         && !isFullscreen
         && Boolean(currentBook);
-    const pinnedTranslationOffset = showPinnedTranslation ? PINNED_TRANSLATION_BAR_HEIGHT : 0;
+    // The expanded card hangs below the bar's strip; whatever is anchored to
+    // the reader's top (the lookup panel, the focus pill) moves under it.
+    const pinnedTranslationOffset = showPinnedTranslation
+        ? Math.max(PINNED_TRANSLATION_BAR_HEIGHT, settings.pinnedTranslationExpanded ? pinnedCardHeight : 0)
+        : 0;
     const focusPillTop = (isFullscreen ? insets.top : insets.top + spacing.xs + 52 + pinnedTranslationOffset) + 12;
     // Arrow controls ride 12dp above the open panel, mirroring the 28 → panel+12
     // bottom shift in the design.
@@ -3942,6 +3958,9 @@ const Read = ({
                     sentence={pinnedSentence}
                     sourceLanguage={activeBookLanguage}
                     targetLanguage={interfaceLanguage}
+                    expanded={settings.pinnedTranslationExpanded !== false}
+                    onExpandedChange={handlePinnedExpandedChange}
+                    onCardHeightChange={setPinnedCardHeight}
                 />
             ) : null}
 
