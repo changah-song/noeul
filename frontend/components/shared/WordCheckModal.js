@@ -448,7 +448,7 @@ export const WordCheckBody = ({ check, onDone }) => {
         }).start();
     }, [fraction, fillWidth]);
 
-    const isKoreanWord = targetLanguage === 'ko';
+    const wordStyle = { ko: 'wordKo', en: 'wordEn' }[targetLanguage] || 'wordZh';
 
     return (
         <View style={styles.body}>
@@ -482,7 +482,7 @@ export const WordCheckBody = ({ check, onDone }) => {
                     </View>
                     <View style={styles.wordStage}>
                         <Text
-                            style={[styles.word, isKoreanWord ? styles.wordKo : styles.wordZh]}
+                            style={[styles.word, styles[wordStyle]]}
                             accessibilityRole="header"
                             adjustsFontSizeToFit
                             numberOfLines={1}
@@ -625,6 +625,10 @@ const createStyles = (colors) => StyleSheet.create({
     },
     wordZh: {
         fontFamily: fontFamilies.krSerifSemiBold,
+    },
+    // Latin display serif for English words.
+    wordEn: {
+        fontFamily: fontFamilies.displayMedium,
     },
     question: {
         textAlign: 'center',

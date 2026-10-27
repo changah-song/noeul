@@ -19,8 +19,15 @@ def test_entries_carry_senses_and_korean_equivalents():
     first = entries[0]
     assert first["pos"] == "verb"
     assert first["ipa"]
-    assert first["senses"] and first["definition"].split("\n") == first["senses"]
+    assert len(first["senses"]) == 3
+    # The main sense ships translated into Korean; the definition is Korean
+    # only, never the English senses.
+    assert first["translated_senses"][0]
+    assert first["definition"] == first["translated_senses"][0]
     assert "달리다" in first["equivalents"]
+    # An English interface reads the English senses.
+    english = en_learner_dict.lookup_entries(["run"], "en")["run"][0]
+    assert english["definition"].split("\n") == english["senses"]
     assert first["gloss"].startswith("달리다")
 
 
@@ -126,3 +133,51 @@ def test_tokenizer_keeps_common_verbs_and_drops_function_words():
     for skipped in ("she", "do", "so", "it", "to"):
         assert skipped not in lemmas
     assert {"surface": "running", "stem": "run"} in surfaces
+
+
+def test_capitalized_words_inside_a_sentence_are_names():
+    lemmas, surfaces, pos = main.extract_en_lookup_tokens(
+        'Charles Dickens loved London. "Will you come?" asked Will, and I said yes.'
+    )
+    # Mid-sentence capitals are names, kept as written and only as written.
+    assert pos["Dickens"] == "name" and pos["London"] == "name"
+    assert {"surface": "Dickens", "stem": "Dickens"} in surfaces
+    assert not any(entry["surface"] == "dickens" for entry in surfaces)
+    # The first word of a sentence (after an opening quote) is not a name;
+    # "Will" the person and "will" the verb stay apart.
+    assert "Charles" not in pos or pos["Charles"] != "name"
+    assert pos.get("Will") == "name"
+    assert pos.get("I") is None
+
+
+def test_names_keep_their_stem_and_are_not_graded(monkeypatch, batch_cache):
+    async def fake_batch(texts, source="en", target="en", batch_size=100):
+        return [f"[{target}] {text}" for text in texts]
+
+    monkeypatch.setattr(main, "_translate_batch", fake_batch)
+    results, _found = main.lookup_en_learner_results(["Dickens", "run"], "ko", {"Dickens": "name"})
+    name = results[0]
+    assert (name["stem"], name["word"], name["pos"]) == ("Dickens", "Dickens", "name")
+    glossed = asyncio.run(main.translate_en_missing_glosses(results, "ko"))
+    assert glossed[0]["gloss"] == "[ko] Dickens"
+
+
+def test_missing_senses_are_translated_and_english_never_mixes_in(monkeypatch, batch_cache):
+    async def fake_batch(texts, source="en", target="en", batch_size=100):
+        return [f"[{target}] {text}" for text in texts]
+
+    monkeypatch.setattr(main, "_translate_batch", fake_batch)
+    result = {"senses": ["A.", "B."], "translated_senses": ["가.", None], "definition": "가."}
+    out = asyncio.run(main.translate_en_missing_senses([result], "ko"))[0]
+    assert out["definition"] == "가.\n[ko] B."
+    assert out["interface_language"] == "ko"
+
+    async def failing_batch(texts, source="en", target="en", batch_size=100):
+        return [None for _ in texts]
+
+    monkeypatch.setattr(main, "_translate_batch", failing_batch)
+    untranslated = {"senses": ["C."], "translated_senses": [None], "definition": None}
+    out = asyncio.run(main.translate_en_missing_senses([untranslated], "vi"))[0]
+    # Nothing translated: English, labelled so the app doesn't cache it as Vietnamese.
+    assert out["definition"] == "C."
+    assert out["interface_language"] == "en" and out["fallback_language"] == "en"

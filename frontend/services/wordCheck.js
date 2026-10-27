@@ -1,5 +1,6 @@
 import KO_POOL from '../assets/data/word-check/ko.generated.json';
 import ZH_POOL from '../assets/data/word-check/zh.generated.json';
+import EN_POOL from '../assets/data/word-check/en.generated.json';
 import { normalizeBookLanguage } from '../constants/languages';
 import {
     CHECK_START_VARIANCE,
@@ -26,7 +27,7 @@ export const WORD_CHECK_PSEUDO = 8;
 // Random spread around the estimate so the words don't all sit at one level.
 const PICK_JITTER = 0.45;
 
-const POOLS = { ko: KO_POOL, zh: ZH_POOL };
+const POOLS = { ko: KO_POOL, zh: ZH_POOL, en: EN_POOL };
 
 export const hasWordCheck = (language) => !!POOLS[normalizeBookLanguage(language) || ''];
 

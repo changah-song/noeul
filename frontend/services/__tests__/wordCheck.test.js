@@ -34,11 +34,11 @@ const run = (check, answerFor) => {
 };
 
 describe('word check', () => {
-    it('ships pools for Korean and Chinese with made-up words outside the real ones', () => {
+    it('ships pools for Korean, Chinese and English with made-up words outside the real ones', () => {
         expect(hasWordCheck('ko')).toBe(true);
         expect(hasWordCheck('zh')).toBe(true);
-        expect(hasWordCheck('en')).toBe(false);
-        ['ko', 'zh'].forEach((language) => {
+        expect(hasWordCheck('en')).toBe(true);
+        ['ko', 'zh', 'en'].forEach((language) => {
             const pool = wordCheckPool(language);
             expect(pool.words.length).toBeGreaterThan(200);
             expect(pool.pseudo.length).toBeGreaterThanOrEqual(WORD_CHECK_PSEUDO);
