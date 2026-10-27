@@ -17,7 +17,7 @@ Usage (wordfreq is not a backend dependency):
   python3 -m pip install --target /tmp/vocablibs wordfreq
   PYTHONPATH=/tmp/vocablibs python3 backend/scripts/generate_word_check.py
 
-Output: frontend/assets/data/word-check/{ko,zh}.generated.json
+Output: frontend/assets/data/word-check/{ko,zh,en}.generated.json
   { "language": "ko",
     "words": [ { "w": "사람", "r": 1, "p": null, "z": 6.29, "l": 0 }, ... ],
     "pseudo": [ "가묵", ... ] }
@@ -36,6 +36,7 @@ BACKEND = ROOT / "backend"
 LEVELS_DB = BACKEND / "proficiency_levels.db"
 KO_DICT = BACKEND / "ko_dict.db"
 ZH_DICT = BACKEND / "zh_dict.db"
+EN_DICT = BACKEND / "en_learner.db"
 OUTPUT_DIR = ROOT / "frontend" / "assets" / "data" / "word-check"
 
 SEED = 20261019
@@ -47,10 +48,12 @@ PSEUDO_COUNT = 60
 ZIPF_EASY, ZIPF_HARD = 6.5, 2.5
 BAND_WEIGHT = 0.5
 LOANWORD_EASE = 0.8
-BAND_COUNT = {"ko": 6, "zh": 7}
+BAND_COUNT = {"ko": 6, "zh": 7, "en": 6}
 
 HANGUL_WORD = re.compile(r"^[가-힣]{2,4}$")
 HAN_WORD = re.compile(r"^[\u4e00-\u9fff]{1,4}$")
+EN_WORD = re.compile(r"^[a-z]{3,12}$")
+EN_VOWELS = set("aeiouy")
 # Function characters make a made-up pair read as a phrase (人看, 了妈).
 ZH_FUNCTION_CHARS = set("了的着过吗呢吧啊么什那这哪谁们个也都就还又才很太最被把让给和跟与或如只没不别会能要可得地是在有我你他她它咱您自已之其所以而")
 
@@ -180,6 +183,60 @@ def chinese(conn: sqlite3.Connection, freqs: dict[str, float], rng: random.Rando
     return {"language": "zh", "words": strip(spread(candidates, rng)), "pseudo": sorted(pseudo)}
 
 
+def english(conn: sqlite3.Connection, freqs: dict[str, float], rng: random.Random) -> dict:
+    """CEFR A1-C2 words with their Zipf frequency (wordfreq), and made-up
+    words spliced from two common words at a vowel (bla|nder, fro|mpet) that
+    no frequency list or dictionary has."""
+    from wordfreq import zipf_frequency
+
+    rows: dict[str, dict] = {}
+    for term, rank in conn.execute("SELECT word, level_rank FROM english_cefr WHERE level_rank IS NOT NULL"):
+        term = (term or "").strip().lower()
+        if EN_WORD.match(term) and (term not in rows or rank < rows[term]["r"]):
+            rows[term] = {"w": term, "r": rank, "p": None}
+    candidates = []
+    for term, row in rows.items():
+        zipf = round(zipf_frequency(term, "en"), 2) or None
+        d = difficulty("en", row["r"], None, zipf, 0)
+        if d is None:
+            continue
+        candidates.append({**row, "z": zipf, "l": 0, "d": d})
+
+    lexicon = set(rows) | set(freqs)
+    if EN_DICT.exists():
+        with sqlite3.connect(EN_DICT) as en:
+            lexicon.update(word for (word,) in en.execute("SELECT word FROM en_words"))
+            lexicon.update(word for (word,) in en.execute("SELECT word FROM en_aliases"))
+    common = [t for t, row in rows.items() if row["r"] <= 3 and 4 <= len(t) <= 8]
+
+    def vowel_cut(word: str, from_end: bool) -> int | None:
+        positions = [i for i in range(1, len(word) - 1) if word[i] in EN_VOWELS and word[i - 1] not in EN_VOWELS]
+        if not positions:
+            return None
+        return positions[-1] if from_end else positions[0]
+
+    pseudo: set[str] = set()
+    attempts = 0
+    while len(pseudo) < PSEUDO_COUNT and attempts < 200000:
+        attempts += 1
+        a, b = rng.choice(common), rng.choice(common)
+        cut_a, cut_b = vowel_cut(a, False), vowel_cut(b, True)
+        if cut_a is None or cut_b is None:
+            continue
+        word = a[:cut_a] + b[cut_b:]
+        if not (5 <= len(word) <= 9) or word in lexicon or word in pseudo:
+            continue
+        # Spellings no English word has give the game away (sqock, acqetre).
+        if re.search(r"q(?!u)|[^aeiouy]{4}", word):
+            continue
+        # Never a word anywhere: no frequency at all, and it doesn't end in a
+        # real word's inflection of something known (blander = bland + er).
+        if zipf_frequency(word, "en") > 0 or any(word[:-k] in lexicon for k in (1, 2, 3) if len(word) - k >= 3):
+            continue
+        pseudo.add(word)
+    return {"language": "en", "words": strip(spread(candidates, rng)), "pseudo": sorted(pseudo)}
+
+
 def strip(items: list[dict]) -> list[dict]:
     return [{k: item[k] for k in ("w", "r", "p", "z", "l")} for item in items]
 
@@ -199,6 +256,7 @@ def main() -> None:
         outputs = [
             korean(conn, get_frequency_dict("ko"), rng),
             chinese(conn, get_frequency_dict("zh"), rng),
+            english(conn, get_frequency_dict("en"), rng),
         ]
     for data in outputs:
         path = OUTPUT_DIR / f"{data['language']}.generated.json"

@@ -1,5 +1,6 @@
 import KO_VOCAB_TIERS from '../assets/data/vocab-size/ko.generated.json';
 import ZH_VOCAB_TIERS from '../assets/data/vocab-size/zh.generated.json';
+import EN_VOCAB_TIERS from '../assets/data/vocab-size/en.generated.json';
 import { normalizeBookLanguage } from '../constants/languages';
 
 // ─── Vocabulary-size level grid (Profile cold-start) ───────────────────────────
@@ -15,13 +16,16 @@ import { normalizeBookLanguage } from '../constants/languages';
 // the seed lands on the same axis as book/word difficulty (see
 // abilityModel.js / the generator's docstring). Runtime stays dumb: read `theta`.
 //
-// Korean has a frequency grid and Chinese an HSK grid; English falls back to the chips.
+// Korean has a frequency grid, Chinese an HSK grid and English a CEFR grid.
 
 const VOCAB_TIERS_BY_LANGUAGE = {
   ko: KO_VOCAB_TIERS.ko,
   // Chinese: one tier per HSK 3.0 level (chinese_hsk), sample words the
   // most frequent of that level.
   zh: ZH_VOCAB_TIERS.zh,
+  // English: one tier per CEFR level (A1-C2, english_cefr), sample words
+  // common words of that level.
+  en: EN_VOCAB_TIERS.en,
 };
 
 /**

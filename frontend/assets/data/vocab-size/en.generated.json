@@ -1,0 +1,118 @@
+{
+  "en": {
+    "system": "cefr",
+    "total": 6805,
+    "bandCounts": {
+      "1": 663,
+      "2": 873,
+      "3": 1292,
+      "4": 1050,
+      "5": 900,
+      "6": 2027
+    },
+    "tiers": [
+      {
+        "threshold": 663,
+        "theta": -3.0,
+        "words": [
+          "about",
+          "both",
+          "care",
+          "come",
+          "even",
+          "may",
+          "might",
+          "money",
+          "right",
+          "top"
+        ],
+        "label": "A1"
+      },
+      {
+        "threshold": 1536,
+        "theta": -1.8,
+        "words": [
+          "age",
+          "attention",
+          "death",
+          "feeling",
+          "fight",
+          "near",
+          "online",
+          "press",
+          "thanks",
+          "truth"
+        ],
+        "label": "A2"
+      },
+      {
+        "threshold": 2828,
+        "theta": -0.6,
+        "words": [
+          "comment",
+          "conference",
+          "culture",
+          "director",
+          "drop",
+          "local",
+          "majority",
+          "previous",
+          "range",
+          "southern"
+        ],
+        "label": "B1"
+      },
+      {
+        "threshold": 3878,
+        "theta": 0.6,
+        "words": [
+          "advance",
+          "amazon",
+          "crazy",
+          "fellow",
+          "girlfriend",
+          "golden",
+          "reform",
+          "shop",
+          "stream",
+          "suspect"
+        ],
+        "label": "B2"
+      },
+      {
+        "threshold": 4778,
+        "theta": 1.8,
+        "words": [
+          "alert",
+          "biological",
+          "function",
+          "guard",
+          "narrative",
+          "pants",
+          "progressive",
+          "root",
+          "royal",
+          "swing"
+        ],
+        "label": "C1"
+      },
+      {
+        "threshold": 6805,
+        "theta": 3.0,
+        "words": [
+          "abortion",
+          "blast",
+          "contest",
+          "deadly",
+          "faithful",
+          "fake",
+          "fantasy",
+          "judicial",
+          "liquid",
+          "yoga"
+        ],
+        "label": "C2"
+      }
+    ]
+  }
+}

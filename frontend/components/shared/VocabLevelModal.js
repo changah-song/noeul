@@ -69,6 +69,7 @@ const VocabLevelModal = ({ visible, onClose, initialMode = 'list' }) => {
     const { t } = useTranslation();
 
     const tiers = useMemo(() => getVocabTiers(targetLanguage), [targetLanguage]);
+    const isEnglish = targetLanguage === 'en';
     const [selectedIndex, setSelectedIndex] = useState(null);
     const [isSaving, setIsSaving] = useState(false);
     // The word check replaces the grid while it runs.
@@ -260,8 +261,8 @@ const VocabLevelModal = ({ visible, onClose, initialMode = 'list' }) => {
                                             <Text style={styles.tagPick} numberOfLines={1}>{t('vocabLevel.yourPick')}</Text>
                                         ) : null}
                                     </View>
-                                    <Text style={[styles.word, known && styles.wordKnown]}>
-                                        {tier.words.join(' ')}
+                                    <Text style={[styles.word, isEnglish && styles.wordEn, known && styles.wordKnown]}>
+                                        {tier.words.join(isEnglish ? ' · ' : ' ')}
                                     </Text>
                                 </TouchableOpacity>
                             );
@@ -375,6 +376,9 @@ const createStyles = (colors) => StyleSheet.create({
         fontSize: 14,
         lineHeight: 20,
         color: colors.text,
+    },
+    wordEn: {
+        fontFamily: fontFamilies.displayRegular,
     },
     wordKnown: {
         color: colors.readerLevelUnderlineEasy,
