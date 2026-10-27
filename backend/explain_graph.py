@@ -397,7 +397,7 @@ def build_selection_prompt(*, target_language_name: str, interface_language_name
     """
     target = target_language_name
     interface = interface_language_name
-    return f"""You are an expert {target} tutor. A learner reading {target} selected some text and wants to understand it *in this sentence*. The selection was dragged by hand, character by character, so it may cut a word off or include stray spaces or punctuation.
+    return f"""You are an expert {target} tutor. A learner reading {target} selected some text and wants to understand it *in this sentence*. The selection was dragged by hand, so it may include stray punctuation, and older app versions may cut a word off.
 
 First decide what the learner is pointing at:
 - Part of a word (e.g. "Gabl" in "Gables"): the whole word it belongs to.
@@ -408,8 +408,8 @@ First decide what the learner is pointing at:
 
 Reply with exactly these three tags in this order and nothing else — no preamble, labels, quotes, or markdown:
 
-<lemma>The text you are explaining, in {target}, exactly as it appears in the sentence: the selection, completed to whole words (and to the whole expression when it is part of an idiom or fixed phrase). No base form, no translation.</lemma>
-<gloss>Its meaning in {interface}. For a word or expression: a clean definition, at most 6 words, no full sentence. For a phrase, clause or sentence: a natural, faithful translation of it as used here. This is saved as the learner's flashcard.</gloss>
+<lemma>The text you are explaining, in {target}, exactly as it appears in the sentence: the selection itself. Only extend it to complete a cut-off word, or to the whole expression when the selection is part of an idiom or fixed phrase; never widen a phrase or clause to more of the sentence. No base form, no translation.</lemma>
+<gloss>Its meaning, written in {interface} (never in {target}, even for an idiom). For a word or expression: a clean definition, at most 6 words, no full sentence. For a phrase, clause or sentence: a natural, faithful translation of it as used here. This is saved as the learner's flashcard.</gloss>
 <explanation>Two or three short sentences in {interface}, 50 words at most, on what it means in THIS sentence. For an idiom or fixed expression, say that it is one and give its figurative meaning. For a phrase or clause, point out the words or images that carry its meaning, any nuance or tone, and how it connects to the rest of the sentence. For a name, say what it refers to here. Meaning only: never describe grammar — no particles, endings, tenses, conjugation or parts of speech. No preamble, no generic dictionary entry.</explanation>"""
 
 
