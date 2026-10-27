@@ -179,6 +179,7 @@ const NativeEpubReaderView = forwardRef(({
     onFocusSentenceChange,
     onExposure,
     onSavedTermsShown,
+    onHighlightNotePress,
     style,
 }, ref) => {
     const { t, language } = useTranslation();
@@ -282,6 +283,10 @@ const NativeEpubReaderView = forwardRef(({
         onSavedTermsShown?.(payloadOf(event));
     };
 
+    const handleHighlightNotePress = (event) => {
+        onHighlightNotePress?.(payloadOf(event));
+    };
+
     return (
         <NativeView
             ref={ref}
@@ -322,6 +327,7 @@ const NativeEpubReaderView = forwardRef(({
             onFocusSentenceChange={handleFocusSentenceChange}
             onExposure={handleExposure}
             onSavedTermsShown={handleSavedTermsShown}
+            onHighlightNotePress={handleHighlightNotePress}
         />
     );
 });

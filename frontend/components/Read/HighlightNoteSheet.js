@@ -44,7 +44,9 @@ const HighlightNoteSheet = ({ visible, quote, initialNote = '', onSave, onClose 
                         placeholder={t('selection.notePlaceholder')}
                         placeholderTextColor={colors.textTertiary}
                         multiline
-                        autoFocus
+                        // A new note opens with the keyboard; an existing one
+                        // opens to be read (tap the box to edit).
+                        autoFocus={!initialNote}
                         textAlignVertical="top"
                     />
                     <View style={styles.buttons}>

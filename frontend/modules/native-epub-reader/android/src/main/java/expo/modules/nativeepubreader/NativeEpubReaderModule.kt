@@ -376,7 +376,8 @@ class NativeEpubReaderModule : Module() {
         "onSelectionCleared",
         "onFocusSentenceChange",
         "onExposure",
-        "onSavedTermsShown"
+        "onSavedTermsShown",
+        "onHighlightNotePress"
       )
     }
   }
@@ -768,6 +769,7 @@ class NativeEpubReaderView(
   private val onFocusSentenceChange by EventDispatcher()
   private val onExposure by EventDispatcher()
   private val onSavedTermsShown by EventDispatcher()
+  private val onHighlightNotePress by EventDispatcher()
   private val viewPager = ViewPager2(context)
   private val continuousScrollView = ContinuousReaderScrollView(context)
   private val continuousPageView = EpubPageView(context)
@@ -951,6 +953,7 @@ class NativeEpubReaderView(
     continuousScrollView.onEdgePull = { direction -> handleContinuousEdgePull(direction) }
     continuousPageView.tapProgress = ::levelTapProgress
     continuousPageView.savedFade = ::savedFadeProgress
+    continuousPageView.noteIconTapped = ::handleNoteIconTapped
     continuousScrollView.addView(
       continuousPageView,
       FrameLayout.LayoutParams(
@@ -1839,6 +1842,7 @@ class NativeEpubReaderView(
       )
       pageAdapter?.tapProgress = ::levelTapProgress
       pageAdapter?.savedFade = ::savedFadeProgress
+      pageAdapter?.noteIconTapped = ::handleNoteIconTapped
       viewPager.adapter = pageAdapter
     } else {
       val canAnimateChapterTransition = (
@@ -3212,6 +3216,10 @@ class NativeEpubReaderView(
     continuousScrollView.requestDisallowInterceptTouchEvent(isDraggingSelection)
   }
 
+  private fun handleNoteIconTapped(noteId: String) {
+    onHighlightNotePress(mapOf("id" to noteId))
+  }
+
   private fun handlePageEdgeAction(kind: ReaderEdgeKind) {
     clearActiveSelection(dispatchEvent = true)
     when (kind) {
@@ -3294,7 +3302,8 @@ class NativeEpubReaderView(
       val end = (map["sourceEndOffset"] as? Number)?.toInt() ?: return@mapNotNull null
       val color = (map["color"] as? String)?.let { runCatching { Color.parseColor(it) }.getOrNull() }
         ?: return@mapNotNull null
-      if (end <= start) null else UserHighlight(spineIndex, blockId, start, end, color)
+      val noteId = (map["noteId"] as? String)?.takeIf { it.isNotBlank() }
+      if (end <= start) null else UserHighlight(spineIndex, blockId, start, end, color, noteId)
     }
     if (next == userHighlights) return
     userHighlights = next
@@ -3326,7 +3335,8 @@ class NativeEpubReaderView(
               blockId = block.blockId,
               sourceStartOffset = start,
               sourceEndOffset = end,
-              userColor = highlight.color
+              userColor = highlight.color,
+              noteId = highlight.noteId?.takeIf { start == highlight.sourceStartOffset }
             )
           )
         }
