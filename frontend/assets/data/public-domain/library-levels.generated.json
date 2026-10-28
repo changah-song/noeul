@@ -97,6 +97,104 @@
     "title": "The Odyssey",
     "unknown_count": 3771
   },
+  "2d0049fc-a65c-436f-9876-45894fc88dfc": {
+    "basis": "vocabulary",
+    "coverage": 0.7047,
+    "distribution": [
+      {
+        "count": 194,
+        "level": "A1",
+        "rank": 1
+      },
+      {
+        "count": 91,
+        "level": "A2",
+        "rank": 2
+      },
+      {
+        "count": 70,
+        "level": "B1",
+        "rank": 3
+      },
+      {
+        "count": 30,
+        "level": "B2",
+        "rank": 4
+      },
+      {
+        "count": 12,
+        "level": "C1",
+        "rank": 5
+      },
+      {
+        "count": 23,
+        "level": "C2",
+        "rank": 6
+      }
+    ],
+    "language": "en",
+    "level": "B1",
+    "level_rank": 3,
+    "matched_count": 420,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "B1",
+    "proficiency_rank": 3,
+    "proficiency_system": "CEFR",
+    "sample_limit": 596,
+    "sample_size": 596,
+    "title": "Brooks's Readers: First Year",
+    "unknown_count": 176
+  },
+  "2ea64ae3-c4c3-4ed3-bed6-42b7e0961895": {
+    "basis": "vocabulary",
+    "coverage": 0.8433,
+    "distribution": [
+      {
+        "count": 108,
+        "level": "A1",
+        "rank": 1
+      },
+      {
+        "count": 49,
+        "level": "A2",
+        "rank": 2
+      },
+      {
+        "count": 34,
+        "level": "B1",
+        "rank": 3
+      },
+      {
+        "count": 20,
+        "level": "B2",
+        "rank": 4
+      },
+      {
+        "count": 5,
+        "level": "C1",
+        "rank": 5
+      },
+      {
+        "count": 10,
+        "level": "C2",
+        "rank": 6
+      }
+    ],
+    "language": "en",
+    "level": "B1",
+    "level_rank": 3,
+    "matched_count": 226,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "B1",
+    "proficiency_rank": 3,
+    "proficiency_system": "CEFR",
+    "sample_limit": 268,
+    "sample_size": 268,
+    "title": "The Tale of Peter Rabbit",
+    "unknown_count": 42
+  },
   "2eaf8a67-c7c7-44e9-9ff2-92271686ac3c": {
     "basis": "vocabulary",
     "coverage": 0.3658,
@@ -145,6 +243,55 @@
     "sample_size": 10565,
     "title": "The Brothers Karamazov",
     "unknown_count": 6700
+  },
+  "32664538-146e-4b17-a259-0bf796d92736": {
+    "basis": "vocabulary",
+    "coverage": 0.8061,
+    "distribution": [
+      {
+        "count": 116,
+        "level": "A1",
+        "rank": 1
+      },
+      {
+        "count": 41,
+        "level": "A2",
+        "rank": 2
+      },
+      {
+        "count": 34,
+        "level": "B1",
+        "rank": 3
+      },
+      {
+        "count": 24,
+        "level": "B2",
+        "rank": 4
+      },
+      {
+        "count": 10,
+        "level": "C1",
+        "rank": 5
+      },
+      {
+        "count": 12,
+        "level": "C2",
+        "rank": 6
+      }
+    ],
+    "language": "en",
+    "level": "B1",
+    "level_rank": 3,
+    "matched_count": 237,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "B1",
+    "proficiency_rank": 3,
+    "proficiency_system": "CEFR",
+    "sample_limit": 294,
+    "sample_size": 294,
+    "title": "The Tale of Benjamin Bunny",
+    "unknown_count": 57
   },
   "349d5bab-66b2-418d-a537-0ea8577320bc": {
     "basis": "vocabulary",
@@ -538,6 +685,55 @@
     "title": "The Call of the Wild",
     "unknown_count": 1763
   },
+  "76f8ec37-c69c-4272-95da-9e16d75aaad7": {
+    "basis": "vocabulary",
+    "coverage": 0.7996,
+    "distribution": [
+      {
+        "count": 302,
+        "level": "A1",
+        "rank": 1
+      },
+      {
+        "count": 163,
+        "level": "A2",
+        "rank": 2
+      },
+      {
+        "count": 124,
+        "level": "B1",
+        "rank": 3
+      },
+      {
+        "count": 74,
+        "level": "B2",
+        "rank": 4
+      },
+      {
+        "count": 44,
+        "level": "C1",
+        "rank": 5
+      },
+      {
+        "count": 63,
+        "level": "C2",
+        "rank": 6
+      }
+    ],
+    "language": "en",
+    "level": "B2",
+    "level_rank": 4,
+    "matched_count": 770,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "B2",
+    "proficiency_rank": 4,
+    "proficiency_system": "CEFR",
+    "sample_limit": 963,
+    "sample_size": 963,
+    "title": "Jataka Tales",
+    "unknown_count": 193
+  },
   "7a995b55-51f0-4924-bafd-315362bce492": {
     "basis": "vocabulary",
     "coverage": 0.5611,
@@ -733,6 +929,55 @@
     "sample_size": 10870,
     "title": "Anna Karenina",
     "unknown_count": 6861
+  },
+  "9ac26bf1-76e0-4e2d-a954-072a318c6000": {
+    "basis": "vocabulary",
+    "coverage": 0.7771,
+    "distribution": [
+      {
+        "count": 124,
+        "level": "A1",
+        "rank": 1
+      },
+      {
+        "count": 53,
+        "level": "A2",
+        "rank": 2
+      },
+      {
+        "count": 33,
+        "level": "B1",
+        "rank": 3
+      },
+      {
+        "count": 26,
+        "level": "B2",
+        "rank": 4
+      },
+      {
+        "count": 9,
+        "level": "C1",
+        "rank": 5
+      },
+      {
+        "count": 20,
+        "level": "C2",
+        "rank": 6
+      }
+    ],
+    "language": "en",
+    "level": "B2",
+    "level_rank": 4,
+    "matched_count": 265,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "B2",
+    "proficiency_rank": 4,
+    "proficiency_system": "CEFR",
+    "sample_limit": 341,
+    "sample_size": 341,
+    "title": "The Tale of Jemima Puddle-Duck",
+    "unknown_count": 76
   },
   "a093aca5-5fe4-4190-be40-5b5419210e0d": {
     "basis": "vocabulary",
