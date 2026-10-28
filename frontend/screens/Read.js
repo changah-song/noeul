@@ -3861,22 +3861,30 @@ const Read = ({
             resumeListening();
         }
     }, [resumeListening]);
-    const previewListenVoice = useCallback(async (voiceId, patch = {}) => {
-        const locale = listenCtxRef.current.targetLocale;
+    // `which`: 'book' (the book's language) or 'translation' (the app's
+    // language, for translations and meanings); each has its own voice.
+    const listenLocaleFor = (which) => (
+        which === 'translation' ? listenCtxRef.current.interfaceLocale : listenCtxRef.current.targetLocale
+    );
+    const previewListenVoice = useCallback(async (voiceId, patch = {}, which = 'book') => {
+        const locale = listenLocaleFor(which);
         const prefs = { ...listenPrefsRef.current, ...patch };
-        setPreviewingVoice(voiceId);
+        const previewKey = `${which}:${voiceId}`;
+        setPreviewingVoice(previewKey);
         await getListenPlayer().speakSequence([{
             text: voiceSampleFor(locale),
             ...listenVoiceFor({ ...prefs, voices: { ...prefs.voices, [locale]: voiceId } }, locale),
         }]);
-        setPreviewingVoice((current) => (current === voiceId ? undefined : current));
+        setPreviewingVoice((current) => (current === previewKey ? undefined : current));
     }, [getListenPlayer]);
     const currentListenVoice = () => listenPrefsRef.current.voices?.[listenCtxRef.current.targetLocale] || null;
-    const selectListenVoice = useCallback((voiceId) => {
-        const locale = listenCtxRef.current.targetLocale;
+    const selectListenVoice = useCallback((voiceId, which = 'book') => {
+        const locale = listenLocaleFor(which);
         updateListenPrefs({ voices: { ...listenPrefsRef.current.voices, [locale]: voiceId || undefined } });
-        previewListenVoice(voiceId);
+        previewListenVoice(voiceId, {}, which);
     }, [previewListenVoice, updateListenPrefs]);
+    const selectTranslationVoice = useCallback((voiceId) => selectListenVoice(voiceId, 'translation'), [selectListenVoice]);
+    const previewTranslationVoice = useCallback((voiceId) => previewListenVoice(voiceId, {}, 'translation'), [previewListenVoice]);
     const changeListenRate = useCallback((rate) => {
         updateListenPrefs({ rate });
         previewListenVoice(currentListenVoice());
@@ -4233,6 +4241,10 @@ const Read = ({
                 onChangePitch={changeListenPitch}
                 onSelectVoice={selectListenVoice}
                 onPreviewVoice={previewListenVoice}
+                translationLocale={voiceLocaleFor(interfaceLanguage)}
+                translationVoiceId={listenPrefs.voices?.[voiceLocaleFor(interfaceLanguage)] || null}
+                onSelectTranslationVoice={selectTranslationVoice}
+                onPreviewTranslationVoice={previewTranslationVoice}
             />
 
             <View
