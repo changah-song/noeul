@@ -734,8 +734,8 @@ class EpubPageView(context: Context) : View(context) {
     val localEnd = (sentence.sourceEndOffset - block.sourceStartOffset).coerceIn(localStart, textLength)
     if (localStart >= localEnd) return
     val ink = themePalette.bodyTextColor
-    // Faint: the tapped word's own box (much darker) must stand out on it.
-    val alpha = if (Color.luminance(themePalette.backgroundColor) < 0.4f) 0x10 else 0x09
+    // Grey, so the tapped word's brown box stands out on it.
+    val alpha = if (Color.luminance(themePalette.backgroundColor) < 0.4f) 0x1C else 0x14
     contextSentencePaint.color = Color.argb(alpha, Color.red(ink), Color.green(ink), Color.blue(ink))
     drawTextSelectionHighlight(canvas, block, layout, localStart, localEnd, textLength, contextSentencePaint)
   }

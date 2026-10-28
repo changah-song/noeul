@@ -64,7 +64,8 @@ export const colorPairs = {
   readerLevelUnderlineEasy: pair('#2f8f46', '#74c476'),
   readerLevelUnderlineMid: pair('#c4661f', '#f59e0b'),
   readerLevelUnderlineHard: pair('#b32d2d', '#e5686a'),
-  readerTappedWordSurfaceBg: pair('#e4e2e2', '#353c47'),
+  // Book brown, so the tapped word stands out on the grey sentence wash.
+  readerTappedWordSurfaceBg: pair('#e3cfb4', '#5c4630'),
   readerTappedWordSurfaceText: pair('#1b1c1c', '#f0eded'),
   readerSavedWordSurfaceBg: pair('#202631', '#f0eded'),
   readerSavedWordSurfaceText: pair('#ffffff', '#1b1c1c'),
