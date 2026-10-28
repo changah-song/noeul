@@ -27,6 +27,14 @@ import {
 import { hasVocabSizeGrid } from '../services/vocabSizeLevels';
 import { hasWordCheck } from '../services/wordCheck';
 import { fontFamilies, useTheme } from '../theme';
+// One entry per bundled book (generate_catalog_levels.py), with its language:
+// how many free books each language starts with, so the cards stay right as
+// books are added. (The catalog itself pulls in the book texts.)
+const BUNDLED_BOOK_LEVELS = require('../assets/data/public-domain/levels.generated.json');
+const BUNDLED_BOOK_COUNTS = Object.values(BUNDLED_BOOK_LEVELS).reduce((counts, book) => {
+    if (book?.language) counts[book.language] = (counts[book.language] ?? 0) + 1;
+    return counts;
+}, {});
 
 // ─── Completion flag ──────────────────────────────────────────────────────────
 
@@ -383,7 +391,7 @@ const Onboarding = ({ onDone }) => {
                             <Text style={styles.cardGlyph}>{card.glyph}</Text>
                             <View style={styles.cardCopy}>
                                 <Text style={styles.cardTitle}>{t(card.nameKey)}</Text>
-                                <Text style={styles.cardDetail}>{t(card.detailKey)}</Text>
+                                <Text style={styles.cardDetail}>{t(card.detailKey, { count: BUNDLED_BOOK_COUNTS[card.id] ?? 0 })}</Text>
                             </View>
                         </ChoiceCard>
                     );

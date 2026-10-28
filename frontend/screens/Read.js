@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Animated, BackHandler, Easing, PanResponder, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, findNodeHandle, ToastAndroid, PermissionsAndroid, Platform } from 'react-native';
+import { Animated, BackHandler, Easing, PanResponder, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, findNodeHandle, ToastAndroid } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather, MaterialIcons } from '@expo/vector-icons';
@@ -48,6 +48,7 @@ import NativeEpubReaderView, {
     stopListenSession,
     addListenControlListener,
 } from '../modules/native-epub-reader/src/NativeEpubReaderView';
+import { ensureNotificationPermission } from '../services/notificationPermission';
 import {
     claimListenSession,
     mayUseListenSession,
@@ -379,9 +380,29 @@ const clampNumber = (value, min, max, fallback = min) => {
 
 
 
-const progressForBookPosition = (spineIndex, totalSpineItems, pageIndex = null, pagesInChapter = null) => {
+// Cover pages at the front of the spine (a cover image wrapper): they hold no
+// reading, so progress starts after them. Without this a short picture book
+// with a cover and one story file read 50% on its first page.
+const COVER_SPINE_RE = /(^|[^a-z])cover/i;
+const leadingCoverCount = (spine = []) => {
+    let count = 0;
+    while (count < spine.length - 1) {
+        const item = spine[count] || {};
+        const label = `${item.idref || ''} ${item.href || ''} ${item.path || ''}`;
+        if (!COVER_SPINE_RE.test(label)) break;
+        count += 1;
+    }
+    return count;
+};
+
+const progressForBookPosition = (spineIndex, totalSpineItems, pageIndex = null, pagesInChapter = null, spine = null) => {
     if (!Number.isInteger(spineIndex) || totalSpineItems <= 0) {
         return null;
+    }
+    const covers = Array.isArray(spine) ? leadingCoverCount(spine) : 0;
+    if (covers > 0) {
+        if (spineIndex < covers) return 0;
+        return progressForBookPosition(spineIndex - covers, totalSpineItems - covers, pageIndex, pagesInChapter);
     }
 
     const chapterProgress = (
@@ -2744,7 +2765,8 @@ const Read = ({
                     loadedSpineIndex,
                     totalSpineItems,
                     restorePageIndex,
-                    restorePagesInChapter
+                    restorePagesInChapter,
+                    parsedPackage.spine
                 ),
                 href: parsedPackage.loadedSpineItem?.path || '',
                 pageInChapter: Number.isInteger(restorePageIndex) ? restorePageIndex + 1 : null,
@@ -2891,7 +2913,13 @@ const Read = ({
             ? eventSpineIndex
             : currentLoadedSpineIndex;
         const totalSpineItems = nativeReaderPackageRef.current?.spine?.length ?? nativeChapterTotal;
-        const nextProgress = progressForBookPosition(resolvedSpineIndex, totalSpineItems, pageIndex, total);
+        const nextProgress = progressForBookPosition(
+            resolvedSpineIndex,
+            totalSpineItems,
+            pageIndex,
+            total,
+            nativeReaderPackageRef.current?.spine
+        );
 
         setReaderLocationInfo((prev) => {
             const next = {
@@ -3093,7 +3121,8 @@ const Read = ({
             committedSpineIndex,
             totalSpineItems,
             committedPageIndex,
-            committedPageCount
+            committedPageCount,
+            committedPackage.spine
         ) ?? clampProgress(activeBook?.progress ?? 0);
         const nextBookPatch = {
             nativePosition: nextPosition,
@@ -3791,14 +3820,13 @@ const Read = ({
     }, [getListenPlayer, pauseListening, setSpokenWord]);
     listenSpeakRef.current = speakFocusedSentence;
 
-    const resumeListening = useCallback(() => {
+    const resumeListening = useCallback(async () => {
+        // The notification player needs this on Android 13+; the dialog is
+        // answered before the voice starts, so it never cuts into a sentence.
+        await ensureNotificationPermission();
         // The voice and the notification player are shared with the Learn
         // tab's audio review; taking them over stops it (and it stops us).
         claimListenSession('reader', () => listenPauseRef.current?.({ keepActive: false }));
-        // The notification player needs this on Android 13+; asked once.
-        if (Platform.OS === 'android' && Number(Platform.Version) >= 33) {
-            PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS).catch(() => {});
-        }
         setListenActive(true);
         setListenPlaying(true);
         listenPlayingRef.current = true;
