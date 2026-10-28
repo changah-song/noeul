@@ -115,6 +115,25 @@ def test_only_words_without_an_equivalent_are_machine_translated(monkeypatch, ba
     assert calls == []
 
 
+def test_machine_gloss_is_asked_with_the_part_of_speech(monkeypatch, batch_cache):
+    calls = []
+    answers = {"underneath (adverb)": "아래에 (부사)", "upon (preposition)": "(전치사) 위에", "rap (noun)": "랩(명사)"}
+
+    async def fake_batch(texts, source="en", target="en", batch_size=100):
+        calls.append(list(texts))
+        return [answers[text] for text in texts]
+
+    monkeypatch.setattr(main, "_translate_batch", fake_batch)
+    results = [
+        {"word": "underneath", "pos": "adverb", "definition": "Below.", "gloss": None},
+        {"word": "upon", "pos": "preposition", "definition": "On.", "gloss": None},
+        {"word": "rap", "pos": "noun", "definition": "A sharp blow.", "gloss": None},
+    ]
+    out = asyncio.run(main.translate_en_missing_glosses(results, "ko"))
+    assert calls == [["underneath (adverb)", "upon (preposition)", "rap (noun)"]]
+    assert [result["gloss"] for result in out] == ["아래에", "위에", "랩"]
+
+
 def test_english_interface_is_left_alone(monkeypatch, batch_cache):
     async def fail(*args, **kwargs):
         raise AssertionError("should not translate")

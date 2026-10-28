@@ -2811,35 +2811,70 @@ async def translate_en_missing_senses(results: list[dict], interface_language: s
     return out
 
 
+# A part-of-speech label the translator sees next to a bare headword, so an
+# ambiguous word is read as that part of speech ("underneath" alone comes
+# back as "하면"; "underneath (adverb)" as "아래에 (부사)").
+_EN_GLOSS_HINT_POS = {
+    "noun", "verb", "adjective", "adverb", "preposition", "pronoun",
+    "conjunction", "interjection", "determiner", "article", "particle", "numeral",
+}
+# The translated label, wherever the translator put it: "아래에 (부사)",
+# "(전치사) 위에", "랩(명사)".
+_EN_GLOSS_HINT_LABEL = re.compile(r"^\s*[(（][^()（）]*[)）]\s*|\s*[(（][^()（）]*[)）]\s*$")
+
+
+def en_gloss_query(word: str, pos: str | None) -> str:
+    """What the translator is sent for a headword's gloss."""
+    return f"{word} ({pos})" if pos in _EN_GLOSS_HINT_POS else word
+
+
+def en_gloss_from_translation(word: str, pos: str | None, translated: str | None) -> str | None:
+    """The gloss from the translator's answer to en_gloss_query: the translated
+    part-of-speech label is dropped. None when nothing useful is left."""
+    text = (translated or "").strip()
+    if pos in _EN_GLOSS_HINT_POS:
+        text = _EN_GLOSS_HINT_LABEL.sub("", text).strip()
+    if not text or text.lower() == word.lower():
+        return None
+    return text
+
+
 async def translate_en_missing_glosses(results: list[dict], interface_language: str) -> list[dict]:
     """Words Wiktionary has no equivalent for in the learner's language get a
-    machine translation of the headword as their gloss (the under-word
-    translation), cached in translate_cache. Definitions stay English."""
+    machine translation of the headword (with its part of speech as a hint) as
+    their gloss (the under-word translation), cached in translate_cache.
+    Definitions stay English."""
     if interface_language == "en":
         return results
     target = normalize_translate_language(interface_language, "en")
-    pending_words = list(dict.fromkeys(
-        result["word"] for result in results
+    pending = list(dict.fromkeys(
+        (result["word"], result.get("pos"))
+        for result in results
         if (result.get("definition") or result.get("pos") == EN_NAME_POS)
         and not result.get("gloss") and result.get("word")
     ))
-    if not pending_words:
+    if not pending:
         return results
 
-    keys = {word: translate_cache_key(word, "en", target) for word in pending_words}
+    queries = {item: en_gloss_query(*item) for item in pending}
+    keys = {item: translate_cache_key(query, "en", target) for item, query in queries.items()}
     cached = await asyncio.to_thread(_translate_cache_get_many, list(keys.values()))
-    gloss_by_word = {word: cached[key] for word, key in keys.items() if key in cached}
-    fresh_words = [word for word in pending_words if word not in gloss_by_word]
-    if fresh_words:
-        fresh = await _translate_batch(fresh_words, source="en", target=target)
-        for word, translated in zip(fresh_words, fresh):
-            if translated and translated.strip().lower() != word.lower():
-                gloss_by_word[word] = translated.strip()
-                await asyncio.to_thread(_translate_cache_put, keys[word], translated.strip())
+    gloss_by_item = {item: cached[key] for item, key in keys.items() if key in cached}
+    fresh_items = [item for item in pending if item not in gloss_by_item]
+    if fresh_items:
+        fresh = await _translate_batch([queries[item] for item in fresh_items], source="en", target=target)
+        for item, translated in zip(fresh_items, fresh):
+            gloss = en_gloss_from_translation(item[0], item[1], translated)
+            if gloss:
+                gloss_by_item[item] = gloss
+                await asyncio.to_thread(_translate_cache_put, keys[item], gloss)
+
+    def item_of(result: dict):
+        return (result.get("word"), result.get("pos"))
 
     return [
-        {**result, "gloss": gloss_by_word[result["word"]], "gloss_source": "machine"}
-        if not result.get("gloss") and result.get("word") in gloss_by_word
+        {**result, "gloss": gloss_by_item[item_of(result)], "gloss_source": "machine"}
+        if not result.get("gloss") and item_of(result) in gloss_by_item
         else result
         for result in results
     ]
