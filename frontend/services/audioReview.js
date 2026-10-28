@@ -9,6 +9,8 @@
 const clean = (value) => String(value ?? '').replace(/\s+/g, ' ').trim();
 
 const MEANING_MAX = 60;
+// A gloss lists equivalents ("이름, 성함, 명칭, 평판"); a few are enough to hear.
+const GLOSS_MAX_ITEMS = 3;
 // Gaps between the parts, and after a word before the next one starts.
 export const AUDIO_REVIEW_PAUSES = {
   afterWord: 450,
@@ -27,6 +29,16 @@ export const shortMeaning = (definition) => {
   const cut = sense.slice(0, MEANING_MAX);
   const lastBreak = Math.max(cut.lastIndexOf(','), cut.lastIndexOf('，'), cut.lastIndexOf(' '));
   return (lastBreak > 20 ? cut.slice(0, lastBreak) : cut).trim();
+};
+
+// The meaning to read when the dictionary has a short gloss for the word
+// (the equivalents shown in the lookup panel), else the saved definition's
+// first sense. Saved English definitions are long senses, so the gloss reads
+// far better aloud.
+export const spokenMeaning = ({ gloss, definition } = {}) => {
+  const items = clean(gloss).split(/[;；]/)[0].split(/[,，、]/).map(clean).filter(Boolean);
+  if (items.length > 0) return items.slice(0, GLOSS_MAX_ITEMS).join(', ');
+  return shortMeaning(definition);
 };
 
 // The sentence to read: of the sentences the word was met in, the shortest

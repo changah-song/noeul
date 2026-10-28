@@ -3,7 +3,18 @@ import {
   buildAudioReviewScript,
   pickSentence,
   shortMeaning,
+  spokenMeaning,
 } from '../audioReview';
+
+describe('spokenMeaning', () => {
+  it('reads the gloss, a few equivalents at most', () => {
+    expect(spokenMeaning({ gloss: '이름, 성함, 명칭, 평판', definition: '특정한 사람, 장소…' })).toBe('이름, 성함, 명칭');
+  });
+
+  it('falls back to the definition without a gloss', () => {
+    expect(spokenMeaning({ gloss: null, definition: '1. to slope down; to dip' })).toBe('to slope down');
+  });
+});
 
 describe('shortMeaning', () => {
   it('keeps the first sense without numbering or asides', () => {

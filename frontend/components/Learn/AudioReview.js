@@ -2,8 +2,6 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     ActivityIndicator,
     Modal,
-    PermissionsAndroid,
-    Platform,
     StyleSheet,
     Text,
     TouchableOpacity,
@@ -12,10 +10,10 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
-import { getVocabContexts } from '../../services/Database';
+import { getVocabContexts, lookupCacheByStem } from '../../services/Database';
 import { chapterTranslations } from '../../services/chapterTranslations';
 import { createListenPlayer, LISTEN_RATES, voiceLocaleFor } from '../../services/listenPlayer';
-import { buildAudioReviewScript, pickSentence, shortMeaning } from '../../services/audioReview';
+import { buildAudioReviewScript, pickSentence, spokenMeaning } from '../../services/audioReview';
 import {
     claimListenSession,
     mayUseListenSession,
@@ -28,6 +26,7 @@ import {
     updateListenSession,
 } from '../../modules/native-epub-reader/src/NativeEpubReaderView';
 import { formatNumber } from '../../services/interfaceLanguage';
+import { ensureNotificationPermission } from '../../services/notificationPermission';
 import { fontFamilies, useTheme } from '../../theme';
 
 const OWNER = 'audio-review';
@@ -70,7 +69,18 @@ const AudioReview = ({ visible, words = [], targetLanguage, interfaceLanguage, o
         if (detailsRef.current[position]) return detailsRef.current[position];
         const row = words[position];
         if (!row) return null;
-        const meaning = shortMeaning(row.def);
+        // The dictionary's short gloss reads better than a long saved sense.
+        let gloss = null;
+        try {
+            const cached = await lookupCacheByStem(row.word, {
+                language: row.language ?? targetLanguage,
+                interfaceLanguage,
+            });
+            gloss = cached?.gloss ?? null;
+        } catch {
+            gloss = null;
+        }
+        const meaning = spokenMeaning({ gloss, definition: row.def });
         let sentence = null;
         try {
             const contexts = await getVocabContexts(
@@ -106,12 +116,12 @@ const AudioReview = ({ visible, words = [], targetLanguage, interfaceLanguage, o
             pause();
             return;
         }
-        // The notification player needs this on Android 13+.
-        if (Platform.OS === 'android' && Number(Platform.Version) >= 33) {
-            PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS).catch(() => {});
-        }
-        claimListenSession(OWNER, () => pause());
         const run = ++runRef.current;
+        // Asked (and answered) before the voice starts: the system dialog
+        // pauses the app and cut the first word off.
+        await ensureNotificationPermission();
+        if (run !== runRef.current) return;
+        claimListenSession(OWNER, () => pause());
         playingRef.current = true;
         setPlaying(true);
         setVoiceError(false);
