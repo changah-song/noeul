@@ -1,12 +1,14 @@
-// Size of the pinned sentence translation (Settings → Words → Sentence
-// translation) and the height the bar reserves for it. Kept free of imports so
-// the settings sheet can use it without loading the translation services.
+// Size of the pinned sentence translation and the height the bar reserves
+// for it. Kept free of imports so it can be used anywhere.
 
-export const PINNED_TRANSLATION_FONT_MIN = 14;
-export const PINNED_TRANSLATION_FONT_MAX = 24;
+export const PINNED_TRANSLATION_FONT_MIN = 12;
+export const PINNED_TRANSLATION_FONT_MAX = 28;
 export const PINNED_TRANSLATION_FONT_DEFAULT = 17;
+// The translation is set a touch smaller than the book's text, so it reads as
+// a companion to the page rather than part of it.
+const READER_FONT_RATIO = 0.95;
 // Lines of translation the bar shows; a longer one scrolls inside it.
-export const PINNED_TRANSLATION_VISIBLE_LINES = 3;
+export const PINNED_TRANSLATION_VISIBLE_LINES = 2;
 export const PINNED_TRANSLATION_PADDING_V = 10;
 
 export const clampPinnedTranslationFontSize = (value) => {
@@ -15,11 +17,17 @@ export const clampPinnedTranslationFontSize = (value) => {
     return Math.min(PINNED_TRANSLATION_FONT_MAX, Math.max(PINNED_TRANSLATION_FONT_MIN, numeric));
 };
 
+// The translation's size for a reader font size: it follows the book's text,
+// so a large reading font never sits under a small translation, or the reverse.
+export const pinnedTranslationFontSizeForReader = (readerFontSize) => (
+    clampPinnedTranslationFontSize(Number(readerFontSize) * READER_FONT_RATIO)
+);
+
 export const pinnedTranslationLineHeight = (fontSize) => Math.round(fontSize * 1.4);
 
-// Height the bar reserves under the header. It is part of the reader's layout,
-// so it only changes with the text size or when the bar is turned off (both
-// re-paginate, like the book's own font size).
+// Height the bar reserves under the header: always two lines of translation.
+// It is part of the reader's layout, so it only changes with the font size or
+// when the bar is turned off (both re-paginate).
 export const pinnedTranslationBarHeight = (fontSize, shown = true) => {
     if (!shown) return 0;
     const size = clampPinnedTranslationFontSize(fontSize);

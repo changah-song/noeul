@@ -180,6 +180,7 @@ const NativeEpubReaderView = forwardRef(({
     onExposure,
     onSavedTermsShown,
     onHighlightNotePress,
+    showContextSentence = false,
     style,
 }, ref) => {
     const { t, language } = useTranslation();
@@ -310,6 +311,7 @@ const NativeEpubReaderView = forwardRef(({
             levelTerms={nativeLevelTerms}
             showPinyin={!!showPinyin}
             showGloss={!!showGloss}
+            showContextSentence={!!showContextSentence}
             tappedTerms={nativeTappedTerms}
             keepScreenOn={!!keepScreenOn}
             clearSelectionToken={clearSelectionToken}

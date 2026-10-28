@@ -110,11 +110,11 @@ private data class SelectionHighlightVerticalMetrics(
   val bottom: Float
 )
 
-// A fading saved-word box (6 steps, see savedWordFade.js) is an even halftone
-// of pixels in a soft tint, so the word, now in normal dark ink, reads on top.
-private const val FADING_BOX_LIGHT_ALPHA = 0.32f
-// 4x4 Bayer matrix: the order cells leave in, spread evenly over the box.
-private val BAYER_4 = intArrayOf(0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5)
+// A saved word: a light shade of the ink behind it and an ink underline, both
+// at full strength right after saving and fading as the word is passed
+// without a lookup.
+private const val SAVED_SHADE_ALPHA = 0.16f
+private const val SAVED_UNDERLINE_ALPHA = 0.85f
 // Sliding glosses: pause at each end, then slide at this speed (dp/s).
 private const val MARQUEE_PAUSE_MS = 1400L
 // Parenthesised and bracketed asides in dictionary senses: "(CL:个[ge4])",
@@ -141,6 +141,14 @@ class EpubPageView(context: Context) : View(context) {
   // How far a level underline has dissolved after the reader tapped the word
   // (0 = solid, 1 = dotted). Set by the owner.
   var tapProgress: ((TextRange) -> Float)? = null
+  // The sentence whose translation is pinned at the top (see ContextSentence).
+  var contextSentence: ContextSentence? = null
+    set(value) {
+      if (field == value) return
+      field = value
+      invalidate()
+    }
+  private val contextSentencePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
   // Called with a highlight's id when its note icon (in the margin) is tapped.
   var noteIconTapped: ((String) -> Unit)? = null
   // Where the note icons were drawn this frame, in view coordinates.
@@ -221,6 +229,11 @@ class EpubPageView(context: Context) : View(context) {
   // The reader's own highlights; the color comes from each range.
   private val userHighlightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
     style = Paint.Style.FILL
+  }
+  private val savedShadePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+  private val savedUnderlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    style = Paint.Style.STROKE
+    strokeCap = Paint.Cap.BUTT
   }
   private val savedHighlightTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
     color = savedHighlightTextColor
@@ -708,7 +721,26 @@ class EpubPageView(context: Context) : View(context) {
     }?.second
   }
 
+  // A faint wash of the ink behind the sentence whose translation is pinned,
+  // under everything else on the line.
+  private fun drawContextSentence(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
+    val sentence = contextSentence ?: return
+    val currentPage = page ?: return
+    if (sentence.blockId != block.blockId) return
+    if (sentence.spineIndex != null && currentPage.spineIndex != null && sentence.spineIndex != currentPage.spineIndex) return
+    val textLength = blockTextForSelection(block).length
+    if (textLength <= 0) return
+    val localStart = (sentence.sourceStartOffset - block.sourceStartOffset).coerceIn(0, textLength)
+    val localEnd = (sentence.sourceEndOffset - block.sourceStartOffset).coerceIn(localStart, textLength)
+    if (localStart >= localEnd) return
+    val ink = themePalette.bodyTextColor
+    val alpha = if (Color.luminance(themePalette.backgroundColor) < 0.4f) 0x1C else 0x12
+    contextSentencePaint.color = Color.argb(alpha, Color.red(ink), Color.green(ink), Color.blue(ink))
+    drawTextSelectionHighlight(canvas, block, layout, localStart, localEnd, textLength, contextSentencePaint)
+  }
+
   private fun drawBlockContent(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
+    drawContextSentence(canvas, block, layout)
     activeHighlightPaint.color = activePaintColor()
     // A text selection is drawn for the whole page at once (drawSelectionBoxes).
     if (activeSelectionKind != ActiveSelectionKind.TEXT) {
@@ -717,7 +749,6 @@ class EpubPageView(context: Context) : View(context) {
     drawTextHighlights(canvas, block, layout, levelRanges, levelMarkPaint)
     drawTextHighlights(canvas, block, layout, savedHighlightRanges, savedHighlightPaint)
     layout.draw(canvas)
-    drawSavedHighlightText(canvas, block, layout, savedHighlightRanges)
     if (showPinyin || showGloss) {
       drawAnnotations(canvas, block, layout)
     }
@@ -1034,7 +1065,6 @@ class EpubPageView(context: Context) : View(context) {
     canvas.translate(FOCUS_EMPHASIS_OFFSET_DP * resources.displayMetrics.density, 0f)
     layout.draw(canvas)
     canvas.translate(-FOCUS_EMPHASIS_OFFSET_DP * resources.displayMetrics.density, 0f)
-    drawSavedHighlightText(canvas, block, layout, savedHighlightRanges)
     canvas.restoreToCount(overlayLayer)
     canvas.restoreToCount(clipSave)
   }
@@ -1842,13 +1872,16 @@ class EpubPageView(context: Context) : View(context) {
           "source=$sourceStart..$sourceEnd text=$word"
       )
 
+      val sentenceBounds = sentenceBoundsAtOffset(block, tokenRange.start, tokenRange.end)
       return WordHit(
         text = word,
         placement = placement,
         range = range,
         localStartOffset = tokenRange.start,
         localEndOffset = tokenRange.end,
-        sentence = sentenceForToken(block, tokenRange)
+        sentence = sentenceForToken(block, tokenRange),
+        sentenceSourceStart = sentenceBounds?.first ?: -1,
+        sentenceSourceEnd = sentenceBounds?.second ?: -1
       )
     }
 
@@ -2286,13 +2319,20 @@ class EpubPageView(context: Context) : View(context) {
       }
 
       if (paint === savedHighlightPaint) {
-        // A saved word loses pixels a step each time it comes on screen
-        // without a lookup, the leaving pixels going one by one, until the
-        // box is gone.
+        // A saved word: a light ink shade with an ink underline. Each time it
+        // comes on screen without a lookup it steps fainter (sliding from the
+        // old strength to the new one), until both are gone.
         val strength = range.strength.coerceIn(0f, 1f)
         val fade = savedFade?.invoke(range)
         if (fade != null) readAnimationPending = true
-        if (strength > 0f || fade != null) {
+        val shown = if (fade != null) {
+          fade.first + (strength - fade.first) * fade.second.coerceIn(0f, 1f)
+        } else {
+          strength
+        }
+        if (shown > 0.01f) {
+          savedShadePaint.color = savedHighlightColor
+          savedShadePaint.alpha = (255 * SAVED_SHADE_ALPHA * shown).roundToInt()
           drawTextSelectionHighlight(
             canvas = canvas,
             block = block,
@@ -2300,11 +2340,12 @@ class EpubPageView(context: Context) : View(context) {
             localStart = localStart,
             localEnd = localEnd,
             textLength = blockTextLength,
-            paint = paint,
-            pixelKeep = strength,
-            pixelFrom = fade?.first ?: strength,
-            pixelProgress = fade?.second ?: 1f
+            paint = savedShadePaint
           )
+          savedUnderlinePaint.color = savedHighlightColor
+          savedUnderlinePaint.alpha = (255 * SAVED_UNDERLINE_ALPHA * shown).roundToInt()
+          savedUnderlinePaint.strokeWidth = dp(2f).toFloat()
+          drawLevelUnderline(canvas, layout, localStart, localEnd, blockTextLength, savedUnderlinePaint)
         }
         return@forEach
       }
@@ -2351,13 +2392,7 @@ class EpubPageView(context: Context) : View(context) {
     localStart: Int,
     localEnd: Int,
     textLength: Int,
-    paint: Paint,
-    // Saved-word boxes: the share of the box's pixels still drawn (1 = solid
-    // box, fading in steps as the reader passes the word without a lookup),
-    // and while a step is animating, the share it is leaving and how far.
-    pixelKeep: Float = 1f,
-    pixelFrom: Float = pixelKeep,
-    pixelProgress: Float = 1f
+    paint: Paint
   ) {
     val text = blockTextForSelection(block)
     val safeStart = localStart.coerceIn(0, textLength)
@@ -2412,120 +2447,7 @@ class EpubPageView(context: Context) : View(context) {
       if (bottom <= top) continue
 
       selectionLineRect.set(left, top, right, bottom)
-      if (pixelKeep < 1f || pixelFrom > pixelKeep) {
-        drawPixelBox(canvas, selectionLineRect, cornerRadius, paint, pixelKeep, pixelFrom, pixelProgress)
-      } else {
-        canvas.drawRoundRect(selectionLineRect, cornerRadius, cornerRadius, paint)
-      }
-    }
-  }
-
-  // The box as a grid of pixels inside its rounded outline, keeping the
-  // `keep` share of them in ordered-dither order. While a step animates
-  // (progress < 1), each pixel between `keep` and `from` leaves at its own
-  // moment, so the reader sees them go one by one.
-  private fun drawPixelBox(
-    canvas: Canvas,
-    rect: RectF,
-    radius: Float,
-    paint: Paint,
-    keep: Float,
-    from: Float,
-    progress: Float
-  ) {
-    pixelPaint.color = paint.color
-    pixelPaint.alpha = (paint.alpha * FADING_BOX_LIGHT_ALPHA).roundToInt()
-    highlightPath.reset()
-    highlightPath.addRoundRect(rect, radius, radius, Path.Direction.CW)
-    val save = canvas.save()
-    canvas.clipPath(highlightPath)
-    val cell = pixelSize
-    val firstX = floor(rect.left / cell).toInt()
-    val lastX = ceil(rect.right / cell).toInt()
-    val firstY = floor(rect.top / cell).toInt()
-    val lastY = ceil(rect.bottom / cell).toInt()
-    for (iy in firstY until lastY) {
-      for (ix in firstX until lastX) {
-        val order = pixelLeaveOrder(ix, iy)
-        val kept = order < keep || (order < from && progress < pixelHash(iy, ix) * 0.85f)
-        if (!kept) continue
-        pixelRect.set(ix * cell.toFloat(), iy * cell.toFloat(), (ix + 1) * cell.toFloat(), (iy + 1) * cell.toFloat())
-        canvas.drawRect(pixelRect, pixelPaint)
-      }
-    }
-    canvas.restoreToCount(save)
-  }
-
-  // Where a cell falls in the box's leaving order, 0..1: cells at or above
-  // the box's strength are gone. Ordered dither on the page's own grid, so
-  // neighbouring boxes line up.
-  private fun pixelLeaveOrder(ix: Int, iy: Int): Float {
-    val bx = ((ix % 4) + 4) % 4
-    val by = ((iy % 4) + 4) % 4
-    return (BAYER_4[by * 4 + bx] + 0.5f) / 16f
-  }
-
-  private fun drawSavedHighlightText(
-    canvas: Canvas,
-    block: PageBlock,
-    layout: StaticLayout,
-    ranges: List<TextRange>
-  ) {
-    val currentPage = page ?: return
-    val text = blockTextForSelection(block)
-    val textLength = text.length
-    if (textLength <= 0 || layout.lineCount <= 0 || ranges.isEmpty()) return
-
-    val sourceStart = block.sourceStartOffset
-    val sourceEnd = sourceStart + textLength
-    val textPaint = TextPaint(block.textPaint ?: savedHighlightTextPaint).apply {
-      color = savedHighlightTextColor
-    }
-    val lightTextAlpha = textPaint.alpha
-
-    ranges.forEach { range ->
-      if (
-        range.pageIndex != currentPage.pageIndex ||
-        range.spineIndex != currentPage.spineIndex ||
-        range.blockId != block.blockId
-      ) {
-        return@forEach
-      }
-      // A reader's highlight keeps the body ink on its light box.
-      if (range.userColor != null) return@forEach
-      // Light text only on a full box; once it breaks into pixels (or is
-      // animating its first step) the word is read in the body ink underneath.
-      if (range.strength < 1f || savedFade?.invoke(range) != null) return@forEach
-      textPaint.alpha = lightTextAlpha
-      if (textPaint.alpha == 0) return@forEach
-
-      val safeStart = (max(range.sourceStartOffset, sourceStart) - sourceStart).coerceIn(0, textLength)
-      val safeEnd = (min(range.sourceEndOffset, sourceEnd) - sourceStart).coerceIn(safeStart, textLength)
-      if (safeStart >= safeEnd) {
-        return@forEach
-      }
-
-      val startLine = layout.getLineForOffset(safeStart)
-      val endLine = layout.getLineForOffset(max(safeStart, safeEnd - 1))
-
-      for (line in startLine..endLine) {
-        val rawLineStart = layout.getLineStart(line).coerceIn(0, textLength)
-        val rawLineEnd = layout.getLineEnd(line).coerceIn(rawLineStart, textLength)
-        var lineStart = max(safeStart, rawLineStart)
-        var lineEnd = min(safeEnd, rawLineEnd)
-
-        while (lineStart < lineEnd && text[lineStart].isWhitespace()) {
-          lineStart += 1
-        }
-        while (lineEnd > lineStart && text[lineEnd - 1].isWhitespace()) {
-          lineEnd -= 1
-        }
-        if (lineStart >= lineEnd) continue
-
-        val x = layout.getPrimaryHorizontal(lineStart)
-        val baseline = layout.getLineBaseline(line).toFloat()
-        canvas.drawText(text, lineStart, lineEnd, x, baseline, textPaint)
-      }
+      canvas.drawRoundRect(selectionLineRect, cornerRadius, cornerRadius, paint)
     }
   }
 

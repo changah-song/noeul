@@ -114,7 +114,19 @@ data class WordHit(
   val range: TextRange,
   val localStartOffset: Int,
   val localEndOffset: Int,
-  val sentence: String = ""
+  val sentence: String = "",
+  // The sentence's source offsets in the block (-1 when unknown).
+  val sentenceSourceStart: Int = -1,
+  val sentenceSourceEnd: Int = -1
+)
+
+// The sentence whose translation is pinned at the top of the reader: drawn
+// with a faint wash so the reader can find it again after reading on.
+data class ContextSentence(
+  val spineIndex: Int?,
+  val blockId: String,
+  val sourceStartOffset: Int,
+  val sourceEndOffset: Int
 )
 
 data class TextSelectionHit(
