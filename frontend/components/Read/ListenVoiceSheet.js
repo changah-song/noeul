@@ -39,8 +39,9 @@ const openTtsSettings = () => {
 
 /**
  * ListenVoiceSheet — listen mode's voice settings, opened from the speed chip
- * in the listen bar: speed, pitch, and which of the phone's on-device voices
- * reads the book's language. Tapping a voice selects it and plays a short
+ * in the listen bar: speed, pitch, which of the phone's on-device voices
+ * reads the book's language, and (when translations and meanings are read in
+ * another language) which voice reads those. Tapping a voice selects it and plays a short
  * sample; "Phone default" follows whatever the phone's own setting is.
  *
  * Only voices already on the phone and usable offline are listed (see
@@ -61,6 +62,12 @@ const ListenVoiceSheet = ({
     onChangePitch,
     onSelectVoice,
     onPreviewVoice,
+    // The language translations and meanings are read in (the app's), when
+    // it is not the book's; null hides that section.
+    translationLocale = null,
+    translationVoiceId = null,
+    onSelectTranslationVoice,
+    onPreviewTranslationVoice,
 }) => {
     const { t } = useTranslation();
     const { height: windowHeight } = useWindowDimensions();
@@ -71,6 +78,7 @@ const ListenVoiceSheet = ({
     const chrome = useMemo(() => createSheetChromeStyles(colors, insets), [colors, insets]);
     const controlStyles = useMemo(() => createReaderSettingsControlStyles(colors), [colors]);
     const [voices, setVoices] = useState(null);
+    const [translationVoices, setTranslationVoices] = useState(null);
 
     const [mounted, setMounted] = useState(visible);
     const slideAnim = useRef(new Animated.Value(0)).current;
@@ -104,10 +112,16 @@ const ListenVoiceSheet = ({
         loadOnDeviceVoices(locale).then((list) => {
             if (!cancelled) setVoices(list);
         });
+        setTranslationVoices(null);
+        if (translationLocale && translationLocale !== locale) {
+            loadOnDeviceVoices(translationLocale).then((list) => {
+                if (!cancelled) setTranslationVoices(list);
+            });
+        }
         return () => {
             cancelled = true;
         };
-    }, [visible, locale]);
+    }, [visible, locale, translationLocale]);
 
     if (!mounted) return null;
 
@@ -117,17 +131,68 @@ const ListenVoiceSheet = ({
         { value: LISTEN_PITCHES[1], label: t('read.listenPitchNormal') },
         { value: LISTEN_PITCHES[2], label: t('read.listenPitchHigher') },
     ];
-    const listedIds = new Set((voices || []).map((voice) => voice.id));
-    // A saved voice the phone no longer has reads with the default.
-    const selectedId = voiceId && (voices == null || listedIds.has(voiceId)) ? voiceId : null;
-    const rows = [
-        { id: null, label: t('read.listenVoiceDefault') },
-        ...(voices || []).map((voice) => ({
-            id: voice.id,
-            label: t('read.listenVoiceNumber', { number: voice.number }),
-            detail: voice.gender ? t(voice.gender === 'female' ? 'read.listenVoiceFemale' : 'read.listenVoiceMale') : '',
-        })),
-    ];
+    // One radio list of voices: "Phone default", then the phone's voices.
+    // `previewKey` keeps the two lists' sample indicators apart.
+    const renderVoiceList = ({ list, chosenId, onSelect, onPreview, label, previewKey }) => {
+        const listedIds = new Set((list || []).map((voice) => voice.id));
+        // A saved voice the phone no longer has reads with the default.
+        const selectedId = chosenId && (list == null || listedIds.has(chosenId)) ? chosenId : null;
+        const rows = [
+            { id: null, label: t('read.listenVoiceDefault') },
+            ...(list || []).map((voice) => ({
+                id: voice.id,
+                label: t('read.listenVoiceNumber', { number: voice.number }),
+                detail: voice.gender ? t(voice.gender === 'female' ? 'read.listenVoiceFemale' : 'read.listenVoiceMale') : '',
+            })),
+        ];
+        return (
+            <>
+                <Text style={styles.sectionLabel}>{label}</Text>
+                <View style={styles.voiceList} accessibilityRole="radiogroup" accessibilityLabel={label}>
+                    {rows.map((row, index) => {
+                        const selected = row.id === selectedId;
+                        const previewing = previewingId !== undefined && previewingId === `${previewKey}:${row.id}`;
+                        return (
+                            <TouchableOpacity
+                                key={row.id ?? 'default'}
+                                style={[styles.voiceRow, index > 0 && styles.voiceRowDivider]}
+                                onPress={() => onSelect?.(row.id)}
+                                activeOpacity={0.7}
+                                accessibilityRole="radio"
+                                accessibilityState={{ checked: selected }}
+                                accessibilityLabel={row.detail ? `${row.label}, ${row.detail}` : row.label}
+                            >
+                                <View style={[styles.radio, selected && styles.radioSelected]} />
+                                <Text style={styles.voiceLabel} numberOfLines={1}>{row.label}</Text>
+                                {row.detail ? <Text style={styles.voiceDetail}>{row.detail}</Text> : null}
+                                <TouchableOpacity
+                                    style={styles.previewButton}
+                                    onPress={() => onPreview?.(row.id)}
+                                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={t('read.listenVoicePreview', { voice: row.label })}
+                                >
+                                    <MaterialIcons
+                                        name={previewing ? 'graphic-eq' : 'play-circle-outline'}
+                                        size={24}
+                                        color={colors.inkSlate}
+                                    />
+                                </TouchableOpacity>
+                            </TouchableOpacity>
+                        );
+                    })}
+                    {list == null ? (
+                        <View style={styles.loadingRow}>
+                            <ActivityIndicator size="small" color={colors.textTertiary} />
+                        </View>
+                    ) : null}
+                </View>
+                {list != null && list.length === 0 ? (
+                    <Text style={styles.note}>{t('read.listenVoiceNoneOffline')}</Text>
+                ) : null}
+            </>
+        );
+    };
     const sheetTranslateY = slideAnim.interpolate({ inputRange: [0, 1], outputRange: [windowHeight, 0] });
 
     return (
@@ -171,53 +236,22 @@ const ListenVoiceSheet = ({
                             />
                         </SettingRow>
 
-                        <Text style={styles.sectionLabel}>{t('read.listenVoiceLabel')}</Text>
-                        <View
-                            style={styles.voiceList}
-                            accessibilityRole="radiogroup"
-                            accessibilityLabel={t('read.listenVoiceLabel')}
-                        >
-                            {rows.map((row, index) => {
-                                const selected = row.id === selectedId;
-                                const previewing = previewingId !== undefined && previewingId === row.id;
-                                return (
-                                    <TouchableOpacity
-                                        key={row.id ?? 'default'}
-                                        style={[styles.voiceRow, index > 0 && styles.voiceRowDivider]}
-                                        onPress={() => onSelectVoice(row.id)}
-                                        activeOpacity={0.7}
-                                        accessibilityRole="radio"
-                                        accessibilityState={{ checked: selected }}
-                                        accessibilityLabel={row.detail ? `${row.label}, ${row.detail}` : row.label}
-                                    >
-                                        <View style={[styles.radio, selected && styles.radioSelected]} />
-                                        <Text style={styles.voiceLabel} numberOfLines={1}>{row.label}</Text>
-                                        {row.detail ? <Text style={styles.voiceDetail}>{row.detail}</Text> : null}
-                                        <TouchableOpacity
-                                            style={styles.previewButton}
-                                            onPress={() => onPreviewVoice(row.id)}
-                                            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                                            accessibilityRole="button"
-                                            accessibilityLabel={t('read.listenVoicePreview', { voice: row.label })}
-                                        >
-                                            <MaterialIcons
-                                                name={previewing ? 'graphic-eq' : 'play-circle-outline'}
-                                                size={24}
-                                                color={colors.inkSlate}
-                                            />
-                                        </TouchableOpacity>
-                                    </TouchableOpacity>
-                                );
-                            })}
-                            {voices == null ? (
-                                <View style={styles.loadingRow}>
-                                    <ActivityIndicator size="small" color={colors.textTertiary} />
-                                </View>
-                            ) : null}
-                        </View>
-                        {voices != null && voices.length === 0 ? (
-                            <Text style={styles.note}>{t('read.listenVoiceNoneOffline')}</Text>
-                        ) : null}
+                        {renderVoiceList({
+                            list: voices,
+                            chosenId: voiceId,
+                            onSelect: onSelectVoice,
+                            onPreview: onPreviewVoice,
+                            label: t('read.listenVoiceLabel'),
+                            previewKey: 'book',
+                        })}
+                        {translationLocale && translationLocale !== locale ? renderVoiceList({
+                            list: translationVoices,
+                            chosenId: translationVoiceId,
+                            onSelect: onSelectTranslationVoice,
+                            onPreview: onPreviewTranslationVoice,
+                            label: t('read.listenTranslationVoiceLabel'),
+                            previewKey: 'translation',
+                        }) : null}
 
                         <TouchableOpacity
                             style={styles.moreRow}
