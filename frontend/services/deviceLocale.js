@@ -6,7 +6,7 @@
 // which phone languages people use, including ones Noeul doesn't offer yet.
 
 import { I18nManager } from 'react-native';
-import { normalizeInterfaceLanguageCode } from '../constants/languages';
+import { DEFAULT_TARGET_LANGUAGE, normalizeInterfaceLanguageCode } from '../constants/languages';
 
 // Java still reports a few ISO 639 codes by their pre-1989 names.
 const LEGACY_LANGUAGE_CODES = { in: 'id', iw: 'he', ji: 'yi' };
@@ -75,3 +75,15 @@ export const deviceInterfaceLanguageOf = (tag) => {
 };
 
 export const getDeviceInterfaceLanguage = () => deviceInterfaceLanguageOf(getDeviceLocaleTag());
+
+/**
+ * The language a fresh install learns. Korean by default, but nobody learns
+ * their own language: a Korean phone starts on English (Korean speakers
+ * learning English come first), which also lets the app itself appear in
+ * Korean (the interface can't be the language being learned).
+ */
+export const defaultTargetLanguageFor = (deviceLanguage) => (
+  deviceLanguage === DEFAULT_TARGET_LANGUAGE ? 'en' : DEFAULT_TARGET_LANGUAGE
+);
+
+export const getDefaultTargetLanguage = () => defaultTargetLanguageFor(getDeviceInterfaceLanguage());

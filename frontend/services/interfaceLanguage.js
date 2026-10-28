@@ -9,12 +9,12 @@ import {
   normalizeInterfaceLanguageCode,
   normalizeInterfaceLanguageForTarget,
 } from '../constants/languages';
-import { getDeviceInterfaceLanguage } from './deviceLocale';
+import { getDefaultTargetLanguage, getDeviceInterfaceLanguage } from './deviceLocale';
 import { translate } from '../i18n/translations';
 
 export const LANGUAGE_SETTINGS_KEY = '@ff/language-settings';
 
-let runtimeTargetLanguage = DEFAULT_TARGET_LANGUAGE;
+let runtimeTargetLanguage = getDefaultTargetLanguage();
 let runtimeInterfaceLanguage = getDeviceInterfaceLanguage() ?? DEFAULT_INTERFACE_LANGUAGE;
 let runtimeChineseScript = DEFAULT_CHINESE_SCRIPT;
 
@@ -66,7 +66,7 @@ export const readStoredLanguageSettings = async () => {
     const parsed = stored ? JSON.parse(stored) : {};
     const targetLanguage = normalizeBookLanguage(
       parsed.targetLanguage ?? parsed.target_language,
-      DEFAULT_TARGET_LANGUAGE
+      getDefaultTargetLanguage()
     );
     return {
       targetLanguage,

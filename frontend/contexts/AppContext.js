@@ -36,7 +36,7 @@ import {
   setRuntimeInterfaceLanguage,
   setRuntimeTargetLanguage,
 } from '../services/interfaceLanguage';
-import { getDeviceInterfaceLanguage } from '../services/deviceLocale';
+import { getDefaultTargetLanguage, getDeviceInterfaceLanguage } from '../services/deviceLocale';
 import {
   DEFAULT_ACTIVE_PROFILE_ID,
   getDefaultProfileIdForLanguage,
@@ -238,6 +238,7 @@ export const AppProvider = ({ children, user }) => {
   const [dictMode, setDictMode] = useState(true);
   const [languageSettings, setLanguageSettings] = useState({
     ...DEFAULT_LANGUAGE_SETTINGS,
+    targetLanguage: getDefaultTargetLanguage(),
     interfaceLanguage: getDeviceInterfaceLanguage() ?? DEFAULT_LANGUAGE_SETTINGS.interfaceLanguage,
     levelsByLanguage: DEFAULT_PROFICIENCY_LEVELS_BY_LANGUAGE,
     activeProfileId: DEFAULT_ACTIVE_PROFILE_ID,
@@ -544,7 +545,10 @@ export const AppProvider = ({ children, user }) => {
         const nextSettings = normalizeLanguageSettings({
           ...DEFAULT_LANGUAGE_SETTINGS,
           // A fresh install starts in the phone's language when Noeul offers
-          // it. updatedAt stays null, so a signed-in account's choice still wins.
+          // it (learning English on a Korean phone, so the app can be in
+          // Korean). updatedAt stays null, so a signed-in account's choice
+          // still wins.
+          targetLanguage: getDefaultTargetLanguage(),
           interfaceLanguage: getDeviceInterfaceLanguage() ?? DEFAULT_LANGUAGE_SETTINGS.interfaceLanguage,
           ...parsed,
           updatedAt: parsed.updatedAt ?? parsed.updated_at ?? null,
