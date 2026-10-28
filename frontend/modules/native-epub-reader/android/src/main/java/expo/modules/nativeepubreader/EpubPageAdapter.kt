@@ -157,12 +157,24 @@ class EpubPageAdapter(
   var savedFade: ((TextRange) -> Pair<Float, Float>?)? = null
   // Forwarded to every page view; see EpubPageView.noteIconTapped.
   var noteIconTapped: ((String) -> Unit)? = null
+  // Forwarded to every page view; see EpubPageView.contextSentence.
+  var contextSentence: ContextSentence? = null
+
+  fun updateContextSentence(recyclerView: RecyclerView?, sentence: ContextSentence?) {
+    contextSentence = sentence
+    if (recyclerView == null) return
+    for (index in 0 until recyclerView.childCount) {
+      val holder = recyclerView.getChildViewHolder(recyclerView.getChildAt(index)) as? PageHolder ?: continue
+      holder.view.contextSentence = sentence
+    }
+  }
 
   private fun bindView(view: EpubPageView, position: Int) {
     val page = pages[position]
     view.tapProgress = tapProgress
     view.savedFade = savedFade
     view.noteIconTapped = noteIconTapped
+    view.contextSentence = contextSentence
     view.bind(
       page = page,
       paddingH = paddingH,

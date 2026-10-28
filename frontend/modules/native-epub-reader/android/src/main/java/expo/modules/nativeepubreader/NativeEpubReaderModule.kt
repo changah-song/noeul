@@ -342,6 +342,10 @@ class NativeEpubReaderModule : Module() {
         view.setShowGloss(enabled)
       }
 
+      Prop("showContextSentence") { view: NativeEpubReaderView, enabled: Boolean ->
+        view.setShowContextSentence(enabled)
+      }
+
       Prop("showPinyin") { view: NativeEpubReaderView, enabled: Boolean ->
         view.setShowPinyin(enabled)
       }
@@ -1348,6 +1352,24 @@ class NativeEpubReaderView(
 
   // Toggle short translations under annotated words. Repaginate so the line
   // spacing reserves (or releases) the row of space below each line.
+  // Mark the sentence of the last tapped word (its translation is pinned at
+  // the top). Off clears the mark.
+  private var showContextSentence = false
+  private var contextSentence: ContextSentence? = null
+
+  fun setShowContextSentence(enabled: Boolean) {
+    if (showContextSentence == enabled) return
+    showContextSentence = enabled
+    if (!enabled) applyContextSentence(null)
+  }
+
+  private fun applyContextSentence(sentence: ContextSentence?) {
+    if (contextSentence == sentence) return
+    contextSentence = sentence
+    pageAdapter?.updateContextSentence(recyclerView(), sentence)
+    continuousPageView.contextSentence = sentence
+  }
+
   fun setShowGloss(enabled: Boolean) {
     if (showGloss == enabled) {
       return
@@ -3150,6 +3172,16 @@ class NativeEpubReaderView(
   }
 
   private fun handlePageWordSelected(hit: WordHit) {
+    if (showContextSentence && hit.sentenceSourceStart >= 0 && hit.sentenceSourceEnd > hit.sentenceSourceStart) {
+      applyContextSentence(
+        ContextSentence(
+          spineIndex = hit.range.spineIndex,
+          blockId = hit.range.blockId,
+          sourceStartOffset = hit.sentenceSourceStart,
+          sourceEndOffset = hit.sentenceSourceEnd
+        )
+      )
+    }
     activeSelectionRanges = listOf(hit.range)
     activeSelectionKind = ActiveSelectionKind.WORD
     pageAdapter?.updateActiveSelectionRanges(activeSelectionRanges, activeSelectionKind)

@@ -7,8 +7,8 @@ import { Feather, MaterialIcons } from '@expo/vector-icons';
 import TopSection from '../components/Read/TopSection/TopSection';
 import PinnedSentenceTranslation from '../components/Read/PinnedSentenceTranslation';
 import {
-    PINNED_TRANSLATION_FONT_DEFAULT,
     pinnedTranslationBarHeight,
+    pinnedTranslationFontSizeForReader,
 } from '../components/Read/pinnedTranslationSize';
 import SelectionExplainPanel from '../components/Read/SelectionExplainPanel';
 import { chapterTranslations } from '../services/chapterTranslations';
@@ -176,8 +176,6 @@ const DEFAULT_READER_SETTINGS = {
     // word's sentence on screen. The open chapter's sentences are translated
     // ahead, so it shows at once. On by default; the reader menu turns it off.
     pinnedSentenceTranslation: true,
-    // That bar's text size. The bar's height follows it (re-paginates).
-    pinnedTranslationFontSize: PINNED_TRANSLATION_FONT_DEFAULT,
 };
 const READING_MODES = ['paged', 'scroll'];
 
@@ -1472,7 +1470,6 @@ const Read = ({
             glossScope: DEFAULT_READER_SETTINGS.glossScope,
             hideSavedAnnotations: DEFAULT_READER_SETTINGS.hideSavedAnnotations,
             pinnedSentenceTranslation: DEFAULT_READER_SETTINGS.pinnedSentenceTranslation,
-            pinnedTranslationFontSize: DEFAULT_READER_SETTINGS.pinnedTranslationFontSize,
         });
     };
 
@@ -3247,6 +3244,8 @@ const Read = ({
         FONT_SIZE_MAX,
         DEFAULT_READER_SETTINGS.fontSize
     ));
+    // The pinned translation is sized from the book's font size.
+    const pinnedTranslationFontSize = pinnedTranslationFontSizeForReader(readerFontSize);
     const readerLineSpacing = clampNumber(
         settings.lineSpacing,
         LINE_SPACING_STEPS[0].value,
@@ -3477,7 +3476,7 @@ const Read = ({
     // It stays in fullscreen, where it sits under the status bar.
     const showPinnedTranslation = Boolean(currentBook) && settings.pinnedSentenceTranslation !== false;
     const pinnedTranslationOffset = showPinnedTranslation
-        ? pinnedTranslationBarHeight(settings.pinnedTranslationFontSize)
+        ? pinnedTranslationBarHeight(pinnedTranslationFontSize)
         : 0;
     // Top of the reading surface in fullscreen: below the bar (which carries
     // the status-bar inset), or the inset alone.
@@ -4071,7 +4070,7 @@ const Read = ({
                     sentence={pinnedSentence}
                     sourceLanguage={activeBookLanguage}
                     targetLanguage={interfaceLanguage}
-                    fontSize={settings.pinnedTranslationFontSize}
+                    fontSize={pinnedTranslationFontSize}
                     topInset={isFullscreen ? insets.top : 0}
                 />
             ) : null}
@@ -4158,6 +4157,8 @@ const Read = ({
                         onFocusSentenceChange={handleFocusSentenceChange}
                         onExposure={handleNativeExposure}
                         onSavedTermsShown={handleSavedTermsShown}
+                        // The sentence whose translation the bar shows gets a faint mark.
+                        showContextSentence={showPinnedTranslation}
                     />
                 )}
                 {readerBrightnessOverlayOpacity > 0 ? (
