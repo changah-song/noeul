@@ -8,6 +8,7 @@ import {
     View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
 import { getVocabContexts, lookupCacheByStem } from '../../services/Database';
@@ -30,6 +31,9 @@ import { ensureNotificationPermission } from '../../services/notificationPermiss
 import { fontFamilies, useTheme } from '../../theme';
 
 const OWNER = 'audio-review';
+// Listen mode's saved voice settings (screens/Read.js LISTEN_PREFS_KEY): the
+// same voices read here.
+const LISTEN_PREFS_KEY = 'listenPrefs';
 // A sentence's translation may need the network; past this the word plays
 // without it rather than waiting.
 const TRANSLATION_TIMEOUT_MS = 6000;
@@ -55,6 +59,7 @@ const AudioReview = ({ visible, words = [], targetLanguage, interfaceLanguage, o
     const [rate, setRate] = useState(1);
     const [details, setDetails] = useState({});
     const [voiceError, setVoiceError] = useState(false);
+    const [voicePrefs, setVoicePrefs] = useState({ voices: {}, pitch: 1 });
     const playerRef = useRef(null);
     const detailsRef = useRef({});
     const playingRef = useRef(false);
@@ -140,6 +145,8 @@ const AudioReview = ({ visible, words = [], targetLanguage, interfaceLanguage, o
             targetLocale,
             interfaceLocale,
             rate,
+            pitch: voicePrefs.pitch,
+            voices: voicePrefs.voices,
         }));
         if (run !== runRef.current) return;
         if (outcome === 'error') {
@@ -154,7 +161,7 @@ const AudioReview = ({ visible, words = [], targetLanguage, interfaceLanguage, o
                 pause();
             }
         }
-    }, [interfaceLocale, loadDetails, pause, rate, targetLocale, words]);
+    }, [interfaceLocale, loadDetails, pause, rate, targetLocale, voicePrefs, words]);
 
     const togglePlay = useCallback(() => {
         if (playingRef.current) pause();
@@ -180,6 +187,26 @@ const AudioReview = ({ visible, words = [], targetLanguage, interfaceLanguage, o
         releaseListenSession(OWNER);
         onClose?.();
     }, [onClose, pause]);
+
+    // The voices, pitch and speed chosen in listen mode, read on each open.
+    useEffect(() => {
+        if (!visible) return undefined;
+        let cancelled = false;
+        AsyncStorage.getItem(LISTEN_PREFS_KEY)
+            .then((raw) => {
+                if (cancelled || !raw) return;
+                const parsed = JSON.parse(raw);
+                setVoicePrefs({
+                    voices: parsed?.voices && typeof parsed.voices === 'object' ? parsed.voices : {},
+                    pitch: Number.isFinite(parsed?.pitch) ? parsed.pitch : 1,
+                });
+                if (LISTEN_RATES.includes(parsed?.rate)) setRate(parsed.rate);
+            })
+            .catch(() => {});
+        return () => {
+            cancelled = true;
+        };
+    }, [visible]);
 
     // Fresh list each time it opens.
     useEffect(() => {
