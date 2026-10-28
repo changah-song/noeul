@@ -79,6 +79,21 @@ describe('buildAudioReviewScript', () => {
     expect(items.filter((item) => item.text).map((item) => item.voice)).toEqual(['en-us-x-iol-local', 'ko-KR-SMTm00']);
   });
 
+  it('repeats the word and meaning before the sentence', () => {
+    const items = buildAudioReviewScript({
+      word: 'hollow',
+      meaning: '분지',
+      sentence: 'A brook ran through the hollow.',
+      targetLocale: 'en-US',
+      interfaceLocale: 'ko-KR',
+      rate: 1,
+      repeat: 3,
+    });
+    expect(items.filter((item) => item.text).map((item) => item.text)).toEqual([
+      'hollow', '분지', 'hollow', '분지', 'hollow', '분지', 'A brook ran through the hollow.',
+    ]);
+  });
+
   it('skips a missing sentence and translation', () => {
     const items = buildAudioReviewScript({
       word: '호랑이', meaning: 'tiger', targetLocale: 'ko-KR', interfaceLocale: 'en-US', rate: 1,

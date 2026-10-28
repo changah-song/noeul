@@ -87,7 +87,7 @@ const EXTRAS = [
 
 // The demo sentence on the "How reading works" card: a word with a level
 // underline (easy), a tapped word (grey box + mid underline), a saved word
-// (ink box). `gloss` is the tapped word's entry in the little panel below.
+// (ink shade + underline). `gloss` is the tapped word's entry in the little panel below.
 const DEMO = {
     ko: {
         tokens: [
@@ -215,7 +215,7 @@ const DemoSentence = ({ language, styles, t }) => {
                                 token.mark === 'saved' && styles.demoSaved,
                             ]}
                         >
-                            <Text style={[styles.demoText, token.mark === 'saved' && styles.demoSavedText]}>
+                            <Text style={styles.demoText}>
                                 {token.text}
                             </Text>
                         </View>
@@ -816,12 +816,10 @@ const createStyles = (colors) => StyleSheet.create({
         backgroundColor: colors.readerTappedWordSurfaceBg,
         borderBottomColor: colors.readerLevelUnderlineMid,
     },
+    // As in the reader: a faint ink shade with an ink underline.
     demoSaved: {
-        paddingHorizontal: 3,
-        backgroundColor: colors.readerSavedWordSurfaceBg,
-    },
-    demoSavedText: {
-        color: colors.readerSavedWordSurfaceText,
+        backgroundColor: `${colors.readerBodyInk}29`,
+        borderBottomColor: `${colors.readerBodyInk}D9`,
     },
     demoPanel: {
         borderTopWidth: 1,

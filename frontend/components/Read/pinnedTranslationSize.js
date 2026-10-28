@@ -4,9 +4,9 @@
 export const PINNED_TRANSLATION_FONT_MIN = 12;
 export const PINNED_TRANSLATION_FONT_MAX = 28;
 export const PINNED_TRANSLATION_FONT_DEFAULT = 17;
-// The translation is set a touch smaller than the book's text, so it reads as
-// a companion to the page rather than part of it.
-const READER_FONT_RATIO = 0.95;
+// The translation is set smaller than the book's text, so it reads as a
+// companion to the page rather than part of it.
+const READER_FONT_RATIO = 0.82;
 // Lines of translation the bar shows; a longer one scrolls inside it.
 export const PINNED_TRANSLATION_VISIBLE_LINES = 2;
 export const PINNED_TRANSLATION_PADDING_V = 10;
