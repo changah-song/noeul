@@ -63,7 +63,9 @@ const PROFILE_SQLITE_MIGRATION_KEY = 'profile_sqlite_migration_v1';
 const VOCAB_EMPTY_HANJA_MIGRATION_KEY = 'vocab_empty_hanja_migration_v1';
 // 9: English names (also at the start of a sentence) come back as names and are
 // no longer graded, so books analysed before that are analysed again.
-export const PREPROCESS_VERSION = 9;
+// 10: English words with no dictionary equivalent get a machine gloss asked
+// with their part of speech ("underneath" was "하면", now "아래에").
+export const PREPROCESS_VERSION = 10;
 const SQLITE_BIND_BATCH_SIZE = 450;
 const DEFAULT_STABILITY = 1.0;
 const DEFAULT_DIFFICULTY = 5.0;
