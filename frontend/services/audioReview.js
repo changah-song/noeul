@@ -60,13 +60,15 @@ export const buildAudioReviewScript = ({
   targetLocale,
   interfaceLocale,
   rate,
-  voice = null,
+  pitch = 1,
+  // The voices chosen in listen mode, by locale (en-US, ko-KR, ...).
+  voices = {},
 }) => {
   const items = [];
   const say = (text, locale, pauseMs) => {
     const spoken = clean(text);
     if (!spoken) return;
-    items.push({ text: spoken, locale, rate, voice: locale === targetLocale ? voice : null });
+    items.push({ text: spoken, locale, rate, pitch, voice: voices?.[locale] || null });
     if (pauseMs) items.push({ pauseMs });
   };
   say(word, targetLocale, AUDIO_REVIEW_PAUSES.afterWord);
