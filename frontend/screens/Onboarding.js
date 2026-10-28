@@ -61,6 +61,27 @@ export const markOnboardingCompleted = async () => {
     }
 };
 
+// The reader's settings key (screens/Read.js READER_SETTINGS_KEY).
+const READER_SETTINGS_KEY = 'readerSettings';
+// A new reader starts with the level underline at the middle of the scale (only
+// words around their level and harder are marked) and a short translation under
+// those words.
+export const NEW_READER_SETTINGS = { levelMarkThreshold: 0.5, glossAnnotations: true };
+
+/**
+ * Give someone who just went through onboarding the new-reader settings, unless
+ * this install already has reader settings. No timestamp is written, so
+ * settings already in their cloud account still win when they sign in.
+ */
+export const applyNewReaderSettings = async () => {
+    try {
+        if (await AsyncStorage.getItem(READER_SETTINGS_KEY)) return;
+        await AsyncStorage.setItem(READER_SETTINGS_KEY, JSON.stringify(NEW_READER_SETTINGS));
+    } catch (error) {
+        console.warn('[Onboarding] Could not save reader settings:', error?.message ?? error);
+    }
+};
+
 // ─── Content ──────────────────────────────────────────────────────────────────
 
 const STEPS = ['welcome', 'languages', 'level', 'tour'];
@@ -293,6 +314,7 @@ const Onboarding = ({ onDone }) => {
     const finish = useCallback(async () => {
         if (finishingRef.current) return;
         finishingRef.current = true;
+        await applyNewReaderSettings();
         await markOnboardingCompleted();
         onDone?.();
     }, [onDone]);

@@ -40,6 +40,7 @@ import {
 } from '../constants/links';
 import { fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
 import ProfileAvatar from '../components/shared/ProfileAvatar';
+import { resetTips } from '../services/tips';
 
 const getProfileColors = (themeColors) => ({
     bg: themeColors.bgPage,
@@ -424,6 +425,18 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
                             ))}
                         </View>
                     </View>
+                    <NavRow
+                        icon="help-circle"
+                        label={t('tips.showAgain')}
+                        onPress={async () => {
+                            await resetTips();
+                            Alert.alert('', t('tips.showAgainDone'));
+                        }}
+                        trailingIcon={null}
+                        showDivider
+                        styles={styles}
+                        profileColors={profileColors}
+                    />
                 </View>
 
                 {/* Shown to everyone, guests included: the privacy policy and a way to
