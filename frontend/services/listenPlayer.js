@@ -232,6 +232,12 @@ export const createListenPlayer = ({ tts = Tts } = {}) => {
       const mySession = session;
       for (const item of items) {
         if (typeof item?.before === 'function') item.before();
+        // A silent gap (no text), e.g. between one word and the next.
+        if (!item?.text && Number(item?.pauseMs) > 0) {
+          await new Promise((resolve) => setTimeout(resolve, Number(item.pauseMs)));
+          if (mySession !== session) return 'stopped';
+          continue;
+        }
         const outcome = await speakOne(item, mySession);
         if (mySession !== session || outcome === 'cancel') return 'stopped';
         if (outcome === 'error') return 'error';

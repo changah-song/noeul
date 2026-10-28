@@ -48,6 +48,12 @@ import NativeEpubReaderView, {
     stopListenSession,
     addListenControlListener,
 } from '../modules/native-epub-reader/src/NativeEpubReaderView';
+import {
+    claimListenSession,
+    mayUseListenSession,
+    ownsListenSession,
+    releaseListenSession,
+} from '../services/listenOwner';
 import ListenBar from '../components/Read/ListenBar';
 import ListenVoiceSheet from '../components/Read/ListenVoiceSheet';
 import VocabLevelModal from '../components/shared/VocabLevelModal';
@@ -3787,6 +3793,9 @@ const Read = ({
     listenSpeakRef.current = speakFocusedSentence;
 
     const resumeListening = useCallback(() => {
+        // The voice and the notification player are shared with the Learn
+        // tab's audio review; taking them over stops it (and it stops us).
+        claimListenSession('reader', () => listenPauseRef.current?.({ keepActive: false }));
         // The notification player needs this on Android 13+; asked once.
         if (Platform.OS === 'android' && Number(Platform.Version) >= 33) {
             PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS).catch(() => {});
@@ -3934,9 +3943,12 @@ const Read = ({
         || '';
     useEffect(() => {
         if (!listenActive) {
-            stopListenSession();
+            // Only tear the player down when it is ours (audio review may own it).
+            if (mayUseListenSession('reader')) stopListenSession();
+            releaseListenSession('reader');
             return;
         }
+        if (!ownsListenSession('reader')) return;
         updateListenSession({
             title: headerBookTitle,
             subtitle: listenSessionSubtitle,
@@ -3945,12 +3957,17 @@ const Read = ({
             cover: typeof activeBook?.cover === 'string' ? activeBook.cover.trim() : '',
         });
     }, [listenActive, listenPlaying, headerBookTitle, listenSessionSubtitle, activeBook?.cover]);
-    useEffect(() => () => stopListenSession(), []);
+    useEffect(() => () => {
+        if (mayUseListenSession('reader')) stopListenSession();
+        releaseListenSession('reader');
+    }, []);
 
     const listenResumeRef = useRef(null);
     listenResumeRef.current = resumeListening;
     useEffect(() => {
         const subscription = addListenControlListener(({ action } = {}) => {
+            // The lock-screen buttons belong to whoever owns the session.
+            if (!ownsListenSession('reader')) return;
             switch (action) {
                 case 'play':
                     listenResumeRef.current?.();
