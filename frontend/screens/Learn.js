@@ -17,6 +17,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Feather, MaterialIcons } from '@expo/vector-icons';
 
 import Flashcard from '../components/Learn/Flashcard';
+import AudioReview from '../components/Learn/AudioReview';
 import ProfileAvatar from '../components/shared/ProfileAvatar';
 import { PILL_TAB_BAR_CLEARANCE } from '../components/shared/TabBar';
 import CandidateCard from '../components/vocab/CandidateCard';
@@ -1314,6 +1315,8 @@ const Learn = ({ navigation, user }) => {
   const [selectedWord, setSelectedWord] = useState(null);
   const [selectedWordContexts, setSelectedWordContexts] = useState([]);
   const [selectedWordKeys, setSelectedWordKeys] = useState(() => new Set());
+  // Audio review: the list it plays (the saved words as currently filtered).
+  const [audioWords, setAudioWords] = useState(null);
 
   const isSelectionMode = selectedWordKeys.size > 0;
 
@@ -1882,6 +1885,16 @@ const Learn = ({ navigation, user }) => {
               <Text numberOfLines={1} style={styles.keepReadingText}>{t('learn.keepReading')}</Text>
             </TouchableOpacity>
           ) : null}
+          {words.length > 0 ? (
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel={t('learn.audioReview')}
+              onPress={() => setAudioWords(visibleWords.length > 0 ? visibleWords : words)}
+              style={styles.listenButton}
+            >
+              <Feather name="headphones" size={20} color={colors.text} />
+            </TouchableOpacity>
+          ) : null}
         </View>
       </View>
 
@@ -2053,6 +2066,14 @@ const Learn = ({ navigation, user }) => {
           syncGeneration={syncGeneration}
         />
       </Modal>
+      <AudioReview
+        visible={Boolean(audioWords)}
+        words={audioWords ?? []}
+        targetLanguage={targetLanguage}
+        interfaceLanguage={interfaceLanguage}
+        ownerId={activeOwnerId}
+        onClose={() => setAudioWords(null)}
+      />
     </Screen>
     </LearnThemeContext.Provider>
   );
@@ -2175,6 +2196,16 @@ const createStyles = (colors) => StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 12,
+  },
+  listenButton: {
+    width: 46,
+    height: 46,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   keepReadingText: {
     fontFamily: fontFamilies.sansSemiBold,

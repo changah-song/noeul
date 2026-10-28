@@ -46,6 +46,8 @@ jest.mock('../../services/Database', () => ({
   viewData: jest.fn(() => Promise.resolve(mockRows)),
   vocabEntryExists: jest.fn(),
 }));
+// The audio review player drives the phone's text-to-speech engine.
+jest.mock('../../components/Learn/AudioReview', () => () => null);
 jest.mock('../../services/supabase', () => ({
   recordCloudVocabReview: jest.fn(),
   supabase: { auth: { getUser: jest.fn(() => Promise.resolve({ data: { user: null } })) } },
