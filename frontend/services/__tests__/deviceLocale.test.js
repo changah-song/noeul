@@ -1,5 +1,6 @@
 import {
   canonicalLocaleTag,
+  defaultTargetLanguageFor,
   deviceInterfaceLanguageOf,
   deviceLanguageOf,
 } from '../deviceLocale';
@@ -36,5 +37,14 @@ describe('deviceLocale', () => {
     expect(deviceInterfaceLanguageOf('pt-PT')).toBe('pt');
     expect(deviceInterfaceLanguageOf('de-DE')).toBeNull();
     expect(deviceInterfaceLanguageOf(null)).toBeNull();
+  });
+});
+
+describe('defaultTargetLanguageFor', () => {
+  it('starts a Korean phone on English, everyone else on Korean', () => {
+    expect(defaultTargetLanguageFor('ko')).toBe('en');
+    expect(defaultTargetLanguageFor('en')).toBe('ko');
+    expect(defaultTargetLanguageFor('zh')).toBe('ko');
+    expect(defaultTargetLanguageFor(null)).toBe('ko');
   });
 });
