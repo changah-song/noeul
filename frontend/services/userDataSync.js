@@ -264,7 +264,13 @@ const syncVocabFromCloud = async (user, scope, generation, tableCursors, cloudRo
       }
 
       assertCanUploadForOwner({ ownerId, user });
-      await upsertUserVocabEntry({ user, ownerId, generation, entry: localRow });
+      // One word the server refuses must not stop the rest of the pass (and,
+      // since the pass then never finishes, every later sync).
+      try {
+        await upsertUserVocabEntry({ user, ownerId, generation, entry: localRow });
+      } catch (error) {
+        console.warn('[userDataSync] Skipped a word the cloud refused:', localRow.word, error?.message ?? error);
+      }
       continue;
     }
 
@@ -317,7 +323,11 @@ const syncVocabFromCloud = async (user, scope, generation, tableCursors, cloudRo
     }
 
     assertCanUploadForOwner({ ownerId, user });
-    await upsertUserVocabEntry({ user, ownerId, generation, entry: localRow });
+    try {
+      await upsertUserVocabEntry({ user, ownerId, generation, entry: localRow });
+    } catch (error) {
+      console.warn('[userDataSync] Skipped a word the cloud refused:', localRow.word, error?.message ?? error);
+    }
   }
 
   return buildNextTableCursors(tableCursors, allCloudRows, localRows);

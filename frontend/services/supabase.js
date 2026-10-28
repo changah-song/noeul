@@ -267,7 +267,10 @@ const toUserVocabRow = (userId, entry) => {
   const now = new Date().toISOString();
   const createdAt = normalizeTimestamp(entry.created_at ?? entry.createdAt, now);
   const updatedAt = normalizeTimestamp(entry.updated_at ?? entry.updatedAt, createdAt);
-  const definition = normalizeVocabIdentityValue(entry.definition ?? entry.def) || null;
+  // user_vocab.definition is NOT NULL: a word saved without a definition
+  // (nothing found, or created by a related-word link) goes up as ''. Sent as
+  // null it was refused, and that one word stopped every later upload.
+  const definition = normalizeVocabIdentityValue(entry.definition ?? entry.def) || '';
   const hanja = normalizeVocabIdentityValue(entry.hanja) || null;
   const word = normalizeVocabIdentityValue(entry.word);
 
@@ -308,8 +311,9 @@ const applyVocabIdentityFilters = (query, entry) => {
     ? nextQuery.is('hanja', null)
     : nextQuery.eq('hanja', hanja);
 
+  // No definition is stored as '' (see toUserVocabRow); match either form.
   nextQuery = definition == null
-    ? nextQuery.is('definition', null)
+    ? nextQuery.or('definition.is.null,definition.eq.')
     : nextQuery.eq('definition', definition);
 
   return nextQuery;
