@@ -7,13 +7,20 @@ import {
     TouchableOpacity,
     View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
 import { getVocabContexts, lookupCacheByStem } from '../../services/Database';
 import { chapterTranslations } from '../../services/chapterTranslations';
-import { createListenPlayer, LISTEN_RATES, voiceLocaleFor } from '../../services/listenPlayer';
-import { buildAudioReviewScript, pickSentence, spokenMeaning } from '../../services/audioReview';
+import { createListenPlayer, LISTEN_RATES, voiceLocaleFor, voiceSampleFor } from '../../services/listenPlayer';
+import {
+    AUDIO_REVIEW_REPEATS,
+    buildAudioReviewScript,
+    pickSentence,
+    spokenMeaning,
+} from '../../services/audioReview';
+import ListenVoiceSheet from '../Read/ListenVoiceSheet';
 import {
     claimListenSession,
     mayUseListenSession,
@@ -30,6 +37,22 @@ import { ensureNotificationPermission } from '../../services/notificationPermiss
 import { fontFamilies, useTheme } from '../../theme';
 
 const OWNER = 'audio-review';
+// Listen mode's saved voice settings (screens/Read.js LISTEN_PREFS_KEY): the
+// same voices read here.
+const LISTEN_PREFS_KEY = 'listenPrefs';
+// Audio review's own setting: how many times the word and meaning are read.
+const AUDIO_REVIEW_PREFS_KEY = 'audioReviewPrefs';
+
+// Merge `patch` into listen mode's saved prefs (shared with the reader).
+const saveListenPrefs = async (patch) => {
+    try {
+        const raw = await AsyncStorage.getItem(LISTEN_PREFS_KEY);
+        const current = raw ? JSON.parse(raw) : {};
+        await AsyncStorage.setItem(LISTEN_PREFS_KEY, JSON.stringify({ ...current, ...patch }));
+    } catch {
+        // The choice still applies for this session.
+    }
+};
 // A sentence's translation may need the network; past this the word plays
 // without it rather than waiting.
 const TRANSLATION_TIMEOUT_MS = 6000;
@@ -49,12 +72,17 @@ const withTimeout = (promise, ms) => Promise.race([
 const AudioReview = ({ visible, words = [], targetLanguage, interfaceLanguage, ownerId, onClose }) => {
     const { t } = useTranslation();
     const { colors } = useTheme();
+    const insets = useSafeAreaInsets();
     const styles = useMemo(() => createStyles(colors), [colors]);
     const [index, setIndex] = useState(0);
     const [playing, setPlaying] = useState(false);
     const [rate, setRate] = useState(1);
     const [details, setDetails] = useState({});
     const [voiceError, setVoiceError] = useState(false);
+    const [voicePrefs, setVoicePrefs] = useState({ voices: {}, pitch: 1 });
+    const [repeat, setRepeat] = useState(1);
+    const [voiceSheetOpen, setVoiceSheetOpen] = useState(false);
+    const [previewingVoice, setPreviewingVoice] = useState(undefined);
     const playerRef = useRef(null);
     const detailsRef = useRef({});
     const playingRef = useRef(false);
@@ -140,6 +168,9 @@ const AudioReview = ({ visible, words = [], targetLanguage, interfaceLanguage, o
             targetLocale,
             interfaceLocale,
             rate,
+            pitch: voicePrefs.pitch,
+            voices: voicePrefs.voices,
+            repeat,
         }));
         if (run !== runRef.current) return;
         if (outcome === 'error') {
@@ -154,7 +185,7 @@ const AudioReview = ({ visible, words = [], targetLanguage, interfaceLanguage, o
                 pause();
             }
         }
-    }, [interfaceLocale, loadDetails, pause, rate, targetLocale, words]);
+    }, [interfaceLocale, loadDetails, pause, rate, repeat, targetLocale, voicePrefs, words]);
 
     const togglePlay = useCallback(() => {
         if (playingRef.current) pause();
@@ -171,7 +202,57 @@ const AudioReview = ({ visible, words = [], targetLanguage, interfaceLanguage, o
     }, [index, playFrom, words.length]);
 
     const cycleRate = useCallback(() => {
-        setRate((value) => LISTEN_RATES[(LISTEN_RATES.indexOf(value) + 1) % LISTEN_RATES.length] ?? 1);
+        setRate((value) => {
+            const next = LISTEN_RATES[(LISTEN_RATES.indexOf(value) + 1) % LISTEN_RATES.length] ?? 1;
+            saveListenPrefs({ rate: next });
+            return next;
+        });
+    }, []);
+
+    const cycleRepeat = useCallback(() => {
+        setRepeat((value) => {
+            const next = AUDIO_REVIEW_REPEATS[(AUDIO_REVIEW_REPEATS.indexOf(value) + 1) % AUDIO_REVIEW_REPEATS.length] ?? 1;
+            AsyncStorage.setItem(AUDIO_REVIEW_PREFS_KEY, JSON.stringify({ repeat: next })).catch(() => {});
+            return next;
+        });
+    }, []);
+
+    // The voice sheet (the reader's listen-mode sheet): the book voice and the
+    // translation voice, speed and pitch, shared with the reader.
+    const openVoiceSheet = useCallback(() => {
+        pause();
+        setVoiceSheetOpen(true);
+    }, [pause]);
+    const previewVoice = useCallback(async (voiceId, which = 'book') => {
+        const locale = which === 'translation' ? interfaceLocale : targetLocale;
+        const key = `${which}:${voiceId}`;
+        setPreviewingVoice(key);
+        if (!playerRef.current) playerRef.current = createListenPlayer();
+        await playerRef.current.speakSequence([{
+            text: voiceSampleFor(locale),
+            locale,
+            rate,
+            pitch: voicePrefs.pitch,
+            voice: voiceId || null,
+        }]);
+        setPreviewingVoice((current) => (current === key ? undefined : current));
+    }, [interfaceLocale, rate, targetLocale, voicePrefs.pitch]);
+    const selectVoice = useCallback((voiceId, which = 'book') => {
+        const locale = which === 'translation' ? interfaceLocale : targetLocale;
+        setVoicePrefs((current) => {
+            const voices = { ...current.voices, [locale]: voiceId || undefined };
+            saveListenPrefs({ voices });
+            return { ...current, voices };
+        });
+        previewVoice(voiceId, which);
+    }, [interfaceLocale, previewVoice, targetLocale]);
+    const changePitch = useCallback((pitch) => {
+        setVoicePrefs((current) => ({ ...current, pitch }));
+        saveListenPrefs({ pitch });
+    }, []);
+    const changeRate = useCallback((next) => {
+        setRate(next);
+        saveListenPrefs({ rate: next });
     }, []);
 
     const close = useCallback(() => {
@@ -180,6 +261,33 @@ const AudioReview = ({ visible, words = [], targetLanguage, interfaceLanguage, o
         releaseListenSession(OWNER);
         onClose?.();
     }, [onClose, pause]);
+
+    // The voices, pitch and speed chosen in listen mode, read on each open.
+    useEffect(() => {
+        if (!visible) return undefined;
+        let cancelled = false;
+        AsyncStorage.getItem(LISTEN_PREFS_KEY)
+            .then((raw) => {
+                if (cancelled || !raw) return;
+                const parsed = JSON.parse(raw);
+                setVoicePrefs({
+                    voices: parsed?.voices && typeof parsed.voices === 'object' ? parsed.voices : {},
+                    pitch: Number.isFinite(parsed?.pitch) ? parsed.pitch : 1,
+                });
+                if (LISTEN_RATES.includes(parsed?.rate)) setRate(parsed.rate);
+            })
+            .catch(() => {});
+        AsyncStorage.getItem(AUDIO_REVIEW_PREFS_KEY)
+            .then((raw) => {
+                if (cancelled || !raw) return;
+                const parsed = JSON.parse(raw);
+                if (AUDIO_REVIEW_REPEATS.includes(parsed?.repeat)) setRepeat(parsed.repeat);
+            })
+            .catch(() => {});
+        return () => {
+            cancelled = true;
+        };
+    }, [visible]);
 
     // Fresh list each time it opens.
     useEffect(() => {
@@ -263,7 +371,15 @@ const AudioReview = ({ visible, words = [], targetLanguage, interfaceLanguage, o
                         <Feather name="chevron-down" size={26} color={colors.text} />
                     </TouchableOpacity>
                     <Text style={styles.headerTitle}>{t('learn.audioReview')}</Text>
-                    <View style={styles.headerButton} />
+                    <TouchableOpacity
+                        onPress={openVoiceSheet}
+                        style={styles.headerButton}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                        accessibilityRole="button"
+                        accessibilityLabel={t('read.listenVoiceTitle')}
+                    >
+                        <Feather name="sliders" size={20} color={colors.text} />
+                    </TouchableOpacity>
                 </View>
 
                 {word ? (
@@ -331,9 +447,40 @@ const AudioReview = ({ visible, words = [], targetLanguage, interfaceLanguage, o
                     >
                         <Feather name="skip-forward" size={26} color={colors.text} />
                     </TouchableOpacity>
-                    <View style={styles.rateButton} />
+                    <TouchableOpacity
+                        onPress={cycleRepeat}
+                        style={styles.rateButton}
+                        accessibilityRole="button"
+                        accessibilityLabel={t('learn.audioRepeat', { count: repeat })}
+                    >
+                        <Feather name="repeat" size={14} color={colors.textSecondary} />
+                        <Text style={styles.rateText}>{`${repeat}`}</Text>
+                    </TouchableOpacity>
                 </View>
             </SafeAreaView>
+            <ListenVoiceSheet
+                visible={voiceSheetOpen}
+                onClose={() => {
+                    setVoiceSheetOpen(false);
+                    playerRef.current?.stop();
+                    setPreviewingVoice(undefined);
+                }}
+                colors={colors}
+                insets={insets}
+                locale={targetLocale}
+                rate={rate}
+                pitch={voicePrefs.pitch}
+                voiceId={voicePrefs.voices?.[targetLocale] || null}
+                previewingId={previewingVoice}
+                onChangeRate={changeRate}
+                onChangePitch={changePitch}
+                onSelectVoice={(voiceId) => selectVoice(voiceId, 'book')}
+                onPreviewVoice={(voiceId) => previewVoice(voiceId, 'book')}
+                translationLocale={interfaceLocale}
+                translationVoiceId={voicePrefs.voices?.[interfaceLocale] || null}
+                onSelectTranslationVoice={(voiceId) => selectVoice(voiceId, 'translation')}
+                onPreviewTranslationVoice={(voiceId) => previewVoice(voiceId, 'translation')}
+            />
         </Modal>
     );
 };
@@ -431,6 +578,8 @@ const createStyles = (colors) => StyleSheet.create({
     rateButton: {
         width: 52,
         height: 36,
+        flexDirection: 'row',
+        gap: 3,
         alignItems: 'center',
         justifyContent: 'center',
         borderRadius: 18,

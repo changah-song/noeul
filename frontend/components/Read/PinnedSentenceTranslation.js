@@ -122,20 +122,22 @@ const createStyles = (colors, fontSize) => {
         scrollContent: {
             paddingHorizontal: 22,
         },
+        // The book's serif (it carries Hangul and CJK; the UI sans falls
+        // back to the system font for them).
         translationText: {
-            fontFamily: fontFamilies.sansRegular,
+            fontFamily: fontFamilies.krSerifRegular,
             fontSize,
             lineHeight,
             color: colors.readerBodyInk,
         },
         mutedText: {
-            fontFamily: fontFamilies.sansRegular,
+            fontFamily: fontFamilies.krSerifRegular,
             fontSize: Math.max(14, fontSize - 2),
             lineHeight,
             color: colors.readerMutedInk,
         },
         retryText: {
-            fontFamily: fontFamilies.sansRegular,
+            fontFamily: fontFamilies.krSerifRegular,
             color: colors.readerBodyInk,
             textDecorationLine: 'underline',
         },

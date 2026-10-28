@@ -62,8 +62,12 @@ export const pickSentence = (contexts = [], word = '') => {
   return [...candidates].sort((a, b) => a.length - b.length)[0];
 };
 
+// How many times the word and its meaning are read before the sentence.
+export const AUDIO_REVIEW_REPEATS = [1, 2, 3, 5];
+
 // The utterances for one word, for listenPlayer.speakSequence. Parts that are
-// missing (no sentence, no translation yet) are skipped.
+// missing (no sentence, no translation yet) are skipped. `repeat` reads the
+// word and its meaning that many times before the sentence.
 export const buildAudioReviewScript = ({
   word,
   meaning,
@@ -72,17 +76,23 @@ export const buildAudioReviewScript = ({
   targetLocale,
   interfaceLocale,
   rate,
-  voice = null,
+  pitch = 1,
+  // The voices chosen in listen mode, by locale (en-US, ko-KR, ...).
+  voices = {},
+  repeat = 1,
 }) => {
   const items = [];
   const say = (text, locale, pauseMs) => {
     const spoken = clean(text);
     if (!spoken) return;
-    items.push({ text: spoken, locale, rate, voice: locale === targetLocale ? voice : null });
+    items.push({ text: spoken, locale, rate, pitch, voice: voices?.[locale] || null });
     if (pauseMs) items.push({ pauseMs });
   };
-  say(word, targetLocale, AUDIO_REVIEW_PAUSES.afterWord);
-  say(meaning, interfaceLocale, AUDIO_REVIEW_PAUSES.afterMeaning);
+  const times = Math.max(1, Math.min(10, Math.round(Number(repeat) || 1)));
+  for (let index = 0; index < times; index += 1) {
+    say(word, targetLocale, AUDIO_REVIEW_PAUSES.afterWord);
+    say(meaning, interfaceLocale, AUDIO_REVIEW_PAUSES.afterMeaning);
+  }
   say(sentence, targetLocale, AUDIO_REVIEW_PAUSES.afterSentence);
   say(translation, interfaceLocale, 0);
   items.push({ pauseMs: AUDIO_REVIEW_PAUSES.betweenWords });
