@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Animated, BackHandler, Easing, PanResponder, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, findNodeHandle, ToastAndroid } from 'react-native';
+import { Animated, AppState, BackHandler, Easing, PanResponder, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, findNodeHandle, ToastAndroid } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather, MaterialIcons } from '@expo/vector-icons';
@@ -127,6 +127,14 @@ import { selectExposureCredits } from '../services/readerExposure';
 import useSavedWordFades from '../hooks/useSavedWordFades';
 import { ONBOARDING_FLOW_SEEN_KEY } from './Onboarding';
 import { getSyncStatus, markSyncPending, subscribeSyncStatus } from '../services/syncStatus';
+import {
+    noteReadingActivity,
+    startReadingClock,
+    stopReadingClock,
+    subscribeGoalReached,
+} from '../services/readingGoal';
+import ReadingTimerPill from '../components/Goal/ReadingTimerPill';
+import GoalCompleteModal from '../components/Goal/GoalCompleteModal';
 import CoachTip from '../components/Tips/CoachTip';
 import useCoachTip from '../hooks/useCoachTip';
 import {
@@ -4110,6 +4118,54 @@ const Read = ({
     }, []);
 
 
+    // The daily reading goal's clock runs while a book is in front of the
+    // reader (this screen, the app in the foreground); touches and listening
+    // count as activity (services/readingGoal.js stops counting when idle).
+    const [appActive, setAppActive] = useState(AppState.currentState === 'active');
+    useEffect(() => {
+        const subscription = AppState.addEventListener('change', (state) => setAppActive(state === 'active'));
+        return () => subscription.remove();
+    }, []);
+    const readingClockOn = readerFocused && appActive && Boolean(currentBook);
+    useEffect(() => {
+        if (!readingClockOn) {
+            stopReadingClock();
+            return undefined;
+        }
+        startReadingClock(activeOwnerId);
+        return () => stopReadingClock();
+    }, [activeOwnerId, readingClockOn]);
+    useEffect(() => {
+        if (!readingClockOn || !listenActive) return undefined;
+        noteReadingActivity();
+        const timer = setInterval(noteReadingActivity, 30 * 1000);
+        return () => clearInterval(timer);
+    }, [listenActive, readingClockOn]);
+    useEffect(() => {
+        if (readingClockOn) noteReadingActivity();
+    }, [progressLabel, readingClockOn]);
+    // Native reader events (page turns, taps, focus steps) are reading: the
+    // book's own view takes its touches, so the container never sees them.
+    const readingActivityWrappers = useRef(new WeakMap()).current;
+    const withReadingActivity = (handler) => {
+        let wrapped = readingActivityWrappers.get(handler);
+        if (!wrapped) {
+            wrapped = (event) => {
+                noteReadingActivity();
+                return handler?.(event);
+            };
+            readingActivityWrappers.set(handler, wrapped);
+        }
+        return wrapped;
+    };
+    const [goalEvent, setGoalEvent] = useState(null);
+    // The goal timer sits above the bottom tip / preparing cards when they show.
+    const bottomCardsShown = Boolean(currentBook) && !highlightedWord && !textSelection && !focusMode;
+    const bottomCardsLift = bottomCardsShown
+        ? ((showLookupHint ? 72 : 0) + (currentChapterPreparing ? 80 : 0))
+        : 0;
+    useEffect(() => subscribeGoalReached(setGoalEvent), []);
+
     // Profile's "Underlines feel off?" → this book's underline settings.
     const openSettingsParam = route?.params?.openSettings;
     useEffect(() => {
@@ -4209,6 +4265,7 @@ const Read = ({
         <Animated.View
             ref={containerRef}
             collapsable={false}
+            onTouchStart={noteReadingActivity}
             style={[styles.container, { opacity: enterAnim, transform: [{ translateY: enterShift }] }]}
         >
             {/* With no book open, the bookmark, focus, progress and menu
@@ -4367,15 +4424,15 @@ const Read = ({
                         focusSwipeEnabled={focusSwipe}
                         focusNavToken={focusNavToken}
                         focusPanelHeight={focusMode ? focusPanelTotalHeight : 0}
-                        onPageChange={handleNativePageChange}
+                        onPageChange={withReadingActivity(handleNativePageChange)}
                         onChapterEnd={handleNativeChapterEnd}
                         onChapterStart={handleNativeChapterStart}
                         onChapterCommit={handleNativeChapterCommit}
-                        onWordSelected={handleNativeWordSelected}
-                        onTextSelected={handleNativeTextSelected}
+                        onWordSelected={withReadingActivity(handleNativeWordSelected)}
+                        onTextSelected={withReadingActivity(handleNativeTextSelected)}
                         onSelectionCleared={handleNativeSelectionCleared}
-                        onFocusSentenceChange={handleFocusSentenceChange}
-                        onExposure={handleNativeExposure}
+                        onFocusSentenceChange={withReadingActivity(handleFocusSentenceChange)}
+                        onExposure={withReadingActivity(handleNativeExposure)}
                         onSavedTermsShown={handleSavedTermsShown}
                         // The sentence whose translation the bar shows gets a faint mark.
                         showContextSentence={showPinnedTranslation}
@@ -4588,6 +4645,16 @@ const Read = ({
                 </View>
             ) : null}
 
+            {currentBook && !isFullscreen ? (
+                <View
+                    pointerEvents="box-none"
+                    style={[styles.readingTimer, { bottom: insets.bottom + 10 + bottomCardsLift }]}
+                >
+                    <ReadingTimerPill />
+                </View>
+            ) : null}
+            <GoalCompleteModal event={goalEvent} onClose={() => setGoalEvent(null)} />
+
             <CoachTip
                 visible={Boolean(activeReaderTip)}
                 title={activeReaderTip?.title}
@@ -4742,6 +4809,12 @@ const createStyles = (themeColors) => StyleSheet.create({
     },
     lookupLayerBottom: {
         justifyContent: 'flex-end',
+    },
+    readingTimer: {
+        position: 'absolute',
+        left: 16,
+        zIndex: 20,
+        elevation: 20,
     },
     hintLayer: {
         position: 'absolute',

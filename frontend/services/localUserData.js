@@ -20,6 +20,7 @@ const USER_STORAGE_KEYS = [
   'manual-songs-en',
   'writing-entries-v1',
   'daily-progress',
+  'reading-days',
 ];
 
 const ARRAY_STORAGE_KEYS = new Set([
@@ -31,6 +32,7 @@ const ARRAY_STORAGE_KEYS = new Set([
 
 const OBJECT_STORAGE_KEYS = new Set([
   'daily-progress',
+  'reading-days',
 ]);
 
 const TARGET_PREFERRED_STORAGE_KEYS = new Set([

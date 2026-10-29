@@ -28,6 +28,7 @@ import { getVocabTiers, hasVocabSizeGrid, thetaForTier } from '../services/vocab
 import { nearestRankForTheta } from '../services/calibrationQuiz';
 import { setProfileAbilityFromVocab } from '../services/Database';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
+import { DEFAULT_GOAL_MINUTES, GOAL_OPTIONS, setGoalMinutes } from '../services/readingGoal';
 import { hasWordCheck } from '../services/wordCheck';
 import { fontFamilies, useTheme } from '../theme';
 // One entry per bundled book (generate_catalog_levels.py), with its language:
@@ -85,12 +86,21 @@ export const applyNewReaderSettings = async () => {
     }
 };
 
+// What each daily goal feels like.
+const GOAL_DETAIL_KEYS = {
+    5: 'goal.option5',
+    10: 'goal.option10',
+    15: 'goal.option15',
+    20: 'goal.option20',
+    30: 'goal.option30',
+};
+
 // "I'm just starting" holds its level loosely (sd ≈ 1.2; a picked level is 0.6).
 const BEGINNER_SEED_VARIANCE = 1.5;
 
 // ─── Content ──────────────────────────────────────────────────────────────────
 
-const STEPS = ['welcome', 'languages', 'level', 'tour'];
+const STEPS = ['welcome', 'languages', 'level', 'goal', 'tour'];
 
 const LANGUAGE_CARDS = [
     { id: 'ko', glyph: '한', nameKey: 'onboarding.korean', detailKey: 'onboarding.koreanDetail' },
@@ -292,6 +302,7 @@ const Onboarding = ({ onDone }) => {
 
     const [step, setStep] = useState(0);
     const [levelChoice, setLevelChoice] = useState('check');
+    const [goalChoice, setGoalChoice] = useState(DEFAULT_GOAL_MINUTES);
     const [showInterfacePicker, setShowInterfacePicker] = useState(false);
     const [showWordCheck, setShowWordCheck] = useState(false);
     const [showLevelPicker, setShowLevelPicker] = useState(false);
@@ -404,6 +415,9 @@ const Onboarding = ({ onDone }) => {
                 seedBeginnerLevel();
             }
         }
+        if (stepName === 'goal') {
+            setGoalMinutes(goalChoice);
+        }
         advance();
     };
 
@@ -488,6 +502,33 @@ const Onboarding = ({ onDone }) => {
                         <View style={styles.cardCopy}>
                             <Text style={styles.cardTitle}>{t(option.titleKey)}</Text>
                             <Text style={styles.cardDetail}>{t(option.detailKey)}</Text>
+                        </View>
+                    </ChoiceCard>
+                ))}
+            </View>
+        </View>
+    );
+
+    // How long to read each day (services/readingGoal.js); 10 minutes unless
+    // they pick another.
+    const renderGoal = () => (
+        <View>
+            <Text style={styles.title} accessibilityRole="header">{t('goal.onboardingTitle')}</Text>
+            <Text style={styles.lead}>{t('goal.onboardingBody')}</Text>
+            <View style={styles.cards} accessibilityRole="radiogroup">
+                {GOAL_OPTIONS.map((minutes) => (
+                    <ChoiceCard
+                        key={minutes}
+                        selected={goalChoice === minutes}
+                        onPress={() => setGoalChoice(minutes)}
+                        styles={styles}
+                        minHeight={56}
+                    >
+                        <View style={styles.cardCopy}>
+                            <Text style={styles.cardTitle}>
+                                {minutes === 30 ? t('goal.minutesPlus', { count: 30 }) : t('goal.minutesCount', { count: minutes })}
+                            </Text>
+                            <Text style={styles.cardDetail}>{t(GOAL_DETAIL_KEYS[minutes])}</Text>
                         </View>
                     </ChoiceCard>
                 ))}
@@ -585,6 +626,7 @@ const Onboarding = ({ onDone }) => {
                     {stepName === 'welcome' ? renderWelcome() : null}
                     {stepName === 'languages' ? renderLanguages() : null}
                     {stepName === 'level' ? renderLevel() : null}
+                    {stepName === 'goal' ? renderGoal() : null}
                     {stepName === 'tour' ? renderTour() : null}
                 </Animated.View>
             </ScrollView>

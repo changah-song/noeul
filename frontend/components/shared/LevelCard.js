@@ -3,55 +3,41 @@ import { Text, TouchableOpacity, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { fontFamilies, useTheme } from '../../theme';
 import { useTranslation } from '../../hooks/useTranslation';
-import { formatDate, formatNumber } from '../../services/interfaceLanguage';
+import { formatNumber } from '../../services/interfaceLanguage';
 import { fetchCloudLevelHistory } from '../../services/abilityLogCloudSync';
 import {
-    getDailyAbilityLog,
     getLevelStartLog,
     getProfileAbility,
     onReaderLevelChanged,
 } from '../../services/Database';
 import {
     describeLevel,
-    LEVEL_CHART_RANGES,
-    levelChartSeries,
-    chartColumnFor,
     levelPlaceForTheta,
     levelRange,
-    roundWords,
     startingTheta,
-    THETA_MAX,
-    THETA_MIN,
     wordGoal,
     wordsForTheta,
 } from '../../services/levelSummary';
 import { loadMilestones, markGoalCelebrated, recordGoal } from '../../services/levelMilestones';
 
-const CHART_DAYS = 30;
-const CHART_HEIGHT = 96;
 // Below this many signals the estimate is still mostly the starting point
-// (no goals are counted yet).
+// (no word goals are counted yet).
 const EARLY_EVENTS = 20;
 const KO_BANDS = ['bookLevel.koBeginner', 'bookLevel.koIntermediate', 'bookLevel.koAdvanced'];
 
 /**
- * LevelCard — Profile's "Your level":
- * - the level on the language's own scale (Korean's reading levels, HSK,
- *   CEFR) and about how many words the reader knows, with the likely range;
- * - a bar to the next small word goal (and the next level), and a
- *   congratulations when a goal is passed, flagged on the chart that day;
- * - the last 30 days as a band (likely range) with a dot per day, and where
- *   they started (set once, at onboarding).
- * The level isn't set here: "Underlines feel off?" (`onAdjust`) offers the
- * underline slider or the word check instead.
+ * LevelCard — Profile's "Your level": the level on the language's own scale
+ * (Korean's reading levels, HSK, CEFR), about how many words the reader
+ * knows and the likely range, where they started (set once, at onboarding),
+ * and a quiet congratulations when the estimate passes a round number of
+ * words. The level isn't set here: "Underlines feel off?" (`onAdjust`) offers
+ * the underline slider or the word check instead.
  */
 const LevelCard = ({ ownerId, profileId, language, userId, onAdjust }) => {
     const { colors } = useTheme();
     const { t } = useTranslation();
     const styles = useMemo(() => createStyles(colors), [colors]);
     const [ability, setAbility] = useState(null);
-    const [logRows, setLogRows] = useState([]);
-    const [chartRange, setChartRange] = useState('30');
     const [startTheta, setStartTheta] = useState(null);
     const [milestones, setMilestones] = useState(null);
     const [version, setVersion] = useState(0);
@@ -61,27 +47,24 @@ const LevelCard = ({ ownerId, profileId, language, userId, onAdjust }) => {
     useEffect(() => {
         let cancelled = false;
         (async () => {
-            const [row, localLog, localStart, cloud] = await Promise.all([
+            const [row, localStart, cloud] = await Promise.all([
                 getProfileAbility({ ownerId, profileId, language }).catch(() => null),
-                getDailyAbilityLog({ ownerId, profileId, language }).catch(() => []),
                 getLevelStartLog({ ownerId, profileId, language }).catch(() => []),
-                // The account's history too: a new or cleared phone has little.
-                userId ? fetchCloudLevelHistory(userId, language) : { rows: [], startRows: [] },
+                // Where they started may only be in the account (a new phone).
+                userId ? fetchCloudLevelHistory(userId, language) : { startRows: [] },
             ]);
-            const byTime = (a, b) => String(a.created_at).localeCompare(String(b.created_at));
-            const log = [...localLog, ...cloud.rows];
-            const startLog = [...localStart, ...cloud.startRows].sort(byTime);
+            const startLog = [...localStart, ...cloud.startRows]
+                .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
             const rowTheta = Number(row?.theta);
             let record = await loadMilestones(ownerId, profileId, language);
-            // Goals count once reading (not just the starting point) has moved
-            // the estimate.
+            // Word goals count once reading (not just the starting point) has
+            // moved the estimate.
             if (Number.isFinite(rowTheta) && (Number(row?.event_count) || 0) >= EARLY_EVENTS) {
                 const { reached } = wordGoal(wordsForTheta(language, rowTheta));
                 ({ record } = await recordGoal(ownerId, profileId, language, reached));
             }
             if (cancelled) return;
             setAbility(row);
-            setLogRows(log);
             setStartTheta(startingTheta(startLog));
             setMilestones(record);
         })();
@@ -100,13 +83,11 @@ const LevelCard = ({ ownerId, profileId, language, userId, onAdjust }) => {
         ? describeLevel(language, { estimate: startTheta, low: startTheta, high: startTheta })
         : null;
 
-    const placeName = useCallback((place, which = 'current') => {
+    const placeName = useCallback((place) => {
         if (place.scale === 'ko') {
-            const rank = which === 'next' ? place.nextRank : place.rank;
-            if (!rank) return null;
-            return `${t(KO_BANDS[Math.ceil(rank / 2) - 1])} ${((rank - 1) % 2) + 1}`;
+            return `${t(KO_BANDS[Math.ceil(place.rank / 2) - 1])} ${((place.rank - 1) % 2) + 1}`;
         }
-        return which === 'next' ? place.nextLabel : place.label;
+        return place.label;
     }, [t]);
     const wordsText = useCallback((item) => (
         item?.kind === 'words'
@@ -118,52 +99,22 @@ const LevelCard = ({ ownerId, profileId, language, userId, onAdjust }) => {
 
     const place = levelPlaceForTheta(language, theta);
     const words = wordsForTheta(language, theta) ?? 0;
-    const goal = wordGoal(words);
-    const nextLevelName = placeName(place, 'next');
-    const reachedGoals = milestones?.reached ?? [];
-    const bestReached = reachedGoals.reduce((best, item) => Math.max(best, Number(item.words) || 0), 0);
+    const bestReached = (milestones?.reached ?? [])
+        .reduce((best, item) => Math.max(best, Number(item.words) || 0), 0);
     const celebrate = bestReached > (milestones?.celebrated ?? 0) ? bestReached : null;
     const closeCelebration = () => {
         markGoalCelebrated(ownerId, profileId, language, celebrate);
         setMilestones((current) => (current ? { ...current, celebrated: celebrate } : current));
     };
 
-    // The chart: the chosen range's columns, or at least today.
-    const chart = levelChartSeries(logRows, chartRange);
-    const series = chart.points.length > 0
-        ? chart.points
-        : [{ day: 'today', index: chart.columns - 1, theta, variance }];
-    const lastColumn = Math.max(1, chart.columns - 1);
-    const startLabel = chartRange === '30'
-        ? t('level.chartStart', { count: CHART_DAYS })
-        : formatDate(`${chart.startDay}T12:00:00Z`, { month: 'short', day: 'numeric', year: chartRange === 'all' ? 'numeric' : undefined });
-
-    // The chart's vertical scale: the data's spread with a little room,
-    // inside the model's -3..3.
-    const lows = series.map((point) => levelRange(point.theta, point.variance).low);
-    const highs = series.map((point) => levelRange(point.theta, point.variance).high);
-    if (startTheta != null) {
-        lows.push(startTheta);
-        highs.push(startTheta);
-    }
-    const yMin = Math.max(THETA_MIN, Math.min(...lows, range.low) - 0.3);
-    const yMax = Math.min(THETA_MAX, Math.max(...highs, range.high) + 0.3);
-    const y = (value) => CHART_HEIGHT * (1 - (value - yMin) / Math.max(0.01, yMax - yMin));
-    const goalColumns = new Set(reachedGoals.map((item) => chartColumnFor(item.at, chart)).filter((column) => column != null));
-
     return (
         <View style={styles.card}>
             {celebrate ? (
                 <View style={styles.celebration} accessibilityLiveRegion="polite">
-                    <Feather name="award" size={22} color={colors.surface} />
-                    <View style={styles.celebrationText}>
-                        <Text style={styles.celebrationTitle}>
-                            {t('level.goalReachedTitle', { words: formatNumber(celebrate) })}
-                        </Text>
-                        <Text style={styles.celebrationBody}>
-                            {t('level.goalReachedBody', { next: formatNumber(goal.next) })}
-                        </Text>
-                    </View>
+                    <Feather name="award" size={20} color={colors.surface} />
+                    <Text style={styles.celebrationTitle}>
+                        {t('level.goalReachedTitle', { words: formatNumber(celebrate) })}
+                    </Text>
                     <TouchableOpacity
                         onPress={closeCelebration}
                         hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
@@ -176,99 +127,24 @@ const LevelCard = ({ ownerId, profileId, language, userId, onAdjust }) => {
             ) : null}
 
             <Text style={styles.levelName}>{placeName(place)}</Text>
-            <Text style={styles.estimate}>{t('level.words', { words: formatNumber(described.kind === 'words' ? described.estimate : Math.round(words)) })}</Text>
-            {described.kind === 'words' && described.low !== described.high ? (
+            <Text style={styles.estimate}>
+                {t('level.words', {
+                    words: formatNumber(described.kind === 'words' ? described.estimate : Math.round(words)),
+                })}
+            </Text>
+            {described.low !== described.high ? (
                 <Text style={styles.range}>
-                    {t('level.wordsRange', { low: formatNumber(described.low), high: formatNumber(described.high) })}
+                    {described.kind === 'words'
+                        ? t('level.wordsRange', { low: formatNumber(described.low), high: formatNumber(described.high) })
+                        : t('level.tierRange', { low: described.low, high: described.high })}
                 </Text>
-            ) : null}
-            {described.kind === 'tiers' && described.low !== described.high ? (
-                <Text style={styles.range}>{t('level.tierRange', { low: described.low, high: described.high })}</Text>
             ) : null}
             <Text style={styles.note}>
                 {events < EARLY_EVENTS ? t('level.early') : t('level.basedOn', { count: formatNumber(events) })}
             </Text>
 
-            <View style={styles.goal}>
-                <View style={styles.goalLabels}>
-                    <Text style={styles.goalLabel}>{t('level.nextGoal', { words: formatNumber(goal.next) })}</Text>
-                    <Text style={styles.goalPercent}>{`${Math.round(goal.progress * 100)}%`}</Text>
-                </View>
-                <View
-                    style={styles.goalTrack}
-                    accessible
-                    accessibilityRole="progressbar"
-                    accessibilityValue={{ min: 0, max: 100, now: Math.round(goal.progress * 100) }}
-                >
-                    <View style={[styles.goalFill, { width: `${Math.max(3, goal.progress * 100)}%` }]} />
-                </View>
-                {nextLevelName && place.nextWords ? (
-                    <Text style={styles.nextLevel}>
-                        {t('level.nextLevel', { level: nextLevelName, words: formatNumber(roundWords(place.nextWords)) })}
-                    </Text>
-                ) : null}
-            </View>
-
-            {series.length > 0 ? (
-                <View accessible accessibilityLabel={t('level.chartA11y')} style={styles.chartBlock}>
-                    <View style={[styles.chart, { height: CHART_HEIGHT }]}>
-                        {startTheta != null ? (
-                            <View style={[styles.startLine, { top: y(startTheta) }]} />
-                        ) : null}
-                        {series.map((point) => {
-                            const band = levelRange(point.theta, point.variance);
-                            const left = `${(point.index / lastColumn) * 100}%`;
-                            return (
-                                <View key={point.day} style={[styles.day, { left }]}>
-                                    <View
-                                        style={[
-                                            styles.band,
-                                            { top: y(band.high), height: Math.max(2, y(band.low) - y(band.high)) },
-                                        ]}
-                                    />
-                                    <View style={[styles.dot, { top: y(point.theta) - 3 }]} />
-                                    {goalColumns.has(point.index) ? (
-                                        <View style={[styles.flag, { top: Math.max(0, y(band.high) - 14) }]}>
-                                            <Feather name="flag" size={11} color={colors.danger} />
-                                        </View>
-                                    ) : null}
-                                </View>
-                            );
-                        })}
-                    </View>
-                    <View style={styles.axis}>
-                        <Text style={styles.axisText}>{startLabel}</Text>
-                        <Text style={styles.axisText}>{t('level.chartEnd')}</Text>
-                    </View>
-                    <View style={styles.ranges} accessibilityRole="radiogroup">
-                        {LEVEL_CHART_RANGES.map((key) => (
-                            <TouchableOpacity
-                                key={key}
-                                onPress={() => setChartRange(key)}
-                                style={[styles.rangeChip, chartRange === key && styles.rangeChipActive]}
-                                accessibilityRole="radio"
-                                accessibilityState={{ selected: chartRange === key }}
-                            >
-                                <Text style={[styles.rangeText, chartRange === key && styles.rangeTextActive]}>
-                                    {t(`level.range${key === 'all' ? 'All' : key}`)}
-                                </Text>
-                            </TouchableOpacity>
-                        ))}
-                    </View>
-                </View>
-            ) : null}
-
             {startDescribed ? (
-                <View style={styles.legendRow}>
-                    <View style={styles.startSwatch} />
-                    <Text style={styles.legendText}>{t('level.started', { level: wordsText(startDescribed) })}</Text>
-                </View>
-            ) : null}
-            {reachedGoals.length > 0 ? (
-                <View style={styles.legendRow}>
-                    <Feather name="flag" size={12} color={colors.danger} />
-                    <Text style={styles.legendText}>{t('level.goalLegend')}</Text>
-                </View>
+                <Text style={styles.started}>{t('level.started', { level: wordsText(startDescribed) })}</Text>
             ) : null}
             {onAdjust ? (
                 <TouchableOpacity
@@ -305,30 +181,18 @@ const createStyles = (colors) => ({
         alignItems: 'center',
         gap: 12,
     },
-    celebrationText: {
-        flex: 1,
-        minWidth: 0,
-    },
     celebrationTitle: {
+        flex: 1,
         fontFamily: fontFamilies.sansSemiBold,
         fontSize: 15,
         lineHeight: 20,
         color: colors.surface,
-    },
-    celebrationBody: {
-        marginTop: 2,
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 13,
-        lineHeight: 18,
-        color: colors.surface,
-        opacity: 0.82,
     },
     levelName: {
         fontFamily: fontFamilies.sansMedium,
         fontSize: 13.5,
         lineHeight: 18,
         color: colors.textSecondary,
-        textTransform: 'none',
     },
     estimate: {
         marginTop: 2,
@@ -351,137 +215,14 @@ const createStyles = (colors) => ({
         lineHeight: 17,
         color: colors.textTertiary,
     },
-    goal: {
-        marginTop: 14,
-    },
-    goalLabels: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'baseline',
-    },
-    goalLabel: {
-        fontFamily: fontFamilies.sansMedium,
-        fontSize: 13.5,
-        color: colors.text,
-    },
-    goalPercent: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 12.5,
-        color: colors.textTertiary,
-    },
-    goalTrack: {
-        marginTop: 6,
-        height: 8,
-        borderRadius: 4,
-        overflow: 'hidden',
-        backgroundColor: colors.surfaceMuted,
-    },
-    goalFill: {
-        height: 8,
-        borderRadius: 4,
-        backgroundColor: colors.text,
-    },
-    nextLevel: {
-        marginTop: 6,
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 12.5,
-        lineHeight: 17,
-        color: colors.textTertiary,
-    },
-    chartBlock: {
-        marginTop: 16,
-    },
-    chart: {
-        position: 'relative',
-        marginHorizontal: 4,
-    },
-    startLine: {
-        position: 'absolute',
-        left: 0,
-        right: 0,
-        borderTopWidth: 1,
-        borderStyle: 'dashed',
-        borderColor: colors.textTertiary,
-    },
-    day: {
-        position: 'absolute',
-        top: 0,
-        bottom: 0,
-        width: 12,
-        marginLeft: -6,
-        alignItems: 'center',
-    },
-    band: {
-        position: 'absolute',
-        width: 6,
-        borderRadius: 3,
-        backgroundColor: colors.accentMuted,
-    },
-    dot: {
-        position: 'absolute',
-        width: 6,
-        height: 6,
-        borderRadius: 3,
-        backgroundColor: colors.text,
-    },
-    flag: {
-        position: 'absolute',
-    },
-    axis: {
-        marginTop: 6,
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-    },
-    ranges: {
-        marginTop: 10,
-        flexDirection: 'row',
-        gap: 6,
-    },
-    rangeChip: {
-        height: 28,
-        paddingHorizontal: 12,
-        borderRadius: 14,
-        borderWidth: 1,
-        borderColor: colors.border,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    rangeChipActive: {
-        backgroundColor: colors.text,
-        borderColor: colors.text,
-    },
-    rangeText: {
-        fontFamily: fontFamilies.sansMedium,
-        fontSize: 12.5,
-        color: colors.textSecondary,
-    },
-    rangeTextActive: {
-        color: colors.surface,
-    },
-    axisText: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 11.5,
-        color: colors.textTertiary,
-    },
-    legendRow: {
-        marginTop: 10,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-    },
-    startSwatch: {
-        width: 16,
-        borderTopWidth: 1,
-        borderStyle: 'dashed',
-        borderColor: colors.textTertiary,
-    },
-    legendText: {
+    started: {
+        marginTop: 12,
         fontFamily: fontFamilies.sansRegular,
         fontSize: 13.5,
         color: colors.textSecondary,
     },
     adjust: {
-        marginTop: 12,
+        marginTop: 10,
         alignSelf: 'flex-start',
     },
     adjustText: {

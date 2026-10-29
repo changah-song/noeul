@@ -32,6 +32,7 @@ import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
 import useCoachTip from '../hooks/useCoachTip';
 import ScreenCoachTip from '../components/Tips/ScreenCoachTip';
+import TodayGoalCard from '../components/Goal/TodayGoalCard';
 import { areTipsEnabled, isTipSeen, loadTips, msUntilUnpromptedTip, TIP_IDS, tipCounter } from '../services/tips';
 import { useFocusEffect } from '@react-navigation/native';
 import { searchSongs } from '../services/api/songSearch';
@@ -3271,6 +3272,12 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         setSelectedBookPreview({ book, index });
     }, [activeBookMenuKey]);
 
+    // The daily goal card re-reads today's minutes each time Home is shown.
+    const [homeFocusKey, setHomeFocusKey] = useState(0);
+    useFocusEffect(useCallback(() => {
+        setHomeFocusKey((value) => value + 1);
+    }, []));
+
     // Set from the press until the reader takes over (or the open fails).
     const [openingBook, setOpeningBook] = useState(false);
     useFocusEffect(useCallback(() => () => setOpeningBook(false), []));
@@ -4242,6 +4249,16 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 ) : null}
 
                 {featuredBooks.length > 0 ? (
+                    <View style={styles.todayGoal}>
+                        <TodayGoalCard
+                            ownerId={activeOwnerId}
+                            refreshKey={homeFocusKey}
+                            onStart={() => handleResumeFeaturedBook(featuredBooks[0])}
+                        />
+                    </View>
+                ) : null}
+
+                {featuredBooks.length > 0 ? (
                     <FeaturedBookCarousel
                         key={getBookKey(featuredBooks[0], 'featured')}
                         books={featuredBooks}
@@ -4978,6 +4995,11 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         marginTop: Spacing.xl2,
         borderRadius: 14,
         backgroundColor: HOME_COLORS.accent,
+    },
+    todayGoal: {
+        marginHorizontal: 20,
+        marginTop: 4,
+        marginBottom: 14,
     },
     heroResumeButtonOpening: {
         backgroundColor: HOME_COLORS.surface2,
