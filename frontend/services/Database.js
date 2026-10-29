@@ -1148,6 +1148,33 @@ export const getAbilityLog = ({ ownerId, profileId, language = 'ko', limit = 200
 };
 
 /**
+ * getDailyAbilityLog — each day's last level reading (created_at, theta_after,
+ * var_after), oldest first: Profile's level-over-time chart.
+ */
+export const getDailyAbilityLog = ({ ownerId, profileId, language = 'ko' } = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT entry.created_at, entry.theta_after, entry.var_after
+         FROM ability_log entry
+         JOIN (
+           SELECT MAX(id) AS id FROM ability_log
+           WHERE owner_id = ? AND profile_id = ? AND language = ? AND theta_after IS NOT NULL
+           GROUP BY substr(created_at, 1, 10)
+         ) last_of_day ON last_of_day.id = entry.id
+         ORDER BY entry.created_at`,
+        [scopedOwnerId, scopedProfileId, normalizedLanguage],
+        (_, result) => resolve(result.rows._array ?? []),
+        (_, error) => reject(error)
+      );
+    });
+  });
+};
+
+/**
  * estimateBookReadingEase — the personalized "how easy is this book for me?"
  * number surfaced in the book preview. Reads the reader's current ability
  * (`theta`) for the active (owner, profile, language) and estimates the expected

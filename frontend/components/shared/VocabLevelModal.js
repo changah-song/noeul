@@ -150,6 +150,12 @@ const VocabLevelModal = ({ visible, onClose, initialMode = 'list' }) => {
         const theta = thetaForTier(targetLanguage, tier.threshold);
         const nearestRank = nearestRankForTheta(targetLanguage, theta);
         try {
+            // The pick first: the level change below refreshes whatever shows
+            // it (Profile's level card reads both).
+            await AsyncStorage.setItem(
+                pickKey(activeOwnerId, activeProfileId, targetLanguage),
+                String(tier.threshold)
+            ).catch(() => {});
             await setProfileAbilityFromVocab({
                 ownerId: activeOwnerId,
                 profileId: activeProfileId,
@@ -159,10 +165,6 @@ const VocabLevelModal = ({ visible, onClose, initialMode = 'list' }) => {
             });
             // Keep the displayed band + fallback seed aligned with the measurement.
             setTargetLanguageLevel(nearestRank);
-            await AsyncStorage.setItem(
-                pickKey(activeOwnerId, activeProfileId, targetLanguage),
-                String(tier.threshold)
-            ).catch(() => {});
             ToastAndroid.show(t('vocabLevel.saved'), ToastAndroid.SHORT);
         } catch (error) {
             console.warn('[VocabLevel] Failed to save vocab level:', error?.message ?? error);
