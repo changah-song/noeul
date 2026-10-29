@@ -378,12 +378,15 @@ function AppContent() {
         user?.id,
     ]);
 
+    // A signed-in account whose data isn't active yet (a decision is pending)
+    // shows nothing. A guest's anonymous session is not an account: its books
+    // are the guest's and stay.
     useEffect(() => {
-        if (user?.id && activeOwnerId !== user.id) {
+        if (isAccountUser(user) && activeOwnerId !== user.id) {
             setCurrentBook(null);
             setBooks([]);
         }
-    }, [activeOwnerId, setBooks, setCurrentBook, user?.id]);
+    }, [activeOwnerId, setBooks, setCurrentBook, user]);
 
     const handleOwnershipDecision = async (action) => {
         if (!pendingOwnershipDecision || localDataDecisionBusy) {

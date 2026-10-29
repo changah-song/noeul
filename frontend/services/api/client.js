@@ -35,6 +35,24 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const AUTH_SESSION_RETRIES = 2;
 const AUTH_SESSION_RETRY_DELAY_MS = 500;
 
+// Every backend call needs a session. With none at all (just signed out, or
+// the app started offline), continue as a guest: one anonymous sign-in, shared
+// by the requests waiting on it. Its data stays the guest's (localDataScope).
+let guestSessionStart = null;
+const startGuestSession = () => {
+  if (!guestSessionStart) {
+    guestSessionStart = supabase.auth.signInAnonymously()
+      .then(({ data, error }) => {
+        if (error) throw error;
+        return data?.session ?? null;
+      })
+      .finally(() => {
+        guestSessionStart = null;
+      });
+  }
+  return guestSessionStart;
+};
+
 const getAuthenticatedSession = async ({ refresh = false } = {}) => {
   let lastError = null;
 
@@ -49,6 +67,13 @@ const getAuthenticatedSession = async ({ refresh = false } = {}) => {
     }
 
     if (!error) {
+      const guestSession = await startGuestSession().catch((guestError) => {
+        lastError = guestError;
+        return null;
+      });
+      if (guestSession?.access_token) {
+        return guestSession;
+      }
       break;
     }
 
