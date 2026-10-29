@@ -49,6 +49,7 @@ jest.mock('../../services/Database', () => ({
   recordVocabContextForSurface: jest.fn(() => Promise.resolve(null)),
   getProfileAbility: jest.fn(() => Promise.resolve({ theta: -2 })),
   getReaderLevel: jest.fn(() => Promise.resolve({ theta: -2, variance: 0.3, lookupRate: 0.5, guessRate: 0.05 })),
+  onReaderLevelChanged: jest.fn(() => () => {}),
   lookupKnowledgeEvidence: jest.fn(() => Promise.resolve([])),
   getSavedWordFades: jest.fn(() => Promise.resolve(new Map())),
   getBookLookupWords: jest.fn(() => Promise.resolve([])),
