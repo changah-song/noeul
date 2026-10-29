@@ -5,7 +5,6 @@ import {
 import { applyLegacyMigrationDecision } from './localOwnerMigration';
 import {
   clearLocalUserData,
-  hasLocalUserData,
   reassignLocalUserData,
 } from './localUserData';
 import { GUEST_OWNER_ID } from './localDataScope';
@@ -58,10 +57,8 @@ export const applyOwnershipDecision = async ({ decision, action, user } = {}) =>
 
   if (decisionType === 'guest-login-existing-remote') {
     if (action === 'merge') {
-      if (await hasLocalUserData(userId)) {
-        throw new Error('Merge with existing account data needs dedupe support before it can run safely.');
-      }
-
+      // Words the account already has on this phone are combined, not
+      // duplicated (reassignSqliteUserData / services/vocabMerge.js).
       await reassignLocalUserData(GUEST_OWNER_ID, userId);
       finishOwnershipDecision(userId);
       return;
