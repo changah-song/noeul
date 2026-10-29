@@ -7,7 +7,9 @@ import {
   goalStats,
   IDLE_AFTER_MS,
   loadReadingDays,
+  monthDays,
   noteReadingActivity,
+  recentDaySlots,
   setGoalMinutes,
   startReadingClock,
   stopReadingClock,
@@ -94,5 +96,26 @@ describe('the reading clock', () => {
     __tickReadingClock();
     expect(getReadingSnapshot().todayMs).toBe(0);
     expect(getReadingSnapshot().idle).toBe(true);
+  });
+});
+
+describe('Home dots and the calendar', () => {
+  const today = '2026-10-29';
+
+  it('shows the last six days, today last', () => {
+    const days = { '2026-10-25': { ms: 120000 }, '2026-10-26': met(), '2026-10-28': met() };
+    expect(recentDaySlots(days, today)).toEqual(['empty', 'missed', 'met', 'missed', 'met', 'today']);
+    expect(recentDaySlots({ ...days, [today]: met() }, today).at(-1)).toBe('met');
+  });
+
+  it('lays out a month Monday first, with each day\'s state', () => {
+    const days = { '2026-10-01': met(), '2026-10-02': { ms: 90000 }, '2026-10-03': { ms: 20000 } };
+    const cells = monthDays(days, 2026, 9, today);
+    // October 2026 starts on a Thursday: three blanks.
+    expect(cells.slice(0, 3)).toEqual([null, null, null]);
+    expect(cells.slice(3, 6).map((cell) => cell.state)).toEqual(['met', 'read', 'none']);
+    expect(cells.find((cell) => cell?.key === today).state).toBe('today');
+    expect(cells.find((cell) => cell?.key === '2026-10-30').state).toBe('future');
+    expect(cells.length % 7).toBe(0);
   });
 });

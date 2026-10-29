@@ -133,7 +133,7 @@ import {
     stopReadingClock,
     subscribeGoalReached,
 } from '../services/readingGoal';
-import ReadingTimerPill from '../components/Goal/ReadingTimerPill';
+import ReaderGoalClock from '../components/Goal/ReaderGoalClock';
 import GoalCompleteModal from '../components/Goal/GoalCompleteModal';
 import CoachTip from '../components/Tips/CoachTip';
 import useCoachTip from '../hooks/useCoachTip';
@@ -4159,11 +4159,6 @@ const Read = ({
         return wrapped;
     };
     const [goalEvent, setGoalEvent] = useState(null);
-    // The goal timer sits above the bottom tip / preparing cards when they show.
-    const bottomCardsShown = Boolean(currentBook) && !highlightedWord && !textSelection && !focusMode;
-    const bottomCardsLift = bottomCardsShown
-        ? ((showLookupHint ? 72 : 0) + (currentChapterPreparing ? 80 : 0))
-        : 0;
     useEffect(() => subscribeGoalReached(setGoalEvent), []);
 
     // Profile's "Underlines feel off?" → this book's underline settings.
@@ -4315,6 +4310,7 @@ const Read = ({
                             accessibilityLabel={listenActive ? t('read.listenStop') : t('read.listen')}
                         />
                     </View>
+                    <ReaderGoalClock styles={chrome} themeColors={themeColors} />
                     <ReaderProgressButton
                         styles={chrome}
                         fillWidth={progressFillWidth}
@@ -4645,14 +4641,6 @@ const Read = ({
                 </View>
             ) : null}
 
-            {currentBook && !isFullscreen ? (
-                <View
-                    pointerEvents="box-none"
-                    style={[styles.readingTimer, { bottom: insets.bottom + 10 + bottomCardsLift }]}
-                >
-                    <ReadingTimerPill />
-                </View>
-            ) : null}
             <GoalCompleteModal event={goalEvent} onClose={() => setGoalEvent(null)} />
 
             <CoachTip
@@ -4809,12 +4797,6 @@ const createStyles = (themeColors) => StyleSheet.create({
     },
     lookupLayerBottom: {
         justifyContent: 'flex-end',
-    },
-    readingTimer: {
-        position: 'absolute',
-        left: 16,
-        zIndex: 20,
-        elevation: 20,
     },
     hintLayer: {
         position: 'absolute',
