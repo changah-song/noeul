@@ -130,7 +130,7 @@ export const setSyncOnline = (online) => {
 export const describeSyncStatus = (status) => {
   if (!status?.ownerId) return 'guest';
   if (status.syncing) return 'syncing';
-  if (!status.online) return status.pendingSince ? 'offline' : (status.lastSyncedAt ? 'synced' : 'offline');
+  if (!status.online) return 'offline';
   if (status.lastError) return 'error';
   if (status.pendingSince) return 'pending';
   return status.lastSyncedAt ? 'synced' : 'never';

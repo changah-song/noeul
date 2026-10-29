@@ -6,18 +6,19 @@ import { formatDate, getInterfaceLocale } from '../../services/interfaceLanguage
 import { describeSyncStatus, getSyncStatus, subscribeSyncStatus } from '../../services/syncStatus';
 import { requestUserDataSync } from '../../services/userDataSyncQueue';
 
-// "3:42 PM" today, "Oct 28" before.
+// "3:42 PM" today, "Oct 28, 3:42 PM" before.
 const syncedTime = (ms) => {
   const date = new Date(ms);
   if (!Number.isFinite(date.getTime())) return '';
-  if (date.toDateString() === new Date().toDateString()) {
-    try {
-      return date.toLocaleTimeString(getInterfaceLocale(), { hour: 'numeric', minute: '2-digit' });
-    } catch {
-      return '';
-    }
+  let time = '';
+  try {
+    time = date.toLocaleTimeString(getInterfaceLocale(), { hour: 'numeric', minute: '2-digit' });
+  } catch {
+    time = '';
   }
-  return formatDate(date, { month: 'short', day: 'numeric' });
+  if (date.toDateString() === new Date().toDateString()) return time;
+  const day = formatDate(date, { month: 'short', day: 'numeric' });
+  return time ? `${day}, ${time}` : day;
 };
 
 const ICONS = {
@@ -47,7 +48,10 @@ const SyncStatusRow = ({ styles, profileColors, showDivider, dividerBelow }) => 
       ? t('sync.syncedAt', { time: syncedTime(status.lastSyncedAt) })
       : t('sync.synced'),
     pending: t('sync.pending'),
-    offline: t('sync.offline'),
+    // Offline still says when the account last had everything.
+    offline: status.lastSyncedAt
+      ? t('sync.offlineSince', { time: syncedTime(status.lastSyncedAt) })
+      : t('sync.offline'),
     error: t('sync.error'),
     never: t('sync.never'),
   }[kind];
