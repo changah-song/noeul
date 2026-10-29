@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { initAllTables } from '../services/Database';
-import { cloudBookToLocalBook, fetchUserBooks } from '../services/bookCloudSync';
+import { cloudBookToLocalBook, fetchUserBooks, uploadUserBook } from '../services/bookCloudSync';
 import { persistCoverDataUri, stripInlineCoverForStorage } from '../services/epubMetadata';
 import { GUEST_OWNER_ID, makeScopedStorageKey } from '../services/localDataScope';
 import {
@@ -141,6 +141,22 @@ const logCloudBookSyncError = ({
     });
 };
 
+const cloudIsFurther = (cloudBook, localBook) => (
+    typeof cloudBook.progress === 'number'
+    && cloudBook.progress >= (Number(localBook.progress) || 0)
+);
+
+// Books imported on this phone that never reached the account (imported as a
+// guest, or offline): uploaded once the reader is signed in. Catalog books are
+// fetched from the library, so they aren't uploaded.
+const needsBackfillUpload = (book) => Boolean(
+    book?.uri
+    && !book.cloudId
+    && book.downloaded !== false
+    && !book.publicDomain
+    && !book.publicLibrary
+);
+
 const mergeCloudBooks = (localBooks = [], cloudBooks = [], userId) => {
     const nextBooks = normalizeBookList(localBooks).map((book) => ({
         ...book,
@@ -179,9 +195,19 @@ const mergeCloudBooks = (localBooks = [], cloudBooks = [], userId) => {
                 wordCount: cloudBook.word_count ?? existingBook.wordCount ?? null,
                 language: cloudBook.language ?? existingBook.language ?? null,
                 format: cloudLocalBook.format || existingBook.format || 'epub',
-                progress: typeof cloudBook.progress === 'number' ? cloudBook.progress : (existingBook.progress ?? 0),
-                location: cloudBook.location ?? existingBook.location ?? null,
-                nativePosition: cloudBook.native_position ?? existingBook.nativePosition ?? null,
+                // Reading position: whichever copy is further along (this
+                // phone may have read past the cloud's copy before it synced).
+                ...(cloudIsFurther(cloudBook, existingBook)
+                    ? {
+                        progress: cloudBook.progress,
+                        location: cloudBook.location ?? existingBook.location ?? null,
+                        nativePosition: cloudBook.native_position ?? existingBook.nativePosition ?? null,
+                    }
+                    : {
+                        progress: existingBook.progress ?? 0,
+                        location: existingBook.location ?? cloudBook.location ?? null,
+                        nativePosition: existingBook.nativePosition ?? cloudBook.native_position ?? null,
+                    }),
                 downloaded: existingBook.downloaded !== false && !!existingBook.uri,
             };
             return;
@@ -541,6 +567,41 @@ const useAppSetup = ({ ownerId, ownerReady = true, user = null } = {}) => {
         setBooks(prev => normalizeBookList(prev).map(b => b?.uri === uri ? { ...b, preprocessed: true } : b));
     };
 
+    // Upload books that never reached the account, one at a time, in the
+    // background; a file that is gone (cleared cache) is skipped.
+    const backfillRunningRef = useRef(false);
+    const backfillBookUploads = useCallback(async (bookList, { user, ownerId, generation } = {}) => {
+        if (backfillRunningRef.current || !user?.id || ownerId !== user.id) return;
+        const pending = normalizeBookList(bookList).filter(needsBackfillUpload);
+        if (pending.length === 0) return;
+        backfillRunningRef.current = true;
+        try {
+            for (const book of pending) {
+                if (generation != null && !isCurrentSyncGeneration(generation)) return;
+                try {
+                    const cloudBook = await uploadUserBook({ user, ownerId, generation, localBook: book });
+                    if (!cloudBook?.id) continue;
+                    setBooks((prev) => normalizeBookList(prev).map((candidate) => (
+                        candidate.uri === book.uri
+                            ? {
+                                ...candidate,
+                                cloudId: cloudBook.id,
+                                cloudOwnerId: cloudBook.user_id ?? user.id,
+                                cloudFilePath: cloudBook.file_path,
+                                cloudCoverPath: cloudBook.cover_path ?? null,
+                                cloudSyncedAt: cloudBook.updated_at ?? cloudBook.uploaded_at ?? new Date().toISOString(),
+                            }
+                            : candidate
+                    )));
+                } catch (error) {
+                    console.warn('[useAppSetup] Book upload skipped:', book.title, error?.message ?? error);
+                }
+            }
+        } finally {
+            backfillRunningRef.current = false;
+        }
+    }, []);
+
     const syncCloudBooks = useCallback(async ({ user, ownerId: syncOwnerId, generation } = {}) => {
         if (loading || !ownerReady) {
             return;
@@ -592,6 +653,7 @@ const useAppSetup = ({ ownerId, ownerReady = true, user = null } = {}) => {
 
             phase = 'set-merged-books';
             setBooks(mergedBooks);
+            backfillBookUploads(mergedBooks, { user, ownerId: syncOwnerId, generation });
 
             if (generation != null && !isCurrentSyncGeneration(generation)) {
                 return;
@@ -652,7 +714,7 @@ const useAppSetup = ({ ownerId, ownerReady = true, user = null } = {}) => {
                 currentBook: currentBookRef.current,
             });
         }
-    }, [loading, ownerReady]);
+    }, [backfillBookUploads, loading, ownerReady]);
 
     return {
         books,

@@ -78,6 +78,7 @@ import {
   getAllRelatedKnownWords,
   getRelatedKnownWords,
   getVocabContexts,
+  applyCloudProfileAbility,
   insertData,
   migrateVocabContextTable,
   migrateVocabEmptyHanja,
@@ -380,6 +381,25 @@ describe('guest import into an account that already has words', () => {
     const rows = await queryAll('SELECT word, level, correct_count FROM vocab WHERE owner_id = ? ORDER BY word', [OWNER]);
     expect(rows.map((row) => row.word)).toEqual(['사과', '학교']);
     expect(rows[0]).toMatchObject({ level: 'learned', correct_count: 4 });
+  });
+});
+
+describe('the level comes back on a new device', () => {
+  it('takes the account level only when it has seen more reading', async () => {
+    const cloud = {
+      theta: 1.2, theta_var: 0.25, lookup_model: 'cloud-model', guess_yes: 2, guess_total: 5,
+      self_report_rank: 3, event_count: 50, updated_at: '2024-03-01T00:00:00.000Z',
+    };
+    expect(await applyCloudProfileAbility({ ownerId: OWNER, profileId: PROFILE, language: 'ko', cloud })).toBe(true);
+    expect(await queryAll(
+      'SELECT theta, theta_var, lookup_model, event_count FROM profile_ability WHERE owner_id = ?',
+      [OWNER]
+    )).toEqual([{ theta: 1.2, theta_var: 0.25, lookup_model: 'cloud-model', event_count: 50 }]);
+
+    // This phone has read more since: its level stays.
+    await run('UPDATE profile_ability SET theta = 0.4, event_count = 80 WHERE owner_id = ?', [OWNER]);
+    expect(await applyCloudProfileAbility({ ownerId: OWNER, profileId: PROFILE, language: 'ko', cloud })).toBe(false);
+    expect(await queryAll('SELECT theta FROM profile_ability WHERE owner_id = ?', [OWNER])).toEqual([{ theta: 0.4 }]);
   });
 });
 

@@ -1339,6 +1339,61 @@ export const getUnsyncedProfileAbilities = (ownerId) => {
 };
 
 /**
+ * applyCloudProfileAbility — take the account's level from the cloud when it
+ * has seen more reading than this phone's (a new device, cleared data, or a
+ * phone that read less). Returns true when the local level changed.
+ */
+export const applyCloudProfileAbility = async ({ ownerId, profileId, language = 'ko', cloud } = {}) => {
+  if (!cloud || !Number.isFinite(Number(cloud.theta))) return false;
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scope = [scopedOwnerId, resolveProfileId(profileId, normalizedLanguage), normalizedLanguage];
+  const local = await getProfileAbility({ ownerId: scopedOwnerId, profileId: scope[1], language: normalizedLanguage });
+  if (local && (Number(local.event_count) || 0) >= (Number(cloud.event_count) || 0)) return false;
+
+  const now = nowIso();
+  const lookupModel = cloud.lookup_model == null || typeof cloud.lookup_model === 'string'
+    ? cloud.lookup_model ?? null
+    : JSON.stringify(cloud.lookup_model);
+  const values = [
+    Number(cloud.theta),
+    cloud.theta_var ?? null,
+    lookupModel,
+    cloud.guess_yes ?? 0,
+    cloud.guess_total ?? 0,
+    cloud.last_event_at ?? null,
+    cloud.self_report_rank ?? null,
+    Number(cloud.event_count) || 0,
+    cloud.seeded_at ?? null,
+    cloud.updated_at ?? now,
+  ];
+  await new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `INSERT INTO profile_ability
+           (owner_id, profile_id, language, theta, theta_var, lookup_model, guess_yes, guess_total,
+            last_event_at, self_report_rank, event_count, seeded_at, updated_at, synced_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(owner_id, profile_id, language) DO UPDATE SET
+           theta = excluded.theta, theta_var = excluded.theta_var, lookup_model = excluded.lookup_model,
+           guess_yes = excluded.guess_yes, guess_total = excluded.guess_total,
+           last_event_at = excluded.last_event_at, self_report_rank = excluded.self_report_rank,
+           event_count = excluded.event_count, seeded_at = excluded.seeded_at,
+           updated_at = excluded.updated_at, synced_at = excluded.synced_at`,
+        [...scope, ...values, now],
+        () => resolve(),
+        (_, error) => {
+          console.error('[Database] Error applying cloud profile ability:', error);
+          reject(error);
+        }
+      );
+    });
+  });
+  emitReaderLevelChanged({ ownerId: scopedOwnerId, profileId: scope[1], language: normalizedLanguage });
+  return true;
+};
+
+/**
  * markProfileAbilitiesSynced — stamp `synced_at` after a successful cloud push.
  * Guarded on `updated_at` so a write that lands between the push and this stamp
  * isn't marked synced prematurely (it will re-push next cycle).
