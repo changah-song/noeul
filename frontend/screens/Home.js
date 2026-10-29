@@ -30,6 +30,10 @@ import { IconButton, Screen } from '../components/ui';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
+import useCoachTip from '../hooks/useCoachTip';
+import ScreenCoachTip from '../components/Tips/ScreenCoachTip';
+import { areTipsEnabled, isTipSeen, loadTips, msUntilUnpromptedTip, TIP_IDS, tipCounter } from '../services/tips';
+import { useFocusEffect } from '@react-navigation/native';
 import { searchSongs } from '../services/api/songSearch';
 import {
     colors,
@@ -2877,6 +2881,24 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         return () => clearTimeout(timer);
     }, [ocrBusy, ocrMessage]);
 
+    // First-time tip: after a first reading session (a word looked up), the
+    // screen scanner takes lookups outside Noeul.
+    const { tipId, offer: offerTip, close: closeTip } = useCoachTip();
+    const ocrButtonRef = useRef(null);
+    useFocusEffect(useCallback(() => {
+        let cancelled = false;
+        const timer = setTimeout(async () => {
+            await loadTips();
+            if (cancelled || isTipSeen(TIP_IDS.homeOcr) || tipCounter('lookups') < 1) return;
+            if (!cancelled && (await areTipsEnabled())) offerTip(TIP_IDS.homeOcr);
+        }, Math.max(1200, msUntilUnpromptedTip()));
+        return () => {
+            cancelled = true;
+            clearTimeout(timer);
+            closeTip(TIP_IDS.homeOcr, { seen: false });
+        };
+    }, [closeTip, offerTip]));
+
     const handleFloatingOcrToggle = useCallback(async () => {
         if (ocrBusy || ocrActionInFlightRef.current) {
             return;
@@ -4158,12 +4180,16 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             >
                 <View style={styles.appTopBar}>
                     <TouchableOpacity
+                        ref={ocrButtonRef}
                         activeOpacity={0.84}
                         accessibilityRole="switch"
                         accessibilityLabel={isFloatingOcrActive ? t('home.turnOcrOff') : t('home.turnOcrOn')}
                         accessibilityState={{ checked: isFloatingOcrActive, busy: ocrBusy }}
                         disabled={ocrBusy}
-                        onPress={handleFloatingOcrToggle}
+                        onPress={() => {
+                            if (tipId === TIP_IDS.homeOcr) closeTip(TIP_IDS.homeOcr);
+                            handleFloatingOcrToggle();
+                        }}
                         style={styles.appTopIconButton}
                     >
                         {ocrBusy ? (
@@ -4775,6 +4801,13 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     </KeyboardAvoidingView>
                 </View>
             </Modal>
+            <ScreenCoachTip
+                visible={tipId === TIP_IDS.homeOcr}
+                title={t('tips.ocrTitle')}
+                body={t('tips.ocrBody')}
+                anchorRef={ocrButtonRef}
+                onClose={() => closeTip(TIP_IDS.homeOcr)}
+            />
         </Screen>
         </HomeThemeContext.Provider>
     );

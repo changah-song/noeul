@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather, MaterialIcons } from '@expo/vector-icons';
 
 import Flashcard from '../components/Learn/Flashcard';
@@ -25,6 +26,9 @@ import { Screen } from '../components/ui';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
+import useCoachTip from '../hooks/useCoachTip';
+import ScreenCoachTip from '../components/Tips/ScreenCoachTip';
+import { areTipsEnabled, isTipSeen, loadTips, msUntilUnpromptedTip, TIP_IDS } from '../services/tips';
 import { stripStoredPlaceholder } from '../i18n/userFacing';
 import { fetchHanjaRelated } from '../services/api/hanjaRelated';
 import { formatDate, formatNumber, tRuntime } from '../services/interfaceLanguage';
@@ -1533,6 +1537,25 @@ const Learn = ({ navigation, user }) => {
     () => getFilteredWords(words, activeFilter, proficiencyByKey),
     [activeFilter, proficiencyByKey, words]
   );
+
+  // First-time tip: once there are saved words, point at audio review.
+  const { tipId, offer: offerTip, close: closeTip } = useCoachTip();
+  const audioButtonRef = useRef(null);
+  const hasWords = words.length > 0;
+  useFocusEffect(useCallback(() => {
+    if (!hasWords) return undefined;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      await loadTips();
+      if (cancelled || isTipSeen(TIP_IDS.learnAudio)) return;
+      if (!cancelled && (await areTipsEnabled())) offerTip(TIP_IDS.learnAudio);
+    }, Math.max(1000, msUntilUnpromptedTip()));
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      closeTip(TIP_IDS.learnAudio, { seen: false });
+    };
+  }, [closeTip, hasWords, offerTip]));
   const selectedWords = useMemo(
     () => words.filter((word) => selectedWordKeys.has(getWordKey(word))),
     [selectedWordKeys, words]
@@ -1887,9 +1910,13 @@ const Learn = ({ navigation, user }) => {
           ) : null}
           {words.length > 0 ? (
             <TouchableOpacity
+              ref={audioButtonRef}
               accessibilityRole="button"
               accessibilityLabel={t('learn.audioReview')}
-              onPress={() => setAudioWords(visibleWords.length > 0 ? visibleWords : words)}
+              onPress={() => {
+                if (tipId === TIP_IDS.learnAudio) closeTip(TIP_IDS.learnAudio);
+                setAudioWords(visibleWords.length > 0 ? visibleWords : words);
+              }}
               style={styles.listenButton}
             >
               <Feather name="headphones" size={20} color={colors.text} />
@@ -2073,6 +2100,13 @@ const Learn = ({ navigation, user }) => {
         interfaceLanguage={interfaceLanguage}
         ownerId={activeOwnerId}
         onClose={() => setAudioWords(null)}
+      />
+      <ScreenCoachTip
+        visible={tipId === TIP_IDS.learnAudio}
+        title={t('tips.learnAudioTitle')}
+        body={t('tips.learnAudioBody')}
+        anchorRef={audioButtonRef}
+        onClose={() => closeTip(TIP_IDS.learnAudio)}
       />
     </Screen>
     </LearnThemeContext.Provider>

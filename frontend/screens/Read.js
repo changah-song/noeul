@@ -125,12 +125,23 @@ import { bookIndexLanguages, tagPreprocessCacheEntries } from '../services/prepr
 import { selectExposureCredits } from '../services/readerExposure';
 import useSavedWordFades from '../hooks/useSavedWordFades';
 import { ONBOARDING_FLOW_SEEN_KEY } from './Onboarding';
-import { useFocusEffect } from '@react-navigation/native';
+import CoachTip from '../components/Tips/CoachTip';
+import useCoachTip from '../hooks/useCoachTip';
+import {
+    bumpTipCounter,
+    areTipsEnabled,
+    isTipSeen,
+    LONG_PRESS_TIP_AFTER_LOOKUPS,
+    markTipSeen,
+    msUntilUnpromptedTip,
+    TIP_IDS,
+    tipCounter,
+} from '../services/tips';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { highlightStrengthsFor, unseenShownTerms } from '../services/savedWordFade';
 import { ANNOTATION_SCOPES, annotationsBySurface, buildAnnotatedLevelTerms } from '../services/readerAnnotations';
 import { createNativeReaderThemeTokens, fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
 
-const LOOKUP_HINT_DISMISSED_KEY = 'lookupHintDismissed';
 // Listen mode preferences (speed, stop on underlined words, AI meaning).
 const LISTEN_PREFS_KEY = 'listenPrefs';
 // voices: the chosen on-device voice per engine locale (ko-KR, en-US, ...);
@@ -553,7 +564,18 @@ const Read = ({
     const [translationBannerErrorPreview] = useState(false);
     const [translationBannerCopiedPreview] = useState(false);
     const [translationBannerTextPreview] = useState('');
-    const [showLookupHint, setShowLookupHint] = useState(true);
+    const [showLookupHint, setShowLookupHint] = useState(false);
+    // First-time tips beyond the tap tip are for people who came through
+    // onboarding, not for long-time readers.
+    const [tipsEnabled, setTipsEnabled] = useState(false);
+    const { tipId, offer: offerTip, close: closeTip } = useCoachTip();
+    const tipIdRef = useRef(null);
+    tipIdRef.current = tipId;
+    // The reader stays mounted behind other tabs; its tips wait for it.
+    const readerFocused = useIsFocused();
+    const containerRef = useRef(null);
+    const focusButtonRef = useRef(null);
+    const listenButtonRef = useRef(null);
     // The open chapter's words (underlines, translations, levels) are still
     // being fetched: the reader shows a short "getting ready" note meanwhile.
     const [currentChapterPreparing, setCurrentChapterPreparing] = useState(false);
@@ -1058,6 +1080,11 @@ const Read = ({
         const surface = includeSurface ? highlightedWord?.trim() : '';
         // A firmer click for committing a word to your deck — you feel it land.
         tapCommit();
+        if (tipsEnabled && !isTipSeen(TIP_IDS.readerSaved)) {
+            // This one answers the save, so it takes over from a waiting tip.
+            if (tipIdRef.current) closeTip(tipIdRef.current, { seen: false });
+            offerTip(TIP_IDS.readerSaved, { unprompted: false });
+        }
         setSavedWords(prev => uniqTerms([...(prev ?? []), word]));
         setOptimisticHighlightTerms((prev) => {
             return uniqTerms([
@@ -1067,7 +1094,7 @@ const Read = ({
             ]);
         });
         setClearSelectionToken((value) => value + 1);
-    }, [highlightedWord]);
+    }, [closeTip, highlightedWord, offerTip, tipsEnabled]);
 
     const handleWordUnsave = useCallback((word, options = {}) => {
         const { includeSurface = true } = options;
@@ -1112,6 +1139,9 @@ const Read = ({
         tapSelect();
 
         const sentence = typeof event.sentence === 'string' ? event.sentence.trim() : '';
+
+        bumpTipCounter('lookups');
+        if (!isTipSeen(TIP_IDS.readerTap)) dismissLookupHint();
 
         // Looking a word up is its own (much stronger) evidence, so this word must
         // not also be credited as a skip when the current exposure unit closes.
@@ -1243,18 +1273,21 @@ const Read = ({
         readerSettingsRef.current = settings;
     }, [settings]);
 
-    useEffect(() => {
-        const loadLookupHintDismissed = async () => {
-            try {
-                const dismissed = await AsyncStorage.getItem(LOOKUP_HINT_DISMISSED_KEY);
-                setShowLookupHint(dismissed !== 'true');
-            } catch (error) {
-                console.error('[Read] Error loading lookup hint state:', error);
-            }
+    // On focus, so "Show tips again" in Profile applies on return.
+    useFocusEffect(useCallback(() => {
+        let cancelled = false;
+        const loadTipState = async () => {
+            const enabled = await areTipsEnabled();
+            if (cancelled) return;
+            setShowLookupHint(!isTipSeen(TIP_IDS.readerTap));
+            setTipsEnabled(enabled);
         };
 
-        loadLookupHintDismissed();
-    }, []);
+        loadTipState();
+        return () => {
+            cancelled = true;
+        };
+    }, []));
 
     const scheduleCloudReaderSettingsSync = useCallback((nextSettings, updatedAt = new Date().toISOString()) => {
         if (
@@ -1653,13 +1686,9 @@ const Read = ({
         });
     }, [isDarkMode]);
 
-    const dismissLookupHint = useCallback(async () => {
+    const dismissLookupHint = useCallback(() => {
         setShowLookupHint(false);
-        try {
-            await AsyncStorage.setItem(LOOKUP_HINT_DISMISSED_KEY, 'true');
-        } catch (error) {
-            console.error('[Read] Error saving lookup hint state:', error);
-        }
+        markTipSeen(TIP_IDS.readerTap);
     }, []);
 
     const activeBookSizeMb = typeof activeBook?.size === 'number'
@@ -3589,6 +3618,7 @@ const Read = ({
     }, []);
 
     const toggleFocusMode = useCallback(() => {
+        if (tipIdRef.current === TIP_IDS.readerFocus) closeTip(TIP_IDS.readerFocus);
         // Persist any coalesced sentence-step position now, before the mode
         // switch emits page events in the other mode's geometry.
         flushPendingFocusPageChange();
@@ -3598,7 +3628,7 @@ const Read = ({
         setIsNativeSelection(false);
         setClearSelectionToken((value) => value + 1);
         setFocusMode((current) => !current);
-    }, [flushPendingFocusPageChange]);
+    }, [closeTip, flushPendingFocusPageChange]);
 
     useEffect(() => {
         if (!currentBook || bookLoadState !== 'ready' || !hasVocabSizeGrid(activeBookLanguage)) {
@@ -4034,8 +4064,89 @@ const Read = ({
     }, []);
 
 
+    // Tips nobody asked for, one at a time, at a quiet moment: a book is open,
+    // nothing else is on screen, and the header (their anchor) is showing.
+    const readerQuiet = readerFocused
+        && Boolean(currentBook)
+        && !highlightedWord
+        && !textSelection
+        && !listenActive
+        && !showMenu
+        && !isFullscreen
+        && !focusMode
+        && !currentChapterPreparing
+        && !showLookupHint;
+    useEffect(() => {
+        if (!tipsEnabled) return undefined;
+        if (!readerQuiet) {
+            // Make way; an unused tip comes back at the next quiet moment.
+            const current = tipIdRef.current;
+            if (current && current !== TIP_IDS.readerSaved && current !== TIP_IDS.readerFocusNav) {
+                closeTip(current, { seen: false });
+            }
+            return undefined;
+        }
+        const timer = setTimeout(() => {
+            if (tipIdRef.current) return;
+            const next = [
+                tipCounter('lookups') >= LONG_PRESS_TIP_AFTER_LOOKUPS && TIP_IDS.readerLongPress,
+                TIP_IDS.readerFocus,
+                isTipSeen(TIP_IDS.readerFocus) && TIP_IDS.readerListen,
+            ].find((id) => id && !isTipSeen(id));
+            if (next) offerTip(next);
+        }, Math.max(1500, msUntilUnpromptedTip()));
+        return () => clearTimeout(timer);
+    }, [closeTip, offerTip, progressLabel, readerQuiet, tipsEnabled]);
+
+    // Entering focus mode the first time: swipe or buttons?
+    useEffect(() => {
+        if (!tipsEnabled || !focusMode || isTipSeen(TIP_IDS.readerFocusNav)) return;
+        offerTip(TIP_IDS.readerFocusNav, { unprompted: false });
+    }, [focusMode, offerTip, tipsEnabled]);
+
+    const chooseFocusNav = (swipe) => {
+        closeTip(TIP_IDS.readerFocusNav);
+        if (Boolean(settings.focusSwipe) !== swipe) {
+            updateSettings({ focusSwipe: swipe }, { keepSelection: true });
+        }
+    };
+
+    const readerTips = {
+        [TIP_IDS.readerFocus]: {
+            title: t('tips.focusTitle'),
+            body: t('tips.focusBody'),
+            anchorRef: focusButtonRef,
+        },
+        [TIP_IDS.readerListen]: {
+            title: t('tips.listenTitle'),
+            body: t('tips.listenBody'),
+            anchorRef: listenButtonRef,
+        },
+        [TIP_IDS.readerLongPress]: {
+            title: t('tips.longPressTitle'),
+            body: t('tips.longPressBody'),
+            bottom: insets.bottom + 16,
+        },
+        [TIP_IDS.readerSaved]: {
+            title: t('tips.savedTitle'),
+            body: t('tips.savedBody'),
+            bottom: insets.bottom + 16,
+        },
+        [TIP_IDS.readerFocusNav]: {
+            title: t('tips.focusNavTitle'),
+            body: t('tips.focusNavBody'),
+            // Above the focus controls (both arrows).
+            bottom: insets.bottom + 168,
+            actions: [
+                { label: t('tips.focusNavSwipe'), onPress: () => chooseFocusNav(true) },
+                { label: t('tips.focusNavButtons'), onPress: () => chooseFocusNav(false) },
+            ],
+        },
+    };
+    const activeReaderTip = tipId ? readerTips[tipId] : null;
+
     return (
-        <View style={styles.container}>
+        <View ref={containerRef} collapsable={false} style={styles.container}>
             {/* With no book open, the bookmark, focus, progress and menu
                 controls have nothing to act on, so hide the header. */}
             {!isFullscreen && currentBook ? (
@@ -4061,22 +4172,28 @@ const Read = ({
                         onPress={() => openSavedPanel('saved')}
                         accessibilityLabel={t('read.savedTab', { count: bookSavedWords.length })}
                     />
-                    <ReaderFocusModeButton
-                        styles={chrome}
-                        themeColors={themeColors}
-                        style={chrome.headerGroupGap}
-                        active={focusMode}
-                        onPress={toggleFocusMode}
-                        accessibilityLabel={t('read.focusMode')}
-                    />
-                    <ReaderListenButton
-                        styles={chrome}
-                        themeColors={themeColors}
-                        style={chrome.headerGroupGap}
-                        active={listenActive}
-                        onPress={() => (listenActive ? pauseListening({ keepActive: false }) : resumeListening())}
-                        accessibilityLabel={listenActive ? t('read.listenStop') : t('read.listen')}
-                    />
+                    <View ref={focusButtonRef} collapsable={false} style={chrome.headerGroupGap}>
+                        <ReaderFocusModeButton
+                            styles={chrome}
+                            themeColors={themeColors}
+                            active={focusMode}
+                            onPress={toggleFocusMode}
+                            accessibilityLabel={t('read.focusMode')}
+                        />
+                    </View>
+                    <View ref={listenButtonRef} collapsable={false} style={chrome.headerGroupGap}>
+                        <ReaderListenButton
+                            styles={chrome}
+                            themeColors={themeColors}
+                            active={listenActive}
+                            onPress={() => {
+                                if (tipIdRef.current === TIP_IDS.readerListen) closeTip(TIP_IDS.readerListen);
+                                if (listenActive) pauseListening({ keepActive: false });
+                                else resumeListening();
+                            }}
+                            accessibilityLabel={listenActive ? t('read.listenStop') : t('read.listen')}
+                        />
+                    </View>
                     <ReaderProgressButton
                         styles={chrome}
                         fillWidth={progressFillWidth}
@@ -4390,9 +4507,6 @@ const Read = ({
                                 <Text style={styles.hintText}>
                                     {t('read.tapHint')}
                                 </Text>
-                                <Text style={styles.hintSubtext}>
-                                    {t('read.longPressHint')}
-                                </Text>
                             </View>
                             <TouchableOpacity
                                 onPress={dismissLookupHint}
@@ -4406,6 +4520,17 @@ const Read = ({
                     ) : null}
                 </View>
             ) : null}
+
+            <CoachTip
+                visible={Boolean(activeReaderTip)}
+                title={activeReaderTip?.title}
+                body={activeReaderTip?.body}
+                anchorRef={activeReaderTip?.anchorRef}
+                containerRef={containerRef}
+                bottom={activeReaderTip?.bottom}
+                actions={activeReaderTip?.actions}
+                onClose={() => closeTip()}
+            />
 
             <ReaderSettingsSheet
                 visible={showMenu && !isFullscreen}
