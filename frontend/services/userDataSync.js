@@ -32,7 +32,7 @@ import {
   isCurrentSyncGeneration,
 } from './localOwnerCoordinator';
 import { pushInteractionEvents } from './interactionEventsCloudSync';
-import { pushProfileAbilities } from './profileAbilityCloudSync';
+import { pullProfileAbility, pushProfileAbilities } from './profileAbilityCloudSync';
 import { pushAbilityLog } from './abilityLogCloudSync';
 import { makeScopedStorageKey } from './localDataScope';
 import {
@@ -868,8 +868,14 @@ export const syncUserDataFromCloud = async ({ user, ownerId, generation }) => {
     console.warn('[userDataSync] Interaction events push failed:', error?.message ?? error);
   }
 
-  // Push-only mirror of the per-profile ability estimate (theta). Non-fatal for
-  // the same reason.
+  // The level: taken from the account first if it has seen more reading (a
+  // new device), then this phone's pushed. Non-fatal for the same reason.
+  try {
+    const { profileId, language } = resolveSyncScope(ownerId);
+    await pullProfileAbility({ user, ownerId, generation, profileId, language });
+  } catch (error) {
+    console.warn('[userDataSync] Profile ability pull failed:', error?.message ?? error);
+  }
   try {
     await pushProfileAbilities({ user, ownerId, generation });
   } catch (error) {

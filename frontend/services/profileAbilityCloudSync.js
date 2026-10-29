@@ -4,18 +4,18 @@ import {
   isCurrentSyncGeneration,
 } from './localOwnerCoordinator';
 import {
+  applyCloudProfileAbility,
   getUnsyncedProfileAbilities,
   markProfileAbilitiesSynced,
 } from './Database';
 import { supabase } from './supabase';
 
-// Phase 2 of the personalized vocabulary model: mirror the on-device
-// `profile_ability` table (the user's latent ability `theta` per profile) to
-// Supabase. PUSH-ONLY for now: theta is device-authoritative (recomputed from
-// local behavior in Phase 3), so we upload the latest local value and never pull
-// it back down — pulling could clobber a behaviorally-updated theta with a stale
-// remote seed. Unlike interaction events these rows are MUTABLE, so on conflict we
-// UPDATE (not ignore) to the newest value.
+// Mirror the on-device `profile_ability` table (the reader's level per
+// profile) to Supabase, whole: the level, its uncertainty and the learned
+// lookup habit. Pulled back on sign-in only when the account's level has seen
+// more reading than this phone's (a new device or cleared data), so a phone's
+// own, newer reading is never overwritten by an older copy. Rows are MUTABLE:
+// on conflict the upload UPDATEs to the newest value.
 
 const FILE_TAG = '[profileAbilityCloudSync]';
 const PROFILE_ABILITY_TABLE = 'profile_ability';
@@ -32,6 +32,20 @@ const toCloudRow = (userId, row) => ({
   seeded_at: row.seeded_at ?? null,
   updated_at: row.updated_at ?? null,
 });
+
+// The engine's full state (supabase/profile_ability_engine_state.sql).
+const toFullCloudRow = (userId, row) => ({
+  ...toCloudRow(userId, row),
+  theta_var: row.theta_var ?? null,
+  lookup_model: row.lookup_model ?? null,
+  guess_yes: row.guess_yes ?? 0,
+  guess_total: row.guess_total ?? 0,
+  last_event_at: row.last_event_at ?? null,
+});
+
+// Until that SQL is applied the table lacks these columns; upload the level
+// alone rather than nothing.
+const isMissingColumnError = (error) => /column|schema cache/i.test(String(error?.message ?? ''));
 
 const canContinue = (generation) =>
   !isCloudSyncPaused() && isCurrentSyncGeneration(generation);
@@ -69,12 +83,15 @@ export const pushProfileAbilities = async ({ user, ownerId, generation } = {}) =
   // session changed underneath us); let that propagate to the caller.
   assertCanUploadForOwner({ ownerId, user });
 
-  const cloudRows = rows.map((row) => toCloudRow(user.id, row));
-  const { error } = await supabase
+  const upsert = (cloudRows) => supabase
     .from(PROFILE_ABILITY_TABLE)
     .upsert(cloudRows, {
       onConflict: 'user_id,profile_id,language',
     });
+  let { error } = await upsert(rows.map((row) => toFullCloudRow(user.id, row)));
+  if (error && isMissingColumnError(error)) {
+    ({ error } = await upsert(rows.map((row) => toCloudRow(user.id, row))));
+  }
 
   if (error) {
     console.warn(`${FILE_TAG} push failed:`, error?.message ?? error);
@@ -83,4 +100,32 @@ export const pushProfileAbilities = async ({ user, ownerId, generation } = {}) =
 
   await markProfileAbilitiesSynced(rows);
   return rows.length;
+};
+
+/**
+ * pullProfileAbility — on sync, take the account's level for this language if
+ * it has seen more reading than the phone's (see applyCloudProfileAbility).
+ *
+ * @returns {Promise<boolean>} whether the local level changed.
+ */
+export const pullProfileAbility = async ({ user, ownerId, generation, profileId, language } = {}) => {
+  if (!user?.id || ownerId !== user.id || !canContinue(generation)) {
+    return false;
+  }
+  const { data, error } = await supabase
+    .from(PROFILE_ABILITY_TABLE)
+    .select('*')
+    .eq('user_id', user.id)
+    .eq('language', language)
+    .order('event_count', { ascending: false })
+    .limit(1);
+  if (error) {
+    console.warn(`${FILE_TAG} pull failed:`, error?.message ?? error);
+    return false;
+  }
+  const cloud = data?.[0];
+  if (!cloud || !canContinue(generation)) {
+    return false;
+  }
+  return applyCloudProfileAbility({ ownerId, profileId, language, cloud });
 };
