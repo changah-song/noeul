@@ -41,6 +41,7 @@ import {
   wordDifficulty,
 } from './levelEngine';
 import { initialFsrsFromPKnown, rankNominations } from './flashcardNomination';
+import { mergeVocabRows, vocabMergeKey } from './vocabMerge';
 
 // ─── Database Setup ───────────────────────────────────────────────────────────
 // NOTE: Change the db filename here if you ever need to reset all tables by
@@ -4185,14 +4186,44 @@ export const reassignSqliteUserData = async (fromOwnerId, toOwnerId) => {
     return;
   }
 
-  if (await hasSqliteUserData(targetOwnerId)) {
-    throw new Error('Refusing to reassign SQLite user data because target owner already has local rows');
-  }
-
+  const now = nowIso();
   return new Promise((resolve, reject) => {
     db.transaction(
       tx => {
-        SQLITE_PRIMARY_USER_DATA_TABLES.forEach((tableName) => {
+        // Saved words: a word the target already has (same language, word,
+        // hanja and definition, in any profile) becomes one row with the
+        // progress of both (services/vocabMerge.js); the rest move over.
+        tx.executeSql(
+          'SELECT * FROM vocab WHERE owner_id IN (?, ?)',
+          [sourceOwnerId, targetOwnerId],
+          (_, result) => {
+            const rows = result.rows._array ?? [];
+            const targetByKey = new Map(
+              rows.filter((row) => row.owner_id === targetOwnerId).map((row) => [vocabMergeKey(row), row])
+            );
+            rows.filter((row) => row.owner_id === sourceOwnerId).forEach((sourceRow) => {
+              const targetRow = targetByKey.get(vocabMergeKey(sourceRow));
+              if (!targetRow) {
+                tx.executeSql(
+                  'UPDATE vocab SET owner_id = ?, updated_at = ? WHERE id = ?',
+                  [targetOwnerId, now, sourceRow.id]
+                );
+                return;
+              }
+              const patch = mergeVocabRows(targetRow, sourceRow, now);
+              const columns = Object.keys(patch);
+              tx.executeSql(
+                `UPDATE vocab SET ${columns.map((column) => `${column} = ?`).join(', ')} WHERE id = ?`,
+                [...columns.map((column) => patch[column]), targetRow.id]
+              );
+              // Its example sentences now belong to the kept row.
+              tx.executeSql('UPDATE vocab_contexts SET vocab_id = ? WHERE vocab_id = ?', [targetRow.id, sourceRow.id]);
+              tx.executeSql('DELETE FROM vocab WHERE id = ?', [sourceRow.id]);
+            });
+          }
+        );
+
+        SQLITE_PRIMARY_USER_DATA_TABLES.filter((tableName) => tableName !== 'vocab').forEach((tableName) => {
           tx.executeSql(
             `UPDATE ${tableName} SET owner_id = ? WHERE owner_id = ?`,
             [targetOwnerId, sourceOwnerId]

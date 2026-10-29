@@ -1256,3 +1256,27 @@ export const readPersistedAuthSession = async () => {
 
   return secureStoreAdapter.getItem(storageKey);
 };
+
+/**
+ * Whether an account already holds saved words or books in the cloud, so the
+ * "bring your progress?" choice can say merge (rather than save) on sign-in.
+ * False when it can't tell.
+ */
+export const accountHasCloudData = async (userId) => {
+  if (!userId) return false;
+  try {
+    const counts = await Promise.all(['user_vocab', 'user_books'].map(async (table) => {
+      const { count, error } = await supabase
+        .from(table)
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', userId)
+        .is('deleted_at', null);
+      if (error) throw error;
+      return count || 0;
+    }));
+    return counts.some((count) => count > 0);
+  } catch (error) {
+    console.warn('[supabase] Could not check account data:', error?.message ?? error);
+    return false;
+  }
+};
