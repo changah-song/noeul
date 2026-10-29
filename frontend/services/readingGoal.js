@@ -98,7 +98,57 @@ export const goalHighlights = ({ stats, todayMs, previousBestMs }) => {
   return items;
 };
 
+/**
+ * recentDaySlots — the last `count` days, oldest first, today last, for
+ * Home's dots: 'met' (goal reached), 'missed' (a past day without it),
+ * 'today' (not reached yet) or 'empty' (before the first day on record).
+ */
+export const recentDaySlots = (days = {}, today = dayKey(), count = 6) => {
+  const firstDay = Object.keys(days).sort()[0] ?? today;
+  return Array.from({ length: count }, (_, index) => {
+    const key = addDays(today, index - (count - 1));
+    if (isMet(days[key])) return 'met';
+    if (key === today) return 'today';
+    return key < firstDay ? 'empty' : 'missed';
+  });
+};
+
+/**
+ * monthDays — one month's cells for the calendar, Monday first: null for
+ * padding, else `{ key, day, state }` with state 'met', 'read' (a minute or
+ * more), 'none', 'today' (goal not reached yet) or 'future'.
+ */
+export const monthDays = (days = {}, year, month, today = dayKey()) => {
+  const leading = (new Date(year, month, 1).getDay() + 6) % 7;
+  const count = new Date(year, month + 1, 0).getDate();
+  const cells = Array.from({ length: leading }, () => null);
+  for (let day = 1; day <= count; day += 1) {
+    const key = dayKey(new Date(year, month, day));
+    let state = 'none';
+    if (isMet(days[key])) state = 'met';
+    else if (key === today) state = 'today';
+    else if (key > today) state = 'future';
+    else if ((Number(days[key]?.ms) || 0) >= MINUTE) state = 'read';
+    cells.push({ key, day, state });
+  }
+  while (cells.length % 7) cells.push(null);
+  return cells;
+};
+
 // ─── Storage ─────────────────────────────────────────────────────────────────
+
+// Home's title peeks at the timer once a day (the first visit, until the
+// goal is done), so it's clear the title is the timer.
+const PEEK_KEY = 'readingGoal.peekDay';
+export const takeDailyPeek = async (today = dayKey()) => {
+  try {
+    if ((await AsyncStorage.getItem(PEEK_KEY)) === today) return false;
+    await AsyncStorage.setItem(PEEK_KEY, today);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 export const getGoalMinutes = async () => {
   try {
@@ -166,6 +216,9 @@ const notify = () => {
   });
 };
 
+/** The day log as the clock has it (load it first with loadReadingGoal). */
+export const getReadingDays = () => clock.days;
+
 export const subscribeReading = (listener) => {
   listeners.add(listener);
   return () => listeners.delete(listener);
@@ -180,8 +233,16 @@ export const subscribeGoalReached = (listener) => {
 /** Load the owner's log and goal (Home, the reader and the calendar call it). */
 export const loadReadingGoal = async (ownerId) => {
   const [days, minutes] = await Promise.all([loadReadingDays(ownerId), getGoalMinutes()]);
-  if (clock.ownerId !== ownerId || !clock.running) {
+  if (clock.ownerId !== ownerId) {
     clock = { ...clock, ownerId, days, today: dayKey() };
+  } else if (!clock.running) {
+    // The same reader: a save may still be on its way to storage, so a day
+    // keeps whichever copy has more reading.
+    const merged = { ...days };
+    Object.entries(clock.days).forEach(([key, entry]) => {
+      if ((Number(entry?.ms) || 0) >= (Number(merged[key]?.ms) || 0)) merged[key] = entry;
+    });
+    clock = { ...clock, days: merged, today: dayKey() };
   }
   clock.goalMs = minutes * MINUTE;
   notify();

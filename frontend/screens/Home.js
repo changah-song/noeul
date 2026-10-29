@@ -32,7 +32,8 @@ import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
 import useCoachTip from '../hooks/useCoachTip';
 import ScreenCoachTip from '../components/Tips/ScreenCoachTip';
-import TodayGoalCard from '../components/Goal/TodayGoalCard';
+import { GoalTitle, homeDaySlots, StreakDots, useReadingGoal } from '../components/Goal/HomeGoalBar';
+import CalendarDrop from '../components/Goal/CalendarDrop';
 import { areTipsEnabled, isTipSeen, loadTips, msUntilUnpromptedTip, TIP_IDS, tipCounter } from '../services/tips';
 import { useFocusEffect } from '@react-navigation/native';
 import { searchSongs } from '../services/api/songSearch';
@@ -3272,11 +3273,20 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         setSelectedBookPreview({ book, index });
     }, [activeBookMenuKey]);
 
-    // The daily goal card re-reads today's minutes each time Home is shown.
+    // The daily reading goal in the top bar: the last six days as dots (the
+    // calendar drops down from them) and the title that turns into today's
+    // countdown. Re-read each time Home is shown.
     const [homeFocusKey, setHomeFocusKey] = useState(0);
+    const [calendarOpen, setCalendarOpen] = useState(false);
+    const [topBarHeight, setTopBarHeight] = useState(64);
     useFocusEffect(useCallback(() => {
         setHomeFocusKey((value) => value + 1);
+        return () => setCalendarOpen(false);
     }, []));
+    const { snapshot: goalSnapshot, days: goalDays } = useReadingGoal(activeOwnerId, homeFocusKey);
+    const daySlots = useMemo(() => homeDaySlots(goalDays), [goalDays]);
+    const dotsLabel = t('goal.dotsLabel', { count: daySlots.filter((state) => state === 'met').length });
+    const toggleCalendar = useCallback(() => setCalendarOpen((value) => !value), []);
 
     // Set from the press until the reader takes over (or the open fails).
     const [openingBook, setOpeningBook] = useState(false);
@@ -4203,7 +4213,10 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 onPress={() => setActiveBookMenuKey(null)}
                 style={styles.stack}
             >
-                <View style={styles.appTopBar}>
+                <View
+                    style={styles.appTopBar}
+                    onLayout={(event) => setTopBarHeight(event.nativeEvent.layout.height)}
+                >
                     <TouchableOpacity
                         ref={ocrButtonRef}
                         activeOpacity={0.84}
@@ -4227,7 +4240,23 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                             />
                         )}
                     </TouchableOpacity>
-                    <Text style={styles.appTopTitle} accessibilityRole="header">Noeul</Text>
+                    <StreakDots
+                        slots={daySlots.slice(0, 3)}
+                        open={calendarOpen}
+                        onPress={toggleCalendar}
+                        accessibilityLabel={dotsLabel}
+                    />
+                    <GoalTitle
+                        snapshot={goalSnapshot}
+                        focusKey={homeFocusKey}
+                        textStyle={styles.appTopTitleText}
+                    />
+                    <StreakDots
+                        slots={daySlots.slice(3)}
+                        open={calendarOpen}
+                        onPress={toggleCalendar}
+                        accessibilityLabel={dotsLabel}
+                    />
                     <TouchableOpacity
                         activeOpacity={0.84}
                         accessibilityRole="button"
@@ -4246,16 +4275,6 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     >
                         {ocrMessage}
                     </Text>
-                ) : null}
-
-                {featuredBooks.length > 0 ? (
-                    <View style={styles.todayGoal}>
-                        <TodayGoalCard
-                            ownerId={activeOwnerId}
-                            refreshKey={homeFocusKey}
-                            onStart={() => handleResumeFeaturedBook(featuredBooks[0])}
-                        />
-                    </View>
                 ) : null}
 
                 {featuredBooks.length > 0 ? (
@@ -4565,6 +4584,14 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                         <Text style={styles.loadingText}>{t('home.openingBook')}</Text>
                     </View>
                 )}
+                <View pointerEvents="box-none" style={[styles.calendarLayer, { top: topBarHeight }]}>
+                    <CalendarDrop
+                        open={calendarOpen}
+                        days={goalDays}
+                        goalMinutes={Math.round(goalSnapshot.goalMs / 60000)}
+                        onClose={() => setCalendarOpen(false)}
+                    />
+                </View>
             </Pressable>
             </ScrollView>
 
@@ -4901,11 +4928,18 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         paddingHorizontal: Spacing.screenHorizontalDense,
         paddingVertical: Spacing.sm,
     },
-    appTopTitle: {
-        flex: 1,
+    appTopTitleText: {
         textAlign: 'center',
         ...textStyles.appTitle,
         color: HOME_COLORS.text,
+    },
+    calendarLayer: {
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        bottom: 0,
+        zIndex: 30,
+        elevation: 30,
     },
     heroSection: {
         paddingTop: Spacing.xl2,
@@ -4995,11 +5029,6 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         marginTop: Spacing.xl2,
         borderRadius: 14,
         backgroundColor: HOME_COLORS.accent,
-    },
-    todayGoal: {
-        marginHorizontal: 20,
-        marginTop: 4,
-        marginBottom: 14,
     },
     heroResumeButtonOpening: {
         backgroundColor: HOME_COLORS.surface2,
