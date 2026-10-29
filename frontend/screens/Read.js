@@ -573,6 +573,22 @@ const Read = ({
     tipIdRef.current = tipId;
     // The reader stays mounted behind other tabs; its tips wait for it.
     const readerFocused = useIsFocused();
+    // Coming to the reader (opening a book, switching tabs) fades and lifts
+    // the page in, rather than cutting to it.
+    const enterAnim = useRef(new Animated.Value(1)).current;
+    const enterShift = useMemo(() => enterAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [14, 0],
+    }), [enterAnim]);
+    useFocusEffect(useCallback(() => {
+        enterAnim.setValue(0);
+        Animated.timing(enterAnim, {
+            toValue: 1,
+            duration: 240,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true,
+        }).start();
+    }, [enterAnim]));
     const containerRef = useRef(null);
     const focusButtonRef = useRef(null);
     const listenButtonRef = useRef(null);
@@ -4146,7 +4162,11 @@ const Read = ({
     const activeReaderTip = tipId ? readerTips[tipId] : null;
 
     return (
-        <View ref={containerRef} collapsable={false} style={styles.container}>
+        <Animated.View
+            ref={containerRef}
+            collapsable={false}
+            style={[styles.container, { opacity: enterAnim, transform: [{ translateY: enterShift }] }]}
+        >
             {/* With no book open, the bookmark, focus, progress and menu
                 controls have nothing to act on, so hide the header. */}
             {!isFullscreen && currentBook ? (
@@ -4582,7 +4602,7 @@ const Read = ({
                 onClose={() => setShowNotesLog(false)}
             />
 
-        </View>
+        </Animated.View>
     );
 };
 

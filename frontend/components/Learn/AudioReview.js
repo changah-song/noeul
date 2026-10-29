@@ -16,7 +16,9 @@ import { chapterTranslations } from '../../services/chapterTranslations';
 import { createListenPlayer, LISTEN_RATES, voiceLocaleFor, voiceSampleFor } from '../../services/listenPlayer';
 import {
     AUDIO_REVIEW_REPEATS,
-    buildAudioReviewScript,
+    buildAudioReviewSentencePart,
+    buildAudioReviewWordPart,
+    groupBySentence,
     pickSentence,
     spokenMeaning,
 } from '../../services/audioReview';
@@ -66,15 +68,28 @@ const withTimeout = (promise, ms) => Promise.race([
  * AudioReview — the Learn tab's audio mode: plays the saved words one after
  * another, hands-free. For each: the word, its short meaning, a sentence it
  * was met in, and that sentence's translation (services/audioReview.js).
+ * Words saved from the same sentence play together: each word and meaning,
+ * then the shared sentence once.
  * Keeps playing with the screen off through the same foreground service and
  * lock-screen player as the reader's listen mode.
  */
-const AudioReview = ({ visible, words = [], targetLanguage, interfaceLanguage, ownerId, onClose }) => {
+// Words whose sentences are looked up up front to group them (local only).
+const GROUPING_LIMIT = 300;
+// The most words read before one shared sentence.
+const GROUP_MAX = 6;
+
+const wordKey = (row) => `${row?.word ?? ''}\u0000${row?.hanja ?? ''}\u0000${row?.def ?? ''}`;
+
+const AudioReview = ({ visible, words: inputWords = [], targetLanguage, interfaceLanguage, ownerId, onClose }) => {
     const { t } = useTranslation();
     const { colors } = useTheme();
     const insets = useSafeAreaInsets();
     const styles = useMemo(() => createStyles(colors), [colors]);
     const [index, setIndex] = useState(0);
+    // The play order: inputWords with words that share a sentence together.
+    const [words, setWords] = useState(inputWords);
+    const sentenceCacheRef = useRef(new Map());
+    const orderingRef = useRef(Promise.resolve());
     const [playing, setPlaying] = useState(false);
     const [rate, setRate] = useState(1);
     const [details, setDetails] = useState({});
@@ -91,6 +106,23 @@ const AudioReview = ({ visible, words = [], targetLanguage, interfaceLanguage, o
     const interfaceLocale = voiceLocaleFor(interfaceLanguage);
     const word = words[index] ?? null;
     const current = details[index] ?? null;
+
+    // The sentence a saved word is read with (from the local database).
+    const sentenceFor = useCallback(async (row) => {
+        const key = wordKey(row);
+        if (sentenceCacheRef.current.has(key)) return sentenceCacheRef.current.get(key);
+        let sentence = null;
+        try {
+            const contexts = await getVocabContexts(
+                row.word, row.hanja, row.def, 12, row.language ?? targetLanguage, { ownerId }
+            );
+            sentence = pickSentence(contexts, row.word);
+        } catch {
+            sentence = null;
+        }
+        sentenceCacheRef.current.set(key, sentence);
+        return sentence;
+    }, [ownerId, targetLanguage]);
 
     // The sentence and its translation for a word, fetched once.
     const loadDetails = useCallback(async (position) => {
@@ -109,15 +141,7 @@ const AudioReview = ({ visible, words = [], targetLanguage, interfaceLanguage, o
             gloss = null;
         }
         const meaning = spokenMeaning({ gloss, definition: row.def });
-        let sentence = null;
-        try {
-            const contexts = await getVocabContexts(
-                row.word, row.hanja, row.def, 12, row.language ?? targetLanguage, { ownerId }
-            );
-            sentence = pickSentence(contexts, row.word);
-        } catch {
-            sentence = null;
-        }
+        const sentence = await sentenceFor(row);
         let translation = '';
         if (sentence) {
             translation = await withTimeout(
@@ -129,7 +153,7 @@ const AudioReview = ({ visible, words = [], targetLanguage, interfaceLanguage, o
         detailsRef.current = { ...detailsRef.current, [position]: loaded };
         setDetails(detailsRef.current);
         return loaded;
-    }, [interfaceLanguage, ownerId, targetLanguage, words]);
+    }, [interfaceLanguage, sentenceFor, targetLanguage, words]);
 
     const pause = useCallback(() => {
         runRef.current += 1;
@@ -138,8 +162,10 @@ const AudioReview = ({ visible, words = [], targetLanguage, interfaceLanguage, o
         playerRef.current?.stop();
     }, []);
 
-    // Play from `position`: read the word, then move on to the next one.
+    // Play from `position`: the word (and any next words that share its
+    // sentence) with their meanings, the sentence once, then move on.
     const playFrom = useCallback(async (position) => {
+        await orderingRef.current;
         if (!words[position]) {
             pause();
             return;
@@ -157,35 +183,52 @@ const AudioReview = ({ visible, words = [], targetLanguage, interfaceLanguage, o
         if (!playerRef.current) playerRef.current = createListenPlayer();
         const loaded = await loadDetails(position);
         if (run !== runRef.current) return;
-        // Fetch the next word while this one plays.
-        loadDetails(position + 1).catch(() => {});
-        const row = words[position];
-        const outcome = await playerRef.current.speakSequence(buildAudioReviewScript({
-            word: row.word,
-            meaning: loaded?.meaning,
-            sentence: loaded?.sentence,
-            translation: loaded?.translation,
-            targetLocale,
-            interfaceLocale,
-            rate,
-            pitch: voicePrefs.pitch,
-            voices: voicePrefs.voices,
-            repeat,
-        }));
-        if (run !== runRef.current) return;
-        if (outcome === 'error') {
-            setVoiceError(true);
-            pause();
-            return;
+
+        const group = [position];
+        if (loaded?.sentence) {
+            while (group.length < GROUP_MAX) {
+                const next = position + group.length;
+                if (!words[next] || (await sentenceFor(words[next])) !== loaded.sentence) break;
+                group.push(next);
+            }
+            if (run !== runRef.current) return;
         }
-        if (outcome === 'done') {
-            if (position + 1 < words.length) {
-                playFrom(position + 1);
-            } else {
+        const after = position + group.length;
+        // Fetch the next word while this one plays.
+        loadDetails(after).catch(() => {});
+
+        const voice = { targetLocale, interfaceLocale, rate, pitch: voicePrefs.pitch, voices: voicePrefs.voices };
+        const finish = (outcome) => {
+            if (outcome === 'error') {
+                setVoiceError(true);
                 pause();
             }
+            return outcome === 'done';
+        };
+        for (const at of group) {
+            setIndex(at);
+            const part = at === position ? loaded : await loadDetails(at);
+            if (run !== runRef.current) return;
+            const outcome = await playerRef.current.speakSequence(buildAudioReviewWordPart({
+                ...voice,
+                word: words[at].word,
+                meaning: part?.meaning,
+                repeat,
+            }));
+            if (run !== runRef.current || !finish(outcome)) return;
         }
-    }, [interfaceLocale, loadDetails, pause, rate, repeat, targetLocale, voicePrefs, words]);
+        const outcome = await playerRef.current.speakSequence(buildAudioReviewSentencePart({
+            ...voice,
+            sentence: loaded?.sentence,
+            translation: loaded?.translation,
+        }));
+        if (run !== runRef.current || !finish(outcome)) return;
+        if (after < words.length) {
+            playFrom(after);
+        } else {
+            pause();
+        }
+    }, [interfaceLocale, loadDetails, pause, rate, repeat, sentenceFor, targetLocale, voicePrefs, words]);
 
     const togglePlay = useCallback(() => {
         if (playingRef.current) pause();
@@ -289,14 +332,33 @@ const AudioReview = ({ visible, words = [], targetLanguage, interfaceLanguage, o
         };
     }, [visible]);
 
-    // Fresh list each time it opens.
+    // Fresh list each time it opens, with words that share a sentence moved
+    // together (play waits for this).
     useEffect(() => {
-        if (!visible) return;
+        if (!visible) return undefined;
+        let cancelled = false;
         detailsRef.current = {};
+        sentenceCacheRef.current = new Map();
         setDetails({});
         setIndex(0);
         setVoiceError(false);
-    }, [visible, words]);
+        setWords(inputWords);
+        orderingRef.current = (async () => {
+            const head = inputWords.slice(0, GROUPING_LIMIT);
+            const sentences = await Promise.all(head.map((row) => sentenceFor(row)));
+            if (cancelled) return;
+            const grouped = groupBySentence(head, (row, at) => sentences[at]);
+            if (grouped.every((row, at) => row === head[at])) return;
+            detailsRef.current = {};
+            setDetails({});
+            setWords([...grouped, ...inputWords.slice(GROUPING_LIMIT)]);
+        })();
+        return () => {
+            cancelled = true;
+        };
+        // sentenceFor changes with the owner/language, which also changes inputWords.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [visible, inputWords]);
 
     // Show the current word's sentence even before playing.
     useEffect(() => {
