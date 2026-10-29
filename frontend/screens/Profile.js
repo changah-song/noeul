@@ -42,6 +42,7 @@ import { fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
 import ProfileAvatar from '../components/shared/ProfileAvatar';
 import { resetTips } from '../services/tips';
 import LevelCard from '../components/shared/LevelCard';
+import SyncStatusRow from '../components/shared/SyncStatusRow';
 
 const getProfileColors = (themeColors) => ({
     bg: themeColors.bgPage,
@@ -417,6 +418,7 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
 
                 <Text style={styles.sectionLabel}>{t('profile.sectionApp')}</Text>
                 <View style={styles.card}>
+                    <SyncStatusRow styles={styles} profileColors={profileColors} dividerBelow />
                     <View style={styles.row}>
                         <Feather name="moon" size={18} color={profileColors.body} />
                         <Text style={[styles.rowLabel, styles.rowLabelFlex]} numberOfLines={1}>{t('profile.appearance')}</Text>

@@ -68,7 +68,15 @@ import {
     startTelemetry,
 } from './services/appTelemetry';
 import { syncUserDataFromCloud } from './services/userDataSync';
-import { subscribeUserDataSyncRequests } from './services/userDataSyncQueue';
+import { requestUserDataSync, subscribeUserDataSyncRequests } from './services/userDataSyncQueue';
+import NetInfo from '@react-native-community/netinfo';
+import {
+    getSyncStatus,
+    markSyncFinished,
+    markSyncStarted,
+    setSyncOnline,
+    setSyncOwner,
+} from './services/syncStatus';
 import { colors, useTheme } from './theme';
 
 const Tab = createBottomTabNavigator();
@@ -77,10 +85,25 @@ const DEFAULT_USER_DATA_SYNC_DELAY_MS = 1500;
 const PASSIVE_CONTEXT_SYNC_DELAY_MS = 30000;
 const USER_DATA_SYNC_DELAY_BY_REASON = {
     'reader-visible-vocab-context': PASSIVE_CONTEXT_SYNC_DELAY_MS,
+    manual: 0,
+    'network-restored': 0,
 };
 const isStaleSyncGenerationError = (error) => (
     String(error?.message || error || '').includes('stale sync generation')
 );
+
+// A sync pass, reported to Profile's "Sync" row (services/syncStatus.js).
+const syncWithStatus = async (args) => {
+    const startedAt = markSyncStarted();
+    try {
+        const completed = await syncUserDataFromCloud(args);
+        markSyncFinished({ startedAt, completed: completed === true });
+        return completed;
+    } catch (error) {
+        markSyncFinished({ startedAt, error: isStaleSyncGenerationError(error) ? null : error });
+        throw error;
+    }
+};
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 // Before anything renders, so crashes during startup are captured too.
@@ -269,7 +292,7 @@ function AppContent() {
             return;
         }
 
-        syncUserDataFromCloud({
+        syncWithStatus({
             user,
             ownerId: activeOwnerId,
             generation: syncGeneration,
@@ -332,7 +355,7 @@ function AppContent() {
             }
 
             syncInFlight = true;
-            syncUserDataFromCloud({
+            syncWithStatus({
                 user,
                 ownerId: activeOwnerId,
                 generation: syncGeneration,
@@ -381,6 +404,21 @@ function AppContent() {
     // A signed-in account whose data isn't active yet (a decision is pending)
     // shows nothing. A guest's anonymous session is not an account: its books
     // are the guest's and stay.
+    // Whose sync Profile shows: the signed-in account once its data is active.
+    useEffect(() => {
+        setSyncOwner(isAccountUser(user) && activeOwnerId === user.id ? user.id : null);
+    }, [activeOwnerId, user]);
+
+    // Offline shows as such; coming back online sends what waited.
+    useEffect(() => NetInfo.addEventListener((netState) => {
+        const online = netState.isConnected !== false && netState.isInternetReachable !== false;
+        const wasOnline = getSyncStatus().online;
+        setSyncOnline(online);
+        if (online && !wasOnline && getSyncStatus().pendingSince) {
+            requestUserDataSync('network-restored');
+        }
+    }), []);
+
     useEffect(() => {
         if (isAccountUser(user) && activeOwnerId !== user.id) {
             setCurrentBook(null);
