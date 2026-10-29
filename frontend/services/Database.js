@@ -996,6 +996,23 @@ export const updateReaderLevel = ({ ownerId, profileId, language = 'ko' } = {}, 
 };
 
 /** The engine's view of a profile: level, how sure, and learned rates. */
+// Deliberate level changes (a picked level, a word check) — not every lookup —
+// so an open reader can re-shade its underlines at once.
+const readerLevelListeners = new Set();
+export const onReaderLevelChanged = (listener) => {
+  readerLevelListeners.add(listener);
+  return () => readerLevelListeners.delete(listener);
+};
+const emitReaderLevelChanged = (detail) => {
+  readerLevelListeners.forEach((listener) => {
+    try {
+      listener(detail);
+    } catch (error) {
+      console.warn('[Database] Level listener failed:', error?.message ?? error);
+    }
+  });
+};
+
 export const getReaderLevel = async ({ ownerId, profileId, language = 'ko' } = {}) => {
   const row = await getProfileAbility({ ownerId, profileId, language });
   const state = readerState(row);
@@ -1037,7 +1054,7 @@ export const applyWordCheckResults = async ({ ownerId, profileId, language = 'ko
     console.warn('[Database] Failed to log word check answer:', error);
   })));
 
-  return updateReaderLevel({ ownerId, profileId, language: normalizedLanguage }, (before) => {
+  const result = await updateReaderLevel({ ownerId, profileId, language: normalizedLanguage }, (before) => {
     const at = list[0].at ?? new Date().toISOString();
     let current = { ...before, variance: Math.max(before.variance, CHECK_START_VARIANCE) };
     const logs = [{
@@ -1060,6 +1077,8 @@ export const applyWordCheckResults = async ({ ownerId, profileId, language = 'ko
     current.eventCount = Math.max(current.eventCount, 1);
     return { state: current, logs, seededAt: new Date().toISOString() };
   });
+  emitReaderLevelChanged({ ownerId, profileId, language: normalizedLanguage });
+  return result;
 };
 
 export const getUnsyncedAbilityLog = (ownerId, { limit = 500 } = {}) => {
@@ -1642,6 +1661,7 @@ export const setProfileAbilityFromVocab = async ({
       }],
     };
   });
+  emitReaderLevelChanged({ ownerId, profileId, language });
   return state ? state.theta : seededTheta;
 };
 
@@ -4018,6 +4038,7 @@ const SQLITE_LEARNING_SIGNAL_TABLES = [
   'interaction_events',
   'profile_ability',
   'word_scores',
+  'ability_log',
 ];
 
 const SQLITE_USER_DATA_TABLES = [
@@ -4044,6 +4065,7 @@ const SQLITE_TABLES_WITH_LANGUAGE = new Set([
   'interaction_events',
   'profile_ability',
   'word_scores',
+  'ability_log',
 ]);
 
 const sqliteTableHasData = (tableName, whereClause, params = [], logLabel = 'owner data') => (
@@ -4177,6 +4199,13 @@ export const reassignSqliteUserData = async (fromOwnerId, toOwnerId) => {
           );
         });
 
+        // The level history moves too (unique client_log_id), and is pushed
+        // to the new owner's account.
+        tx.executeSql(
+          'UPDATE ability_log SET owner_id = ?, synced_at = NULL WHERE owner_id = ?',
+          [targetOwnerId, sourceOwnerId]
+        );
+
         // Events are append-only with a globally unique client_event_id; clear
         // synced_at so they are pushed to the new owner's account.
         tx.executeSql(
@@ -4224,12 +4253,21 @@ export const reassignSqliteUserData = async (fromOwnerId, toOwnerId) => {
 
               if (sourceWins) {
                 tx.executeSql(
+                  // The whole engine state: the level is rebuilt from the
+                  // lookup-habit hypotheses on the next signal, so copying
+                  // theta alone snapped it back to the target's old level.
                   `UPDATE profile_ability
-                   SET theta = ?, self_report_rank = ?, event_count = ?, seeded_at = ?,
+                   SET theta = ?, theta_var = ?, lookup_model = ?, guess_yes = ?, guess_total = ?,
+                       last_event_at = ?, self_report_rank = ?, event_count = ?, seeded_at = ?,
                        updated_at = ?, synced_at = NULL
                    WHERE id = ?`,
                   [
                     sourceRow.theta,
+                    sourceRow.theta_var,
+                    sourceRow.lookup_model,
+                    sourceRow.guess_yes ?? 0,
+                    sourceRow.guess_total ?? 0,
+                    sourceRow.last_event_at,
                     sourceRow.self_report_rank,
                     sourceRow.event_count,
                     sourceRow.seeded_at,

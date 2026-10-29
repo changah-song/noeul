@@ -68,6 +68,7 @@ import {
   createBookNotesTable,
   createBookPreprocessTables,
   createDictionaryCacheTable,
+  createAbilityLogTable,
   createInteractionEventsTable,
   createProfileAbilityTable,
   createTable,
@@ -128,6 +129,7 @@ beforeEach(async () => {
   await migrateVocabContextTable();
   await createInteractionEventsTable();
   await createProfileAbilityTable();
+  await createAbilityLogTable();
   await createWordScoresTable();
   await createDictionaryCacheTable();
   await createBookIndexTable();
@@ -339,6 +341,28 @@ describe('guest import moves learning-signal tables (bug 6)', () => {
       { profile_id: 'ko_default', theta: 1.5, event_count: 40 },
       { profile_id: 'zh_default', theta: 0.7, event_count: 3 },
     ]);
+  });
+  it('keeps the winning level whole (not just theta) and moves its history', async () => {
+    const guest = 'guest';
+    await run(
+      `INSERT INTO profile_ability (owner_id, profile_id, language, theta, theta_var, lookup_model, guess_yes, guess_total, event_count, updated_at)
+       VALUES (?, 'ko_default', 'ko', 0.0, 2.0, 'account-model', 0, 0, 1, '2024-01-01T00:00:00.000Z'),
+              (?, 'ko_default', 'ko', 1.5, 0.3, 'guest-model', 4, 10, 40, '2024-02-01T00:00:00.000Z')`,
+      [OWNER, guest]
+    );
+    await run(
+      `INSERT INTO ability_log (client_log_id, owner_id, profile_id, language, signal, created_at)
+       VALUES ('log-1', ?, 'ko_default', 'ko', 'lookup', '2024-02-01T00:00:00.000Z')`,
+      [guest]
+    );
+
+    await reassignSqliteUserData(guest, OWNER);
+
+    expect(await queryAll(
+      'SELECT theta, theta_var, lookup_model, guess_yes, guess_total FROM profile_ability WHERE owner_id = ?',
+      [OWNER]
+    )).toEqual([{ theta: 1.5, theta_var: 0.3, lookup_model: 'guest-model', guess_yes: 4, guess_total: 10 }]);
+    expect(await queryAll('SELECT owner_id, synced_at FROM ability_log')).toEqual([{ owner_id: OWNER, synced_at: null }]);
   });
 });
 

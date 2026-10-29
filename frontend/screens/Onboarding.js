@@ -24,7 +24,10 @@ import {
     KRDICT_INTERFACE_LANGUAGE_OPTIONS,
     TARGET_LANGUAGE_OPTIONS,
 } from '../constants/languages';
-import { hasVocabSizeGrid } from '../services/vocabSizeLevels';
+import { getVocabTiers, hasVocabSizeGrid, thetaForTier } from '../services/vocabSizeLevels';
+import { nearestRankForTheta } from '../services/calibrationQuiz';
+import { setProfileAbilityFromVocab } from '../services/Database';
+import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { hasWordCheck } from '../services/wordCheck';
 import { fontFamilies, useTheme } from '../theme';
 // One entry per bundled book (generate_catalog_levels.py), with its language:
@@ -81,6 +84,9 @@ export const applyNewReaderSettings = async () => {
         console.warn('[Onboarding] Could not save reader settings:', error?.message ?? error);
     }
 };
+
+// "I'm just starting" holds its level loosely (sd ≈ 1.2; a picked level is 0.6).
+const BEGINNER_SEED_VARIANCE = 1.5;
 
 // ─── Content ──────────────────────────────────────────────────────────────────
 
@@ -271,7 +277,10 @@ const Onboarding = ({ onDone }) => {
         targetLanguage,
         setTargetLanguage,
         setChineseScript,
+        activeProfileId,
+        setTargetLanguageLevel,
     } = useAppContext();
+    const { activeOwnerId } = useLocalOwner();
     const theme = useTheme();
     const colors = theme.colors;
     const styles = useMemo(() => createStyles(colors), [colors]);
@@ -353,6 +362,27 @@ const Onboarding = ({ onDone }) => {
         setShowInterfacePicker(false);
     };
 
+    // "I'm just starting": the lowest tier, held loosely (wide uncertainty) so
+    // the first pages of reading move it quickly. Without this the reader
+    // started in the middle of the scale.
+    const seedBeginnerLevel = () => {
+        const [lowest] = getVocabTiers(targetLanguage);
+        if (!lowest) return;
+        const theta = thetaForTier(targetLanguage, lowest.threshold);
+        const nearestRank = nearestRankForTheta(targetLanguage, theta);
+        setProfileAbilityFromVocab({
+            ownerId: activeOwnerId,
+            profileId: activeProfileId,
+            language: targetLanguage,
+            theta,
+            nearestRank,
+            variance: BEGINNER_SEED_VARIANCE,
+            details: { source: 'onboarding-just-starting' },
+        })
+            .then(() => setTargetLanguageLevel?.(nearestRank))
+            .catch((error) => console.warn('[Onboarding] Could not seed beginner level:', error?.message ?? error));
+    };
+
     const handlePrimary = () => {
         if (isLast) {
             finish();
@@ -366,6 +396,9 @@ const Onboarding = ({ onDone }) => {
             if (activeLevelChoice === 'pick') {
                 setShowLevelPicker(true);
                 return;
+            }
+            if (activeLevelChoice === 'new') {
+                seedBeginnerLevel();
             }
         }
         advance();

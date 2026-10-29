@@ -4,6 +4,7 @@ import {
     getWordDifficulties,
     lookupBookLevelSurfaces,
     lookupKnowledgeEvidence,
+    onReaderLevelChanged,
 } from '../services/Database';
 import { buildWordKnowledge, signalsFromEvidenceRows } from '../services/levelEngine';
 import { buildLevelUnderlineTerms, rowDifficulty } from '../services/levelUnderlineTerms';
@@ -50,6 +51,9 @@ export const loadLevelUnderlineTerms = async ({ ownerId, bookUri, language }) =>
 
 const useLevelUnderlineTerms = ({ ownerId, bookUri, language, refreshKey }) => {
     const [terms, setTerms] = useState([]);
+    // A picked level or a word check re-shades at once.
+    const [levelVersion, setLevelVersion] = useState(0);
+    useEffect(() => onReaderLevelChanged(() => setLevelVersion((value) => value + 1)), []);
 
     useEffect(() => {
         if (!bookUri) {
@@ -72,7 +76,7 @@ const useLevelUnderlineTerms = ({ ownerId, bookUri, language, refreshKey }) => {
         return () => {
             isActive = false;
         };
-    }, [ownerId, bookUri, language, refreshKey]);
+    }, [ownerId, bookUri, language, refreshKey, levelVersion]);
 
     return terms;
 };

@@ -80,6 +80,7 @@ import {
     insertBookIndexEntries,
     insertData,
     logInteractionEvent,
+    onReaderLevelChanged,
     lookupBookHighlightSurfaces,
     lookupBookAnnotationSurfaces,
     countBookRowsInInterfaceLanguage,
@@ -952,6 +953,11 @@ const Read = ({
     // and it undermines trust in the marks. So this deliberately keys off the book
     // and the committed spine index (reader open + chapter boundary) and reads
     // theta fresh INSIDE the effect rather than depending on it.
+    // A level picked in Profile or a word check re-shades the open book at
+    // once (lookups don't: mid-read re-shading would be unsettling).
+    const [levelVersion, setLevelVersion] = useState(0);
+    useEffect(() => onReaderLevelChanged(() => setLevelVersion((value) => value + 1)), []);
+
     useEffect(() => {
         if (!currentBook) {
             setLevelUnderlineTerms([]);
@@ -986,6 +992,7 @@ const Read = ({
         activeOwnerId,
         currentBook,
         currentSpineIndex,
+        levelVersion,
         preprocessStatus,
     ]);
 
