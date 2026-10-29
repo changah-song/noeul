@@ -24,6 +24,7 @@ import { applyWordCheckResults, getReaderLevel } from '../../services/Database';
 import { createWordCheck } from '../../services/wordCheck';
 import { nearestRankForTheta } from '../../services/calibrationQuiz';
 import { getVocabTiers } from '../../services/vocabSizeLevels';
+import { recordWordCheckTaken } from '../../services/wordCheckSchedule';
 
 // Fewer answers than this are not worth saving when the reader stops early.
 const MIN_ANSWERS_TO_SAVE = 10;
@@ -363,6 +364,7 @@ export const useWordCheck = ({ active, onClose }) => {
             });
             const theta = state?.theta ?? summary.theta;
             setTargetLanguageLevel?.(nearestRankForTheta(targetLanguage, theta));
+            recordWordCheckTaken(activeOwnerId, activeProfileId, targetLanguage);
             return { ...summary, theta, variance: state?.variance ?? summary.variance };
         } catch (error) {
             console.warn('[WordCheck] Failed to save answers:', error?.message ?? error);

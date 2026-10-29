@@ -17,10 +17,10 @@ import * as Clipboard from 'expo-clipboard';
 import { AuthModal } from './Auth';
 import { deleteCurrentUserProfile } from '../services/accountDeletion';
 import { Screen } from '../components/ui';
-import VocabLevelModal, { tierIndexForTheta } from '../components/shared/VocabLevelModal';
-import { OptionSheet } from '../components/shared/WordCheckModal';
-import { getVocabTiers, hasVocabSizeGrid } from '../services/vocabSizeLevels';
-import { getProfileAbility } from '../services/Database';
+import WordCheckModal, { OptionSheet } from '../components/shared/WordCheckModal';
+import { hasVocabSizeGrid } from '../services/vocabSizeLevels';
+import { hasWordCheck } from '../services/wordCheck';
+import { daysUntilWordCheck } from '../services/wordCheckSchedule';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
@@ -104,10 +104,7 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
     const [draftName, setDraftName] = useState('');
     const [isSavingName, setIsSavingName] = useState(false);
     const [showTargetLanguagePicker, setShowTargetLanguagePicker] = useState(false);
-    const [showVocabLevel, setShowVocabLevel] = useState(false);
-    // The estimated tier; its label is built at render so it follows the
-    // app language when that changes.
-    const [vocabTier, setVocabTier] = useState(null);
+    const [showWordCheck, setShowWordCheck] = useState(false);
     // Notifications and personalized vocabulary keep their stored settings
     // (AppContext) but no longer have rows here.
     const {
@@ -165,36 +162,32 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
         }
     }, [user?.id]);
 
-    // The current level estimate for the "Vocabulary level" row.
-    const loadVocabEstimate = useCallback(async () => {
-        if (!hasVocabSizeGrid(targetLanguage)) {
-            setVocabTier(null);
-            return;
-        }
-        try {
-            const ability = await getProfileAbility({
-                ownerId: activeOwnerId,
-                profileId: activeProfileId,
-                language: targetLanguage,
+    // The level isn't set here (that would wipe what reading has taught the
+    // model): underlines that feel off get the reader's underline slider, or
+    // the word check, which adds evidence (once a week).
+    const openLevelAdjust = useCallback(() => {
+        const buttons = [
+            {
+                text: t('level.adjustSlider'),
+                onPress: () => navigation?.navigate?.('Read', { openSettings: 'words' }),
+            },
+        ];
+        if (hasWordCheck(targetLanguage)) {
+            buttons.push({
+                text: t('level.adjustCheck'),
+                onPress: async () => {
+                    const days = await daysUntilWordCheck(activeOwnerId, activeProfileId, targetLanguage);
+                    if (days > 0) {
+                        Alert.alert('', t('level.checkWait', { count: days }));
+                        return;
+                    }
+                    setShowWordCheck(true);
+                },
             });
-            const tiers = getVocabTiers(targetLanguage);
-            const index = tierIndexForTheta(tiers, ability?.theta);
-            setVocabTier(index == null ? null : tiers[index]);
-        } catch {
-            setVocabTier(null);
         }
-    }, [activeOwnerId, activeProfileId, targetLanguage]);
-
-    useEffect(() => {
-        if (!showVocabLevel) {
-            loadVocabEstimate();
-        }
-    }, [loadVocabEstimate, showVocabLevel]);
-
-    useEffect(() => {
-        const unsubscribe = navigation?.addListener?.('focus', loadVocabEstimate);
-        return typeof unsubscribe === 'function' ? unsubscribe : undefined;
-    }, [loadVocabEstimate, navigation]);
+        buttons.push({ text: t('common.cancel'), style: 'cancel' });
+        Alert.alert(t('level.adjustTitle'), t('level.adjustBody'), buttons);
+    }, [activeOwnerId, activeProfileId, navigation, t, targetLanguage]);
 
     const goBack = () => {
         if (navigation?.canGoBack?.()) {
@@ -378,6 +371,7 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
                             ownerId={activeOwnerId}
                             profileId={activeProfileId}
                             language={targetLanguage}
+                            onAdjust={openLevelAdjust}
                         />
                     </>
                 ) : null}
@@ -393,17 +387,6 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
                         styles={styles}
                         profileColors={profileColors}
                     />
-                    {showVocabRow ? (
-                        <NavRow
-                            icon="bar-chart-2"
-                            label={t('profile.vocabLevel')}
-                            value={vocabEstimateLabel(vocabTier, t)}
-                            onPress={() => setShowVocabLevel(true)}
-                            showDivider
-                            styles={styles}
-                            profileColors={profileColors}
-                        />
-                    ) : null}
                     <NavRow
                         icon="globe"
                         label={t('profile.interfaceLanguage')}
@@ -529,7 +512,7 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
                 )}
             </ScrollView>
 
-            <VocabLevelModal visible={showVocabLevel} onClose={() => setShowVocabLevel(false)} />
+            <WordCheckModal visible={showWordCheck} onClose={() => setShowWordCheck(false)} />
 
             <OptionSheet
                 visible={showTargetLanguagePicker}

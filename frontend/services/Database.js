@@ -1148,6 +1148,30 @@ export const getAbilityLog = ({ ownerId, profileId, language = 'ko', limit = 200
 };
 
 /**
+ * getLevelStartLog — the level log's set-the-level rows (picks, "just
+ * starting", word checks), oldest first: services/levelSummary startingTheta.
+ */
+export const getLevelStartLog = ({ ownerId, profileId, language = 'ko' } = {}) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopedProfileId = resolveProfileId(profileId, normalizedLanguage);
+  return new Promise((resolve, reject) => {
+    db.transaction(tx => {
+      tx.executeSql(
+        `SELECT signal, theta_after, created_at FROM ability_log
+         WHERE owner_id = ? AND profile_id = ? AND language = ?
+           AND signal IN ('seed', 'check_start', 'check', 'pseudo')
+         ORDER BY created_at, id
+         LIMIT 300`,
+        [scopedOwnerId, scopedProfileId, normalizedLanguage],
+        (_, result) => resolve(result.rows._array ?? []),
+        (_, error) => reject(error)
+      );
+    });
+  });
+};
+
+/**
  * getDailyAbilityLog — each day's last level reading (created_at, theta_after,
  * var_after), oldest first: Profile's level-over-time chart.
  */

@@ -1,25 +1,22 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Text, TouchableOpacity, View } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { fontFamilies, useTheme } from '../../theme';
 import { useTranslation } from '../../hooks/useTranslation';
 import { formatNumber } from '../../services/interfaceLanguage';
 import {
     getDailyAbilityLog,
+    getLevelStartLog,
     getProfileAbility,
     onReaderLevelChanged,
-    setProfileAbilityFromVocab,
 } from '../../services/Database';
-import { getVocabTiers, thetaForTier } from '../../services/vocabSizeLevels';
-import { nearestRankForTheta } from '../../services/calibrationQuiz';
 import {
     dailyLevelSeries,
     describeLevel,
     levelRange,
+    startingTheta,
     THETA_MAX,
     THETA_MIN,
 } from '../../services/levelSummary';
-import { tierIndexForTheta, vocabLevelPickKey } from './VocabLevelModal';
 
 const CHART_DAYS = 30;
 const CHART_HEIGHT = 96;
@@ -28,17 +25,18 @@ const EARLY_EVENTS = 20;
 
 /**
  * LevelCard — Profile's "Your level": what the app thinks the reader's level
- * is (a range, from what they look up, skip and review), the level they
- * picked, and the last 30 days as a band (likely range) with a dot per day.
- * When reading has moved well away from the pick, it offers to use it.
+ * is (a range, from what they look up, skip and review), where they started
+ * (set once, at onboarding), and the last 30 days as a band (likely range)
+ * with a dot per day. The level isn't set here: "Underlines feel off?"
+ * (`onAdjust`) offers the underline slider or the word check instead.
  */
-const LevelCard = ({ ownerId, profileId, language }) => {
+const LevelCard = ({ ownerId, profileId, language, onAdjust }) => {
     const { colors } = useTheme();
     const { t } = useTranslation();
     const styles = useMemo(() => createStyles(colors), [colors]);
     const [ability, setAbility] = useState(null);
     const [series, setSeries] = useState([]);
-    const [pickThreshold, setPickThreshold] = useState(null);
+    const [startTheta, setStartTheta] = useState(null);
     const [version, setVersion] = useState(0);
 
     useEffect(() => onReaderLevelChanged(() => setVersion((value) => value + 1)), []);
@@ -46,15 +44,15 @@ const LevelCard = ({ ownerId, profileId, language }) => {
     useEffect(() => {
         let cancelled = false;
         (async () => {
-            const [row, log, pick] = await Promise.all([
+            const [row, log, startLog] = await Promise.all([
                 getProfileAbility({ ownerId, profileId, language }).catch(() => null),
                 getDailyAbilityLog({ ownerId, profileId, language }).catch(() => []),
-                AsyncStorage.getItem(vocabLevelPickKey(ownerId, profileId, language)).catch(() => null),
+                getLevelStartLog({ ownerId, profileId, language }).catch(() => []),
             ]);
             if (cancelled) return;
             setAbility(row);
             setSeries(dailyLevelSeries(log, { days: CHART_DAYS }));
-            setPickThreshold(pick != null && pick !== '' ? Number(pick) : null);
+            setStartTheta(startingTheta(startLog));
         })();
         return () => {
             cancelled = true;
@@ -67,40 +65,16 @@ const LevelCard = ({ ownerId, profileId, language }) => {
     const hasEstimate = Number.isFinite(theta);
     const range = hasEstimate ? levelRange(theta, variance) : null;
     const described = range ? describeLevel(language, range) : null;
-    const pickTheta = pickThreshold != null ? thetaForTier(language, pickThreshold) : null;
+    const pickTheta = startTheta;
     const pickDescribed = pickTheta != null
         ? describeLevel(language, { estimate: pickTheta, low: pickTheta, high: pickTheta })
         : null;
-    // Reading has moved the estimate more than one spread away from the pick.
-    const drifted = hasEstimate && pickTheta != null && events >= EARLY_EVENTS
-        && Math.abs(theta - pickTheta) > Math.sqrt(Math.max(variance, 0.01));
 
     const levelText = useCallback((item) => (
         item?.kind === 'words'
             ? t('level.words', { words: formatNumber(item.estimate) })
             : item?.estimate ?? ''
     ), [t]);
-
-    const applyEstimate = useCallback(async () => {
-        if (!hasEstimate) return;
-        const tiers = getVocabTiers(language);
-        const index = tierIndexForTheta(tiers, theta);
-        await setProfileAbilityFromVocab({
-            ownerId,
-            profileId,
-            language,
-            theta,
-            nearestRank: nearestRankForTheta(language, theta),
-            variance,
-            details: { source: 'profile-use-estimate' },
-        });
-        if (index != null && tiers[index]) {
-            await AsyncStorage.setItem(
-                vocabLevelPickKey(ownerId, profileId, language),
-                String(tiers[index].threshold)
-            ).catch(() => {});
-        }
-    }, [hasEstimate, language, ownerId, profileId, theta, variance]);
 
     if (!described) return null;
 
@@ -162,16 +136,18 @@ const LevelCard = ({ ownerId, profileId, language }) => {
             {pickDescribed ? (
                 <View style={styles.pickRow}>
                     <View style={styles.pickSwatch} />
-                    <Text style={styles.pickText}>{t('level.picked', { level: levelText(pickDescribed) })}</Text>
+                    <Text style={styles.pickText}>{t('level.started', { level: levelText(pickDescribed) })}</Text>
                 </View>
             ) : null}
-            {drifted ? (
-                <View style={styles.suggestRow}>
-                    <Text style={styles.suggestText}>{t('level.suggests', { level: levelText(described) })}</Text>
-                    <TouchableOpacity onPress={applyEstimate} style={styles.useButton} accessibilityRole="button">
-                        <Text style={styles.useButtonText}>{t('level.useThis')}</Text>
-                    </TouchableOpacity>
-                </View>
+            {onAdjust ? (
+                <TouchableOpacity
+                    onPress={onAdjust}
+                    style={styles.adjust}
+                    hitSlop={{ top: 8, bottom: 8 }}
+                    accessibilityRole="button"
+                >
+                    <Text style={styles.adjustText}>{t('level.adjust')}</Text>
+                </TouchableOpacity>
             ) : null}
         </View>
     );
@@ -271,31 +247,15 @@ const createStyles = (colors) => ({
         fontSize: 13.5,
         color: colors.textSecondary,
     },
-    suggestRow: {
-        marginTop: 10,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 10,
+    adjust: {
+        marginTop: 12,
+        alignSelf: 'flex-start',
     },
-    suggestText: {
-        flex: 1,
-        fontFamily: fontFamilies.sansRegular,
+    adjustText: {
+        fontFamily: fontFamilies.sansMedium,
         fontSize: 13.5,
-        lineHeight: 18,
-        color: colors.text,
-    },
-    useButton: {
-        height: 34,
-        paddingHorizontal: 14,
-        borderRadius: 17,
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: colors.text,
-    },
-    useButtonText: {
-        fontFamily: fontFamilies.sansSemiBold,
-        fontSize: 13.5,
-        color: colors.surface,
+        color: colors.textSecondary,
+        textDecorationLine: 'underline',
     },
 });
 

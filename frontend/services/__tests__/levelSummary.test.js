@@ -1,4 +1,4 @@
-import { dailyLevelSeries, describeLevel, levelRange, wordsForTheta } from '../levelSummary';
+import { dailyLevelSeries, describeLevel, levelRange, startingTheta, wordsForTheta } from '../levelSummary';
 
 describe('describing the reader level', () => {
   it('turns a level and its spread into an 80% range, inside the scale', () => {
@@ -46,5 +46,27 @@ describe('the level over time', () => {
     const series = dailyLevelSeries(rows, { days: 3, now });
     expect(series).toHaveLength(3);
     expect(series[0]).toMatchObject({ day: '2026-10-28', theta: -1 });
+  });
+});
+
+describe('where the reader started', () => {
+  it('is the first pick, and later picks do not move it', () => {
+    expect(startingTheta([
+      { signal: 'seed', theta_after: -1.25 },
+      { signal: 'seed', theta_after: 0.55 },
+    ])).toBe(-1.25);
+  });
+
+  it('is the level after the last answer of a first word check', () => {
+    expect(startingTheta([
+      { signal: 'check_start', theta_after: 0 },
+      { signal: 'check', theta_after: 0.4 },
+      { signal: 'pseudo', theta_after: 0.3 },
+      { signal: 'seed', theta_after: 2 },
+    ])).toBe(0.3);
+  });
+
+  it('is unknown without a start', () => {
+    expect(startingTheta([])).toBeNull();
   });
 });
