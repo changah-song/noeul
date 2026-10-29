@@ -127,6 +127,10 @@ const ReaderSettingsSheet = ({
     const chrome = useMemo(() => createSheetChromeStyles(colors, insets), [colors, insets]);
     const controlStyles = useMemo(() => createReaderSettingsControlStyles(colors), [colors]);
     const [activeTab, setActiveTab] = useState(SETTINGS_TABS.includes(initialTab) ? initialTab : 'text');
+    // Opened for a particular tab (Profile's "Underlines feel off?"): show it.
+    useEffect(() => {
+        if (visible && SETTINGS_TABS.includes(initialTab)) setActiveTab(initialTab);
+    }, [initialTab, visible]);
 
     // A short fade as the tab body swaps, so switching tabs doesn't jump.
     const tabFade = useRef(new Animated.Value(1)).current;

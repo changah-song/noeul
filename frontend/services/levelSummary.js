@@ -120,3 +120,24 @@ export const dailyLevelSeries = (rows, { days = 30, now = Date.now() } = {}) => 
   }
   return points;
 };
+
+/**
+ * startingTheta — where the reader started: the first time their level was
+ * set (onboarding's pick or "just starting", a 'seed'; or a word check, its
+ * level after the last answer). Later picks don't move it. Rows: the level
+ * log's seed / check rows, oldest first. Null when there is none.
+ */
+export const startingTheta = (rows) => {
+  const list = rows ?? [];
+  const first = list.findIndex((row) => row?.signal === 'seed' || row?.signal === 'check_start');
+  if (first < 0) return null;
+  let theta = Number(list[first].theta_after);
+  if (list[first].signal === 'check_start') {
+    for (let index = first + 1; index < list.length; index += 1) {
+      const row = list[index];
+      if (row.signal !== 'check' && row.signal !== 'pseudo') break;
+      theta = Number(row.theta_after);
+    }
+  }
+  return Number.isFinite(theta) ? theta : null;
+};

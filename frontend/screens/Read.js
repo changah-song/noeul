@@ -598,6 +598,8 @@ const Read = ({
     // being fetched: the reader shows a short "getting ready" note meanwhile.
     const [currentChapterPreparing, setCurrentChapterPreparing] = useState(false);
     const [showMenu, setShowMenu] = useState(false);
+    // The settings tab to open on (Profile → "Underlines feel off?" opens Words).
+    const [settingsTab, setSettingsTab] = useState('text');
     const [showBeforeYouGo, setShowBeforeYouGo] = useState(false);
     const [showSavedPanel, setShowSavedPanel] = useState(false);
     const [savedPanelTab, setSavedPanelTab] = useState('saved');
@@ -4108,6 +4110,20 @@ const Read = ({
     }, []);
 
 
+    // Profile's "Underlines feel off?" → this book's underline settings.
+    const openSettingsParam = route?.params?.openSettings;
+    useEffect(() => {
+        if (!openSettingsParam) return;
+        navigation?.setParams?.({ openSettings: undefined });
+        if (!currentBook) {
+            ToastAndroid.show(t('level.openBookFirst'), ToastAndroid.SHORT);
+            return;
+        }
+        setIsFullscreen(false);
+        setSettingsTab(openSettingsParam);
+        setShowMenu(true);
+    }, [currentBook, navigation, openSettingsParam, t]);
+
     // Tips nobody asked for, one at a time, at a quiet moment: a book is open,
     // nothing else is on screen, and the header (their anchor) is showing.
     const readerQuiet = readerFocused
@@ -4260,7 +4276,10 @@ const Read = ({
                         styles={chrome}
                         themeColors={themeColors}
                         open={showMenu}
-                        onPress={() => setShowMenu((prev) => !prev)}
+                        onPress={() => {
+                            setSettingsTab('text');
+                            setShowMenu((prev) => !prev);
+                        }}
                         accessibilityLabel={t('read.bookSettings')}
                     />
                 </ReaderHeaderBar>
@@ -4582,12 +4601,16 @@ const Read = ({
 
             <ReaderSettingsSheet
                 visible={showMenu && !isFullscreen}
-                onClose={() => setShowMenu(false)}
+                onClose={() => {
+                    setShowMenu(false);
+                    setSettingsTab('text');
+                }}
                 colors={themeColors}
                 insets={insets}
                 title={t('read.bookSettings')}
                 language={activeBookLanguage}
                 settings={settings}
+                initialTab={settingsTab}
                 onSettingChange={handleSettingChange}
                 onResetTextSettings={resetBookSettings}
                 onResetWordSettings={resetWordSettings}
