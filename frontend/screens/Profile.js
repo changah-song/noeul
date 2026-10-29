@@ -41,7 +41,7 @@ import {
 } from '../constants/links';
 import { fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
 import ProfileAvatar from '../components/shared/ProfileAvatar';
-import { resetTips } from '../services/tips';
+import FeatureGuideSheet from '../components/shared/FeatureGuideSheet';
 import LevelCard from '../components/shared/LevelCard';
 import SyncStatusRow from '../components/shared/SyncStatusRow';
 
@@ -106,6 +106,7 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
     const [isSavingName, setIsSavingName] = useState(false);
     const [showTargetLanguagePicker, setShowTargetLanguagePicker] = useState(false);
     const [showWordCheck, setShowWordCheck] = useState(false);
+    const [showFeatureGuide, setShowFeatureGuide] = useState(false);
     // Notifications and personalized vocabulary keep their stored settings
     // (AppContext) but no longer have rows here.
     const {
@@ -355,6 +356,7 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
                             ownerId={activeOwnerId}
                             profileId={activeProfileId}
                             language={targetLanguage}
+                            userId={isGuest ? null : user?.id}
                             onAdjust={openLevelAdjust}
                         />
                     </>
@@ -408,12 +410,8 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
                     </View>
                     <NavRow
                         icon="help-circle"
-                        label={t('tips.showAgain')}
-                        onPress={async () => {
-                            await resetTips();
-                            Alert.alert('', t('tips.showAgainDone'));
-                        }}
-                        trailingIcon={null}
+                        label={t('tips.showTips')}
+                        onPress={() => setShowFeatureGuide(true)}
                         showDivider
                         styles={styles}
                         profileColors={profileColors}
@@ -497,6 +495,8 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
             </ScrollView>
 
             <WordCheckModal visible={showWordCheck} onClose={() => setShowWordCheck(false)} />
+
+            <FeatureGuideSheet visible={showFeatureGuide} onClose={() => setShowFeatureGuide(false)} />
 
             <LevelAdjustSheet
                 visible={showLevelAdjust}

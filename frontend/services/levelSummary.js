@@ -122,6 +122,38 @@ export const dailyLevelSeries = (rows, { days = 30, now = Date.now() } = {}) => 
   return points;
 };
 
+export const LEVEL_CHART_RANGES = ['30', '180', 'all'];
+// Most columns a chart draws; longer spans group days into weeks or more.
+const MAX_COLUMNS = 30;
+
+/**
+ * levelChartSeries — the chart's columns for a range ('30' days, '180' days,
+ * or 'all' since the first log row): `{ points, columns, groupDays, startDay }`. Each
+ * column is the last value of its group of days (a day, a week, ...), with
+ * `index` in 0..columns-1.
+ */
+export const levelChartSeries = (rows, range = '30', { now = Date.now() } = {}) => {
+  let days = Number(range) || 30;
+  if (range === 'all') {
+    const first = (rows ?? []).reduce((min, row) => {
+      const at = Date.parse(row?.created_at || '');
+      return Number.isFinite(at) && at < min ? at : min;
+    }, now);
+    days = Math.max(30, Math.ceil((now - first) / DAY_MS) + 1);
+  }
+  const groupDays = Math.max(1, Math.ceil(days / MAX_COLUMNS));
+  const columns = Math.ceil(days / groupDays);
+  const daily = dailyLevelSeries(rows, { days, now });
+  const byColumn = new Map();
+  daily.forEach((point) => {
+    // Grouped from the end, so today closes the last column.
+    const column = columns - 1 - Math.floor((days - 1 - point.index) / groupDays);
+    byColumn.set(column, { ...point, index: column });
+  });
+  const startDay = new Date(now - (days - 1) * DAY_MS).toISOString().slice(0, 10);
+  return { points: [...byColumn.values()].sort((a, b) => a.index - b.index), columns, groupDays, startDay };
+};
+
 /**
  * startingTheta — where the reader started: the first time their level was
  * set (onboarding's pick or "just starting", a 'seed'; or a word check, its
@@ -199,4 +231,12 @@ export const wordGoal = (words) => {
   const step = goalStep(value);
   const reached = Math.floor(value / step) * step;
   return { reached, next: reached + step, progress: (value - reached) / step };
+};
+
+// The chart column a moment falls in (null when it's before the chart).
+export const chartColumnFor = (at, { columns, groupDays }, now = Date.now()) => {
+  const time = Date.parse(at || '');
+  if (!Number.isFinite(time)) return null;
+  const column = columns - 1 - Math.floor(Math.floor((now - time) / DAY_MS) / groupDays);
+  return column >= 0 ? column : null;
 };

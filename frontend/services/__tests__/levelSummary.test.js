@@ -1,6 +1,8 @@
 import {
   dailyLevelSeries,
   describeLevel,
+  chartColumnFor,
+  levelChartSeries,
   levelPlaceForTheta,
   levelRange,
   startingTheta,
@@ -99,5 +101,36 @@ describe('the level on the language scale, and goals', () => {
     expect(wordGoal(1600)).toMatchObject({ reached: 1500, next: 1750 });
     expect(wordGoal(4200)).toMatchObject({ reached: 4000, next: 4500 });
     expect(wordGoal(12500)).toMatchObject({ reached: 12000, next: 13000 });
+  });
+});
+
+describe('the chart over longer spans', () => {
+  const now = Date.parse('2026-10-30T12:00:00Z');
+  const rows = [
+    { created_at: '2026-01-10T08:00:00Z', theta_after: -1, var_after: 0.5 },
+    { created_at: '2026-06-01T08:00:00Z', theta_after: 0, var_after: 0.4 },
+    { created_at: '2026-10-30T08:00:00Z', theta_after: 0.5, var_after: 0.3 },
+  ];
+
+  it('keeps 30 days as one column a day', () => {
+    const chart = levelChartSeries(rows, '30', { now });
+    expect(chart).toMatchObject({ columns: 30, groupDays: 1 });
+    expect(chart.points[chart.points.length - 1]).toMatchObject({ index: 29, theta: 0.5 });
+  });
+
+  it('groups longer spans into at most 30 columns, ending today', () => {
+    const half = levelChartSeries(rows, '180', { now });
+    expect(half.columns).toBeLessThanOrEqual(30);
+    expect(half.points[half.points.length - 1]).toMatchObject({ index: half.columns - 1, theta: 0.5 });
+
+    const all = levelChartSeries(rows, 'all', { now });
+    expect(all.columns).toBeLessThanOrEqual(30);
+    expect(all.points[0].theta).toBe(-1);
+  });
+
+  it('finds the column a goal falls in', () => {
+    const chart = levelChartSeries(rows, '30', { now });
+    expect(chartColumnFor('2026-10-30T09:00:00Z', chart, now)).toBe(29);
+    expect(chartColumnFor('2026-01-01T00:00:00Z', chart, now)).toBeNull();
   });
 });

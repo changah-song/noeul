@@ -93,3 +93,40 @@ export const pushAbilityLog = async ({ user, ownerId, generation } = {}) => {
   }
   return totalPushed;
 };
+
+/**
+ * fetchCloudLevelHistory — the account's level history for one language, for
+ * Profile's chart on a phone that doesn't have it (a new device, cleared
+ * data): `{ rows, startRows }`, the newest rows (created_at, theta_after,
+ * var_after) and the set-the-level rows (picks, word checks), oldest first.
+ * Empty when it can't be read.
+ */
+export const fetchCloudLevelHistory = async (userId, language) => {
+  if (!userId) return { rows: [], startRows: [] };
+  try {
+    const [history, starts] = await Promise.all([
+      supabase
+        .from(USER_ABILITY_LOG_TABLE)
+        .select('created_at, theta_after, var_after')
+        .eq('user_id', userId)
+        .eq('language', language)
+        .not('theta_after', 'is', null)
+        .order('created_at', { ascending: false })
+        .limit(5000),
+      supabase
+        .from(USER_ABILITY_LOG_TABLE)
+        .select('signal, theta_after, created_at')
+        .eq('user_id', userId)
+        .eq('language', language)
+        .in('signal', ['seed', 'check_start', 'check', 'pseudo'])
+        .order('created_at', { ascending: true })
+        .limit(300),
+    ]);
+    if (history.error) throw history.error;
+    if (starts.error) throw starts.error;
+    return { rows: history.data ?? [], startRows: starts.data ?? [] };
+  } catch (error) {
+    console.warn(`${FILE_TAG} history fetch failed:`, error?.message ?? error);
+    return { rows: [], startRows: [] };
+  }
+};
