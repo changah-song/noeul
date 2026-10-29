@@ -889,4 +889,7 @@ export const syncUserDataFromCloud = async ({ user, ownerId, generation }) => {
   } catch (error) {
     console.warn('[userDataSync] Ability log push failed:', error?.message ?? error);
   }
+
+  // A whole pass ran (the early returns above mean it was skipped).
+  return true;
 };

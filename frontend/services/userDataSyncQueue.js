@@ -1,6 +1,15 @@
+import { markSyncPending } from './syncStatus';
+
 const subscribers = new Set();
 
+// Requests that ask for a sync without changing anything locally.
+const NO_CHANGE_REASONS = new Set(['manual', 'network-restored']);
+
 export const requestUserDataSync = (reason = 'local-user-data-change') => {
+  if (!NO_CHANGE_REASONS.has(reason)) {
+    markSyncPending();
+  }
+
   const request = {
     reason,
     requestedAt: Date.now(),

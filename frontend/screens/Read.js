@@ -126,6 +126,7 @@ import { bookIndexLanguages, tagPreprocessCacheEntries } from '../services/prepr
 import { selectExposureCredits } from '../services/readerExposure';
 import useSavedWordFades from '../hooks/useSavedWordFades';
 import { ONBOARDING_FLOW_SEEN_KEY } from './Onboarding';
+import { getSyncStatus, markSyncPending, subscribeSyncStatus } from '../services/syncStatus';
 import CoachTip from '../components/Tips/CoachTip';
 import useCoachTip from '../hooks/useCoachTip';
 import {
@@ -1092,11 +1093,31 @@ const Read = ({
                 ownerId,
                 generation,
                 book,
+            }).then(() => {
+                failedProgressBookRef.current = null;
             }).catch((error) => {
+                // Offline, most likely: Profile shows "not synced yet", and the
+                // push runs again when the network is back (below).
+                failedProgressBookRef.current = book;
+                markSyncPending();
                 console.warn('[Read] Cloud progress sync failed:', error);
             });
         }, 3000);
     }, [activeOwnerId, syncGeneration, syncPaused, user]);
+
+    const failedProgressBookRef = useRef(null);
+    const scheduleCloudProgressSyncRef = useRef(scheduleCloudProgressSync);
+    scheduleCloudProgressSyncRef.current = scheduleCloudProgressSync;
+    useEffect(() => {
+        let wasOnline = getSyncStatus().online;
+        return subscribeSyncStatus((status) => {
+            const cameBack = status.online && !wasOnline;
+            wasOnline = status.online;
+            if (cameBack && failedProgressBookRef.current) {
+                scheduleCloudProgressSyncRef.current(failedProgressBookRef.current);
+            }
+        });
+    }, []);
 
     const handleWordSave = useCallback((word, options = {}) => {
         const { includeSurface = true } = options;
