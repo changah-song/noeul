@@ -1894,6 +1894,9 @@ const Learn = ({ navigation, user }) => {
           >
             <Text
               numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.7}
+              maxFontSizeMultiplier={1.2}
               style={[styles.reviewButtonText, reviewCount === 0 && styles.reviewButtonTextDisabled]}
             >
               {reviewLabel}
@@ -1905,7 +1908,15 @@ const Learn = ({ navigation, user }) => {
               onPress={() => navigation?.navigate?.('Read', { returnTo: 'Learn' })}
               style={styles.keepReadingButton}
             >
-              <Text numberOfLines={1} style={styles.keepReadingText}>{t('learn.keepReading')}</Text>
+              <Text
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.7}
+                maxFontSizeMultiplier={1.2}
+                style={styles.keepReadingText}
+              >
+                {t('learn.keepReading')}
+              </Text>
             </TouchableOpacity>
           ) : null}
           {words.length > 0 ? (
@@ -2204,7 +2215,7 @@ const createStyles = (colors) => StyleSheet.create({
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 12,
+    paddingHorizontal: 8,
     backgroundColor: colors.inkSlate,
   },
   // Disabled reads as a quiet muted block with muted text, never a faded
@@ -2229,7 +2240,7 @@ const createStyles = (colors) => StyleSheet.create({
     backgroundColor: colors.surface,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 12,
+    paddingHorizontal: 8,
   },
   listenButton: {
     width: 46,

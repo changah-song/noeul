@@ -1464,7 +1464,7 @@ const FeaturedCarouselItem = memo(({
     );
 });
 
-const FeaturedBookCarousel = ({ books, screenWidth, onResumeBook, onPressBook }) => {
+const FeaturedBookCarousel = ({ books, screenWidth, onResumeBook, onPressBook, opening = false }) => {
     const { t } = useTranslation();
     const { homeColors: HOME_COLORS, styles } = useHomeTheme();
     const scrollRef = useRef(null);
@@ -1591,15 +1591,25 @@ const FeaturedBookCarousel = ({ books, screenWidth, onResumeBook, onPressBook })
                     <View style={styles.heroProgressRail}>
                         <View style={[styles.heroProgressFill, { width: `${progressPercent}%` }]} />
                     </View>
+                    {/* Greys out with a spinner the moment it's pressed: opening a
+                        free book copies it in first, which takes a moment. */}
                     <TouchableOpacity
                         accessibilityRole="button"
                         accessibilityLabel={t('home.resume')}
+                        accessibilityState={{ busy: opening, disabled: opening }}
                         activeOpacity={0.88}
+                        disabled={opening}
                         onPress={() => onResumeBook(activeBook)}
-                        style={styles.heroResumeButton}
+                        style={[styles.heroResumeButton, opening && styles.heroResumeButtonOpening]}
                     >
-                        <Text style={styles.heroResumeText}>{t('home.resume')}</Text>
-                        <Feather name="arrow-right" size={17} color={HOME_COLORS.onAccent} />
+                        <Text style={[styles.heroResumeText, opening && styles.heroResumeTextOpening]}>
+                            {t('home.resume')}
+                        </Text>
+                        {opening ? (
+                            <ActivityIndicator size="small" color={HOME_COLORS.tertiary} />
+                        ) : (
+                            <Feather name="arrow-right" size={17} color={HOME_COLORS.onAccent} />
+                        )}
                     </TouchableOpacity>
                 </View>
             </View>
@@ -3261,17 +3271,25 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         setSelectedBookPreview({ book, index });
     }, [activeBookMenuKey]);
 
-    const handleResumeFeaturedBook = useCallback((book) => {
+    // Set from the press until the reader takes over (or the open fails).
+    const [openingBook, setOpeningBook] = useState(false);
+    useFocusEffect(useCallback(() => () => setOpeningBook(false), []));
+    const handleResumeFeaturedBook = useCallback(async (book) => {
         if (!book) {
             return;
         }
 
-        if (book.publicDomain) {
-            handlePublicDomainBookPress(book);
-            return;
+        setOpeningBook(true);
+        try {
+            if (book.publicDomain) {
+                await handlePublicDomainBookPress(book);
+            } else {
+                handleBookPress(book);
+            }
+        } finally {
+            // Still here (the open failed or was a download): let go.
+            setTimeout(() => setOpeningBook(false), 800);
         }
-
-        handleBookPress(book);
     }, [handleBookPress, handlePublicDomainBookPress]);
 
     const handleReadPreviewBook = useCallback(() => {
@@ -4229,6 +4247,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                         books={featuredBooks}
                         screenWidth={width}
                         onResumeBook={handleResumeFeaturedBook}
+                        opening={openingBook}
                         onPressBook={handleBookPreviewPress}
                     />
                 ) : null}
@@ -4959,6 +4978,12 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         marginTop: Spacing.xl2,
         borderRadius: 14,
         backgroundColor: HOME_COLORS.accent,
+    },
+    heroResumeButtonOpening: {
+        backgroundColor: HOME_COLORS.surface2,
+    },
+    heroResumeTextOpening: {
+        color: HOME_COLORS.tertiary,
     },
     heroResumeText: {
         fontFamily: fontFamilies.sansSemiBold,

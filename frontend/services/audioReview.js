@@ -65,22 +65,7 @@ export const pickSentence = (contexts = [], word = '') => {
 // How many times the word and its meaning are read before the sentence.
 export const AUDIO_REVIEW_REPEATS = [1, 2, 3, 5];
 
-// The utterances for one word, for listenPlayer.speakSequence. Parts that are
-// missing (no sentence, no translation yet) are skipped. `repeat` reads the
-// word and its meaning that many times before the sentence.
-export const buildAudioReviewScript = ({
-  word,
-  meaning,
-  sentence,
-  translation,
-  targetLocale,
-  interfaceLocale,
-  rate,
-  pitch = 1,
-  // The voices chosen in listen mode, by locale (en-US, ko-KR, ...).
-  voices = {},
-  repeat = 1,
-}) => {
+const speaker = ({ rate, pitch = 1, voices = {} }) => {
   const items = [];
   const say = (text, locale, pauseMs) => {
     const spoken = clean(text);
@@ -88,13 +73,60 @@ export const buildAudioReviewScript = ({
     items.push({ text: spoken, locale, rate, pitch, voice: voices?.[locale] || null });
     if (pauseMs) items.push({ pauseMs });
   };
+  return { items, say };
+};
+
+// The word and its meaning, `repeat` times (utterances for
+// listenPlayer.speakSequence).
+export const buildAudioReviewWordPart = ({
+  word,
+  meaning,
+  targetLocale,
+  interfaceLocale,
+  repeat = 1,
+  ...voice
+}) => {
+  const { items, say } = speaker(voice);
   const times = Math.max(1, Math.min(10, Math.round(Number(repeat) || 1)));
   for (let index = 0; index < times; index += 1) {
     say(word, targetLocale, AUDIO_REVIEW_PAUSES.afterWord);
     say(meaning, interfaceLocale, AUDIO_REVIEW_PAUSES.afterMeaning);
   }
+  return items;
+};
+
+// The sentence and its translation, then the pause before the next word.
+// Missing parts (no sentence, no translation yet) are skipped.
+export const buildAudioReviewSentencePart = ({
+  sentence,
+  translation,
+  targetLocale,
+  interfaceLocale,
+  ...voice
+}) => {
+  const { items, say } = speaker(voice);
   say(sentence, targetLocale, AUDIO_REVIEW_PAUSES.afterSentence);
   say(translation, interfaceLocale, 0);
   items.push({ pauseMs: AUDIO_REVIEW_PAUSES.betweenWords });
   return items;
+};
+
+// The utterances for one word: the word part, then the sentence part.
+export const buildAudioReviewScript = (args) => [
+  ...buildAudioReviewWordPart(args),
+  ...buildAudioReviewSentencePart(args),
+];
+
+// Words met in the same sentence, moved next to each other (where the first
+// of them was), so audio review reads that sentence once for all of them.
+// `sentenceOf(item)` is the sentence an item will be read with, or null.
+export const groupBySentence = (items, sentenceOf) => {
+  const groups = new Map();
+  items.forEach((item, index) => {
+    const sentence = clean(sentenceOf(item, index));
+    const key = sentence ? `s:${sentence}` : `i:${index}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  });
+  return [...groups.values()].flat();
 };

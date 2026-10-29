@@ -1,6 +1,9 @@
 import {
   AUDIO_REVIEW_PAUSES,
   buildAudioReviewScript,
+  buildAudioReviewSentencePart,
+  buildAudioReviewWordPart,
+  groupBySentence,
   pickSentence,
   shortMeaning,
   spokenMeaning,
@@ -99,5 +102,21 @@ describe('buildAudioReviewScript', () => {
       word: '호랑이', meaning: 'tiger', targetLocale: 'ko-KR', interfaceLocale: 'en-US', rate: 1,
     });
     expect(items.filter((item) => item.text).map((item) => item.text)).toEqual(['호랑이', 'tiger']);
+  });
+
+  it('moves words that share a sentence next to each other', () => {
+    const sentence = { a: 'S1', b: 'S2', c: 'S1', d: null, e: 'S2' };
+    expect(groupBySentence(['a', 'b', 'c', 'd', 'e'], (word) => sentence[word])).toEqual(['a', 'c', 'b', 'e', 'd']);
+  });
+
+  it('splits a word into its word part and its sentence part', () => {
+    const args = {
+      word: 'hollow', meaning: '분지', sentence: 'A brook ran through the hollow.', translation: '시내가 분지를 지나갔다.',
+      targetLocale: 'en-US', interfaceLocale: 'ko-KR', rate: 1,
+    };
+    const texts = (items) => items.filter((item) => item.text).map((item) => item.text);
+    expect(texts(buildAudioReviewWordPart(args))).toEqual(['hollow', '분지']);
+    expect(texts(buildAudioReviewSentencePart(args))).toEqual(['A brook ran through the hollow.', '시내가 분지를 지나갔다.']);
+    expect(buildAudioReviewScript(args)).toEqual([...buildAudioReviewWordPart(args), ...buildAudioReviewSentencePart(args)]);
   });
 });
