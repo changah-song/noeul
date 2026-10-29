@@ -366,6 +366,23 @@ describe('guest import moves learning-signal tables (bug 6)', () => {
   });
 });
 
+describe('guest import into an account that already has words', () => {
+  it('merges the same word into one row and moves the rest', async () => {
+    const guest = 'guest';
+    await insertData('사과', '', 'apple', { ownerId: OWNER, profileId: PROFILE });
+    await insertData('사과', '', 'apple', { ownerId: guest, profileId: 'ko_default' });
+    await insertData('학교', '學校', 'school', { ownerId: guest, profileId: 'ko_default' });
+    await run(`UPDATE vocab SET level = 'learned', correct_count = 4 WHERE owner_id = ? AND word = '사과'`, [guest]);
+
+    await reassignSqliteUserData(guest, OWNER);
+
+    expect(await queryAll('SELECT COUNT(*) AS n FROM vocab WHERE owner_id = ?', [guest])).toEqual([{ n: 0 }]);
+    const rows = await queryAll('SELECT word, level, correct_count FROM vocab WHERE owner_id = ? ORDER BY word', [OWNER]);
+    expect(rows.map((row) => row.word)).toEqual(['사과', '학교']);
+    expect(rows[0]).toMatchObject({ level: 'learned', correct_count: 4 });
+  });
+});
+
 describe('un-marking a related known word leaves a tombstone (bug 7)', () => {
   it('records the un-mark for sync and clears it on re-mark', async () => {
     await insertData('학교', '學校', 'school', { ownerId: OWNER, profileId: PROFILE });

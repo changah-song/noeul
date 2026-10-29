@@ -47,7 +47,7 @@ import Read from './screens/Read';
 // Write screen is shelved: kept on disk (screens/Write.js) but no longer routed.
 // To un-shelf, restore this import and the <Tab.Screen name="Write"> block below.
 // import Write from './screens/Write';
-import { GUEST_OWNER_ID, getLocalOwnerId } from './services/localDataScope';
+import { GUEST_OWNER_ID, getLocalOwnerId, isAccountUser } from './services/localDataScope';
 import {
     getActiveOwnerId,
     resumeCloudSync,
@@ -55,7 +55,8 @@ import {
 } from './services/localOwnerCoordinator';
 import { getLegacyMigrationStatus } from './services/localOwnerMigration';
 import { applyOwnershipDecision } from './services/localOwnershipDecisions';
-import { hasLocalUserData } from './services/localUserData';
+import { hasLocalUserData, reassignLocalUserData } from './services/localUserData';
+import { accountHasCloudData } from './services/supabase';
 import { getRuntimeInterfaceLanguage, loadRuntimeInterfaceLanguage } from './services/interfaceLanguage';
 import { translate } from './i18n/translations';
 import { getUserFacingErrorMessage } from './i18n/userFacing';
@@ -185,8 +186,16 @@ function AppContent() {
             const authEvent = user?.id ? 'SESSION_RESTORED' : 'SIGNED_OUT';
 
             try {
+                // Earlier versions kept an anonymous session's data under its
+                // user id; it is the guest's now (local until sign-in).
+                if (user?.id && !isAccountUser(user) && await hasLocalUserData(user.id)) {
+                    await reassignLocalUserData(user.id, GUEST_OWNER_ID);
+                }
                 const migrationStatus = await getLegacyMigrationStatus({ user });
                 const hasGuestData = await hasLocalUserData(GUEST_OWNER_ID);
+                const hasRemoteData = hasGuestData && isAccountUser(user)
+                    ? await accountHasCloudData(user.id)
+                    : false;
                 if (!isActive) {
                     return;
                 }
@@ -197,7 +206,7 @@ function AppContent() {
                     authEvent,
                     user,
                     hasGuestData,
-                    hasRemoteData: false,
+                    hasRemoteData,
                     hasLegacyDecisionRequired: migrationStatus.requiresDecision,
                 });
                 if (!isActive) {
@@ -240,7 +249,8 @@ function AppContent() {
         return () => {
             isActive = false;
         };
-    }, [loading, user?.id]);
+        // is_anonymous: signing up from an anonymous session keeps the user id.
+    }, [loading, user?.id, user?.is_anonymous]);
 
     useEffect(() => {
         if (

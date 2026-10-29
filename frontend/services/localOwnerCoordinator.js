@@ -1,4 +1,4 @@
-import { GUEST_OWNER_ID, getLocalOwnerId } from './localDataScope';
+import { GUEST_OWNER_ID, getLocalOwnerId, isAccountUser } from './localDataScope';
 
 let activeOwnerId = GUEST_OWNER_ID;
 let syncPaused = false;
@@ -125,7 +125,7 @@ export const transitionLocalOwner = async ({
   let shouldResumeCloudSync = false;
 
   try {
-    if (!user?.id) {
+    if (!isAccountUser(user)) {
       switchActiveOwner(GUEST_OWNER_ID, { bumpGeneration: false });
       clearOwnershipDecision();
       return { status: 'switched', ownerId: GUEST_OWNER_ID, generation };
@@ -172,7 +172,7 @@ export const transitionLocalOwner = async ({
 
 export const assertCanUploadForOwner = ({ ownerId, user }) => {
   const userOwnerId = getLocalOwnerId(user);
-  if (!user?.id || ownerId !== userOwnerId) {
+  if (!isAccountUser(user) || ownerId !== userOwnerId) {
     throw new Error('Refusing cloud upload for inactive or mismatched local owner');
   }
 };

@@ -230,10 +230,6 @@ export const reassignLocalUserData = async (fromOwnerId = GUEST_OWNER_ID, toOwne
     return;
   }
 
-  if (await hasSqliteUserData(targetOwnerId)) {
-    throw new Error('Refusing to reassign local user data because target owner already has SQLite rows');
-  }
-
   const sourceKeys = getOwnerStorageKeys(sourceOwnerId);
   const targetKeys = getOwnerStorageKeys(targetOwnerId);
   const [sourcePairs, targetPairs] = await Promise.all([
