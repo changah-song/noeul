@@ -1,4 +1,5 @@
 import { getVocabTiers } from './vocabSizeLevels';
+import { seedThetaFromRank } from './abilityModel';
 
 // The reader's level in words a person can read: "about 1,200–2,000 words"
 // (Korean, a frequency grid) or "B1–B2" / "HSK 3–4" (English, Chinese). The
@@ -41,7 +42,7 @@ export const wordsForTheta = (language, theta) => {
 };
 
 // Two significant figures: 1,234 -> 1,200; 87 -> 90.
-const roundWords = (words) => {
+export const roundWords = (words) => {
   if (!Number.isFinite(words) || words <= 0) return 0;
   const magnitude = 10 ** Math.max(0, Math.floor(Math.log10(words)) - 1);
   return Math.round(words / magnitude) * magnitude;
@@ -140,4 +141,62 @@ export const startingTheta = (rows) => {
     }
   }
   return Number.isFinite(theta) ? theta : null;
+};
+
+// ─── The level on the language's own scale, and small goals ──────────────────
+
+const KO_RANKS = [1, 2, 3, 4, 5, 6];
+
+/**
+ * levelPlaceForTheta — where a level sits on the language's own scale:
+ * Korean's six reading levels (`{ scale: 'ko', rank, nextRank }`), or the
+ * HSK / CEFR tier (`{ scale: 'tier', label, nextLabel }`), each with the words
+ * known at the next one (`nextWords`, null at the top).
+ */
+export const levelPlaceForTheta = (language, theta) => {
+  const value = Number(theta);
+  if (language === 'ko') {
+    let rank = 1;
+    KO_RANKS.forEach((candidate) => {
+      if (seedThetaFromRank('ko', candidate) <= value + 1e-6) rank = candidate;
+    });
+    const nextRank = rank < KO_RANKS.length ? rank + 1 : null;
+    return {
+      scale: 'ko',
+      rank,
+      nextRank,
+      nextWords: nextRank ? wordsForTheta(language, seedThetaFromRank('ko', nextRank)) : null,
+    };
+  }
+  const tiers = getVocabTiers(language);
+  let index = 0;
+  tiers.forEach((tier, i) => {
+    if (tier.theta <= value + 1e-6) index = i;
+  });
+  const next = tiers[index + 1] ?? null;
+  return {
+    scale: 'tier',
+    label: tiers[index]?.label ?? null,
+    nextLabel: next?.label ?? null,
+    nextWords: next ? next.threshold : null,
+  };
+};
+
+// Small goals between levels: every 100 words early on, then 250, 500, 1,000.
+export const goalStep = (words) => {
+  if (words < 1000) return 100;
+  if (words < 3000) return 250;
+  if (words < 10000) return 500;
+  return 1000;
+};
+
+/**
+ * wordGoal — the goal just passed and the next one, and how far along:
+ * `{ reached, next, progress }` with progress in 0..1.
+ */
+export const wordGoal = (words) => {
+  const value = Math.max(0, Number(words) || 0);
+  const step = goalStep(value);
+  const reached = Math.floor(value / step) * step;
+  return { reached, next: reached + step, progress: (value - reached) / step };
 };

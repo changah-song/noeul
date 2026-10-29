@@ -1,4 +1,12 @@
-import { dailyLevelSeries, describeLevel, levelRange, startingTheta, wordsForTheta } from '../levelSummary';
+import {
+  dailyLevelSeries,
+  describeLevel,
+  levelPlaceForTheta,
+  levelRange,
+  startingTheta,
+  wordGoal,
+  wordsForTheta,
+} from '../levelSummary';
 
 describe('describing the reader level', () => {
   it('turns a level and its spread into an 80% range, inside the scale', () => {
@@ -68,5 +76,28 @@ describe('where the reader started', () => {
 
   it('is unknown without a start', () => {
     expect(startingTheta([])).toBeNull();
+  });
+});
+
+describe('the level on the language scale, and goals', () => {
+  it('places Korean on its six reading levels, with the next one', () => {
+    // Ranks sit at -3, -1.8, -0.6, 0.6, 1.8, 3.
+    expect(levelPlaceForTheta('ko', 0)).toMatchObject({ scale: 'ko', rank: 3, nextRank: 4 });
+    expect(levelPlaceForTheta('ko', -3)).toMatchObject({ rank: 1, nextRank: 2 });
+    expect(levelPlaceForTheta('ko', 3).nextRank).toBeNull();
+  });
+
+  it('places English and Chinese on CEFR and HSK', () => {
+    expect(levelPlaceForTheta('en', -0.6)).toMatchObject({ scale: 'tier', label: 'B1', nextLabel: 'B2', nextWords: 3878 });
+    expect(levelPlaceForTheta('zh', 0.5)).toMatchObject({ label: 'HSK 4', nextLabel: 'HSK 5' });
+  });
+
+  it('sets small goals that grow with the level', () => {
+    const early = wordGoal(730);
+    expect(early).toMatchObject({ reached: 700, next: 800 });
+    expect(early.progress).toBeCloseTo(0.3);
+    expect(wordGoal(1600)).toMatchObject({ reached: 1500, next: 1750 });
+    expect(wordGoal(4200)).toMatchObject({ reached: 4000, next: 4500 });
+    expect(wordGoal(12500)).toMatchObject({ reached: 12000, next: 13000 });
   });
 });

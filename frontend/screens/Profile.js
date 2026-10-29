@@ -18,6 +18,7 @@ import { AuthModal } from './Auth';
 import { deleteCurrentUserProfile } from '../services/accountDeletion';
 import { Screen } from '../components/ui';
 import WordCheckModal, { OptionSheet } from '../components/shared/WordCheckModal';
+import LevelAdjustSheet from '../components/shared/LevelAdjustSheet';
 import { hasVocabSizeGrid } from '../services/vocabSizeLevels';
 import { hasWordCheck } from '../services/wordCheck';
 import { daysUntilWordCheck } from '../services/wordCheckSchedule';
@@ -165,29 +166,12 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
     // The level isn't set here (that would wipe what reading has taught the
     // model): underlines that feel off get the reader's underline slider, or
     // the word check, which adds evidence (once a week).
-    const openLevelAdjust = useCallback(() => {
-        const buttons = [
-            {
-                text: t('level.adjustSlider'),
-                onPress: () => navigation?.navigate?.('Read', { openSettings: 'words' }),
-            },
-        ];
-        if (hasWordCheck(targetLanguage)) {
-            buttons.push({
-                text: t('level.adjustCheck'),
-                onPress: async () => {
-                    const days = await daysUntilWordCheck(activeOwnerId, activeProfileId, targetLanguage);
-                    if (days > 0) {
-                        Alert.alert('', t('level.checkWait', { count: days }));
-                        return;
-                    }
-                    setShowWordCheck(true);
-                },
-            });
-        }
-        buttons.push({ text: t('common.cancel'), style: 'cancel' });
-        Alert.alert(t('level.adjustTitle'), t('level.adjustBody'), buttons);
-    }, [activeOwnerId, activeProfileId, navigation, t, targetLanguage]);
+    const [showLevelAdjust, setShowLevelAdjust] = useState(false);
+    const [checkDaysLeft, setCheckDaysLeft] = useState(0);
+    const openLevelAdjust = useCallback(async () => {
+        setCheckDaysLeft(await daysUntilWordCheck(activeOwnerId, activeProfileId, targetLanguage));
+        setShowLevelAdjust(true);
+    }, [activeOwnerId, activeProfileId, targetLanguage]);
 
     const goBack = () => {
         if (navigation?.canGoBack?.()) {
@@ -513,6 +497,22 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
             </ScrollView>
 
             <WordCheckModal visible={showWordCheck} onClose={() => setShowWordCheck(false)} />
+
+            <LevelAdjustSheet
+                visible={showLevelAdjust}
+                onClose={() => setShowLevelAdjust(false)}
+                checkDaysLeft={checkDaysLeft}
+                onUnderlines={() => {
+                    setShowLevelAdjust(false);
+                    navigation?.navigate?.('Read', { openSettings: 'words' });
+                }}
+                onCheck={hasWordCheck(targetLanguage)
+                    ? () => {
+                        setShowLevelAdjust(false);
+                        setShowWordCheck(true);
+                    }
+                    : undefined}
+            />
 
             <OptionSheet
                 visible={showTargetLanguagePicker}
