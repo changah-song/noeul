@@ -41,6 +41,7 @@ import {
 import { fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
 import ProfileAvatar from '../components/shared/ProfileAvatar';
 import { resetTips } from '../services/tips';
+import LevelCard from '../components/shared/LevelCard';
 
 const getProfileColors = (themeColors) => ({
     bg: themeColors.bgPage,
@@ -368,6 +369,17 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
                         </TouchableOpacity>
                     ) : null}
                 </View>
+
+                {showVocabRow ? (
+                    <>
+                        <Text style={styles.sectionLabel}>{t('level.title')}</Text>
+                        <LevelCard
+                            ownerId={activeOwnerId}
+                            profileId={activeProfileId}
+                            language={targetLanguage}
+                        />
+                    </>
+                ) : null}
 
                 <Text style={styles.sectionLabel}>{t('profile.sectionLearning')}</Text>
                 <View style={styles.card}>

@@ -265,4 +265,26 @@ export const reassignLocalUserData = async (fromOwnerId = GUEST_OWNER_ID, toOwne
   if (sourceKeysToRemove.length > 0) {
     await AsyncStorage.multiRemove(sourceKeysToRemove);
   }
+
+  await reassignLevelPicks(sourceOwnerId, targetOwnerId);
+};
+
+// The level picked per language (VocabLevelModal's `vocabLevelPick:<owner>:...`
+// keys) moves too, unless the target already picked one there.
+const reassignLevelPicks = async (sourceOwnerId, targetOwnerId) => {
+  try {
+    const prefix = `vocabLevelPick:${sourceOwnerId}:`;
+    const keys = (await AsyncStorage.getAllKeys()).filter((key) => key.startsWith(prefix));
+    if (keys.length === 0) return;
+    const pairs = await AsyncStorage.multiGet(keys);
+    const targetKeys = keys.map((key) => `vocabLevelPick:${targetOwnerId}:${key.slice(prefix.length)}`);
+    const existing = new Map(await AsyncStorage.multiGet(targetKeys));
+    const writes = pairs
+      .map(([, value], index) => [targetKeys[index], value])
+      .filter(([key, value]) => value != null && existing.get(key) == null);
+    if (writes.length > 0) await AsyncStorage.multiSet(writes);
+    await AsyncStorage.multiRemove(keys);
+  } catch (error) {
+    console.warn('[localUserData] Could not move level picks:', error?.message ?? error);
+  }
 };
