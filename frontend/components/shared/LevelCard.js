@@ -3,7 +3,8 @@ import { Text, TouchableOpacity, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { fontFamilies, useTheme } from '../../theme';
 import { useTranslation } from '../../hooks/useTranslation';
-import { formatNumber } from '../../services/interfaceLanguage';
+import { formatDate, formatNumber } from '../../services/interfaceLanguage';
+import { fetchCloudLevelHistory } from '../../services/abilityLogCloudSync';
 import {
     getDailyAbilityLog,
     getLevelStartLog,
@@ -11,8 +12,10 @@ import {
     onReaderLevelChanged,
 } from '../../services/Database';
 import {
-    dailyLevelSeries,
     describeLevel,
+    LEVEL_CHART_RANGES,
+    levelChartSeries,
+    chartColumnFor,
     levelPlaceForTheta,
     levelRange,
     roundWords,
@@ -42,12 +45,13 @@ const KO_BANDS = ['bookLevel.koBeginner', 'bookLevel.koIntermediate', 'bookLevel
  * The level isn't set here: "Underlines feel off?" (`onAdjust`) offers the
  * underline slider or the word check instead.
  */
-const LevelCard = ({ ownerId, profileId, language, onAdjust }) => {
+const LevelCard = ({ ownerId, profileId, language, userId, onAdjust }) => {
     const { colors } = useTheme();
     const { t } = useTranslation();
     const styles = useMemo(() => createStyles(colors), [colors]);
     const [ability, setAbility] = useState(null);
-    const [series, setSeries] = useState([]);
+    const [logRows, setLogRows] = useState([]);
+    const [chartRange, setChartRange] = useState('30');
     const [startTheta, setStartTheta] = useState(null);
     const [milestones, setMilestones] = useState(null);
     const [version, setVersion] = useState(0);
@@ -57,11 +61,16 @@ const LevelCard = ({ ownerId, profileId, language, onAdjust }) => {
     useEffect(() => {
         let cancelled = false;
         (async () => {
-            const [row, log, startLog] = await Promise.all([
+            const [row, localLog, localStart, cloud] = await Promise.all([
                 getProfileAbility({ ownerId, profileId, language }).catch(() => null),
                 getDailyAbilityLog({ ownerId, profileId, language }).catch(() => []),
                 getLevelStartLog({ ownerId, profileId, language }).catch(() => []),
+                // The account's history too: a new or cleared phone has little.
+                userId ? fetchCloudLevelHistory(userId, language) : { rows: [], startRows: [] },
             ]);
+            const byTime = (a, b) => String(a.created_at).localeCompare(String(b.created_at));
+            const log = [...localLog, ...cloud.rows];
+            const startLog = [...localStart, ...cloud.startRows].sort(byTime);
             const rowTheta = Number(row?.theta);
             let record = await loadMilestones(ownerId, profileId, language);
             // Goals count once reading (not just the starting point) has moved
@@ -72,14 +81,14 @@ const LevelCard = ({ ownerId, profileId, language, onAdjust }) => {
             }
             if (cancelled) return;
             setAbility(row);
-            setSeries(dailyLevelSeries(log, { days: CHART_DAYS }));
+            setLogRows(log);
             setStartTheta(startingTheta(startLog));
             setMilestones(record);
         })();
         return () => {
             cancelled = true;
         };
-    }, [language, ownerId, profileId, version]);
+    }, [language, ownerId, profileId, userId, version]);
 
     const theta = Number(ability?.theta);
     const variance = Number(ability?.theta_var ?? 2);
@@ -119,6 +128,16 @@ const LevelCard = ({ ownerId, profileId, language, onAdjust }) => {
         setMilestones((current) => (current ? { ...current, celebrated: celebrate } : current));
     };
 
+    // The chart: the chosen range's columns, or at least today.
+    const chart = levelChartSeries(logRows, chartRange);
+    const series = chart.points.length > 0
+        ? chart.points
+        : [{ day: 'today', index: chart.columns - 1, theta, variance }];
+    const lastColumn = Math.max(1, chart.columns - 1);
+    const startLabel = chartRange === '30'
+        ? t('level.chartStart', { count: CHART_DAYS })
+        : formatDate(`${chart.startDay}T12:00:00Z`, { month: 'short', day: 'numeric', year: chartRange === 'all' ? 'numeric' : undefined });
+
     // The chart's vertical scale: the data's spread with a little room,
     // inside the model's -3..3.
     const lows = series.map((point) => levelRange(point.theta, point.variance).low);
@@ -130,7 +149,7 @@ const LevelCard = ({ ownerId, profileId, language, onAdjust }) => {
     const yMin = Math.max(THETA_MIN, Math.min(...lows, range.low) - 0.3);
     const yMax = Math.min(THETA_MAX, Math.max(...highs, range.high) + 0.3);
     const y = (value) => CHART_HEIGHT * (1 - (value - yMin) / Math.max(0.01, yMax - yMin));
-    const goalDays = new Set(reachedGoals.map((item) => String(item.at || '').slice(0, 10)));
+    const goalColumns = new Set(reachedGoals.map((item) => chartColumnFor(item.at, chart)).filter((column) => column != null));
 
     return (
         <View style={styles.card}>
@@ -190,7 +209,7 @@ const LevelCard = ({ ownerId, profileId, language, onAdjust }) => {
                 ) : null}
             </View>
 
-            {series.length > 1 ? (
+            {series.length > 0 ? (
                 <View accessible accessibilityLabel={t('level.chartA11y')} style={styles.chartBlock}>
                     <View style={[styles.chart, { height: CHART_HEIGHT }]}>
                         {startTheta != null ? (
@@ -198,7 +217,7 @@ const LevelCard = ({ ownerId, profileId, language, onAdjust }) => {
                         ) : null}
                         {series.map((point) => {
                             const band = levelRange(point.theta, point.variance);
-                            const left = `${(point.index / (CHART_DAYS - 1)) * 100}%`;
+                            const left = `${(point.index / lastColumn) * 100}%`;
                             return (
                                 <View key={point.day} style={[styles.day, { left }]}>
                                     <View
@@ -208,7 +227,7 @@ const LevelCard = ({ ownerId, profileId, language, onAdjust }) => {
                                         ]}
                                     />
                                     <View style={[styles.dot, { top: y(point.theta) - 3 }]} />
-                                    {goalDays.has(point.day) ? (
+                                    {goalColumns.has(point.index) ? (
                                         <View style={[styles.flag, { top: Math.max(0, y(band.high) - 14) }]}>
                                             <Feather name="flag" size={11} color={colors.danger} />
                                         </View>
@@ -218,8 +237,23 @@ const LevelCard = ({ ownerId, profileId, language, onAdjust }) => {
                         })}
                     </View>
                     <View style={styles.axis}>
-                        <Text style={styles.axisText}>{t('level.chartStart', { count: CHART_DAYS })}</Text>
+                        <Text style={styles.axisText}>{startLabel}</Text>
                         <Text style={styles.axisText}>{t('level.chartEnd')}</Text>
+                    </View>
+                    <View style={styles.ranges} accessibilityRole="radiogroup">
+                        {LEVEL_CHART_RANGES.map((key) => (
+                            <TouchableOpacity
+                                key={key}
+                                onPress={() => setChartRange(key)}
+                                style={[styles.rangeChip, chartRange === key && styles.rangeChipActive]}
+                                accessibilityRole="radio"
+                                accessibilityState={{ selected: chartRange === key }}
+                            >
+                                <Text style={[styles.rangeText, chartRange === key && styles.rangeTextActive]}>
+                                    {t(`level.range${key === 'all' ? 'All' : key}`)}
+                                </Text>
+                            </TouchableOpacity>
+                        ))}
                     </View>
                 </View>
             ) : null}
@@ -397,6 +431,32 @@ const createStyles = (colors) => ({
         marginTop: 6,
         flexDirection: 'row',
         justifyContent: 'space-between',
+    },
+    ranges: {
+        marginTop: 10,
+        flexDirection: 'row',
+        gap: 6,
+    },
+    rangeChip: {
+        height: 28,
+        paddingHorizontal: 12,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: colors.border,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    rangeChipActive: {
+        backgroundColor: colors.text,
+        borderColor: colors.text,
+    },
+    rangeText: {
+        fontFamily: fontFamilies.sansMedium,
+        fontSize: 12.5,
+        color: colors.textSecondary,
+    },
+    rangeTextActive: {
+        color: colors.surface,
     },
     axisText: {
         fontFamily: fontFamilies.sansRegular,

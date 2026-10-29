@@ -110,6 +110,9 @@ const EXTRAS = [
     { key: 'scan', icon: 'maximize', labelKey: 'onboarding.extraScan' },
     { key: 'songs', icon: 'music', labelKey: 'onboarding.extraSongs' },
     { key: 'cards', icon: 'layers', labelKey: 'onboarding.extraFlashcards' },
+    { key: 'audio', icon: 'play-circle', labelKey: 'onboarding.extraAudio' },
+    { key: 'level', icon: 'bar-chart-2', labelKey: 'onboarding.extraLevel' },
+    { key: 'more', icon: 'more-horizontal', labelKey: 'onboarding.extraMore' },
 ];
 
 // The demo sentence on the "How reading works" card: a word with a level
@@ -508,11 +511,20 @@ const Onboarding = ({ onDone }) => {
                 </View>
                 <View style={styles.gestureRow}>
                     <View style={styles.gestureIcon}>
-                        <MaterialIcons name="translate" size={20} color={colors.inkSlate} />
+                        <MaterialIcons name="auto-awesome" size={20} color={colors.inkSlate} />
                     </View>
                     <View style={styles.gestureCopy}>
                         <Text style={styles.gestureTitle}>{t('onboarding.holdTitle')}</Text>
                         <Text style={styles.gestureDetail}>{t('onboarding.holdDetail')}</Text>
+                    </View>
+                </View>
+                <View style={styles.gestureRow}>
+                    <View style={styles.gestureIcon}>
+                        <MaterialIcons name="subtitles" size={20} color={colors.inkSlate} />
+                    </View>
+                    <View style={styles.gestureCopy}>
+                        <Text style={styles.gestureTitle}>{t('onboarding.sentenceTitle')}</Text>
+                        <Text style={styles.gestureDetail}>{t('onboarding.sentenceDetail')}</Text>
                     </View>
                 </View>
                 <Text style={styles.tourNote}>{t('onboarding.tourNote')}</Text>
@@ -958,12 +970,14 @@ const createStyles = (colors) => StyleSheet.create({
         fontSize: 12,
         color: colors.textTertiary,
     },
+    // Two rows of four.
     extrasRow: {
         flexDirection: 'row',
-        gap: 6,
+        flexWrap: 'wrap',
+        rowGap: 12,
     },
     extra: {
-        flex: 1,
+        width: '25%',
         alignItems: 'center',
         gap: 6,
     },
