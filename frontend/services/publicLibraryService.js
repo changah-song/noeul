@@ -8,6 +8,11 @@ import { supabase } from './supabase';
 // Generated levels (with per-band distributions) for the library's books, keyed
 // by public_library.id: backend/scripts/generate_public_library_levels.py.
 const LIBRARY_LEVELS = require('../assets/data/public-domain/library-levels.generated.json');
+// Bundled covers, genres and descriptions for the library's books.
+const { LIBRARY_META } = require('../assets/data/public-domain/libraryMeta');
+
+/** The small cover bundled with the app for a library book, or null. */
+export const libraryCoverFor = (libraryId) => (libraryId && LIBRARY_META[libraryId]?.cover) || null;
 
 export const PUBLIC_LIBRARY_BUCKET = 'public-library';
 export const PUBLIC_LIBRARY_DIR = `${FileSystem.documentDirectory}public-library/`;
@@ -252,10 +257,10 @@ export const publicLibraryRowToBook = (row = {}, overrides = {}) => {
     coverBackgroundColor: row.cover_background_color ?? null,
     language: targetLanguage,
     targetLanguage,
-    genre: cleanNullableString(row.genre ?? row.category),
+    genre: cleanNullableString(row.genre ?? row.category ?? LIBRARY_META[id]?.genre),
     difficulty: cleanDifficulty(row.difficulty ?? row.level ?? LIBRARY_LEVELS[id]?.level),
     bookLevel: LIBRARY_LEVELS[id] ?? null,
-    snippet: cleanNullableString(row.description ?? row.summary ?? row.snippet),
+    snippet: cleanNullableString(row.description ?? row.summary ?? row.snippet ?? LIBRARY_META[id]?.snippet),
     source: cleanNullableString(
         row.source ?? row.publisher ?? translate(getRuntimeInterfaceLanguage(), 'home.publicLibrarySource')
     ),
