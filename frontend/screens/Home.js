@@ -92,6 +92,7 @@ import {
     fetchPublicLibrary,
     getLocalPath as getPublicLibraryLocalPath,
     isBookDownloaded as isPublicLibraryBookDownloaded,
+    libraryCoverFor,
 } from '../services/publicLibraryService';
 import {
     cloudSongToLocalSong,
@@ -736,6 +737,22 @@ const BookCover = ({ book, width, height, style, titleStyle }) => {
     const { homeColors, styles } = useHomeTheme();
     const coverUri = typeof book?.cover === 'string' ? book.cover.trim() : '';
     const [failedCoverUri, setFailedCoverUri] = useState(null);
+    // A library book not downloaded yet shows the small cover bundled with
+    // the app (assets/data/public-domain/libraryMeta.js).
+    const bundledCover = (!coverUri || coverUri === failedCoverUri)
+        ? libraryCoverFor(book?.publicLibraryId)
+        : null;
+
+    if (bundledCover) {
+        return (
+            <Image
+                source={bundledCover}
+                accessibilityLabel={getBookTitle(book, t)}
+                fadeDuration={0}
+                style={[styles.coverImage, style, { width, height }]}
+            />
+        );
+    }
 
     if (coverUri && coverUri !== failedCoverUri) {
         return (

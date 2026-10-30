@@ -50,7 +50,7 @@ const PACKAGE_CACHE_DIR = 'epub-native-packages';
 const EXTRACTED_BOOK_META_FILE = '.ff-extraction.json';
 const EXTRACTED_EPUB_CACHE_VERSION = 'epub-extraction-v1';
 const EPUB_PACKAGE_CACHE_VERSION = 'native-renderer-css-v7';
-const CHAPTER_CACHE_VERSION = `${EPUB_PACKAGE_CACHE_VERSION}:chapter-blocks-v2`;
+const CHAPTER_CACHE_VERSION = `${EPUB_PACKAGE_CACHE_VERSION}:chapter-blocks-v3`;
 const EPUB_PACKAGE_CACHE = new Map();
 const ZIP_REQUIRED_CACHE_MISS = 'ZIP_REQUIRED_CACHE_MISS';
 
@@ -940,7 +940,22 @@ const normalizeParsedChildren = (children, { trimEdges = false, preserveWhitespa
         return children.filter(hasRenderableContent);
     }
 
-    const normalized = children.filter(hasRenderableContent);
+    // A word space (from whitespace between inline elements) counts only
+    // between inline content: not next to a block, not doubled.
+    const normalized = [];
+    children.filter(hasRenderableContent).forEach((child) => {
+        const previous = normalized[normalized.length - 1];
+        if (child.type === 'text' && child.text === ' ') {
+            if (!previous || previous.type === 'block' || previous.type === 'lineBreak'
+                || (previous.type === 'text' && /\s$/.test(previous.text))) {
+                return;
+            }
+        }
+        if (child.type === 'block' && previous?.type === 'text' && previous.text === ' ') {
+            normalized.pop();
+        }
+        normalized.push(child);
+    });
 
     if (trimEdges) {
         while (normalized.length && !trimLeadingText(normalized[0])) {
@@ -1686,9 +1701,32 @@ const blockTags = new Set([
     'h4',
     'h5',
     'h6',
+    // A heading group ("Stave I" over "Marley's Ghost") and table rows (a
+    // play's speeches: speaker | line) are blocks of their own; before, a
+    // group ran its parts together and a play's whole act was one paragraph.
+    'hgroup',
+    'table',
+    'thead',
+    'tbody',
+    'tfoot',
+    'tr',
+    'caption',
+    'dl',
+    'dt',
+    'dd',
+    'address',
+]);
+
+const groupBlockTags = new Set([
+    'hgroup', 'table', 'thead', 'tbody', 'tfoot', 'tr', 'caption', 'dl', 'dt', 'dd', 'address',
 ]);
 
 const headingTagPattern = /^h([1-6])$/;
+
+// A play's speaker cell (Standard Ebooks: <td epub:type="z3998:persona">).
+const isPersonaCell = (node) => /(^|\s)z3998:persona(\s|$)/.test(
+    String(node?.getAttribute?.('epub:type') || node?.getAttribute?.('type') || '')
+);
 
 const attributeMap = (node) => ({
     id: node.getAttribute?.('id') || null,
@@ -1946,6 +1984,11 @@ const tagStyleTokens = (tag = '') => {
             return { display: 'block', marginLeft: '1em', marginRight: '1em' };
         case 'li':
             return { display: 'list-item', marginBottom: '0.25em' };
+        // A play's speech: a little air between one speaker and the next.
+        case 'tr':
+            return { display: 'block', marginBottom: '0.45em' };
+        case 'dd':
+            return { display: 'block', marginLeft: '1em', marginBottom: '0.25em' };
         case 'pre':
             return { display: 'block', whiteSpace: 'pre-wrap', fontFamily: 'monospace' };
         case 'figcaption':
@@ -2661,7 +2704,12 @@ const parseXhtmlRenderTree = async (
                 : normalizedText;
 
             if (!preserveWhitespace && !text.trim()) {
-                return null;
+                // Whitespace between two inline elements is a word space
+                // (<span>Stave</span> <span>I</span>); between blocks it's
+                // dropped again in normalizeParsedChildren.
+                return rawText.length > 0
+                    ? { id: idFactory.nextId('span'), type: 'text', text: ' ' }
+                    : null;
             }
 
             if (!preserveWhitespace && blockStartState) {
@@ -2681,9 +2729,12 @@ const parseXhtmlRenderTree = async (
 
         const tag = localNameOf(node).toLowerCase();
         const attrs = attributeMap(node);
+        const personaCell = (tag === 'td' || tag === 'th') && isPersonaCell(node);
         const styleTokens = mergeStyleTokens(
             inheritedStyleTokens,
-            resolveNodeStyleTokens(tag, attrs, styleRules, ancestorChain)
+            resolveNodeStyleTokens(tag, attrs, styleRules, ancestorChain),
+            // The speaker's name in a play stands out from the line.
+            personaCell ? { fontWeight: 700 } : {}
         );
         const nextBlockStartState = blockTags.has(tag)
             ? { canSynthesizeIndent: true, tokens: styleTokens }
@@ -2742,7 +2793,7 @@ const parseXhtmlRenderTree = async (
             };
         }
 
-        const children = [];
+        let children = [];
         for (let i = 0; i < (node.childNodes?.length || 0); i += 1) {
             const child = await parseNode(node.childNodes[i], nextContext);
             if (child) {
@@ -2750,7 +2801,22 @@ const parseXhtmlRenderTree = async (
             }
         }
 
-        const nodeId = idFactory.nextId(blockTags.has(tag) ? 'block' : 'inline');
+        // A table row reads as one line: a play's speech as "Algernon. Did
+        // you hear…", other cells side by side with a dot between.
+        if (tag === 'tr') {
+            const cells = children.filter((child) => (
+                child.type !== 'text' && hasRenderableContent(child)
+            ));
+            children = cells.flatMap((cell, index) => (index < cells.length - 1
+                ? [cell, { id: idFactory.nextId('span'), type: 'text', text: cell.personaCell ? '. ' : ' · ' }]
+                : [cell]));
+        }
+
+        // Tags that became blocks later count on their own, so the ids of the
+        // other blocks (saved positions, bookmarks, notes) stay as they were.
+        const nodeId = idFactory.nextId(
+            groupBlockTags.has(tag) ? 'group' : (blockTags.has(tag) ? 'block' : 'inline')
+        );
 
         return {
             id: nodeId,
@@ -2758,6 +2824,7 @@ const parseXhtmlRenderTree = async (
             tag,
             attrs,
             styleTokens,
+            ...(personaCell ? { personaCell: true } : {}),
             children: normalizeParsedChildren(children, {
                 trimEdges: blockTags.has(tag),
                 preserveWhitespace: nextContext.preserveWhitespace,
