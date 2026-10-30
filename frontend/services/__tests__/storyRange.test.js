@@ -1,4 +1,4 @@
-import { storyProgress, storyRange } from '../storyRange';
+import { chapterMarks, positionForStoryProgress, storyProgress, storyRange } from '../storyRange';
 
 const item = (path, size = 1000) => ({ path: `epub/text/${path}.xhtml`, size });
 
@@ -18,16 +18,16 @@ describe('story range', () => {
     { title: 'Donate', spineIndex: 10 }, { title: 'Acknowledgments', spineIndex: 11 },
   ];
 
-  it('starts at the first chapter and ends with the story', () => {
-    expect(storyRange(spine, toc)).toEqual({ start: 5, end: 7 });
+  it('starts at the first chapter and ends with the story, its epilogue included', () => {
+    expect(storyRange(spine, toc)).toEqual({ start: 5, end: 8 });
   });
 
   it('reads 0% before the story and 100% after it', () => {
     const range = storyRange(spine, toc);
     expect(storyProgress(spine, range, 2)).toBe(0);
     expect(storyProgress(spine, range, 5)).toBe(0);
-    expect(storyProgress(spine, range, 6)).toBeCloseTo(1 / 3);
-    expect(storyProgress(spine, range, 7, 9, 10)).toBe(1);
+    expect(storyProgress(spine, range, 6)).toBeCloseTo(1 / 4);
+    expect(storyProgress(spine, range, 8, 9, 10)).toBe(1);
     expect(storyProgress(spine, range, 10)).toBe(1);
   });
 
@@ -50,5 +50,21 @@ describe('story range', () => {
     const plain = [item('a'), item('b')];
     expect(storyRange(plain, [])).toEqual({ start: 0, end: 1 });
     expect(storyRange([], [])).toEqual({ start: 0, end: 0 });
+  });
+});
+
+describe('scrubber positions', () => {
+  const spine = [item('a', 1000), item('b', 3000), item('c', 1000)];
+  const range = { start: 0, end: 2 };
+
+  it('finds the chapter and the point inside it for a spot on the line', () => {
+    expect(positionForStoryProgress(spine, range, 0)).toEqual({ spineIndex: 0, chapterFraction: 0 });
+    expect(positionForStoryProgress(spine, range, 0.5)).toEqual({ spineIndex: 1, chapterFraction: 0.5 });
+    expect(positionForStoryProgress(spine, range, 1)).toEqual({ spineIndex: 2, chapterFraction: 1 });
+  });
+
+  it('marks where each chapter starts', () => {
+    expect(chapterMarks(spine, range, [{ title: 'Two', spineIndex: 1 }]).map((mark) => [mark.at, mark.title]))
+      .toEqual([[0.2, 'Two'], [0.8, '']]);
   });
 });

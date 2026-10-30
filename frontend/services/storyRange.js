@@ -21,7 +21,7 @@ const FRONT_WORDS = [
 
 const BACK_WORDS = [
   'endnotes', 'notes', 'footnotes', 'colophon', 'uncopyright', 'donate', 'acknowledgments', 'acknowledgements',
-  'afterword', 'epilogue', 'appendix', 'glossary', 'index', 'about the author', 'biography',
+  'afterword', 'appendix', 'glossary', 'index', 'about the author', 'biography',
   'bibliography', "author's note", 'authors note', 'backmatter', 'back matter', 'license', 'licence',
   'gutenberg', 'pg-footer', 'footer', 'further reading', 'chronology', 'credits', 'imprint', 'loi',
 ];
@@ -113,4 +113,40 @@ export const storyProgress = (spine, range, spineIndex, pageIndex = null, pagesI
     : 0;
   const value = (before + within * itemWeight(spine[spineIndex])) / Math.max(total, 1);
   return Math.min(Math.max(value, 0), 1);
+};
+
+/**
+ * positionForStoryProgress — the inverse of storyProgress: for a point on the
+ * scrubber (0..1), the chapter and how far into it (0..1).
+ */
+export const positionForStoryProgress = (spine, range, fraction) => {
+  if (!Array.isArray(spine) || spine.length === 0) return null;
+  const { start, end } = range || { start: 0, end: spine.length - 1 };
+  const value = Math.min(Math.max(Number(fraction) || 0, 0), 1);
+  let total = 0;
+  for (let index = start; index <= end; index += 1) total += itemWeight(spine[index]);
+  let target = value * total;
+  for (let index = start; index <= end; index += 1) {
+    const weight = itemWeight(spine[index]);
+    if (target < weight || index === end) {
+      return { spineIndex: index, chapterFraction: Math.min(Math.max(target / weight, 0), 1) };
+    }
+    target -= weight;
+  }
+  return { spineIndex: end, chapterFraction: 1 };
+};
+
+/**
+ * chapterMarks — where each chapter after the first starts on the scrubber
+ * (one per chapter file in the range), with its contents title.
+ */
+export const chapterMarks = (spine, range, toc = []) => {
+  if (!Array.isArray(spine) || spine.length === 0) return [];
+  const { start, end } = range || { start: 0, end: spine.length - 1 };
+  const titles = tocTitlesBySpine(toc);
+  const marks = [];
+  for (let index = start + 1; index <= end; index += 1) {
+    marks.push({ spineIndex: index, at: storyProgress(spine, range, index), title: titles[index] || '' });
+  }
+  return marks;
 };
