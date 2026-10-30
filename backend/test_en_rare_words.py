@@ -1,6 +1,13 @@
 """English rare words: lemma repair (trellis, not "trelli") and the frequency
-and name tagging that let the app underline a rare word with no entry."""
-import main
+and name tagging that let the app underline a rare word with no entry.
+
+These need the server module (main.py and its packages); CI's light
+environment skips them. The dictionary's coverage of the classics is tested in
+test_en_learner_dict.py."""
+import pytest
+
+pytest.importorskip("fastapi")
+main = pytest.importorskip("main")
 
 
 def test_a_lemma_with_no_entry_falls_back_to_the_written_word(monkeypatch):
@@ -38,13 +45,3 @@ def test_frequency_is_attached_and_unknown_proper_nouns_become_names(monkeypatch
     assert by_stem["epigram"].get("pos") is None
     assert by_stem["bracknell"]["pos"] == main.EN_NAME_POS
     assert surfaces == [{"surface": "trellis", "stem": "trellis", "zipf": 2.59}]
-
-
-def test_the_dictionary_covers_the_classics():
-    """Words the library's books use, however rare, have entries; an
-    inflection the tagger leaves alone points at its base."""
-    import en_learner_dict
-
-    words = ["epigram", "nosegay", "betwixt", "thither", "footman", "entreat", "timidly", "trellis"]
-    assert en_learner_dict.words_with_entries(words) == set(words)
-    assert en_learner_dict.resolve_aliases(["clung"])["clung"] == "cling"

@@ -220,3 +220,13 @@ def test_these_and_those_show_their_singular_determiner():
     assert entries["those"][0]["word"] == "that"
     assert entries["those"][0]["pos"] == "determiner"
 
+
+
+def test_the_dictionary_covers_the_classics():
+    """Words the library's books use, however rare, have entries (old senses
+    labelled); an inflection the tagger leaves alone points at its base."""
+    words = ["epigram", "nosegay", "betwixt", "thither", "footman", "entreat", "timidly", "trellis"]
+    assert en_learner_dict.words_with_entries(words) == set(words)
+    assert en_learner_dict.resolve_aliases(["clung"])["clung"] == "cling"
+    betwixt = en_learner_dict.lookup_entries(["betwixt"], "en")["betwixt"][0]
+    assert betwixt["senses"][0].startswith("(archaic) ")
