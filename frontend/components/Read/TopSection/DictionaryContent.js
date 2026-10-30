@@ -25,7 +25,6 @@ import { playEnglishPronunciation } from '../../../services/pronunciationAudio';
 import { getRuntimeChineseScript } from '../../../services/interfaceLanguage';
 import { requestUserDataSync } from '../../../services/userDataSyncQueue';
 import { chapterTranslations } from '../../../services/chapterTranslations';
-import { tutorialTargetRef } from '../../../services/tutorialTargets';
 import {
     getEntryFallbackLanguage,
     normalizeSurfaceWordForLanguage,
@@ -115,6 +114,20 @@ const getEntryHanja = (entry) => cleanValue(entry?.hanja) || cleanValue(entry?.o
 const getEntryDefinition = (entry) => cleanValue(entry?.definition) || cleanValue(entry?.transWord);
 const getEntryGloss = (entry) => cleanValue(entry?.gloss);
 const getEntryPos = (entry) => cleanValue(entry?.pos);
+
+// English: whether the expanded panel has anything the short meaning doesn't
+// already say. Several senses do; a single sense only when it isn't just the
+// short meaning again (punctuation and spacing aside). Names have none.
+const englishEntryHasMore = (entry) => {
+    if (getEntryPos(entry) === 'name') return false;
+    const definition = getEntryDefinition(entry);
+    const senses = String(definition).split('\n').map(cleanValue).filter(Boolean);
+    if (senses.length === 0) return false;
+    if (senses.length > 1) return true;
+    const shortMeaning = getEntryGloss(entry) || shortEnglishSense(definition);
+    const bare = (value) => String(value).replace(/[\s.,;:!?…()'"“”‘’·-]+/g, '').toLowerCase();
+    return bare(senses[0]) !== bare(shortMeaning);
+};
 const getEntryRomanization = (entry) => cleanValue(entry?.romanization);
 const getEntryIpa = (entry) => cleanValue(entry?.ipa);
 const getEntryPinyin = (entry) => cleanValue(entry?.pinyin) || getEntryIpa(entry);
@@ -695,13 +708,15 @@ const DictionaryContent = ({
         return {
             hanja: getEntryHanja(entry),
             word,
+            englishHasMore: isEnglishBook && Boolean(entry) && englishEntryHasMore(entry),
         };
-    }, [activeLookupItem, liveEntryMeta, lookupWord]);
+    }, [activeLookupItem, isEnglishBook, liveEntryMeta, lookupWord]);
     const activeLookupHanja = activeLookupDetails.hanja;
     const canExpandCurrentLookup = (
         (isKoreanBook && hasHanja(activeLookupHanja))
-        // English: expanding lists the word's other entries (bank: the river one).
-        || (isEnglishBook && Boolean(activeLookupDetails.word))
+        // English: expanding shows the full senses, only when they add to the
+        // short meaning.
+        || (isEnglishBook && activeLookupDetails.englishHasMore)
         // Chinese: expanding loads the word's other pronunciations (heteronyms); the
         // collapsed panel already shows the primary reading from cache.
         || (isChineseBook && Boolean(activeLookupDetails.word))
@@ -728,13 +743,15 @@ const DictionaryContent = ({
         const entry = activeLookupItem?.cachedEntry;
         // Chinese has its own expand fetch (zhReadings) and renders from it, not from
         // extraDefs — so skip this one for zh to avoid a duplicate /zh_dict_search/.
-        if (isChineseBook || !isPanelExpanded || !entry?.definition || extraDefs[entry.stem] !== undefined) {
+        // English shows only the entry's own senses when expanded, no other
+        // entries, so it has nothing to fetch either.
+        if (isChineseBook || isEnglishBook || !isPanelExpanded || !entry?.definition || extraDefs[entry.stem] !== undefined) {
             return;
         }
 
         prefetchExtra(entry.stem);
         setExpandedCached(prev => ({ ...prev, [entry.stem]: true }));
-    }, [activeLookupItem, extraDefs, isChineseBook, isPanelExpanded]);
+    }, [activeLookupItem, extraDefs, isChineseBook, isEnglishBook, isPanelExpanded]);
 
     // Fetch every reading of a Chinese word from /zh_dict_search/ (the cache only
     // holds the top one) into zhReadings, once per word.
@@ -1149,13 +1166,13 @@ const DictionaryContent = ({
         );
     };
 
-    // The Save toggle: an icon in the heading's top-right corner.
+    // The Save toggle: a large icon pinned to the panel's top-right corner
+    // (top of the heading row rather than centred on the headword).
     const renderSaveIcon = ({ word, hanja = '', definition = '', requireDefinition = true }) => {
         const canSave = !requireDefinition || hasSavableDefinition(definition);
         const saved = canSave && isWordSaved(word);
         return (
             <TouchableOpacity
-                ref={tutorialTargetRef('lookup.save')}
                 style={[styles.saveIconButton, !canSave && styles.saveIconButtonDisabled]}
                 onPress={canSave
                     ? () => (saved ? toggleUnSave(word, hanja, definition) : toggleSave(word, hanja, definition))
@@ -1168,7 +1185,7 @@ const DictionaryContent = ({
             >
                 <MaterialIcons
                     name={saved ? 'bookmark' : 'bookmark-border'}
-                    size={26}
+                    size={31}
                     color={saved ? palette.text : palette.mutedText}
                 />
             </TouchableOpacity>
@@ -1648,7 +1665,7 @@ const DictionaryContent = ({
                             {isPanelExpanded ? renderChineseCharacterBreakdown(cleanValue(word)) : null}
                         </View>
                     ) : (
-                    isEnglishBook ? renderEnglishBody({ definition, gloss, pos, posLabel, showLess, extraEntries }) : (
+                    isEnglishBook ? renderEnglishBody({ definition, gloss, pos, posLabel }) : (
                     <>
                         <View style={[styles.definitionRow, !posLabel && styles.definitionRowSolo]}>
                             {posLabel ? (
@@ -1676,15 +1693,12 @@ const DictionaryContent = ({
     };
 
     // English: the short meaning first (the learner-language equivalents, or
-    // the first sense cut to its first clause). The full senses and the word's
-    // other entries wait behind "More meanings" (the expanded panel).
-    const renderEnglishBody = ({ definition, gloss, pos, posLabel, showLess, extraEntries }) => {
+    // the first sense cut to its first clause). The full senses wait behind
+    // "More meanings" (the expanded panel), which is only offered when they
+    // say more than the short meaning (englishEntryHasMore).
+    const renderEnglishBody = ({ definition, gloss, pos, posLabel }) => {
         const shortMeaning = cleanValue(gloss) || shortEnglishSense(definition);
-        const isName = cleanValue(pos) === 'name';
-        const hasMore = !isName && (
-            (Boolean(cleanValue(definition)) && cleanValue(definition) !== shortMeaning)
-            || (Array.isArray(extraEntries) && extraEntries.length > 0)
-        );
+        const hasMore = englishEntryHasMore({ definition, gloss, pos });
         return (
             <>
                 <View style={[styles.definitionRow, !posLabel && styles.definitionRowSolo]}>
@@ -1704,25 +1718,21 @@ const DictionaryContent = ({
                             {t('lookup.noDictionaryEntry')}
                         </Text>
                     )}
+                    {/* More meanings: a small chevron at the end of the meaning
+                        rather than a row of its own, so the panel stays short. */}
+                    {!isPanelExpanded && hasMore ? (
+                        <TouchableOpacity
+                            onPress={() => onRequestExpand?.()}
+                            style={[styles.moreMeaningsButton, { borderColor: palette.border }]}
+                            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                            accessibilityRole="button"
+                            accessibilityLabel={t('lookup.moreMeanings')}
+                        >
+                            <MaterialIcons name="expand-more" size={18} color={palette.mutedText} />
+                        </TouchableOpacity>
+                    ) : null}
                 </View>
-                {isPanelExpanded ? (
-                    <>
-                        {definition ? renderEnglishSenses(definition) : null}
-                        {showLess ? renderExtraDefinitions(extraEntries) : null}
-                    </>
-                ) : hasMore ? (
-                    <TouchableOpacity
-                        onPress={() => onRequestExpand?.()}
-                        style={styles.moreMeaningsButton}
-                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                        accessibilityRole="button"
-                    >
-                        <Text style={[styles.moreMeaningsText, { color: palette.mutedText }]}>
-                            {t('lookup.moreMeanings')}
-                        </Text>
-                        <MaterialIcons name="expand-more" size={16} color={palette.mutedText} />
-                    </TouchableOpacity>
-                ) : null}
+                {isPanelExpanded && hasMore ? renderEnglishSenses(definition) : null}
             </>
         );
     };
@@ -2030,14 +2040,16 @@ const createStyles = (colors) => StyleSheet.create({
     dictionaryScrollContentWithNav: {
         paddingHorizontal: 0,
     },
+    // Compact by default (headword, pronunciation, the short meaning); the
+    // full senses wait behind the expanded panel.
     primaryEntry: {
-        gap: 8,
+        gap: 4,
         paddingHorizontal: 22,
-        paddingTop: 6,
+        paddingTop: 0,
         paddingBottom: 0,
     },
     entryHeading: {
-        gap: 4,
+        gap: 0,
     },
     headwordRow: {
         flexDirection: 'row',
@@ -2075,8 +2087,8 @@ const createStyles = (colors) => StyleSheet.create({
     },
     entryWord: {
         fontFamily: fontFamilies.krSerifSemiBold,
-        fontSize: 30,
-        lineHeight: 40,
+        fontSize: 24,
+        lineHeight: 32,
         letterSpacing: 0,
         paddingTop: 0,
         includeFontPadding: true,
@@ -2143,31 +2155,29 @@ const createStyles = (colors) => StyleSheet.create({
         marginRight: -4,
     },
     moreMeaningsButton: {
-        flexDirection: 'row',
+        width: 26,
+        height: 26,
+        borderRadius: 13,
+        borderWidth: 1,
         alignItems: 'center',
-        alignSelf: 'center',
-        gap: 2,
-        marginTop: 2,
-    },
-    moreMeaningsText: {
-        fontFamily: fontFamilies.sansMedium,
-        fontSize: 13,
-        lineHeight: 18,
+        justifyContent: 'center',
     },
     saveIconButton: {
-        width: 36,
-        height: 36,
+        width: 44,
+        height: 44,
+        alignSelf: 'flex-start',
         alignItems: 'center',
         justifyContent: 'center',
         flexShrink: 0,
-        marginRight: -8,
+        marginTop: -8,
+        marginRight: -10,
     },
     saveIconButtonDisabled: {
         opacity: 0.4,
     },
     // Balances the save icon so the headword stays centred.
     saveIconSpacer: {
-        width: 28,
+        width: 34,
         flexShrink: 0,
     },
     notFoundWordLine: {
@@ -2205,8 +2215,8 @@ const createStyles = (colors) => StyleSheet.create({
     },
     definitionText: {
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 17,
-        lineHeight: 24,
+        fontSize: 16,
+        lineHeight: 22,
         letterSpacing: 0,
         textAlign: 'center',
         // No flexShrink: when the definition can't share the badge's line it wraps

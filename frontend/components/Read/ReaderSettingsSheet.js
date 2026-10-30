@@ -18,17 +18,12 @@ import { fontFamilies } from '../../theme';
 import { ANNOTATION_SCOPES } from '../../services/readerAnnotations';
 import {
     DEFAULT_BOOK_READER_SETTINGS,
-    READER_BRIGHTNESS_MAX,
-    READER_BRIGHTNESS_MIN,
-    READER_FOCUS_SPAN_MAX,
-    READER_FOCUS_SPAN_MIN,
     READER_FONT_SIZE_MAX,
     READER_FONT_SIZE_MIN,
     READER_LEVEL_MARK_STYLES,
     READER_READING_MODES,
     buildLegendGradient,
     clampNumber,
-    stepFocusSpan,
     stepFontSize,
 } from '../../services/readerSettings';
 import {
@@ -54,12 +49,11 @@ export const SHEET_HEIGHT_RATIO = 0.68;
 const DISMISS_DRAG_RATIO = 0.22;
 const DISMISS_VELOCITY = 0.6;
 
-export const SETTINGS_TABS = ['text', 'words', 'focus'];
+export const SETTINGS_TABS = ['text', 'words'];
 
 const TAB_LABEL_KEYS = {
     text: 'read.settingsTabText',
     words: 'read.settingsTabWords',
-    focus: 'read.settingsTabFocus',
 };
 
 // Line spacing is offered as three named choices (values from
@@ -90,13 +84,15 @@ const scopeOrDefault = (value, fallback) => (ANNOTATION_SCOPES.includes(value) ?
  * Layout, top to bottom:
  *   grabber · serif title + close X (the shared sheet chrome)
  *   `actions` (surface-specific rows such as Checkpoints or Edit lyrics)
- *   segmented tabs: Text | Words | Focus
- *   scrolling tab body, each ending in a small "Reset to default"
+ *   segmented tabs: Text | Words
+ *   scrolling tab body, each ending in a small reset-to-default icon
  *
- *   Text  — font size, line spacing, brightness, page turns
+ *   Text  — font size, line spacing, page turns (horizontal / vertical icons)
  *   Words — difficulty underlines (+ threshold legend), pinyin (+ scope,
  *           Chinese only), translation under words (+ scope)
- *   Focus — move between sentences (swipe / buttons), sentences at a time
+ *
+ * Focus mode has nothing to set (one sentence, swiped), and the sentence
+ * translation bar is always on.
  *
  * `settings` is the raw stored object; values are clamped here with the
  * shared helpers in services/readerSettings so the sheet never shows an
@@ -115,7 +111,6 @@ const ReaderSettingsSheet = ({
     onSettingChange,
     onResetTextSettings,
     onResetWordSettings,
-    onResetFocusSettings,
     actions = [],
     features = {},
     initialTab = 'text',
@@ -217,13 +212,6 @@ const ReaderSettingsSheet = ({
         [colors.readerLevelUnderlineEasy, colors.readerLevelUnderlineMid, colors.readerLevelUnderlineHard]
     );
 
-    const handleBrightness = useCallback((value) => {
-        onSettingChange(
-            'brightness',
-            Number(clampNumber(value, READER_BRIGHTNESS_MIN, READER_BRIGHTNESS_MAX, DEFAULT_BOOK_READER_SETTINGS.brightness).toFixed(2))
-        );
-    }, [onSettingChange]);
-
     if (!mounted) {
         return null;
     }
@@ -233,9 +221,6 @@ const ReaderSettingsSheet = ({
         source.fontSize, READER_FONT_SIZE_MIN, READER_FONT_SIZE_MAX, DEFAULT_BOOK_READER_SETTINGS.fontSize
     ));
     const lineSpacingChoice = nearestLineSpacingChoice(source.lineSpacing);
-    const brightness = clampNumber(
-        source.brightness, READER_BRIGHTNESS_MIN, READER_BRIGHTNESS_MAX, DEFAULT_BOOK_READER_SETTINGS.brightness
-    );
     const readingMode = READER_READING_MODES.includes(source.readingMode)
         ? source.readingMode
         : DEFAULT_BOOK_READER_SETTINGS.readingMode;
@@ -249,20 +234,14 @@ const ReaderSettingsSheet = ({
     const pinyinOn = Boolean(source.pinyinAnnotations);
     const glossOn = Boolean(source.glossAnnotations);
     const hideSavedOn = source.hideSavedAnnotations !== false;
-    const pinnedTranslationOn = source.pinnedSentenceTranslation !== false;
     // Settings saved before the scopes were split carried one `annotationScope`.
     const legacyScope = scopeOrDefault(source.annotationScope, null);
     const pinyinScope = scopeOrDefault(source.pinyinScope, legacyScope || 'underlined');
     const glossScope = scopeOrDefault(source.glossScope, legacyScope || 'underlined');
-    const focusSpan = Math.round(clampNumber(
-        source.focusSpan, READER_FOCUS_SPAN_MIN, READER_FOCUS_SPAN_MAX, DEFAULT_BOOK_READER_SETTINGS.focusSpan
-    ));
-    const focusSwipe = !!source.focusSwipe;
 
     const showGloss = features.glossAnnotations !== false;
     const showScopes = features.annotationScope !== false;
     const showPinyin = language === 'zh' && features.pinyinAnnotations !== false;
-    const showPinnedTranslation = features.pinnedSentenceTranslation !== false;
     const showHideSaved = features.hideSavedAnnotations !== false
         && ((showPinyin && pinyinOn) || (showGloss && glossOn));
 
@@ -300,23 +279,6 @@ const ReaderSettingsSheet = ({
                     options={LINE_SPACING_CHOICES.map(({ value, labelKey }) => ({ value, label: t(labelKey) }))}
                 />
             </SettingRow>
-            <SettingRow styles={controlStyles} label={t('read.brightness')}>
-                <Slider
-                    style={styles.brightnessSlider}
-                    value={brightness}
-                    onValueChange={handleBrightness}
-                    minimumValue={READER_BRIGHTNESS_MIN}
-                    maximumValue={READER_BRIGHTNESS_MAX}
-                    step={0.01}
-                    allowTouchTrack
-                    thumbTintColor={colors.inkSlate}
-                    minimumTrackTintColor={colors.inkSlate}
-                    maximumTrackTintColor={colors.border}
-                    trackStyle={styles.sliderTrack}
-                    thumbStyle={styles.sliderThumb}
-                    accessibilityLabel={t('read.readerBrightness')}
-                />
-            </SettingRow>
             <SettingRow styles={controlStyles} label={t('read.settingsPageTurns')} last>
                 <SegmentedControl
                     styles={controlStyles}
@@ -325,12 +287,12 @@ const ReaderSettingsSheet = ({
                     onChange={(value) => onSettingChange('readingMode', value)}
                     accessibilityLabel={t('read.settingsPageTurns')}
                     options={[
-                        { value: 'paged', label: t('read.readingHorizontal') },
-                        { value: 'scroll', label: t('read.readingVertical') },
+                        { value: 'paged', label: t('read.readingHorizontal'), icon: 'swap-horiz', iconOnly: true },
+                        { value: 'scroll', label: t('read.readingVertical'), icon: 'swap-vert', iconOnly: true },
                     ]}
                 />
             </SettingRow>
-            <ResetLink styles={controlStyles} label={t('read.resetSection')} onPress={onResetTextSettings} />
+            <ResetLink styles={controlStyles} colors={colors} label={t('read.resetSection')} onPress={onResetTextSettings} />
         </>
     );
 
@@ -465,22 +427,6 @@ const ReaderSettingsSheet = ({
                 ),
             });
         }
-        if (showPinnedTranslation) {
-            rows.push({
-                key: 'pinnedTranslation',
-                label: t('read.pinnedTranslation'),
-                below: <Text style={styles.legendHint}>{t('read.pinnedTranslationHint')}</Text>,
-                control: (
-                    <ToggleSwitch
-                        styles={controlStyles}
-                        colors={colors}
-                        value={pinnedTranslationOn}
-                        onChange={(value) => onSettingChange('pinnedSentenceTranslation', value)}
-                        accessibilityLabel={t('read.pinnedTranslation')}
-                    />
-                ),
-            });
-        }
         return (
             <>
                 {rows.map((row, index) => (
@@ -495,41 +441,10 @@ const ReaderSettingsSheet = ({
                         {row.control}
                     </SettingRow>
                 ))}
-                <ResetLink styles={controlStyles} label={t('read.resetSection')} onPress={onResetWordSettings} />
+                <ResetLink styles={controlStyles} colors={colors} label={t('read.resetSection')} onPress={onResetWordSettings} />
             </>
         );
     };
-
-    const renderFocusTab = () => (
-        <>
-            <SettingRow styles={controlStyles} label={t('read.settingsMoveBetweenSentences')}>
-                <SegmentedControl
-                    styles={controlStyles}
-                    colors={colors}
-                    value={focusSwipe ? 'swipe' : 'buttons'}
-                    onChange={(value) => onSettingChange('focusSwipe', value === 'swipe')}
-                    accessibilityLabel={t('read.settingsMoveBetweenSentences')}
-                    options={[
-                        { value: 'swipe', label: t('read.focusNavSwipe') },
-                        { value: 'buttons', label: t('read.focusNavButtons') },
-                    ]}
-                />
-            </SettingRow>
-            <SettingRow styles={controlStyles} label={t('read.settingsSentencesAtATime')} last>
-                <Stepper
-                    styles={controlStyles}
-                    colors={colors}
-                    value={focusSpan}
-                    onStep={(direction) => onSettingChange('focusSpan', stepFocusSpan(focusSpan, direction))}
-                    atMin={focusSpan <= READER_FOCUS_SPAN_MIN}
-                    atMax={focusSpan >= READER_FOCUS_SPAN_MAX}
-                    decreaseLabel={t('read.decreaseFocusSpan')}
-                    increaseLabel={t('read.increaseFocusSpan')}
-                />
-            </SettingRow>
-            <ResetLink styles={controlStyles} label={t('read.resetSection')} onPress={onResetFocusSettings} />
-        </>
-    );
 
     return (
         <Modal visible transparent animationType="none" onRequestClose={onClose} statusBarTranslucent>
@@ -602,7 +517,6 @@ const ReaderSettingsSheet = ({
                     >
                         {activeTab === 'text' ? renderTextTab() : null}
                         {activeTab === 'words' ? renderWordsTab() : null}
-                        {activeTab === 'focus' ? renderFocusTab() : null}
                     </Animated.ScrollView>
                 </Animated.View>
             </View>
@@ -664,19 +578,6 @@ const createStyles = (colors, sheetHeight = 520) => StyleSheet.create({
         paddingHorizontal: SHEET_PADDING,
         paddingTop: 6,
         paddingBottom: SHEET_PADDING,
-    },
-    brightnessSlider: {
-        width: 150,
-        height: 36,
-    },
-    sliderTrack: {
-        height: 4,
-        borderRadius: 2,
-    },
-    sliderThumb: {
-        width: 20,
-        height: 20,
-        borderRadius: 10,
     },
     legend: {
         paddingBottom: 14,

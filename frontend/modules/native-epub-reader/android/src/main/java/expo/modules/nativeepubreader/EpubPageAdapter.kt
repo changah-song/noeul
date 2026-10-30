@@ -157,6 +157,8 @@ class EpubPageAdapter(
   var savedFade: ((TextRange) -> Pair<Float, Float>?)? = null
   // Forwarded to every page view; see EpubPageView.noteIconTapped.
   var noteIconTapped: ((String) -> Unit)? = null
+  // Forwarded to every page view; see EpubPageView.doubleTapped.
+  var doubleTapped: (() -> Unit)? = null
   // Forwarded to every page view; see EpubPageView.contextSentence.
   var contextSentence: ContextSentence? = null
 
@@ -174,6 +176,7 @@ class EpubPageAdapter(
     view.tapProgress = tapProgress
     view.savedFade = savedFade
     view.noteIconTapped = noteIconTapped
+    view.doubleTapped = doubleTapped
     view.contextSentence = contextSentence
     view.bind(
       page = page,

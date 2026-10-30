@@ -35,6 +35,9 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 private const val PAGE_VIEW_TAG = "EpubPageView"
+// Slack around a line's ink (glyphs, pinyin, gloss) within which a tap still
+// counts as on the line; beyond it is line spacing, i.e. blank space.
+private const val TAP_BAND_SLACK_DP = 5f
 
 // Focus (sentence beam) mode rendering constants, mirroring the design spec:
 // unfocused sentences sit at 22% opacity and focus shifts animate over 300ms.
@@ -154,6 +157,13 @@ class EpubPageView(context: Context) : View(context) {
   private val contextSentencePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
   // Called with a highlight's id when its note icon (in the margin) is tapped.
   var noteIconTapped: ((String) -> Unit)? = null
+  // Called on a double tap anywhere on the page (the reader toggles full
+  // screen). The first tap still does what a tap does at once, so word
+  // lookups never wait to see whether a second tap follows.
+  var doubleTapped: (() -> Unit)? = null
+  private var lastTapUpTime = 0L
+  private var lastTapX = 0f
+  private var lastTapY = 0f
   // Where the note icons were drawn this frame, in view coordinates.
   private val noteIconHits = mutableListOf<Pair<RectF, String>>()
   private val noteIconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
@@ -193,6 +203,8 @@ class EpubPageView(context: Context) : View(context) {
   private var geometryDirty = true
   private val bitmapCache = mutableMapOf<String, Bitmap?>()
   private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+  private val doubleTapTimeout = ViewConfiguration.getDoubleTapTimeout().toLong()
+  private val doubleTapSlop = ViewConfiguration.get(context).scaledDoubleTapSlop.toFloat()
   private val longPressTimeout = ViewConfiguration.getLongPressTimeout().toLong()
   private val longPressHandler = Handler(Looper.getMainLooper())
   private var longPressRunnable: Runnable? = null
@@ -626,6 +638,24 @@ class EpubPageView(context: Context) : View(context) {
       windowBottom = Float.POSITIVE_INFINITY
     }
 
+    // Focus mode dims everything but the lit sentence. One translucent layer
+    // over the whole drawn window does that for every block at once (a layer
+    // per paragraph cost dozens of offscreen layers on every frame of the beam
+    // animation); the lit sentence and the note icons are drawn on top of it
+    // afterwards, from `focusPass`.
+    val focusDimLayer = if (focusModeEnabled) {
+      canvas.saveLayerAlpha(
+        0f,
+        if (windowTop.isFinite()) windowTop else 0f,
+        width.toFloat(),
+        if (windowBottom.isFinite()) windowBottom else height.toFloat(),
+        (FOCUS_DIM_ALPHA * 255).roundToInt()
+      )
+    } else {
+      -1
+    }
+    val focusPass = if (focusModeEnabled) mutableListOf<Triple<PageBlock, StaticLayout, Float>>() else null
+
     page?.blocks?.forEach { block ->
       yOffset += block.marginTop
 
@@ -644,37 +674,36 @@ class EpubPageView(context: Context) : View(context) {
       if (block.type == "image") {
         val blockWidth = block.contentWidth.takeIf { it > 0 } ?: contentWidth
         val imageX = (paddingH + block.marginLeft).toFloat()
-        if (focusModeEnabled) {
-          val dimLayer = canvas.saveLayerAlpha(
-            imageX,
-            yOffset,
-            imageX + blockWidth,
-            yOffset + block.imageHeight,
-            (FOCUS_DIM_ALPHA * 255).roundToInt()
-          )
-          drawImage(canvas, block, imageX, yOffset, blockWidth)
-          canvas.restoreToCount(dimLayer)
-        } else {
-          drawImage(canvas, block, imageX, yOffset, blockWidth)
-        }
+        drawImage(canvas, block, imageX, yOffset, blockWidth)
         yOffset += block.imageHeight
       } else {
         val layout = block.textLayout ?: buildFallbackTextLayout(block, contentWidth) ?: return@forEach
 
         canvas.save()
         canvas.translate((paddingH + block.marginLeft).toFloat(), yOffset)
-        if (focusModeEnabled) {
-          drawFocusModeBlock(canvas, block, layout)
-        } else {
-          drawBlockContent(canvas, block, layout)
-        }
+        drawBlockContent(canvas, block, layout)
         canvas.restore()
-        drawNoteIcons(canvas, block, layout, yOffset)
+        if (focusPass != null) {
+          focusPass.add(Triple(block, layout, yOffset))
+        } else {
+          drawNoteIcons(canvas, block, layout, yOffset)
+        }
 
         yOffset += layout.height
       }
 
       yOffset += block.marginBottom
+    }
+
+    if (focusPass != null) {
+      canvas.restoreToCount(focusDimLayer)
+      focusPass.forEach { (block, layout, top) ->
+        canvas.save()
+        canvas.translate((paddingH + block.marginLeft).toFloat(), top)
+        drawFocusModeOverlays(canvas, block, layout)
+        canvas.restore()
+        drawNoteIcons(canvas, block, layout, top)
+      }
     }
   }
 
@@ -1002,20 +1031,12 @@ class EpubPageView(context: Context) : View(context) {
     return above to below
   }
 
-  private fun drawFocusModeBlock(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
-    val layoutWidth = layout.width.toFloat().coerceAtLeast(1f)
-    val layoutHeight = layout.height.toFloat().coerceAtLeast(1f)
-    val (above, below) = annotationOverhang(block)
-    val dimLayer = canvas.saveLayerAlpha(
-      -dp(8f).toFloat(),
-      -above,
-      layoutWidth + dp(8f),
-      layoutHeight + below,
-      (FOCUS_DIM_ALPHA * 255).roundToInt()
-    )
-    drawBlockContent(canvas, block, layout)
-    canvas.restoreToCount(dimLayer)
-
+  // The lit sentence (and the one it is fading out of) over the dimmed block.
+  // Only blocks holding a focus range draw anything here.
+  private fun drawFocusModeOverlays(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
+    if (focusRanges.none { it.blockId == block.blockId } && previousFocusRanges.none { it.blockId == block.blockId }) {
+      return
+    }
     if (focusTransition < 1f) {
       drawFocusOverlay(canvas, block, layout, previousFocusRanges, 1f - focusTransition)
     }
@@ -1220,6 +1241,20 @@ class EpubPageView(context: Context) : View(context) {
 
         if (isTapCandidate) {
           performClick()
+          val isDoubleTap = doubleTapped != null &&
+            event.eventTime - lastTapUpTime <= doubleTapTimeout &&
+            abs(event.x - lastTapX) <= doubleTapSlop &&
+            abs(event.y - lastTapY) <= doubleTapSlop
+          if (isDoubleTap) {
+            // The reader closes whatever the first tap opened.
+            lastTapUpTime = 0L
+            isTapCandidate = false
+            doubleTapped?.invoke()
+            return true
+          }
+          lastTapUpTime = event.eventTime
+          lastTapX = event.x
+          lastTapY = event.y
           noteIconAt(event.x, event.y)?.let { noteId ->
             noteIconTapped?.invoke(noteId)
             isTapCandidate = false
@@ -1843,6 +1878,15 @@ class EpubPageView(context: Context) : View(context) {
         return null
       }
 
+      // Only the line's own band counts: its glyphs, the pinyin above and the
+      // gloss below them, plus a little slack. The rest of a line's height is
+      // line spacing, and a tap there is a tap on blank space (it closes the
+      // panel) rather than on the nearest word.
+      if (!isInLineInkBand(block, layout, line, localY)) {
+        Log.d(PAGE_VIEW_TAG, "word hit no-hit: reason=between lines block=${block.blockId}")
+        return null
+      }
+
       val localOffset = layout.getOffsetForHorizontal(line, localX)
       val blockText = blockTextForSelection(block)
       // Chinese: the underline and the gloss under a word come from the
@@ -1858,6 +1902,13 @@ class EpubPageView(context: Context) : View(context) {
           PAGE_VIEW_TAG,
           "word hit no-hit: reason=blank space block=${block.blockId} localOffset=$localOffset"
         )
+        return null
+      }
+
+      // The tap must land on the word itself (with a little slack), not on
+      // the space or punctuation beside it that the offset snapped from.
+      if (!isOnTokenHorizontally(layout, line, tokenRange, localX, horizontalTolerance)) {
+        Log.d(PAGE_VIEW_TAG, "word hit no-hit: reason=between words block=${block.blockId}")
         return null
       }
 
@@ -1896,6 +1947,38 @@ class EpubPageView(context: Context) : View(context) {
 
     Log.d(PAGE_VIEW_TAG, "word hit no-hit: reason=${describeNoHitArea(tapX, tapY)}")
     return null
+  }
+
+  // Whether `localY` (in the block's layout) falls on the tapped line's ink:
+  // from the top of its glyphs (or of the pinyin row above them) to the
+  // bottom of its glyphs (or of the gloss row below), with a few dp of slack.
+  private fun isInLineInkBand(block: PageBlock, layout: StaticLayout, line: Int, localY: Float): Boolean {
+    val paint = block.textPaint ?: return true
+    val metrics = paint.fontMetrics
+    val baseline = layout.getLineBaseline(line).toFloat()
+    val bodyTextPx = paint.textSize
+    val slack = dp(TAP_BAND_SLACK_DP).toFloat()
+    val top = baseline + metrics.ascent - (if (showPinyin) bodyTextPx * PINYIN_ROW_SCALE else 0f) - slack
+    val bottom = baseline + metrics.descent + (if (showGloss) bodyTextPx * GLOSS_ROW_SCALE else 0f) + slack
+    return localY in top..bottom
+  }
+
+  // Whether `localX` falls on the part of `token` that sits on `line`, give or
+  // take `tolerance` (a word wrapped across lines is checked on this line).
+  private fun isOnTokenHorizontally(
+    layout: StaticLayout,
+    line: Int,
+    token: LocalTokenRange,
+    localX: Float,
+    tolerance: Float
+  ): Boolean {
+    val visibleEnd = layout.getLineVisibleEnd(line)
+    val partStart = max(token.start, layout.getLineStart(line))
+    val partEnd = min(token.end, visibleEnd)
+    if (partStart >= partEnd) return false
+    val startX = layout.getPrimaryHorizontal(partStart)
+    val endX = if (partEnd >= visibleEnd) layout.getLineRight(line) else layout.getPrimaryHorizontal(partEnd)
+    return localX >= min(startX, endX) - tolerance && localX <= max(startX, endX) + tolerance
   }
 
   private fun hitTestTextPosition(

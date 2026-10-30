@@ -13,6 +13,7 @@ import {
     View,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import { AuthModal } from './Auth';
 import { deleteCurrentUserProfile } from '../services/accountDeletion';
@@ -41,8 +42,7 @@ import {
 } from '../constants/links';
 import { fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
 import ProfileAvatar from '../components/shared/ProfileAvatar';
-import FeatureGuideSheet from '../components/shared/FeatureGuideSheet';
-import { requestTutorial } from '../services/firstBookTutorial';
+import ReaderGuide from '../components/Guide/ReaderGuide';
 import LevelCard from '../components/shared/LevelCard';
 import SyncStatusRow from '../components/shared/SyncStatusRow';
 
@@ -107,7 +107,7 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
     const [isSavingName, setIsSavingName] = useState(false);
     const [showTargetLanguagePicker, setShowTargetLanguagePicker] = useState(false);
     const [showWordCheck, setShowWordCheck] = useState(false);
-    const [showFeatureGuide, setShowFeatureGuide] = useState(false);
+    const [showReaderGuide, setShowReaderGuide] = useState(false);
     // Notifications and personalized vocabulary keep their stored settings
     // (AppContext) but no longer have rows here.
     const {
@@ -320,6 +320,8 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
                 showsVerticalScrollIndicator={false}
                 keyboardShouldPersistTaps="handled"
             >
+                {/* One row: back, then who you are (avatar, name and account
+                    line, and for an account the edit button). */}
                 <View style={styles.topBar}>
                     <TouchableOpacity
                         onPress={goBack}
@@ -329,25 +331,24 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
                     >
                         <Feather name="chevron-left" size={24} color={profileColors.inkSlate} />
                     </TouchableOpacity>
-                </View>
-
-                <View style={styles.profileHeader}>
-                    <ProfileAvatar user={user} size={56} />
-                    <View style={styles.profileIdentity}>
-                        <Text style={styles.profileName} numberOfLines={1}>{shownName}</Text>
-                        <Text style={styles.profileSubtitle} numberOfLines={1}>{identitySubtitle}</Text>
+                    <View style={styles.profileHeader}>
+                        <ProfileAvatar user={user} size={48} />
+                        <View style={styles.profileIdentity}>
+                            <Text style={styles.profileName} numberOfLines={1}>{shownName}</Text>
+                            <Text style={styles.profileSubtitle} numberOfLines={1}>{identitySubtitle}</Text>
+                        </View>
+                        {!isGuest ? (
+                            <TouchableOpacity
+                                accessibilityRole="button"
+                                accessibilityLabel={t('profile.editUsername')}
+                                activeOpacity={0.78}
+                                onPress={openNameEditor}
+                                style={styles.editUsernameButton}
+                            >
+                                <Feather name="edit-2" size={16} color={profileColors.sub} />
+                            </TouchableOpacity>
+                        ) : null}
                     </View>
-                    {!isGuest ? (
-                        <TouchableOpacity
-                            accessibilityRole="button"
-                            accessibilityLabel={t('profile.editUsername')}
-                            activeOpacity={0.78}
-                            onPress={openNameEditor}
-                            style={styles.editUsernameButton}
-                        >
-                            <Feather name="edit-2" size={16} color={profileColors.sub} />
-                        </TouchableOpacity>
-                    ) : null}
                 </View>
 
                 {showVocabRow ? (
@@ -410,9 +411,9 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
                         </View>
                     </View>
                     <NavRow
-                        icon="help-circle"
-                        label={t('tips.showTips')}
-                        onPress={() => setShowFeatureGuide(true)}
+                        icon="play-circle"
+                        label={t('guide.replay')}
+                        onPress={() => setShowReaderGuide(true)}
                         showDivider
                         styles={styles}
                         profileColors={profileColors}
@@ -497,15 +498,20 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
 
             <WordCheckModal visible={showWordCheck} onClose={() => setShowWordCheck(false)} />
 
-            <FeatureGuideSheet
-                visible={showFeatureGuide}
-                onClose={() => setShowFeatureGuide(false)}
-                onReplayGuide={async () => {
-                    setShowFeatureGuide(false);
-                    await requestTutorial();
-                    navigation?.navigate?.('Home');
-                }}
-            />
+            {/* The reading guide from onboarding, played again full screen. */}
+            <Modal
+                visible={showReaderGuide}
+                animationType="slide"
+                presentationStyle="fullScreen"
+                statusBarTranslucent
+                onRequestClose={() => setShowReaderGuide(false)}
+            >
+                <SafeAreaProvider>
+                    {showReaderGuide ? (
+                        <ReaderGuide onClose={() => setShowReaderGuide(false)} finishLabel={t('common.done')} />
+                    ) : null}
+                </SafeAreaProvider>
+            </Modal>
 
             <LevelAdjustSheet
                 visible={showLevelAdjust}
@@ -753,10 +759,12 @@ const createStyles = (profileColors, themeColors) => StyleSheet.create({
         paddingBottom: 32,
     },
     topBar: {
-        paddingTop: 4,
-        paddingHorizontal: 8,
+        paddingTop: 6,
+        paddingLeft: 8,
+        paddingRight: 20,
         flexDirection: 'row',
         alignItems: 'center',
+        gap: 8,
     },
     backButton: {
         width: 44,
@@ -764,11 +772,13 @@ const createStyles = (profileColors, themeColors) => StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'center',
     },
+    // The rest of the top bar, after the back button.
     profileHeader: {
-        paddingHorizontal: 20,
+        flex: 1,
+        minWidth: 0,
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 14,
+        gap: 12,
     },
     avatar: {
         width: 56,
@@ -787,13 +797,12 @@ const createStyles = (profileColors, themeColors) => StyleSheet.create({
     profileIdentity: {
         flex: 1,
         minWidth: 0,
-        gap: 2,
+        gap: 1,
     },
     profileName: {
-        width: '100%',
         fontFamily: fontFamilies.displaySemiBold,
-        fontSize: 24,
-        lineHeight: 30,
+        fontSize: 21,
+        lineHeight: 27,
         color: profileColors.ink,
     },
     profileSubtitle: {

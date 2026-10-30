@@ -30,7 +30,7 @@ import { setProfileAbilityFromVocab } from '../services/Database';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { DEFAULT_GOAL_MINUTES, GOAL_OPTIONS, setGoalMinutes } from '../services/readingGoal';
 import { hasWordCheck } from '../services/wordCheck';
-import { requestTutorial } from '../services/firstBookTutorial';
+import ReaderGuide from '../components/Guide/ReaderGuide';
 import { fontFamilies, useTheme } from '../theme';
 // One entry per bundled book (generate_catalog_levels.py), with its language:
 // how many free books each language starts with, so the cards stay right as
@@ -101,8 +101,8 @@ const BEGINNER_SEED_VARIANCE = 1.5;
 
 // ─── Content ──────────────────────────────────────────────────────────────────
 
-// The last step ends in the starter book, where the first-book tutorial
-// shows how reading works (services/firstBookTutorial.js).
+// After the last step the reading guide plays (components/Guide/ReaderGuide.js),
+// on a sample page in the language just picked.
 const STEPS = ['welcome', 'languages', 'level', 'goal'];
 
 const LANGUAGE_CARDS = [
@@ -178,10 +178,10 @@ const ChoiceCard = ({ selected, onPress, children, styles, minHeight }) => (
  *   1. Welcome (app tile, headline, "Get started" / "I already have an account")
  *   2. Languages (learning language cards + the interface-language row)
  *   3. Level (word check / pick it myself / just starting)
- *   4. How reading works (demo card, gestures, "Also in Noeul") → "Start reading"
+ *   4. Daily goal → the reading guide
  *
- * Choices go through the same AppContext setters Profile uses. Finishing
- * (or signing in from step 1) marks onboarding completed and calls onDone().
+ * Choices go through the same AppContext setters Profile uses. Leaving the
+ * guide (or signing in from step 1) marks onboarding completed and calls onDone().
  */
 const Onboarding = ({ onDone }) => {
     const {
@@ -207,6 +207,7 @@ const Onboarding = ({ onDone }) => {
     const [showWordCheck, setShowWordCheck] = useState(false);
     const [showLevelPicker, setShowLevelPicker] = useState(false);
     const [showAuth, setShowAuth] = useState(false);
+    const [showGuide, setShowGuide] = useState(false);
     const finishingRef = useRef(false);
 
     const activeTargetId = getActiveTargetLanguageOptionId(targetLanguage);
@@ -234,13 +235,11 @@ const Onboarding = ({ onDone }) => {
         }).start();
     }, [enter, step]);
 
-    // Someone signing in to an account they already have skips the tutorial.
-    const finish = useCallback(async ({ tutorial = true } = {}) => {
+    const finish = useCallback(async () => {
         if (finishingRef.current) return;
         finishingRef.current = true;
         await applyNewReaderSettings();
         await markOnboardingCompleted();
-        if (tutorial) await requestTutorial();
         onDone?.();
     }, [onDone]);
 
@@ -304,7 +303,7 @@ const Onboarding = ({ onDone }) => {
             setGoalMinutes(goalChoice);
         }
         if (isLast) {
-            finish();
+            setShowGuide(true);
             return;
         }
         if (stepName === 'level' && hasVocabSizeGrid(targetLanguage)) {
@@ -438,6 +437,10 @@ const Onboarding = ({ onDone }) => {
         </View>
     );
 
+    if (showGuide) {
+        return <ReaderGuide onClose={finish} finishLabel={t('onboarding.startReading')} />;
+    }
+
     return (
         <View
             style={[
@@ -539,8 +542,9 @@ const Onboarding = ({ onDone }) => {
                 mode="signin"
                 onClose={() => setShowAuth(false)}
                 onAuthenticated={() => {
+                    // Someone signing in to an account they already have skips the guide.
                     setShowAuth(false);
-                    finish({ tutorial: false });
+                    finish();
                 }}
             />
         </View>

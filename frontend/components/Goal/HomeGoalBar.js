@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Easing, Text, TouchableOpacity, View } from 'react-native';
-import { useTheme } from '../../theme';
+import { fontFamilies, useTheme } from '../../theme';
 import { useTranslation } from '../../hooks/useTranslation';
+import CalendarDrop from './CalendarDrop';
 import {
   dayKey,
   getReadingDays,
+  goalStats,
   getReadingSnapshot,
   loadReadingGoal,
   recentDaySlots,
@@ -210,3 +212,112 @@ const createDotStyles = (colors) => ({
 });
 
 export const homeDaySlots = (days) => recentDaySlots(days, dayKey(), 6);
+
+/**
+ * HomeGoalCluster — the middle of Home's top bar: three day dots, the title
+ * (today's countdown when tapped) and three more dots. It subscribes to the
+ * reading clock itself, which ticks every second while a book is read, so
+ * only this cluster re-renders on a tick and not the whole Home screen.
+ */
+export const HomeGoalCluster = memo(({ ownerId, focusKey, calendarOpen, onToggleCalendar, textStyle }) => {
+  const { t } = useTranslation();
+  const { snapshot, days } = useReadingGoal(ownerId, focusKey);
+  const slots = useMemo(() => homeDaySlots(days), [days]);
+  const label = t('goal.dotsLabel', { count: slots.filter((state) => state === 'met').length });
+  return (
+    <>
+      <StreakDots slots={slots.slice(0, 3)} open={calendarOpen} onPress={onToggleCalendar} accessibilityLabel={label} />
+      <GoalTitle snapshot={snapshot} focusKey={focusKey} textStyle={textStyle} />
+      <StreakDots slots={slots.slice(3)} open={calendarOpen} onPress={onToggleCalendar} accessibilityLabel={label} />
+    </>
+  );
+});
+
+/**
+ * HomeGoalCalendar — the month calendar that drops from the dots, with its
+ * own subscription for the same reason as HomeGoalCluster.
+ */
+export const HomeGoalCalendar = memo(({ ownerId, focusKey, open, onClose }) => {
+  const { snapshot, days } = useReadingGoal(ownerId, focusKey);
+  return (
+    <CalendarDrop
+      open={open}
+      days={days}
+      goalMinutes={Math.round(snapshot.goalMs / 60000)}
+      onClose={onClose}
+    />
+  );
+});
+
+// The sunset (노을) mark, drawn in views: a sun half-set on the horizon. With
+// today's goal reached it is filled, with two lines of glow under the
+// horizon; until then only its outline, in a muted ink.
+const SunsetMark = ({ met, color }) => {
+  const bar = { height: 2.6, borderRadius: 1.3, backgroundColor: color };
+  return (
+    <View style={{ width: 28, height: 19, alignItems: 'center' }}>
+      <View
+        style={met
+          ? { width: 15, height: 7.5, borderTopLeftRadius: 7.5, borderTopRightRadius: 7.5, backgroundColor: color }
+          : {
+            width: 15,
+            height: 7.5,
+            borderTopLeftRadius: 7.5,
+            borderTopRightRadius: 7.5,
+            borderWidth: 2.2,
+            borderBottomWidth: 0,
+            borderColor: color,
+          }}
+      />
+      <View style={[bar, { width: 28 }]} />
+      {met ? (
+        <>
+          <View style={[bar, { width: 14, marginTop: 2.2 }]} />
+          <View style={[bar, { width: 8, marginTop: 2.2 }]} />
+        </>
+      ) : null}
+    </View>
+  );
+};
+
+/**
+ * HomeGoalSun — the top-left of Home: the sunset mark (filled once today's
+ * reading goal is reached, an outline until then) with the day streak beside it.
+ * Tapping it opens the calendar. Subscribes to the reading clock itself, like
+ * HomeGoalCluster, so Home doesn't re-render as the clock ticks.
+ */
+export const HomeGoalSun = memo(({ ownerId, focusKey, open, onPress, style }) => {
+  const { colors } = useTheme();
+  const { t } = useTranslation();
+  const { snapshot, days } = useReadingGoal(ownerId, focusKey);
+  const streak = useMemo(() => goalStats(days).dayStreak, [days]);
+  const met = Boolean(snapshot.met);
+  return (
+    <TouchableOpacity
+      activeOpacity={0.8}
+      onPress={onPress}
+      style={[style, { width: undefined, minWidth: 44, flexDirection: 'row', gap: 5, paddingHorizontal: 2 }]}
+      accessibilityRole="button"
+      accessibilityState={{ expanded: !!open }}
+      accessibilityLabel={`${t(met ? 'goal.legendMet' : 'goal.keepReading')}, ${t('goal.hlDays', { count: streak })}`}
+    >
+      {/* The horizon sits at the same height filled or not, level with the
+          streak's digits. */}
+      <View style={{ height: 19, justifyContent: 'flex-start', marginTop: 6 }}>
+        <SunsetMark met={met} color={met ? colors.inkSlate : colors.textSubtle} />
+      </View>
+      <Text
+        allowFontScaling={false}
+        style={{
+          fontFamily: fontFamilies.sansSemiBold,
+          fontSize: 15,
+          lineHeight: 18,
+          color: met ? colors.inkSlate : colors.textMuted,
+          fontVariant: ['tabular-nums'],
+        }}
+      >
+        {streak}
+      </Text>
+    </TouchableOpacity>
+  );
+});

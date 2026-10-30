@@ -2,11 +2,16 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Animated, AppState, BackHandler, Easing, PanResponder, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, findNodeHandle, ToastAndroid } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Feather, MaterialIcons } from '@expo/vector-icons';
+import { Feather, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 
 import TopSection from '../components/Read/TopSection/TopSection';
 import PinnedSentenceTranslation from '../components/Read/PinnedSentenceTranslation';
 import {
+    PINNED_TRANSLATION_DEFAULT_LINES,
+    PINNED_TRANSLATION_GRIP_HEIGHT,
+    PINNED_TRANSLATION_MAX_LINES,
+    clampPinnedTranslationLines,
+    nearestPinnedTranslationLines,
     pinnedTranslationBarHeight,
     pinnedTranslationFontSizeForReader,
 } from '../components/Read/pinnedTranslationSize';
@@ -21,7 +26,7 @@ import {
     ReaderHeaderBar,
     ReaderListenButton,
     ReaderMenuButton,
-    ReaderSavedWordsButton,
+    ReaderProgressButton,
 } from '../components/Read/ReaderHeaderBar';
 import { createReaderChromeStyles } from '../components/Read/readerChromeStyles';
 import { useAppContext } from '../contexts/AppContext';
@@ -45,8 +50,6 @@ import NativeEpubReaderView, {
     updateListenSession,
     stopListenSession,
     addListenControlListener,
-    fetchTutorialTargets,
-    supportsTutorialTargets,
 } from '../modules/native-epub-reader/src/NativeEpubReaderView';
 import { ensureNotificationPermission } from '../services/notificationPermission';
 import {
@@ -136,28 +139,10 @@ import {
     stopReadingClock,
     subscribeGoalReached,
 } from '../services/readingGoal';
-import ReaderGoalClock from '../components/Goal/ReaderGoalClock';
 import GoalCompleteModal from '../components/Goal/GoalCompleteModal';
-import CoachTip from '../components/Tips/CoachTip';
-import useCoachTip from '../hooks/useCoachTip';
-import {
-    areTipsEnabled,
-    isTipSeen,
-    markTipSeen,
-    TIP_IDS,
-} from '../services/tips';
-import FirstBookTutorial, { TutorialReplayToast } from '../components/Read/FirstBookTutorial';
-import {
-    advanceTutorial,
-    finishTutorial,
-    getTutorial,
-    initialTutorialProgress,
-    loadTutorial,
-    setTutorialBook,
-    subscribeTutorial,
-    TUTORIAL_STEPS,
-} from '../services/firstBookTutorial';
-import { measureInWindow, measureTutorialTarget } from '../services/tutorialTargets';
+import { endBookOpening, getBookOpening, subscribeBookOpening } from '../services/bookOpening';
+import PreparingNotice from '../components/Read/PreparingNotice';
+import { publishReaderListen, registerReaderListenCommands } from '../services/readerListenState';
 import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { highlightStrengthsFor, unseenShownTerms } from '../services/savedWordFade';
 import { ANNOTATION_SCOPES, annotationsBySurface, buildAnnotatedLevelTerms } from '../services/readerAnnotations';
@@ -185,19 +170,18 @@ const DEFAULT_READER_SETTINGS = {
     fontSize: 18,
     isDarkMode: false,
     lineSpacing: 2.05,
-    brightness: 0.62,
-    focusSpan: 1,
-    focusSwipe: false,
     readingMode: 'paged',
     levelMarkStyle: 'underline',
     // 0..1: only words at least this hard on the green→red scale are marked
-    // (0 = every graded word, 1 = only the hardest).
-    levelMarkThreshold: 0,
+    // (0 = every graded word, 1 = only the hardest). New readers start in the
+    // middle, so the page isn't underlined wall to wall.
+    levelMarkThreshold: 0.5,
     // Chinese only: draw pinyin above words. Loosens line spacing when on, so
     // it re-paginates. Ignored for non-Chinese books.
     pinyinAnnotations: false,
-    // Short translation under words (any language). Also re-paginates.
-    glossAnnotations: false,
+    // Short translation under words (any language). Also re-paginates. On for
+    // new readers, for the underlined words (glossScope).
+    glossAnnotations: true,
     // Which words get pinyin / translations: 'underlined' (graded words) or
     // 'all' (every word in the book), chosen separately for each.
     pinyinScope: 'underlined',
@@ -205,10 +189,8 @@ const DEFAULT_READER_SETTINGS = {
     // No pinyin / translation on saved (highlighted) words, so the reader can
     // try to recall a word they looked up before.
     hideSavedAnnotations: true,
-    // The bar under the header that keeps the translation of the last tapped
-    // word's sentence on screen. The open chapter's sentences are translated
-    // ahead, so it shows at once. On by default; the reader menu turns it off.
-    pinnedSentenceTranslation: true,
+    // Lines of the sentence translation bar shows (0 folds it to its grip).
+    translationLines: PINNED_TRANSLATION_DEFAULT_LINES,
 };
 const READING_MODES = ['paged', 'scroll'];
 
@@ -228,8 +210,6 @@ const EMPTY_LEVEL_TERMS = [];
 
 const FONT_SIZE_MIN = 12;
 const FONT_SIZE_MAX = 30;
-const FOCUS_SPAN_MIN = 1;
-const FOCUS_SPAN_MAX = 5;
 // Focus mode emits a page event on every sentence step; persisting each one
 // (screen state + library patch + AsyncStorage write) is what made beam
 // navigation feel sluggish, so steps coalesce to the trailing event.
@@ -244,8 +224,6 @@ const LINE_SPACING_STEPS = [
     { value: 2.3 },
     { value: 2.6 },
 ];
-const BRIGHTNESS_MIN = 0.2;
-const BRIGHTNESS_MAX = 1;
 const BOOK_LEVEL_LABELS = {
     en: {
         1: 'A1',
@@ -392,10 +370,6 @@ const finalizeBookLevelAccumulator = (accumulator) => {
     };
 };
 
-// How long the translation bar stays after a word tap, and after the AI
-// explanation opens.
-const PINNED_TRANSLATION_SHOW_MS = 5000;
-const PINNED_TRANSLATION_AI_HIDE_MS = 1200;
 
 const clampProgress = (value) => {
     const progress = Number(value);
@@ -609,28 +583,13 @@ const Read = ({
     // pill offers the way back.
     const [returnPosition, setReturnPosition] = useState(null);
     const [selectionPhraseSaved, setSelectionPhraseSaved] = useState(false);
-    const [lookupPlacement, setLookupPlacement] = useState('bottom');
     const [clearSelectionToken, setClearSelectionToken] = useState(0);
     // Temporary handoff QA toggles for the long-press translation banner.
     const [translationBannerLoadingPreview] = useState(false);
     const [translationBannerErrorPreview] = useState(false);
     const [translationBannerCopiedPreview] = useState(false);
     const [translationBannerTextPreview] = useState('');
-    const [showLookupHint, setShowLookupHint] = useState(false);
-    // First-time tips beyond the tap tip are for people who came through
-    // onboarding, not for long-time readers.
-    const [tipsEnabled, setTipsEnabled] = useState(false);
-    const { tipId, offer: offerTip, close: closeTip } = useCoachTip();
-    // The first-book tutorial (components/Read/FirstBookTutorial.js) while it
-    // runs: { step, held, focused, listening }, else null.
-    const [tutorialProgress, setTutorialProgress] = useState(null);
-    const tutorialRunning = tutorialProgress != null;
-    const tutorialEventRef = useRef(null);
-    const pinnedBarRef = useRef(null);
-    const readerAreaRef = useRef(null);
-    const tipIdRef = useRef(null);
-    tipIdRef.current = tipId;
-    // The reader stays mounted behind other tabs; its tips wait for it.
+    // The reader stays mounted behind other tabs.
     const readerFocused = useIsFocused();
     // Coming to the reader (opening a book, switching tabs) fades and lifts
     // the page in, rather than cutting to it.
@@ -648,12 +607,15 @@ const Read = ({
             useNativeDriver: true,
         }).start();
     }, [enterAnim]));
-    const containerRef = useRef(null);
-    const focusButtonRef = useRef(null);
-    const listenButtonRef = useRef(null);
     // The open chapter's words (underlines, translations, levels) are still
     // being fetched: the reader shows a short "getting ready" note meanwhile.
     const [currentChapterPreparing, setCurrentChapterPreparing] = useState(false);
+    // After the chapter itself is processed, its underlines, the translations
+    // under words and the sentence translations still load; the "preparing"
+    // notice stays until they are in (preparingNoticeVisible, below).
+    const [levelTermsLoading, setLevelTermsLoading] = useState(false);
+    const [annotationsLoading, setAnnotationsLoading] = useState(false);
+    const [chapterTranslating, setChapterTranslating] = useState(false);
     const [showMenu, setShowMenu] = useState(false);
     // The settings tab to open on (Profile → "Underlines feel off?" opens Words).
     const [settingsTab, setSettingsTab] = useState('text');
@@ -696,6 +658,22 @@ const Read = ({
     const [currentSpineIndex, setCurrentSpineIndex] = useState(null);
     const [chapterTransitionDirection, setChapterTransitionDirection] = useState('none:0');
 
+    // The book-opening screen Home put up (services/bookOpening.js) goes once
+    // this book is laid out, or failed to load. Which book settled is noted on
+    // the load state's own changes: right after a switch the state still says
+    // the last book's "ready" for a render, and that must not count.
+    const settledBookRef = useRef(null);
+    useEffect(() => {
+        settledBookRef.current = bookLoadState === 'ready' || bookLoadState === 'error' ? currentBook : null;
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [bookLoadState]);
+    const [bookOpening, setBookOpening] = useState(getBookOpening);
+    useEffect(() => subscribeBookOpening(setBookOpening), []);
+    useEffect(() => {
+        if (!bookOpening.visible || !readerFocused || !currentBook) return;
+        if (settledBookRef.current === currentBook) endBookOpening();
+    }, [bookLoadState, bookOpening, currentBook, readerFocused]);
+
     // ── Focus (sentence beam) mode ───────────────────────────────────────────
     const [focusMode, setFocusMode] = useState(false);
     const [focusNavToken, setFocusNavToken] = useState('none:0');
@@ -705,37 +683,36 @@ const Read = ({
     // vocabulary size once, the first time a book opens.
     const [showVocabLevelPrompt, setShowVocabLevelPrompt] = useState(false);
     const [listenActive, setListenActive] = useState(false);
-    // Sentence of the last tapped word, for the pinned translation bar. Outlives
-    // the lookup panel; cleared on a chapter or book change.
+    // Sentence of the last tapped word, for the translation bar under the
+    // header. Outlives the lookup panel; cleared on a chapter or book change.
+    // In focus mode the bar follows the lit sentence instead (focusText).
     const [pinnedSentence, setPinnedSentence] = useState('');
-    // The translation bar shows after a word tap and leaves on its own: 5 s
-    // after the last tap (held while a finger is on it), sooner once the AI
-    // explanation opens.
-    const [pinnedVisible, setPinnedVisible] = useState(false);
-    const pinnedHideTimerRef = useRef(null);
-    const pinnedHeldRef = useRef(false);
-    const schedulePinnedHide = useCallback((delayMs) => {
-        clearTimeout(pinnedHideTimerRef.current);
-        pinnedHideTimerRef.current = setTimeout(() => {
-            if (!pinnedHeldRef.current) setPinnedVisible(false);
-        }, delayMs);
+    // The bar is always there: it takes its own space at the top.
+    const pinnedVisible = true;
+    // The lit sentence's text in focus mode, for the bar. A small store of its
+    // own so a focus step re-renders the bar and not the whole reader.
+    const focusTextRef = useRef('');
+    const focusTextListenersRef = useRef(new Set());
+    const publishFocusText = useCallback((text) => {
+        if (focusTextRef.current === text) return;
+        focusTextRef.current = text;
+        focusTextListenersRef.current.forEach((listener) => listener(text));
     }, []);
-    const showPinnedFor = useCallback((delayMs = PINNED_TRANSLATION_SHOW_MS) => {
-        setPinnedVisible(true);
-        schedulePinnedHide(delayMs);
-    }, [schedulePinnedHide]);
-    const holdPinnedTranslation = useCallback((held) => {
-        pinnedHeldRef.current = held;
-        if (held) clearTimeout(pinnedHideTimerRef.current);
-        else schedulePinnedHide(PINNED_TRANSLATION_SHOW_MS);
-    }, [schedulePinnedHide]);
-    useEffect(() => () => clearTimeout(pinnedHideTimerRef.current), []);
+    const subscribeFocusText = useCallback((listener) => {
+        focusTextListenersRef.current.add(listener);
+        listener(focusTextRef.current);
+        return () => focusTextListenersRef.current.delete(listener);
+    }, []);
     const [listenPlaying, setListenPlaying] = useState(false);
     const [listenPrefs, setListenPrefs] = useState(DEFAULT_LISTEN_PREFS);
     const listenPrefsRef = useRef(DEFAULT_LISTEN_PREFS);
     const listenPlayingRef = useRef(false);
     const listenPlayerRef = useRef(null);
     const listenFocusRef = useRef(null);
+    // Listening turned focus mode on (and should turn it off when it ends),
+    // and is waiting for focus mode's first sentence to start reading.
+    const listenEnteredFocusRef = useRef(false);
+    const listenStartPendingRef = useRef(false);
     const listenSpokenKeyRef = useRef('');
     const listenRunRef = useRef(0);
     const listenCtxRef = useRef({});
@@ -797,7 +774,6 @@ const Read = ({
     // position still lands in the library.
     useEffect(() => flushPendingFocusPageChange, [flushPendingFocusPageChange]);
     const focusControlsTranslate = useRef(new Animated.Value(0)).current;
-    const focusSwipeKnobAnim = useRef(new Animated.Value(0)).current;
 
     // ── Preprocessing state ──────────────────────────────────────────────────
     // 'idle'         — no preprocessing requested
@@ -1047,10 +1023,12 @@ const Read = ({
     useEffect(() => {
         if (!currentBook) {
             setLevelUnderlineTerms([]);
+            setLevelTermsLoading(false);
             return;
         }
 
         let isActive = true;
+        setLevelTermsLoading(true);
 
         const loadTerms = () => loadLevelUnderlineTerms({
             ownerId: activeOwnerId,
@@ -1067,6 +1045,8 @@ const Read = ({
             if (isActive) {
                 setLevelUnderlineTerms([]);
             }
+        }).finally(() => {
+            if (isActive) setLevelTermsLoading(false);
         });
 
         return () => {
@@ -1105,7 +1085,6 @@ const Read = ({
         setHighlightedWord('');
         setHighlightedWordContext(null);
         setIsNativeSelection(false);
-        setLookupPlacement('bottom');
         setClearSelectionToken((value) => value + 1);
         setHighlightTerms(null);
         setOptimisticHighlightTerms([]);
@@ -1209,7 +1188,6 @@ const Read = ({
         const surface = includeSurface ? highlightedWord?.trim() : '';
         // A firmer click for committing a word to your deck — you feel it land.
         tapCommit();
-        tutorialEventRef.current?.({ type: 'wordSaved' });
         setSavedWords(prev => uniqTerms([...(prev ?? []), word]));
         setOptimisticHighlightTerms((prev) => {
             return uniqTerms([
@@ -1250,8 +1228,6 @@ const Read = ({
 
         const sentence = typeof event.sentence === 'string' ? event.sentence.trim() : '';
 
-        if (!isTipSeen(TIP_IDS.readerTap)) dismissLookupHint();
-
         // Looking a word up is its own (much stronger) evidence, so this word must
         // not also be credited as a skip when the current exposure unit closes.
         recentLookupsRef.current.add(text);
@@ -1270,8 +1246,6 @@ const Read = ({
             sentence,
         });
         setPinnedSentence(sentence || text);
-        showPinnedFor();
-        setLookupPlacement(event.placement === 'top' ? 'top' : 'bottom');
 
         recordVocabContextForSurface({
             ownerId: activeOwnerId,
@@ -1305,9 +1279,6 @@ const Read = ({
         setIsNativeSelection(true);
         setHighlightedWord('');
         setHighlightedWordContext(null);
-        // The AI explanation takes the reader's attention: the translation
-        // bar steps aside sooner.
-        schedulePinnedHide(PINNED_TRANSLATION_AI_HIDE_MS);
         setTextSelection({
             text,
             sentence: typeof event.sentence === 'string' ? event.sentence.trim() : '',
@@ -1319,7 +1290,6 @@ const Read = ({
         setSelectionPhraseSaved(false);
         extendingSelectionRef.current = false;
         // The explanation always opens at the bottom, like a sheet.
-        setLookupPlacement('bottom');
     }, []);
 
     const extendingSelectionRef = useRef(false);
@@ -1376,22 +1346,6 @@ const Read = ({
     useEffect(() => {
         readerSettingsRef.current = settings;
     }, [settings]);
-
-    // On focus, so "Show tips again" in Profile applies on return.
-    useFocusEffect(useCallback(() => {
-        let cancelled = false;
-        const loadTipState = async () => {
-            const enabled = await areTipsEnabled();
-            if (cancelled) return;
-            setShowLookupHint(!isTipSeen(TIP_IDS.readerTap));
-            setTipsEnabled(enabled);
-        };
-
-        loadTipState();
-        return () => {
-            cancelled = true;
-        };
-    }, []));
 
     const scheduleCloudReaderSettingsSync = useCallback((nextSettings, updatedAt = new Date().toISOString()) => {
         if (
@@ -1613,7 +1567,6 @@ const Read = ({
         updateSettings({
             fontSize: DEFAULT_READER_SETTINGS.fontSize,
             lineSpacing: DEFAULT_READER_SETTINGS.lineSpacing,
-            brightness: DEFAULT_READER_SETTINGS.brightness,
             readingMode: DEFAULT_READER_SETTINGS.readingMode,
             levelMarkStyle: DEFAULT_READER_SETTINGS.levelMarkStyle,
             levelMarkThreshold: DEFAULT_READER_SETTINGS.levelMarkThreshold,
@@ -1627,14 +1580,6 @@ const Read = ({
             pinyinScope: DEFAULT_READER_SETTINGS.pinyinScope,
             glossScope: DEFAULT_READER_SETTINGS.glossScope,
             hideSavedAnnotations: DEFAULT_READER_SETTINGS.hideSavedAnnotations,
-            pinnedSentenceTranslation: DEFAULT_READER_SETTINGS.pinnedSentenceTranslation,
-        });
-    };
-
-    const resetFocusSettings = () => {
-        updateSettings({
-            focusSwipe: DEFAULT_READER_SETTINGS.focusSwipe,
-            focusSpan: DEFAULT_READER_SETTINGS.focusSpan,
         });
     };
 
@@ -1648,6 +1593,13 @@ const Read = ({
             unsubscribeBlur?.();
         };
     }, [navigation]);
+
+    // A double tap on the page (the native view reports it, after closing
+    // whatever the first tap opened) goes in and out of full screen.
+    const handleNativeDoubleTap = useCallback(() => {
+        setShowMenu(false);
+        setIsFullscreen((current) => !current);
+    }, []);
 
     // The reader has no tab bar, so the header's back chevron is the way out.
     const goBackFromReader = useCallback(() => {
@@ -1793,11 +1745,6 @@ const Read = ({
         });
     }, [isDarkMode]);
 
-    const dismissLookupHint = useCallback(() => {
-        setShowLookupHint(false);
-        markTipSeen(TIP_IDS.readerTap);
-    }, []);
-
     const activeBookSizeMb = typeof activeBook?.size === 'number'
         ? activeBook.size / (1024 * 1024)
         : null;
@@ -1875,16 +1822,15 @@ const Read = ({
         currentSpineTitle: activeChapterTitle,
         currentBookTitle: headerBookTitle,
     }), [nativeReaderPackage?.bookManifest, activeBookLanguage, chapterTransitionDirection, activeChapterTitle, headerBookTitle]);
+    // The scrubber shows progress through the whole book, the same number Home
+    // and the book page show. (It used to show progress through the current
+    // chapter, so a short first chapter read "100%" while Home said 50%.)
     const bookProgress = clampProgress(
         typeof readerLocationInfo?.percentage === 'number'
             ? readerLocationInfo.percentage
             : activeBook?.progress
     );
-    // The scrubber shows progress through the whole book, the same number Home
-    // and the book page show. (It used to show progress through the current
-    // chapter, so a short first chapter read "100%" while Home said 50%.)
-    const progressPercent = Math.round(bookProgress * 100);
-    const progressLabel = t('common.percent', { value: formatNumber(progressPercent) });
+    const headerProgressPercent = Math.round(bookProgress * 100);
     const chapterIndexLabel = Number.isInteger(activeSpineIndex)
         ? t('read.chapterNumber', { number: formatNumber(activeSpineIndex + 1) })
         : t('read.defaultTitle');
@@ -3438,9 +3384,9 @@ const Read = ({
         loadNativeReaderPackage(loadedSpineIndex - 1, { animateChapterTransition: true });
     }, [loadNativeReaderPackage]);
 
-    // Focus mode always presents the lookup panel from the bottom so the
-    // anchored sentence can lift above it.
-    const shouldPlaceLookupAtTop = lookupPlacement === 'top' && !focusMode;
+    // The lookup panel always comes up from the bottom (in focus mode the
+    // anchored sentence lifts above it as needed).
+    const shouldPlaceLookupAtTop = false;
     const readerFontSize = Math.round(clampNumber(
         settings.fontSize,
         FONT_SIZE_MIN,
@@ -3455,26 +3401,10 @@ const Read = ({
         LINE_SPACING_STEPS[LINE_SPACING_STEPS.length - 1].value,
         DEFAULT_READER_SETTINGS.lineSpacing
     );
-    const readerBrightness = clampNumber(
-        settings.brightness,
-        BRIGHTNESS_MIN,
-        BRIGHTNESS_MAX,
-        DEFAULT_READER_SETTINGS.brightness
-    );
-    const readerBrightnessDelta = readerBrightness - DEFAULT_READER_SETTINGS.brightness;
-    const readerBrightnessOverlayColor = readerBrightnessDelta < 0 ? '#000000' : '#ffffff';
-    const readerBrightnessOverlayOpacity = readerBrightnessDelta < 0
-        ? Math.min(0.28, (Math.abs(readerBrightnessDelta) / (DEFAULT_READER_SETTINGS.brightness - BRIGHTNESS_MIN)) * 0.28)
-        : Math.min(0.08, (readerBrightnessDelta / (BRIGHTNESS_MAX - DEFAULT_READER_SETTINGS.brightness)) * 0.08);
-
     // ── Focus (sentence beam) mode wiring ────────────────────────────────────
-    const focusSpan = Math.round(clampNumber(
-        settings.focusSpan,
-        FOCUS_SPAN_MIN,
-        FOCUS_SPAN_MAX,
-        DEFAULT_READER_SETTINGS.focusSpan
-    ));
-    const focusSwipe = !!settings.focusSwipe;
+    // One sentence at a time, moved by swiping; neither is a setting.
+    const focusSpan = 1;
+    const focusSwipe = true;
     const readingMode = READING_MODES.includes(settings.readingMode)
         ? settings.readingMode
         : DEFAULT_READER_SETTINGS.readingMode;
@@ -3501,7 +3431,6 @@ const Read = ({
     // The pinned translation belongs to the chapter it came from.
     useEffect(() => {
         setPinnedSentence('');
-        setPinnedVisible(false);
     }, [activeSpineIndex, currentBook]);
 
     // Translate the open chapter's sentences in a few requests, ahead of time,
@@ -3510,7 +3439,9 @@ const Read = ({
     // between chapters doesn't wait). Each chapter is fetched once per language
     // and kept on the phone (services/chapterTranslations.js).
     const listenTranslating = listenActive && Boolean(listenPrefs.translateSentences);
-    const chapterTranslationsWanted = Boolean(settings.pinnedSentenceTranslation) || listenTranslating;
+    // The sentence translation bar is always on, so the open chapter is always
+    // translated ahead.
+    const chapterTranslationsWanted = true;
     useEffect(() => {
         if (
             !chapterTranslationsWanted
@@ -3519,9 +3450,11 @@ const Read = ({
             // Same language (or just another script of it): nothing to translate.
             || normalizeBookLanguage(activeBookLanguage) === String(interfaceLanguage || '').split('-')[0]
         ) {
+            setChapterTranslating(false);
             return undefined;
         }
         let active = true;
+        setChapterTranslating(true);
         const prefetch = async (spineIndex) => {
             const chapterPackage = await loadParsedChapterPackage(spineIndex, `translate:${spineIndex}`);
             if (!active || !chapterPackage) return;
@@ -3538,6 +3471,10 @@ const Read = ({
         };
         const totalSpineItems = nativeReaderPackageRef.current?.spine?.length ?? 0;
         prefetch(currentSpineIndex)
+            .finally(() => {
+                // The open chapter is what the notice waits for, not the next.
+                if (active) setChapterTranslating(false);
+            })
             .then(() => {
                 if (active && listenTranslating && currentSpineIndex + 1 < totalSpineItems) {
                     return prefetch(currentSpineIndex + 1);
@@ -3579,9 +3516,11 @@ const Read = ({
         // are worth showing now, and the effect re-runs as processing progresses.
         if (!annotationsWanted || !currentBook) {
             setAnnotationRows([]);
+            setAnnotationsLoading(false);
             return undefined;
         }
         let isActive = true;
+        setAnnotationsLoading(true);
         lookupBookAnnotationSurfaces(activeOwnerId, currentBook, { language: activeBookLanguage })
             .then((rows) => {
                 if (isActive) setAnnotationRows(rows || []);
@@ -3589,6 +3528,9 @@ const Read = ({
             .catch((error) => {
                 console.error('[Read] Failed to load word annotations:', error);
                 if (isActive) setAnnotationRows([]);
+            })
+            .finally(() => {
+                if (isActive) setAnnotationsLoading(false);
             });
         return () => {
             isActive = false;
@@ -3656,9 +3598,18 @@ const Read = ({
             readerShowPinyin,
         ]
     );
-    // Rows above the settings tabs in the sheet: the contents, full screen
-    // (both left the header for the scrubber) and Checkpoints, one tap away.
+    // Rows above the settings tabs in the sheet: the contents (it left the
+    // header for the scrubber) and Checkpoints, one tap away. Full screen is a
+    // double tap on the page.
     const settingsSheetActions = useMemo(() => [{
+        key: 'saved',
+        label: t('read.savedTab', { count: bookSavedWords.length }),
+        icon: <MaterialCommunityIcons name="cards-outline" size={21} color={themeColors.readerBodyInk} />,
+        onPress: () => {
+            setShowMenu(false);
+            openSavedPanel('saved');
+        },
+    }, {
         key: 'contents',
         label: t('read.contents'),
         icon: <MaterialIcons name="toc" size={21} color={themeColors.readerBodyInk} />,
@@ -3667,26 +3618,18 @@ const Read = ({
             if (toc.length > 0) setShowToc(true);
         },
     }, {
-        key: 'fullscreen',
-        label: t('read.enterFullscreen'),
-        icon: <MaterialIcons name="fullscreen" size={22} color={themeColors.readerBodyInk} />,
-        onPress: () => {
-            setShowMenu(false);
-            setIsFullscreen(true);
-        },
-    }, {
         key: 'checkpoints',
         label: t('read.checkpoints'),
         icon: <MaterialIcons name="bookmark-border" size={21} color={themeColors.readerBodyInk} />,
         onPress: openNotesLog,
-    }], [openNotesLog, t, themeColors.readerBodyInk, toc.length]);
+    }], [bookSavedWords.length, openNotesLog, openSavedPanel, t, themeColors.readerBodyInk, toc.length]);
 
     // ─── Page scrubber ───────────────────────────────────────────────────────
     // The line along the bottom: where you are in the story, its chapters and
     // bookmarks; dragging previews and releasing goes there.
     const scrubberShown = Boolean(currentBook) && bookLoadState === 'ready' && !isFullscreen && !focusMode;
     const scrubberSpace = scrubberShown ? PAGE_SCRUBBER_HEIGHT + insets.bottom : 0;
-    // Cards and tips at the bottom of the screen sit above the scrubber.
+    // Cards at the bottom of the screen sit above the scrubber.
     const bottomOverlayBase = scrubberShown ? scrubberSpace : insets.bottom;
     const readerSpine = nativeReaderPackage?.spine;
     const scrubberRange = useMemo(
@@ -3767,27 +3710,167 @@ const Read = ({
     }, [activeSpineIndex, handleSelectBookmark, readerSpine, scrubberRange]);
     const focusPanelOpen = focusMode && !!highlightedWord;
     // Total height the lookup panel occupies from the bottom of the screen;
-    // the native reading surface lifts by exactly this much.
+    // the native reading surface lifts only as far as the focused sentence
+    // needs to end above it (often not at all: it rests in the top half).
     const focusPanelTotalHeight = focusPanelOpen
         ? Math.max(0, Math.round(lookupPanelHeight))
         : 0;
     const focusControlsBaseBottom = insets.bottom + 28;
     // The position pill rides at the top of the reading surface rather than the
-    // bottom: the lit sentence rests low in the viewport, so anything anchored
-    // to the bottom sits on top of it. FOCUS_SPAN_TOP_MARGIN_DP in the native
+    // bottom, where the lookup panel comes up. FOCUS_SPAN_TOP_MARGIN_DP in the native
     // module reserves the matching strip of reading surface, so a sentence too
     // tall to fit still stops short of the pill instead of running under it.
-    // The pinned translation bar floats over the top of the page while it's
-    // shown (after a word tap, for a few seconds), so the text never moves;
-    // a top-placed lookup panel and the focus pill sit below it meanwhile.
-    // The tutorial shows the translation bar even when it is turned off.
-    const showPinnedTranslation = Boolean(currentBook)
-        && (settings.pinnedSentenceTranslation !== false || tutorialRunning);
+    const showPinnedTranslation = Boolean(currentBook);
+    // The bar takes its own space under the header (under the status bar in
+    // full screen): 0–4 lines of translation at its font size, the reader's
+    // choice (dragged at the grip under it), and the page lays out below. A
+    // longer translation scrolls inside it rather than re-paginating the book.
+    const pinnedLines = clampPinnedTranslationLines(settings.translationLines);
+    const pinnedBarHeight = pinnedTranslationBarHeight(pinnedTranslationFontSize, pinnedLines);
     const pinnedTranslationOffset = showPinnedTranslation && pinnedVisible
-        ? pinnedTranslationBarHeight(pinnedTranslationFontSize)
+        ? pinnedBarHeight + PINNED_TRANSLATION_GRIP_HEIGHT
         : 0;
-    // Top of the reading surface in fullscreen: below the status-bar inset,
-    // and below the bar while it shows.
+
+    // Dragging the grip: the bar's height animates from one line count to the
+    // next as the finger passes each (a tick of haptics on each), and the page
+    // slides along with it (a transform, so the book isn't re-laid out on
+    // every frame). Letting go saves the count; the page then lays out once
+    // at its new size. A tap folds the bar away, or brings it back.
+    const pinnedHeightAnim = useRef(new Animated.Value(pinnedBarHeight)).current;
+    const pinnedDragRef = useRef(null);
+    const pinnedCommittedRef = useRef({ lines: pinnedLines, height: pinnedBarHeight, fontSize: pinnedTranslationFontSize });
+    pinnedCommittedRef.current = { lines: pinnedLines, height: pinnedBarHeight, fontSize: pinnedTranslationFontSize };
+    const updateSettingsRef = useRef(null);
+    updateSettingsRef.current = updateSettings;
+    // Where the grip last sent the height. A saved height that differs (a new
+    // font size, settings from the cloud) is taken at once; the grip's own
+    // saves keep their animation running.
+    const pinnedAnimTargetRef = useRef(pinnedBarHeight);
+    useEffect(() => {
+        if (pinnedDragRef.current || pinnedAnimTargetRef.current === pinnedBarHeight) return;
+        pinnedAnimTargetRef.current = pinnedBarHeight;
+        pinnedHeightAnim.setValue(pinnedBarHeight);
+    }, [pinnedBarHeight, pinnedHeightAnim]);
+    // A spring rather than a fixed-length tween: retargeted on every move, it
+    // carries the bar's motion over instead of restarting it.
+    const springPinnedHeight = useCallback((toValue) => {
+        Animated.spring(pinnedHeightAnim, {
+            toValue,
+            stiffness: 420,
+            damping: 38,
+            mass: 1,
+            overshootClamping: true,
+            useNativeDriver: false,
+        }).start();
+    }, [pinnedHeightAnim]);
+    const animatePinnedTo = useCallback((lines) => {
+        const toValue = pinnedTranslationBarHeight(pinnedCommittedRef.current.fontSize, lines);
+        pinnedAnimTargetRef.current = toValue;
+        springPinnedHeight(toValue);
+    }, [springPinnedHeight]);
+    // The grip's handle bends into a chevron the way it's being moved (⌃ up,
+    // ⌄ down); at rest it lies flat, or shows ⌄ when the bar is folded away.
+    const pinnedGripTilt = useRef(new Animated.Value(pinnedLines === 0 ? 1 : 0)).current;
+    const tiltPinnedGrip = useCallback((toValue) => {
+        Animated.spring(pinnedGripTilt, {
+            toValue,
+            stiffness: 360,
+            damping: 26,
+            mass: 1,
+            useNativeDriver: true,
+        }).start();
+    }, [pinnedGripTilt]);
+    useEffect(() => {
+        if (!pinnedDragRef.current) tiltPinnedGrip(pinnedLines === 0 ? 1 : 0);
+    }, [pinnedLines, tiltPinnedGrip]);
+    const commitPinnedLines = useCallback((lines) => {
+        pinnedDragRef.current = null;
+        if (lines !== pinnedCommittedRef.current.lines) {
+            updateSettingsRef.current?.({ translationLines: lines }, { keepSelection: true });
+        }
+    }, []);
+    const pinnedGripResponder = useMemo(() => PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderTerminationRequest: () => false,
+        onPanResponderGrant: () => {
+            const { lines, height } = pinnedCommittedRef.current;
+            pinnedDragRef.current = { startHeight: height, lines, moved: false, lastRaw: height, tilt: 0 };
+        },
+        onPanResponderMove: (_event, gesture) => {
+            const drag = pinnedDragRef.current;
+            if (!drag) return;
+            if (Math.abs(gesture.dy) > 4) drag.moved = true;
+            const { fontSize } = pinnedCommittedRef.current;
+            const raw = drag.startHeight + gesture.dy;
+            // Which way the finger is going: the handle bends to match.
+            if (Math.abs(raw - drag.lastRaw) > 1.5) {
+                const tilt = raw < drag.lastRaw ? -1 : 1;
+                if (tilt !== drag.tilt) {
+                    drag.tilt = tilt;
+                    tiltPinnedGrip(tilt);
+                }
+                drag.lastRaw = raw;
+            }
+            const lines = nearestPinnedTranslationLines(raw, fontSize);
+            if (lines !== drag.lines) {
+                drag.lines = lines;
+                tapSelect();
+            }
+            // Snapped to the nearest line count, leaning a little toward the
+            // finger in between, so the steps feel connected.
+            const stepHeight = pinnedTranslationBarHeight(fontSize, lines);
+            const maxHeight = pinnedTranslationBarHeight(fontSize, PINNED_TRANSLATION_MAX_LINES);
+            const target = Math.min(maxHeight, Math.max(0, stepHeight + (raw - stepHeight) * 0.3));
+            pinnedAnimTargetRef.current = target;
+            springPinnedHeight(target);
+        },
+        onPanResponderRelease: () => {
+            const drag = pinnedDragRef.current;
+            if (!drag) return;
+            if (!drag.moved) {
+                // A tap: fold away, or back to the full four lines.
+                const lines = pinnedCommittedRef.current.lines > 0 ? 0 : PINNED_TRANSLATION_MAX_LINES;
+                tapSelect();
+                animatePinnedTo(lines);
+                commitPinnedLines(lines);
+                tiltPinnedGrip(lines === 0 ? 1 : 0);
+                return;
+            }
+            animatePinnedTo(drag.lines);
+            commitPinnedLines(drag.lines);
+            tiltPinnedGrip(drag.lines === 0 ? 1 : 0);
+        },
+        onPanResponderTerminate: () => {
+            const drag = pinnedDragRef.current;
+            if (!drag) return;
+            animatePinnedTo(drag.lines);
+            commitPinnedLines(drag.lines);
+            tiltPinnedGrip(drag.lines === 0 ? 1 : 0);
+        },
+    }), [animatePinnedTo, commitPinnedLines, springPinnedHeight, tiltPinnedGrip]);
+    // The grip is adjustable for screen readers too: one line at a time.
+    const pinnedGripAccessibility = useMemo(() => ({
+        accessible: true,
+        accessibilityRole: 'adjustable',
+        accessibilityLabel: t('read.pinnedTranslation'),
+        accessibilityValue: { min: 0, max: PINNED_TRANSLATION_MAX_LINES, now: pinnedLines },
+        accessibilityActions: [{ name: 'increment' }, { name: 'decrement' }],
+        onAccessibilityAction: ({ nativeEvent }) => {
+            const step = nativeEvent.actionName === 'increment' ? 1 : -1;
+            const lines = clampPinnedTranslationLines(pinnedCommittedRef.current.lines + step);
+            animatePinnedTo(lines);
+            commitPinnedLines(lines);
+        },
+    }), [animatePinnedTo, commitPinnedLines, pinnedLines, t]);
+    // While the bar animates away from its saved height, the page follows.
+    const pinnedFollowShift = useMemo(() => pinnedHeightAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [-pinnedBarHeight, 1 - pinnedBarHeight],
+        extrapolate: 'extend',
+    }), [pinnedBarHeight, pinnedHeightAnim]);
+    // Top of the reading surface in fullscreen: below the status-bar inset
+    // and the bar.
     const fullscreenTop = insets.top + pinnedTranslationOffset;
     const focusPillTop = (isFullscreen ? fullscreenTop : insets.top + spacing.xs + 52 + pinnedTranslationOffset) + 12;
 
@@ -3796,14 +3879,6 @@ const Read = ({
     const focusControlsLiftTarget = focusPanelOpen
         ? Math.max(0, focusPanelTotalHeight + 12 - focusControlsBaseBottom)
         : 0;
-    const focusSwipeTrackColor = focusSwipeKnobAnim.interpolate({
-        inputRange: [0, 1],
-        outputRange: ['#d2d0d0', themeColors.inkSlate],
-    });
-    const focusSwipeKnobLeft = focusSwipeKnobAnim.interpolate({
-        inputRange: [0, 1],
-        outputRange: [3, 21],
-    });
 
     useEffect(() => {
         Animated.timing(focusControlsTranslate, {
@@ -3814,20 +3889,13 @@ const Read = ({
         }).start();
     }, [focusControlsLiftTarget, focusControlsTranslate]);
 
-    useEffect(() => {
-        Animated.timing(focusSwipeKnobAnim, {
-            toValue: focusSwipe ? 1 : 0,
-            duration: 250,
-            useNativeDriver: false,
-        }).start();
-    }, [focusSwipe, focusSwipeKnobAnim]);
-
     const handleFocusSentenceChange = useCallback((event = {}) => {
         publishFocusInfo({
             index: Number.isInteger(event.index) ? event.index : 0,
             count: Number.isInteger(event.count) && event.count > 0 ? event.count : 1,
             total: Number.isInteger(event.total) ? event.total : 0,
         });
+        publishFocusText(cleanListenText(event.text));
         // While listening, stepping goes through the focusNav command and its
         // result (see stepOn); events matter for a new chapter or a jump
         // forward. Events for earlier sentences are the queue flushing after
@@ -3835,7 +3903,13 @@ const Read = ({
         // not replay them.
         const previous = listenFocusRef.current;
         const sameChapter = previous?.spineIndex === currentSpineIndexRef.current;
-        const behind = sameChapter && Number.isInteger(previous?.index) && event.index <= previous.index;
+        // Listening just turned focus mode on: this is where it starts.
+        const starting = listenStartPendingRef.current && listenPlayingRef.current;
+        if (starting) listenStartPendingRef.current = false;
+        const behind = !starting
+            && sameChapter
+            && Number.isInteger(previous?.index)
+            && event.index <= previous.index;
         if (!behind) {
             listenFocusRef.current = { ...event, spineIndex: currentSpineIndexRef.current };
         }
@@ -3844,7 +3918,7 @@ const Read = ({
         if (listenPlayingRef.current && !behind && key !== listenSpokenKeyRef.current) {
             listenSpeakRef.current?.(event, key);
         }
-    }, [publishFocusInfo]);
+    }, [publishFocusInfo, publishFocusText]);
 
     const sendFocusNav = useCallback((direction) => {
         // Preferred path: call straight into the native view. Routing through
@@ -4106,13 +4180,24 @@ const Read = ({
         // The voice and the notification player are shared with the Learn
         // tab's audio review; taking them over stops it (and it stops us).
         claimListenSession('reader', () => listenPauseRef.current?.({ keepActive: false }));
+        // Listening reads in focus mode. Turn it on BEFORE marking listening
+        // active: after the await above, state updates aren't batched, and a
+        // render with listening on but focus off makes the guard below stop
+        // listening again. Leaving listening turns focus back off (it was
+        // listening's doing), and the first sentence focus sends is read
+        // however far the reader got before (listenStartPendingRef).
+        const enteringFocus = !focusModeRef.current;
+        if (enteringFocus) {
+            listenEnteredFocusRef.current = true;
+            listenStartPendingRef.current = true;
+            toggleFocusMode();
+        }
         setListenActive(true);
         setListenPlaying(true);
         listenPlayingRef.current = true;
         listenErrorsRef.current = 0;
-        if (!focusModeRef.current) {
+        if (enteringFocus) {
             // Entering focus mode sends the first sentence; that starts the voice.
-            toggleFocusMode();
             return;
         }
         const current = listenFocusRef.current;
@@ -4241,9 +4326,24 @@ const Read = ({
             pauseListening({ keepActive: false });
         }
     }, [focusMode, listenActive, pauseListening]);
+    // Listening ended (closed, stopped, another book): back to normal reading
+    // if it was listening that turned focus mode on. A reader who was already
+    // in focus mode stays there.
+    const wasListenActiveRef = useRef(false);
+    useEffect(() => {
+        const was = wasListenActiveRef.current;
+        wasListenActiveRef.current = listenActive;
+        if (!was || listenActive) return;
+        listenStartPendingRef.current = false;
+        if (listenEnteredFocusRef.current) {
+            listenEnteredFocusRef.current = false;
+            if (focusModeRef.current) toggleFocusMode();
+        }
+    }, [listenActive, toggleFocusMode]);
+    // Another book stops the voice (currentBook is the book's uri).
     useEffect(() => {
         pauseListening({ keepActive: false });
-    }, [currentBook?.id, pauseListening]);
+    }, [currentBook, pauseListening]);
     useEffect(() => () => {
         listenPlayerRef.current?.destroy();
         listenPlayerRef.current = null;
@@ -4278,6 +4378,24 @@ const Read = ({
 
     const listenResumeRef = useRef(null);
     listenResumeRef.current = resumeListening;
+
+    // Home's mini player and the route-change pause (services/readerListenState.js).
+    useEffect(() => {
+        publishReaderListen({
+            active: listenActive,
+            playing: listenPlaying,
+            title: headerBookTitle || '',
+            subtitle: listenSessionSubtitle || '',
+        });
+    }, [headerBookTitle, listenActive, listenPlaying, listenSessionSubtitle]);
+    useEffect(() => registerReaderListenCommands({
+        toggle: () => (listenPlayingRef.current ? listenPauseRef.current?.() : listenResumeRef.current?.()),
+        pause: () => listenPauseRef.current?.(),
+        next: () => listenNavRef.current?.('next'),
+        previous: () => listenNavRef.current?.('prev'),
+        stop: () => listenPauseRef.current?.({ keepActive: false }),
+    }), []);
+    useEffect(() => () => publishReaderListen({ active: false, playing: false }), []);
     useEffect(() => {
         const subscription = addListenControlListener(({ action } = {}) => {
             // The lock-screen buttons belong to whoever owns the session.
@@ -4390,174 +4508,30 @@ const Read = ({
         setShowMenu(true);
     }, [currentBook, navigation, openSettingsParam, t]);
 
-    // ── The first-book tutorial ──────────────────────────────────────────────
-    // Onboarding (or Profile › Tips) asks for it and Home opens the starter
-    // book; it runs here once that book is open and ready. Each action step
-    // advances when the reader really does the thing (the events below).
-    const [tutorialRecord, setTutorialRecord] = useState(getTutorial);
-    const [tutorialToast, setTutorialToast] = useState(false);
+    // ── "Getting this chapter's word help ready" ─────────────────────────────
+    // Up while the chapter is processed and then while its underlines, the
+    // translations under words and the sentence translations load, so once it
+    // goes, a tap's definition and translation are instant and the underlines
+    // are on the page. The follow-up loads usually finish in a blink, so they
+    // only bring it up after a short grace (no flicker); it stays a moment
+    // past the end so the page has painted the new marks.
+    const wordHelpLoading = bookLoadState === 'ready'
+        && (levelTermsLoading || annotationsLoading || chapterTranslating);
+    const [preparingNoticeVisible, setPreparingNoticeVisible] = useState(false);
     useEffect(() => {
-        let active = true;
-        loadTutorial().then((value) => {
-            if (active) setTutorialRecord(value);
-        });
-        const unsubscribe = subscribeTutorial((value) => setTutorialRecord(value));
-        return () => {
-            active = false;
-            unsubscribe();
-        };
-    }, []);
-    const tutorialProgressRef = useRef(null);
-    tutorialProgressRef.current = tutorialProgress;
-    const dispatchTutorial = useCallback((event) => {
-        setTutorialProgress((current) => (current ? advanceTutorial(current, event) : current));
-    }, []);
-    tutorialEventRef.current = dispatchTutorial;
-
-    const startTutorial = useCallback(() => {
-        setTutorialToast(false);
-        setShowLookupHint(false);
-        markTipSeen(TIP_IDS.readerTap);
-        setShowMenu(false);
-        dismissLookup();
-        setTutorialProgress(initialTutorialProgress());
-    }, [dismissLookup]);
-
-    // Once per request: the record stays "pending" for a moment after the
-    // tutorial ends (it is written asynchronously), which must not restart it.
-    const tutorialStartedRef = useRef(false);
-    useEffect(() => {
-        if (tutorialRecord.status !== 'pending') tutorialStartedRef.current = false;
-    }, [tutorialRecord.status]);
-    useEffect(() => {
-        if (tutorialRunning || tutorialStartedRef.current) return;
-        if (!readerFocused || bookLoadState !== 'ready' || !nativeReaderPackage) return;
-        if (tutorialRecord.status !== 'pending' || !tutorialRecord.bookUri || tutorialRecord.bookUri !== currentBook) return;
-        tutorialStartedRef.current = true;
-        startTutorial();
-    }, [bookLoadState, currentBook, nativeReaderPackage, readerFocused, startTutorial, tutorialRecord, tutorialRunning]);
-
-    useEffect(() => {
-        if (highlightedWord && !textSelection) dispatchTutorial({ type: 'wordTapped' });
-    }, [dispatchTutorial, highlightedWord, textSelection]);
-    useEffect(() => {
-        if (textSelection) dispatchTutorial({ type: 'selectionOpened' });
-    }, [dispatchTutorial, textSelection]);
-    useEffect(() => {
-        if (focusMode) dispatchTutorial({ type: 'focusOn' });
-    }, [dispatchTutorial, focusMode]);
-    useEffect(() => {
-        if (listenActive) dispatchTutorial({ type: 'listenOn' });
-    }, [dispatchTutorial, listenActive]);
-
-    // Between steps, put away what the last one opened.
-    const tutorialStep = tutorialProgress?.step ?? null;
-    const previousTutorialStepRef = useRef(null);
-    useEffect(() => {
-        const previous = previousTutorialStepRef.current;
-        previousTutorialStepRef.current = tutorialStep;
-        if (tutorialStep === previous) return;
-        // The bar is held up for its step and the save step after it, so the
-        // lookup panel below it stays put.
-        const holdsBar = (step) => step === TUTORIAL_STEPS.sentenceBar || step === TUTORIAL_STEPS.saveWord;
-        if (holdsBar(tutorialStep) && !holdsBar(previous)) {
-            setPinnedVisible(true);
-            holdPinnedTranslation(true);
-        } else if (holdsBar(previous) && !holdsBar(tutorialStep)) {
-            holdPinnedTranslation(false);
+        if (currentChapterPreparing) {
+            setPreparingNoticeVisible(true);
+            return undefined;
         }
-        if (tutorialStep === TUTORIAL_STEPS.holdSentence || tutorialStep === TUTORIAL_STEPS.focus) {
-            dismissLookup();
-        }
-        if ((tutorialStep === TUTORIAL_STEPS.listen || tutorialStep === TUTORIAL_STEPS.more) && focusModeRef.current) {
-            toggleFocusMode();
-        }
-    }, [dismissLookup, holdPinnedTranslation, toggleFocusMode, tutorialStep]);
-
-    const finishedTutorial = tutorialProgress?.finished ?? null;
-    useEffect(() => {
-        if (!finishedTutorial) return;
-        setTutorialProgress(null);
-        finishTutorial(finishedTutorial);
-        holdPinnedTranslation(false);
-        dismissLookup();
-        pauseListening({ keepActive: false });
-        if (focusModeRef.current) toggleFocusMode();
-        setTutorialToast(true);
-    }, [dismissLookup, finishedTutorial, holdPinnedTranslation, pauseListening, toggleFocusMode]);
-
-    // Back skips it.
-    useEffect(() => {
-        if (!tutorialRunning) return undefined;
-        const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
-            dispatchTutorial({ type: 'skip' });
-            return true;
-        });
-        return () => subscription.remove();
-    }, [dispatchTutorial, tutorialRunning]);
-
-    // What the current step lights, in window dp. A word or sentence the page
-    // can't offer falls back to the whole page.
-    const measureTutorialStepTarget = useCallback(async () => {
-        const progress = tutorialProgressRef.current;
-        if (!progress) return null;
-        const onPage = async (kind) => {
-            const viewTag = findNodeHandle(nativeReaderViewRef.current);
-            if (supportsTutorialTargets && viewTag != null) {
-                const targets = await fetchTutorialTargets(viewTag).catch(() => null);
-                if (targets?.[kind]) return targets[kind];
-            }
-            return measureInWindow(readerAreaRef.current);
-        };
-        switch (progress.step) {
-            case TUTORIAL_STEPS.tapWord:
-                return onPage('word');
-            case TUTORIAL_STEPS.sentenceBar:
-                return measureInWindow(pinnedBarRef.current);
-            case TUTORIAL_STEPS.saveWord:
-                return measureTutorialTarget('lookup.save');
-            case TUTORIAL_STEPS.holdSentence:
-                // The explanation itself is left undimmed (the card moves up).
-                return progress.held ? null : onPage('sentence');
-            case TUTORIAL_STEPS.focus:
-                return progress.focused ? null : measureInWindow(focusButtonRef.current);
-            case TUTORIAL_STEPS.listen:
-                return progress.listening ? measureTutorialTarget('listen.bar') : measureInWindow(listenButtonRef.current);
-            default:
-                return null;
-        }
-    }, []);
-
-    // Entering focus mode the first time: swipe or buttons?
-    useEffect(() => {
-        if (!tipsEnabled || !focusMode || tutorialRunning || isTipSeen(TIP_IDS.readerFocusNav)) return;
-        offerTip(TIP_IDS.readerFocusNav, { unprompted: false });
-    }, [focusMode, offerTip, tipsEnabled, tutorialRunning]);
-
-    const chooseFocusNav = (swipe) => {
-        closeTip(TIP_IDS.readerFocusNav);
-        if (Boolean(settings.focusSwipe) !== swipe) {
-            updateSettings({ focusSwipe: swipe }, { keepSelection: true });
-        }
-    };
-
-    const readerTips = {
-        [TIP_IDS.readerFocusNav]: {
-            title: t('tips.focusNavTitle'),
-            body: t('tips.focusNavBody'),
-            // Above the focus controls (both arrows).
-            bottom: insets.bottom + 168,
-            actions: [
-                { label: t('tips.focusNavSwipe'), onPress: () => chooseFocusNav(true) },
-                { label: t('tips.focusNavButtons'), onPress: () => chooseFocusNav(false) },
-            ],
-        },
-    };
-    const activeReaderTip = tipId ? readerTips[tipId] : null;
+        const timer = setTimeout(
+            () => setPreparingNoticeVisible(wordHelpLoading),
+            wordHelpLoading ? 300 : 200
+        );
+        return () => clearTimeout(timer);
+    }, [currentChapterPreparing, wordHelpLoading]);
 
     return (
         <Animated.View
-            ref={containerRef}
             collapsable={false}
             style={[styles.container, { opacity: enterAnim, transform: [{ translateY: enterShift }] }]}
         >
@@ -4571,22 +4545,7 @@ const Read = ({
                         onPress={goBackFromReader}
                         accessibilityLabel={t('home.backToLibrary')}
                     />
-                    <ReaderCheckpointButton
-                        styles={chrome}
-                        themeColors={themeColors}
-                        active={!!activeBookmark}
-                        onPress={toggleBookmark}
-                        onLongPress={openBeforeYouGo}
-                        accessibilityLabel={activeBookmark ? t('read.removeBookmark') : t('read.addBookmark')}
-                    />
-                    <ReaderSavedWordsButton
-                        styles={chrome}
-                        themeColors={themeColors}
-                        count={bookSavedWords.length}
-                        onPress={() => openSavedPanel('saved')}
-                        accessibilityLabel={t('read.savedTab', { count: bookSavedWords.length })}
-                    />
-                    <View ref={focusButtonRef} collapsable={false} style={chrome.headerGroupGap}>
+                    <View style={chrome.headerGroupGap}>
                         <ReaderFocusModeButton
                             styles={chrome}
                             themeColors={themeColors}
@@ -4595,7 +4554,7 @@ const Read = ({
                             accessibilityLabel={t('read.focusMode')}
                         />
                     </View>
-                    <View ref={listenButtonRef} collapsable={false} style={chrome.headerGroupGap}>
+                    <View style={chrome.headerGroupGap}>
                         <ReaderListenButton
                             styles={chrome}
                             themeColors={themeColors}
@@ -4607,10 +4566,25 @@ const Read = ({
                             accessibilityLabel={listenActive ? t('read.listenStop') : t('read.listen')}
                         />
                     </View>
-                    <ReaderGoalClock styles={chrome} themeColors={themeColors} />
-                    {/* Where you are (and the contents) live in the scrubber
-                        along the bottom; full screen is in the menu. */}
-                    <View style={styles.headerSpacer} />
+                    {/* Where you are in the book (tap: the contents). Saved and
+                        suggested words are in the menu; full screen is a
+                        double tap. */}
+                    <ReaderProgressButton
+                        styles={chrome}
+                        fillWidth={`${headerProgressPercent}%`}
+                        label={t('common.percent', { value: headerProgressPercent })}
+                        disabled={toc.length === 0}
+                        onPress={() => setShowToc(true)}
+                        accessibilityLabel={`${t('read.contents')}, ${t('common.percent', { value: headerProgressPercent })}`}
+                    />
+                    <ReaderCheckpointButton
+                        styles={chrome}
+                        themeColors={themeColors}
+                        active={!!activeBookmark}
+                        onPress={toggleBookmark}
+                        onLongPress={openBeforeYouGo}
+                        accessibilityLabel={activeBookmark ? t('read.removeBookmark') : t('read.addBookmark')}
+                    />
                     <ReaderMenuButton
                         styles={chrome}
                         themeColors={themeColors}
@@ -4624,7 +4598,34 @@ const Read = ({
                 </ReaderHeaderBar>
             ) : null}
 
-            <View ref={readerAreaRef} collapsable={false} style={[styles.reader, isFullscreen ? { paddingTop: insets.top } : null]}>
+            {/* The sentence translation: always there, in its own space between
+                the header and the page (in focus mode, the lit sentence's). */}
+            {showPinnedTranslation ? (
+                <View collapsable={false} style={styles.pinnedBarLayer}>
+                    <PinnedSentenceTranslation
+                        sentence={pinnedSentence}
+                        followFocus={focusMode}
+                        subscribeFocusText={subscribeFocusText}
+                        sourceLanguage={activeBookLanguage}
+                        targetLanguage={interfaceLanguage}
+                        fontSize={pinnedTranslationFontSize}
+                        heightAnim={pinnedHeightAnim}
+                        topInset={isFullscreen ? insets.top : 0}
+                        gripHandlers={pinnedGripResponder.panHandlers}
+                        gripAccessibility={pinnedGripAccessibility}
+                        gripTilt={pinnedGripTilt}
+                    />
+                </View>
+            ) : null}
+
+            <Animated.View
+                collapsable={false}
+                style={[
+                    styles.reader,
+                    isFullscreen && !showPinnedTranslation ? { paddingTop: insets.top } : null,
+                    showPinnedTranslation ? { transform: [{ translateY: pinnedFollowShift }] } : null,
+                ]}
+            >
                 {bookLoadState === 'error' ? (
                     <View style={styles.readerErrorState}>
                         <Text style={styles.readerErrorTitle}>{t('read.openErrorTitle')}</Text>
@@ -4703,6 +4704,7 @@ const Read = ({
                         onWordSelected={withReadingActivity(handleNativeWordSelected)}
                         onTextSelected={withReadingActivity(handleNativeTextSelected)}
                         onSelectionCleared={handleNativeSelectionCleared}
+                        onDoubleTap={handleNativeDoubleTap}
                         onFocusSentenceChange={withReadingActivity(handleFocusSentenceChange)}
                         onExposure={handleNativeExposure}
                         onSavedTermsShown={handleSavedTermsShown}
@@ -4710,19 +4712,7 @@ const Read = ({
                         showContextSentence={showPinnedTranslation && pinnedVisible}
                     />
                 )}
-                {readerBrightnessOverlayOpacity > 0 ? (
-                    <View
-                        pointerEvents="none"
-                        style={[
-                            styles.readerBrightnessOverlay,
-                            {
-                                backgroundColor: readerBrightnessOverlayColor,
-                                opacity: readerBrightnessOverlayOpacity,
-                            },
-                        ]}
-                    />
-                ) : null}
-            </View>
+            </Animated.View>
 
             {scrubberShown ? (
                 <PageScrubber
@@ -4794,7 +4784,9 @@ const Read = ({
                 />
             ) : null}
 
-            {listenActive && focusMode && bookLoadState === 'ready' && nativeReaderPackage ? (
+            {/* Whenever the voice is on, its bar is too (a chapter loading
+                in between included): it never reads with no player. */}
+            {listenActive && focusMode && currentBook ? (
                 <ListenBar
                     playing={listenPlaying}
                     rate={listenPrefs.rate}
@@ -4834,24 +4826,6 @@ const Read = ({
                 onPreviewTranslationVoice={previewTranslationVoice}
             />
 
-            {showPinnedTranslation ? (
-                <View
-                    pointerEvents="box-none"
-                    style={[styles.pinnedLayer, { top: isFullscreen ? 0 : insets.top + spacing.xs + 52 }]}
-                >
-                    <View ref={pinnedBarRef} collapsable={false}>
-                        <PinnedSentenceTranslation
-                            visible={pinnedVisible}
-                            sentence={pinnedSentence}
-                            sourceLanguage={activeBookLanguage}
-                            targetLanguage={interfaceLanguage}
-                            fontSize={pinnedTranslationFontSize}
-                            topInset={isFullscreen ? insets.top : 0}
-                            onHoldChange={holdPinnedTranslation}
-                        />
-                    </View>
-                </View>
-            ) : null}
 
             <View
                 style={[
@@ -4920,62 +4894,21 @@ const Read = ({
                 </View>
             ) : null}
 
-            {/* First-run tip. Floats above the bottom edge so it never covers
-                the book title or the header (in fullscreen the header is gone
-                and the top of the page is the title). Focus mode has its own
-                position pill and controls, so the tip stays out of the way
-                there. */}
-            {currentBook && !highlightedWord && !textSelection && !focusMode && !tutorialRunning && (showLookupHint || currentChapterPreparing) ? (
+            {/* "Getting this chapter's word help ready". Floats above the
+                bottom edge so it never covers the book title or the header (in
+                fullscreen the header is gone and the top of the page is the
+                title). Focus mode has its own position pill and controls, so
+                it stays out of the way there. */}
+            {currentBook && !highlightedWord && !textSelection && !focusMode && preparingNoticeVisible ? (
                 <View
                     pointerEvents="box-none"
                     style={[styles.hintLayer, { bottom: bottomOverlayBase + 16 }]}
                 >
-                    {currentChapterPreparing ? (
-                        <View
-                            style={[styles.hintCard, styles.preparingCard]}
-                            accessibilityLiveRegion="polite"
-                            accessibilityRole="progressbar"
-                        >
-                            <ActivityIndicator size="small" color={themeColors.textTertiary} style={styles.hintIcon} />
-                            <View style={styles.hintTextStack}>
-                                <Text style={styles.hintText}>{t('read.preparingWords')}</Text>
-                                <Text style={styles.hintSubtext}>{t('read.preparingWordsDetail')}</Text>
-                            </View>
-                        </View>
-                    ) : null}
-                    {showLookupHint ? (
-                        <View style={styles.hintCard}>
-                            <Feather name="info" size={16} color={themeColors.textTertiary} style={styles.hintIcon} />
-                            <View style={styles.hintTextStack}>
-                                <Text style={styles.hintText}>
-                                    {t('read.tapHint')}
-                                </Text>
-                            </View>
-                            <TouchableOpacity
-                                onPress={dismissLookupHint}
-                                style={styles.hintCloseButton}
-                                accessibilityRole="button"
-                                accessibilityLabel={t('common.close')}
-                            >
-                                <Feather name="x" size={16} color={themeColors.textTertiary} />
-                            </TouchableOpacity>
-                        </View>
-                    ) : null}
+                    <PreparingNotice />
                 </View>
             ) : null}
 
             <GoalCompleteModal event={goalEvent} onClose={() => setGoalEvent(null)} />
-
-            <CoachTip
-                visible={Boolean(activeReaderTip)}
-                title={activeReaderTip?.title}
-                body={activeReaderTip?.body}
-                anchorRef={activeReaderTip?.anchorRef}
-                containerRef={containerRef}
-                bottom={activeReaderTip?.bottom}
-                actions={activeReaderTip?.actions}
-                onClose={() => closeTip()}
-            />
 
             <ReaderSettingsSheet
                 visible={showMenu && !isFullscreen}
@@ -4992,7 +4925,6 @@ const Read = ({
                 onSettingChange={handleSettingChange}
                 onResetTextSettings={resetBookSettings}
                 onResetWordSettings={resetWordSettings}
-                onResetFocusSettings={resetFocusSettings}
                 actions={settingsSheetActions}
             />
 
@@ -5031,22 +4963,6 @@ const Read = ({
                 onClose={() => setShowNotesLog(false)}
             />
 
-            <FirstBookTutorial
-                progress={tutorialProgress}
-                title={activeBook?.title ?? null}
-                containerRef={containerRef}
-                measureTarget={measureTutorialStepTarget}
-                insets={insets}
-                onNext={() => dispatchTutorial({ type: 'next' })}
-                onSkip={() => dispatchTutorial({ type: 'skip' })}
-            />
-            <TutorialReplayToast
-                visible={tutorialToast && !tutorialRunning}
-                bottom={bottomOverlayBase + 16}
-                onReplay={startTutorial}
-                onClose={() => setTutorialToast(false)}
-            />
-
         </Animated.View>
     );
 };
@@ -5064,9 +4980,9 @@ const createStyles = (themeColors) => StyleSheet.create({
         flex: 1,
         backgroundColor: themeColors.readerPaper,
     },
-    readerBrightnessOverlay: {
-        ...StyleSheet.absoluteFillObject,
-        backgroundColor: '#000000',
+    // Above the page, which slides under it while the grip is dragged.
+    pinnedBarLayer: {
+        zIndex: 2,
     },
     readerErrorState: {
         flex: 1,
@@ -5124,16 +5040,6 @@ const createStyles = (themeColors) => StyleSheet.create({
         ...textStyles.body,
         color: themeColors.readerSavedChipText,
     },
-    headerSpacer: {
-        flex: 1,
-    },
-    pinnedLayer: {
-        position: 'absolute',
-        left: 0,
-        right: 0,
-        zIndex: 15,
-        elevation: 15,
-    },
     lookupLayer: {
         position: 'absolute',
         left: 0,
@@ -5186,55 +5092,6 @@ const createStyles = (themeColors) => StyleSheet.create({
         height: 44,
         paddingLeft: 6,
         paddingRight: 14,
-        justifyContent: 'center',
-    },
-    hintCard: {
-        flexDirection: 'row',
-        alignItems: 'flex-start',
-        gap: 10,
-        borderRadius: 14,
-        backgroundColor: themeColors.surface,
-        borderWidth: 1,
-        borderColor: themeColors.divider,
-        paddingLeft: 14,
-        paddingRight: 4,
-        paddingVertical: 4,
-        shadowColor: 'rgba(27, 28, 28, 0.08)',
-        shadowOffset: { width: 0, height: 6 },
-        shadowOpacity: 1,
-        shadowRadius: 18,
-        elevation: 3,
-    },
-    hintIcon: {
-        marginTop: 12,
-    },
-    preparingCard: {
-        // No close button: leave the same room on the right as the text's left.
-        paddingRight: 14,
-        marginBottom: 8,
-    },
-    hintTextStack: {
-        flex: 1,
-        minWidth: 0,
-        gap: 2,
-        paddingVertical: 9,
-    },
-    hintText: {
-        fontFamily: fontFamilies.sansMedium,
-        fontSize: 14,
-        lineHeight: 19,
-        color: themeColors.text,
-    },
-    hintSubtext: {
-        fontFamily: fontFamilies.sansRegular,
-        fontSize: 13,
-        lineHeight: 18,
-        color: themeColors.textTertiary,
-    },
-    hintCloseButton: {
-        width: 44,
-        height: 44,
-        alignItems: 'center',
         justifyContent: 'center',
     },
 });

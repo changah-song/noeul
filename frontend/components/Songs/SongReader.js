@@ -59,7 +59,6 @@ import { selectExposureCredits } from '../../services/readerExposure';
 import { lookupLayerPlacement } from '../../services/readerSelection';
 import {
     DEFAULT_SONG_READER_SETTINGS,
-    brightnessOverlay,
     normalizeReaderSettings,
 } from '../../services/readerSettings';
 import { normalizeBookLanguage } from '../../constants/languages';
@@ -77,7 +76,6 @@ const SONG_SHEET_FEATURES = {
     glossAnnotations: false,
     annotationScope: false,
     hideSavedAnnotations: false,
-    pinnedSentenceTranslation: false,
 };
 
 // Word characters we treat as tappable/lookup-able across supported targets:
@@ -312,7 +310,6 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         updateSettings({
             fontSize: DEFAULT_SONG_READER_SETTINGS.fontSize,
             lineSpacing: DEFAULT_SONG_READER_SETTINGS.lineSpacing,
-            brightness: DEFAULT_SONG_READER_SETTINGS.brightness,
             readingMode: DEFAULT_SONG_READER_SETTINGS.readingMode,
             levelMarkStyle: DEFAULT_SONG_READER_SETTINGS.levelMarkStyle,
         });
@@ -322,13 +319,6 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
         updateSettings({
             levelMarkStyle: DEFAULT_SONG_READER_SETTINGS.levelMarkStyle,
             pinyinAnnotations: DEFAULT_SONG_READER_SETTINGS.pinyinAnnotations,
-        });
-    }, [updateSettings]);
-
-    const resetFocusSettings = useCallback(() => {
-        updateSettings({
-            focusSwipe: DEFAULT_SONG_READER_SETTINGS.focusSwipe,
-            focusSpan: DEFAULT_SONG_READER_SETTINGS.focusSpan,
         });
     }, [updateSettings]);
 
@@ -516,7 +506,6 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     );
     const readerLevelTerms = levelMarksEnabled ? levelUnderlineTerms : EMPTY_LEVEL_TERMS;
     const readerShowPinyin = songLanguage === 'zh' && settings.pinyinAnnotations && levelMarksEnabled;
-    const overlay = brightnessOverlay(settings.brightness);
 
     // ── Exposure crediting (same rules as the book reader) ───────────────────
     const handleNativeExposure = useCallback(({ terms, chars, dwellMs } = {}) => {
@@ -831,8 +820,8 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                         levelTerms={readerLevelTerms}
                         showPinyin={readerShowPinyin}
                         clearSelectionToken={clearSelectionToken}
-                        focusSentenceCount={settings.focusSpan}
-                        focusSwipeEnabled={settings.focusSwipe}
+                        focusSentenceCount={1}
+                        focusSwipeEnabled
                         focusNavToken={focusNavToken}
                         focusPanelHeight={focusMode ? focusPanelTotalHeight : 0}
                         onWordSelected={handleNativeWordSelected}
@@ -893,22 +882,13 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                         ))}
                     </ScrollView>
                 )}
-                {overlay.opacity > 0 ? (
-                    <View
-                        pointerEvents="none"
-                        style={[
-                            chrome.readerBrightnessOverlay,
-                            { backgroundColor: overlay.color, opacity: overlay.opacity },
-                        ]}
-                    />
-                ) : null}
             </View>
 
             {focusMode && useNativeLyricReader ? (
                 <FocusControls
                     subscribe={subscribeFocusInfo}
-                    focusSpan={settings.focusSpan}
-                    focusSwipe={settings.focusSwipe}
+                    focusSpan={1}
+                    focusSwipe
                     sendFocusNav={sendFocusNav}
                     focusControlsTranslate={focusControlsTranslate}
                     focusControlsBaseBottom={focusControlsBaseBottom}
@@ -965,7 +945,6 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
                 onSettingChange={handleSettingChange}
                 onResetTextSettings={resetSongSettings}
                 onResetWordSettings={resetSongWordSettings}
-                onResetFocusSettings={resetFocusSettings}
                 actions={songSheetActions}
                 features={songSheetFeatures}
             />
