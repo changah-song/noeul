@@ -127,6 +127,7 @@ import { selectExposureCredits } from '../services/readerExposure';
 import useSavedWordFades from '../hooks/useSavedWordFades';
 import { ONBOARDING_FLOW_SEEN_KEY } from './Onboarding';
 import { getSyncStatus, markSyncPending, subscribeSyncStatus } from '../services/syncStatus';
+import { blockIdForAnchor, tocAnchorFromHref } from '../services/tocAnchors';
 import {
     noteReadingActivity,
     startReadingClock,
@@ -4119,8 +4120,9 @@ const Read = ({
 
 
     // The daily reading goal's clock runs while a book is in front of the
-    // reader (this screen, the app in the foreground); touches and listening
-    // count as activity (services/readingGoal.js stops counting when idle).
+    // reader (this screen, the app in the foreground), and only counts real
+    // reading: turning or scrolling pages, looking words up, the voice
+    // reading aloud (services/readingGoal.js stops counting when idle).
     const [appActive, setAppActive] = useState(AppState.currentState === 'active');
     useEffect(() => {
         const subscription = AppState.addEventListener('change', (state) => setAppActive(state === 'active'));
@@ -4136,16 +4138,28 @@ const Read = ({
         return () => stopReadingClock();
     }, [activeOwnerId, readingClockOn]);
     useEffect(() => {
-        if (!readingClockOn || !listenActive) return undefined;
+        if (!readingClockOn || !listenPlaying) return undefined;
         noteReadingActivity();
         const timer = setInterval(noteReadingActivity, 30 * 1000);
         return () => clearInterval(timer);
-    }, [listenActive, readingClockOn]);
+    }, [listenPlaying, readingClockOn]);
+    // A page event counts only when the page actually changed: the reader
+    // also reports where it is on opening and after relayouts.
+    const lastReadingPageRef = useRef('');
+    const handleReadingPageChange = useCallback((event) => {
+        const data = event?.nativeEvent ?? event ?? {};
+        const pageKey = `${data.spineIndex ?? ''}:${data.page ?? ''}:${data.firstBlockId ?? ''}`;
+        if (lastReadingPageRef.current && pageKey !== lastReadingPageRef.current) {
+            noteReadingActivity();
+        }
+        lastReadingPageRef.current = pageKey;
+        return handleNativePageChange(event);
+    }, [handleNativePageChange]);
     useEffect(() => {
-        if (readingClockOn) noteReadingActivity();
-    }, [progressLabel, readingClockOn]);
-    // Native reader events (page turns, taps, focus steps) are reading: the
-    // book's own view takes its touches, so the container never sees them.
+        lastReadingPageRef.current = '';
+    }, [currentBook]);
+    // Native reader events (lookups, focus steps) are reading: the book's own
+    // view takes its touches, so the container never sees them.
     const readingActivityWrappers = useRef(new WeakMap()).current;
     const withReadingActivity = (handler) => {
         let wrapped = readingActivityWrappers.get(handler);
@@ -4260,7 +4274,6 @@ const Read = ({
         <Animated.View
             ref={containerRef}
             collapsable={false}
-            onTouchStart={noteReadingActivity}
             style={[styles.container, { opacity: enterAnim, transform: [{ translateY: enterShift }] }]}
         >
             {/* With no book open, the bookmark, focus, progress and menu
@@ -4420,7 +4433,7 @@ const Read = ({
                         focusSwipeEnabled={focusSwipe}
                         focusNavToken={focusNavToken}
                         focusPanelHeight={focusMode ? focusPanelTotalHeight : 0}
-                        onPageChange={withReadingActivity(handleNativePageChange)}
+                        onPageChange={handleReadingPageChange}
                         onChapterEnd={handleNativeChapterEnd}
                         onChapterStart={handleNativeChapterStart}
                         onChapterCommit={handleNativeChapterCommit}
@@ -4428,7 +4441,7 @@ const Read = ({
                         onTextSelected={withReadingActivity(handleNativeTextSelected)}
                         onSelectionCleared={handleNativeSelectionCleared}
                         onFocusSentenceChange={withReadingActivity(handleFocusSentenceChange)}
-                        onExposure={withReadingActivity(handleNativeExposure)}
+                        onExposure={handleNativeExposure}
                         onSavedTermsShown={handleSavedTermsShown}
                         // The sentence whose translation the bar shows gets a faint mark.
                         showContextSentence={showPinnedTranslation}
@@ -4456,21 +4469,33 @@ const Read = ({
                 bookProgress={bookProgress}
                 isDarkMode={isDarkMode}
                 onClose={() => setShowToc(false)}
-                onSelect={(item) => {
+                onSelect={async (item) => {
                     if (!Number.isInteger(item?.spineIndex)) {
                         return;
                     }
 
                     setShowToc(false);
+                    // An entry inside a chapter file (`fables.xhtml#the-fox`) goes
+                    // to the block where that element starts, not the file's start.
+                    let firstBlockId = null;
+                    const anchor = tocAnchorFromHref(item.href);
+                    if (anchor) {
+                        try {
+                            const chapterPackage = await loadParsedChapterPackage(item.spineIndex, 'toc');
+                            firstBlockId = blockIdForAnchor(chapterBlocksForReaderPackage(chapterPackage), anchor);
+                        } catch {
+                            firstBlockId = null;
+                        }
+                    }
                     // Same path as a checkpoint jump: it carries a seek token and
                     // sends an explicit seek for the chapter already on screen,
                     // which a bare restore-position update can't do in scroll mode.
                     handleSelectBookmark({
                         spineIndex: item.spineIndex,
-                        pageIndex: 0,
+                        pageIndex: firstBlockId ? null : 0,
                         pagesInChapter: null,
                         href: item.path || item.href || '',
-                        firstBlockId: null,
+                        firstBlockId,
                     });
                 }}
             />

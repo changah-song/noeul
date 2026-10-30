@@ -186,6 +186,10 @@ let clock = {
   lastTickAt: 0,
   lastActivityAt: 0,
   lastSavedAt: 0,
+  // False from opening the book until the first page turn or lookup; the
+  // time until then is held in heldMs and credited on that first turn.
+  confirmed: false,
+  heldMs: 0,
 };
 let timer = null;
 const listeners = new Set();
@@ -274,8 +278,18 @@ const tick = () => {
     notify();
     return;
   }
+  // Until the reader turns a page (or looks something up), the time is held:
+  // a book left open on its first page isn't reading.
+  if (!clock.confirmed) {
+    clock.heldMs += Math.max(0, elapsed);
+    return;
+  }
+  credit(Math.max(0, elapsed), now);
+};
+
+const credit = (addMs, now = Date.now()) => {
   const before = todayEntry();
-  const ms = (Number(before.ms) || 0) + Math.max(0, elapsed);
+  const ms = (Number(before.ms) || 0) + addMs;
   const previousBestMs = Object.entries(clock.days)
     .filter(([key]) => key !== clock.today)
     .reduce((best, [, entry]) => Math.max(best, Number(entry?.ms) || 0), 0);
@@ -313,7 +327,7 @@ export const startReadingClock = async (ownerId) => {
   if (clock.running && clock.ownerId === ownerId) return;
   if (clock.ownerId !== ownerId) await loadReadingGoal(ownerId);
   const now = Date.now();
-  clock = { ...clock, running: true, lastTickAt: now, lastActivityAt: now };
+  clock = { ...clock, running: true, lastTickAt: now, lastActivityAt: now, confirmed: false, heldMs: 0 };
   if (!timer) timer = setInterval(tick, 1000);
   notify();
 };
@@ -332,12 +346,22 @@ export const stopReadingClock = () => {
 
 /** A page turn, tap or lookup: the reader is reading. */
 export const noteReadingActivity = () => {
-  const wasIdle = Date.now() - clock.lastActivityAt > IDLE_AFTER_MS;
-  clock.lastActivityAt = Date.now();
+  const now = Date.now();
+  const wasIdle = now - clock.lastActivityAt > IDLE_AFTER_MS;
+  clock.lastActivityAt = now;
   if (wasIdle) {
-    clock.lastTickAt = Date.now();
-    notify();
+    // Back after a break: the break itself doesn't count.
+    clock.lastTickAt = now;
+    clock.heldMs = 0;
   }
+  if (clock.running && !clock.confirmed) {
+    // The first page turn: the time spent on that first page was reading.
+    clock.confirmed = true;
+    const held = Math.min(clock.heldMs, IDLE_AFTER_MS);
+    clock.heldMs = 0;
+    if (held > 0) credit(held, now);
+  }
+  if (wasIdle) notify();
 };
 
 // For tests.
@@ -345,7 +369,7 @@ export const __resetReadingClock = () => {
   stopReadingClock();
   clock = {
     ownerId: null, running: false, goalMs: DEFAULT_GOAL_MINUTES * MINUTE, days: {},
-    today: dayKey(), lastTickAt: 0, lastActivityAt: 0, lastSavedAt: 0,
+    today: dayKey(), lastTickAt: 0, lastActivityAt: 0, lastSavedAt: 0, confirmed: false, heldMs: 0,
   };
   listeners.clear();
   goalListeners.clear();

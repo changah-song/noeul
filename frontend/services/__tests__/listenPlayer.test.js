@@ -232,5 +232,24 @@ describe('onDeviceVoicesFor', () => {
   it('copes with no voices at all', () => {
     expect(onDeviceVoicesFor(null, 'ko-KR')).toEqual([]);
   });
+
+  it('treats a sentence "finished" instantly as an error (an engine with no voice)', async () => {
+    const tts = fakeTts();
+    let clock = 0;
+    const player = createListenPlayer({ tts, now: () => clock });
+    const sentence = 'Once upon a time there were four little rabbits.';
+
+    const silent = player.speakSequence([{ text: sentence, locale: 'en-US', rate: 1 }]);
+    await flush();
+    clock += 5;
+    tts.finish('u1');
+    await expect(silent).resolves.toBe('error');
+
+    const spoken = player.speakSequence([{ text: sentence, locale: 'en-US', rate: 1 }]);
+    await flush();
+    clock += 2500;
+    tts.finish('u2');
+    await expect(spoken).resolves.toBe('done');
+  });
 });
 

@@ -50,7 +50,7 @@ const PACKAGE_CACHE_DIR = 'epub-native-packages';
 const EXTRACTED_BOOK_META_FILE = '.ff-extraction.json';
 const EXTRACTED_EPUB_CACHE_VERSION = 'epub-extraction-v1';
 const EPUB_PACKAGE_CACHE_VERSION = 'native-renderer-css-v6';
-const CHAPTER_CACHE_VERSION = `${EPUB_PACKAGE_CACHE_VERSION}:chapter-blocks-v1`;
+const CHAPTER_CACHE_VERSION = `${EPUB_PACKAGE_CACHE_VERSION}:chapter-blocks-v2`;
 const EPUB_PACKAGE_CACHE = new Map();
 const ZIP_REQUIRED_CACHE_MISS = 'ZIP_REQUIRED_CACHE_MISS';
 
@@ -2357,10 +2357,35 @@ const normalizeNativeBlockSpans = (spans) => {
     ));
 };
 
+// Element ids inside inline content (`<a id="chapter-1"></a>` before a title).
+const collectInlineAnchorIds = (node, ids = []) => {
+    if (!node || node.type === 'block') {
+        return ids;
+    }
+    if (node.attrs?.id) {
+        ids.push(node.attrs.id);
+    }
+    (node.children || []).forEach((child) => collectInlineAnchorIds(child, ids));
+    return ids;
+};
+
 const buildNativeChapterBlocks = (root) => {
     const blocks = [];
+    // Ids of elements met since the last block (a wrapping <article id>, an
+    // empty <a id>): they land on the next block as `anchors`, so a link to
+    // `file.xhtml#id` (the contents) can find where that element starts.
+    let pendingAnchors = [];
+    const takeAnchors = () => {
+        if (!pendingAnchors.length) {
+            return {};
+        }
+        const anchors = [...new Set(pendingAnchors)];
+        pendingAnchors = [];
+        return { anchors };
+    };
 
     const addTextBlock = (sourceNode, segmentNodes, blockId, context) => {
+        segmentNodes.forEach((node) => collectInlineAnchorIds(node, pendingAnchors));
         const spans = withOffsets(
             normalizeNativeBlockSpans(
                 segmentNodes.flatMap((node) => collectNativeSpans(node))
@@ -2388,11 +2413,16 @@ const buildNativeChapterBlocks = (root) => {
             text,
             spans,
             ...blockMetadataForTag(tag, context),
+            ...takeAnchors(),
         });
     };
 
     const addImageBlock = (node) => {
+        if (node.attrs?.id) {
+            pendingAnchors.push(node.attrs.id);
+        }
         blocks.push({
+            ...takeAnchors(),
             id: node.id,
             type: 'image',
             tag: node.tag || 'img',
@@ -2430,6 +2460,9 @@ const buildNativeChapterBlocks = (root) => {
             return;
         }
 
+        if (node.attrs?.id) {
+            pendingAnchors.push(node.attrs.id);
+        }
         const nodeBlockStyleTokens = pickStyleTokens(
             node.styleTokens || {},
             blockContextStyleTokenKeys
@@ -3411,3 +3444,6 @@ export const readEpubPackageXml = async (uri, fallbackName = '', options = {}) =
         containerXml,
     };
 };
+
+// For tests.
+export const __buildNativeChapterBlocks = buildNativeChapterBlocks;

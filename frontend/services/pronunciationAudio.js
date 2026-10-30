@@ -85,6 +85,15 @@ const speakWithDeviceVoice = async (word, language = 'en-US') => {
 
   const requestId = ++playbackRequestId;
   await unloadActiveSound();
+  // No engine the app can reach (or none installed): say so rather than
+  // staying silent.
+  const ready = await Promise.race([
+    Promise.resolve(Tts.getInitStatus()).then(() => true, () => false),
+    new Promise((resolve) => setTimeout(() => resolve(true), 2500)),
+  ]);
+  if (!ready) {
+    return false;
+  }
   Tts.stop();
   // Set the voice before speaking, otherwise the first word after an accent
   // change is read with the previous language.
@@ -122,6 +131,6 @@ export const playEnglishPronunciation = async ({
     }
   }
 
-  await speakWithDeviceVoice(word, ttsLanguage);
-  return 'tts';
+  const spoke = await speakWithDeviceVoice(word, ttsLanguage);
+  return spoke === false ? 'unavailable' : 'tts';
 };

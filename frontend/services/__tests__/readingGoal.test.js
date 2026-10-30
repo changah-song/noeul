@@ -97,6 +97,29 @@ describe('the reading clock', () => {
     expect(getReadingSnapshot().todayMs).toBe(0);
     expect(getReadingSnapshot().idle).toBe(true);
   });
+
+  it('holds the time on the first page until a page turn, then credits it', async () => {
+    await startReadingClock('user-1');
+    for (let second = 0; second < 40; second += 1) {
+      jest.setSystemTime(Date.now() + 1000);
+      __tickReadingClock();
+    }
+    // Opened, not turned: nothing yet.
+    expect(getReadingSnapshot().todayMs).toBe(0);
+    noteReadingActivity();
+    expect(getReadingSnapshot().todayMs).toBe(40000);
+  });
+
+  it('never counts a book left open without turning a page', async () => {
+    await startReadingClock('user-1');
+    for (let second = 0; second < 600; second += 1) {
+      jest.setSystemTime(Date.now() + 1000);
+      __tickReadingClock();
+    }
+    noteReadingActivity();
+    // Idle after 3 minutes: the long stare isn't credited on the late turn.
+    expect(getReadingSnapshot().todayMs).toBe(0);
+  });
 });
 
 describe('Home dots and the calendar', () => {
