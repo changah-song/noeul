@@ -63,6 +63,27 @@ def resolve_aliases(words: list[str]) -> dict[str, str]:
     return resolved
 
 
+def words_with_entries(words: list[str]) -> set[str]:
+    """The given words (normalized) that have an entry, directly or through
+    an alias. Cheap: no senses are read."""
+    if not is_installed():
+        return set()
+    normalized = list(dict.fromkeys(normalize_word(word) for word in words if normalize_word(word)))
+    if not normalized:
+        return set()
+    headword_of = resolve_aliases(normalized)
+    headwords = list(dict.fromkeys(headword_of.values()))
+    conn = _connection()
+    found: set[str] = set()
+    for chunk in _chunks(headwords):
+        placeholders = ",".join("?" * len(chunk))
+        for row in conn.execute(
+            f"SELECT DISTINCT word FROM en_entries WHERE word IN ({placeholders})", chunk
+        ):
+            found.add(row["word"])
+    return {word for word in normalized if headword_of.get(word) in found}
+
+
 def lookup_entries(
     stems: list[str],
     interface_language: str = "en",

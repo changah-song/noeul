@@ -66,7 +66,12 @@ const VOCAB_EMPTY_HANJA_MIGRATION_KEY = 'vocab_empty_hanja_migration_v1';
 // no longer graded, so books analysed before that are analysed again.
 // 10: English words with no dictionary equivalent get a machine gloss asked
 // with their part of speech ("underneath" was "하면", now "아래에").
-export const PREPROCESS_VERSION = 10;
+// 11: English words carry their frequency (zipf): graded by rarity outside the
+// CEFR lists, and a rare word with no entry is underlined (epigram).
+export const PREPROCESS_VERSION = 11;
+// English words with no dictionary entry are underlined only when rarer than
+// this (zipf 3.5 ≈ "antique", "orchard"; epigram 2.6).
+const EN_UNDERLINE_OOV_MAX_ZIPF = 3.5;
 const SQLITE_BIND_BATCH_SIZE = 450;
 const DEFAULT_STABILITY = 1.0;
 const DEFAULT_DIFFICULTY = 5.0;
@@ -7539,11 +7544,24 @@ export const lookupBookLevelSurfaces = (
            -- name, a jieba compound like 看着, a stem KRDICT does not
            -- know) would be underlined as hardest and open an empty
            -- panel. Any interface language counts; the tap looks it up live.
-           AND EXISTS (
-             SELECT 1 FROM dictionary_cache d2
-             WHERE d2.language = dc.language
-               AND d2.stem = dc.stem
-               AND (TRIM(COALESCE(d2.definition, '')) != '' OR TRIM(COALESCE(d2.gloss, '')) != '')
+           AND (
+             EXISTS (
+               SELECT 1 FROM dictionary_cache d2
+               WHERE d2.language = dc.language
+                 AND d2.stem = dc.stem
+                 AND (TRIM(COALESCE(d2.definition, '')) != '' OR TRIM(COALESCE(d2.gloss, '')) != '')
+             )
+             -- English: a rare word the dictionary leaves out (archaic,
+             -- literary: epigram, nosegay) is underlined too; the panel then
+             -- offers a quick translation and the long-press explanation.
+             -- Never a common word (zipf ${EN_UNDERLINE_OOV_MAX_ZIPF}+),
+             -- a name (below) or anything but a plain lowercase word.
+             OR (
+               dc.language = 'en'
+               AND COALESCE(dc.zipf, 0) < ${EN_UNDERLINE_OOV_MAX_ZIPF}
+               AND LENGTH(dc.stem) >= 3
+               AND dc.stem NOT GLOB '*[^a-z-]*'
+             )
            )
            -- English names (Dickens, London) can be tapped but are not graded.
            AND COALESCE(dc.pos, '') != 'name'

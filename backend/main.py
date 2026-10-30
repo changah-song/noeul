@@ -2892,6 +2892,9 @@ async def _preprocess_en_core(
 
     loop = asyncio.get_event_loop()
     unique_stems, surface_index, pos_by_stem = await loop.run_in_executor(None, extract_en_lookup_tokens, text)
+    unique_stems, surface_index, pos_by_stem = await loop.run_in_executor(
+        None, repair_en_lemmas, unique_stems, surface_index, pos_by_stem,
+    )
     if max_stems:
         processed_stems = set(unique_stems[:max_stems])
         unique_stems = unique_stems[:max_stems]
@@ -2950,6 +2953,9 @@ async def _preprocess_en_core(
         )
         for entry in surface_index
     ]
+    results, surface_index = await loop.run_in_executor(
+        None, attach_en_word_frequency, results, surface_index, pos_by_stem, name_stems,
+    )
     return {
         "results": results,
         "surface_index": surface_index,
@@ -2960,6 +2966,96 @@ async def _preprocess_en_core(
             "book_level": score_vocabulary_level("en", results),
         },
     }
+
+
+def repair_en_lemmas(
+    stems: list[str],
+    surface_index: list[dict],
+    pos_by_stem: dict[str, str],
+) -> tuple[list[str], list[dict], dict[str, str]]:
+    """The tagger sometimes cuts a word into a lemma that isn't one ("trellis"
+    -> "trelli", read as a plural). When a lemma has no entry but the word as
+    written does, the written word is the stem."""
+    candidates = [stem for stem in stems if pos_by_stem.get(stem) != EN_NAME_POS]
+    known = en_learner_dict.words_with_entries(candidates)
+    unknown = {stem for stem in candidates if en_learner_dict.normalize_word(stem) not in known}
+    if not unknown:
+        return stems, surface_index, pos_by_stem
+    surfaces_by_stem: dict[str, list[str]] = {}
+    for entry in surface_index:
+        stem = entry.get("stem")
+        surface = (entry.get("surface") or "").strip().lower()
+        if stem in unknown and surface and surface != stem:
+            surfaces_by_stem.setdefault(stem, []).append(surface)
+    known_surfaces = en_learner_dict.words_with_entries(
+        [surface for surfaces in surfaces_by_stem.values() for surface in surfaces]
+    )
+    replacement: dict[str, str] = {}
+    for stem, surfaces in surfaces_by_stem.items():
+        found = next((surface for surface in surfaces if surface in known_surfaces), None)
+        if found:
+            replacement[stem] = found
+    if not replacement:
+        return stems, surface_index, pos_by_stem
+    new_stems = list(dict.fromkeys(replacement.get(stem, stem) for stem in stems))
+    new_pos = {}
+    for stem, pos in pos_by_stem.items():
+        new_pos.setdefault(replacement.get(stem, stem), pos)
+    seen: set[tuple[str, str]] = set()
+    new_index = []
+    for entry in surface_index:
+        stem = replacement.get(entry.get("stem"), entry.get("stem"))
+        pair = (entry.get("surface"), stem)
+        if pair in seen:
+            continue
+        seen.add(pair)
+        new_index.append({**entry, "stem": stem})
+    return new_stems, new_index, new_pos
+
+
+def en_result_has_entry(result: dict) -> bool:
+    return bool((result.get("definition") or "").strip() or (result.get("gloss") or "").strip())
+
+
+def attach_en_word_frequency(
+    results: list[dict],
+    surface_index: list[dict],
+    pos_by_stem: dict[str, str],
+    name_stems: set[str],
+) -> tuple[list[dict], list[dict]]:
+    """English words get their frequency (zipf, from the dictionary's word
+    list) so the app grades a word outside the CEFR lists by how rare it is
+    rather than as the hardest, and underlines a rare word the dictionary has
+    no entry for (an archaic or literary word: epigram, nosegay). A word with
+    no entry that the tagger calls a proper noun is a name, never underlined."""
+    stems = [
+        (result.get("stem") or "").strip().lower()
+        for result in results
+        if result.get("stem") not in name_stems
+    ]
+    zipf_by_stem = en_learner_dict.zipf_frequencies(stems)
+    out_results = []
+    for result in results:
+        stem = result.get("stem")
+        if stem in name_stems:
+            out_results.append(result)
+            continue
+        key = (stem or "").strip().lower()
+        extra: dict = {}
+        if key in zipf_by_stem:
+            extra["zipf"] = zipf_by_stem[key]
+        if pos_by_stem.get(stem) == "PROPN" and not en_result_has_entry(result):
+            extra["pos"] = EN_NAME_POS
+        out_results.append({**result, **extra} if extra else result)
+    out_surfaces = []
+    for entry in surface_index:
+        stem = entry.get("stem")
+        key = (stem or "").strip().lower()
+        if stem in name_stems or key not in zipf_by_stem:
+            out_surfaces.append(entry)
+            continue
+        out_surfaces.append({**entry, "zipf": zipf_by_stem[key]})
+    return out_results, out_surfaces
 
 
 async def _preprocess_zh_core(

@@ -24,6 +24,7 @@ import { fontFamilies, radii, spacing, textStyles, useTheme } from '../../../the
 import { playEnglishPronunciation } from '../../../services/pronunciationAudio';
 import { getRuntimeChineseScript } from '../../../services/interfaceLanguage';
 import { requestUserDataSync } from '../../../services/userDataSyncQueue';
+import { chapterTranslations } from '../../../services/chapterTranslations';
 import {
     getEntryFallbackLanguage,
     normalizeSurfaceWordForLanguage,
@@ -1774,6 +1775,34 @@ const DictionaryContent = ({
         );
     };
 
+    // An English word the dictionary has no entry for (often an archaic or
+    // literary one, underlined for being rare) gets a quick machine
+    // translation, marked as such, and the long press is suggested.
+    const isNotFound = cachedResults !== null
+        && cachedResults.length === 0
+        && !needsLiveFetch
+        && lookupItemCount === 0
+        && !liveError;
+    const [notFoundTranslation, setNotFoundTranslation] = useState('');
+    useEffect(() => {
+        setNotFoundTranslation('');
+        if (!isNotFound || !isEnglishBook || !lookupWord || String(interfaceLanguage || 'en').startsWith('en')) {
+            return undefined;
+        }
+        let cancelled = false;
+        chapterTranslations.translate(lookupWord, 'en', interfaceLanguage)
+            .then((text) => {
+                const cleaned = typeof text === 'string' ? text.trim() : '';
+                if (!cancelled && cleaned && cleaned.toLowerCase() !== lookupWord.toLowerCase()) {
+                    setNotFoundTranslation(cleaned);
+                }
+            })
+            .catch(() => {});
+        return () => {
+            cancelled = true;
+        };
+    }, [interfaceLanguage, isEnglishBook, isNotFound, lookupWord]);
+
     // Not-found panel. Mirrors renderDictionaryPanel's structure so the header
     // lives inside a ScrollView while the action row stays pinned below. Without this the content overflowed the fixed
     // sheet height, clipping the word header at the top with no way to scroll.
@@ -1808,9 +1837,21 @@ const DictionaryContent = ({
                     {renderSaveIcon({ word: lookupWord, requireDefinition: false })}
                 </View>
                 {/* A failed request is not the same as "no entry": say so. */}
+                {notFoundTranslation ? (
+                    <Text style={[styles.notFoundTranslation, { color: palette.text }]}>
+                        {notFoundTranslation}
+                    </Text>
+                ) : null}
                 <Text style={[styles.notFoundSubtext, { color: colors.textSubtle }]}>
-                    {liveError ? t('lookup.dictionaryFailed') : t('lookup.noDefinition')}
+                    {liveError
+                        ? t('lookup.dictionaryFailed')
+                        : (notFoundTranslation ? t('lookup.machineTranslationNote') : t('lookup.noDefinition'))}
                 </Text>
+                {!liveError && isEnglishBook ? (
+                    <Text style={[styles.notFoundSubtext, { color: colors.textSubtle }]}>
+                        {t('lookup.tryLongPress')}
+                    </Text>
+                ) : null}
             </ScrollView>
         </View>
     );
@@ -2487,6 +2528,13 @@ const createStyles = (colors) => StyleSheet.create({
         fontSize: 14,
         lineHeight: 20,
         textAlign: 'center',
+    },
+    notFoundTranslation: {
+        fontFamily: fontFamilies.sansMedium,
+        fontSize: 17,
+        lineHeight: 24,
+        textAlign: 'center',
+        marginBottom: 4,
     },
     fallbackNotice: {
         fontFamily: fontFamilies.sansRegular,
