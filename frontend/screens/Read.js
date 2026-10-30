@@ -45,6 +45,8 @@ import NativeEpubReaderView, {
     updateListenSession,
     stopListenSession,
     addListenControlListener,
+    fetchTutorialTargets,
+    supportsTutorialTargets,
 } from '../modules/native-epub-reader/src/NativeEpubReaderView';
 import { ensureNotificationPermission } from '../services/notificationPermission';
 import {
@@ -139,15 +141,23 @@ import GoalCompleteModal from '../components/Goal/GoalCompleteModal';
 import CoachTip from '../components/Tips/CoachTip';
 import useCoachTip from '../hooks/useCoachTip';
 import {
-    bumpTipCounter,
     areTipsEnabled,
     isTipSeen,
-    LONG_PRESS_TIP_AFTER_LOOKUPS,
     markTipSeen,
-    msUntilUnpromptedTip,
     TIP_IDS,
-    tipCounter,
 } from '../services/tips';
+import FirstBookTutorial, { TutorialReplayToast } from '../components/Read/FirstBookTutorial';
+import {
+    advanceTutorial,
+    finishTutorial,
+    getTutorial,
+    initialTutorialProgress,
+    loadTutorial,
+    setTutorialBook,
+    subscribeTutorial,
+    TUTORIAL_STEPS,
+} from '../services/firstBookTutorial';
+import { measureInWindow, measureTutorialTarget } from '../services/tutorialTargets';
 import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { highlightStrengthsFor, unseenShownTerms } from '../services/savedWordFade';
 import { ANNOTATION_SCOPES, annotationsBySurface, buildAnnotatedLevelTerms } from '../services/readerAnnotations';
@@ -611,6 +621,13 @@ const Read = ({
     // onboarding, not for long-time readers.
     const [tipsEnabled, setTipsEnabled] = useState(false);
     const { tipId, offer: offerTip, close: closeTip } = useCoachTip();
+    // The first-book tutorial (components/Read/FirstBookTutorial.js) while it
+    // runs: { step, held, focused, listening }, else null.
+    const [tutorialProgress, setTutorialProgress] = useState(null);
+    const tutorialRunning = tutorialProgress != null;
+    const tutorialEventRef = useRef(null);
+    const pinnedBarRef = useRef(null);
+    const readerAreaRef = useRef(null);
     const tipIdRef = useRef(null);
     tipIdRef.current = tipId;
     // The reader stays mounted behind other tabs; its tips wait for it.
@@ -1192,11 +1209,7 @@ const Read = ({
         const surface = includeSurface ? highlightedWord?.trim() : '';
         // A firmer click for committing a word to your deck — you feel it land.
         tapCommit();
-        if (tipsEnabled && !isTipSeen(TIP_IDS.readerSaved)) {
-            // This one answers the save, so it takes over from a waiting tip.
-            if (tipIdRef.current) closeTip(tipIdRef.current, { seen: false });
-            offerTip(TIP_IDS.readerSaved, { unprompted: false });
-        }
+        tutorialEventRef.current?.({ type: 'wordSaved' });
         setSavedWords(prev => uniqTerms([...(prev ?? []), word]));
         setOptimisticHighlightTerms((prev) => {
             return uniqTerms([
@@ -1206,7 +1219,7 @@ const Read = ({
             ]);
         });
         setClearSelectionToken((value) => value + 1);
-    }, [closeTip, highlightedWord, offerTip, tipsEnabled]);
+    }, [highlightedWord]);
 
     const handleWordUnsave = useCallback((word, options = {}) => {
         const { includeSurface = true } = options;
@@ -1237,7 +1250,6 @@ const Read = ({
 
         const sentence = typeof event.sentence === 'string' ? event.sentence.trim() : '';
 
-        bumpTipCounter('lookups');
         if (!isTipSeen(TIP_IDS.readerTap)) dismissLookupHint();
 
         // Looking a word up is its own (much stronger) evidence, so this word must
@@ -2867,6 +2879,25 @@ const Read = ({
                 }
             }
 
+            // A chapter with nothing to show (a cover page whose only image
+            // was dropped) left a blank page with nothing to turn: go on to the
+            // next one, or back to the one before when paging backwards.
+            const parsedSpineIndex = spineIndexForReaderPackage(parsedPackage);
+            const parsedBlocks = chapterBlocksForReaderPackage(parsedPackage);
+            if (Number.isInteger(parsedSpineIndex) && Array.isArray(parsedBlocks) && parsedBlocks.length === 0) {
+                const goingBack = isChapterNavigation
+                    && Number.isInteger(previousSpineIndex)
+                    && parsedSpineIndex < previousSpineIndex;
+                const spineLength = parsedPackage.spine?.length ?? 0;
+                let skipTo = parsedSpineIndex + (goingBack ? -1 : 1);
+                // Nothing before it (an empty cover first): stay where you were.
+                if (goingBack && skipTo < 0) skipTo = parsedSpineIndex + 1;
+                if (skipTo >= 0 && skipTo < spineLength) {
+                    loadNativeReaderPackageRef.current?.(skipTo, { animateChapterTransition, restorePosition });
+                    return;
+                }
+            }
+
             const loadedSpineIndex = spineIndexForReaderPackage(parsedPackage) ?? 0;
             const totalSpineItems = parsedPackage.spine?.length ?? 0;
             const nextRestorePosition = (
@@ -3749,7 +3780,9 @@ const Read = ({
     // The pinned translation bar floats over the top of the page while it's
     // shown (after a word tap, for a few seconds), so the text never moves;
     // a top-placed lookup panel and the focus pill sit below it meanwhile.
-    const showPinnedTranslation = Boolean(currentBook) && settings.pinnedSentenceTranslation !== false;
+    // The tutorial shows the translation bar even when it is turned off.
+    const showPinnedTranslation = Boolean(currentBook)
+        && (settings.pinnedSentenceTranslation !== false || tutorialRunning);
     const pinnedTranslationOffset = showPinnedTranslation && pinnedVisible
         ? pinnedTranslationBarHeight(pinnedTranslationFontSize)
         : 0;
@@ -3835,7 +3868,6 @@ const Read = ({
     }, []);
 
     const toggleFocusMode = useCallback(() => {
-        if (tipIdRef.current === TIP_IDS.readerFocus) closeTip(TIP_IDS.readerFocus);
         // Persist any coalesced sentence-step position now, before the mode
         // switch emits page events in the other mode's geometry.
         flushPendingFocusPageChange();
@@ -3845,7 +3877,7 @@ const Read = ({
         setIsNativeSelection(false);
         setClearSelectionToken((value) => value + 1);
         setFocusMode((current) => !current);
-    }, [closeTip, flushPendingFocusPageChange]);
+    }, [flushPendingFocusPageChange]);
 
     useEffect(() => {
         if (!currentBook || bookLoadState !== 'ready' || !hasVocabSizeGrid(activeBookLanguage)) {
@@ -4358,45 +4390,149 @@ const Read = ({
         setShowMenu(true);
     }, [currentBook, navigation, openSettingsParam, t]);
 
-    // Tips nobody asked for, one at a time, at a quiet moment: a book is open,
-    // nothing else is on screen, and the header (their anchor) is showing.
-    const readerQuiet = readerFocused
-        && Boolean(currentBook)
-        && !highlightedWord
-        && !textSelection
-        && !listenActive
-        && !showMenu
-        && !isFullscreen
-        && !focusMode
-        && !currentChapterPreparing
-        && !showLookupHint;
+    // ── The first-book tutorial ──────────────────────────────────────────────
+    // Onboarding (or Profile › Tips) asks for it and Home opens the starter
+    // book; it runs here once that book is open and ready. Each action step
+    // advances when the reader really does the thing (the events below).
+    const [tutorialRecord, setTutorialRecord] = useState(getTutorial);
+    const [tutorialToast, setTutorialToast] = useState(false);
     useEffect(() => {
-        if (!tipsEnabled) return undefined;
-        if (!readerQuiet) {
-            // Make way; an unused tip comes back at the next quiet moment.
-            const current = tipIdRef.current;
-            if (current && current !== TIP_IDS.readerSaved && current !== TIP_IDS.readerFocusNav) {
-                closeTip(current, { seen: false });
-            }
-            return undefined;
+        let active = true;
+        loadTutorial().then((value) => {
+            if (active) setTutorialRecord(value);
+        });
+        const unsubscribe = subscribeTutorial((value) => setTutorialRecord(value));
+        return () => {
+            active = false;
+            unsubscribe();
+        };
+    }, []);
+    const tutorialProgressRef = useRef(null);
+    tutorialProgressRef.current = tutorialProgress;
+    const dispatchTutorial = useCallback((event) => {
+        setTutorialProgress((current) => (current ? advanceTutorial(current, event) : current));
+    }, []);
+    tutorialEventRef.current = dispatchTutorial;
+
+    const startTutorial = useCallback(() => {
+        setTutorialToast(false);
+        setShowLookupHint(false);
+        markTipSeen(TIP_IDS.readerTap);
+        setShowMenu(false);
+        dismissLookup();
+        setTutorialProgress(initialTutorialProgress());
+    }, [dismissLookup]);
+
+    // Once per request: the record stays "pending" for a moment after the
+    // tutorial ends (it is written asynchronously), which must not restart it.
+    const tutorialStartedRef = useRef(false);
+    useEffect(() => {
+        if (tutorialRecord.status !== 'pending') tutorialStartedRef.current = false;
+    }, [tutorialRecord.status]);
+    useEffect(() => {
+        if (tutorialRunning || tutorialStartedRef.current) return;
+        if (!readerFocused || bookLoadState !== 'ready' || !nativeReaderPackage) return;
+        if (tutorialRecord.status !== 'pending' || !tutorialRecord.bookUri || tutorialRecord.bookUri !== currentBook) return;
+        tutorialStartedRef.current = true;
+        startTutorial();
+    }, [bookLoadState, currentBook, nativeReaderPackage, readerFocused, startTutorial, tutorialRecord, tutorialRunning]);
+
+    useEffect(() => {
+        if (highlightedWord && !textSelection) dispatchTutorial({ type: 'wordTapped' });
+    }, [dispatchTutorial, highlightedWord, textSelection]);
+    useEffect(() => {
+        if (textSelection) dispatchTutorial({ type: 'selectionOpened' });
+    }, [dispatchTutorial, textSelection]);
+    useEffect(() => {
+        if (focusMode) dispatchTutorial({ type: 'focusOn' });
+    }, [dispatchTutorial, focusMode]);
+    useEffect(() => {
+        if (listenActive) dispatchTutorial({ type: 'listenOn' });
+    }, [dispatchTutorial, listenActive]);
+
+    // Between steps, put away what the last one opened.
+    const tutorialStep = tutorialProgress?.step ?? null;
+    const previousTutorialStepRef = useRef(null);
+    useEffect(() => {
+        const previous = previousTutorialStepRef.current;
+        previousTutorialStepRef.current = tutorialStep;
+        if (tutorialStep === previous) return;
+        // The bar is held up for its step and the save step after it, so the
+        // lookup panel below it stays put.
+        const holdsBar = (step) => step === TUTORIAL_STEPS.sentenceBar || step === TUTORIAL_STEPS.saveWord;
+        if (holdsBar(tutorialStep) && !holdsBar(previous)) {
+            setPinnedVisible(true);
+            holdPinnedTranslation(true);
+        } else if (holdsBar(previous) && !holdsBar(tutorialStep)) {
+            holdPinnedTranslation(false);
         }
-        const timer = setTimeout(() => {
-            if (tipIdRef.current) return;
-            const next = [
-                tipCounter('lookups') >= LONG_PRESS_TIP_AFTER_LOOKUPS && TIP_IDS.readerLongPress,
-                TIP_IDS.readerFocus,
-                isTipSeen(TIP_IDS.readerFocus) && TIP_IDS.readerListen,
-            ].find((id) => id && !isTipSeen(id));
-            if (next) offerTip(next);
-        }, Math.max(1500, msUntilUnpromptedTip()));
-        return () => clearTimeout(timer);
-    }, [closeTip, offerTip, progressLabel, readerQuiet, tipsEnabled]);
+        if (tutorialStep === TUTORIAL_STEPS.holdSentence || tutorialStep === TUTORIAL_STEPS.focus) {
+            dismissLookup();
+        }
+        if ((tutorialStep === TUTORIAL_STEPS.listen || tutorialStep === TUTORIAL_STEPS.more) && focusModeRef.current) {
+            toggleFocusMode();
+        }
+    }, [dismissLookup, holdPinnedTranslation, toggleFocusMode, tutorialStep]);
+
+    const finishedTutorial = tutorialProgress?.finished ?? null;
+    useEffect(() => {
+        if (!finishedTutorial) return;
+        setTutorialProgress(null);
+        finishTutorial(finishedTutorial);
+        holdPinnedTranslation(false);
+        dismissLookup();
+        pauseListening({ keepActive: false });
+        if (focusModeRef.current) toggleFocusMode();
+        setTutorialToast(true);
+    }, [dismissLookup, finishedTutorial, holdPinnedTranslation, pauseListening, toggleFocusMode]);
+
+    // Back skips it.
+    useEffect(() => {
+        if (!tutorialRunning) return undefined;
+        const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+            dispatchTutorial({ type: 'skip' });
+            return true;
+        });
+        return () => subscription.remove();
+    }, [dispatchTutorial, tutorialRunning]);
+
+    // What the current step lights, in window dp. A word or sentence the page
+    // can't offer falls back to the whole page.
+    const measureTutorialStepTarget = useCallback(async () => {
+        const progress = tutorialProgressRef.current;
+        if (!progress) return null;
+        const onPage = async (kind) => {
+            const viewTag = findNodeHandle(nativeReaderViewRef.current);
+            if (supportsTutorialTargets && viewTag != null) {
+                const targets = await fetchTutorialTargets(viewTag).catch(() => null);
+                if (targets?.[kind]) return targets[kind];
+            }
+            return measureInWindow(readerAreaRef.current);
+        };
+        switch (progress.step) {
+            case TUTORIAL_STEPS.tapWord:
+                return onPage('word');
+            case TUTORIAL_STEPS.sentenceBar:
+                return measureInWindow(pinnedBarRef.current);
+            case TUTORIAL_STEPS.saveWord:
+                return measureTutorialTarget('lookup.save');
+            case TUTORIAL_STEPS.holdSentence:
+                // The explanation itself is left undimmed (the card moves up).
+                return progress.held ? null : onPage('sentence');
+            case TUTORIAL_STEPS.focus:
+                return progress.focused ? null : measureInWindow(focusButtonRef.current);
+            case TUTORIAL_STEPS.listen:
+                return progress.listening ? measureTutorialTarget('listen.bar') : measureInWindow(listenButtonRef.current);
+            default:
+                return null;
+        }
+    }, []);
 
     // Entering focus mode the first time: swipe or buttons?
     useEffect(() => {
-        if (!tipsEnabled || !focusMode || isTipSeen(TIP_IDS.readerFocusNav)) return;
+        if (!tipsEnabled || !focusMode || tutorialRunning || isTipSeen(TIP_IDS.readerFocusNav)) return;
         offerTip(TIP_IDS.readerFocusNav, { unprompted: false });
-    }, [focusMode, offerTip, tipsEnabled]);
+    }, [focusMode, offerTip, tipsEnabled, tutorialRunning]);
 
     const chooseFocusNav = (swipe) => {
         closeTip(TIP_IDS.readerFocusNav);
@@ -4406,26 +4542,6 @@ const Read = ({
     };
 
     const readerTips = {
-        [TIP_IDS.readerFocus]: {
-            title: t('tips.focusTitle'),
-            body: t('tips.focusBody'),
-            anchorRef: focusButtonRef,
-        },
-        [TIP_IDS.readerListen]: {
-            title: t('tips.listenTitle'),
-            body: t('tips.listenBody'),
-            anchorRef: listenButtonRef,
-        },
-        [TIP_IDS.readerLongPress]: {
-            title: t('tips.longPressTitle'),
-            body: t('tips.longPressBody'),
-            bottom: bottomOverlayBase + 16,
-        },
-        [TIP_IDS.readerSaved]: {
-            title: t('tips.savedTitle'),
-            body: t('tips.savedBody'),
-            bottom: bottomOverlayBase + 16,
-        },
         [TIP_IDS.readerFocusNav]: {
             title: t('tips.focusNavTitle'),
             body: t('tips.focusNavBody'),
@@ -4485,7 +4601,6 @@ const Read = ({
                             themeColors={themeColors}
                             active={listenActive}
                             onPress={() => {
-                                if (tipIdRef.current === TIP_IDS.readerListen) closeTip(TIP_IDS.readerListen);
                                 if (listenActive) pauseListening({ keepActive: false });
                                 else resumeListening();
                             }}
@@ -4509,7 +4624,7 @@ const Read = ({
                 </ReaderHeaderBar>
             ) : null}
 
-            <View style={[styles.reader, isFullscreen ? { paddingTop: insets.top } : null]}>
+            <View ref={readerAreaRef} collapsable={false} style={[styles.reader, isFullscreen ? { paddingTop: insets.top } : null]}>
                 {bookLoadState === 'error' ? (
                     <View style={styles.readerErrorState}>
                         <Text style={styles.readerErrorTitle}>{t('read.openErrorTitle')}</Text>
@@ -4724,15 +4839,17 @@ const Read = ({
                     pointerEvents="box-none"
                     style={[styles.pinnedLayer, { top: isFullscreen ? 0 : insets.top + spacing.xs + 52 }]}
                 >
-                    <PinnedSentenceTranslation
-                        visible={pinnedVisible}
-                        sentence={pinnedSentence}
-                        sourceLanguage={activeBookLanguage}
-                        targetLanguage={interfaceLanguage}
-                        fontSize={pinnedTranslationFontSize}
-                        topInset={isFullscreen ? insets.top : 0}
-                        onHoldChange={holdPinnedTranslation}
-                    />
+                    <View ref={pinnedBarRef} collapsable={false}>
+                        <PinnedSentenceTranslation
+                            visible={pinnedVisible}
+                            sentence={pinnedSentence}
+                            sourceLanguage={activeBookLanguage}
+                            targetLanguage={interfaceLanguage}
+                            fontSize={pinnedTranslationFontSize}
+                            topInset={isFullscreen ? insets.top : 0}
+                            onHoldChange={holdPinnedTranslation}
+                        />
+                    </View>
                 </View>
             ) : null}
 
@@ -4808,7 +4925,7 @@ const Read = ({
                 and the top of the page is the title). Focus mode has its own
                 position pill and controls, so the tip stays out of the way
                 there. */}
-            {currentBook && !highlightedWord && !textSelection && !focusMode && (showLookupHint || currentChapterPreparing) ? (
+            {currentBook && !highlightedWord && !textSelection && !focusMode && !tutorialRunning && (showLookupHint || currentChapterPreparing) ? (
                 <View
                     pointerEvents="box-none"
                     style={[styles.hintLayer, { bottom: bottomOverlayBase + 16 }]}
@@ -4912,6 +5029,22 @@ const Read = ({
                 onDeleteBookmark={handleDeleteBookmark}
                 onDelete={handleDeleteNote}
                 onClose={() => setShowNotesLog(false)}
+            />
+
+            <FirstBookTutorial
+                progress={tutorialProgress}
+                title={activeBook?.title ?? null}
+                containerRef={containerRef}
+                measureTarget={measureTutorialStepTarget}
+                insets={insets}
+                onNext={() => dispatchTutorial({ type: 'next' })}
+                onSkip={() => dispatchTutorial({ type: 'skip' })}
+            />
+            <TutorialReplayToast
+                visible={tutorialToast && !tutorialRunning}
+                bottom={bottomOverlayBase + 16}
+                onReplay={startTutorial}
+                onClose={() => setTutorialToast(false)}
             />
 
         </Animated.View>

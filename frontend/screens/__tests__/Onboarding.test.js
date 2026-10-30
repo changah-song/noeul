@@ -62,7 +62,7 @@ it('stores and reads the completion flag', async () => {
   expect(await hasCompletedOnboarding()).toBe(true);
 });
 
-it('walks the five steps and finishes with onDone', async () => {
+it('walks the four steps, asks for the first-book tutorial and finishes with onDone', async () => {
   const onDone = jest.fn();
   let tree;
   await act(async () => {
@@ -83,17 +83,18 @@ it('walks the five steps and finishes with onDone', async () => {
   await act(async () => { levelCards[levelCards.length - 1].props.onPress(); });
   await act(async () => { primary(tree).props.onPress(); });
 
-  // Daily goal: pick 15 minutes.
+  // Daily goal: pick 15 minutes, then Start reading.
   const goalCards = radios(tree);
   expect(goalCards).toHaveLength(5);
   await act(async () => { goalCards[2].props.onPress(); });
   await act(async () => { primary(tree).props.onPress(); });
-  expect(AsyncStorage.setItem).toHaveBeenCalledWith('readingGoal.minutes', '15');
-
-  // Tour → Start reading
-  await act(async () => { primary(tree).props.onPress(); });
   await flush();
+  expect(AsyncStorage.setItem).toHaveBeenCalledWith('readingGoal.minutes', '15');
   expect(onDone).toHaveBeenCalledTimes(1);
   expect(AsyncStorage.setItem).toHaveBeenCalledWith(ONBOARDING_COMPLETED_KEY, '1');
+  expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+    'tutorial.firstBook.v1',
+    JSON.stringify({ status: 'pending', bookUri: null })
+  );
   act(() => { tree.unmount(); });
 });

@@ -249,6 +249,12 @@ class NativeEpubReaderModule : Module() {
     }.runOnQueue(Queues.MAIN)
 
 
+    // The first-book tutorial lights an underlined word and a sentence on the
+    // page being read: their rects in window dp.
+    AsyncFunction("tutorialTargets") { view: NativeEpubReaderView ->
+      view.tutorialTargets()
+    }.runOnQueue(Queues.MAIN)
+
     // Listen mode: highlight the word being explained ({ blockId,
     // sourceStartOffset, sourceEndOffset }), or clear it with an empty map.
     AsyncFunction("setSpokenWord") { view: NativeEpubReaderView, word: Map<String, Any?> ->
@@ -2542,6 +2548,41 @@ class NativeEpubReaderView(
       (recyclerView()?.findViewHolderForAdapterPosition(viewPager.currentItem) as? EpubPageAdapter.PageHolder)?.view
     } ?: return false
     return view.extendSelectionBySentence(step)
+  }
+
+  fun tutorialTargets(): Map<String, Any> {
+    val vertical = isVerticalLayoutMode()
+    val view = if (vertical) {
+      continuousPageView
+    } else {
+      (recyclerView()?.findViewHolderForAdapterPosition(viewPager.currentItem) as? EpubPageAdapter.PageHolder)?.view
+    } ?: return emptyMap()
+    // The continuous page is one tall view inside a scroller: only the part
+    // in view counts.
+    val visibleTop = if (vertical) continuousScrollView.scrollY.toFloat() else 0f
+    val visibleBottom = if (vertical) {
+      (continuousScrollView.scrollY + continuousScrollView.height).toFloat()
+    } else {
+      view.height.toFloat()
+    }
+    // The same frame as React Native's measureInWindow: on screen, less the
+    // visible window's top-left (the status bar), so JS can mix the two.
+    val location = IntArray(2)
+    view.getLocationOnScreen(location)
+    val visibleFrame = android.graphics.Rect()
+    view.getWindowVisibleDisplayFrame(visibleFrame)
+    location[0] -= visibleFrame.left
+    location[1] -= visibleFrame.top
+    val density = resources.displayMetrics.density
+    return view.tutorialTargets(visibleTop, visibleBottom).mapValues { (_, target) ->
+      mapOf(
+        "x" to ((location[0] + target.rect.left) / density).toDouble(),
+        "y" to ((location[1] + target.rect.top) / density).toDouble(),
+        "width" to (target.rect.width() / density).toDouble(),
+        "height" to (target.rect.height() / density).toDouble(),
+        "text" to target.text
+      )
+    }
   }
 
   fun focusNav(direction: String): Map<String, Any> {

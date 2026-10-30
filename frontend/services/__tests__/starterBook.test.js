@@ -1,4 +1,4 @@
-import { pickStarterBook, starterThetaFromAbility } from '../starterBook';
+import { pickStarterBook, pickTutorialBook, starterThetaFromAbility } from '../starterBook';
 
 const book = (id, language, wordCount, levelRank, extra = {}) => ({
   id,
@@ -158,5 +158,18 @@ describe('pickStarterBook against the bundled catalog', () => {
     expect(pickStarterBook(catalogBooks, { language: 'ko', theta: -3 }).language).toBe('ko');
     expect(pickStarterBook(catalogBooks, { language: 'zh' }).id).toBe('kong-yiji-lu-xun');
     expect(pickStarterBook(catalogBooks, { language: 'en' })).toBeNull();
+  });
+});
+
+describe('pickTutorialBook', () => {
+  const brooks = book('b', 'en', 9000, 3, { publicLibraryId: 'brooks' });
+  const peter = book('p', 'en', null, 3, { publicLibraryId: '2ea64ae3-c4c3-4ed3-bed6-42b7e0961895' });
+
+  it('prefers the language’s tutorial book', () => {
+    expect(pickTutorialBook([brooks, peter], { language: 'en' })).toBe(peter);
+  });
+
+  it('falls back to the starter book without it', () => {
+    expect(pickTutorialBook([brooks], { language: 'en' })).toBe(brooks);
   });
 });

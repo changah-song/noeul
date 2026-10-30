@@ -54,6 +54,9 @@ private const val FOCUS_EMPHASIS_OFFSET_DP = 0.3f
 // new one.
 private data class SelectionBox(val key: Long, val rect: RectF)
 
+// Something the first-book tutorial lights on the page, in view coordinates.
+data class TutorialTarget(val rect: RectF, val text: String)
+
 private data class RenderedTextBlock(
   val block: PageBlock,
   val layout: StaticLayout,
@@ -2779,6 +2782,95 @@ class EpubPageView(context: Context) : View(context) {
   // next sentence's end, crossing into the neighbouring paragraph when needed
   // (within this page). Re-emits onTextSelected so the translation updates.
   // Returns false when there is no text selection or nothing further to add.
+  // The first-book tutorial's targets on this page, within [visibleTop,
+  // visibleBottom] of the view: "word", the first underlined word that sits on
+  // one line, and "sentence", the first whole sentence of a real paragraph that
+  // fits on three lines (one without the word when there is a choice).
+  fun tutorialTargets(visibleTop: Float, visibleBottom: Float): Map<String, TutorialTarget> {
+    if (geometryDirty || renderedTextBlocks.isEmpty()) rebuildGeometry()
+    val currentPage = page ?: return emptyMap()
+    val margin = dp(8f).toFloat()
+    val out = mutableMapOf<String, TutorialTarget>()
+    fun visible(top: Float, bottom: Float) = top >= visibleTop + margin && bottom <= visibleBottom - margin
+
+    run findWord@{
+      renderedTextBlocks.forEach { rendered ->
+        val block = rendered.block
+        val layout = rendered.layout
+        val text = blockTextForSelection(block)
+        // From a paragraph of the story, not a title page or heading.
+        if (text.trim().length < 40) return@forEach
+        rangesForBlock(levelRanges, block.blockId)
+          .filter { it.pageIndex == currentPage.pageIndex && it.spineIndex == currentPage.spineIndex }
+          .sortedBy { it.sourceStartOffset }
+          .forEach { range ->
+            val start = range.sourceStartOffset - block.sourceStartOffset
+            val end = range.sourceEndOffset - block.sourceStartOffset
+            if (start < 0 || end > text.length || start >= end) return@forEach
+            // Capitals are names and headings more often than not.
+            val word = text.substring(start, end)
+            if (word.any { it.isUpperCase() } && word.none { it.isLowerCase() }) return@forEach
+            val line = layout.getLineForOffset(start)
+            if (layout.getLineForOffset(end - 1) != line) return@forEach
+            val top = rendered.y + layout.getLineTop(line)
+            val bottom = rendered.y + layout.getLineBottom(line)
+            if (!visible(top, bottom)) return@forEach
+            val startX = layout.getPrimaryHorizontal(start)
+            val endX = if (end >= layout.getLineEnd(line)) layout.getLineRight(line) else layout.getPrimaryHorizontal(end)
+            out["word"] = TutorialTarget(
+              RectF(rendered.x + min(startX, endX), top, rendered.x + max(startX, endX), bottom),
+              word
+            )
+            return@findWord
+          }
+      }
+    }
+
+    val word = out["word"]
+    var fallback: TutorialTarget? = null
+    run findSentence@{
+      renderedTextBlocks.forEach { rendered ->
+        val block = rendered.block
+        val layout = rendered.layout
+        val text = blockTextForSelection(block)
+        // Headings and one-line captions make a poor first selection.
+        if (text.trim().length < 40) return@forEach
+        sentenceSpans(block).forEach { (rawStart, rawEnd) ->
+          var start = rawStart
+          var end = rawEnd
+          while (start < end && text[start].isWhitespace()) start++
+          while (end > start && text[end - 1].isWhitespace()) end--
+          if (end - start < 12) return@forEach
+          val sentence = text.substring(start, end)
+          // A line in capitals is a title, not a sentence of the story.
+          if (sentence.any { it.isUpperCase() } && sentence.none { it.isLowerCase() }) return@forEach
+          val startLine = layout.getLineForOffset(start)
+          val endLine = layout.getLineForOffset(end - 1)
+          if (endLine - startLine > 2) return@forEach
+          val top = rendered.y + layout.getLineTop(startLine)
+          val bottom = rendered.y + layout.getLineBottom(endLine)
+          if (!visible(top, bottom)) return@forEach
+          val rect = if (startLine == endLine) {
+            val startX = layout.getPrimaryHorizontal(start)
+            val endX = if (end >= layout.getLineEnd(endLine)) layout.getLineRight(endLine) else layout.getPrimaryHorizontal(end)
+            RectF(rendered.x + min(startX, endX), top, rendered.x + max(startX, endX), bottom)
+          } else {
+            RectF(rendered.x, top, rendered.x + rendered.width, bottom)
+          }
+          val target = TutorialTarget(rect, sentence)
+          if (word != null && RectF.intersects(rect, word.rect)) {
+            if (fallback == null) fallback = target
+            return@forEach
+          }
+          out["sentence"] = target
+          return@findSentence
+        }
+      }
+    }
+    if (out["sentence"] == null) fallback?.let { out["sentence"] = it }
+    return out
+  }
+
   fun extendSelectionBySentence(direction: Int): Boolean {
     if (activeSelectionKind != ActiveSelectionKind.TEXT) return false
     extendWithinParagraph(direction)?.let { ranges ->

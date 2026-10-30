@@ -25,6 +25,7 @@ import { playEnglishPronunciation } from '../../../services/pronunciationAudio';
 import { getRuntimeChineseScript } from '../../../services/interfaceLanguage';
 import { requestUserDataSync } from '../../../services/userDataSyncQueue';
 import { chapterTranslations } from '../../../services/chapterTranslations';
+import { tutorialTargetRef } from '../../../services/tutorialTargets';
 import {
     getEntryFallbackLanguage,
     normalizeSurfaceWordForLanguage,
@@ -1154,6 +1155,7 @@ const DictionaryContent = ({
         const saved = canSave && isWordSaved(word);
         return (
             <TouchableOpacity
+                ref={tutorialTargetRef('lookup.save')}
                 style={[styles.saveIconButton, !canSave && styles.saveIconButtonDisabled]}
                 onPress={canSave
                     ? () => (saved ? toggleUnSave(word, hanja, definition) : toggleSave(word, hanja, definition))
