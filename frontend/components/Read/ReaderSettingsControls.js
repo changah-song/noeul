@@ -116,9 +116,10 @@ export const Stepper = ({
 );
 
 /**
- * SegmentedControl — `options` is [{ value, label, icon? }] where `icon` is a
- * MaterialIcons name. A muted track; the selected segment is a raised white
- * chip with semibold text.
+ * SegmentedControl — `options` is [{ value, label, icon?, iconOnly? }] where
+ * `icon` is a MaterialIcons name; `iconOnly` draws just a larger icon (the
+ * label stays as its accessibility label). A muted track; the selected
+ * segment is a raised white chip with semibold text.
  */
 export const SegmentedControl = ({ styles, colors, options, value, onChange, accessibilityLabel }) => (
     <View style={styles.segmentTrack} accessibilityRole="radiogroup" accessibilityLabel={accessibilityLabel}>
@@ -137,13 +138,15 @@ export const SegmentedControl = ({ styles, colors, options, value, onChange, acc
                     {option.icon ? (
                         <MaterialIcons
                             name={option.icon}
-                            size={15}
+                            size={option.iconOnly ? 20 : 15}
                             color={selected ? colors.text : colors.textMuted}
                         />
                     ) : null}
-                    <Text style={[styles.segmentText, selected && styles.segmentTextActive]} numberOfLines={1}>
-                        {option.label}
-                    </Text>
+                    {option.iconOnly ? null : (
+                        <Text style={[styles.segmentText, selected && styles.segmentTextActive]} numberOfLines={1}>
+                            {option.label}
+                        </Text>
+                    )}
                 </TouchableOpacity>
             );
         })}
@@ -279,9 +282,10 @@ export const Checkbox = ({ styles, colors, value, onChange, accessibilityLabel }
 );
 
 /**
- * ResetLink — the small "Reset to default" text button that closes each tab.
+ * ResetLink — the small reset-to-default icon button that closes each tab
+ * (`label` is its accessibility label).
  */
-export const ResetLink = ({ styles, label, onPress }) => (
+export const ResetLink = ({ styles, colors, label, onPress }) => (
     <TouchableOpacity
         style={styles.resetLink}
         onPress={onPress}
@@ -290,7 +294,7 @@ export const ResetLink = ({ styles, label, onPress }) => (
         accessibilityRole="button"
         accessibilityLabel={label}
     >
-        <Text style={styles.resetLinkText}>{label}</Text>
+        <Feather name="rotate-ccw" size={19} color={colors?.textTertiary} />
     </TouchableOpacity>
 );
 
@@ -538,14 +542,9 @@ export const createReaderSettingsControlStyles = (colors) => StyleSheet.create({
     resetLink: {
         alignSelf: 'flex-end',
         marginTop: 10,
-        minHeight: 32,
+        width: 36,
+        height: 36,
+        alignItems: 'center',
         justifyContent: 'center',
-        paddingHorizontal: 2,
-    },
-    resetLinkText: {
-        fontFamily: fontFamilies.sansMedium,
-        fontSize: 13,
-        lineHeight: 17,
-        color: colors.textTertiary,
     },
 });

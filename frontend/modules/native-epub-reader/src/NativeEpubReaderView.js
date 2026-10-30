@@ -185,6 +185,7 @@ const NativeEpubReaderView = forwardRef(({
     onWordSelected,
     onTextSelected,
     onSelectionCleared,
+    onDoubleTap,
     onFocusSentenceChange,
     onExposure,
     onSavedTermsShown,
@@ -281,6 +282,10 @@ const NativeEpubReaderView = forwardRef(({
         onSelectionCleared?.(payloadOf(event));
     };
 
+    const handleDoubleTap = (event) => {
+        onDoubleTap?.(payloadOf(event));
+    };
+
     const handleFocusSentenceChange = (event) => {
         onFocusSentenceChange?.(payloadOf(event));
     };
@@ -335,6 +340,7 @@ const NativeEpubReaderView = forwardRef(({
             onWordSelected={handleWordSelected}
             onTextSelected={handleTextSelected}
             onSelectionCleared={handleSelectionCleared}
+            onDoubleTap={handleDoubleTap}
             onFocusSentenceChange={handleFocusSentenceChange}
             onExposure={handleExposure}
             onSavedTermsShown={handleSavedTermsShown}

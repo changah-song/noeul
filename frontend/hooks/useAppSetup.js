@@ -526,10 +526,20 @@ const useAppSetup = ({ ownerId, ownerReady = true, user = null } = {}) => {
         }
 
         const previousMeta = currentBookMetaRef.current;
-        const metaUpdatedAt = previousMeta.currentBookUri === currentBook
+        const sameBook = previousMeta.currentBookUri === currentBook;
+        const metaUpdatedAt = sameBook
             ? previousMeta.updatedAt
             : new Date().toISOString();
         const meta = buildCurrentBookPreference(books, currentBook, metaUpdatedAt);
+        // `books` changes on every page turn; the current book's preference
+        // only when the book (or its cloud id) does. Nothing to write else.
+        if (
+            sameBook
+            && previousMeta.currentBookCloudId === meta.currentBookCloudId
+            && !applyingCloudCurrentBookRef.current
+        ) {
+            return;
+        }
         currentBookMetaRef.current = meta;
 
         Promise.all([

@@ -384,6 +384,7 @@ class NativeEpubReaderModule : Module() {
         "onWordSelected",
         "onTextSelected",
         "onSelectionCleared",
+        "onDoubleTap",
         "onFocusSentenceChange",
         "onExposure",
         "onSavedTermsShown",
@@ -527,13 +528,15 @@ private data class FocusSentenceInfo(
   val bottomY: Int
 )
 
-// Focus (sentence beam) mode geometry and motion, mirroring the design spec:
-// the focused sentence's top is pinned at 60% of the viewport (higher when the
-// span is too tall to fit below that line — see focusAnchorRatioFor), the
-// content gets generous top/bottom insets so edge sentences can still anchor there,
-// the anchor scroll eases over 380ms, and the dictionary-panel lift matches
-// the panel's 450ms cubic-bezier(.22,.61,.36,1) slide.
-private const val FOCUS_ANCHOR_RATIO = 0.60f
+// Focus (sentence beam) mode geometry and motion: the focused sentence's top is
+// pinned at 28% of the viewport, in the top half so even a long sentence fits
+// on screen (higher still when the span is too tall to fit below that line —
+// see focusAnchorRatioFor). The content gets generous top/bottom insets so
+// edge sentences can still anchor there, the anchor scroll eases over 380ms,
+// and the dictionary-panel lift (only as much as the sentence needs to clear
+// the panel — see focusLiftFor) matches the panel's 450ms
+// cubic-bezier(.22,.61,.36,1) slide.
+private const val FOCUS_ANCHOR_RATIO = 0.28f
 private const val FOCUS_TOP_INSET_RATIO = 0.545f
 private const val FOCUS_BOTTOM_INSET_RATIO = 0.52f
 // Breathing room kept between a span and the edge it is aligned against, so an
@@ -943,6 +946,7 @@ class NativeEpubReaderView(
   private val onWordSelected by EventDispatcher()
   private val onTextSelected by EventDispatcher()
   private val onSelectionCleared by EventDispatcher()
+  private val onDoubleTap by EventDispatcher()
   private val onFocusSentenceChange by EventDispatcher()
   private val onExposure by EventDispatcher()
   private val onSavedTermsShown by EventDispatcher()
@@ -1063,6 +1067,9 @@ class NativeEpubReaderView(
   private var focusSwipeEnabled = false
   private var lastFocusNavToken: String? = null
   private var lastFocusMoveAtMs = 0L
+  // The dictionary panel's height, and how far the surface is lifted for it
+  // (0 when the focused sentence already sits clear of the panel).
+  private var focusPanelHeightPx = 0f
   private var focusPanelLiftPx = 0f
   private var focusScrollAnimator: ValueAnimator? = null
   private var suppressContinuousScrollEvents = false
@@ -1131,6 +1138,7 @@ class NativeEpubReaderView(
     continuousPageView.tapProgress = ::levelTapProgress
     continuousPageView.savedFade = ::savedFadeProgress
     continuousPageView.noteIconTapped = ::handleNoteIconTapped
+    continuousPageView.doubleTapped = ::handlePageDoubleTap
     continuousScrollView.addView(
       continuousPageView,
       FrameLayout.LayoutParams(
@@ -2038,6 +2046,7 @@ class NativeEpubReaderView(
       pageAdapter?.tapProgress = ::levelTapProgress
       pageAdapter?.savedFade = ::savedFadeProgress
       pageAdapter?.noteIconTapped = ::handleNoteIconTapped
+      pageAdapter?.doubleTapped = ::handlePageDoubleTap
       viewPager.adapter = pageAdapter
     } else {
       val canAnimateChapterTransition = (
@@ -2505,7 +2514,9 @@ class NativeEpubReaderView(
     val rapid = now - lastFocusMoveAtMs < FOCUS_RAPID_NAV_WINDOW_MS
     lastFocusMoveAtMs = now
 
-    clearActiveSelection(dispatchEvent = true, forceEvent = true)
+    // Close an open lookup with the step; with nothing open, no event (each
+    // one costs the reader a round of state updates on every sentence).
+    clearActiveSelection(dispatchEvent = true, forceEvent = continuousPageView.focusPanelOpen)
     focusTo(next, animate = true, fast = rapid)
     return focusStatePayload() + mapOf("moved" to true)
   }
@@ -2713,14 +2724,9 @@ class NativeEpubReaderView(
 
   // Where the focused span's top should sit, as a fraction of the viewport.
   // Normally FOCUS_ANCHOR_RATIO, but a span taller than the room below that
-  // line would spill off screen, so it gets bottom-aligned instead: lifted
-  // just far enough that its last line clears the dictionary panel.
-  //
-  // The panel cancels out of that bottom constraint. With the lift applied the
-  // span's bottom sits at ratio*H - P + S and the panel's top edge at H - P,
-  // so requiring one to clear the other reduces to ratio <= (H - S) / H. The
-  // panel only binds at the other end, where the span's first line must stay
-  // below the top of the screen — hence the floor.
+  // line would spill off screen, so it gets bottom-aligned instead, never
+  // higher than the top margin (the floor). The panel doesn't enter into it:
+  // focusLiftFor lifts the surface only as far as the span needs.
   private fun focusAnchorRatioFor(spanHeight: Int): Float {
     if (layoutHeight <= 0) {
       return FOCUS_ANCHOR_RATIO
@@ -2728,17 +2734,24 @@ class NativeEpubReaderView(
 
     val height = layoutHeight.toFloat()
     val fitted = (height - spanHeight - focusSpanBottomMarginPx()) / height
-    // coerceAtMost keeps the range below well-formed if a panel ever reports a
-    // height at or beyond the viewport.
-    val floor = ((focusPanelLiftPx + focusSpanTopMarginPx()) / height).coerceAtMost(1f)
-    // The floor is allowed to exceed FOCUS_ANCHOR_RATIO: a panel taller than
-    // 60% of the viewport lifts the content far enough that the resting anchor
-    // would put the span's first line above the top of the screen, and pushing
-    // the ratio up is what brings it back down into view. When the floor and
-    // the fitted ratio disagree (a very long sentence under an expanded panel)
-    // the floor wins, keeping the opening lines visible and letting the tail
-    // run behind the panel.
+    val floor = (focusSpanTopMarginPx() / height).coerceAtMost(1f)
     return min(FOCUS_ANCHOR_RATIO, fitted).coerceIn(floor, 1f)
+  }
+
+  // How far to lift the surface so a span whose top sits `spanTopOnScreen` px
+  // down the viewport ends clear of the open dictionary panel: just the
+  // overlap, and never so far that the span's first line leaves the screen
+  // (a sentence taller than the room above the panel keeps its opening lines
+  // and lets the tail run behind the panel). 0 with the panel closed, and for
+  // the usual sentence, which already ends above the panel.
+  private fun focusLiftFor(spanTopOnScreen: Float, spanHeight: Int): Float {
+    if (focusPanelHeightPx <= 0f || layoutHeight <= 0) {
+      return 0f
+    }
+    val panelTop = layoutHeight - focusPanelHeightPx
+    val overlap = spanTopOnScreen + spanHeight + focusSpanBottomMarginPx() - panelTop
+    val maxLift = (spanTopOnScreen - focusSpanTopMarginPx()).coerceAtLeast(0f)
+    return overlap.coerceIn(0f, maxLift)
   }
 
   // Content extent of the whole highlighted beam, first sentence's top through
@@ -2787,9 +2800,11 @@ class NativeEpubReaderView(
   }
 
   private fun anchorScrollToFocus(animated: Boolean, fast: Boolean = false) {
-    updateFocusScrollBounds()
-
-    val sentence = focusSentences.getOrNull(focusIndex) ?: return
+    val sentence = focusSentences.getOrNull(focusIndex)
+    if (sentence == null) {
+      updateFocusScrollBounds()
+      return
+    }
     val extent = focusSpanExtent()
     val spanHeight = extent?.let { (top, bottom) -> bottom - top } ?: 0
     val contentHeight = continuousPageView.layoutParams?.height ?: 0
@@ -2797,6 +2812,15 @@ class NativeEpubReaderView(
     val ratio = focusAnchorRatioFor(spanHeight)
     val target = (sentence.topY - (layoutHeight * ratio)).roundToInt()
       .coerceIn(0, maxScroll)
+
+    // Lift for the panel from where the span will actually land (a sentence
+    // near a chapter edge can't always reach the anchor line).
+    val nextLift = focusLiftFor((sentence.topY - target).toFloat(), spanHeight)
+    if (nextLift != focusPanelLiftPx) {
+      focusPanelLiftPx = nextLift
+      updateFocusLift(animated = animated)
+    }
+    updateFocusScrollBounds()
 
     focusScrollAnimator?.cancel()
     if (!animated) {
@@ -2959,19 +2983,19 @@ class NativeEpubReaderView(
   }
 
   fun setFocusPanelHeight(heightDp: Double) {
-    val nextLiftPx = (heightDp * resources.displayMetrics.density).toFloat().coerceAtLeast(0f)
-    continuousPageView.focusPanelOpen = isFocusMode() && nextLiftPx > 0f
-    if (focusPanelLiftPx == nextLiftPx) {
+    val nextPanelPx = (heightDp * resources.displayMetrics.density).toFloat().coerceAtLeast(0f)
+    continuousPageView.focusPanelOpen = isFocusMode() && nextPanelPx > 0f
+    if (focusPanelHeightPx == nextPanelPx) {
       return
     }
 
-    focusPanelLiftPx = nextLiftPx
-    updateFocusLift(animated = true)
-    // The lift alone keeps a normal sentence clear of the panel, but the panel
-    // height is also the floor on the anchor ratio, so a bottom-aligned long
-    // span has to be re-solved whenever the panel opens, closes or resizes.
+    focusPanelHeightPx = nextPanelPx
+    // Re-anchoring works out the lift the span needs under the new panel.
     if (isFocusMode() && focusSentences.isNotEmpty()) {
       anchorScrollToFocus(animated = true)
+    } else {
+      focusPanelLiftPx = 0f
+      updateFocusLift(animated = true)
     }
   }
 
@@ -3501,6 +3525,13 @@ class NativeEpubReaderView(
 
   private fun handleNoteIconTapped(noteId: String) {
     onHighlightNotePress(mapOf("id" to noteId))
+  }
+
+  // The first tap of the pair may have opened a lookup: close it, then tell
+  // the reader to toggle full screen.
+  private fun handlePageDoubleTap() {
+    clearActiveSelection(dispatchEvent = true, forceEvent = true)
+    onDoubleTap(mapOf<String, Any>())
   }
 
   private fun handlePageEdgeAction(kind: ReaderEdgeKind) {

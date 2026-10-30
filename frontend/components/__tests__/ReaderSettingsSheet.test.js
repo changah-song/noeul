@@ -63,7 +63,6 @@ const renderSheet = async (overrides = {}) => {
     onSettingChange: jest.fn(),
     onResetTextSettings: jest.fn(),
     onResetWordSettings: jest.fn(),
-    onResetFocusSettings: jest.fn(),
     actions: [{ key: 'checkpoints', label: 'Checkpoints', icon: null, onPress: jest.fn() }],
     ...overrides,
   };
@@ -84,7 +83,9 @@ describe('ReaderSettingsSheet', () => {
     expect(json).toContain('Page turns');
     expect(json).toContain('Line spacing');
     expect(json).not.toContain('Difficulty underlines');
-    expect(json).not.toContain('Move between sentences');
+    // Gone from the menu: brightness, the focus tab, the translation bar toggle.
+    expect(json).not.toContain('Brightness');
+    expect(tree.root.findAllByProps({ testID: 'reader-settings-tab-focus' })).toHaveLength(0);
 
     await press(tree, 'Checkpoints');
     expect(props.actions[0].onPress).toHaveBeenCalled();
@@ -103,13 +104,7 @@ describe('ReaderSettingsSheet', () => {
     expect(json).toContain('Translation under words');
     expect(json).not.toContain('Font size');
     expect(tree.root.findByProps({ testID: 'reader-settings-tab-words' }).props.accessibilityState).toEqual({ selected: true });
-
-    await pressTab(tree, 'focus');
-    json = text(tree);
-    expect(json).toContain('Move between sentences');
-    expect(json).toContain('Sentences at a time');
-    expect(json).toContain('Swipe');
-    expect(json).not.toContain('Difficulty underlines');
+    expect(findByLabel(tree, 'Sentence translation')).toHaveLength(0);
     await act(async () => tree.unmount());
   });
 
@@ -122,6 +117,8 @@ describe('ReaderSettingsSheet', () => {
     // Line spacing is a three-way segmented control.
     await press(tree, 'Tight');
     expect(props.onSettingChange).toHaveBeenCalledWith('lineSpacing', 1.65);
+    // Page turns are icons; their names stay as accessibility labels.
+    expect(tree.root.findAll((node) => node.props.children === 'Vertical')).toHaveLength(0);
     await press(tree, 'Vertical');
     expect(props.onSettingChange).toHaveBeenCalledWith('readingMode', 'scroll');
 
@@ -140,12 +137,6 @@ describe('ReaderSettingsSheet', () => {
     expect(marksSwitch.props.accessibilityState).toEqual({ checked: true });
     await press(tree, 'Difficulty underlines');
     expect(props.onSettingChange).toHaveBeenCalledWith('levelMarkStyle', 'off');
-
-    await pressTab(tree, 'focus');
-    await press(tree, 'Swipe');
-    expect(props.onSettingChange).toHaveBeenCalledWith('focusSwipe', true);
-    await press(tree, 'Longer focus span');
-    expect(props.onSettingChange).toHaveBeenCalledWith('focusSpan', 2);
     await act(async () => tree.unmount());
   });
 
@@ -177,6 +168,8 @@ describe('ReaderSettingsSheet', () => {
 
   it('resets the active tab only', async () => {
     const { tree, props } = await renderSheet();
+    // An icon now, labelled for accessibility.
+    expect(tree.root.findAll((node) => node.props.children === 'Reset to default')).toHaveLength(0);
     await press(tree, 'Reset to default');
     expect(props.onResetTextSettings).toHaveBeenCalledTimes(1);
     expect(props.onResetWordSettings).not.toHaveBeenCalled();
@@ -184,10 +177,6 @@ describe('ReaderSettingsSheet', () => {
     await pressTab(tree, 'words');
     await press(tree, 'Reset to default');
     expect(props.onResetWordSettings).toHaveBeenCalledTimes(1);
-
-    await pressTab(tree, 'focus');
-    await press(tree, 'Reset to default');
-    expect(props.onResetFocusSettings).toHaveBeenCalledTimes(1);
     await act(async () => tree.unmount());
   });
 

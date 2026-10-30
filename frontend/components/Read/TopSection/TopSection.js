@@ -15,12 +15,12 @@ import DictionaryContent from './DictionaryContent';
 
 // The word panel hugs its content; these are only ceilings. Past them the
 // panel body scrolls inside DictionaryContent while the action row stays put.
-const DICTIONARY_MAX_HEIGHT = 380;
+const DICTIONARY_MAX_HEIGHT = 200;
 // Chinese packs several readings + numbered senses inline, so it gets more room.
-const DICTIONARY_ZH_MAX_HEIGHT = 430;
+const DICTIONARY_ZH_MAX_HEIGHT = 240;
 const DICTIONARY_EXPANDED_MAX_HEIGHT = 548;
 const TRANSLATION_MAX_SCROLL_HEIGHT = 150;
-const DICTIONARY_BOTTOM_PADDING = 26;
+const DICTIONARY_BOTTOM_PADDING = 12;
 const TOP_PLACEMENT_DICTIONARY_TOP_PADDING = 22;
 const TOP_PLACEMENT_DICTIONARY_BOTTOM_PADDING = 4;
 
@@ -291,8 +291,8 @@ const TopSection = ({
         }
     };
 
-    // The grab bar (drag to close, or to open the roots section) with the
-    // close button at its end.
+    // The grab bar (drag to close, or to open the roots section). There is no
+    // close button: a swipe down, a tap on the page or back closes the panel.
     const renderGrabber = (position) => {
         const wrapStyle = position === 'bottom' ? styles.grabberWrapBottom : styles.grabberWrap;
         const grabberLabel = isChineseDictionarySheet
@@ -317,18 +317,6 @@ const TopSection = ({
                         <View style={styles.grabber} />
                     </View>
                 )}
-                {onClose ? (
-                    <TouchableOpacity
-                        accessibilityRole="button"
-                        accessibilityLabel={t('common.close')}
-                        activeOpacity={0.6}
-                        onPress={onClose}
-                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                        style={[styles.closeButton, position === 'bottom' ? styles.closeButtonBottom : null]}
-                    >
-                        <MaterialIcons name="close" size={20} color={themeColors.textMuted} />
-                    </TouchableOpacity>
-                ) : null}
             </View>
         );
     };
@@ -394,12 +382,6 @@ const TopSection = ({
                         onPress: handleCopy,
                         disabled: !canCopyTranslation && !isCopyConfirmed,
                     })}
-                    {onClose ? renderIconButton({
-                        icon: 'close',
-                        label: t('common.close'),
-                        onPress: onClose,
-                        color: themeColors.textMuted,
-                    }) : null}
                 </View>
             ) : null}
 
@@ -547,8 +529,8 @@ const createStyles = (colors) => StyleSheet.create({
         paddingTop: 0,
     },
     grabberWrap: {
-        height: 22,
-        paddingTop: 9,
+        height: 16,
+        paddingTop: 7,
         alignItems: 'center',
     },
     grabberWrapBottom: {
@@ -568,19 +550,7 @@ const createStyles = (colors) => StyleSheet.create({
     },
     // A taller strip than the bar itself, so the drag is easy to start.
     grabberTouch: {
-        height: 30,
-    },
-    closeButton: {
-        position: 'absolute',
-        right: 10,
-        top: 6,
-        width: 30,
-        height: 30,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    closeButtonBottom: {
-        top: 0,
+        height: 20,
     },
 });
 

@@ -23,7 +23,7 @@ export const ReaderBackButton = memo(({ styles, themeColors, onPress, accessibil
         accessibilityRole="button"
         accessibilityLabel={accessibilityLabel}
     >
-        <Feather name="chevron-left" size={24} color={themeColors.inkSlate} />
+        <Feather name="chevron-left" size={26} color={themeColors.inkSlate} />
     </TouchableOpacity>
 ));
 ReaderBackButton.displayName = 'ReaderBackButton';
@@ -44,11 +44,11 @@ export const ReaderCheckpointButton = memo(({
         accessibilityState={{ selected: !!active }}
         accessibilityLabel={accessibilityLabel}
     >
-        <MaterialIcons
-            name={active ? 'bookmark' : 'bookmark-border'}
-            size={21}
-            color={themeColors.inkSlate}
-        />
+        {active ? (
+            <MaterialCommunityIcons name="bookmark" size={25} color={themeColors.inkSlate} />
+        ) : (
+            <Feather name="bookmark" size={22} color={themeColors.inkSlate} />
+        )}
     </TouchableOpacity>
 ));
 ReaderCheckpointButton.displayName = 'ReaderCheckpointButton';
@@ -78,7 +78,7 @@ export const ReaderFocusModeButton = memo(({ styles, themeColors, active, onPres
         accessibilityState={{ selected: !!active }}
         accessibilityLabel={accessibilityLabel}
     >
-        <Feather name="eye" size={20} color={themeColors.inkSlate} />
+        <Feather name="eye" size={23} color={themeColors.inkSlate} />
     </TouchableOpacity>
 ));
 ReaderFocusModeButton.displayName = 'ReaderFocusModeButton';
@@ -91,13 +91,14 @@ export const ReaderListenButton = memo(({ styles, themeColors, active, onPress, 
         accessibilityState={{ selected: !!active }}
         accessibilityLabel={accessibilityLabel}
     >
-        <Feather name="headphones" size={19} color={themeColors.inkSlate} />
+        <Feather name="headphones" size={22} color={themeColors.inkSlate} />
     </TouchableOpacity>
 ));
 ReaderListenButton.displayName = 'ReaderListenButton';
 
 // Thin progress bar + percent. Fills the space between the left icon group
-// and the right-hand buttons, right-aligned; tapping opens the contents.
+// (back, focus, listen) and the right-hand buttons (bookmark, menu),
+// right-aligned; tapping opens the contents.
 export const ReaderProgressButton = memo(({
     styles,
     fillWidth,
@@ -145,7 +146,7 @@ export const ReaderMenuButton = memo(({ styles, themeColors, open, onPress, acce
         accessibilityState={{ expanded: !!open }}
         accessibilityLabel={accessibilityLabel}
     >
-        <Feather name="menu" size={21} color={themeColors.inkSlate} />
+        <Feather name="menu" size={24} color={themeColors.inkSlate} />
     </TouchableOpacity>
 ));
 ReaderMenuButton.displayName = 'ReaderMenuButton';

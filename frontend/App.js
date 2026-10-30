@@ -27,6 +27,8 @@ import {
     NotoSerifKR_700Bold,
 } from '@expo-google-fonts/noto-serif-kr';
 import LocalDataDecisionModal from './components/Auth/LocalDataDecisionModal';
+import BookOpeningOverlay from './components/shared/BookOpeningOverlay';
+import { noteRouteShown } from './services/readerListenState';
 import { PillTabBar, tabScreenOptions } from './components/shared/TabBar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -571,6 +573,8 @@ function AppContent() {
     );
 }
 
+const FROZEN_WHEN_HIDDEN = { freezeOnBlur: true };
+
 function ThemedAppShell({
     books,
     setBooks,
@@ -603,7 +607,10 @@ function ThemedAppShell({
     }), [appBackground, themeColors]);
     const navigationRef = useNavigationContainerRef();
     const trackScreen = useCallback(() => {
-        setTelemetryScreen(navigationRef.getCurrentRoute()?.name ?? null);
+        const routeName = navigationRef.getCurrentRoute()?.name ?? null;
+        setTelemetryScreen(routeName);
+        // The reader's voice pauses on a screen with no player for it.
+        noteRouteShown(routeName);
     }, [navigationRef]);
     const sceneContainerStyle = useMemo(() => ({
         backgroundColor: appBackground,
@@ -685,7 +692,12 @@ function ThemedAppShell({
                         themeColors,
                     })}
                 >
-                    <Tab.Screen name="Home">
+                    {/* Hidden tabs are frozen (react-native-screens): the reader
+                        updates `books` on every page turn, and Home, Learn and
+                        Profile catch up when shown instead of re-rendering
+                        behind it. Read stays live for listen mode and the
+                        reading clock. */}
+                    <Tab.Screen name="Home" options={FROZEN_WHEN_HIDDEN}>
                         {props => (
                             <Home
                                 {...props}
@@ -714,17 +726,16 @@ function ThemedAppShell({
                             />
                         )}
                     </Tab.Screen>
-                    <Tab.Screen name="Learn">
+                    <Tab.Screen name="Learn" options={FROZEN_WHEN_HIDDEN}>
                         {props => (
                             <Learn
                                 {...props}
-                                books={books}
                                 user={user}
                             />
                         )}
                     </Tab.Screen>
                     {/* Write tab shelved — see the commented-out import above to un-shelf. */}
-                    <Tab.Screen name="Profile">
+                    <Tab.Screen name="Profile" options={FROZEN_WHEN_HIDDEN}>
                         {props => (
                             <Profile
                                 {...props}
@@ -738,6 +749,7 @@ function ThemedAppShell({
                     </Tab.Screen>
                 </Tab.Navigator>
             </NavigationContainer>
+            <BookOpeningOverlay />
             <LocalDataDecisionModal
                 decision={pendingOwnershipDecision}
                 user={user}

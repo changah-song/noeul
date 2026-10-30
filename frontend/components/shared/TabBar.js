@@ -164,10 +164,9 @@ const PILL_ROUTES = [
 ];
 
 // Spring for the sliding highlight: quick, settles without a visible wobble.
-const SLIDE_SPRING = { stiffness: 320, damping: 30, mass: 1, useNativeDriver: false };
-// The trailing edge follows a little looser, so the highlight stretches
-// toward the new tab and then catches up.
-const TRAIL_SPRING = { stiffness: 190, damping: 26, mass: 1, useNativeDriver: false };
+// On the native driver, so a tab switch (which re-renders the screens on the
+// JS thread) can't make it stutter.
+const SLIDE_SPRING = { stiffness: 320, damping: 30, mass: 1, useNativeDriver: true };
 
 const PillTabContent = ({ icon, label, color }) => (
     <View style={styles.pillTab}>
@@ -209,12 +208,9 @@ const PillTabs = ({ state, navigation, themeColors }) => {
     const activeIndex = Math.max(0, items.findIndex((item) => item.name === current.name));
 
     const progress = useRef(new Animated.Value(activeIndex)).current;
-    const leftEdge = useRef(new Animated.Value(0)).current;
-    const rightEdge = useRef(new Animated.Value(0)).current;
     const appear = useRef(new Animated.Value(0)).current;
     const [layouts, setLayouts] = useState({});
     const placed = useRef(false);
-    const lastIndex = useRef(activeIndex);
     const measured = items.every((item) => layouts[item.name]);
 
     // Rise in when the pill comes back (e.g. leaving the reader).
@@ -224,25 +220,14 @@ const PillTabs = ({ state, navigation, themeColors }) => {
 
     useEffect(() => {
         if (!measured) return;
-        const target = layouts[items[activeIndex].name];
         if (!placed.current) {
             // First measure: put the highlight under the current tab, no slide.
-            leftEdge.setValue(target.x);
-            rightEdge.setValue(target.x + target.width);
             progress.setValue(activeIndex);
             placed.current = true;
-            lastIndex.current = activeIndex;
             return;
         }
-        const movingRight = activeIndex >= lastIndex.current;
-        lastIndex.current = activeIndex;
-        Animated.parallel([
-            Animated.spring(leftEdge, { toValue: target.x, ...(movingRight ? TRAIL_SPRING : SLIDE_SPRING) }),
-            Animated.spring(rightEdge, { toValue: target.x + target.width, ...(movingRight ? SLIDE_SPRING : TRAIL_SPRING) }),
-            Animated.spring(progress, { toValue: activeIndex, ...SLIDE_SPRING }),
-        ]).start();
-        // items is derived from props each render; layouts/activeIndex cover its changes.
-    }, [activeIndex, layouts, measured, leftEdge, rightEdge, progress]);
+        Animated.spring(progress, { toValue: activeIndex, ...SLIDE_SPRING }).start();
+    }, [activeIndex, measured, progress]);
 
     const setLayout = (name) => ({ nativeEvent }) => {
         const { x, width } = nativeEvent.layout;
@@ -265,19 +250,42 @@ const PillTabs = ({ state, navigation, themeColors }) => {
                 },
             ]}
         >
-            {measured ? (
-                <Animated.View
-                    pointerEvents="none"
-                    style={[
-                        styles.pillHighlight,
-                        {
-                            backgroundColor: themeColors.inkSlate,
-                            left: leftEdge,
-                            width: Animated.subtract(rightEdge, leftEdge),
-                        },
-                    ]}
-                />
-            ) : null}
+            {/* One highlight per tab, each its tab's size: as `progress`
+                moves, the outgoing one slides toward the new tab and fades
+                while the incoming one slides in, which reads as one highlight
+                moving and resizing (transform + opacity only, so native). */}
+            {measured ? items.map((item, index) => {
+                const own = layouts[item.name];
+                const offsetTo = (other) => (other ? other.x - own.x : 0);
+                const previous = layouts[items[index - 1]?.name];
+                const next = layouts[items[index + 1]?.name];
+                return (
+                    <Animated.View
+                        key={`highlight-${item.name}`}
+                        pointerEvents="none"
+                        style={[
+                            styles.pillHighlight,
+                            {
+                                backgroundColor: themeColors.inkSlate,
+                                left: own.x,
+                                width: own.width,
+                                opacity: progress.interpolate({
+                                    inputRange: [index - 1, index, index + 1],
+                                    outputRange: [0, 1, 0],
+                                    extrapolate: 'clamp',
+                                }),
+                                transform: [{
+                                    translateX: progress.interpolate({
+                                        inputRange: [index - 1, index, index + 1],
+                                        outputRange: [offsetTo(previous), 0, offsetTo(next)],
+                                        extrapolate: 'clamp',
+                                    }),
+                                }],
+                            },
+                        ]}
+                    />
+                );
+            }) : null}
             {items.map((item, index) => {
                 const focused = index === activeIndex;
                 const onPress = () => {

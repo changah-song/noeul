@@ -30,11 +30,7 @@ import { IconButton, Screen } from '../components/ui';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
-import useCoachTip from '../hooks/useCoachTip';
-import ScreenCoachTip from '../components/Tips/ScreenCoachTip';
-import { GoalTitle, homeDaySlots, StreakDots, useReadingGoal } from '../components/Goal/HomeGoalBar';
-import CalendarDrop from '../components/Goal/CalendarDrop';
-import { areTipsEnabled, isTipSeen, loadTips, msUntilUnpromptedTip, TIP_IDS, tipCounter } from '../services/tips';
+import { HomeGoalCalendar, HomeGoalCluster, HomeGoalSun } from '../components/Goal/HomeGoalBar';
 import { useFocusEffect } from '@react-navigation/native';
 import { searchSongs } from '../services/api/songSearch';
 import {
@@ -85,14 +81,9 @@ import {
 import { readEpubMetadata } from '../services/epubMetadata';
 import { readPdfMetadata } from '../services/pdfMetadata';
 import { getPublicDomainBooks } from '../services/publicDomainBooks';
-import { pickStarterBook, pickTutorialBook, starterThetaFromAbility } from '../services/starterBook';
-import {
-    finishTutorial,
-    getTutorial,
-    loadTutorial,
-    setTutorialBook,
-    subscribeTutorial,
-} from '../services/firstBookTutorial';
+import { beginBookOpening, endBookOpening } from '../services/bookOpening';
+import ListenMiniPlayer from '../components/Home/ListenMiniPlayer';
+import { pickStarterBook, starterThetaFromAbility } from '../services/starterBook';
 import {
     downloadFeaturedBooks,
     downloadPublicBook,
@@ -2917,24 +2908,6 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         return () => clearTimeout(timer);
     }, [ocrBusy, ocrMessage]);
 
-    // First-time tip: after a first reading session (a word looked up), the
-    // screen scanner takes lookups outside Noeul.
-    const { tipId, offer: offerTip, close: closeTip } = useCoachTip();
-    const ocrButtonRef = useRef(null);
-    useFocusEffect(useCallback(() => {
-        let cancelled = false;
-        const timer = setTimeout(async () => {
-            await loadTips();
-            if (cancelled || isTipSeen(TIP_IDS.homeOcr) || tipCounter('lookups') < 1) return;
-            if (!cancelled && (await areTipsEnabled())) offerTip(TIP_IDS.homeOcr);
-        }, Math.max(1200, msUntilUnpromptedTip()));
-        return () => {
-            cancelled = true;
-            clearTimeout(timer);
-            closeTip(TIP_IDS.homeOcr, { seen: false });
-        };
-    }, [closeTip, offerTip]));
-
     const handleFloatingOcrToggle = useCallback(async () => {
         if (ocrBusy || ocrActionInFlightRef.current) {
             return;
@@ -3038,6 +3011,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
         downloadsInFlightRef.current.add(bookKey);
         setDownloadingBookId(bookKey);
+        beginBookOpening(book);
         const ownerId = activeOwnerId;
         const generation = syncGeneration;
 
@@ -3056,6 +3030,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 })
                 : {};
             if (!isCurrentSyncGeneration(generation) || activeOwnerIdRef.current !== ownerId) {
+                endBookOpening();
                 return;
             }
 
@@ -3085,6 +3060,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             navigation.navigate('Read', { returnTo: 'Home' });
         } catch (error) {
             console.warn('[Home] Failed to download cloud book:', error?.message ?? error);
+            endBookOpening();
             Alert.alert(t('home.downloadFailedTitle'), t(getDownloadErrorMessageKey(error)));
         } finally {
             downloadsInFlightRef.current.delete(bookKey);
@@ -3112,6 +3088,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             return;
         }
 
+        beginBookOpening(book);
         const openedAt = new Date().toISOString();
         updateBookRecord(book, { lastOpenedAt: openedAt });
         handlePress(book.uri);
@@ -3238,6 +3215,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             return;
         }
 
+        beginBookOpening(book);
         const openedAt = new Date().toISOString();
         const localBook = isPublicLibraryBook(book)
             ? await downloadPublicLibraryBookToLocal(book, { lastOpenedAt: openedAt })
@@ -3247,6 +3225,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             });
 
         if (!localBook?.uri) {
+            endBookOpening();
             return;
         }
 
@@ -3254,7 +3233,6 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         setCurrentBook(localBook.uri);
         setPreprocessOnOpen(isPublicLibraryBook(localBook));
         navigation.navigate('Read', { returnTo: 'Home' });
-        return localBook.uri;
     }, [
         downloadPublicLibraryBookToLocal,
         navigation,
@@ -3264,59 +3242,6 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     ]);
 
     publicDomainBookPressRef.current = handlePublicDomainBookPress;
-
-    // The first-book tutorial: once asked for (the end of onboarding, or
-    // Profile › Tips), open the tutorial's book (services/starterBook.js) and
-    // the reader runs the tutorial on it.
-    const [tutorialRecord, setTutorialRecord] = useState(getTutorial);
-    useEffect(() => {
-        let active = true;
-        loadTutorial().then((value) => {
-            if (active) setTutorialRecord(value);
-        });
-        const unsubscribe = subscribeTutorial((value) => setTutorialRecord(value));
-        return () => {
-            active = false;
-            unsubscribe();
-        };
-    }, []);
-    const tutorialOpeningRef = useRef(false);
-    useEffect(() => {
-        if (tutorialRecord.status !== 'pending' || tutorialRecord.bookUri || tutorialOpeningRef.current) return;
-        if (!languageSettingsReady || publicDomainBooks.length === 0) return;
-        tutorialOpeningRef.current = true;
-        (async () => {
-            try {
-                const ability = await getProfileAbility({
-                    ownerId: activeOwnerId,
-                    profileId: activeProfileId,
-                    language: targetLanguage,
-                }).catch(() => null);
-                const book = pickTutorialBook(publicDomainBooks, {
-                    language: targetLanguage,
-                    theta: starterThetaFromAbility(ability),
-                });
-                if (!book) {
-                    await finishTutorial('skipped');
-                    return;
-                }
-                const uri = await handlePublicDomainBookPress(book);
-                if (uri) await setTutorialBook(uri);
-            } catch (error) {
-                console.warn('[Home] Could not open the tutorial book:', error?.message ?? error);
-            } finally {
-                tutorialOpeningRef.current = false;
-            }
-        })();
-    }, [
-        activeOwnerId,
-        activeProfileId,
-        handlePublicDomainBookPress,
-        languageSettingsReady,
-        publicDomainBooks,
-        targetLanguage,
-        tutorialRecord,
-    ]);
 
     const addPublicDomainBookToLibrary = useCallback(async (book) => {
         if (!book) {
@@ -3361,14 +3286,19 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         setHomeFocusKey((value) => value + 1);
         return () => setCalendarOpen(false);
     }, []));
-    const { snapshot: goalSnapshot, days: goalDays } = useReadingGoal(activeOwnerId, homeFocusKey);
-    const daySlots = useMemo(() => homeDaySlots(goalDays), [goalDays]);
-    const dotsLabel = t('goal.dotsLabel', { count: daySlots.filter((state) => state === 'met').length });
+    // The goal's dots, title and calendar subscribe to the reading clock
+    // themselves (HomeGoalCluster / HomeGoalCalendar): it ticks every second
+    // while a book is read, and Home must not re-render on each tick.
     const toggleCalendar = useCallback(() => setCalendarOpen((value) => !value), []);
+    const closeCalendar = useCallback(() => setCalendarOpen(false), []);
 
     // Set from the press until the reader takes over (or the open fails).
     const [openingBook, setOpeningBook] = useState(false);
     useFocusEffect(useCallback(() => () => setOpeningBook(false), []));
+    const openReaderFromPlayer = useCallback(() => {
+        navigation?.navigate?.('Read', { returnTo: 'Home' });
+    }, [navigation]);
+
     const handleResumeFeaturedBook = useCallback(async (book) => {
         if (!book) {
             return;
@@ -4295,45 +4225,23 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     style={styles.appTopBar}
                     onLayout={(event) => setTopBarHeight(event.nativeEvent.layout.height)}
                 >
-                    <TouchableOpacity
-                        ref={ocrButtonRef}
-                        activeOpacity={0.84}
-                        accessibilityRole="switch"
-                        accessibilityLabel={isFloatingOcrActive ? t('home.turnOcrOff') : t('home.turnOcrOn')}
-                        accessibilityState={{ checked: isFloatingOcrActive, busy: ocrBusy }}
-                        disabled={ocrBusy}
-                        onPress={() => {
-                            if (tipId === TIP_IDS.homeOcr) closeTip(TIP_IDS.homeOcr);
-                            handleFloatingOcrToggle();
-                        }}
-                        style={styles.appTopIconButton}
-                    >
-                        {ocrBusy ? (
-                            <ActivityIndicator size="small" color={HOME_COLORS.accent} />
-                        ) : (
-                            <MaterialCommunityIcons
-                                name={isFloatingOcrActive ? 'close' : 'line-scan'}
-                                size={22}
-                                color={HOME_COLORS.accent}
-                            />
-                        )}
-                    </TouchableOpacity>
-                    <StreakDots
-                        slots={daySlots.slice(0, 3)}
-                        open={calendarOpen}
-                        onPress={toggleCalendar}
-                        accessibilityLabel={dotsLabel}
-                    />
-                    <GoalTitle
-                        snapshot={goalSnapshot}
+                    {/* Today's goal (the sunset fills in once it's reached) over
+                        the day streak; opens the calendar. The screen scanner's
+                        button lived here and is off for now
+                        (handleFloatingOcrToggle). */}
+                    <HomeGoalSun
+                        ownerId={activeOwnerId}
                         focusKey={homeFocusKey}
-                        textStyle={styles.appTopTitleText}
-                    />
-                    <StreakDots
-                        slots={daySlots.slice(3)}
                         open={calendarOpen}
                         onPress={toggleCalendar}
-                        accessibilityLabel={dotsLabel}
+                        style={styles.appTopIconButton}
+                    />
+                    <HomeGoalCluster
+                        ownerId={activeOwnerId}
+                        focusKey={homeFocusKey}
+                        calendarOpen={calendarOpen}
+                        onToggleCalendar={toggleCalendar}
+                        textStyle={styles.appTopTitleText}
                     />
                     <TouchableOpacity
                         activeOpacity={0.84}
@@ -4354,6 +4262,9 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                         {ocrMessage}
                     </Text>
                 ) : null}
+
+                {/* The reader's voice, while it's on: under the title bar. */}
+                <ListenMiniPlayer onOpenReader={openReaderFromPlayer} />
 
                 {featuredBooks.length > 0 ? (
                     <FeaturedBookCarousel
@@ -4656,18 +4567,12 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     )}
                 </View>
             )}
-                {!!openingBookUri && (
-                    <View style={styles.loadingOverlay}>
-                        <ActivityIndicator size="small" color={HOME_COLORS.accent} />
-                        <Text style={styles.loadingText}>{t('home.openingBook')}</Text>
-                    </View>
-                )}
                 <View pointerEvents="box-none" style={[styles.calendarLayer, { top: topBarHeight }]}>
-                    <CalendarDrop
+                    <HomeGoalCalendar
+                        ownerId={activeOwnerId}
+                        focusKey={homeFocusKey}
                         open={calendarOpen}
-                        days={goalDays}
-                        goalMinutes={Math.round(goalSnapshot.goalMs / 60000)}
-                        onClose={() => setCalendarOpen(false)}
+                        onClose={closeCalendar}
                     />
                 </View>
             </Pressable>
@@ -4942,13 +4847,6 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     </KeyboardAvoidingView>
                 </View>
             </Modal>
-            <ScreenCoachTip
-                visible={tipId === TIP_IDS.homeOcr}
-                title={t('tips.ocrTitle')}
-                body={t('tips.ocrBody')}
-                anchorRef={ocrButtonRef}
-                onClose={() => closeTip(TIP_IDS.homeOcr)}
-            />
         </Screen>
         </HomeThemeContext.Provider>
     );
@@ -6398,25 +6296,6 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     fabModalAnchor: {
         bottom: FAB_WINDOW_BOTTOM_OFFSET,
     },
-    loadingOverlay: {
-        position: 'absolute',
-        top: spacing.xl,
-        alignSelf: 'center',
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: spacing.sm,
-        paddingHorizontal: spacing.md,
-        paddingVertical: spacing.sm,
-        borderRadius: 4,
-        borderWidth: 1,
-        borderColor: HOME_COLORS.border,
-        backgroundColor: HOME_COLORS.surface,
-        ...HOME_SHADOWS.card,
-    },
-    loadingText: {
-        ...textStyles.caption,
-        color: HOME_COLORS.sub,
-    },
     modalBackdrop: {
         flex: 1,
         backgroundColor: colors.overlay,
@@ -6712,5 +6591,8 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
 });
 
 const defaultHomeStyles = createStyles(HOME_COLORS, colors);
+
+// Also drawn by the book-opening screen (components/shared/BookOpeningOverlay.js).
+export { BookCover };
 
 export default Home;
