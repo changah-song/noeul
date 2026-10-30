@@ -19,6 +19,7 @@ import { Feather, MaterialIcons } from '@expo/vector-icons';
 
 import Flashcard from '../components/Learn/Flashcard';
 import AudioReview from '../components/Learn/AudioReview';
+import GrammarSection from '../components/Learn/GrammarSection';
 import ProfileAvatar from '../components/shared/ProfileAvatar';
 import { PILL_TAB_BAR_CLEARANCE } from '../components/shared/TabBar';
 import CandidateCard from '../components/vocab/CandidateCard';
@@ -1851,6 +1852,7 @@ const Learn = ({ navigation, user }) => {
       key: 'learned',
       label: learnedWords.length > 0 ? t('learn.learnedTabCount', { count: formatNumber(learnedWords.length) }) : t('learn.learnedTab'),
     },
+    { key: 'grammar', label: t('grammar.learnTab') },
   ];
 
   return (
@@ -2020,6 +2022,8 @@ const Learn = ({ navigation, user }) => {
         )}
       </View>
       </>
+      ) : mainTab === 'grammar' ? (
+        <GrammarSection ownerId={activeOwnerId} language={targetLanguage} />
       ) : mainTab === 'learned' ? (
         <View style={styles.suggestedWrap}>
           {learnedWords.length === 0 ? (

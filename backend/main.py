@@ -34,6 +34,7 @@ from song_search import (
     merge_song_results,
     normalize_song_query,
 )
+import grammar_catalog
 from explain_graph import (
     ExplainGraphError,
     build_grounded_prompt,
@@ -5432,6 +5433,145 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
     if not req.personalized:
         await asyncio.to_thread(_lookup_cache_put, req.cache_key, parsed)
 
+    return parsed
+
+
+# ─── Grammar: the pattern a sentence uses ────────────────────────────────────
+# The AI panel's Grammar tab: which of the language's tracked patterns
+# (grammar_catalog.py) the selected sentence uses, explained in plain words,
+# the sentence in chunks, and a blank with wrong options for later review.
+
+GRAMMAR_MAX_TOKENS = 900
+GRAMMAR_CACHE_PREFIX = "grammar1"
+
+
+def build_grammar_prompt(*, target_language_name: str, interface_language_name: str, language: str) -> str:
+    target = target_language_name
+    interface = interface_language_name
+    return f"""You are a patient {target} grammar tutor for a learner whose own language is {interface}. The learner selected some text while reading and wants to see how its grammar works.
+
+Pick the ONE pattern from this list that best explains the selected text (the one most likely to confuse a learner here). Use its id exactly. If none fits, use "none".
+
+id | form | name | level
+{grammar_catalog.catalog_prompt_lines(language)}
+
+Reply with one JSON object and nothing else (no markdown, no code fence):
+{{
+  "pattern_id": "<an id from the list, or none>",
+  "title": "<the pattern's name in {interface}, at most 6 words>",
+  "rule": "<one or two short sentences in {interface} on how the pattern works here, in plain words a beginner understands; no grammar jargon>",
+  "chunks": [{{"text": "<a piece of the selected text, copied exactly>", "label": "<what that piece does, in {interface}, at most 4 words>", "pattern": <true if this piece carries the pattern, else false>}}],
+  "blank": "<the word or words (1 to 3) of the selected text that carry the pattern, copied exactly>",
+  "options": ["<three wrong but plausible alternatives to blank, each a real {target} word or phrase that would make the sentence wrong>"]
+}}
+The chunks go in reading order and together cover the selected text (or, if the selection is only part of a sentence, the clause around it): 2 to 6 chunks."""
+
+
+def _grammar_chunk_texts_in_order(chunks: list[dict], sentence: str) -> list[dict]:
+    kept = []
+    position = 0
+    for chunk in chunks:
+        text = (chunk.get("text") or "").strip() if isinstance(chunk, dict) else ""
+        if not text:
+            continue
+        found = sentence.find(text, position)
+        if found < 0:
+            continue
+        position = found + len(text)
+        kept.append({
+            "text": text,
+            "label": str(chunk.get("label") or "").strip()[:40],
+            "pattern": bool(chunk.get("pattern")),
+        })
+    return kept
+
+
+def parse_grammar_reply(raw: str, language: str, sentence: str, selection: str) -> dict | None:
+    """The model's JSON, checked: a known pattern id (else none), chunks that
+    really are in the text, a blank in the text and three distinct options."""
+    text = (raw or "").strip()
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        data = json.loads(text[start:end + 1])
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    pattern_id = str(data.get("pattern_id") or "none").strip()
+    entry = grammar_catalog.BY_ID.get(pattern_id)
+    if not entry or not pattern_id.startswith(f"{language}."):
+        entry = None
+        pattern_id = "none"
+    # Chunks and the blank must come from the text itself (the sentence holds
+    # the selection; a selection the client sent alone is its own sentence).
+    source = sentence if selection in sentence else f"{sentence} {selection}"
+    chunks = _grammar_chunk_texts_in_order(data.get("chunks") or [], source)
+    blank = str(data.get("blank") or "").strip()
+    if blank and blank not in source:
+        blank = ""
+    options = []
+    for option in data.get("options") or []:
+        option = str(option or "").strip()
+        if option and option.lower() != blank.lower() and option.lower() not in (o.lower() for o in options):
+            options.append(option)
+    rule = str(data.get("rule") or "").strip()
+    if not rule:
+        return None
+    return {
+        "pattern_id": pattern_id,
+        "title": str(data.get("title") or (entry or {}).get("name") or "").strip()[:60],
+        "form": (entry or {}).get("form"),
+        "level": (entry or {}).get("level"),
+        "rule": rule[:400],
+        "chunks": chunks,
+        "blank": blank if len(options) >= 3 else "",
+        "options": options[:3] if blank else [],
+    }
+
+
+@app.post("/explain_grammar/")
+async def explain_grammar(payload: dict, auth: dict[str, Any] = Depends(verify_supabase_token)):
+    """The grammar pattern of a selected sentence (the AI panel's Grammar tab)."""
+    req = await _prepare_explain_request({**payload, "mode": "selection"}, auth)
+    cache_key = f"{GRAMMAR_CACHE_PREFIX}:{req.cache_key}"
+    cached = await asyncio.to_thread(_lookup_cache_get, cache_key)
+    if cached and cached.get("explanation"):
+        try:
+            return json.loads(cached["explanation"])
+        except ValueError:
+            pass
+
+    await _charge_explain_miss(auth)
+    target_language_name, interface_language_name = _explain_language_names(req)
+    system_prompt = build_grammar_prompt(
+        target_language_name=target_language_name,
+        interface_language_name=interface_language_name,
+        language=req.target_language,
+    )
+    try:
+        message = await get_anthropic_async_client().messages.create(
+            **explain_model_params(max_tokens=GRAMMAR_MAX_TOKENS),
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_message_for_selection(req.word, req.sentence)}],
+        )
+    except Exception as error:
+        print(f"[explain_grammar] Anthropic API error: {error.__class__.__name__}: {error}")
+        raise ApiError(502, "ai_unavailable", "AI explanation service is temporarily unavailable")
+    await record_ai_spend(EXPLAIN_MODEL, getattr(message, "usage", None))
+
+    raw = "".join(
+        block.text for block in (message.content or []) if getattr(block, "type", None) == "text"
+    )
+    parsed = parse_grammar_reply(raw, req.target_language, req.sentence, req.word)
+    if not parsed:
+        raise ApiError(502, "ai_bad_response", "AI returned no grammar explanation")
+    await asyncio.to_thread(_lookup_cache_put, cache_key, {
+        "lemma": parsed["pattern_id"],
+        "gloss": None,
+        "explanation": json.dumps(parsed, ensure_ascii=False),
+    })
     return parsed
 
 
