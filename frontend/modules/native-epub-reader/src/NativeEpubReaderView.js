@@ -59,6 +59,15 @@ export const sendExtendSelection = (viewTag, direction) => (
     NativeModule?.extendSelection?.(viewTag, direction) ?? androidOnly()
 );
 
+// The first-book tutorial: where one underlined word and one whole sentence
+// sit on the page being read, in window dp ({ word, sentence }, each
+// { x, y, width, height, text }, either missing when the page has none).
+export const supportsTutorialTargets = typeof NativeModule?.tutorialTargets === 'function';
+
+export const fetchTutorialTargets = (viewTag) => (
+    NativeModule?.tutorialTargets?.(viewTag) ?? androidOnly()
+);
+
 // Imperative jump to a saved checkpoint. The restorePosition prop also carries
 // the passive position echo pushed on every page event, so a jump sent that way
 // can be dropped as a no-op; this command is unambiguous. The flag lets callers

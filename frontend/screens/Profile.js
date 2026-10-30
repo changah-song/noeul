@@ -42,6 +42,7 @@ import {
 import { fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
 import ProfileAvatar from '../components/shared/ProfileAvatar';
 import FeatureGuideSheet from '../components/shared/FeatureGuideSheet';
+import { requestTutorial } from '../services/firstBookTutorial';
 import LevelCard from '../components/shared/LevelCard';
 import SyncStatusRow from '../components/shared/SyncStatusRow';
 
@@ -496,7 +497,15 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
 
             <WordCheckModal visible={showWordCheck} onClose={() => setShowWordCheck(false)} />
 
-            <FeatureGuideSheet visible={showFeatureGuide} onClose={() => setShowFeatureGuide(false)} />
+            <FeatureGuideSheet
+                visible={showFeatureGuide}
+                onClose={() => setShowFeatureGuide(false)}
+                onReplayGuide={async () => {
+                    setShowFeatureGuide(false);
+                    await requestTutorial();
+                    navigation?.navigate?.('Home');
+                }}
+            />
 
             <LevelAdjustSheet
                 visible={showLevelAdjust}

@@ -24,9 +24,10 @@ const FEATURES = [
 
 /**
  * FeatureGuideSheet — Profile's "Show tips": what Noeul can do, one row per
- * feature with its icon, and a button to see the in-app tips again.
+ * feature with its icon, a button to replay the first-book tutorial
+ * (`onReplayGuide`) and one to see the in-app tips again.
  */
-const FeatureGuideSheet = ({ visible, onClose }) => {
+const FeatureGuideSheet = ({ visible, onClose, onReplayGuide }) => {
     const { colors } = useTheme();
     const { t } = useTranslation();
     const styles = useMemo(() => createStyles(colors), [colors]);
@@ -55,17 +56,29 @@ const FeatureGuideSheet = ({ visible, onClose }) => {
                     </View>
                 ))}
             </ScrollView>
+            {onReplayGuide ? (
+                <TouchableOpacity
+                    onPress={() => {
+                        setTipsReset(false);
+                        onReplayGuide();
+                    }}
+                    style={styles.button}
+                    accessibilityRole="button"
+                >
+                    <Text style={styles.buttonText}>{t('tutorial.replayGuide')}</Text>
+                </TouchableOpacity>
+            ) : null}
             <TouchableOpacity
                 onPress={async () => {
                     await resetTips();
                     setTipsReset(true);
                 }}
                 disabled={tipsReset}
-                style={[styles.button, tipsReset && styles.buttonDone]}
+                style={[styles.secondaryButton, tipsReset && styles.buttonDone]}
                 accessibilityRole="button"
             >
                 {tipsReset ? <Feather name="check" size={16} color={colors.textSecondary} /> : null}
-                <Text style={[styles.buttonText, tipsReset && styles.buttonTextDone]}>
+                <Text style={[styles.secondaryButtonText, tipsReset && styles.buttonTextDone]}>
                     {tipsReset ? t('tips.showAgainDone') : t('tips.showAgain')}
                 </Text>
             </TouchableOpacity>
@@ -124,6 +137,22 @@ const createStyles = (colors) => ({
         alignItems: 'center',
         justifyContent: 'center',
         backgroundColor: colors.text,
+    },
+    secondaryButton: {
+        marginTop: 4,
+        marginHorizontal: 16,
+        minHeight: 44,
+        borderRadius: 14,
+        paddingHorizontal: 12,
+        flexDirection: 'row',
+        gap: 8,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    secondaryButtonText: {
+        fontFamily: fontFamilies.sansMedium,
+        fontSize: 14,
+        color: colors.textSecondary,
     },
     buttonDone: {
         backgroundColor: colors.surfaceMuted,

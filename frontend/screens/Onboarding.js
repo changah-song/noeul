@@ -12,7 +12,7 @@ import {
     View,
 } from 'react-native';
 import { SafeAreaInsetsContext } from 'react-native-safe-area-context';
-import { Feather, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
+import { Feather } from '@expo/vector-icons';
 import { AuthModal } from './Auth';
 import VocabLevelModal from '../components/shared/VocabLevelModal';
 import WordCheckModal, { OptionSheet } from '../components/shared/WordCheckModal';
@@ -30,6 +30,7 @@ import { setProfileAbilityFromVocab } from '../services/Database';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { DEFAULT_GOAL_MINUTES, GOAL_OPTIONS, setGoalMinutes } from '../services/readingGoal';
 import { hasWordCheck } from '../services/wordCheck';
+import { requestTutorial } from '../services/firstBookTutorial';
 import { fontFamilies, useTheme } from '../theme';
 // One entry per bundled book (generate_catalog_levels.py), with its language:
 // how many free books each language starts with, so the cards stay right as
@@ -100,7 +101,9 @@ const BEGINNER_SEED_VARIANCE = 1.5;
 
 // ─── Content ──────────────────────────────────────────────────────────────────
 
-const STEPS = ['welcome', 'languages', 'level', 'goal', 'tour'];
+// The last step ends in the starter book, where the first-book tutorial
+// shows how reading works (services/firstBookTutorial.js).
+const STEPS = ['welcome', 'languages', 'level', 'goal'];
 
 const LANGUAGE_CARDS = [
     { id: 'ko', glyph: '한', nameKey: 'onboarding.korean', detailKey: 'onboarding.koreanDetail' },
@@ -113,62 +116,6 @@ const LEVEL_OPTIONS = [
     { id: 'pick', titleKey: 'onboarding.levelPick', detailKey: 'onboarding.levelPickDetail' },
     { id: 'new', titleKey: 'onboarding.levelNew', detailKey: 'onboarding.levelNewDetail' },
 ];
-
-const EXTRAS = [
-    { key: 'listen', icon: 'headphones', labelKey: 'onboarding.extraListen' },
-    { key: 'focus', icon: 'eye', labelKey: 'onboarding.extraFocus' },
-    { key: 'scan', icon: 'maximize', labelKey: 'onboarding.extraScan' },
-    { key: 'songs', icon: 'music', labelKey: 'onboarding.extraSongs' },
-    { key: 'cards', icon: 'layers', labelKey: 'onboarding.extraFlashcards' },
-    { key: 'audio', icon: 'play-circle', labelKey: 'onboarding.extraAudio' },
-    { key: 'level', icon: 'bar-chart-2', labelKey: 'onboarding.extraLevel' },
-    { key: 'more', icon: 'more-horizontal', labelKey: 'onboarding.extraMore' },
-];
-
-// The demo sentence on the "How reading works" card: a word with a level
-// underline (easy), a tapped word (grey box + mid underline), a saved word
-// (ink shade + underline). `gloss` is the tapped word's entry in the little panel below.
-const DEMO = {
-    ko: {
-        tokens: [
-            { text: '복녀는, ' },
-            { text: '원래', mark: 'easy' },
-            { text: ' 가난은 하나마 ' },
-            { text: '정직한', mark: 'tapped' },
-            { text: ' 농가에서 ' },
-            { text: '처녀', mark: 'saved' },
-            { text: '였었다.' },
-        ],
-        headword: '정직',
-        glossKey: 'onboarding.demoGlossKo',
-    },
-    zh: {
-        tokens: [
-            { text: '他' },
-            { text: '原来', mark: 'easy' },
-            { text: '是个' },
-            { text: '诚实', mark: 'tapped' },
-            { text: '的' },
-            { text: '农民', mark: 'saved' },
-            { text: '。' },
-        ],
-        headword: '诚实',
-        glossKey: 'onboarding.demoGlossZh',
-    },
-    en: {
-        tokens: [
-            { text: 'He was ' },
-            { text: 'always', mark: 'easy' },
-            { text: ' an ' },
-            { text: 'honest', mark: 'tapped' },
-            { text: ' ' },
-            { text: 'farmer', mark: 'saved' },
-            { text: '.' },
-        ],
-        headword: 'honest',
-        glossKey: 'onboarding.demoGlossEn',
-    },
-};
 
 // ─── Pieces ───────────────────────────────────────────────────────────────────
 
@@ -222,53 +169,6 @@ const ChoiceCard = ({ selected, onPress, children, styles, minHeight }) => (
         <View style={[styles.radio, selected && styles.radioSelected]} />
     </Pressable>
 );
-
-// Plain runs are split into words (each keeping its trailing space) so the
-// wrapping row can break between them.
-const splitDemoTokens = (tokens) => tokens.flatMap((token) => {
-    if (token.mark) return [token];
-    const parts = token.text.split(' ');
-    return parts
-        .map((part, i) => ({ text: i < parts.length - 1 ? `${part} ` : part }))
-        .filter((part) => part.text.length > 0);
-});
-
-const DemoSentence = ({ language, styles, t }) => {
-    const demo = DEMO[language] || DEMO.ko;
-    const tokens = useMemo(() => splitDemoTokens(demo.tokens), [demo]);
-    return (
-        <View style={styles.demoCard}>
-            <View style={styles.demoTextWrap}>
-                {tokens.map((token, i) => {
-                    if (!token.mark) {
-                        // eslint-disable-next-line react/no-array-index-key
-                        return <Text key={i} style={styles.demoText}>{token.text}</Text>;
-                    }
-                    return (
-                        <View
-                            // eslint-disable-next-line react/no-array-index-key
-                            key={i}
-                            style={[
-                                styles.demoWord,
-                                token.mark === 'easy' && styles.demoUnderlineEasy,
-                                token.mark === 'tapped' && styles.demoTapped,
-                                token.mark === 'saved' && styles.demoSaved,
-                            ]}
-                        >
-                            <Text style={styles.demoText}>
-                                {token.text}
-                            </Text>
-                        </View>
-                    );
-                })}
-            </View>
-            <View style={styles.demoPanel}>
-                <Text style={styles.demoHeadword}>{demo.headword}</Text>
-                <Text style={styles.demoGloss} numberOfLines={1}>{t(demo.glossKey)}</Text>
-            </View>
-        </View>
-    );
-};
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
@@ -334,11 +234,13 @@ const Onboarding = ({ onDone }) => {
         }).start();
     }, [enter, step]);
 
-    const finish = useCallback(async () => {
+    // Someone signing in to an account they already have skips the tutorial.
+    const finish = useCallback(async ({ tutorial = true } = {}) => {
         if (finishingRef.current) return;
         finishingRef.current = true;
         await applyNewReaderSettings();
         await markOnboardingCompleted();
+        if (tutorial) await requestTutorial();
         onDone?.();
     }, [onDone]);
 
@@ -398,6 +300,9 @@ const Onboarding = ({ onDone }) => {
     };
 
     const handlePrimary = () => {
+        if (stepName === 'goal') {
+            setGoalMinutes(goalChoice);
+        }
         if (isLast) {
             finish();
             return;
@@ -414,9 +319,6 @@ const Onboarding = ({ onDone }) => {
             if (activeLevelChoice === 'new') {
                 seedBeginnerLevel();
             }
-        }
-        if (stepName === 'goal') {
-            setGoalMinutes(goalChoice);
         }
         advance();
     };
@@ -536,56 +438,6 @@ const Onboarding = ({ onDone }) => {
         </View>
     );
 
-    const renderTour = () => (
-        <View>
-            <DemoSentence language={activeTargetId} styles={styles} t={t} />
-            <Text style={[styles.title, styles.tourTitle]} accessibilityRole="header">{t('onboarding.tourTitle')}</Text>
-            <View style={styles.gestures}>
-                <View style={styles.gestureRow}>
-                    <View style={styles.gestureIcon}>
-                        <MaterialCommunityIcons name="gesture-tap" size={22} color={colors.inkSlate} />
-                    </View>
-                    <View style={styles.gestureCopy}>
-                        <Text style={styles.gestureTitle}>{t('onboarding.tapTitle')}</Text>
-                        <Text style={styles.gestureDetail}>{t('onboarding.tapDetail')}</Text>
-                    </View>
-                </View>
-                <View style={styles.gestureRow}>
-                    <View style={styles.gestureIcon}>
-                        <MaterialIcons name="auto-awesome" size={20} color={colors.inkSlate} />
-                    </View>
-                    <View style={styles.gestureCopy}>
-                        <Text style={styles.gestureTitle}>{t('onboarding.holdTitle')}</Text>
-                        <Text style={styles.gestureDetail}>{t('onboarding.holdDetail')}</Text>
-                    </View>
-                </View>
-                <View style={styles.gestureRow}>
-                    <View style={styles.gestureIcon}>
-                        <MaterialIcons name="subtitles" size={20} color={colors.inkSlate} />
-                    </View>
-                    <View style={styles.gestureCopy}>
-                        <Text style={styles.gestureTitle}>{t('onboarding.sentenceTitle')}</Text>
-                        <Text style={styles.gestureDetail}>{t('onboarding.sentenceDetail')}</Text>
-                    </View>
-                </View>
-                <Text style={styles.tourNote}>{t('onboarding.tourNote')}</Text>
-            </View>
-            <View style={styles.extras}>
-                <Text style={styles.extrasLabel}>{t('onboarding.alsoInNoeul')}</Text>
-                <View style={styles.extrasRow}>
-                    {EXTRAS.map((extra) => (
-                        <View key={extra.key} style={styles.extra}>
-                            <View style={styles.extraIcon}>
-                                <Feather name={extra.icon} size={18} color={colors.textSecondary} />
-                            </View>
-                            <Text style={styles.extraLabel} numberOfLines={2}>{t(extra.labelKey)}</Text>
-                        </View>
-                    ))}
-                </View>
-            </View>
-        </View>
-    );
-
     return (
         <View
             style={[
@@ -627,7 +479,6 @@ const Onboarding = ({ onDone }) => {
                     {stepName === 'languages' ? renderLanguages() : null}
                     {stepName === 'level' ? renderLevel() : null}
                     {stepName === 'goal' ? renderGoal() : null}
-                    {stepName === 'tour' ? renderTour() : null}
                 </Animated.View>
             </ScrollView>
 
@@ -689,7 +540,7 @@ const Onboarding = ({ onDone }) => {
                 onClose={() => setShowAuth(false)}
                 onAuthenticated={() => {
                     setShowAuth(false);
-                    finish();
+                    finish({ tutorial: false });
                 }}
             />
         </View>

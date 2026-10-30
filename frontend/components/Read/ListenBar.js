@@ -4,6 +4,7 @@ import { Feather, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-ico
 import { useTranslation } from '../../hooks/useTranslation';
 import { LISTEN_RATES } from '../../services/listenPlayer';
 import { formatNumber } from '../../services/interfaceLanguage';
+import { tutorialTargetRef } from '../../services/tutorialTargets';
 
 // Listen-mode transport, a floating rounded bar: previous / play-pause /
 // next, the speed chip (opens speed, pitch and voice settings), the two study
@@ -35,7 +36,7 @@ const ListenBar = ({
             pointerEvents="box-none"
             style={[styles.listenBarWrap, { bottom, transform: [{ translateY }] }]}
         >
-            <View style={styles.listenBar}>
+            <View ref={tutorialTargetRef('listen.bar')} collapsable={false} style={styles.listenBar}>
                 <TouchableOpacity
                     style={styles.listenButton}
                     onPress={onPrevious}

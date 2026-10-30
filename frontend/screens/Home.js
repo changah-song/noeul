@@ -85,7 +85,14 @@ import {
 import { readEpubMetadata } from '../services/epubMetadata';
 import { readPdfMetadata } from '../services/pdfMetadata';
 import { getPublicDomainBooks } from '../services/publicDomainBooks';
-import { pickStarterBook, starterThetaFromAbility } from '../services/starterBook';
+import { pickStarterBook, pickTutorialBook, starterThetaFromAbility } from '../services/starterBook';
+import {
+    finishTutorial,
+    getTutorial,
+    loadTutorial,
+    setTutorialBook,
+    subscribeTutorial,
+} from '../services/firstBookTutorial';
 import {
     downloadFeaturedBooks,
     downloadPublicBook,
@@ -3247,6 +3254,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         setCurrentBook(localBook.uri);
         setPreprocessOnOpen(isPublicLibraryBook(localBook));
         navigation.navigate('Read', { returnTo: 'Home' });
+        return localBook.uri;
     }, [
         downloadPublicLibraryBookToLocal,
         navigation,
@@ -3256,6 +3264,59 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     ]);
 
     publicDomainBookPressRef.current = handlePublicDomainBookPress;
+
+    // The first-book tutorial: once asked for (the end of onboarding, or
+    // Profile › Tips), open the tutorial's book (services/starterBook.js) and
+    // the reader runs the tutorial on it.
+    const [tutorialRecord, setTutorialRecord] = useState(getTutorial);
+    useEffect(() => {
+        let active = true;
+        loadTutorial().then((value) => {
+            if (active) setTutorialRecord(value);
+        });
+        const unsubscribe = subscribeTutorial((value) => setTutorialRecord(value));
+        return () => {
+            active = false;
+            unsubscribe();
+        };
+    }, []);
+    const tutorialOpeningRef = useRef(false);
+    useEffect(() => {
+        if (tutorialRecord.status !== 'pending' || tutorialRecord.bookUri || tutorialOpeningRef.current) return;
+        if (!languageSettingsReady || publicDomainBooks.length === 0) return;
+        tutorialOpeningRef.current = true;
+        (async () => {
+            try {
+                const ability = await getProfileAbility({
+                    ownerId: activeOwnerId,
+                    profileId: activeProfileId,
+                    language: targetLanguage,
+                }).catch(() => null);
+                const book = pickTutorialBook(publicDomainBooks, {
+                    language: targetLanguage,
+                    theta: starterThetaFromAbility(ability),
+                });
+                if (!book) {
+                    await finishTutorial('skipped');
+                    return;
+                }
+                const uri = await handlePublicDomainBookPress(book);
+                if (uri) await setTutorialBook(uri);
+            } catch (error) {
+                console.warn('[Home] Could not open the tutorial book:', error?.message ?? error);
+            } finally {
+                tutorialOpeningRef.current = false;
+            }
+        })();
+    }, [
+        activeOwnerId,
+        activeProfileId,
+        handlePublicDomainBookPress,
+        languageSettingsReady,
+        publicDomainBooks,
+        targetLanguage,
+        tutorialRecord,
+    ]);
 
     const addPublicDomainBookToLibrary = useCallback(async (book) => {
         if (!book) {

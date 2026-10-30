@@ -119,3 +119,26 @@ export const starterThetaFromAbility = (ability) => {
   const selfReportRank = toFiniteNumber(ability.self_report_rank);
   return eventCount > 0 || selfReportRank != null ? theta : null;
 };
+
+// The first-book tutorial's book, by language: one whose opening pages are the
+// story itself (short sentences, underlined words), not a title page and a
+// long contents list. Ids are public_library ids / bundled catalog ids.
+export const TUTORIAL_BOOK_IDS = {
+  en: ['2ea64ae3-c4c3-4ed3-bed6-42b7e0961895'], // The Tale of Peter Rabbit
+};
+
+/**
+ * pickTutorialBook — the tutorial's preferred book when the catalog has it,
+ * else the starter book (pickStarterBook).
+ */
+export const pickTutorialBook = (books, { language, theta = null } = {}) => {
+  const targetLanguage = normalizeBookLanguage(language, null);
+  const preferred = TUTORIAL_BOOK_IDS[targetLanguage] ?? [];
+  for (const id of preferred) {
+    const match = (books ?? []).find((book) => (
+      book && (book.publicLibraryId === id || book.publicDomainId === id)
+    ));
+    if (match) return match;
+  }
+  return pickStarterBook(books, { language, theta });
+};
