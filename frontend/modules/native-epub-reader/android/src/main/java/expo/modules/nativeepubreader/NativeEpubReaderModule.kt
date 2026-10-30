@@ -551,7 +551,8 @@ private const val FOCUS_SCROLL_FAST_DURATION_MS = 180L
 // deliberate pull at the chapter edge — larger than the focus swipe threshold
 // so it never fires from scroll momentum.
 private const val CONTINUOUS_SCROLL_DISPATCH_DELAY_MS = 180L
-private const val CONTINUOUS_EDGE_PULL_THRESHOLD_DP = 56f
+private const val CONTINUOUS_PULL_SPACE_DP = 96f
+private const val CONTINUOUS_PULL_FULL_DP = 120f
 // A touch this soon after the content last moved on its own counts as landing
 // on a fling. Frames thin out as a fling slows (touches on the emulator landed
 // up to 47 ms after the last frame), and 80 ms is still far shorter than anyone
@@ -601,14 +602,150 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
   private var downAtSpanTop = false
   private var downAtSpanBottom = false
 
-  // Continuous-mode scroll progress and chapter navigation: a pull past the
-  // top/bottom edge (started and released at that edge) turns the chapter.
+  // Continuous-mode scroll progress and chapter navigation. Past the end of a
+  // chapter sits an empty space with a ring and "Pull up for the next chapter";
+  // pulling on at the edge lifts the text and fills the ring, and letting go
+  // once it's full turns the chapter. The top edge works the same way backward.
+  // Nothing turns on momentum or on a short tug, so the reader isn't thrown
+  // into the next chapter by accident.
   var onScrollPositionChanged: ((Int) -> Unit)? = null
   var edgePullEnabled = false
   var onEdgePull: ((Int) -> Unit)? = null
-  private val edgePullThreshold = CONTINUOUS_EDGE_PULL_THRESHOLD_DP * context.resources.displayMetrics.density
-  private var downAtTop = false
-  private var downAtBottom = false
+  var pullNextEnabled = false
+  var pullPreviousEnabled = false
+  private val density = context.resources.displayMetrics.density
+  // Empty space after the chapter's text, where the ring waits.
+  val pullSpacePx = (CONTINUOUS_PULL_SPACE_DP * density).roundToInt()
+  private val pullFullPx = CONTINUOUS_PULL_FULL_DP * density
+  private var pullDirection = 0
+  private var pullStartY = 0f
+  private var pullDistance = 0f
+  private var pullWasFull = false
+  private var lastMoveY = 0f
+  private var downAtStart = false
+  private var downAtEnd = false
+  private var pullReleaseAnimator: ValueAnimator? = null
+  private val pullTrackPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+    style = android.graphics.Paint.Style.STROKE
+    strokeWidth = 1.6f * density
+  }
+  private val pullFillPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+    style = android.graphics.Paint.Style.STROKE
+    strokeWidth = 1.6f * density
+    strokeCap = android.graphics.Paint.Cap.ROUND
+  }
+  private val pullDotPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+  private val pullTextPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+    textSize = 13f * context.resources.displayMetrics.scaledDensity
+  }
+  private val pullArcRect = android.graphics.RectF()
+
+  fun setPullColors(inkColor: Int, faintColor: Int) {
+    pullTrackPaint.color = faintColor
+    pullFillPaint.color = inkColor
+    pullDotPaint.color = inkColor
+    pullTextPaint.color = inkColor
+    invalidate()
+  }
+
+  private val pullProgress: Float
+    get() = (pullDistance / pullFullPx).coerceIn(0f, 1f)
+
+  // How far the text moves with the finger: half the pull, easing off.
+  private fun pullShift(): Float {
+    val limit = pullFullPx * 0.6f
+    return limit * (1f - kotlin.math.exp(-pullDistance / limit))
+  }
+
+  private fun applyPull() {
+    getChildAt(0)?.translationY = -pullDirection * pullShift()
+    val full = pullProgress >= 1f
+    if (full && !pullWasFull) {
+      performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+    }
+    pullWasFull = full
+    invalidate()
+  }
+
+  private fun endPull(fire: Boolean) {
+    val direction = pullDirection
+    val from = pullDistance
+    pullReleaseAnimator?.cancel()
+    pullReleaseAnimator = ValueAnimator.ofFloat(from, 0f).apply {
+      duration = 220L
+      addUpdateListener { animator ->
+        pullDistance = animator.animatedValue as Float
+        applyPull()
+      }
+      addListener(object : android.animation.AnimatorListenerAdapter() {
+        override fun onAnimationEnd(animation: android.animation.Animator) {
+          pullDirection = 0
+          pullDistance = 0f
+          pullWasFull = false
+          getChildAt(0)?.translationY = 0f
+          invalidate()
+        }
+      })
+      start()
+    }
+    if (fire) {
+      onEdgePull?.invoke(direction)
+    }
+  }
+
+  override fun draw(canvas: android.graphics.Canvas) {
+    super.draw(canvas)
+    if (swipeNavigationEnabled || !edgePullEnabled) return
+    val maxScroll = maxVerticalScroll()
+    // Next: shows as the empty space after the text scrolls into view.
+    if (pullNextEnabled) {
+      val revealed = (scrollY - (maxScroll - pullSpacePx)).coerceIn(0, pullSpacePx)
+      val alpha = if (pullDirection > 0) 1f else revealed.toFloat() / pullSpacePx
+      if (alpha > 0.01f) {
+        val gap = pullSpacePx + if (pullDirection > 0) pullShift() else 0f
+        drawPullIndicator(canvas, scrollY + height - gap / 2f, alpha, next = true)
+      }
+    }
+    // Previous: only while pulling down at the top.
+    if (pullPreviousEnabled && pullDirection < 0) {
+      val shift = pullShift()
+      drawPullIndicator(canvas, scrollY + shift / 2f, (shift / (24f * density)).coerceIn(0f, 1f), next = false)
+    }
+  }
+
+  private fun drawPullIndicator(canvas: android.graphics.Canvas, centerY: Float, alpha: Float, next: Boolean) {
+    val active = (pullDirection > 0) == next && pullDirection != 0
+    val progress = if (active) pullProgress else 0f
+    val label = ReaderText.t(
+      when {
+        next && progress >= 1f -> "releaseNext"
+        next -> "pullNext"
+        progress >= 1f -> "releasePrevious"
+        else -> "pullPrevious"
+      }
+    )
+    val radius = 9f * density
+    val gap = 8f * density
+    val textWidth = pullTextPaint.measureText(label)
+    val total = radius * 2 + gap + textWidth
+    val left = (width - total) / 2f
+    val cx = left + radius
+    val alphaInt = (alpha * 255).roundToInt().coerceIn(0, 255)
+    pullTrackPaint.alpha = alphaInt
+    pullFillPaint.alpha = alphaInt
+    pullDotPaint.alpha = alphaInt
+    pullTextPaint.alpha = (alpha * 0.72f * 255).roundToInt().coerceIn(0, 255)
+    canvas.drawCircle(cx, centerY, radius, pullTrackPaint)
+    if (progress > 0f) {
+      pullArcRect.set(cx - radius, centerY - radius, cx + radius, centerY + radius)
+      canvas.drawArc(pullArcRect, -90f, 360f * progress, false, pullFillPaint)
+    }
+    if (progress >= 1f) {
+      canvas.drawCircle(cx, centerY, radius * 0.45f, pullDotPaint)
+    }
+    val baseline = centerY - (pullTextPaint.descent() + pullTextPaint.ascent()) / 2f
+    canvas.drawText(label, left + radius * 2 + gap, baseline, pullTextPaint)
+  }
 
   // Fling tracking. ScrollView keeps its scroller private, so a fling is
   // "the content moved within the last few frames while no finger was down".
@@ -617,7 +754,8 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
 
   init {
     isFillViewport = true
-    overScrollMode = OVER_SCROLL_IF_CONTENT_SCROLLS
+    // The chapter pull (below) is the edge feedback, so no stretch or glow.
+    overScrollMode = OVER_SCROLL_NEVER
   }
 
   override fun dispatchTouchEvent(event: MotionEvent): Boolean {
@@ -663,8 +801,9 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
         startX = event.x
         startY = event.y
         reportedVerticalDrag = false
-        downAtTop = scrollY <= 0
-        downAtBottom = scrollY >= maxVerticalScroll()
+        lastMoveY = event.y
+        downAtStart = scrollY <= 0
+        downAtEnd = scrollY >= maxVerticalScroll()
         // A child (the page view, handling word taps) may consume this DOWN, in
         // which case onTouchEvent only starts seeing the gesture once the drag
         // is intercepted at ACTION_MOVE. Seed the focus-drag state here too so
@@ -698,30 +837,55 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
 
   override fun onTouchEvent(event: MotionEvent): Boolean {
     if (!swipeNavigationEnabled) {
-      var pendingEdgePull = 0
-      if (edgePullEnabled) {
-        when (event.actionMasked) {
-          MotionEvent.ACTION_DOWN -> {
-            startY = event.y
-            downAtTop = scrollY <= 0
-            downAtBottom = scrollY >= maxVerticalScroll()
+      if (!edgePullEnabled) {
+        return super.onTouchEvent(event)
+      }
+      when (event.actionMasked) {
+        MotionEvent.ACTION_DOWN -> {
+          pullReleaseAnimator?.cancel()
+          pullDirection = 0
+          pullDistance = 0f
+          getChildAt(0)?.translationY = 0f
+          lastMoveY = event.y
+          downAtStart = scrollY <= 0
+          downAtEnd = scrollY >= maxVerticalScroll()
+        }
+        MotionEvent.ACTION_MOVE -> {
+          if (pullDirection != 0) {
+            pullDistance = ((pullStartY - event.y) * pullDirection).coerceAtLeast(0f)
+            lastMoveY = event.y
+            applyPull()
+            return true
           }
-          MotionEvent.ACTION_UP -> {
-            val dy = event.y - startY
-            if (dy <= -edgePullThreshold && downAtBottom && scrollY >= maxVerticalScroll()) {
-              pendingEdgePull = 1
-            } else if (dy >= edgePullThreshold && downAtTop && scrollY <= 0) {
-              pendingEdgePull = -1
-            }
+          val handled = super.onTouchEvent(event)
+          val movingUp = event.y < lastMoveY
+          val movingDown = event.y > lastMoveY
+          lastMoveY = event.y
+          // Touched down at the edge (the ring already in view) and pushing
+          // past it: from here the drag fills the ring instead of scrolling.
+          // A swipe that only arrives at the edge mid-way never turns the
+          // chapter.
+          if (pullNextEnabled && downAtEnd && movingUp && scrollY >= maxVerticalScroll()) {
+            pullDirection = 1
+            pullStartY = event.y
+          } else if (pullPreviousEnabled && downAtStart && movingDown && scrollY <= 0) {
+            pullDirection = -1
+            pullStartY = event.y
+          }
+          return handled
+        }
+        MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+          if (pullDirection != 0) {
+            // Close the ScrollView's own drag without a fling.
+            val cancel = MotionEvent.obtain(event).apply { action = MotionEvent.ACTION_CANCEL }
+            super.onTouchEvent(cancel)
+            cancel.recycle()
+            endPull(fire = event.actionMasked == MotionEvent.ACTION_UP && pullProgress >= 1f)
+            return true
           }
         }
       }
-
-      val handled = super.onTouchEvent(event)
-      if (pendingEdgePull != 0) {
-        onEdgePull?.invoke(pendingEdgePull)
-      }
-      return handled
+      return super.onTouchEvent(event)
     }
 
     val bounds = focusScrollBounds
@@ -2039,6 +2203,9 @@ class NativeEpubReaderView(
   ) {
     val page = pages.getOrNull(position) ?: ReaderPage(0, emptyList())
     continuousPageIndex = position
+    continuousScrollView.pullNextEnabled = canPullToNextChapter(page)
+    continuousScrollView.pullPreviousEnabled = canPullToPreviousChapter(page)
+    continuousScrollView.setPullColors(themePalette.bodyTextColor, themePalette.ruleColor)
     val focusEnabled = isFocusMode()
     val focusTopInset = if (focusEnabled) (layoutHeight * FOCUS_TOP_INSET_RATIO).roundToInt() else 0
     val focusBottomInset = if (focusEnabled) (layoutHeight * FOCUS_BOTTOM_INSET_RATIO).roundToInt() else 0
@@ -2402,9 +2569,19 @@ class NativeEpubReaderView(
       return
     }
 
-    val targetDisplayIndex = chapterPages
-      .getOrNull(chapterPageIndex)
-      ?.index
+    // A block id (a contents entry inside the chapter, a bookmark) wins over the
+    // page number: pages move when the font or layout changes, blocks don't.
+    // (A block split across pages keeps the requested page when it holds it.)
+    val blockDisplayIndex = blockId?.let { id ->
+      val requested = chapterPages.getOrNull(chapterPageIndex)
+      if (requested != null && requested.value.blocks.any { block -> block.blockId == id }) {
+        requested.index
+      } else {
+        chapterPages.firstOrNull { (_, page) -> page.blocks.any { block -> block.blockId == id } }?.index
+      }
+    }
+    val targetDisplayIndex = blockDisplayIndex
+      ?: chapterPages.getOrNull(chapterPageIndex)?.index
       ?: chapterPages.last().index
 
     Log.d(
@@ -2780,7 +2957,25 @@ class NativeEpubReaderView(
       contentHeight = contentHeight.coerceAtLeast(layoutHeight + dp(220f))
     }
 
+    if (canPullToNextChapter(page)) {
+      contentHeight += continuousScrollView.pullSpacePx
+    }
+
     return contentHeight
+  }
+
+  // Scroll mode's chapter pull: forward unless this is the book's last chapter
+  // (its "book finished" card takes over), back unless it's the first.
+  private fun canPullToNextChapter(page: ReaderPage): Boolean {
+    if (readerRenderMode != "continuous" || isFocusMode() || page.edgeState != null) return false
+    val spineIndex = page.spineIndex ?: return true
+    val total = bookManifest.intValue("totalSpineItems") ?: return true
+    return spineIndex < total - 1
+  }
+
+  private fun canPullToPreviousChapter(page: ReaderPage): Boolean {
+    if (readerRenderMode != "continuous" || isFocusMode()) return false
+    return (page.spineIndex ?: 0) > 0
   }
 
   // ===== Continuous (vertical scroll) mode =====

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Text, View, StyleSheet, TouchableOpacity, Pressable, ScrollView } from 'react-native';
+import { Text, View, StyleSheet, TouchableOpacity, Pressable, ScrollView, ToastAndroid } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { api } from '../../../services/api/client';
 import { logTiming } from '../../../services/appTelemetry';
@@ -1174,12 +1174,15 @@ const DictionaryContent = ({
 
     const handlePronunciationPress = async ({ word, audioUs, audioUk, preferredAccent }) => {
         try {
-            await playEnglishPronunciation({
+            const result = await playEnglishPronunciation({
                 word,
                 audioUs,
                 audioUk,
                 preferredAccent,
             });
+            if (result === 'unavailable') {
+                ToastAndroid.show(t('read.listenUnavailable'), ToastAndroid.LONG);
+            }
         } catch (error) {
             console.warn('[DictionaryContent] pronunciation playback failed:', error?.message || error);
         }

@@ -113,7 +113,14 @@ export const loadOnDeviceVoices = async (locale, tts = Tts) => {
 
 const LANGUAGE_SETTLE_MS = 1500;
 
-export const createListenPlayer = ({ tts = Tts } = {}) => {
+// Even very fast speech takes over ~25 ms a character; a sentence of 12+
+// characters "finished" in under a sixth of that never played.
+export const isImplausiblyFast = (utterance, elapsedMs) => {
+  const length = String(utterance || '').trim().length;
+  return length >= 12 && elapsedMs < Math.min(400, length * 4);
+};
+
+export const createListenPlayer = ({ tts = Tts, now = Date.now } = {}) => {
   let session = 0;
   let currentId = null;
   let resolveCurrent = null;
@@ -190,6 +197,7 @@ export const createListenPlayer = ({ tts = Tts } = {}) => {
       resolveCurrent = resolve;
     });
     let id;
+    const startedAt = now();
     try {
       id = await tts.speak(utterance);
     } catch {
@@ -200,12 +208,21 @@ export const createListenPlayer = ({ tts = Tts } = {}) => {
       resolveCurrent = null;
       return 'cancel';
     }
+    let outcome;
     if (lastEndedId != null && String(lastEndedId) === String(id)) {
       resolveCurrent = null;
-      return lastEndedWith;
+      outcome = lastEndedWith;
+    } else {
+      currentId = id;
+      outcome = await waiter;
     }
-    currentId = id;
-    return waiter;
+    // Some engines without a voice for the language report every utterance
+    // as finished at once, without a sound: the reader then raced through the
+    // chapter. A sentence can't be read that fast, so count it as an error.
+    if (outcome === 'finish' && isImplausiblyFast(utterance, now() - startedAt)) {
+      return 'error';
+    }
+    return outcome;
   };
 
   // End whatever is playing: the engine flushes its queue and the waiting
