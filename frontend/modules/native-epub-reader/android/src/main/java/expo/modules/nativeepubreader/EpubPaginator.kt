@@ -21,6 +21,8 @@ import java.util.Locale
 import java.util.concurrent.CancellationException
 
 private const val DEFAULT_READER_LINE_HEIGHT_MULT = 1.5f
+private const val HEADING_MAX_LINE_HEIGHT_MULT = 1.3f
+private val HEADING_TAG_RE = Regex("^h[1-6]$")
 
 class EpubPaginator(
   private val pageWidth: Int,
@@ -257,12 +259,21 @@ class EpubPaginator(
     }
 
     val textPaint = textPaintForBlock(tag, styleTokens)
+    val isHeading = HEADING_TAG_RE.matches(tag)
     val blockLineHeightMult = lineHeightMultiplierForBlock(styleTokens["lineHeight"], textPaint.textSize)
+      // A heading's lines stay close: the reader's looser spacing is for body
+      // text, and on large type it pulled a two-line title far apart.
+      .let { mult -> if (isHeading) mult.coerceAtMost(HEADING_MAX_LINE_HEIGHT_MULT) else mult }
     val marginTop = spacingFromToken(styleTokens["marginTop"], 0f)
-    // StaticLayout adds the annotation row (spacingAdd) between lines but not
-    // under the last line, so give the paragraph gap the same room: the last
-    // line's gloss and the next paragraph's first-line pinyin draw there.
-    val marginBottom = spacingFromToken(styleTokens["marginBottom"], defaultBottomMargin(tag)) + rubySpacePx
+    // StaticLayout adds the annotation row (spacingAdd) and the line-height
+    // extra between lines but not under the last line, so give the paragraph
+    // gap the same room: a paragraph break is never tighter than a line break
+    // (the last line's gloss and the next paragraph's pinyin draw there too).
+    val lineExtraPx = textPaint.fontMetricsInt.let { metrics ->
+      ((metrics.descent - metrics.ascent) * (blockLineHeightMult - 1f)).roundToInt().coerceAtLeast(0)
+    }
+    val marginBottom = spacingFromToken(styleTokens["marginBottom"], defaultBottomMargin(tag)) +
+      rubySpacePx + (if (isHeading) 0 else lineExtraPx)
 
     return withTextLayout(PageBlock(
       blockId = blockId,
