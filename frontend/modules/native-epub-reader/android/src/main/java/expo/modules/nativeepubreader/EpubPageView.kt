@@ -1230,18 +1230,23 @@ class EpubPageView(context: Context) : View(context) {
             }
           }
 
-          // While the lookup panel is open in focus mode, a tap anywhere on
-          // the reading surface only dismisses the panel — it must not move
-          // the beam or select a new word (mirrors paged-mode behavior).
-          if (focusModeEnabled && focusPanelOpen) {
-            clearSelectionFromTap()
-            isTapCandidate = false
-            return true
-          }
-
-          if (!focusModeEnabled && activeSelectionKind != null && activeSelectionRanges.isNotEmpty()) {
-            if (!hitTestActiveSelectionHighlight(event.x, event.y)) {
+          // While the lookup panel is open, a tap on another word looks that
+          // word up (the panel just changes); a tap on blank space closes it.
+          // A passage selection (the AI explanation) still only closes.
+          val panelOpen = (focusModeEnabled && focusPanelOpen) ||
+            (!focusModeEnabled && activeSelectionKind != null && activeSelectionRanges.isNotEmpty())
+          if (panelOpen) {
+            if (!focusModeEnabled && hitTestActiveSelectionHighlight(event.x, event.y)) {
+              isTapCandidate = false
+              return true
+            }
+            val nextWord = if (activeSelectionKind == ActiveSelectionKind.TEXT) null else hitTestText(event.x, event.y)
+            if (nextWord == null) {
               clearSelectionFromTap()
+            } else if (focusModeEnabled) {
+              onWordSelected?.invoke(nextWord.copy(placement = "bottom"))
+            } else {
+              onWordSelected?.invoke(nextWord)
             }
             isTapCandidate = false
             return true

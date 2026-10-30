@@ -65,35 +65,52 @@ const TopSection = ({
     const prevWordRef = useRef('');
     const canExpandLookupRef = useRef(false);
     const placementRef = useRef(placement);
+    const expandedRef = useRef(false);
+    expandedRef.current = isLookupExpanded;
+    const onCloseRef = useRef(onClose);
+    onCloseRef.current = onClose;
     const translateY = useRef(new Animated.Value(24)).current;
+    const dragOffset = useRef(new Animated.Value(0)).current;
+    const sheetTranslateY = useRef(Animated.add(translateY, dragOffset)).current;
     const opacity = useRef(new Animated.Value(0)).current;
+    // The grab bar: dragging toward the edge the panel sits on collapses an
+    // expanded panel, and otherwise closes it (the panel follows the finger);
+    // dragging away from that edge opens the roots / characters section.
     const panResponder = useRef(PanResponder.create({
+        onStartShouldSetPanResponder: () => false,
         onMoveShouldSetPanResponder: (_, gestureState) => (
-            canExpandLookupRef.current
-            &&
-            Math.abs(gestureState.dy) > 12
+            Math.abs(gestureState.dy) > 8
             && Math.abs(gestureState.dy) > Math.abs(gestureState.dx)
         ),
+        onPanResponderMove: (_, gestureState) => {
+            if (expandedRef.current) return;
+            // Toward the edge only: down for the bottom panel, up for the top one.
+            const towardEdge = placementRef.current === 'top'
+                ? Math.min(0, gestureState.dy)
+                : Math.max(0, gestureState.dy);
+            dragOffset.setValue(towardEdge);
+        },
         onPanResponderRelease: (_, gestureState) => {
-            if (!canExpandLookupRef.current) {
-                return;
-            }
+            const isTop = placementRef.current === 'top';
+            const towardEdge = isTop ? -gestureState.dy : gestureState.dy;
+            const flungToEdge = isTop ? gestureState.vy < -0.8 : gestureState.vy > 0.8;
 
-            const shouldExpand = placementRef.current === 'top'
-                ? gestureState.dy > 28
-                : gestureState.dy < -28;
-            const shouldCollapse = placementRef.current === 'top'
-                ? gestureState.dy < -28
-                : gestureState.dy > 28;
-
-            if (shouldExpand) {
+            if (towardEdge < -28 && canExpandLookupRef.current) {
                 setIsLookupExpanded(true);
                 return;
             }
-
-            if (shouldCollapse) {
+            if (towardEdge > 28 && expandedRef.current) {
                 setIsLookupExpanded(false);
+                return;
             }
+            if (towardEdge > 70 || (towardEdge > 20 && flungToEdge)) {
+                onCloseRef.current?.();
+                return;
+            }
+            Animated.spring(dragOffset, { toValue: 0, useNativeDriver: true, bounciness: 4 }).start();
+        },
+        onPanResponderTerminate: () => {
+            Animated.spring(dragOffset, { toValue: 0, useNativeDriver: true, bounciness: 4 }).start();
         },
     })).current;
 
@@ -128,6 +145,7 @@ const TopSection = ({
     useEffect(() => {
         if (highlightedWord) {
             setVisibleWord(highlightedWord);
+            dragOffset.setValue(0);
             Animated.parallel([
                 Animated.timing(translateY, {
                     toValue: 0,
@@ -162,9 +180,10 @@ const TopSection = ({
         ]).start(({ finished }) => {
             if (finished) {
                 setVisibleWord('');
+                dragOffset.setValue(0);
             }
         });
-    }, [highlightedWord, opacity, translateY]);
+    }, [dragOffset, highlightedWord, opacity, translateY]);
 
     useEffect(() => {
         if (highlightedWord) {
@@ -272,32 +291,44 @@ const TopSection = ({
         }
     };
 
+    // The grab bar (drag to close, or to open the roots section) with the
+    // close button at its end.
     const renderGrabber = (position) => {
         const wrapStyle = position === 'bottom' ? styles.grabberWrapBottom : styles.grabberWrap;
-        if (!canExpandLookup) {
-            return (
-                <View style={wrapStyle}>
-                    <View style={styles.grabber} />
-                </View>
-            );
-        }
-
         const grabberLabel = isChineseDictionarySheet
             ? t(isLookupExpanded ? 'lookup.hideCharacters' : 'lookup.showCharacters')
             : t(isLookupExpanded ? 'lookup.hideRoots' : 'lookup.showRoots');
 
         return (
-            <View {...panResponder.panHandlers}>
-                <TouchableOpacity
-                    accessibilityRole="button"
-                    accessibilityLabel={grabberLabel}
-                    accessibilityState={{ expanded: isLookupExpanded }}
-                    activeOpacity={0.6}
-                    onPress={toggleLookupExpanded}
-                    style={wrapStyle}
-                >
-                    <View style={styles.grabber} />
-                </TouchableOpacity>
+            <View {...panResponder.panHandlers} style={styles.grabberRow}>
+                {canExpandLookup ? (
+                    <TouchableOpacity
+                        accessibilityRole="button"
+                        accessibilityLabel={grabberLabel}
+                        accessibilityState={{ expanded: isLookupExpanded }}
+                        activeOpacity={0.6}
+                        onPress={toggleLookupExpanded}
+                        style={[wrapStyle, styles.grabberTouch]}
+                    >
+                        <View style={styles.grabber} />
+                    </TouchableOpacity>
+                ) : (
+                    <View style={[wrapStyle, styles.grabberTouch]}>
+                        <View style={styles.grabber} />
+                    </View>
+                )}
+                {onClose ? (
+                    <TouchableOpacity
+                        accessibilityRole="button"
+                        accessibilityLabel={t('common.close')}
+                        activeOpacity={0.6}
+                        onPress={onClose}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                        style={[styles.closeButton, position === 'bottom' ? styles.closeButtonBottom : null]}
+                    >
+                        <MaterialIcons name="close" size={20} color={themeColors.textMuted} />
+                    </TouchableOpacity>
+                ) : null}
             </View>
         );
     };
@@ -335,7 +366,7 @@ const TopSection = ({
                 { backgroundColor: panelColors.background, borderColor: panelColors.border },
                 {
                     opacity,
-                    transform: [{ translateY }],
+                    transform: [{ translateY: sheetTranslateY }],
                 },
             ]}
         >
@@ -530,6 +561,26 @@ const createStyles = (colors) => StyleSheet.create({
         height: 4,
         borderRadius: 2,
         backgroundColor: colors.border,
+    },
+    grabberRow: {
+        position: 'relative',
+        zIndex: 2,
+    },
+    // A taller strip than the bar itself, so the drag is easy to start.
+    grabberTouch: {
+        height: 30,
+    },
+    closeButton: {
+        position: 'absolute',
+        right: 10,
+        top: 6,
+        width: 30,
+        height: 30,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    closeButtonBottom: {
+        top: 0,
     },
 });
 
