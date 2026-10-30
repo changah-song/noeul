@@ -278,6 +278,13 @@ export const publicLibraryRowToBook = (row = {}, overrides = {}) => {
   };
 };
 
+// Library rows kept off the shelf until fixed: Jekyll and Hyde's file in the
+// bucket can't be downloaded (HTTP 400).
+const HIDDEN_LIBRARY_IDS = new Set([
+  'd0005a28-4eac-46e1-89f7-d540e532f298',
+]);
+const isListedLibraryRow = (row) => !HIDDEN_LIBRARY_IDS.has(String(row?.id ?? ''));
+
 export const fetchPublicLibrary = async (targetLanguage) => {
   const normalizedLanguage = normalizeBookLanguage(targetLanguage, 'en');
   try {
@@ -293,7 +300,7 @@ export const fetchPublicLibrary = async (targetLanguage) => {
       throw error;
     }
 
-    return (Array.isArray(data) ? data : []).map((row) => publicLibraryRowToBook(row, {
+    return (Array.isArray(data) ? data : []).filter(isListedLibraryRow).map((row) => publicLibraryRowToBook(row, {
       language: normalizedLanguage,
     }));
   } catch (error) {
@@ -317,7 +324,7 @@ export const fetchPublicLibrary = async (targetLanguage) => {
     throw error;
   }
 
-  return (data ?? []).map((row) => publicLibraryRowToBook(row, {
+  return (data ?? []).filter(isListedLibraryRow).map((row) => publicLibraryRowToBook(row, {
     language: normalizedLanguage,
   }));
 };
