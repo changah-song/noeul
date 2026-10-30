@@ -38,3 +38,13 @@ def test_frequency_is_attached_and_unknown_proper_nouns_become_names(monkeypatch
     assert by_stem["epigram"].get("pos") is None
     assert by_stem["bracknell"]["pos"] == main.EN_NAME_POS
     assert surfaces == [{"surface": "trellis", "stem": "trellis", "zipf": 2.59}]
+
+
+def test_the_dictionary_covers_the_classics():
+    """Words the library's books use, however rare, have entries; an
+    inflection the tagger leaves alone points at its base."""
+    import en_learner_dict
+
+    words = ["epigram", "nosegay", "betwixt", "thither", "footman", "entreat", "timidly", "trellis"]
+    assert en_learner_dict.words_with_entries(words) == set(words)
+    assert en_learner_dict.resolve_aliases(["clung"])["clung"] == "cling"

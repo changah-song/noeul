@@ -2034,6 +2034,7 @@ def build_surface_index(
 
 
 EN_NAME_POS = "name"
+EN_ROMAN_NUMERAL_RE = re.compile(r"^m{0,4}(cm|cd|d?c{0,3})(xc|xl|l?x{0,3})(ix|iv|v?i{0,3})$")
 
 
 def is_en_name_token(token) -> bool:
@@ -2088,6 +2089,8 @@ def extract_en_lookup_tokens(text: str) -> tuple[list[str], list[dict], dict[str
             or token.is_punct
             or token.is_space
             or len(lemma) <= 1
+            # A chapter number in capitals ("II", "XIV") isn't a word.
+            or (raw_surface.isupper() and EN_ROMAN_NUMERAL_RE.match(lower_surface))
         ):
             continue
 

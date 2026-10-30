@@ -48,6 +48,7 @@ from datetime import date
 BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_OUT = os.path.join(BACKEND_DIR, "en_learner.db")
 DEFAULT_LEVELS_DB = os.path.join(BACKEND_DIR, "proficiency_levels.db")
+DEFAULT_EXTRA_WORDS = os.path.join(BACKEND_DIR, "data", "en_library_words.txt")
 
 MAX_ENTRIES = 4
 # Plural determiners Wiktionary files only as forms of their singular (so they
@@ -131,6 +132,30 @@ def keep_sense(sense: dict) -> bool:
     return bool(glosses and glosses[-1].strip())
 
 
+# Old or literary senses kept, labelled, for a word that has no other.
+OLD_SENSE_TAGS = ("archaic", "obsolete", "dated", "literary", "poetic", "rare", "historical", "dialectal")
+NEVER_SENSE_TAGS = {"vulgar", "offensive", "derogatory", "ethnic", "pejorative", "misspelling", "Internet"}
+
+
+def keep_old_sense(sense: dict) -> bool:
+    if sense.get("form_of") or sense.get("alt_of"):
+        return False
+    tags = set(sense.get("tags") or [])
+    if tags & NEVER_SENSE_TAGS or "form-of" in tags or "alt-of" in tags:
+        return False
+    glosses = sense.get("glosses") or []
+    return bool(glosses and glosses[-1].strip())
+
+
+def old_sense_label(sense: dict) -> str:
+    """"(archaic) " for a sense tagged archaic, obsolete, poetic and so on."""
+    tags = set(sense.get("tags") or [])
+    for tag in OLD_SENSE_TAGS:
+        if tag in tags:
+            return f"({tag}) "
+    return ""
+
+
 def sense_text(sense: dict) -> str:
     """The most specific gloss, or its parent when the subsense is a fragment
     ("...because it has already been mentioned")."""
@@ -194,11 +219,17 @@ def equivalents_for(entry: dict, kept_senses: list[dict]) -> dict[str, list[str]
     return out
 
 
-def load_wanted_words(levels_db: str, top: int) -> tuple[dict[str, float], set[str]]:
-    """(candidate word -> Zipf frequency, the learner word list)."""
+def load_wanted_words(levels_db: str, top: int, extra_words: str | None = None) -> tuple[dict[str, float], set[str]]:
+    """(candidate word -> Zipf frequency, the learner word list). Besides the
+    most common words and the learner list, every word of the app's English
+    library (`extra_words`, one per line: data/en_library_words.txt), however
+    rare: the classics' footman, entreat and timidly."""
     from wordfreq import top_n_list, zipf_frequency
 
     words = {w for w in top_n_list("en", top) if WORD_RE.match(w)}
+    if extra_words and os.path.exists(extra_words):
+        with open(extra_words, encoding="utf-8") as handle:
+            words |= {line.strip().lower() for line in handle if WORD_RE.match(line.strip().lower())}
     learner_words: set[str] = set()
     if os.path.exists(levels_db):
         conn = sqlite3.connect(levels_db)
@@ -214,9 +245,14 @@ def load_wanted_words(levels_db: str, top: int) -> tuple[dict[str, float], set[s
     return {w: zipf_frequency(w, "en") for w in words}, learner_words
 
 
-def build(src: str, out: str, levels_db: str, top: int) -> None:
-    wanted, learner_words = load_wanted_words(levels_db, top)
+def build(src: str, out: str, levels_db: str, top: int, extra_words: str | None = None) -> None:
+    wanted, learner_words = load_wanted_words(levels_db, top, extra_words)
     aliases: dict[str, str] = {}
+    # An inflection ("clung" -> cling) and words with a sense in current use:
+    # a word known only in old senses that is also an inflection points at
+    # its base instead ("clung" is not "shrunken").
+    form_targets: dict[str, str] = {}
+    has_current_sense: set[str] = set()
     print(f"[build_en_learner_dict] {len(wanted)} candidate words")
 
     # word -> list of (is_capitalized, entry dict); lowercase entries sort first
@@ -236,12 +272,27 @@ def build(src: str, out: str, levels_db: str, top: int) -> None:
             if pos in SKIP_POS and not (pos == "name" and key in learner_words and headword != key):
                 continue
             all_senses = raw.get("senses") or []
+            for sense in all_senses:
+                for target in sense.get("form_of") or []:
+                    target_word = str(target.get("word") or "").lower()
+                    if target_word and target_word != key:
+                        form_targets.setdefault(key, target_word)
             senses = [s for s in all_senses if keep_sense(s)][:MAX_SENSES]
+            labels: list[str] = [""] * len(senses)
+            if senses:
+                has_current_sense.add(key)
             if not senses:
-                # A spelling variant ("apologise", "colour") points at its main
-                # entry; inflections ("ran") are left to the tokenizer.
+                # A word known only in an old or literary sense (betwixt,
+                # nosegay, thither) still gets an entry, each sense labelled:
+                # the classics are full of them.
+                senses = [s for s in all_senses if keep_old_sense(s)][:MAX_SENSES]
+                labels = [old_sense_label(s) for s in senses]
+            if not senses:
+                # A spelling variant ("apologise", "colour") or an inflection
+                # the tokenizer left as it is ("clung", "drank", "louder")
+                # points at its main entry.
                 for sense in all_senses:
-                    for target in sense.get("alt_of") or []:
+                    for target in (sense.get("alt_of") or []) + (sense.get("form_of") or []):
                         target_word = str(target.get("word") or "").lower()
                         if target_word and target_word != key:
                             aliases.setdefault(key, target_word)
@@ -253,7 +304,7 @@ def build(src: str, out: str, levels_db: str, top: int) -> None:
                 "ipa": first_ipa(sounds),
                 "audio_us": audio_for(sounds, ("us", "us-inlandnorth", "general-american")),
                 "audio_uk": audio_for(sounds, ("uk", "gb", "received-pronunciation")),
-                "senses": [sense_text(s) for s in senses],
+                "senses": [f"{label}{sense_text(s)}" for label, s in zip(labels, senses)],
                 "equivalents": equivalents_for(raw, senses),
             }))
 
@@ -303,6 +354,10 @@ def build(src: str, out: str, levels_db: str, top: int) -> None:
         CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT);
         """
     )
+    for word, target in form_targets.items():
+        if word in collected and word not in has_current_sense and target in collected:
+            del collected[word]
+            aliases[word] = target
     entry_rows = equivalent_rows = 0
     for word, items in sorted(collected.items()):
         items.sort(key=lambda item: (item[0], item[1]))
@@ -353,8 +408,13 @@ def main() -> int:
     parser.add_argument("--out", default=DEFAULT_OUT)
     parser.add_argument("--levels-db", default=DEFAULT_LEVELS_DB)
     parser.add_argument("--top", type=int, default=50000, help="how many of wordfreq's most common words to consider")
+    parser.add_argument(
+        "--extra-words",
+        default=DEFAULT_EXTRA_WORDS,
+        help="words to include however rare, one per line (the library's vocabulary)",
+    )
     args = parser.parse_args()
-    build(args.src, args.out, args.levels_db, args.top)
+    build(args.src, args.out, args.levels_db, args.top, args.extra_words)
     return 0
 
 
