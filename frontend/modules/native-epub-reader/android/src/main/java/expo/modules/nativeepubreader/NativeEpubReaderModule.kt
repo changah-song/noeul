@@ -2374,6 +2374,11 @@ class NativeEpubReaderView(
       }
     }
 
+    // A point in the chapter from the scrubber (0..1).
+    source.doubleValue("chapterFraction")?.let { fraction ->
+      return (fraction.coerceIn(0.0, 1.0) * maxScroll).roundToInt().coerceIn(0, maxScroll)
+    }
+
     if (pageIndex != null && pagesInChapter != null && pagesInChapter > 1) {
       val fraction = pageIndex.toFloat() / (pagesInChapter - 1)
       return (fraction * maxScroll).roundToInt().coerceIn(0, maxScroll)
@@ -2580,7 +2585,14 @@ class NativeEpubReaderView(
         chapterPages.firstOrNull { (_, page) -> page.blocks.any { block -> block.blockId == id } }?.index
       }
     }
+    // The scrubber asks for a point in the chapter (0..1): its page count
+    // isn't known until the chapter is laid out here.
+    val fractionDisplayIndex = position.doubleValue("chapterFraction")?.let { fraction ->
+      val pageIndex = (fraction.coerceIn(0.0, 1.0) * (chapterPages.size - 1)).roundToInt()
+      chapterPages.getOrNull(pageIndex)?.index
+    }
     val targetDisplayIndex = blockDisplayIndex
+      ?: fractionDisplayIndex
       ?: chapterPages.getOrNull(chapterPageIndex)?.index
       ?: chapterPages.last().index
 
@@ -4106,6 +4118,12 @@ class NativeEpubReaderView(
       return null
     }
 
+    // A point in the chapter from the scrubber (0..1).
+    restorePosition.doubleValue("chapterFraction")?.let { fraction ->
+      val pageIndex = (fraction.coerceIn(0.0, 1.0) * matchingChapterPages.lastIndex).roundToInt()
+      return matchingChapterPages[pageIndex].first
+    }
+
     if (requestedPageIndex != null && requestedPageIndex in matchingChapterPages.indices) {
       val (displayIndex, requestedPage) = matchingChapterPages[requestedPageIndex]
       if (
@@ -4242,5 +4260,9 @@ class NativeEpubReaderView(
 
   private fun Map<*, *>.booleanValue(key: String): Boolean? {
     return this[key] as? Boolean
+  }
+
+  private fun Map<*, *>.doubleValue(key: String): Double? {
+    return (this[key] as? Number)?.toDouble()?.takeIf { it.isFinite() }
   }
 }

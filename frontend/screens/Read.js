@@ -18,11 +18,9 @@ import {
     ReaderBackButton,
     ReaderCheckpointButton,
     ReaderFocusModeButton,
-    ReaderFullscreenButton,
     ReaderHeaderBar,
     ReaderListenButton,
     ReaderMenuButton,
-    ReaderProgressButton,
     ReaderSavedWordsButton,
 } from '../components/Read/ReaderHeaderBar';
 import { createReaderChromeStyles } from '../components/Read/readerChromeStyles';
@@ -128,7 +126,8 @@ import useSavedWordFades from '../hooks/useSavedWordFades';
 import { ONBOARDING_FLOW_SEEN_KEY } from './Onboarding';
 import { getSyncStatus, markSyncPending, subscribeSyncStatus } from '../services/syncStatus';
 import { blockIdForAnchor, tocAnchorFromHref } from '../services/tocAnchors';
-import { storyProgress, storyRange } from '../services/storyRange';
+import { chapterMarks, positionForStoryProgress, storyProgress, storyRange } from '../services/storyRange';
+import PageScrubber, { PAGE_SCRUBBER_HEIGHT } from '../components/Read/PageScrubber';
 import {
     noteReadingActivity,
     startReadingClock,
@@ -423,25 +422,35 @@ const leadingCoverCount = (spine = []) => {
     return count;
 };
 
-// The story's range in a spine (services/storyRange.js), kept per spine array.
+// The part of a spine progress counts over. The library's public-domain books
+// get the story's range (services/storyRange.js: first chapter to the end of
+// the story); a reader's own books, whose make-up we don't know, everything
+// after a leading cover. Kept per spine array.
 const storyRangeCache = new WeakMap();
-const storyRangeForSpine = (spine, toc) => {
+const storyRangeForSpine = (spine, toc, curated = false) => {
     if (!Array.isArray(spine) || spine.length === 0) return null;
     const cached = storyRangeCache.get(spine);
-    if (cached && cached.toc === toc) return cached.range;
-    const range = storyRange(spine, Array.isArray(toc) ? toc : []);
-    storyRangeCache.set(spine, { toc, range });
+    if (cached && cached.toc === toc && cached.curated === curated) return cached.range;
+    const range = curated
+        ? storyRange(spine, Array.isArray(toc) ? toc : [])
+        : { start: leadingCoverCount(spine), end: spine.length - 1 };
+    storyRangeCache.set(spine, { toc, curated, range });
     return range;
 };
 
-// Progress through the story: 0% at its first chapter, 100% at its end, with
-// introductions, notes and the like outside the range.
-const progressForBookPosition = (spineIndex, totalSpineItems, pageIndex = null, pagesInChapter = null, spine = null, toc = null) => {
+// Public-domain books from the app's library (bundled or downloaded).
+const isCuratedBook = (book) => Boolean(
+    book?.publicDomain || book?.publicLibraryId || book?.publicLibraryStoragePath || book?.storagePath
+);
+
+// Progress through the book, weighted by chapter size: for the library's
+// books 0% at the story's first chapter and 100% at its end.
+const progressForBookPosition = (spineIndex, totalSpineItems, pageIndex = null, pagesInChapter = null, spine = null, toc = null, curated = false) => {
     if (!Number.isInteger(spineIndex) || totalSpineItems <= 0) {
         return null;
     }
     if (Array.isArray(spine) && spine.length === totalSpineItems) {
-        return storyProgress(spine, storyRangeForSpine(spine, toc), spineIndex, pageIndex, pagesInChapter);
+        return storyProgress(spine, storyRangeForSpine(spine, toc, curated), spineIndex, pageIndex, pagesInChapter);
     }
     const covers = Array.isArray(spine) ? leadingCoverCount(spine) : 0;
     if (covers > 0) {
@@ -840,6 +849,10 @@ const Read = ({
         ? selectedBook
         : null;
     const currentBook = activeBook?.uri ?? null;
+    // The library's books get the story-range treatment (see isCuratedBook).
+    const curatedBook = isCuratedBook(activeBook);
+    const curatedBookRef = useRef(curatedBook);
+    curatedBookRef.current = curatedBook;
     const activeBookLanguage = activeBook ? selectedBookLanguage : targetLanguage;
     const shouldUseHeuristicHighlights = !activeBook?.preprocessed;
     const translationBannerVisualState = useMemo(() => ({
@@ -1852,12 +1865,11 @@ const Read = ({
             ? readerLocationInfo.percentage
             : activeBook?.progress
     );
-    // The header shows progress through the whole book, the same number Home
+    // The scrubber shows progress through the whole book, the same number Home
     // and the book page show. (It used to show progress through the current
     // chapter, so a short first chapter read "100%" while Home said 50%.)
     const progressPercent = Math.round(bookProgress * 100);
     const progressLabel = t('common.percent', { value: formatNumber(progressPercent) });
-    const progressFillWidth = `${progressPercent}%`;
     const chapterIndexLabel = Number.isInteger(activeSpineIndex)
         ? t('read.chapterNumber', { number: formatNumber(activeSpineIndex + 1) })
         : t('read.defaultTitle');
@@ -2153,6 +2165,8 @@ const Read = ({
             pagesInChapter: Number.isInteger(bookmark.pagesInChapter) ? bookmark.pagesInChapter : null,
             href: bookmark.href || '',
             firstBlockId: bookmark.firstBlockId || null,
+            // The scrubber's point in the chapter (0..1), when that's all it knows.
+            ...(Number.isFinite(bookmark.chapterFraction) ? { chapterFraction: bookmark.chapterFraction } : {}),
             seekToken: `seek:${seekTokenRef.current}`,
         };
 
@@ -2841,8 +2855,8 @@ const Read = ({
             // A book opened for the first time starts at its first chapter,
             // past the cover, title page and introduction (still in the
             // contents). The percent counts from there too.
-            if (!isChapterNavigation && !requestedRestorePosition) {
-                const range = storyRangeForSpine(parsedPackage.spine, parsedPackage.toc);
+            if (!isChapterNavigation && !requestedRestorePosition && curatedBookRef.current) {
+                const range = storyRangeForSpine(parsedPackage.spine, parsedPackage.toc, true);
                 const autoSpineIndex = spineIndexForReaderPackage(parsedPackage);
                 if (range && Number.isInteger(range.start) && range.start !== autoSpineIndex) {
                     loadNativeReaderPackageRef.current?.(range.start);
@@ -2887,7 +2901,8 @@ const Read = ({
                     restorePageIndex,
                     restorePagesInChapter,
                     parsedPackage.spine,
-                    parsedPackage.toc
+                    parsedPackage.toc,
+                    curatedBookRef.current
                 ),
                 href: parsedPackage.loadedSpineItem?.path || '',
                 pageInChapter: Number.isInteger(restorePageIndex) ? restorePageIndex + 1 : null,
@@ -3040,7 +3055,8 @@ const Read = ({
             pageIndex,
             total,
             nativeReaderPackageRef.current?.spine,
-            nativeReaderPackageRef.current?.toc
+            nativeReaderPackageRef.current?.toc,
+            curatedBookRef.current
         );
 
         setReaderLocationInfo((prev) => {
@@ -3245,7 +3261,8 @@ const Read = ({
             committedPageIndex,
             committedPageCount,
             committedPackage.spine,
-            committedPackage.toc
+            committedPackage.toc,
+            curatedBookRef.current
         ) ?? clampProgress(activeBook?.progress ?? 0);
         const nextBookPatch = {
             nativePosition: nextPosition,
@@ -3605,13 +3622,115 @@ const Read = ({
             readerShowPinyin,
         ]
     );
-    // Rows above the settings tabs in the sheet: Checkpoints stays one tap away.
+    // Rows above the settings tabs in the sheet: the contents, full screen
+    // (both left the header for the scrubber) and Checkpoints, one tap away.
     const settingsSheetActions = useMemo(() => [{
+        key: 'contents',
+        label: t('read.contents'),
+        icon: <MaterialIcons name="toc" size={21} color={themeColors.readerBodyInk} />,
+        onPress: () => {
+            setShowMenu(false);
+            if (toc.length > 0) setShowToc(true);
+        },
+    }, {
+        key: 'fullscreen',
+        label: t('read.enterFullscreen'),
+        icon: <MaterialIcons name="fullscreen" size={22} color={themeColors.readerBodyInk} />,
+        onPress: () => {
+            setShowMenu(false);
+            setIsFullscreen(true);
+        },
+    }, {
         key: 'checkpoints',
         label: t('read.checkpoints'),
         icon: <MaterialIcons name="bookmark-border" size={21} color={themeColors.readerBodyInk} />,
         onPress: openNotesLog,
-    }], [openNotesLog, t, themeColors.readerBodyInk]);
+    }], [openNotesLog, t, themeColors.readerBodyInk, toc.length]);
+
+    // ─── Page scrubber ───────────────────────────────────────────────────────
+    // The line along the bottom: where you are in the story, its chapters and
+    // bookmarks; dragging previews and releasing goes there.
+    const scrubberShown = Boolean(currentBook) && bookLoadState === 'ready' && !isFullscreen && !focusMode;
+    const scrubberSpace = scrubberShown ? PAGE_SCRUBBER_HEIGHT + insets.bottom : 0;
+    // Cards and tips at the bottom of the screen sit above the scrubber.
+    const bottomOverlayBase = scrubberShown ? scrubberSpace : insets.bottom;
+    const readerSpine = nativeReaderPackage?.spine;
+    const scrubberRange = useMemo(
+        () => storyRangeForSpine(readerSpine, toc, curatedBook),
+        [curatedBook, readerSpine, toc]
+    );
+    const scrubberChapters = useMemo(
+        () => chapterMarks(readerSpine, scrubberRange, toc),
+        [readerSpine, scrubberRange, toc]
+    );
+    const scrubberBookmarks = useMemo(() => (Array.isArray(readerSpine) ? bookBookmarks : [])
+        .filter((bookmark) => Number.isInteger(bookmark?.spineIndex))
+        .map((bookmark) => ({
+            id: bookmark.id,
+            at: storyProgress(readerSpine, scrubberRange, bookmark.spineIndex, bookmark.pageIndex, bookmark.pagesInChapter) ?? 0,
+            where: [
+                localizeGeneratedSectionLabel(bookmark.chapterLabel, t),
+                Number.isInteger(bookmark.pageIndex) ? t('read.pageNumber', { page: formatNumber(bookmark.pageIndex + 1) }) : '',
+            ].filter(Boolean).join(' · '),
+            // The page's first words, when that chapter has been read in.
+            snippet: (() => {
+                const chapterPackage = parsedChapterCacheRef.current.get(bookmark.spineIndex);
+                if (!chapterPackage || !bookmark.firstBlockId) return '';
+                const block = chapterBlocksForReaderPackage(chapterPackage)
+                    .find((candidate) => candidate?.id === bookmark.firstBlockId);
+                return typeof block?.text === 'string' ? block.text.trim().slice(0, 120) : '';
+            })(),
+            bookmark,
+        })), [bookBookmarks, readerSpine, scrubberRange, t]);
+    // The preview: the contents title there and the start of that chapter
+    // (once it's been read in; dragging over a chapter starts that).
+    const describeScrubberPoint = useCallback((fraction) => {
+        const position = positionForStoryProgress(readerSpine, scrubberRange, fraction);
+        if (!position) return null;
+        const tocItem = flattenedToc.reduce((found, item) => (
+            Number.isInteger(item?.spineIndex) && item.spineIndex <= position.spineIndex ? item : found
+        ), null);
+        const chapterPackage = parsedChapterCacheRef.current.get(position.spineIndex);
+        const text = chapterPackage
+            ? chapterBlocksForReaderPackage(chapterPackage)
+                .filter((block) => !block?.excludeFromText && typeof block?.text === 'string')
+                .map((block) => block.text.trim())
+                .filter(Boolean)
+                .join(' ')
+                .slice(0, 420)
+            : '';
+        const title = localizeGeneratedSectionLabel(titleForTocItem(tocItem), t);
+        return { title, text, chapter: title };
+    }, [flattenedToc, readerSpine, scrubberRange, t]);
+    const scrubberTargetRef = useRef(null);
+    const pendingScrubSeekRef = useRef(null);
+    const handleSelectBookmarkRef = useRef(handleSelectBookmark);
+    handleSelectBookmarkRef.current = handleSelectBookmark;
+    const handleScrubberTarget = useCallback((fraction) => {
+        const position = positionForStoryProgress(readerSpine, scrubberRange, fraction);
+        if (!position || scrubberTargetRef.current === position.spineIndex) return;
+        scrubberTargetRef.current = position.spineIndex;
+        if (!parsedChapterCacheRef.current.has(position.spineIndex)) {
+            loadParsedChapterPackage(position.spineIndex, 'scrubber').catch(() => {});
+        }
+    }, [loadParsedChapterPackage, readerSpine, scrubberRange]);
+    const handleScrubberSeek = useCallback((fraction) => {
+        scrubberTargetRef.current = null;
+        const position = positionForStoryProgress(readerSpine, scrubberRange, fraction);
+        if (!position) return;
+        const target = {
+            spineIndex: position.spineIndex,
+            pageIndex: null,
+            pagesInChapter: null,
+            href: '',
+            firstBlockId: null,
+            chapterFraction: position.chapterFraction,
+        };
+        // Another chapter opens at its top first; the point inside it is a
+        // second, in-chapter seek once it's on screen (handleReadingPageChange).
+        if (position.spineIndex !== activeSpineIndex) pendingScrubSeekRef.current = target;
+        handleSelectBookmark(target);
+    }, [activeSpineIndex, handleSelectBookmark, readerSpine, scrubberRange]);
     const focusPanelOpen = focusMode && !!highlightedWord;
     // Total height the lookup panel occupies from the bottom of the screen;
     // the native reading surface lifts by exactly this much.
@@ -4193,6 +4312,13 @@ const Read = ({
             noteReadingActivity();
         }
         lastReadingPageRef.current = pageKey;
+        // The scrubber opened another chapter: now that it's on screen, go to
+        // the point in it that was asked for.
+        const pendingScrub = pendingScrubSeekRef.current;
+        if (pendingScrub && data.spineIndex === pendingScrub.spineIndex) {
+            pendingScrubSeekRef.current = null;
+            setTimeout(() => handleSelectBookmarkRef.current?.(pendingScrub), 120);
+        }
         return handleNativePageChange(event);
     }, [handleNativePageChange]);
     useEffect(() => {
@@ -4290,12 +4416,12 @@ const Read = ({
         [TIP_IDS.readerLongPress]: {
             title: t('tips.longPressTitle'),
             body: t('tips.longPressBody'),
-            bottom: insets.bottom + 16,
+            bottom: bottomOverlayBase + 16,
         },
         [TIP_IDS.readerSaved]: {
             title: t('tips.savedTitle'),
             body: t('tips.savedBody'),
-            bottom: insets.bottom + 16,
+            bottom: bottomOverlayBase + 16,
         },
         [TIP_IDS.readerFocusNav]: {
             title: t('tips.focusNavTitle'),
@@ -4364,20 +4490,9 @@ const Read = ({
                         />
                     </View>
                     <ReaderGoalClock styles={chrome} themeColors={themeColors} />
-                    <ReaderProgressButton
-                        styles={chrome}
-                        fillWidth={progressFillWidth}
-                        label={progressLabel}
-                        disabled={toc.length === 0}
-                        onPress={() => setShowToc(true)}
-                        accessibilityLabel={`${t('read.contents')}, ${progressLabel}`}
-                    />
-                    <ReaderFullscreenButton
-                        styles={chrome}
-                        themeColors={themeColors}
-                        onPress={() => setIsFullscreen(true)}
-                        accessibilityLabel={t('read.enterFullscreen')}
-                    />
+                    {/* Where you are (and the contents) live in the scrubber
+                        along the bottom; full screen is in the menu. */}
+                    <View style={styles.headerSpacer} />
                     <ReaderMenuButton
                         styles={chrome}
                         themeColors={themeColors}
@@ -4490,6 +4605,22 @@ const Read = ({
                     />
                 ) : null}
             </View>
+
+            {scrubberShown ? (
+                <PageScrubber
+                    progress={bookProgress}
+                    chapters={scrubberChapters}
+                    bookmarks={scrubberBookmarks}
+                    describe={describeScrubberPoint}
+                    onDragTarget={handleScrubberTarget}
+                    onSeek={handleScrubberSeek}
+                    onSelectBookmark={(item) => handleSelectBookmark(item.bookmark)}
+                    onOpenContents={() => {
+                        if (toc.length > 0) setShowToc(true);
+                    }}
+                    bottomInset={insets.bottom}
+                />
+            ) : null}
 
             <TocDrawer
                 visible={showToc}
@@ -4645,7 +4776,7 @@ const Read = ({
             </View>
 
             {returnPosition && currentBook && !highlightedWord && !textSelection ? (
-                <View pointerEvents="box-none" style={[styles.hintLayer, styles.returnLayer, { bottom: insets.bottom + 20 }]}>
+                <View pointerEvents="box-none" style={[styles.hintLayer, styles.returnLayer, { bottom: bottomOverlayBase + 20 }]}>
                     <View style={styles.returnPill}>
                         <TouchableOpacity
                             style={styles.returnButton}
@@ -4677,7 +4808,7 @@ const Read = ({
             {currentBook && !highlightedWord && !textSelection && !focusMode && (showLookupHint || currentChapterPreparing) ? (
                 <View
                     pointerEvents="box-none"
-                    style={[styles.hintLayer, { bottom: insets.bottom + 16 }]}
+                    style={[styles.hintLayer, { bottom: bottomOverlayBase + 16 }]}
                 >
                     {currentChapterPreparing ? (
                         <View
@@ -4856,6 +4987,9 @@ const createStyles = (themeColors) => StyleSheet.create({
     retryButtonText: {
         ...textStyles.body,
         color: themeColors.readerSavedChipText,
+    },
+    headerSpacer: {
+        flex: 1,
     },
     pinnedLayer: {
         position: 'absolute',
