@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Animated, Easing, ScrollView, StyleSheet, Text, TouchableOpacity } from 'react-native';
 import { useTranslation } from '../../hooks/useTranslation';
 import { chapterTranslations } from '../../services/chapterTranslations';
 import { fontFamilies, useTheme } from '../../theme';
@@ -19,7 +19,10 @@ import {
  * at once; a sentence the chapter didn't cover is fetched on the spot.
  *
  * Three lines tall; a longer translation scrolls inside the bar. A line
- * separates it from the page. It is turned on and off from the reader menu.
+ * separates it from the page. It floats over the top of the page and fades
+ * in on a word tap and out a few seconds later (screens/Read.js times it;
+ * `visible`), so the page isn't crowded once the reader is done with it. It
+ * is turned on and off from the reader menu.
  */
 const PinnedSentenceTranslation = ({
     sentence,
@@ -27,6 +30,9 @@ const PinnedSentenceTranslation = ({
     targetLanguage,
     fontSize = PINNED_TRANSLATION_FONT_DEFAULT,
     topInset = 0,
+    visible = true,
+    // (held) => …: a finger on the bar keeps it from leaving.
+    onHoldChange,
 }) => {
     const { t } = useTranslation();
     const { colors } = useTheme();
@@ -36,6 +42,22 @@ const PinnedSentenceTranslation = ({
     const [state, setState] = useState({ status: 'idle', text: '' });
     const [retryToken, setRetryToken] = useState(0);
     const scrollRef = useRef(null);
+    const shown = visible && Boolean(cleanedSentence);
+    const fade = useRef(new Animated.Value(shown ? 1 : 0)).current;
+    const [mounted, setMounted] = useState(shown);
+
+    // Softly in and out.
+    useEffect(() => {
+        if (shown) setMounted(true);
+        Animated.timing(fade, {
+            toValue: shown ? 1 : 0,
+            duration: shown ? 220 : 380,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+        }).start(({ finished }) => {
+            if (finished && !shown) setMounted(false);
+        });
+    }, [fade, shown]);
 
     useEffect(() => {
         if (!cleanedSentence) {
@@ -74,9 +96,21 @@ const PinnedSentenceTranslation = ({
             ? t('read.pinnedTranslationError')
             : t('read.pinnedTranslationPlaceholder');
     const hasTranslation = state.status === 'ok' && Boolean(state.text);
+    if (!mounted) return null;
     return (
-        <View
-            style={[styles.bar, { paddingTop: topInset + PINNED_TRANSLATION_PADDING_V, height: topInset + pinnedTranslationBarHeight(size) }]}
+        <Animated.View
+            style={[
+                styles.bar,
+                { paddingTop: topInset + PINNED_TRANSLATION_PADDING_V, height: topInset + pinnedTranslationBarHeight(size) },
+                {
+                    opacity: fade,
+                    transform: [{ translateY: fade.interpolate({ inputRange: [0, 1], outputRange: [-6, 0] }) }],
+                },
+            ]}
+            pointerEvents={shown ? 'auto' : 'none'}
+            onTouchStart={() => onHoldChange?.(true)}
+            onTouchEnd={() => onHoldChange?.(false)}
+            onTouchCancel={() => onHoldChange?.(false)}
             accessibilityLiveRegion="polite"
         >
             <ScrollView
@@ -100,7 +134,7 @@ const PinnedSentenceTranslation = ({
                     <Text style={styles.mutedText}>{statusText}</Text>
                 )}
             </ScrollView>
-        </View>
+        </Animated.View>
     );
 };
 

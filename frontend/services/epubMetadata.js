@@ -49,7 +49,7 @@ const CHAPTER_CACHE_DIR = 'epub-native-chapters';
 const PACKAGE_CACHE_DIR = 'epub-native-packages';
 const EXTRACTED_BOOK_META_FILE = '.ff-extraction.json';
 const EXTRACTED_EPUB_CACHE_VERSION = 'epub-extraction-v1';
-const EPUB_PACKAGE_CACHE_VERSION = 'native-renderer-css-v6';
+const EPUB_PACKAGE_CACHE_VERSION = 'native-renderer-css-v7';
 const CHAPTER_CACHE_VERSION = `${EPUB_PACKAGE_CACHE_VERSION}:chapter-blocks-v2`;
 const EPUB_PACKAGE_CACHE = new Map();
 const ZIP_REQUIRED_CACHE_MISS = 'ZIP_REQUIRED_CACHE_MISS';
@@ -1145,7 +1145,16 @@ const loadFreshEpubPackage = async (uri, fallbackName = '', sourceSignature = nu
     }
 
     const packageXml = await packageFile.async('string');
-    const parsedPackageBase = parsePackageDocument(packageXml, packagePath, fallbackName, extractedBook.rootUri);
+    const parsedPackageDocument = parsePackageDocument(packageXml, packagePath, fallbackName, extractedBook.rootUri);
+    // Each chapter file's size weights reading progress (services/storyRange.js),
+    // so one long file holding most of the book counts for what it holds.
+    const parsedPackageBase = {
+        ...parsedPackageDocument,
+        spine: parsedPackageDocument.spine.map((item) => {
+            const size = Number(findZipFile(zip, item.path)?._data?.uncompressedSize);
+            return Number.isFinite(size) && size > 0 ? { ...item, size } : item;
+        }),
+    };
     const parsedToc = await readPackageToc(zip, parsedPackageBase);
     const parsedPackage = {
         ...parsedPackageBase,

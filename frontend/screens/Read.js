@@ -128,6 +128,7 @@ import useSavedWordFades from '../hooks/useSavedWordFades';
 import { ONBOARDING_FLOW_SEEN_KEY } from './Onboarding';
 import { getSyncStatus, markSyncPending, subscribeSyncStatus } from '../services/syncStatus';
 import { blockIdForAnchor, tocAnchorFromHref } from '../services/tocAnchors';
+import { storyProgress, storyRange } from '../services/storyRange';
 import {
     noteReadingActivity,
     startReadingClock,
@@ -382,6 +383,11 @@ const finalizeBookLevelAccumulator = (accumulator) => {
     };
 };
 
+// How long the translation bar stays after a word tap, and after the AI
+// explanation opens.
+const PINNED_TRANSLATION_SHOW_MS = 5000;
+const PINNED_TRANSLATION_AI_HIDE_MS = 1200;
+
 const clampProgress = (value) => {
     const progress = Number(value);
     if (!Number.isFinite(progress)) {
@@ -417,9 +423,25 @@ const leadingCoverCount = (spine = []) => {
     return count;
 };
 
-const progressForBookPosition = (spineIndex, totalSpineItems, pageIndex = null, pagesInChapter = null, spine = null) => {
+// The story's range in a spine (services/storyRange.js), kept per spine array.
+const storyRangeCache = new WeakMap();
+const storyRangeForSpine = (spine, toc) => {
+    if (!Array.isArray(spine) || spine.length === 0) return null;
+    const cached = storyRangeCache.get(spine);
+    if (cached && cached.toc === toc) return cached.range;
+    const range = storyRange(spine, Array.isArray(toc) ? toc : []);
+    storyRangeCache.set(spine, { toc, range });
+    return range;
+};
+
+// Progress through the story: 0% at its first chapter, 100% at its end, with
+// introductions, notes and the like outside the range.
+const progressForBookPosition = (spineIndex, totalSpineItems, pageIndex = null, pagesInChapter = null, spine = null, toc = null) => {
     if (!Number.isInteger(spineIndex) || totalSpineItems <= 0) {
         return null;
+    }
+    if (Array.isArray(spine) && spine.length === totalSpineItems) {
+        return storyProgress(spine, storyRangeForSpine(spine, toc), spineIndex, pageIndex, pagesInChapter);
     }
     const covers = Array.isArray(spine) ? leadingCoverCount(spine) : 0;
     if (covers > 0) {
@@ -660,6 +682,28 @@ const Read = ({
     // Sentence of the last tapped word, for the pinned translation bar. Outlives
     // the lookup panel; cleared on a chapter or book change.
     const [pinnedSentence, setPinnedSentence] = useState('');
+    // The translation bar shows after a word tap and leaves on its own: 5 s
+    // after the last tap (held while a finger is on it), sooner once the AI
+    // explanation opens.
+    const [pinnedVisible, setPinnedVisible] = useState(false);
+    const pinnedHideTimerRef = useRef(null);
+    const pinnedHeldRef = useRef(false);
+    const schedulePinnedHide = useCallback((delayMs) => {
+        clearTimeout(pinnedHideTimerRef.current);
+        pinnedHideTimerRef.current = setTimeout(() => {
+            if (!pinnedHeldRef.current) setPinnedVisible(false);
+        }, delayMs);
+    }, []);
+    const showPinnedFor = useCallback((delayMs = PINNED_TRANSLATION_SHOW_MS) => {
+        setPinnedVisible(true);
+        schedulePinnedHide(delayMs);
+    }, [schedulePinnedHide]);
+    const holdPinnedTranslation = useCallback((held) => {
+        pinnedHeldRef.current = held;
+        if (held) clearTimeout(pinnedHideTimerRef.current);
+        else schedulePinnedHide(PINNED_TRANSLATION_SHOW_MS);
+    }, [schedulePinnedHide]);
+    useEffect(() => () => clearTimeout(pinnedHideTimerRef.current), []);
     const [listenPlaying, setListenPlaying] = useState(false);
     const [listenPrefs, setListenPrefs] = useState(DEFAULT_LISTEN_PREFS);
     const listenPrefsRef = useRef(DEFAULT_LISTEN_PREFS);
@@ -1160,13 +1204,9 @@ const Read = ({
         setOptimisticHighlightTerms(prev => prev.filter(term => term !== word && term !== surface));
     }, [highlightedWord]);
 
-    // Refs let the native selection callbacks read the latest panel/focus state
+    // A ref lets the native selection callbacks read the latest focus state
     // without being re-created (which would churn the native view's props).
-    const lookupOpenRef = useRef(false);
     const focusModeRef = useRef(false);
-    useEffect(() => {
-        lookupOpenRef.current = !!highlightedWord;
-    }, [highlightedWord]);
     useEffect(() => {
         focusModeRef.current = focusMode;
     }, [focusMode]);
@@ -1177,20 +1217,9 @@ const Read = ({
             return;
         }
 
-        // A word tap while a lookup panel is already open should only dismiss the
-        // panel — not register the tapped word as a new selection. Tapping empty
-        // space already routes through onSelectionCleared, and native text
-        // selections clear themselves, so this closes the last remaining gap.
-        // Focus mode normally suppresses this natively (the tap never reaches
-        // JS); this also catches a tap that lands before the native view has
-        // learned the panel opened.
-        if (lookupOpenRef.current) {
-            dismissPanelRef.current?.();
-            return;
-        }
-
-        // A genuine new selection (not a panel dismiss): a whisper-light tick so
-        // the lookup feels physical the instant you touch a word.
+        // A word tap with the panel already open looks the new word up (the
+        // panel stays and changes); a tap on blank space closes it through
+        // onSelectionCleared. A light tick so the lookup feels physical.
         tapSelect();
 
         const sentence = typeof event.sentence === 'string' ? event.sentence.trim() : '';
@@ -1216,6 +1245,7 @@ const Read = ({
             sentence,
         });
         setPinnedSentence(sentence || text);
+        showPinnedFor();
         setLookupPlacement(event.placement === 'top' ? 'top' : 'bottom');
 
         recordVocabContextForSurface({
@@ -1241,15 +1271,6 @@ const Read = ({
         setTextSelection(null);
     }, []);
 
-    const dismissPanelRef = useRef(null);
-    dismissPanelRef.current = () => {
-        setHighlightedWord('');
-        setHighlightedWordContext(null);
-        setIsNativeSelection(false);
-        setTextSelection(null);
-        setClearSelectionToken((v) => v + 1);
-    };
-
     const handleNativeTextSelected = useCallback((event = {}) => {
         const text = typeof event.text === 'string' ? event.text.trim() : '';
         if (!text) {
@@ -1259,6 +1280,9 @@ const Read = ({
         setIsNativeSelection(true);
         setHighlightedWord('');
         setHighlightedWordContext(null);
+        // The AI explanation takes the reader's attention: the translation
+        // bar steps aside sooner.
+        schedulePinnedHide(PINNED_TRANSLATION_AI_HIDE_MS);
         setTextSelection({
             text,
             sentence: typeof event.sentence === 'string' ? event.sentence.trim() : '',
@@ -2814,6 +2838,18 @@ const Read = ({
                 return;
             }
 
+            // A book opened for the first time starts at its first chapter,
+            // past the cover, title page and introduction (still in the
+            // contents). The percent counts from there too.
+            if (!isChapterNavigation && !requestedRestorePosition) {
+                const range = storyRangeForSpine(parsedPackage.spine, parsedPackage.toc);
+                const autoSpineIndex = spineIndexForReaderPackage(parsedPackage);
+                if (range && Number.isInteger(range.start) && range.start !== autoSpineIndex) {
+                    loadNativeReaderPackageRef.current?.(range.start);
+                    return;
+                }
+            }
+
             const loadedSpineIndex = spineIndexForReaderPackage(parsedPackage) ?? 0;
             const totalSpineItems = parsedPackage.spine?.length ?? 0;
             const nextRestorePosition = (
@@ -2850,7 +2886,8 @@ const Read = ({
                     totalSpineItems,
                     restorePageIndex,
                     restorePagesInChapter,
-                    parsedPackage.spine
+                    parsedPackage.spine,
+                    parsedPackage.toc
                 ),
                 href: parsedPackage.loadedSpineItem?.path || '',
                 pageInChapter: Number.isInteger(restorePageIndex) ? restorePageIndex + 1 : null,
@@ -3002,7 +3039,8 @@ const Read = ({
             totalSpineItems,
             pageIndex,
             total,
-            nativeReaderPackageRef.current?.spine
+            nativeReaderPackageRef.current?.spine,
+            nativeReaderPackageRef.current?.toc
         );
 
         setReaderLocationInfo((prev) => {
@@ -3206,7 +3244,8 @@ const Read = ({
             totalSpineItems,
             committedPageIndex,
             committedPageCount,
-            committedPackage.spine
+            committedPackage.spine,
+            committedPackage.toc
         ) ?? clampProgress(activeBook?.progress ?? 0);
         const nextBookPatch = {
             nativePosition: nextPosition,
@@ -3411,6 +3450,7 @@ const Read = ({
     // The pinned translation belongs to the chapter it came from.
     useEffect(() => {
         setPinnedSentence('');
+        setPinnedVisible(false);
     }, [activeSpineIndex, currentBook]);
 
     // Translate the open chapter's sentences in a few requests, ahead of time,
@@ -3584,16 +3624,16 @@ const Read = ({
     // to the bottom sits on top of it. FOCUS_SPAN_TOP_MARGIN_DP in the native
     // module reserves the matching strip of reading surface, so a sentence too
     // tall to fit still stops short of the pill instead of running under it.
-    // The pinned translation bar pushes the reading surface down by its fixed
-    // height, so everything anchored to the reader's top edge shifts with it.
-    // It stays in fullscreen, where it sits under the status bar.
+    // The pinned translation bar floats over the top of the page while it's
+    // shown (after a word tap, for a few seconds), so the text never moves;
+    // a top-placed lookup panel and the focus pill sit below it meanwhile.
     const showPinnedTranslation = Boolean(currentBook) && settings.pinnedSentenceTranslation !== false;
-    const pinnedTranslationOffset = showPinnedTranslation
+    const pinnedTranslationOffset = showPinnedTranslation && pinnedVisible
         ? pinnedTranslationBarHeight(pinnedTranslationFontSize)
         : 0;
-    // Top of the reading surface in fullscreen: below the bar (which carries
-    // the status-bar inset), or the inset alone.
-    const fullscreenTop = showPinnedTranslation ? insets.top + pinnedTranslationOffset : insets.top;
+    // Top of the reading surface in fullscreen: below the status-bar inset,
+    // and below the bar while it shows.
+    const fullscreenTop = insets.top + pinnedTranslationOffset;
     const focusPillTop = (isFullscreen ? fullscreenTop : insets.top + spacing.xs + 52 + pinnedTranslationOffset) + 12;
 
     // Arrow controls ride 12dp above the open panel, mirroring the 28 → panel+12
@@ -4351,17 +4391,7 @@ const Read = ({
                 </ReaderHeaderBar>
             ) : null}
 
-            {showPinnedTranslation ? (
-                <PinnedSentenceTranslation
-                    sentence={pinnedSentence}
-                    sourceLanguage={activeBookLanguage}
-                    targetLanguage={interfaceLanguage}
-                    fontSize={pinnedTranslationFontSize}
-                    topInset={isFullscreen ? insets.top : 0}
-                />
-            ) : null}
-
-            <View style={styles.reader}>
+            <View style={[styles.reader, isFullscreen ? { paddingTop: insets.top } : null]}>
                 {bookLoadState === 'error' ? (
                     <View style={styles.readerErrorState}>
                         <Text style={styles.readerErrorTitle}>{t('read.openErrorTitle')}</Text>
@@ -4444,7 +4474,7 @@ const Read = ({
                         onExposure={handleNativeExposure}
                         onSavedTermsShown={handleSavedTermsShown}
                         // The sentence whose translation the bar shows gets a faint mark.
-                        showContextSentence={showPinnedTranslation}
+                        showContextSentence={showPinnedTranslation && pinnedVisible}
                     />
                 )}
                 {readerBrightnessOverlayOpacity > 0 ? (
@@ -4554,6 +4584,23 @@ const Read = ({
                 onSelectTranslationVoice={selectTranslationVoice}
                 onPreviewTranslationVoice={previewTranslationVoice}
             />
+
+            {showPinnedTranslation ? (
+                <View
+                    pointerEvents="box-none"
+                    style={[styles.pinnedLayer, { top: isFullscreen ? 0 : insets.top + spacing.xs + 52 }]}
+                >
+                    <PinnedSentenceTranslation
+                        visible={pinnedVisible}
+                        sentence={pinnedSentence}
+                        sourceLanguage={activeBookLanguage}
+                        targetLanguage={interfaceLanguage}
+                        fontSize={pinnedTranslationFontSize}
+                        topInset={isFullscreen ? insets.top : 0}
+                        onHoldChange={holdPinnedTranslation}
+                    />
+                </View>
+            ) : null}
 
             <View
                 style={[
@@ -4809,6 +4856,13 @@ const createStyles = (themeColors) => StyleSheet.create({
     retryButtonText: {
         ...textStyles.body,
         color: themeColors.readerSavedChipText,
+    },
+    pinnedLayer: {
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        zIndex: 15,
+        elevation: 15,
     },
     lookupLayer: {
         position: 'absolute',
