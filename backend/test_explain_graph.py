@@ -329,6 +329,15 @@ def test_selection_prompt_covers_partial_words_and_phrases():
     assert "Korean" in prompt and "English" in prompt
 
 
+def test_selection_prompt_walks_a_sentence_through_its_chunks():
+    prompt = g.build_selection_prompt(target_language_name="English", interface_language_name="Korean")
+    # A long selection is usually a sentence the reader couldn't put together:
+    # it gets a chunk-by-chunk walkthrough in plain words, longer than a word's note.
+    assert "one chunk per line" in prompt
+    assert "120 words" in prompt
+    assert "plain words" in prompt
+
+
 def test_selection_user_message_names_the_selection():
     assert g.user_message_for_selection("Gabl", "Anne of Green Gables").startswith("Selected text: Gabl")
 

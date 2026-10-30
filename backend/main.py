@@ -1277,7 +1277,7 @@ def get_anthropic_async_client():
     return _anthropic_async_client
 
 
-def explain_model_params(model: str = None) -> dict:
+def explain_model_params(model: str = None, max_tokens: int | None = None) -> dict:
     """Request params for the explain call, tuned for latency.
 
     Haiku 5.x thinks by default; a 2-3 sentence explanation does not need it, and
@@ -1285,7 +1285,7 @@ def explain_model_params(model: str = None) -> dict:
     effort low). Older models take neither field.
     """
     model = model or EXPLAIN_MODEL
-    params = {"model": model, "max_tokens": CONTEXT_EXPLANATION_MAX_TOKENS}
+    params = {"model": model, "max_tokens": max_tokens or CONTEXT_EXPLANATION_MAX_TOKENS}
     if not model.startswith(("claude-haiku-4", "claude-sonnet-4", "claude-3")):
         params["thinking"] = {"type": "disabled"}
         params["output_config"] = {"effort": "low"}
@@ -5073,6 +5073,13 @@ async def assess_entry(payload: dict, auth: dict[str, Any] = Depends(verify_supa
 
 
 CONTEXT_EXPLANATION_MAX_TOKENS = 600
+# A long selection gets a chunk-by-chunk walkthrough (build_selection_prompt):
+# up to 120 words plus a full translation, more in Korean or Chinese tokens.
+SELECTION_EXPLANATION_MAX_TOKENS = 1000
+
+
+def explain_max_tokens_for(req) -> int:
+    return SELECTION_EXPLANATION_MAX_TOKENS if getattr(req, "mode", None) == "selection" else CONTEXT_EXPLANATION_MAX_TOKENS
 
 
 def build_contextual_explanation_prompt(target_language_name: str, interface_language_name: str) -> str:
@@ -5283,7 +5290,7 @@ async def _prepare_explain_request(payload: dict, auth: dict[str, Any]) -> _Expl
         cache_key = f"{cache_key}:l{lemma_hash}"
     # A selection gets its own prompt, so it never shares a tapped word's entry.
     if req.mode == "selection":
-        cache_key = f"{cache_key}:sel"
+        cache_key = f"{cache_key}:sel2"
     # Client grounding (hanja + dictionary senses) also shapes the prompt, so a
     # request carrying crafted grounding must not be able to write an answer that
     # other readers of the same word+sentence are then served. Requests without
@@ -5398,7 +5405,7 @@ async def explain_in_context(payload: dict, auth: dict[str, Any] = Depends(verif
 
         try:
             message = await get_anthropic_async_client().messages.create(
-                **explain_model_params(),
+                **explain_model_params(max_tokens=explain_max_tokens_for(req)),
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_message}],
             )
@@ -5491,7 +5498,7 @@ async def explain_in_context_stream(payload: dict, auth: dict[str, Any] = Depend
         stream = None
         try:
             async with get_anthropic_async_client().messages.stream(
-                **explain_model_params(),
+                **explain_model_params(max_tokens=explain_max_tokens_for(req)),
                 system=system_prompt,
                 messages=[{"role": "user", "content": user_message}],
             ) as stream:
