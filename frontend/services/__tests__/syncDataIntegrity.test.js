@@ -64,6 +64,7 @@ import * as SQLite from 'expo-sqlite';
 import {
   addRelatedKnownWord,
   createBookBookmarksTable,
+  createGrammarTables,
   createBookIndexTable,
   createBookNotesTable,
   createBookPreprocessTables,
@@ -136,6 +137,7 @@ beforeEach(async () => {
   await createBookIndexTable();
   await createBookNotesTable();
   await createBookBookmarksTable();
+  await createGrammarTables();
   await createBookPreprocessTables();
 });
 

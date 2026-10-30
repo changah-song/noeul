@@ -1664,6 +1664,9 @@ const Read = ({
             bottomInset={focusMode ? 0 : insets.bottom}
             saved={selectionPhraseSaved}
             onSave={handleSelectionPhraseSave}
+            ownerId={activeOwnerId}
+            bookUri={currentBook}
+            bookTitle={activeBook?.title ?? null}
         />
     );
 

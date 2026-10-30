@@ -4151,6 +4151,8 @@ const SQLITE_LEARNING_SIGNAL_TABLES = [
   'profile_ability',
   'word_scores',
   'ability_log',
+  'grammar_patterns',
+  'grammar_examples',
 ];
 
 const SQLITE_USER_DATA_TABLES = [
@@ -4178,6 +4180,8 @@ const SQLITE_TABLES_WITH_LANGUAGE = new Set([
   'profile_ability',
   'word_scores',
   'ability_log',
+  'grammar_patterns',
+  'grammar_examples',
 ]);
 
 const sqliteTableHasData = (tableName, whereClause, params = [], logLabel = 'owner data') => (
@@ -4665,6 +4669,284 @@ export const deleteBookNote = (id, { ownerId } = {}) => {
 const makeBookBookmarkId = () => (
   `bb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
 );
+
+// ─── Grammar patterns ─────────────────────────────────────────────────────
+// The patterns a reader meets in the AI panel's Grammar tab (ids from the
+// backend's grammar_catalog.py), each sentence they met it in, and their
+// review state. Local to the device for now.
+
+const GRAMMAR_KNOWN_STREAK = 3;
+const GRAMMAR_REVIEW_DAYS = [1, 3, 7, 21];
+
+export const createGrammarTables = () => new Promise((resolve, reject) => {
+  db.transaction(
+    tx => {
+      tx.executeSql(
+        `CREATE TABLE IF NOT EXISTS grammar_patterns (
+          id           TEXT PRIMARY KEY,
+          owner_id     TEXT NOT NULL DEFAULT 'guest',
+          profile_id   TEXT DEFAULT 'ko_default',
+          language     TEXT NOT NULL DEFAULT 'ko',
+          pattern_id   TEXT NOT NULL,
+          title        TEXT,
+          form         TEXT,
+          level        TEXT,
+          rule         TEXT,
+          kept         INTEGER NOT NULL DEFAULT 0,
+          encounters   INTEGER NOT NULL DEFAULT 0,
+          streak       INTEGER NOT NULL DEFAULT 0,
+          state        TEXT NOT NULL DEFAULT 'new',
+          review_due   TEXT,
+          last_seen_at TEXT,
+          created_at   TEXT NOT NULL,
+          updated_at   TEXT,
+          deleted_at   TEXT,
+          synced_at    TEXT,
+          UNIQUE (owner_id, profile_id, language, pattern_id)
+        );`
+      );
+      tx.executeSql(
+        `CREATE TABLE IF NOT EXISTS grammar_examples (
+          id          TEXT PRIMARY KEY,
+          owner_id    TEXT NOT NULL DEFAULT 'guest',
+          profile_id  TEXT DEFAULT 'ko_default',
+          language    TEXT NOT NULL DEFAULT 'ko',
+          pattern_id  TEXT NOT NULL,
+          sentence    TEXT NOT NULL,
+          chunks      TEXT,
+          blank       TEXT,
+          options     TEXT,
+          book_uri    TEXT,
+          book_title  TEXT,
+          created_at  TEXT NOT NULL,
+          deleted_at  TEXT,
+          synced_at   TEXT,
+          UNIQUE (owner_id, profile_id, language, pattern_id, sentence)
+        );`
+      );
+      tx.executeSql(
+        'CREATE INDEX IF NOT EXISTS idx_grammar_examples_pattern ON grammar_examples(owner_id, profile_id, language, pattern_id, created_at)'
+      );
+    },
+    (error) => {
+      console.error('[Database] Error creating grammar tables:', error);
+      reject(error);
+    },
+    () => resolve()
+  );
+});
+
+const grammarScope = (options = {}) => {
+  const language = normalizeBookLanguage(options.language) || 'ko';
+  return {
+    ownerId: resolveOwnerId(options.ownerId ?? options),
+    profileId: resolveProfileId(options.profileId ?? options.profile_id ?? options, language),
+    language,
+  };
+};
+
+const makeGrammarId = (prefix) => `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+
+const parseJsonArray = (value) => {
+  try {
+    const parsed = JSON.parse(value || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const grammarRows = (sql, params) => new Promise((resolve, reject) => {
+  db.transaction(tx => {
+    tx.executeSql(sql, params, (_, result) => resolve(result.rows._array), (_, error) => {
+      console.error('[Database] Grammar query failed:', error);
+      reject(error);
+      return true;
+    });
+  });
+});
+
+/**
+ * recordGrammarEncounter — the Grammar tab explained a sentence: remember the
+ * pattern and the sentence (once per sentence). Resolves the pattern's row,
+ * with how many different sentences it has been met in.
+ */
+export const recordGrammarEncounter = ({ result, sentence, bookUri = null, bookTitle = null, ...options } = {}) => {
+  const patternId = result?.pattern_id;
+  const cleanSentence = String(sentence || '').trim();
+  if (!patternId || patternId === 'none' || !cleanSentence) return Promise.resolve(null);
+  const { ownerId, profileId, language } = grammarScope(options);
+  const now = new Date().toISOString();
+
+  return new Promise((resolve, reject) => {
+    let added = 0;
+    db.transaction(
+      tx => {
+        tx.executeSql(
+          `INSERT OR IGNORE INTO grammar_examples
+             (id, owner_id, profile_id, language, pattern_id, sentence, chunks, blank, options, book_uri, book_title, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            makeGrammarId('ge'), ownerId, profileId, language, patternId, cleanSentence,
+            JSON.stringify(result.chunks || []), result.blank || null, JSON.stringify(result.options || []),
+            bookUri, bookTitle, now,
+          ],
+          (_, insert) => {
+            added = insert.rowsAffected > 0 ? 1 : 0;
+            tx.executeSql(
+              `INSERT INTO grammar_patterns
+                 (id, owner_id, profile_id, language, pattern_id, title, form, level, rule, encounters, last_seen_at, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (owner_id, profile_id, language, pattern_id) DO UPDATE SET
+                 title = COALESCE(excluded.title, title),
+                 form = COALESCE(excluded.form, form),
+                 level = COALESCE(excluded.level, level),
+                 rule = COALESCE(excluded.rule, rule),
+                 encounters = encounters + ?,
+                 last_seen_at = excluded.last_seen_at,
+                 updated_at = excluded.updated_at,
+                 deleted_at = NULL`,
+              [
+                makeGrammarId('gp'), ownerId, profileId, language, patternId,
+                result.title || null, result.form || null, result.level || null, result.rule || null,
+                added, now, now, now, added,
+              ]
+            );
+          }
+        );
+      },
+      (error) => {
+        console.error('[Database] Error recording a grammar encounter:', error);
+        reject(error);
+      },
+      () => {
+        grammarRows(
+          `SELECT pattern_id AS patternId, encounters, kept FROM grammar_patterns
+           WHERE owner_id = ? AND profile_id = ? AND language = ? AND pattern_id = ?`,
+          [ownerId, profileId, language, patternId]
+        ).then((rows) => resolve(rows[0] ? { ...rows[0], kept: Boolean(rows[0].kept) } : null), reject);
+      }
+    );
+  });
+};
+
+/** Keep (or stop keeping) a pattern for review. */
+export const setGrammarPatternKept = ({ patternId, kept = true, ...options } = {}) => {
+  const { ownerId, profileId, language } = grammarScope(options);
+  const now = new Date().toISOString();
+  return grammarRows(
+    `UPDATE grammar_patterns
+     SET kept = ?, review_due = CASE WHEN ? = 1 AND review_due IS NULL THEN ? ELSE review_due END,
+         state = CASE WHEN ? = 1 AND state = 'new' THEN 'practising' ELSE state END,
+         updated_at = ?, synced_at = NULL
+     WHERE owner_id = ? AND profile_id = ? AND language = ? AND pattern_id = ?`,
+    [kept ? 1 : 0, kept ? 1 : 0, now, kept ? 1 : 0, now, ownerId, profileId, language, patternId]
+  );
+};
+
+const grammarPatternFromRow = (row) => ({
+  patternId: row.pattern_id,
+  title: row.title,
+  form: row.form,
+  level: row.level,
+  rule: row.rule,
+  kept: Boolean(row.kept),
+  encounters: row.encounters || 0,
+  state: row.state || 'new',
+  streak: row.streak || 0,
+  reviewDue: row.review_due,
+  lastSeenAt: row.last_seen_at,
+  bookTitles: row.book_titles ? String(row.book_titles).split('\u001f').filter(Boolean) : [],
+});
+
+/** Every pattern met, with the books it was met in. */
+export const getGrammarPatterns = (options = {}) => {
+  const { ownerId, profileId, language } = grammarScope(options);
+  return grammarRows(
+    `SELECT gp.*,
+            (SELECT GROUP_CONCAT(DISTINCT ge.book_title) FROM grammar_examples ge
+              WHERE ge.owner_id = gp.owner_id AND ge.profile_id = gp.profile_id
+                AND ge.language = gp.language AND ge.pattern_id = gp.pattern_id
+                AND ge.deleted_at IS NULL) AS book_titles_csv
+     FROM grammar_patterns gp
+     WHERE gp.owner_id = ? AND gp.profile_id = ? AND gp.language = ? AND gp.deleted_at IS NULL
+     ORDER BY gp.level ASC, gp.last_seen_at DESC`,
+    [ownerId, profileId, language]
+  ).then((rows) => rows.map((row) => ({
+    ...grammarPatternFromRow(row),
+    bookTitles: row.book_titles_csv ? String(row.book_titles_csv).split(',').filter(Boolean) : [],
+  })));
+};
+
+/** One pattern with the sentences it was met in, newest first. */
+export const getGrammarPatternExamples = ({ patternId, limit = 20, ...options } = {}) => {
+  const { ownerId, profileId, language } = grammarScope(options);
+  return grammarRows(
+    `SELECT id, sentence, chunks, blank, options, book_title AS bookTitle, created_at AS createdAt
+     FROM grammar_examples
+     WHERE owner_id = ? AND profile_id = ? AND language = ? AND pattern_id = ? AND deleted_at IS NULL
+     ORDER BY created_at DESC LIMIT ?`,
+    [ownerId, profileId, language, patternId, limit]
+  ).then((rows) => rows.map((row) => ({
+    ...row,
+    chunks: parseJsonArray(row.chunks),
+    options: parseJsonArray(row.options),
+  })));
+};
+
+/**
+ * getGrammarReviewItems — up to `limit` kept patterns due for review, each
+ * with one of its sentences that has a blank and three wrong options.
+ */
+export const getGrammarReviewItems = ({ limit = 10, ...options } = {}) => {
+  const { ownerId, profileId, language } = grammarScope(options);
+  return grammarRows(
+    `SELECT gp.pattern_id AS patternId, gp.title, gp.level, gp.rule,
+            ge.sentence, ge.blank, ge.options, ge.book_title AS bookTitle
+     FROM grammar_patterns gp
+     JOIN grammar_examples ge
+       ON ge.owner_id = gp.owner_id AND ge.profile_id = gp.profile_id
+      AND ge.language = gp.language AND ge.pattern_id = gp.pattern_id
+     WHERE gp.owner_id = ? AND gp.profile_id = ? AND gp.language = ?
+       AND gp.kept = 1 AND gp.deleted_at IS NULL AND ge.deleted_at IS NULL
+       AND COALESCE(ge.blank, '') != ''
+       AND (gp.review_due IS NULL OR gp.review_due <= ?)
+     ORDER BY gp.review_due ASC, RANDOM()`,
+    [ownerId, profileId, language, new Date().toISOString()]
+  ).then((rows) => {
+    const seen = new Set();
+    return rows
+      .filter((row) => (seen.has(row.patternId) ? false : (seen.add(row.patternId), true)))
+      .slice(0, limit)
+      .map((row) => ({ ...row, options: parseJsonArray(row.options) }));
+  });
+};
+
+/** A review answer: right answers in a row make a pattern known. */
+export const recordGrammarReview = ({ patternId, correct, ...options } = {}) => {
+  const { ownerId, profileId, language } = grammarScope(options);
+  return grammarRows(
+    `SELECT streak FROM grammar_patterns
+     WHERE owner_id = ? AND profile_id = ? AND language = ? AND pattern_id = ?`,
+    [ownerId, profileId, language, patternId]
+  ).then((rows) => {
+    const streak = correct ? (Number(rows[0]?.streak) || 0) + 1 : 0;
+    const now = Date.now();
+    const days = correct ? GRAMMAR_REVIEW_DAYS[Math.min(streak - 1, GRAMMAR_REVIEW_DAYS.length - 1)] : 0;
+    // A miss comes back in ten minutes.
+    const due = new Date(now + (correct ? days * 86400000 : 10 * 60000)).toISOString();
+    const state = streak >= GRAMMAR_KNOWN_STREAK ? 'known' : 'practising';
+    return grammarRows(
+      `UPDATE grammar_patterns SET streak = ?, state = ?, review_due = ?, updated_at = ?, synced_at = NULL
+       WHERE owner_id = ? AND profile_id = ? AND language = ? AND pattern_id = ?`,
+      [streak, state, due, new Date(now).toISOString(), ownerId, profileId, language, patternId]
+    ).then(() => ({ streak, state }));
+  });
+};
+
+/** How many kept patterns are due now. */
+export const countGrammarReviewsDue = (options = {}) => getGrammarReviewItems({ ...options, limit: 99 })
+  .then((items) => items.length);
 
 export const createBookBookmarksTable = () => {
   return new Promise((resolve, reject) => {
@@ -5312,6 +5594,7 @@ export const initAllTables = async () => {
   await migrateBookNotesTable();
   await createBookBookmarksTable();
   await createBookHighlightsTable();
+  await createGrammarTables();
   await createBookPreprocessTables();
   await migrateBookPreprocessLevelColumns();
   await createSentenceTranslationsTable();
