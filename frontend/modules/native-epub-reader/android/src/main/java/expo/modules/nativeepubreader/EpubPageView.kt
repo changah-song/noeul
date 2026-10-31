@@ -154,6 +154,14 @@ class EpubPageView(context: Context) : View(context) {
       field = value
       invalidate()
     }
+  // 1 = the wash at full strength; the owner runs it down to 0 as the reader
+  // turns away from the page.
+  var contextSentenceFade: Float = 1f
+    set(value) {
+      if (field == value) return
+      field = value
+      invalidate()
+    }
   private val contextSentencePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
   // Called with a highlight's id when its note icon (in the margin) is tapped.
   var noteIconTapped: ((String) -> Unit)? = null
@@ -767,7 +775,9 @@ class EpubPageView(context: Context) : View(context) {
     if (localStart >= localEnd) return
     val ink = themePalette.bodyTextColor
     // Grey, so the tapped word's brown box stands out on it.
-    val alpha = if (Color.luminance(themePalette.backgroundColor) < 0.4f) 0x1C else 0x14
+    val fullAlpha = if (Color.luminance(themePalette.backgroundColor) < 0.4f) 0x1C else 0x14
+    val alpha = (fullAlpha * contextSentenceFade.coerceIn(0f, 1f)).toInt()
+    if (alpha <= 0) return
     contextSentencePaint.color = Color.argb(alpha, Color.red(ink), Color.green(ink), Color.blue(ink))
     drawTextSelectionHighlight(canvas, block, layout, localStart, localEnd, textLength, contextSentencePaint)
   }

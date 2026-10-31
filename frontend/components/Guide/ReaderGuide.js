@@ -59,6 +59,8 @@ const CLIP_COPY = {
 };
 
 const MORE = [
+    { key: 'Fullscreen', Icon: MaterialCommunityIcons, icon: 'gesture-double-tap' },
+    { key: 'Audio', Icon: Feather, icon: 'headphones' },
     { key: 'Bookmark', Icon: MaterialIcons, icon: 'bookmark-border' },
     { key: 'Jump', Icon: MaterialCommunityIcons, icon: 'gesture-swipe-horizontal' },
     { key: 'Settings', Icon: Feather, icon: 'menu' },
@@ -84,8 +86,10 @@ const reducer = (state, action) => {
             if (action.mode === 'try' && clip.actionAt != null && !state.acted && t >= clip.actionAt) {
                 return state.t === clip.actionAt ? state : { ...state, t: clip.actionAt };
             }
+            // A clip stops at its end and waits for Next: the viewer moves on
+            // at their own pace.
             if (t >= clip.duration) {
-                return state.clip < GUIDE_LAST_CLIP ? startClip(state.clip + 1) : { ...state, playing: false };
+                return { ...state, t: clip.duration, playing: false };
             }
             return { ...state, t };
         }

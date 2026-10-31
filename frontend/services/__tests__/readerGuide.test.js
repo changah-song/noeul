@@ -91,7 +91,7 @@ describe('timeline', () => {
             expect(guideFrameAt('hold', 1950, '2:8', length).ai).toBe(false);
             expect(guideFrameAt('hold', 2300, '2:8', length).ai).toBe(true);
         });
-        expect(guideFrameAt('hold', 4000, '2:8', 6).grammar).toBe(true);
+        expect(guideFrameAt('hold', 4000, '2:8', 6).grammar).toBe(false);
     });
 
     it('steps focus mode to the next sentence and reads four sentences aloud', () => {

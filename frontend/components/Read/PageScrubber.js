@@ -3,6 +3,7 @@ import { Modal, PanResponder, Pressable, Text, TouchableOpacity, View } from 're
 import { MaterialIcons } from '@expo/vector-icons';
 import { fontFamilies, useTheme } from '../../theme';
 import { useTranslation } from '../../hooks/useTranslation';
+import { tapSelect } from '../../services/haptics';
 
 export const PAGE_SCRUBBER_HEIGHT = 56;
 const SIDE = 24;
@@ -15,6 +16,8 @@ const PREVIEW_HEIGHT = 250;
 const BOOKMARK_MERGE_PX = 18;
 // Chapter rings nearer than this to the last one shown are left out.
 const MARK_MIN_GAP_PX = 7;
+// A drag this close to the saved spot snaps onto it.
+const SAVED_SNAP_PX = 16;
 
 const clamp01 = (value) => Math.min(Math.max(Number(value) || 0, 0), 1);
 
@@ -27,6 +30,11 @@ const clamp01 = (value) => Math.min(Math.max(Number(value) || 0, 0), 1);
  *
  * Positions are 0..1 through the story (screens/Read.js maps them to and
  * from chapters, services/storyRange.js).
+ *
+ * `savedAt`: while the reader is away from their saved spot (after a jump
+ * they haven't confirmed), that spot is the black dot and where they are is a
+ * hollow ring. A drag near the black dot snaps onto it, and letting go there
+ * (or tapping it) goes back: onReturnToSaved.
  */
 const PageScrubber = ({
     progress = 0,
@@ -37,6 +45,8 @@ const PageScrubber = ({
     onDragTarget,
     onSelectBookmark,
     onOpenContents,
+    savedAt = null,
+    onReturnToSaved,
     bottomInset = 0,
 }) => {
     const { colors } = useTheme();
@@ -49,7 +59,10 @@ const PageScrubber = ({
     const widthRef = useRef(0);
     widthRef.current = width;
     const callbacks = useRef({});
-    callbacks.current = { onSeek, onDragTarget };
+    callbacks.current = { onSeek, onDragTarget, onReturnToSaved };
+    const savedAtRef = useRef(savedAt);
+    savedAtRef.current = Number.isFinite(savedAt) ? clamp01(savedAt) : null;
+    const snappedRef = useRef(false);
 
     // After letting go the dot stays where it was dropped until the reader
     // reports arriving there (its first report can still be the chapter top).
@@ -72,25 +85,41 @@ const PageScrubber = ({
     const percent = Math.round(shown * 100);
 
     const fractionAt = (x) => clamp01(x / Math.max(1, widthRef.current));
+    // Near the saved spot the finger snaps onto it (a tick when it does).
+    const snapped = (x) => {
+        const saved = savedAtRef.current;
+        const onSaved = saved !== null && Math.abs(x - saved * widthRef.current) <= SAVED_SNAP_PX;
+        if (onSaved !== snappedRef.current) {
+            snappedRef.current = onSaved;
+            if (onSaved) tapSelect();
+        }
+        return onSaved ? saved : fractionAt(x);
+    };
     const panResponder = useMemo(() => PanResponder.create({
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: () => true,
         onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: (event) => {
             startXRef.current = event.nativeEvent.locationX;
-            const fraction = fractionAt(startXRef.current);
+            snappedRef.current = false;
+            const fraction = snapped(startXRef.current);
             setDragFraction(fraction);
             callbacks.current.onDragTarget?.(fraction);
         },
         onPanResponderMove: (_event, gesture) => {
-            const fraction = fractionAt(startXRef.current + gesture.dx);
+            const fraction = snapped(startXRef.current + gesture.dx);
             setDragFraction(fraction);
             callbacks.current.onDragTarget?.(fraction);
         },
         onPanResponderRelease: (_event, gesture) => {
-            const fraction = fractionAt(startXRef.current + gesture.dx);
+            const fraction = snapped(startXRef.current + gesture.dx);
             setDragFraction(null);
             holdRef.current(fraction);
+            if (snappedRef.current && callbacks.current.onReturnToSaved) {
+                snappedRef.current = false;
+                callbacks.current.onReturnToSaved();
+                return;
+            }
             callbacks.current.onSeek?.(fraction);
         },
         onPanResponderTerminate: () => setDragFraction(null),
@@ -131,6 +160,8 @@ const PageScrubber = ({
     const preview = dragging ? describe?.(dragFraction) : null;
     const thumbSize = dragging ? THUMB_DRAGGING : THUMB;
     const thumbX = shown * width;
+    const savedShown = Number.isFinite(savedAt) && width > 0;
+    const savedX = savedShown ? clamp01(savedAt) * width : 0;
     const previewLeft = Math.max(-SIDE + 12, Math.min(width - PREVIEW_WIDTH + PERCENT_WIDTH - 12, thumbX - PREVIEW_WIDTH / 2));
 
     return (
@@ -159,6 +190,15 @@ const PageScrubber = ({
                             style={[styles.mark, { left: mark.x - 4 }, mark.at <= shown && styles.markPassed]}
                         />
                     ))}
+                    {savedShown ? (
+                        <View
+                            pointerEvents="none"
+                            style={[
+                                styles.savedDot,
+                                { left: savedX - SAVED_DOT / 2, top: TRACK_Y - SAVED_DOT / 2 + 1 },
+                            ]}
+                        />
+                    ) : null}
                     <View
                         pointerEvents="none"
                         style={[
@@ -170,6 +210,7 @@ const PageScrubber = ({
                                 left: thumbX - thumbSize / 2,
                                 top: TRACK_Y - thumbSize / 2 + 1,
                             },
+                            savedShown && !dragging && styles.thumbAway,
                             dragging && styles.thumbDragging,
                         ]}
                     />
@@ -243,6 +284,7 @@ const PageScrubber = ({
 
 // The line's height inside the touch strip.
 const TRACK_Y = 30;
+const SAVED_DOT = 14;
 
 const createStyles = (colors) => ({
     bar: {
@@ -293,6 +335,22 @@ const createStyles = (colors) => ({
     thumb: {
         position: 'absolute',
         backgroundColor: colors.readerBodyInk,
+    },
+    // Away from the saved spot: where you are is a ring, the spot the dot.
+    thumbAway: {
+        borderWidth: 2,
+        borderColor: colors.readerBodyInk,
+        backgroundColor: colors.readerPaper,
+    },
+    savedDot: {
+        position: 'absolute',
+        width: SAVED_DOT,
+        height: SAVED_DOT,
+        borderRadius: SAVED_DOT / 2,
+        borderWidth: 2,
+        borderColor: colors.readerPaper,
+        backgroundColor: colors.readerBodyInk,
+        elevation: 2,
     },
     thumbDragging: {
         borderWidth: 6,

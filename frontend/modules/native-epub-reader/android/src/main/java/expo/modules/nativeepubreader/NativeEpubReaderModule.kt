@@ -1,5 +1,7 @@
 package expo.modules.nativeepubreader
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Color
@@ -1087,6 +1089,10 @@ class NativeEpubReaderView(
       override fun onPageScrollStateChanged(state: Int) {
         if (state == ViewPager2.SCROLL_STATE_DRAGGING) {
           userDraggedPager = true
+          // Turning the page leaves the looked-up word behind: its panel
+          // closes (fading, on the JS side) and its sentence's wash fades out.
+          clearActiveSelection(dispatchEvent = true)
+          fadeOutContextSentence()
         }
 
         if (state == ViewPager2.SCROLL_STATE_SETTLING && userDraggedPager) {
@@ -1543,9 +1549,39 @@ class NativeEpubReaderView(
 
   private fun applyContextSentence(sentence: ContextSentence?) {
     if (contextSentence == sentence) return
+    val runningFade = contextSentenceFadeAnimator
+    contextSentenceFadeAnimator = null
+    runningFade?.cancel()
+    setContextSentenceFade(1f)
     contextSentence = sentence
     pageAdapter?.updateContextSentence(recyclerView(), sentence)
     continuousPageView.contextSentence = sentence
+  }
+
+  // Fades the wash out, then drops the sentence. A new sentence (another word
+  // tapped) cancels the fade and shows at full strength.
+  private var contextSentenceFadeAnimator: ValueAnimator? = null
+
+  private fun fadeOutContextSentence() {
+    if (contextSentence == null || contextSentenceFadeAnimator != null) return
+    val animator = ValueAnimator.ofFloat(1f, 0f).apply {
+      duration = 260L
+      addUpdateListener { setContextSentenceFade(it.animatedValue as Float) }
+    }
+    animator.addListener(object : AnimatorListenerAdapter() {
+      override fun onAnimationEnd(animation: Animator) {
+        if (contextSentenceFadeAnimator !== animator) return
+        contextSentenceFadeAnimator = null
+        applyContextSentence(null)
+      }
+    })
+    contextSentenceFadeAnimator = animator
+    animator.start()
+  }
+
+  private fun setContextSentenceFade(fade: Float) {
+    pageAdapter?.updateContextSentenceFade(recyclerView(), fade)
+    continuousPageView.contextSentenceFade = fade
   }
 
   fun setShowGloss(enabled: Boolean) {

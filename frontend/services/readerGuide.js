@@ -20,7 +20,7 @@ export const GUIDE_CLIPS = [
     { key: 'tap', duration: 4200, actionAt: 900, target: 'word' },
     { key: 'bar', duration: 3800 },
     { key: 'save', duration: 3800, actionAt: 900, target: 'save' },
-    { key: 'hold', duration: 6200, actionAt: 700, target: 'hold' },
+    { key: 'hold', duration: 5000, actionAt: 700, target: 'hold' },
     { key: 'focus', duration: 4800, actionAt: 700, target: 'eye' },
     { key: 'listen', duration: 5600, actionAt: 700, target: 'listen' },
     { key: 'done' },
@@ -82,9 +82,9 @@ export const guideFrameAt = (key, elapsed, word, holdLength) => {
             frame.selected = elapsed < 500 ? 1 : Math.min(holdLength, 1 + Math.floor((elapsed - 500) / step));
             if (elapsed < 2050) frame.holdTouch = frame.selected - 1;
         }
+        // Only the meaning: the Grammar tab sits in view for later, but a
+        // second tap in the same clip was one thing too many to take in.
         frame.ai = elapsed >= 2250;
-        if (touchingAt(elapsed, 3700)) frame.touch = 'grammar';
-        frame.grammar = elapsed >= 3900;
     } else if (key === 'focus') {
         frame.savedMark = true;
         if (touchingAt(elapsed)) frame.touch = 'eye';
