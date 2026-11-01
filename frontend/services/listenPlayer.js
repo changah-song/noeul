@@ -1,4 +1,5 @@
 import Tts from 'react-native-tts';
+import { checkVoices } from '../modules/tts-voice-check/src';
 
 // Listen mode's voice: a small queue over the phone's own text-to-speech
 // engine. The reader screen hands it sequences of utterances (the sentence,
@@ -109,6 +110,48 @@ export const loadOnDeviceVoices = async (locale, tts = Tts) => {
   } catch {
     return [];
   }
+};
+
+// Keep the voices the check heard speak, renumbered so the picker reads
+// Voice 1, 2, 3 with no gaps. `check` is checkVoices' result; when the check
+// could not run (null), every listed voice stays and the default is unknown.
+export const applyVoiceCheck = (voices, check) => {
+  const list = Array.isArray(voices) ? voices : [];
+  if (!check || typeof check !== 'object') return { defaultVoice: null, voices: list };
+  return {
+    defaultVoice: check.defaultVoice === true,
+    voices: list
+      .filter((voice) => check.voices?.[voice.id] === true)
+      .map((voice, index) => ({ ...voice, number: index + 1 })),
+  };
+};
+
+// Voices (and the phone default) already heard speaking this app run, per
+// locale. Only successes are kept: a voice that failed is tried again on the
+// next open, since the reader may have just downloaded it.
+const confirmedVoices = new Map();
+const DEFAULT_VOICE = '\u0000default';
+
+// The voices the picker may offer for a locale: what the engine lists, then
+// only those that really speak (engines list voices they never downloaded).
+// Resolves { defaultVoice: true | false | null, voices }.
+export const loadWorkingVoices = async (locale, { tts = Tts, check = checkVoices } = {}) => {
+  const listed = await loadOnDeviceVoices(locale, tts);
+  const known = confirmedVoices.get(locale) || new Set();
+  const unknownIds = listed.map((voice) => voice.id).filter((id) => !known.has(id));
+  if (!known.has(DEFAULT_VOICE) || unknownIds.length > 0) {
+    const result = await check(locale, unknownIds, voiceSampleFor(locale));
+    if (!result) return applyVoiceCheck(listed, null);
+    if (result.defaultVoice) known.add(DEFAULT_VOICE);
+    unknownIds.forEach((id) => {
+      if (result.voices?.[id]) known.add(id);
+    });
+    confirmedVoices.set(locale, known);
+  }
+  return applyVoiceCheck(listed, {
+    defaultVoice: known.has(DEFAULT_VOICE),
+    voices: Object.fromEntries(listed.map((voice) => [voice.id, known.has(voice.id)])),
+  });
 };
 
 const LANGUAGE_SETTLE_MS = 1500;
