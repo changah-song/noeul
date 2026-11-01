@@ -386,7 +386,6 @@ class NativeEpubReaderModule : Module() {
         "onWordSelected",
         "onTextSelected",
         "onSelectionCleared",
-        "onDoubleTap",
         "onFocusSentenceChange",
         "onExposure",
         "onSavedTermsShown",
@@ -651,12 +650,49 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
   }
   private val pullArcRect = android.graphics.RectF()
 
+  // Where the reader is in the chapter: a thin bar down the right edge, there
+  // the whole time (not only mid-scroll, like Android's own), so it's plain
+  // how much of the chapter is left. Each chapter is its own scroll, so the
+  // bar starts over with each one. The empty pull space after the text isn't
+  // counted: the thumb reaches the bottom as the last line comes into view.
+  private val scrollbarTrackPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+  private val scrollbarThumbPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+  private val scrollbarRect = android.graphics.RectF()
+  private val scrollbarWidth = 3f * density
+  private val scrollbarEdgeGap = 5f * density
+  private val scrollbarEndGap = 10f * density
+  private val scrollbarMinThumb = 32f * density
+
   fun setPullColors(inkColor: Int, faintColor: Int) {
     pullTrackPaint.color = faintColor
     pullFillPaint.color = inkColor
     pullDotPaint.color = inkColor
     pullTextPaint.color = inkColor
+    scrollbarTrackPaint.color = faintColor
+    scrollbarThumbPaint.color = inkColor
+    scrollbarThumbPaint.alpha = (0.32f * 255).roundToInt()
     invalidate()
+  }
+
+  private fun drawChapterScrollbar(canvas: android.graphics.Canvas) {
+    val child = getChildAt(0) ?: return
+    val textHeight = child.height - if (pullNextEnabled) pullSpacePx else 0
+    val textScroll = textHeight - height
+    // The whole chapter fits on the screen: nothing to show.
+    if (textScroll <= 0) return
+    val fraction = (scrollY.toFloat() / textScroll).coerceIn(0f, 1f)
+    val trackTop = scrollY + scrollbarEndGap
+    val trackLength = height - scrollbarEndGap * 2
+    if (trackLength <= scrollbarMinThumb) return
+    val thumbLength = (trackLength * height / textHeight).coerceIn(scrollbarMinThumb, trackLength)
+    val right = width - scrollbarEdgeGap
+    val left = right - scrollbarWidth
+    val radius = scrollbarWidth / 2f
+    scrollbarRect.set(left, trackTop, right, trackTop + trackLength)
+    canvas.drawRoundRect(scrollbarRect, radius, radius, scrollbarTrackPaint)
+    val thumbTop = trackTop + (trackLength - thumbLength) * fraction
+    scrollbarRect.set(left, thumbTop, right, thumbTop + thumbLength)
+    canvas.drawRoundRect(scrollbarRect, radius, radius, scrollbarThumbPaint)
   }
 
   private val pullProgress: Float
@@ -707,6 +743,7 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
   override fun draw(canvas: android.graphics.Canvas) {
     super.draw(canvas)
     if (swipeNavigationEnabled || !edgePullEnabled) return
+    drawChapterScrollbar(canvas)
     val maxScroll = maxVerticalScroll()
     // Next: shows as the empty space after the text scrolls into view.
     if (pullNextEnabled) {
@@ -948,7 +985,6 @@ class NativeEpubReaderView(
   private val onWordSelected by EventDispatcher()
   private val onTextSelected by EventDispatcher()
   private val onSelectionCleared by EventDispatcher()
-  private val onDoubleTap by EventDispatcher()
   private val onFocusSentenceChange by EventDispatcher()
   private val onExposure by EventDispatcher()
   private val onSavedTermsShown by EventDispatcher()
@@ -1144,7 +1180,6 @@ class NativeEpubReaderView(
     continuousPageView.tapProgress = ::levelTapProgress
     continuousPageView.savedFade = ::savedFadeProgress
     continuousPageView.noteIconTapped = ::handleNoteIconTapped
-    continuousPageView.doubleTapped = ::handlePageDoubleTap
     continuousScrollView.addView(
       continuousPageView,
       FrameLayout.LayoutParams(
@@ -2082,7 +2117,6 @@ class NativeEpubReaderView(
       pageAdapter?.tapProgress = ::levelTapProgress
       pageAdapter?.savedFade = ::savedFadeProgress
       pageAdapter?.noteIconTapped = ::handleNoteIconTapped
-      pageAdapter?.doubleTapped = ::handlePageDoubleTap
       viewPager.adapter = pageAdapter
     } else {
       val canAnimateChapterTransition = (
@@ -3550,8 +3584,13 @@ class NativeEpubReaderView(
     onTextSelected(event)
   }
 
+  // The page itself was tapped where there's no word (or a drag selected
+  // nothing). `fromTap` tells the reader apart from clears it causes itself
+  // (a page turn, a chapter pull): with nothing open, a tap brings the
+  // reader's controls back from full screen.
   private fun handlePageSelectionCleared() {
-    clearActiveSelection(dispatchEvent = true, forceEvent = true)
+    clearActiveSelection(dispatchEvent = false)
+    onSelectionCleared(mapOf("fromTap" to true))
   }
 
   private fun handlePageSelectionDragStateChanged(isDraggingSelection: Boolean) {
@@ -3561,13 +3600,6 @@ class NativeEpubReaderView(
 
   private fun handleNoteIconTapped(noteId: String) {
     onHighlightNotePress(mapOf("id" to noteId))
-  }
-
-  // The first tap of the pair may have opened a lookup: close it, then tell
-  // the reader to toggle full screen.
-  private fun handlePageDoubleTap() {
-    clearActiveSelection(dispatchEvent = true, forceEvent = true)
-    onDoubleTap(mapOf<String, Any>())
   }
 
   private fun handlePageEdgeAction(kind: ReaderEdgeKind) {

@@ -29,6 +29,7 @@ import { IconButton, Screen } from '../components/ui';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
+import { useNavigationButtonsInset } from '../hooks/useNavigationButtonsInset';
 import AppTopBar from '../components/shared/AppTopBar';
 import { useFocusEffect } from '@react-navigation/native';
 import { searchSongs } from '../services/api/songSearch';
@@ -142,6 +143,8 @@ const HERO_ITEM_GAP = Spacing.xl4;
 const FAB_EDGE_OFFSET = Spacing.xl5;
 const FAB_MENU_GAP = Spacing.xl;
 const FAB_WINDOW_BOTTOM_OFFSET = Layout.tabBarHeight + FAB_EDGE_OFFSET;
+// Room under the shelf for the floating Read/Learn pill.
+const HOME_PILL_CLEARANCE = Layout.tabBarHeight + Spacing.xl5;
 const WORDS_PER_PAGE = 250;
 const APP_LOGO_SOURCE = require('../assets/noeul.png');
 const DEFAULT_PREVIEW_SPINE_WIDTH = 24;
@@ -1745,6 +1748,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const { colors: themeColors } = useTheme();
     const colors = themeColors;
     const safeAreaInsets = useSafeAreaInsets();
+    const navigationButtonsInset = useNavigationButtonsInset();
     const HOME_COLORS = useMemo(() => createHomeColors(colors), [colors]);
     const styles = useMemo(() => createStyles(HOME_COLORS, colors), [HOME_COLORS, colors]);
     const themedTabBarStyle = useMemo(() => createTabBarBaseStyle(colors), [colors]);
@@ -2097,8 +2101,11 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     attribution: localBook.attribution ?? book.attribution,
                     snippet: localBook.snippet ?? book.snippet,
                     genre: localBook.genre ?? book.genre,
-                    difficulty: localBook.difficulty ?? book.difficulty,
-                    bookLevel: localBook.bookLevel ?? book.bookLevel,
+                    // The catalog's level (scored on the book's main content
+                    // only) over one saved with the download or worked out on
+                    // the device, which counted the front matter too.
+                    difficulty: book.difficulty ?? localBook.difficulty,
+                    bookLevel: book.bookLevel ?? localBook.bookLevel,
                     coverColor: book.coverColor,
                     coverAccentColor: hasCustomCover
                         ? localBook.coverAccentColor ?? catalogCoverColors.coverAccentColor
@@ -4305,7 +4312,12 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         <HomeThemeContext.Provider value={homeThemeValue}>
         <Screen backgroundColor={HOME_COLORS.bg} contentContainerStyle={styles.screenFrame}>
             <ScrollView
-                contentContainerStyle={styles.screenContent}
+                contentContainerStyle={[
+                    styles.screenContent,
+                    // The pill rises above the navigation buttons; the
+                    // shelf's end clears it by the same amount.
+                    { paddingBottom: HOME_PILL_CLEARANCE + navigationButtonsInset },
+                ]}
                 showsVerticalScrollIndicator={false}
             >
             <Pressable
@@ -4918,7 +4930,6 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     screenContent: {
         paddingHorizontal: 0,
         paddingTop: 0,
-        paddingBottom: Layout.tabBarHeight + Spacing.xl5,
     },
     stack: {
         gap: 0,

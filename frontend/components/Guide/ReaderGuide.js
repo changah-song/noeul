@@ -54,12 +54,11 @@ const CLIP_COPY = {
     bar: { title: 'guide.barTitle', body: 'guide.barBody' },
     save: { title: 'guide.saveTitle', body: 'guide.saveBody', hint: 'guide.saveHint' },
     hold: { title: 'guide.holdTitle', body: 'guide.holdBody', hint: 'guide.holdHint' },
-    focus: { title: 'guide.focusTitle', body: 'guide.focusBody', hint: 'guide.focusHint' },
     listen: { title: 'guide.listenTitle', body: 'guide.listenBody', hint: 'guide.listenHint' },
 };
 
 const MORE = [
-    { key: 'Fullscreen', Icon: MaterialCommunityIcons, icon: 'gesture-double-tap' },
+    { key: 'Fullscreen', Icon: MaterialCommunityIcons, icon: 'fullscreen' },
     { key: 'Audio', Icon: Feather, icon: 'headphones' },
     { key: 'Bookmark', Icon: MaterialIcons, icon: 'bookmark-border' },
     { key: 'Jump', Icon: MaterialCommunityIcons, icon: 'gesture-swipe-horizontal' },

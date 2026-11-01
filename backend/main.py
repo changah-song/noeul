@@ -2068,6 +2068,66 @@ def is_en_sentence_initial_name(token, names_mid_sentence: set[str]) -> bool:
     return token.pos_ == "PROPN" and token.ent_type_ in EN_NAME_ENTITY_TYPES
 
 
+# Verbs whose bare stem is right even though the stem + "e" is also a verb
+# ("dinged" is ding, not dinge).
+EN_VERB_KEEP_BARE_STEMS = {"ding"}
+# (verb index, verb exceptions) from spaCy's lemmatizer, read once.
+en_verb_lemma_tables = None
+
+
+def correct_en_verb_lemma(word: str, lemma: str, verb_index, verb_exceptions) -> str:
+    """spaCy's rule lemmatizer lets the last matching suffix rule win, so when
+    both the bare stem and the stem + "e" are verbs it picks the bare one:
+    shining -> shin, hoping -> hop, rides -> rid, planed -> plan, staring ->
+    star. A verb that ends in a single consonant doubles it before -ing/-ed
+    (hopping, planned, starred; spaCy lists those as exceptions), so an
+    undoubled form whose e-form is a verb is that verb. Not before "-ing" when
+    the stem ends in "ng" (singing, swinging: sing takes no e; singed is singe).
+
+    spaCy also moves an exception to the front only when no rule found it, so
+    "coping" (listed as cope) still came out as "cop"; the listed lemma wins.
+    A word spaCy left as it is (a base form: "to found") is not touched."""
+    word = (word or "").strip().lower()
+    if not lemma or lemma == word:
+        return lemma
+    listed = verb_exceptions.get(word)
+    if listed:
+        return listed[0]
+    if lemma in EN_VERB_KEEP_BARE_STEMS:
+        return lemma
+    for suffix in ("ing", "ed", "es"):
+        if word.endswith(suffix) and word[: -len(suffix)] == lemma:
+            if suffix == "ing" and lemma.endswith("ng"):
+                return lemma
+            with_e = f"{lemma}e"
+            return with_e if with_e in verb_index else lemma
+    return lemma
+
+
+def get_en_verb_lemma_tables():
+    """(verb index, verb exceptions) from the loaded model's lemmatizer, or
+    empty ones when the model has no rule tables."""
+    global en_verb_lemma_tables
+    if en_verb_lemma_tables is None:
+        verb_index, verb_exceptions = set(), {}
+        try:
+            lookups = get_en_nlp().get_pipe("lemmatizer").lookups
+            verb_index = set(lookups.get_table("lemma_index", {}).get("verb", []))
+            verb_exceptions = dict(lookups.get_table("lemma_exc", {}).get("verb", {}))
+        except (KeyError, AttributeError, ValueError):
+            pass
+        en_verb_lemma_tables = (verb_index, verb_exceptions)
+    return en_verb_lemma_tables
+
+
+def en_token_lemma(token) -> str:
+    lemma = token.lemma_.strip().lower()
+    if token.pos_ != "VERB":
+        return lemma
+    verb_index, verb_exceptions = get_en_verb_lemma_tables()
+    return correct_en_verb_lemma(token.text, lemma, verb_index, verb_exceptions)
+
+
 def extract_en_lookup_tokens(text: str) -> tuple[list[str], list[dict], dict[str, str]]:
     doc = get_en_nlp()(text)
     seen_lemmas: set[str] = set()
@@ -2080,7 +2140,7 @@ def extract_en_lookup_tokens(text: str) -> tuple[list[str], list[dict], dict[str
     names_mid_sentence = {token.text for token in doc if is_en_name_token(token)}
 
     for token in doc:
-        lemma = token.lemma_.strip().lower()
+        lemma = en_token_lemma(token)
         raw_surface = token.text.strip()
         lower_surface = raw_surface.lower()
 

@@ -21,12 +21,13 @@ import Flashcard from '../components/Learn/Flashcard';
 import AudioReview from '../components/Learn/AudioReview';
 import GrammarSection from '../components/Learn/GrammarSection';
 import AppTopBar from '../components/shared/AppTopBar';
-import { PILL_TAB_BAR_CLEARANCE } from '../components/shared/TabBar';
+import { usePillTabBarClearance } from '../components/shared/TabBar';
 import CandidateCard from '../components/vocab/CandidateCard';
 import { Screen } from '../components/ui';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
+import { useNavigationButtonsInset } from '../hooks/useNavigationButtonsInset';
 import { stripStoredPlaceholder } from '../i18n/userFacing';
 import { fetchHanjaRelated } from '../services/api/hanjaRelated';
 import { formatDate, formatNumber, tRuntime } from '../services/interfaceLanguage';
@@ -126,6 +127,7 @@ const LEARN_SIDE_PADDING = 16;
 const ENCOUNTER_DOT_COUNT = 4;
 const DETAIL_CONTEXT_LIMIT = 2;
 const DETAIL_HANJA_RELATED_PAGE_SIZE = 2;
+const DETAIL_BOTTOM_PADDING = 32;
 const SEGMENT_TRACK_PADDING = 3;
 const MS_PER_DAY = 1000 * 60 * 60 * 24;
 const EMPTY_HANJA_LOOKUP = {
@@ -1132,6 +1134,7 @@ const WordDetailModal = ({
 }) => {
   const { t, language } = useTranslation();
   const { colors, styles } = useLearnTheme();
+  const navigationButtonsInset = useNavigationButtonsInset();
   const [hanjaIndex, setHanjaIndex] = useState(0);
   const hanjaKey = word?.hanja ?? '';
 
@@ -1191,7 +1194,12 @@ const WordDetailModal = ({
         </TouchableOpacity>
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.detailContent}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        // The page runs under the navigation bar; with buttons there, the
+        // end of the page scrolls up above them.
+        contentContainerStyle={[styles.detailContent, { paddingBottom: DETAIL_BOTTOM_PADDING + navigationButtonsInset }]}
+      >
         <View style={styles.detailHero}>
           <View style={styles.detailWordLine}>
             <Text selectable style={styles.detailWord}>{word.word}</Text>
@@ -1295,6 +1303,7 @@ const Learn = ({ navigation, user }) => {
   const { activeOwnerId, syncGeneration, syncPaused } = useLocalOwner();
   const { colors } = useTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
+  const pillTabBarClearance = usePillTabBarClearance();
   const proficiencyLevels = useMemo(() => createProficiencyLevels(colors), [colors]);
   const proficiencyByKey = useMemo(() => createProficiencyByKey(proficiencyLevels), [proficiencyLevels]);
   const learnThemeValue = useMemo(() => ({
@@ -1836,7 +1845,12 @@ const Learn = ({ navigation, user }) => {
 
   return (
     <LearnThemeContext.Provider value={learnThemeValue}>
-    <Screen scroll backgroundColor={colors.bgPage} contentContainerStyle={styles.content}>
+    <Screen
+      scroll
+      backgroundColor={colors.bgPage}
+      // The floating Read/Learn pill sits over the bottom of the list.
+      contentContainerStyle={[styles.content, { paddingBottom: pillTabBarClearance }]}
+    >
       {/* The same bar as Home (today's goal, profile), so the top of the
           screen stays put when switching between Read and Learn. */}
       <AppTopBar
@@ -2099,8 +2113,6 @@ const createStyles = (colors) => StyleSheet.create({
     flexGrow: 1,
     paddingHorizontal: 0,
     paddingTop: 0,
-    // The floating Read/Learn pill sits over the bottom of the list.
-    paddingBottom: PILL_TAB_BAR_CLEARANCE,
     gap: 0,
   },
   summaryCard: {
@@ -2519,7 +2531,6 @@ const createStyles = (colors) => StyleSheet.create({
   },
   detailContent: {
     paddingTop: 6,
-    paddingBottom: 32,
   },
   detailHero: {
     paddingHorizontal: 24,

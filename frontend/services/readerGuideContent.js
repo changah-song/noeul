@@ -17,8 +17,7 @@ import { normalizeChineseScript, normalizeInterfaceLanguageCode, normalizeLangua
 export const GUIDE_PARAGRAPHS = [[0, 1], [2, 3], [4, 5], [6]];
 export const GUIDE_BAR_SENTENCE = 2;
 export const GUIDE_HOLD_SENTENCE = 6;
-// Focus mode steps from this sentence to the next; listening reads the first four.
-export const GUIDE_FOCUS_SENTENCE = 2;
+// Listening reads the first four sentences.
 export const GUIDE_LISTEN_SENTENCES = 4;
 
 const PAGES = {

@@ -1,6 +1,5 @@
 import {
     GUIDE_BAR_SENTENCE,
-    GUIDE_FOCUS_SENTENCE,
     GUIDE_HOLD_SENTENCE,
     GUIDE_LISTEN_SENTENCES,
 } from './readerGuideContent';
@@ -14,15 +13,14 @@ import {
 // there until the viewer taps the lit spot (or asks to be shown).
 // `target`: what gets tapped — a role, resolved to the page's word ids by the
 // player ('word' = the page's word to look up, 'hold' = the held sentence's
-// first word).
+// first word, 'play' = the play button over the page's bottom corner).
 export const GUIDE_CLIPS = [
     { key: 'intro' },
     { key: 'tap', duration: 4200, actionAt: 900, target: 'word' },
     { key: 'bar', duration: 3800 },
     { key: 'save', duration: 3800, actionAt: 900, target: 'save' },
     { key: 'hold', duration: 5000, actionAt: 700, target: 'hold' },
-    { key: 'focus', duration: 4800, actionAt: 700, target: 'eye' },
-    { key: 'listen', duration: 5600, actionAt: 700, target: 'listen' },
+    { key: 'listen', duration: 5600, actionAt: 700, target: 'play' },
     { key: 'done' },
 ];
 
@@ -52,12 +50,9 @@ export const guideFrameAt = (key, elapsed, word, holdLength) => {
         grammar: false,
         selected: 0,
         holdTouch: -1,
-        focus: null,
         reading: -1,
         touch: null,
         toast: false,
-        swipe: false,
-        focusOn: false,
         listenOn: false,
     };
     if (key === 'tap') {
@@ -85,17 +80,9 @@ export const guideFrameAt = (key, elapsed, word, holdLength) => {
         // Only the meaning: the Grammar tab sits in view for later, but a
         // second tap in the same clip was one thing too many to take in.
         frame.ai = elapsed >= 2250;
-    } else if (key === 'focus') {
-        frame.savedMark = true;
-        if (touchingAt(elapsed)) frame.touch = 'eye';
-        if (elapsed >= 150) {
-            frame.focusOn = true;
-            frame.focus = elapsed >= 2050 ? GUIDE_FOCUS_SENTENCE + 1 : GUIDE_FOCUS_SENTENCE;
-        }
-        frame.swipe = elapsed >= 1550 && elapsed < 2050;
     } else if (key === 'listen') {
         frame.savedMark = true;
-        if (touchingAt(elapsed)) frame.touch = 'listen';
+        if (touchingAt(elapsed)) frame.touch = 'play';
         if (elapsed >= 150) {
             frame.listenOn = true;
             frame.reading = Math.max(0, Math.min(GUIDE_LISTEN_SENTENCES - 1, Math.floor((elapsed - 300) / 1250)));

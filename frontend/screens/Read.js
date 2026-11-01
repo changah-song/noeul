@@ -22,12 +22,12 @@ import FocusControls from '../components/Read/FocusControls';
 import {
     ReaderBackButton,
     ReaderCheckpointButton,
-    ReaderFocusModeButton,
     ReaderHeaderBar,
-    ReaderListenButton,
     ReaderMenuButton,
     ReaderProgressButton,
 } from '../components/Read/ReaderHeaderBar';
+import { navigationButtonsInset } from '../hooks/useNavigationButtonsInset';
+import { SEEK_SETTLE_MS, isReadingOn } from '../services/readingOn';
 import { createReaderChromeStyles } from '../components/Read/readerChromeStyles';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
@@ -137,7 +137,14 @@ import useSavedWordFades from '../hooks/useSavedWordFades';
 import { ONBOARDING_FLOW_SEEN_KEY } from './Onboarding';
 import { getSyncStatus, markSyncPending, subscribeSyncStatus } from '../services/syncStatus';
 import { blockIdForAnchor, tocAnchorFromHref } from '../services/tocAnchors';
-import { chapterMarks, positionForStoryProgress, storyProgress, storyRange } from '../services/storyRange';
+import {
+    chapterMarks,
+    positionForStoryProgress,
+    storyBoundsForBook,
+    storyProgress,
+    storyRange,
+    storyStartBlockId,
+} from '../services/storyRange';
 import PageScrubber, { PAGE_SCRUBBER_HEIGHT } from '../components/Read/PageScrubber';
 import {
     noteReadingActivity,
@@ -200,6 +207,9 @@ const DEFAULT_READER_SETTINGS = {
     translationLines: PINNED_TRANSLATION_DEFAULT_LINES,
 };
 const READING_MODES = ['paged', 'scroll'];
+// The play button over the bottom line's right end, and its gap above it.
+const PLAY_BUTTON_SIZE = 44;
+const PLAY_BUTTON_GAP = 12;
 
 const shallowEqualObjects = (a, b) => {
     const aKeys = Object.keys(a);
@@ -421,16 +431,18 @@ const leadingCoverCount = (spine = []) => {
 // The part of a spine progress counts over. The library's public-domain books
 // get the story's range (services/storyRange.js: first chapter to the end of
 // the story); a reader's own books, whose make-up we don't know, everything
-// after a leading cover. Kept per spine array.
+// after a leading cover. `bounds`: the library book's measured main content
+// (storyBoundsForBook), which can start and end inside a file. Kept per spine
+// array.
 const storyRangeCache = new WeakMap();
-const storyRangeForSpine = (spine, toc, curated = false) => {
+const storyRangeForSpine = (spine, toc, curated = false, bounds = null) => {
     if (!Array.isArray(spine) || spine.length === 0) return null;
     const cached = storyRangeCache.get(spine);
-    if (cached && cached.toc === toc && cached.curated === curated) return cached.range;
+    if (cached && cached.toc === toc && cached.curated === curated && cached.bounds === bounds) return cached.range;
     const range = curated
-        ? storyRange(spine, Array.isArray(toc) ? toc : [])
+        ? storyRange(spine, Array.isArray(toc) ? toc : [], bounds)
         : { start: leadingCoverCount(spine), end: spine.length - 1 };
-    storyRangeCache.set(spine, { toc, curated, range });
+    storyRangeCache.set(spine, { toc, curated, bounds, range });
     return range;
 };
 
@@ -441,12 +453,12 @@ const isCuratedBook = (book) => Boolean(
 
 // Progress through the book, weighted by chapter size: for the library's
 // books 0% at the story's first chapter and 100% at its end.
-const progressForBookPosition = (spineIndex, totalSpineItems, pageIndex = null, pagesInChapter = null, spine = null, toc = null, curated = false) => {
+const progressForBookPosition = (spineIndex, totalSpineItems, pageIndex = null, pagesInChapter = null, spine = null, toc = null, curated = false, bounds = null) => {
     if (!Number.isInteger(spineIndex) || totalSpineItems <= 0) {
         return null;
     }
     if (Array.isArray(spine) && spine.length === totalSpineItems) {
-        return storyProgress(spine, storyRangeForSpine(spine, toc, curated), spineIndex, pageIndex, pagesInChapter);
+        return storyProgress(spine, storyRangeForSpine(spine, toc, curated, bounds), spineIndex, pageIndex, pagesInChapter);
     }
     const covers = Array.isArray(spine) ? leadingCoverCount(spine) : 0;
     if (covers > 0) {
@@ -790,6 +802,8 @@ const Read = ({
     };
     const listenSpeakRef = useRef(null);
     const listenPauseRef = useRef(null);
+    // The voice was stopped for a lookup panel and goes on when it closes.
+    const resumeAfterPanelRef = useRef(false);
     const sendFocusNavRef = useRef(null);
     const [lookupPanelHeight, setLookupPanelHeight] = useState(0);
     // Focus info (sentence index/total) updates on every beam step. It is kept
@@ -888,6 +902,7 @@ const Read = ({
     // Monotonic counter stamped onto a restorePosition that represents a
     // deliberate jump; see handleSelectBookmark.
     const seekTokenRef = useRef(0);
+    const lastSeekAtRef = useRef(0);
     const recordedVocabContextsRef = useRef({ book: null, keys: new Set() });
     const updateNativeRestorePosition = useCallback((position) => {
         // Page changes repeat the same position often (every focus-mode step
@@ -913,6 +928,11 @@ const Read = ({
     const curatedBook = isCuratedBook(activeBook);
     const curatedBookRef = useRef(curatedBook);
     curatedBookRef.current = curatedBook;
+    // Where a library book's main content starts and ends (past the preface,
+    // the notes to teachers, before the word list), measured offline.
+    const storyBounds = useMemo(() => storyBoundsForBook(activeBook), [activeBook?.publicLibraryId]);
+    const storyBoundsRef = useRef(storyBounds);
+    storyBoundsRef.current = storyBounds;
     const activeBookLanguage = activeBook ? selectedBookLanguage : targetLanguage;
     const shouldUseHeuristicHighlights = !activeBook?.preprocessed;
     const translationBannerVisualState = useMemo(() => ({
@@ -1283,6 +1303,13 @@ const Read = ({
     useEffect(() => {
         focusModeRef.current = focusMode;
     }, [focusMode]);
+    // A lookup panel is up: the dictionary, or the AI explanation (only ever
+    // one of them).
+    const lookupOpen = Boolean(highlightedWord) || Boolean(textSelection);
+    const lookupOpenRef = useRef(lookupOpen);
+    lookupOpenRef.current = lookupOpen;
+    // Listen mode's "wait while a panel is up" (see holdListeningForPanel).
+    const holdListeningForPanelRef = useRef(null);
 
     const handleNativeWordSelected = useCallback((event = {}) => {
         const text = typeof event.text === 'string' ? event.text.trim() : '';
@@ -1294,6 +1321,8 @@ const Read = ({
         // panel stays and changes); a tap on blank space closes it through
         // onSelectionCleared. A light tick so the lookup feels physical.
         tapSelect();
+        // Straight away, not after the panel renders: the voice stops on the tap.
+        holdListeningForPanelRef.current?.();
 
         const sentence = typeof event.sentence === 'string' ? event.sentence.trim() : '';
 
@@ -1310,6 +1339,8 @@ const Read = ({
         }
 
         setIsNativeSelection(false);
+        // The dictionary takes the AI explanation's place: one panel at a time.
+        setTextSelection(null);
         setHighlightedWord(text);
         setHighlightedWordContext({
             sentence,
@@ -1332,7 +1363,12 @@ const Read = ({
         });
     }, [activeBook?.title, activeBookLanguage, activeOwnerId, currentBook]);
 
-    const handleNativeSelectionCleared = useCallback(() => {
+    // `fromTap`: the page itself was tapped on blank space. With nothing open
+    // that brings the controls back from full screen (reading on hides them).
+    const handleNativeSelectionCleared = useCallback((event = {}) => {
+        if (event?.fromTap && !lookupOpenRef.current) {
+            setIsFullscreen(false);
+        }
         setHighlightedWord('');
         setHighlightedWordContext(null);
         setIsNativeSelection(false);
@@ -1345,6 +1381,7 @@ const Read = ({
             return;
         }
 
+        holdListeningForPanelRef.current?.();
         setIsNativeSelection(true);
         setHighlightedWord('');
         setHighlightedWordContext(null);
@@ -1662,13 +1699,6 @@ const Read = ({
         };
     }, [navigation]);
 
-    // A double tap on the page (the native view reports it, after closing
-    // whatever the first tap opened) goes in and out of full screen.
-    const handleNativeDoubleTap = useCallback(() => {
-        setShowMenu(false);
-        setIsFullscreen((current) => !current);
-    }, []);
-
     // The reader has no tab bar, so back (the header's chevron or the
     // hardware button) is the way out: to the tab the reader came from, else
     // Home. Either way the book leaves the tab history. Navigating to Home
@@ -1707,7 +1737,7 @@ const Read = ({
             sentence={textSelection.sentence}
             language={activeBookLanguage}
             interfaceLanguage={interfaceLanguage}
-            bottomInset={focusMode ? 0 : insets.bottom}
+            bottomInset={focusMode ? navigationButtonsInset(insets.bottom) : insets.bottom}
             ownerId={activeOwnerId}
             bookUri={currentBook}
             bookTitle={activeBook?.title ?? null}
@@ -2161,6 +2191,7 @@ const Read = ({
         // "page" is the whole chapter and the target always resolves to the
         // chapter already on screen.
         seekTokenRef.current += 1;
+        lastSeekAtRef.current = Date.now();
         const position = {
             spineIndex: bookmark.spineIndex,
             pageIndex: Number.isInteger(bookmark.pageIndex) ? bookmark.pageIndex : 0,
@@ -2833,6 +2864,8 @@ const Read = ({
                 completedAt: finalStatus === 'complete' ? new Date().toISOString() : null,
             });
 
+            // A library book keeps the catalog's level, measured on its main
+            // content only; this one counts every chapter, front matter too.
             setBooks((prevBooks) => prevBooks.map((book) => (
                 book.uri === currentBook
                     ? {
@@ -2842,7 +2875,7 @@ const Read = ({
                         ...(completedWordCount != null
                             ? { wordCount: completedWordCount }
                             : {}),
-                        ...(completedBookLevel?.level
+                        ...(completedBookLevel?.level && !curatedBookRef.current
                             ? { difficulty: completedBookLevel.level, bookLevel: completedBookLevel }
                             : {}),
                     }
@@ -2853,7 +2886,7 @@ const Read = ({
                 scheduleCloudProgressSync({
                     ...activeBook,
                     wordCount: completedWordCount,
-                    ...(completedBookLevel?.level
+                    ...(completedBookLevel?.level && !curatedBookRef.current
                         ? { difficulty: completedBookLevel.level, bookLevel: completedBookLevel }
                         : {}),
                     preprocessed: fullBookWindow && finalStatus === 'complete',
@@ -2974,15 +3007,42 @@ const Read = ({
                 return;
             }
 
-            // A book opened for the first time starts at its first chapter,
-            // past the cover, title page and introduction (still in the
-            // contents). The percent counts from there too.
+            // A book opened for the first time starts where its main content
+            // does, past the cover, title page, preface and notes to teachers
+            // (still in the contents), even partway into a file. The percent
+            // counts from there too.
             if (!isChapterNavigation && !requestedRestorePosition && curatedBookRef.current) {
-                const range = storyRangeForSpine(parsedPackage.spine, parsedPackage.toc, true);
+                const range = storyRangeForSpine(parsedPackage.spine, parsedPackage.toc, true, storyBoundsRef.current);
                 const autoSpineIndex = spineIndexForReaderPackage(parsedPackage);
-                if (range && Number.isInteger(range.start) && range.start !== autoSpineIndex) {
-                    loadNativeReaderPackageRef.current?.(range.start);
-                    return;
+                if (range && Number.isInteger(range.start)) {
+                    let firstBlockId = null;
+                    if (range.startFraction > 0) {
+                        try {
+                            const startPackage = range.start === autoSpineIndex
+                                ? parsedPackage
+                                : await loadParsedChapterPackage(range.start, 'story-start');
+                            if (chapterLoadTokenRef.current !== loadToken) return;
+                            firstBlockId = storyStartBlockId(chapterBlocksForReaderPackage(startPackage), range);
+                        } catch {
+                            firstBlockId = null;
+                        }
+                    }
+                    if (range.start !== autoSpineIndex || firstBlockId) {
+                        // A jump, not reading on: it mustn't send the page full screen.
+                        seekTokenRef.current += 1;
+                        lastSeekAtRef.current = Date.now();
+                        loadNativeReaderPackageRef.current?.(range.start, firstBlockId ? {
+                            restorePosition: {
+                                spineIndex: range.start,
+                                pageIndex: null,
+                                pagesInChapter: null,
+                                href: parsedPackage.spine?.[range.start]?.path || '',
+                                firstBlockId,
+                                seekToken: `seek:${seekTokenRef.current}`,
+                            },
+                        } : {});
+                        return;
+                    }
                 }
             }
 
@@ -3042,7 +3102,8 @@ const Read = ({
                     restorePagesInChapter,
                     parsedPackage.spine,
                     parsedPackage.toc,
-                    curatedBookRef.current
+                    curatedBookRef.current,
+                    storyBoundsRef.current
                 ),
                 href: parsedPackage.loadedSpineItem?.path || '',
                 pageInChapter: Number.isInteger(restorePageIndex) ? restorePageIndex + 1 : null,
@@ -3209,7 +3270,8 @@ const Read = ({
             total,
             nativeReaderPackageRef.current?.spine,
             nativeReaderPackageRef.current?.toc,
-            curatedBookRef.current
+            curatedBookRef.current,
+            storyBoundsRef.current
         );
 
         setReaderLocationInfo((prev) => {
@@ -3457,7 +3519,8 @@ const Read = ({
             committedPageCount,
             committedPackage.spine,
             committedPackage.toc,
-            curatedBookRef.current
+            curatedBookRef.current,
+            storyBoundsRef.current
         ) ?? clampProgress(activeBook?.progress ?? 0);
         const nextBookPatch = {
             nativePosition: nextPosition,
@@ -3814,8 +3877,8 @@ const Read = ({
         ]
     );
     // Rows above the settings tabs in the sheet: saved words and Checkpoints.
-    // The contents open from the progress in the header and the scrubber;
-    // full screen is a double tap on the page.
+    // The contents open from the progress in the header; full screen comes on
+    // by itself as the reader reads on.
     const settingsSheetActions = useMemo(() => [{
         key: 'saved',
         label: t('read.savedTab', { count: bookSavedWords.length }),
@@ -3836,12 +3899,20 @@ const Read = ({
     // bookmarks; dragging previews and releasing goes there.
     const scrubberShown = Boolean(currentBook) && bookLoadState === 'ready' && !isFullscreen && !focusMode;
     const scrubberSpace = scrubberShown ? PAGE_SCRUBBER_HEIGHT + insets.bottom : 0;
-    // Cards at the bottom of the screen sit above the scrubber.
-    const bottomOverlayBase = scrubberShown ? scrubberSpace : insets.bottom;
+    // Listening starts from a play button resting over the line's right end;
+    // it goes with the rest of the controls in full screen, and gives way to
+    // an open panel and to the listen bar.
+    const playButtonShown = scrubberShown && !listenActive && !lookupOpen;
+    // Cards at the bottom of the screen sit above the scrubber (and the play
+    // button). Without the scrubber the page stops above the navigation
+    // buttons, on phones that have them.
+    const bottomOverlayBase = (scrubberShown ? scrubberSpace : insets.bottom)
+        + (playButtonShown ? PLAY_BUTTON_SIZE + PLAY_BUTTON_GAP : 0);
+    const readerBottomInset = scrubberShown ? 0 : navigationButtonsInset(insets.bottom);
     const readerSpine = nativeReaderPackage?.spine;
     const scrubberRange = useMemo(
-        () => storyRangeForSpine(readerSpine, toc, curatedBook),
-        [curatedBook, readerSpine, toc]
+        () => storyRangeForSpine(readerSpine, toc, curatedBook, storyBounds),
+        [curatedBook, readerSpine, storyBounds, toc]
     );
     const scrubberChapters = useMemo(
         () => chapterMarks(readerSpine, scrubberRange, toc),
@@ -3915,7 +3986,9 @@ const Read = ({
         if (position.spineIndex !== activeSpineIndex) pendingScrubSeekRef.current = target;
         handleSelectBookmark(target);
     }, [activeSpineIndex, handleSelectBookmark, readerSpine, scrubberRange]);
-    const focusPanelOpen = focusMode && !!highlightedWord;
+    // The AI explanation counts as much as the dictionary: the listen bar and
+    // the lit sentence lift above either.
+    const focusPanelOpen = focusMode && lookupOpen;
     // Total height the lookup panel occupies from the bottom of the screen;
     // the native reading surface lifts only as far as the focused sentence
     // needs to end above it (often not at all: it rests in the top half).
@@ -4220,6 +4293,9 @@ const Read = ({
     }, []);
 
     const pauseListening = useCallback(({ keepActive = true } = {}) => {
+        // Any pause but the panel's own (which sets it again after) means the
+        // panel closing must not start the voice.
+        resumeAfterPanelRef.current = false;
         listenRunRef.current += 1;
         listenPlayingRef.current = false;
         listenSpokenKeyRef.current = '';
@@ -4381,6 +4457,7 @@ const Read = ({
     listenSpeakRef.current = speakFocusedSentence;
 
     const resumeListening = useCallback(async () => {
+        resumeAfterPanelRef.current = false;
         // The notification player needs this on Android 13+; the dialog is
         // answered before the voice starts, so it never cuts into a sentence.
         await ensureNotificationPermission();
@@ -4441,6 +4518,27 @@ const Read = ({
             resumeListening();
         }
     }, [pauseListening, resumeListening]);
+
+    // While a lookup panel is up the voice waits, so the word (or the AI's
+    // explanation) can be taken in without the sentence running on; once
+    // the panel is down it picks up again at the lit sentence (the tapped
+    // word's, after a tap). A pause or play of the reader's own in between
+    // wins.
+    const holdListeningForPanel = useCallback(() => {
+        if (!listenPlayingRef.current) return;
+        pauseListening();
+        resumeAfterPanelRef.current = true;
+    }, [pauseListening]);
+    holdListeningForPanelRef.current = holdListeningForPanel;
+    useEffect(() => {
+        if (lookupOpen) {
+            holdListeningForPanel();
+            return;
+        }
+        if (!resumeAfterPanelRef.current) return;
+        resumeAfterPanelRef.current = false;
+        resumeListening();
+    }, [holdListeningForPanel, lookupOpen, resumeListening]);
 
     const updateListenPrefs = useCallback((patch) => {
         const next = { ...listenPrefsRef.current, ...patch };
@@ -4665,6 +4763,13 @@ const Read = ({
     // A page event counts only when the page actually changed: the reader
     // also reports where it is on opening and after relayouts.
     const lastReadingPageRef = useRef('');
+    const lastReadingSpotRef = useRef(null);
+    // The controls coming or going resizes the page, and the relayout's page
+    // events (the same spot, laid out again) are not reading on either.
+    const fullscreenChangedAtRef = useRef(0);
+    useEffect(() => {
+        fullscreenChangedAtRef.current = Date.now();
+    }, [isFullscreen]);
     const handleReadingPageChange = useCallback((event) => {
         const data = event?.nativeEvent ?? event ?? {};
         const pageKey = `${data.spineIndex ?? ''}:${data.page ?? ''}:${data.firstBlockId ?? ''}`;
@@ -4672,6 +4777,23 @@ const Read = ({
             noteReadingActivity();
         }
         lastReadingPageRef.current = pageKey;
+        // Reading on (a page turned forward, the page scrolled on) hides the
+        // controls: full screen without asking. A tap on the page brings them
+        // back. Listening keeps its bar, and a jump is not reading on.
+        const readingSpot = { spineIndex: data.spineIndex, page: data.page, total: data.total };
+        const previousReadingSpot = lastReadingSpotRef.current;
+        lastReadingSpotRef.current = readingSpot;
+        const now = Date.now();
+        if (
+            !focusModeRef.current
+            && now - lastSeekAtRef.current > SEEK_SETTLE_MS
+            && now - fullscreenChangedAtRef.current > SEEK_SETTLE_MS
+            && isReadingOn(previousReadingSpot, readingSpot, {
+                scroll: readerSettingsRef.current?.readingMode === 'scroll',
+            })
+        ) {
+            setIsFullscreen(true);
+        }
         // The scrubber opened another chapter: now that it's on screen, go to
         // the point in it that was asked for.
         const pendingScrub = pendingScrubSeekRef.current;
@@ -4717,6 +4839,7 @@ const Read = ({
     }, [currentBook, handleNativePageChange, startChapterPreprocessing]);
     useEffect(() => {
         lastReadingPageRef.current = '';
+        lastReadingSpotRef.current = null;
     }, [currentBook]);
     // Native reader events (lookups, focus steps) are reading: the book's own
     // view takes its touches, so the container never sees them.
@@ -4805,8 +4928,9 @@ const Read = ({
             collapsable={false}
             style={[styles.container, { opacity: enterAnim, transform: [{ translateY: enterShift }] }]}
         >
-            {/* With no book open, the bookmark, focus, progress and menu
-                controls have nothing to act on, so hide the header. */}
+            {/* With no book open, the bookmark, progress and menu controls
+                have nothing to act on, so hide the header. Listening starts
+                from the play button over the bottom line. */}
             {!isFullscreen && currentBook ? (
                 <ReaderHeaderBar styles={chrome} topInset={insets.top}>
                     <ReaderBackButton
@@ -4815,30 +4939,9 @@ const Read = ({
                         onPress={goBackFromReader}
                         accessibilityLabel={t('home.backToLibrary')}
                     />
-                    <View style={chrome.headerGroupGap}>
-                        <ReaderFocusModeButton
-                            styles={chrome}
-                            themeColors={themeColors}
-                            active={focusMode}
-                            onPress={toggleFocusMode}
-                            accessibilityLabel={t('read.focusMode')}
-                        />
-                    </View>
-                    <View style={chrome.headerGroupGap}>
-                        <ReaderListenButton
-                            styles={chrome}
-                            themeColors={themeColors}
-                            active={listenActive}
-                            onPress={() => {
-                                if (listenActive) pauseListening({ keepActive: false });
-                                else resumeListening();
-                            }}
-                            accessibilityLabel={listenActive ? t('read.listenStop') : t('read.listen')}
-                        />
-                    </View>
-                    {/* Where you are in the book (tap: the contents). Saved and
-                        suggested words are in the menu; full screen is a
-                        double tap. */}
+                    {/* Where you are in the book (tap: the contents, its only
+                        door). Saved and suggested words are in the menu; full
+                        screen comes on as you read on. */}
                     <ReaderProgressButton
                         styles={chrome}
                         fillWidth={`${headerProgressPercent}%`}
@@ -4893,6 +4996,7 @@ const Read = ({
                 style={[
                     styles.reader,
                     isFullscreen && !showPinnedTranslation ? { paddingTop: insets.top } : null,
+                    readerBottomInset > 0 ? { paddingBottom: readerBottomInset } : null,
                     showPinnedTranslation ? { transform: [{ translateY: pinnedFollowShift }] } : null,
                 ]}
             >
@@ -4974,7 +5078,6 @@ const Read = ({
                         onWordSelected={withReadingActivity(handleNativeWordSelected)}
                         onTextSelected={withReadingActivity(handleNativeTextSelected)}
                         onSelectionCleared={handleNativeSelectionCleared}
-                        onDoubleTap={handleNativeDoubleTap}
                         onFocusSentenceChange={withReadingActivity(handleFocusSentenceChange)}
                         onExposure={handleNativeExposure}
                         onSavedTermsShown={handleSavedTermsShown}
@@ -4993,13 +5096,21 @@ const Read = ({
                     onDragTarget={handleScrubberTarget}
                     onSeek={handleScrubberSeek}
                     onSelectBookmark={(item) => handleSelectBookmark(item.bookmark)}
-                    onOpenContents={() => {
-                        if (toc.length > 0) setShowToc(true);
-                    }}
                     savedAt={heldSpot ? heldSpot.progress : null}
                     onReturnToSaved={returnToHeldSpot}
                     bottomInset={insets.bottom}
                 />
+            ) : null}
+
+            {playButtonShown ? (
+                <TouchableOpacity
+                    style={[styles.playButton, { bottom: scrubberSpace + PLAY_BUTTON_GAP }]}
+                    onPress={resumeListening}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('read.listen')}
+                >
+                    <Feather name="play" size={20} color={themeColors.readerBodyInk} style={styles.playIcon} />
+                </TouchableOpacity>
             ) : null}
 
             <TocDrawer
@@ -5126,7 +5237,7 @@ const Read = ({
                         isNativeSelection={isNativeSelection}
                         onExtendSelection={supportsExtendSelection ? handleExtendSelection : undefined}
                         placement={shouldPlaceLookupAtTop ? 'top' : 'bottom'}
-                        bottomInset={focusMode ? 0 : insets.bottom}
+                        bottomInset={focusMode ? navigationButtonsInset(insets.bottom) : insets.bottom}
                         isDarkMode={isDarkMode}
                         onClose={dismissLookup}
                         onWordSave={handleWordSave}
@@ -5312,6 +5423,30 @@ const createStyles = (themeColors) => StyleSheet.create({
         left: 0,
         right: 0,
         paddingHorizontal: 16,
+    },
+    // Quiet, on the page's own surface: it's there when wanted, not a call
+    // to action over the text.
+    playButton: {
+        position: 'absolute',
+        right: 16,
+        width: PLAY_BUTTON_SIZE,
+        height: PLAY_BUTTON_SIZE,
+        borderRadius: PLAY_BUTTON_SIZE / 2,
+        backgroundColor: themeColors.readerSurface,
+        borderWidth: 1,
+        borderColor: themeColors.readerBorder,
+        alignItems: 'center',
+        justifyContent: 'center',
+        shadowColor: 'rgba(27, 28, 28, 0.10)',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 1,
+        shadowRadius: 12,
+        elevation: 3,
+        zIndex: 12,
+    },
+    // The triangle's weight sits left of its box: nudge it to look centred.
+    playIcon: {
+        marginLeft: 2,
     },
     returnLayer: {
         alignItems: 'center',

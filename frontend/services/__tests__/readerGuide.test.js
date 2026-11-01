@@ -65,8 +65,8 @@ describe('sample pages', () => {
 });
 
 describe('timeline', () => {
-    it('has six clips between the intro and the end card', () => {
-        expect(GUIDE_STEP_COUNT).toBe(6);
+    it('has five clips between the intro and the end card', () => {
+        expect(GUIDE_STEP_COUNT).toBe(5);
         expect(GUIDE_CLIPS[0].key).toBe('intro');
         expect(GUIDE_CLIPS[GUIDE_CLIPS.length - 1].key).toBe('done');
         GUIDE_CLIPS.filter((clip) => clip.actionAt != null).forEach((clip) => {
@@ -94,9 +94,9 @@ describe('timeline', () => {
         expect(guideFrameAt('hold', 4000, '2:8', 6).grammar).toBe(false);
     });
 
-    it('steps focus mode to the next sentence and reads four sentences aloud', () => {
-        expect(guideFrameAt('focus', 500, '2:8', 6).focus).toBe(2);
-        expect(guideFrameAt('focus', 2100, '2:8', 6).focus).toBe(3);
+    it('starts listening from the play button and reads four sentences aloud', () => {
+        expect(guideFrameAt('listen', 0, '2:8', 6).touch).toBe('play');
+        expect(guideFrameAt('listen', 400, '2:8', 6).listenOn).toBe(true);
         expect(guideFrameAt('listen', 400, '2:8', 6).reading).toBe(0);
         expect(guideFrameAt('listen', 9000, '2:8', 6).reading).toBe(3);
     });
@@ -105,6 +105,6 @@ describe('timeline', () => {
         const page = getGuidePage('ko', 'en');
         expect(guideTargetId(GUIDE_CLIPS.find((clip) => clip.key === 'tap'), page)).toBe(page.word);
         expect(guideTargetId(GUIDE_CLIPS.find((clip) => clip.key === 'hold'), page)).toBe(`${GUIDE_HOLD_SENTENCE}:0`);
-        expect(guideTargetId(GUIDE_CLIPS.find((clip) => clip.key === 'focus'), page)).toBe('eye');
+        expect(guideTargetId(GUIDE_CLIPS.find((clip) => clip.key === 'listen'), page)).toBe('play');
     });
 });

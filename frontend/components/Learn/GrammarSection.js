@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
+import { useNavigationButtonsInset } from '../../hooks/useNavigationButtonsInset';
 import {
     getGrammarPatternExamples,
     getGrammarPatterns,
@@ -10,6 +11,8 @@ import {
     setGrammarPatternKept,
 } from '../../services/Database';
 import { fontFamilies, useTheme } from '../../theme';
+
+const REVIEW_BOTTOM_PADDING = 28;
 
 const shuffle = (items) => {
     const copy = [...items];
@@ -242,6 +245,7 @@ const GrammarPatternPage = ({ pattern, ownerId, language, styles, colors, onBack
 
 const GrammarReview = ({ items, ownerId, language, styles, colors, onClose }) => {
     const { t } = useTranslation();
+    const navigationButtonsInset = useNavigationButtonsInset();
     const [index, setIndex] = useState(0);
     const [picked, setPicked] = useState(null);
     const visible = Array.isArray(items) && items.length > 0;
@@ -280,7 +284,9 @@ const GrammarReview = ({ items, ownerId, language, styles, colors, onClose }) =>
 
     return (
         <Modal visible animationType="slide" onRequestClose={onClose}>
-            <View style={styles.reviewScreen}>
+            {/* The modal draws under the navigation bar; with buttons there,
+                Next sits above them. */}
+            <View style={[styles.reviewScreen, { paddingBottom: REVIEW_BOTTOM_PADDING + navigationButtonsInset }]}>
                 <View style={styles.reviewTop}>
                     <TouchableOpacity onPress={onClose} accessibilityRole="button" accessibilityLabel={t('common.close')} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                         <Feather name="x" size={22} color={colors.text} />
@@ -377,7 +383,7 @@ const createStyles = (colors) => StyleSheet.create({
     primary: { height: 48, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.text, marginTop: 6 },
     primaryDisabled: { opacity: 0.4 },
     primaryText: { fontFamily: fontFamilies.sansSemiBold, fontSize: 15, color: colors.surface },
-    reviewScreen: { flex: 1, paddingTop: 52, paddingHorizontal: 20, paddingBottom: 28, gap: 20, backgroundColor: colors.bgPage },
+    reviewScreen: { flex: 1, paddingTop: 52, paddingHorizontal: 20, gap: 20, backgroundColor: colors.bgPage },
     reviewTop: { flexDirection: 'row', alignItems: 'center', gap: 12 },
     progressTrack: { flex: 1, height: 4, borderRadius: 2, overflow: 'hidden', backgroundColor: colors.border },
     progressFill: { height: 4, backgroundColor: colors.text },

@@ -3523,3 +3523,4 @@ export const readEpubPackageXml = async (uri, fallbackName = '', options = {}) =
 
 // For tests.
 export const __buildNativeChapterBlocks = buildNativeChapterBlocks;
+export const __parseXhtmlRenderTree = parseXhtmlRenderTree;

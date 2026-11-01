@@ -172,10 +172,10 @@ const createStyles = (colors, fontSize) => {
             paddingHorizontal: 24,
             paddingVertical: PINNED_TRANSLATION_PADDING_V,
         },
-        // Noto Serif KR: a plain book serif (it covers Latin and Hangul alike),
-        // calm next to the page without being decorative.
+        // The plain sans (Hangul falls back to the phone's own sans), so the
+        // translation reads as a quiet aid rather than a second book page.
         translationText: {
-            fontFamily: fontFamilies.krSerifRegular,
+            fontFamily: fontFamilies.sansRegular,
             fontSize,
             lineHeight,
             color: colors.readerBodyInk,

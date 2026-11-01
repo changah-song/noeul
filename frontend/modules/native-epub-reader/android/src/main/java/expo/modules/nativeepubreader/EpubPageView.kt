@@ -165,13 +165,6 @@ class EpubPageView(context: Context) : View(context) {
   private val contextSentencePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
   // Called with a highlight's id when its note icon (in the margin) is tapped.
   var noteIconTapped: ((String) -> Unit)? = null
-  // Called on a double tap anywhere on the page (the reader toggles full
-  // screen). The first tap still does what a tap does at once, so word
-  // lookups never wait to see whether a second tap follows.
-  var doubleTapped: (() -> Unit)? = null
-  private var lastTapUpTime = 0L
-  private var lastTapX = 0f
-  private var lastTapY = 0f
   // Where the note icons were drawn this frame, in view coordinates.
   private val noteIconHits = mutableListOf<Pair<RectF, String>>()
   private val noteIconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
@@ -211,8 +204,6 @@ class EpubPageView(context: Context) : View(context) {
   private var geometryDirty = true
   private val bitmapCache = mutableMapOf<String, Bitmap?>()
   private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
-  private val doubleTapTimeout = ViewConfiguration.getDoubleTapTimeout().toLong()
-  private val doubleTapSlop = ViewConfiguration.get(context).scaledDoubleTapSlop.toFloat()
   private val longPressTimeout = ViewConfiguration.getLongPressTimeout().toLong()
   private val longPressHandler = Handler(Looper.getMainLooper())
   private var longPressRunnable: Runnable? = null
@@ -1251,20 +1242,6 @@ class EpubPageView(context: Context) : View(context) {
 
         if (isTapCandidate) {
           performClick()
-          val isDoubleTap = doubleTapped != null &&
-            event.eventTime - lastTapUpTime <= doubleTapTimeout &&
-            abs(event.x - lastTapX) <= doubleTapSlop &&
-            abs(event.y - lastTapY) <= doubleTapSlop
-          if (isDoubleTap) {
-            // The reader closes whatever the first tap opened.
-            lastTapUpTime = 0L
-            isTapCandidate = false
-            doubleTapped?.invoke()
-            return true
-          }
-          lastTapUpTime = event.eventTime
-          lastTapX = event.x
-          lastTapY = event.y
           noteIconAt(event.x, event.y)?.let { noteId ->
             noteIconTapped?.invoke(noteId)
             isTapCandidate = false
@@ -1278,9 +1255,9 @@ class EpubPageView(context: Context) : View(context) {
             }
           }
 
-          // While the lookup panel is open, a tap on another word looks that
-          // word up (the panel just changes); a tap on blank space closes it.
-          // A passage selection (the AI explanation) still only closes.
+          // While a panel is open, a tap on another word looks that word up:
+          // the panel changes, the AI explanation included, so there is only
+          // ever one. A tap on blank space closes it.
           val panelOpen = (focusModeEnabled && focusPanelOpen) ||
             (!focusModeEnabled && activeSelectionKind != null && activeSelectionRanges.isNotEmpty())
           if (panelOpen) {
@@ -1288,7 +1265,7 @@ class EpubPageView(context: Context) : View(context) {
               isTapCandidate = false
               return true
             }
-            val nextWord = if (activeSelectionKind == ActiveSelectionKind.TEXT) null else hitTestText(event.x, event.y)
+            val nextWord = hitTestText(event.x, event.y)
             if (nextWord == null) {
               clearSelectionFromTap()
             } else if (focusModeEnabled) {
