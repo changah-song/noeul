@@ -29,6 +29,10 @@ WT="$CACHE/worktrees/$SHA"
 
 export JAVA_HOME=${JAVA_HOME_17:-/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home}
 export ANDROID_HOME=${ANDROID_HOME:-$HOME/Library/Android/sdk}
+# Homebrew's Python 3.14 has a broken pyexpat, which kills node-gyp building
+# better-sqlite3 during `npm ci`. The system Python works.
+export NODE_GYP_FORCE_PYTHON=${NODE_GYP_FORCE_PYTHON:-/usr/bin/python3}
+export PYTHON=${PYTHON:-/usr/bin/python3}
 
 cleanup() { git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1 || true; }
 trap cleanup EXIT

@@ -1,10 +1,13 @@
 import {
+    donePiecesForLayout,
     OPEN_CHAPTER_PIECES_AHEAD,
     PREPROCESS_PIECE_WORDS,
     parsePieceProgress,
     pieceForPosition,
     piecesToPrepare,
     splitChapterForPreprocess,
+    storedChapterProgress,
+    storedProgressCoversNeighbor,
 } from '../preprocessPieces';
 
 const words = (count, word = 'word') => Array.from({ length: count }, () => word).join(' ');
@@ -102,6 +105,62 @@ describe('piecesToPrepare', () => {
 
     it('has nothing for a chapter with no text', () => {
         expect(piecesToPrepare({ spineIndex: 4, centerSpineIndex: 4, pieceCount: 0 })).toEqual([]);
+    });
+});
+
+describe('storedChapterProgress', () => {
+    it('reads the stored piece progress', () => {
+        expect(storedChapterProgress({ status: 'partial', piece_progress: '{"count":3,"done":[0,1]}' }))
+            .toEqual({ count: 3, done: [0, 1] });
+    });
+
+    it('takes a partial chapter from before pieces were tracked as its first piece done', () => {
+        expect(storedChapterProgress({ status: 'partial', piece_progress: null }))
+            .toEqual({ count: null, done: [0] });
+    });
+
+    it('has nothing for a chapter never started, or one that failed', () => {
+        expect(storedChapterProgress(null)).toBeNull();
+        expect(storedChapterProgress({ status: 'failed', piece_progress: null })).toBeNull();
+    });
+});
+
+describe('storedProgressCoversNeighbor', () => {
+    const covers = (spineIndex, progress) => storedProgressCoversNeighbor({
+        spineIndex,
+        centerSpineIndex: 4,
+        progress,
+    });
+
+    it('needs the first piece of a chapter ahead', () => {
+        expect(covers(5, { count: 3, done: [0] })).toBe(true);
+        expect(covers(5, { count: null, done: [0] })).toBe(true);
+        expect(covers(5, { count: 3, done: [2] })).toBe(false);
+    });
+
+    it('needs the last piece of the chapter before, which an old partial row can\'t say', () => {
+        expect(covers(3, { count: 3, done: [2] })).toBe(true);
+        expect(covers(3, { count: 3, done: [0] })).toBe(false);
+        expect(covers(3, { count: null, done: [0] })).toBe(false);
+    });
+
+    it('never settles the open chapter from what is stored', () => {
+        expect(covers(4, { count: 1, done: [0] })).toBe(false);
+    });
+});
+
+describe('donePiecesForLayout', () => {
+    it('keeps the done pieces when the chapter splits the same way', () => {
+        expect(donePiecesForLayout({ count: 4, done: [0, 2] }, 4)).toEqual([0, 2]);
+    });
+
+    it('keeps an old partial row\'s first piece whatever the count', () => {
+        expect(donePiecesForLayout({ count: null, done: [0] }, 6)).toEqual([0]);
+    });
+
+    it('starts over when the chapter now splits differently', () => {
+        expect(donePiecesForLayout({ count: 4, done: [0, 2] }, 5)).toEqual([]);
+        expect(donePiecesForLayout(null, 5)).toEqual([]);
     });
 });
 

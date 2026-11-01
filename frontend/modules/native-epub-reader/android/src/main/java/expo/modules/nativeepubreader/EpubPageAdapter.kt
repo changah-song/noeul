@@ -48,6 +48,8 @@ class EpubPageAdapter(
 
   override fun getItemCount(): Int = pages.size
 
+  fun pageAt(position: Int): ReaderPage? = pages.getOrNull(position)
+
   fun updatePages(newPages: List<ReaderPage>) {
     pages = newPages
     notifyDataSetChanged()
@@ -172,6 +174,29 @@ class EpubPageAdapter(
     }
   }
 
+  // Forwarded to every page view; see EpubPageView.listenSentences.
+  var listenSentences: List<ContextSentence> = emptyList()
+  // Forwarded to every page view; see EpubPageView.spokenRange.
+  var spokenRange: FocusRange? = null
+
+  fun updateListenSentences(recyclerView: RecyclerView?, sentences: List<ContextSentence>) {
+    listenSentences = sentences
+    forEachBoundView(recyclerView) { it.listenSentences = sentences }
+  }
+
+  fun updateSpokenRange(recyclerView: RecyclerView?, range: FocusRange?) {
+    spokenRange = range
+    forEachBoundView(recyclerView) { it.spokenRange = range }
+  }
+
+  private fun forEachBoundView(recyclerView: RecyclerView?, apply: (EpubPageView) -> Unit) {
+    if (recyclerView == null) return
+    for (index in 0 until recyclerView.childCount) {
+      val holder = recyclerView.getChildViewHolder(recyclerView.getChildAt(index)) as? PageHolder ?: continue
+      apply(holder.view)
+    }
+  }
+
   fun updateContextSentence(recyclerView: RecyclerView?, sentence: ContextSentence?) {
     contextSentence = sentence
     if (recyclerView == null) return
@@ -188,6 +213,8 @@ class EpubPageAdapter(
     view.noteIconTapped = noteIconTapped
     view.contextSentence = contextSentence
     view.contextSentenceFade = contextSentenceFade
+    view.listenSentences = listenSentences
+    view.spokenRange = spokenRange
     view.bind(
       page = page,
       paddingH = paddingH,

@@ -60,6 +60,8 @@ import {
     normalizeLegacyKoreanStats,
 } from '../services/bookEase';
 import {
+    colorLuminance as getCoverColorLuminance,
+    contrastRatio as getCoverContrastRatio,
     darkenHex,
     extractBookCoverColors,
     getGeneratedBookCoverPalette,
@@ -648,34 +650,6 @@ const formatBookCount = (t, base, count) => (
 
 const formatBookLanguage = (language, t = tRuntime) => {
     return getLocalizedLanguageName(language, t);
-};
-
-const getCoverColorLuminance = (value) => {
-    const color = normalizeHexColor(value);
-    if (!color) {
-        return 0;
-    }
-
-    const channelLuminance = (hexChannel) => {
-        const channel = Number.parseInt(hexChannel, 16) / 255;
-        return channel <= 0.03928
-            ? channel / 12.92
-            : ((channel + 0.055) / 1.055) ** 2.4;
-    };
-
-    return (
-        (0.2126 * channelLuminance(color.slice(1, 3)))
-        + (0.7152 * channelLuminance(color.slice(3, 5)))
-        + (0.0722 * channelLuminance(color.slice(5, 7)))
-    );
-};
-
-const getCoverContrastRatio = (firstColor, secondColor) => {
-    const firstLuminance = getCoverColorLuminance(firstColor);
-    const secondLuminance = getCoverColorLuminance(secondColor);
-    const lighter = Math.max(firstLuminance, secondLuminance);
-    const darker = Math.min(firstLuminance, secondLuminance);
-    return (lighter + 0.05) / (darker + 0.05);
 };
 
 const getReadableCoverColor = ({
@@ -6690,6 +6664,6 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
 const defaultHomeStyles = createStyles(HOME_COLORS, colors);
 
 // Also drawn by the book-opening screen (components/shared/BookOpeningOverlay.js).
-export { BookCover };
+export { BookCover, getDefaultCoverPalette };
 
 export default Home;

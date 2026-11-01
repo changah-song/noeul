@@ -60,6 +60,7 @@ const DICTIONARY_CACHE_DIFFICULTY_MIGRATION_KEY = 'dictionary_cache_difficulty_m
 const DICTIONARY_CACHE_ZH_SCRIPTS_MIGRATION_KEY = 'dictionary_cache_zh_scripts_migration_v1';
 const DICTIONARY_CACHE_KO_LANGUAGE_PURGE_KEY = 'dictionary_cache_ko_language_purge_v1';
 const BOOK_INDEX_EN_VERB_LEMMA_PURGE_KEY = 'book_index_en_verb_lemma_purge_v1';
+const DICTIONARY_CACHE_EN_REFETCH_PURGE_KEY = 'dictionary_cache_en_refetch_purge_v1';
 const LOCAL_OWNER_SQLITE_MIGRATION_KEY = 'local_owner_sqlite_migration_v1';
 const PROFILE_SQLITE_MIGRATION_KEY = 'profile_sqlite_migration_v1';
 const VOCAB_EMPTY_HANJA_MIGRATION_KEY = 'vocab_empty_hanja_migration_v1';
@@ -3653,6 +3654,43 @@ export const purgeEnglishBareVerbStemRows = async () => {
   await AsyncStorage.setItem(BOOK_INDEX_EN_VERB_LEMMA_PURGE_KEY, 'done');
 };
 
+// English stems whose dictionary entries were wrong: "am" was the abbreviation
+// AM (Member of the Order of Australia), "is" / "was" / "had" notes on grammar,
+// and "be" / "do" opened with grammar notes (be -> -되다). The dictionary now
+// shows the verbs' main meanings; drop the cached rows once, with the
+// book_index rows that point at them, so the next tap fetches them again.
+const EN_REFETCH_STEMS = ['am', 'is', 'was', 'were', 'been', 'had', 'be', 'do'];
+
+export const purgeEnglishRefetchStemRows = async () => {
+  if (await AsyncStorage.getItem(DICTIONARY_CACHE_EN_REFETCH_PURGE_KEY) === 'done') return;
+
+  const placeholders = EN_REFETCH_STEMS.map(() => '?').join(', ');
+  await new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        tx.executeSql(
+          `DELETE FROM book_index
+           WHERE stem_id IN (
+             SELECT id FROM dictionary_cache WHERE language = 'en' AND lower(stem) IN (${placeholders})
+           )`,
+          EN_REFETCH_STEMS
+        );
+        tx.executeSql(
+          `DELETE FROM dictionary_cache WHERE language = 'en' AND lower(stem) IN (${placeholders})`,
+          EN_REFETCH_STEMS
+        );
+      },
+      (error) => {
+        console.error('[Database] Error purging stale English cache rows:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+
+  await AsyncStorage.setItem(DICTIONARY_CACHE_EN_REFETCH_PURGE_KEY, 'done');
+};
+
 /**
  * createBookIndexTable
  * Creates the `book_index` table if it doesn't exist.
@@ -5661,6 +5699,7 @@ export const initAllTables = async () => {
   await createBookIndexTable();
   await purgeKoreanNonEnglishCacheRows();
   await purgeEnglishBareVerbStemRows();
+  await purgeEnglishRefetchStemRows();
   await createBookNotesTable();
   await migrateBookNotesTable();
   await createBookBookmarksTable();

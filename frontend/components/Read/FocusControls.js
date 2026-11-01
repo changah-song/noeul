@@ -1,9 +1,10 @@
 import { memo, useEffect, useState } from 'react';
-import { Animated, Text, TouchableOpacity, View } from 'react-native';
+import { Animated, TouchableOpacity } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
 
-// Focus-mode position pill + sentence arrows.
+// Focus-mode sentence arrows. (The "3 / 40" position pill is gone: the
+// chapter's progress thumb shows where you are.)
 //
 // This lives in its own component so the beam-navigation stream (a focus-info
 // update on every sentence step) only re-renders these small controls instead
@@ -18,7 +19,6 @@ const FocusControls = ({
     sendFocusNav,
     focusControlsTranslate,
     focusControlsBaseBottom,
-    focusPillTop,
     styles,
     themeColors,
 }) => {
@@ -30,32 +30,9 @@ const FocusControls = ({
     const focusMaxIndex = Math.max(0, focusInfo.total - focusSpan);
     const focusAtStart = focusInfo.index <= 0;
     const focusAtEnd = focusInfo.index >= focusMaxIndex;
-    const focusFirstSentence = focusInfo.total > 0 ? Math.min(focusInfo.index + 1, focusInfo.total) : 0;
-    const focusLastSentence = Math.min(focusInfo.total, focusInfo.index + focusSpan);
-    const focusPositionLabel = focusSpan > 1
-        ? t('read.focusSentenceRangeLabel', {
-            start: focusFirstSentence,
-            end: focusLastSentence,
-            total: focusInfo.total,
-        })
-        : t('read.focusSentenceLabel', {
-            current: focusFirstSentence,
-            total: focusInfo.total,
-        });
 
     return (
         <>
-            {/* Sits at the top of the reading surface, so unlike the arrows it
-                does not lift with the dictionary panel — nothing at the bottom
-                of the screen can reach it. */}
-            <View
-                pointerEvents="box-none"
-                style={[styles.focusControlsLeft, { top: focusPillTop }]}
-            >
-                <View style={styles.focusPositionPill}>
-                    <Text style={styles.focusPositionLabel}>{focusPositionLabel}</Text>
-                </View>
-            </View>
             {!focusSwipe && !hideArrows ? (
                 <Animated.View
                     pointerEvents="box-none"

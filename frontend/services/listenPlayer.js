@@ -175,6 +175,10 @@ export const createListenPlayer = ({ tts = Tts, now = Date.now } = {}) => {
   // a very short utterance; remember it so the wait does not hang.
   let lastEndedId = null;
   let lastEndedWith = null;
+  // The playing item's onProgress: called with { start, end } (offsets in
+  // its text) as the engine reaches each word. Engines that don't report
+  // word ranges simply never call it.
+  let currentProgress = null;
 
   const settle = (id, outcome) => {
     if (resolveCurrent && currentId != null && String(id) === String(currentId)) {
@@ -190,6 +194,14 @@ export const createListenPlayer = ({ tts = Tts, now = Date.now } = {}) => {
   const onFinish = (event) => settle(event?.utteranceId, 'finish');
   const onCancel = (event) => settle(event?.utteranceId, 'cancel');
   const onError = (event) => settle(event?.utteranceId, 'error');
+  const onProgress = (event) => {
+    // Before speak() hands back the id, the playing utterance is the only one.
+    if (!currentProgress || (currentId != null && String(event?.utteranceId) !== String(currentId))) return;
+    const start = Number(event?.start);
+    const end = Number(event?.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return;
+    currentProgress({ start, end });
+  };
   // Keep the subscriptions: react-native-tts's removeEventListener calls
   // NativeEventEmitter.removeListener, which React Native 0.81 removed, so
   // unhooking must go through each subscription's remove() instead.
@@ -197,6 +209,7 @@ export const createListenPlayer = ({ tts = Tts, now = Date.now } = {}) => {
     tts.addEventListener('tts-finish', onFinish),
     tts.addEventListener('tts-cancel', onCancel),
     tts.addEventListener('tts-error', onError),
+    tts.addEventListener('tts-progress', onProgress),
   ];
 
   const withTimeout = (promise, ms) => Promise.race([
@@ -229,7 +242,7 @@ export const createListenPlayer = ({ tts = Tts, now = Date.now } = {}) => {
   };
 
   // Speak one utterance; resolves 'finish', 'cancel' or 'error'.
-  const speakOne = async ({ text, locale, rate, voice, pitch }, mySession) => {
+  const speakOne = async ({ text, locale, rate, voice, pitch, onProgress: progress }, mySession) => {
     const utterance = String(text || '').trim();
     if (!utterance) return 'finish';
     await prepare(locale, rate, voice, pitch);
@@ -241,10 +254,12 @@ export const createListenPlayer = ({ tts = Tts, now = Date.now } = {}) => {
     });
     let id;
     const startedAt = now();
+    currentProgress = typeof progress === 'function' ? progress : null;
     try {
       id = await tts.speak(utterance);
     } catch {
       resolveCurrent = null;
+      currentProgress = null;
       return 'error';
     }
     if (mySession !== session) {
@@ -259,6 +274,8 @@ export const createListenPlayer = ({ tts = Tts, now = Date.now } = {}) => {
       currentId = id;
       outcome = await waiter;
     }
+    // A newer sequence may already have put its own handler on.
+    if (mySession === session) currentProgress = null;
     // Some engines without a voice for the language report every utterance
     // as finished at once, without a sound: the reader then raced through the
     // chapter. A sentence can't be read that fast, so count it as an error.
@@ -275,6 +292,7 @@ export const createListenPlayer = ({ tts = Tts, now = Date.now } = {}) => {
     const resolve = resolveCurrent;
     resolveCurrent = null;
     currentId = null;
+    currentProgress = null;
     try {
       tts.stop();
     } catch {

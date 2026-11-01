@@ -263,6 +263,12 @@ class NativeEpubReaderModule : Module() {
       view.setSpokenWord(word)
     }.runOnQueue(Queues.MAIN)
 
+    // Listen mode: the word the voice is reading ({ blockId, start, end },
+    // block-local offsets), or clear it with an empty map.
+    AsyncFunction("setSpokenRange") { view: NativeEpubReaderView, range: Map<String, Any?> ->
+      view.setSpokenRange(range)
+    }.runOnQueue(Queues.MAIN)
+
     View(NativeEpubReaderView::class) {
       Prop("bookManifest") { view: NativeEpubReaderView, manifest: Map<String, Any?> ->
         view.setBookManifest(manifest)
@@ -346,6 +352,11 @@ class NativeEpubReaderModule : Module() {
         view.keepScreenOn = enabled
       }
 
+      // Listen mode: taps outside the lit span count as blank space.
+      Prop("focusTapsInSpanOnly") { view: NativeEpubReaderView, enabled: Boolean ->
+        view.setFocusTapsInSpanOnly(enabled)
+      }
+
       Prop("showGloss") { view: NativeEpubReaderView, enabled: Boolean ->
         view.setShowGloss(enabled)
       }
@@ -378,6 +389,21 @@ class NativeEpubReaderModule : Module() {
         view.setFocusPanelHeight(height)
       }
 
+      Prop("fullscreen") { view: NativeEpubReaderView, enabled: Boolean ->
+        view.setFullscreen(enabled)
+      }
+
+      Prop("pagedFocus") { view: NativeEpubReaderView, enabled: Boolean ->
+        view.setPagedFocus(enabled)
+      }
+
+      Prop("chromeInsets") { view: NativeEpubReaderView, insets: Map<String, Any?> ->
+        view.setChromeInsets(
+          (insets["top"] as? Number)?.toDouble() ?: 0.0,
+          (insets["bottom"] as? Number)?.toDouble() ?: 0.0
+        )
+      }
+
       Events(
         "onPageChange",
         "onChapterEnd",
@@ -389,7 +415,8 @@ class NativeEpubReaderModule : Module() {
         "onFocusSentenceChange",
         "onExposure",
         "onSavedTermsShown",
-        "onHighlightNotePress"
+        "onHighlightNotePress",
+        "onReadingDirection"
       )
     }
   }
@@ -529,6 +556,17 @@ private data class FocusSentenceInfo(
   val bottomY: Int
 )
 
+// A sentence listened to in paged mode. Offsets are into the whole block's
+// text (sourceText), not a page's slice of it; pageIndex is the index into
+// `pages` of the page the sentence starts on.
+private data class PagedFocusSentence(
+  val blockId: String,
+  val startOffset: Int,
+  val endOffset: Int,
+  val pageIndex: Int,
+  val sourceText: String
+)
+
 // Focus (sentence beam) mode geometry and motion: the focused sentence's top is
 // pinned at 28% of the viewport, in the top half so even a long sentence fits
 // on screen (higher still when the span is too tall to fit below that line —
@@ -561,6 +599,15 @@ private const val FOCUS_SCROLL_FAST_DURATION_MS = 180L
 // deliberate pull at the chapter edge — larger than the focus swipe threshold
 // so it never fires from scroll momentum.
 private const val CONTINUOUS_SCROLL_DISPATCH_DELAY_MS = 180L
+// The progress thumb (down the right edge in scroll mode, along the bottom in
+// paged mode) shows while the text moves, stays this long once it stops, then
+// fades out over SCROLLBAR_FADE_MS.
+private const val SCROLLBAR_LINGER_MS = 700L
+private const val SCROLLBAR_FADE_MS = 320L
+private const val SCROLLBAR_THUMB_ALPHA = 0.32f
+// How far the text has to move one way before it counts as reading on (or
+// going back) for the controls: past a finger's jitter, well short of a line.
+private const val READING_DIRECTION_TRAVEL_DP = 6f
 private const val CONTINUOUS_PULL_SPACE_DP = 96f
 private const val CONTINUOUS_PULL_FULL_DP = 120f
 // A touch this soon after the content last moved on its own counts as landing
@@ -650,46 +697,88 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
   }
   private val pullArcRect = android.graphics.RectF()
 
-  // Where the reader is in the chapter: a thin bar down the right edge, there
-  // the whole time (not only mid-scroll, like Android's own), so it's plain
-  // how much of the chapter is left. Each chapter is its own scroll, so the
-  // bar starts over with each one. The empty pull space after the text isn't
-  // counted: the thumb reaches the bottom as the last line comes into view.
-  private val scrollbarTrackPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+  // Where the reader is in the chapter: a thin thumb down the right edge,
+  // with no track behind it. It shows while the text moves and fades once it
+  // has settled. Each chapter is its own scroll, so the thumb starts over
+  // with each one. The empty pull space after the text isn't counted: the
+  // thumb reaches the bottom as the last line comes into view. It runs
+  // between the reader's controls (scrollbarInsetTop/Bottom), which lie over
+  // the text.
   private val scrollbarThumbPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
   private val scrollbarRect = android.graphics.RectF()
   private val scrollbarWidth = 3f * density
   private val scrollbarEdgeGap = 5f * density
   private val scrollbarEndGap = 10f * density
   private val scrollbarMinThumb = 32f * density
+  private var scrollbarInsetTop = 0
+  private var scrollbarInsetBottom = 0
+  private var scrollbarAlpha = 0f
+  private var scrollbarFadeAnimator: ValueAnimator? = null
+  private val scrollbarFadeRunnable = Runnable { fadeScrollbar() }
+
+  // Pulling at a chapter edge: 1 toward the next chapter, -1 the previous.
+  var onPullStarted: ((Int) -> Unit)? = null
+  // True from the reader's first touch until the host next binds a chapter or
+  // scrolls it itself: scrolling in that time (fling included) is the reader's.
+  var userDriven = false
+
+  fun setScrollbarInsets(top: Int, bottom: Int) {
+    if (scrollbarInsetTop == top && scrollbarInsetBottom == bottom) return
+    scrollbarInsetTop = top
+    scrollbarInsetBottom = bottom
+    invalidate()
+  }
+
+  private fun wakeScrollbar() {
+    scrollbarFadeAnimator?.cancel()
+    scrollbarAlpha = 1f
+    removeCallbacks(scrollbarFadeRunnable)
+    postDelayed(scrollbarFadeRunnable, SCROLLBAR_LINGER_MS)
+  }
+
+  private fun fadeScrollbar() {
+    scrollbarFadeAnimator?.cancel()
+    scrollbarFadeAnimator = ValueAnimator.ofFloat(scrollbarAlpha, 0f).apply {
+      duration = SCROLLBAR_FADE_MS
+      addUpdateListener { animator ->
+        scrollbarAlpha = animator.animatedValue as Float
+        invalidate()
+      }
+      start()
+    }
+  }
+
+  override fun onDetachedFromWindow() {
+    removeCallbacks(scrollbarFadeRunnable)
+    scrollbarFadeAnimator?.cancel()
+    super.onDetachedFromWindow()
+  }
 
   fun setPullColors(inkColor: Int, faintColor: Int) {
     pullTrackPaint.color = faintColor
     pullFillPaint.color = inkColor
     pullDotPaint.color = inkColor
     pullTextPaint.color = inkColor
-    scrollbarTrackPaint.color = faintColor
     scrollbarThumbPaint.color = inkColor
-    scrollbarThumbPaint.alpha = (0.32f * 255).roundToInt()
     invalidate()
   }
 
   private fun drawChapterScrollbar(canvas: android.graphics.Canvas) {
+    if (scrollbarAlpha <= 0.01f) return
     val child = getChildAt(0) ?: return
     val textHeight = child.height - if (pullNextEnabled) pullSpacePx else 0
     val textScroll = textHeight - height
     // The whole chapter fits on the screen: nothing to show.
     if (textScroll <= 0) return
     val fraction = (scrollY.toFloat() / textScroll).coerceIn(0f, 1f)
-    val trackTop = scrollY + scrollbarEndGap
-    val trackLength = height - scrollbarEndGap * 2
+    val trackTop = scrollY + scrollbarInsetTop + scrollbarEndGap
+    val trackLength = height - scrollbarInsetTop - scrollbarInsetBottom - scrollbarEndGap * 2
     if (trackLength <= scrollbarMinThumb) return
     val thumbLength = (trackLength * height / textHeight).coerceIn(scrollbarMinThumb, trackLength)
     val right = width - scrollbarEdgeGap
     val left = right - scrollbarWidth
     val radius = scrollbarWidth / 2f
-    scrollbarRect.set(left, trackTop, right, trackTop + trackLength)
-    canvas.drawRoundRect(scrollbarRect, radius, radius, scrollbarTrackPaint)
+    scrollbarThumbPaint.alpha = (SCROLLBAR_THUMB_ALPHA * scrollbarAlpha * 255).roundToInt().coerceIn(0, 255)
     val thumbTop = trackTop + (trackLength - thumbLength) * fraction
     scrollbarRect.set(left, thumbTop, right, thumbTop + thumbLength)
     canvas.drawRoundRect(scrollbarRect, radius, radius, scrollbarThumbPaint)
@@ -808,7 +897,10 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
 
   override fun dispatchTouchEvent(event: MotionEvent): Boolean {
     when (event.actionMasked) {
-      MotionEvent.ACTION_DOWN -> fingerDown = true
+      MotionEvent.ACTION_DOWN -> {
+        fingerDown = true
+        userDriven = true
+      }
       MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> fingerDown = false
     }
     return super.dispatchTouchEvent(event)
@@ -835,6 +927,9 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
     (getChildAt(0) as? EpubPageView)?.onViewportScrolled(t, height)
     if (!fingerDown) {
       lastScrollChangeAtMs = SystemClock.uptimeMillis()
+    }
+    if (t != oldt && edgePullEnabled && !swipeNavigationEnabled) {
+      wakeScrollbar()
     }
     onScrollPositionChanged?.invoke(t)
   }
@@ -916,9 +1011,11 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
           if (pullNextEnabled && downAtEnd && movingUp && scrollY >= maxVerticalScroll()) {
             pullDirection = 1
             pullStartY = event.y
+            onPullStarted?.invoke(1)
           } else if (pullPreviousEnabled && downAtStart && movingDown && scrollY <= 0) {
             pullDirection = -1
             pullStartY = event.y
+            onPullStarted?.invoke(-1)
           }
           return handled
         }
@@ -989,6 +1086,11 @@ class NativeEpubReaderView(
   private val onExposure by EventDispatcher()
   private val onSavedTermsShown by EventDispatcher()
   private val onHighlightNotePress by EventDispatcher()
+  private val onReadingDirection by EventDispatcher()
+  // React Native drops a child's requestLayout, so without this the pager's
+  // own layout passes (pages scrolling in, a rebind mid-turn) never run and a
+  // page turn can stall halfway. Android lays the reader out itself instead.
+  override val shouldUseAndroidLayout = true
   private val viewPager = ViewPager2(context)
   private val continuousScrollView = ContinuousReaderScrollView(context)
   private val continuousPageView = EpubPageView(context)
@@ -1080,6 +1182,8 @@ class NativeEpubReaderView(
   private var levelUnderlineMidColor = themePalette.levelUnderlineMidColor
   private var levelUnderlineHardColor = themePalette.levelUnderlineHardColor
   private var userDraggedPager = false
+  // The page a drag started on (for the reading direction of a flick).
+  private var dragStartItem = -1
   private var previousPageIndex = 0
   private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
   private var dragStartPage = -1
@@ -1111,6 +1215,35 @@ class NativeEpubReaderView(
   private var focusPanelLiftPx = 0f
   private var focusScrollAnimator: ValueAnimator? = null
   private var suppressContinuousScrollEvents = false
+  // The reader's controls (header, scrubber) lie over the reader instead of
+  // resizing it, so coming and going never lays the text out again. Scroll
+  // mode starts and ends a chapter's text clear of them and lets it pass
+  // under them in between; paged mode is given its room by the JS layout.
+  private var chromeTopPx = 0
+  private var chromeBottomPx = 0
+  // Which way the reader is moving the text, for the controls: 1 reading on,
+  // -1 going back, 0 not yet this gesture. Reported once per change.
+  private var reportedReadingDirection = 0
+  private var readingDirectionTravel = 0
+  private var lastReadingPositionPx = Int.MIN_VALUE
+  private val readingDirectionTravelPx = dp(READING_DIRECTION_TRAVEL_DP)
+  // Whether the controls are away (full screen); paged mode's progress thumb
+  // shows only then.
+  private var readerFullscreen = false
+  // Listening in paged mode: the chapter's sentences, read in turn, the page
+  // following the voice. Steps through the same focusNav / onFocusSentenceChange
+  // contract as focus mode, with focusIndex and focusSpanCount.
+  private var pagedFocusEnabled = false
+  private var pagedFocusSentences: List<PagedFocusSentence> = emptyList()
+  private var pagedFocusSpine: Int? = null
+  // Paged mode's chapter progress thumb along the bottom (see dispatchDraw).
+  private var pagerThumbFraction = 0f
+  private var pagerThumbPageCount = 0
+  private var pagerThumbAlpha = 0f
+  private var pagerThumbFadeAnimator: ValueAnimator? = null
+  private val pagerThumbFadeRunnable = Runnable { fadePagerThumb() }
+  private val pagerThumbPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+  private val pagerThumbRect = android.graphics.RectF()
   private val continuousScrollDispatchRunnable = Runnable {
     dispatchContinuousPageChange(includeSavedHighlights = false)
   }
@@ -1125,10 +1258,11 @@ class NativeEpubReaderView(
       override fun onPageScrollStateChanged(state: Int) {
         if (state == ViewPager2.SCROLL_STATE_DRAGGING) {
           userDraggedPager = true
+          dragStartItem = viewPager.currentItem
+          startReadingGesture()
           // Turning the page leaves the looked-up word behind: its panel
           // closes (fading, on the JS side) and its sentence's wash fades out.
           clearActiveSelection(dispatchEvent = true)
-          fadeOutContextSentence()
         }
 
         if (state == ViewPager2.SCROLL_STATE_SETTLING && userDraggedPager) {
@@ -1147,9 +1281,29 @@ class NativeEpubReaderView(
         }
       }
 
+      override fun onPageScrolled(position: Int, positionOffset: Float, positionOffsetPixels: Int) {
+        updatePagerThumb(position, positionOffset)
+        // Only the reader's own drag says which way they're going; the settle
+        // after it (or a snap back) is the pager's.
+        if (viewPager.scrollState == ViewPager2.SCROLL_STATE_DRAGGING) {
+          trackReadingDirection(position * viewPager.width + positionOffsetPixels)
+        }
+      }
+
       override fun onPageSelected(position: Int) {
         if (suppressPageEvents) {
           return
+        }
+
+        // A flick can leave the drag after a frame or two, before its travel
+        // counts; the page it turns to still says which way it went.
+        if (userDraggedPager && dragStartItem >= 0 && position != dragStartItem) {
+          reportReadingDirection(if (position > dragStartItem) 1 else -1)
+        }
+        // Listening, the reader turned the page themselves: the voice goes
+        // there too.
+        if (userDraggedPager && isPagedFocus()) {
+          pagedFocusToPage(position - pagePositionOffset)
         }
 
         val total = pages.size
@@ -1175,7 +1329,19 @@ class NativeEpubReaderView(
     continuousScrollView.onSwipeNavigate = { direction ->
       moveFocus(direction)
     }
-    continuousScrollView.onScrollPositionChanged = { handleContinuousScrollChanged() }
+    continuousScrollView.onScrollPositionChanged = { y ->
+      handleContinuousScrollChanged()
+      if (
+        readerRenderMode == "continuous" &&
+        !suppressContinuousScrollEvents &&
+        continuousScrollView.userDriven
+      ) {
+        trackReadingDirection(y)
+      } else {
+        lastReadingPositionPx = y
+      }
+    }
+    continuousScrollView.onPullStarted = { direction -> reportReadingDirection(direction) }
     continuousScrollView.onEdgePull = { direction -> handleContinuousEdgePull(direction) }
     continuousPageView.tapProgress = ::levelTapProgress
     continuousPageView.savedFade = ::savedFadeProgress
@@ -1223,12 +1389,113 @@ class NativeEpubReaderView(
     paginationGeneration += 1
     paginationTask?.cancel(true)
     focusScrollAnimator?.cancel()
+    removeCallbacks(pagerThumbFadeRunnable)
+    pagerThumbFadeAnimator?.cancel()
     mainHandler.removeCallbacks(continuousScrollDispatchRunnable)
     // The last unit of a session is never followed by another page/beam move, so
     // settle it here or it goes uncredited. Continuous mode already emitted each
     // block as it scrolled past, so nothing is buffered there to flush.
     flushExposureUnit()
     super.onDetachedFromWindow()
+  }
+
+  override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+    if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+      startReadingGesture()
+    }
+    return super.dispatchTouchEvent(event)
+  }
+
+  // ===== Reading direction (the controls come and go with it) =====
+
+  // A new touch starts over: its first move one way is reported even if the
+  // last gesture went the same way (a tap may have brought the controls back
+  // in between). Its first position is taken as it comes, not assumed: a
+  // drag can catch a page still settling from the last turn.
+  private fun startReadingGesture() {
+    reportedReadingDirection = 0
+    readingDirectionTravel = 0
+    lastReadingPositionPx = Int.MIN_VALUE
+  }
+
+  private fun trackReadingDirection(positionPx: Int) {
+    val previous = lastReadingPositionPx
+    lastReadingPositionPx = positionPx
+    if (previous == Int.MIN_VALUE) return
+    val delta = positionPx - previous
+    if (delta == 0) return
+    if (readingDirectionTravel != 0 && (delta > 0) != (readingDirectionTravel > 0)) {
+      readingDirectionTravel = 0
+    }
+    readingDirectionTravel += delta
+    if (abs(readingDirectionTravel) >= readingDirectionTravelPx) {
+      reportReadingDirection(if (readingDirectionTravel > 0) 1 else -1)
+    }
+  }
+
+  private fun reportReadingDirection(direction: Int) {
+    if (direction == 0 || direction == reportedReadingDirection) return
+    reportedReadingDirection = direction
+    onReadingDirection(mapOf("direction" to if (direction > 0) "forward" else "back"))
+  }
+
+  // ===== Paged mode's progress thumb =====
+  //
+  // Where the page is in its chapter: a short thumb sliding along the very
+  // bottom edge as the page turns (following the finger), with no track
+  // behind it. Full screen only: otherwise the scrubber shows where you are.
+  // It fades once the page has settled, like scroll mode's thumb.
+
+  private fun updatePagerThumb(position: Int, offset: Float) {
+    val adapter = pageAdapter ?: return
+    val page = adapter.pageAt(position) ?: return
+    val count = page.chapterPageCount
+    val index = page.chapterPageIndex
+    if (count <= 1 || index < 0) {
+      pagerThumbPageCount = 0
+      invalidate()
+      return
+    }
+    // Into the next page of the same chapter, the thumb follows; across a
+    // chapter boundary it holds at the end until the turn lands.
+    val next = adapter.pageAt(position + 1)
+    val sameChapter = next != null && next.spineIndex == page.spineIndex && offset > 0f
+    val progress = index + if (sameChapter) offset else 0f
+    pagerThumbFraction = (progress / (count - 1)).coerceIn(0f, 1f)
+    pagerThumbPageCount = count
+    pagerThumbFadeAnimator?.cancel()
+    pagerThumbAlpha = 1f
+    removeCallbacks(pagerThumbFadeRunnable)
+    postDelayed(pagerThumbFadeRunnable, SCROLLBAR_LINGER_MS)
+    invalidate()
+  }
+
+  private fun fadePagerThumb() {
+    pagerThumbFadeAnimator?.cancel()
+    pagerThumbFadeAnimator = ValueAnimator.ofFloat(pagerThumbAlpha, 0f).apply {
+      duration = SCROLLBAR_FADE_MS
+      addUpdateListener { animator ->
+        pagerThumbAlpha = animator.animatedValue as Float
+        invalidate()
+      }
+      start()
+    }
+  }
+
+  override fun dispatchDraw(canvas: android.graphics.Canvas) {
+    super.dispatchDraw(canvas)
+    if (readerRenderMode != "paged" || !readerFullscreen || pagerThumbAlpha <= 0.01f || pagerThumbPageCount <= 1) return
+    val trackLeft = pagePaddingH.toFloat()
+    val trackLength = width - pagePaddingH * 2f
+    if (trackLength <= 0f) return
+    val thickness = dp(3f).toFloat()
+    val thumbLength = (trackLength / pagerThumbPageCount).coerceIn(dp(28f).toFloat(), trackLength)
+    val left = trackLeft + (trackLength - thumbLength) * pagerThumbFraction
+    val bottom = height - dp(3f).toFloat()
+    pagerThumbRect.set(left, bottom - thickness, left + thumbLength, bottom)
+    pagerThumbPaint.color = themePalette.bodyTextColor
+    pagerThumbPaint.alpha = (SCROLLBAR_THUMB_ALPHA * pagerThumbAlpha * 255).roundToInt().coerceIn(0, 255)
+    canvas.drawRoundRect(pagerThumbRect, thickness / 2f, thickness / 2f, pagerThumbPaint)
   }
 
   override fun onAttachedToWindow() {
@@ -1432,6 +1699,7 @@ class NativeEpubReaderView(
     clearActiveSelection(dispatchEvent = false)
     focusScrollAnimator?.cancel()
     continuousPageView.focusPanelOpen = false
+    continuousPageView.spokenRange = null
     continuousScrollView.swipeNavigationEnabled = isFocusMode() && focusSwipeEnabled
     continuousScrollView.focusScrollBounds = null
     continuousScrollView.edgePullEnabled = readerRenderMode == "continuous"
@@ -1571,8 +1839,8 @@ class NativeEpubReaderView(
 
   // Toggle short translations under annotated words. Repaginate so the line
   // spacing reserves (or releases) the row of space below each line.
-  // Mark the sentence of the last tapped word (its translation is pinned at
-  // the top). Off clears the mark.
+  // Mark the sentence of the tapped word while its translation pops up at the
+  // top; it fades with the lookup (clearActiveSelection). Off clears the mark.
   private var showContextSentence = false
   private var contextSentence: ContextSentence? = null
 
@@ -1651,6 +1919,7 @@ class NativeEpubReaderView(
 
     val layoutWidthSnapshot = layoutWidth
     val layoutHeightSnapshot = layoutHeight
+    val pagedChromeBottomSnapshot = chromeBottomPx
     val fontSizeSnapshot = readerFontSizeSp
     val lineHeightSnapshot = readerLineHeightMultiplier
     val isDarkSnapshot = readerTheme == "dark"
@@ -1707,7 +1976,9 @@ class NativeEpubReaderView(
           context = appContext,
           rubySpacePx = rubySpaceSnapshot,
           textLocale = textLocaleSnapshot,
-          paddingBottom = if (renderModeSnapshot == "paged") dp(16f) else pagePaddingV
+          // Paged: the bottom controls' room below the page margin (the top's
+          // is left by the JS layout).
+          paddingBottom = if (renderModeSnapshot == "paged") dp(16f) + pagedChromeBottomSnapshot else pagePaddingV
         )
         if (renderModeSnapshot == "continuous" || renderModeSnapshot == "focus") {
           buildContinuousChapterWindow(paginator, windowSnapshot)
@@ -2180,6 +2451,7 @@ class NativeEpubReaderView(
       onSelectionCleared(mapOf<String, Any>())
     }
     forcePagerRefresh()
+    refreshPagedFocus()
   }
 
   private fun animateChapterTransition(
@@ -2288,6 +2560,8 @@ class NativeEpubReaderView(
   ) {
     val page = pages.getOrNull(position) ?: ReaderPage(0, emptyList())
     continuousPageIndex = position
+    // From here until the next touch, the scroll moves are this bind's.
+    continuousScrollView.userDriven = false
     continuousScrollView.pullNextEnabled = canPullToNextChapter(page)
     continuousScrollView.pullPreviousEnabled = canPullToPreviousChapter(page)
     continuousScrollView.setPullColors(themePalette.bodyTextColor, themePalette.ruleColor)
@@ -2315,7 +2589,7 @@ class NativeEpubReaderView(
     continuousPageView.bind(
       page = page,
       paddingH = pagePaddingH,
-      paddingV = pagePaddingV + focusTopInset,
+      paddingV = continuousTextTop() + focusTopInset,
       lineHeightMult = readerLineHeightMultiplier,
       backgroundColor = backgroundColor,
       themePalette = themePalette,
@@ -2454,7 +2728,7 @@ class NativeEpubReaderView(
     }
 
     source.stringValue("firstBlockId")?.takeIf { it.isNotBlank() }?.let { blockId ->
-      continuousBlockTopOffset(page, blockId)?.let { blockTop ->
+      continuousBlockScrollTarget(page, blockId)?.let { blockTop ->
         return blockTop.coerceIn(0, maxScroll)
       }
     }
@@ -2565,6 +2839,9 @@ class NativeEpubReaderView(
   // while the screen is off; listen mode reads the next sentence from this
   // return value instead, so it keeps going on a locked phone.
   private fun moveFocus(direction: Int): Map<String, Any> {
+    if (isPagedFocus()) {
+      return movePagedFocus(direction)
+    }
     if (!isFocusMode() || focusSentences.isEmpty()) {
       return mapOf("moved" to false)
     }
@@ -2596,18 +2873,20 @@ class NativeEpubReaderView(
   // current one ends instead of asking the view, which only answers on the
   // busy UI thread.
   private fun focusStatePayload(index: Int = focusIndex, withNext: Boolean = true): Map<String, Any> {
-    val sentences = focusSentences
+    val paged = isPagedFocus()
+    val sentenceCount = if (paged) pagedFocusSentences.size else focusSentences.size
     val event = mutableMapOf<String, Any>(
       "index" to index,
       "count" to focusSpanCount,
-      "total" to sentences.size
+      "total" to sentenceCount
     )
-    focusSpanText(index)?.let { (text, words) ->
+    (if (paged) pagedFocusSpanText(index) else focusSpanText(index))?.let { (text, words, segments) ->
       event["text"] = text
       event["levelWords"] = words
+      event["segments"] = segments
     }
     if (withNext) {
-      val maxIndex = (sentences.size - focusSpanCount).coerceAtLeast(0)
+      val maxIndex = (sentenceCount - focusSpanCount).coerceAtLeast(0)
       event["next"] = if (index + 1 <= maxIndex) {
         focusStatePayload(index + 1, withNext = false) + mapOf("moved" to true)
       } else {
@@ -2731,7 +3010,7 @@ class NativeEpubReaderView(
       val contentHeight = continuousContentHeightForPage(page).coerceAtLeast(layoutHeight)
       val maxScroll = (contentHeight - layoutHeight).coerceAtLeast(0)
       val scrollTarget = blockId
-        ?.let { continuousBlockTopOffset(page, it)?.coerceIn(0, maxScroll) }
+        ?.let { continuousBlockScrollTarget(page, it)?.coerceIn(0, maxScroll) }
         ?: continuousRestoreScrollTargetFor(position, page, maxScroll)
       bindContinuousPage(
         targetDisplayIndex,
@@ -2922,7 +3201,12 @@ class NativeEpubReaderView(
 
   // The focused sentences' text and the graded (underlined) words inside
   // them, in reading order: what listen mode reads aloud and may stop on.
-  private fun focusSpanText(fromIndex: Int = focusIndex): Pair<String, List<Map<String, Any>>>? {
+  // Segments place each sentence in that text ({ blockId, start, end, at }:
+  // block-local offsets, `at` where it begins in the text), so the word the
+  // voice reports can be lit in the view.
+  private fun focusSpanText(
+    fromIndex: Int = focusIndex
+  ): Triple<String, List<Map<String, Any>>, List<Map<String, Any>>>? {
     val sentences = focusSentences
     if (sentences.isEmpty()) return null
     val page = pages.getOrNull(continuousPageIndex) ?: return null
@@ -2931,6 +3215,8 @@ class NativeEpubReaderView(
     val levelRanges = levelRangesByPage[page.pageIndex].orEmpty()
     val parts = ArrayList<String>()
     val words = ArrayList<Map<String, Any>>()
+    val segments = ArrayList<Map<String, Any>>()
+    var at = 0
     sentences.subList(start, end).forEach { sentence ->
       val block = page.blocks.firstOrNull { it.blockId == sentence.blockId } ?: return@forEach
       val text = block.plainText
@@ -2938,6 +3224,9 @@ class NativeEpubReaderView(
       val localEnd = sentence.endOffset.coerceIn(localStart, text.length)
       if (localStart >= localEnd) return@forEach
       parts.add(text.substring(localStart, localEnd))
+      segments.add(mapOf("blockId" to block.blockId, "start" to localStart, "end" to localEnd, "at" to at))
+      // Parts are joined with one space.
+      at += localEnd - localStart + 1
       val sourceStart = block.sourceStartOffset + localStart
       val sourceEnd = block.sourceStartOffset + localEnd
       levelRanges.forEach { range ->
@@ -2958,7 +3247,7 @@ class NativeEpubReaderView(
       }
     }
     if (parts.isEmpty()) return null
-    return parts.joinToString(" ") to words.sortedBy { it["sourceStartOffset"] as Int }
+    return Triple(parts.joinToString(" "), words.sortedBy { it["sourceStartOffset"] as Int }, segments)
   }
 
   // Listen mode highlights the word it is explaining with the word-selection
@@ -2971,7 +3260,11 @@ class NativeEpubReaderView(
       clearActiveSelection(dispatchEvent = false)
       return
     }
-    val page = pages.getOrNull(continuousPageIndex) ?: return
+    val page = if (isPagedFocus()) {
+      pageIndexContaining(blockId, start)?.let { pages.getOrNull(it) }
+    } else {
+      pages.getOrNull(continuousPageIndex)
+    } ?: return
     activeSelectionRanges = listOf(
       TextRange(
         pageIndex = page.pageIndex,
@@ -2984,6 +3277,232 @@ class NativeEpubReaderView(
     activeSelectionKind = ActiveSelectionKind.WORD
     pageAdapter?.updateActiveSelectionRanges(activeSelectionRanges, activeSelectionKind)
     invalidateVisiblePageHighlights()
+  }
+
+  fun setSpokenRange(range: Map<String, Any?>) {
+    val blockId = range["blockId"] as? String
+    val start = (range["start"] as? Number)?.toInt()
+    val end = (range["end"] as? Number)?.toInt()
+    val spoken = if (blockId != null && start != null && end != null && start < end) {
+      FocusRange(blockId = blockId, startOffset = start, endOffset = end)
+    } else {
+      null
+    }
+    continuousPageView.spokenRange = spoken
+    pageAdapter?.updateSpokenRange(recyclerView(), spoken)
+    // A sentence running over onto the next page: turn when the voice does.
+    if (spoken != null && isPagedFocus()) {
+      pageIndexContaining(spoken.blockId, spoken.startOffset)?.let { showPagedFocusPage(it) }
+    }
+  }
+
+  // ===== Listening in paged mode =====
+
+  fun setFullscreen(enabled: Boolean) {
+    if (readerFullscreen == enabled) return
+    readerFullscreen = enabled
+    invalidate()
+  }
+
+  fun setPagedFocus(enabled: Boolean) {
+    if (pagedFocusEnabled == enabled) return
+    pagedFocusEnabled = enabled
+    pagedFocusSentences = emptyList()
+    pagedFocusSpine = null
+    focusIndex = 0
+    if (enabled) {
+      refreshPagedFocus()
+    } else {
+      pageAdapter?.updateListenSentences(recyclerView(), emptyList())
+      pageAdapter?.updateSpokenRange(recyclerView(), null)
+    }
+  }
+
+  private fun isPagedFocus(): Boolean = pagedFocusEnabled && readerRenderMode == "paged"
+
+  // The chapter's sentences, each listed on the page it starts on.
+  private fun buildPagedFocusSentences(spineIndex: Int?): List<PagedFocusSentence> {
+    val sentences = ArrayList<PagedFocusSentence>()
+    val seen = HashSet<String>()
+    pages.forEachIndexed { pageIndex, page ->
+      if (page.spineIndex != spineIndex) return@forEachIndexed
+      page.blocks.forEach { block ->
+        if (block.type == "image") return@forEach
+        val source = block.sourceText.ifEmpty { block.plainText }
+        val sliceStart = block.sourceStartOffset
+        val sliceEnd = sliceStart + block.plainText.length
+        block.sentenceRanges.forEach { range ->
+          val start = range.first.coerceIn(0, source.length)
+          val end = (range.last + 1).coerceIn(start, source.length)
+          if (start >= end || start < sliceStart || start >= sliceEnd) return@forEach
+          if (!seen.add("${block.blockId}:$start")) return@forEach
+          sentences.add(PagedFocusSentence(block.blockId, start, end, pageIndex, source))
+        }
+      }
+    }
+    return sentences
+  }
+
+  // The first sentence starting on a page; on a page that is all one long
+  // sentence, that sentence.
+  private fun pagedFocusIndexForPage(pageIndex: Int): Int {
+    val sentences = pagedFocusSentences
+    val starting = sentences.indexOfFirst { it.pageIndex == pageIndex }
+    if (starting >= 0) return starting
+    return sentences.indexOfLast { it.pageIndex < pageIndex }.coerceAtLeast(0)
+  }
+
+  // After the pages were laid out (again) or listening began: the sentences of
+  // the chapter on screen. Within the same chapter the voice keeps its
+  // sentence; a new chapter (or the start) begins on the page in view and is
+  // announced, which is what starts the voice there.
+  private fun refreshPagedFocus() {
+    if (!isPagedFocus() || pages.isEmpty()) return
+    val pageIndex = (viewPager.currentItem - pagePositionOffset).coerceIn(0, pages.lastIndex)
+    val spineIndex = pages[pageIndex].spineIndex
+    val previous = pagedFocusSentences.getOrNull(focusIndex)
+    val sameChapter = previous != null && pagedFocusSpine == spineIndex
+    pagedFocusSentences = buildPagedFocusSentences(spineIndex)
+    pagedFocusSpine = spineIndex
+    focusIndex = if (sameChapter) {
+      pagedFocusSentences.indexOfFirst {
+        it.blockId == previous!!.blockId && it.startOffset == previous.startOffset
+      }.takeIf { it >= 0 } ?: pagedFocusIndexForPage(pageIndex)
+    } else {
+      pagedFocusIndexForPage(pageIndex)
+    }
+    applyPagedFocusHighlight()
+    if (!sameChapter && pagedFocusSentences.isNotEmpty()) {
+      dispatchFocusState()
+    }
+  }
+
+  // The reader turned to a page while listening: read on from there.
+  private fun pagedFocusToPage(pageIndex: Int) {
+    val page = pages.getOrNull(pageIndex) ?: return
+    if (page.spineIndex != pagedFocusSpine) {
+      pagedFocusSentences = buildPagedFocusSentences(page.spineIndex)
+      pagedFocusSpine = page.spineIndex
+    }
+    if (pagedFocusSentences.isEmpty()) return
+    focusIndex = pagedFocusIndexForPage(pageIndex)
+    applyPagedFocusHighlight()
+    // `jump`: listen mode takes it up even when it lies behind the sentence
+    // being read.
+    onFocusSentenceChange(focusStatePayload() + mapOf("jump" to true))
+  }
+
+  private fun movePagedFocus(direction: Int): Map<String, Any> {
+    if (pagedFocusSentences.isEmpty()) {
+      return mapOf("moved" to false)
+    }
+    val maxIndex = (pagedFocusSentences.size - focusSpanCount).coerceAtLeast(0)
+    val next = focusIndex + direction
+    if (next < 0) {
+      onChapterStart(mapOf<String, Any>())
+      return mapOf("moved" to false, "atStart" to true)
+    }
+    if (next > maxIndex) {
+      onChapterEnd(mapOf<String, Any>())
+      return mapOf("moved" to false, "atEnd" to true)
+    }
+    clearActiveSelection(dispatchEvent = true)
+    focusIndex = next
+    applyPagedFocusHighlight()
+    pagedFocusSentences.getOrNull(focusIndex)?.let { showPagedFocusPage(it.pageIndex) }
+    dispatchFocusState()
+    return focusStatePayload() + mapOf("moved" to true)
+  }
+
+  private fun applyPagedFocusHighlight() {
+    val sentences = pagedFocusSentences
+    val lit = if (sentences.isEmpty()) {
+      emptyList()
+    } else {
+      val start = focusIndex.coerceIn(0, sentences.lastIndex)
+      sentences.subList(start, (start + focusSpanCount).coerceAtMost(sentences.size)).map {
+        ContextSentence(pagedFocusSpine, it.blockId, it.startOffset, it.endOffset)
+      }
+    }
+    pageAdapter?.updateListenSentences(recyclerView(), lit)
+  }
+
+  // Turns to the page (an index into `pages`) the voice has reached, unless
+  // the reader has a page in hand.
+  private fun showPagedFocusPage(pageIndex: Int) {
+    val target = pageIndex + pagePositionOffset
+    if (
+      target == viewPager.currentItem ||
+      isChapterTransitionAnimating ||
+      viewPager.scrollState != ViewPager2.SCROLL_STATE_IDLE
+    ) {
+      return
+    }
+    viewPager.setCurrentItem(target, true)
+  }
+
+  // The page (index into `pages`) of the listened chapter whose slice of the
+  // block holds the offset.
+  private fun pageIndexContaining(blockId: String, sourceOffset: Int): Int? {
+    pages.forEachIndexed { pageIndex, page ->
+      if (pagedFocusSpine != null && page.spineIndex != pagedFocusSpine) return@forEachIndexed
+      val block = page.blocks.firstOrNull { it.blockId == blockId } ?: return@forEachIndexed
+      val sliceStart = block.sourceStartOffset
+      if (sourceOffset >= sliceStart && sourceOffset < sliceStart + block.plainText.length) {
+        return pageIndex
+      }
+    }
+    return null
+  }
+
+  // pagedFocusSpanText mirrors focusSpanText: the lit sentences' text, their
+  // graded words, and segments placing each sentence in the text (offsets
+  // into the whole block, as setSpokenRange takes them back).
+  private fun pagedFocusSpanText(
+    fromIndex: Int = focusIndex
+  ): Triple<String, List<Map<String, Any>>, List<Map<String, Any>>>? {
+    val sentences = pagedFocusSentences
+    if (sentences.isEmpty()) return null
+    val start = fromIndex.coerceIn(0, sentences.lastIndex)
+    val end = (start + focusSpanCount).coerceAtMost(sentences.size)
+    val chapterLevelRanges = pages
+      .filter { it.spineIndex == pagedFocusSpine }
+      .flatMap { levelRangesByPage[it.pageIndex].orEmpty() }
+    val parts = ArrayList<String>()
+    val words = ArrayList<Map<String, Any>>()
+    val segments = ArrayList<Map<String, Any>>()
+    val seenWords = HashSet<String>()
+    var at = 0
+    sentences.subList(start, end).forEach { sentence ->
+      val text = sentence.sourceText
+      parts.add(text.substring(sentence.startOffset, sentence.endOffset))
+      segments.add(
+        mapOf("blockId" to sentence.blockId, "start" to sentence.startOffset, "end" to sentence.endOffset, "at" to at)
+      )
+      // Parts are joined with one space.
+      at += sentence.endOffset - sentence.startOffset + 1
+      chapterLevelRanges.forEach { range ->
+        if (range.blockId != sentence.blockId || range.annotationOnly) return@forEach
+        if (range.sourceStartOffset < sentence.startOffset || range.sourceEndOffset > sentence.endOffset) return@forEach
+        if (range.sourceEndOffset > text.length || range.sourceStartOffset >= range.sourceEndOffset) return@forEach
+        if (!seenWords.add("${range.blockId}:${range.sourceStartOffset}")) return@forEach
+        val word = mutableMapOf<String, Any>(
+          "text" to text.substring(range.sourceStartOffset, range.sourceEndOffset),
+          "blockId" to sentence.blockId,
+          "sourceStartOffset" to range.sourceStartOffset,
+          "sourceEndOffset" to range.sourceEndOffset
+        )
+        range.gloss?.let { word["gloss"] = it }
+        range.pinyin?.let { word["pinyin"] = it }
+        words.add(word)
+      }
+    }
+    if (parts.isEmpty()) return null
+    return Triple(parts.joinToString(" "), words.sortedBy { it["sourceStartOffset"] as Int }, segments)
+  }
+
+  fun setFocusTapsInSpanOnly(enabled: Boolean) {
+    continuousPageView.focusTapsInSpanOnly = enabled
   }
 
   // Reading-progress event for focus mode: sentence index stands in for the
@@ -3052,6 +3571,45 @@ class NativeEpubReaderView(
     }
   }
 
+  fun setChromeInsets(topDp: Double, bottomDp: Double) {
+    val top = dp(topDp.toFloat()).coerceAtLeast(0)
+    val bottom = dp(bottomDp.toFloat()).coerceAtLeast(0)
+    if (top == chromeTopPx && bottom == chromeBottomPx) {
+      return
+    }
+    val topShift = top - chromeTopPx
+    val bottomChanged = bottom != chromeBottomPx
+    chromeTopPx = top
+    chromeBottomPx = bottom
+    continuousScrollView.setScrollbarInsets(top, bottom)
+    // Paged pages leave the bottom room below their text, so they're laid out
+    // again; also when the first layout is still under way without it.
+    val paginating = paginationTask?.isDone == false
+    if (readerRenderMode == "paged" && bottomChanged && (pages.isNotEmpty() || paginating)) {
+      repaginate(resetToFirstPage = pages.isEmpty())
+      return
+    }
+    if (readerRenderMode != "continuous" || pages.isEmpty()) {
+      return
+    }
+    // The text moves down by the change at the top: scroll with it so the
+    // same line stays where it was on screen.
+    bindContinuousPage(
+      continuousPageIndex,
+      readerBackgroundColor(),
+      resetScroll = false,
+      scrollTarget = (continuousScrollView.scrollY + topShift).coerceAtLeast(0)
+    )
+  }
+
+  private fun continuousChromeTop(): Int = if (readerRenderMode == "continuous") chromeTopPx else 0
+
+  private fun continuousChromeBottom(): Int = if (readerRenderMode == "continuous") chromeBottomPx else 0
+
+  // Where a chapter's text starts in scroll mode: the page margin, below the
+  // header's room.
+  private fun continuousTextTop(): Int = pagePaddingV + continuousChromeTop()
+
   fun setFocusPanelHeight(heightDp: Double) {
     val nextPanelPx = (heightDp * resources.displayMetrics.density).toFloat().coerceAtLeast(0f)
     continuousPageView.focusPanelOpen = isFocusMode() && nextPanelPx > 0f
@@ -3088,7 +3646,7 @@ class NativeEpubReaderView(
   }
 
   private fun continuousContentHeightForPage(page: ReaderPage): Int {
-    var contentHeight = pagePaddingV * 2
+    var contentHeight = pagePaddingV * 2 + continuousChromeTop() + continuousChromeBottom()
 
     page.blocks.forEach { block ->
       contentHeight += block.marginTop
@@ -3252,9 +3810,11 @@ class NativeEpubReaderView(
 
   // Topmost block still visible at the given scroll offset — the position
   // anchor for continuous mode, mirroring what the first block of a paged
-  // page provides.
+  // page provides. Visible means below the header's room, where a restore
+  // puts the block back (see continuousBlockScrollTarget).
   private fun firstVisibleBlockId(page: ReaderPage, scrollY: Int): String {
-    var yOffset = pagePaddingV
+    val readingTop = scrollY + continuousChromeTop()
+    var yOffset = continuousTextTop()
     for (block in page.blocks) {
       yOffset += block.marginTop
       val blockHeight = if (block.type == "image") {
@@ -3262,7 +3822,7 @@ class NativeEpubReaderView(
       } else {
         block.textLayout?.height ?: 0
       }
-      if (yOffset + blockHeight > scrollY) {
+      if (yOffset + blockHeight > readingTop) {
         return block.blockId
       }
       yOffset += blockHeight
@@ -3272,9 +3832,6 @@ class NativeEpubReaderView(
     return page.blocks.firstOrNull()?.blockId ?: ""
   }
 
-  // Content offset of a block's top edge. Restoring to exactly this offset
-  // makes firstVisibleBlockId report the same block back, so restore events
-  // round-trip without drifting.
   // ─── Exposure emission ──────────────────────────────────────────────────────
   //
   // An "exposure" is a graded word the reader was SHOWN and moved past. Native
@@ -3449,7 +4006,7 @@ class NativeEpubReaderView(
     val viewportBottom = scrollY + layoutHeight
     val now = SystemClock.uptimeMillis()
 
-    var yOffset = pagePaddingV
+    var yOffset = continuousTextTop()
     for (block in page.blocks) {
       yOffset += block.marginTop
       val height = if (block.type == "image") {
@@ -3495,12 +4052,16 @@ class NativeEpubReaderView(
     exposedBlockIds.clear()
   }
 
-  private fun continuousBlockTopOffset(page: ReaderPage, blockId: String): Int? {
-    var yOffset = pagePaddingV
+  // The scroll offset that puts a block's top edge just below the header's
+  // room (the very top in focus mode). Restoring to exactly this offset makes
+  // firstVisibleBlockId report the same block back, so restore events
+  // round-trip without drifting.
+  private fun continuousBlockScrollTarget(page: ReaderPage, blockId: String): Int? {
+    var yOffset = continuousTextTop()
     for (block in page.blocks) {
       yOffset += block.marginTop
       if (block.blockId == blockId) {
-        return yOffset
+        return yOffset - continuousChromeTop()
       }
       yOffset += if (block.type == "image") {
         block.imageHeight
@@ -3548,6 +4109,8 @@ class NativeEpubReaderView(
   }
 
   private fun handlePageTextSelected(selection: TextSelectionHit) {
+    // A held selection replaces the word's lookup, and its translation popup.
+    fadeOutContextSentence()
     activeSelectionRanges = selection.ranges
     activeSelectionKind = ActiveSelectionKind.TEXT
     pageAdapter?.updateActiveSelectionRanges(activeSelectionRanges, activeSelectionKind)
@@ -3611,6 +4174,8 @@ class NativeEpubReaderView(
 
   private fun clearActiveSelection(dispatchEvent: Boolean, forceEvent: Boolean = false) {
     val hadSelection = activeSelectionRanges.isNotEmpty()
+    // The word's sentence translation closes with its lookup, so its wash goes too.
+    fadeOutContextSentence()
     activeSelectionRanges = emptyList()
     activeSelectionKind = null
     pageAdapter?.updateActiveSelectionRanges(activeSelectionRanges, activeSelectionKind)
@@ -4135,6 +4700,10 @@ class NativeEpubReaderView(
 
   private fun flushPendingEdgeNavigation() {
     when (pendingEdgeNavigation) {
+      "end" -> reportReadingDirection(1)
+      "start" -> reportReadingDirection(-1)
+    }
+    when (pendingEdgeNavigation) {
       "end" -> onChapterEnd(mapOf<String, Any>())
       "start" -> onChapterStart(mapOf<String, Any>())
     }
@@ -4194,6 +4763,7 @@ class NativeEpubReaderView(
     suppressPageEvents = false
     previousPageIndex = logicalPage
     dispatchPageChange(logicalPage, pages.size)
+    refreshPagedFocus()
   }
 
   private fun applyRestorePositionToCurrentPagesIfPossible(force: Boolean = false) {

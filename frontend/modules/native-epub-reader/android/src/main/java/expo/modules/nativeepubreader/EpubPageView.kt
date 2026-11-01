@@ -127,6 +127,15 @@ private const val MARQUEE_PAUSE_MS = 1400L
 // "(bound form)", "[Lu3 Xun4]".
 private val ASIDE_PATTERN = Regex("\\([^)]*\\)|（[^）]*）|\\[[^\\]]*]")
 private const val MARQUEE_FRAME_MS = 40L
+// A gloss with several common senses ("서투르다, 어색하다") shows them in turn,
+// each for GLOSS_TURN_MS, fading out and in at the change. All glosses share
+// the clock, so a page's words change together. Senses past the first few are
+// rarer and left to the dictionary panel.
+private const val GLOSS_TURN_MS = 3200L
+private const val GLOSS_FADE_MS = 280L
+private const val GLOSS_MAX_SENSES = 3
+// Joins a compound's component glosses ("joint · graveyard"); kept whole.
+private const val COMPOUND_GLOSS_JOINER = " · "
 
 class EpubPageView(context: Context) : View(context) {
   private var page: ReaderPage? = null
@@ -194,6 +203,27 @@ class EpubPageView(context: Context) : View(context) {
   // Set while the JS lookup panel is visible in focus mode; taps then dismiss
   // the panel instead of moving the beam or selecting another word.
   var focusPanelOpen = false
+  // Set while listen mode is on: only the lit span answers taps; a tap
+  // anywhere else counts as blank space (closes the panel, moves nothing).
+  var focusTapsInSpanOnly = false
+  // Listen mode: the word the voice is reading (block-local offsets), washed
+  // light blue. It stays while paused, marking where the voice picks up.
+  var spokenRange: FocusRange? = null
+    set(value) {
+      if (field == value) return
+      field = value
+      invalidate()
+    }
+  private val spokenWordPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+  // Listening in paged mode: the sentence being read, washed a paler blue
+  // than the word under the voice.
+  var listenSentences: List<ContextSentence> = emptyList()
+    set(value) {
+      if (field == value) return
+      field = value
+      invalidate()
+    }
+  private val listenSentencePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
   private var focusRanges: List<FocusRange> = emptyList()
   private var previousFocusRanges: List<FocusRange> = emptyList()
   private var focusTransition = 1f
@@ -773,8 +803,49 @@ class EpubPageView(context: Context) : View(context) {
     drawTextSelectionHighlight(canvas, block, layout, localStart, localEnd, textLength, contextSentencePaint)
   }
 
+  // Offsets are into the whole block's text: a page's slice of a block
+  // draws only its own part.
+  private fun drawSpokenWord(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
+    val range = spokenRange ?: return
+    if (range.blockId != block.blockId) return
+    val textLength = blockTextForSelection(block).length
+    if (textLength <= 0) return
+    val localStart = (range.startOffset - block.sourceStartOffset).coerceIn(0, textLength)
+    val localEnd = (range.endOffset - block.sourceStartOffset).coerceIn(localStart, textLength)
+    if (localStart >= localEnd) return
+    spokenWordPaint.color = if (Color.luminance(themePalette.backgroundColor) < 0.4f) {
+      Color.argb(0x66, 0x5B, 0x9B, 0xE6)
+    } else {
+      Color.argb(0x73, 0x9C, 0xCB, 0xFF)
+    }
+    drawTextSelectionHighlight(canvas, block, layout, localStart, localEnd, textLength, spokenWordPaint)
+  }
+
+  private fun drawListenSentences(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
+    if (listenSentences.isEmpty()) return
+    val currentPage = page ?: return
+    val textLength = blockTextForSelection(block).length
+    if (textLength <= 0) return
+    listenSentencePaint.color = if (Color.luminance(themePalette.backgroundColor) < 0.4f) {
+      Color.argb(0x2A, 0x5B, 0x9B, 0xE6)
+    } else {
+      Color.argb(0x33, 0x9C, 0xCB, 0xFF)
+    }
+    listenSentences.forEach { sentence ->
+      if (sentence.blockId != block.blockId) return@forEach
+      if (sentence.spineIndex != null && currentPage.spineIndex != null && sentence.spineIndex != currentPage.spineIndex) return@forEach
+      val localStart = (sentence.sourceStartOffset - block.sourceStartOffset).coerceIn(0, textLength)
+      val localEnd = (sentence.sourceEndOffset - block.sourceStartOffset).coerceIn(localStart, textLength)
+      if (localStart < localEnd) {
+        drawTextSelectionHighlight(canvas, block, layout, localStart, localEnd, textLength, listenSentencePaint)
+      }
+    }
+  }
+
   private fun drawBlockContent(canvas: Canvas, block: PageBlock, layout: StaticLayout) {
     drawContextSentence(canvas, block, layout)
+    drawListenSentences(canvas, block, layout)
+    drawSpokenWord(canvas, block, layout)
     activeHighlightPaint.color = activePaintColor()
     // A text selection is drawn for the whole page at once (drawSelectionBoxes).
     if (activeSelectionKind != ActiveSelectionKind.TEXT) {
@@ -793,8 +864,9 @@ class EpubPageView(context: Context) : View(context) {
   // gets a slot reaching halfway to its neighbours on the line; one that doesn't
   // fit its slot slides back and forth inside it instead of being cut off, so
   // the whole translation can be read. Sliding glosses schedule redraws only
-  // while one is on screen, and none during the pauses at either end.
-  private data class GlossItem(val line: Int, val left: Float, val right: Float, val text: String)
+  // while one is on screen, and none during the pauses at either end. A gloss
+  // with several senses shows one at a time (see glossTurn).
+  private data class GlossItem(val line: Int, val left: Float, val right: Float, val senses: List<String>)
 
   private var marqueeTickScheduled = false
   private var selectionDragStarted = false
@@ -878,7 +950,7 @@ class EpubPageView(context: Context) : View(context) {
       val lastLine = layout.getLineForOffset(localEnd - 1)
       val syllables = pinyin?.trim()?.split(Regex("\\s+"))
       val perCharacterPinyin = syllables != null && syllables.size == localEnd - localStart
-      val glossLabel = gloss?.let { firstSense(it) }.orEmpty()
+      val glossSenses = gloss?.let { commonSenses(it) }.orEmpty()
       for (line in firstLine..lastLine) {
         val partStart = max(localStart, layout.getLineStart(line))
         val visibleLineEnd = layout.getLineVisibleEnd(line)
@@ -921,8 +993,8 @@ class EpubPageView(context: Context) : View(context) {
             pinyinPaint.textScaleX = 1f
           }
         }
-        if (glossLabel.isNotEmpty()) {
-          glosses.add(GlossItem(line, left, right, glossLabel))
+        if (glossSenses.isNotEmpty()) {
+          glosses.add(GlossItem(line, left, right, glossSenses))
         }
       }
     }
@@ -930,7 +1002,7 @@ class EpubPageView(context: Context) : View(context) {
     if (glosses.isEmpty()) return
     // Hangul and CJK glosses are short and dense, so they can be larger than
     // a Latin-script gloss (which is longer and slides when it doesn't fit).
-    val compactScript = glosses.any { item -> item.text.any(::isCompactScriptChar) }
+    val compactScript = glosses.any { item -> item.senses.any { sense -> sense.any(::isCompactScriptChar) } }
     glossPaint.textSize = bodyPaint.textSize * (if (compactScript) GLOSS_TEXT_SCALE_COMPACT else GLOSS_TEXT_SCALE_LATIN)
     val gap = dp(3f).toFloat()
     val edgeSlack = dp(24f).toFloat()
@@ -954,25 +1026,31 @@ class EpubPageView(context: Context) : View(context) {
         }
         val slotWidth = slotRight - slotLeft
         if (slotWidth < dp(10f)) return@forEachIndexed
-        val width = glossPaint.measureText(item.text)
+        val turn = glossTurn(item.senses.size, now)
+        nextTickMs = min(nextTickMs, turn.untilChange)
+        val text = item.senses[turn.index]
+        glossPaint.alpha = (Color.alpha(annotationColor) * turn.alpha).toInt()
+        val width = glossPaint.measureText(text)
         val center = (item.left + item.right) / 2f
 
         if (width <= slotWidth) {
           // Centered on the word, nudged to stay inside the slot.
           val x = center.coerceIn(slotLeft + width / 2f, slotRight - width / 2f)
-          canvas.drawText(item.text, x, baseline, glossPaint)
+          canvas.drawText(text, x, baseline, glossPaint)
         } else {
           val overflow = width - slotWidth
-          val (offset, untilChange) = marqueeOffset(overflow, now)
+          // A sense taking its turn slides from the start of the turn.
+          val (offset, untilChange) = marqueeOffset(overflow, turn.elapsed)
           nextTickMs = min(nextTickMs, untilChange)
           val save = canvas.save()
           canvas.clipRect(slotLeft, baseline + glossPaint.ascent(), slotRight, baseline + glossPaint.descent())
           // textAlign is CENTER: the text's left edge sits at slotLeft - offset.
-          canvas.drawText(item.text, slotLeft - offset + width / 2f, baseline, glossPaint)
+          canvas.drawText(text, slotLeft - offset + width / 2f, baseline, glossPaint)
           canvas.restoreToCount(save)
         }
       }
     }
+    glossPaint.color = annotationColor
 
     if (nextTickMs != Long.MAX_VALUE && !marqueeTickScheduled) {
       marqueeTickScheduled = true
@@ -1005,18 +1083,45 @@ class EpubPageView(context: Context) : View(context) {
       block == Character.UnicodeBlock.KATAKANA
   }
 
-  // The gloss's first sense, without the dictionary's asides: "(located) at;
-  // (to be) in" -> "at", "pocket (in a garment)" -> "pocket", "(bound form)
-  // to go" -> "to go". A sense that is nothing but an aside is skipped.
-  private fun firstSense(gloss: String): String {
+  // Which of a gloss's senses is showing now, how opaque it is (fading out at
+  // the end of its turn and in at the start of the next), how long it has
+  // been showing, and how long until the next frame is needed. A lone sense
+  // never changes, and keeps the shared marquee clock.
+  private data class GlossTurn(val index: Int, val alpha: Float, val elapsed: Long, val untilChange: Long)
+
+  private fun glossTurn(count: Int, now: Long): GlossTurn {
+    if (count <= 1) return GlossTurn(0, 1f, now, Long.MAX_VALUE)
+    val index = ((now / GLOSS_TURN_MS) % count).toInt()
+    val elapsed = now % GLOSS_TURN_MS
+    val remaining = GLOSS_TURN_MS - elapsed
+    return when {
+      elapsed < GLOSS_FADE_MS -> GlossTurn(index, elapsed.toFloat() / GLOSS_FADE_MS, elapsed, MARQUEE_FRAME_MS)
+      remaining <= GLOSS_FADE_MS -> GlossTurn(index, remaining.toFloat() / GLOSS_FADE_MS, elapsed, MARQUEE_FRAME_MS)
+      else -> GlossTurn(index, 1f, elapsed, remaining - GLOSS_FADE_MS)
+    }
+  }
+
+  // The gloss's common senses, most common first, without the dictionary's
+  // asides: "(located) at; (to be) in" -> "at", "in"; "서투르다, 어색하다" ->
+  // both; "(bound form) to go" -> "to go". A sense that is nothing but an
+  // aside is skipped. A compound's joined components stay one label.
+  private fun commonSenses(gloss: String): List<String> {
+    if (gloss.contains(COMPOUND_GLOSS_JOINER)) {
+      val joined = gloss.split(COMPOUND_GLOSS_JOINER)
+        .mapNotNull { part -> splitSenses(part).firstOrNull() }
+        .joinToString(COMPOUND_GLOSS_JOINER)
+      return if (joined.isEmpty()) emptyList() else listOf(joined)
+    }
+    return splitSenses(gloss).distinct().take(GLOSS_MAX_SENSES)
+  }
+
+  private fun splitSenses(gloss: String): List<String> {
     // Asides first: a comma inside "(since the 20th century, ...)" would
     // otherwise split the sense in the middle of the parenthesis.
     val withoutAsides = gloss.replace(ASIDE_PATTERN, " ")
-    withoutAsides.split(';', '；', ',', '，').forEach { sense ->
-      val cleaned = sense.replace(Regex("\\s+"), " ").trim()
-      if (cleaned.isNotEmpty()) return cleaned
-    }
-    return ""
+    return withoutAsides.split(';', '；', ',', '，', '、')
+      .map { sense -> sense.replace(Regex("\\s+"), " ").trim() }
+      .filter { it.isNotEmpty() }
   }
 
   // Focus mode: draw the whole block dimmed, then re-draw the focused sentence
@@ -1266,6 +1371,7 @@ class EpubPageView(context: Context) : View(context) {
               return true
             }
             val nextWord = hitTestText(event.x, event.y)
+              ?.takeUnless { tapOutsideFocusSpan(it.range.blockId, it.localStartOffset) }
             if (nextWord == null) {
               clearSelectionFromTap()
             } else if (focusModeEnabled) {
@@ -1278,6 +1384,7 @@ class EpubPageView(context: Context) : View(context) {
           }
 
           val hit = hitTestText(event.x, event.y)
+            ?.takeUnless { tapOutsideFocusSpan(it.range.blockId, it.localStartOffset) }
           if (hit != null) {
             if (focusModeEnabled) {
               // Word taps move the beam to the word's sentence; the lookup panel
@@ -1290,9 +1397,11 @@ class EpubPageView(context: Context) : View(context) {
           } else {
             if (focusModeEnabled) {
               // A tap on a sentence's blank space still moves the beam there.
-              hitTestTextPosition(event.x, event.y, allowClosest = false)?.let { position ->
-                onFocusTextTapped?.invoke(position.block.blockId, position.localOffset)
-              }
+              hitTestTextPosition(event.x, event.y, allowClosest = false)
+                ?.takeUnless { tapOutsideFocusSpan(it.block.blockId, it.localOffset) }
+                ?.let { position ->
+                  onFocusTextTapped?.invoke(position.block.blockId, position.localOffset)
+                }
             }
             onSelectionCleared?.invoke()
           }
@@ -1312,6 +1421,13 @@ class EpubPageView(context: Context) : View(context) {
     }
 
     return true
+  }
+
+  private fun tapOutsideFocusSpan(blockId: String, localOffset: Int): Boolean {
+    if (!focusModeEnabled || !focusTapsInSpanOnly) return false
+    return focusRanges.none { range ->
+      range.blockId == blockId && localOffset >= range.startOffset && localOffset < range.endOffset
+    }
   }
 
   private fun clearSelectionFromTap() {

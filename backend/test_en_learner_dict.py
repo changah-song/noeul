@@ -222,6 +222,26 @@ def test_these_and_those_show_their_singular_determiner():
 
 
 
+def test_forms_of_be_and_have_show_the_verb():
+    """"am" was the abbreviation AM (Member of the Order of Australia) and
+    "is" a note on existential "there"; a tap on either shows "be"."""
+    out = en_learner_dict.lookup_entries(["am", "is", "was", "were", "been", "had"], "ko")
+    for word in ("am", "is", "was", "were", "been"):
+        assert out[word][0]["word"] == "be"
+        assert out[word][0]["stem"] == word
+    assert out["had"][0]["word"] == "have"
+
+
+def test_be_and_do_lead_with_their_main_meanings():
+    be = en_learner_dict.best_entry(en_learner_dict.lookup_entries(["be"], "ko")["be"])
+    assert be["equivalents"] == ["이다", "있다"]
+    assert "passive" not in be["senses"][0]
+    # The curated senses ship translated into Korean.
+    assert all(be["translated_senses"])
+    do = en_learner_dict.best_entry(en_learner_dict.lookup_entries(["do"], "ko")["do"])
+    assert do["gloss"] == "하다"
+
+
 def test_the_dictionary_covers_the_classics():
     """Words the library's books use, however rare, have entries (old senses
     labelled); an inflection the tagger leaves alone points at its base."""

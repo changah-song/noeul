@@ -1,20 +1,11 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
 import { Animated, AppState, BackHandler, Easing, PanResponder, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, findNodeHandle, ToastAndroid } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 
 import TopSection from '../components/Read/TopSection/TopSection';
-import PinnedSentenceTranslation from '../components/Read/PinnedSentenceTranslation';
-import {
-    PINNED_TRANSLATION_DEFAULT_LINES,
-    PINNED_TRANSLATION_GRIP_HEIGHT,
-    PINNED_TRANSLATION_MAX_LINES,
-    clampPinnedTranslationLines,
-    nearestPinnedTranslationLines,
-    pinnedTranslationBarHeight,
-    pinnedTranslationFontSizeForReader,
-} from '../components/Read/pinnedTranslationSize';
+import SentenceTranslationPopup from '../components/Read/SentenceTranslationPopup';
 import SelectionExplainPanel from '../components/Read/SelectionExplainPanel';
 import { chapterTranslations } from '../services/chapterTranslations';
 import TocDrawer from '../components/Read/TocDrawer';
@@ -27,7 +18,9 @@ import {
     ReaderProgressButton,
 } from '../components/Read/ReaderHeaderBar';
 import { navigationButtonsInset } from '../hooks/useNavigationButtonsInset';
-import { SEEK_SETTLE_MS, isReadingOn } from '../services/readingOn';
+import usePresence from '../hooks/usePresence';
+import useReduceMotion from '../hooks/useReduceMotion';
+import { isLocationJump, isNearPosition, pageInLayout } from '../services/locationJump';
 import { createReaderChromeStyles } from '../components/Read/readerChromeStyles';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
@@ -47,6 +40,8 @@ import NativeEpubReaderView, {
     supportsSeekToPosition,
     sendSpokenWord,
     supportsSpokenWord,
+    sendSpokenRange,
+    supportsSpokenRange,
     updateListenSession,
     stopListenSession,
     addListenControlListener,
@@ -63,6 +58,7 @@ import ListenVoiceSheet from '../components/Read/ListenVoiceSheet';
 import VocabLevelModal from '../components/shared/VocabLevelModal';
 import { hasVocabSizeGrid } from '../services/vocabSizeLevels';
 import { createListenPlayer, voiceLocaleFor, voiceSampleFor, LISTEN_PITCHES, LISTEN_RATES } from '../services/listenPlayer';
+import { remainingFrom, spokenRangeAt } from '../services/listenSpokenWord';
 import {
     PREPROCESS_VERSION,
     deleteBookBookmark,
@@ -105,10 +101,12 @@ import NotesLogSheet from '../components/Read/NotesLogSheet';
 import ReaderSettingsSheet from '../components/Read/ReaderSettingsSheet';
 import preprocessChapter from '../services/api/preprocessChapter';
 import {
-    parsePieceProgress,
+    donePiecesForLayout,
     pieceForPosition,
     piecesToPrepare,
     splitChapterForPreprocess,
+    storedChapterProgress,
+    storedProgressCoversNeighbor,
 } from '../services/preprocessPieces';
 import { withNormalizedSurfaceIndex } from '../services/dictionaryLookup';
 import { updateUserBookProgress } from '../services/bookCloudSync';
@@ -184,7 +182,8 @@ const DEFAULT_READER_SETTINGS = {
     fontSize: 18,
     isDarkMode: false,
     lineSpacing: 2.05,
-    readingMode: 'paged',
+    // New readers start in scroll mode.
+    readingMode: 'scroll',
     levelMarkStyle: 'underline',
     // 0..1: only words at least this hard on the green→red scale are marked
     // (0 = every graded word, 1 = only the hardest). New readers start in the
@@ -203,13 +202,20 @@ const DEFAULT_READER_SETTINGS = {
     // No pinyin / translation on saved (highlighted) words, so the reader can
     // try to recall a word they looked up before.
     hideSavedAnnotations: true,
-    // Lines of the sentence translation bar shows (0 folds it to its grip).
-    translationLines: PINNED_TRANSLATION_DEFAULT_LINES,
 };
 const READING_MODES = ['paged', 'scroll'];
+// A relayout's page events (the same spot, renumbered) arrive within this long.
+const SEEK_SETTLE_MS = 1500;
+// A jump the reader asked for lands within this long (another chapter has to
+// be read in and laid out first).
+const DELIBERATE_JUMP_MS = 6000;
 // The play button over the bottom line's right end, and its gap above it.
 const PLAY_BUTTON_SIZE = 44;
 const PLAY_BUTTON_GAP = 12;
+// The header and the scrubber slide away (full screen, focus mode) and back
+// in this long, and the page slides with them.
+const CHROME_SLIDE_MS = 260;
+const CHROME_EASING = Easing.bezier(0.22, 0.61, 0.36, 1);
 
 const shallowEqualObjects = (a, b) => {
     const aKeys = Object.keys(a);
@@ -534,36 +540,6 @@ const isPdfBook = (book, uri = '') => (
     || String(uri || '').toLowerCase().split('?')[0].endsWith('.pdf')
 );
 
-// Whether going from `previous` to `next` (spine + page) was a jump rather
-// than reading on: another chapter that isn't the next one entered at its
-// start (or the one before, paging back from its start), or more than a few
-// pages at once in paged mode. A vertical fling or focus steps can move far
-// within a chapter, so only chapter changes count there.
-const LOCATION_JUMP_PAGES = 3;
-const isLocationJump = (previous, next, { pagedWithinChapter = true } = {}) => {
-    if (!previous || !next) return false;
-    if (!Number.isInteger(previous.spineIndex) || !Number.isInteger(next.spineIndex)) return false;
-    if (previous.spineIndex === next.spineIndex) {
-        return pagedWithinChapter
-            && Number.isInteger(previous.pageIndex)
-            && Number.isInteger(next.pageIndex)
-            && Math.abs(next.pageIndex - previous.pageIndex) > LOCATION_JUMP_PAGES;
-    }
-    const lastPage = Number.isInteger(previous.pagesInChapter) ? previous.pagesInChapter - 1 : null;
-    const forwardOn = next.spineIndex === previous.spineIndex + 1
-        && next.pageIndex === 0
-        && (lastPage === null || previous.pageIndex >= lastPage - 1);
-    const backOn = next.spineIndex === previous.spineIndex - 1 && previous.pageIndex === 0;
-    return !forwardOn && !backOn;
-};
-const isNearPosition = (a, b) => (
-    Boolean(a && b)
-    && a.spineIndex === b.spineIndex
-    && Number.isInteger(a.pageIndex)
-    && Number.isInteger(b.pageIndex)
-    && Math.abs(a.pageIndex - b.pageIndex) <= 1
-);
-
 // Word help is prepared ahead of the reader: the open chapter, then the next
 // two, then the one before (for a step back). Each only in the pieces near the
 // reader (see services/preprocessPieces).
@@ -647,6 +623,8 @@ const Read = ({
     heldSpotRef.current = heldSpot;
     const [locationPrompt, setLocationPrompt] = useState(false);
     const lastViewedSpotRef = useRef(null);
+    // Set by a jump the reader asked for, until its page event arrives.
+    const deliberateJumpRef = useRef(false);
     const lastPageEventRef = useRef(null);
     const stepsSincePromptRef = useRef(0);
     const processNativePageChangeRef = useRef(null);
@@ -755,26 +733,9 @@ const Read = ({
     // vocabulary size once, the first time a book opens.
     const [showVocabLevelPrompt, setShowVocabLevelPrompt] = useState(false);
     const [listenActive, setListenActive] = useState(false);
-    // Sentence of the last tapped word, for the translation bar under the
-    // header. Outlives the lookup panel; cleared on a chapter or book change.
-    // In focus mode the bar follows the lit sentence instead (focusText).
+    // Sentence of the last tapped word, for the translation popup at the top.
+    // The popup shows it only while the word's lookup is open.
     const [pinnedSentence, setPinnedSentence] = useState('');
-    // The bar is always there: it takes its own space at the top.
-    const pinnedVisible = true;
-    // The lit sentence's text in focus mode, for the bar. A small store of its
-    // own so a focus step re-renders the bar and not the whole reader.
-    const focusTextRef = useRef('');
-    const focusTextListenersRef = useRef(new Set());
-    const publishFocusText = useCallback((text) => {
-        if (focusTextRef.current === text) return;
-        focusTextRef.current = text;
-        focusTextListenersRef.current.forEach((listener) => listener(text));
-    }, []);
-    const subscribeFocusText = useCallback((listener) => {
-        focusTextListenersRef.current.add(listener);
-        listener(focusTextRef.current);
-        return () => focusTextListenersRef.current.delete(listener);
-    }, []);
     const [listenPlaying, setListenPlaying] = useState(false);
     const [listenPrefs, setListenPrefs] = useState(DEFAULT_LISTEN_PREFS);
     const listenPrefsRef = useRef(DEFAULT_LISTEN_PREFS);
@@ -786,6 +747,9 @@ const Read = ({
     const listenEnteredFocusRef = useRef(false);
     const listenStartPendingRef = useRef(false);
     const listenSpokenKeyRef = useRef('');
+    // How far the voice got in the sentence it is reading ({ key, offset },
+    // offset into the cleaned text): play after a pause picks up there.
+    const listenReachedRef = useRef(null);
     const listenRunRef = useRef(0);
     const listenCtxRef = useRef({});
     const listenErrorsRef = useRef(0);
@@ -1451,6 +1415,16 @@ const Read = ({
     useEffect(() => {
         readerSettingsRef.current = settings;
     }, [settings]);
+
+    // Focus mode (where a "page" is a sentence) and the reader settings lay
+    // the chapter out again; the page events that follow are the same spot,
+    // renumbered, not a jump (see processNativePageChange). Full screen
+    // doesn't: the controls lie over the page. A layout effect, so it's
+    // stamped before the native view reports.
+    const layoutChangedAtRef = useRef(0);
+    useLayoutEffect(() => {
+        layoutChangedAtRef.current = Date.now();
+    }, [focusMode, settings]);
 
     const scheduleCloudReaderSettingsSync = useCallback((nextSettings, updatedAt = new Date().toISOString()) => {
         if (
@@ -2192,6 +2166,7 @@ const Read = ({
         // chapter already on screen.
         seekTokenRef.current += 1;
         lastSeekAtRef.current = Date.now();
+        deliberateJumpRef.current = true;
         const position = {
             spineIndex: bookmark.spineIndex,
             pageIndex: Number.isInteger(bookmark.pageIndex) ? bookmark.pageIndex : 0,
@@ -2642,13 +2617,8 @@ const Read = ({
 
                 // A chapter ahead or behind needs one known piece, so what's
                 // stored says whether it's done without opening the chapter.
-                const storedProgress = parsePieceProgress(existingChapter?.piece_progress);
-                if (
-                    !isCurrentChapter
-                    && storedProgress
-                    && piecesToPrepare({ spineIndex, centerSpineIndex, pieceCount: storedProgress.count })
-                        .every((piece) => storedProgress.done.includes(piece))
-                ) {
+                const storedProgress = storedChapterProgress(existingChapter);
+                if (storedProgressCoversNeighbor({ spineIndex, centerSpineIndex, progress: storedProgress })) {
                     settleChapter(false);
                     continue;
                 }
@@ -2672,7 +2642,7 @@ const Read = ({
                     const layout = splitChapterForPreprocess(chapterBlocksForReaderPackage(chapterPackage));
                     const pieceCount = layout.pieces.length;
                     // Pieces done before, unless the chapter splits differently now.
-                    const donePieces = new Set(storedProgress?.count === pieceCount ? storedProgress.done : []);
+                    const donePieces = new Set(donePiecesForLayout(storedProgress, pieceCount));
                     const readingPiece = (
                         isCurrentChapter && readingPosition?.spineIndex === spineIndex
                             ? pieceForPosition(layout, readingPosition)
@@ -3363,7 +3333,26 @@ const Read = ({
         // is confirmed or they're back there, where they are isn't saved.
         lastPageEventRef.current = { page, total, spineIndex, href, firstBlockId };
         const previousSpot = lastViewedSpotRef.current;
-        lastViewedSpotRef.current = { position: nextPosition, progress: nextBookPatch.progress };
+        lastViewedSpotRef.current = {
+            position: nextPosition,
+            progress: nextBookPatch.progress,
+            focus: focusModeRef.current,
+        };
+        // Just after a relayout (full screen, focus mode, settings) the spot
+        // is only being renumbered, unless the reader has since jumped on
+        // purpose. Focus mode counts sentences, not pages: its spots never
+        // compare with the page's.
+        const relayout = (
+            Date.now() - layoutChangedAtRef.current < SEEK_SETTLE_MS
+            && lastSeekAtRef.current < layoutChangedAtRef.current
+        ) || Boolean(previousSpot && previousSpot.focus !== focusModeRef.current);
+        // A jump the reader asked for (scrubber, contents, a bookmark) counts
+        // by distance in scroll mode too, where reading alone can cover many
+        // screens of one chapter. Taken by the first event that moved.
+        const moved = !previousSpot || !isNearPosition(previousSpot.position, nextPosition);
+        const deliberate = deliberateJumpRef.current
+            && Date.now() - lastSeekAtRef.current < DELIBERATE_JUMP_MS;
+        if (moved || !deliberate) deliberateJumpRef.current = false;
         const held = heldSpotRef.current;
         if (held) {
             if (isNearPosition(held.position, nextPosition)) {
@@ -3372,9 +3361,9 @@ const Read = ({
                 setLocationPrompt(false);
             } else {
                 // Reading on from the new spot without answering counts as yes.
-                const readOn = previousSpot && !isLocationJump(previousSpot.position, nextPosition)
+                const readOn = !relayout && previousSpot && !isLocationJump(previousSpot.position, nextPosition)
                     && (nextPosition.spineIndex > previousSpot.position.spineIndex
-                        || nextPosition.pageIndex > previousSpot.position.pageIndex);
+                        || nextPosition.pageIndex > pageInLayout(previousSpot.position, nextPosition.pagesInChapter));
                 stepsSincePromptRef.current = readOn ? stepsSincePromptRef.current + 1 : stepsSincePromptRef.current;
                 if (!(locationPromptRef.current && stepsSincePromptRef.current >= 3)) {
                     updateNativeRestorePosition(nextPosition);
@@ -3387,8 +3376,9 @@ const Read = ({
         } else if (
             previousSpot
             && !focusModeRef.current
+            && !relayout
             && isLocationJump(previousSpot.position, nextPosition, {
-                pagedWithinChapter: readerSettingsRef.current?.readingMode !== 'scroll',
+                pagedWithinChapter: deliberate || readerSettingsRef.current?.readingMode !== 'scroll',
             })
         ) {
             const spot = { position: previousSpot.position, progress: previousSpot.progress };
@@ -3671,8 +3661,6 @@ const Read = ({
         FONT_SIZE_MAX,
         DEFAULT_READER_SETTINGS.fontSize
     ));
-    // The pinned translation is sized from the book's font size.
-    const pinnedTranslationFontSize = pinnedTranslationFontSizeForReader(readerFontSize);
     const readerLineSpacing = clampNumber(
         settings.lineSpacing,
         LINE_SPACING_STEPS[0].value,
@@ -3706,19 +3694,19 @@ const Read = ({
         startChapterPreprocessing(spineIndex, totalSpineItems, null);
     }, [currentBook, interfaceLanguage, startChapterPreprocessing]);
 
-    // The pinned translation belongs to the chapter it came from.
+    // The popup's sentence belongs to the chapter it came from.
     useEffect(() => {
         setPinnedSentence('');
     }, [activeSpineIndex, currentBook]);
 
     // Translate the open chapter's sentences in a few requests, ahead of time,
-    // while something will read them: the pinned translation bar, or listen
+    // while something will read them: the sentence translation popup, or listen
     // mode's translation mode (which also takes the next chapter, so the turn
     // between chapters doesn't wait). Each chapter is fetched once per language
     // and kept on the phone (services/chapterTranslations.js).
     const listenTranslating = listenActive && Boolean(listenPrefs.translateSentences);
-    // The sentence translation bar is always on, so the open chapter is always
-    // translated ahead.
+    // Any word tap can open the translation popup, so the open chapter is
+    // always translated ahead and the popup shows at once.
     const chapterTranslationsWanted = true;
     useEffect(() => {
         if (
@@ -3776,7 +3764,10 @@ const Read = ({
     ]);
 
     const isScrollMode = readingMode === 'scroll';
-    const nativeRenderMode = focusMode ? 'focus' : (isScrollMode ? 'continuous' : 'paged');
+    // Listening (focus mode) reads in the beam in scroll mode; in paged mode
+    // it stays on the page, which lights the sentence and turns with the voice.
+    const nativeRenderMode = isScrollMode ? (focusMode ? 'focus' : 'continuous') : 'paged';
+    const pagedListening = focusMode && nativeRenderMode === 'paged';
     // 'off' hides the marks only; exposure/lookup evidence keeps flowing, since
     // the model should keep learning even when the marks are turned off.
     const levelMarkStyle = LEVEL_MARK_STYLES.includes(settings.levelMarkStyle)
@@ -3897,18 +3888,20 @@ const Read = ({
     // ─── Page scrubber ───────────────────────────────────────────────────────
     // The line along the bottom: where you are in the story, its chapters and
     // bookmarks; dragging previews and releasing goes there.
-    const scrubberShown = Boolean(currentBook) && bookLoadState === 'ready' && !isFullscreen && !focusMode;
+    // Listening (focus mode) is full screen too: only its own bar is up.
+    const chromeHidden = isFullscreen || focusMode;
+    const scrubberShown = Boolean(currentBook) && bookLoadState === 'ready' && !chromeHidden;
     const scrubberSpace = scrubberShown ? PAGE_SCRUBBER_HEIGHT + insets.bottom : 0;
     // Listening starts from a play button resting over the line's right end;
-    // it goes with the rest of the controls in full screen, and gives way to
-    // an open panel and to the listen bar.
-    const playButtonShown = scrubberShown && !listenActive && !lookupOpen;
-    // Cards at the bottom of the screen sit above the scrubber (and the play
-    // button). Without the scrubber the page stops above the navigation
-    // buttons, on phones that have them.
-    const bottomOverlayBase = (scrubberShown ? scrubberSpace : insets.bottom)
-        + (playButtonShown ? PLAY_BUTTON_SIZE + PLAY_BUTTON_GAP : 0);
-    const readerBottomInset = scrubberShown ? 0 : navigationButtonsInset(insets.bottom);
+    // it goes with the rest of the controls in full screen, rises above an
+    // open panel or a notice, and turns into the listen bar.
+    const playButtonShown = scrubberShown && !listenActive;
+    // Cards at the bottom of the screen sit just above the scrubber (the play
+    // button rises over them).
+    const bottomOverlayBase = scrubberShown ? scrubberSpace : insets.bottom;
+    // The page runs from the status bar to the navigation buttons (on phones
+    // that have them) whether the controls are up or not; they lie over it.
+    const readerBottomInset = navigationButtonsInset(insets.bottom);
     const readerSpine = nativeReaderPackage?.spine;
     const scrubberRange = useMemo(
         () => storyRangeForSpine(readerSpine, toc, curatedBook, storyBounds),
@@ -3995,164 +3988,14 @@ const Read = ({
     const focusPanelTotalHeight = focusPanelOpen
         ? Math.max(0, Math.round(lookupPanelHeight))
         : 0;
-    const focusControlsBaseBottom = insets.bottom + 28;
-    // The position pill rides at the top of the reading surface rather than the
-    // bottom, where the lookup panel comes up. FOCUS_SPAN_TOP_MARGIN_DP in the native
-    // module reserves the matching strip of reading surface, so a sentence too
-    // tall to fit still stops short of the pill instead of running under it.
-    const showPinnedTranslation = Boolean(currentBook);
-    // The bar takes its own space under the header (under the status bar in
-    // full screen): 0–4 lines of translation at its font size, the reader's
-    // choice (dragged at the grip under it), and the page lays out below. A
-    // longer translation scrolls inside it rather than re-paginating the book.
-    const pinnedLines = clampPinnedTranslationLines(settings.translationLines);
-    const pinnedBarHeight = pinnedTranslationBarHeight(pinnedTranslationFontSize, pinnedLines);
-    const pinnedTranslationOffset = showPinnedTranslation && pinnedVisible
-        ? pinnedBarHeight + PINNED_TRANSLATION_GRIP_HEIGHT
-        : 0;
-
-    // Dragging the grip: the bar's height animates from one line count to the
-    // next as the finger passes each (a tick of haptics on each), and the page
-    // slides along with it (a transform, so the book isn't re-laid out on
-    // every frame). Letting go saves the count; the page then lays out once
-    // at its new size. A tap folds the bar away, or brings it back.
-    const pinnedHeightAnim = useRef(new Animated.Value(pinnedBarHeight)).current;
-    const pinnedDragRef = useRef(null);
-    const pinnedCommittedRef = useRef({ lines: pinnedLines, height: pinnedBarHeight, fontSize: pinnedTranslationFontSize });
-    pinnedCommittedRef.current = { lines: pinnedLines, height: pinnedBarHeight, fontSize: pinnedTranslationFontSize };
-    const updateSettingsRef = useRef(null);
-    updateSettingsRef.current = updateSettings;
-    // Where the grip last sent the height. A saved height that differs (a new
-    // font size, settings from the cloud) is taken at once; the grip's own
-    // saves keep their animation running.
-    const pinnedAnimTargetRef = useRef(pinnedBarHeight);
-    useEffect(() => {
-        if (pinnedDragRef.current || pinnedAnimTargetRef.current === pinnedBarHeight) return;
-        pinnedAnimTargetRef.current = pinnedBarHeight;
-        pinnedHeightAnim.setValue(pinnedBarHeight);
-    }, [pinnedBarHeight, pinnedHeightAnim]);
-    // A spring rather than a fixed-length tween: retargeted on every move, it
-    // carries the bar's motion over instead of restarting it.
-    const springPinnedHeight = useCallback((toValue) => {
-        Animated.spring(pinnedHeightAnim, {
-            toValue,
-            stiffness: 420,
-            damping: 38,
-            mass: 1,
-            overshootClamping: true,
-            useNativeDriver: false,
-        }).start();
-    }, [pinnedHeightAnim]);
-    const animatePinnedTo = useCallback((lines) => {
-        const toValue = pinnedTranslationBarHeight(pinnedCommittedRef.current.fontSize, lines);
-        pinnedAnimTargetRef.current = toValue;
-        springPinnedHeight(toValue);
-    }, [springPinnedHeight]);
-    // The grip's handle bends into a chevron the way it's being moved (⌃ up,
-    // ⌄ down); at rest it lies flat, or shows ⌄ when the bar is folded away.
-    const pinnedGripTilt = useRef(new Animated.Value(pinnedLines === 0 ? 1 : 0)).current;
-    const tiltPinnedGrip = useCallback((toValue) => {
-        Animated.spring(pinnedGripTilt, {
-            toValue,
-            stiffness: 360,
-            damping: 26,
-            mass: 1,
-            useNativeDriver: true,
-        }).start();
-    }, [pinnedGripTilt]);
-    useEffect(() => {
-        if (!pinnedDragRef.current) tiltPinnedGrip(pinnedLines === 0 ? 1 : 0);
-    }, [pinnedLines, tiltPinnedGrip]);
-    const commitPinnedLines = useCallback((lines) => {
-        pinnedDragRef.current = null;
-        if (lines !== pinnedCommittedRef.current.lines) {
-            updateSettingsRef.current?.({ translationLines: lines }, { keepSelection: true });
-        }
-    }, []);
-    const pinnedGripResponder = useMemo(() => PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponder: () => true,
-        onPanResponderTerminationRequest: () => false,
-        onPanResponderGrant: () => {
-            const { lines, height } = pinnedCommittedRef.current;
-            pinnedDragRef.current = { startHeight: height, lines, moved: false, lastRaw: height, tilt: 0 };
-        },
-        onPanResponderMove: (_event, gesture) => {
-            const drag = pinnedDragRef.current;
-            if (!drag) return;
-            if (Math.abs(gesture.dy) > 4) drag.moved = true;
-            const { fontSize } = pinnedCommittedRef.current;
-            const raw = drag.startHeight + gesture.dy;
-            // Which way the finger is going: the handle bends to match.
-            if (Math.abs(raw - drag.lastRaw) > 1.5) {
-                const tilt = raw < drag.lastRaw ? -1 : 1;
-                if (tilt !== drag.tilt) {
-                    drag.tilt = tilt;
-                    tiltPinnedGrip(tilt);
-                }
-                drag.lastRaw = raw;
-            }
-            const lines = nearestPinnedTranslationLines(raw, fontSize);
-            if (lines !== drag.lines) {
-                drag.lines = lines;
-                tapSelect();
-            }
-            // Snapped to the nearest line count, leaning a little toward the
-            // finger in between, so the steps feel connected.
-            const stepHeight = pinnedTranslationBarHeight(fontSize, lines);
-            const maxHeight = pinnedTranslationBarHeight(fontSize, PINNED_TRANSLATION_MAX_LINES);
-            const target = Math.min(maxHeight, Math.max(0, stepHeight + (raw - stepHeight) * 0.3));
-            pinnedAnimTargetRef.current = target;
-            springPinnedHeight(target);
-        },
-        onPanResponderRelease: () => {
-            const drag = pinnedDragRef.current;
-            if (!drag) return;
-            if (!drag.moved) {
-                // A tap: fold away, or back to the full four lines.
-                const lines = pinnedCommittedRef.current.lines > 0 ? 0 : PINNED_TRANSLATION_MAX_LINES;
-                tapSelect();
-                animatePinnedTo(lines);
-                commitPinnedLines(lines);
-                tiltPinnedGrip(lines === 0 ? 1 : 0);
-                return;
-            }
-            animatePinnedTo(drag.lines);
-            commitPinnedLines(drag.lines);
-            tiltPinnedGrip(drag.lines === 0 ? 1 : 0);
-        },
-        onPanResponderTerminate: () => {
-            const drag = pinnedDragRef.current;
-            if (!drag) return;
-            animatePinnedTo(drag.lines);
-            commitPinnedLines(drag.lines);
-            tiltPinnedGrip(drag.lines === 0 ? 1 : 0);
-        },
-    }), [animatePinnedTo, commitPinnedLines, springPinnedHeight, tiltPinnedGrip]);
-    // The grip is adjustable for screen readers too: one line at a time.
-    const pinnedGripAccessibility = useMemo(() => ({
-        accessible: true,
-        accessibilityRole: 'adjustable',
-        accessibilityLabel: t('read.pinnedTranslation'),
-        accessibilityValue: { min: 0, max: PINNED_TRANSLATION_MAX_LINES, now: pinnedLines },
-        accessibilityActions: [{ name: 'increment' }, { name: 'decrement' }],
-        onAccessibilityAction: ({ nativeEvent }) => {
-            const step = nativeEvent.actionName === 'increment' ? 1 : -1;
-            const lines = clampPinnedTranslationLines(pinnedCommittedRef.current.lines + step);
-            animatePinnedTo(lines);
-            commitPinnedLines(lines);
-        },
-    }), [animatePinnedTo, commitPinnedLines, pinnedLines, t]);
-    // While the bar animates away from its saved height, the page follows.
-    const pinnedFollowShift = useMemo(() => pinnedHeightAnim.interpolate({
-        inputRange: [0, 1],
-        outputRange: [-pinnedBarHeight, 1 - pinnedBarHeight],
-        extrapolate: 'extend',
-    }), [pinnedBarHeight, pinnedHeightAnim]);
-    // Top of the reading surface in fullscreen: below the status-bar inset
-    // and the bar.
-    const fullscreenTop = insets.top + pinnedTranslationOffset;
-    const focusPillTop = (isFullscreen ? fullscreenTop : insets.top + spacing.xs + 52 + pinnedTranslationOffset) + 12;
+    // Paged listening has no arrows to clear: the listen bar sits low, over
+    // the page's bottom margin.
+    const focusControlsBaseBottom = insets.bottom + (pagedListening ? 8 : 28);
+    // The tapped word's sentence, translated in a popup over the top of the
+    // page. It lives as long as the lookup does: reading on (a page turn, a
+    // tap elsewhere, a new chapter) closes both.
+    const showTranslationPopup = Boolean(currentBook);
+    const translationPopupSentence = showTranslationPopup && highlightedWord ? pinnedSentence : '';
 
     // Arrow controls ride 12dp above the open panel, mirroring the 28 → panel+12
     // bottom shift in the design.
@@ -4175,7 +4018,6 @@ const Read = ({
             count: Number.isInteger(event.count) && event.count > 0 ? event.count : 1,
             total: Number.isInteger(event.total) ? event.total : 0,
         });
-        publishFocusText(cleanListenText(event.text));
         // While listening, stepping goes through the focusNav command and its
         // result (see stepOn); events matter for a new chapter or a jump
         // forward. Events for earlier sentences are the queue flushing after
@@ -4186,7 +4028,10 @@ const Read = ({
         // Listening just turned focus mode on: this is where it starts.
         const starting = listenStartPendingRef.current && listenPlayingRef.current;
         if (starting) listenStartPendingRef.current = false;
+        // A jump (the reader turned the page while listening) is taken up
+        // wherever it lands.
         const behind = !starting
+            && !event.jump
             && sameChapter
             && Number.isInteger(previous?.index)
             && event.index <= previous.index;
@@ -4198,7 +4043,7 @@ const Read = ({
         if (listenPlayingRef.current && !behind && key !== listenSpokenKeyRef.current) {
             listenSpeakRef.current?.(event, key);
         }
-    }, [publishFocusInfo, publishFocusText]);
+    }, [publishFocusInfo]);
 
     const sendFocusNav = useCallback((direction) => {
         // Preferred path: call straight into the native view. Routing through
@@ -4292,6 +4137,15 @@ const Read = ({
         sendSpokenWord(viewTag, word).catch(() => {});
     }, []);
 
+    // The word the voice is reading, lit light blue; it stays lit while
+    // paused, marking where play picks up.
+    const setSpokenRange = useCallback((range) => {
+        if (!supportsSpokenRange) return;
+        const viewTag = findNodeHandle(nativeReaderViewRef.current);
+        if (viewTag == null) return;
+        sendSpokenRange(viewTag, range).catch(() => {});
+    }, []);
+
     const pauseListening = useCallback(({ keepActive = true } = {}) => {
         // Any pause but the panel's own (which sets it again after) means the
         // panel closing must not start the voice.
@@ -4303,17 +4157,20 @@ const Read = ({
         setSpokenWord(null);
         setListenPlaying(false);
         if (!keepActive) {
+            setSpokenRange(null);
             setListenActive(false);
         }
-    }, [setSpokenWord]);
+    }, [setSpokenRange, setSpokenWord]);
     listenPauseRef.current = pauseListening;
 
     // Read the focused sentence, then (study mode) each underlined word in it
     // with its meaning, then step the beam on. Every await re-checks that this
     // run is still the current one, so pause, a tap or a newer sentence stops
-    // it between utterances.
+    // it between utterances. `prepared.from` resumes the sentence partway in
+    // (where a pause left it).
     const speakFocusedSentence = useCallback(async (event, key, prepared = {}) => {
-        const text = cleanListenText(event?.text);
+        const rawText = typeof event?.text === 'string' ? event.text : '';
+        const text = cleanListenText(rawText);
         if (!text) return;
         const run = ++listenRunRef.current;
         listenSpokenKeyRef.current = key;
@@ -4372,13 +4229,36 @@ const Read = ({
             ? (prepared.translation || chapterTranslations.translate(text, ctx.language, ctx.interfaceLanguage).catch(() => ''))
             : null;
 
-        let outcome = await player.speakSequence([{ text, ...listenVoiceFor(prefs, ctx.targetLocale) }]);
+        // Follow the voice word by word: light the word it reaches and
+        // remember it, so play after a pause starts from that word. Offsets
+        // from the engine are into `rest`; the view's segments index the
+        // uncleaned text.
+        const rest = remainingFrom(text, prepared.from);
+        const leading = rawText.length - rawText.trimStart().length;
+        listenReachedRef.current = { key, offset: rest.base };
+        setSpokenRange(null);
+        const followWord = ({ start, end }) => {
+            if (!mine()) return;
+            const offset = rest.base + start;
+            listenReachedRef.current = { key, offset };
+            setSpokenRange(spokenRangeAt(event.segments, leading + offset, leading + rest.base + end));
+        };
+
+        let outcome = await player.speakSequence([{
+            text: rest.text,
+            ...listenVoiceFor(prefs, ctx.targetLocale),
+            onProgress: followWord,
+        }]);
         if (!mine()) return;
+        setSpokenRange(null);
         if (outcome === 'error') {
             if (failed()) stepOn();
             return;
         }
         listenErrorsRef.current = 0;
+        // The sentence itself is done; a pause from here on replays only the
+        // translation and the word meanings.
+        listenReachedRef.current = { key, offset: text.length };
 
         if (translation) {
             const translated = cleanListenText(await translation);
@@ -4453,7 +4333,7 @@ const Read = ({
                 listenSpeakRef.current?.(result, resultKey);
             }
         }).catch(() => {});
-    }, [getListenPlayer, pauseListening, setSpokenWord]);
+    }, [getListenPlayer, pauseListening, setSpokenRange, setSpokenWord]);
     listenSpeakRef.current = speakFocusedSentence;
 
     const resumeListening = useCallback(async () => {
@@ -4487,7 +4367,9 @@ const Read = ({
         const current = listenFocusRef.current;
         if (current?.text) {
             const key = `${currentSpineIndexRef.current}:${current.index}:${cleanListenText(current.text)}`;
-            speakFocusedSentence(current, key);
+            // Same sentence as the pause: carry on from the word it reached.
+            const reached = listenReachedRef.current;
+            speakFocusedSentence(current, key, { from: reached?.key === key ? reached.offset : 0 });
         }
     }, [speakFocusedSentence, toggleFocusMode]);
 
@@ -4763,13 +4645,6 @@ const Read = ({
     // A page event counts only when the page actually changed: the reader
     // also reports where it is on opening and after relayouts.
     const lastReadingPageRef = useRef('');
-    const lastReadingSpotRef = useRef(null);
-    // The controls coming or going resizes the page, and the relayout's page
-    // events (the same spot, laid out again) are not reading on either.
-    const fullscreenChangedAtRef = useRef(0);
-    useEffect(() => {
-        fullscreenChangedAtRef.current = Date.now();
-    }, [isFullscreen]);
     const handleReadingPageChange = useCallback((event) => {
         const data = event?.nativeEvent ?? event ?? {};
         const pageKey = `${data.spineIndex ?? ''}:${data.page ?? ''}:${data.firstBlockId ?? ''}`;
@@ -4777,23 +4652,6 @@ const Read = ({
             noteReadingActivity();
         }
         lastReadingPageRef.current = pageKey;
-        // Reading on (a page turned forward, the page scrolled on) hides the
-        // controls: full screen without asking. A tap on the page brings them
-        // back. Listening keeps its bar, and a jump is not reading on.
-        const readingSpot = { spineIndex: data.spineIndex, page: data.page, total: data.total };
-        const previousReadingSpot = lastReadingSpotRef.current;
-        lastReadingSpotRef.current = readingSpot;
-        const now = Date.now();
-        if (
-            !focusModeRef.current
-            && now - lastSeekAtRef.current > SEEK_SETTLE_MS
-            && now - fullscreenChangedAtRef.current > SEEK_SETTLE_MS
-            && isReadingOn(previousReadingSpot, readingSpot, {
-                scroll: readerSettingsRef.current?.readingMode === 'scroll',
-            })
-        ) {
-            setIsFullscreen(true);
-        }
         // The scrubber opened another chapter: now that it's on screen, go to
         // the point in it that was asked for.
         const pendingScrub = pendingScrubSeekRef.current;
@@ -4839,7 +4697,6 @@ const Read = ({
     }, [currentBook, handleNativePageChange, startChapterPreprocessing]);
     useEffect(() => {
         lastReadingPageRef.current = '';
-        lastReadingSpotRef.current = null;
     }, [currentBook]);
     // Native reader events (lookups, focus steps) are reading: the book's own
     // view takes its touches, so the container never sees them.
@@ -4873,18 +4730,16 @@ const Read = ({
     }, [currentBook, navigation, openSettingsParam, t]);
 
     // ── "Getting this chapter's word help ready" ─────────────────────────────
-    // Up while the chapter is processed and then while its underlines, the
-    // translations under words and the sentence translations load, so once it
-    // goes, a tap's definition and translation are instant and the underlines
-    // are on the page. The follow-up loads usually finish in a blink, so they
-    // only bring it up after a short grace (no flicker); it stays a moment
-    // past the end so the page has painted the new marks.
+    // Only when the page in front of the reader is really being processed
+    // (they jumped somewhere not prepared ahead). A chapter reached by reading
+    // on was prepared while they read the one before, so it says nothing. Once
+    // up, it stays while the underlines, the translations under words and the
+    // sentence translations load, so when it goes a tap's definition and
+    // translation are instant and the underlines are on the page; then a
+    // check and "word help is ready" for a moment.
     const wordHelpLoading = bookLoadState === 'ready'
         && (levelTermsLoading || annotationsLoading || chapterTranslating);
     const [preparingNoticeVisible, setPreparingNoticeVisible] = useState(false);
-    // When the chapter really was prepared (not just read back from the
-    // phone), the notice ends by saying so: a check and "word help is ready"
-    // for a moment before it goes.
     const [wordHelpDone, setWordHelpDone] = useState(false);
     const chapterWasPreparedRef = useRef(false);
     useEffect(() => {
@@ -4892,6 +4747,10 @@ const Read = ({
             chapterWasPreparedRef.current = true;
             setWordHelpDone(false);
             setPreparingNoticeVisible(true);
+            return undefined;
+        }
+        // Nothing was processed: the follow-up loads alone don't bring it up.
+        if (!chapterWasPreparedRef.current) {
             return undefined;
         }
         const timer = setTimeout(() => {
@@ -4921,7 +4780,108 @@ const Read = ({
     useEffect(() => {
         chapterWasPreparedRef.current = false;
         setWordHelpDone(false);
+        setPreparingNoticeVisible(false);
     }, [currentBook]);
+
+    // ── The controls coming and going ────────────────────────────────────────
+    // They go the moment the reader reads on (drags or flings the text on,
+    // turns a page forward) and come back the moment they go back, even a
+    // little, or tap the page. Jumps don't count: the reader reports only
+    // its own gestures. Listening (focus mode) keeps its own controls.
+    const handleReadingDirection = useCallback((event) => {
+        if (focusModeRef.current) return;
+        if (event?.direction === 'forward') {
+            setIsFullscreen(true);
+        } else if (event?.direction === 'back') {
+            setIsFullscreen(false);
+        }
+    }, []);
+
+    // The header slides up and away, the scrubber down, and back, over the
+    // page. The page itself never changes size, so nothing is laid out again
+    // and a page turn under way carries on: paged mode lays its pages out
+    // between the two, and scroll mode lets the text pass under them.
+    const reduceMotion = useReduceMotion();
+    const [headerHeight, setHeaderHeight] = useState(0);
+    const headerPresence = usePresence(!chromeHidden, { duration: CHROME_SLIDE_MS, easing: CHROME_EASING, reduceMotion });
+    const headerSlide = useMemo(() => headerPresence.progress.interpolate({
+        inputRange: [0, 1],
+        outputRange: [-headerHeight, 0],
+    }), [headerHeight, headerPresence.progress]);
+    // The room the controls take over the page: the header below the status
+    // bar, the scrubber above the navigation buttons.
+    const chromeInsets = useMemo(() => ({
+        top: Math.max(0, headerHeight - insets.top),
+        bottom: Math.max(0, PAGE_SCRUBBER_HEIGHT + insets.bottom - navigationButtonsInset(insets.bottom)),
+    }), [headerHeight, insets.bottom, insets.top]);
+    const scrubberPresence = usePresence(scrubberShown, { duration: CHROME_SLIDE_MS, easing: CHROME_EASING, reduceMotion });
+    const scrubberSlide = useMemo(() => scrubberPresence.progress.interpolate({
+        inputRange: [0, 1],
+        outputRange: [PAGE_SCRUBBER_HEIGHT + insets.bottom, 0],
+    }), [insets.bottom, scrubberPresence.progress]);
+
+    // ── The play button ──────────────────────────────────────────────────────
+    // It rests over the scrubber's right end and rises above whatever comes
+    // up at the bottom: the dictionary or AI panel, or a notice.
+    const preparingNoticeShown = Boolean(currentBook) && !highlightedWord && !textSelection
+        && !focusMode && preparingNoticeVisible;
+    const locationPromptShown = locationPrompt && Boolean(currentBook) && !highlightedWord && !textSelection;
+    const [preparingNoticeHeight, setPreparingNoticeHeight] = useState(0);
+    const [locationPromptHeight, setLocationPromptHeight] = useState(0);
+    const noticeHeight = Math.max(
+        preparingNoticeShown ? preparingNoticeHeight : 0,
+        locationPromptShown ? locationPromptHeight : 0
+    );
+    const playButtonRest = PAGE_SCRUBBER_HEIGHT + insets.bottom + PLAY_BUTTON_GAP;
+    let playButtonLiftTarget = 0;
+    if (lookupOpen && !shouldPlaceLookupAtTop) {
+        playButtonLiftTarget = Math.max(0, lookupPanelHeight + PLAY_BUTTON_GAP - playButtonRest);
+    } else if (noticeHeight > 0) {
+        // The notice sits 16 above the scrubber; the button a gap above it.
+        playButtonLiftTarget = 16 + noticeHeight;
+    }
+    const playButtonLift = useRef(new Animated.Value(0)).current;
+    useEffect(() => {
+        Animated.timing(playButtonLift, {
+            toValue: -playButtonLiftTarget,
+            duration: reduceMotion ? 0 : 280,
+            easing: CHROME_EASING,
+            useNativeDriver: true,
+        }).start();
+    }, [playButtonLift, playButtonLiftTarget, reduceMotion]);
+    const playPresence = usePresence(playButtonShown, { duration: 200, reduceMotion });
+    const playButtonScale = useMemo(() => playPresence.progress.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0.6, 1],
+    }), [playPresence.progress]);
+
+    // ── The listen bar ───────────────────────────────────────────────────────
+    // Tapping play grows the bar out of the button at once, before listening
+    // has started (the notification permission may still be asked first);
+    // closing it shrinks it back into the button when the button returns
+    // (listening had turned focus mode on). Started anywhere else, it fades.
+    const [listenLaunching, setListenLaunching] = useState(false);
+    const [listenFromButton, setListenFromButton] = useState(false);
+    const listenBarWanted = Boolean(currentBook) && ((listenActive && focusMode) || listenLaunching);
+    const [listenBarMounted, setListenBarMounted] = useState(false);
+    useEffect(() => {
+        if (listenBarWanted) setListenBarMounted(true);
+    }, [listenBarWanted]);
+    const handleListenBarExited = useCallback(() => {
+        setListenBarMounted(false);
+        setListenFromButton(false);
+    }, []);
+    const listenFromPlayButton = useCallback(() => {
+        setListenFromButton(true);
+        setListenLaunching(true);
+        resumeListening().finally(() => setListenLaunching(false));
+    }, [resumeListening]);
+    const listenBarOriginBottom = playButtonRest + playButtonLiftTarget;
+    const listenBarOrigin = useMemo(() => (listenFromButton ? {
+        bottom: listenBarOriginBottom,
+        right: 16,
+        size: PLAY_BUTTON_SIZE,
+    } : null), [listenBarOriginBottom, listenFromButton]);
 
     return (
         <Animated.View
@@ -4930,187 +4890,220 @@ const Read = ({
         >
             {/* With no book open, the bookmark, progress and menu controls
                 have nothing to act on, so hide the header. Listening starts
-                from the play button over the bottom line. */}
-            {!isFullscreen && currentBook ? (
-                <ReaderHeaderBar styles={chrome} topInset={insets.top}>
-                    <ReaderBackButton
-                        styles={chrome}
-                        themeColors={themeColors}
-                        onPress={goBackFromReader}
-                        accessibilityLabel={t('home.backToLibrary')}
-                    />
-                    {/* Where you are in the book (tap: the contents, its only
-                        door). Saved and suggested words are in the menu; full
-                        screen comes on as you read on. */}
-                    <ReaderProgressButton
-                        styles={chrome}
-                        fillWidth={`${headerProgressPercent}%`}
-                        label={t('common.percent', { value: headerProgressPercent })}
-                        disabled={toc.length === 0}
-                        onPress={() => setShowToc(true)}
-                        accessibilityLabel={`${t('read.contents')}, ${t('common.percent', { value: headerProgressPercent })}`}
-                    />
-                    <ReaderCheckpointButton
-                        styles={chrome}
-                        themeColors={themeColors}
-                        active={!!activeBookmark}
-                        onPress={toggleBookmark}
-                        onLongPress={openBeforeYouGo}
-                        accessibilityLabel={activeBookmark ? t('read.removeBookmark') : t('read.addBookmark')}
-                    />
-                    <ReaderMenuButton
-                        styles={chrome}
-                        themeColors={themeColors}
-                        open={showMenu}
-                        onPress={() => {
-                            setSettingsTab('text');
-                            setShowMenu((prev) => !prev);
-                        }}
-                        accessibilityLabel={t('read.bookSettings')}
-                    />
-                </ReaderHeaderBar>
+                from the play button over the bottom line. Kept mounted while
+                hidden in full screen, so coming back is only a slide. */}
+            {currentBook ? (
+                <Animated.View
+                    collapsable={false}
+                    pointerEvents={chromeHidden ? 'none' : 'auto'}
+                    onLayout={(event) => {
+                        const height = Math.round(event?.nativeEvent?.layout?.height ?? 0);
+                        if (height > 0) setHeaderHeight(height);
+                    }}
+                    style={[styles.headerLayer, { transform: [{ translateY: headerSlide }] }]}
+                >
+                    <ReaderHeaderBar styles={chrome} topInset={insets.top}>
+                        <ReaderBackButton
+                            styles={chrome}
+                            themeColors={themeColors}
+                            onPress={goBackFromReader}
+                            accessibilityLabel={t('home.backToLibrary')}
+                        />
+                        {/* Where you are in the book (tap: the contents, its only
+                            door). Saved and suggested words are in the menu; full
+                            screen comes on as you read on. */}
+                        <ReaderProgressButton
+                            styles={chrome}
+                            fillWidth={`${headerProgressPercent}%`}
+                            label={t('common.percent', { value: headerProgressPercent })}
+                            disabled={toc.length === 0}
+                            onPress={() => setShowToc(true)}
+                            accessibilityLabel={`${t('read.contents')}, ${t('common.percent', { value: headerProgressPercent })}`}
+                        />
+                        <ReaderCheckpointButton
+                            styles={chrome}
+                            themeColors={themeColors}
+                            active={!!activeBookmark}
+                            onPress={toggleBookmark}
+                            onLongPress={openBeforeYouGo}
+                            accessibilityLabel={activeBookmark ? t('read.removeBookmark') : t('read.addBookmark')}
+                        />
+                        <ReaderMenuButton
+                            styles={chrome}
+                            themeColors={themeColors}
+                            open={showMenu}
+                            onPress={() => {
+                                setSettingsTab('text');
+                                setShowMenu((prev) => !prev);
+                            }}
+                            accessibilityLabel={t('read.bookSettings')}
+                        />
+                    </ReaderHeaderBar>
+                </Animated.View>
             ) : null}
 
-            {/* The sentence translation: always there, in its own space between
-                the header and the page (in focus mode, the lit sentence's). */}
-            {showPinnedTranslation ? (
-                <View collapsable={false} style={styles.pinnedBarLayer}>
-                    <PinnedSentenceTranslation
-                        sentence={pinnedSentence}
-                        followFocus={focusMode}
-                        subscribeFocusText={subscribeFocusText}
+            <View style={styles.page}>
+                <View
+                    style={[
+                        styles.reader,
+                        { paddingTop: insets.top },
+                        readerBottomInset > 0 ? { paddingBottom: readerBottomInset } : null,
+                    ]}
+                >
+                    {bookLoadState === 'error' ? (
+                        <View style={styles.readerErrorState}>
+                            <Text style={styles.readerErrorTitle}>{t('read.openErrorTitle')}</Text>
+                            <Text style={styles.readerErrorBody}>{bookLoadError}</Text>
+                            {typeof activeBookSizeMb === 'number' ? (
+                                <Text style={styles.readerErrorMeta}>
+                                    {t('common.fileSize', { size: formatNumber(activeBookSizeMb, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}
+                                </Text>
+                            ) : null}
+                            <TouchableOpacity style={styles.retryButton} onPress={retryBookLoad}>
+                                <Text style={styles.retryButtonText}>{t('common.tryAgain')}</Text>
+                            </TouchableOpacity>
+                        </View>
+                    ) : !currentBook ? (
+                        <View style={styles.readerLoadingState}>
+                            <MaterialIcons name="menu-book" size={28} color={themeColors.readerMutedInk} />
+                            <Text style={styles.readerLoadingTitle}>{t('read.noBook')}</Text>
+                            <Text style={styles.readerLoadingBody}>{t('read.noBookBody')}</Text>
+                            <TouchableOpacity
+                                style={styles.retryButton}
+                                onPress={() => navigation?.navigate?.('Home')}
+                                accessibilityRole="button"
+                            >
+                                <Text style={styles.retryButtonText}>{t('read.noBookAction')}</Text>
+                            </TouchableOpacity>
+                        </View>
+                    ) : isReaderWaitingForHighlights ? (
+                        <View style={styles.readerLoadingState}>
+                            <ActivityIndicator size="small" color={themeColors.accentStrong} />
+                            <Text style={styles.readerLoadingTitle}>{t('read.preparingHighlights')}</Text>
+                            <Text style={styles.readerLoadingBody}>
+                                {t('read.preparingHighlightsBody')}
+                            </Text>
+                        </View>
+                    ) : bookLoadState === 'loading' || !nativeReaderPackage ? (
+                        <View style={styles.readerLoadingState}>
+                            <ActivityIndicator size="small" color={themeColors.accentStrong} />
+                            <Text style={styles.readerLoadingTitle}>{t('read.openingReader')}</Text>
+                            <Text style={styles.readerLoadingBody}>
+                                {t('read.openingReaderBody')}
+                            </Text>
+                        </View>
+                    ) : (
+                        <NativeEpubReaderView
+                            ref={nativeReaderViewRef}
+                            key={`${currentBook}-${readerRetryKey}`}
+                            style={[
+                                styles.nativeReaderView,
+                                nativeRenderMode === 'paged' ? { marginTop: chromeInsets.top } : null,
+                            ]}
+                            // Scroll mode pads the text with both; paged mode
+                            // (top room given above) keeps the bottom one below
+                            // its pages, where its progress thumb runs in full
+                            // screen. Passed in every mode, so switching doesn't
+                            // change it.
+                            chromeInsets={chromeInsets}
+                            fullscreen={chromeHidden}
+                            pagedFocus={pagedListening}
+                            bookManifest={nativeBookManifest}
+                            chapterBlocks={nativeChapterBlocks}
+                            chapterResources={nativeChapterResources}
+                            chapterWindow={nativeChapterWindow}
+                            restorePosition={nativeRestorePosition}
+                            chapterTransitionDirection={chapterTransitionDirection}
+                            fontSize={readerFontSize}
+                            lineHeight={readerLineSpacing}
+                            theme={isDarkMode ? 'dark' : 'light'}
+                            themeTokens={nativeReaderThemeTokens}
+                            renderMode={nativeRenderMode}
+                            readerEdgeStateEnabled={false}
+                            highlightTerms={readerHighlightTerms}
+                            highlightStrengths={highlightStrengths}
+                            levelTerms={readerLevelTerms}
+                            showPinyin={readerShowPinyin}
+                            showGloss={readerShowGloss}
+                            tappedTerms={tappedTerms}
+                            keepScreenOn={listenPlaying}
+                        focusTapsInSpanOnly={listenActive}
+                            clearSelectionToken={clearSelectionToken}
+                            focusSentenceCount={focusSpan}
+                            focusSwipeEnabled={focusSwipe}
+                            focusNavToken={focusNavToken}
+                            focusPanelHeight={focusMode ? focusPanelTotalHeight : 0}
+                            onPageChange={handleReadingPageChange}
+                            onReadingDirection={handleReadingDirection}
+                            onChapterEnd={handleNativeChapterEnd}
+                            onChapterStart={handleNativeChapterStart}
+                            onChapterCommit={handleNativeChapterCommit}
+                            onWordSelected={withReadingActivity(handleNativeWordSelected)}
+                            onTextSelected={withReadingActivity(handleNativeTextSelected)}
+                            onSelectionCleared={handleNativeSelectionCleared}
+                            onFocusSentenceChange={withReadingActivity(handleFocusSentenceChange)}
+                            onExposure={handleNativeExposure}
+                            onSavedTermsShown={handleSavedTermsShown}
+                            // The sentence whose translation the popup shows gets a faint mark.
+                            showContextSentence={showTranslationPopup}
+                        />
+                    )}
+                </View>
+
+                {showTranslationPopup ? (
+                    <SentenceTranslationPopup
+                        sentence={translationPopupSentence}
                         sourceLanguage={activeBookLanguage}
                         targetLanguage={interfaceLanguage}
-                        fontSize={pinnedTranslationFontSize}
-                        heightAnim={pinnedHeightAnim}
-                        topInset={isFullscreen ? insets.top : 0}
-                        gripHandlers={pinnedGripResponder.panHandlers}
-                        gripAccessibility={pinnedGripAccessibility}
-                        gripTilt={pinnedGripTilt}
+                        top={chromeHidden ? insets.top : headerHeight}
                     />
-                </View>
-            ) : null}
+                ) : null}
+            </View>
 
-            <Animated.View
-                collapsable={false}
-                style={[
-                    styles.reader,
-                    isFullscreen && !showPinnedTranslation ? { paddingTop: insets.top } : null,
-                    readerBottomInset > 0 ? { paddingBottom: readerBottomInset } : null,
-                    showPinnedTranslation ? { transform: [{ translateY: pinnedFollowShift }] } : null,
-                ]}
-            >
-                {bookLoadState === 'error' ? (
-                    <View style={styles.readerErrorState}>
-                        <Text style={styles.readerErrorTitle}>{t('read.openErrorTitle')}</Text>
-                        <Text style={styles.readerErrorBody}>{bookLoadError}</Text>
-                        {typeof activeBookSizeMb === 'number' ? (
-                            <Text style={styles.readerErrorMeta}>
-                                {t('common.fileSize', { size: formatNumber(activeBookSizeMb, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) })}
-                            </Text>
-                        ) : null}
-                        <TouchableOpacity style={styles.retryButton} onPress={retryBookLoad}>
-                            <Text style={styles.retryButtonText}>{t('common.tryAgain')}</Text>
-                        </TouchableOpacity>
-                    </View>
-                ) : !currentBook ? (
-                    <View style={styles.readerLoadingState}>
-                        <MaterialIcons name="menu-book" size={28} color={themeColors.readerMutedInk} />
-                        <Text style={styles.readerLoadingTitle}>{t('read.noBook')}</Text>
-                        <Text style={styles.readerLoadingBody}>{t('read.noBookBody')}</Text>
-                        <TouchableOpacity
-                            style={styles.retryButton}
-                            onPress={() => navigation?.navigate?.('Home')}
-                            accessibilityRole="button"
-                        >
-                            <Text style={styles.retryButtonText}>{t('read.noBookAction')}</Text>
-                        </TouchableOpacity>
-                    </View>
-                ) : isReaderWaitingForHighlights ? (
-                    <View style={styles.readerLoadingState}>
-                        <ActivityIndicator size="small" color={themeColors.accentStrong} />
-                        <Text style={styles.readerLoadingTitle}>{t('read.preparingHighlights')}</Text>
-                        <Text style={styles.readerLoadingBody}>
-                            {t('read.preparingHighlightsBody')}
-                        </Text>
-                    </View>
-                ) : bookLoadState === 'loading' || !nativeReaderPackage ? (
-                    <View style={styles.readerLoadingState}>
-                        <ActivityIndicator size="small" color={themeColors.accentStrong} />
-                        <Text style={styles.readerLoadingTitle}>{t('read.openingReader')}</Text>
-                        <Text style={styles.readerLoadingBody}>
-                            {t('read.openingReaderBody')}
-                        </Text>
-                    </View>
-                ) : (
-                    <NativeEpubReaderView
-                        ref={nativeReaderViewRef}
-                        key={`${currentBook}-${readerRetryKey}`}
-                        style={styles.nativeReaderView}
-                        bookManifest={nativeBookManifest}
-                        chapterBlocks={nativeChapterBlocks}
-                        chapterResources={nativeChapterResources}
-                        chapterWindow={nativeChapterWindow}
-                        restorePosition={nativeRestorePosition}
-                        chapterTransitionDirection={chapterTransitionDirection}
-                        fontSize={readerFontSize}
-                        lineHeight={readerLineSpacing}
-                        theme={isDarkMode ? 'dark' : 'light'}
-                        themeTokens={nativeReaderThemeTokens}
-                        renderMode={nativeRenderMode}
-                        readerEdgeStateEnabled={false}
-                        highlightTerms={readerHighlightTerms}
-                        highlightStrengths={highlightStrengths}
-                        levelTerms={readerLevelTerms}
-                        showPinyin={readerShowPinyin}
-                        showGloss={readerShowGloss}
-                        tappedTerms={tappedTerms}
-                        keepScreenOn={listenPlaying}
-                        clearSelectionToken={clearSelectionToken}
-                        focusSentenceCount={focusSpan}
-                        focusSwipeEnabled={focusSwipe}
-                        focusNavToken={focusNavToken}
-                        focusPanelHeight={focusMode ? focusPanelTotalHeight : 0}
-                        onPageChange={handleReadingPageChange}
-                        onChapterEnd={handleNativeChapterEnd}
-                        onChapterStart={handleNativeChapterStart}
-                        onChapterCommit={handleNativeChapterCommit}
-                        onWordSelected={withReadingActivity(handleNativeWordSelected)}
-                        onTextSelected={withReadingActivity(handleNativeTextSelected)}
-                        onSelectionCleared={handleNativeSelectionCleared}
-                        onFocusSentenceChange={withReadingActivity(handleFocusSentenceChange)}
-                        onExposure={handleNativeExposure}
-                        onSavedTermsShown={handleSavedTermsShown}
-                        // The sentence whose translation the bar shows gets a faint mark.
-                        showContextSentence={showPinnedTranslation && pinnedVisible}
-                    />
-                )}
-            </Animated.View>
-
-            {scrubberShown ? (
-                <PageScrubber
-                    progress={bookProgress}
-                    chapters={scrubberChapters}
-                    bookmarks={scrubberBookmarks}
-                    describe={describeScrubberPoint}
-                    onDragTarget={handleScrubberTarget}
-                    onSeek={handleScrubberSeek}
-                    onSelectBookmark={(item) => handleSelectBookmark(item.bookmark)}
-                    savedAt={heldSpot ? heldSpot.progress : null}
-                    onReturnToSaved={returnToHeldSpot}
-                    bottomInset={insets.bottom}
-                />
-            ) : null}
-
-            {playButtonShown ? (
-                <TouchableOpacity
-                    style={[styles.playButton, { bottom: scrubberSpace + PLAY_BUTTON_GAP }]}
-                    onPress={resumeListening}
-                    accessibilityRole="button"
-                    accessibilityLabel={t('read.listen')}
+            {/* Kept mounted once the book is open, so coming back is only a slide. */}
+            {(scrubberPresence.mounted || bookLoadState === 'ready') && currentBook ? (
+                <Animated.View
+                    pointerEvents={scrubberShown ? 'box-none' : 'none'}
+                    style={[styles.scrubberLayer, { transform: [{ translateY: scrubberSlide }] }]}
                 >
-                    <Feather name="play" size={20} color={themeColors.readerBodyInk} style={styles.playIcon} />
-                </TouchableOpacity>
+                    <PageScrubber
+                        progress={bookProgress}
+                        chapters={scrubberChapters}
+                        bookmarks={scrubberBookmarks}
+                        describe={describeScrubberPoint}
+                        onDragTarget={handleScrubberTarget}
+                        onSeek={handleScrubberSeek}
+                        onSelectBookmark={(item) => handleSelectBookmark(item.bookmark)}
+                        savedAt={heldSpot ? heldSpot.progress : null}
+                        onReturnToSaved={returnToHeldSpot}
+                        bottomInset={insets.bottom}
+                    />
+                </Animated.View>
+            ) : null}
+
+            {/* Hidden the moment the listen bar is up: the bar grows out of it,
+                and shrinks back into it. */}
+            {playPresence.mounted && !listenBarMounted ? (
+                <Animated.View
+                    pointerEvents={playButtonShown ? 'box-none' : 'none'}
+                    style={[
+                        styles.playButtonLayer,
+                        {
+                            bottom: playButtonRest,
+                            opacity: playPresence.progress,
+                            transform: [{ translateY: playButtonLift }, { scale: playButtonScale }],
+                        },
+                    ]}
+                >
+                    <TouchableOpacity
+                        style={styles.playButton}
+                        onPress={listenFromPlayButton}
+                        accessibilityRole="button"
+                        accessibilityLabel={t('read.listen')}
+                    >
+                        <Feather name="play" size={20} color={themeColors.readerPaper} style={styles.playIcon} />
+                    </TouchableOpacity>
+                </Animated.View>
             ) : null}
 
             <TocDrawer
@@ -5152,7 +5145,7 @@ const Read = ({
                 }}
             />
 
-            {focusMode && bookLoadState === 'ready' && nativeReaderPackage ? (
+            {nativeRenderMode === 'focus' && bookLoadState === 'ready' && nativeReaderPackage ? (
                 <FocusControls
                     subscribe={subscribeFocusInfo}
                     focusSpan={focusSpan}
@@ -5161,7 +5154,6 @@ const Read = ({
                     sendFocusNav={sendFocusNav}
                     focusControlsTranslate={focusControlsTranslate}
                     focusControlsBaseBottom={focusControlsBaseBottom}
-                    focusPillTop={focusPillTop}
                     styles={chrome}
                     themeColors={themeColors}
                 />
@@ -5169,8 +5161,11 @@ const Read = ({
 
             {/* Whenever the voice is on, its bar is too (a chapter loading
                 in between included): it never reads with no player. */}
-            {listenActive && focusMode && currentBook ? (
+            {listenBarWanted || listenBarMounted ? (
                 <ListenBar
+                    open={listenBarWanted}
+                    origin={listenBarOrigin}
+                    onExited={handleListenBarExited}
                     playing={listenPlaying}
                     rate={listenPrefs.rate}
                     explainWords={listenPrefs.explainWords}
@@ -5215,13 +5210,10 @@ const Read = ({
                     styles.lookupLayer,
                     shouldPlaceLookupAtTop ? styles.lookupLayerTop : styles.lookupLayerBottom,
                     shouldPlaceLookupAtTop
-                        ? { paddingTop: isFullscreen ? fullscreenTop : insets.top + spacing.xs + 52 + pinnedTranslationOffset }
-                        // Focus mode anchors the panel flush to the bottom edge; in
-                        // regular reading the reader content already ends at the tab
-                        // bar's top edge, so the panel sits flush against that. The
-                        // safe-area gap is only needed in fullscreen, where neither
-                        // the tab bar nor the focus panel is anchoring the bottom.
-                        : { paddingBottom: isFullscreen && !focusMode ? insets.bottom + 6 : 0 },
+                        ? { paddingTop: chromeHidden ? insets.top : insets.top + spacing.xs + 52 }
+                        // Flush to the bottom edge, full screen or not: the panel
+                        // keeps clear of the navigation buttons itself (bottomInset).
+                        : null,
                 ]}
                 pointerEvents="box-none"
             >
@@ -5253,8 +5245,9 @@ const Read = ({
             </View>
 
             <LocationPrompt
-                visible={locationPrompt && Boolean(currentBook) && !highlightedWord && !textSelection}
+                visible={locationPromptShown}
                 bottom={bottomOverlayBase + 16}
+                onHeight={setLocationPromptHeight}
                 onConfirm={confirmNewSpot}
                 onDecline={declineNewSpot}
             />
@@ -5264,10 +5257,11 @@ const Read = ({
                 fullscreen the header is gone and the top of the page is the
                 title). Focus mode has its own position pill and controls, so
                 it stays out of the way there. */}
-            {currentBook && !highlightedWord && !textSelection && !focusMode && preparingNoticeVisible ? (
+            {preparingNoticeShown ? (
                 <View
                     pointerEvents="box-none"
                     style={[styles.hintLayer, { bottom: bottomOverlayBase + 16 }]}
+                    onLayout={(event) => setPreparingNoticeHeight(Math.round(event?.nativeEvent?.layout?.height ?? 0))}
                 >
                     <PreparingNotice done={wordHelpDone} />
                 </View>
@@ -5276,7 +5270,7 @@ const Read = ({
             <GoalCompleteModal event={goalEvent} onClose={() => setGoalEvent(null)} />
 
             <ReaderSettingsSheet
-                visible={showMenu && !isFullscreen}
+                visible={showMenu && !chromeHidden}
                 onClose={() => {
                     setShowMenu(false);
                     setSettingsTab('text');
@@ -5337,17 +5331,30 @@ const createStyles = (themeColors) => StyleSheet.create({
         flex: 1,
         backgroundColor: themeColors.readerPaper,
     },
+    // Laid over the page, which never makes room for it.
+    headerLayer: {
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
+        zIndex: 3,
+    },
+    page: {
+        flex: 1,
+    },
     reader: {
         flex: 1,
         position: 'relative',
     },
+    scrubberLayer: {
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        bottom: 0,
+    },
     nativeReaderView: {
         flex: 1,
         backgroundColor: themeColors.readerPaper,
-    },
-    // Above the page, which slides under it while the grip is dragged.
-    pinnedBarLayer: {
-        zIndex: 2,
     },
     readerErrorState: {
         flex: 1,
@@ -5426,15 +5433,17 @@ const createStyles = (themeColors) => StyleSheet.create({
     },
     // Quiet, on the page's own surface: it's there when wanted, not a call
     // to action over the text.
-    playButton: {
+    playButtonLayer: {
         position: 'absolute',
         right: 16,
+        zIndex: 12,
+    },
+    playButton: {
         width: PLAY_BUTTON_SIZE,
         height: PLAY_BUTTON_SIZE,
         borderRadius: PLAY_BUTTON_SIZE / 2,
-        backgroundColor: themeColors.readerSurface,
-        borderWidth: 1,
-        borderColor: themeColors.readerBorder,
+        // The ink's colour: dark on a light page, light on a dark one.
+        backgroundColor: themeColors.readerBodyInk,
         alignItems: 'center',
         justifyContent: 'center',
         shadowColor: 'rgba(27, 28, 28, 0.10)',
@@ -5442,7 +5451,6 @@ const createStyles = (themeColors) => StyleSheet.create({
         shadowOpacity: 1,
         shadowRadius: 12,
         elevation: 3,
-        zIndex: 12,
     },
     // The triangle's weight sits left of its box: nudge it to look centred.
     playIcon: {
