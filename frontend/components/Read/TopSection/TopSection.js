@@ -20,7 +20,10 @@ const DICTIONARY_MAX_HEIGHT = 200;
 const DICTIONARY_ZH_MAX_HEIGHT = 240;
 const DICTIONARY_EXPANDED_MAX_HEIGHT = 548;
 const TRANSLATION_MAX_SCROLL_HEIGHT = 150;
-const DICTIONARY_BOTTOM_PADDING = 12;
+// Room under the last line of the definition, so it doesn't sit on the
+// panel's bottom edge (the max height grows by the same amount).
+const DICTIONARY_BOTTOM_PADDING = 26;
+const DICTIONARY_BOTTOM_PADDING_EXTRA = DICTIONARY_BOTTOM_PADDING - 12;
 const TOP_PLACEMENT_DICTIONARY_TOP_PADDING = 22;
 const TOP_PLACEMENT_DICTIONARY_BOTTOM_PADDING = 4;
 
@@ -256,7 +259,7 @@ const TopSection = ({
     const translationSourceLabel = getLocalizedLanguageName(translationSourceLanguage, t);
     const translationTargetLabel = getLocalizedLanguageName(translationTargetLanguage, t);
     const bottomPanelInset = !isTopPlacement && !isTranslationMode ? bottomInset : 0;
-    const sheetSizeStyle = isTranslationMode ? null : { maxHeight: dictionaryMaxHeight + bottomPanelInset };
+    const sheetSizeStyle = isTranslationMode ? null : { maxHeight: dictionaryMaxHeight + DICTIONARY_BOTTOM_PADDING_EXTRA + bottomPanelInset };
     const sheetBottomPadding = isTranslationMode
         ? 14
         : (isTopPlacement ? TOP_PLACEMENT_DICTIONARY_BOTTOM_PADDING : DICTIONARY_BOTTOM_PADDING + bottomPanelInset);

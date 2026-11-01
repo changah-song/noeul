@@ -48,6 +48,13 @@ jest.mock('../../services/Database', () => ({
 }));
 // The audio review player drives the phone's text-to-speech engine.
 jest.mock('../../components/Learn/AudioReview', () => () => null);
+// The shared top bar reads the reading goal; only its profile button matters here.
+jest.mock('../../components/shared/AppTopBar', () => {
+  const { TouchableOpacity } = require('react-native');
+  return ({ onProfilePress }) => (
+    <TouchableOpacity accessibilityLabel="tabs.profile" onPress={onProfilePress} />
+  );
+});
 jest.mock('../../services/supabase', () => ({
   recordCloudVocabReview: jest.fn(),
   supabase: { auth: { getUser: jest.fn(() => Promise.resolve({ data: { user: null } })) } },

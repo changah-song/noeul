@@ -20,7 +20,7 @@ import { Feather, MaterialIcons } from '@expo/vector-icons';
 import Flashcard from '../components/Learn/Flashcard';
 import AudioReview from '../components/Learn/AudioReview';
 import GrammarSection from '../components/Learn/GrammarSection';
-import ProfileAvatar from '../components/shared/ProfileAvatar';
+import AppTopBar from '../components/shared/AppTopBar';
 import { PILL_TAB_BAR_CLEARANCE } from '../components/shared/TabBar';
 import CandidateCard from '../components/vocab/CandidateCard';
 import { Screen } from '../components/ui';
@@ -1837,17 +1837,13 @@ const Learn = ({ navigation, user }) => {
   return (
     <LearnThemeContext.Provider value={learnThemeValue}>
     <Screen scroll backgroundColor={colors.bgPage} contentContainerStyle={styles.content}>
-      <View style={styles.appTopBar}>
-        <Text style={styles.appTopTitle}>{t('learn.title')}</Text>
-        <TouchableOpacity
-          accessibilityRole="button"
-          accessibilityLabel={t('tabs.profile')}
-          onPress={() => navigation?.navigate?.('Profile')}
-          style={styles.avatarButton}
-        >
-          <ProfileAvatar user={user} size={34} />
-        </TouchableOpacity>
-      </View>
+      {/* The same bar as Home (today's goal, profile), so the top of the
+          screen stays put when switching between Read and Learn. */}
+      <AppTopBar
+        ownerId={activeOwnerId}
+        user={user}
+        onProfilePress={() => navigation?.navigate?.('Profile')}
+      />
 
       <View style={styles.summaryCard}>
         <View style={styles.summaryStats}>
@@ -2098,47 +2094,14 @@ const Learn = ({ navigation, user }) => {
 
 const createStyles = (colors) => StyleSheet.create({
   content: {
+    // At least the screen's height, so the goal calendar's backdrop (placed
+    // against this container) reaches the bottom when the list is short.
+    flexGrow: 1,
     paddingHorizontal: 0,
     paddingTop: 0,
     // The floating Read/Learn pill sits over the bottom of the list.
     paddingBottom: PILL_TAB_BAR_CLEARANCE,
     gap: 0,
-  },
-  appTopBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingTop: 12,
-    paddingLeft: 20,
-    paddingRight: 12,
-  },
-  appTopTitle: {
-    flex: 1,
-    fontFamily: fontFamilies.displaySemiBold,
-    fontSize: 30,
-    lineHeight: 38,
-    letterSpacing: -0.4,
-    color: colors.text,
-  },
-  avatarButton: {
-    width: 44,
-    height: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatar: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: colors.inkSlate,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatarText: {
-    // Same serif initial as the Read home avatar.
-    fontFamily: fontFamilies.displaySemiBold,
-    fontSize: 16,
-    lineHeight: 20,
-    color: colors.white,
   },
   summaryCard: {
     marginHorizontal: LEARN_SIDE_PADDING,

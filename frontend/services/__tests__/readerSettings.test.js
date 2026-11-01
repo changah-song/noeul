@@ -70,11 +70,11 @@ describe('steppers', () => {
     expect(stepFontSize(READER_FONT_SIZE_MIN, -1)).toBe(READER_FONT_SIZE_MIN);
   });
 
-  it('steps line spacing between the named presets', () => {
+  it('steps line spacing between the stops', () => {
     expect(stepLineSpacing(1.65, 1)).toBe(1.85);
-    expect(stepLineSpacing(1.7, -1)).toBe(1.4); // snaps 1.7 → Regular first
+    expect(stepLineSpacing(1.7, -1)).toBe(1.5); // snaps 1.7 → 1.65 first
     expect(stepLineSpacing(2.6, 1)).toBe(2.6);
-    expect(stepLineSpacing(1.4, -1)).toBe(1.4);
+    expect(stepLineSpacing(1.2, -1)).toBe(1.2);
     expect(nearestLineSpacingIndex(undefined)).toBe(
       READER_LINE_SPACING_STEPS.findIndex((step) => step.value === DEFAULT_BOOK_READER_SETTINGS.lineSpacing)
     );
@@ -86,11 +86,19 @@ describe('steppers', () => {
     expect(stepFocusSpan(5, 1)).toBe(5);
   });
 
-  it('has a translated label for every line-spacing preset', () => {
+  it('steps line spacing one stop at a time, within the range', () => {
+    const values = READER_LINE_SPACING_STEPS.map((step) => step.value);
+    expect(stepLineSpacing(2.05, -1)).toBe(1.85);
+    expect(stepLineSpacing(1.5, -1)).toBe(1.4);
+    expect(stepLineSpacing(values[0], -1)).toBe(values[0]);
+    expect(stepLineSpacing(values[values.length - 1], 1)).toBe(values[values.length - 1]);
+  });
+
+  it('has translated labels for the line-spacing stepper', () => {
     Object.values(UI_TRANSLATIONS).forEach((table) => {
-      READER_LINE_SPACING_STEPS.forEach(({ labelKey }) => {
-        expect(typeof table[labelKey]).toBe('string');
-        expect(table[labelKey].length).toBeGreaterThan(0);
+      ['read.decreaseLineSpacing', 'read.increaseLineSpacing'].forEach((key) => {
+        expect(typeof table[key]).toBe('string');
+        expect(table[key].length).toBeGreaterThan(0);
       });
     });
   });

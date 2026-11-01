@@ -24,13 +24,12 @@ import * as DocumentPicker from 'expo-document-picker';
 import { Feather, Ionicons, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 import { createTabBarBaseStyle } from '../components/shared/TabBar';
 import Book3D from '../components/Home/Book3D';
-import ProfileAvatar from '../components/shared/ProfileAvatar';
 import SongReader from '../components/Songs/SongReader';
 import { IconButton, Screen } from '../components/ui';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
-import { HomeGoalCalendar, HomeGoalCluster, HomeGoalSun } from '../components/Goal/HomeGoalBar';
+import AppTopBar from '../components/shared/AppTopBar';
 import { useFocusEffect } from '@react-navigation/native';
 import { searchSongs } from '../services/api/songSearch';
 import {
@@ -120,7 +119,7 @@ import {
     stopFloatingWidget,
 } from '../modules/screen-ocr-overlay/src';
 import { normalizeBookLanguage } from '../constants/languages';
-import { formatDate, formatNumber, tRuntime } from '../services/interfaceLanguage';
+import { formatDate, formatNumber, getRuntimeInterfaceLanguage, tRuntime } from '../services/interfaceLanguage';
 import {
     getLocalizedLanguageName,
     getUserFacingErrorMessage,
@@ -128,7 +127,7 @@ import {
     localizeStoredPlaceholder,
     stripStoredPlaceholder,
 } from '../i18n/userFacing';
-import { localizePublicDomainBook } from '../assets/data/public-domain/catalogI18n';
+import { getPublicDomainBookCopy, localizePublicDomainBook } from '../assets/data/public-domain/catalogI18n';
 import { localizedLevelLabel } from '../i18n/contentStrings';
 import { getProficiencyLevelOptions } from '../constants/proficiencyLevels';
 
@@ -322,8 +321,31 @@ const getDownloadErrorMessageKey = (error) => {
     }
     return 'home.downloadFailedBody';
 };
-const getBookTitle = (book, t = tRuntime) => localizeStoredPlaceholder(book?.title, t) || t('common.untitled');
-const getBookAuthor = (book, t = tRuntime) => localizeStoredPlaceholder(book?.author, t) || t('common.unknownAuthor');
+// Free (public-domain and library) books show their title and author in the
+// app's language, as the book is published there (catalogI18n); the original
+// is kept in book.title / book.author (getOriginalBookTitle).
+const translatedBookCopy = (book) => (
+    book && (book.publicDomain || book.publicDomainId || book.publicLibraryId)
+        ? getPublicDomainBookCopy(book, getRuntimeInterfaceLanguage())
+        : null
+);
+const getBookTitle = (book, t = tRuntime) => (
+    localizeStoredPlaceholder(translatedBookCopy(book)?.title || book?.title, t) || t('common.untitled')
+);
+const getBookAuthor = (book, t = tRuntime) => (
+    localizeStoredPlaceholder(translatedBookCopy(book)?.author || book?.author, t) || t('common.unknownAuthor')
+);
+// The original title and author, when they differ from what's shown.
+const getOriginalBookCredit = (book, t = tRuntime) => {
+    const copy = translatedBookCopy(book);
+    if (!copy) return '';
+    const title = localizeStoredPlaceholder(book?.title, t);
+    const author = localizeStoredPlaceholder(book?.author, t);
+    const titleDiffers = Boolean(title) && Boolean(copy.title) && copy.title !== title;
+    const authorDiffers = Boolean(author) && Boolean(copy.author) && copy.author !== author;
+    if (!titleDiffers && !authorDiffers) return '';
+    return [title, author].filter(Boolean).join(' · ');
+};
 const hasKoreanText = (value) => KOREAN_TEXT_PATTERN.test(String(value || ''));
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const isPdfBook = (book) => (
@@ -1321,6 +1343,11 @@ const BookPreview = ({
                         >
                             {getBookAuthor(book, t)}
                         </Text>
+                        {getOriginalBookCredit(book, t) ? (
+                            <Text style={styles.previewOriginalCredit} numberOfLines={2}>
+                                {getOriginalBookCredit(book, t)}
+                            </Text>
+                        ) : null}
                         {showTag ? (
                             <View style={styles.previewTagWrap}>
                                 <Text style={styles.previewTagText}>{tagText}</Text>
@@ -1346,15 +1373,8 @@ const BookPreview = ({
                     </View>
                 ) : null}
 
-                <PreviewReadingEase readingEase={readingEase} />
-
-                <View style={styles.previewMetaGrid}>
-                    <PreviewMetadataItem label={t('home.length')} value={formatWordCount(wordCount, t)} />
-                    <PreviewMetadataItem label={t('home.level')} value={levelValue} />
-                    <PreviewMetadataItem label={t('home.genre')} value={genreValue} />
-                    <PreviewMetadataItem label={t('home.lastOpened')} value={formatPreviewDateTime(book?.lastOpenedAt, t, language)} />
-                </View>
-
+                {/* The blurb first, so what the book is about is the first
+                    thing seen; the stats follow. */}
                 <View style={styles.previewAboutSection}>
                     <Text style={styles.previewSectionLabel}>{t('home.aboutTheStory')}</Text>
                     {showAbout ? (
@@ -1370,6 +1390,16 @@ const BookPreview = ({
                         <PreviewNoSnippet />
                     )}
                 </View>
+
+                <PreviewReadingEase readingEase={readingEase} />
+
+                <View style={styles.previewMetaGrid}>
+                    <PreviewMetadataItem label={t('home.length')} value={formatWordCount(wordCount, t)} />
+                    <PreviewMetadataItem label={t('home.level')} value={levelValue} />
+                    <PreviewMetadataItem label={t('home.genre')} value={genreValue} />
+                    <PreviewMetadataItem label={t('home.lastOpened')} value={formatPreviewDateTime(book?.lastOpenedAt, t, language)} />
+                </View>
+
             </ScrollView>
 
             <View style={[styles.previewBottomBar, { paddingBottom: Spacing.xl3 + safeAreaInsets.bottom }]}>
@@ -1726,7 +1756,9 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const [editDraft, setEditDraft] = useState({ title: '', author: '', cover: '' });
     const [activeLibraryTab, setActiveLibraryTab] = useState('Books');
     const [activeBookFilter, setActiveBookFilter] = useState('all');
-    const [collectionViewMode, setCollectionViewMode] = useState('grid');
+    // Rows by default: the title, author and the rest of what's known about
+    // each book, rather than covers alone.
+    const [collectionViewMode, setCollectionViewMode] = useState('list');
     const [activePublicDomainSort, setActivePublicDomainSort] = useState('ease');
     const [publicDomainSortDirection, setPublicDomainSortDirection] = useState('asc');
     const [publicLibraryBooks, setPublicLibraryBooks] = useState([]);
@@ -3276,22 +3308,6 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         setSelectedBookPreview({ book, index });
     }, [activeBookMenuKey]);
 
-    // The daily reading goal in the top bar: the last six days as dots (the
-    // calendar drops down from them) and the title that turns into today's
-    // countdown. Re-read each time Home is shown.
-    const [homeFocusKey, setHomeFocusKey] = useState(0);
-    const [calendarOpen, setCalendarOpen] = useState(false);
-    const [topBarHeight, setTopBarHeight] = useState(64);
-    useFocusEffect(useCallback(() => {
-        setHomeFocusKey((value) => value + 1);
-        return () => setCalendarOpen(false);
-    }, []));
-    // The goal's dots, title and calendar subscribe to the reading clock
-    // themselves (HomeGoalCluster / HomeGoalCalendar): it ticks every second
-    // while a book is read, and Home must not re-render on each tick.
-    const toggleCalendar = useCallback(() => setCalendarOpen((value) => !value), []);
-    const closeCalendar = useCallback(() => setCalendarOpen(false), []);
-
     // Set from the press until the reader takes over (or the open fails).
     const [openingBook, setOpeningBook] = useState(false);
     useFocusEffect(useCallback(() => () => setOpeningBook(false), []));
@@ -3937,14 +3953,91 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         </View>
     );
 
+    // Empty "My Books" when learning English: the two ways in, bring an EPUB or
+    // take a free book from the library, with every free book listed under them.
+    const renderStartWays = () => {
+        const freeBooks = sortedPublicDomainBookRows;
+        const options = [
+            {
+                key: 'own',
+                icon: 'file-plus',
+                title: t('home.startOwnTitle'),
+                body: t('home.startOwnBody'),
+                action: t('home.startOwnAction'),
+                onPress: confirmAddBook,
+                primary: false,
+            },
+            {
+                key: 'free',
+                icon: 'book-open',
+                title: t('home.startFreeTitle'),
+                body: t('home.startFreeBody'),
+                action: t('home.startFreeAction'),
+                onPress: () => setActiveBookFilter('public-domain'),
+                primary: true,
+            },
+        ];
+
+        return (
+            <View>
+                <View style={styles.startWaysWrap}>
+                    <Text style={styles.startWaysTitle}>{t('home.startTwoWaysTitle')}</Text>
+                    {options.map((option, index) => (
+                        <View key={option.key} style={styles.startWayCard}>
+                            <View style={styles.startWayHead}>
+                                <View style={styles.startWayNumber}>
+                                    <Text style={styles.startWayNumberText}>{index + 1}</Text>
+                                </View>
+                                <Text style={styles.startWayTitle}>{option.title}</Text>
+                            </View>
+                            <Text style={styles.starterCopy}>{option.body}</Text>
+                            <TouchableOpacity
+                                accessibilityRole="button"
+                                activeOpacity={Motion.pressedOpacity}
+                                onPress={option.onPress}
+                                style={option.primary ? styles.starterPrimary : styles.startWaySecondary}
+                            >
+                                <Feather
+                                    name={option.icon}
+                                    size={18}
+                                    color={option.primary ? HOME_COLORS.onAccent : HOME_COLORS.text}
+                                />
+                                <Text
+                                    style={option.primary
+                                        ? styles.collectionEmptyPrimaryText
+                                        : styles.starterSecondaryText}
+                                >
+                                    {option.action}
+                                </Text>
+                            </TouchableOpacity>
+                        </View>
+                    ))}
+                </View>
+                {publicLibraryLoading ? (
+                    <View style={styles.startWaysLoading}>
+                        <ActivityIndicator size="small" color={HOME_COLORS.accent} />
+                    </View>
+                ) : freeBooks.length > 0 ? (
+                    <View style={styles.easeSection}>
+                        <View style={styles.easeSectionHeader}>
+                            <Text style={styles.easeSectionTitle}>{t('home.publicDomain')}</Text>
+                            <Text style={styles.easeSectionCount}>{formatNumber(freeBooks.length)}</Text>
+                        </View>
+                        {renderBookRows(freeBooks, t('home.publicDomain'))}
+                    </View>
+                ) : null}
+            </View>
+        );
+    };
+
     // Empty "My Books" with a bundled book to suggest: a one-tap "Start reading"
     // card (adds the book to the shelf and opens it, exactly like Read on the
     // public-domain preview), with Import / Browse kept as secondary actions.
     const renderStarterBookCard = (book) => {
         const title = getBookTitle(book, t);
         const author = getBookAuthor(book, t);
-        const localizedTitle = localizePublicDomainBook(book, interfaceLanguage)?.titleTranslation;
-        const translatedTitle = typeof localizedTitle === 'string' ? localizedTitle.trim() : '';
+        // The title is shown in the app's language; the original goes under it.
+        const translatedTitle = getOriginalBookCredit(book, t);
         const wordCount = getBookWordCount(book);
         const meta = [
             wordCount ? formatWordCount(wordCount, t) : null,
@@ -4221,38 +4314,14 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 onPress={() => setActiveBookMenuKey(null)}
                 style={styles.stack}
             >
-                <View
-                    style={styles.appTopBar}
-                    onLayout={(event) => setTopBarHeight(event.nativeEvent.layout.height)}
-                >
-                    {/* Today's goal (the sunset fills in once it's reached) over
-                        the day streak; opens the calendar. The screen scanner's
-                        button lived here and is off for now
-                        (handleFloatingOcrToggle). */}
-                    <HomeGoalSun
-                        ownerId={activeOwnerId}
-                        focusKey={homeFocusKey}
-                        open={calendarOpen}
-                        onPress={toggleCalendar}
-                        style={styles.appTopIconButton}
-                    />
-                    <HomeGoalCluster
-                        ownerId={activeOwnerId}
-                        focusKey={homeFocusKey}
-                        calendarOpen={calendarOpen}
-                        onToggleCalendar={toggleCalendar}
-                        textStyle={styles.appTopTitleText}
-                    />
-                    <TouchableOpacity
-                        activeOpacity={0.84}
-                        accessibilityRole="button"
-                        accessibilityLabel={t('tabs.profile')}
-                        onPress={() => navigation?.navigate?.('Profile')}
-                        style={styles.appTopIconButton}
-                    >
-                        <ProfileAvatar user={user} size={34} />
-                    </TouchableOpacity>
-                </View>
+                {/* Today's goal and the profile, shared with Learn. The screen
+                    scanner's button lived here and is off for now
+                    (handleFloatingOcrToggle). */}
+                <AppTopBar
+                    ownerId={activeOwnerId}
+                    user={user}
+                    onProfilePress={() => navigation?.navigate?.('Profile')}
+                />
                 {ocrMessage ? (
                     <Text
                         accessibilityLiveRegion="polite"
@@ -4357,15 +4426,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                     setActiveBookFilter('public-domain');
                                 },
                             },
-                            {
-                                id: 'songs',
-                                label: t('home.songs'),
-                                onPress: () => {
-                                    setActiveBookMenuKey(null);
-                                    setActiveLibraryTab('Songs');
-                                    setCollectionViewMode('grid');
-                                },
-                            },
+                            // Songs are set aside for now.
                         ]}
                     />
                 </View>
@@ -4430,6 +4491,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                         <>
                             {filteredLibraryBooks.length === 0 && activeBookFilter !== 'favorites' && starterBook ? (
                                 renderStarterBookCard(starterBook)
+                            ) : filteredLibraryBooks.length === 0 && activeBookFilter !== 'favorites' && useRemotePublicLibrary ? (
+                                renderStartWays()
                             ) : filteredLibraryBooks.length === 0 && activeBookFilter !== 'favorites' && starterBookPending ? (
                                 <View style={styles.collectionEmptyState} />
                             ) : filteredLibraryBooks.length === 0 ? (
@@ -4567,14 +4630,6 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     )}
                 </View>
             )}
-                <View pointerEvents="box-none" style={[styles.calendarLayer, { top: topBarHeight }]}>
-                    <HomeGoalCalendar
-                        ownerId={activeOwnerId}
-                        focusKey={homeFocusKey}
-                        open={calendarOpen}
-                        onClose={closeCalendar}
-                    />
-                </View>
             </Pressable>
             </ScrollView>
 
@@ -4868,54 +4923,12 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     stack: {
         gap: 0,
     },
-    appTopBar: {
-        minHeight: 56,
-        flexDirection: 'row',
-        alignItems: 'center',
-        paddingHorizontal: Spacing.xl,
-        paddingTop: Spacing.sm,
-        backgroundColor: HOME_COLORS.bg,
-    },
-    appTopIconButton: {
-        width: 44,
-        height: 44,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    appTopAvatar: {
-        width: 34,
-        height: 34,
-        borderRadius: 17,
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: HOME_COLORS.accent,
-    },
-    appTopAvatarText: {
-        fontFamily: fontFamilies.displaySemiBold,
-        fontSize: 16,
-        lineHeight: 20,
-        color: HOME_COLORS.onAccent,
-        includeFontPadding: false,
-    },
     ocrStatusText: {
         ...textStyles.caption,
         color: HOME_COLORS.secondary,
         textAlign: 'center',
         paddingHorizontal: Spacing.screenHorizontalDense,
         paddingVertical: Spacing.sm,
-    },
-    appTopTitleText: {
-        textAlign: 'center',
-        ...textStyles.appTitle,
-        color: HOME_COLORS.text,
-    },
-    calendarLayer: {
-        position: 'absolute',
-        left: 0,
-        right: 0,
-        bottom: 0,
-        zIndex: 30,
-        elevation: 30,
     },
     heroSection: {
         paddingTop: Spacing.xl2,
@@ -5115,6 +5128,15 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         fontSize: 15,
         lineHeight: 20,
         color: colors.textMuted,
+    },
+    // The original title and author, under the translated ones.
+    previewOriginalCredit: {
+        marginTop: 4,
+        fontFamily: fontFamilies.serifRegular,
+        fontStyle: 'italic',
+        fontSize: 13,
+        lineHeight: 18,
+        color: colors.textTertiary,
     },
     previewTagWrap: {
         alignSelf: 'flex-start',
@@ -5401,10 +5423,10 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     collectionViewButtonDisabled: {
         opacity: Motion.disabledOpacity,
     },
+    // Two tabs, half the width each.
     libraryTabs: {
         flexDirection: 'row',
         alignItems: 'flex-end',
-        gap: Spacing.xl5,
         marginHorizontal: Spacing.screenHorizontalDense,
         marginTop: Spacing.xs,
         borderBottomWidth: 1,
@@ -5412,7 +5434,9 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         position: 'relative',
     },
     libraryTab: {
+        flex: 1,
         minHeight: 44,
+        alignItems: 'center',
         justifyContent: 'center',
         paddingVertical: Spacing.lg,
     },
@@ -5752,6 +5776,68 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         gap: Spacing.md,
         borderRadius: 14,
         backgroundColor: HOME_COLORS.accent,
+    },
+    // The English first-run "two ways to start".
+    startWaysWrap: {
+        gap: Spacing.xl2,
+        paddingHorizontal: Spacing.screenHorizontalDense,
+        paddingTop: Spacing.xl3,
+        paddingBottom: Spacing.xl3,
+    },
+    startWaysTitle: {
+        fontFamily: fontFamilies.displaySemiBold,
+        fontSize: 22,
+        lineHeight: 28,
+        color: HOME_COLORS.text,
+    },
+    startWayCard: {
+        gap: Spacing.xl,
+        padding: Spacing.xl4,
+        borderRadius: 18,
+        borderWidth: 1,
+        borderColor: HOME_COLORS.divider,
+        backgroundColor: HOME_COLORS.surface,
+    },
+    startWayHead: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: Spacing.lg,
+    },
+    startWayNumber: {
+        width: 26,
+        height: 26,
+        borderRadius: 13,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: HOME_COLORS.text,
+    },
+    startWayNumberText: {
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 13,
+        lineHeight: 17,
+        color: HOME_COLORS.surface,
+    },
+    startWayTitle: {
+        flex: 1,
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 17,
+        lineHeight: 23,
+        color: HOME_COLORS.text,
+    },
+    startWaySecondary: {
+        height: 48,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: Spacing.md,
+        borderRadius: 14,
+        borderWidth: 1,
+        borderColor: HOME_COLORS.border,
+        backgroundColor: HOME_COLORS.surface,
+    },
+    startWaysLoading: {
+        paddingVertical: Spacing.xl8,
+        alignItems: 'center',
     },
     starterSecondaryActions: {
         flexDirection: 'row',

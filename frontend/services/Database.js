@@ -3679,6 +3679,7 @@ export const createBookPreprocessTables = () => {
             book_level_system  TEXT,
             book_level_source  TEXT,
             book_level_stats   TEXT,
+            piece_progress     TEXT,
             completed_at       TEXT,
             preprocess_version INTEGER DEFAULT ${PREPROCESS_VERSION},
             PRIMARY KEY (owner_id, profile_id, book_uri, spine_index, preprocess_version)
@@ -3727,6 +3728,26 @@ export const migrateBookPreprocessLevelColumns = async () => {
       },
       (error) => {
         console.error('[Database] Error migrating book preprocess level columns:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+};
+
+// Which pieces of a long chapter are processed (see markBookPreprocessChapter).
+// Runs after the owner rebuild, which copies the column only when it's there.
+export const migrateBookPreprocessPieceProgress = async () => {
+  const chapterColumns = await getTableColumns('book_preprocess_chapters');
+  if (chapterColumns.includes('piece_progress')) return;
+
+  await new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        tx.executeSql('ALTER TABLE book_preprocess_chapters ADD COLUMN piece_progress TEXT');
+      },
+      (error) => {
+        console.error('[Database] Error adding preprocess piece progress column:', error);
         reject(error);
       },
       () => resolve()
@@ -3958,6 +3979,7 @@ export const migrateLocalOwnerSqlite = async () => {
             book_level_system  TEXT,
             book_level_source  TEXT,
             book_level_stats   TEXT,
+            piece_progress     TEXT,
             completed_at       TEXT,
             preprocess_version INTEGER DEFAULT ${PREPROCESS_VERSION},
             PRIMARY KEY (owner_id, profile_id, book_uri, spine_index, preprocess_version)
@@ -3967,7 +3989,7 @@ export const migrateLocalOwnerSqlite = async () => {
           `INSERT OR REPLACE INTO book_preprocess_chapters_owner_new (
             owner_id, profile_id, book_uri, spine_index, status, surface_count,
             book_level, book_level_rank, book_level_system, book_level_source, book_level_stats,
-            completed_at, preprocess_version
+            piece_progress, completed_at, preprocess_version
           )
            SELECT
             COALESCE(owner_id, ?),
@@ -3981,6 +4003,7 @@ export const migrateLocalOwnerSqlite = async () => {
             ${sqlBookLevelColumnOrNull(preprocessChapterColumns, 'book_level_system')},
             ${sqlBookLevelColumnOrNull(preprocessChapterColumns, 'book_level_source')},
             ${sqlBookLevelColumnOrNull(preprocessChapterColumns, 'book_level_stats')},
+            ${sqlBookLevelColumnOrNull(preprocessChapterColumns, 'piece_progress')},
             completed_at,
             COALESCE(preprocess_version, ?)
            FROM book_preprocess_chapters
@@ -5600,6 +5623,7 @@ export const initAllTables = async () => {
   await createSentenceTranslationsTable();
   await migrateLocalOwnerSqlite();
   await migrateProfileSqlite();
+  await migrateBookPreprocessPieceProgress();
   await createOwnerIndexes();
   await deduplicateCacheTable();
   await initializeHanjaDatabase();
@@ -8219,7 +8243,7 @@ export const getBookPreprocessChapter = (
       tx.executeSql(
         `SELECT owner_id, profile_id, book_uri, spine_index, status, surface_count,
                 book_level, book_level_rank, book_level_system, book_level_source, book_level_stats,
-                completed_at, preprocess_version
+                piece_progress, completed_at, preprocess_version
          FROM book_preprocess_chapters
          WHERE owner_id = ? AND profile_id = ? AND book_uri = ? AND spine_index = ? AND preprocess_version = ?
          LIMIT 1`,
@@ -8258,7 +8282,7 @@ export const getBookPreprocessChapters = (
       tx.executeSql(
         `SELECT owner_id, profile_id, book_uri, spine_index, status, surface_count,
                 book_level, book_level_rank, book_level_system, book_level_source, book_level_stats,
-                completed_at, preprocess_version
+                piece_progress, completed_at, preprocess_version
          FROM book_preprocess_chapters
          WHERE owner_id = ? AND profile_id = ? AND book_uri = ? AND preprocess_version = ?
          ORDER BY spine_index ASC`,
@@ -8285,10 +8309,14 @@ export const markBookPreprocessChapter = ({
   preprocessVersion = PREPROCESS_VERSION,
   completedAt = null,
   bookLevel = null,
+  // { count, done }: how many pieces the chapter is sent in and which are
+  // processed. Left out, the stored value stays.
+  pieceProgress = null,
 }) => {
   const scopedOwnerId = resolveOwnerId(ownerId);
   const scopedProfileId = resolveProfileId(profileId);
   const storedBookLevel = normalizeBookLevelForStorage(bookLevel);
+  const storedPieceProgress = pieceProgress ? JSON.stringify(pieceProgress) : null;
 
   return new Promise((resolve, reject) => {
     if (!bookUri || !Number.isInteger(spineIndex)) {
@@ -8301,7 +8329,7 @@ export const markBookPreprocessChapter = ({
         `INSERT OR REPLACE INTO book_preprocess_chapters (
           owner_id, profile_id, book_uri, spine_index, status, surface_count,
           book_level, book_level_rank, book_level_system, book_level_source, book_level_stats,
-          completed_at, preprocess_version
+          piece_progress, completed_at, preprocess_version
         )
          VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, (
            SELECT book_level FROM book_preprocess_chapters WHERE owner_id = ? AND profile_id = ? AND book_uri = ? AND spine_index = ? AND preprocess_version = ?
@@ -8313,6 +8341,8 @@ export const markBookPreprocessChapter = ({
            SELECT book_level_source FROM book_preprocess_chapters WHERE owner_id = ? AND profile_id = ? AND book_uri = ? AND spine_index = ? AND preprocess_version = ?
          )), COALESCE(?, (
            SELECT book_level_stats FROM book_preprocess_chapters WHERE owner_id = ? AND profile_id = ? AND book_uri = ? AND spine_index = ? AND preprocess_version = ?
+         )), COALESCE(?, (
+           SELECT piece_progress FROM book_preprocess_chapters WHERE owner_id = ? AND profile_id = ? AND book_uri = ? AND spine_index = ? AND preprocess_version = ?
          )), ?, ?)`,
         [
           scopedOwnerId,
@@ -8346,6 +8376,12 @@ export const markBookPreprocessChapter = ({
           spineIndex,
           preprocessVersion,
           storedBookLevel.statsJson,
+          scopedOwnerId,
+          scopedProfileId,
+          bookUri,
+          spineIndex,
+          preprocessVersion,
+          storedPieceProgress,
           scopedOwnerId,
           scopedProfileId,
           bookUri,

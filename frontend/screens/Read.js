@@ -104,6 +104,12 @@ import SavedWordsPanel from '../components/Read/SavedWordsPanel';
 import NotesLogSheet from '../components/Read/NotesLogSheet';
 import ReaderSettingsSheet from '../components/Read/ReaderSettingsSheet';
 import preprocessChapter from '../services/api/preprocessChapter';
+import {
+    parsePieceProgress,
+    pieceForPosition,
+    piecesToPrepare,
+    splitChapterForPreprocess,
+} from '../services/preprocessPieces';
 import { withNormalizedSurfaceIndex } from '../services/dictionaryLookup';
 import { updateUserBookProgress } from '../services/bookCloudSync';
 import { addReadingMillis } from '../services/dailyProgress';
@@ -142,8 +148,9 @@ import {
 import GoalCompleteModal from '../components/Goal/GoalCompleteModal';
 import { endBookOpening, getBookOpening, subscribeBookOpening } from '../services/bookOpening';
 import PreparingNotice from '../components/Read/PreparingNotice';
+import LocationPrompt from '../components/Read/LocationPrompt';
 import { publishReaderListen, registerReaderListenCommands } from '../services/readerListenState';
-import { useFocusEffect, useIsFocused } from '@react-navigation/native';
+import { CommonActions, useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { highlightStrengthsFor, unseenShownTerms } from '../services/savedWordFade';
 import { ANNOTATION_SCOPES, annotationsBySurface, buildAnnotatedLevelTerms } from '../services/readerAnnotations';
 import { createNativeReaderThemeTokens, fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
@@ -214,10 +221,12 @@ const FONT_SIZE_MAX = 30;
 // (screen state + library patch + AsyncStorage write) is what made beam
 // navigation feel sluggish, so steps coalesce to the trailing event.
 const FOCUS_PAGE_CHANGE_DEBOUNCE_MS = 400;
-// Only the values are used here; the settings sheet labels its choices with
-// read.lineSpacing* keys (LINE_SPACING_CHOICES).
+// The same stops as services/readerSettings.js READER_LINE_SPACING_STEPS.
 const LINE_SPACING_STEPS = [
+    { value: 1.2 },
+    { value: 1.3 },
     { value: 1.4 },
+    { value: 1.5 },
     { value: 1.65 },
     { value: 1.85 },
     { value: 2.05 },
@@ -510,7 +519,41 @@ const isPdfBook = (book, uri = '') => (
     || String(uri || '').toLowerCase().split('?')[0].endsWith('.pdf')
 );
 
-const CHAPTER_PREPROCESS_RADIUS = 1;
+// Whether going from `previous` to `next` (spine + page) was a jump rather
+// than reading on: another chapter that isn't the next one entered at its
+// start (or the one before, paging back from its start), or more than a few
+// pages at once in paged mode. A vertical fling or focus steps can move far
+// within a chapter, so only chapter changes count there.
+const LOCATION_JUMP_PAGES = 3;
+const isLocationJump = (previous, next, { pagedWithinChapter = true } = {}) => {
+    if (!previous || !next) return false;
+    if (!Number.isInteger(previous.spineIndex) || !Number.isInteger(next.spineIndex)) return false;
+    if (previous.spineIndex === next.spineIndex) {
+        return pagedWithinChapter
+            && Number.isInteger(previous.pageIndex)
+            && Number.isInteger(next.pageIndex)
+            && Math.abs(next.pageIndex - previous.pageIndex) > LOCATION_JUMP_PAGES;
+    }
+    const lastPage = Number.isInteger(previous.pagesInChapter) ? previous.pagesInChapter - 1 : null;
+    const forwardOn = next.spineIndex === previous.spineIndex + 1
+        && next.pageIndex === 0
+        && (lastPage === null || previous.pageIndex >= lastPage - 1);
+    const backOn = next.spineIndex === previous.spineIndex - 1 && previous.pageIndex === 0;
+    return !forwardOn && !backOn;
+};
+const isNearPosition = (a, b) => (
+    Boolean(a && b)
+    && a.spineIndex === b.spineIndex
+    && Number.isInteger(a.pageIndex)
+    && Number.isInteger(b.pageIndex)
+    && Math.abs(a.pageIndex - b.pageIndex) <= 1
+);
+
+// Word help is prepared ahead of the reader: the open chapter, then the next
+// two, then the one before (for a step back). Each only in the pieces near the
+// reader (see services/preprocessPieces).
+const CHAPTER_PREPROCESS_AHEAD = 2;
+const CHAPTER_PREPROCESS_BEHIND = 1;
 
 const buildChapterPreprocessOrder = (centerSpineIndex, totalSpineItems) => {
     if (!Number.isInteger(centerSpineIndex) || totalSpineItems <= 0) {
@@ -518,14 +561,14 @@ const buildChapterPreprocessOrder = (centerSpineIndex, totalSpineItems) => {
     }
 
     const order = [centerSpineIndex];
-    for (let offset = 1; offset <= CHAPTER_PREPROCESS_RADIUS; offset += 1) {
-        const nextSpineIndex = centerSpineIndex + offset;
-        const previousSpineIndex = centerSpineIndex - offset;
-        if (nextSpineIndex < totalSpineItems) {
-            order.push(nextSpineIndex);
+    for (let offset = 1; offset <= CHAPTER_PREPROCESS_AHEAD; offset += 1) {
+        if (centerSpineIndex + offset < totalSpineItems) {
+            order.push(centerSpineIndex + offset);
         }
-        if (previousSpineIndex >= 0) {
-            order.push(previousSpineIndex);
+    }
+    for (let offset = 1; offset <= CHAPTER_PREPROCESS_BEHIND; offset += 1) {
+        if (centerSpineIndex - offset >= 0) {
+            order.push(centerSpineIndex - offset);
         }
     }
 
@@ -581,8 +624,17 @@ const Read = ({
     const [textSelection, setTextSelection] = useState(null);
     // Where the reader was before jumping to a bookmark from the notes log; a
     // pill offers the way back.
-    const [returnPosition, setReturnPosition] = useState(null);
-    const [selectionPhraseSaved, setSelectionPhraseSaved] = useState(false);
+    // After a sudden jump, the spot the reader left ({ position, progress })
+    // is held: not overwritten by where they are now until they confirm the
+    // new spot (locationPrompt) or come back to it. The scrubber marks it.
+    const [heldSpot, setHeldSpot] = useState(null);
+    const heldSpotRef = useRef(null);
+    heldSpotRef.current = heldSpot;
+    const [locationPrompt, setLocationPrompt] = useState(false);
+    const lastViewedSpotRef = useRef(null);
+    const lastPageEventRef = useRef(null);
+    const stepsSincePromptRef = useRef(0);
+    const processNativePageChangeRef = useRef(null);
     const [clearSelectionToken, setClearSelectionToken] = useState(0);
     // Temporary handoff QA toggles for the long-press translation banner.
     const [translationBannerLoadingPreview] = useState(false);
@@ -790,6 +842,13 @@ const Read = ({
     const preprocessingInFlightRef = useRef(false);
     const chapterPreprocessTokenRef = useRef(0);
     const activeChapterPreprocessRef = useRef({ bookUri: null, centerSpineIndex: null });
+    // The open chapter's piece being prepared around, and a run asked for
+    // while one was going (the reader reached a new piece): it goes next.
+    const preprocessWindowRef = useRef({ bookUri: null, spineIndex: null, piece: null });
+    const pendingChapterPreprocessRef = useRef(null);
+    const startChapterPreprocessingRef = useRef(null);
+    // The open chapter's pieces, worked out once per chapter for page turns.
+    const preprocessLayoutRef = useRef({ readerPackage: null, layout: null });
     const readingSessionStartedAtRef = useRef(Date.now());
     const readingSessionOwnerIdRef = useRef(activeOwnerId);
     const chapterLoadTokenRef = useRef(0);
@@ -1080,6 +1139,8 @@ const Read = ({
         extractedTextRef.current = null;
         preprocessingInFlightRef.current = false;
         activeChapterPreprocessRef.current = { bookUri: null, centerSpineIndex: null };
+        preprocessWindowRef.current = { bookUri: null, spineIndex: null, piece: null };
+        pendingChapterPreprocessRef.current = null;
         chapterPreprocessTokenRef.current += 1;
         readingSessionStartedAtRef.current = Date.now();
         setHighlightedWord('');
@@ -1287,7 +1348,6 @@ const Read = ({
             start: Number.isInteger(event.sourceStartOffset) ? event.sourceStartOffset : null,
             end: Number.isInteger(event.sourceEndOffset) ? event.sourceEndOffset : null,
         });
-        setSelectionPhraseSaved(false);
         extendingSelectionRef.current = false;
         // The explanation always opens at the bottom, like a sheet.
     }, []);
@@ -1601,13 +1661,27 @@ const Read = ({
         setIsFullscreen((current) => !current);
     }, []);
 
-    // The reader has no tab bar, so the header's back chevron is the way out.
+    // The reader has no tab bar, so back (the header's chevron or the
+    // hardware button) is the way out: to the tab the reader came from, else
+    // Home. Either way the book leaves the tab history. Navigating to Home
+    // instead would leave it there, and back on Home would reopen the book,
+    // round and round.
     const goBackFromReader = useCallback(() => {
         if (navigation?.canGoBack?.()) {
             navigation.goBack();
-        } else {
-            navigation?.navigate?.('Home');
+            return;
         }
+        const state = navigation?.getState?.();
+        const home = state?.routes?.find((route) => route.name === 'Home');
+        if (!home) {
+            navigation?.navigate?.('Home');
+            return;
+        }
+        navigation.dispatch(CommonActions.reset({
+            ...state,
+            index: state.routes.indexOf(home),
+            history: [{ type: 'route', key: home.key }],
+        }));
     }, [navigation]);
 
     const dismissLookup = useCallback(() => {
@@ -1626,8 +1700,6 @@ const Read = ({
             language={activeBookLanguage}
             interfaceLanguage={interfaceLanguage}
             bottomInset={focusMode ? 0 : insets.bottom}
-            saved={selectionPhraseSaved}
-            onSave={handleSelectionPhraseSave}
             ownerId={activeOwnerId}
             bookUri={currentBook}
             bookTitle={activeBook?.title ?? null}
@@ -1636,45 +1708,6 @@ const Read = ({
 
     // Save a phrase from the AI explanation as a vocab card, with its short
     // meaning as the definition (like saving a word from the lookup panel).
-    const handleSelectionPhraseSave = async ({ text, gloss, sentence }) => {
-        const word = String(text || '').trim();
-        const definition = String(gloss || '').trim();
-        if (!word || !definition) return;
-        handleWordSave(word, { includeSurface: false });
-        try {
-            const alreadySaved = await vocabEntryExists(word, '', definition, activeBookLanguage, { ownerId: activeOwnerId });
-            if (!alreadySaved) {
-                const createdAt = new Date().toISOString();
-                await insertData(word, '', definition, {
-                    ownerId: activeOwnerId,
-                    level: 'unorganized',
-                    sourceBookUri: currentBook ?? null,
-                    sourceBookTitle: activeBook?.title ?? null,
-                    contextSentence: sentence || null,
-                    createdAt,
-                    updatedAt: createdAt,
-                    language: activeBookLanguage,
-                    source: 'ai',
-                });
-            }
-            await recordVocabContext({
-                ownerId: activeOwnerId,
-                word,
-                hanja: '',
-                definition,
-                sentence: sentence || '',
-                sourceBookUri: currentBook ?? null,
-                sourceBookTitle: activeBook?.title ?? null,
-                language: activeBookLanguage,
-            });
-            requestUserDataSync('reader-phrase-save');
-            setSelectionPhraseSaved(true);
-            refreshBookSavedWords?.();
-        } catch (error) {
-            console.warn('[Read] Saving the phrase failed:', error?.message ?? error);
-        }
-    };
-
     // Hardware back steps out of transient reader chrome one layer at a time:
     // the options dropdown, then the open lookup panel, then fullscreen. Focus
     // mode is deliberately NOT unwound here — from focus mode back leaves the
@@ -1704,17 +1737,17 @@ const Read = ({
         return () => subscription.remove();
     }, [showMenu, isFullscreen, highlightedWord, dismissLookup]);
 
-    // Last resort while the reader is on screen: back returns to Read home
-    // rather than closing the app (there is no tab bar here, and the history
-    // can hold only this screen when Android restores the app into a book).
-    // Registered on focus, so the layer handler above (added later) runs first.
+    // Last resort while the reader is on screen: back leaves the book like the
+    // header's chevron, rather than closing the app (the history can hold only
+    // this screen when Android restores the app into a book). Registered on
+    // focus, so the layer handler above (added later) runs first.
     useFocusEffect(useCallback(() => {
         const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
-            navigation.navigate('Home');
+            goBackFromReader();
             return true;
         });
         return () => subscription.remove();
-    }, [navigation]));
+    }, [goBackFromReader]));
 
     // Swipe-down anywhere on the lookup panel dismisses it (mirrors the hardware
     // back / close-button paths). Only claims clearly downward drags so it doesn't
@@ -2155,28 +2188,37 @@ const Read = ({
         }
     }, [activeSpineIndex, flushPendingFocusPageChange, updateNativeRestorePosition]);
 
-    // A jump from the notes log keeps where the reader was, for the "back"
-    // pill. A second jump keeps the first starting point.
+    // A jump from the notes log is like any other: the reader is asked
+    // whether it's their new spot (see processNativePageChange).
     const jumpFromNotesLog = (target) => {
-        const here = nativeRestorePositionRef.current;
-        if (Number.isInteger(here?.spineIndex)) {
-            setReturnPosition((previous) => previous || {
-                spineIndex: here.spineIndex,
-                pageIndex: here.pageIndex,
-                pagesInChapter: here.pagesInChapter,
-                href: here.href,
-                firstBlockId: here.firstBlockId,
-            });
-        }
         handleSelectBookmark(target);
     };
-    const returnToPosition = () => {
-        const target = returnPosition;
-        setReturnPosition(null);
-        if (target) handleSelectBookmark(target);
-    };
+    const locationPromptRef = useRef(false);
+    locationPromptRef.current = locationPrompt;
+    // Yes: this is the spot now; save it at once.
+    const confirmNewSpot = useCallback(() => {
+        heldSpotRef.current = null;
+        setHeldSpot(null);
+        setLocationPrompt(false);
+        const event = lastPageEventRef.current;
+        if (event) processNativePageChangeRef.current?.(event);
+    }, []);
+    // No: keep the old spot (the scrubber's black dot) to go back to.
+    const declineNewSpot = useCallback(() => {
+        setLocationPrompt(false);
+    }, []);
+    const returnToHeldSpot = useCallback(() => {
+        const held = heldSpotRef.current;
+        setLocationPrompt(false);
+        if (held?.position) handleSelectBookmark(held.position);
+    }, [handleSelectBookmark]);
+    // Another book starts fresh.
     useEffect(() => {
-        setReturnPosition(null);
+        heldSpotRef.current = null;
+        setHeldSpot(null);
+        setLocationPrompt(false);
+        lastViewedSpotRef.current = null;
+        lastPageEventRef.current = null;
     }, [currentBook]);
 
     useEffect(() => {
@@ -2441,7 +2483,11 @@ const Read = ({
     const startChapterPreprocessing = useCallback(async (
         centerSpineIndex,
         totalSpineItems,
-        currentPackage = null
+        currentPackage = null,
+        // The reader's spot in the open chapter (a page change's, which can be
+        // ahead of the restore position while focus mode holds it back);
+        // withinChapter: they reached a new piece of the chapter being read.
+        { position = null, withinChapter = false } = {}
     ) => {
         if (!currentBook || !Number.isInteger(centerSpineIndex) || totalSpineItems <= 0) {
             return;
@@ -2458,6 +2504,16 @@ const Read = ({
             && activePreprocess.bookUri === currentBook
             && activePreprocess.centerSpineIndex === centerSpineIndex
         ) {
+            // Same chapter, further on: the run going may be partway through
+            // the very piece they need, so let it finish and go again after.
+            if (withinChapter) {
+                pendingChapterPreprocessRef.current = {
+                    bookUri: currentBook,
+                    centerSpineIndex,
+                    totalSpineItems,
+                    position,
+                };
+            }
             return;
         }
 
@@ -2465,6 +2521,8 @@ const Read = ({
         chapterPreprocessTokenRef.current = preprocessToken;
         preprocessingInFlightRef.current = true;
         activeChapterPreprocessRef.current = { bookUri: currentBook, centerSpineIndex };
+        pendingChapterPreprocessRef.current = null;
+        const readingPosition = position || nativeRestorePositionRef.current;
 
         // Translations (the words' glosses and definitions) are fetched in the
         // app language. A book processed in another language has none in this
@@ -2496,6 +2554,9 @@ const Read = ({
         let totalSurfaceCount = 0;
         let totalWordCount = 0;
         let countedWordChapters = 0;
+        // Every chapter in the window prepared to the end (not just near the
+        // reader): only then is a one-window book done.
+        let allChaptersComplete = true;
         const bookLevelAccumulator = createBookLevelAccumulator(activeBookLanguage);
 
         try {
@@ -2523,32 +2584,34 @@ const Read = ({
                     return;
                 }
 
-                if (existingChapter?.status === 'complete') {
+                // The chapter's needed pieces are done already: nothing to send.
+                const settleChapter = (complete) => {
                     addStoredBookLevelToAccumulator(bookLevelAccumulator, existingChapter);
                     completedChapters += 1;
-                    totalSurfaceCount += Number(existingChapter.surface_count) || 0;
+                    totalSurfaceCount += Number(existingChapter?.surface_count) || 0;
+                    if (!complete) allChaptersComplete = false;
                     if (isCurrentChapter) {
                         setPreprocessStatus('done');
                         setCurrentChapterPreparing(false);
                     }
+                };
+
+                if (existingChapter?.status === 'complete') {
+                    settleChapter(true);
                     continue;
                 }
 
-                await markBookPreprocessChapter({
-                    ownerId: activeOwnerId,
-                    bookUri: currentBook,
-                    spineIndex,
-                    status: 'processing',
-                    surfaceCount: 0,
-                    preprocessVersion: PREPROCESS_VERSION,
-                });
-                if (chapterPreprocessTokenRef.current !== preprocessToken) {
-                    return;
-                }
-
-                setPreprocessStatus('preprocessing');
-                if (isCurrentChapter) {
-                    setCurrentChapterPreparing(true);
+                // A chapter ahead or behind needs one known piece, so what's
+                // stored says whether it's done without opening the chapter.
+                const storedProgress = parsePieceProgress(existingChapter?.piece_progress);
+                if (
+                    !isCurrentChapter
+                    && storedProgress
+                    && piecesToPrepare({ spineIndex, centerSpineIndex, pieceCount: storedProgress.count })
+                        .every((piece) => storedProgress.done.includes(piece))
+                ) {
+                    settleChapter(false);
+                    continue;
                 }
 
                 try {
@@ -2564,51 +2627,128 @@ const Read = ({
                         return;
                     }
 
-                    const chapterText = chapterTextForReaderPackage(chapterPackage);
-                    totalWordCount += countReadableTextWords(chapterText);
+                    totalWordCount += countReadableTextWords(chapterTextForReaderPackage(chapterPackage));
                     countedWordChapters += 1;
-                    const {
-                        results = [],
-                        surface_index: surfaceIndex = [],
-                        stats = {},
-                    } = await preprocessChapter({
-                        bookUri: currentBook,
-                        spineIndex,
-                        text: chapterText,
-                        language: activeBookLanguage,
-                        interfaceLanguage,
-                    });
 
-                    if (chapterPreprocessTokenRef.current !== preprocessToken) {
-                        return;
+                    const layout = splitChapterForPreprocess(chapterBlocksForReaderPackage(chapterPackage));
+                    const pieceCount = layout.pieces.length;
+                    // Pieces done before, unless the chapter splits differently now.
+                    const donePieces = new Set(storedProgress?.count === pieceCount ? storedProgress.done : []);
+                    const readingPiece = (
+                        isCurrentChapter && readingPosition?.spineIndex === spineIndex
+                            ? pieceForPosition(layout, readingPosition)
+                            : 0
+                    );
+                    if (isCurrentChapter) {
+                        preprocessWindowRef.current = { bookUri: currentBook, spineIndex, piece: readingPiece };
+                    }
+                    const piecesToSend = piecesToPrepare({
+                        spineIndex,
+                        centerSpineIndex,
+                        pieceCount,
+                        readingPiece,
+                    }).filter((piece) => !donePieces.has(piece));
+
+                    if (pieceCount > 0 && piecesToSend.length === 0) {
+                        settleChapter(donePieces.size >= pieceCount);
+                        continue;
                     }
 
-                    const surfaceCount = await persistChapterPreprocessResults({
-                        bookUri: currentBook,
-                        results,
-                        surfaceIndex,
-                        language: activeBookLanguage,
-                    });
-                    const chapterBookLevel = stats?.book_level ?? null;
-                    addBookLevelScoreToAccumulator(bookLevelAccumulator, chapterBookLevel);
-
+                    let surfaceCount = Number(existingChapter?.surface_count) || 0;
                     await markBookPreprocessChapter({
                         ownerId: activeOwnerId,
                         bookUri: currentBook,
                         spineIndex,
-                        status: 'complete',
+                        status: 'processing',
                         surfaceCount,
                         preprocessVersion: PREPROCESS_VERSION,
-                        bookLevel: chapterBookLevel,
-                        completedAt: new Date().toISOString(),
                     });
-
                     if (chapterPreprocessTokenRef.current !== preprocessToken) {
                         return;
                     }
 
+                    setPreprocessStatus('preprocessing');
+                    // The notice is for the page in front of them; the piece
+                    // after it is got ready quietly.
+                    if (isCurrentChapter && piecesToSend.includes(readingPiece)) {
+                        setCurrentChapterPreparing(true);
+                    }
+
+                    // Each piece is saved as it comes, so a run cut short (the
+                    // reader turned to another chapter) keeps what it got.
+                    let chapterBookLevel = null;
+                    for (const piece of piecesToSend) {
+                        const {
+                            results = [],
+                            surface_index: surfaceIndex = [],
+                            stats = {},
+                        } = await preprocessChapter({
+                            bookUri: currentBook,
+                            spineIndex,
+                            text: layout.pieces[piece],
+                            language: activeBookLanguage,
+                            interfaceLanguage,
+                        });
+                        if (chapterPreprocessTokenRef.current !== preprocessToken) {
+                            return;
+                        }
+                        if (stats?.book_level) {
+                            chapterBookLevel = chapterBookLevel ?? stats.book_level;
+                            addBookLevelScoreToAccumulator(bookLevelAccumulator, stats.book_level);
+                        }
+
+                        surfaceCount += await persistChapterPreprocessResults({
+                            bookUri: currentBook,
+                            results,
+                            surfaceIndex,
+                            language: activeBookLanguage,
+                        });
+                        donePieces.add(piece);
+                        await markBookPreprocessChapter({
+                            ownerId: activeOwnerId,
+                            bookUri: currentBook,
+                            spineIndex,
+                            status: donePieces.size >= pieceCount ? 'complete' : 'partial',
+                            surfaceCount,
+                            preprocessVersion: PREPROCESS_VERSION,
+                            bookLevel: chapterBookLevel,
+                            pieceProgress: {
+                                count: pieceCount,
+                                done: [...donePieces].sort((a, b) => a - b),
+                            },
+                            completedAt: new Date().toISOString(),
+                        });
+                        if (chapterPreprocessTokenRef.current !== preprocessToken) {
+                            return;
+                        }
+                        if (isCurrentChapter && piece === readingPiece) {
+                            setPreprocessStatus('done');
+                            setCurrentChapterPreparing(false);
+                        }
+                    }
+
+                    // A chapter with no text has nothing to send.
+                    if (pieceCount === 0) {
+                        await markBookPreprocessChapter({
+                            ownerId: activeOwnerId,
+                            bookUri: currentBook,
+                            spineIndex,
+                            status: 'complete',
+                            surfaceCount: 0,
+                            preprocessVersion: PREPROCESS_VERSION,
+                            pieceProgress: { count: 0, done: [] },
+                            completedAt: new Date().toISOString(),
+                        });
+                        if (chapterPreprocessTokenRef.current !== preprocessToken) {
+                            return;
+                        }
+                    }
+
                     completedChapters += 1;
                     totalSurfaceCount += surfaceCount;
+                    if (donePieces.size < pieceCount) {
+                        allChaptersComplete = false;
+                    }
                     await markBookPreprocessMeta({
                         ownerId: activeOwnerId,
                         bookUri: currentBook,
@@ -2635,6 +2775,7 @@ const Read = ({
                     }
                 } catch (error) {
                     failedChapters += 1;
+                    allChaptersComplete = false;
                     console.warn(`[Read] Chapter preprocess failed for spine ${spineIndex}:`, error);
                     await markBookPreprocessChapter({
                         ownerId: activeOwnerId,
@@ -2665,7 +2806,7 @@ const Read = ({
             const windowSucceeded = failedChapters === 0 && completedChapters > 0;
             const finalStatus = !windowSucceeded
                 ? (completedChapters > 0 ? 'partial' : 'failed')
-                : (fullBookWindow ? 'complete' : 'partial');
+                : (fullBookWindow && allChaptersComplete ? 'complete' : 'partial');
             const completedWordCount = (
                 finalStatus === 'complete'
                 && countedWordChapters === queue.length
@@ -2724,6 +2865,17 @@ const Read = ({
             if (chapterPreprocessTokenRef.current === preprocessToken) {
                 preprocessingInFlightRef.current = false;
                 activeChapterPreprocessRef.current = { bookUri: null, centerSpineIndex: null };
+                // The reader reached a new piece while this ran: prepare there.
+                const pending = pendingChapterPreprocessRef.current;
+                pendingChapterPreprocessRef.current = null;
+                if (pending && pending.bookUri === currentBook) {
+                    startChapterPreprocessingRef.current?.(
+                        pending.centerSpineIndex,
+                        pending.totalSpineItems,
+                        null,
+                        { position: pending.position, withinChapter: true }
+                    );
+                }
             }
         }
     }, [
@@ -2738,6 +2890,7 @@ const Read = ({
         scheduleCloudProgressSync,
         setBooks,
     ]);
+    startChapterPreprocessingRef.current = startChapterPreprocessing;
 
     const loadNativeReaderPackage = useCallback(async (
         requestedSpineIndex = null,
@@ -3124,6 +3277,47 @@ const Read = ({
             progress: nextProgress ?? clampProgress(activeBook?.progress ?? 0),
         };
 
+        // A sudden jump holds the spot the reader left (and asks); until it
+        // is confirmed or they're back there, where they are isn't saved.
+        lastPageEventRef.current = { page, total, spineIndex, href, firstBlockId };
+        const previousSpot = lastViewedSpotRef.current;
+        lastViewedSpotRef.current = { position: nextPosition, progress: nextBookPatch.progress };
+        const held = heldSpotRef.current;
+        if (held) {
+            if (isNearPosition(held.position, nextPosition)) {
+                heldSpotRef.current = null;
+                setHeldSpot(null);
+                setLocationPrompt(false);
+            } else {
+                // Reading on from the new spot without answering counts as yes.
+                const readOn = previousSpot && !isLocationJump(previousSpot.position, nextPosition)
+                    && (nextPosition.spineIndex > previousSpot.position.spineIndex
+                        || nextPosition.pageIndex > previousSpot.position.pageIndex);
+                stepsSincePromptRef.current = readOn ? stepsSincePromptRef.current + 1 : stepsSincePromptRef.current;
+                if (!(locationPromptRef.current && stepsSincePromptRef.current >= 3)) {
+                    updateNativeRestorePosition(nextPosition);
+                    return;
+                }
+                heldSpotRef.current = null;
+                setHeldSpot(null);
+                setLocationPrompt(false);
+            }
+        } else if (
+            previousSpot
+            && !focusModeRef.current
+            && isLocationJump(previousSpot.position, nextPosition, {
+                pagedWithinChapter: readerSettingsRef.current?.readingMode !== 'scroll',
+            })
+        ) {
+            const spot = { position: previousSpot.position, progress: previousSpot.progress };
+            heldSpotRef.current = spot;
+            setHeldSpot(spot);
+            stepsSincePromptRef.current = 0;
+            setLocationPrompt(true);
+            updateNativeRestorePosition(nextPosition);
+            return;
+        }
+
         if (activeBook?.cloudId) {
             scheduleCloudProgressSync({
                 ...activeBook,
@@ -3170,6 +3364,7 @@ const Read = ({
         setBooks,
         updateNativeRestorePosition,
     ]);
+    processNativePageChangeRef.current = processNativePageChange;
 
     const handleNativePageChange = useCallback((event = {}) => {
         if (!focusModeRef.current) {
@@ -3598,9 +3793,9 @@ const Read = ({
             readerShowPinyin,
         ]
     );
-    // Rows above the settings tabs in the sheet: the contents (it left the
-    // header for the scrubber) and Checkpoints, one tap away. Full screen is a
-    // double tap on the page.
+    // Rows above the settings tabs in the sheet: saved words and Checkpoints.
+    // The contents open from the progress in the header and the scrubber;
+    // full screen is a double tap on the page.
     const settingsSheetActions = useMemo(() => [{
         key: 'saved',
         label: t('read.savedTab', { count: bookSavedWords.length }),
@@ -3610,19 +3805,11 @@ const Read = ({
             openSavedPanel('saved');
         },
     }, {
-        key: 'contents',
-        label: t('read.contents'),
-        icon: <MaterialIcons name="toc" size={21} color={themeColors.readerBodyInk} />,
-        onPress: () => {
-            setShowMenu(false);
-            if (toc.length > 0) setShowToc(true);
-        },
-    }, {
         key: 'checkpoints',
         label: t('read.checkpoints'),
         icon: <MaterialIcons name="bookmark-border" size={21} color={themeColors.readerBodyInk} />,
         onPress: openNotesLog,
-    }], [bookSavedWords.length, openNotesLog, openSavedPanel, t, themeColors.readerBodyInk, toc.length]);
+    }], [bookSavedWords.length, openNotesLog, openSavedPanel, t, themeColors.readerBodyInk]);
 
     // ─── Page scrubber ───────────────────────────────────────────────────────
     // The line along the bottom: where you are in the story, its chapters and
@@ -4472,8 +4659,42 @@ const Read = ({
             pendingScrubSeekRef.current = null;
             setTimeout(() => handleSelectBookmarkRef.current?.(pendingScrub), 120);
         }
+        // A long chapter's word help is prepared a piece at a time around the
+        // reader: on reaching a new piece, prepare it and the one after.
+        const readerPackage = nativeReaderPackageRef.current;
+        const preprocessWindow = preprocessWindowRef.current;
+        if (
+            currentBook
+            && preprocessWindow.bookUri === currentBook
+            && Number.isInteger(data.spineIndex)
+            && data.spineIndex === preprocessWindow.spineIndex
+            && spineIndexForReaderPackage(readerPackage) === data.spineIndex
+        ) {
+            if (preprocessLayoutRef.current.readerPackage !== readerPackage) {
+                preprocessLayoutRef.current = {
+                    readerPackage,
+                    layout: splitChapterForPreprocess(chapterBlocksForReaderPackage(readerPackage)),
+                };
+            }
+            const position = {
+                spineIndex: data.spineIndex,
+                pageIndex: Number.isInteger(data.page) ? data.page : null,
+                pagesInChapter: Number.isInteger(data.total) ? data.total : null,
+                firstBlockId: data.firstBlockId || null,
+            };
+            const piece = pieceForPosition(preprocessLayoutRef.current.layout, position);
+            if (piece !== preprocessWindow.piece) {
+                preprocessWindowRef.current = { ...preprocessWindow, piece };
+                startChapterPreprocessing(
+                    data.spineIndex,
+                    readerPackage.spine?.length ?? 0,
+                    readerPackage,
+                    { position, withinChapter: true }
+                );
+            }
+        }
         return handleNativePageChange(event);
-    }, [handleNativePageChange]);
+    }, [currentBook, handleNativePageChange, startChapterPreprocessing]);
     useEffect(() => {
         lastReadingPageRef.current = '';
     }, [currentBook]);
@@ -4518,17 +4739,46 @@ const Read = ({
     const wordHelpLoading = bookLoadState === 'ready'
         && (levelTermsLoading || annotationsLoading || chapterTranslating);
     const [preparingNoticeVisible, setPreparingNoticeVisible] = useState(false);
+    // When the chapter really was prepared (not just read back from the
+    // phone), the notice ends by saying so: a check and "word help is ready"
+    // for a moment before it goes.
+    const [wordHelpDone, setWordHelpDone] = useState(false);
+    const chapterWasPreparedRef = useRef(false);
     useEffect(() => {
         if (currentChapterPreparing) {
+            chapterWasPreparedRef.current = true;
+            setWordHelpDone(false);
             setPreparingNoticeVisible(true);
             return undefined;
         }
-        const timer = setTimeout(
-            () => setPreparingNoticeVisible(wordHelpLoading),
-            wordHelpLoading ? 300 : 200
-        );
+        const timer = setTimeout(() => {
+            if (wordHelpLoading) {
+                setPreparingNoticeVisible(true);
+                return;
+            }
+            if (chapterWasPreparedRef.current) {
+                chapterWasPreparedRef.current = false;
+                setWordHelpDone(true);
+                setPreparingNoticeVisible(true);
+                return;
+            }
+            setPreparingNoticeVisible(false);
+        }, wordHelpLoading ? 300 : 200);
         return () => clearTimeout(timer);
     }, [currentChapterPreparing, wordHelpLoading]);
+    useEffect(() => {
+        if (!wordHelpDone) return undefined;
+        const timer = setTimeout(() => {
+            setWordHelpDone(false);
+            setPreparingNoticeVisible(false);
+        }, 2600);
+        return () => clearTimeout(timer);
+    }, [wordHelpDone]);
+    // Another book starts over.
+    useEffect(() => {
+        chapterWasPreparedRef.current = false;
+        setWordHelpDone(false);
+    }, [currentBook]);
 
     return (
         <Animated.View
@@ -4726,6 +4976,8 @@ const Read = ({
                     onOpenContents={() => {
                         if (toc.length > 0) setShowToc(true);
                     }}
+                    savedAt={heldSpot ? heldSpot.progress : null}
+                    onReturnToSaved={returnToHeldSpot}
                     bottomInset={insets.bottom}
                 />
             ) : null}
@@ -4869,30 +5121,12 @@ const Read = ({
                 </View>
             </View>
 
-            {returnPosition && currentBook && !highlightedWord && !textSelection ? (
-                <View pointerEvents="box-none" style={[styles.hintLayer, styles.returnLayer, { bottom: bottomOverlayBase + 20 }]}>
-                    <View style={styles.returnPill}>
-                        <TouchableOpacity
-                            style={styles.returnButton}
-                            onPress={returnToPosition}
-                            accessibilityRole="button"
-                            activeOpacity={0.75}
-                        >
-                            <Feather name="corner-up-left" size={17} color={themeColors.surface} />
-                            <Text style={styles.returnText} numberOfLines={1}>{t('read.backToWhereYouWere')}</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            onPress={() => setReturnPosition(null)}
-                            style={styles.returnClose}
-                            hitSlop={{ top: 10, bottom: 10, left: 6, right: 10 }}
-                            accessibilityRole="button"
-                            accessibilityLabel={t('common.close')}
-                        >
-                            <Feather name="x" size={16} color={themeColors.surface} />
-                        </TouchableOpacity>
-                    </View>
-                </View>
-            ) : null}
+            <LocationPrompt
+                visible={locationPrompt && Boolean(currentBook) && !highlightedWord && !textSelection}
+                bottom={bottomOverlayBase + 16}
+                onConfirm={confirmNewSpot}
+                onDecline={declineNewSpot}
+            />
 
             {/* "Getting this chapter's word help ready". Floats above the
                 bottom edge so it never covers the book title or the header (in
@@ -4904,7 +5138,7 @@ const Read = ({
                     pointerEvents="box-none"
                     style={[styles.hintLayer, { bottom: bottomOverlayBase + 16 }]}
                 >
-                    <PreparingNotice />
+                    <PreparingNotice done={wordHelpDone} />
                 </View>
             ) : null}
 

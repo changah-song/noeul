@@ -21,10 +21,13 @@ import {
     READER_FONT_SIZE_MAX,
     READER_FONT_SIZE_MIN,
     READER_LEVEL_MARK_STYLES,
+    READER_LINE_SPACING_STEPS,
     READER_READING_MODES,
     buildLegendGradient,
     clampNumber,
+    nearestLineSpacingIndex,
     stepFontSize,
+    stepLineSpacing,
 } from '../../services/readerSettings';
 import {
     ResetLink,
@@ -56,22 +59,11 @@ const TAB_LABEL_KEYS = {
     words: 'read.settingsTabWords',
 };
 
-// Line spacing is offered as three named choices (values from
-// READER_LINE_SPACING_STEPS; Relaxed is the book default, Normal the song
-// default). A stored value between steps shows as the nearest choice.
-export const LINE_SPACING_CHOICES = [
-    { value: 1.65, labelKey: 'read.lineSpacingTight' },
-    { value: 1.85, labelKey: 'read.lineSpacingNormal' },
-    { value: 2.05, labelKey: 'read.lineSpacingRelaxed' },
-];
-
-const nearestLineSpacingChoice = (value) => {
-    const numeric = Number(value);
-    const target = Number.isFinite(numeric) ? numeric : DEFAULT_BOOK_READER_SETTINGS.lineSpacing;
-    return LINE_SPACING_CHOICES.reduce((best, choice) => (
-        Math.abs(choice.value - target) < Math.abs(best.value - target) ? choice : best
-    ), LINE_SPACING_CHOICES[0]).value;
-};
+// Line spacing steps through READER_LINE_SPACING_STEPS with − / +, shown as
+// the multiple ("1.65×"). A stored value between steps shows as the nearest.
+const LINE_SPACING_MIN = READER_LINE_SPACING_STEPS[0].value;
+const LINE_SPACING_MAX = READER_LINE_SPACING_STEPS[READER_LINE_SPACING_STEPS.length - 1].value;
+const nearestLineSpacing = (value) => READER_LINE_SPACING_STEPS[nearestLineSpacingIndex(value)].value;
 
 const scopeOrDefault = (value, fallback) => (ANNOTATION_SCOPES.includes(value) ? value : fallback);
 
@@ -220,7 +212,7 @@ const ReaderSettingsSheet = ({
     const fontSize = Math.round(clampNumber(
         source.fontSize, READER_FONT_SIZE_MIN, READER_FONT_SIZE_MAX, DEFAULT_BOOK_READER_SETTINGS.fontSize
     ));
-    const lineSpacingChoice = nearestLineSpacingChoice(source.lineSpacing);
+    const lineSpacing = nearestLineSpacing(source.lineSpacing);
     const readingMode = READER_READING_MODES.includes(source.readingMode)
         ? source.readingMode
         : DEFAULT_BOOK_READER_SETTINGS.readingMode;
@@ -270,13 +262,15 @@ const ReaderSettingsSheet = ({
                 />
             </SettingRow>
             <SettingRow styles={controlStyles} label={t('read.lineSpacing')}>
-                <SegmentedControl
+                <Stepper
                     styles={controlStyles}
                     colors={colors}
-                    value={lineSpacingChoice}
-                    onChange={(value) => onSettingChange('lineSpacing', value)}
-                    accessibilityLabel={t('read.lineSpacing')}
-                    options={LINE_SPACING_CHOICES.map(({ value, labelKey }) => ({ value, label: t(labelKey) }))}
+                    value={`${lineSpacing}×`}
+                    onStep={(direction) => onSettingChange('lineSpacing', stepLineSpacing(lineSpacing, direction))}
+                    atMin={lineSpacing <= LINE_SPACING_MIN}
+                    atMax={lineSpacing >= LINE_SPACING_MAX}
+                    decreaseLabel={t('read.decreaseLineSpacing')}
+                    increaseLabel={t('read.increaseLineSpacing')}
                 />
             </SettingRow>
             <SettingRow styles={controlStyles} label={t('read.settingsPageTurns')} last>

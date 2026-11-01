@@ -16,13 +16,19 @@ export const READER_LEVEL_MARK_OPTIONS = [
     { value: 'underline', icon: 'format-underlined', labelKey: 'read.markUnderline' },
 ];
 
+// Line spacing (a multiple of the font size) steps one stop at a time from the
+// settings sheet. Most stops sit below the default: readers asked for denser
+// pages far more than for airier ones.
 export const READER_LINE_SPACING_STEPS = [
-    { value: 1.4, labelKey: 'read.lineSpacingCompact' },
-    { value: 1.65, labelKey: 'read.lineSpacingRegular' },
-    { value: 1.85, labelKey: 'read.lineSpacingOpen' },
-    { value: 2.05, labelKey: 'read.lineSpacingRelaxed' },
-    { value: 2.3, labelKey: 'read.lineSpacingAiry' },
-    { value: 2.6, labelKey: 'read.lineSpacingWide' },
+    { value: 1.2 },
+    { value: 1.3 },
+    { value: 1.4 },
+    { value: 1.5 },
+    { value: 1.65 },
+    { value: 1.85 },
+    { value: 2.05 },
+    { value: 2.3 },
+    { value: 2.6 },
 ];
 
 // Same defaults as the book reader (Read.js DEFAULT_READER_SETTINGS), minus the

@@ -114,9 +114,9 @@ describe('ReaderSettingsSheet', () => {
     await press(tree, 'Increase font size');
     expect(props.onSettingChange).toHaveBeenCalledWith('fontSize', 19);
 
-    // Line spacing is a three-way segmented control.
-    await press(tree, 'Tight');
-    expect(props.onSettingChange).toHaveBeenCalledWith('lineSpacing', 1.65);
+    // Line spacing steps one stop at a time (2.05 by default).
+    await press(tree, 'Decrease line spacing');
+    expect(props.onSettingChange).toHaveBeenCalledWith('lineSpacing', 1.85);
     // Page turns are icons; their names stay as accessibility labels.
     expect(tree.root.findAll((node) => node.props.children === 'Vertical')).toHaveLength(0);
     await press(tree, 'Vertical');

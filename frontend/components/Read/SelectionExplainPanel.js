@@ -13,9 +13,9 @@ const clean = (value) => (typeof value === 'string' ? value.trim() : '');
  * SelectionExplainPanel — the AI explanation of a long-pressed selection, in a
  * bottom sheet like the definition panel: idioms, phrases and archaic words the
  * dictionary doesn't cover, explained in the sentence they appear in. The short
- * meaning streams in first, then the longer explanation. The bookmark in the
- * corner keeps the expression with that short meaning as a vocab card. Tapping
- * the page (or swiping the sheet down) closes it.
+ * meaning streams in first, then the longer explanation. Saving is the word
+ * panel's job, so there is no save button here. Tapping the page (or swiping
+ * the sheet down) closes it.
  */
 const SelectionExplainPanel = ({
     text,
@@ -23,8 +23,6 @@ const SelectionExplainPanel = ({
     language,
     interfaceLanguage,
     bottomInset = 0,
-    saved = false,
-    onSave,
     // For the Grammar tab's record of patterns met.
     ownerId,
     bookUri,
@@ -94,8 +92,7 @@ const SelectionExplainPanel = ({
         };
     }, [interfaceLanguage, language, phrase, sentence, t]);
 
-    const canSave = !state.loading && Boolean(state.gloss) && !saved;
-    // A cut-off selection ("Gabl") is shown and saved as the word it belongs to.
+    // A cut-off selection ("Gabl") is shown as the word it belongs to.
     const heading = state.expression || phrase;
 
     return (
@@ -103,21 +100,6 @@ const SelectionExplainPanel = ({
             <View style={styles.header}>
                 <MaterialIcons name="auto-awesome" size={15} color={colors.textTertiary} />
                 <Text style={styles.headerLabel}>{t('selection.aiExplain')}</Text>
-                <TouchableOpacity
-                    style={[styles.saveIcon, !canSave && !saved && styles.saveIconDisabled]}
-                    disabled={!canSave}
-                    onPress={() => onSave?.({ text: heading, gloss: state.gloss, sentence })}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    accessibilityRole="button"
-                    accessibilityLabel={saved ? t('selection.saved') : t('lookup.save')}
-                    accessibilityState={{ disabled: !canSave, selected: saved }}
-                >
-                    <MaterialIcons
-                        name={saved ? 'bookmark' : 'bookmark-border'}
-                        size={26}
-                        color={saved ? colors.text : colors.textTertiary}
-                    />
-                </TouchableOpacity>
             </View>
             <Text style={styles.phrase} selectable numberOfLines={3}>{heading}</Text>
             <View style={styles.tabs} accessibilityRole="tablist">
@@ -188,16 +170,6 @@ const createStyles = (colors) => StyleSheet.create({
         shadowRadius: 30,
         elevation: 10,
         maxHeight: 560,
-    },
-    saveIcon: {
-        width: 36,
-        height: 36,
-        alignItems: 'center',
-        justifyContent: 'center',
-        marginRight: -8,
-    },
-    saveIconDisabled: {
-        opacity: 0.4,
     },
     header: {
         flexDirection: 'row',

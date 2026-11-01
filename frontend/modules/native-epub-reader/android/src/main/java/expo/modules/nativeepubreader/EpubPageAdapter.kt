@@ -162,6 +162,18 @@ class EpubPageAdapter(
   // Forwarded to every page view; see EpubPageView.contextSentence.
   var contextSentence: ContextSentence? = null
 
+  // Forwarded to every page view; see EpubPageView.contextSentenceFade.
+  var contextSentenceFade: Float = 1f
+
+  fun updateContextSentenceFade(recyclerView: RecyclerView?, fade: Float) {
+    contextSentenceFade = fade
+    if (recyclerView == null) return
+    for (index in 0 until recyclerView.childCount) {
+      val holder = recyclerView.getChildViewHolder(recyclerView.getChildAt(index)) as? PageHolder ?: continue
+      holder.view.contextSentenceFade = fade
+    }
+  }
+
   fun updateContextSentence(recyclerView: RecyclerView?, sentence: ContextSentence?) {
     contextSentence = sentence
     if (recyclerView == null) return
@@ -178,6 +190,7 @@ class EpubPageAdapter(
     view.noteIconTapped = noteIconTapped
     view.doubleTapped = doubleTapped
     view.contextSentence = contextSentence
+    view.contextSentenceFade = contextSentenceFade
     view.bind(
       page = page,
       paddingH = paddingH,

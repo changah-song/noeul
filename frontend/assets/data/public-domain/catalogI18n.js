@@ -27,6 +27,27 @@ const CATALOG_TRANSLATIONS = {
 
 export const CATALOG_TRANSLATION_LANGUAGES = Object.keys(CATALOG_TRANSLATIONS);
 
+// The same for the English public library (Supabase public_library, whose
+// English title/author come from the database and genre/blurb from
+// libraryMeta.js): library-i18n/<lang>.json, keyed by public_library id, with
+// the title the book is published under in that language, the author's name
+// as it's written there, the genre line and the blurb.
+const LIBRARY_TRANSLATIONS = {
+  zh: require('./library-i18n/zh.json'),
+  'zh-Hant': require('./library-i18n/zh-Hant.json'),
+  ko: require('./library-i18n/ko.json'),
+  ja: require('./library-i18n/ja.json'),
+  fr: require('./library-i18n/fr.json'),
+  es: require('./library-i18n/es.json'),
+  pt: require('./library-i18n/pt.json'),
+  ar: require('./library-i18n/ar.json'),
+  mn: require('./library-i18n/mn.json'),
+  vi: require('./library-i18n/vi.json'),
+  th: require('./library-i18n/th.json'),
+  id: require('./library-i18n/id.json'),
+  ru: require('./library-i18n/ru.json'),
+};
+
 const PUBLIC_DOMAIN_ID_PREFIX = 'public-domain-';
 const PUBLIC_DOMAIN_URI_PREFIX = 'public-domain:';
 
@@ -45,10 +66,15 @@ export const getCatalogBookId = (bookOrId) => {
   return id.startsWith(PUBLIC_DOMAIN_ID_PREFIX) ? id.slice(PUBLIC_DOMAIN_ID_PREFIX.length) : id;
 };
 
-// { title, genre, snippet } for a bundled book in `language`, or null (English
-// or no translation).
+// { title, author?, genre, snippet } for a bundled or public-library book in
+// `language`, or null (English, or no translation).
 export const getPublicDomainBookCopy = (bookOrId, language) => {
   const normalized = normalizeInterfaceLanguageCode(language);
+  const libraryId = bookOrId && typeof bookOrId === 'object' ? bookOrId.publicLibraryId : null;
+  if (libraryId) {
+    const libraryCopy = LIBRARY_TRANSLATIONS[normalized]?.[libraryId];
+    if (libraryCopy && typeof libraryCopy === 'object') return libraryCopy;
+  }
   const table = CATALOG_TRANSLATIONS[normalized];
   if (!table) return null;
   const copy = table[getCatalogBookId(bookOrId)];
@@ -67,6 +93,7 @@ export const localizePublicDomainBook = (book, language) => {
   return {
     ...book,
     titleTranslation: copy.title || book.titleTranslation,
+    authorTranslation: copy.author || book.authorTranslation,
     genre: copy.genre || book.genre,
     snippet: copy.snippet || book.snippet,
   };
