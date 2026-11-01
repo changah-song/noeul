@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { AccessibilityInfo, Animated, Easing, StyleSheet, View } from 'react-native';
+import { useEffect, useMemo, useRef } from 'react';
+import { Animated, Easing, StyleSheet, View } from 'react-native';
+import useReduceMotion from '../../hooks/useReduceMotion';
 
 const CYCLE_MS = 1400;
 const CYCLE_REDUCED_MS = 3000;
@@ -23,23 +24,7 @@ const dotOpacityRange = (offset) => {
  */
 export default function LoadingDots({ color, size = 9, gap = 12, style, accessibilityLabel }) {
     const clock = useRef(new Animated.Value(0)).current;
-    const [reduceMotion, setReduceMotion] = useState(false);
-
-    useEffect(() => {
-        let active = true;
-        AccessibilityInfo.isReduceMotionEnabled()
-            .then((value) => {
-                if (active) setReduceMotion(Boolean(value));
-            })
-            .catch(() => {});
-        const subscription = AccessibilityInfo.addEventListener('reduceMotionChanged', (value) => {
-            setReduceMotion(Boolean(value));
-        });
-        return () => {
-            active = false;
-            subscription?.remove?.();
-        };
-    }, []);
+    const reduceMotion = useReduceMotion();
 
     useEffect(() => {
         clock.setValue(0);
