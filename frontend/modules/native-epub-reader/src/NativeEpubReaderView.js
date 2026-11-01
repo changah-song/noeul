@@ -15,6 +15,7 @@ import {
 } from '../../../services/interfaceLanguage';
 
 const EMPTY_USER_HIGHLIGHTS = [];
+const EMPTY_CHROME_INSETS = { top: 0, bottom: 0 };
 const NativeView = Platform.OS === 'android'
     ? requireNativeViewManager('NativeEpubReader')
     : null;
@@ -139,6 +140,14 @@ export const sendSpokenWord = (viewTag, word) => (
     NativeModule?.setSpokenWord?.(viewTag, word || {}) ?? androidOnly()
 );
 
+// Listen mode: light the word the voice is reading ({ blockId, start, end },
+// block-local offsets), or clear it with null.
+export const supportsSpokenRange = typeof NativeModule?.setSpokenRange === 'function';
+
+export const sendSpokenRange = (viewTag, range) => (
+    NativeModule?.setSpokenRange?.(viewTag, range || {}) ?? androidOnly()
+);
+
 const NativeEpubReaderView = forwardRef(({
     bookManifest,
     chapterBlocks,
@@ -173,11 +182,23 @@ const NativeEpubReaderView = forwardRef(({
     tappedTerms = null,
     // Keep the screen on (listen mode).
     keepScreenOn = false,
+    focusTapsInSpanOnly = false,
     clearSelectionToken = 0,
     focusSentenceCount = 1,
     focusSwipeEnabled = false,
     focusNavToken = 'none:0',
     focusPanelHeight = 0,
+    // { top, bottom } — room the reader's controls take over the text. Scroll
+    // mode starts and ends a chapter clear of them; in between the text
+    // passes under them.
+    chromeInsets = null,
+    // Whether the reader's controls are away; paged mode's progress thumb
+    // shows only then.
+    fullscreen = false,
+    // Listening in paged mode: the sentence read is lit on the page and the
+    // page turns with the voice (the focusNav / onFocusSentenceChange contract
+    // of focus mode).
+    pagedFocus = false,
     onPageChange,
     onChapterEnd,
     onChapterStart,
@@ -185,11 +206,13 @@ const NativeEpubReaderView = forwardRef(({
     onWordSelected,
     onTextSelected,
     onSelectionCleared,
-    onDoubleTap,
     onFocusSentenceChange,
     onExposure,
     onSavedTermsShown,
     onHighlightNotePress,
+    // { direction: 'forward' | 'back' } — the reader moving the text on or
+    // back (a drag or fling, not a jump), once per change of way.
+    onReadingDirection,
     showContextSentence = false,
     style,
 }, ref) => {
@@ -282,10 +305,6 @@ const NativeEpubReaderView = forwardRef(({
         onSelectionCleared?.(payloadOf(event));
     };
 
-    const handleDoubleTap = (event) => {
-        onDoubleTap?.(payloadOf(event));
-    };
-
     const handleFocusSentenceChange = (event) => {
         onFocusSentenceChange?.(payloadOf(event));
     };
@@ -300,6 +319,10 @@ const NativeEpubReaderView = forwardRef(({
 
     const handleHighlightNotePress = (event) => {
         onHighlightNotePress?.(payloadOf(event));
+    };
+
+    const handleReadingDirection = (event) => {
+        onReadingDirection?.(payloadOf(event));
     };
 
     return (
@@ -328,11 +351,15 @@ const NativeEpubReaderView = forwardRef(({
             showContextSentence={!!showContextSentence}
             tappedTerms={nativeTappedTerms}
             keepScreenOn={!!keepScreenOn}
+            focusTapsInSpanOnly={!!focusTapsInSpanOnly}
             clearSelectionToken={clearSelectionToken}
             focusSentenceCount={focusSentenceCount}
             focusSwipeEnabled={focusSwipeEnabled}
             focusNavToken={focusNavToken}
             focusPanelHeight={focusPanelHeight}
+            chromeInsets={chromeInsets || EMPTY_CHROME_INSETS}
+            fullscreen={!!fullscreen}
+            pagedFocus={!!pagedFocus}
             onPageChange={handlePageChange}
             onChapterEnd={handleChapterEnd}
             onChapterStart={handleChapterStart}
@@ -340,11 +367,11 @@ const NativeEpubReaderView = forwardRef(({
             onWordSelected={handleWordSelected}
             onTextSelected={handleTextSelected}
             onSelectionCleared={handleSelectionCleared}
-            onDoubleTap={handleDoubleTap}
             onFocusSentenceChange={handleFocusSentenceChange}
             onExposure={handleExposure}
             onSavedTermsShown={handleSavedTermsShown}
             onHighlightNotePress={handleHighlightNotePress}
+            onReadingDirection={handleReadingDirection}
         />
     );
 });

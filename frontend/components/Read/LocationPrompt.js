@@ -7,9 +7,10 @@ import { useTranslation } from '../../hooks/useTranslation';
  * LocationPrompt — after a sudden jump in the book (the scrubber, the
  * contents, a leap into another chapter), asks whether this is the reader's
  * new spot. Yes saves it; No keeps the old one, which stays marked with a black
- * dot on the scrubber to get back to (screens/Read.js holds it).
+ * dot on the scrubber to get back to (screens/Read.js holds it). `onHeight`
+ * hears the card's height, for what has to make room above it.
  */
-const LocationPrompt = ({ visible, bottom = 24, onConfirm, onDecline }) => {
+const LocationPrompt = ({ visible, bottom = 24, onConfirm, onDecline, onHeight }) => {
     const { colors } = useTheme();
     const { t } = useTranslation();
     const styles = useMemo(() => createStyles(colors), [colors]);
@@ -29,7 +30,11 @@ const LocationPrompt = ({ visible, bottom = 24, onConfirm, onDecline }) => {
     if (!visible) return null;
     const translateY = enter.interpolate({ inputRange: [0, 1], outputRange: [12, 0] });
     return (
-        <View pointerEvents="box-none" style={[styles.layer, { bottom }]}>
+        <View
+            pointerEvents="box-none"
+            style={[styles.layer, { bottom }]}
+            onLayout={onHeight ? (event) => onHeight(Math.round(event?.nativeEvent?.layout?.height ?? 0)) : undefined}
+        >
             <Animated.View
                 accessibilityLiveRegion="polite"
                 style={[styles.card, { opacity: enter, transform: [{ translateY }] }]}

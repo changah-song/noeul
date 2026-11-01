@@ -15,6 +15,7 @@ import {
   getLanguageLabel,
   normalizeChineseScript,
   normalizeLanguageCode,
+  normalizeInterfaceLanguageCode,
   normalizeInterfaceLanguageForTarget,
 } from '../constants/languages';
 import {
@@ -116,10 +117,20 @@ const normalizeBoolean = (value, fallback = false) => {
   return fallback;
 };
 
-const normalizeLanguageSettings = (settings = {}) => {
+// Two app languages are kept: the one the learner chose (or the phone's, until
+// they choose), and the one shown. They differ only while the chosen one is
+// the language being learned, so picking a learning language never loses the
+// learner's own: switch back and it returns.
+export const normalizeLanguageSettings = (settings = {}) => {
   const targetLanguage = normalizeLanguageCode(
     settings.targetLanguage ?? settings.target_language,
     DEFAULT_LANGUAGE_SETTINGS.targetLanguage
+  );
+  const preferredInterfaceLanguage = normalizeInterfaceLanguageCode(
+    settings.preferredInterfaceLanguage
+      ?? settings.interfaceLanguage
+      ?? settings.interface_language,
+    DEFAULT_LANGUAGE_SETTINGS.interfaceLanguage
   );
 
   return {
@@ -132,9 +143,9 @@ const normalizeLanguageSettings = (settings = {}) => {
       settings.nativeLanguage ?? settings.native_language,
       DEFAULT_LANGUAGE_SETTINGS.nativeLanguage
     ),
+    preferredInterfaceLanguage,
     interfaceLanguage: normalizeInterfaceLanguageForTarget(
-      settings.interfaceLanguage
-        ?? settings.interface_language,
+      preferredInterfaceLanguage,
       targetLanguage
     ),
     activeProfileId: normalizeProfileId(
@@ -182,8 +193,12 @@ const settingsFromCloudPreferences = (preferences = {}) => normalizeLanguageSett
   updated_at: preferences.updated_at,
 });
 
+// Checked against the learner's own learning language: without it the default
+// (Korean) made a Korean speaker's saved "ko" look like a clash and turn into
+// English.
 const settingsFromCloudAccount = (account = {}) => normalizeLanguageSettings({
   interface_language: account.interface_language,
+  target_language: account.target_language,
   updated_at: account.updated_at,
 });
 
@@ -194,8 +209,9 @@ const toCloudLanguagePreferencePatch = (settings) => ({
   updated_at: settings.updatedAt,
 });
 
+// The learner's own choice, not a stand-in shown while it clashes.
 const toCloudAccountLanguagePatch = (settings) => ({
-  interface_language: settings.interfaceLanguage,
+  interface_language: settings.preferredInterfaceLanguage ?? settings.interfaceLanguage,
   updated_at: settings.updatedAt,
 });
 
@@ -208,7 +224,8 @@ const isUntouchedDefaultAccount = (account, user, localSettings) => Boolean(
   account
   && user?.created_at
   && account.interface_language === DEFAULT_LANGUAGE_SETTINGS.interfaceLanguage
-  && localSettings.interfaceLanguage !== DEFAULT_LANGUAGE_SETTINGS.interfaceLanguage
+  && (localSettings.preferredInterfaceLanguage ?? localSettings.interfaceLanguage)
+    !== DEFAULT_LANGUAGE_SETTINGS.interfaceLanguage
   && Math.abs(getTimestampMs(account.updated_at) - getTimestampMs(user.created_at))
     < DEFAULT_ACCOUNT_ROW_WINDOW_MS
 );
@@ -228,6 +245,20 @@ const hasInterfaceLanguagePatch = (patch = {}) => (
   hasOwn(patch, 'interfaceLanguage')
   || hasOwn(patch, 'interface_language')
 );
+
+// A patch naming an app language is the learner choosing it; any other patch
+// (a new learning language, say) keeps their choice and re-derives what's shown.
+export const applyLanguageSettingsPatch = (current = {}, patch = {}, updatedAt) => {
+  const chosenInterfaceLanguage = patch.interfaceLanguage ?? patch.interface_language;
+  return normalizeLanguageSettings({
+    ...current,
+    ...patch,
+    ...(hasInterfaceLanguagePatch(patch)
+      ? { preferredInterfaceLanguage: chosenInterfaceLanguage }
+      : {}),
+    updatedAt,
+  });
+};
 
 const latestTimestamp = (...values) => values.reduce((latest, value) => (
   getTimestampMs(value) > getTimestampMs(latest) ? value : latest
@@ -264,11 +295,7 @@ export const AppProvider = ({ children, user }) => {
     } = options;
 
     setLanguageSettings((current) => {
-      const next = normalizeLanguageSettings({
-        ...current,
-        ...patch,
-        updatedAt,
-      });
+      const next = applyLanguageSettingsPatch(current, patch, updatedAt);
 
       latestLanguageSettingsRef.current = next;
       setRuntimeInterfaceLanguage(next.interfaceLanguage);
@@ -452,9 +479,9 @@ export const AppProvider = ({ children, user }) => {
       nativeLanguage: cloudPreferences
         ? cloudPreferenceSettings.nativeLanguage
         : localSettings.nativeLanguage,
-      interfaceLanguage: cloudAccount
-        ? cloudAccountSettings.interfaceLanguage
-        : localSettings.interfaceLanguage,
+      preferredInterfaceLanguage: cloudAccount
+        ? cloudAccountSettings.preferredInterfaceLanguage
+        : (localSettings.preferredInterfaceLanguage ?? localSettings.interfaceLanguage),
       activeProfileId: cloudPreferences
         ? cloudPreferenceSettings.activeProfileId
         : localSettings.activeProfileId,

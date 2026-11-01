@@ -316,3 +316,22 @@ describe('loadWorkingVoices', () => {
     expect(result.voices.map((v) => v.id)).toEqual(['ja-JP-SMTf00']);
   });
 });
+
+describe('listenPlayer word progress', () => {
+  it('passes the engine word ranges to the playing item only', async () => {
+    const tts = fakeTts();
+    const player = createListenPlayer({ tts });
+    const seen = [];
+    const result = player.speakSequence([
+      { text: 'hello there', locale: 'en-US', rate: 1, onProgress: (range) => seen.push(range) },
+    ]);
+    await flush();
+    tts.handlers['tts-progress']({ utteranceId: 'u1', start: 6, end: 11, frame: 0 });
+    tts.handlers['tts-progress']({ utteranceId: 'other', start: 0, end: 3, frame: 0 });
+    tts.finish('u1');
+    await result;
+    // After the item is done, late events go nowhere.
+    tts.handlers['tts-progress']({ utteranceId: 'u1', start: 0, end: 5, frame: 0 });
+    expect(seen).toEqual([{ start: 6, end: 11 }]);
+  });
+});

@@ -235,3 +235,108 @@ export const extractBookCoverColors = async ({
     return deriveBookCoverColorsFromBaseColor(normalizedFallback);
   }
 };
+
+// WCAG relative luminance of a hex colour (0 for anything unreadable).
+export const colorLuminance = (value) => {
+  const color = normalizeHexColor(value);
+  if (!color) {
+    return 0;
+  }
+
+  const channelLuminance = (hexChannel) => {
+    const channel = Number.parseInt(hexChannel, 16) / 255;
+    return channel <= 0.03928
+      ? channel / 12.92
+      : ((channel + 0.055) / 1.055) ** 2.4;
+  };
+
+  return (
+    (0.2126 * channelLuminance(color.slice(1, 3)))
+    + (0.7152 * channelLuminance(color.slice(3, 5)))
+    + (0.0722 * channelLuminance(color.slice(5, 7)))
+  );
+};
+
+export const contrastRatio = (firstColor, secondColor) => {
+  const firstLuminance = colorLuminance(firstColor);
+  const secondLuminance = colorLuminance(secondColor);
+  const lighter = Math.max(firstLuminance, secondLuminance);
+  const darker = Math.min(firstLuminance, secondLuminance);
+  return (lighter + 0.05) / (darker + 0.05);
+};
+
+// The cover's main colour: the image's dominant colour (on iOS, its
+// background), or null when there is no image or it can't be read. Shares
+// the colour library's cache with extractBookCoverColors.
+export const extractBookCoverMainColor = async ({ coverUri, cacheKey } = {}) => {
+  const cover = typeof coverUri === 'string' ? coverUri.trim() : '';
+  if (!cover) {
+    return null;
+  }
+
+  const getColors = loadGetColors();
+  if (!getColors) {
+    return null;
+  }
+
+  try {
+    const result = await getColors(cover, {
+      fallback: FALLBACK_COVER_COLOR,
+      cache: true,
+      key: makeSafeCacheKey(cacheKey, cover),
+      pixelSpacing: 8,
+      quality: 'low',
+    });
+    if (!result || typeof result !== 'object') {
+      return null;
+    }
+
+    return result.platform === 'ios'
+      ? firstHex([result.background, result.primary])
+      : firstHex([result.dominant, result.average, result.muted]);
+  } catch (error) {
+    console.warn('[bookCoverColors] Failed to read the cover\'s main colour:', error?.message ?? error);
+    return null;
+  }
+};
+
+const OPENING_INK_DARK = '#11151c';
+const OPENING_INK_LIGHT = '#ffffff';
+// The tips are body text: WCAG AA.
+const OPENING_MIN_CONTRAST = 4.5;
+// In dark mode the colour is dimmed this much, so opening a book at night
+// doesn't light up the room.
+const OPENING_DARK_MODE_DIM = 0.55;
+// Each step the background takes away from the ink when they're too close.
+const OPENING_CONTRAST_STEP = 0.08;
+const OPENING_CONTRAST_MAX_STEPS = 8;
+
+/**
+ * The book-opening screen's colours from the cover's main colour: that colour
+ * as the background (dimmed in dark mode), and ink for the bar, the tips and
+ * the status bar, dark or light, whichever reads better on it. When neither
+ * reaches 4.5:1 (mid-tones), the background steps away from the ink until it
+ * does. Null when there is no colour to work from.
+ */
+export const getBookOpeningColors = (mainColor, { isDarkMode = false } = {}) => {
+  const main = normalizeHexColor(mainColor);
+  if (!main) {
+    return null;
+  }
+
+  let background = isDarkMode ? darkenHex(main, OPENING_DARK_MODE_DIM) : main;
+  const ink = contrastRatio(background, OPENING_INK_DARK) >= contrastRatio(background, OPENING_INK_LIGHT)
+    ? OPENING_INK_DARK
+    : OPENING_INK_LIGHT;
+  for (
+    let step = 0;
+    step < OPENING_CONTRAST_MAX_STEPS && contrastRatio(background, ink) < OPENING_MIN_CONTRAST;
+    step += 1
+  ) {
+    background = ink === OPENING_INK_LIGHT
+      ? darkenHex(background, OPENING_CONTRAST_STEP)
+      : lightenHex(background, OPENING_CONTRAST_STEP);
+  }
+
+  return { background, ink, inkIsDark: ink === OPENING_INK_DARK };
+};

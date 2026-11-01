@@ -74,10 +74,13 @@ report the error. A build failure is a finding, not a reason to stop.
 
 ```bash
 OUT=~/.cache/noeul-pr-check/runs/pr<N>-<sha7>
-python3 .claude/skills/pr-check/smoke.py run --apk <main.apk> --label main --out $OUT/main
-python3 .claude/skills/pr-check/smoke.py run --apk <pr.apk>   --label pr   --out $OUT/pr
-python3 .claude/skills/pr-check/smoke.py compare $OUT/main/results.json $OUT/pr/results.json
+/usr/bin/python3 .claude/skills/pr-check/smoke.py run --apk <main.apk> --label main --out $OUT/main
+/usr/bin/python3 .claude/skills/pr-check/smoke.py run --apk <pr.apk>   --label pr   --out $OUT/pr
+/usr/bin/python3 .claude/skills/pr-check/smoke.py compare $OUT/main/results.json $OUT/pr/results.json
 ```
+
+Use the system Python (`/usr/bin/python3`). Homebrew's Python 3.14 has a broken
+`pyexpat`, so it can't parse the phone's UI dump ("No module named expat").
 
 Each run installs the release APK over the phone's dev build, wipes the app's
 data, and takes about 7 minutes. It:
@@ -85,7 +88,10 @@ data, and takes about 7 minutes. It:
 - times a fresh-install launch, three cold starts and an airplane-mode start,
 - visits every tab,
 - adds the public-domain book 감자 and pages through it in the reader,
-- turns on focus mode and steps to the next sentence,
+- turns on focus mode and steps to the next sentence (builds without a
+  Focus mode button skip this; since #155 focus comes with Listen),
+- turns a page forward and checks the controls hide (full screen), then taps
+  blank page and checks they come back (fails on builds from before #155),
 - saves a word from the reader and reviews it as a flashcard in Learn,
 - adds a song with lyrics and opens it,
 - starts the screen-text scanner, scans the reader page (it must find Korean
@@ -93,7 +99,7 @@ data, and takes about 7 minutes. It:
 
 Freezes and crash signals come from the device log. To debug or try one part,
 pass `--steps` with a comma-separated subset: `startup`, `tabs`, `book`,
-`focus`, `songs`, `flashcards`, `ocr`, `offline`.
+`focus`, `readon`, `songs`, `flashcards`, `ocr`, `offline`.
 
 Timings vary between runs. The comparison only calls a startup "slower" past
 20% and 300 ms. Treat small differences as noise.
@@ -157,7 +163,8 @@ are more freezes, CI fails, or a screenshot shows a visible regression.
   lines (`frontend/services/appTelemetry.js`). A build from before that line
   existed shows no startup times. Say that rather than reporting a failure.
 - The smoke script finds buttons by their English text or accessibility labels:
-  tab names, "Public domain", "Add", "Resume", "Focus mode", "Next sentence",
+  tab names, "Public domain", "Add", "Resume", "Reading settings" (the reader header's menu button, used to tell
+  the reader is open), "Focus mode", "Next sentence",
   "Save", "Review N due", "Show answer", "Okay", "New song", "Song title",
   "Enter lyrics", "Save", "Back to songs", and "Turn on/off screen text scanner".
   If a PR renames one, update `smoke.py` in the same PR.

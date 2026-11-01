@@ -106,3 +106,32 @@ export const parsePieceProgress = (stored) => {
     }
     return null;
 };
+
+// What's done of a chapter, from its stored row. A 'partial' chapter from
+// before pieces were tracked had just its first piece done (it was prepared
+// as a chapter ahead, split the same way); how many pieces it has is unknown
+// (count null) until the chapter is opened.
+export const storedChapterProgress = (chapter) => {
+    const progress = parsePieceProgress(chapter?.piece_progress);
+    if (progress) return progress;
+    if (chapter?.status === 'partial') return { count: null, done: [0] };
+    return null;
+};
+
+// Whether the stored progress already covers the one piece a chapter ahead
+// (its first) or behind (its last) needs, without opening the chapter.
+export const storedProgressCoversNeighbor = ({ spineIndex, centerSpineIndex, progress }) => {
+    if (!progress || spineIndex === centerSpineIndex) return false;
+    const needed = spineIndex > centerSpineIndex
+        ? 0
+        : (Number.isInteger(progress.count) && progress.count > 0 ? progress.count - 1 : null);
+    return needed !== null && progress.done.includes(needed);
+};
+
+// The pieces of the chapter as split now that the stored progress has done:
+// none when it was split into a different number of pieces.
+export const donePiecesForLayout = (progress, pieceCount) => (
+    progress && (progress.count === null || progress.count === pieceCount)
+        ? progress.done.filter((piece) => piece < pieceCount)
+        : []
+);

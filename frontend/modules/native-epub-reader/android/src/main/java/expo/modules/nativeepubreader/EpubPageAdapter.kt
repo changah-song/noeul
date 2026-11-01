@@ -48,6 +48,8 @@ class EpubPageAdapter(
 
   override fun getItemCount(): Int = pages.size
 
+  fun pageAt(position: Int): ReaderPage? = pages.getOrNull(position)
+
   fun updatePages(newPages: List<ReaderPage>) {
     pages = newPages
     notifyDataSetChanged()
@@ -157,8 +159,6 @@ class EpubPageAdapter(
   var savedFade: ((TextRange) -> Pair<Float, Float>?)? = null
   // Forwarded to every page view; see EpubPageView.noteIconTapped.
   var noteIconTapped: ((String) -> Unit)? = null
-  // Forwarded to every page view; see EpubPageView.doubleTapped.
-  var doubleTapped: (() -> Unit)? = null
   // Forwarded to every page view; see EpubPageView.contextSentence.
   var contextSentence: ContextSentence? = null
 
@@ -171,6 +171,29 @@ class EpubPageAdapter(
     for (index in 0 until recyclerView.childCount) {
       val holder = recyclerView.getChildViewHolder(recyclerView.getChildAt(index)) as? PageHolder ?: continue
       holder.view.contextSentenceFade = fade
+    }
+  }
+
+  // Forwarded to every page view; see EpubPageView.listenSentences.
+  var listenSentences: List<ContextSentence> = emptyList()
+  // Forwarded to every page view; see EpubPageView.spokenRange.
+  var spokenRange: FocusRange? = null
+
+  fun updateListenSentences(recyclerView: RecyclerView?, sentences: List<ContextSentence>) {
+    listenSentences = sentences
+    forEachBoundView(recyclerView) { it.listenSentences = sentences }
+  }
+
+  fun updateSpokenRange(recyclerView: RecyclerView?, range: FocusRange?) {
+    spokenRange = range
+    forEachBoundView(recyclerView) { it.spokenRange = range }
+  }
+
+  private fun forEachBoundView(recyclerView: RecyclerView?, apply: (EpubPageView) -> Unit) {
+    if (recyclerView == null) return
+    for (index in 0 until recyclerView.childCount) {
+      val holder = recyclerView.getChildViewHolder(recyclerView.getChildAt(index)) as? PageHolder ?: continue
+      apply(holder.view)
     }
   }
 
@@ -188,9 +211,10 @@ class EpubPageAdapter(
     view.tapProgress = tapProgress
     view.savedFade = savedFade
     view.noteIconTapped = noteIconTapped
-    view.doubleTapped = doubleTapped
     view.contextSentence = contextSentence
     view.contextSentenceFade = contextSentenceFade
+    view.listenSentences = listenSentences
+    view.spokenRange = spokenRange
     view.bind(
       page = page,
       paddingH = paddingH,

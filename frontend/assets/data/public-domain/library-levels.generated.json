@@ -1,35 +1,35 @@
 {
   "1688c985-d48d-447e-86c1-ff1d762fb3dd": {
     "basis": "vocabulary",
-    "coverage": 0.4658,
+    "coverage": 0.4987,
     "distribution": [
       {
-        "count": 515,
+        "count": 476,
         "level": "A1",
         "rank": 1
       },
       {
-        "count": 529,
+        "count": 513,
         "level": "A2",
         "rank": 2
       },
       {
-        "count": 614,
+        "count": 608,
         "level": "B1",
         "rank": 3
       },
       {
-        "count": 412,
+        "count": 407,
         "level": "B2",
         "rank": 4
       },
       {
-        "count": 284,
+        "count": 278,
         "level": "C1",
         "rank": 5
       },
       {
-        "count": 534,
+        "count": 526,
         "level": "C2",
         "rank": 6
       }
@@ -37,48 +37,48 @@
     "language": "en",
     "level": "C1",
     "level_rank": 5,
-    "matched_count": 2888,
+    "matched_count": 2808,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "C1",
     "proficiency_rank": 5,
     "proficiency_system": "CEFR",
-    "sample_limit": 6200,
-    "sample_size": 6200,
+    "sample_limit": 5631,
+    "sample_size": 5631,
     "title": "Anne of Green Gables",
-    "unknown_count": 3312
+    "unknown_count": 2823
   },
   "2293b630-3c92-4c5b-9222-f31790503a14": {
     "basis": "vocabulary",
-    "coverage": 0.3761,
+    "coverage": 0.4411,
     "distribution": [
       {
-        "count": 416,
+        "count": 401,
         "level": "A1",
         "rank": 1
       },
       {
-        "count": 403,
+        "count": 371,
         "level": "A2",
         "rank": 2
       },
       {
-        "count": 452,
+        "count": 413,
         "level": "B1",
         "rank": 3
       },
       {
-        "count": 328,
+        "count": 300,
         "level": "B2",
         "rank": 4
       },
       {
-        "count": 214,
+        "count": 204,
         "level": "C1",
         "rank": 5
       },
       {
-        "count": 460,
+        "count": 440,
         "level": "C2",
         "rank": 6
       }
@@ -86,48 +86,48 @@
     "language": "en",
     "level": "C2",
     "level_rank": 6,
-    "matched_count": 2273,
+    "matched_count": 2129,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "C2",
     "proficiency_rank": 6,
     "proficiency_system": "CEFR",
-    "sample_limit": 6044,
-    "sample_size": 6044,
+    "sample_limit": 4827,
+    "sample_size": 4827,
     "title": "The Odyssey",
-    "unknown_count": 3771
+    "unknown_count": 2698
   },
   "2d0049fc-a65c-436f-9876-45894fc88dfc": {
     "basis": "vocabulary",
-    "coverage": 0.7047,
+    "coverage": 0.8974,
     "distribution": [
       {
-        "count": 194,
+        "count": 149,
         "level": "A1",
         "rank": 1
       },
       {
-        "count": 91,
+        "count": 51,
         "level": "A2",
         "rank": 2
       },
       {
-        "count": 70,
+        "count": 26,
         "level": "B1",
         "rank": 3
       },
       {
-        "count": 30,
+        "count": 18,
         "level": "B2",
         "rank": 4
       },
       {
-        "count": 12,
+        "count": 10,
         "level": "C1",
         "rank": 5
       },
       {
-        "count": 23,
+        "count": 17,
         "level": "C2",
         "rank": 6
       }
@@ -135,23 +135,23 @@
     "language": "en",
     "level": "B1",
     "level_rank": 3,
-    "matched_count": 420,
+    "matched_count": 271,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "B1",
     "proficiency_rank": 3,
     "proficiency_system": "CEFR",
-    "sample_limit": 596,
-    "sample_size": 596,
+    "sample_limit": 302,
+    "sample_size": 302,
     "title": "Brooks's Readers: First Year",
-    "unknown_count": 176
+    "unknown_count": 31
   },
   "2ea64ae3-c4c3-4ed3-bed6-42b7e0961895": {
     "basis": "vocabulary",
     "coverage": 0.8433,
     "distribution": [
       {
-        "count": 108,
+        "count": 109,
         "level": "A1",
         "rank": 1
       },
@@ -161,17 +161,17 @@
         "rank": 2
       },
       {
-        "count": 34,
+        "count": 33,
         "level": "B1",
         "rank": 3
       },
       {
-        "count": 20,
+        "count": 19,
         "level": "B2",
         "rank": 4
       },
       {
-        "count": 5,
+        "count": 6,
         "level": "C1",
         "rank": 5
       },
@@ -197,35 +197,35 @@
   },
   "2eaf8a67-c7c7-44e9-9ff2-92271686ac3c": {
     "basis": "vocabulary",
-    "coverage": 0.3658,
+    "coverage": 0.3912,
     "distribution": [
       {
-        "count": 536,
+        "count": 504,
         "level": "A1",
         "rank": 1
       },
       {
-        "count": 634,
+        "count": 618,
         "level": "A2",
         "rank": 2
       },
       {
-        "count": 785,
+        "count": 770,
         "level": "B1",
         "rank": 3
       },
       {
-        "count": 566,
+        "count": 563,
         "level": "B2",
         "rank": 4
       },
       {
-        "count": 411,
+        "count": 405,
         "level": "C1",
         "rank": 5
       },
       {
-        "count": 933,
+        "count": 915,
         "level": "C2",
         "rank": 6
       }
@@ -233,28 +233,28 @@
     "language": "en",
     "level": "C2",
     "level_rank": 6,
-    "matched_count": 3865,
+    "matched_count": 3775,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "C2",
     "proficiency_rank": 6,
     "proficiency_system": "CEFR",
-    "sample_limit": 10565,
-    "sample_size": 10565,
+    "sample_limit": 9651,
+    "sample_size": 9651,
     "title": "The Brothers Karamazov",
-    "unknown_count": 6700
+    "unknown_count": 5876
   },
   "32664538-146e-4b17-a259-0bf796d92736": {
     "basis": "vocabulary",
-    "coverage": 0.8061,
+    "coverage": 0.8102,
     "distribution": [
       {
-        "count": 116,
+        "count": 117,
         "level": "A1",
         "rank": 1
       },
       {
-        "count": 41,
+        "count": 43,
         "level": "A2",
         "rank": 2
       },
@@ -264,7 +264,7 @@
         "rank": 3
       },
       {
-        "count": 24,
+        "count": 23,
         "level": "B2",
         "rank": 4
       },
@@ -282,391 +282,48 @@
     "language": "en",
     "level": "B1",
     "level_rank": 3,
-    "matched_count": 237,
+    "matched_count": 239,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "B1",
     "proficiency_rank": 3,
     "proficiency_system": "CEFR",
-    "sample_limit": 294,
-    "sample_size": 294,
+    "sample_limit": 295,
+    "sample_size": 295,
     "title": "The Tale of Benjamin Bunny",
-    "unknown_count": 57
+    "unknown_count": 56
   },
   "349d5bab-66b2-418d-a537-0ea8577320bc": {
     "basis": "vocabulary",
-    "coverage": 0.4877,
+    "coverage": 0.538,
     "distribution": [
       {
-        "count": 492,
+        "count": 471,
         "level": "A1",
         "rank": 1
       },
       {
-        "count": 490,
+        "count": 481,
         "level": "A2",
         "rank": 2
       },
       {
-        "count": 584,
+        "count": 561,
         "level": "B1",
         "rank": 3
-      },
-      {
-        "count": 348,
-        "level": "B2",
-        "rank": 4
-      },
-      {
-        "count": 260,
-        "level": "C1",
-        "rank": 5
-      },
-      {
-        "count": 531,
-        "level": "C2",
-        "rank": 6
-      }
-    ],
-    "language": "en",
-    "level": "C1",
-    "level_rank": 5,
-    "matched_count": 2705,
-    "method": "80th_percentile_known_vocab",
-    "note": "Estimated from vocabulary only.",
-    "proficiency_level": "C1",
-    "proficiency_rank": 5,
-    "proficiency_system": "CEFR",
-    "sample_limit": 5547,
-    "sample_size": 5547,
-    "title": "The Picture of Dorian Gray",
-    "unknown_count": 2842
-  },
-  "39f271f7-0b01-4264-8f06-5cc49d6a7f91": {
-    "basis": "vocabulary",
-    "coverage": 0.6209,
-    "distribution": [
-      {
-        "count": 387,
-        "level": "A1",
-        "rank": 1
-      },
-      {
-        "count": 294,
-        "level": "A2",
-        "rank": 2
-      },
-      {
-        "count": 259,
-        "level": "B1",
-        "rank": 3
-      },
-      {
-        "count": 152,
-        "level": "B2",
-        "rank": 4
-      },
-      {
-        "count": 88,
-        "level": "C1",
-        "rank": 5
-      },
-      {
-        "count": 173,
-        "level": "C2",
-        "rank": 6
-      }
-    ],
-    "language": "en",
-    "level": "B2",
-    "level_rank": 4,
-    "matched_count": 1353,
-    "method": "80th_percentile_known_vocab",
-    "note": "Estimated from vocabulary only.",
-    "proficiency_level": "B2",
-    "proficiency_rank": 4,
-    "proficiency_system": "CEFR",
-    "sample_limit": 2179,
-    "sample_size": 2179,
-    "title": "Alice's Adventures in Wonderland",
-    "unknown_count": 826
-  },
-  "3d10f9b1-60d0-49cc-a6df-f0254138438d": {
-    "basis": "vocabulary",
-    "coverage": 0.6573,
-    "distribution": [
-      {
-        "count": 396,
-        "level": "A1",
-        "rank": 1
-      },
-      {
-        "count": 309,
-        "level": "A2",
-        "rank": 2
-      },
-      {
-        "count": 316,
-        "level": "B1",
-        "rank": 3
-      },
-      {
-        "count": 161,
-        "level": "B2",
-        "rank": 4
-      },
-      {
-        "count": 90,
-        "level": "C1",
-        "rank": 5
-      },
-      {
-        "count": 184,
-        "level": "C2",
-        "rank": 6
-      }
-    ],
-    "language": "en",
-    "level": "B2",
-    "level_rank": 4,
-    "matched_count": 1456,
-    "method": "80th_percentile_known_vocab",
-    "note": "Estimated from vocabulary only.",
-    "proficiency_level": "B2",
-    "proficiency_rank": 4,
-    "proficiency_system": "CEFR",
-    "sample_limit": 2215,
-    "sample_size": 2215,
-    "title": "The Importance of Being Earnest",
-    "unknown_count": 759
-  },
-  "5f5e5d4d-ccd8-4b9d-9ec1-5ffb184bed7a": {
-    "basis": "vocabulary",
-    "coverage": 0.4575,
-    "distribution": [
-      {
-        "count": 359,
-        "level": "A1",
-        "rank": 1
-      },
-      {
-        "count": 378,
-        "level": "A2",
-        "rank": 2
-      },
-      {
-        "count": 459,
-        "level": "B1",
-        "rank": 3
-      },
-      {
-        "count": 231,
-        "level": "B2",
-        "rank": 4
-      },
-      {
-        "count": 165,
-        "level": "C1",
-        "rank": 5
-      },
-      {
-        "count": 311,
-        "level": "C2",
-        "rank": 6
-      }
-    ],
-    "language": "en",
-    "level": "C1",
-    "level_rank": 5,
-    "matched_count": 1903,
-    "method": "80th_percentile_known_vocab",
-    "note": "Estimated from vocabulary only.",
-    "proficiency_level": "C1",
-    "proficiency_rank": 5,
-    "proficiency_system": "CEFR",
-    "sample_limit": 4160,
-    "sample_size": 4160,
-    "title": "The Art of War",
-    "unknown_count": 2257
-  },
-  "63c8fef9-915a-460f-9cbc-3297bf41ac82": {
-    "basis": "vocabulary",
-    "coverage": 0.2546,
-    "distribution": [
-      {
-        "count": 553,
-        "level": "A1",
-        "rank": 1
-      },
-      {
-        "count": 685,
-        "level": "A2",
-        "rank": 2
-      },
-      {
-        "count": 976,
-        "level": "B1",
-        "rank": 3
-      },
-      {
-        "count": 677,
-        "level": "B2",
-        "rank": 4
-      },
-      {
-        "count": 543,
-        "level": "C1",
-        "rank": 5
-      },
-      {
-        "count": 1294,
-        "level": "C2",
-        "rank": 6
-      }
-    ],
-    "language": "en",
-    "level": "C2",
-    "level_rank": 6,
-    "matched_count": 4728,
-    "method": "80th_percentile_known_vocab",
-    "note": "Estimated from vocabulary only.",
-    "proficiency_level": "C2",
-    "proficiency_rank": 6,
-    "proficiency_system": "CEFR",
-    "sample_limit": 18571,
-    "sample_size": 18571,
-    "title": "Les Misérables",
-    "unknown_count": 13843
-  },
-  "68d4b7ce-69ba-4585-985a-7fd5560f5540": {
-    "basis": "vocabulary",
-    "coverage": 0.392,
-    "distribution": [
-      {
-        "count": 455,
-        "level": "A1",
-        "rank": 1
-      },
-      {
-        "count": 420,
-        "level": "A2",
-        "rank": 2
-      },
-      {
-        "count": 425,
-        "level": "B1",
-        "rank": 3
-      },
-      {
-        "count": 305,
-        "level": "B2",
-        "rank": 4
-      },
-      {
-        "count": 178,
-        "level": "C1",
-        "rank": 5
-      },
-      {
-        "count": 321,
-        "level": "C2",
-        "rank": 6
-      }
-    ],
-    "language": "en",
-    "level": "C1",
-    "level_rank": 5,
-    "matched_count": 2104,
-    "method": "80th_percentile_known_vocab",
-    "note": "Estimated from vocabulary only.",
-    "proficiency_level": "C1",
-    "proficiency_rank": 5,
-    "proficiency_system": "CEFR",
-    "sample_limit": 5368,
-    "sample_size": 5368,
-    "title": "The Adventures of Huckleberry Finn",
-    "unknown_count": 3264
-  },
-  "6a30cc6a-1fb1-47fb-9134-df0390399e95": {
-    "basis": "vocabulary",
-    "coverage": 0.5113,
-    "distribution": [
-      {
-        "count": 474,
-        "level": "A1",
-        "rank": 1
-      },
-      {
-        "count": 531,
-        "level": "A2",
-        "rank": 2
-      },
-      {
-        "count": 637,
-        "level": "B1",
-        "rank": 3
-      },
-      {
-        "count": 373,
-        "level": "B2",
-        "rank": 4
-      },
-      {
-        "count": 265,
-        "level": "C1",
-        "rank": 5
-      },
-      {
-        "count": 590,
-        "level": "C2",
-        "rank": 6
-      }
-    ],
-    "language": "en",
-    "level": "C2",
-    "level_rank": 6,
-    "matched_count": 2870,
-    "method": "80th_percentile_known_vocab",
-    "note": "Estimated from vocabulary only.",
-    "proficiency_level": "C2",
-    "proficiency_rank": 6,
-    "proficiency_system": "CEFR",
-    "sample_limit": 5613,
-    "sample_size": 5613,
-    "title": "Frankenstein",
-    "unknown_count": 2743
-  },
-  "7316af04-52df-4c12-897a-eafa3e0db384": {
-    "basis": "vocabulary",
-    "coverage": 0.5374,
-    "distribution": [
-      {
-        "count": 416,
-        "level": "A1",
-        "rank": 1
-      },
-      {
-        "count": 427,
-        "level": "A2",
-        "rank": 2
-      },
-      {
-        "count": 413,
-        "level": "B1",
-        "rank": 3
-      },
-      {
-        "count": 265,
-        "level": "B2",
-        "rank": 4
-      },
-      {
-        "count": 188,
-        "level": "C1",
-        "rank": 5
       },
       {
         "count": 339,
+        "level": "B2",
+        "rank": 4
+      },
+      {
+        "count": 251,
+        "level": "C1",
+        "rank": 5
+      },
+      {
+        "count": 524,
         "level": "C2",
         "rank": 6
       }
@@ -674,48 +331,48 @@
     "language": "en",
     "level": "C1",
     "level_rank": 5,
-    "matched_count": 2048,
+    "matched_count": 2627,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "C1",
     "proficiency_rank": 5,
     "proficiency_system": "CEFR",
-    "sample_limit": 3811,
-    "sample_size": 3811,
-    "title": "The Call of the Wild",
-    "unknown_count": 1763
+    "sample_limit": 4883,
+    "sample_size": 4883,
+    "title": "The Picture of Dorian Gray",
+    "unknown_count": 2256
   },
-  "76f8ec37-c69c-4272-95da-9e16d75aaad7": {
+  "39f271f7-0b01-4264-8f06-5cc49d6a7f91": {
     "basis": "vocabulary",
-    "coverage": 0.7996,
+    "coverage": 0.6816,
     "distribution": [
       {
-        "count": 302,
+        "count": 375,
         "level": "A1",
         "rank": 1
       },
       {
-        "count": 163,
+        "count": 282,
         "level": "A2",
         "rank": 2
       },
       {
-        "count": 124,
+        "count": 243,
         "level": "B1",
         "rank": 3
       },
       {
-        "count": 74,
+        "count": 142,
         "level": "B2",
         "rank": 4
       },
       {
-        "count": 44,
+        "count": 77,
         "level": "C1",
         "rank": 5
       },
       {
-        "count": 63,
+        "count": 163,
         "level": "C2",
         "rank": 6
       }
@@ -723,38 +380,283 @@
     "language": "en",
     "level": "B2",
     "level_rank": 4,
-    "matched_count": 770,
+    "matched_count": 1282,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "B2",
     "proficiency_rank": 4,
     "proficiency_system": "CEFR",
-    "sample_limit": 963,
-    "sample_size": 963,
-    "title": "Jataka Tales",
-    "unknown_count": 193
+    "sample_limit": 1881,
+    "sample_size": 1881,
+    "title": "Alice's Adventures in Wonderland",
+    "unknown_count": 599
   },
-  "7a995b55-51f0-4924-bafd-315362bce492": {
+  "3d10f9b1-60d0-49cc-a6df-f0254138438d": {
     "basis": "vocabulary",
-    "coverage": 0.5611,
+    "coverage": 0.7306,
     "distribution": [
       {
-        "count": 454,
+        "count": 369,
         "level": "A1",
         "rank": 1
       },
       {
-        "count": 413,
+        "count": 292,
         "level": "A2",
         "rank": 2
       },
       {
-        "count": 452,
+        "count": 299,
         "level": "B1",
         "rank": 3
       },
       {
-        "count": 278,
+        "count": 147,
+        "level": "B2",
+        "rank": 4
+      },
+      {
+        "count": 85,
+        "level": "C1",
+        "rank": 5
+      },
+      {
+        "count": 172,
+        "level": "C2",
+        "rank": 6
+      }
+    ],
+    "language": "en",
+    "level": "B2",
+    "level_rank": 4,
+    "matched_count": 1364,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "B2",
+    "proficiency_rank": 4,
+    "proficiency_system": "CEFR",
+    "sample_limit": 1867,
+    "sample_size": 1867,
+    "title": "The Importance of Being Earnest",
+    "unknown_count": 503
+  },
+  "5f5e5d4d-ccd8-4b9d-9ec1-5ffb184bed7a": {
+    "basis": "vocabulary",
+    "coverage": 0.523,
+    "distribution": [
+      {
+        "count": 269,
+        "level": "A1",
+        "rank": 1
+      },
+      {
+        "count": 213,
+        "level": "A2",
+        "rank": 2
+      },
+      {
+        "count": 249,
+        "level": "B1",
+        "rank": 3
+      },
+      {
+        "count": 111,
+        "level": "B2",
+        "rank": 4
+      },
+      {
+        "count": 77,
+        "level": "C1",
+        "rank": 5
+      },
+      {
+        "count": 148,
+        "level": "C2",
+        "rank": 6
+      }
+    ],
+    "language": "en",
+    "level": "C1",
+    "level_rank": 5,
+    "matched_count": 1067,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "C1",
+    "proficiency_rank": 5,
+    "proficiency_system": "CEFR",
+    "sample_limit": 2040,
+    "sample_size": 2040,
+    "title": "The Art of War",
+    "unknown_count": 973
+  },
+  "63c8fef9-915a-460f-9cbc-3297bf41ac82": {
+    "basis": "vocabulary",
+    "coverage": 0.3095,
+    "distribution": [
+      {
+        "count": 523,
+        "level": "A1",
+        "rank": 1
+      },
+      {
+        "count": 667,
+        "level": "A2",
+        "rank": 2
+      },
+      {
+        "count": 956,
+        "level": "B1",
+        "rank": 3
+      },
+      {
+        "count": 666,
+        "level": "B2",
+        "rank": 4
+      },
+      {
+        "count": 529,
+        "level": "C1",
+        "rank": 5
+      },
+      {
+        "count": 1273,
+        "level": "C2",
+        "rank": 6
+      }
+    ],
+    "language": "en",
+    "level": "C2",
+    "level_rank": 6,
+    "matched_count": 4614,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "C2",
+    "proficiency_rank": 6,
+    "proficiency_system": "CEFR",
+    "sample_limit": 14907,
+    "sample_size": 14907,
+    "title": "Les Misérables",
+    "unknown_count": 10293
+  },
+  "68d4b7ce-69ba-4585-985a-7fd5560f5540": {
+    "basis": "vocabulary",
+    "coverage": 0.4278,
+    "distribution": [
+      {
+        "count": 433,
+        "level": "A1",
+        "rank": 1
+      },
+      {
+        "count": 400,
+        "level": "A2",
+        "rank": 2
+      },
+      {
+        "count": 405,
+        "level": "B1",
+        "rank": 3
+      },
+      {
+        "count": 297,
+        "level": "B2",
+        "rank": 4
+      },
+      {
+        "count": 172,
+        "level": "C1",
+        "rank": 5
+      },
+      {
+        "count": 309,
+        "level": "C2",
+        "rank": 6
+      }
+    ],
+    "language": "en",
+    "level": "C1",
+    "level_rank": 5,
+    "matched_count": 2016,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "C1",
+    "proficiency_rank": 5,
+    "proficiency_system": "CEFR",
+    "sample_limit": 4712,
+    "sample_size": 4712,
+    "title": "The Adventures of Huckleberry Finn",
+    "unknown_count": 2696
+  },
+  "6a30cc6a-1fb1-47fb-9134-df0390399e95": {
+    "basis": "vocabulary",
+    "coverage": 0.5434,
+    "distribution": [
+      {
+        "count": 446,
+        "level": "A1",
+        "rank": 1
+      },
+      {
+        "count": 503,
+        "level": "A2",
+        "rank": 2
+      },
+      {
+        "count": 605,
+        "level": "B1",
+        "rank": 3
+      },
+      {
+        "count": 364,
+        "level": "B2",
+        "rank": 4
+      },
+      {
+        "count": 253,
+        "level": "C1",
+        "rank": 5
+      },
+      {
+        "count": 564,
+        "level": "C2",
+        "rank": 6
+      }
+    ],
+    "language": "en",
+    "level": "C2",
+    "level_rank": 6,
+    "matched_count": 2735,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "C2",
+    "proficiency_rank": 6,
+    "proficiency_system": "CEFR",
+    "sample_limit": 5033,
+    "sample_size": 5033,
+    "title": "Frankenstein",
+    "unknown_count": 2298
+  },
+  "7316af04-52df-4c12-897a-eafa3e0db384": {
+    "basis": "vocabulary",
+    "coverage": 0.5648,
+    "distribution": [
+      {
+        "count": 404,
+        "level": "A1",
+        "rank": 1
+      },
+      {
+        "count": 414,
+        "level": "A2",
+        "rank": 2
+      },
+      {
+        "count": 402,
+        "level": "B1",
+        "rank": 3
+      },
+      {
+        "count": 254,
         "level": "B2",
         "rank": 4
       },
@@ -764,7 +666,7 @@
         "rank": 5
       },
       {
-        "count": 344,
+        "count": 338,
         "level": "C2",
         "rank": 6
       }
@@ -772,48 +674,146 @@
     "language": "en",
     "level": "C1",
     "level_rank": 5,
-    "matched_count": 2126,
+    "matched_count": 1997,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "C1",
     "proficiency_rank": 5,
     "proficiency_system": "CEFR",
-    "sample_limit": 3789,
-    "sample_size": 3789,
+    "sample_limit": 3536,
+    "sample_size": 3536,
+    "title": "The Call of the Wild",
+    "unknown_count": 1539
+  },
+  "76f8ec37-c69c-4272-95da-9e16d75aaad7": {
+    "basis": "vocabulary",
+    "coverage": 0.8534,
+    "distribution": [
+      {
+        "count": 288,
+        "level": "A1",
+        "rank": 1
+      },
+      {
+        "count": 138,
+        "level": "A2",
+        "rank": 2
+      },
+      {
+        "count": 94,
+        "level": "B1",
+        "rank": 3
+      },
+      {
+        "count": 64,
+        "level": "B2",
+        "rank": 4
+      },
+      {
+        "count": 38,
+        "level": "C1",
+        "rank": 5
+      },
+      {
+        "count": 53,
+        "level": "C2",
+        "rank": 6
+      }
+    ],
+    "language": "en",
+    "level": "B2",
+    "level_rank": 4,
+    "matched_count": 675,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "B2",
+    "proficiency_rank": 4,
+    "proficiency_system": "CEFR",
+    "sample_limit": 791,
+    "sample_size": 791,
+    "title": "Jataka Tales",
+    "unknown_count": 116
+  },
+  "7a995b55-51f0-4924-bafd-315362bce492": {
+    "basis": "vocabulary",
+    "coverage": 0.5907,
+    "distribution": [
+      {
+        "count": 438,
+        "level": "A1",
+        "rank": 1
+      },
+      {
+        "count": 408,
+        "level": "A2",
+        "rank": 2
+      },
+      {
+        "count": 432,
+        "level": "B1",
+        "rank": 3
+      },
+      {
+        "count": 269,
+        "level": "B2",
+        "rank": 4
+      },
+      {
+        "count": 185,
+        "level": "C1",
+        "rank": 5
+      },
+      {
+        "count": 345,
+        "level": "C2",
+        "rank": 6
+      }
+    ],
+    "language": "en",
+    "level": "C1",
+    "level_rank": 5,
+    "matched_count": 2077,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "C1",
+    "proficiency_rank": 5,
+    "proficiency_system": "CEFR",
+    "sample_limit": 3516,
+    "sample_size": 3516,
     "title": "Peter and Wendy",
-    "unknown_count": 1663
+    "unknown_count": 1439
   },
   "83abcec7-15e8-4951-a240-561f25280225": {
     "basis": "vocabulary",
-    "coverage": 0.3477,
+    "coverage": 0.3647,
     "distribution": [
       {
-        "count": 528,
+        "count": 498,
         "level": "A1",
         "rank": 1
       },
       {
-        "count": 627,
+        "count": 614,
         "level": "A2",
         "rank": 2
       },
       {
-        "count": 804,
+        "count": 773,
         "level": "B1",
         "rank": 3
       },
       {
-        "count": 565,
+        "count": 561,
         "level": "B2",
         "rank": 4
       },
       {
-        "count": 415,
+        "count": 411,
         "level": "C1",
         "rank": 5
       },
       {
-        "count": 883,
+        "count": 873,
         "level": "C2",
         "rank": 6
       }
@@ -821,48 +821,48 @@
     "language": "en",
     "level": "C2",
     "level_rank": 6,
-    "matched_count": 3822,
+    "matched_count": 3730,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "C2",
     "proficiency_rank": 6,
     "proficiency_system": "CEFR",
-    "sample_limit": 10993,
-    "sample_size": 10993,
+    "sample_limit": 10228,
+    "sample_size": 10228,
     "title": "Jane Eyre",
-    "unknown_count": 7171
+    "unknown_count": 6498
   },
   "8751d13a-a276-4daf-af3f-31fcbd8386ae": {
     "basis": "vocabulary",
-    "coverage": 0.402,
+    "coverage": 0.4361,
     "distribution": [
       {
-        "count": 531,
+        "count": 497,
         "level": "A1",
         "rank": 1
       },
       {
-        "count": 575,
+        "count": 558,
         "level": "A2",
         "rank": 2
       },
       {
-        "count": 719,
+        "count": 709,
         "level": "B1",
         "rank": 3
       },
       {
-        "count": 505,
+        "count": 500,
         "level": "B2",
         "rank": 4
       },
       {
-        "count": 356,
+        "count": 351,
         "level": "C1",
         "rank": 5
       },
       {
-        "count": 734,
+        "count": 721,
         "level": "C2",
         "rank": 6
       }
@@ -870,48 +870,48 @@
     "language": "en",
     "level": "C2",
     "level_rank": 6,
-    "matched_count": 3420,
+    "matched_count": 3336,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "C2",
     "proficiency_rank": 6,
     "proficiency_system": "CEFR",
-    "sample_limit": 8508,
-    "sample_size": 8508,
+    "sample_limit": 7649,
+    "sample_size": 7649,
     "title": "Little Women",
-    "unknown_count": 5088
+    "unknown_count": 4313
   },
   "8bf49a16-0a10-4094-8af9-4ad37ca43ee3": {
     "basis": "vocabulary",
-    "coverage": 0.3688,
+    "coverage": 0.4007,
     "distribution": [
       {
-        "count": 547,
+        "count": 518,
         "level": "A1",
         "rank": 1
       },
       {
-        "count": 660,
+        "count": 649,
         "level": "A2",
         "rank": 2
       },
       {
-        "count": 859,
+        "count": 851,
         "level": "B1",
         "rank": 3
       },
       {
-        "count": 597,
+        "count": 590,
         "level": "B2",
         "rank": 4
       },
       {
-        "count": 415,
+        "count": 407,
         "level": "C1",
         "rank": 5
       },
       {
-        "count": 931,
+        "count": 917,
         "level": "C2",
         "rank": 6
       }
@@ -919,20 +919,20 @@
     "language": "en",
     "level": "C2",
     "level_rank": 6,
-    "matched_count": 4009,
+    "matched_count": 3932,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "C2",
     "proficiency_rank": 6,
     "proficiency_system": "CEFR",
-    "sample_limit": 10870,
-    "sample_size": 10870,
+    "sample_limit": 9813,
+    "sample_size": 9813,
     "title": "Anna Karenina",
-    "unknown_count": 6861
+    "unknown_count": 5881
   },
   "9ac26bf1-76e0-4e2d-a954-072a318c6000": {
     "basis": "vocabulary",
-    "coverage": 0.7771,
+    "coverage": 0.7794,
     "distribution": [
       {
         "count": 124,
@@ -974,42 +974,42 @@
     "proficiency_level": "B2",
     "proficiency_rank": 4,
     "proficiency_system": "CEFR",
-    "sample_limit": 341,
-    "sample_size": 341,
+    "sample_limit": 340,
+    "sample_size": 340,
     "title": "The Tale of Jemima Puddle-Duck",
-    "unknown_count": 76
+    "unknown_count": 75
   },
   "a093aca5-5fe4-4190-be40-5b5419210e0d": {
     "basis": "vocabulary",
-    "coverage": 0.5106,
+    "coverage": 0.5523,
     "distribution": [
       {
-        "count": 521,
+        "count": 485,
         "level": "A1",
         "rank": 1
       },
       {
-        "count": 585,
+        "count": 579,
         "level": "A2",
         "rank": 2
       },
       {
-        "count": 716,
+        "count": 707,
         "level": "B1",
         "rank": 3
       },
       {
-        "count": 452,
+        "count": 434,
         "level": "B2",
         "rank": 4
       },
       {
-        "count": 341,
+        "count": 335,
         "level": "C1",
         "rank": 5
       },
       {
-        "count": 606,
+        "count": 591,
         "level": "C2",
         "rank": 6
       }
@@ -1017,48 +1017,48 @@
     "language": "en",
     "level": "C1",
     "level_rank": 5,
-    "matched_count": 3221,
+    "matched_count": 3131,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "C1",
     "proficiency_rank": 5,
     "proficiency_system": "CEFR",
-    "sample_limit": 6308,
-    "sample_size": 6308,
+    "sample_limit": 5669,
+    "sample_size": 5669,
     "title": "The Adventures of Sherlock Holmes",
-    "unknown_count": 3087
+    "unknown_count": 2538
   },
   "a85cf9af-1488-4a8c-9549-62cc3b2b0a41": {
     "basis": "vocabulary",
-    "coverage": 0.506,
+    "coverage": 0.5356,
     "distribution": [
       {
-        "count": 481,
+        "count": 447,
         "level": "A1",
         "rank": 1
       },
       {
-        "count": 491,
+        "count": 486,
         "level": "A2",
         "rank": 2
       },
       {
-        "count": 545,
+        "count": 543,
         "level": "B1",
         "rank": 3
       },
       {
-        "count": 354,
+        "count": 345,
         "level": "B2",
         "rank": 4
       },
       {
-        "count": 225,
+        "count": 223,
         "level": "C1",
         "rank": 5
       },
       {
-        "count": 459,
+        "count": 454,
         "level": "C2",
         "rank": 6
       }
@@ -1066,23 +1066,72 @@
     "language": "en",
     "level": "C1",
     "level_rank": 5,
-    "matched_count": 2555,
+    "matched_count": 2498,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "C1",
     "proficiency_rank": 5,
     "proficiency_system": "CEFR",
-    "sample_limit": 5049,
-    "sample_size": 5049,
+    "sample_limit": 4664,
+    "sample_size": 4664,
     "title": "Pride and Prejudice",
-    "unknown_count": 2494
+    "unknown_count": 2166
   },
   "a88de2fb-e26a-49e4-8b2b-af927884a0b4": {
     "basis": "vocabulary",
-    "coverage": 0.6226,
+    "coverage": 0.6788,
     "distribution": [
       {
-        "count": 411,
+        "count": 394,
+        "level": "A1",
+        "rank": 1
+      },
+      {
+        "count": 391,
+        "level": "A2",
+        "rank": 2
+      },
+      {
+        "count": 412,
+        "level": "B1",
+        "rank": 3
+      },
+      {
+        "count": 268,
+        "level": "B2",
+        "rank": 4
+      },
+      {
+        "count": 161,
+        "level": "C1",
+        "rank": 5
+      },
+      {
+        "count": 299,
+        "level": "C2",
+        "rank": 6
+      }
+    ],
+    "language": "en",
+    "level": "C1",
+    "level_rank": 5,
+    "matched_count": 1925,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "C1",
+    "proficiency_rank": 5,
+    "proficiency_system": "CEFR",
+    "sample_limit": 2836,
+    "sample_size": 2836,
+    "title": "Fables",
+    "unknown_count": 911
+  },
+  "a923eb9a-39a1-438f-a5f1-91737a3f4d73": {
+    "basis": "vocabulary",
+    "coverage": 0.5178,
+    "distribution": [
+      {
+        "count": 433,
         "level": "A1",
         "rank": 1
       },
@@ -1092,22 +1141,22 @@
         "rank": 2
       },
       {
-        "count": 447,
+        "count": 507,
         "level": "B1",
         "rank": 3
       },
       {
-        "count": 293,
+        "count": 310,
         "level": "B2",
         "rank": 4
       },
       {
-        "count": 176,
+        "count": 240,
         "level": "C1",
         "rank": 5
       },
       {
-        "count": 334,
+        "count": 462,
         "level": "C2",
         "rank": 6
       }
@@ -1115,97 +1164,48 @@
     "language": "en",
     "level": "C1",
     "level_rank": 5,
-    "matched_count": 2080,
+    "matched_count": 2371,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "C1",
     "proficiency_rank": 5,
     "proficiency_system": "CEFR",
-    "sample_limit": 3341,
-    "sample_size": 3341,
-    "title": "Fables",
-    "unknown_count": 1261
-  },
-  "a923eb9a-39a1-438f-a5f1-91737a3f4d73": {
-    "basis": "vocabulary",
-    "coverage": 0.502,
-    "distribution": [
-      {
-        "count": 445,
-        "level": "A1",
-        "rank": 1
-      },
-      {
-        "count": 428,
-        "level": "A2",
-        "rank": 2
-      },
-      {
-        "count": 518,
-        "level": "B1",
-        "rank": 3
-      },
-      {
-        "count": 319,
-        "level": "B2",
-        "rank": 4
-      },
-      {
-        "count": 244,
-        "level": "C1",
-        "rank": 5
-      },
-      {
-        "count": 470,
-        "level": "C2",
-        "rank": 6
-      }
-    ],
-    "language": "en",
-    "level": "C1",
-    "level_rank": 5,
-    "matched_count": 2424,
-    "method": "80th_percentile_known_vocab",
-    "note": "Estimated from vocabulary only.",
-    "proficiency_level": "C1",
-    "proficiency_rank": 5,
-    "proficiency_system": "CEFR",
-    "sample_limit": 4829,
-    "sample_size": 4829,
+    "sample_limit": 4579,
+    "sample_size": 4579,
     "title": "Heart of Darkness",
-    "unknown_count": 2405
+    "unknown_count": 2208
   },
   "b49d21d5-305c-4d91-8886-a30d8f21880e": {
     "basis": "vocabulary",
-    "coverage": 0.6181,
+    "coverage": 0.7113,
     "distribution": [
       {
-        "count": 352,
+        "count": 325,
         "level": "A1",
         "rank": 1
       },
       {
-        "count": 225,
+        "count": 205,
         "level": "A2",
         "rank": 2
       },
       {
-        "count": 167,
+        "count": 138,
         "level": "B1",
         "rank": 3
       },
       {
-        "count": 106,
+        "count": 89,
         "level": "B2",
         "rank": 4
       },
       {
-        "count": 50,
+        "count": 45,
         "level": "C1",
         "rank": 5
       },
       {
-        "count": 92,
+        "count": 75,
         "level": "C2",
         "rank": 6
       }
@@ -1213,332 +1213,38 @@
     "language": "en",
     "level": "B2",
     "level_rank": 4,
-    "matched_count": 992,
+    "matched_count": 877,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "B2",
     "proficiency_rank": 4,
     "proficiency_system": "CEFR",
-    "sample_limit": 1605,
-    "sample_size": 1605,
+    "sample_limit": 1233,
+    "sample_size": 1233,
     "title": "Winnie-the-Pooh",
-    "unknown_count": 613
+    "unknown_count": 356
   },
   "b8389225-b7d8-4ce0-abd8-6e6fc1d25536": {
     "basis": "vocabulary",
-    "coverage": 0.4091,
+    "coverage": 0.4316,
     "distribution": [
       {
-        "count": 521,
+        "count": 502,
         "level": "A1",
         "rank": 1
       },
       {
-        "count": 582,
+        "count": 567,
         "level": "A2",
         "rank": 2
       },
       {
-        "count": 745,
+        "count": 732,
         "level": "B1",
         "rank": 3
       },
       {
-        "count": 503,
-        "level": "B2",
-        "rank": 4
-      },
-      {
-        "count": 346,
-        "level": "C1",
-        "rank": 5
-      },
-      {
-        "count": 779,
-        "level": "C2",
-        "rank": 6
-      }
-    ],
-    "language": "en",
-    "level": "C2",
-    "level_rank": 6,
-    "matched_count": 3476,
-    "method": "80th_percentile_known_vocab",
-    "note": "Estimated from vocabulary only.",
-    "proficiency_level": "C2",
-    "proficiency_rank": 6,
-    "proficiency_system": "CEFR",
-    "sample_limit": 8496,
-    "sample_size": 8496,
-    "title": "Crime and Punishment",
-    "unknown_count": 5020
-  },
-  "c823f7be-3337-48c6-b6e8-ef27cf401f29": {
-    "basis": "vocabulary",
-    "coverage": 0.5834,
-    "distribution": [
-      {
-        "count": 442,
-        "level": "A1",
-        "rank": 1
-      },
-      {
-        "count": 401,
-        "level": "A2",
-        "rank": 2
-      },
-      {
-        "count": 420,
-        "level": "B1",
-        "rank": 3
-      },
-      {
-        "count": 301,
-        "level": "B2",
-        "rank": 4
-      },
-      {
-        "count": 167,
-        "level": "C1",
-        "rank": 5
-      },
-      {
-        "count": 323,
-        "level": "C2",
-        "rank": 6
-      }
-    ],
-    "language": "en",
-    "level": "C1",
-    "level_rank": 5,
-    "matched_count": 2054,
-    "method": "80th_percentile_known_vocab",
-    "note": "Estimated from vocabulary only.",
-    "proficiency_level": "C1",
-    "proficiency_rank": 5,
-    "proficiency_system": "CEFR",
-    "sample_limit": 3521,
-    "sample_size": 3521,
-    "title": "A Christmas Carol",
-    "unknown_count": 1467
-  },
-  "c9daf231-91e4-40ec-a486-e23cd60f7d8a": {
-    "basis": "vocabulary",
-    "coverage": 0.5579,
-    "distribution": [
-      {
-        "count": 374,
-        "level": "A1",
-        "rank": 1
-      },
-      {
-        "count": 294,
-        "level": "A2",
-        "rank": 2
-      },
-      {
-        "count": 291,
-        "level": "B1",
-        "rank": 3
-      },
-      {
-        "count": 203,
-        "level": "B2",
-        "rank": 4
-      },
-      {
-        "count": 135,
-        "level": "C1",
-        "rank": 5
-      },
-      {
-        "count": 263,
-        "level": "C2",
-        "rank": 6
-      }
-    ],
-    "language": "en",
-    "level": "C1",
-    "level_rank": 5,
-    "matched_count": 1560,
-    "method": "80th_percentile_known_vocab",
-    "note": "Estimated from vocabulary only.",
-    "proficiency_level": "C1",
-    "proficiency_rank": 5,
-    "proficiency_system": "CEFR",
-    "sample_limit": 2796,
-    "sample_size": 2796,
-    "title": "Bambi",
-    "unknown_count": 1236
-  },
-  "cd2aa35a-f340-47a5-a057-20f00d513b68": {
-    "basis": "vocabulary",
-    "coverage": 0.6717,
-    "distribution": [
-      {
-        "count": 395,
-        "level": "A1",
-        "rank": 1
-      },
-      {
-        "count": 298,
-        "level": "A2",
-        "rank": 2
-      },
-      {
-        "count": 287,
-        "level": "B1",
-        "rank": 3
-      },
-      {
-        "count": 194,
-        "level": "B2",
-        "rank": 4
-      },
-      {
-        "count": 119,
-        "level": "C1",
-        "rank": 5
-      },
-      {
-        "count": 215,
-        "level": "C2",
-        "rank": 6
-      }
-    ],
-    "language": "en",
-    "level": "C1",
-    "level_rank": 5,
-    "matched_count": 1508,
-    "method": "80th_percentile_known_vocab",
-    "note": "Estimated from vocabulary only.",
-    "proficiency_level": "C1",
-    "proficiency_rank": 5,
-    "proficiency_system": "CEFR",
-    "sample_limit": 2245,
-    "sample_size": 2245,
-    "title": "The Wonderful Wizard of Oz",
-    "unknown_count": 737
-  },
-  "d194c99e-ecb0-4f9c-aa42-001ab9903225": {
-    "basis": "vocabulary",
-    "coverage": 0.4894,
-    "distribution": [
-      {
-        "count": 450,
-        "level": "A1",
-        "rank": 1
-      },
-      {
-        "count": 395,
-        "level": "A2",
-        "rank": 2
-      },
-      {
-        "count": 414,
-        "level": "B1",
-        "rank": 3
-      },
-      {
-        "count": 269,
-        "level": "B2",
-        "rank": 4
-      },
-      {
-        "count": 159,
-        "level": "C1",
-        "rank": 5
-      },
-      {
-        "count": 295,
-        "level": "C2",
-        "rank": 6
-      }
-    ],
-    "language": "en",
-    "level": "C1",
-    "level_rank": 5,
-    "matched_count": 1982,
-    "method": "80th_percentile_known_vocab",
-    "note": "Estimated from vocabulary only.",
-    "proficiency_level": "C1",
-    "proficiency_rank": 5,
-    "proficiency_system": "CEFR",
-    "sample_limit": 4050,
-    "sample_size": 4050,
-    "title": "The Secret Garden",
-    "unknown_count": 2068
-  },
-  "f944d572-c517-40a8-9ac9-6dbe468b9773": {
-    "basis": "vocabulary",
-    "coverage": 0.3159,
-    "distribution": [
-      {
-        "count": 542,
-        "level": "A1",
-        "rank": 1
-      },
-      {
-        "count": 644,
-        "level": "A2",
-        "rank": 2
-      },
-      {
-        "count": 898,
-        "level": "B1",
-        "rank": 3
-      },
-      {
-        "count": 637,
-        "level": "B2",
-        "rank": 4
-      },
-      {
-        "count": 483,
-        "level": "C1",
-        "rank": 5
-      },
-      {
-        "count": 1102,
-        "level": "C2",
-        "rank": 6
-      }
-    ],
-    "language": "en",
-    "level": "C2",
-    "level_rank": 6,
-    "matched_count": 4306,
-    "method": "80th_percentile_known_vocab",
-    "note": "Estimated from vocabulary only.",
-    "proficiency_level": "C2",
-    "proficiency_rank": 6,
-    "proficiency_system": "CEFR",
-    "sample_limit": 13629,
-    "sample_size": 13629,
-    "title": "The Count of Monte Cristo",
-    "unknown_count": 9323
-  },
-  "fd0b98b5-b5a0-4d11-872d-a019cb2d9f33": {
-    "basis": "vocabulary",
-    "coverage": 0.4327,
-    "distribution": [
-      {
-        "count": 510,
-        "level": "A1",
-        "rank": 1
-      },
-      {
-        "count": 581,
-        "level": "A2",
-        "rank": 2
-      },
-      {
-        "count": 744,
-        "level": "B1",
-        "rank": 3
-      },
-      {
-        "count": 533,
+        "count": 491,
         "level": "B2",
         "rank": 4
       },
@@ -1548,7 +1254,7 @@
         "rank": 5
       },
       {
-        "count": 757,
+        "count": 753,
         "level": "C2",
         "rank": 6
       }
@@ -1556,48 +1262,244 @@
     "language": "en",
     "level": "C2",
     "level_rank": 6,
-    "matched_count": 3470,
+    "matched_count": 3390,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "C2",
     "proficiency_rank": 6,
     "proficiency_system": "CEFR",
-    "sample_limit": 8020,
-    "sample_size": 8020,
-    "title": "A Tale of Two Cities",
-    "unknown_count": 4550
+    "sample_limit": 7855,
+    "sample_size": 7855,
+    "title": "Crime and Punishment",
+    "unknown_count": 4465
   },
-  "fee9a36f-68ce-4440-85ef-846d6c2f8455": {
+  "c823f7be-3337-48c6-b6e8-ef27cf401f29": {
     "basis": "vocabulary",
-    "coverage": 0.2904,
+    "coverage": 0.6117,
     "distribution": [
       {
-        "count": 535,
+        "count": 433,
         "level": "A1",
         "rank": 1
       },
       {
-        "count": 654,
+        "count": 391,
         "level": "A2",
         "rank": 2
       },
       {
-        "count": 879,
+        "count": 406,
         "level": "B1",
         "rank": 3
       },
       {
-        "count": 621,
+        "count": 297,
         "level": "B2",
         "rank": 4
       },
       {
-        "count": 480,
+        "count": 164,
         "level": "C1",
         "rank": 5
       },
       {
-        "count": 1014,
+        "count": 313,
+        "level": "C2",
+        "rank": 6
+      }
+    ],
+    "language": "en",
+    "level": "C1",
+    "level_rank": 5,
+    "matched_count": 2004,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "C1",
+    "proficiency_rank": 5,
+    "proficiency_system": "CEFR",
+    "sample_limit": 3276,
+    "sample_size": 3276,
+    "title": "A Christmas Carol",
+    "unknown_count": 1272
+  },
+  "c9daf231-91e4-40ec-a486-e23cd60f7d8a": {
+    "basis": "vocabulary",
+    "coverage": 0.5865,
+    "distribution": [
+      {
+        "count": 361,
+        "level": "A1",
+        "rank": 1
+      },
+      {
+        "count": 295,
+        "level": "A2",
+        "rank": 2
+      },
+      {
+        "count": 277,
+        "level": "B1",
+        "rank": 3
+      },
+      {
+        "count": 199,
+        "level": "B2",
+        "rank": 4
+      },
+      {
+        "count": 130,
+        "level": "C1",
+        "rank": 5
+      },
+      {
+        "count": 264,
+        "level": "C2",
+        "rank": 6
+      }
+    ],
+    "language": "en",
+    "level": "C1",
+    "level_rank": 5,
+    "matched_count": 1526,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "C1",
+    "proficiency_rank": 5,
+    "proficiency_system": "CEFR",
+    "sample_limit": 2602,
+    "sample_size": 2602,
+    "title": "Bambi",
+    "unknown_count": 1076
+  },
+  "cd2aa35a-f340-47a5-a057-20f00d513b68": {
+    "basis": "vocabulary",
+    "coverage": 0.7213,
+    "distribution": [
+      {
+        "count": 391,
+        "level": "A1",
+        "rank": 1
+      },
+      {
+        "count": 286,
+        "level": "A2",
+        "rank": 2
+      },
+      {
+        "count": 267,
+        "level": "B1",
+        "rank": 3
+      },
+      {
+        "count": 179,
+        "level": "B2",
+        "rank": 4
+      },
+      {
+        "count": 112,
+        "level": "C1",
+        "rank": 5
+      },
+      {
+        "count": 204,
+        "level": "C2",
+        "rank": 6
+      }
+    ],
+    "language": "en",
+    "level": "C1",
+    "level_rank": 5,
+    "matched_count": 1439,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "C1",
+    "proficiency_rank": 5,
+    "proficiency_system": "CEFR",
+    "sample_limit": 1995,
+    "sample_size": 1995,
+    "title": "The Wonderful Wizard of Oz",
+    "unknown_count": 556
+  },
+  "d194c99e-ecb0-4f9c-aa42-001ab9903225": {
+    "basis": "vocabulary",
+    "coverage": 0.5133,
+    "distribution": [
+      {
+        "count": 440,
+        "level": "A1",
+        "rank": 1
+      },
+      {
+        "count": 386,
+        "level": "A2",
+        "rank": 2
+      },
+      {
+        "count": 402,
+        "level": "B1",
+        "rank": 3
+      },
+      {
+        "count": 259,
+        "level": "B2",
+        "rank": 4
+      },
+      {
+        "count": 154,
+        "level": "C1",
+        "rank": 5
+      },
+      {
+        "count": 289,
+        "level": "C2",
+        "rank": 6
+      }
+    ],
+    "language": "en",
+    "level": "C1",
+    "level_rank": 5,
+    "matched_count": 1930,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "C1",
+    "proficiency_rank": 5,
+    "proficiency_system": "CEFR",
+    "sample_limit": 3760,
+    "sample_size": 3760,
+    "title": "The Secret Garden",
+    "unknown_count": 1830
+  },
+  "f944d572-c517-40a8-9ac9-6dbe468b9773": {
+    "basis": "vocabulary",
+    "coverage": 0.3589,
+    "distribution": [
+      {
+        "count": 509,
+        "level": "A1",
+        "rank": 1
+      },
+      {
+        "count": 638,
+        "level": "A2",
+        "rank": 2
+      },
+      {
+        "count": 884,
+        "level": "B1",
+        "rank": 3
+      },
+      {
+        "count": 619,
+        "level": "B2",
+        "rank": 4
+      },
+      {
+        "count": 470,
+        "level": "C1",
+        "rank": 5
+      },
+      {
+        "count": 1085,
         "level": "C2",
         "rank": 6
       }
@@ -1605,15 +1507,113 @@
     "language": "en",
     "level": "C2",
     "level_rank": 6,
-    "matched_count": 4183,
+    "matched_count": 4205,
     "method": "80th_percentile_known_vocab",
     "note": "Estimated from vocabulary only.",
     "proficiency_level": "C2",
     "proficiency_rank": 6,
     "proficiency_system": "CEFR",
-    "sample_limit": 14404,
-    "sample_size": 14404,
+    "sample_limit": 11717,
+    "sample_size": 11717,
+    "title": "The Count of Monte Cristo",
+    "unknown_count": 7512
+  },
+  "fd0b98b5-b5a0-4d11-872d-a019cb2d9f33": {
+    "basis": "vocabulary",
+    "coverage": 0.45,
+    "distribution": [
+      {
+        "count": 495,
+        "level": "A1",
+        "rank": 1
+      },
+      {
+        "count": 562,
+        "level": "A2",
+        "rank": 2
+      },
+      {
+        "count": 727,
+        "level": "B1",
+        "rank": 3
+      },
+      {
+        "count": 515,
+        "level": "B2",
+        "rank": 4
+      },
+      {
+        "count": 349,
+        "level": "C1",
+        "rank": 5
+      },
+      {
+        "count": 743,
+        "level": "C2",
+        "rank": 6
+      }
+    ],
+    "language": "en",
+    "level": "C2",
+    "level_rank": 6,
+    "matched_count": 3391,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "C2",
+    "proficiency_rank": 6,
+    "proficiency_system": "CEFR",
+    "sample_limit": 7535,
+    "sample_size": 7535,
+    "title": "A Tale of Two Cities",
+    "unknown_count": 4144
+  },
+  "fee9a36f-68ce-4440-85ef-846d6c2f8455": {
+    "basis": "vocabulary",
+    "coverage": 0.3209,
+    "distribution": [
+      {
+        "count": 503,
+        "level": "A1",
+        "rank": 1
+      },
+      {
+        "count": 624,
+        "level": "A2",
+        "rank": 2
+      },
+      {
+        "count": 848,
+        "level": "B1",
+        "rank": 3
+      },
+      {
+        "count": 608,
+        "level": "B2",
+        "rank": 4
+      },
+      {
+        "count": 469,
+        "level": "C1",
+        "rank": 5
+      },
+      {
+        "count": 986,
+        "level": "C2",
+        "rank": 6
+      }
+    ],
+    "language": "en",
+    "level": "C2",
+    "level_rank": 6,
+    "matched_count": 4038,
+    "method": "80th_percentile_known_vocab",
+    "note": "Estimated from vocabulary only.",
+    "proficiency_level": "C2",
+    "proficiency_rank": 6,
+    "proficiency_system": "CEFR",
+    "sample_limit": 12582,
+    "sample_size": 12582,
     "title": "Moby Dick",
-    "unknown_count": 10221
+    "unknown_count": 8544
   }
 }

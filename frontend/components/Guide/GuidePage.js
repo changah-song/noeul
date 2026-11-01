@@ -3,7 +3,7 @@ import { Animated, Easing, Platform, Pressable, StyleSheet, Text, View } from 'r
 import { Feather, MaterialIcons } from '@expo/vector-icons';
 import { fontFamilies } from '../../theme';
 import { GUIDE_BAR_SENTENCE, GUIDE_HOLD_SENTENCE, GUIDE_PARAGRAPHS } from '../../services/readerGuideContent';
-import { PulseRing, TouchHold, TouchSwipe, TouchTap } from './GuideTouch';
+import { PulseRing, TouchHold, TouchTap } from './GuideTouch';
 
 // Fonts for the sample page, as the reader sets them for each language.
 const PAGE_FONTS = {
@@ -87,7 +87,6 @@ function GuidePage({ page, frame, targetId, waiting, onTarget, t, colors, accent
             borderBottomColor = 'transparent';
             borderRadius = 4;
         }
-        const faded = frame.focus != null && sentence !== frame.focus;
         return (
             <Pressable
                 key={id}
@@ -95,7 +94,7 @@ function GuidePage({ page, frame, targetId, waiting, onTarget, t, colors, accent
                 accessibilityLabel={isTarget(id) ? text : undefined}
                 style={[
                     styles.word,
-                    { paddingHorizontal: pad, backgroundColor, borderBottomColor, borderRadius, opacity: faded ? 0.14 : 1 },
+                    { paddingHorizontal: pad, backgroundColor, borderBottomColor, borderRadius },
                 ]}
             >
                 <Text style={[styles.wordText, { color, fontFamily: fonts.regular }]}>{text}</Text>
@@ -115,22 +114,6 @@ function GuidePage({ page, frame, targetId, waiting, onTarget, t, colors, accent
                 <View style={styles.iconButton}>
                     <Feather name="chevron-left" size={22} color={colors.inkSlate} />
                 </View>
-                <Pressable
-                    {...target('eye')}
-                    accessibilityLabel={t('read.focusMode')}
-                    style={[styles.iconButton, frame.focusOn && styles.iconButtonOn]}
-                >
-                    <Feather name="eye" size={19} color={colors.inkSlate} />
-                    {marks('eye', 12)}
-                </Pressable>
-                <Pressable
-                    {...target('listen')}
-                    accessibilityLabel={t('read.listen')}
-                    style={[styles.iconButton, frame.listenOn && styles.iconButtonOn]}
-                >
-                    <Feather name="headphones" size={18} color={colors.inkSlate} />
-                    {marks('listen', 12)}
-                </Pressable>
                 <View style={styles.progress}>
                     <View style={styles.progressTrack}>
                         <View style={styles.progressFill} />
@@ -154,8 +137,6 @@ function GuidePage({ page, frame, targetId, waiting, onTarget, t, colors, accent
                     </View>
                 ))}
             </View>
-
-            {frame.swipe ? <TouchSwipe ink={ink} top={compact ? 220 : 260} /> : null}
 
             <Animated.View
                 pointerEvents="none"
@@ -247,13 +228,18 @@ function GuidePage({ page, frame, targetId, waiting, onTarget, t, colors, accent
                 <Text style={styles.toast}>{t('guide.savedToast')}</Text>
             </Animated.View>
 
-            {frame.focus != null ? (
-                <View style={styles.focusStepper} pointerEvents="none">
-                    <Feather name="chevron-left" size={18} color={colors.inkSlate} />
-                    <Text style={styles.focusLabel}>{`${frame.focus + 1} / ${page.sentences.length}`}</Text>
-                    <Feather name="chevron-right" size={18} color={colors.inkSlate} />
-                </View>
-            ) : null}
+            {/* Listening starts here, as in the reader; the listen bar takes
+                its place. */}
+            {frame.listenOn ? null : (
+                <Pressable
+                    {...target('play')}
+                    accessibilityLabel={t('read.listen')}
+                    style={styles.playButton}
+                >
+                    <Feather name="play" size={17} color={colors.inkSlate} style={styles.playIcon} />
+                    {marks('play', 16)}
+                </Pressable>
+            )}
 
             <Animated.View
                 pointerEvents="none"
@@ -308,9 +294,6 @@ const createStyles = (colors, compact) => {
             borderRadius: 10,
             alignItems: 'center',
             justifyContent: 'center',
-        },
-        iconButtonOn: {
-            backgroundColor: colors.accentSoft,
         },
         progress: {
             flex: 1,
@@ -587,26 +570,23 @@ const createStyles = (colors, compact) => {
             color: colors.surface,
             backgroundColor: colors.inkSlate,
         },
-        focusStepper: {
+        playButton: {
             position: 'absolute',
+            right: 14,
             bottom: 14,
-            alignSelf: 'center',
             zIndex: 4,
-            flexDirection: 'row',
+            width: 38,
+            height: 38,
+            borderRadius: 19,
             alignItems: 'center',
-            gap: 8,
-            paddingVertical: 7,
-            paddingHorizontal: 12,
-            borderRadius: 999,
-            backgroundColor: colors.surfaceElevated,
+            justifyContent: 'center',
+            borderWidth: 1,
+            borderColor: colors.readerBorder,
+            backgroundColor: colors.readerSurface,
             ...panelShadow,
         },
-        focusLabel: {
-            minWidth: 36,
-            textAlign: 'center',
-            fontFamily: fontFamilies.sansRegular,
-            fontSize: 12,
-            color: colors.textSecondary,
+        playIcon: {
+            marginLeft: 2,
         },
         listenBar: {
             position: 'absolute',

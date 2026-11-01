@@ -435,8 +435,10 @@ export const createReaderSettingsControlStyles = (colors) => StyleSheet.create({
         borderWidth: 1,
         borderColor: colors.border,
     },
+    // Room on both sides, so a long value ("1.65×") never crowds the buttons.
     stepperValue: {
-        minWidth: 44,
+        minWidth: 56,
+        marginHorizontal: 8,
         textAlign: 'center',
         fontFamily: fontFamilies.sansSemiBold,
         fontSize: 15,

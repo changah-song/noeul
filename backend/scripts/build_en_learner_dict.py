@@ -15,6 +15,11 @@ wordfreq is a build-time dependency only:
     pip install wordfreq
     python scripts/build_en_learner_dict.py --src kaikki.org-dictionary-English.jsonl.gz
 
+The hand-written fixes (FORCED_ALIASES, CURATED_ENTRIES) are applied on every
+build; to apply them to the committed en_learner.db without the dump:
+
+    python scripts/build_en_learner_dict.py --patch
+
 Scope
 -----
 - Words: wordfreq's top --top English words plus every word in english_cefr
@@ -54,6 +59,77 @@ MAX_ENTRIES = 4
 # Plural determiners Wiktionary files only as forms of their singular (so they
 # have no entry of their own): a tap on "these" shows "this".
 EXTRA_ALIASES = {"these": "this", "those": "that"}
+# Forms of be and have that keep a few stray senses of their own besides
+# being a form ("am": Member of the Order of Australia, from "AM"; "is": used
+# with existential "there"). The tokenizer never sends these verbs (they are
+# too common to grade), so a tap on "am" looked up "am" as written: it shows
+# the verb instead.
+FORCED_ALIASES = {"am": "be", "is": "be", "was": "be", "were": "be", "been": "be", "had": "have"}
+# The commonest verbs open with grammar notes in Wiktionary ("be": used with
+# past participles to form the passive) and their translation tables follow
+# suit (be -> -되다, -리다). These replace the first entry with the meanings a
+# learner wants. `translations` are the senses in Korean, the first audience;
+# other languages are machine-translated at lookup time.
+CURATED_ENTRIES = {
+    "be": {
+        "pos": "verb",
+        "senses": [
+            "To have a quality, identity or role; links a subject to what it is or is like.",
+            "To exist, or to be present in a place.",
+            "Used with other verbs to form the continuous tenses and the passive voice.",
+        ],
+        "translations": {
+            "ko": [
+                "어떤 성질, 정체, 역할을 가지다. 주어와 그것이 무엇인지, 어떠한지를 이어 준다.",
+                "존재하다. 또는 어떤 곳에 있다.",
+                "다른 동사와 함께 쓰여 진행형과 수동태를 만든다.",
+            ],
+        },
+        "equivalents": {
+            "ko": ["이다", "있다"],
+            "ja": ["である", "いる", "ある"],
+            "zh": ["是", "在"],
+            "zh-Hant": ["是", "在"],
+            "es": ["ser", "estar"],
+            "pt": ["ser", "estar"],
+            "fr": ["être"],
+            "ru": ["быть"],
+            "vi": ["là", "ở"],
+            "th": ["เป็น", "อยู่"],
+            "id": ["adalah", "ada"],
+            "ar": ["كَانَ"],
+            "mn": ["байх"],
+        },
+    },
+    "do": {
+        "pos": "verb",
+        "senses": [
+            "To perform or carry out an action or task.",
+            "Used to make questions and negative sentences, and to add emphasis.",
+        ],
+        "translations": {
+            "ko": [
+                "어떤 행동이나 일을 하다.",
+                "의문문과 부정문을 만들거나 뜻을 강조할 때 쓴다.",
+            ],
+        },
+        "equivalents": {
+            "ko": ["하다"],
+            "ja": ["する", "やる"],
+            "zh": ["做", "干"],
+            "zh-Hant": ["做", "幹"],
+            "es": ["hacer"],
+            "pt": ["fazer"],
+            "fr": ["faire"],
+            "ru": ["делать"],
+            "vi": ["làm"],
+            "th": ["ทำ"],
+            "id": ["melakukan", "berbuat"],
+            "ar": ["فَعَلَ"],
+            "mn": ["хийх"],
+        },
+    },
+}
 MAX_SENSES = 3
 MAX_EQUIVALENTS = 4
 # Translation groups (one per meaning) an entry's equivalents may come from.
@@ -250,7 +326,9 @@ def build(src: str, out: str, levels_db: str, top: int, extra_words: str | None 
     aliases: dict[str, str] = {}
     # An inflection ("clung" -> cling) and words with a sense in current use:
     # a word known only in old senses that is also an inflection points at
-    # its base instead ("clung" is not "shrunken").
+    # its base instead ("clung" is not "shrunken"). Only the word as written
+    # counts as current use, or a name: an abbreviation spelled in capitals
+    # doesn't ("am" is be, not "AM", Member of the Order of Australia).
     form_targets: dict[str, str] = {}
     has_current_sense: set[str] = set()
     print(f"[build_en_learner_dict] {len(wanted)} candidate words")
@@ -279,7 +357,7 @@ def build(src: str, out: str, levels_db: str, top: int, extra_words: str | None 
                         form_targets.setdefault(key, target_word)
             senses = [s for s in all_senses if keep_sense(s)][:MAX_SENSES]
             labels: list[str] = [""] * len(senses)
-            if senses:
+            if senses and (headword == key or pos == "name"):
                 has_current_sense.add(key)
             if not senses:
                 # A word known only in an old or literary sense (betwixt,
@@ -395,6 +473,7 @@ def build(src: str, out: str, levels_db: str, top: int, extra_words: str | None 
         ("built", date.today().isoformat()),
         ("top_words", str(top)),
     ])
+    apply_overrides(conn)
     conn.commit()
     conn.execute("VACUUM")
     conn.close()
@@ -402,9 +481,55 @@ def build(src: str, out: str, levels_db: str, top: int, extra_words: str | None 
           f"{equivalent_rows} equivalent rows, {len(alias_rows)} aliases -> {out} ({os.path.getsize(out) / 1e6:.1f} MB)")
 
 
+def apply_overrides(conn: sqlite3.Connection) -> None:
+    """FORCED_ALIASES and CURATED_ENTRIES, written into a built dictionary."""
+    for word, target in FORCED_ALIASES.items():
+        for table in ("en_entries", "en_equivalents", "en_words"):
+            conn.execute(f"DELETE FROM {table} WHERE word = ?", (word,))
+        conn.execute("INSERT OR REPLACE INTO en_aliases VALUES (?, ?)", (word, target))
+    for word, entry in CURATED_ENTRIES.items():
+        senses = json.dumps(entry["senses"], ensure_ascii=False)
+        updated = conn.execute(
+            "UPDATE en_entries SET pos = ?, senses = ? WHERE word = ? AND entry_no = 1",
+            (entry["pos"], senses, word),
+        ).rowcount
+        if not updated:
+            conn.execute(
+                "INSERT INTO en_entries (word, entry_no, pos, senses) VALUES (?, 1, ?, ?)",
+                (word, entry["pos"], senses),
+            )
+        conn.execute("DELETE FROM en_equivalents WHERE word = ? AND entry_no = 1", (word,))
+        conn.executemany(
+            "INSERT INTO en_equivalents VALUES (?, ?, 1, ?)",
+            [(language, word, json.dumps(words, ensure_ascii=False))
+             for language, words in entry["equivalents"].items()],
+        )
+        conn.executemany(
+            "INSERT OR REPLACE INTO en_sense_translations VALUES (?, ?, ?)",
+            [(language, source, text)
+             for language, texts in entry["translations"].items()
+             for source, text in zip(entry["senses"], texts)],
+        )
+
+
+def patch(out: str) -> None:
+    conn = sqlite3.connect(out)
+    apply_overrides(conn)
+    conn.commit()
+    conn.execute("VACUUM")
+    conn.close()
+    print(f"[build_en_learner_dict] applied {len(FORCED_ALIASES)} aliases and "
+          f"{len(CURATED_ENTRIES)} curated entries -> {out}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--src", required=True, help="kaikki.org-dictionary-English.jsonl.gz")
+    parser.add_argument("--src", help="kaikki.org-dictionary-English.jsonl.gz")
+    parser.add_argument(
+        "--patch",
+        action="store_true",
+        help="only apply FORCED_ALIASES and CURATED_ENTRIES to the existing --out",
+    )
     parser.add_argument("--out", default=DEFAULT_OUT)
     parser.add_argument("--levels-db", default=DEFAULT_LEVELS_DB)
     parser.add_argument("--top", type=int, default=50000, help="how many of wordfreq's most common words to consider")
@@ -414,6 +539,11 @@ def main() -> int:
         help="words to include however rare, one per line (the library's vocabulary)",
     )
     args = parser.parse_args()
+    if args.patch:
+        patch(args.out)
+        return 0
+    if not args.src:
+        parser.error("--src is required (or --patch)")
     build(args.src, args.out, args.levels_db, args.top, args.extra_words)
     return 0
 

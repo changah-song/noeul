@@ -5,6 +5,7 @@ import {
     insertBookIndexEntries,
     insertCacheEntries,
     lookupCacheByStems,
+    PREPROCESS_VERSION,
 } from './Database';
 import {
     normalizeBookLanguage,
@@ -35,7 +36,10 @@ const lyricsSignature = (lyrics) => {
     return `${text.length}:${hash}`;
 };
 
+// The preprocess version is part of it, so a song is analysed again when the
+// books are (English verbs that kept a wrong stem, PREPROCESS_VERSION 12).
 const buildSignature = ({ lyrics, interfaceLanguage, script }) => [
+    PREPROCESS_VERSION,
     normalizeInterfaceLanguageCode(interfaceLanguage),
     script || '',
     lyricsSignature(lyrics),

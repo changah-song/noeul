@@ -25,8 +25,8 @@ const clamp01 = (value) => Math.min(Math.max(Number(value) || 0, 0), 1);
  * PageScrubber — where you are in the book, along the bottom of the reader.
  * A line with a dot (drag it, or tap the line, to move through the book),
  * rings where chapters start, bookmarks above the line (close ones share a
- * mark with a count that opens a list), and the percent, which opens the
- * contents. While dragging, a plain page preview shows the chapter there.
+ * mark with a count that opens a list), and the percent. While dragging, a
+ * plain page preview shows the chapter there.
  *
  * Positions are 0..1 through the story (screens/Read.js maps them to and
  * from chapters, services/storyRange.js).
@@ -44,7 +44,6 @@ const PageScrubber = ({
     onSeek,
     onDragTarget,
     onSelectBookmark,
-    onOpenContents,
     savedAt = null,
     onReturnToSaved,
     bottomInset = 0,
@@ -215,14 +214,11 @@ const PageScrubber = ({
                         ]}
                     />
                 </View>
-                <TouchableOpacity
-                    onPress={onOpenContents}
-                    style={styles.percentButton}
-                    accessibilityRole="button"
-                    accessibilityLabel={`${t('read.contents')}, ${t('common.percent', { value: percent })}`}
-                >
+                {/* Only a readout: the contents open from the progress in the
+                    header, so a thumb landing past the line's end does nothing. */}
+                <View style={styles.percentButton} importantForAccessibility="no-hide-descendants">
                     <Text style={styles.percent}>{t('common.percent', { value: percent })}</Text>
-                </TouchableOpacity>
+                </View>
             </View>
 
             {bookmarkGroups.map((group) => (

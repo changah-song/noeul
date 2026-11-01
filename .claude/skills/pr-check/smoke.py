@@ -70,7 +70,7 @@ SAFE_FOREGROUND = re.compile(
 )
 STARTUP_TIMEOUT_S = 60
 DEFAULT_SERIAL = "R3KYC01FY8K"  # the user's Galaxy S25 Ultra
-ALL_STEPS = ("startup", "tabs", "book", "focus", "songs", "flashcards", "ocr", "offline")
+ALL_STEPS = ("startup", "tabs", "book", "focus", "readon", "songs", "flashcards", "ocr", "offline")
 HOME_MARKERS = re.compile(r"^(Collection|My books|Your shelf is empty)$", re.I)
 
 
@@ -415,6 +415,25 @@ def run(args: argparse.Namespace) -> None:
             dev.shell("input swipe 540 900 540 1900 250")
             time.sleep(0.5)
 
+    # The reader header's menu button: there whenever the reader's controls are.
+    reader_re = re.compile(r"^Reading settings$")
+
+    def in_reader() -> bool:
+        """True with the reader open and its controls showing. Since #155 the
+        reader goes full screen as the reader reads on; back brings the
+        controls back (no tab bar shows while the reader is full screen)."""
+        if dev.find(reader_re):
+            return True
+        if dev.find(re.compile(r"^(Home|Resume.*)$", re.I)):
+            return False
+        dev.shell("input keyevent KEYCODE_BACK")
+        return dev.wait_for(reader_re, timeout_s=3)
+
+    def ensure_reader():
+        if not in_reader():
+            go_home()
+            open_reader()
+
     counter_re = re.compile(r"^SENTENCES? (\d+)(?:[–-]\d+)? / (\d+)$", re.I)
 
     def focus_counter():
@@ -425,8 +444,10 @@ def run(args: argparse.Namespace) -> None:
         return int(match[1]), int(match[2])
 
     def focus_mode():
-        if dev.find(re.compile(r"^Resume", re.I)) and not dev.find(re.compile(r"^Focus mode$")):
-            open_reader()
+        ensure_reader()
+        # Since #155 focus mode has no button of its own: Listen starts it.
+        if not dev.find(re.compile(r"^Focus mode$")):
+            return "skipped: this build has no Focus mode button (focus comes with Listen)"
         if not dev.tap_text(re.compile(r"^Focus mode$")):
             raise RuntimeError("'Focus mode' button not found in the reader")
         time.sleep(2)
@@ -448,6 +469,28 @@ def run(args: argparse.Namespace) -> None:
         if not after or after[0] <= before[0]:
             raise RuntimeError(f"sentence counter did not advance ({before} -> {after}) using {how}")
         return f"sentence {before[0]} -> {after[0]} of {after[1]} via {how}"
+
+    def reading_on():
+        """Turning a page forward hides the reader's controls; a tap on blank
+        page brings them back. Builds from before #155 keep the controls."""
+        ensure_reader()
+        size = dev.shell("wm size").strip().split()[-1]
+        width, height = map(int, size.split("x"))
+        dev.shell(f"input swipe {int(width * 0.85)} {height // 2} {int(width * 0.15)} {height // 2} 250")
+        time.sleep(2)
+        if dev.find(reader_re):
+            raise RuntimeError("turned a page forward, but the reader's controls stayed")
+        dev.screenshot(out / "reading-on-fullscreen.png")
+        # The page's margins hold no words: top, bottom, then the left edge.
+        save_re = re.compile(r"^(Save|Save word)$")
+        for fx, fy in ((0.5, 0.06), (0.5, 0.95), (0.03, 0.5)):
+            dev.tap(int(width * fx), int(height * fy))
+            if dev.wait_for(reader_re, timeout_s=3):
+                return f"controls hid after a page turn and came back on a tap at ({fx}, {fy})"
+            if dev.find(save_re):  # hit a word: close its panel, try another spot
+                dev.shell("input keyevent KEYCODE_BACK")
+                time.sleep(1)
+        raise RuntimeError("a tap on blank page didn't bring the controls back")
 
     # Digits only: `adb input text` goes through the phone's keyboard, and a
     # keyboard in Korean mode turns Latin letters into jamo. Digits type the
@@ -507,9 +550,7 @@ def run(args: argparse.Namespace) -> None:
 
     def flashcards():
         # Into the reader with the book from the earlier step.
-        if not dev.find(re.compile(r"^Focus mode$")):
-            go_home()
-            open_reader()
+        ensure_reader()
         # Tap a word near the start of a paragraph until the lookup panel offers "Save word".
         # The lookup panel's save button; the reader header then counts it as "Saved (1)".
         save_re = re.compile(r"^(Save|Save word)$")
@@ -524,9 +565,7 @@ def run(args: argparse.Namespace) -> None:
         spots = [(fx, fy) for fy in (0.34, 0.40, 0.46, 0.52, 0.58, 0.64) for fx in (0.6, 0.3, 0.8)]
         save_node = None
         for fx, fy in spots:
-            if not dev.find(re.compile(r"^Focus mode$")):
-                go_home()
-                open_reader()
+            ensure_reader()
             dev.tap(int(width * fx), int(height * fy))
             if not dev.wait_for(save_re, timeout_s=8):
                 continue
@@ -657,13 +696,15 @@ def run(args: argparse.Namespace) -> None:
             if dev.tap_text(ocr_off, timeout_s=8):
                 time.sleep(2)
 
-    if groups & {"book", "focus", "flashcards", "ocr"}:
+    if groups & {"book", "focus", "readon", "flashcards", "ocr"}:
         steps.append(step(dev, out, "book-add", add_book))
         steps.append(step(dev, out, "book-open-reader", open_reader))
     if "book" in groups:
         steps.append(step(dev, out, "book-page-through", page_through))
     if "focus" in groups:
         steps.append(step(dev, out, "focus-mode", focus_mode))
+    if "readon" in groups:
+        steps.append(step(dev, out, "reading-on", reading_on))
     if "flashcards" in groups:
         steps.append(step(dev, out, "flashcards", flashcards))
     if "songs" in groups:

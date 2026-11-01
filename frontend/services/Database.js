@@ -59,6 +59,8 @@ const DICTIONARY_CACHE_ROMANIZATION_MIGRATION_KEY = 'dictionary_cache_romanizati
 const DICTIONARY_CACHE_DIFFICULTY_MIGRATION_KEY = 'dictionary_cache_difficulty_migration_v1';
 const DICTIONARY_CACHE_ZH_SCRIPTS_MIGRATION_KEY = 'dictionary_cache_zh_scripts_migration_v1';
 const DICTIONARY_CACHE_KO_LANGUAGE_PURGE_KEY = 'dictionary_cache_ko_language_purge_v1';
+const BOOK_INDEX_EN_VERB_LEMMA_PURGE_KEY = 'book_index_en_verb_lemma_purge_v1';
+const DICTIONARY_CACHE_EN_REFETCH_PURGE_KEY = 'dictionary_cache_en_refetch_purge_v1';
 const LOCAL_OWNER_SQLITE_MIGRATION_KEY = 'local_owner_sqlite_migration_v1';
 const PROFILE_SQLITE_MIGRATION_KEY = 'profile_sqlite_migration_v1';
 const VOCAB_EMPTY_HANJA_MIGRATION_KEY = 'vocab_empty_hanja_migration_v1';
@@ -68,7 +70,9 @@ const VOCAB_EMPTY_HANJA_MIGRATION_KEY = 'vocab_empty_hanja_migration_v1';
 // with their part of speech ("underneath" was "하면", now "아래에").
 // 11: English words carry their frequency (zipf): graded by rarity outside the
 // CEFR lists, and a rare word with no entry is underlined (epigram).
-export const PREPROCESS_VERSION = 11;
+// 12: English verbs keep their silent e ("shining" is shine, not shin; "hoping"
+// is hope, not hop). The wrong rows are dropped by purgeEnglishBareVerbStemRows.
+export const PREPROCESS_VERSION = 12;
 // English words with no dictionary entry are underlined only when rarer than
 // this (zipf 3.5 ≈ "antique", "orchard"; epigram 2.6).
 const EN_UNDERLINE_OOV_MAX_ZIPF = 3.5;
@@ -3606,6 +3610,87 @@ export const purgeKoreanNonEnglishCacheRows = async () => {
   await AsyncStorage.setItem(DICTIONARY_CACHE_KO_LANGUAGE_PURGE_KEY, 'done');
 };
 
+// The backend's English lemmas used to drop a verb's silent e: "shining" was
+// indexed under shin, "hoping" under hop, "rides" under rid. book_index only
+// ever gains rows (INSERT OR IGNORE), so analysing a book again would add
+// shining -> shine next to the old shining -> shin and the tap would still show
+// both. Once, drop every English row whose word is its stem + -ing/-ed/-es and
+// whose stem ends consonant-vowel-consonant (shin, hop, rid, cop, plan) or in
+// "th" (bath): the shape of every wrong row. PREPROCESS_VERSION 12 analyses the
+// books again and adds the right rows back (the doubled ones, hopping -> hop,
+// never matched); a tap before that is looked up by the backend.
+export const purgeEnglishBareVerbStemRows = async () => {
+  if (await AsyncStorage.getItem(BOOK_INDEX_EN_VERB_LEMMA_PURGE_KEY) === 'done') return;
+
+  await new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        tx.executeSql(
+          `DELETE FROM book_index
+           WHERE id IN (
+             SELECT bi.id FROM book_index bi
+             JOIN dictionary_cache dc ON dc.id = bi.stem_id
+             WHERE dc.language = 'en'
+               AND lower(bi.surface) IN (dc.stem || 'ing', dc.stem || 'ed', dc.stem || 'es')
+               AND (
+                 dc.stem LIKE '%th'
+                 OR (
+                   substr(dc.stem, -1) NOT IN ('a', 'e', 'i', 'o', 'u', 'w', 'x', 'y')
+                   AND substr(dc.stem, -2, 1) IN ('a', 'e', 'i', 'o', 'u')
+                   AND substr(dc.stem, -3, 1) NOT IN ('a', 'e', 'i', 'o', 'u')
+                 )
+               )
+           )`
+        );
+      },
+      (error) => {
+        console.error('[Database] Error purging English bare-verb book_index rows:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+
+  await AsyncStorage.setItem(BOOK_INDEX_EN_VERB_LEMMA_PURGE_KEY, 'done');
+};
+
+// English stems whose dictionary entries were wrong: "am" was the abbreviation
+// AM (Member of the Order of Australia), "is" / "was" / "had" notes on grammar,
+// and "be" / "do" opened with grammar notes (be -> -되다). The dictionary now
+// shows the verbs' main meanings; drop the cached rows once, with the
+// book_index rows that point at them, so the next tap fetches them again.
+const EN_REFETCH_STEMS = ['am', 'is', 'was', 'were', 'been', 'had', 'be', 'do'];
+
+export const purgeEnglishRefetchStemRows = async () => {
+  if (await AsyncStorage.getItem(DICTIONARY_CACHE_EN_REFETCH_PURGE_KEY) === 'done') return;
+
+  const placeholders = EN_REFETCH_STEMS.map(() => '?').join(', ');
+  await new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        tx.executeSql(
+          `DELETE FROM book_index
+           WHERE stem_id IN (
+             SELECT id FROM dictionary_cache WHERE language = 'en' AND lower(stem) IN (${placeholders})
+           )`,
+          EN_REFETCH_STEMS
+        );
+        tx.executeSql(
+          `DELETE FROM dictionary_cache WHERE language = 'en' AND lower(stem) IN (${placeholders})`,
+          EN_REFETCH_STEMS
+        );
+      },
+      (error) => {
+        console.error('[Database] Error purging stale English cache rows:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+
+  await AsyncStorage.setItem(DICTIONARY_CACHE_EN_REFETCH_PURGE_KEY, 'done');
+};
+
 /**
  * createBookIndexTable
  * Creates the `book_index` table if it doesn't exist.
@@ -5613,6 +5698,8 @@ export const initAllTables = async () => {
   await migrateBookIndex();
   await createBookIndexTable();
   await purgeKoreanNonEnglishCacheRows();
+  await purgeEnglishBareVerbStemRows();
+  await purgeEnglishRefetchStemRows();
   await createBookNotesTable();
   await migrateBookNotesTable();
   await createBookBookmarksTable();

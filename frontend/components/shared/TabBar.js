@@ -3,6 +3,7 @@ import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { colors, fontFamilies } from '../../theme';
 import { useTranslation } from '../../hooks/useTranslation';
+import { useNavigationButtonsInset } from '../../hooks/useNavigationButtonsInset';
 
 const TAB_LABEL_KEYS = {
     Home: 'tabs.home',
@@ -103,7 +104,6 @@ const styles = StyleSheet.create({
         right: 0,
         bottom: 0,
         alignItems: 'center',
-        paddingBottom: 14,
         backgroundColor: 'transparent',
     },
     pill: {
@@ -155,6 +155,14 @@ export const tabBarBaseStyle = createTabBarBaseStyle(colors);
 // Room screens leave at the bottom of their scroll content so the last row
 // can scroll clear of the floating pill.
 export const PILL_TAB_BAR_CLEARANCE = 96;
+
+// The gap under the pill. With button navigation the pill also rises by the
+// button bar's height, so it isn't hidden behind the buttons.
+const PILL_BAR_BOTTOM_PADDING = 14;
+
+// PILL_TAB_BAR_CLEARANCE plus the room the pill rises by on a phone with
+// navigation buttons, so the last row still clears it there.
+export const usePillTabBarClearance = () => PILL_TAB_BAR_CLEARANCE + useNavigationButtonsInset();
 
 // The two destinations in the floating pill. The reader (Read) and Profile are
 // reached from inside the app (a book, the avatar) and show no tab bar.
@@ -318,6 +326,7 @@ const PillTabs = ({ state, navigation, themeColors }) => {
  * OCR, an editor) through tabBarStyle.
  */
 export const PillTabBar = ({ state, navigation, descriptors, themeColors = colors }) => {
+    const navigationButtonsInset = useNavigationButtonsInset();
     const current = state.routes[state.index];
     const options = descriptors[current.key]?.options ?? {};
     const hiddenStyle = StyleSheet.flatten(options.tabBarStyle) || {};
@@ -331,7 +340,10 @@ export const PillTabBar = ({ state, navigation, descriptors, themeColors = color
     }
     return (
         // Floats over the screen: the books scroll behind it.
-        <View style={styles.pillBar} pointerEvents="box-none">
+        <View
+            style={[styles.pillBar, { paddingBottom: PILL_BAR_BOTTOM_PADDING + navigationButtonsInset }]}
+            pointerEvents="box-none"
+        >
             <PillTabs state={state} navigation={navigation} themeColors={themeColors} />
         </View>
     );

@@ -26,6 +26,7 @@ import { daysUntilWordCheck } from '../services/wordCheckSchedule';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
+import { useNavigationButtonsInset } from '../hooks/useNavigationButtonsInset';
 import { getUserFacingErrorMessage } from '../i18n/userFacing';
 import { formatDate, formatNumber } from '../services/interfaceLanguage';
 import {
@@ -92,6 +93,8 @@ const NavRow = ({ icon, label, value, valueStyle, onPress, trailingIcon = 'chevr
     </>
 );
 
+const PAGE_BOTTOM_PADDING = 32;
+
 const Profile = ({ user, signOut, updateUsername, navigation }) => {
     const [isSigningOut, setIsSigningOut] = useState(false);
     const [showSignOutModal, setShowSignOutModal] = useState(false);
@@ -124,6 +127,7 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
     const theme = useTheme();
     const profileColors = useMemo(() => getProfileColors(theme.colors), [theme.colors]);
     const styles = useMemo(() => createStyles(profileColors, theme.colors), [profileColors, theme.colors]);
+    const navigationButtonsInset = useNavigationButtonsInset();
     const { t, language } = useTranslation();
     const isAnonymous = Boolean(user?.is_anonymous);
     const isGuest = !user?.id || isAnonymous;
@@ -316,7 +320,12 @@ const Profile = ({ user, signOut, updateUsername, navigation }) => {
         >
             <ScrollView
                 style={styles.pageScroller}
-                contentContainerStyle={styles.pageScrollerContent}
+                contentContainerStyle={[
+                    styles.pageScrollerContent,
+                    // The page runs under the navigation bar; with buttons
+                    // there, the account buttons at the end scroll above them.
+                    { paddingBottom: PAGE_BOTTOM_PADDING + navigationButtonsInset },
+                ]}
                 showsVerticalScrollIndicator={false}
                 keyboardShouldPersistTaps="handled"
             >
@@ -756,7 +765,6 @@ const createStyles = (profileColors, themeColors) => StyleSheet.create({
     },
     pageScrollerContent: {
         flexGrow: 1,
-        paddingBottom: 32,
     },
     topBar: {
         paddingTop: 6,
