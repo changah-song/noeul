@@ -1,7 +1,9 @@
 jest.mock('react-native-tts', () => ({}), { virtual: true });
+jest.mock('../../modules/tts-voice-check/src', () => ({ checkVoices: jest.fn(async () => null) }));
 
 const {
   createListenPlayer, voiceLocaleFor, voiceSampleFor, onDeviceVoicesFor, LISTEN_RATES,
+  applyVoiceCheck, loadWorkingVoices,
 } = require('../listenPlayer');
 
 // A stand-in engine: speak() hands back an id, and the test fires the finish
@@ -253,3 +255,64 @@ describe('onDeviceVoicesFor', () => {
   });
 });
 
+describe('applyVoiceCheck', () => {
+  const listed = [
+    { id: 'en-US-SMTf00', number: 1, gender: 'female', quality: 0 },
+    { id: 'en-US-SMTm00', number: 2, gender: 'male', quality: 0 },
+    { id: 'en-us-x-iob-local', number: 3, gender: null, quality: 0 },
+  ];
+
+  it('keeps only the voices heard speaking, numbered without gaps', () => {
+    const result = applyVoiceCheck(listed, {
+      defaultVoice: true,
+      voices: { 'en-US-SMTf00': false, 'en-US-SMTm00': true, 'en-us-x-iob-local': true },
+    });
+    expect(result.defaultVoice).toBe(true);
+    expect(result.voices.map((v) => [v.id, v.number])).toEqual([
+      ['en-US-SMTm00', 1],
+      ['en-us-x-iob-local', 2],
+    ]);
+  });
+
+  it('reports a phone with no working voice at all', () => {
+    expect(applyVoiceCheck(listed, { defaultVoice: false, voices: {} })).toEqual({ defaultVoice: false, voices: [] });
+  });
+
+  it('keeps every listed voice when the check could not run', () => {
+    expect(applyVoiceCheck(listed, null)).toEqual({ defaultVoice: null, voices: listed });
+  });
+});
+
+describe('loadWorkingVoices', () => {
+  const engine = (voices) => ({
+    getInitStatus: jest.fn(async () => 'success'),
+    voices: jest.fn(async () => voices),
+  });
+  const voice = (id, language) => ({ id, language, networkConnectionRequired: false, notInstalled: false });
+
+  it('lists only what the check heard, and re-checks only what failed', async () => {
+    const tts = engine([voice('en-US-SMTf00', 'en-US'), voice('en-US-SMTm00', 'en-US')]);
+    const check = jest.fn(async () => ({ defaultVoice: true, voices: { 'en-US-SMTf00': true, 'en-US-SMTm00': false } }));
+    const first = await loadWorkingVoices('en-US', { tts, check });
+    expect(first.voices.map((v) => v.id)).toEqual(['en-US-SMTf00']);
+    expect(check).toHaveBeenLastCalledWith('en-US', ['en-US-SMTf00', 'en-US-SMTm00'], voiceSampleFor('en-US'));
+
+    // The reader downloads the second voice and opens the picker again.
+    check.mockImplementationOnce(async () => ({ defaultVoice: true, voices: { 'en-US-SMTm00': true } }));
+    const second = await loadWorkingVoices('en-US', { tts, check });
+    expect(check).toHaveBeenLastCalledWith('en-US', ['en-US-SMTm00'], voiceSampleFor('en-US'));
+    expect(second.voices.map((v) => v.id)).toEqual(['en-US-SMTf00', 'en-US-SMTm00']);
+
+    // Everything is confirmed now: no check at all.
+    check.mockClear();
+    await loadWorkingVoices('en-US', { tts, check });
+    expect(check).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the engine list when the check cannot run', async () => {
+    const tts = engine([voice('ja-JP-SMTf00', 'ja-JP')]);
+    const result = await loadWorkingVoices('ja-JP', { tts, check: async () => null });
+    expect(result.defaultVoice).toBeNull();
+    expect(result.voices.map((v) => v.id)).toEqual(['ja-JP-SMTf00']);
+  });
+});
