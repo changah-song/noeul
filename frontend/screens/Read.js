@@ -146,7 +146,7 @@ import {
     subscribeGoalReached,
 } from '../services/readingGoal';
 import GoalCompleteModal from '../components/Goal/GoalCompleteModal';
-import { endBookOpening, getBookOpening, subscribeBookOpening } from '../services/bookOpening';
+import { endBookOpening, isBookOpening, subscribeBookOpening } from '../services/bookOpening';
 import PreparingNotice from '../components/Read/PreparingNotice';
 import LocationPrompt from '../components/Read/LocationPrompt';
 import { publishReaderListen, registerReaderListenCommands } from '../services/readerListenState';
@@ -221,6 +221,9 @@ const FONT_SIZE_MAX = 30;
 // (screen state + library patch + AsyncStorage write) is what made beam
 // navigation feel sluggish, so steps coalesce to the trailing event.
 const FOCUS_PAGE_CHANGE_DEBOUNCE_MS = 400;
+// How long a book that is just opening holds back its neighbour prefetch and
+// preprocessing: past the first page's paint and the opening screen's fade.
+const OPENING_BACKGROUND_WORK_DELAY_MS = 400;
 // The same stops as services/readerSettings.js READER_LINE_SPACING_STEPS.
 const LINE_SPACING_STEPS = [
     { value: 1.2 },
@@ -719,12 +722,17 @@ const Read = ({
         settledBookRef.current = bookLoadState === 'ready' || bookLoadState === 'error' ? currentBook : null;
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [bookLoadState]);
-    const [bookOpening, setBookOpening] = useState(getBookOpening);
-    useEffect(() => subscribeBookOpening(setBookOpening), []);
-    useEffect(() => {
-        if (!bookOpening.visible || !readerFocused || !currentBook) return;
+    // Checked from a ref, not state: the opening screen coming and going must
+    // not re-render the whole reader while it is laying the book out.
+    const endBookOpeningIfSettledRef = useRef(null);
+    endBookOpeningIfSettledRef.current = () => {
+        if (!isBookOpening() || !readerFocused || !currentBook) return;
         if (settledBookRef.current === currentBook) endBookOpening();
-    }, [bookLoadState, bookOpening, currentBook, readerFocused]);
+    };
+    useEffect(() => subscribeBookOpening(() => endBookOpeningIfSettledRef.current?.()), []);
+    useEffect(() => {
+        endBookOpeningIfSettledRef.current?.();
+    }, [bookLoadState, currentBook, readerFocused]);
 
     // ── Focus (sentence beam) mode ───────────────────────────────────────────
     const [focusMode, setFocusMode] = useState(false);
@@ -3017,7 +3025,6 @@ const Read = ({
             });
             setNativeReaderPackage(parsedPackage);
             updateNativeChapterWindowForSpine(loadedSpineIndex, parsedPackage);
-            prefetchAdjacentChapters(loadedSpineIndex, totalSpineItems);
             const restorePageIndex = Number.isInteger(nextRestorePosition?.pageIndex)
                 ? nextRestorePosition.pageIndex
                 : null;
@@ -3041,7 +3048,20 @@ const Read = ({
                 pageInChapter: Number.isInteger(restorePageIndex) ? restorePageIndex + 1 : null,
                 pagesInChapter: restorePagesInChapter,
             });
-            startChapterPreprocessing(loadedSpineIndex, totalSpineItems, parsedPackage);
+            // The neighbours' parsing and the chapter's preprocessing run on the
+            // JS thread. When the book is just opening they wait until the
+            // first page is up (and the opening screen fading), so the page
+            // isn't held back behind them.
+            const startBackgroundWork = () => {
+                if (chapterLoadTokenRef.current !== loadToken) return;
+                prefetchAdjacentChapters(loadedSpineIndex, totalSpineItems);
+                startChapterPreprocessing(loadedSpineIndex, totalSpineItems, parsedPackage);
+            };
+            if (canKeepCurrentReader) {
+                startBackgroundWork();
+            } else {
+                setTimeout(startBackgroundWork, OPENING_BACKGROUND_WORK_DELAY_MS);
+            }
             setBookLoadState('ready');
             setBookLoadError('');
         } catch (error) {
