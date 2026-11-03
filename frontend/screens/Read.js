@@ -21,6 +21,7 @@ import { navigationButtonsInset } from '../hooks/useNavigationButtonsInset';
 import usePresence from '../hooks/usePresence';
 import useReduceMotion from '../hooks/useReduceMotion';
 import { isLocationJump, isNearPosition, pageInLayout } from '../services/locationJump';
+import { readerBackLayer } from '../services/readerBackLayer';
 import { createReaderChromeStyles } from '../components/Read/readerChromeStyles';
 import { useAppContext } from '../contexts/AppContext';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
@@ -1753,33 +1754,31 @@ const Read = ({
     // Save a phrase from the AI explanation as a vocab card, with its short
     // meaning as the definition (like saving a word from the lookup panel).
     // Hardware back steps out of transient reader chrome one layer at a time:
-    // the options dropdown, then the open lookup panel, then fullscreen. Focus
+    // the options dropdown, then the open lookup panel (the dictionary card or
+    // the long-press AI explanation, see readerBackLayer), then fullscreen. Focus
     // mode is deliberately NOT unwound here — from focus mode back leaves the
     // reader like any other read view, and when focus mode is also fullscreen
     // back only drops fullscreen (leaving focus mode intact). Only registers
     // when one of those layers is active so normal back behaviour is untouched
     // otherwise.
     useEffect(() => {
-        if (!showMenu && !highlightedWord && !isFullscreen) {
+        const layer = readerBackLayer({ showMenu, lookupOpen, isFullscreen });
+        if (!layer) {
             return undefined;
         }
         const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
-            if (showMenu) {
+            if (layer === 'menu') {
                 setShowMenu(false);
-                return true;
-            }
-            if (highlightedWord) {
+            } else if (layer === 'lookup') {
+                // Also clears the native selection highlight.
                 dismissLookup();
-                return true;
-            }
-            if (isFullscreen) {
+            } else {
                 setIsFullscreen(false);
-                return true;
             }
-            return false;
+            return true;
         });
         return () => subscription.remove();
-    }, [showMenu, isFullscreen, highlightedWord, dismissLookup]);
+    }, [showMenu, isFullscreen, lookupOpen, dismissLookup]);
 
     // Last resort while the reader is on screen: back leaves the book like the
     // header's chevron, rather than closing the app (the history can hold only
