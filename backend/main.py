@@ -60,6 +60,7 @@ from word_lookup import (
     KrdictFetchGuard,
 )
 from zh_senses import first_meaning_sense, is_reference_only_definition, rank_zh_entries
+import en_expressions
 import en_learner_dict
 from zh_tokens import (
     ZH_LOOKUP_CONTENT_POS_PREFIXES,
@@ -2146,7 +2147,10 @@ def is_en_participle_candidate(token, lemma: str) -> bool:
 
 
 def extract_en_lookup_tokens(text: str) -> tuple[list[str], list[dict], dict[str, str]]:
-    doc = get_en_nlp()(text)
+    return extract_en_lookup_tokens_from_doc(get_en_nlp()(text))
+
+
+def extract_en_lookup_tokens_from_doc(doc) -> tuple[list[str], list[dict], dict[str, str]]:
     seen_lemmas: set[str] = set()
     seen_surface_pairs: set[tuple[str, str]] = set()
     lemmas: list[str] = []
@@ -2216,6 +2220,57 @@ def extract_en_lookup_tokens(text: str) -> tuple[list[str], list[dict], dict[str
     # first one on a tie), so the dictionary entry matches how it is used.
     pos_by_lemma = {lemma: counts.most_common(1)[0][0] for lemma, counts in pos_counts_by_lemma.items()}
     return lemmas, surface_index, pos_by_lemma
+
+
+def extract_en_expressions_from_doc(doc) -> tuple[list[str], list[dict]]:
+    """The whitelisted multi-word expressions in the text (en_expressions.py):
+    (their stems in order of first appearance, their surface_index rows). A
+    row's surface is the text as written ("gave up", "made up her mind"), its
+    stem the expression ("give up", "make up one's mind"); a capitalized
+    surface is indexed lowercase too, like a word."""
+    stems: list[str] = []
+    surface_index: list[dict] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for match in en_expressions.default_matcher().find(doc, lemma_of=en_token_lemma):
+        stem = match.expression.text
+        if stem not in stems:
+            stems.append(stem)
+        for surface in dict.fromkeys([match.surface, match.surface.lower()]):
+            if (surface, stem) not in seen_pairs:
+                seen_pairs.add((surface, stem))
+                surface_index.append({"surface": surface, "stem": stem})
+    return stems, surface_index
+
+
+def extract_en_lookup_tokens_and_expressions(
+    text: str,
+) -> tuple[list[str], list[dict], dict[str, str], list[str], list[dict]]:
+    """extract_en_lookup_tokens plus extract_en_expressions_from_doc, over one
+    parse of the text."""
+    doc = get_en_nlp()(text)
+    lemmas, surface_index, pos_by_lemma = extract_en_lookup_tokens_from_doc(doc)
+    expression_stems, expression_index = extract_en_expressions_from_doc(doc)
+    return lemmas, surface_index, pos_by_lemma, expression_stems, expression_index
+
+
+def lookup_en_expression_results(stems: list[str], interface_language: str) -> list[dict]:
+    """One result per expression stem, like lookup_en_learner_results: the
+    en_learner.db entry, else the whitelist's own (a dictionary built before
+    the expressions were added), with the expression's CEFR level."""
+    by_text = en_expressions.expressions_by_text()
+    entries_by_stem = en_learner_dict.lookup_entries(stems, interface_language)
+    results = []
+    for stem in stems:
+        expression = by_text.get(stem)
+        if not expression:
+            continue
+        entries = entries_by_stem.get(stem) or []
+        entry = entries[0] if entries else en_expressions.dictionary_entry(expression, interface_language)
+        results.append(attach_proficiency_level(
+            en_learner_result(stem, entry, interface_language),
+            en_expressions.level_payload(expression),
+        ))
+    return results
 
 
 def en_dictionary_no_entry(stem: str) -> dict:
@@ -2986,13 +3041,24 @@ async def _preprocess_en_core(
     max_stems=None,
     progress_callback=None,
     interface_language: str = "en",
+    expressions: bool = False,
 ) -> dict:
+    """expressions: also find the whitelisted multi-word expressions ("gave up"
+    -> give up) and return them as results and surface rows like words. Only
+    app builds that can tap a phrase ask for them."""
     async def report(event: str, **data):
         if progress_callback:
             await progress_callback(event, data)
 
     loop = asyncio.get_event_loop()
-    unique_stems, surface_index, pos_by_stem = await loop.run_in_executor(None, extract_en_lookup_tokens, text)
+    expression_stems: list[str] = []
+    expression_index: list[dict] = []
+    if expressions:
+        (
+            unique_stems, surface_index, pos_by_stem, expression_stems, expression_index,
+        ) = await loop.run_in_executor(None, extract_en_lookup_tokens_and_expressions, text)
+    else:
+        unique_stems, surface_index, pos_by_stem = await loop.run_in_executor(None, extract_en_lookup_tokens, text)
     unique_stems, surface_index, pos_by_stem = await loop.run_in_executor(
         None, repair_en_lemmas, unique_stems, surface_index, pos_by_stem,
     )
@@ -3013,7 +3079,7 @@ async def _preprocess_en_core(
         surface_count=len(surface_index),
     )
 
-    if not unique_stems:
+    if not unique_stems and not expression_stems:
         return {
             "results": [],
             "surface_index": surface_index,
@@ -3030,8 +3096,19 @@ async def _preprocess_en_core(
         None,
         partial(lookup_en_learner_results, unique_stems, normalized_interface_language, pos_by_stem),
     )
+    expression_results: list[dict] = []
+    if expression_stems:
+        expression_results = await loop.run_in_executor(
+            None, lookup_en_expression_results, expression_stems, normalized_interface_language,
+        )
+        # Senses and glosses are translated with the words', in one batch.
+        results = results + expression_results
     results = await translate_en_missing_senses(results, normalized_interface_language)
     results = await translate_en_missing_glosses(results, normalized_interface_language)
+    expression_stem_set = set(expression_stems)
+    if expression_stem_set:
+        expression_results = [result for result in results if result.get("stem") in expression_stem_set]
+        results = [result for result in results if result.get("stem") not in expression_stem_set]
     level_by_stem = await loop.run_in_executor(
         None,
         lookup_english_cefr_levels,
@@ -3057,14 +3134,29 @@ async def _preprocess_en_core(
     results, surface_index = await loop.run_in_executor(
         None, attach_en_word_frequency, results, surface_index, pos_by_stem, name_stems,
     )
+    # The book's level comes from its words alone.
+    book_level = score_vocabulary_level("en", results)
+    if expression_results:
+        expression_by_text = en_expressions.expressions_by_text()
+        level_by_stem_text = {
+            result["stem"]: en_expressions.level_payload(expression_by_text[result["stem"]])
+            for result in expression_results
+            if result.get("stem") in expression_by_text
+        }
+        results = results + expression_results
+        surface_index = surface_index + [
+            attach_proficiency_level(entry, level_by_stem_text[entry["stem"]])
+            for entry in expression_index
+            if entry["stem"] in level_by_stem_text
+        ]
     return {
         "results": results,
         "surface_index": surface_index,
         "stats": {
-            "total_stems": len(unique_stems),
-            "cache_hits": found_count,
+            "total_stems": len(unique_stems) + len(expression_results),
+            "cache_hits": found_count + sum(1 for result in expression_results if result.get("definition")),
             "new_fetched": 0,
-            "book_level": score_vocabulary_level("en", results),
+            "book_level": book_level,
         },
     }
 
@@ -4833,6 +4925,9 @@ async def preprocess_chapter_en(payload: dict, auth: dict[str, Any] = Depends(ve
         text,
         max_stems,
         interface_language=interface_language,
+        # Multi-word expressions ("gave up"): only for app builds that can tap
+        # one and open its card.
+        expressions=payload.get("expressions") is True,
     )
     return {
         "book_uri": book_uri,
