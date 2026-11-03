@@ -2,6 +2,7 @@ import {
     ABILITY_THETA_MAX,
     ABILITY_THETA_MIN,
     OOV_DIFFICULTY,
+    UNDERLINE_KNOWN_CEILING,
     difficultyFromLevelRank,
     difficultyFromPercentile,
     sigmoid,
@@ -46,7 +47,9 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // Belief about the reader's level.
 export const PRIOR_VARIANCE = 2.0;        // a reader we know nothing about (sd ≈ 1.4)
 export const SEED_VARIANCE = 0.6;         // after the vocabulary picker (sd ≈ 0.8)
-export const CHECK_START_VARIANCE = 1.0;  // a word check starts at least this unsure
+// A word check starts at least this unsure, so 28 answers can carry a reader
+// the model had settled on (wrongly) anywhere on the scale.
+export const CHECK_START_VARIANCE = PRIOR_VARIANCE;
 export const MIN_VARIANCE = 0.02;
 export const DRIFT_PER_DAY = 0.004;       // variance regained per day without signals
 export const MAX_STEP = 0.6;              // no single signal moves the level further
@@ -57,7 +60,10 @@ export const ITEM_VARIANCE = 0.6;
 const ITEM_SLOPE = 1 / Math.sqrt(1 + (Math.PI / 8) * ITEM_VARIANCE);
 
 // Observation models (see the header).
-export const LOOKUP_GIVEN_KNOWN = 0.03;
+// Readers also tap words they know: for the pinyin, the audio, or the
+// sentence translation a tap opens. Real Chinese reading (2026-11) had 120
+// taps on words like 的, 了 and 我们 in two weeks.
+export const LOOKUP_GIVEN_KNOWN = 0.1;
 export const CHECK_YES_GIVEN_KNOWN = 0.97;
 export const GUESS_RATE_PRIOR = { yes: 1, total: 20 };     // 0.05
 export const GUESS_RATE_MAX = 0.6;
@@ -105,6 +111,21 @@ export const observationModel = (signal, { lookupRate, guessRate } = {}) => {
         return null;
     }
 };
+
+/**
+ * lookupCountsForLevel — whether a lookup may move the reader's level.
+ *
+ * Words read past are only logged for words the reader sees underlined (the
+ * native reader reports the graded words on the page, and a word the model
+ * thinks is known isn't one). A lookup of a word outside that set would be
+ * one-sided evidence: its tap is logged, reading past it never is, so the
+ * easiest words looked "always looked up" and pulled the level down. Until
+ * every word read past is logged, such a lookup still teaches the word's own
+ * knowledge (buildWordKnowledge) but not the level.
+ */
+export const lookupCountsForLevel = (theta, difficulty) => (
+    sigmoid(Number(theta) - Number(difficulty)) < UNDERLINE_KNOWN_CEILING
+);
 
 /**
  * observedValue — the yes/no outcome a signal reports, in its model's terms:
@@ -371,7 +392,20 @@ export const applySignal = (state, signal = {}) => {
     hypotheses.forEach((h) => { h.logWeight -= top; });
 
     const before = mixture(base.hypotheses);
-    const after = mixture(hypotheses);
+    let after = mixture(hypotheses);
+    // Reweighting the habits can shift the mixed level against the signal (a
+    // word read past lowering it, a lookup raising it): what moved is the
+    // habit, not the level. Undo that part of the shift.
+    // A lookup says "unknown" (down); a pass, "know", "recalled" say up.
+    const isReading = signal.type === 'lookup' || signal.type === 'pass';
+    const direction = (isReading ? observed === 0 : observed === 1) ? 1 : -1;
+    const shift = after.mean - before.mean;
+    if (shift * direction < 0) {
+        hypotheses.forEach((h) => {
+            h.mean = clamp(h.mean - shift, ABILITY_THETA_MIN, ABILITY_THETA_MAX);
+        });
+        after = mixture(hypotheses);
+    }
     const next = {
         ...base,
         hypotheses,
@@ -397,6 +431,18 @@ export const applySignal = (state, signal = {}) => {
             at,
         },
     };
+};
+
+/**
+ * widenState — make the level at least `variance` unsure, keeping where it
+ * is. Every habit's belief widens: they are what the signals update, so
+ * widening only the mixed summary would change nothing.
+ */
+export const widenState = (state, variance) => {
+    const v = Number(variance) || 0;
+    const base = state?.hypotheses || freshHypotheses(state?.theta ?? 0, Math.max(v, state?.variance ?? PRIOR_VARIANCE));
+    const hypotheses = base.map((h) => ({ ...h, variance: Math.max(h.variance, v) }));
+    return { ...state, hypotheses, variance: mixture(hypotheses).variance };
 };
 
 /**

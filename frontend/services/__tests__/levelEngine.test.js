@@ -8,6 +8,7 @@ jest.mock('../../constants/proficiencyLevels', () => ({
 jest.mock('../flashcardNomination', () => ({ remainingExposureFactor: () => 0 }));
 
 const {
+    LOOKUP_GIVEN_KNOWN,
     applySignal,
     buildWordKnowledge,
     difficultyFromZipf,
@@ -16,6 +17,7 @@ const {
     lookupRateOf,
     readerState,
     seedState,
+    widenState,
     wordDifficulty,
 } = require('../levelEngine');
 
@@ -56,7 +58,7 @@ describe('reader level', () => {
                     state = applySignal(state, { type: 'check', difficulty, outcome: known ? 1 : 0 }).state;
                     continue;
                 }
-                const looked = known ? random() < 0.03 : random() < rate;
+                const looked = known ? random() < LOOKUP_GIVEN_KNOWN : random() < rate;
                 state = applySignal(state, { type: looked ? 'lookup' : 'pass', difficulty }).state;
             }
             return state;
@@ -102,6 +104,36 @@ describe('reader level', () => {
         expect(readerState({ theta: 1, event_count: 0 }).variance).toBe(2);
         expect(readerState({ theta: 1, event_count: 300 }).variance).toBeLessThan(0.2);
         expect(readerState({ theta: 1, theta_var: 0.4, event_count: 300 }).variance).toBe(0.4);
+    });
+
+    it('never moves the level against the signal, whatever the habits learn', () => {
+        // Many habits, settled low: re-weighing them used to drag the mixed
+        // level down on a word read past and up on a lookup.
+        let state = seedState(fresh(), { theta: -2.3, variance: 0.04 });
+        for (let i = 0; i < 300; i += 1) {
+            state = applySignal(state, { type: i % 3 ? 'pass' : 'lookup', difficulty: (i % 13) * 0.45 - 2.7 }).state;
+        }
+        [-2.5, -1, 0, 1.5, 2.8].forEach((difficulty) => {
+            const pass = applySignal(state, { type: 'pass', difficulty }).log;
+            const lookup = applySignal(state, { type: 'lookup', difficulty }).log;
+            const yes = applySignal(state, { type: 'check', difficulty, outcome: 1 }).log;
+            const no = applySignal(state, { type: 'review', difficulty, outcome: 0 }).log;
+            expect(pass.thetaAfter).toBeGreaterThanOrEqual(pass.thetaBefore - 1e-12);
+            expect(lookup.thetaAfter).toBeLessThanOrEqual(lookup.thetaBefore + 1e-12);
+            expect(yes.thetaAfter).toBeGreaterThanOrEqual(yes.thetaBefore - 1e-12);
+            expect(no.thetaAfter).toBeLessThanOrEqual(no.thetaBefore + 1e-12);
+        });
+    });
+
+    it('widens every habit, not just the summary', () => {
+        const settled = seedState(fresh(), { theta: 1, variance: 0.05 });
+        const wide = widenState(settled, 2);
+        expect(wide.theta).toBe(1);
+        expect(wide.variance).toBeCloseTo(2, 5);
+        wide.hypotheses.forEach((h) => expect(h.variance).toBe(2));
+        const moved = applySignal(wide, { type: 'check', difficulty: 1, outcome: 1 }).state.theta;
+        const stuck = applySignal(settled, { type: 'check', difficulty: 1, outcome: 1 }).state.theta;
+        expect(moved - 1).toBeGreaterThan(5 * (stuck - 1));
     });
 
     it('ignores a signal without a difficulty', () => {

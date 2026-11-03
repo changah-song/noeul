@@ -72,6 +72,40 @@ answers fix it.
    word, and the calibration check across readers. Apply
    `supabase/user_ability_log.sql` once to enable it.
 
+## Fixes from real data (2026-11-03)
+
+The first long real log (one Chinese reader, 2,906 level changes over two
+weeks, uploaded `ability_log`) showed the level falling from about HSK 4.6 to
+HSK 1.6 while the reader said "know" to all 28 word-check words. Four causes:
+
+| Problem | Fix |
+|---|---|
+| The word check widened only the mixed summary of the level, not the 18 habit beliefs the signals update (each was at variance ≈ 0.05). 28 "know" answers moved the level +0.55 and every word asked was HSK 1. | `widenState` widens every habit; a check starts at `CHECK_START_VARIANCE` = 2.0. |
+| Words read past are logged only for underlined words, but lookups for every word. The easiest words (的, 了, 我们) looked "always looked up": 120 such lookups cost −12.6. | `lookupCountsForLevel`: a lookup moves the level only when the word would be underlined (P(known) < 0.85). It still teaches the word's own knowledge. Lifted once every word read past is logged. |
+| The same word tapped again within minutes counted every time (150 repeats). | A word's lookup counts once a day, like words read past. |
+| Re-weighing the habits moved the mixed level against the signal: 780 words read past lowered it. | The part of the shift that goes against the signal is undone. |
+
+`LOOKUP_GIVEN_KNOWN` also rose from 0.03 to 0.10: readers tap known words for
+the pinyin, the audio or the sentence translation. On this log 0.15 scored
+better still; the right value differs by reader, so it should be learned.
+
+**Replay on real logs.** `node scripts/levelReplay.js --log reader.json
+--engine old.js --engine services/levelEngine.js --app` scores engine versions
+on the same uploaded log (the Level model page's `admin_level_model` data):
+predictions before each lookup, word read past, check answer and review, plus
+each check answer predicted from the level just before the check (from
+reading alone). On the log above:
+
+| | before | after |
+|---|---|---|
+| Check answers predicted from reading alone (all were "know") | 0.41 | 0.71 |
+| Their log loss | 0.91 | 0.35 |
+| Level at the end | −2.48 (HSK 1.5) | +0.48 (HSK 4.5) |
+
+Reading AUC stays near 0.5 on this log: among underlined words, listed
+difficulty barely predicts what this reader taps. That is the next thing to
+fix (word difficulty, and logging every word read past).
+
 ## Tuning knobs
 
 All in `levelEngine.js`: `BAND_WEIGHT` (level vs frequency), `LOANWORD_EASE`,

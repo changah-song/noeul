@@ -31,10 +31,12 @@ import { LEARNED_LEVEL, SAVED_WORD_FADE_GAP_MS, SAVED_WORD_FADE_STEPS } from './
 import {
   applySignal as applyLevelSignal,
   guessRateOf,
+  lookupCountsForLevel,
   lookupRateOf,
   readerState,
   repeatWeight,
   CHECK_START_VARIANCE,
+  widenState,
   SEED_VARIANCE,
   seedState,
   serializeHypotheses,
@@ -1066,7 +1068,7 @@ export const applyWordCheckResults = async ({ ownerId, profileId, language = 'ko
 
   const result = await updateReaderLevel({ ownerId, profileId, language: normalizedLanguage }, (before) => {
     const at = list[0].at ?? new Date().toISOString();
-    let current = { ...before, variance: Math.max(before.variance, CHECK_START_VARIANCE) };
+    let current = widenState(before, CHECK_START_VARIANCE);
     const logs = [{
       signal: 'check_start',
       thetaBefore: before.theta,
@@ -1516,6 +1518,21 @@ const countWordSignals = ({ ownerId, profileId, language }, stems) => new Promis
   }, () => resolve(counts), () => resolve(counts));
 });
 
+// Lookups of one stem logged since the start of today (UTC, as for words read
+// past in applyExposureBatch).
+const countLookupsToday = ({ ownerId, profileId, language }, stem) => new Promise((resolve) => {
+  db.transaction(tx => {
+    tx.executeSql(
+      `SELECT COUNT(*) AS n FROM interaction_events
+       WHERE owner_id = ? AND profile_id = ? AND language = ? AND event_type = 'lookup'
+         AND deleted_at IS NULL AND stem = ? AND created_at >= ?`,
+      [ownerId, profileId, language, stem, `${new Date().toISOString().slice(0, 10)}T00:00:00`],
+      (_, result) => resolve(Number(result.rows._array?.[0]?.n) || 0),
+      () => resolve(0)
+    );
+  });
+});
+
 /**
  * updateThetaFromOutcome — fold one signal about one word (a lookup, a review,
  * a word-check answer) into the profile's level through the level engine, and
@@ -1579,11 +1596,18 @@ export const updateThetaFromOutcome = async ({
       profileId: resolveProfileId(profileId, normalizedLanguage),
       language: normalizedLanguage,
     };
+    // Tapping the same word again the same day (closing the card and opening
+    // it again, checking the pinyin twice) says nothing new about the level;
+    // like a word read past, it counts once a day.
+    if (await countLookupsToday(scope, cleanStem) > 1) {
+      return null;
+    }
     const counts = await countWordSignals(scope, [cleanStem]);
     weight = repeatWeight(Math.max(0, (counts.get(cleanStem) || 0) - 1));
   }
 
   const state = await updateReaderLevel({ ownerId, profileId, language: normalizedLanguage }, (before) => {
+    if (type === 'lookup' && !lookupCountsForLevel(before.theta, wordDifficultyValue)) return null;
     const { state: next, log } = applyLevelSignal(before, {
       type,
       difficulty: wordDifficultyValue,

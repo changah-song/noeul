@@ -81,6 +81,23 @@ describe('word check', () => {
         expect(low.theta).toBeLessThan(-1.5);
     });
 
+    it('moves a reader the model had settled on, and asks harder words as they climb', () => {
+        // A long reading history leaves every habit's belief narrow (here at
+        // HSK 1); the check must still be able to carry them up.
+        const settled = seedState(readerState(null), { theta: -2.78, variance: 0.05 });
+        const asked = [];
+        const result = run(createWordCheck({ language: 'zh', reader: settled, seed: 7 }), (p) => {
+            if (!p.pseudo) asked.push(p.difficulty);
+            return p.pseudo ? 0 : 1;
+        });
+        expect(result.theta).toBeGreaterThan(2);
+        expect(Math.max(...asked.slice(-5))).toBeGreaterThan(1.5);
+
+        const frontier = run(createWordCheck({ language: 'zh', reader: settled, seed: 7 }), (p) => (p.pseudo ? 0 : Number(p.difficulty < 0)));
+        expect(frontier.theta).toBeGreaterThan(-0.6);
+        expect(frontier.theta).toBeLessThan(0.8);
+    });
+
     it('trusts "I know it" less from a reader who claims made-up words', () => {
         const start = seedState(readerState(null), { theta: 0 });
         // Knows the words below difficulty 0.5; the claimer also says yes to made-up ones.
@@ -128,5 +145,20 @@ describe('applyWordCheckResults', () => {
             { event_type: 'check_pseudo', word: '거게', stem: null, outcome: 0 },
             { event_type: 'check', word: '공동묘지', stem: '공동묘지', outcome: 1 },
         ]);
+    });
+
+    it('widens a settled level before the answers, so they can move it', async () => {
+        const easyYes = Array.from({ length: 10 }, (_, i) => ({
+            word: `w${i}`, pseudo: false, outcome: 1, difficulty: -2 + i * 0.3, at: `2026-10-19T01:00:${String(i).padStart(2, '0')}.000Z`,
+        }));
+        await applyWordCheckResults({ ownerId: 'u2', language: 'zh', answers: [{ ...easyYes[0], at: '2026-10-18T01:00:00.000Z' }] });
+        // Settle the stored level low by hand: narrow beliefs everywhere.
+        const db = SQLite.openDatabase('fluentfable.db');
+        const narrow = JSON.stringify(seedState(readerState(null), { theta: -2.8, variance: 0.04 }).hypotheses);
+        await new Promise((resolve) => db.transaction((tx) => {
+            tx.executeSql('UPDATE profile_ability SET theta = -2.8, theta_var = 0.04, lookup_model = ?', [narrow], () => resolve());
+        }));
+        const state = await applyWordCheckResults({ ownerId: 'u2', language: 'zh', answers: easyYes });
+        expect(state.theta).toBeGreaterThan(-1);
     });
 });
