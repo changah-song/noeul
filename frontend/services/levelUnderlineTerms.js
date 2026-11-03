@@ -1,4 +1,4 @@
-import { pKnown, underlineCategory } from './abilityModel';
+import { ABILITY_THETA_MAX, pKnown, underlineCategory } from './abilityModel';
 import { wordDifficulty } from './levelEngine';
 import { adjustedPKnown } from './wordEvidence';
 import { isLevelSample } from './levelSample';
@@ -22,6 +22,26 @@ export const rowDifficulty = (row, language) => {
         zipf: row?.zipf ?? null,
         loanword: row?.loanword ?? null,
     }).difficulty;
+};
+
+// An English phrase ("gave up") with no level of its own is a little harder
+// than its harder word. Phrases normally carry their own CEFR level
+// (backend/data/en_expressions.tsv), so this is only a fallback.
+export const PHRASE_EXTRA = 0.7;
+
+const isPhrase = (surface) => /\S\s+\S/.test(surface);
+const hasOwnGrade = (row) => [row?.level_rank, row?.proficiency_rank, row?.difficulty_percentile, row?.zipf]
+    .some((value) => value != null && value !== '');
+
+/**
+ * phraseDifficultyFromParts — the fallback difficulty of a phrase from its
+ * words' difficulties: the hardest plus PHRASE_EXTRA, at most the top of the
+ * scale. Null when none of its words is known.
+ */
+export const phraseDifficultyFromParts = (partDifficulties) => {
+    const known = (partDifficulties || []).filter((value) => Number.isFinite(value));
+    if (known.length === 0) return null;
+    return Math.min(ABILITY_THETA_MAX, Math.max(...known) + PHRASE_EXTRA);
 };
 
 /**
@@ -55,12 +75,26 @@ export const buildLevelUnderlineTerms = (rows, language, theta, options = {}) =>
     // Pinyin (dc.ipa for zh) rides along so the native reader can annotate
     // underlined words. Only present for Chinese.
     const surfacePinyin = new Map();
+    // Single words' difficulties, for a phrase graded by its words (below).
+    const wordDifficultyBySurface = new Map();
+    (rows || []).forEach((row) => {
+        const surface = typeof row?.surface === 'string' ? row.surface.trim().toLowerCase() : '';
+        if (!surface || isPhrase(surface) || !hasOwnGrade(row)) return;
+        const difficulty = rowDifficulty(row, language);
+        if (!(wordDifficultyBySurface.get(surface) >= difficulty)) wordDifficultyBySurface.set(surface, difficulty);
+    });
     (rows || []).forEach((row) => {
         const surface = typeof row?.surface === 'string' ? row.surface.trim() : '';
         if (!surface) {
             return;
         }
-        const difficulty = rowDifficulty(row, language);
+        let difficulty = rowDifficulty(row, language);
+        if (isPhrase(surface) && !hasOwnGrade(row)) {
+            const fromParts = phraseDifficultyFromParts(
+                surface.toLowerCase().split(/\s+/).map((word) => wordDifficultyBySurface.get(word))
+            );
+            if (fromParts != null) difficulty = fromParts;
+        }
         const stem = typeof row?.stem === 'string' ? row.stem.trim() : '';
 
         const pinyin = typeof row?.ipa === 'string' ? row.ipa.trim() : '';

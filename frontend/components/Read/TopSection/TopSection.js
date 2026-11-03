@@ -31,6 +31,9 @@ const TopSection = ({
     onExtendSelection,
     highlightedWord,
     sourceSentence = '',
+    // A tap inside a phrase ("gave up"): the single word tapped, offered on
+    // the phrase's card as a chip.
+    phraseWord = '',
     isNativeSelection,
     placement = 'bottom',
     isDarkMode,
@@ -398,6 +401,7 @@ const TopSection = ({
                     <DictionaryContent
                         highlightedWord={visibleWord}
                         sourceSentence={sourceSentence}
+                        phraseWord={phraseWord}
                         isDarkMode={isDarkMode}
                         onWordSave={onWordSave}
                         onWordUnsave={onWordUnsave}
