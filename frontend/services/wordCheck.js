@@ -6,6 +6,7 @@ import {
     CHECK_START_VARIANCE,
     applySignal,
     guessRateOf,
+    widenState,
     wordDifficulty,
 } from './levelEngine';
 
@@ -104,7 +105,7 @@ export const createWordCheck = ({ language, reader, seed = Date.now() }) => {
     }
     const used = new Set();
     const answers = [];
-    let state = { ...reader, variance: Math.max(Number(reader?.variance) || 0, CHECK_START_VARIANCE) };
+    let state = widenState(reader, CHECK_START_VARIANCE);
     let current = null;
 
     const pickReal = () => {

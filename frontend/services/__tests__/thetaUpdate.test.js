@@ -25,10 +25,12 @@ import * as SQLite from 'expo-sqlite';
 import {
   createAbilityLogTable,
   createDictionaryCacheTable,
+  createInteractionEventsTable,
   createProfileAbilityTable,
   ensureProfileAbilitySeed,
   getAbilityLog,
   getProfileAbility,
+  logInteractionEvent,
   updateThetaFromOutcome,
 } from '../Database';
 import { seedThetaFromRank } from '../abilityModel';
@@ -61,6 +63,7 @@ beforeEach(async () => {
   await createProfileAbilityTable();
   await createDictionaryCacheTable();
   await createAbilityLogTable();
+  await createInteractionEventsTable();
 });
 
 describe('updateThetaFromOutcome', () => {
@@ -192,6 +195,29 @@ describe('updateThetaFromOutcome', () => {
     expect(log.theta_after).toBeCloseTo(next, 10);
     expect(log.var_after).toBeLessThan(log.var_before);
     expect(JSON.parse(log.details)).toMatchObject({ levelRank: 3 });
+  });
+
+  it('counts a word looked up again the same day once', async () => {
+    await cacheStem({ stem: '소문', levelRank: 3 });
+    await ensureProfileAbilitySeed({ ownerId: OWNER, profileId: PROFILE, language: 'ko', rank: 3 });
+    const lookUp = async () => {
+      // As dictionaryLookup does: the event is logged, then the level updates.
+      await logInteractionEvent({ ownerId: OWNER, profileId: PROFILE, language: 'ko', word: '소문', stem: '소문', eventType: 'lookup' });
+      return updateThetaFromOutcome({ ownerId: OWNER, profileId: PROFILE, language: 'ko', stem: '소문', signal: 'lookup' });
+    };
+    expect(await lookUp()).not.toBeNull();
+    expect(await lookUp()).toBeNull();
+    expect(await getAbilityLog({ ownerId: OWNER, profileId: PROFILE, language: 'ko' })).toHaveLength(1);
+  });
+
+  it('leaves the level alone on a lookup of a word it thinks is known', async () => {
+    // Reading past such a word is never logged (it isn't underlined), so its
+    // lookup alone would be one-sided evidence.
+    await cacheStem({ stem: '학교', levelRank: 1 });
+    await ensureProfileAbilitySeed({ ownerId: OWNER, profileId: PROFILE, language: 'ko', rank: 5 });
+    const next = await updateThetaFromOutcome({ ownerId: OWNER, profileId: PROFILE, language: 'ko', stem: '학교', signal: 'lookup' });
+    expect(next).toBeNull();
+    expect(await getAbilityLog({ ownerId: OWNER, profileId: PROFILE, language: 'ko' })).toHaveLength(0);
   });
 
   it('ignores a non-binary outcome', async () => {
