@@ -55,3 +55,41 @@ describe('selectExposureCredits', () => {
     expect(result).toEqual(['a']);
   });
 });
+
+describe('level sample', () => {
+    const { isLevelSample, LEVEL_SAMPLE_RATE } = require('../levelSample');
+    const { buildLevelExposureTerms } = require('../levelUnderlineTerms');
+
+    it('picks a stable share of words', () => {
+        const words = Array.from({ length: 4000 }, (_, i) => `词${i}`);
+        const share = words.filter((w) => isLevelSample(w)).length / words.length;
+        expect(Math.abs(share - LEVEL_SAMPLE_RATE)).toBeLessThan(0.03);
+        expect(words.map((w) => isLevelSample(w))).toEqual(words.map((w) => isLevelSample(` ${w} `)));
+        expect(isLevelSample('')).toBe(false);
+        expect(isLevelSample(null)).toBe(false);
+    });
+
+    it('reports the sampled known words, not the underlined ones', () => {
+        const stems = Array.from({ length: 200 }, (_, i) => `w${i}`);
+        const sampled = stems.filter((s) => isLevelSample(s));
+        const rows = stems.map((stem) => ({ surface: `${stem}s`, stem }));
+        const underlined = [{ text: `${sampled[0]}s`, stem: sampled[0] }];
+        const terms = buildLevelExposureTerms(rows, underlined);
+        expect(terms.map((t) => t.stem)).toEqual(sampled.slice(1));
+        expect(terms[0]).toEqual({ text: `${sampled[1]}s`, stem: sampled[1] });
+    });
+
+    it('caps underlined and unmarked words separately', () => {
+        const marked = Array.from({ length: 50 }, (_, i) => `m${i}`);
+        const unmarked = Array.from({ length: 50 }, (_, i) => `u${i}`);
+        const weights = new Map(marked.map((t, i) => [t, i / 50]));
+        const out = selectExposureCredits({
+            terms: [...unmarked, ...marked], chars: 10, dwellMs: 60000, weights, max: 40,
+        });
+        expect(out.filter((t) => t.startsWith('m'))).toHaveLength(40);
+        expect(out.filter((t) => t.startsWith('u'))).toHaveLength(40);
+        // The most uncertain underlined words (weight nearest 0.5) are kept.
+        expect(out).toContain('m25');
+        expect(out).not.toContain('m0');
+    });
+});

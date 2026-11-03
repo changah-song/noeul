@@ -15,6 +15,8 @@
 //              does this from PR fix/level-engine-bugs on)
 //   --only-marked  a lookup of a word that wasn't underlined is not a signal
 //   --app      both, as the app does from fix/level-engine-bugs on
+//   --sampled  the log was recorded with the level sample's words read past
+//              logged (feat/level-measurement on): their lookups count too
 //   --json     print the full result as JSON
 
 require('@babel/register')({
@@ -46,6 +48,7 @@ const results = engines.map((file) => ({
     result: replayLevelLog(events, require(path.resolve(file)), {
         lookupOncePerDay: has('--once-per-day') || has('--app'),
         lookupOnlyIfMarked: has('--only-marked') || has('--app'),
+        sampleLogged: has('--sampled'),
     }),
 }));
 

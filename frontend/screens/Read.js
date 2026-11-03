@@ -128,7 +128,8 @@ import {
     SUPPORTED_BOOK_LANGUAGES,
     normalizeBookLanguage,
 } from '../constants/languages';
-import { loadLevelUnderlineTerms } from '../hooks/useLevelUnderlineTerms';
+import { loadLevelReaderTerms } from '../hooks/useLevelUnderlineTerms';
+import useLookupDetail, { LOOKUP_ACTIONS } from '../hooks/useLookupDetail';
 import { bookIndexLanguages, tagPreprocessCacheEntries } from '../services/preprocessCacheEntries';
 import { selectExposureCredits } from '../services/readerExposure';
 import useSavedWordFades from '../hooks/useSavedWordFades';
@@ -687,6 +688,8 @@ const Read = ({
     const [highlightTerms, setHighlightTerms] = useState(null);
     const [optimisticHighlightTerms, setOptimisticHighlightTerms] = useState([]);
     const [levelUnderlineTerms, setLevelUnderlineTerms] = useState([]);
+    // Known words in the level sample: reported as read past, never drawn.
+    const [levelExposureTerms, setLevelExposureTerms] = useState([]);
     // Every word in the book with its pinyin / gloss, loaded only while word
     // annotations are on.
     const [annotationRows, setAnnotationRows] = useState([]);
@@ -898,6 +901,12 @@ const Read = ({
     const storyBoundsRef = useRef(storyBounds);
     storyBoundsRef.current = storyBounds;
     const activeBookLanguage = activeBook ? selectedBookLanguage : targetLanguage;
+    const noteLookupAction = useLookupDetail({
+        word: highlightedWord,
+        ownerId: activeOwnerId,
+        language: activeBookLanguage,
+        sourceBookUri: currentBook,
+    });
     const shouldUseHeuristicHighlights = !activeBook?.preprocessed;
     const translationBannerVisualState = useMemo(() => ({
         loading: translationBannerLoadingPreview,
@@ -1074,6 +1083,7 @@ const Read = ({
     useEffect(() => {
         if (!currentBook) {
             setLevelUnderlineTerms([]);
+            setLevelExposureTerms([]);
             setLevelTermsLoading(false);
             return;
         }
@@ -1081,20 +1091,22 @@ const Read = ({
         let isActive = true;
         setLevelTermsLoading(true);
 
-        const loadTerms = () => loadLevelUnderlineTerms({
+        const loadTerms = () => loadLevelReaderTerms({
             ownerId: activeOwnerId,
             bookUri: currentBook,
             language: activeBookLanguage,
         });
 
-        loadTerms().then((terms) => {
+        loadTerms().then(({ terms, exposureTerms }) => {
             if (isActive) {
                 setLevelUnderlineTerms(terms);
+                setLevelExposureTerms(exposureTerms);
             }
         }).catch((error) => {
             console.error('[Read] Failed to load book level underline surfaces:', error);
             if (isActive) {
                 setLevelUnderlineTerms([]);
+                setLevelExposureTerms([]);
             }
         }).finally(() => {
             if (isActive) setLevelTermsLoading(false);
@@ -1239,6 +1251,7 @@ const Read = ({
     const handleWordSave = useCallback((word, options = {}) => {
         const { includeSurface = true } = options;
         const surface = includeSurface ? highlightedWord?.trim() : '';
+        noteLookupAction(LOOKUP_ACTIONS.saved);
         // A firmer click for committing a word to your deck — you feel it land.
         tapCommit();
         setSavedWords(prev => uniqTerms([...(prev ?? []), word]));
@@ -1250,7 +1263,7 @@ const Read = ({
             ]);
         });
         setClearSelectionToken((value) => value + 1);
-    }, [highlightedWord]);
+    }, [highlightedWord, noteLookupAction]);
 
     const handleWordUnsave = useCallback((word, options = {}) => {
         const { includeSurface = true } = options;
@@ -1814,8 +1827,10 @@ const Read = ({
         [levelUnderlineTerms]
     );
     levelUnderlineStemsRef.current = useMemo(
-        () => new Map(levelUnderlineTerms.filter((term) => term.stem).map(({ text, stem }) => [text, stem])),
-        [levelUnderlineTerms]
+        () => new Map([...levelUnderlineTerms, ...levelExposureTerms]
+            .filter((term) => term.stem)
+            .map(({ text, stem }) => [text, stem])),
+        [levelUnderlineTerms, levelExposureTerms]
     );
     const isReaderWaitingForHighlights = !!currentBook && !shouldUseHeuristicHighlights && !highlightTermsReady;
     const nativeChapterBlocks = chapterBlocksForReaderPackage(nativeReaderPackage);
@@ -3867,6 +3882,18 @@ const Read = ({
             readerShowPinyin,
         ]
     );
+    // Words reported as read past without being drawn: the known words in the
+    // level sample, plus any underlined word the reader isn't shown right now
+    // (marks off, or below the marks threshold). Every word whose lookup can
+    // move the level must have its reading past logged too.
+    const readerExposureTerms = useMemo(() => {
+        const drawn = new Set(readerLevelTerms.filter((term) => !term.annotationOnly).map((term) => term.text));
+        const out = new Set(levelExposureTerms.map((term) => term.text));
+        levelUnderlineTerms.forEach((term) => {
+            if (!drawn.has(term.text)) out.add(term.text);
+        });
+        return [...out];
+    }, [readerLevelTerms, levelUnderlineTerms, levelExposureTerms]);
     // Rows above the settings tabs in the sheet: saved words and Checkpoints.
     // The contents open from the progress in the header; full screen comes on
     // by itself as the reader reads on.
@@ -5023,6 +5050,7 @@ const Read = ({
                             highlightTerms={readerHighlightTerms}
                             highlightStrengths={highlightStrengths}
                             levelTerms={readerLevelTerms}
+                            exposureTerms={readerExposureTerms}
                             showPinyin={readerShowPinyin}
                             showGloss={readerShowGloss}
                             tappedTerms={tappedTerms}

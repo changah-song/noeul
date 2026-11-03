@@ -16,8 +16,11 @@ export const EXPOSURE_MAX_PER_UNIT = 40;
  *   2. words looked up recently — a lookup already logged stronger evidence
  *   3. saved words — already earning graded evidence through the SRS loop
  *
- * Survivors are ranked by how uncertain the model is about them (underline
- * weight nearest 0.5), so the cap, when it bites, keeps the informative ones.
+ * Underlined survivors are ranked by how uncertain the model is about them
+ * (underline weight nearest 0.5), so the cap, when it bites, keeps the
+ * informative ones. Words with no underline weight (the known words in the
+ * level sample, reported without being drawn) are capped on their own, so
+ * they never crowd out the underlined ones or get cut by them.
  *
  * @returns {string[]} surfaces to credit (possibly empty)
  */
@@ -38,16 +41,17 @@ export const selectExposureCredits = ({
     }
 
     const seen = new Set();
-    return terms
-        .filter((term) => {
-            if (typeof term !== 'string' || !term || seen.has(term)) {
-                return false;
-            }
-            seen.add(term);
-            return !lookedUp.has(term) && !saved.has(term);
-        })
-        .sort((a, b) => (
-            Math.abs((weights.get(a) ?? 1) - 0.5) - Math.abs((weights.get(b) ?? 1) - 0.5)
-        ))
+    const survivors = terms.filter((term) => {
+        if (typeof term !== 'string' || !term || seen.has(term)) {
+            return false;
+        }
+        seen.add(term);
+        return !lookedUp.has(term) && !saved.has(term);
+    });
+    const marked = survivors
+        .filter((term) => weights.has(term))
+        .sort((a, b) => Math.abs(weights.get(a) - 0.5) - Math.abs(weights.get(b) - 0.5))
         .slice(0, max);
+    const unmarked = survivors.filter((term) => !weights.has(term)).slice(0, max);
+    return [...marked, ...unmarked];
 };
