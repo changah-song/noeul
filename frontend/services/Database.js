@@ -37,6 +37,7 @@ import {
   repeatWeight,
   CHECK_START_VARIANCE,
   LEVEL_ENGINE_VERSION,
+  applyRefit,
   widenState,
   SEED_VARIANCE,
   seedState,
@@ -44,6 +45,7 @@ import {
   wordDifficulty,
 } from './levelEngine';
 import { initialFsrsFromPKnown, rankNominations } from './flashcardNomination';
+import { fitReaderLevel, prepareRefitEvents } from './levelRefit';
 import { mergeVocabRows, vocabMergeKey } from './vocabMerge';
 
 // ─── Database Setup ───────────────────────────────────────────────────────────
@@ -991,7 +993,7 @@ export const updateReaderLevel = ({ ownerId, profileId, language = 'ko' } = {}, 
             state.variance,
             result.selfReportRank ?? null,
             state.eventCount,
-            serializeHypotheses(state.hypotheses),
+            serializeHypotheses(state.hypotheses, state.knownTapRate),
             state.guessYes,
             state.guessTotal,
             state.lastEventAt,
@@ -1160,6 +1162,110 @@ export const getAbilityLog = ({ ownerId, profileId, language = 'ko', limit = 200
       );
     });
   });
+};
+
+const REFIT_WINDOW_DAYS = 180;
+const REFIT_EVENT_TYPES = { lookup: 'lookup', exposure: 'pass', check: 'check', check_pseudo: 'pseudo', review: 'review' };
+
+const readRefitEvents = ({ ownerId, profileId, language }, since) => new Promise((resolve, reject) => {
+  db.transaction(tx => {
+    tx.executeSql(
+      `SELECT event_type, stem, outcome, grade, source_book_uri, created_at FROM interaction_events
+       WHERE owner_id = ? AND profile_id = ? AND language = ? AND deleted_at IS NULL
+         AND event_type IN ('lookup', 'exposure', 'check', 'check_pseudo', 'review')
+         AND created_at >= ?
+       ORDER BY created_at ASC`,
+      [ownerId, profileId, language, since],
+      (_, result) => resolve(result.rows._array ?? []),
+      (_, error) => {
+        reject(error);
+        return true;
+      }
+    );
+  });
+});
+
+// The newest level the reader picked (or "just starting"): the refit's prior.
+const readLatestSeed = ({ ownerId, profileId, language }) => new Promise((resolve) => {
+  db.transaction(tx => {
+    tx.executeSql(
+      `SELECT theta_after FROM ability_log
+       WHERE owner_id = ? AND profile_id = ? AND language = ? AND signal = 'seed'
+       ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [ownerId, profileId, language],
+      (_, result) => resolve(result.rows._array?.[0]?.theta_after ?? null),
+      () => resolve(null)
+    );
+  });
+});
+
+/**
+ * refitReaderLevel — set the reader's level from their whole recent log at
+ * once (services/levelRefit.js): the level, how often they look up words
+ * they don't know and tap ones they do, and an honest uncertainty. Run after
+ * a reading session and when the app opens; the online updates carry on from
+ * the result between refits. Logs one 'refit' row.
+ *
+ * @returns {Promise<object|null>} the new engine state, or null when there was
+ *          nothing to fit
+ */
+export const refitReaderLevel = async ({ ownerId, profileId, language = 'ko', now = Date.now() } = {}) => {
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scope = {
+    ownerId: resolveOwnerId(ownerId),
+    profileId: resolveProfileId(profileId, normalizedLanguage),
+    language: normalizedLanguage,
+  };
+  const since = new Date(now - REFIT_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const rows = await readRefitEvents(scope, since);
+  if (rows.length === 0) return null;
+
+  const stems = Array.from(new Set(rows.map((row) => row.stem).filter(Boolean)));
+  const difficulties = await getWordDifficulties(normalizedLanguage, stems);
+  const events = rows.map((row) => {
+    const type = REFIT_EVENT_TYPES[row.event_type];
+    if (type === 'pseudo') return { type, outcome: row.outcome, at: row.created_at };
+    const entry = difficulties?.[row.stem];
+    if (!entry || entry.isFallback) return null;
+    return {
+      type,
+      stem: row.stem,
+      difficulty: Number(entry.difficulty),
+      outcome: row.outcome,
+      at: row.created_at,
+      source: row.source_book_uri,
+      // Lookups: the reader's level mark (see dictionaryLookup levelMark).
+      levelMark: row.event_type === 'lookup' ? row.grade : null,
+    };
+  }).filter(Boolean);
+
+  const prepared = prepareRefitEvents(events, { now });
+  if (prepared.reading.length === 0 && prepared.labelled.length === 0) return null;
+  const seed = await readLatestSeed(scope);
+  const fit = fitReaderLevel(prepared, { theta: seed ?? 0 });
+  const at = new Date(now).toISOString();
+
+  const state = await updateReaderLevel(scope, (before) => ({
+    state: applyRefit(before, fit, { at }),
+    logs: [{
+      signal: 'refit',
+      thetaBefore: before.theta,
+      thetaAfter: fit.theta,
+      varianceBefore: before.variance,
+      varianceAfter: Math.max(fit.variance, 0),
+      lookupRate: fit.lookupRate,
+      guessRate: fit.guessRate,
+      details: {
+        knownTapRate: Math.round(fit.knownTapRate * 1e4) / 1e4,
+        readingWeight: Math.round(fit.readingWeight * 10) / 10,
+        labelledWeight: Math.round(fit.labelledWeight * 10) / 10,
+        events: events.length,
+      },
+      at,
+    }],
+  }));
+  emitReaderLevelChanged(scope);
+  return state;
 };
 
 /**
@@ -1562,6 +1668,9 @@ export const updateThetaFromOutcome = async ({
   signal,
   learningRate,
   sourceBookUri = null,
+  // Lookups from the book reader: 1 underlined, 2 in the level sample, 0
+  // neither (reading past it isn't logged, so the lookup doesn't count).
+  levelMark = null,
 } = {}) => {
   const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
   const y = outcome === 1 || outcome === true ? 1 : (outcome === 0 || outcome === false ? 0 : null);
@@ -1611,7 +1720,12 @@ export const updateThetaFromOutcome = async ({
   }
 
   const state = await updateReaderLevel({ ownerId, profileId, language: normalizedLanguage }, (before) => {
-    if (type === 'lookup' && !lookupCountsForLevel(before.theta, wordDifficultyValue, cleanStem)) return null;
+    if (type === 'lookup') {
+      const counts = levelMark != null
+        ? Number(levelMark) > 0
+        : lookupCountsForLevel(before.theta, wordDifficultyValue, cleanStem);
+      if (!counts) return null;
+    }
     const { state: next, log } = applyLevelSignal(before, {
       type,
       difficulty: wordDifficultyValue,

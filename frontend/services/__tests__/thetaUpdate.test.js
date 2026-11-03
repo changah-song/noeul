@@ -30,7 +30,9 @@ import {
   ensureProfileAbilitySeed,
   getAbilityLog,
   getProfileAbility,
+  getReaderLevel,
   logInteractionEvent,
+  refitReaderLevel,
   updateThetaFromOutcome,
 } from '../Database';
 import { seedThetaFromRank } from '../abilityModel';
@@ -239,5 +241,39 @@ describe('updateThetaFromOutcome', () => {
     const row = await getProfileAbility({ ownerId: OWNER, profileId: PROFILE, language: 'ko' });
     expect(result).toBeNull();
     expect(row.event_count).toBe(0);
+  });
+});
+
+describe('refitReaderLevel', () => {
+  it('sets the level and both tap rates from the whole log, and logs why', async () => {
+    const words = ['소문', '공부', '학교', '나무', '바다', '사과'];
+    for (const [i, stem] of words.entries()) await cacheStem({ stem, levelRank: 1 + (i % 6) });
+    await ensureProfileAbilitySeed({ ownerId: OWNER, profileId: PROFILE, language: 'ko', rank: 1 });
+    const day = (d, s) => new Date(Date.UTC(2026, 9, 20 + d, 10, 0, s)).toISOString();
+    // Reads every day, passing the easy words and tapping the hardest.
+    for (let d = 0; d < 6; d += 1) {
+      for (const [i, stem] of words.entries()) {
+        const tapped = i >= 5;
+        await logInteractionEvent({
+          ownerId: OWNER, profileId: PROFILE, language: 'ko', word: stem, stem,
+          eventType: tapped ? 'lookup' : 'exposure', outcome: tapped ? null : 1,
+          grade: tapped ? 1 : null, sourceBookUri: 'book://a', createdAt: day(d, i),
+        });
+      }
+    }
+    const state = await refitReaderLevel({ ownerId: OWNER, profileId: PROFILE, language: 'ko', now: Date.UTC(2026, 9, 27) });
+    expect(state.theta).toBeGreaterThan(seedThetaFromRank('ko', 1));
+    expect(state.knownTapRate).toBeGreaterThan(0);
+
+    const level = await getReaderLevel({ ownerId: OWNER, profileId: PROFILE, language: 'ko' });
+    expect(level.theta).toBeCloseTo(state.theta, 6);
+    expect(level.knownTapRate).toBeCloseTo(state.knownTapRate, 3);
+    const [log] = await getAbilityLog({ ownerId: OWNER, profileId: PROFILE, language: 'ko' });
+    expect(log.signal).toBe('refit');
+    expect(JSON.parse(log.details)).toMatchObject({ engine: LEVEL_ENGINE_VERSION, events: 36 });
+  });
+
+  it('does nothing for a reader with no log', async () => {
+    expect(await refitReaderLevel({ ownerId: OWNER, profileId: PROFILE, language: 'ko' })).toBeNull();
   });
 });

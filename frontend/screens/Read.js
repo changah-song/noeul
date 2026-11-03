@@ -130,6 +130,7 @@ import {
 } from '../constants/languages';
 import { loadLevelReaderTerms } from '../hooks/useLevelUnderlineTerms';
 import useLookupDetail, { LOOKUP_ACTIONS } from '../hooks/useLookupDetail';
+import { scheduleLevelRefit } from '../services/levelRefitScheduler';
 import { bookIndexLanguages, tagPreprocessCacheEntries } from '../services/preprocessCacheEntries';
 import { selectExposureCredits } from '../services/readerExposure';
 import useSavedWordFades from '../hooks/useSavedWordFades';
@@ -230,6 +231,8 @@ const shallowEqualObjects = (a, b) => {
 const LEVEL_MARK_STYLES = ['off', 'underline'];
 // Stable empty reference so toggling underlines off doesn't hand native a fresh
 // array each render (which would churn the level matcher).
+// Reading this long is a session worth refitting the level after.
+const REFIT_SESSION_MS = 60 * 1000;
 const EMPTY_LEVEL_TERMS = [];
 
 const FONT_SIZE_MIN = 12;
@@ -840,6 +843,8 @@ const Read = ({
     const preprocessLayoutRef = useRef({ readerPackage: null, layout: null });
     const readingSessionStartedAtRef = useRef(Date.now());
     const readingSessionOwnerIdRef = useRef(activeOwnerId);
+    // The language of the book being read, for the level refit when it closes.
+    const readingSessionLanguageRef = useRef(null);
     const chapterLoadTokenRef = useRef(0);
     const nativeReaderPackageRef = useRef(null);
     const nativeRestorePositionRef = useRef(null);
@@ -1132,6 +1137,10 @@ const Read = ({
         if (elapsed >= 5000) {
             addReadingMillis(sessionOwnerId, elapsed);
         }
+        if (elapsed >= REFIT_SESSION_MS && readingSessionLanguageRef.current) {
+            scheduleLevelRefit({ ownerId: sessionOwnerId, language: readingSessionLanguageRef.current, afterSession: true });
+        }
+        readingSessionLanguageRef.current = currentBook ? activeBookLanguage : null;
 
         // A coalesced focus-mode step captured its own processor (closing over
         // the previous book), so flushing here still records the position the
@@ -1180,11 +1189,20 @@ const Read = ({
     }, [activeOwnerId, currentBook, updateNativeRestorePosition, publishFocusInfo, flushPendingFocusPageChange]);
 
     useEffect(() => {
+        // Opening the app: refit the level from everything read so far, once
+        // the database has had a moment to open.
+        const timer = setTimeout(() => {
+            scheduleLevelRefit({ ownerId: activeOwnerId, language: activeBookLanguage });
+        }, 5000);
         return () => {
+            clearTimeout(timer);
             const elapsed = Date.now() - readingSessionStartedAtRef.current;
             const sessionOwnerId = readingSessionOwnerIdRef.current || activeOwnerId;
             if (elapsed >= 5000) {
                 addReadingMillis(sessionOwnerId, elapsed);
+            }
+            if (elapsed >= REFIT_SESSION_MS && readingSessionLanguageRef.current) {
+                scheduleLevelRefit({ ownerId: sessionOwnerId, language: readingSessionLanguageRef.current, afterSession: true });
             }
             if (cloudProgressSyncTimeoutRef.current) {
                 clearTimeout(cloudProgressSyncTimeoutRef.current);
@@ -1826,6 +1844,18 @@ const Read = ({
         () => new Map(levelUnderlineTerms.map(({ text, weight }) => [text, weight])),
         [levelUnderlineTerms]
     );
+    // What a tapped word was to the level model (recorded on the lookup):
+    // 1 underlined (drawn or not), 2 a sampled known word, 0 neither.
+    const levelMarkSets = useMemo(() => ({
+        underlined: new Set(levelUnderlineTerms.map((term) => term.text)),
+        sampled: new Set(levelExposureTerms.map((term) => term.text)),
+    }), [levelUnderlineTerms, levelExposureTerms]);
+    const levelMarkFor = useCallback((surface) => {
+        const text = typeof surface === 'string' ? surface.trim() : '';
+        if (levelMarkSets.underlined.has(text)) return 1;
+        if (levelMarkSets.sampled.has(text)) return 2;
+        return 0;
+    }, [levelMarkSets]);
     levelUnderlineStemsRef.current = useMemo(
         () => new Map([...levelUnderlineTerms, ...levelExposureTerms]
             .filter((term) => term.stem)
@@ -5266,6 +5296,7 @@ const Read = ({
                         currentBook={currentBook}
                         sourceBook={activeBook}
                         savedWords={savedWordsList}
+                        levelMarkFor={currentBook ? levelMarkFor : null}
                         translationVisualState={translationBannerVisualState}
                     />
                     {textSelection ? renderSelectionExplain() : null}

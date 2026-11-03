@@ -51,7 +51,9 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 //   2.0  difficulty model v2 (2026-10-19)
 //   2.1  word check widens every habit; lookups gated, once a day; no
 //        wrong-way moves; P(look up | known) 0.10; level sample logged
-export const LEVEL_ENGINE_VERSION = '2.1';
+//   2.2  batch refit (levelRefit.js) sets the level, both tap rates and an
+//        honest uncertainty from the whole recent log
+export const LEVEL_ENGINE_VERSION = '2.2';
 
 // Belief about the reader's level.
 export const PRIOR_VARIANCE = 2.0;        // a reader we know nothing about (sd ≈ 1.4)
@@ -66,7 +68,7 @@ export const MAX_STEP = 0.6;              // no single signal moves the level fu
 // difficulty (variance on the logit scale). The reader's level is learned
 // through that blur, which flattens P(known) by the probit factor below.
 export const ITEM_VARIANCE = 0.6;
-const ITEM_SLOPE = 1 / Math.sqrt(1 + (Math.PI / 8) * ITEM_VARIANCE);
+export const ITEM_SLOPE = 1 / Math.sqrt(1 + (Math.PI / 8) * ITEM_VARIANCE);
 
 // Observation models (see the header).
 // Readers also tap words they know: for the pinyin, the audio, or the
@@ -101,12 +103,15 @@ export const SIGNAL_WEIGHTS = {
  * observationModel — hit / false-alarm rates for a signal, given the reader's
  * learned rates.
  */
-export const observationModel = (signal, { lookupRate, guessRate } = {}) => {
+export const observationModel = (signal, { lookupRate, guessRate, knownTapRate } = {}) => {
     switch (signal) {
     case 'lookup':
     case 'pass':
         return {
-            hit: LOOKUP_GIVEN_KNOWN,
+            // The reader's own rate once a refit has learned it.
+            hit: Number.isFinite(Number(knownTapRate)) && knownTapRate != null
+                ? clamp(Number(knownTapRate), 0.005, 0.5)
+                : LOOKUP_GIVEN_KNOWN,
             falseAlarm: clamp(Number(lookupRate) || 0.5, 0.05, 0.95),
         };
     case 'check':
@@ -263,6 +268,21 @@ const mixture = (hypotheses) => {
     return { mean, variance: Math.max(MIN_VARIANCE, second - mean * mean), rate };
 };
 
+// lookup_model is the hypotheses array, or (after a refit) { hypotheses,
+// knownTapRate }.
+const parseLookupModel = (raw) => {
+    try {
+        const value = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (value && !Array.isArray(value) && typeof value === 'object') {
+            const rate = Number(value.knownTapRate);
+            return { hypotheses: parseHypotheses(value.hypotheses), knownTapRate: Number.isFinite(rate) ? rate : null };
+        }
+        return { hypotheses: parseHypotheses(value), knownTapRate: null };
+    } catch {
+        return { hypotheses: null, knownTapRate: null };
+    }
+};
+
 const parseHypotheses = (raw) => {
     try {
         const list = typeof raw === 'string' ? JSON.parse(raw) : raw;
@@ -276,13 +296,22 @@ const parseHypotheses = (raw) => {
     }
 };
 
-/** The hypotheses as stored in profile_ability.lookup_model (rounded JSON). */
-export const serializeHypotheses = (hypotheses) => JSON.stringify((hypotheses || []).map((h) => ({
+const roundHypotheses = (hypotheses) => (hypotheses || []).map((h) => ({
     rate: h.rate,
     mean: Math.round(h.mean * 1e4) / 1e4,
     variance: Math.round(h.variance * 1e5) / 1e5,
     logWeight: Math.round(h.logWeight * 1e3) / 1e3,
-})));
+}));
+
+/**
+ * The habits as stored in profile_ability.lookup_model (rounded JSON), with
+ * the learned P(look up | known) once a refit has set one.
+ */
+export const serializeHypotheses = (hypotheses, knownTapRate = null) => (
+    Number.isFinite(Number(knownTapRate)) && knownTapRate != null
+        ? JSON.stringify({ hypotheses: roundHypotheses(hypotheses), knownTapRate: Math.round(knownTapRate * 1e4) / 1e4 })
+        : JSON.stringify(roundHypotheses(hypotheses))
+);
 
 /**
  * readerState — the engine's view of a profile_ability row, with defaults for
@@ -297,10 +326,12 @@ export const readerState = (row) => {
         ? storedVariance
         : (row ? Math.max(0.15, PRIOR_VARIANCE / (1 + events / 15)) : PRIOR_VARIANCE);
     const level = Number.isFinite(theta) ? clamp(theta, ABILITY_THETA_MIN, ABILITY_THETA_MAX) : 0;
+    const model = parseLookupModel(row?.lookup_model);
     return {
         theta: level,
         variance,
-        hypotheses: parseHypotheses(row?.lookup_model) || freshHypotheses(level, variance),
+        hypotheses: model.hypotheses || freshHypotheses(level, variance),
+        knownTapRate: model.knownTapRate,
         guessYes: Number(row?.guess_yes) || 0,
         guessTotal: Number(row?.guess_total) || 0,
         lastEventAt: row?.last_event_at ?? row?.updated_at ?? null,
@@ -375,7 +406,7 @@ export const applySignal = (state, signal = {}) => {
     let pObserved = 0;
 
     const hypotheses = base.hypotheses.map((h, i) => {
-        const model = observationModel(signal.type, { lookupRate: h.rate, guessRate });
+        const model = observationModel(signal.type, { lookupRate: h.rate, guessRate, knownTapRate: base.knownTapRate });
         const step = noisyBinaryStep({
             mean: h.mean,
             variance: driftVariance(h.variance, base.lastEventAt, at),
@@ -438,6 +469,34 @@ export const applySignal = (state, signal = {}) => {
             lookupRate: signal.type === 'lookup' || signal.type === 'pass' ? before.rate : null,
             at,
         },
+    };
+};
+
+/**
+ * applyRefit — set the level from a batch refit (services/levelRefit.js):
+ * every habit's belief moves to the fitted level and uncertainty, the habits
+ * are re-weighed around the fitted lookup rate, and the learned P(look up |
+ * known) is kept for the online updates that follow.
+ */
+export const applyRefit = (state, fit, { at } = {}) => {
+    const theta = clamp(Number(fit.theta), ABILITY_THETA_MIN, ABILITY_THETA_MAX);
+    const variance = Math.max(MIN_VARIANCE, Number(fit.variance));
+    const spread = 0.06;
+    const hypotheses = LOOKUP_RATES.map((rate, i) => ({
+        rate,
+        mean: theta,
+        variance,
+        logWeight: LOOKUP_RATE_LOG_PRIOR[i] - ((rate - Number(fit.lookupRate)) ** 2) / (2 * spread * spread),
+    }));
+    const top = Math.max(...hypotheses.map((h) => h.logWeight));
+    hypotheses.forEach((h) => { h.logWeight -= top; });
+    return {
+        ...state,
+        hypotheses,
+        theta,
+        variance,
+        knownTapRate: Number(fit.knownTapRate),
+        lastEventAt: at ? new Date(at).toISOString() : (state?.lastEventAt ?? new Date().toISOString()),
     };
 };
 

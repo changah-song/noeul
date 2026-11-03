@@ -41,6 +41,9 @@ const TopSection = ({
     currentBook,
     sourceBook,
     savedWords,
+    // (surface) => 1 underlined, 2 in the level sample, 0 neither: recorded on
+    // the lookup so the level counts it only when reading past it is logged.
+    levelMarkFor,
     translationVisualState = {},
     // The reader has no tab bar: a bottom panel pads its own way past the
     // system gesture bar.
@@ -405,6 +408,7 @@ const TopSection = ({
                         currentBook={currentBook}
                         sourceBook={sourceBook}
                         savedWords={savedWords}
+                        levelMarkFor={levelMarkFor}
                     />
                 ) : (
                     <TranslationContent

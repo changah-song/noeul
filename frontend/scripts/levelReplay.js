@@ -27,7 +27,7 @@ require('@babel/register')({
 
 const fs = require('fs');
 const path = require('path');
-const { eventsFromAbilityLog, replayLevelLog } = require('../services/levelReplay');
+const { eventsFromAbilityLog, replayLevelLog, replayRefit } = require('../services/levelReplay');
 
 const args = process.argv.slice(2);
 const values = (name) => args.flatMap((arg, i) => (arg === name && i + 1 < args.length ? [args[i + 1]] : []));
@@ -42,7 +42,7 @@ const engines = values('--engine');
 if (engines.length === 0) engines.push(path.join(__dirname, '../services/levelEngine.js'));
 
 const events = eventsFromAbilityLog(JSON.parse(fs.readFileSync(path.resolve(logFile), 'utf8')));
-const results = engines.map((file) => ({
+const results = engines.filter((file) => file !== 'refit').map((file) => ({
     name: path.basename(file),
     // eslint-disable-next-line global-require, import/no-dynamic-require
     result: replayLevelLog(events, require(path.resolve(file)), {
@@ -51,6 +51,22 @@ const results = engines.map((file) => ({
         sampleLogged: has('--sampled'),
     }),
 }));
+
+// `--engine refit` scores the batch refit (services/levelRefit.js) instead.
+if (engines.includes('refit')) {
+    const { sigmoid, UNDERLINE_KNOWN_CEILING } = require('../services/abilityModel');
+    const { ITEM_SLOPE } = require('../services/levelEngine');
+    const { isLevelSample } = require('../services/levelSample');
+    results.push({
+        name: 'refit',
+        result: replayRefit(events, require('../services/levelRefit'), {
+            sigmoid,
+            slope: ITEM_SLOPE,
+            ceiling: UNDERLINE_KNOWN_CEILING,
+            isSample: has('--sampled') ? isLevelSample : () => false,
+        }),
+    });
+}
 
 if (has('--json')) {
     console.log(JSON.stringify(results, null, 2));
@@ -75,4 +91,5 @@ console.log(row('', () => '').replace(/\s+$/, '') + results.map(({ name }) => na
     console.log(row('  calibration error', (r) => f(r[key].calibrationError)));
 });
 console.log(row('final level', (r) => `${f(r.final.theta, 2)} ± ${f(Math.sqrt(r.final.variance), 2)}`));
+console.log(row('tap rates (unknown / known)', (r) => (r.final.knownTapRate != null ? `${f(r.final.lookupRate, 2)} / ${f(r.final.knownTapRate, 2)}` : '–')));
 console.log(row('skipped signals', (r) => String(r.skipped)));
