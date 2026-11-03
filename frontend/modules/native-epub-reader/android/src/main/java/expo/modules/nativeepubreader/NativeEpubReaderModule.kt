@@ -78,8 +78,15 @@ private class HighlightMatcher(terms: List<String>) {
   private val nodes = mutableListOf(HighlightTrieNode())
   val termCount = terms.size
 
+  // Whether any term has a space in it ("gave up"): only then does the text
+  // need its whitespace runs collapsed before matching.
+  private val hasPhraseTerms = terms.any { term -> term.any { isPhraseSpace(it) } }
+
   init {
-    terms.forEachIndexed { priority, term ->
+    terms.forEachIndexed { priority, rawTerm ->
+      // One plain space between a phrase's words; the text is matched with
+      // its whitespace runs collapsed the same way (see find).
+      val term = if (hasPhraseTerms) collapsePhraseSpaces(rawTerm) else rawTerm
       var nodeIndex = 0
       term.forEach { char ->
         nodeIndex = nodes[nodeIndex].children.getOrPut(char) {
@@ -99,8 +106,12 @@ private class HighlightMatcher(terms: List<String>) {
 
     val matches = mutableListOf<HighlightMatch>()
     var nodeIndex = 0
+    // A phrase matches across any whitespace run: "gave up", "gave\nup".
+    // Offsets are mapped back to the original text.
+    val collapsed = if (hasPhraseTerms) collapseTextSpaces(text) else null
+    val scanned = collapsed?.text ?: text
 
-    text.forEachIndexed { index, char ->
+    scanned.forEachIndexed { index, char ->
       while (nodeIndex != 0 && !nodes[nodeIndex].children.containsKey(char)) {
         nodeIndex = nodes[nodeIndex].fail
       }
@@ -109,11 +120,12 @@ private class HighlightMatcher(terms: List<String>) {
 
       nodes[nodeIndex].outputs.forEach { term ->
         val end = index + 1
+        val start = end - term.text.length
         matches.add(
           HighlightMatch(
             term = term.text,
-            start = end - term.text.length,
-            end = end,
+            start = collapsed?.offsets?.get(start) ?: start,
+            end = collapsed?.offsets?.get(index)?.plus(1) ?: end,
             priority = term.priority
           )
         )
@@ -1838,8 +1850,27 @@ class NativeEpubReaderView(
 
   private fun rebuildExposureRanges(sourcePages: List<ReaderPage>) {
     val built = buildHighlightRanges(sourcePages, exposureMatcher, "exposure")
-    exposureRangesByPage = built.rangesByPage
-    exposureTermsByPage = built.termsByPage
+    // A sampled word inside a phrase the level terms mark ("gave" in "gave
+    // up", underlined or not) was read as part of the phrase: not credited.
+    val hasPhrases = levelTerms.any { isPhraseTerm(it.text) }
+    if (!hasPhrases) {
+      exposureRangesByPage = built.rangesByPage
+      exposureTermsByPage = built.termsByPage
+      return
+    }
+    val rangesByPage = built.rangesByPage.mapValues { (pageIndex, ranges) ->
+      withoutRangesInsidePhrases(
+        ranges,
+        levelRangesByPage[pageIndex].orEmpty().filter { isPhraseTerm(it.term) },
+        blockOf = { it.blockId },
+        startOf = { it.sourceStartOffset },
+        endOf = { it.sourceEndOffset }
+      )
+    }.filterValues { it.isNotEmpty() }
+    exposureRangesByPage = rangesByPage
+    exposureTermsByPage = rangesByPage.mapValues { (_, ranges) ->
+      ranges.mapNotNull { it.term }.distinct()
+    }
   }
 
   // Toggle pinyin annotations above underlined words. Repaginate so the line
@@ -3929,7 +3960,8 @@ class NativeEpubReaderView(
       val start = range.sourceStartOffset - block.sourceStartOffset
       val end = range.sourceEndOffset - block.sourceStartOffset
       if (start >= localStart && end <= localEnd && start in 0 until end && end <= text.length) {
-        terms.add(text.substring(start, end))
+        // A phrase reads as its term ("gave up"), whatever space is between.
+        terms.add(collapsePhraseSpaces(text.substring(start, end)))
       }
     }
     return terms.toList()
@@ -4149,6 +4181,10 @@ class NativeEpubReaderView(
     hit.range.spineIndex?.let { spineIndex ->
       event["spineIndex"] = spineIndex
     }
+    // A phrase tap ("gave up"): the single word tapped inside it.
+    if (hit.phraseWord.isNotEmpty()) {
+      event["phraseWord"] = hit.phraseWord
+    }
 
     onWordSelected(event)
   }
@@ -4350,6 +4386,8 @@ class NativeEpubReaderView(
     )
     levelRangesByPage = levelHighlights.rangesByPage
     levelTermsByPage = levelHighlights.termsByPage
+    // Exposures leave out words inside the phrases just matched.
+    rebuildExposureRanges(pages)
     pageAdapter?.updateLevelUnderlineRanges(levelRangesByPage)
     invalidateVisiblePageHighlights()
   }

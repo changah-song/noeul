@@ -1997,8 +1997,12 @@ class EpubPageView(context: Context) : View(context) {
       // breaker splits words it doesn't know (厮 + 杀). A tap inside a marked
       // or glossed word takes that exact word, so the lookup matches what is
       // drawn under it.
-      val tokenRange = markedCjkWordAt(block, blockText, localOffset)
+      val tappedRange = markedCjkWordAt(block, blockText, localOffset)
         ?: tokenRangeAtOffset(blockText, localOffset)
+      // English: a tap on any word of a marked phrase ("gave up") takes the
+      // phrase, and remembers the word itself for the card's word chip.
+      val phraseRange = markedPhraseAt(block, blockText, localOffset)
+      val tokenRange = phraseRange ?: tappedRange
 
       if (tokenRange == null) {
         Log.d(
@@ -2017,7 +2021,16 @@ class EpubPageView(context: Context) : View(context) {
 
       val sourceStart = block.sourceStartOffset + tokenRange.start
       val sourceEnd = block.sourceStartOffset + tokenRange.end
-      val word = blockText.substring(tokenRange.start, tokenRange.end)
+      // A phrase is reported with one plain space between its words, as its
+      // level term is written ("gave up", even across a line break).
+      val word = collapsePhraseSpaces(blockText.substring(tokenRange.start, tokenRange.end))
+      val phraseWord = if (phraseRange != null && tappedRange != null &&
+        tappedRange.start >= phraseRange.start && tappedRange.end <= phraseRange.end
+      ) {
+        blockText.substring(tappedRange.start, tappedRange.end)
+      } else {
+        ""
+      }
       val wordCenterY = wordCenterY(rendered, layout, tokenRange, line)
       val placement = if (usesTopLookupPlacement(wordCenterY)) "top" else "bottom"
       val range = TextRange(
@@ -2044,7 +2057,8 @@ class EpubPageView(context: Context) : View(context) {
         localEndOffset = tokenRange.end,
         sentence = sentenceForToken(block, tokenRange),
         sentenceSourceStart = sentenceBounds?.first ?: -1,
-        sentenceSourceEnd = sentenceBounds?.second ?: -1
+        sentenceSourceEnd = sentenceBounds?.second ?: -1,
+        phraseWord = phraseWord
       )
     }
 
@@ -2863,6 +2877,29 @@ class EpubPageView(context: Context) : View(context) {
       if (best == null || end - start > best!!.end - best!!.start) best = LocalTokenRange(start, end)
     }
     return best?.takeIf { it.end - it.start > 1 }
+  }
+
+  // The longest marked phrase (a level / annotation term with a space in it:
+  // "gave up", "of course") on this block that covers a tapped Latin letter or
+  // the space inside it, in block-local offsets. Null elsewhere.
+  private fun markedPhraseAt(block: PageBlock, text: String, offset: Int): LocalTokenRange? {
+    if (text.isEmpty()) return null
+    val probe = offset.coerceIn(0, text.length - 1)
+    if (!isLatinLetter(text[probe]) && !isPhraseSpace(text[probe]) && !isInWordPunctuationAt(text, probe)) {
+      return null
+    }
+    val currentPage = page ?: return null
+    val candidates = rangesForBlock(levelRanges, block.blockId)
+      .filter { range ->
+        range.pageIndex == currentPage.pageIndex &&
+          range.spineIndex == currentPage.spineIndex &&
+          isPhraseTerm(range.term)
+      }
+      .map { range ->
+        (range.sourceStartOffset - block.sourceStartOffset) to (range.sourceEndOffset - block.sourceStartOffset)
+      }
+    if (candidates.isEmpty()) return null
+    return phraseRangeAt(text, probe, candidates)?.let { (start, end) -> LocalTokenRange(start, end) }
   }
 
   private fun tokenRangeAtOffset(text: String, offset: Int): LocalTokenRange? {

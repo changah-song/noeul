@@ -23,4 +23,6 @@ dependencies {
   // Media session + MediaStyle notification for listen mode.
   implementation "androidx.media:media:1.7.0"
   implementation "com.tom-roush:pdfbox-android:2.0.27.0"
+  // Plain JVM tests of the pure text logic (src/test): ./gradlew :native-epub-reader:testReleaseUnitTest
+  testImplementation 'junit:junit:4.13.2'
 }

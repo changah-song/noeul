@@ -117,7 +117,11 @@ data class WordHit(
   val sentence: String = "",
   // The sentence's source offsets in the block (-1 when unknown).
   val sentenceSourceStart: Int = -1,
-  val sentenceSourceEnd: Int = -1
+  val sentenceSourceEnd: Int = -1,
+  // A tap inside a marked phrase ("gave up"): `text` and `range` are the
+  // phrase's, this is the single word that was tapped ("gave"), so the card
+  // can offer it too. Empty for a plain word.
+  val phraseWord: String = ""
 )
 
 // The sentence whose translation is pinned at the top of the reader: drawn
