@@ -71,6 +71,7 @@ const DICTIONARY_CACHE_ZH_SCRIPTS_MIGRATION_KEY = 'dictionary_cache_zh_scripts_m
 const DICTIONARY_CACHE_KO_LANGUAGE_PURGE_KEY = 'dictionary_cache_ko_language_purge_v1';
 const BOOK_INDEX_EN_VERB_LEMMA_PURGE_KEY = 'book_index_en_verb_lemma_purge_v1';
 const DICTIONARY_CACHE_EN_REFETCH_PURGE_KEY = 'dictionary_cache_en_refetch_purge_v1';
+const BOOK_INDEX_EN_PARTICIPLE_PURGE_KEY = 'book_index_en_participle_purge_v1';
 const LOCAL_OWNER_SQLITE_MIGRATION_KEY = 'local_owner_sqlite_migration_v1';
 const PROFILE_SQLITE_MIGRATION_KEY = 'profile_sqlite_migration_v1';
 const VOCAB_EMPTY_HANJA_MIGRATION_KEY = 'vocab_empty_hanja_migration_v1';
@@ -82,7 +83,10 @@ const VOCAB_EMPTY_HANJA_MIGRATION_KEY = 'vocab_empty_hanja_migration_v1';
 // CEFR lists, and a rare word with no entry is underlined (epigram).
 // 12: English verbs keep their silent e ("shining" is shine, not shin; "hoping"
 // is hope, not hop). The wrong rows are dropped by purgeEnglishBareVerbStemRows.
-export const PREPROCESS_VERSION = 12;
+// 13: an English word's gloss follows its part of speech in the text ("bore" is
+// the verb bear, not the animal 곰), and a participle with an adjective of its
+// own keeps it ("born" is 태어난). Old rows: purgeEnglishLexicalizedParticipleRows.
+export const PREPROCESS_VERSION = 13;
 // English words with no dictionary entry are underlined only when rarer than
 // this (zipf 3.5 ≈ "antique", "orchard"; epigram 2.6).
 const EN_UNDERLINE_OOV_MAX_ZIPF = 3.5;
@@ -3846,6 +3850,46 @@ export const purgeEnglishBareVerbStemRows = async () => {
   await AsyncStorage.setItem(BOOK_INDEX_EN_VERB_LEMMA_PURGE_KEY, 'done');
 };
 
+// Irregular participles the backend now indexes as adjectives of their own
+// when they aren't in a perfect tense ("was born" is born, 태어난; it used to be
+// "bear", glossed 곰). The backend's en_learner_dict.lexicalized_adjectives
+// over spaCy's irregular verb forms gives exactly these.
+const EN_LEXICALIZED_PARTICIPLES = ['born', 'broken', 'forbidden', 'frozen', 'lost', 'spoilt', 'swollen'];
+
+// book_index only gains rows, so analysing a book again would add born -> born
+// next to the old born -> bear and the tap would show both. Once, drop the
+// English rows that index these participles under another stem; PREPROCESS_VERSION
+// 13 adds back the ones that are still right ("has lost" is lose).
+export const purgeEnglishLexicalizedParticipleRows = async () => {
+  if (await AsyncStorage.getItem(BOOK_INDEX_EN_PARTICIPLE_PURGE_KEY) === 'done') return;
+
+  const placeholders = EN_LEXICALIZED_PARTICIPLES.map(() => '?').join(', ');
+  await new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        tx.executeSql(
+          `DELETE FROM book_index
+           WHERE id IN (
+             SELECT bi.id FROM book_index bi
+             JOIN dictionary_cache dc ON dc.id = bi.stem_id
+             WHERE dc.language = 'en'
+               AND lower(bi.surface) IN (${placeholders})
+               AND lower(dc.stem) != lower(bi.surface)
+           )`,
+          EN_LEXICALIZED_PARTICIPLES
+        );
+      },
+      (error) => {
+        console.error('[Database] Error purging English participle book_index rows:', error);
+        reject(error);
+      },
+      () => resolve()
+    );
+  });
+
+  await AsyncStorage.setItem(BOOK_INDEX_EN_PARTICIPLE_PURGE_KEY, 'done');
+};
+
 // English stems whose dictionary entries were wrong: "am" was the abbreviation
 // AM (Member of the Order of Australia), "is" / "was" / "had" notes on grammar,
 // and "be" / "do" opened with grammar notes (be -> -되다). The dictionary now
@@ -5891,6 +5935,7 @@ export const initAllTables = async () => {
   await createBookIndexTable();
   await purgeKoreanNonEnglishCacheRows();
   await purgeEnglishBareVerbStemRows();
+  await purgeEnglishLexicalizedParticipleRows();
   await purgeEnglishRefetchStemRows();
   await createBookNotesTable();
   await migrateBookNotesTable();
