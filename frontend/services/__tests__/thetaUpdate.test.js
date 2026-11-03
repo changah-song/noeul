@@ -34,6 +34,8 @@ import {
   updateThetaFromOutcome,
 } from '../Database';
 import { seedThetaFromRank } from '../abilityModel';
+import { LEVEL_ENGINE_VERSION } from '../levelEngine';
+import { isLevelSample } from '../levelSample';
 
 const { __resetMockDatabases } = SQLite;
 
@@ -213,11 +215,17 @@ describe('updateThetaFromOutcome', () => {
   it('leaves the level alone on a lookup of a word it thinks is known', async () => {
     // Reading past such a word is never logged (it isn't underlined), so its
     // lookup alone would be one-sided evidence.
-    await cacheStem({ stem: '학교', levelRank: 1 });
+    // ...unless the word is in the level sample, whose reading past is logged.
+    const [known, sampled] = ['나무', '학교'];
+    expect([isLevelSample(known), isLevelSample(sampled)]).toEqual([false, true]);
+    await cacheStem({ stem: known, levelRank: 1 });
+    await cacheStem({ stem: sampled, levelRank: 1 });
     await ensureProfileAbilitySeed({ ownerId: OWNER, profileId: PROFILE, language: 'ko', rank: 5 });
-    const next = await updateThetaFromOutcome({ ownerId: OWNER, profileId: PROFILE, language: 'ko', stem: '학교', signal: 'lookup' });
-    expect(next).toBeNull();
-    expect(await getAbilityLog({ ownerId: OWNER, profileId: PROFILE, language: 'ko' })).toHaveLength(0);
+    expect(await updateThetaFromOutcome({ ownerId: OWNER, profileId: PROFILE, language: 'ko', stem: known, signal: 'lookup' })).toBeNull();
+    expect(await updateThetaFromOutcome({ ownerId: OWNER, profileId: PROFILE, language: 'ko', stem: sampled, signal: 'lookup' })).not.toBeNull();
+    const logs = await getAbilityLog({ ownerId: OWNER, profileId: PROFILE, language: 'ko' });
+    expect(logs.map((row) => row.stem)).toEqual([sampled]);
+    expect(JSON.parse(logs[0].details)).toMatchObject({ engine: LEVEL_ENGINE_VERSION });
   });
 
   it('ignores a non-binary outcome', async () => {

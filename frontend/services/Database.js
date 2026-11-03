@@ -36,6 +36,7 @@ import {
   readerState,
   repeatWeight,
   CHECK_START_VARIANCE,
+  LEVEL_ENGINE_VERSION,
   widenState,
   SEED_VARIANCE,
   seedState,
@@ -452,6 +453,9 @@ const INTERACTION_EVENT_TYPES = new Set([
   // never claim to know; it measures their guess rate.
   'check',
   'check_pseudo',
+  // What the reader did with a word card (hooks/useLookupDetail.js): value_num
+  // = seconds it was open, grade = action flags (1 = saved the word).
+  'lookup_detail',
 ]);
 
 // RN has no crypto.getRandomValues polyfill here, so the `uuid` package would throw.
@@ -911,7 +915,7 @@ const insertAbilityLogRows = (tx, scope, entries) => {
         entry.lookupRate ?? null,
         entry.guessRate ?? null,
         entry.sourceBookUri ?? null,
-        entry.details ? JSON.stringify(entry.details) : null,
+        JSON.stringify({ ...(entry.details || {}), engine: LEVEL_ENGINE_VERSION }),
         entry.at ?? new Date().toISOString(),
       ]
     );
@@ -1607,7 +1611,7 @@ export const updateThetaFromOutcome = async ({
   }
 
   const state = await updateReaderLevel({ ownerId, profileId, language: normalizedLanguage }, (before) => {
-    if (type === 'lookup' && !lookupCountsForLevel(before.theta, wordDifficultyValue)) return null;
+    if (type === 'lookup' && !lookupCountsForLevel(before.theta, wordDifficultyValue, cleanStem)) return null;
     const { state: next, log } = applyLevelSignal(before, {
       type,
       difficulty: wordDifficultyValue,

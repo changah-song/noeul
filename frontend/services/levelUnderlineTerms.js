@@ -1,6 +1,7 @@
 import { pKnown, underlineCategory } from './abilityModel';
 import { wordDifficulty } from './levelEngine';
 import { adjustedPKnown } from './wordEvidence';
+import { isLevelSample } from './levelSample';
 
 // Shared by the book reader (screens/Read.js) and the song reader
 // (components/Songs/SongReader.js, via hooks/useLevelUnderlineTerms) so both
@@ -101,4 +102,22 @@ export const buildLevelUnderlineTerms = (rows, language, theta, options = {}) =>
     });
 
     return terms;
+};
+
+/**
+ * buildLevelExposureTerms — the graded surfaces that are NOT underlined but
+ * whose word is in the level sample (services/levelSample.js): the reader
+ * reports reading past them without drawing anything, so the level sees both
+ * outcomes for them. `{ text, stem }`, one per surface.
+ */
+export const buildLevelExposureTerms = (rows, underlined = []) => {
+    const marked = new Set((underlined || []).map((term) => term?.text).filter(Boolean));
+    const out = new Map();
+    (rows || []).forEach((row) => {
+        const surface = typeof row?.surface === 'string' ? row.surface.trim() : '';
+        const stem = typeof row?.stem === 'string' ? row.stem.trim() : '';
+        if (!surface || !stem || marked.has(surface) || out.has(surface)) return;
+        if (isLevelSample(stem)) out.set(surface, { text: surface, stem });
+    });
+    return [...out.values()];
 };

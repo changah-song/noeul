@@ -106,6 +106,32 @@ Reading AUC stays near 0.5 on this log: among underlined words, listed
 difficulty barely predicts what this reader taps. That is the next thing to
 fix (word difficulty, and logging every word read past).
 
+## Measuring it (2026-11-03)
+
+**Every word read past is observable.** The reader only reports words read
+past for words it is given, and it was given the underlined ones. Now a fixed
+25% of words (`services/levelSample.js`, by a hash of the dictionary form)
+are also sent as *exposure-only* terms when they aren't underlined: native
+matches them separately from the level underlines, never draws them, never
+makes them tappable as marks, and only adds them to `onExposure`. Their
+lookups count toward the level too (`lookupCountsForLevel`), so for these
+words both outcomes are logged and P(look up | known) can be measured. Words
+that are underlined but not shown (marks off, or below the marks threshold)
+are sent as exposure-only as well. Underlined and exposure-only words are
+capped separately per unit (40 each).
+
+**Each level-log row names its engine.** `ability_log.details.engine` =
+`LEVEL_ENGINE_VERSION` (2.1 from this change).
+
+**What a tap was for.** `lookup_detail` events: `value_num` = seconds the
+word card stayed open, `grade` = flags (1 = saved). Recorded only for now; the
+engine will use them to tell a glance (pinyin, sentence translation) from a
+real lookup.
+
+**Replay.** `scripts/levelReplay.js --sampled` replays a log recorded with
+the sample on, so sampled words' lookups count as they do in the app. Older
+logs (before 2.1) must be replayed without it.
+
 ## Tuning knobs
 
 All in `levelEngine.js`: `BAND_WEIGHT` (level vs frequency), `LOANWORD_EASE`,

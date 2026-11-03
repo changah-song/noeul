@@ -442,6 +442,7 @@
     if (d.answered != null) parts.push(`${d.answered} answers`);
     if (row.signal === 'lookup' || row.signal === 'pass') parts.push(`lookup rate ${pct(row.lookup_rate)}`);
     if (row.signal === 'pseudo') parts.push(`guess rate ${pct(row.guess_rate)}`);
+    if (d.engine) parts.push(`engine ${d.engine}`);
     return parts.join(' · ');
   }
 

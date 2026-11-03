@@ -80,6 +80,9 @@ const summarize = (pairs) => ({
  *        lookupOncePerDay — a word's second lookup of the day is not a signal
  *        lookupOnlyIfMarked — a lookup of a word that wasn't underlined is
  *          not a signal (engine.lookupCountsForLevel)
+ *        sampleLogged — the log was recorded with the level sample's words
+ *          read past logged too (feat/level-measurement on), so their
+ *          lookups count as well
  *        difficultyOf(event) — recompute a word's difficulty (default: logged)
  *        checkStartVariance — how unsure a word check starts (default: engine's)
  * @returns {{ reading, check, review, fromReading, final, daily, skipped }}
@@ -143,7 +146,7 @@ export const replayLevelLog = (events, engine, policy = {}) => {
             if (engine.repeatWeight) weight = engine.repeatWeight(previous);
         }
         if (event.signal === 'lookup' && policy.lookupOnlyIfMarked && engine.lookupCountsForLevel
-            && !engine.lookupCountsForLevel(state.theta, difficulty)) {
+            && !engine.lookupCountsForLevel(state.theta, difficulty, policy.sampleLogged ? event.stem : null)) {
             skipped += 1;
             continue;
         }

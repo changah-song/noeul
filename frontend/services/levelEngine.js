@@ -7,6 +7,7 @@ import {
     difficultyFromPercentile,
     sigmoid,
 } from './abilityModel';
+import { isLevelSample } from './levelSample';
 
 // ─── Level engine (difficulty model v2) ───────────────────────────────────────
 //
@@ -43,6 +44,14 @@ import {
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Which version of the engine wrote a level-log row (ability_log.details
+// .engine), so a level can be traced to the model that produced it. Bump it
+// with every change to how signals move the level.
+//   2.0  difficulty model v2 (2026-10-19)
+//   2.1  word check widens every habit; lookups gated, once a day; no
+//        wrong-way moves; P(look up | known) 0.10; level sample logged
+export const LEVEL_ENGINE_VERSION = '2.1';
 
 // Belief about the reader's level.
 export const PRIOR_VARIANCE = 2.0;        // a reader we know nothing about (sd ≈ 1.4)
@@ -115,16 +124,15 @@ export const observationModel = (signal, { lookupRate, guessRate } = {}) => {
 /**
  * lookupCountsForLevel — whether a lookup may move the reader's level.
  *
- * Words read past are only logged for words the reader sees underlined (the
- * native reader reports the graded words on the page, and a word the model
- * thinks is known isn't one). A lookup of a word outside that set would be
- * one-sided evidence: its tap is logged, reading past it never is, so the
- * easiest words looked "always looked up" and pulled the level down. Until
- * every word read past is logged, such a lookup still teaches the word's own
- * knowledge (buildWordKnowledge) but not the level.
+ * Words read past are logged for the underlined words and for the known words
+ * in the level sample (services/levelSample.js), not for other known words. A
+ * lookup of one of those would be one-sided evidence: its tap is logged,
+ * reading past it never is, so the easiest words looked "always looked up"
+ * and pulled the level down. Such a lookup still teaches the word's own
+ * knowledge (buildWordKnowledge), just not the level.
  */
-export const lookupCountsForLevel = (theta, difficulty) => (
-    sigmoid(Number(theta) - Number(difficulty)) < UNDERLINE_KNOWN_CEILING
+export const lookupCountsForLevel = (theta, difficulty, stem = null) => (
+    sigmoid(Number(theta) - Number(difficulty)) < UNDERLINE_KNOWN_CEILING || isLevelSample(stem)
 );
 
 /**

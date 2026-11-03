@@ -341,6 +341,13 @@ class NativeEpubReaderModule : Module() {
         view.setLevelTerms(terms)
       }
 
+      // Graded words the reader probably knows, sampled for the level model:
+      // never drawn and never tappable as marks, only reported in exposure
+      // units so reading past them is logged as well as tapping them.
+      Prop("exposureTerms") { view: NativeEpubReaderView, terms: List<Any?> ->
+        view.setExposureTerms(terms)
+      }
+
       // Level-underlined words the reader has tapped: [{ text, at }] with `at`
       // the tap time in epoch ms. Their underline dissolves into dots and stays.
       Prop("tappedTerms") { view: NativeEpubReaderView, terms: List<Any?> ->
@@ -1131,6 +1138,8 @@ class NativeEpubReaderView(
   private var levelTerms: List<LevelTerm> = emptyList()
   private var highlightMatcher = HighlightMatcher(emptyList())
   private var levelMatcher = HighlightMatcher(emptyList())
+  private var exposureTerms: List<String> = emptyList()
+  private var exposureMatcher = HighlightMatcher(emptyList())
   // Gradient weight per level term, indexed by the term's matcher priority (which
   // is its index in the list the matcher was built from).
   private var levelWeights: FloatArray = FloatArray(0)
@@ -1157,6 +1166,10 @@ class NativeEpubReaderView(
   private var userHighlights: List<UserHighlight> = emptyList()
   private var savedHighlightContextsByPage: Map<Int, List<Map<String, Any>>> = emptyMap()
   private var levelRangesByPage: Map<Int, List<TextRange>> = emptyMap()
+  // Exposure-only words (see setExposureTerms): kept apart from the level
+  // ranges so they never reach drawing, annotation or tap handling.
+  private var exposureRangesByPage: Map<Int, List<TextRange>> = emptyMap()
+  private var exposureTermsByPage: Map<Int, List<String>> = emptyMap()
   // Graded words actually rendered on each page, shipped out with onPageChange so
   // JS can credit "shown but not looked up" as weak positive evidence.
   private var levelTermsByPage: Map<Int, List<String>> = emptyMap()
@@ -1802,6 +1815,25 @@ class NativeEpubReaderView(
     rebuildLevelUnderlineRanges()
   }
 
+  fun setExposureTerms(terms: List<Any?>) {
+    val nextTerms = terms
+      .mapNotNull { entry -> (entry as? String)?.trim()?.takeIf { it.isNotEmpty() } }
+      .distinct()
+      .sortedWith(compareByDescending<String> { it.length }.thenBy { it })
+    if (exposureTerms == nextTerms) {
+      return
+    }
+    exposureTerms = nextTerms
+    exposureMatcher = HighlightMatcher(nextTerms)
+    rebuildExposureRanges(pages)
+  }
+
+  private fun rebuildExposureRanges(sourcePages: List<ReaderPage>) {
+    val built = buildHighlightRanges(sourcePages, exposureMatcher, "exposure")
+    exposureRangesByPage = built.rangesByPage
+    exposureTermsByPage = built.termsByPage
+  }
+
   // Toggle pinyin annotations above underlined words. Repaginate so the line
   // spacing reserves (or releases) the ruby row of space above each line.
   fun setShowPinyin(enabled: Boolean) {
@@ -2321,6 +2353,7 @@ class NativeEpubReaderView(
     )
     levelRangesByPage = levelHighlights.rangesByPage
     levelTermsByPage = levelHighlights.termsByPage
+    rebuildExposureRanges(nextPages)
 
     // New content is binding: close the unit from the old layout, and forget the
     // continuous block-visibility ledger — it's keyed to blocks that no longer
@@ -3958,7 +3991,7 @@ class NativeEpubReaderView(
     if (page == null || readerRenderMode != "paged") return
     beginExposureUnit(
       key = "paged:${page.spineIndex}:${page.pageIndex}",
-      terms = levelTermsByPage[page.pageIndex].orEmpty(),
+      terms = levelTermsByPage[page.pageIndex].orEmpty() + exposureTermsByPage[page.pageIndex].orEmpty(),
       savedTerms = savedTermsByPage[page.pageIndex].orEmpty(),
       chars = page.blocks.sumOf { blockTextLength(it) }
     )
@@ -3976,6 +4009,9 @@ class NativeEpubReaderView(
     var chars = 0
     span.forEach { sentence ->
       terms.addAll(gradedTermsIn(page, sentence.blockId, sentence.startOffset, sentence.endOffset))
+      terms.addAll(
+        gradedTermsIn(page, sentence.blockId, sentence.startOffset, sentence.endOffset, exposureRangesByPage)
+      )
       savedTerms.addAll(
         gradedTermsIn(page, sentence.blockId, sentence.startOffset, sentence.endOffset, savedHighlightRangesByPage)
       )
@@ -4038,7 +4074,8 @@ class NativeEpubReaderView(
         exposedBlockIds.add(block.blockId)
         val length = blockTextLength(block)
         emitExposure(
-          gradedTermsIn(page, block.blockId, 0, length),
+          gradedTermsIn(page, block.blockId, 0, length) +
+            gradedTermsIn(page, block.blockId, 0, length, exposureRangesByPage),
           gradedTermsIn(page, block.blockId, 0, length, savedHighlightRangesByPage),
           length,
           now - seenAt

@@ -175,6 +175,10 @@ const NativeEpubReaderView = forwardRef(({
     // Optional per-term `pinyin` / `gloss` are drawn above / below the word when
     // showPinyin / showGloss are on; `annotationOnly` terms draw no underline.
     levelTerms = [],
+    // [string] — graded words the reader probably knows, sampled for the level
+    // model: never drawn, only reported in onExposure so reading past them is
+    // logged as well as tapping them (services/levelSample.js).
+    exposureTerms = [],
     showPinyin = false,
     showGloss = false,
     // [{ text, at }] — underlined words the reader tapped (at = tap time, epoch
@@ -264,6 +268,10 @@ const NativeEpubReaderView = forwardRef(({
         () => (isKorean ? joinKoreanInTerms(levelTerms || []) : (levelTerms || [])),
         [isKorean, levelTerms]
     );
+    const nativeExposureTerms = useMemo(
+        () => (isKorean ? joinKoreanInTerms(exposureTerms || []) : (exposureTerms || [])),
+        [isKorean, exposureTerms]
+    );
     const payloadOf = (event) => {
         const payload = event?.nativeEvent || event || {};
         return isKorean ? stripJoinersDeep(payload) : payload;
@@ -346,6 +354,7 @@ const NativeEpubReaderView = forwardRef(({
             highlightStrengths={nativeHighlightStrengths}
             userHighlights={userHighlights || EMPTY_USER_HIGHLIGHTS}
             levelTerms={nativeLevelTerms}
+            exposureTerms={nativeExposureTerms}
             showPinyin={!!showPinyin}
             showGloss={!!showGloss}
             showContextSentence={!!showContextSentence}

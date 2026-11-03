@@ -7,10 +7,10 @@ import {
     onReaderLevelChanged,
 } from '../services/Database';
 import { buildWordKnowledge, signalsFromEvidenceRows } from '../services/levelEngine';
-import { buildLevelUnderlineTerms, rowDifficulty } from '../services/levelUnderlineTerms';
+import { buildLevelExposureTerms, buildLevelUnderlineTerms, rowDifficulty } from '../services/levelUnderlineTerms';
 
 /**
- * Load the graded-word underline snapshot for an indexed text (a book, or a
+ * loadLevelReaderTerms — load the graded-word underline snapshot for an indexed text (a book, or a
  * song via its `song:<id>` book_index URI): the reader's level, their history
  * with every word in the language (for word families and Chinese characters),
  * and each word's difficulty, shaded with buildLevelUnderlineTerms.
@@ -19,9 +19,9 @@ import { buildLevelUnderlineTerms, rowDifficulty } from '../services/levelUnderl
  * `refreshKey` change — the level moves on every lookup, and re-shading
  * mid-read would make words silently change color under the reader.
  */
-export const loadLevelUnderlineTerms = async ({ ownerId, bookUri, language }) => {
+export const loadLevelReaderTerms = async ({ ownerId, bookUri, language }) => {
     if (!bookUri) {
-        return [];
+        return { terms: [], exposureTerms: [] };
     }
     const [reader, rows, evidenceRows] = await Promise.all([
         getReaderLevel({ ownerId, language }),
@@ -46,8 +46,15 @@ export const loadLevelUnderlineTerms = async ({ ownerId, bookUri, language }) =>
     }
 
     const knowledge = buildWordKnowledge({ language, reader, difficulties, events, saved });
-    return buildLevelUnderlineTerms(rows, language, reader.theta, { knowledge });
+    const terms = buildLevelUnderlineTerms(rows, language, reader.theta, { knowledge });
+    return { terms, exposureTerms: buildLevelExposureTerms(rows, terms) };
 };
+
+/**
+ * loadLevelUnderlineTerms — the underline terms alone (see loadLevelReaderTerms
+ * for the exposure-only words that go with them).
+ */
+export const loadLevelUnderlineTerms = async (args) => (await loadLevelReaderTerms(args)).terms;
 
 const useLevelUnderlineTerms = ({ ownerId, bookUri, language, refreshKey }) => {
     const [terms, setTerms] = useState([]);
