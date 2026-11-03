@@ -850,10 +850,18 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
         drawPullIndicator(canvas, scrollY + height - gap / 2f, alpha, next = true)
       }
     }
-    // Previous: only while pulling down at the top.
+    // Previous: only while pulling down at the top, in the gap that opens
+    // above the text. Pulling back brings the header in over the top of the
+    // page (scrollbarInsetTop is its room), so the ring sits below it, not
+    // under it.
     if (pullPreviousEnabled && pullDirection < 0) {
       val shift = pullShift()
-      drawPullIndicator(canvas, scrollY + shift / 2f, (shift / (24f * density)).coerceIn(0f, 1f), next = false)
+      drawPullIndicator(
+        canvas,
+        scrollY + scrollbarInsetTop + shift / 2f,
+        (shift / (24f * density)).coerceIn(0f, 1f),
+        next = false
+      )
     }
   }
 
