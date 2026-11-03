@@ -857,6 +857,7 @@ const Read = ({
     // to rank exposure candidates by how uncertain the model is about them.
     const levelUnderlineWeightsRef = useRef(new Map());
     const levelUnderlineStemsRef = useRef(new Map());
+    const glossedSurfacesRef = useRef(new Set());
     // Saved words are excluded from exposure: they're already in the SRS loop and
     // earn graded evidence in Learn, so crediting them again through a far noisier
     // channel would double-count them.
@@ -1845,13 +1846,15 @@ const Read = ({
         [levelUnderlineTerms]
     );
     // What a tapped word was to the level model (recorded on the lookup):
-    // 1 underlined (drawn or not), 2 a sampled known word, 0 neither.
+    // 1 underlined (drawn or not), 2 a sampled known word, 0 neither, 3 shown
+    // with a translation (not evidence: see glossedSurfacesRef).
     const levelMarkSets = useMemo(() => ({
         underlined: new Set(levelUnderlineTerms.map((term) => term.text)),
         sampled: new Set(levelExposureTerms.map((term) => term.text)),
     }), [levelUnderlineTerms, levelExposureTerms]);
     const levelMarkFor = useCallback((surface) => {
         const text = typeof surface === 'string' ? surface.trim() : '';
+        if (glossedSurfacesRef.current.has(text)) return 3;
         if (levelMarkSets.underlined.has(text)) return 1;
         if (levelMarkSets.sampled.has(text)) return 2;
         return 0;
@@ -3228,6 +3231,7 @@ const Read = ({
             dwellMs,
             lookedUp,
             saved: savedSurfacesRef.current,
+            glossed: glossedSurfacesRef.current,
             weights: levelUnderlineWeightsRef.current,
         });
 
@@ -3911,6 +3915,13 @@ const Read = ({
             readerShowGloss,
             readerShowPinyin,
         ]
+    );
+    // Words drawn with a translation under them. Reading past one doesn't
+    // mean the reader knew it, and tapping one means they wanted more than
+    // the translation: neither is evidence about their level.
+    glossedSurfacesRef.current = useMemo(
+        () => new Set(readerLevelTerms.filter((term) => term.gloss).map((term) => term.text)),
+        [readerLevelTerms]
     );
     // Words reported as read past without being drawn: the known words in the
     // level sample, plus any underlined word the reader isn't shown right now

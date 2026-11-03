@@ -35,3 +35,16 @@ export const isLevelSample = (stem) => {
     if (!key) return false;
     return hash(key) / 4294967296 < LEVEL_SAMPLE_RATE;
 };
+
+/**
+ * Lookup level marks (interaction_events.grade on a lookup, set by the book
+ * reader): whether reading past the tapped word was being logged, so the
+ * lookup is evidence about the level.
+ *   1  underlined (drawn or not)          counts
+ *   2  a sampled known word               counts
+ *   0  neither                            doesn't
+ *   3  shown with a translation under it  doesn't: reading past it is not
+ *      logged, and the tap means "more than the translation", not "unknown"
+ */
+export const LEVEL_MARK = { none: 0, underlined: 1, sampled: 2, glossed: 3 };
+export const isObservedLevelMark = (mark) => mark === 1 || mark === 2 || mark === '1' || mark === '2';

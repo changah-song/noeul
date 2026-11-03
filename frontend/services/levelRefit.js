@@ -10,6 +10,7 @@ import {
     SIGNAL_WEIGHTS,
     repeatWeight,
 } from './levelEngine';
+import { isObservedLevelMark } from './levelSample';
 
 // ─── Batch refit: the level from the whole recent log ─────────────────────────
 //
@@ -142,7 +143,7 @@ export const prepareRefitEvents = (events = [], { now = Date.now() } = {}) => {
         // was worse: on one real log, words below difficulty −2 were looked
         // up 98 times and never logged read past. Older lookups fade with age.
         if (r.type === 'pass') r.counts = true;
-        else if (r.levelMark != null) r.counts = r.levelMark > 0;
+        else if (r.levelMark != null) r.counts = isObservedLevelMark(r.levelMark);
         else r.counts = exposed.has(r.stem);
     });
     return { reading, labelled, pseudo };

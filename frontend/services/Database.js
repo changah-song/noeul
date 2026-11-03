@@ -38,6 +38,8 @@ import {
   CHECK_START_VARIANCE,
   LEVEL_ENGINE_VERSION,
   applyRefit,
+  compoundDifficulty,
+  compoundSplits,
   widenState,
   SEED_VARIANCE,
   seedState,
@@ -46,6 +48,7 @@ import {
 } from './levelEngine';
 import { initialFsrsFromPKnown, rankNominations } from './flashcardNomination';
 import { fitReaderLevel, prepareRefitEvents } from './levelRefit';
+import { isObservedLevelMark } from './levelSample';
 import { mergeVocabRows, vocabMergeKey } from './vocabMerge';
 
 // ─── Database Setup ───────────────────────────────────────────────────────────
@@ -1722,7 +1725,7 @@ export const updateThetaFromOutcome = async ({
   const state = await updateReaderLevel({ ownerId, profileId, language: normalizedLanguage }, (before) => {
     if (type === 'lookup') {
       const counts = levelMark != null
-        ? Number(levelMark) > 0
+        ? isObservedLevelMark(levelMark)
         : lookupCountsForLevel(before.theta, wordDifficultyValue, cleanStem);
       if (!counts) return null;
     }
@@ -1949,6 +1952,12 @@ export const getWordDifficulties = (language, stems) => {
   if (requested.length === 0) {
     return Promise.resolve({});
   }
+  // Chinese compounds are also scored from their parts (levelEngine
+  // compoundDifficulty), so read those too.
+  const parts = new Set();
+  requested.forEach((stem) => compoundSplits(normalizedLanguage, stem)
+    .forEach(({ parts: split }) => split.forEach((part) => parts.add(part))));
+  const queried = Array.from(new Set([...requested, ...parts]));
 
   return new Promise((resolve, reject) => {
     db.transaction(
@@ -1956,7 +1965,7 @@ export const getWordDifficulties = (language, stems) => {
         // Accumulate the first non-null value of each feature per stem across
         // the cache's per-interface-language rows.
         const byStem = {};
-        chunkValues(requested).forEach((chunk) => {
+        chunkValues(queried).forEach((chunk) => {
           const placeholders = chunk.map(() => '?').join(', ');
           tx.executeSql(
             `SELECT stem, level_rank, difficulty_percentile, zipf, loanword FROM dictionary_cache
@@ -1978,26 +1987,41 @@ export const getWordDifficulties = (language, stems) => {
           'SELECT 1',
           [],
           () => {
+            const own = (stem) => {
+              const row = byStem[stem] || {};
+              return {
+                row,
+                resolved: wordDifficulty({
+                  language: normalizedLanguage,
+                  levelRank: row.level_rank ?? null,
+                  percentile: row.difficulty_percentile,
+                  zipf: row.zipf,
+                  loanword: row.loanword,
+                }),
+              };
+            };
+            const gradedDifficulty = (stem) => {
+              const { resolved } = own(stem);
+              return resolved.graded ? resolved.difficulty : null;
+            };
             const difficulties = {};
             requested.forEach((stem) => {
-              const row = byStem[stem] || {};
+              const { row, resolved } = own(stem);
               const levelRank = row.level_rank ?? null;
-              const resolved = wordDifficulty({
-                language: normalizedLanguage,
-                levelRank,
-                percentile: row.difficulty_percentile,
-                zipf: row.zipf,
-                loanword: row.loanword,
-              });
+              const compound = compoundDifficulty(
+                normalizedLanguage, stem, gradedDifficulty, resolved.graded ? resolved.difficulty : null
+              );
+              const fromParts = Boolean(compound);
               difficulties[stem] = {
                 levelRank,
-                difficulty: resolved.difficulty,
-                isFallback: !resolved.graded,
+                difficulty: fromParts ? compound.difficulty : resolved.difficulty,
+                isFallback: !resolved.graded && !fromParts,
                 details: {
                   levelRank,
                   percentile: row.difficulty_percentile ?? null,
                   zipf: row.zipf ?? null,
                   loanword: resolved.parts.loanword || undefined,
+                  compound: fromParts ? compound.parts.join('+') : undefined,
                 },
               };
             });

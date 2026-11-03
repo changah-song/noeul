@@ -15,6 +15,8 @@ export const EXPOSURE_MAX_PER_UNIT = 40;
  *   1. units left too fast for their length — never really read (dwell gate)
  *   2. words looked up recently — a lookup already logged stronger evidence
  *   3. saved words — already earning graded evidence through the SRS loop
+ *   4. words shown with a translation under them — reading past those
+ *      doesn't mean the reader knew them
  *
  * Underlined survivors are ranked by how uncertain the model is about them
  * (underline weight nearest 0.5), so the cap, when it bites, keeps the
@@ -30,6 +32,7 @@ export const selectExposureCredits = ({
     dwellMs,
     lookedUp = new Set(),
     saved = new Set(),
+    glossed = new Set(),
     weights = new Map(),
     max = EXPOSURE_MAX_PER_UNIT,
 } = {}) => {
@@ -46,7 +49,7 @@ export const selectExposureCredits = ({
             return false;
         }
         seen.add(term);
-        return !lookedUp.has(term) && !saved.has(term);
+        return !lookedUp.has(term) && !saved.has(term) && !glossed.has(term);
     });
     const marked = survivors
         .filter((term) => weights.has(term))

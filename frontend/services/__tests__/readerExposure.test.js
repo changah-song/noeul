@@ -93,3 +93,22 @@ describe('level sample', () => {
         expect(out).not.toContain('m0');
     });
 });
+
+describe('words shown with a translation', () => {
+    const { isObservedLevelMark, LEVEL_MARK } = require('../levelSample');
+
+    it('are not credited as read past', () => {
+        const out = selectExposureCredits({
+            terms: ['走廊', '蒲公英'], chars: 10, dwellMs: 60000,
+            weights: new Map([['走廊', 0.5], ['蒲公英', 0.5]]), glossed: new Set(['走廊']),
+        });
+        expect(out).toEqual(['蒲公英']);
+    });
+
+    it('and their lookups do not count', () => {
+        expect(isObservedLevelMark(LEVEL_MARK.underlined)).toBe(true);
+        expect(isObservedLevelMark(LEVEL_MARK.sampled)).toBe(true);
+        expect(isObservedLevelMark(LEVEL_MARK.glossed)).toBe(false);
+        expect(isObservedLevelMark(LEVEL_MARK.none)).toBe(false);
+    });
+});

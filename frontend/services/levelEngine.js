@@ -53,7 +53,9 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 //        wrong-way moves; P(look up | known) 0.10; level sample logged
 //   2.2  batch refit (levelRefit.js) sets the level, both tap rates and an
 //        honest uncertainty from the whole recent log
-export const LEVEL_ENGINE_VERSION = '2.2';
+//   2.3  words shown with a translation aren't evidence; Chinese compounds
+//        scored from their parts; HSK 7–9 spread by frequency
+export const LEVEL_ENGINE_VERSION = '2.3';
 
 // Belief about the reader's level.
 export const PRIOR_VARIANCE = 2.0;        // a reader we know nothing about (sd ≈ 1.4)
@@ -549,6 +551,18 @@ export const difficultyFromZipf = (zipf) => {
     return ABILITY_THETA_MIN + clamp(scaled, 0, 1) * (ABILITY_THETA_MAX - ABILITY_THETA_MIN);
 };
 
+// HSK 3.0 puts levels 7–9 in one band of 9,085 words, half of all graded
+// Chinese vocabulary, which the scale would put at the very top (+3). Within
+// that band a word's place follows how common it is, from the HSK 6 position
+// (+2, the most common: 走廊, 一眼) to the top (the rarest), as the finer Korean
+// percentile does for Korean.
+const ZH_TOP_BAND = 7;
+const ZH_TOP_BAND_ZIPF = { common: 5.0, rare: 3.0 };
+const zhTopBandDifficulty = (zipf) => {
+    const rareness = (ZH_TOP_BAND_ZIPF.common - zipf) / (ZH_TOP_BAND_ZIPF.common - ZH_TOP_BAND_ZIPF.rare);
+    return ABILITY_THETA_MAX - 1 + clamp(rareness, 0, 1);
+};
+
 const finiteOrNull = (value) => {
     if (value == null || value === '') return null;
     const n = Number(value);
@@ -573,10 +587,13 @@ export const wordDifficulty = ({
 } = {}) => {
     const pct = finiteOrNull(percentile);
     const rank = finiteOrNull(levelRank);
-    const band = pct != null
+    const frequency = difficultyFromZipf(zipf);
+    let band = pct != null
         ? difficultyFromPercentile(pct)
         : (rank != null ? difficultyFromLevelRank(language, rank) : null);
-    const frequency = difficultyFromZipf(zipf);
+    if (pct == null && rank === ZH_TOP_BAND && String(language || '').startsWith('zh') && frequency != null) {
+        band = zhTopBandDifficulty(Number(zipf));
+    }
     let difficulty;
     if (band != null && frequency != null) {
         difficulty = BAND_WEIGHT * band + (1 - BAND_WEIGHT) * frequency;
@@ -592,6 +609,78 @@ export const wordDifficulty = ({
         graded,
         parts: { band, frequency, loanword: isLoan },
     };
+};
+
+// ─── Chinese compounds ────────────────────────────────────────────────────────
+//
+// A word's listed difficulty comes from its own level and frequency. For a
+// Chinese compound made of easy parts that is far too hard: 吃掉 (eat + away),
+// 脱下 (take + off) and 野孩子 (wild + child) are rare as wholes, so they scored
+// at or near the top of the scale, yet anyone who knows the parts reads them.
+// The word splitter (jieba) produces many such words. Two kinds are scored
+// from their parts:
+//   verb + complement  (吃掉, 塞进, 铐起来): the head's difficulty, a little more
+//   three-character compounds (面包店, 垃圾桶, 野孩子): the harder part's, a
+//                     little more
+// Four-character words are left alone: most are idioms (灵机一动), whose
+// meaning doesn't follow from their parts. A compound is never made harder,
+// and a word with its own difficulty is made at most MAX_COMPOUND_EASE
+// easier: some are idioms too (想开 "get over it", 得了 "that's enough") and
+// would otherwise drop to beginner level. Unvalidated so far: the only long
+// log was read with translations shown, which hides what difficulty predicts.
+
+const ZH_COMPLEMENTS = [
+    '起来', '下来', '上来', '出来', '进来', '回来', '过来', '过去', '下去', '上去', '出去', '进去',
+    '掉', '下', '上', '出', '进', '起', '回', '过', '着', '了', '完', '好', '到', '住', '开', '走', '成',
+];
+export const COMPLEMENT_EXTRA = 0.2;
+export const COMPOUND_EXTRA = 0.4;
+export const MAX_COMPOUND_EASE = 1.5;
+
+/** The ways a Chinese word could split into parts worth scoring it by. */
+export const compoundSplits = (language, stem) => {
+    const word = String(stem || '').trim();
+    if (!String(language || '').startsWith('zh') || word.length < 2 || word.length > 4) return [];
+    const splits = [];
+    ZH_COMPLEMENTS.forEach((complement) => {
+        if (word.length > complement.length && word.endsWith(complement)) {
+            splits.push({ kind: 'complement', parts: [word.slice(0, -complement.length), complement] });
+        }
+    });
+    if (word.length === 3) {
+        splits.push({ kind: 'compound', parts: [word.slice(0, 1), word.slice(1)] });
+        splits.push({ kind: 'compound', parts: [word.slice(0, 2), word.slice(2)] });
+    }
+    return splits;
+};
+
+/**
+ * compoundDifficulty — a Chinese word's difficulty from its parts, when that
+ * is easier than its own (or it has none).
+ *
+ * @param {string} language
+ * @param {string} stem
+ * @param {(part: string) => number|null} difficultyOf  a part's graded
+ *        difficulty, or null when nothing is known about it
+ * @param {number|null} [own]  the word's own graded difficulty, if any
+ * @returns {{ difficulty: number, parts: string[] }|null}
+ */
+export const compoundDifficulty = (language, stem, difficultyOf, own = null) => {
+    let best = null;
+    compoundSplits(language, stem).forEach(({ kind, parts }) => {
+        const [head, tail] = parts.map((part) => difficultyOf(part));
+        let value = null;
+        if (kind === 'complement' && Number.isFinite(head)) {
+            value = head + COMPLEMENT_EXTRA;
+        } else if (kind === 'compound' && Number.isFinite(head) && Number.isFinite(tail)) {
+            value = Math.max(head, tail) + COMPOUND_EXTRA;
+        }
+        if (value != null && Number.isFinite(own)) value = Math.max(value, own - MAX_COMPOUND_EASE);
+        if (value != null && (!best || value < best.difficulty)) {
+            best = { difficulty: clamp(value, ABILITY_THETA_MIN, ABILITY_THETA_MAX), parts };
+        }
+    });
+    return best && (!Number.isFinite(own) || best.difficulty < own) ? best : null;
 };
 
 // ─── Per-word knowledge ───────────────────────────────────────────────────────

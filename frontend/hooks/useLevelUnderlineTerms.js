@@ -6,7 +6,12 @@ import {
     lookupKnowledgeEvidence,
     onReaderLevelChanged,
 } from '../services/Database';
-import { buildWordKnowledge, signalsFromEvidenceRows } from '../services/levelEngine';
+import {
+    buildWordKnowledge,
+    compoundDifficulty,
+    compoundSplits,
+    signalsFromEvidenceRows,
+} from '../services/levelEngine';
 import { buildLevelExposureTerms, buildLevelUnderlineTerms, rowDifficulty } from '../services/levelUnderlineTerms';
 
 /**
@@ -39,11 +44,26 @@ export const loadLevelReaderTerms = async ({ ownerId, bookUri, language }) => {
         }
     });
     const { events, saved } = signalsFromEvidenceRows(evidenceRows);
-    const missing = Array.from(new Set(events.map((event) => event.stem))).filter((stem) => !difficulties.has(stem));
-    if (missing.length > 0) {
-        const extra = await getWordDifficulties(language, missing).catch(() => ({}));
-        Object.entries(extra).forEach(([stem, entry]) => difficulties.set(stem, entry.difficulty));
-    }
+    // Words the reader has history with but the book doesn't grade, and the
+    // parts of the book's Chinese compounds.
+    const parts = Array.from(difficulties.keys())
+        .flatMap((stem) => compoundSplits(language, stem).flatMap((split) => split.parts));
+    const missing = Array.from(new Set([...events.map((event) => event.stem), ...parts]))
+        .filter((stem) => !difficulties.has(stem));
+    const extra = missing.length > 0 ? await getWordDifficulties(language, missing).catch(() => ({})) : {};
+    const graded = new Map(difficulties);
+    Object.entries(extra).forEach(([stem, entry]) => {
+        if (!entry.isFallback) graded.set(stem, entry.difficulty);
+        if (!difficulties.has(stem)) difficulties.set(stem, entry.difficulty);
+    });
+    // Score compounds from their parts as the level engine does
+    // (Database.getWordDifficulties), so underlines and the level agree.
+    Array.from(difficulties.keys()).forEach((stem) => {
+        const compound = compoundDifficulty(
+            language, stem, (part) => (graded.has(part) ? graded.get(part) : null), difficulties.get(stem)
+        );
+        if (compound) difficulties.set(stem, compound.difficulty);
+    });
 
     const knowledge = buildWordKnowledge({ language, reader, difficulties, events, saved });
     const terms = buildLevelUnderlineTerms(rows, language, reader.theta, { knowledge });

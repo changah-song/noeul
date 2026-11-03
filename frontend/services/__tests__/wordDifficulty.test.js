@@ -122,3 +122,29 @@ describe('getWordDifficulties', () => {
     expect(await getWordDifficulties('ko', ['   ', ''])).toEqual({});
   });
 });
+
+describe('Chinese compounds', () => {
+  it('scores a compound of easy parts from its parts, never harder', async () => {
+    await cacheStem({ stem: '吃', language: 'zh', levelRank: 1 });
+    await cacheStem({ stem: '面包', language: 'zh', levelRank: 1 });
+    await cacheStem({ stem: '店', language: 'zh', levelRank: 2 });
+    await cacheStem({ stem: '东西', language: 'zh', levelRank: 1 });
+    await cacheStem({ stem: '走廊', language: 'zh', levelRank: 7 });
+
+    const out = await getWordDifficulties('zh', ['吃掉', '面包店', '东西', '走廊', '灵机一动']);
+    // 吃掉: no entry of its own, read from 吃.
+    expect(out['吃掉']).toMatchObject({ isFallback: false, details: { compound: '吃+掉' } });
+    expect(out['吃掉'].difficulty).toBeCloseTo(difficultyFromLevelRank('zh', 1) + 0.2, 6);
+    expect(out['面包店'].difficulty).toBeCloseTo(difficultyFromLevelRank('zh', 2) + 0.4, 6);
+    // Two-character words and idioms keep their own difficulty.
+    expect(out['东西'].details.compound).toBeUndefined();
+    expect(out['走廊'].details.compound).toBeUndefined();
+    expect(out['灵机一动']).toMatchObject({ isFallback: true, difficulty: OOV_DIFFICULTY });
+  });
+
+  it('leaves Korean and English alone', async () => {
+    await cacheStem({ stem: '먹', language: 'ko', levelRank: 1 });
+    const ko = await getWordDifficulties('ko', ['먹었다']);
+    expect(ko['먹었다'].isFallback).toBe(true);
+  });
+});
