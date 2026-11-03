@@ -1,4 +1,4 @@
-import { ABILITY_THETA_MAX, ABILITY_THETA_MIN, sigmoid } from './abilityModel';
+import { LEVEL_THETA_MAX, LEVEL_THETA_MIN, sigmoid } from './abilityModel';
 import {
     CHECK_YES_GIVEN_KNOWN,
     GUESS_RATE_MAX,
@@ -55,7 +55,7 @@ const R_RANGE = [0.05, 0.95];
 const H_RANGE = [0.005, 0.5];
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const GRID_POINTS = 81;
+const GRID_POINTS = 121;
 const R_GRID = Array.from({ length: 13 }, (_, i) => 0.05 + i * 0.075);
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const log = (x) => Math.log(clamp(x, 1e-12, 1));
@@ -200,7 +200,7 @@ const logLikelihood = (items, theta, params) => items.reduce((sum, item) => {
  *             readingWeight, labelledWeight }}
  */
 export const fitReaderLevel = ({ reading = [], labelled = [], pseudo = { yes: 0, total: 0 } }, prior = {}) => {
-    const mu0 = clamp(Number.isFinite(Number(prior.theta)) ? Number(prior.theta) : 0, ABILITY_THETA_MIN, ABILITY_THETA_MAX);
+    const mu0 = clamp(Number.isFinite(Number(prior.theta)) ? Number(prior.theta) : 0, LEVEL_THETA_MIN, LEVEL_THETA_MAX);
     const v0 = Number(prior.variance) > 0 ? Number(prior.variance) : PRIOR_VARIANCE;
     const g = guessRateFor(pseudo);
     const items = aggregate([...reading.filter(counts), ...labelled]);
@@ -247,7 +247,7 @@ export const fitReaderLevel = ({ reading = [], labelled = [], pseudo = { yes: 0,
                 hess -= item.w * ITEM_SLOPE * ITEM_SLOPE * pk * (1 - pk);
             });
             const move = clamp(-grad / hess, -1, 1);
-            nextTheta = clamp(nextTheta + move, ABILITY_THETA_MIN, ABILITY_THETA_MAX);
+            nextTheta = clamp(nextTheta + move, LEVEL_THETA_MIN, LEVEL_THETA_MAX);
             if (Math.abs(move) < 1e-5) break;
         }
 
@@ -265,7 +265,7 @@ export const fitReaderLevel = ({ reading = [], labelled = [], pseudo = { yes: 0,
     // h is pinned down well by the many known words, so it stays at its fit.
     const grid = [];
     for (let i = 0; i < GRID_POINTS; i += 1) {
-        grid.push(ABILITY_THETA_MIN + ((ABILITY_THETA_MAX - ABILITY_THETA_MIN) * i) / (GRID_POINTS - 1));
+        grid.push(LEVEL_THETA_MIN + ((LEVEL_THETA_MAX - LEVEL_THETA_MIN) * i) / (GRID_POINTS - 1));
     }
     const logPost = grid.map(() => []);
     R_GRID.forEach((rate) => {

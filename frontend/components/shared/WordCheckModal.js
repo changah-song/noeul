@@ -23,19 +23,12 @@ import { fontFamilies, useTheme } from '../../theme';
 import { applyWordCheckResults, getReaderLevel } from '../../services/Database';
 import { createWordCheck } from '../../services/wordCheck';
 import { nearestRankForTheta } from '../../services/calibrationQuiz';
-import { getVocabTiers } from '../../services/vocabSizeLevels';
+import { getVocabTiers, tierIndexForTheta } from '../../services/vocabSizeLevels';
 import { recordWordCheckTaken } from '../../services/wordCheckSchedule';
 
 // Fewer answers than this are not worth saving when the reader stops early.
 const MIN_ANSWERS_TO_SAVE = 10;
 
-const tierIndexAtOrBelow = (tiers, theta) => {
-    let index = 0;
-    tiers.forEach((tier, i) => {
-        if (Number(tier.theta) <= Number(theta) + 1e-6) index = i;
-    });
-    return index;
-};
 
 // ─── Bottom sheet frame ───────────────────────────────────────────────────────
 //
@@ -417,13 +410,13 @@ export const WordCheckBody = ({ check, onDone }) => {
     // The headline result, split so the number can be set in bold.
     const resultHeadline = useMemo(() => {
         if (!result || !tiers.length) return null;
-        const tier = tiers[tierIndexAtOrBelow(tiers, result.theta)];
+        const tier = tiers[tierIndexForTheta(targetLanguage, result.theta)];
         if (!tier) return null;
         if (tier.label) return { text: t('wordCheck.resultHsk', { level: tier.label }), strong: tier.label };
         if (tier.advanced) return { text: t('wordCheck.resultAdvanced'), strong: null };
         const count = formatNumber(tier.threshold);
         return { text: t('wordCheck.resultWords', { count }), strong: count };
-    }, [result, t, tiers]);
+    }, [result, t, targetLanguage, tiers]);
 
     const renderHeadline = () => {
         if (!resultHeadline) return t('wordCheck.resultSaved');

@@ -9,6 +9,8 @@ import {
   wordGoal,
   wordsForTheta,
 } from '../levelSummary';
+import { COVERAGE, coverage, vocabularySize } from '../levelScale';
+import { getVocabTiers, thetaForTier } from '../vocabSizeLevels';
 
 describe('describing the reader level', () => {
   it('turns a level and its spread into an 80% range, inside the scale', () => {
@@ -16,22 +18,31 @@ describe('describing the reader level', () => {
     expect(range.estimate).toBe(0);
     expect(range.low).toBeCloseTo(-1.28);
     expect(range.high).toBeCloseTo(1.28);
-    expect(levelRange(2.8, 1).high).toBe(3);
+    // A reader's level may lie beyond the words' range, up to +5.
+    expect(levelRange(4.8, 1).high).toBe(5);
   });
 
-  it('reads Korean levels as words known', () => {
-    // Between the 1,500 (-0.31) and 2,000 (-0.02) tiers.
-    expect(wordsForTheta('ko', -0.165)).toBeCloseTo(1750, -1);
-    expect(describeLevel('ko', { estimate: -0.31, low: -0.59, high: -0.02 })).toEqual({
-      kind: 'words', estimate: 1500, low: 1000, high: 2000,
-    });
+  it('reads Korean levels as the words the reader is expected to know', () => {
+    expect(wordsForTheta('ko', 0.5)).toBeCloseTo(vocabularySize('ko', 0.5), 6);
+    const described = describeLevel('ko', { estimate: 0.5, low: -0.5, high: 1.5 });
+    expect(described.kind).toBe('words');
+    expect(described.low).toBeLessThan(described.estimate);
+    expect(described.estimate).toBeLessThan(described.high);
   });
 
-  it('reads English and Chinese levels as their tier labels', () => {
-    expect(describeLevel('en', { estimate: -0.6, low: -1.8, high: 0.6 })).toEqual({
-      kind: 'tiers', estimate: 'B1', low: 'A2', high: 'B2',
+  it('labels HSK and CEFR by the highest band known to 80%', () => {
+    ['zh', 'en'].forEach((language) => {
+      getVocabTiers(language).forEach((tier, i) => {
+        // Picking a tier shows that tier...
+        const theta = thetaForTier(language, tier.threshold);
+        expect(describeLevel(language, { estimate: theta, low: theta, high: theta }).estimate).toBe(tier.label);
+        // ...because the reader then knows at least 80% of it.
+        if (theta < 5) expect(coverage(language, theta, i + 1)).toBeGreaterThanOrEqual(COVERAGE);
+      });
     });
-    expect(describeLevel('zh', { estimate: 0.2, low: 0.2, high: 0.2 }).estimate).toBe('HSK 4');
+    // Half of HSK 4 is not HSK 4 (it used to be).
+    const half = describeLevel('zh', { estimate: 0, low: 0, high: 0 }).estimate;
+    expect(half).not.toBe('HSK 4');
   });
 });
 
@@ -67,6 +78,13 @@ describe('where the reader started', () => {
     ])).toBe(-1.25);
   });
 
+  it('reads a pick made before engine 2.4 in today\'s meaning', () => {
+    const zh = getVocabTiers('zh');
+    // Old rows have no engine tag; the HSK 4 pick seeded its band position, 0.
+    expect(startingTheta([{ signal: 'seed', theta_after: 0 }], 'zh')).toBeCloseTo(thetaForTier('zh', zh[3].threshold), 10);
+    expect(startingTheta([{ signal: 'seed', theta_after: 2.02, details: '{"engine":"2.4"}' }], 'zh')).toBe(2.02);
+  });
+
   it('is the level after the last answer of a first word check', () => {
     expect(startingTheta([
       { signal: 'check_start', theta_after: 0 },
@@ -83,15 +101,18 @@ describe('where the reader started', () => {
 
 describe('the level on the language scale, and goals', () => {
   it('places Korean on its six reading levels, with the next one', () => {
-    // Ranks sit at -3, -1.8, -0.6, 0.6, 1.8, 3.
-    expect(levelPlaceForTheta('ko', 0)).toMatchObject({ scale: 'ko', rank: 3, nextRank: 4 });
-    expect(levelPlaceForTheta('ko', -3)).toMatchObject({ rank: 1, nextRank: 2 });
-    expect(levelPlaceForTheta('ko', 3).nextRank).toBeNull();
+    expect(levelPlaceForTheta('ko', -4)).toMatchObject({ scale: 'ko', rank: 1, nextRank: 2 });
+    expect(levelPlaceForTheta('ko', 5).nextRank).toBeNull();
+    const mid = levelPlaceForTheta('ko', 1);
+    expect(mid.nextWords).toBeGreaterThan(wordsForTheta('ko', 1));
   });
 
-  it('places English and Chinese on CEFR and HSK', () => {
-    expect(levelPlaceForTheta('en', -0.6)).toMatchObject({ scale: 'tier', label: 'B1', nextLabel: 'B2', nextWords: 3878 });
-    expect(levelPlaceForTheta('zh', 0.5)).toMatchObject({ label: 'HSK 4', nextLabel: 'HSK 5' });
+  it('places English and Chinese on CEFR and HSK, with the next tier\'s words', () => {
+    const en = getVocabTiers('en');
+    const b1 = thetaForTier('en', en[2].threshold);
+    expect(levelPlaceForTheta('en', b1)).toMatchObject({ scale: 'tier', label: 'B1', nextLabel: 'B2', nextWords: en[3].threshold });
+    const zh = getVocabTiers('zh');
+    expect(levelPlaceForTheta('zh', thetaForTier('zh', zh[3].threshold))).toMatchObject({ label: 'HSK 4', nextLabel: 'HSK 5' });
   });
 
   it('sets small goals that grow with the level', () => {

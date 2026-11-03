@@ -276,4 +276,26 @@ describe('refitReaderLevel', () => {
   it('does nothing for a reader with no log', async () => {
     expect(await refitReaderLevel({ ownerId: OWNER, profileId: PROFILE, language: 'ko' })).toBeNull();
   });
+
+  it('moves a reader still at a level picked before engine 2.4 to its place today', async () => {
+    const { getVocabTiers, thetaForTier } = require('../vocabSizeLevels');
+    const zh = getVocabTiers('zh');
+    // An old HSK 4 pick: theta 0, logged without an engine tag.
+    const db = SQLite.openDatabase('fluentfable.db');
+    await new Promise((resolve) => db.transaction((tx) => {
+      tx.executeSql(
+        `INSERT INTO ability_log (client_log_id, owner_id, profile_id, language, signal, theta_before, theta_after, created_at)
+         VALUES ('old-seed', ?, 'zh_default', 'zh', 'seed', 0, 0, '2026-10-01T00:00:00Z')`,
+        [OWNER],
+        () => resolve()
+      );
+    }));
+    const state = await refitReaderLevel({ ownerId: OWNER, profileId: 'zh_default', language: 'zh' });
+    expect(state.theta).toBeCloseTo(thetaForTier('zh', zh[3].threshold), 6);
+    const [log] = await getAbilityLog({ ownerId: OWNER, profileId: 'zh_default', language: 'zh' });
+    expect(log.signal).toBe('seed');
+    expect(JSON.parse(log.details)).toMatchObject({ migratedFrom: 0, engine: LEVEL_ENGINE_VERSION });
+    // Once moved, it stays put.
+    expect(await refitReaderLevel({ ownerId: OWNER, profileId: 'zh_default', language: 'zh' })).toBeNull();
+  });
 });

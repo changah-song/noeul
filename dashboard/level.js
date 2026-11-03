@@ -278,9 +278,10 @@
     const t0 = points[0].t;
     const t1 = Math.max(points[points.length - 1].t, t0 + 60000);
     const xAt = (t) => margin.left + ((t - t0) / (t1 - t0)) * plotW;
-    const yAt = (v) => margin.top + ((3 - Math.max(-3, Math.min(3, v))) / 6) * plotH;
+    // A reader's level runs from −4 to +5 (beyond the words' −3…+3).
+    const yAt = (v) => margin.top + ((5 - Math.max(-4, Math.min(5, v))) / 9) * plotH;
 
-    [-3, -1.5, 0, 1.5, 3].forEach((v, i) => {
+    [-4, -2, 0, 2, 4].forEach((v, i) => {
       const y = Math.round(yAt(v)) + 0.5;
       svg.appendChild(svgEl('line', { class: i === 0 ? 'base-line' : 'grid-line', x1: margin.left, x2: width - margin.right, y1: y, y2: y }));
       svg.appendChild(svgText({ class: 'axis-text', x: margin.left - 8, y: y + 4, 'text-anchor': 'end' }, v > 0 ? `+${v}` : String(v)));

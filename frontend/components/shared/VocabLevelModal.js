@@ -13,7 +13,7 @@ import { useLocalOwner } from '../../contexts/LocalOwnerContext';
 import { useTranslation } from '../../hooks/useTranslation';
 import { formatNumber } from '../../services/interfaceLanguage';
 import { fontFamilies, useTheme } from '../../theme';
-import { getVocabTiers, thetaForTier } from '../../services/vocabSizeLevels';
+import { getVocabTiers, thetaForTier, tierIndexForTheta } from '../../services/vocabSizeLevels';
 import { nearestRankForTheta } from '../../services/calibrationQuiz';
 import { getProfileAbility, setProfileAbilityFromVocab } from '../../services/Database';
 import { hasWordCheck } from '../../services/wordCheck';
@@ -25,14 +25,10 @@ const pickKey = vocabLevelPickKey;
 
 // Index of the hardest tier at or below this ability: the row the model now
 // thinks the reader knows all of. Null when there is no ability yet.
-export const tierIndexForTheta = (tiers, theta) => {
+export const tierIndexFor = (language, tiers, theta) => {
     if (theta === null || theta === undefined || theta === '') return null;
     if (!Number.isFinite(Number(theta)) || !tiers.length) return null;
-    let index = null;
-    tiers.forEach((tier, i) => {
-        if (Number(tier.theta) <= Number(theta) + 1e-6) index = i;
-    });
-    return index ?? 0;
+    return tierIndexForTheta(language, Number(theta));
 };
 
 // Rgba tint of a #rrggbb token (falls back to the token itself).
@@ -122,7 +118,7 @@ const VocabLevelModal = ({ visible, onClose, initialMode = 'list' }) => {
                 });
                 // Only once reading has had a say: a fresh seed equals the pick.
                 const events = Number(ability?.event_count ?? ability?.eventCount ?? 0);
-                if (events > 1) estimate = tierIndexForTheta(tiers, ability?.theta);
+                if (events > 1) estimate = tierIndexFor(targetLanguage, tiers, ability?.theta);
             } catch {
                 estimate = null;
             }

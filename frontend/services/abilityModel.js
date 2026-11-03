@@ -21,6 +21,13 @@ import { remainingExposureFactor } from './flashcardNomination';
 export const ABILITY_THETA_MIN = -3;
 export const ABILITY_THETA_MAX = 3;
 
+// A READER's level can lie beyond the words' range: at θ = +3 a reader still
+// knows only about two thirds of the hardest band, so someone who has
+// mastered HSK 6 needs θ above it, and a true beginner, below −3. Word
+// difficulties stay within [ABILITY_THETA_MIN, ABILITY_THETA_MAX].
+export const LEVEL_THETA_MIN = -4;
+export const LEVEL_THETA_MAX = 5;
+
 // Difficulty for a word with no graded-KB entry (not in NIKL/HSK/CEFR). The
 // graded lists cover common vocabulary well (NIKL ~20k, HSK ~17k, CEFR ~14k), so
 // a content word absent from them skews rare/advanced — we default it to the

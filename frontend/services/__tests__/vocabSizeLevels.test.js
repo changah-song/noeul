@@ -71,10 +71,25 @@ describe('vocab-size grid data', () => {
 });
 
 describe('thetaForTier', () => {
-  it('returns the tier\'s baked theta', () => {
-    const tiers = getVocabTiers('ko');
+  it('seeds a Korean frequency tier where the reader is expected to know that many words', () => {
+    const { vocabularySize } = require('../levelScale');
+    const tiers = getVocabTiers('ko').filter((tier) => !tier.advanced);
     const sample = tiers[Math.floor(tiers.length / 2)];
-    expect(thetaForTier('ko', sample.threshold)).toBe(sample.theta);
+    expect(vocabularySize('ko', thetaForTier('ko', sample.threshold))).toBeCloseTo(sample.threshold, -1);
+  });
+
+  it('seeds every tier higher than the one before', () => {
+    ['ko', 'zh', 'en'].forEach((language) => {
+      const seeds = getVocabTiers(language).map((tier) => thetaForTier(language, tier.threshold));
+      seeds.slice(1).forEach((seed, i) => expect(seed).toBeGreaterThanOrEqual(seeds[i]));
+    });
+  });
+
+  it('reads a level picked before engine 2.4 as the same tier today', () => {
+    const { legacySeedTheta } = require('../vocabSizeLevels');
+    const tiers = getVocabTiers('zh');
+    // The old pick of HSK 4 seeded the HSK 4 band position, 0.
+    expect(legacySeedTheta('zh', tiers[3].theta)).toBeCloseTo(thetaForTier('zh', tiers[3].threshold), 10);
   });
 
   it('falls back to the scale midpoint for an unknown threshold', () => {

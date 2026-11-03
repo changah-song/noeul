@@ -49,6 +49,8 @@ import {
 import { initialFsrsFromPKnown, rankNominations } from './flashcardNomination';
 import { fitReaderLevel, prepareRefitEvents } from './levelRefit';
 import { isObservedLevelMark } from './levelSample';
+import { isLegacyLevelRow } from './levelSummary';
+import { legacySeedTheta } from './vocabSizeLevels';
 import { mergeVocabRows, vocabMergeKey } from './vocabMerge';
 
 // ─── Database Setup ───────────────────────────────────────────────────────────
@@ -1192,11 +1194,11 @@ const readRefitEvents = ({ ownerId, profileId, language }, since) => new Promise
 const readLatestSeed = ({ ownerId, profileId, language }) => new Promise((resolve) => {
   db.transaction(tx => {
     tx.executeSql(
-      `SELECT theta_after FROM ability_log
+      `SELECT theta_after, details FROM ability_log
        WHERE owner_id = ? AND profile_id = ? AND language = ? AND signal = 'seed'
        ORDER BY created_at DESC, id DESC LIMIT 1`,
       [ownerId, profileId, language],
-      (_, result) => resolve(result.rows._array?.[0]?.theta_after ?? null),
+      (_, result) => resolve(result.rows._array?.[0] ?? null),
       () => resolve(null)
     );
   });
@@ -1221,7 +1223,33 @@ export const refitReaderLevel = async ({ ownerId, profileId, language = 'ko', no
   };
   const since = new Date(now - REFIT_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
   const rows = await readRefitEvents(scope, since);
-  if (rows.length === 0) return null;
+  // A level picked before engine 2.4 seeded the point where the reader knows
+  // half of the picked tier; in today's meaning the same pick is higher.
+  const seedRow = await readLatestSeed(scope);
+  const legacySeed = Boolean(seedRow) && isLegacyLevelRow(seedRow);
+  const seed = seedRow
+    ? (legacySeed ? legacySeedTheta(normalizedLanguage, Number(seedRow.theta_after)) : Number(seedRow.theta_after))
+    : null;
+  const at = new Date(now).toISOString();
+  // Nothing read yet: move a reader still at an old pick to its new place.
+  const reseed = () => (legacySeed && Number.isFinite(seed)
+    ? updateReaderLevel(scope, (before) => ({
+      state: seedState(before, { theta: seed, at }),
+      logs: [{
+        signal: 'seed',
+        thetaBefore: before.theta,
+        thetaAfter: seed,
+        varianceBefore: before.variance,
+        varianceAfter: SEED_VARIANCE,
+        details: { migratedFrom: Number(seedRow.theta_after) },
+        at,
+      }],
+    })).then((state) => {
+      emitReaderLevelChanged(scope);
+      return state;
+    })
+    : Promise.resolve(null));
+  if (rows.length === 0) return reseed();
 
   const stems = Array.from(new Set(rows.map((row) => row.stem).filter(Boolean)));
   const difficulties = await getWordDifficulties(normalizedLanguage, stems);
@@ -1243,10 +1271,8 @@ export const refitReaderLevel = async ({ ownerId, profileId, language = 'ko', no
   }).filter(Boolean);
 
   const prepared = prepareRefitEvents(events, { now });
-  if (prepared.reading.length === 0 && prepared.labelled.length === 0) return null;
-  const seed = await readLatestSeed(scope);
+  if (prepared.reading.length === 0 && prepared.labelled.length === 0) return reseed();
   const fit = fitReaderLevel(prepared, { theta: seed ?? 0 });
-  const at = new Date(now).toISOString();
 
   const state = await updateReaderLevel(scope, (before) => ({
     state: applyRefit(before, fit, { at }),

@@ -1,6 +1,8 @@
 import {
     ABILITY_THETA_MAX,
     ABILITY_THETA_MIN,
+    LEVEL_THETA_MAX,
+    LEVEL_THETA_MIN,
     OOV_DIFFICULTY,
     UNDERLINE_KNOWN_CEILING,
     difficultyFromLevelRank,
@@ -55,7 +57,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 //        honest uncertainty from the whole recent log
 //   2.3  words shown with a translation aren't evidence; Chinese compounds
 //        scored from their parts; HSK 7–9 spread by frequency
-export const LEVEL_ENGINE_VERSION = '2.3';
+//   2.4  one meaning for the level (levelScale.js): a picked tier seeds where
+//        the reader knows 85% of it, labels and words follow coverage, and a
+//        reader's level runs from −4 to +5
+export const LEVEL_ENGINE_VERSION = '2.4';
 
 // Belief about the reader's level.
 export const PRIOR_VARIANCE = 2.0;        // a reader we know nothing about (sd ≈ 1.4)
@@ -327,7 +332,7 @@ export const readerState = (row) => {
     const variance = Number.isFinite(storedVariance) && storedVariance > 0
         ? storedVariance
         : (row ? Math.max(0.15, PRIOR_VARIANCE / (1 + events / 15)) : PRIOR_VARIANCE);
-    const level = Number.isFinite(theta) ? clamp(theta, ABILITY_THETA_MIN, ABILITY_THETA_MAX) : 0;
+    const level = Number.isFinite(theta) ? clamp(theta, LEVEL_THETA_MIN, LEVEL_THETA_MAX) : 0;
     const model = parseLookupModel(row?.lookup_model);
     return {
         theta: level,
@@ -423,7 +428,7 @@ export const applySignal = (state, signal = {}) => {
         const predicted = observed ? step.pObserved : 1 - step.pObserved;
         return {
             rate: h.rate,
-            mean: clamp(step.mean, ABILITY_THETA_MIN, ABILITY_THETA_MAX),
+            mean: clamp(step.mean, LEVEL_THETA_MIN, LEVEL_THETA_MAX),
             variance: step.variance,
             logWeight: h.logWeight + weight * Math.log(Math.max(1e-9, predicted)),
         };
@@ -443,7 +448,7 @@ export const applySignal = (state, signal = {}) => {
     const shift = after.mean - before.mean;
     if (shift * direction < 0) {
         hypotheses.forEach((h) => {
-            h.mean = clamp(h.mean - shift, ABILITY_THETA_MIN, ABILITY_THETA_MAX);
+            h.mean = clamp(h.mean - shift, LEVEL_THETA_MIN, LEVEL_THETA_MAX);
         });
         after = mixture(hypotheses);
     }
@@ -481,7 +486,7 @@ export const applySignal = (state, signal = {}) => {
  * known) is kept for the online updates that follow.
  */
 export const applyRefit = (state, fit, { at } = {}) => {
-    const theta = clamp(Number(fit.theta), ABILITY_THETA_MIN, ABILITY_THETA_MAX);
+    const theta = clamp(Number(fit.theta), LEVEL_THETA_MIN, LEVEL_THETA_MAX);
     const variance = Math.max(MIN_VARIANCE, Number(fit.variance));
     const spread = 0.06;
     const hypotheses = LOOKUP_RATES.map((rate, i) => ({
@@ -519,7 +524,7 @@ export const widenState = (state, variance) => {
  * learned rates stay, the belief restarts at the given mean and variance.
  */
 export const seedState = (state, { theta, variance = SEED_VARIANCE, at } = {}) => {
-    const level = clamp(Number(theta) || 0, ABILITY_THETA_MIN, ABILITY_THETA_MAX);
+    const level = clamp(Number(theta) || 0, LEVEL_THETA_MIN, LEVEL_THETA_MAX);
     const hypotheses = (state?.hypotheses || freshHypotheses(level, variance)).map((h) => ({
         ...h, mean: level, variance,
     }));
