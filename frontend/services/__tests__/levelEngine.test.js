@@ -167,6 +167,43 @@ describe('word difficulty', () => {
     });
 });
 
+describe('Chinese difficulty', () => {
+    const { compoundDifficulty, compoundSplits } = require('../levelEngine');
+
+    it('spreads HSK 7–9 by frequency between the HSK 6 position and the top', () => {
+        const at = (zipf) => wordDifficulty({ language: 'zh', levelRank: 7, zipf }).parts.band;
+        expect(at(5.5)).toBeCloseTo(2, 6);
+        expect(at(4)).toBeCloseTo(2.5, 6);
+        expect(at(2.5)).toBeCloseTo(3, 6);
+        // Without a frequency, the band stays where it was; other languages too.
+        expect(wordDifficulty({ language: 'zh', levelRank: 7 }).parts.band).toBe(3);
+        expect(wordDifficulty({ language: 'ko', levelRank: 6, zipf: 5 }).parts.band).toBe(3);
+    });
+
+    it('splits verb + complement and three-character compounds, not idioms', () => {
+        expect(compoundSplits('zh', '铐起来')).toContainEqual({ kind: 'complement', parts: ['铐', '起来'] });
+        expect(compoundSplits('zh', '面包店')).toContainEqual({ kind: 'compound', parts: ['面包', '店'] });
+        expect(compoundSplits('zh', '灵机一动')).toEqual([]);
+        expect(compoundSplits('ko', '먹었다')).toEqual([]);
+    });
+
+    it('takes the easiest reading of the parts, and none when a part is unknown', () => {
+        const known = { 吃: -3, 孩子: -2.5, 野: 0.5 };
+        const of = (part) => (part in known ? known[part] : null);
+        expect(compoundDifficulty('zh', '吃掉', of)).toEqual({ difficulty: -2.8, parts: ['吃', '掉'] });
+        expect(compoundDifficulty('zh', '野孩子', of)).toEqual({ difficulty: 0.9, parts: ['野', '孩子'] });
+        expect(compoundDifficulty('zh', '蒲公英', of)).toBeNull();
+    });
+
+    it('lowers a word with its own difficulty by at most MAX_COMPOUND_EASE', () => {
+        const { MAX_COMPOUND_EASE } = require('../levelEngine');
+        const of = (part) => ({ 想: -3 }[part] ?? null);
+        // 想开 "get over it": an idiom, not think + open.
+        expect(compoundDifficulty('zh', '想开', of, 1.92).difficulty).toBeCloseTo(1.92 - MAX_COMPOUND_EASE, 6);
+        expect(compoundDifficulty('zh', '想开', of, -3)).toBeNull();
+    });
+});
+
 describe('word knowledge', () => {
     const now = Date.UTC(2026, 9, 19);
     const reader = { theta: 0, variance: 0.3, lookupRate: 0.5, guessRate: 0.05 };

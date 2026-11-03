@@ -180,6 +180,40 @@ difficulty barely predicts which words this reader taps, so reading alone
 cannot place them closely. The refit says so (±0.72); better word difficulty
 is what tightens it.
 
+## Word difficulty and translations (engine 2.3)
+
+**Words shown with a translation aren't evidence.** On the real Chinese log,
+among underlined words the reader tapped 16–23% at every HSK level from 3 to 7
+and for unlisted words alike: listed difficulty predicted nothing (AUC 0.50).
+The reader shows a short translation under every underlined word (the default
+for new readers, `glossAnnotations`). With the meaning printed under it,
+reading past a word doesn't mean it was known, and tapping it means "more than
+the translation", not "unknown". Such words are no longer credited as read
+past (`selectExposureCredits` `glossed`), and their lookups carry level mark 3
+(`levelSample.LEVEL_MARK.glossed`), which neither the online update nor the
+refit counts. The sampled known words (not underlined, so not translated) and
+untranslated underlined words still are. Pinyin alone doesn't exclude a word.
+
+**Chinese compounds from their parts** (`compoundDifficulty`, used by
+`getWordDifficulties` and the underline snapshot alike): verb + complement
+(吃掉, 塞进, 铐起来) is its head + 0.2; a three-character compound (面包店,
+野孩子) is its harder part + 0.4. Four-character words (mostly idioms) are left
+alone, a compound is never made harder, and a word with its own difficulty is
+lowered by at most 1.5 (想开 "get over it" is not think + open). On the log
+this changed 710 of 2,892 signals' difficulties (捕到 3.00 → 1.71, 卖掉
+0.82 → −0.68).
+
+**HSK 7–9 by frequency.** HSK 3.0 levels 7–9 are one band of 9,085 words,
+which the scale put at +3. Within it the band position now follows frequency,
+from +2 (Zipf ≥ 5, the HSK 6 position) to +3 (Zipf ≤ 3), before the usual
+50/50 blend with frequency.
+
+**Not yet validated.** Replayed on the log, the new difficulties change
+nothing measurable (reading AUC 0.513 → 0.511), as expected: almost all of it
+was read with translations shown. Logs recorded from 2.3 on, where reading
+past and tapping mean what the model assumes, are what will show whether
+these help; the penalties (0.2, 0.4, 1.5) are first guesses to tune then.
+
 ## Tuning knobs
 
 All in `levelEngine.js`: `BAND_WEIGHT` (level vs frequency), `LOANWORD_EASE`,

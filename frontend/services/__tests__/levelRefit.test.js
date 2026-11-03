@@ -72,7 +72,7 @@ describe('fitReaderLevel', () => {
         // Taps on 的/了-like words, whose reading past is never logged.
         const easyTaps = Array.from({ length: 200 }, (_, i) => ({
             type: 'lookup', stem: `easy${i % 20}`, difficulty: -2.8, at: new Date(NOW - (i % 20) * DAY).toISOString(),
-            levelMark: i % 2 ? 0 : null,
+            levelMark: [0, null, 3][i % 3],
         }));
         const without = fitReaderLevel(prepareRefitEvents(base, { now: NOW }));
         const withTaps = fitReaderLevel(prepareRefitEvents([...base, ...easyTaps], { now: NOW }));
