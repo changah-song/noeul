@@ -208,15 +208,89 @@ def localized_definition(entry: dict, interface_language: str) -> str | None:
     return "\n".join(translated) or None
 
 
-def best_entry(entries: list[dict]) -> dict | None:
-    """The entry to show first: the most common one that has an equivalent in
-    the learner's language, else the most common one."""
+# spaCy's part of speech -> the dictionary's (Wiktionary's) one.
+SPACY_POS_TO_ENTRY_POS = {
+    "NOUN": "noun",
+    "VERB": "verb",
+    "AUX": "verb",
+    "ADJ": "adjective",
+    "ADV": "adverb",
+    "NUM": "numeral",
+    "ADP": "preposition",
+    "PRON": "pronoun",
+    "DET": "determiner",
+    "CCONJ": "conjunction",
+    "SCONJ": "conjunction",
+    "INTJ": "interjection",
+}
+
+
+def best_entry(entries: list[dict], pos: str | None = None) -> dict | None:
+    """The entry to show first. With the word's part of speech in the text
+    (spaCy's: VERB, NOUN...), the first entry of that part of speech with an
+    equivalent in the learner's language, else the first of that part of
+    speech: "born" and "bore" are the verb "bear", never the animal 곰, though
+    the noun comes first. Otherwise (or when the dictionary has no entry of
+    that part of speech) the most common entry with an equivalent, else the
+    most common one."""
     if not entries:
         return None
+    entry_pos = SPACY_POS_TO_ENTRY_POS.get(pos or "")
+    if entry_pos:
+        matching = [entry for entry in entries if entry.get("pos") == entry_pos]
+        if matching:
+            return next((entry for entry in matching if entry.get("equivalents")), matching[0])
     for entry in entries[:2]:
         if entry.get("equivalents"):
             return entry
     return entries[0]
+
+
+# How many interface languages an adjective must be translated into to count
+# as a word of its own (born: 10 of 13; withdrawn, 찐따, 4; taken, 0).
+LEXICALIZED_ADJECTIVE_MIN_LANGUAGES = 8
+
+
+def lexicalized_adjectives(words: list[str], min_languages: int = LEXICALIZED_ADJECTIVE_MIN_LANGUAGES) -> set[str]:
+    """The given words (normalized) that the dictionary lists only as
+    adjectives (names aside) and whose adjective has equivalents in at least
+    min_languages interface languages: born, broken, lost, frozen. Such a
+    participle is a word of its own rather than a form of its verb. "left"
+    (also a noun and an adverb) and "taken" (only "infatuated") are not."""
+    if not is_installed():
+        return set()
+    normalized = list(dict.fromkeys(normalize_word(word) for word in words if normalize_word(word)))
+    if not normalized:
+        return set()
+    conn = _connection()
+    adjective_only: set[str] = set()
+    for chunk in _chunks(normalized):
+        placeholders = ",".join("?" * len(chunk))
+        for row in conn.execute(
+            f"""
+            SELECT word FROM en_entries WHERE word IN ({placeholders}) AND pos != 'name'
+            GROUP BY word HAVING SUM(pos != 'adjective') = 0
+            """,
+            chunk,
+        ):
+            adjective_only.add(row["word"])
+    found: set[str] = set()
+    candidates = list(adjective_only)
+    for chunk in _chunks(candidates):
+        placeholders = ",".join("?" * len(chunk))
+        for row in conn.execute(
+            f"""
+            SELECT q.word, COUNT(DISTINCT q.interface_language) AS languages
+            FROM en_equivalents q
+            JOIN en_entries e ON e.word = q.word AND e.entry_no = q.entry_no
+            WHERE q.word IN ({placeholders}) AND e.pos = 'adjective'
+            GROUP BY q.word
+            """,
+            chunk,
+        ):
+            if row["languages"] >= min_languages:
+                found.add(row["word"])
+    return found
 
 
 def zipf_frequencies(words: list[str]) -> dict[str, float]:

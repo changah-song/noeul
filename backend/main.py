@@ -18,6 +18,7 @@ from typing import Any, Optional
 import os
 import re
 from datetime import datetime, timezone
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache, partial
 import certifi
@@ -2128,19 +2129,49 @@ def en_token_lemma(token) -> str:
     return correct_en_verb_lemma(token.text, lemma, verb_index, verb_exceptions)
 
 
+def is_en_participle_candidate(token, lemma: str) -> bool:
+    """An irregular past participle used as an adjective or in the passive
+    ("was born", "a born leader", "was broken"): not one ending in -ed (closed,
+    determined: those stay forms of their verb), and not in a perfect tense
+    ("has lost" is still losing something)."""
+    if token.tag_ != "VBN":
+        return False
+    surface = token.text.lower()
+    if surface == lemma or surface.endswith("ed"):
+        return False
+    return not any(
+        child.dep_ == "aux" and child.lemma_.lower() == "have"
+        for child in token.children
+    )
+
+
 def extract_en_lookup_tokens(text: str) -> tuple[list[str], list[dict], dict[str, str]]:
     doc = get_en_nlp()(text)
     seen_lemmas: set[str] = set()
     seen_surface_pairs: set[tuple[str, str]] = set()
     lemmas: list[str] = []
     surface_index: list[dict] = []
-    pos_by_lemma: dict[str, str] = {}
+    pos_counts_by_lemma: dict[str, Counter] = {}
     # Words capitalized mid-sentence anywhere in the text: the same word opening
     # a sentence is the same name.
     names_mid_sentence = {token.text for token in doc if is_en_name_token(token)}
+    # Participles the dictionary has as adjectives of their own ("born" is
+    # 태어난, not a form of "bear", whose first entry is the animal 곰).
+    lexicalized_participles = en_learner_dict.lexicalized_adjectives([
+        token.text for token in doc
+        if token.pos_ == "VERB" and is_en_participle_candidate(token, en_token_lemma(token))
+    ])
 
     for token in doc:
         lemma = en_token_lemma(token)
+        token_pos = token.pos_
+        if (
+            token_pos == "VERB"
+            and token.text.lower() in lexicalized_participles
+            and is_en_participle_candidate(token, lemma)
+        ):
+            lemma = token.text.lower()
+            token_pos = "ADJ"
         raw_surface = token.text.strip()
         lower_surface = raw_surface.lower()
 
@@ -2164,12 +2195,12 @@ def extract_en_lookup_tokens(text: str) -> tuple[list[str], list[dict], dict[str
             pos = EN_NAME_POS
         else:
             surfaces = list(dict.fromkeys([raw_surface, lower_surface]))
-            pos = token.pos_
+            pos = token_pos
 
         if lemma not in seen_lemmas:
             seen_lemmas.add(lemma)
             lemmas.append(lemma)
-            pos_by_lemma[lemma] = pos
+        pos_counts_by_lemma.setdefault(lemma, Counter())[pos] += 1
 
         for surface in surfaces:
             if len(surface) > 1:
@@ -2181,6 +2212,9 @@ def extract_en_lookup_tokens(text: str) -> tuple[list[str], list[dict], dict[str
                         "stem": lemma,
                     })
 
+    # A lemma's part of speech is the one it has most often in the text (the
+    # first one on a tie), so the dictionary entry matches how it is used.
+    pos_by_lemma = {lemma: counts.most_common(1)[0][0] for lemma, counts in pos_counts_by_lemma.items()}
     return lemmas, surface_index, pos_by_lemma
 
 
@@ -2799,8 +2833,10 @@ def lookup_en_learner_results(
     interface_language: str,
     pos_by_stem: dict[str, str] | None = None,
 ) -> tuple[list[dict], int]:
-    """(one result per stem, how many had an entry). The entry shown is the most
-    common one with an equivalent in the learner's language. A name (tagged by
+    """(one result per stem, how many had an entry). The entry shown is the
+    first one of the stem's part of speech in the text (pos_by_stem: "bear"
+    from "bore" is the verb, not the animal) with an equivalent in the
+    learner's language, else the most common one with an equivalent. A name (tagged by
     the tokenizer) keeps its capitalized stem and uses the dictionary's name
     entry when there is one (London, April), else no definition."""
     pos_by_stem = pos_by_stem or {}
@@ -2816,7 +2852,8 @@ def lookup_en_learner_results(
             result = en_learner_result(raw_stem.strip(), name_entry, interface_language)
             results.append({**result, "stem": raw_stem.strip(), "word": raw_stem.strip(), "pos": EN_NAME_POS})
             continue
-        results.append(en_learner_result(stem, en_learner_dict.best_entry(entries), interface_language))
+        entry = en_learner_dict.best_entry(entries, pos_by_stem.get(raw_stem))
+        results.append(en_learner_result(stem, entry, interface_language))
     return results, sum(1 for result in results if result.get("definition"))
 
 
