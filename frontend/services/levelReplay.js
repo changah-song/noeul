@@ -192,3 +192,86 @@ export const replayLevelLog = (events, engine, policy = {}) => {
         skipped,
     };
 };
+
+/**
+ * replayRefit — score the batch refit (services/levelRefit.js) on a log, the
+ * same way as replayLevelLog: before each day (and before each word check)
+ * the level is refit from everything earlier, then that day's signals are
+ * predicted from it. `refit` is the module ({ prepareRefitEvents,
+ * fitReaderLevel }), passed in like the engine. `scoreIf(event)` picks the
+ * reading signals to score (default: the ones the app would count), so
+ * variants can be compared on the same events.
+ */
+export const replayRefit = (events, refit, { sigmoid, slope, ceiling, isSample, scoreIf = null } = {}) => {
+    const pairs = { reading: [], check: [], review: [], fromReading: [] };
+    const past = [];
+    const daily = new Map();
+    let prior = { theta: 0, variance: 2 };
+    let fit = null;
+    let fitDay = null;
+    let fitBeforeCheck = null;
+    const first = events.find((e) => Number.isFinite(e.thetaBefore));
+    if (first) prior = { theta: first.thetaBefore, variance: 2 };
+
+    const refitNow = (at) => refit.fitReaderLevel(refit.prepareRefitEvents(past, { now: new Date(at).getTime() }), prior);
+    const pKnown = (difficulty) => sigmoid(slope * (fit.theta - difficulty));
+    const exposed = new Set();
+
+    for (const event of events) {
+        const day = dayOf(event.at);
+        if (event.signal === 'seed') {
+            if (Number.isFinite(event.thetaAfter)) prior = { theta: event.thetaAfter, variance: 2 };
+            continue;
+        }
+        if (event.signal === 'check_start') {
+            fitBeforeCheck = refitNow(event.at);
+            continue;
+        }
+        if (day !== fitDay) {
+            fit = refitNow(event.at);
+            fitDay = day;
+        }
+        const type = event.signal;
+        if (type === 'pseudo') {
+            past.push({ type, outcome: event.outcome, at: event.at });
+            continue;
+        }
+        const difficulty = Number(event.difficulty);
+        if (!Number.isFinite(difficulty) || !event.stem) continue;
+        if (type === 'pass') exposed.add(event.stem);
+
+        if (type === 'lookup' || type === 'pass') {
+            const pk = pKnown(difficulty);
+            const counted = type === 'pass'
+                || !Number.isFinite(event.thetaBefore) || sigmoid(event.thetaBefore - difficulty) < ceiling
+                || (exposed.has(event.stem) && isSample(event.stem));
+            if (scoreIf ? scoreIf(event) : counted) {
+                pairs.reading.push({ score: fit.knownTapRate * pk + fit.lookupRate * (1 - pk), y: type === 'lookup' ? 1 : 0 });
+            }
+        } else if (type === 'check') {
+            const yes = (f) => {
+                const pk = sigmoid(slope * (f.theta - difficulty));
+                return 0.97 * pk + f.guessRate * (1 - pk);
+            };
+            pairs.check.push({ score: yes(fit), y: event.outcome ? 1 : 0 });
+            if (fitBeforeCheck) pairs.fromReading.push({ score: yes(fitBeforeCheck), y: event.outcome ? 1 : 0 });
+        } else if (type === 'review') {
+            const pk = pKnown(difficulty);
+            pairs.review.push({ score: 0.9 * pk + 0.35 * (1 - pk), y: event.outcome ? 1 : 0 });
+        }
+        past.push({
+            type, stem: event.stem, difficulty, outcome: event.outcome, at: event.at, source: event.source, thetaBefore: event.thetaBefore,
+        });
+        daily.set(day, fit.theta);
+    }
+    const final = events.length ? refitNow(events[events.length - 1].at) : null;
+    return {
+        reading: summarize(pairs.reading),
+        check: summarize(pairs.check),
+        review: summarize(pairs.review),
+        fromReading: summarize(pairs.fromReading),
+        final: final && { theta: final.theta, variance: final.variance, lookupRate: final.lookupRate, knownTapRate: final.knownTapRate },
+        daily: [...daily.entries()].map(([d, theta]) => ({ day: d, theta })),
+        skipped: 0,
+    };
+};

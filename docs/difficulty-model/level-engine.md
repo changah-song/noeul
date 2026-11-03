@@ -132,6 +132,54 @@ real lookup.
 the sample on, so sampled words' lookups count as they do in the app. Older
 logs (before 2.1) must be replayed without it.
 
+## Batch refit (engine 2.2)
+
+`services/levelRefit.js` sets the level from the whole recent log (180 days)
+at once, after each reading session and when the app opens
+(`levelRefitScheduler.js`; at most every 30 minutes, every 2 after a session).
+The online updates carry on from its result in between.
+
+    P(known)   = sigmoid(ITEM_SLOPE · (θ − difficulty))
+    P(look up) = h · P(known) + r · (1 − P(known))
+    word check, reviews: as in the online engine
+
+Learned per reader: θ, r (taps on unknown words) and h (taps on known words,
+prior mean 0.1). Each signal is weighted by age (half-life 90 days), repeats
+(`repeatWeight`) and session (one day's reading of one book counts at most 40
+signals). θ, r and h are fitted by EM; the level's uncertainty is read off its
+posterior on a grid, **averaged over r**: from reading alone, a strong reader
+who rarely taps and a weaker one who taps more explain the same log almost
+equally well, and fixing r at its best fit reported such readers far too sure.
+The level is never reported surer than sd 0.25.
+
+**Which lookups count.** A lookup counts only when reading past the same word
+was being logged then. The reader now records that on each lookup
+(`interaction_events.grade`: 1 underlined, 2 sampled known word, 0 neither,
+from `levelMarkFor` in Read.js), and the online engine uses it too. Older
+lookups lack it; they count when the word has been seen read past at all
+(biased upward, since a hard word tapped every time never is, but every
+level-based rule was worse on real data). They fade with age.
+
+**Simulated readers** (20 days of 150 signals, known θ, r, h): 34 of 36 within
+2 reported standard deviations; r and h recovered to ±0.1 / ±0.07 when the
+level is identifiable. ~80 ms per fit (signals are grouped by kind, outcome
+and difficulty to 0.05).
+
+**On the real Chinese log** (`levelReplay.js --engine refit`, refit before each
+day from the days before):
+
+| | 2.0 shipped | 2.1 online | 2.2 refit |
+|---|---|---|---|
+| Check answers predicted from reading alone (all "know") | 0.41 | 0.71 | 0.93 |
+| Their log loss | 0.91 | 0.35 | 0.08 |
+| Level at the end | −2.48 ± 0.21 | +0.48 ± 0.34 | +1.82 ± 0.72 |
+| Learned tap rates (unknown / known) | – | – | 0.21 / 0.07 |
+
+On words logged both ways, reading AUC is about 0.5 for every version: listed
+difficulty barely predicts which words this reader taps, so reading alone
+cannot place them closely. The refit says so (±0.72); better word difficulty
+is what tightens it.
+
 ## Tuning knobs
 
 All in `levelEngine.js`: `BAND_WEIGHT` (level vs frequency), `LOANWORD_EASE`,

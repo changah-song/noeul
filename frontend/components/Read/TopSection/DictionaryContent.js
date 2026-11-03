@@ -272,8 +272,12 @@ const DictionaryContent = ({
     currentBook,
     sourceBook,
     savedWords = [],
+    levelMarkFor = null,
 }) => {
     const { interfaceLanguage } = useAppContext();
+    // Read at lookup time, so a new function each render doesn't re-run it.
+    const levelMarkForRef = useRef(levelMarkFor);
+    levelMarkForRef.current = levelMarkFor;
     const { t, language } = useTranslation();
     const { colors } = useTheme();
     const styles = useMemo(() => createStyles(colors), [colors]);
@@ -422,6 +426,7 @@ const DictionaryContent = ({
                     interfaceLanguage,
                     targetLanguage,
                     usableCachedEntry: isUsableCachedEntry,
+                    levelMark: levelMarkForRef.current ? levelMarkForRef.current(lookupWord) : null,
                 });
                 if (isCancelled) {
                     return;

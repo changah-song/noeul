@@ -476,6 +476,9 @@ export const resolveDictionaryLookup = async ({
     allowRemoteStemming = true,
     fallbackToSurfaceForKorean = false,
     script = getRuntimeChineseScript(),
+    // Whether reading past this word is logged: 1 underlined, 2 in the level
+    // sample, 0 neither, null unknown (callers outside the book reader).
+    levelMark = null,
 }) => {
     const rawSurface = cleanValue(surface);
     const normalizedTargetLanguage = normalizeBookLanguage(targetLanguage);
@@ -520,6 +523,7 @@ export const resolveDictionaryLookup = async ({
             word: normalizedSurface,
             stem: resolvedStem,
             eventType: 'lookup',
+            grade: levelMark,
             sourceBookUri: currentBook ?? null,
         }).catch((error) => {
             console.warn('[dictionaryLookup] Failed to log lookup interaction event:', error);
@@ -535,6 +539,7 @@ export const resolveDictionaryLookup = async ({
             stem: resolvedStem,
             word: normalizedSurface,
             signal: 'lookup',
+            levelMark,
             sourceBookUri: currentBook ?? null,
         }).catch((error) => {
             console.warn('[dictionaryLookup] Failed to update theta from lookup:', error);
