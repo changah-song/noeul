@@ -1,13 +1,14 @@
-import { getVocabTiers } from './vocabSizeLevels';
-import { seedThetaFromRank } from './abilityModel';
+import { getVocabTiers, legacySeedTheta, tierIndexForTheta } from './vocabSizeLevels';
+import { coveredBand, thetaForBandCoverage, vocabularySize } from './levelScale';
+import { LEVEL_THETA_MAX, LEVEL_THETA_MIN, seedThetaFromRank } from './abilityModel';
 
 // The reader's level in words a person can read: "about 1,200–2,000 words"
 // (Korean, a frequency grid) or "B1–B2" / "HSK 3–4" (English, Chinese). The
 // model's level is a mean (theta, -3..3) with a variance; the range shown is
 // the middle 80% of that belief.
 
-export const THETA_MIN = -3;
-export const THETA_MAX = 3;
+export const THETA_MIN = LEVEL_THETA_MIN;
+export const THETA_MAX = LEVEL_THETA_MAX;
 const RANGE_Z = 1.28;
 
 const clampTheta = (value) => Math.max(THETA_MIN, Math.min(THETA_MAX, value));
@@ -24,8 +25,11 @@ export const levelRange = (theta, variance) => {
 
 const hasLabels = (tiers) => tiers.some((tier) => tier.label);
 
-// Words known at `theta`, interpolated between the tiers around it.
+// Words known at `theta`: the expected vocabulary (services/levelScale.js),
+// or, for a language without word data, interpolated between its tiers.
 export const wordsForTheta = (language, theta) => {
+  const expected = vocabularySize(language, theta);
+  if (Number.isFinite(expected)) return expected;
   const tiers = getVocabTiers(language).filter((tier) => !tier.advanced);
   if (tiers.length === 0) return null;
   const value = Number(theta);
@@ -48,14 +52,11 @@ export const roundWords = (words) => {
   return Math.round(words / magnitude) * magnitude;
 };
 
-// The tier label a theta falls in (the last tier at or below it).
+// The tier label a level reaches: the highest HSK / CEFR band the reader
+// knows at least 80% of (levelScale COVERAGE).
 export const tierLabelForTheta = (language, theta) => {
   const tiers = getVocabTiers(language);
-  let label = tiers[0]?.label ?? null;
-  tiers.forEach((tier) => {
-    if (tier.label && tier.theta <= Number(theta) + 1e-6) label = tier.label;
-  });
-  return label;
+  return tiers[tierIndexForTheta(language, theta)]?.label ?? null;
 };
 
 /**
@@ -160,11 +161,15 @@ export const levelChartSeries = (rows, range = '30', { now = Date.now() } = {}) 
  * level after the last answer). Later picks don't move it. Rows: the level
  * log's seed / check rows, oldest first. Null when there is none.
  */
-export const startingTheta = (rows) => {
+export const startingTheta = (rows, language = null) => {
   const list = rows ?? [];
   const first = list.findIndex((row) => row?.signal === 'seed' || row?.signal === 'check_start');
   if (first < 0) return null;
   let theta = Number(list[first].theta_after);
+  // A level picked before engine 2.4 meant something else (see legacySeedTheta).
+  if (language && list[first].signal === 'seed' && isLegacyLevelRow(list[first])) {
+    theta = legacySeedTheta(language, theta);
+  }
   if (list[first].signal === 'check_start') {
     for (let index = first + 1; index < list.length; index += 1) {
       const row = list[index];
@@ -173,6 +178,20 @@ export const startingTheta = (rows) => {
     }
   }
   return Number.isFinite(theta) ? theta : null;
+};
+
+/** Whether a level-log row predates engine 2.4 (picks meant half a tier then). */
+export const isLegacyLevelRow = (row) => {
+  let details = row?.details;
+  if (typeof details === 'string') {
+    try {
+      details = JSON.parse(details);
+    } catch {
+      details = null;
+    }
+  }
+  const engine = Number.parseFloat(details?.engine);
+  return !Number.isFinite(engine) || engine < 2.4;
 };
 
 // ─── The level on the language's own scale, and small goals ──────────────────
@@ -188,23 +207,20 @@ const KO_RANKS = [1, 2, 3, 4, 5, 6];
 export const levelPlaceForTheta = (language, theta) => {
   const value = Number(theta);
   if (language === 'ko') {
-    let rank = 1;
-    KO_RANKS.forEach((candidate) => {
-      if (seedThetaFromRank('ko', candidate) <= value + 1e-6) rank = candidate;
-    });
+    // The highest reading level whose words the reader knows 80% of.
+    const covered = coveredBand('ko', value);
+    const rank = Number.isFinite(covered) ? Math.max(1, Math.min(KO_RANKS.length, covered)) : 1;
     const nextRank = rank < KO_RANKS.length ? rank + 1 : null;
+    const nextTheta = nextRank ? (thetaForBandCoverage('ko', nextRank, 0.8) ?? seedThetaFromRank('ko', nextRank)) : null;
     return {
       scale: 'ko',
       rank,
       nextRank,
-      nextWords: nextRank ? wordsForTheta(language, seedThetaFromRank('ko', nextRank)) : null,
+      nextWords: nextRank ? wordsForTheta(language, nextTheta) : null,
     };
   }
   const tiers = getVocabTiers(language);
-  let index = 0;
-  tiers.forEach((tier, i) => {
-    if (tier.theta <= value + 1e-6) index = i;
-  });
+  const index = tierIndexForTheta(language, value);
   const next = tiers[index + 1] ?? null;
   return {
     scale: 'tier',

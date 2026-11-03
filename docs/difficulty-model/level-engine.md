@@ -214,6 +214,39 @@ was read with translations shown. Logs recorded from 2.3 on, where reading
 past and tapping mean what the model assumes, are what will show whether
 these help; the penalties (0.2, 0.4, 1.5) are first guesses to tune then.
 
+## One meaning for the level (engine 2.4)
+
+The model's θ is the difficulty at which the reader knows a word half the
+time. Three things used to read it three ways: the level picker seeded a tier
+at that tier's band position (where the reader knows *half* of it), "HSK N"
+meant "θ is at or above the HSK N position" (so HSK 2 meant knowing about half
+of HSK 2), and the word count interpolated between tier positions.
+`services/levelScale.js` gives them one meaning:
+
+| | Meaning |
+|---|---|
+| coverage(θ, band) | the share of a band's words the reader knows: mean P(known) over the word-check pool's words in that band (~50 per band, same difficulty as everywhere) |
+| "HSK N" / "B1" / Korean reading level | the highest band known to at least 80% |
+| words known | Σ over bands of (words in the band × its coverage) |
+| picking a tier | the θ where that band is known to 85% (Korean frequency tiers: where the expected vocabulary is that many words) |
+
+**A reader's level now runs from −4 to +5.** At +3, the top of the word
+scale, a reader still knew only about two thirds of the hardest band, so
+nobody could be shown HSK 6–7 or C1–C2, and picking HSK 6 or 7 seeded the
+same +3. Word difficulties stay within −3…+3. Picks now seed HSK 1–7 at
+−0.21, 0.74, 1.24, 2.02, 2.53, 3.03, 4.06.
+
+**Old picks.** A level picked before 2.4 is read as the same tier today
+(`legacySeedTheta`), in "where you started" and as the refit's prior. A reader
+with a pick and nothing read yet is moved once (a `seed` row with
+`migratedFrom`).
+
+On the real Chinese log the profile goes from "HSK 1 (likely HSK 1–1)" (2.0)
+to "HSK 4 (likely HSK 2–6)". The word count counts partial knowledge of every
+band (here about 40% of HSK 7–9's 9,085 words), so it is much larger than
+before (about 11,000); how fast knowledge falls off with difficulty
+(`ITEM_VARIANCE`) decides it and is not yet validated.
+
 ## Tuning knobs
 
 All in `levelEngine.js`: `BAND_WEIGHT` (level vs frequency), `LOANWORD_EASE`,

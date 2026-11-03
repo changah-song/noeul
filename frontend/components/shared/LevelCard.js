@@ -65,7 +65,7 @@ const LevelCard = ({ ownerId, profileId, language, userId, onAdjust }) => {
             }
             if (cancelled) return;
             setAbility(row);
-            setStartTheta(startingTheta(startLog));
+            setStartTheta(startingTheta(startLog, language));
             setMilestones(record);
         })();
         return () => {

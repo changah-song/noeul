@@ -6,20 +6,21 @@ jest.mock('../../services/Database', () => ({
   setProfileAbilityFromVocab: jest.fn(),
 }));
 
-const { tierIndexForTheta } = require('../shared/VocabLevelModal');
+const { tierIndexFor } = require('../shared/VocabLevelModal');
+const { getVocabTiers, thetaForTier } = require('../../services/vocabSizeLevels');
 
-const tiers = [{ theta: -3 }, { theta: -2 }, { theta: -1 }, { theta: 0 }, { theta: 1 }, { theta: 2 }, { theta: 3 }];
+const tiers = getVocabTiers('zh');
 
-describe('tierIndexForTheta', () => {
-  it('is the hardest tier at or below the ability', () => {
-    expect(tierIndexForTheta(tiers, 0)).toBe(3);
-    expect(tierIndexForTheta(tiers, 0.6)).toBe(3);
-    expect(tierIndexForTheta(tiers, 3)).toBe(6);
+describe('tierIndexFor', () => {
+  it('is the tier the level reaches, the one a pick of it seeds', () => {
+    tiers.forEach((tier, i) => {
+      expect(tierIndexFor('zh', tiers, thetaForTier('zh', tier.threshold))).toBe(i);
+    });
   });
 
   it('floors at the first tier and is null without an ability', () => {
-    expect(tierIndexForTheta(tiers, -5)).toBe(0);
-    expect(tierIndexForTheta(tiers, undefined)).toBeNull();
-    expect(tierIndexForTheta([], 1)).toBeNull();
+    expect(tierIndexFor('zh', tiers, -4)).toBe(0);
+    expect(tierIndexFor('zh', tiers, undefined)).toBeNull();
+    expect(tierIndexFor('zh', [], 1)).toBeNull();
   });
 });

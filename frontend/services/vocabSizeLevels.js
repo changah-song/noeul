@@ -2,6 +2,7 @@ import KO_VOCAB_TIERS from '../assets/data/vocab-size/ko.generated.json';
 import ZH_VOCAB_TIERS from '../assets/data/vocab-size/zh.generated.json';
 import EN_VOCAB_TIERS from '../assets/data/vocab-size/en.generated.json';
 import { normalizeBookLanguage } from '../constants/languages';
+import { coveredBand, thetaForBandCoverage, thetaForVocabulary, vocabularySize } from './levelScale';
 
 // ─── Vocabulary-size level grid (Profile cold-start) ───────────────────────────
 //
@@ -47,15 +48,61 @@ export const getVocabTiers = (language) => {
   return Array.isArray(entry?.tiers) ? entry.tiers : [];
 };
 
+const isLabelled = (tiers) => tiers.some((tier) => tier.label);
+
 /**
- * thetaForTier — the seeded ability for "I know all the words up to this tier".
- * Falls back to the scale midpoint for an unknown threshold.
+ * thetaForTier — the level for "I know all the words up to this tier", in
+ * the same meaning the profile shows (services/levelScale.js): for HSK / CEFR
+ * tiers, where the tier's band is known to PICK_COVERAGE; for Korean's
+ * frequency tiers, where the expected vocabulary is the tier's word count.
+ * Falls back to the tier's baked band position, then 0.
  *
  * @param {string} language
  * @param {number} threshold  a tier's `threshold` value
- * @returns {number} theta in [-3, 3]
+ * @returns {number} theta
  */
 export const thetaForTier = (language, threshold) => {
-  const tier = getVocabTiers(language).find((item) => item.threshold === threshold);
-  return Number.isFinite(Number(tier?.theta)) ? Number(tier.theta) : 0;
+  const tiers = getVocabTiers(language);
+  const index = tiers.findIndex((item) => item.threshold === threshold);
+  if (index < 0) return 0;
+  const theta = isLabelled(tiers)
+    ? thetaForBandCoverage(language, index + 1)
+    : thetaForVocabulary(language, threshold);
+  if (Number.isFinite(theta)) return theta;
+  return Number.isFinite(Number(tiers[index].theta)) ? Number(tiers[index].theta) : 0;
+};
+
+/**
+ * tierIndexForTheta — the tier a level reaches (0 = the first, also when not
+ * even that): the highest HSK / CEFR band known to COVERAGE, or the largest
+ * Korean frequency tier within the expected vocabulary.
+ */
+export const tierIndexForTheta = (language, theta) => {
+  const tiers = getVocabTiers(language);
+  if (tiers.length === 0) return 0;
+  if (isLabelled(tiers)) {
+    const band = coveredBand(language, theta);
+    return Math.max(0, Math.min(tiers.length - 1, (band ?? 1) - 1));
+  }
+  const words = vocabularySize(language, theta) ?? 0;
+  let index = 0;
+  tiers.forEach((tier, i) => {
+    if (tier.threshold <= words) index = i;
+  });
+  return index;
+};
+
+/**
+ * legacySeedTheta — a level picked before engine 2.4, when a tier seeded the
+ * tier's band position (the level at which the reader knows HALF of it), in
+ * today's meaning: the same tier, seeded by thetaForTier.
+ */
+export const legacySeedTheta = (language, theta) => {
+  const tiers = getVocabTiers(language);
+  if (tiers.length === 0 || !Number.isFinite(Number(theta))) return Number(theta);
+  let nearest = tiers[0];
+  tiers.forEach((tier) => {
+    if (Math.abs(Number(tier.theta) - Number(theta)) < Math.abs(Number(nearest.theta) - Number(theta))) nearest = tier;
+  });
+  return thetaForTier(language, nearest.threshold);
 };
