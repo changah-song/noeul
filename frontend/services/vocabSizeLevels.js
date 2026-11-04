@@ -2,7 +2,7 @@ import KO_VOCAB_TIERS from '../assets/data/vocab-size/ko.generated.json';
 import ZH_VOCAB_TIERS from '../assets/data/vocab-size/zh.generated.json';
 import EN_VOCAB_TIERS from '../assets/data/vocab-size/en.generated.json';
 import { normalizeBookLanguage } from '../constants/languages';
-import { coveredBand, thetaForBandCoverage, thetaForVocabulary, vocabularySize } from './levelScale';
+import { coveredBand, legacyVocabularySize, thetaForBandCoverage, thetaForVocabulary, vocabularySize } from './levelScale';
 import { LEVEL_THETA_MIN } from './abilityModel';
 
 // ─── Vocabulary-size level grid (Profile cold-start) ───────────────────────────
@@ -55,7 +55,7 @@ const isLabelled = (tiers) => tiers.some((tier) => tier.label);
  * thetaForTier — the level for "I know all the words up to this tier", in
  * the same meaning the profile shows (services/levelScale.js): for HSK / CEFR
  * tiers, where the tier's band is known to PICK_COVERAGE; for Korean's
- * frequency tiers, where the expected vocabulary is the tier's word count.
+ * frequency tiers, where the words counted reach the tier's word count.
  * Falls back to the tier's baked band position, then 0.
  *
  * @param {string} language
@@ -76,7 +76,7 @@ export const thetaForTier = (language, threshold) => {
 /**
  * tierIndexForTheta — the tier a level reaches (0 = the first, also when not
  * even that): the highest HSK / CEFR band known to COVERAGE, or the largest
- * Korean frequency tier within the expected vocabulary.
+ * Korean frequency tier within the words counted.
  */
 export const tierIndexForTheta = (language, theta) => {
   const tiers = getVocabTiers(language);
@@ -85,7 +85,9 @@ export const tierIndexForTheta = (language, theta) => {
     const band = coveredBand(language, theta);
     return Math.max(0, Math.min(tiers.length - 1, (band ?? 1) - 1));
   }
-  const words = vocabularySize(language, theta) ?? 0;
+  // Half a word of slack: a tier's seed solves to its count to within
+  // floating-point error, and must read back as that tier.
+  const words = (vocabularySize(language, theta) ?? 0) + 0.5;
   let index = 0;
   tiers.forEach((tier, i) => {
     if (tier.threshold <= words) index = i;
@@ -94,18 +96,43 @@ export const tierIndexForTheta = (language, theta) => {
 };
 
 /**
- * legacySeedTheta — a level picked before engine 2.4, when a tier seeded the
- * tier's band position (the level at which the reader knows HALF of it), in
- * today's meaning: the same tier, seeded by thetaForTier.
+ * legacySeedTheta — a level picked under an older engine, in today's meaning.
+ * Before engine 2.4 a tier seeded the tier's band position (the level at
+ * which the reader knows HALF of it): the same tier, seeded by thetaForTier.
+ * Under 2.4 a Korean frequency tier seeded where the old words count
+ * (levelScale legacyVocabularySize) was the tier's size: the level with that
+ * many words today (the bottom of the scale stays there). HSK / CEFR picks
+ * from 2.4 already mean today's level. `engine`: the row's engine version
+ * (missing: before 2.4).
  */
-export const legacySeedTheta = (language, theta) => {
+export const legacySeedTheta = (language, theta, engine = null) => {
   const tiers = getVocabTiers(language);
-  if (tiers.length === 0 || !Number.isFinite(Number(theta))) return Number(theta);
+  const value = Number(theta);
+  if (tiers.length === 0 || !Number.isFinite(value)) return value;
+  const version = Number.parseFloat(engine);
+  if (Number.isFinite(version) && version >= 2.4) {
+    if (version >= 2.5 || isLabelled(tiers) || value <= LEVEL_THETA_MIN + 1e-6) return value;
+    const words = legacyVocabularySize(language, value);
+    const today = Number.isFinite(words) ? thetaForVocabulary(language, words) : null;
+    return Number.isFinite(today) ? today : value;
+  }
   let nearest = tiers[0];
   tiers.forEach((tier) => {
-    if (Math.abs(Number(tier.theta) - Number(theta)) < Math.abs(Number(nearest.theta) - Number(theta))) nearest = tier;
+    if (Math.abs(Number(tier.theta) - value) < Math.abs(Number(nearest.theta) - value)) nearest = tier;
   });
   return thetaForTier(language, nearest.threshold);
+};
+
+/**
+ * isLegacySeed — whether a level picked under `engine` (missing: before 2.4)
+ * means a different level today (legacySeedTheta).
+ */
+export const isLegacySeed = (language, engine) => {
+  const version = Number.parseFloat(engine);
+  if (!Number.isFinite(version) || version < 2.4) return true;
+  if (version >= 2.5) return false;
+  const tiers = getVocabTiers(language);
+  return tiers.length > 0 && !isLabelled(tiers);
 };
 
 // ─── Below the first tier ("just starting") ──────────────────────────────────
@@ -121,24 +148,16 @@ export const BEGINNER_THETA = LEVEL_THETA_MIN;
 // sd ≈ 1.2; a picked tier is held at 0.6.
 export const BEGINNER_SEED_VARIANCE = 1.5;
 
-const SCALE_FLOOR_EPSILON = 1e-3;
-
-// The first tier a reader below it hasn't reached: HSK 1 / A1; for Korean's
-// frequency tiers, the first one the scale can tell from its floor (the
-// smaller ones all pick the bottom of the scale, where the expected
-// vocabulary is already several hundred words).
-const firstTier = (language) => {
-  const tiers = getVocabTiers(language).filter((tier) => !tier.advanced);
-  if (tiers.length === 0) return null;
-  if (isLabelled(tiers)) return tiers[0];
-  return tiers.find((tier) => thetaForTier(language, tier.threshold) > LEVEL_THETA_MIN + SCALE_FLOOR_EPSILON)
-    ?? tiers[tiers.length - 1];
-};
+// The first tier a reader below it hasn't reached: HSK 1 / A1, or Korean's
+// first frequency tier (100 words). The vocabulary is 0 at the bottom of the
+// scale and rises from there (levelScale countedShare), so every Korean tier
+// seeds its own level and "knows none" stays below the first.
+const firstTier = (language) => getVocabTiers(language).find((tier) => !tier.advanced) ?? null;
 
 /**
  * isBeginnerTheta — whether a level is below the language's first tier: for
  * HSK / CEFR, not even the first band known to COVERAGE; for Korean, below the
- * pick level of the first frequency tier above the floor of the scale.
+ * pick level of the first frequency tier (fewer than its 100 words).
  */
 export const isBeginnerTheta = (language, theta) => {
   const value = Number(theta);
@@ -155,6 +174,6 @@ export const isBeginnerTheta = (language, theta) => {
 
 /**
  * beginnerWords — the words a beginner is learning first: the first tier's
- * size (HSK 1's or A1's words, or Korean's first resolvable frequency tier).
+ * size (HSK 1's or A1's words, or Korean's first frequency tier).
  */
 export const beginnerWords = (language) => firstTier(language)?.threshold ?? null;

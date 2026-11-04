@@ -60,7 +60,11 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 //   2.4  one meaning for the level (levelScale.js): a picked tier seeds where
 //        the reader knows 85% of it, labels and words follow coverage, and a
 //        reader's level runs from −4 to +5
-export const LEVEL_ENGINE_VERSION = '2.4';
+//   2.5  words known count a band only past COUNT_FLOOR coverage (levelScale
+//        countedShare): 0 at the bottom of the scale, so each Korean
+//        frequency tier seeds its own, higher level (older Korean picks are
+//        read as the same word count, see legacySeedTheta)
+export const LEVEL_ENGINE_VERSION = '2.5';
 
 // Belief about the reader's level.
 export const PRIOR_VARIANCE = 2.0;        // a reader we know nothing about (sd ≈ 1.4)

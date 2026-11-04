@@ -1,4 +1,4 @@
-import { getVocabTiers, isBeginnerTheta, legacySeedTheta, tierIndexForTheta } from './vocabSizeLevels';
+import { getVocabTiers, isBeginnerTheta, isLegacySeed, legacySeedTheta, tierIndexForTheta } from './vocabSizeLevels';
 import { coveredBand, thetaForBandCoverage, vocabularySize } from './levelScale';
 import { LEVEL_THETA_MAX, LEVEL_THETA_MIN, seedThetaFromRank } from './abilityModel';
 
@@ -25,7 +25,7 @@ export const levelRange = (theta, variance) => {
 
 const hasLabels = (tiers) => tiers.some((tier) => tier.label);
 
-// Words known at `theta`: the expected vocabulary (services/levelScale.js),
+// Words known at `theta`: the words counted (services/levelScale.js vocabularySize),
 // or, for a language without word data, interpolated between its tiers.
 export const wordsForTheta = (language, theta) => {
   const expected = vocabularySize(language, theta);
@@ -187,9 +187,10 @@ export const startingTheta = (rows, language = null) => {
   const first = list.findIndex((row) => row?.signal === 'seed' || row?.signal === 'check_start');
   if (first < 0) return null;
   let theta = Number(list[first].theta_after);
-  // A level picked before engine 2.4 meant something else (see legacySeedTheta).
-  if (language && list[first].signal === 'seed' && isLegacyLevelRow(list[first])) {
-    theta = legacySeedTheta(language, theta);
+  // A level picked under an older engine may mean something else today
+  // (see legacySeedTheta).
+  if (language && list[first].signal === 'seed' && isLegacyLevelRow(list[first], language)) {
+    theta = legacySeedTheta(language, theta, levelRowEngine(list[first]));
   }
   if (list[first].signal === 'check_start') {
     for (let index = first + 1; index < list.length; index += 1) {
@@ -201,8 +202,8 @@ export const startingTheta = (rows, language = null) => {
   return Number.isFinite(theta) ? theta : null;
 };
 
-/** Whether a level-log row predates engine 2.4 (picks meant half a tier then). */
-export const isLegacyLevelRow = (row) => {
+/** The engine version a level-log row was written under (null: before 2.4). */
+export const levelRowEngine = (row) => {
   let details = row?.details;
   if (typeof details === 'string') {
     try {
@@ -212,7 +213,18 @@ export const isLegacyLevelRow = (row) => {
     }
   }
   const engine = Number.parseFloat(details?.engine);
-  return !Number.isFinite(engine) || engine < 2.4;
+  return Number.isFinite(engine) ? engine : null;
+};
+
+/**
+ * Whether a level-log seed row means a different level today: any pick before
+ * engine 2.4 (picks meant half a tier then), and with `language` a Korean
+ * frequency-tier pick under 2.4 (the words count changed in 2.5).
+ */
+export const isLegacyLevelRow = (row, language = null) => {
+  const engine = levelRowEngine(row);
+  if (!language) return engine === null || engine < 2.4;
+  return isLegacySeed(language, engine);
 };
 
 // ─── The level on the language's own scale, and small goals ──────────────────
