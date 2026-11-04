@@ -1,0 +1,1325 @@
+# The expressions' gloss and senses in the other interface languages.
+# source: machine = translated from the reviewed Korean (scripts/translate_en_expressions.py);
+#   hand = corrected by hand (never overwritten), with the reason in note.
+# gloss items are separated by ' | ', senses by ' / ' (aligned with definition_en).
+expression	language	gloss	senses	source	note
+of course	ja	もちろん	はい、と答えるとき、あるいは何かが明白である、または予想されていたことを示すときに使われます。	machine	
+at last	ja	ついに	ついに、長い時間や多大な努力の末に。	machine	
+at once	ja	すぐに	直ちに、遅滞なく。 / 同時に、一緒に。	machine	
+all at once	ja	突然	突然、何の予告もなく。 / すべて同時に。	machine	
+at all	ja	まったく	いかなる方法でも、いかなる程度でも（否定形と疑問形の両方で）。	machine	
+not at all	ja	全く〜ない	全く違います。 / 感謝の言葉や謝罪に対する丁寧な返答。	hand	gloss by hand; machine: 全くそうではない
+as if	ja	まるで	ある意味、何かを暗示している（それが真実とは限らない）。	machine	
+as though	ja	まるで	まさか。	machine	
+in spite of	ja	にもかかわらず	にもかかわらず、妨げられることなく。	machine	
+as well as	ja	〜だけでなく	加えて、また。	hand	gloss by hand; machine: に加えて
+at least	ja	少なくとも	それ以下ではない。 / とにかく、良い面を指摘するために使われていました。	machine	
+instead of	ja	の代わりに	代わりに；代わりに。	machine	
+no longer	ja	もはや	もうない。	machine	
+each other	ja	お互い	お互いが相手に対して同じことをしていることを示すために使われる。	machine	
+one another	ja	お互い	お互い。	machine	
+according to	ja	によると	言われた通り、あるいは示された通り。 / 従う、または同意する形で。	machine	
+as soon as	ja	〜するとすぐに	直後または直後。	hand	gloss by hand; machine: 出来るだけ早く
+after all	ja	結局	予想に反して。 / 理由を説明する際に使われます。「それを覚えておいてください。」	hand	gloss by hand; machine: 最後に
+at first	ja	最初は	最初は（そして後に変わった）。	hand	gloss by hand; machine: 初めに
+in fact	ja	実際には	実際、本当に（詳細や対比を加えることが多い）。	machine	
+by the way	ja	ところで	何かを付け加えたり、話題を変えたりする際に使用します。	machine	
+now and then	ja	時々	時々。頻繁ではないし、定期的にでもない。	machine	
+from time to time	ja	たまに	時々、たまに。	machine	
+never mind	ja	気にしないで	心配しないで。問題ないよ。 / 言うまでもなく。	hand	gloss by hand; machine: どうでも
+in vain	ja	無駄に	成功しなかった。	machine	
+by no means	ja	決して〜ない	全く違います。絶対に違います。	hand	gloss by hand; machine: 絶対に違う
+on account of	ja	のため	～のために；～の理由で。	machine	
+on purpose	ja	意図的に	意図的に。偶然ではない。	machine	
+all the same	ja	それにもかかわらず	それでもなお。 / 違いはない。重要ではない（誰かにとって）。	machine	
+in the midst of	ja	〜の最中に	（場所や集団の）真ん中で。 / 何かが起こっている最中。	hand	gloss by hand; machine: 真ん中で
+on the contrary	ja	それどころか	正反対のことが真実だと言うときに使われる。	machine	
+on the other hand	ja	一方で	対照的な事実や意見を示す際に用いられる。	machine	
+at any rate	ja	ともかく	何が起ころうとも、とにかく。 / 少なくとも。	machine	
+for the sake of	ja	のために	利益または目的のために。	machine	
+ever since	ja	それ以来	（ある時点または出来事以来）継続的に。	machine	
+by and by	ja	やがて	しばらくしたら、まもなく。	machine	
+to and fro	ja	行ったり来たり	前後に。	machine	
+all of a sudden	ja	突然	突然、そして予期せず。	machine	
+in order to	ja	するために	目的は。	machine	
+rather than	ja	〜よりむしろ	代わりに; そして、そうではない。	hand	gloss by hand; machine: それよりも
+above all	ja	何よりも	最も重要なこと。	machine	
+at length	ja	ついに	ついに、長い時間が経って。 / 長期間にわたり、詳細に。	machine	
+at present	ja	現在	今、この時。	machine	
+in the meantime	ja	その間	一方、何かが起こるまでは。	machine	
+owing to	ja	のため	～のために；～の結果として。	machine	
+thanks to	ja	のおかげで	（多くの場合、良いことが原因で）。	machine	
+no doubt	ja	間違いなく	確かに、可能性は高いでしょう。	machine	
+in short	ja	要するに	一言でまとめると、	machine	
+as long as	ja	〜する限り	ただし、条件付きで。 / できるだけ長い間。	hand	gloss by hand; machine: に限って
+out of the question	ja	不可能	不可能。許可されていない。	machine	
+by means of	ja	〜によって	使用することによって。	hand	gloss by hand; machine: 使用することによって
+a great deal	ja	たくさん	非常に、たくさん。 / 大量の（の）。	machine	
+for instance	ja	例えば	例えば。	machine	
+that is to say	ja	言い換えると	言い換えると。	machine	
+so to speak	ja	いわば	フレーズが正確に意図されたものではないことを示すために使用されます。	machine	
+as it were	ja	いわば	いわば、そういうことだ。	machine	
+if only	ja	〜ならいいのに	強い願望を表現する際に用いられる。 / たとえ（理由があって）	hand	gloss by hand; machine: もし
+or else	ja	さもないと	そうでなければ（多くの場合、脅迫となる）。 / または。	machine	
+no matter	ja	〜に関係なく	（何、どのように…）に関わらず。 / それは重要ではない。	hand	gloss by hand; machine: 関係ない
+apart from	ja	〜を除いて	ただし、 / 同様に。 / 分離した。	hand	gloss by hand; machine: 例外
+at the same time	ja	同時に	一緒に、同時に。 / しかしながら、それにもかかわらず。	machine	
+beside oneself	ja	我を忘れる	強い感情のために自分をコントロールできない。	hand	gloss by hand; machine: 感情に圧倒される
+make up one's mind	ja	決める	決断する。決定する。	machine	
+change one's mind	ja	考えを変える	決定や意見を変えること。	machine	
+make sure	ja	確認する	何かが起こるようにするため。 / 確認のため。	machine	
+take place	ja	起こる	起こる（特に予定通りに）。	machine	
+fall asleep	ja	眠りにつく	眠りにつくために。	machine	
+take care of	ja	世話をする	世話をすること。安全で健康な状態に保つこと。 / 対処する。	machine	
+catch sight of	ja	ちらりと見る	突然見えるようになる、多くの場合、ほんの一瞬だけ。	machine	
+put an end to	ja	終わらせる	何かを止める。	machine	
+hold one's tongue	ja	黙る	何も言わない。	hand	gloss by hand; machine: 静かに
+do one's best	ja	最善を尽くす	できる限り努力する。	machine	
+make one's way	ja	向かう	どこかへ行くこと、多くの場合、努力を伴う。 / 人生で成功するために。	machine	
+burst into tears	ja	わっと泣き出す	突然泣き出す。	hand	gloss by hand; machine: 涙が溢れ出した
+get rid of	ja	取り除く	取り除く、捨てる、解放される。	machine	
+get used to	ja	慣れる	何かに精通すること。	machine	
+turn up one's nose	ja	鼻であしらう	何かを不十分だと見下したり、拒否したりすること。	hand	gloss by hand; machine: 嘲笑する
+give way	ja	崩れる	壊れる、崩壊する。 / 譲る、誰かに先に行かせる。	hand	gloss by hand; machine: 崩壊
+find out	ja	知る	事実や情報を発見する。	hand	gloss by hand; machine: 探し出す
+give up	ja	あきらめる	何かを試みたり、実行したりするのをやめること。 / 引き渡す。	machine	
+look after	ja	世話をする	世話をするために。 / 去っていく人を見送ること。	machine	
+turn out	ja	〜だと分かる	最終的に証明するために。 / （電気を）消す。 / 誰かを追い出すこと。	hand	gloss by hand; machine: 結局
+put up with	ja	耐える	不快なことを文句を言わずに受け入れること。	machine	
+get over	ja	克服する	回復するために。 / 渡る、または乗り越える。	machine	
+make out	ja	見分ける	物を見たり聞いたりするのが困難である。 / （人や物事を）理解する。 / 主張する、または装う。	machine	
+give in	ja	降参する	抵抗をやめること。不本意ながら同意すること。 / 提出する。	machine	
+carry out	ja	実行する	任務や計画を実行する。 / 外に持ち出す。	machine	
+point out	ja	指摘する	誰かに事実を伝えること。 / 指さして示す。	machine	
+set out	ja	出発する	旅（多くの場合、長い旅）を始めること。 / 何かを始めようと努力すること。 / 配置または展示する。	hand	gloss by hand; machine: 出発
+grow up	ja	成長する	大人になること。	machine	
+turn up	ja	現れる	現れる、到着する。 / 音、熱、光を強くする。 / 折り曲げる、または上向きにする。	machine	
+break out	ja	勃発する	突然始まる（戦争、火災、戦闘など）。 / 逃げるために。 / 突然何かを始める。	hand	gloss by hand; machine: 噴火する
+break down	ja	故障する	仕事を辞める。 / 失敗する、または崩壊する。 / 自分の感情をコントロールできなくなること。	hand	gloss by hand; machine: 動作を停止する
+break up	ja	別れる	関係や会合を終えること。 / 粉々に砕く、分離する。	hand	gloss by hand; machine: 別れた
+look forward to	ja	楽しみにする	何かを楽しみながら待つこと。	hand	gloss by hand; machine: 楽しみにしています
+set off	ja	出発	旅に出る。出発する。 / （爆発や警報など）を引き起こす。 / 何かをより良く見せるため。	machine	
+put off	ja	延期	延期する。 / 誰かに何かを嫌わせる。 / （服を）脱ぐ。	machine	
+hold on	ja	ちょっと待って	待つ。 / しっかりと握る。 / 困難にもかかわらず、続けること。	machine	
+carry on	ja	続ける	続ける。 / 興奮した様子や不適切な振る舞いをすること。	hand	gloss by hand; machine: 続く
+deal with	ja	対処する	問題や課題に対処する。 / 取引をするために。	machine	
+account for	ja	説明する	説明のために。 / 全体の一部を形成する。	machine	
+care for	ja	世話をする	（病人、高齢者、若者など）誰かの世話をする。 / 好きである、または欲しい（否定形や疑問形によく用いられる）。	machine	
+send for	ja	呼びにやる	誰かに来てもらうよう頼むこと。多くの場合、メッセージを送ることで行われる。	hand	gloss by hand; machine: 召喚
+think over	ja	熟考する	慎重に検討する。	machine	
+consist of	ja	〜から成る	作られる。	hand	gloss by hand; machine: で構成されている
+long for	ja	切望する	何かを強く望むこと。	machine	
+take off	ja	服を脱ぐ	（服を）脱ぐ。 / （飛行機が）地上を離れる。 / 突然立ち去る。	machine	
+come up with	ja	思いつく	アイデアや答えを考える。 / 追いつくために。	machine	
+run away	ja	逃げる	逃げる、こっそりと立ち去る。	machine	
+die away	ja	消え去る	徐々に弱体化し、消滅する。	machine	
+of course	zh	当然	用来表示“是”，或者表示某事显而易见或理所当然。	machine	
+at last	zh	终于	最终，经过长时间或大量努力。	hand	gloss by hand; machine: 最后
+at once	zh	立即	立即；毫不拖延。 / 同时；一起。	hand	gloss by hand; machine: 立即地
+all at once	zh	突然	突然，毫无预兆。 / 同时发生。	machine	
+at all	zh	根本	以任何方式；任何程度（否定句和疑问句）。	hand	gloss by hand; machine: 全部
+not at all	zh	一点也不	绝不可能。 / 对感谢或道歉的礼貌回应。	hand	gloss by hand; machine: 一点也不。
+as if	zh	仿佛	以一种暗示某些事情（但可能并非事实）的方式。	machine	
+as though	zh	仿佛	仿佛。	machine	
+in spite of	zh	尽管	尽管；并未被阻止。	machine	
+as well as	zh	以及	此外；而且。	hand	gloss by hand; machine: 此外
+at least	zh	至少	不少于。 / 总之，用来指出好的一面。	machine	
+instead of	zh	而不是	代替；而不是。	machine	
+no longer	zh	不再	不再。	machine	
+each other	zh	彼此	用来表示每个人对另一个人都做了同样的事情。	machine	
+one another	zh	彼此	彼此。	machine	
+according to	zh	根据	正如所说或所展示的那样。 / 以符合或同意的方式。	machine	
+as soon as	zh	一…就…	立即或在之后。	hand	gloss by hand; machine: 立刻
+after all	zh	毕竟	尽管出乎意料。 / 用来给出理由：记住这一点。	hand	gloss by hand; machine: 到底
+at first	zh	起初	一开始是这样（后来有所改变）。	machine	
+in fact	zh	实际上	实际上；真的（通常用来添加细节或对比）。	machine	
+by the way	zh	顺便一提	用于补充内容或转换话题。	machine	
+now and then	zh	有时	有时；不经常或不规律。	machine	
+from time to time	zh	偶尔	有时；偶尔。	machine	
+never mind	zh	没关系	别担心，没关系。 / 更何况。	machine	
+in vain	zh	徒然	没有成功。	machine	
+by no means	zh	绝不	完全不是；绝对不是。	hand	gloss by hand; machine: 当然不是
+on account of	zh	由于	因为；由于……的原因。	machine	
+on purpose	zh	故意	故意的，并非偶然。	machine	
+all the same	zh	尽管如此	然而，即便如此。 / 没什么不同；对某些人来说并不重要。	machine	
+in the midst of	zh	在…之中	在（某个地方或群体）中间。 / 当某事发生时。	hand	gloss by hand; machine: 在中间
+on the contrary	zh	相反	过去常用来表示情况正好相反。	machine	
+on the other hand	zh	另一方面	用于提出相反的事实或观点。	machine	
+at any rate	zh	反正	不管发生什么，反正就是这样。 / 至少。	machine	
+for the sake of	zh	为了	为了……的利益或目的。	machine	
+ever since	zh	自那以后	自（某个时间或事件）以来一直如此。	machine	
+by and by	zh	不久之后	过了一段时间；很快。	machine	
+to and fro	zh	来回	来回。	machine	
+all of a sudden	zh	突然	突然且出乎意料。	machine	
+in order to	zh	为了	目的是为了。	machine	
+rather than	zh	而不是	相反；而不是。	machine	
+above all	zh	尤其是	最重要的是。	hand	gloss by hand; machine: 首先
+at length	zh	终于	终于，在经历了漫长的等待之后。 / 很长时间；详细地。	hand	gloss by hand; machine: 最后
+at present	zh	现在	现在；此时此刻。	machine	
+in the meantime	zh	在此期间	与此同时；直到发生某些事情为止。	hand	gloss by hand; machine: 同时
+owing to	zh	由于	因为；由于。	machine	
+thanks to	zh	多亏	因为（通常是好事）。	hand	gloss by hand; machine: 由于
+no doubt	zh	无疑	当然；很有可能。	machine	
+in short	zh	简而言之	简而言之，总结一下。	machine	
+as long as	zh	只要	前提是。 / 尽可能长时间地。	machine	
+out of the question	zh	不可能的	不可能；不允许。	machine	
+by means of	zh	通过使用	通过使用。	machine	
+a great deal	zh	很多	非常多。 / 大量的。	machine	
+for instance	zh	例如	例如。	machine	
+that is to say	zh	换句话说	换句话说。	machine	
+so to speak	zh	可以说	用于表示某个短语的意思并非完全正确。	machine	
+as it were	zh	可以说	可以说。	machine	
+if only	zh	要是…就好了	用来表达强烈的愿望。 / 即使只是（出于某种原因）。	hand	gloss by hand; machine: 如果仅
+or else	zh	否则	否则（通常是一种威胁）。 / 或者。	machine	
+no matter	zh	不管	无论（什么，如何……）。 / 这并不重要。	machine	
+apart from	zh	除了	除了…… / 也。 / 已分离。	machine	
+at the same time	zh	同时	同时；一起。 / 然而，尽管如此。	machine	
+beside oneself	zh	不能自已	由于强烈的情感而无法控制自己。	hand	gloss by hand; machine: 情绪激动
+make up one's mind	zh	决定	做出决定；做出决定。	machine	
+change one's mind	zh	改变主意	改变决定或观点。	machine	
+make sure	zh	确保	为了确保某事发生。 / 查一下。	machine	
+take place	zh	发生	发生（尤其是按计划进行）。	machine	
+fall asleep	zh	睡着	开始入睡。	machine	
+take care of	zh	照顾	照顾；确保安全健康。 / 处理。	hand	gloss by hand; machine: 照顾好
+catch sight of	zh	瞥见	突然看到，通常只是短暂的一瞬。	hand	gloss by hand; machine: 瞥见一眼
+put an end to	zh	结束	使某事停止。	hand	gloss by hand; machine: 杜绝
+hold one's tongue	zh	保持安静	什么也不说。	machine	
+do one's best	zh	尽力而为	尽最大努力。	machine	
+make one's way	zh	前往	去某个地方，通常需要付出努力。 / 获得人生成功。	hand	gloss by hand; machine: 朝
+burst into tears	zh	放声大哭	突然开始哭泣。	hand	gloss by hand; machine: 突然泪流满面
+get rid of	zh	摆脱	去除或丢弃；摆脱。	machine	
+get used to	zh	习惯	熟悉某事物。	machine	
+turn up one's nose	zh	嗤之以鼻	拒绝或轻视某物，认为它不够好。	hand	gloss by hand; machine: 讥笑
+give way	zh	坍塌	破碎或坍塌。 / 让步；让某人先走。	machine	
+find out	zh	得知	发现某个事实或信息。	hand	gloss by hand; machine: 查出
+give up	zh	放弃	停止尝试或做某事。 / 移交。	machine	
+look after	zh	照顾	需要照料。 / 目送某人离去。	hand	gloss by hand; machine: 照顾好
+turn out	zh	结果是	最终证明自己。 / 关掉（灯）。 / 让某人离开。	machine	
+put up with	zh	忍受	默默接受不愉快的事情。	machine	
+get over	zh	克服	恢复 / 穿过或翻越。	machine	
+make out	zh	辨别	视力或听力出现困难。 / 理解（某人或某事）。 / 声称或假装。	machine	
+give in	zh	屈服	停止抵抗；不情愿地同意。 / 上交。	machine	
+carry out	zh	执行	执行某项任务或计划。 / 带到户外。	machine	
+point out	zh	指出	告诉某人一个事实。 / 用手指指着看。	machine	
+set out	zh	出发	开始一段旅程（通常是一段漫长的旅程）。 / 开始尝试做某事。 / 安排或展示。	hand	gloss by hand; machine: 离开
+grow up	zh	长大	成为成年人。	machine	
+turn up	zh	出现	出现或到达。 / 增强声音、热量或光线。 / 折叠或向上翘起。	machine	
+break out	zh	爆发	突然开始（战争、火灾、战斗）。 / 逃脱。 / 突然开始做某事。	machine	
+break down	zh	出故障	停止工作。 / 失败或崩溃。 / 失去对自身情绪的控制。	hand	gloss by hand; machine: 停止工作
+break up	zh	分手	结束一段关系或会面。 / 分解成碎片；分离。	hand	gloss by hand; machine: 分头
+look forward to	zh	期待	愉快地等待某事。	machine	
+set off	zh	出发	开始旅程；离开。 / 引起（爆炸、警报）。 / 为了让某物看起来更好。	hand	gloss by hand; machine: 离开
+put off	zh	推迟	推迟。 / 使某人讨厌某事。 / 脱掉（衣服）。	machine	
+hold on	zh	稍等	等待。 / 紧紧抓住。 / 克服困难，继续前进。	machine	
+carry on	zh	继续	继续。 / 行为激动或不当。	machine	
+deal with	zh	处理	处理问题或任务。 / 与……开展业务。	machine	
+account for	zh	解释	解释一下。 / 成为整体的一部分。	machine	
+care for	zh	照顾	照顾（病人、老人或小孩）。 / 喜欢或想要（通常用于否定句和疑问句）。	hand	gloss by hand; machine: 照顾好
+send for	zh	派人去叫	邀请某人过来，通常是通过发送消息的方式。	hand	gloss by hand; machine: 召唤
+think over	zh	仔细考虑	仔细考虑。	hand	gloss by hand; machine: 思考
+consist of	zh	由…组成	待制成。	hand	gloss by hand; machine: 由以下部分组成
+long for	zh	渴望	非常渴望某样东西。	machine	
+take off	zh	脱下	脱掉（衣服）。 / 离开地面（飞机）。 / 突然离开。	hand	gloss by hand; machine: 裎）
+come up with	zh	想出	想出一个主意或答案。 / 赶上进度。	machine	
+run away	zh	逃跑	逃跑；秘密离开。	machine	
+die away	zh	渐渐消失	逐渐衰弱直至消失。	machine	
+of course	zh-Hant	當然	用來表示“是”，或表示某事顯而易見或理所當然。	machine	
+at last	zh-Hant	終於	最終，經過長時間或大量努力。	hand	gloss by hand; machine: 最後
+at once	zh-Hant	立即	立即；毫不拖延。 / 同時；一起。	hand	gloss by hand; machine: 立即地
+all at once	zh-Hant	突然	突然，毫無預兆。 / 同時發生。	machine	
+at all	zh-Hant	根本	以任何方式；在任何程度上（否定句和疑問句）。	hand	gloss by hand; machine: 全部
+not at all	zh-Hant	一點也不	絕不可能。 / 對感謝或道歉的禮貌回應。	hand	gloss by hand; machine: 一點也不。
+as if	zh-Hant	彷彿	以一種暗示某些事情（但可能並非事實）的方式。	machine	
+as though	zh-Hant	彷彿	彷彿。	machine	
+in spite of	zh-Hant	儘管	儘管；並未被阻止。	machine	
+as well as	zh-Hant	以及	另外；而且。	hand	gloss by hand; machine: 另外
+at least	zh-Hant	至少	不少於。 / 總之，用來指出好的一面。	machine	
+instead of	zh-Hant	而不是	代替；而不是。	machine	
+no longer	zh-Hant	不再	不再。	machine	
+each other	zh-Hant	彼此	用來表示每個人對另一個人都做了同樣的事情。	machine	
+one another	zh-Hant	彼此	彼此。	machine	
+according to	zh-Hant	根據	正如所說或所展示的。 / 以符合或同意的方式。	machine	
+as soon as	zh-Hant	一…就…	立即或在之後。	hand	gloss by hand; machine: 立刻
+after all	zh-Hant	畢竟	儘管出乎意料。 / 用來給出理由：記住這一點。	hand	gloss by hand; machine: 到底
+at first	zh-Hant	起初	一開始是這樣（後來有所改變）。	machine	
+in fact	zh-Hant	實際上	實際上；真的（通常用來添加細節或對比）。	machine	
+by the way	zh-Hant	順便一提	用於補充內容或改變話題。	machine	
+now and then	zh-Hant	有時	有時；不經常或不規律。	machine	
+from time to time	zh-Hant	偶爾	有時；偶爾。	machine	
+never mind	zh-Hant	沒關係	別擔心，沒關係。 / 更何況。	machine	
+in vain	zh-Hant	徒然	沒有成功。	machine	
+by no means	zh-Hant	絕不	完全不是；絕對不是。	hand	gloss by hand; machine: 當然不是
+on account of	zh-Hant	由於	因為；由於……的原因。	machine	
+on purpose	zh-Hant	故意	故意的，並非偶然。	machine	
+all the same	zh-Hant	儘管如此	然而，即便如此。 / 沒什麼不同；對某些人來說並不重要。	machine	
+in the midst of	zh-Hant	在…之中	在（某個地方或群體）中間。 / 當某事發生時。	hand	gloss by hand; machine: 在中間
+on the contrary	zh-Hant	相反	過去常用來表示情況正好相反。	machine	
+on the other hand	zh-Hant	另一方面	用於提出相反的事實或觀點。	machine	
+at any rate	zh-Hant	反正	不管發生什麼，反正就是這樣。 / 至少。	machine	
+for the sake of	zh-Hant	為了	為了……的利益或目的。	machine	
+ever since	zh-Hant	自那以後	自從（某個時間或事件）以來一直如此。	machine	
+by and by	zh-Hant	不久之後	過了一段時間；很快。	machine	
+to and fro	zh-Hant	來回	來回。	machine	
+all of a sudden	zh-Hant	突然	突然且出乎意料。	machine	
+in order to	zh-Hant	為了	目的是為了。	machine	
+rather than	zh-Hant	而不是	相反；而不是。	machine	
+above all	zh-Hant	尤其是	最重要的是。	hand	gloss by hand; machine: 首先
+at length	zh-Hant	終於	終於，在經歷了漫長的等待後。 / 很長時間；詳細地。	hand	gloss by hand; machine: 最後
+at present	zh-Hant	現在	現在；此時此刻。	machine	
+in the meantime	zh-Hant	在此期間	同時；直到發生某些事情為止。	hand	gloss by hand; machine: 同時
+owing to	zh-Hant	由於	因為；由於。	machine	
+thanks to	zh-Hant	多虧	因為（通常是好事）。	hand	gloss by hand; machine: 由於
+no doubt	zh-Hant	無疑	當然；很有可能。	machine	
+in short	zh-Hant	簡而言之	簡而言之，總結一下。	machine	
+as long as	zh-Hant	只要	前提是。 / 盡可能長時間地。	machine	
+out of the question	zh-Hant	不可能的	不可能；不允許。	machine	
+by means of	zh-Hant	透過使用	透過使用。	machine	
+a great deal	zh-Hant	很多	非常多。 / 大量的。	machine	
+for instance	zh-Hant	例如	例如。	machine	
+that is to say	zh-Hant	換句話說	換句話說。	machine	
+so to speak	zh-Hant	可以說	用來表示某個短語的意思並非完全準確。	machine	
+as it were	zh-Hant	可以說	可以說。	machine	
+if only	zh-Hant	要是…就好了	用來表達強烈的慾望。 / 即使只是（出於某種原因）。	hand	gloss by hand; machine: 如果僅
+or else	zh-Hant	否則	否則（通常是一種威脅）。 / 或者。	machine	
+no matter	zh-Hant	不管	無論（什麼，如何…）。 / 這並不重要。	machine	
+apart from	zh-Hant	除了	除了… / 也。 / 已分離。	machine	
+at the same time	zh-Hant	同時	同時；一起。 / 然而，儘管如此。	machine	
+beside oneself	zh-Hant	不能自已	由於強烈的情感而無法控制自己。	hand	gloss by hand; machine: 情緒激動
+make up one's mind	zh-Hant	決定	做出決定；做出決定。	machine	
+change one's mind	zh-Hant	改變主意	改變決定或觀點。	machine	
+make sure	zh-Hant	確保	為了確保某事發生。 / 查一下。	machine	
+take place	zh-Hant	發生	發生（尤其是按計劃進行）。	machine	
+fall asleep	zh-Hant	睡著	開始入睡。	machine	
+take care of	zh-Hant	照顧	照顧；確保安全健康。 / 處理。	hand	gloss by hand; machine: 照顧好
+catch sight of	zh-Hant	瞥見	突然看到，通常只是短暫的一瞬。	hand	gloss by hand; machine: 瞥見一眼
+put an end to	zh-Hant	結束	使某事停止。	hand	gloss by hand; machine: 杜絕
+hold one's tongue	zh-Hant	保持安靜	什麼也不說。	machine	
+do one's best	zh-Hant	盡力而為	盡最大努力。	machine	
+make one's way	zh-Hant	前往	去某個地方，通常需要付出努力。 / 獲得人生成功。	hand	gloss by hand; machine: 朝
+burst into tears	zh-Hant	放聲大哭	突然開始哭泣。	hand	gloss by hand; machine: 突然淚流滿面
+get rid of	zh-Hant	擺脫	去除或丟棄；擺脫。	machine	
+get used to	zh-Hant	習慣	熟悉某事物。	machine	
+turn up one's nose	zh-Hant	嗤之以鼻	拒絕或輕視某物，認為它不夠好。	hand	gloss by hand; machine: 謳笑
+give way	zh-Hant	坍塌	破碎或坍塌。 / 讓步；讓某人先走。	machine	
+find out	zh-Hant	得知	發現某個事實或資訊。	hand	gloss by hand; machine: 查出
+give up	zh-Hant	放棄	停止嘗試或做某事。 / 移交。	machine	
+look after	zh-Hant	照顧	需要照料。 / 目送某人離去。	hand	gloss by hand; machine: 照顧好
+turn out	zh-Hant	結果是	最終證明自己。 / 關掉（燈）。 / 讓某人離開。	machine	
+put up with	zh-Hant	忍受	默默接受不愉快的事。	machine	
+get over	zh-Hant	克服	恢復 / 穿過或翻越。	machine	
+make out	zh-Hant	辨別	視力或聽力出現困難。 / 理解（某人或某事）。 / 聲稱或假裝。	machine	
+give in	zh-Hant	屈服	停止抵抗；不情願地同意。 / 上交。	machine	
+carry out	zh-Hant	執行	執行某項任務或計劃。 / 帶到戶外。	machine	
+point out	zh-Hant	指出	告訴某人一個事實。 / 用手指指著看。	machine	
+set out	zh-Hant	出發	開始一段旅程（通常是一段漫長的旅程）。 / 開始嘗試做某事。 / 安排或展示。	hand	gloss by hand; machine: 離開
+grow up	zh-Hant	長大	成為成年人。	machine	
+turn up	zh-Hant	出現	出現或到達。 / 增強聲音、熱或光線。 / 折疊或向上翹起。	machine	
+break out	zh-Hant	爆發	突然開始（戰爭、火災、戰鬥）。 / 逃脫。 / 突然開始做某件事。	machine	
+break down	zh-Hant	出故障	停止工作。 / 失敗或崩潰。 / 失去對自身情緒的控制。	hand	gloss by hand; machine: 停止工作
+break up	zh-Hant	分手	結束一段關係或會面。 / 分解成碎片；分離。	hand	gloss by hand; machine: 分頭
+look forward to	zh-Hant	期待	愉快地等待某事。	machine	
+set off	zh-Hant	出發	開始旅程；離開。 / 引起（爆炸、警報）。 / 為了讓某物看起來更好。	hand	gloss by hand; machine: 離開
+put off	zh-Hant	延遲	推遲。 / 使某人討厭某事。 / 脫掉（衣服）。	machine	
+hold on	zh-Hant	稍等	等待。 / 緊緊抓住。 / 克服困難，繼續前進。	machine	
+carry on	zh-Hant	繼續	繼續。 / 行為激動或不當。	machine	
+deal with	zh-Hant	處理	處理問題或任務。 / 與…開展業務。	machine	
+account for	zh-Hant	解釋	解釋一下。 / 成為整體的一部分。	machine	
+care for	zh-Hant	照顧	照顧（病人、老人或小孩）。 / 喜歡或想要（通常用於否定句和疑問句）。	hand	gloss by hand; machine: 照顧好
+send for	zh-Hant	派人去叫	邀請某人過來，通常是透過發送訊息的方式。	hand	gloss by hand; machine: 召喚
+think over	zh-Hant	仔細考慮	仔細考慮。	hand	gloss by hand; machine: 思考
+consist of	zh-Hant	由…組成	待製成。	hand	gloss by hand; machine: 由以下部分組成
+long for	zh-Hant	渴望	非常渴望某樣東西。	machine	
+take off	zh-Hant	脫下	脫掉（衣服）。 / 離開地面（飛機）。 / 突然離開。	hand	gloss by hand; machine: 裎）
+come up with	zh-Hant	想出	想出一個主意或答案。 / 趕上進度。	machine	
+run away	zh-Hant	逃跑	逃跑；秘密離開。	machine	
+die away	zh-Hant	漸漸消失	逐漸衰弱直至消失。	machine	
+of course	es	por supuesto	Se usa para decir sí, o que algo es obvio o esperado.	machine	
+at last	es	finalmente	Finalmente, después de mucho tiempo o mucho esfuerzo.	machine	
+at once	es	inmediatamente	Inmediatamente; sin demora. / Al mismo tiempo; juntos.	machine	
+all at once	es	de repente	De repente, sin previo aviso. / Todo al mismo tiempo.	machine	
+at all	es	en absoluto	De cualquier forma; en cualquier grado (tanto en negaciones como en preguntas).	machine	
+not at all	es	en absoluto	De ninguna manera. / Una respuesta cortés a un agradecimiento o una disculpa.	hand	gloss by hand; machine: de ninguna manera
+as if	es	como si	De una manera que sugiere algo (que puede no ser cierto).	machine	
+as though	es	como si	Como si.	machine	
+in spite of	es	a pesar de	A pesar de; sin ser detenido por.	machine	
+as well as	es	además de	Además de; y también.	machine	
+at least	es	al menos	No menos que. / En fin; solía señalar un lado bueno.	machine	
+instead of	es	en lugar de	En lugar de; en vez de.	machine	
+no longer	es	ya no	Ya no.	machine	
+each other	es	entre sí	Se utiliza para demostrar que cada persona le hace lo mismo a la otra.	machine	
+one another	es	entre sí	Entre sí.	machine	
+according to	es	según	Como dijo o demostró. / De una manera que siga o concuerde con.	hand	gloss by hand; machine: de acuerdo a
+as soon as	es	tan pronto como	Inmediatamente cuando o después.	machine	
+after all	es	al final	A pesar de lo esperado. / Se usa para dar una razón: recuérdalo.	machine	
+at first	es	al principio	Al principio (y luego cambió).	hand	gloss by hand; machine: en primer lugar
+in fact	es	en realidad	En realidad; realmente (a menudo añadiendo detalles o un contraste).	machine	
+by the way	es	por cierto	Se utiliza para añadir algo o cambiar de tema.	machine	
+now and then	es	a veces	A veces; no a menudo ni con regularidad.	machine	
+from time to time	es	ocasionalmente	A veces; ocasionalmente.	machine	
+never mind	es	no importa	No te preocupes; no importa. / Por no mencionar.	machine	
+in vain	es	en vano	Sin éxito.	machine	
+by no means	es	ciertamente no	En absoluto; desde luego que no.	machine	
+on account of	es	debido a	Debido a; por la razón de.	machine	
+on purpose	es	intencionalmente	Intencionadamente; no por accidente.	machine	
+all the same	es	sin embargo	Sin embargo, aun así. / No es diferente; no es importante (para alguien).	machine	
+in the midst of	es	en medio de	En medio de (un lugar o un grupo). / Mientras algo está sucediendo.	hand	gloss by hand; machine: a mediados de
+on the contrary	es	al contrario	Se usa para decir que lo contrario es cierto.	hand	gloss by hand; machine: de lo contrario
+on the other hand	es	por otro lado	Se utiliza para presentar un hecho o una opinión que contraste con la realidad.	machine	
+at any rate	es	de todos modos	Pase lo que pase; de todos modos. / Al menos.	machine	
+for the sake of	es	por el bien de	Para beneficio o propósito de.	machine	
+ever since	es	desde entonces	Continuamente desde (un momento o evento).	machine	
+by and by	es	pronto	Después de un tiempo; pronto.	machine	
+to and fro	es	de aquí para allí	De acá para allá.	machine	
+all of a sudden	es	de repente	De repente e inesperadamente.	machine	
+in order to	es	con el fin de	Con el fin de.	machine	
+rather than	es	en vez de	En lugar de; y no.	machine	
+above all	es	sobre todo	Lo más importante.	machine	
+at length	es	finalmente	Finalmente, después de mucho tiempo. / Durante mucho tiempo; en detalle.	machine	
+at present	es	actualmente	Ahora; en este momento.	machine	
+in the meantime	es	mientras tanto	Mientras tanto; hasta que algo suceda.	machine	
+owing to	es	debido a	Debido a; como resultado de.	machine	
+thanks to	es	gracias a	Debido a (a menudo algo bueno).	machine	
+no doubt	es	indudablemente	Ciertamente; muy probablemente.	machine	
+in short	es	en resumen	En pocas palabras; para resumir.	hand	gloss by hand; machine: en breve
+as long as	es	mientras	A condición de que. / Durante tanto tiempo como.	machine	
+out of the question	es	imposible	Imposible; no permitido.	machine	
+by means of	es	mediante	Mediante el uso.	hand	gloss by hand; machine: mediante el uso
+a great deal	es	mucho	Muchísimo; muchísimo. / Una gran cantidad (de).	machine	
+for instance	es	por ejemplo	Por ejemplo.	machine	
+that is to say	es	en otras palabras	En otras palabras.	machine	
+so to speak	es	por decirlo así	Se utiliza para indicar que una frase no se interpreta exactamente como se quiere decir.	machine	
+as it were	es	por decirlo así	Por decirlo así.	machine	
+if only	es	si solamente	Se utiliza para expresar un fuerte deseo. / Aunque sea solo por una razón.	machine	
+or else	es	de lo contrario	De lo contrario (a menudo una amenaza). / O.	machine	
+no matter	es	no importa	Independientemente de (qué, cómo...). / No es importante.	machine	
+apart from	es	excepto	Excepto. / Así como también. / Separado de.	machine	
+at the same time	es	al mismo tiempo	Juntos; simultáneamente. / Sin embargo, a pesar de eso.	machine	
+beside oneself	es	fuera de sí	Incapaz de controlarse debido a un sentimiento intenso.	hand	gloss by hand; machine: abrumado por la emoción
+make up one's mind	es	decidir	Tomar una decisión; decidir.	machine	
+change one's mind	es	cambiar de opinión	Cambiar una decisión o una opinión.	machine	
+make sure	es	asegurarse	Para asegurarnos de que algo suceda. / Para comprobar.	hand	gloss by hand; machine: Cerciorarse
+take place	es	suceder	Suceder (especialmente como se planeó).	machine	
+fall asleep	es	dormirse	Para empezar a dormir.	machine	
+take care of	es	ocuparse de	Cuidar; mantener a salvo y en buen estado. / Para lidiar con.	machine	
+catch sight of	es	vislumbrar	Ver de repente, a menudo solo por un instante.	machine	
+put an end to	es	poner fin a	Hacer que algo se detenga.	machine	
+hold one's tongue	es	callar	Por no decir nada.	machine	
+do one's best	es	hacer lo mejor que uno pueda	Intentarlo con todas mis fuerzas.	machine	
+make one's way	es	dirigirse	Ir a algún sitio, a menudo con esfuerzo. / Para tener éxito en la vida.	hand	gloss by hand; machine: diríjase hacia
+burst into tears	es	romper a llorar	De repente, empezar a llorar.	hand	gloss by hand; machine: rompió a llorar
+get rid of	es	deshacerse de	Quitar o desechar; liberarse de algo.	machine	
+get used to	es	acostumbrarse a	Familiarizarse con algo.	machine	
+turn up one's nose	es	mofarse	Rechazar o menospreciar algo por considerarlo insuficiente.	machine	
+give way	es	colapsar	Romperse o colapsar. / Ceder el paso; dejar que alguien pase primero.	machine	
+find out	es	descubrir	Descubrir un hecho o una información.	machine	
+give up	es	abandonar	Dejar de intentar o hacer algo. / Entregar.	machine	
+look after	es	ocuparse de	Para cuidar. / Observar a alguien que se va de viaje.	machine	
+turn out	es	resultar ser	Para demostrar que al final lo es. / Apagar (una luz). / Hacer que alguien se vaya.	machine	
+put up with	es	aguantar	Aceptar algo desagradable sin quejarse.	hand	gloss by hand; machine: perdurar
+get over	es	superar	Para recuperarse de. / Cruzar o trepar.	machine	
+make out	es	discernir	Ver u oír con dificultad. / Para entender (a alguien o algo). / Reclamar o fingir.	machine	
+give in	es	ceder	Dejar de resistirse; aceptar a regañadientes. / Para entregar.	machine	
+carry out	es	realizar	Realizar una tarea o un plan. / Para llevar afuera.	machine	
+point out	es	indicar	Contarle un hecho a alguien. / Para mostrarlo señalando.	machine	
+set out	es	partir	Para emprender un viaje (a menudo largo). / Para empezar a intentar hacer algo. / Para organizar o exhibir.	hand	gloss by hand; machine: salir
+grow up	es	crecer	Convertirse en adulto.	machine	
+turn up	es	aparecer	Aparecer o llegar. / Para intensificar un sonido, calor o luz. / Doblar o apuntar hacia arriba.	machine	
+break out	es	estallar	Comenzar repentinamente (guerra, incendio, combate). / Para escapar. / Empezar a hacer algo de repente.	machine	
+break down	es	averiarse	Para dejar de funcionar. / Fallar o colapsar. / Perder el control de los propios sentimientos.	hand	gloss by hand; machine: dejar de funcionar
+break up	es	separarse	Para poner fin a una relación o reunión. / Romper en pedazos; separar.	hand	gloss by hand; machine: partir
+look forward to	es	esperar con ilusión	Esperar algo con placer.	hand	gloss by hand; machine: pensar
+set off	es	partir	Emprender un viaje; partir. / Provocar (una explosión, una alarma). / Para que algo se vea mejor.	hand	gloss by hand; machine: salir
+put off	es	posponer	Posponer. / Hacer que a alguien le disguste algo. / Quitarse (la ropa).	machine	
+hold on	es	espera un momento	Esperar. / Sujetar firmemente. / Continuar a pesar de las dificultades.	machine	
+carry on	es	continuar	Para continuar. / Comportarse de manera excitada o inapropiada.	machine	
+deal with	es	tratar con	Para resolver un problema o realizar una tarea. / Para hacer negocios con.	machine	
+account for	es	explicar	Para explicar. / Formar parte de un total.	machine	
+care for	es	ocuparse de	Cuidar (a alguien enfermo, anciano o joven). / Gustar o desear (a menudo en negaciones e preguntas).	machine	
+send for	es	convocar	Invitar a alguien a venir, a menudo enviando un mensaje.	machine	
+think over	es	reflexionar	Considerar detenidamente.	machine	
+consist of	es	estar compuesto de	Estar hecho de.	machine	
+long for	es	anhelar	Desear algo con mucha intensidad.	machine	
+take off	es	quitarse (la ropa)	Quitar (la ropa). / Despegar del suelo (un avión). / Irse repentinamente.	machine	
+come up with	es	idear	Pensar en una idea o respuesta. / Para ponerse al día.	hand	gloss by hand; machine: presentar
+run away	es	huir	Escapar; marcharse en secreto.	machine	
+die away	es	desvanecerse	Ir debilitándose gradualmente hasta desaparecer.	machine	
+of course	fr	bien sûr	Utilisé pour dire oui, ou que quelque chose est évident ou attendu.	machine	
+at last	fr	enfin	Enfin, après une longue période ou beaucoup d'efforts.	machine	
+at once	fr	immédiatement	Immédiatement ; sans délai. / En même temps ; ensemble.	machine	
+all at once	fr	soudainement	Soudainement, sans prévenir. / Tous en même temps.	machine	
+at all	fr	du tout	De quelque manière que ce soit ; à n'importe quel degré (dans les négations et les questions).	machine	
+not at all	fr	pas du tout	Absolument pas. / Une réponse polie à des remerciements ou à des excuses.	machine	
+as if	fr	comme si	D'une manière qui suggère quelque chose (qui n'est peut-être pas vrai).	machine	
+as though	fr	comme si	Comme si.	machine	
+in spite of	fr	malgré	Malgré ; sans être arrêté par.	machine	
+as well as	fr	en plus de	En outre ; et aussi.	machine	
+at least	fr	au moins	Pas moins de. / Bref ; utilisé pour souligner un aspect positif.	machine	
+instead of	fr	au lieu de	Au lieu de ; plutôt que.	machine	
+no longer	fr	ne plus	Pas plus.	hand	gloss by hand; machine: plus maintenant
+each other	fr	l'un l'autre	Utilisé pour montrer que chaque personne fait la même chose à l'autre.	machine	
+one another	fr	l'un l'autre	L'un l'autre.	machine	
+according to	fr	selon	Comme dit ou montré par. / D'une manière qui suit ou qui est en accord avec.	machine	
+as soon as	fr	dès que	Immédiatement après ou pendant.	machine	
+after all	fr	à la fin	Malgré les attentes. / Utilisé pour donner une raison : souvenez-vous de cela.	machine	
+at first	fr	d'abord	Au début (et cela a changé par la suite).	machine	
+in fact	fr	en fait	En fait ; vraiment (ajoutant souvent des détails ou un contraste).	machine	
+by the way	fr	au fait	Utilisé pour ajouter quelque chose ou changer de sujet.	hand	gloss by hand; machine: d'ailleurs
+now and then	fr	parfois	Parfois ; pas souvent ni régulièrement.	machine	
+from time to time	fr	occasionnellement	Parfois ; occasionnellement.	machine	
+never mind	fr	pas grave	Ne t'inquiète pas, ça n'a pas d'importance. / Sans parler de.	machine	
+in vain	fr	en vain	Sans succès.	machine	
+by no means	fr	certainement pas	Pas du tout ; certainement pas.	machine	
+on account of	fr	à cause de	En raison de ; pour la raison de.	machine	
+on purpose	fr	intentionnellement	Intentionnellement ; pas par accident.	machine	
+all the same	fr	néanmoins	Néanmoins, même ainsi. / Pas différent ; sans importance (pour quelqu'un).	machine	
+in the midst of	fr	au milieu de	Au milieu (d'un lieu ou d'un groupe). / Pendant que quelque chose se passe.	machine	
+on the contrary	fr	au contraire	On disait autrefois que le contraire était vrai.	machine	
+on the other hand	fr	d'autre part	Utilisé pour présenter un fait ou une opinion contrastée.	machine	
+at any rate	fr	de toute façon	Quoi qu'il arrive, en tout cas. / Au moins.	machine	
+for the sake of	fr	pour le bien de	Pour le bénéfice ou dans le but de.	machine	
+ever since	fr	depuis	Sans interruption depuis (une date ou un événement).	machine	
+by and by	fr	bientôt	Au bout d'un moment ; bientôt.	machine	
+to and fro	fr	çà et là	En avant et en arrière.	hand	gloss by hand; machine: aller et retour
+all of a sudden	fr	soudainement	Soudainement et de façon inattendue.	machine	
+in order to	fr	pour	Dans le but de.	machine	
+rather than	fr	plutôt que	Au lieu de ; et non.	machine	
+above all	fr	surtout	Le plus important.	machine	
+at length	fr	enfin	Enfin, après une longue période. / Pendant longtemps ; en détail.	machine	
+at present	fr	actuellement	Maintenant ; à ce moment précis.	machine	
+in the meantime	fr	entre-temps	En attendant, jusqu'à ce que quelque chose se produise.	machine	
+owing to	fr	à cause de	À cause de ; en conséquence de.	machine	
+thanks to	fr	grâce à	À cause de (souvent quelque chose de bien).	machine	
+no doubt	fr	indubitablement	Certainement ; très probablement.	machine	
+in short	fr	en bref	En quelques mots ; pour résumer.	machine	
+as long as	fr	tant que	À condition que. / Pendant aussi longtemps que.	machine	
+out of the question	fr	impossible	Impossible ; interdit.	machine	
+by means of	fr	en utilisant	En utilisant.	machine	
+a great deal	fr	beaucoup	Beaucoup ; énormément. / Une grande quantité (de).	machine	
+for instance	fr	par exemple	Par exemple.	machine	
+that is to say	fr	autrement dit	Autrement dit.	machine	
+so to speak	fr	pour ainsi dire	Utilisé pour indiquer qu'une phrase n'est pas comprise au sens littéral.	machine	
+as it were	fr	pour ainsi dire	Pour ainsi dire.	machine	
+if only	fr	si seulement	Utilisé pour exprimer un souhait ardent. / Même si ce n'est que (pour une raison).	machine	
+or else	fr	sinon	Sinon (souvent une menace). / Ou.	machine	
+no matter	fr	peu importe	Peu importe (quoi, comment...). / Ce n'est pas important.	machine	
+apart from	fr	à part	Sauf pour. / Ainsi que. / Séparé de.	hand	gloss by hand; machine: sauf pour
+at the same time	fr	en même temps	Ensemble ; simultanément. / Cependant, malgré cela.	machine	
+beside oneself	fr	hors de soi	Incapable de se contrôler à cause d'une émotion forte.	hand	gloss by hand; machine: submergée par l'émotion
+make up one's mind	fr	décider	Prendre une décision ; décider.	machine	
+change one's mind	fr	changer d'avis	Changer une décision ou une opinion.	machine	
+make sure	fr	s'assurer	Pour s'assurer que quelque chose se produise. / À vérifier.	machine	
+take place	fr	avoir lieu	Se produire (surtout comme prévu).	hand	gloss by hand; machine: arriver
+fall asleep	fr	s'endormir	Pour commencer à dormir.	machine	
+take care of	fr	prendre soin de	Prendre soin de ; veiller à la sécurité et au bien-être. / À gérer.	machine	
+catch sight of	fr	apercevoir	Voir soudainement, souvent brièvement seulement.	machine	
+put an end to	fr	mettre fin à	Pour faire cesser quelque chose.	machine	
+hold one's tongue	fr	garder le silence	Pour ne rien dire.	machine	
+do one's best	fr	faire de son mieux	Faire de son mieux.	machine	
+make one's way	fr	se diriger vers	Aller quelque part, souvent au prix d'efforts. / Réussir dans la vie.	machine	
+burst into tears	fr	éclater en sanglots	Se mettre soudainement à pleurer.	hand	gloss by hand; machine: éclata en sanglots
+get rid of	fr	se débarrasser de	Enlever ou jeter ; se libérer de.	machine	
+get used to	fr	s'habituer à	Se familiariser avec quelque chose.	machine	
+turn up one's nose	fr	faire la fine bouche	Refuser ou dédaigner quelque chose en le jugeant insuffisant.	hand	gloss by hand; machine: ricaner devant
+give way	fr	s'effondrer	Se briser ou s'effondrer. / Céder le passage ; laisser passer quelqu'un en premier.	hand	gloss by hand; machine: effondrement
+find out	fr	découvrir	Découvrir un fait ou une information.	machine	
+give up	fr	abandonner	Cesser d'essayer ou de faire quelque chose. / Pour remettre les clés.	machine	
+look after	fr	prendre soin de	À prendre en charge. / Observer quelqu'un qui s'en va.	machine	
+turn out	fr	s'avérer	Pour prouver que c'est le cas au final. / Éteindre (une lumière). / Pour faire partir quelqu'un.	hand	gloss by hand; machine: s'avèrent être
+put up with	fr	endurer	Accepter quelque chose de désagréable sans se plaindre.	machine	
+get over	fr	surmonter	Se remettre de. / Traverser ou enjamber.	machine	
+make out	fr	discerner	Voir ou entendre difficilement. / Comprendre (quelqu'un ou quelque chose). / Prétendre ou faire semblant.	machine	
+give in	fr	céder	Cesser de résister ; accepter à contrecœur. / À remettre.	hand	gloss by hand; machine: donner
+carry out	fr	effectuer	Réaliser une tâche ou un plan. / À emporter à l'extérieur.	machine	
+point out	fr	souligner	Informer quelqu'un d'un fait. / Montrer en pointant du doigt.	machine	
+set out	fr	se mettre en route	Pour entreprendre un voyage (souvent long). / Commencer à essayer de faire quelque chose. / Disposer ou afficher.	hand	gloss by hand; machine: partir
+grow up	fr	grandir	Devenir adulte.	machine	
+turn up	fr	apparaître	Apparaître ou arriver. / Augmenter l'intensité d'un son, d'une chaleur ou d'une lumière. / Se plier ou pointer vers le haut.	machine	
+break out	fr	éclater	Commencer soudainement (guerre, incendie, combats). / S'échapper. / Se mettre soudainement à faire quelque chose.	machine	
+break down	fr	tomber en panne	Cesser de travailler. / Échouer ou s'effondrer. / Perdre le contrôle de ses sentiments.	hand	gloss by hand; machine: arrêter de travailler
+break up	fr	rompre	Mettre fin à une relation ou à une rencontre. / Briser en morceaux ; séparer.	hand	gloss by hand; machine: fractionner
+look forward to	fr	avoir hâte de	Attendre quelque chose avec plaisir.	hand	gloss by hand; machine: j'ai hâte de
+set off	fr	partir	Entreprendre un voyage ; partir. / Provoquer (une explosion, une alarme). / Pour embellir quelque chose.	machine	
+put off	fr	reporter	Reporter. / Faire en sorte que quelqu'un n'aime pas quelque chose. / Enlever (ses vêtements).	machine	
+hold on	fr	attendre	Attendre. / Tenir fermement. / Continuer malgré les difficultés.	hand	gloss by hand; machine: Attendez un instant
+carry on	fr	continuer	Pour continuer. / Se comporter de manière excitée ou inappropriée.	machine	
+deal with	fr	traiter avec	Pour résoudre un problème ou accomplir une tâche. / Pour faire affaire avec.	machine	
+account for	fr	expliquer	Pour expliquer. / Faire partie d'un total.	machine	
+care for	fr	prendre soin de	S'occuper (d'une personne malade, âgée ou jeune). / Aimer ou vouloir (souvent à la forme négative et interrogative).	machine	
+send for	fr	convoquer	Demander à quelqu'un de venir, souvent en envoyant un message.	machine	
+think over	fr	réfléchir	À examiner attentivement.	machine	
+consist of	fr	être composé de	À fabriquer de.	machine	
+long for	fr	aspirer à	Désirer quelque chose très fort.	machine	
+take off	fr	enlever (les vêtements)	Enlever (les vêtements). / Quitter le sol (un avion). / Partir subitement.	machine	
+come up with	fr	imaginer	Trouver une idée ou une réponse. / Pour rattraper le retard.	hand	gloss by hand; machine: trouver
+run away	fr	s'enfuir	S'échapper ; partir secrètement.	hand	gloss by hand; machine: fuyez
+die away	fr	s'estomper	S'affaiblir progressivement et disparaître.	machine	
+of course	pt	claro	Usado para dizer sim, ou que algo é óbvio ou esperado.	machine	
+at last	pt	finalmente	Finalmente, depois de muito tempo e esforço.	machine	
+at once	pt	imediatamente	Imediatamente; sem demora. / Ao mesmo tempo; juntos.	machine	
+all at once	pt	de repente	De repente, sem aviso prévio. / Tudo ao mesmo tempo.	machine	
+at all	pt	de forma alguma	De qualquer forma; em qualquer grau (em negativas e perguntas).	machine	
+not at all	pt	nem um pouco	De forma alguma. / Uma resposta educada a um agradecimento ou um pedido de desculpas.	hand	gloss by hand; machine: Nem um pouco.
+as if	pt	como se	De uma forma que sugere algo (que pode não ser verdade).	machine	
+as though	pt	como se	Como se.	machine	
+in spite of	pt	apesar de	Apesar de; sem ser impedido por.	machine	
+as well as	pt	além de	Além disso; e também.	machine	
+at least	pt	pelo menos	Não menos que. / Enfim; costumava destacar um lado bom.	machine	
+instead of	pt	em vez de	Em vez de; em vez de.	machine	
+no longer	pt	não mais	Não mais.	machine	
+each other	pt	uns aos outros	Usado para mostrar que cada pessoa faz a mesma coisa à outra.	machine	
+one another	pt	uns aos outros	Uns aos outros.	machine	
+according to	pt	de acordo com	Como dito ou demonstrado por. / De uma forma que siga ou concorde com.	machine	
+as soon as	pt	assim que	Imediatamente após ou quando.	machine	
+after all	pt	no fim	Apesar do que era esperado. / Costumava servir de justificativa: lembre-se disso.	machine	
+at first	pt	inicialmente	No início (e depois mudou).	machine	
+in fact	pt	na verdade	Na verdade; realmente (frequentemente adicionando detalhes ou contraste).	machine	
+by the way	pt	por falar nisso	Usado para acrescentar algo ou mudar de assunto.	machine	
+now and then	pt	às vezes	Às vezes; não frequentemente ou regularmente.	machine	
+from time to time	pt	ocasionalmente	Às vezes; ocasionalmente.	machine	
+never mind	pt	deixa para lá	Não se preocupe; isso não importa. / Sem falar nisso.	machine	
+in vain	pt	em vão	Sem sucesso.	machine	
+by no means	pt	certamente não	De forma alguma; certamente que não.	machine	
+on account of	pt	por causa de	Por causa de; devido a.	machine	
+on purpose	pt	intencionalmente	Intencionalmente; não por acidente.	machine	
+all the same	pt	no entanto	Contudo; mesmo assim. / Não é diferente; não é importante (para alguém).	machine	
+in the midst of	pt	no meio de	No meio de (um lugar ou um grupo). / Enquanto algo está acontecendo.	machine	
+on the contrary	pt	pelo contrário	Costumava-se dizer que o oposto é verdadeiro.	machine	
+on the other hand	pt	por outro lado	Usado para apresentar um fato ou opinião contrastante.	machine	
+at any rate	pt	de qualquer forma	Aconteça o que acontecer; de qualquer forma. / Pelo menos.	machine	
+for the sake of	pt	pelo bem de	Para benefício ou propósito de.	machine	
+ever since	pt	desde então	Continuamente desde (um momento ou evento).	hand	gloss by hand; machine: desde
+by and by	pt	em breve	Depois de um tempo; em breve.	machine	
+to and fro	pt	de um lado para o outro	Para trás e para a frente.	hand	gloss by hand; machine: vai e volta
+all of a sudden	pt	de repente	De repente e inesperadamente.	machine	
+in order to	pt	a fim de	Com o objetivo de.	machine	
+rather than	pt	em vez de	Em vez de; e não.	machine	
+above all	pt	sobretudo	Mais importante ainda.	machine	
+at length	pt	finalmente	Finalmente, depois de muito tempo. / Por muito tempo; em detalhes.	machine	
+at present	pt	atualmente	Agora; neste momento.	machine	
+in the meantime	pt	enquanto isso	Enquanto isso; até que algo aconteça.	machine	
+owing to	pt	por causa de	Devido a; como resultado de.	machine	
+thanks to	pt	graças a	Por causa de (geralmente algo bom).	machine	
+no doubt	pt	sem dúvida	Certamente; muito provavelmente.	machine	
+in short	pt	resumidamente	Em poucas palavras; resumindo.	machine	
+as long as	pt	desde que	Sob a condição de que. / Por um longo período de tempo.	machine	
+out of the question	pt	impossível	Impossível; não permitido.	machine	
+by means of	pt	usando	Ao usar.	machine	
+a great deal	pt	bastante	Muito; bastante. / Uma grande quantidade (de).	machine	
+for instance	pt	por exemplo	Por exemplo.	machine	
+that is to say	pt	em outras palavras	Em outras palavras.	machine	
+so to speak	pt	por assim dizer	Usado para mostrar que uma frase não deve ser interpretada literalmente.	machine	
+as it were	pt	por assim dizer	Por assim dizer.	machine	
+if only	pt	se ao menos	Usado para expressar um forte desejo. / Mesmo que seja apenas (por um motivo).	machine	
+or else	pt	de outra forma	Caso contrário (frequentemente uma ameaça). / Ou.	machine	
+no matter	pt	não importa	Independentemente de (o quê, como...). / Não é importante.	machine	
+apart from	pt	exceto por	Exceto por. / Assim como. / Separado de.	machine	
+at the same time	pt	ao mesmo tempo	Juntos; simultaneamente. / No entanto, apesar disso.	machine	
+beside oneself	pt	fora de si	Incapaz de se controlar devido a um sentimento forte.	hand	gloss by hand; machine: dominado pela emoção
+make up one's mind	pt	decidir	Tomar uma decisão; decidir.	machine	
+change one's mind	pt	mudar de ideia	Mudar uma decisão ou opinião.	machine	
+make sure	pt	certificar-se	Para garantir que algo aconteça. / Para verificar.	machine	
+take place	pt	acontecer	Acontecer (especialmente conforme combinado).	machine	
+fall asleep	pt	adormecer	Para começar a dormir.	machine	
+take care of	pt	cuidar de	Cuidar de; manter em segurança e bem-estar. / Para lidar com isso.	machine	
+catch sight of	pt	vislumbrar	Ver de repente, muitas vezes apenas por um breve instante.	machine	
+put an end to	pt	pôr fim a	Fazer algo parar.	machine	
+hold one's tongue	pt	calar-se	Não dizer nada.	hand	gloss by hand; machine: fique quieto
+do one's best	pt	fazer o melhor	Tentar ao máximo.	machine	
+make one's way	pt	dirigir-se	Ir a algum lugar, muitas vezes com esforço. / Para ter sucesso na vida.	hand	gloss by hand; machine: siga em direção a
+burst into tears	pt	cair em prantos	Começar a chorar de repente.	hand	gloss by hand; machine: caiu em prantos
+get rid of	pt	livrar-se de	Remover ou descartar; livrar-se de.	machine	
+get used to	pt	acostumar-se a	Familiarizar-se com algo.	hand	gloss by hand; machine: acostume-se com
+turn up one's nose	pt	zombar de	Recusar ou menosprezar algo por considerá-lo insuficiente.	machine	
+give way	pt	desmoronar	Quebrar ou desmoronar. / Ceder; deixar alguém passar primeiro.	hand	gloss by hand; machine: colapso
+find out	pt	descobrir	Descobrir um fato ou uma informação.	machine	
+give up	pt	desistir	Desistir de tentar ou fazer algo. / Entregar.	machine	
+look after	pt	cuidar de	Cuidar disso. / Para vigiar alguém que está indo embora.	machine	
+turn out	pt	acabar sendo	Para provar que, no final, seria verdade. / Apagar (uma luz). / Fazer alguém ir embora.	machine	
+put up with	pt	aguentar	Aceitar algo desagradável sem reclamar.	machine	
+get over	pt	superar	Para se recuperar de. / Atravessar ou escalar.	machine	
+make out	pt	discernir	Ter dificuldade para ver ou ouvir. / Para entender (alguém ou algo). / Afirmar ou fingir.	machine	
+give in	pt	ceder	Deixar de resistir; concordar contra a vontade. / Para entregar.	machine	
+carry out	pt	levar a cabo	Executar uma tarefa ou um plano. / Para levar para fora.	machine	
+point out	pt	apontar	Contar um fato a alguém. / Mostrar apontando.	machine	
+set out	pt	partir	Para iniciar uma jornada (frequentemente longa). / Para começar a tentar fazer alguma coisa. / Organizar ou exibir.	machine	
+grow up	pt	crescer	Tornar-se adulto.	machine	
+turn up	pt	aparecer	Aparecer ou chegar. / Aumentar a intensidade de um som, calor ou luz. / Dobrar ou apontar para cima.	machine	
+break out	pt	irromper	Começar de repente (guerra, incêndio, luta). / Para escapar. / Começar a fazer algo de repente.	hand	gloss by hand; machine: entrar em erupção
+break down	pt	quebrar	Parar de funcionar. / Falhar ou entrar em colapso. / Perder o controle dos próprios sentimentos.	hand	gloss by hand; machine: parar de funcionar
+break up	pt	separar-se	Terminar um relacionamento ou um encontro. / Quebrar em pedaços; separar.	hand	gloss by hand; machine: separar
+look forward to	pt	aguardar ansiosamente	Esperar por algo com prazer.	hand	gloss by hand; machine: aguardamos ansiosamente por
+set off	pt	partir	Iniciar uma jornada; partir. / Provocar (uma explosão, um alarme). / Para fazer algo parecer melhor.	machine	
+put off	pt	adiar	Adiar. / Fazer com que alguém deteste algo. / Tirar (a roupa).	machine	
+hold on	pt	esperar	Aguardar. / Para segurar com firmeza. / Continuar apesar das dificuldades.	hand	gloss by hand; machine: Aguarde um momento
+carry on	pt	continuar	Continuar. / Comportar-se de maneira agitada ou inadequada.	machine	
+deal with	pt	tratar	Para lidar com um problema ou tarefa. / Para fazer negócios com.	machine	
+account for	pt	explicar	Para explicar. / Fazer parte de um todo.	machine	
+care for	pt	cuidar de	Cuidar de (alguém doente, idoso ou jovem). / Gostar ou querer (frequentemente em formas negativas e interrogativas).	machine	
+send for	pt	convocar	Convidar alguém para vir, geralmente enviando uma mensagem.	machine	
+think over	pt	ponderar	Para analisar com atenção.	machine	
+consist of	pt	ser composto por	Para ser feito de.	machine	
+long for	pt	ansiar por	Desejar muito alguma coisa.	machine	
+take off	pt	tirar (as roupas)	Tirar (roupas). / Sair do chão (de um avião). / Partir de repente.	machine	
+come up with	pt	bolar	Pensar em uma ideia ou resposta. / Para colocar tudo em dia.	hand	gloss by hand; machine: inventar
+run away	pt	fugir	Escapar; partir secretamente.	machine	
+die away	pt	desaparecer	Tornar-se gradualmente mais fraco e desaparecer.	machine	
+of course	ru	конечно	Используется для выражения согласия или для подтверждения очевидности или ожидаемости чего-либо.	machine	
+at last	ru	наконец	Наконец, после долгого времени или больших усилий.	hand	gloss by hand; machine: окончательно
+at once	ru	немедленно	Немедленно; без промедления. / Одновременно; вместе.	machine	
+all at once	ru	внезапно	Внезапно, без предупреждения. / Всё одновременно.	machine	
+at all	ru	совсем	В любом случае; в любой степени (как в отрицательных, так и в вопросительных выражениях).	machine	
+not at all	ru	нисколько	Ни в коем случае. / Вежливый ответ на благодарность или извинение.	hand	gloss by hand; machine: ни в коем случае
+as if	ru	как будто	Это наводит на определенные мысли (которые могут не соответствовать действительности).	machine	
+as though	ru	как будто	Как будто.	machine	
+in spite of	ru	несмотря на	Несмотря ни на что; не будучи остановленным.	machine	
+as well as	ru	в дополнение к	Кроме того; и также.	machine	
+at least	ru	по меньшей мере	Не менее. / В любом случае, это используется для того, чтобы подчеркнуть хорошую сторону.	machine	
+instead of	ru	вместо	Вместо; вместо.	machine	
+no longer	ru	больше не	Уже нет.	hand	gloss by hand; machine: больше никогда
+each other	ru	друг друга	Используется для демонстрации того, что каждый человек поступает с другим одинаково.	machine	
+one another	ru	друг друга	Друг друга.	machine	
+according to	ru	в соответствии с	Как сказано или показано. / Таким образом, чтобы это соответствовало или согласовывалось с чем-либо.	machine	
+as soon as	ru	как только	Немедленно, когда или после.	machine	
+after all	ru	в конце концов	Вопреки ожиданиям. / Используется для объяснения причины: запомните это.	machine	
+at first	ru	сначала	Вначале (а позже изменилось).	machine	
+in fact	ru	фактически	На самом деле; действительно (часто добавляя детали или контраст).	machine	
+by the way	ru	кстати	Используется для добавления чего-либо или смены темы.	machine	
+now and then	ru	иногда	Иногда; нечасто и не регулярно.	machine	
+from time to time	ru	изредка	Иногда; время от времени.	machine	
+never mind	ru	неважно	Не волнуйтесь, это не имеет значения. / Не говоря уже о.	machine	
+in vain	ru	тщетно	Безрезультатно.	machine	
+by no means	ru	конечно же нет	Вовсе нет; конечно же, нет.	machine	
+on account of	ru	из-за	Из-за; по причине.	machine	
+on purpose	ru	намеренно	Намеренно, а не случайно.	machine	
+all the same	ru	тем не менее	Тем не менее, даже так. / Не отличается; неважно (для кого-то).	machine	
+in the midst of	ru	посреди	В центре (места или группы). / Пока что-то происходит.	hand	gloss by hand; machine: в середине
+on the contrary	ru	напротив	Раньше говорили, что верно обратное.	machine	
+on the other hand	ru	с другой стороны	Используется для выражения противоположного факта или мнения.	machine	
+at any rate	ru	в любом случае	Что бы ни случилось; в любом случае. / По меньшей мере.	machine	
+for the sake of	ru	ради	В интересах или для целей.	machine	
+ever since	ru	с тех пор	Непрерывно с (времени или события).	machine	
+by and by	ru	вскоре	Через некоторое время; скоро.	machine	
+to and fro	ru	взад и вперед	Вперед и назад.	machine	
+all of a sudden	ru	внезапно	Внезапно и неожиданно.	machine	
+in order to	ru	для того, чтобы	С целью.	machine	
+rather than	ru	скорее, чем	Вместо; и не.	machine	
+above all	ru	прежде всего	Самое главное.	machine	
+at length	ru	наконец	Наконец, после долгого перерыва. / Долгое время; подробно.	hand	gloss by hand; machine: окончательно
+at present	ru	в настоящее время	Сейчас; в это время.	machine	
+in the meantime	ru	тем временем	Тем временем; до тех пор, пока что-нибудь не произойдет.	machine	
+owing to	ru	из-за	Вследствие; в результате.	machine	
+thanks to	ru	благодаря	Потому что (часто из-за чего-то хорошего).	machine	
+no doubt	ru	несомненно	Безусловно; весьма вероятно.	machine	
+in short	ru	короче говоря	В двух словах, подводя итог.	hand	gloss by hand; machine: суммируя
+as long as	ru	пока	При условии, что. / В течение столь длительного времени.	machine	
+out of the question	ru	невозможный	Невозможно; запрещено.	machine	
+by means of	ru	используя	С помощью.	machine	
+a great deal	ru	много	В значительной степени; очень много. / Большое количество (чего-либо).	machine	
+for instance	ru	например	Например.	machine	
+that is to say	ru	другими словами	Другими словами.	machine	
+so to speak	ru	так сказать	Используется для того, чтобы показать, что фраза не следует понимать в точности.	machine	
+as it were	ru	так сказать	Так сказать.	machine	
+if only	ru	если бы только	Используется для выражения сильного желания. / Даже если только (по какой-то причине).	machine	
+or else	ru	в противном случае	В противном случае (часто это угроза). / Или.	machine	
+no matter	ru	независимо от того	Независимо от (чего, как...). / Это неважно.	machine	
+apart from	ru	за исключением	За исключением. / А также. / Отделились от.	machine	
+at the same time	ru	в то же время	Вместе; одновременно. / Однако, несмотря на это.	machine	
+beside oneself	ru	вне себя	Неспособность контролировать себя из-за сильного чувства.	hand	gloss by hand; machine: переполнен эмоциями
+make up one's mind	ru	решиться	Принять решение.	hand	gloss by hand; machine: решать
+change one's mind	ru	изменить свое мнение	Изменить решение или мнение.	machine	
+make sure	ru	убедиться	Чтобы гарантировать, что что-то произойдёт. / Для проверки.	hand	gloss by hand; machine: убеждаться
+take place	ru	произойти	Произойдёт (особенно по договоренности).	hand	gloss by hand; machine: случаться
+fall asleep	ru	заснуть	Начать засыпать.	machine	
+take care of	ru	позаботиться	Заботиться; обеспечивать безопасность и благополучие. / С этим разобраться.	machine	
+catch sight of	ru	мельком увидеть	Увидеть что-то внезапно, зачастую лишь на мгновение.	machine	
+put an end to	ru	положить конец	Чтобы остановить что-либо.	machine	
+hold one's tongue	ru	молчать	Промолчать.	machine	
+do one's best	ru	сделать все возможное	Стараться изо всех сил.	machine	
+make one's way	ru	направляться	Добраться куда-либо, часто с усилием. / Чтобы добиться успеха в жизни.	hand	gloss by hand; machine: направляйтесь
+burst into tears	ru	расплакаться	Внезапно начать плакать.	hand	gloss by hand; machine: расплакался
+get rid of	ru	избавиться от	Удалить или выбросить; освободиться от чего-либо.	hand	gloss by hand; machine: избавляться от
+get used to	ru	привыкнуть	Ознакомиться с чем-либо.	machine	
+turn up one's nose	ru	насмехаться над	Отказаться от чего-либо или считать что-то недостаточно хорошим.	machine	
+give way	ru	рухнуть	Разрушиться или обрушиться. / Уступить; пропустить кого-либо вперед.	hand	gloss by hand; machine: крах
+find out	ru	выяснить	Узнать факт или информацию.	machine	
+give up	ru	сдаться	Прекратить попытки или действия, которые вы предпринимаете. / Передать.	machine	
+look after	ru	позаботиться	Позаботиться. / Наблюдать за тем, кто уезжает.	machine	
+turn out	ru	оказаться	Чтобы в конце концов это доказать. / Выключить (свет). / Заставить кого-то уйти.	hand	gloss by hand; machine: оказалось
+put up with	ru	терпеть	Принять что-либо неприятное без жалоб.	machine	
+get over	ru	преодолеть	Оправиться от. / Перелезть или перелезть.	machine	
+make out	ru	различать	С трудом видеть или слышать. / Понять (кого-либо или что-либо). / Заявлять или притворяться.	machine	
+give in	ru	сдаться	Прекратить сопротивление; согласиться против своей воли. / Сдать.	machine	
+carry out	ru	выполнять	Выполнить задачу или план. / Для переноски на улицу.	machine	
+point out	ru	указать	Рассказать кому-либо о каком-либо факте. / Показать указательным пальцем.	machine	
+set out	ru	отправиться	Начать путешествие (часто долгое). / Начать что-то делать. / Расположить или выставить.	hand	gloss by hand; machine: отправление
+grow up	ru	вырасти	Стать взрослым.	hand	gloss by hand; machine: расти
+turn up	ru	появляться	Появиться или прибыть. / Усилить звук, тепло или свет. / Складывать или направлять вверх.	machine	
+break out	ru	разразиться	Начаться внезапно (война, пожар, боевые действия). / Чтобы сбежать. / Внезапно начать что-то делать.	hand	gloss by hand; machine: извержение
+break down	ru	сломаться	Прекратить работу. / Потерпеть неудачу или рухнуть. / Потерять контроль над своими чувствами.	hand	gloss by hand; machine: прекратить работу
+break up	ru	расстаться	Прекратить отношения или встречу. / Разбить на части; разделить.	machine	
+look forward to	ru	с нетерпением ждать	Ожидать чего-либо с удовольствием.	hand	gloss by hand; machine: с нетерпением жду
+set off	ru	отправиться	Начать путешествие; отправиться в путь. / Вызвать (взрыв, тревогу). / Чтобы что-то выглядело лучше.	hand	gloss by hand; machine: отправление
+put off	ru	откладывать	Отложить. / Вызвать у кого-либо неприязнь к чему-либо. / Снять (одежду).	machine	
+hold on	ru	подождать	Подождать. / Крепко держать. / Продолжать, несмотря на трудности.	hand	gloss by hand; machine: Подождите минутку
+carry on	ru	продолжать	Продолжить. / Вести себя возбужденно или неподобающим образом.	machine	
+deal with	ru	иметь дело с	Решить проблему или выполнить задачу. / Вести с ними дела.	machine	
+account for	ru	объяснять	Чтобы объяснить. / Входить в состав общего целого.	machine	
+care for	ru	позаботиться	Ухаживать за больным, пожилым или молодым человеком. / Нравится или хочется (часто в отрицательной форме и в вопросах).	machine	
+send for	ru	призвать	Пригласить кого-либо прийти, часто с помощью сообщения.	machine	
+think over	ru	обдумать	Внимательно обдумать.	hand	gloss by hand; machine: размышлять
+consist of	ru	состоять из	Из чего быть сделано.	hand	gloss by hand; machine: быть состоит из
+long for	ru	тосковать	Очень сильно чего-то желать.	machine	
+take off	ru	снять (одежду)	Снять (одежду). / Оторваться от земли (самолета). / Уйти внезапно.	machine	
+come up with	ru	придумать	Придумать идею или ответ. / Догнать остальных.	machine	
+run away	ru	убежать	Сбежать; уйти тайно.	hand	gloss by hand; machine: убегать
+die away	ru	исчезнуть	Постепенно ослабевать и исчезать.	machine	
+of course	vi	tất nhiên rồi	Dùng để nói "vâng", hoặc để diễn đạt rằng điều gì đó là hiển nhiên hoặc dễ đoán.	machine	
+at last	vi	cuối cùng	Cuối cùng, sau một thời gian dài hoặc rất nhiều nỗ lực.	machine	
+at once	vi	ngay lập tức	Ngay lập tức; không chậm trễ. / Đồng thời; cùng nhau.	machine	
+all at once	vi	đột nhiên	Đột ngột, không hề báo trước. / Tất cả cùng một lúc.	machine	
+at all	vi	chút nào	Bằng bất kỳ cách nào; ở bất kỳ mức độ nào (trong câu phủ định và câu hỏi).	hand	gloss by hand; machine: hoàn toàn
+not at all	vi	hoàn toàn không	Hoàn toàn không. / Một lời đáp lịch sự cho lời cảm ơn hoặc lời xin lỗi.	machine	
+as if	vi	như thể	Theo cách nào đó gợi ý điều gì đó (có thể không đúng).	machine	
+as though	vi	như thể	Như thể vậy.	machine	
+in spite of	vi	mặc dù	Mặc dù; không bị ngăn cản bởi.	hand	gloss by hand; machine: cho dù
+as well as	vi	ngoài ra	Ngoài ra; và cũng vậy.	machine	
+at least	vi	ít nhất	Không ít hơn. / Tóm lại, nó được dùng để chỉ ra mặt tốt.	machine	
+instead of	vi	thay vì	Thay thế cho; hơn là.	machine	
+no longer	vi	không còn nữa	Không còn nữa.	machine	
+each other	vi	nhau	Dùng để thể hiện rằng mỗi người đều làm điều tương tự với người kia.	machine	
+one another	vi	nhau	Nhau.	machine	
+according to	vi	theo	Như đã nói hoặc được chứng minh bởi. / Theo cách phù hợp hoặc đồng thuận với.	machine	
+as soon as	vi	ngay khi	Ngay lập tức hoặc sau đó.	hand	gloss by hand; machine: càng sớm càng
+after all	vi	cuối cùng	Trái với dự đoán. / Dùng để đưa ra lý do: hãy nhớ điều đó.	machine	
+at first	vi	lúc đầu	Ban đầu thì vậy (và sau này thì thay đổi).	machine	
+in fact	vi	trên thực tế	Thực ra; thật đấy (thường dùng để bổ sung chi tiết hoặc tạo sự tương phản).	machine	
+by the way	vi	nhân tiện	Được dùng để thêm vào điều gì đó hoặc thay đổi chủ đề.	machine	
+now and then	vi	thỉnh thoảng	Thỉnh thoảng; không thường xuyên hoặc đều đặn.	machine	
+from time to time	vi	thỉnh thoảng	Đôi khi; thỉnh thoảng.	machine	
+never mind	vi	đừng bận tâm	Đừng lo lắng; điều đó không quan trọng. / Chưa kể đến.	machine	
+in vain	vi	vô ích	Không thành công.	machine	
+by no means	vi	chắc chắn là không	Hoàn toàn không; chắc chắn là không.	machine	
+on account of	vi	vì	Bởi vì; vì lý do đó.	machine	
+on purpose	vi	cố ý	Cố ý chứ không phải vô tình.	machine	
+all the same	vi	tuy nhiên	Tuy nhiên, dù vậy. / Không khác biệt; không quan trọng (đối với ai đó).	machine	
+in the midst of	vi	ở giữa	Ở giữa (một địa điểm hoặc một nhóm). / Trong khi một việc gì đó đang xảy ra.	machine	
+on the contrary	vi	ngược lại	Người ta thường nói điều ngược lại mới đúng.	machine	
+on the other hand	vi	mặt khác	Dùng để đưa ra một sự thật hoặc ý kiến trái ngược.	machine	
+at any rate	vi	dẫu sao thì	Dù chuyện gì xảy ra đi nữa. / Ít nhất là vậy.	machine	
+for the sake of	vi	vì lợi ích của	Vì lợi ích hoặc mục đích của.	machine	
+ever since	vi	kể từ đó	Liên tục kể từ (một thời điểm hoặc sự kiện).	machine	
+by and by	vi	không lâu sau	Một lúc sau; không lâu nữa.	machine	
+to and fro	vi	qua lại	Tiến lùi tiến lùi.	machine	
+all of a sudden	vi	đột nhiên	Đột ngột và bất ngờ.	machine	
+in order to	vi	để	Với mục đích là.	machine	
+rather than	vi	còn hơn là	Thay vì; và không.	machine	
+above all	vi	trên hết	Quan trọng nhất.	machine	
+at length	vi	cuối cùng	Cuối cùng thì, sau một thời gian dài. / Đã lâu rồi; rất chi tiết.	machine	
+at present	vi	hiện nay	Ngay bây giờ; vào thời điểm này.	machine	
+in the meantime	vi	trong khi đó	Trong khi đó, cho đến khi có chuyện gì đó xảy ra.	machine	
+owing to	vi	vì	Do đó; kết quả là.	machine	
+thanks to	vi	nhờ	Vì (thường là điều gì đó tốt đẹp).	machine	
+no doubt	vi	chắc chắn	Chắc chắn rồi; rất có thể.	machine	
+in short	vi	tóm lại	Nói tóm lại, chỉ cần vài từ là đủ.	machine	
+as long as	vi	miễn là	Với điều kiện là. / Trong một khoảng thời gian dài như vậy.	machine	
+out of the question	vi	không thể nào	Không thể; không được phép.	machine	
+by means of	vi	bằng cách sử dụng	Bằng cách sử dụng.	machine	
+a great deal	vi	nhiều	Rất nhiều; rất nhiều. / Một lượng lớn (của).	machine	
+for instance	vi	ví dụ	Ví dụ.	machine	
+that is to say	vi	nói cách khác	Nói cách khác.	machine	
+so to speak	vi	có thể nói là	Cách dùng này nhằm thể hiện rằng một cụm từ không có nghĩa chính xác.	hand	gloss by hand; machine: nói cách khác
+as it were	vi	có thể nói là	Nói cách khác.	hand	gloss by hand; machine: nói cách khác
+if only	vi	giá như	Dùng để bày tỏ một mong muốn mạnh mẽ. / Dù chỉ là (vì một lý do nào đó).	machine	
+or else	vi	nếu không thì	Ngược lại (thường là một lời đe dọa). / Hoặc.	machine	
+no matter	vi	bất kể	Bất kể (cái gì, như thế nào...). / Điều đó không quan trọng.	machine	
+apart from	vi	ngoại trừ	Ngoại trừ. / Cũng như. / Đã tách rời.	machine	
+at the same time	vi	đồng thời	Cùng nhau; đồng thời. / Tuy nhiên, bất chấp điều đó.	machine	
+beside oneself	vi	không tự chủ được	Không thể kiềm chế bản thân vì cảm xúc mãnh liệt.	hand	gloss by hand; machine: Ngập tràn cảm xúc
+make up one's mind	vi	quyết định	Đưa ra quyết định; lựa chọn.	machine	
+change one's mind	vi	thay đổi ý định	Thay đổi quyết định hoặc quan điểm.	machine	
+make sure	vi	đảm bảo	Để chắc chắn rằng điều gì đó sẽ xảy ra. / Để kiểm tra.	machine	
+take place	vi	xảy ra	Xảy ra (đặc biệt là theo sự sắp đặt).	machine	
+fall asleep	vi	ngủ thiếp đi	Để bắt đầu ngủ.	machine	
+take care of	vi	chăm sóc	Chăm sóc; giữ gìn an toàn và khỏe mạnh. / Để giải quyết.	machine	
+catch sight of	vi	thoáng nhìn thấy	Đột nhiên nhìn thấy, thường chỉ trong chốc lát.	machine	
+put an end to	vi	chấm dứt	Để làm cho điều gì đó dừng lại.	machine	
+hold one's tongue	vi	giữ im lặng	Không nói gì cả.	machine	
+do one's best	vi	cố gắng hết sức	Cố gắng hết sức có thể.	machine	
+make one's way	vi	hướng về	Đi đến một nơi nào đó, thường là phải nỗ lực. / Để thành công trong cuộc sống.	machine	
+burst into tears	vi	bật khóc	Đột nhiên bật khóc.	machine	
+get rid of	vi	loại bỏ	Loại bỏ hoặc vứt bỏ; giải thoát khỏi.	machine	
+get used to	vi	làm quen với	Làm quen với một điều gì đó.	machine	
+turn up one's nose	vi	chế nhạo	Từ chối hoặc coi thường điều gì đó vì cho rằng nó không đủ tốt.	machine	
+give way	vi	sụp đổ	Bị vỡ hoặc sụp đổ. / Nhường đường; để người khác đi trước.	machine	
+find out	vi	tìm ra	Khám phá ra một sự thật hoặc một thông tin nào đó.	machine	
+give up	vi	bỏ cuộc	Ngừng cố gắng hoặc ngừng làm điều gì đó. / Để giao nộp.	machine	
+look after	vi	chăm sóc	Để chăm sóc. / Để tiễn biệt một người sắp rời đi.	machine	
+turn out	vi	hóa ra là	Để chứng minh điều đó vào cuối cùng. / Tắt (đèn). / Khiến ai đó rời đi.	machine	
+put up with	vi	chịu đựng	Chấp nhận điều gì đó khó chịu mà không than phiền.	machine	
+get over	vi	vượt qua	Để hồi phục khỏi. / Vượt qua hoặc trèo qua.	machine	
+make out	vi	nhận ra	Khó nhìn hoặc khó nghe. / Để hiểu (ai đó hoặc điều gì đó). / Khẳng định hoặc giả vờ.	hand	gloss by hand; machine: phân biệt
+give in	vi	nhượng bộ	Ngừng chống cự; đồng ý một cách miễn cưỡng. / Để nộp.	machine	
+carry out	vi	tiến hành	Thực hiện một nhiệm vụ hoặc lên kế hoạch. / Để mang ra ngoài.	machine	
+point out	vi	chỉ ra	Thông báo cho ai đó về một sự thật. / Minh họa bằng cách chỉ trỏ.	machine	
+set out	vi	lên đường	Bắt đầu một cuộc hành trình (thường là một cuộc hành trình dài). / Bắt đầu thử làm điều gì đó. / Sắp xếp hoặc trưng bày.	hand	gloss by hand; machine: khởi hành
+grow up	vi	lớn lên	Trở thành người lớn.	machine	
+turn up	vi	xuất hiện	Xuất hiện hoặc đến nơi. / Làm cho âm thanh, nhiệt độ hoặc ánh sáng mạnh hơn. / Gập hoặc hướng lên trên.	machine	
+break out	vi	bùng nổ	Bắt đầu đột ngột (chiến tranh, hỏa hoạn, giao tranh). / Để trốn thoát. / Đột nhiên bắt đầu làm điều gì đó.	hand	gloss by hand; machine: phun trào
+break down	vi	bị hỏng	Ngừng làm việc. / Thất bại hoặc sụp đổ. / Mất kiểm soát cảm xúc.	hand	gloss by hand; machine: ngừng hoạt động
+break up	vi	chia tay	Kết thúc một mối quan hệ hoặc cuộc gặp gỡ. / Chia thành từng mảnh; tách rời.	hand	gloss by hand; machine: chia ra
+look forward to	vi	mong chờ	Chờ đợi điều gì đó với niềm vui.	machine	
+set off	vi	khởi hành	Bắt đầu một cuộc hành trình; rời đi. / Gây ra (một vụ nổ, một tiếng báo động). / Để làm cho thứ gì đó trông đẹp hơn.	machine	
+put off	vi	hoãn	Hoãn lại. / Làm cho ai đó không thích điều gì đó. / Cởi bỏ (quần áo).	machine	
+hold on	vi	đợi một chút	Chờ đợi. / Nắm chặt. / Tiếp tục bất chấp khó khăn.	machine	
+carry on	vi	tiếp tục	Tiếp tục. / Cư xử một cách phấn khích hoặc không đúng mực.	machine	
+deal with	vi	đối phó với	Giải quyết vấn đề hoặc nhiệm vụ. / Để hợp tác kinh doanh.	machine	
+account for	vi	giải thích	Để giải thích. / Để cấu thành một phần của tổng thể.	machine	
+care for	vi	chăm sóc	Chăm sóc (người ốm, người già hoặc người trẻ). / Thích hoặc muốn (thường dùng trong câu phủ định và câu hỏi).	machine	
+send for	vi	cho gọi	Mời ai đó đến, thường bằng cách gửi tin nhắn.	hand	gloss by hand; machine: triệu hồi
+think over	vi	suy ngẫm	Cần cân nhắc kỹ lưỡng.	machine	
+consist of	vi	bao gồm	Được làm từ.	machine	
+long for	vi	khao khát	Rất muốn có một thứ gì đó.	machine	
+take off	vi	cởi (quần áo)	Cởi bỏ (quần áo). / Rời khỏi mặt đất (máy bay). / Rời đi đột ngột.	machine	
+come up with	vi	nghĩ ra	Nghĩ ra một ý tưởng hoặc câu trả lời. / Để bắt kịp.	machine	
+run away	vi	bỏ trốn	Trốn thoát; rời đi một cách bí mật.	machine	
+die away	vi	biến mất	Dần dần trở nên yếu đi và biến mất.	machine	
+of course	th	แน่นอน	ใช้เพื่อบอกว่าใช่ หรือบอกว่าบางสิ่งบางอย่างชัดเจนหรือเป็นที่คาดหวังได้	machine	
+at last	th	ในที่สุด	ในที่สุด หลังจากใช้เวลานานหรือพยายามอย่างมาก	machine	
+at once	th	โดยทันที	ทันที; โดยไม่ชักช้า / ในเวลาเดียวกัน; ด้วยกัน	machine	
+all at once	th	กะทันหัน	เกิดขึ้นอย่างกะทันหันโดยไม่มีสัญญาณเตือนล่วงหน้า / ทั้งหมดเกิดขึ้นพร้อมกัน	machine	
+at all	th	เลย	ไม่ว่าด้วยวิธีใด หรือในระดับใดก็ตาม (ทั้งในเชิงลบและคำถาม)	hand	gloss by hand; machine: ทั้งหมด
+not at all	th	ไม่เลยแม้แต่น้อย	ไม่เลยสักนิด / คำตอบที่สุภาพต่อคำขอบคุณหรือคำขอโทษ	machine	
+as if	th	ราวกับว่า	ในลักษณะที่ชวนให้นึกถึงบางสิ่งบางอย่าง (ซึ่งอาจไม่เป็นความจริง)	machine	
+as though	th	ราวกับว่า	ราวกับว่าอย่างนั้น	machine	
+in spite of	th	ทั้งๆ ที่	ถึงแม้ว่าจะไม่ถูกขัดขวางก็ตาม	hand	gloss by hand; machine: ถึงอย่างไรก็ตาม
+as well as	th	นอกจาก	นอกจากนี้; และนอกจากนี้.	machine	
+at least	th	อย่างน้อย	ไม่น้อยกว่า / อย่างไรก็ตาม ใช้เพื่อชี้ให้เห็นด้านดี	machine	
+instead of	th	แทนที่จะ	แทนที่; แทนที่จะเป็น	machine	
+no longer	th	ไม่อีกต่อไป	แต่ไม่ใช่เช่นนั้นอีกต่อไปแล้ว	machine	
+each other	th	กันและกัน	ใช้เพื่อแสดงว่าแต่ละคนทำสิ่งเดียวกันต่ออีกฝ่ายหนึ่ง	machine	
+one another	th	กันและกัน	กันและกัน.	machine	
+according to	th	ตาม	ดังที่กล่าวหรือแสดงให้เห็นโดย... / ในลักษณะที่สอดคล้องหรือตรงกัน	machine	
+as soon as	th	ทันทีที่	ทันทีเมื่อหรือหลังจากนั้น	machine	
+after all	th	ในที่สุด	แม้จะขัดกับความคาดหวังก็ตาม / ใช้เพื่ออธิบายเหตุผล: จำไว้ด้วยนะ	machine	
+at first	th	ตอนแรก	ในตอนเริ่มต้น (และต่อมาก็มีการเปลี่ยนแปลง)	machine	
+in fact	th	ในความเป็นจริง	จริงๆแล้ว; จริงๆ (มักใช้เพื่อเพิ่มรายละเอียดหรือความแตกต่าง)	machine	
+by the way	th	อนึ่ง	ใช้เพื่อเพิ่มเนื้อหาหรือเปลี่ยนหัวข้อสนทนา	machine	
+now and then	th	บางครั้ง	บางครั้ง; ไม่บ่อยนักหรือเป็นประจำ	machine	
+from time to time	th	เป็นครั้งคราว	บางครั้ง; เป็นครั้งคราว	machine	
+never mind	th	ช่างเถอะ	ไม่ต้องกังวล มันไม่สำคัญหรอก / ไม่ต้องพูดถึงเลย	machine	
+in vain	th	ไร้ผล	แต่ไม่ประสบความสำเร็จ	machine	
+by no means	th	ไม่ใช่แน่นอน	ไม่เลย ไม่ใช่แน่นอน	machine	
+on account of	th	เพราะว่า	เนื่องจาก; ด้วยเหตุผลที่ว่า	machine	
+on purpose	th	โดยเจตนา	โดยเจตนา ไม่ใช่โดยบังเอิญ	machine	
+all the same	th	แต่ถึงอย่างไร	อย่างไรก็ตาม ถึงกระนั้นก็ตาม / ไม่แตกต่างกัน ไม่สำคัญ (สำหรับใครบางคน)	machine	
+in the midst of	th	ท่ามกลาง	อยู่ตรงกลาง (สถานที่หรือกลุ่ม) / ในขณะที่บางสิ่งกำลังเกิดขึ้น	hand	gloss by hand; machine: ตรงกลาง
+on the contrary	th	ในทางตรงกันข้าม	ใช้เพื่อบอกว่าสิ่งที่ตรงกันข้ามเป็นความจริง	machine	
+on the other hand	th	ในทางกลับกัน	ใช้เพื่อนำเสนอข้อเท็จจริงหรือความคิดเห็นที่แตกต่างออกไป	machine	
+at any rate	th	ถึงอย่างไร	ไม่ว่าจะเกิดอะไรขึ้นก็ตาม / อย่างน้อย.	machine	
+for the sake of	th	เพื่อเห็นแก่	เพื่อประโยชน์หรือวัตถุประสงค์ของ...	machine	
+ever since	th	นับตั้งแต่นั้นมา	ต่อเนื่องมาตั้งแต่ (เวลาหรือเหตุการณ์หนึ่ง)	machine	
+by and by	th	อีกไม่นาน	หลังจากนั้นสักพัก; เร็วๆ นี้	machine	
+to and fro	th	ไปมา	ต่องแต่ง.	machine	
+all of a sudden	th	กะทันหัน	ทันทีทันใดและโดยไม่คาดคิด	machine	
+in order to	th	เพื่อ	โดยมีวัตถุประสงค์เพื่อ...	machine	
+rather than	th	แทนที่จะ	แทนที่จะเป็น และไม่ใช่	machine	
+above all	th	เหนือสิ่งอื่นใด	สิ่งสำคัญที่สุด	machine	
+at length	th	ในที่สุด	ในที่สุดก็มาถึงเสียที หลังจากรอมานาน / เป็นเวลานานแล้ว; โดยละเอียด	machine	
+at present	th	ตอนนี้	ตอนนี้; ในเวลานี้	machine	
+in the meantime	th	ในขณะเดียวกัน	ในระหว่างนี้ จนกว่าจะมีอะไรเกิดขึ้น	machine	
+owing to	th	เพราะว่า	เนื่องจาก; ผลจาก.	machine	
+thanks to	th	เพราะ	เนื่องจาก (ส่วนใหญ่มักเป็นเรื่องดี)	hand	gloss by hand; machine: ขอบคุณ
+no doubt	th	อย่างไม่ต้องสงสัย	แน่นอน เป็นไปได้มากทีเดียว	machine	
+in short	th	โดยสรุป	กล่าวโดยสรุปสั้นๆ	machine	
+as long as	th	ตราบใดที่	โดยมีเงื่อนไขว่า... / เป็นเวลานานเท่ากับ...	machine	
+out of the question	th	เป็นไปไม่ได้	เป็นไปไม่ได้ ไม่ได้รับอนุญาต	machine	
+by means of	th	โดยใช้	โดยการใช้.	machine	
+a great deal	th	มาก	มากทีเดียว เยอะมาก / ปริมาณมาก (ของ)	machine	
+for instance	th	ตัวอย่างเช่น	ตัวอย่างเช่น.	machine	
+that is to say	th	กล่าวอีกนัยหนึ่ง	กล่าวอีกนัยหนึ่งคือ...	machine	
+so to speak	th	พูดง่ายๆ ก็คือ	ใช้เพื่อแสดงว่าวลีนั้นไม่ได้หมายความตามตัวอักษร	machine	
+as it were	th	พูดง่ายๆ ก็คือ	พูดให้เข้าใจง่ายๆ ก็คืออย่างนั้นแหละ	machine	
+if only	th	ถ้าเพียงแต่ว่า	ใช้เพื่อแสดงความปรารถนาอย่างแรงกล้า / ถึงแม้จะเป็นเพียง (ด้วยเหตุผลบางอย่าง) ก็ตาม	machine	
+or else	th	มิฉะนั้น	มิฉะนั้น (มักจะเป็นการข่มขู่) / หรือ.	machine	
+no matter	th	ไม่ว่าอย่างไรก็ตาม	โดยไม่คำนึงถึง (อะไร อย่างไร...) / มันไม่สำคัญ	machine	
+apart from	th	ยกเว้น	ยกเว้น. / รวมถึง. / แยกจากกันแล้ว	machine	
+at the same time	th	ในเวลาเดียวกัน	ด้วยกัน; พร้อมกัน / อย่างไรก็ตาม แม้จะเป็นเช่นนั้นก็ตาม	machine	
+beside oneself	th	ท่วมท้นไปด้วยอารมณ์	ไม่สามารถควบคุมตนเองได้เนื่องจากความรู้สึกรุนแรง	machine	
+make up one's mind	th	ตัดสินใจ	เพื่อตัดสินใจ; เพื่อตัดสินใจ	machine	
+change one's mind	th	เปลี่ยนใจ	เพื่อเปลี่ยนการตัดสินใจหรือความคิดเห็น	machine	
+make sure	th	ตรวจสอบให้แน่ใจ	เพื่อให้แน่ใจว่าบางสิ่งบางอย่างจะเกิดขึ้น / เพื่อตรวจสอบ	machine	
+take place	th	เกิดขึ้น	เกิดขึ้น (โดยเฉพาะอย่างยิ่งตามที่ได้วางแผนไว้)	machine	
+fall asleep	th	หลับไป	เพื่อเริ่มต้นการนอนหลับ	machine	
+take care of	th	ดูแล	ดูแลเอาใจใส่; ทำให้ปลอดภัยและมีสุขภาพดี / เพื่อจัดการกับ.	machine	
+catch sight of	th	มองเห็นแวบหนึ่ง	มองเห็นได้อย่างฉับพลัน บ่อยครั้งเพียงชั่วครู่เท่านั้น	machine	
+put an end to	th	ยุติ	เพื่อทำให้บางสิ่งหยุดลง	machine	
+hold one's tongue	th	เงียบไว้	ไม่ต้องพูดอะไรเลย	machine	
+do one's best	th	ทำอย่างสุดความสามารถ	พยายามอย่างเต็มที่ที่สุดเท่าที่จะทำได้	machine	
+make one's way	th	มุ่งหน้าไปยัง	การเดินทางไปยังที่ใดที่หนึ่ง มักต้องใช้ความพยายาม / เพื่อประสบความสำเร็จในชีวิต	machine	
+burst into tears	th	ร้องไห้ออกมา	จู่ๆ ก็เริ่มร้องไห้	machine	
+get rid of	th	กำจัด	เพื่อกำจัดหรือทิ้งไป; เพื่อให้เป็นอิสระ	machine	
+get used to	th	ทำความคุ้นเคยกับ	เพื่อทำความคุ้นเคยกับบางสิ่งบางอย่าง	machine	
+turn up one's nose	th	เยาะเย้ย	ปฏิเสธหรือดูถูกบางสิ่งบางอย่างว่าไม่ดีพอ	machine	
+give way	th	ทรุด	แตกหักหรือพังทลาย / ยอมให้; ปล่อยให้คนอื่นไปก่อน	machine	
+find out	th	ค้นพบ	เพื่อค้นหาข้อเท็จจริงหรือข้อมูลบางอย่าง	hand	gloss by hand; machine: หา
+give up	th	ยอมแพ้	หยุดพยายามหรือหยุดทำบางสิ่งบางอย่าง / เพื่อส่งมอบ	machine	
+look after	th	ดูแล	เพื่อดูแลรักษา / การเฝ้ามองคนที่กำลังจะจากไป	machine	
+turn out	th	ปรากฏว่า	เพื่อพิสูจน์ให้เห็นในที่สุด / เพื่อปิด (ไฟ) / ทำให้ใครบางคนจากไป	machine	
+put up with	th	ทนกับ	การยอมรับสิ่งที่ไม่พึงประสงค์โดยไม่บ่น	hand	gloss by hand; machine: อดทน
+get over	th	เอาชนะ	เพื่อฟื้นตัวจาก. / ข้ามหรือปีนข้ามไป	machine	
+make out	th	แยกแยะ	มองเห็นหรือได้ยินได้ไม่ชัด / เพื่อทำความเข้าใจ (บุคคลหรือสิ่งใดสิ่งหนึ่ง) / อ้างหรือแสร้งทำ	machine	
+give in	th	ยอมแพ้	เพื่อยุติการต่อต้าน; เพื่อยินยอมอย่างไม่เต็มใจ / เพื่อส่งมอบ	machine	
+carry out	th	ดำเนินการ	เพื่อทำภารกิจหรือแผนงานให้สำเร็จ / สำหรับพกพาออกไปข้างนอก	machine	
+point out	th	ชี้ให้เห็น	เพื่อบอกความจริงแก่ผู้อื่น / เพื่อแสดงให้เห็นโดยการชี้	machine	
+set out	th	ออกเดินทาง	เพื่อเริ่มต้นการเดินทาง (ซึ่งมักเป็นการเดินทางไกล) / เพื่อเริ่มต้นพยายามทำบางสิ่งบางอย่าง / จัดเรียงหรือจัดแสดง	machine	
+grow up	th	โตขึ้น	เพื่อก้าวสู่การเป็นผู้ใหญ่	machine	
+turn up	th	ปรากฏ	ปรากฏหรือมาถึง / เพื่อทำให้เสียง ความร้อน หรือแสงสว่างแรงขึ้น / พับหรือชี้ขึ้นด้านบน	machine	
+break out	th	ปะทุ	เริ่มต้นอย่างฉับพลัน (สงคราม ไฟไหม้ การทะเลาะวิวาท) / เพื่อหลบหนี / เริ่มทำบางสิ่งบางอย่างโดยฉับพลัน	machine	
+break down	th	หยุดทำงาน	เพื่อหยุดการทำงาน / ล้มเหลวหรือพังทลาย / สูญเสียการควบคุมอารมณ์ของตนเอง	machine	
+break up	th	เลิกกัน	เพื่อยุติความสัมพันธ์หรือการพบปะ / ทำให้แตกเป็นชิ้นๆ; แยกออกจากกัน	hand	gloss by hand; machine: แยกจากกัน
+look forward to	th	ตั้งตารอ	รอคอยบางสิ่งบางอย่างด้วยความยินดี	machine	
+set off	th	ออกเดินทาง	เพื่อเริ่มต้นการเดินทาง; เพื่อจากไป / ก่อให้เกิด (การระเบิด, สัญญาณเตือนภัย) / เพื่อทำให้บางสิ่งดูดีขึ้น	machine	
+put off	th	เลื่อน	เพื่อเลื่อนออกไป / ทำให้ใครบางคนไม่ชอบบางสิ่งบางอย่าง / ถอด (เสื้อผ้า) ออก	machine	
+hold on	th	รอสักครู่	เพื่อรอคอย / จับให้แน่น / เดินหน้าต่อไปแม้จะเผชิญกับความยากลำบาก	machine	
+carry on	th	ดำเนินการต่อ	เพื่อดำเนินการต่อ / แสดงพฤติกรรมตื่นเต้นหรือไม่เหมาะสม	machine	
+deal with	th	จัดการกับ	เพื่อจัดการกับปัญหาหรืองานที่ได้รับมอบหมาย / เพื่อทำธุรกิจด้วย	machine	
+account for	th	อธิบาย	เพื่ออธิบาย / เพื่อเป็นส่วนหนึ่งของทั้งหมด	machine	
+care for	th	ดูแล	ดูแล (ผู้ป่วย ผู้สูงอายุ หรือเด็ก) / ชอบหรือต้องการ (มักใช้ในประโยคปฏิเสธและคำถาม)	machine	
+send for	th	เรียก	การขอให้ใครบางคนมา โดยมักจะใช้วิธีส่งข้อความ	machine	
+think over	th	ไตร่ตรอง	ต้องพิจารณาอย่างรอบคอบ	machine	
+consist of	th	ประกอบด้วย	ทำจาก.	machine	
+long for	th	ปรารถนา	ต้องการบางสิ่งบางอย่างอย่างมาก	machine	
+take off	th	ถอด (เสื้อผ้า)	เพื่อถอด (เสื้อผ้า) ออก / เพื่อบินขึ้นจากพื้นดิน (เครื่องบิน) / จากไปอย่างกะทันหัน	machine	
+come up with	th	คิดค้น	คิดหาไอเดียหรือคำตอบ / เพื่อตามให้ทัน	machine	
+run away	th	หนีไป	เพื่อหลบหนี; เพื่อจากไปอย่างลับๆ	machine	
+die away	th	จางหายไป	ค่อยๆ อ่อนแรงลงและหายไปในที่สุด	machine	
+of course	id	tentu saja	Digunakan untuk mengatakan ya, atau bahwa sesuatu itu jelas atau sudah diduga.	machine	
+at last	id	akhirnya	Akhirnya, setelah sekian lama atau banyak usaha.	machine	
+at once	id	langsung	Segera; tanpa penundaan. / Pada saat yang sama; bersama-sama.	machine	
+all at once	id	tiba-tiba	Tiba-tiba, tanpa peringatan. / Semuanya terjadi bersamaan.	machine	
+at all	id	sama sekali	Dengan cara apa pun; sampai tingkat apa pun (dalam bentuk negatif dan pertanyaan).	machine	
+not at all	id	sama sekali tidak	Sama sekali tidak. / Balasan sopan untuk ucapan terima kasih atau permintaan maaf.	machine	
+as if	id	seolah-olah	Dengan cara yang menyiratkan sesuatu (yang mungkin tidak benar).	hand	gloss by hand; machine: seolah olah
+as though	id	seolah-olah	Seolah olah.	hand	gloss by hand; machine: seolah olah
+in spite of	id	meskipun	Meskipun demikian; tanpa dihentikan oleh.	machine	
+as well as	id	sebagai tambahan	Selain itu; dan juga.	machine	
+at least	id	setidaknya	Tidak kurang dari. / Pokoknya; dulu digunakan untuk menunjukkan sisi baiknya.	machine	
+instead of	id	alih-alih	Sebagai pengganti; bukan.	machine	
+no longer	id	tidak lagi	Tidak lagi.	machine	
+each other	id	satu sama lain	Digunakan untuk menunjukkan bahwa setiap orang melakukan hal yang sama kepada orang lain.	machine	
+one another	id	satu sama lain	Satu sama lain.	machine	
+according to	id	menurut	Seperti yang dikatakan atau ditunjukkan oleh. / Dengan cara yang sesuai atau selaras dengan.	machine	
+as soon as	id	segera setelah	Segera setelah atau saat itu juga.	machine	
+after all	id	pada akhirnya	Bertentangan dengan apa yang diharapkan. / Digunakan untuk memberikan alasan: ingat itu.	machine	
+at first	id	pada awalnya	Pada awalnya (dan kemudian berubah).	machine	
+in fact	id	nyatanya	Sebenarnya; sungguh (seringkali menambahkan detail atau kontras).	machine	
+by the way	id	omong-omong	Digunakan untuk menambahkan sesuatu atau mengubah topik pembicaraan.	machine	
+now and then	id	kadang-kadang	Terkadang; tidak sering atau teratur.	machine	
+from time to time	id	kadang-kadang	Terkadang; sesekali.	machine	
+never mind	id	sudahlah	Jangan khawatir; itu tidak penting. / Belum lagi.	machine	
+in vain	id	sia-sia	Tanpa hasil.	machine	
+by no means	id	tentu tidak	Tidak sama sekali; tentu tidak.	machine	
+on account of	id	karena	Karena; untuk alasan.	machine	
+on purpose	id	dengan sengaja	Dengan sengaja; bukan karena kecelakaan.	machine	
+all the same	id	namun demikian	Meskipun demikian; bahkan begitu. / Tidak berbeda; tidak penting (bagi seseorang).	machine	
+in the midst of	id	di tengah	Di tengah (suatu tempat atau suatu kelompok). / Saat sesuatu sedang terjadi.	machine	
+on the contrary	id	sebaliknya	Digunakan untuk menyatakan bahwa kebalikannya adalah benar.	machine	
+on the other hand	id	di sisi lain	Digunakan untuk memberikan fakta atau opini yang kontras.	machine	
+at any rate	id	bagaimanapun	Apa pun yang terjadi; bagaimanapun juga. / Setidaknya.	machine	
+for the sake of	id	demi	Untuk kepentingan atau tujuan tertentu.	machine	
+ever since	id	sejak	Terus-menerus sejak (suatu waktu atau peristiwa).	machine	
+by and by	id	tak lama kemudian	Setelah beberapa saat; segera.	machine	
+to and fro	id	bolak-balik	Maju dan mundur.	machine	
+all of a sudden	id	tiba-tiba	Tiba-tiba dan tanpa diduga.	machine	
+in order to	id	untuk	Dengan tujuan untuk.	machine	
+rather than	id	daripada	Sebagai gantinya; dan bukan.	machine	
+above all	id	terutama	Yang terpenting.	hand	gloss by hand; machine: terpenting
+at length	id	akhirnya	Akhirnya, setelah sekian lama. / Untuk waktu yang lama; secara detail.	machine	
+at present	id	saat ini	Sekarang; saat ini.	machine	
+in the meantime	id	sementara itu	Sementara itu; sampai sesuatu terjadi.	machine	
+owing to	id	karena	Karena; sebagai akibat dari.	machine	
+thanks to	id	berkat	Karena (seringkali sesuatu yang baik).	machine	
+no doubt	id	tidak diragukan lagi	Tentu; sangat mungkin.	hand	gloss by hand; machine: niscaya
+in short	id	pendeknya	Singkatnya; sebagai kesimpulan.	machine	
+as long as	id	selama	Dengan syarat bahwa. / Selama waktu yang sangat lama.	machine	
+out of the question	id	mustahil	Tidak mungkin; tidak diperbolehkan.	machine	
+by means of	id	dengan menggunakan	Dengan menggunakan.	machine	
+a great deal	id	banyak	Sangat; banyak sekali. / Sejumlah besar (dari).	machine	
+for instance	id	misalnya	Misalnya.	machine	
+that is to say	id	dengan kata lain	Dengan kata lain.	machine	
+so to speak	id	boleh dikatakan	Digunakan untuk menunjukkan bahwa sebuah frasa tidak dimaksudkan secara persis.	hand	gloss by hand; machine: bisa dibilang begitu
+as it were	id	boleh dikatakan	Bisa dibilang begitu.	hand	gloss by hand; machine: bisa dibilang begitu
+if only	id	seandainya saja	Digunakan untuk menyatakan keinginan yang kuat. / Sekalipun hanya (karena suatu alasan).	machine	
+or else	id	jika tidak	Sebaliknya (seringkali berupa ancaman). / Atau.	machine	
+no matter	id	apa pun	Terlepas dari (apa, bagaimana...). / Itu tidak penting.	machine	
+apart from	id	selain	Kecuali untuk. / Maupun. / Terpisah dari.	hand	gloss by hand; machine: kecuali untuk
+at the same time	id	pada saat yang sama	Bersama-sama; secara serentak. / Namun, terlepas dari itu.	machine	
+beside oneself	id	hilang kendali	Tidak mampu mengendalikan diri karena perasaan yang kuat.	hand	gloss by hand; machine: diliputi emosi
+make up one's mind	id	memutuskan	Untuk mengambil keputusan; untuk memutuskan.	machine	
+change one's mind	id	mengubah pikiran	Mengubah keputusan atau pendapat.	machine	
+make sure	id	memastikan	Untuk memastikan bahwa sesuatu terjadi. / Untuk memeriksa.	machine	
+take place	id	terjadi	Terjadi (terutama sesuai rencana).	machine	
+fall asleep	id	tertidur	Untuk mulai tidur.	machine	
+take care of	id	mengurus	Untuk menjaga; untuk memastikan keselamatan dan kesehatan mereka. / Untuk ditangani.	machine	
+catch sight of	id	melihat sekilas	Melihat secara tiba-tiba, seringkali hanya sebentar.	machine	
+put an end to	id	mengakhiri	Untuk menghentikan sesuatu.	machine	
+hold one's tongue	id	diam	Tak perlu berkata apa-apa.	machine	
+do one's best	id	melakukan yang terbaik	Berusaha sekeras mungkin.	machine	
+make one's way	id	menuju	Untuk pergi ke suatu tempat, seringkali dengan usaha. / Untuk meraih kesuksesan dalam hidup.	hand	gloss by hand; machine: menuju ke arah
+burst into tears	id	tiba-tiba menangis	Tiba-tiba menangis.	machine	
+get rid of	id	menyingkirkan	Untuk menghilangkan atau membuang; untuk menjadi bebas dari.	machine	
+get used to	id	terbiasa dengan	Menjadi akrab dengan sesuatu.	hand	gloss by hand; machine: biasakan
+turn up one's nose	id	mencemooh	Menolak atau meremehkan sesuatu karena dianggap tidak cukup baik.	machine	
+give way	id	runtuh	Rusak atau runtuh. / Mengalah; membiarkan seseorang berjalan lebih dulu.	machine	
+find out	id	mengetahui	Untuk menemukan suatu fakta atau informasi.	machine	
+give up	id	menyerah	Berhenti mencoba atau melakukan sesuatu. / Untuk diserahkan.	machine	
+look after	id	mengurus	Untuk diurus. / Untuk mengamati seseorang yang akan pergi.	machine	
+turn out	id	ternyata	Untuk membuktikan pada akhirnya. / Untuk mematikan (lampu). / Untuk membuat seseorang pergi.	machine	
+put up with	id	tahan dengan	Menerima sesuatu yang tidak menyenangkan tanpa mengeluh.	hand	gloss by hand; machine: menderita
+get over	id	mengatasi	Untuk pulih dari. / Menyeberangi atau memanjat.	machine	
+make out	id	mengenali	Mengalami kesulitan melihat atau mendengar. / Untuk memahami (seseorang atau sesuatu). / Mengklaim atau berpura-pura.	hand	gloss by hand; machine: melihat
+give in	id	menyerah	Untuk berhenti melawan; untuk setuju dengan enggan. / Untuk diserahkan.	machine	
+carry out	id	melaksanakan	Melakukan suatu tugas atau rencana. / Untuk dibawa keluar.	machine	
+point out	id	menunjukkan	Memberitahukan suatu fakta kepada seseorang. / Untuk menunjukkan dengan menunjuk.	hand	gloss by hand; machine: tunjukkan
+set out	id	berangkat	Untuk memulai sebuah perjalanan (seringkali perjalanan panjang). / Untuk mulai mencoba melakukan sesuatu. / Untuk mengatur atau menampilkan.	machine	
+grow up	id	tumbuh dewasa	Untuk menjadi dewasa.	machine	
+turn up	id	muncul	Muncul atau tiba. / Untuk memperkuat suara, panas, atau cahaya. / Melipat atau menunjuk ke atas.	machine	
+break out	id	pecah	Dimulai secara tiba-tiba (perang, kebakaran, pertempuran). / Untuk melarikan diri. / Mulai melakukan sesuatu secara tiba-tiba.	hand	gloss by hand; machine: meletus
+break down	id	rusak	Untuk berhenti bekerja. / Gagal atau runtuh. / Kehilangan kendali atas perasaan seseorang.	hand	gloss by hand; machine: berhenti bekerja
+break up	id	putus	Untuk mengakhiri hubungan atau pertemuan. / Memecah menjadi beberapa bagian; memisahkan.	hand	gloss by hand; machine: berpisah
+look forward to	id	menantikan	Menunggu sesuatu dengan senang hati.	machine	
+set off	id	berangkat	Untuk memulai perjalanan; untuk pergi. / Menyebabkan (ledakan, alarm). / Untuk membuat sesuatu terlihat lebih baik.	machine	
+put off	id	menunda	Untuk menunda. / Membuat seseorang tidak menyukai sesuatu. / Melepas (pakaian).	machine	
+hold on	id	tunggu sebentar	Untuk menunggu. / Untuk memegang erat. / Untuk terus maju meskipun menghadapi kesulitan.	machine	
+carry on	id	melanjutkan	Untuk melanjutkan. / Bertingkah laku secara berlebihan atau tidak pantas.	machine	
+deal with	id	menghadapi	Untuk menangani suatu masalah atau tugas. / Untuk berbisnis dengan.	machine	
+account for	id	menjelaskan	Untuk menjelaskan. / Untuk menjadi bagian dari keseluruhan.	machine	
+care for	id	mengurus	Merawat (seseorang yang sakit, tua, atau muda). / Menyukai atau menginginkan (seringkali dalam bentuk negatif dan pertanyaan).	machine	
+send for	id	memanggil	Mengajak seseorang untuk datang, seringkali dengan mengirim pesan.	machine	
+think over	id	merenungkan	Untuk dipertimbangkan dengan cermat.	machine	
+consist of	id	terdiri dari	Terbuat dari.	machine	
+long for	id	mendambakan	Menginginkan sesuatu dengan sangat強く.	machine	
+take off	id	buka baju)	Untuk melepas (pakaian). / Untuk lepas landas (pesawat). / Pergi secara tiba-tiba.	machine	
+come up with	id	mencetuskan	Untuk memikirkan sebuah ide atau jawaban. / Untuk mengejar ketertinggalan.	hand	gloss by hand; machine: muncul dengan
+run away	id	melarikan diri	Melarikan diri; pergi secara diam-diam.	machine	
+die away	id	berangsur hilang	Menjadi semakin lemah dan menghilang secara bertahap.	machine	
+of course	ar	بالطبع	تُستخدم للقول نعم، أو أن شيئًا ما واضح أو متوقع.	machine	
+at last	ar	أخيراً	وأخيراً، بعد وقت طويل أو جهد كبير.	machine	
+at once	ar	في الحال	فوراً؛ دون تأخير. / في الوقت نفسه؛ معاً.	machine	
+all at once	ar	فجأة	فجأة، وبدون سابق إنذار. / جميعها في نفس الوقت.	machine	
+at all	ar	على الإطلاق	بأي شكل من الأشكال؛ إلى أي درجة (في النفي والاستفهام).	machine	
+not at all	ar	ليس على الإطلاق	لا بأي حال من الأحوال. / رد مهذب على الشكر أو الاعتذار.	machine	
+as if	ar	كما لو	بطريقة توحي بشيء ما (قد لا يكون صحيحاً).	machine	
+as though	ar	كما لو	كأنّ.	machine	
+in spite of	ar	بالرغم من	على الرغم من ذلك؛ دون أن يتم إيقافه.	machine	
+as well as	ar	بالإضافة إلى	بالإضافة إلى؛ وأيضًا.	machine	
+at least	ar	على الأقل	لا يقل عن ذلك. / على أي حال؛ كان يُستخدم للإشارة إلى الجانب الإيجابي.	machine	
+instead of	ar	بدلاً من	بدلاً من؛ بدلاً من.	machine	
+no longer	ar	لم يعد	ليس بعد الآن.	machine	
+each other	ar	بعضهم بعضًا	تُستخدم لإظهار أن كل شخص يفعل الشيء نفسه مع الآخر.	hand	gloss by hand; machine: بعضها البعض
+one another	ar	بعضهم بعضًا	بعضها البعض.	hand	gloss by hand; machine: بعضها البعض
+according to	ar	وفقًا لـ	كما قيل أو أظهر. / بطريقة تتبع أو تتفق مع.	hand	gloss by hand; machine: وفق
+as soon as	ar	بمجرد	مباشرة عند أو بعد ذلك.	machine	
+after all	ar	في النهاية	على الرغم مما كان متوقعاً. / يُستخدم لإعطاء سبب: تذكر ذلك.	machine	
+at first	ar	في البداية	في البداية (ثم تغير الأمر لاحقاً).	machine	
+in fact	ar	في الحقيقة	في الواقع؛ حقاً (غالباً ما يضيف تفاصيل أو تباين).	machine	
+by the way	ar	بالمناسبة	تُستخدم لإضافة شيء ما أو لتغيير الموضوع.	machine	
+now and then	ar	أحيانا	أحيانًا؛ ليس كثيرًا أو بانتظام.	machine	
+from time to time	ar	أحياناً	أحيانًا؛ بين الحين والآخر.	machine	
+never mind	ar	لا تهتم	لا تقلق؛ الأمر لا يهم. / ناهيك عن ذلك.	machine	
+in vain	ar	عبثا	دون جدوى.	machine	
+by no means	ar	بالتأكيد لا	لا على الإطلاق؛ بالتأكيد لا.	machine	
+on account of	ar	بسبب	بسبب؛ نتيجة لـ.	machine	
+on purpose	ar	عمدا	عن قصد؛ وليس عن طريق الصدفة.	machine	
+all the same	ar	مع ذلك	ومع ذلك؛ حتى مع ذلك. / ليس مختلفاً؛ ليس مهماً (لشخص ما).	machine	
+in the midst of	ar	في منتصف	في وسط (مكان أو مجموعة). / بينما يحدث شيء ما.	machine	
+on the contrary	ar	على العكس تماما	كان يُستخدم للقول بأن العكس هو الصحيح.	machine	
+on the other hand	ar	على الجانب الآخر	تُستخدم لعرض حقيقة أو رأي مخالف.	machine	
+at any rate	ar	على أي حال	مهما حدث؛ على أي حال. / على الأقل.	machine	
+for the sake of	ar	من أجل	لصالح أو لغرض.	machine	
+ever since	ar	منذ ذلك الحين	بشكل مستمر منذ (وقت أو حدث).	machine	
+by and by	ar	قريبًا	بعد فترة؛ قريباً.	machine	
+to and fro	ar	ذهابا وايابا	إلى الأمام وإلى الخلف.	machine	
+all of a sudden	ar	فجأة	فجأة وبشكل غير متوقع.	machine	
+in order to	ar	بغرض	بهدف.	machine	
+rather than	ar	بدلاً من	بدلاً من؛ وليس.	machine	
+above all	ar	قبل كل شيء	والأهم من ذلك كله.	machine	
+at length	ar	أخيراً	وأخيراً، بعد وقت طويل. / لفترة طويلة؛ بالتفصيل.	machine	
+at present	ar	حالياً	الآن؛ في هذا الوقت.	machine	
+in the meantime	ar	في هذه الأثناء	في هذه الأثناء؛ إلى أن يحدث شيء ما.	hand	gloss by hand; machine: في أثناء
+owing to	ar	بسبب	بسبب؛ نتيجة لـ.	machine	
+thanks to	ar	بفضل	بسبب (غالباً بسبب شيء جيد).	hand	gloss by hand; machine: شكراً لـ
+no doubt	ar	بلا شك	بالتأكيد؛ على الأرجح جداً.	machine	
+in short	ar	باختصار	باختصار؛ باختصار.	machine	
+as long as	ar	طالما	بشرط أن. / لأطول فترة ممكنة.	machine	
+out of the question	ar	مستحيل	مستحيل؛ غير مسموح به.	machine	
+by means of	ar	باستخدام	باستخدام.	machine	
+a great deal	ar	كثيراً	كثيراً جداً؛ كثيراً. / كمية كبيرة (من).	machine	
+for instance	ar	على سبيل المثال	على سبيل المثال.	machine	
+that is to say	ar	بعبارة أخرى	بعبارة أخرى.	machine	
+so to speak	ar	بمعنى آخر	تُستخدم هذه العبارة للإشارة إلى أنها لا تُقصد بدقة.	machine	
+as it were	ar	بمعنى آخر	بمعنى آخر.	machine	
+if only	ar	يا ليت	تُستخدم للتعبير عن رغبة قوية. / حتى لو كان ذلك لسبب وجيه.	machine	
+or else	ar	خلاف ذلك	وإلا (غالباً ما يكون ذلك تهديداً). / أو.	machine	
+no matter	ar	لا يهم	بغض النظر عن (ماذا، كيف...). / ليس الأمر مهماً.	machine	
+apart from	ar	باستثناء	باستثناء. / إلى جانب. / منفصل عن.	machine	
+at the same time	ar	في الوقت نفسه	معًا؛ في وقت واحد. / ومع ذلك؛ على الرغم من ذلك.	machine	
+beside oneself	ar	خارج عن طوره	عدم القدرة على السيطرة على النفس بسبب شعور قوي.	hand	gloss by hand; machine: غمرتني المشاعر
+make up one's mind	ar	يقرر	اتخاذ قرار؛ أن يقرر.	machine	
+change one's mind	ar	تغيير رأيه	لتغيير قرار أو رأي.	machine	
+make sure	ar	يتأكد	للتأكد من حدوث شيء ما. / للتأكد.	hand	gloss by hand; machine: تأكد
+take place	ar	يحدث	أن يحدث (خاصةً كما هو متفق عليه).	machine	
+fall asleep	ar	يغفو	للبدء بالنوم.	hand	gloss by hand; machine: النوم
+take care of	ar	يعتني بـ	أن يعتني بالآخرين؛ أن يحافظ عليهم آمنين وبصحة جيدة. / للتعامل مع الأمر.	hand	gloss by hand; machine: اعتني بـ
+catch sight of	ar	يلمح	أن ترى فجأة، غالباً لفترة وجيزة فقط.	hand	gloss by hand; machine: ألقِ نظرة خاطفة على
+put an end to	ar	يضع حدًا لـ	لإيقاف شيء ما.	hand	gloss by hand; machine: وضع حد لـ
+hold one's tongue	ar	يلتزم الصمت	لا داعي للقول.	hand	gloss by hand; machine: التزم الهدوء
+do one's best	ar	يبذل قصارى جهده	أن أبذل قصارى جهدي.	hand	gloss by hand; machine: ابذل قصارى جهدك
+make one's way	ar	اتجه نحو	الذهاب إلى مكان ما، غالباً ببذل جهد. / لتحقيق النجاح في الحياة.	machine	
+burst into tears	ar	ينفجر بالبكاء	أن يبدأ بالبكاء فجأة.	hand	gloss by hand; machine: انفجرت بالبكاء
+get rid of	ar	يتخلص من	إزالة أو التخلص من شيء ما؛ التحرر منه.	hand	gloss by hand; machine: تخلص من
+get used to	ar	يعتاد على	أن يصبح المرء على دراية بشيء ما.	hand	gloss by hand; machine: اعتد على
+turn up one's nose	ar	يزدري	رفض شيء ما أو الاستخفاف به باعتباره غير جيد بما فيه الكفاية.	hand	gloss by hand; machine: استهزأ بـ
+give way	ar	ينهار	أن ينكسر أو ينهار. / أن يتنازل؛ أن يسمح لشخص ما بالمرور أولاً.	machine	
+find out	ar	اكتشف	اكتشاف حقيقة أو معلومة.	machine	
+give up	ar	يستسلم	التوقف عن محاولة أو فعل شيء ما. / للتسليم.	machine	
+look after	ar	يعتني بـ	للعناية به. / مراقبة شخص ما وهو يرحل.	hand	gloss by hand; machine: اعتني بـ
+turn out	ar	اتضح أنه	ليثبت ذلك في النهاية. / لإطفاء (الضوء). / لإجبار شخص ما على المغادرة.	machine	
+put up with	ar	يتحمل	أن تتقبل شيئاً غير سار دون أن تتذمر.	hand	gloss by hand; machine: يكابد
+get over	ar	يتغلب على	للتعافي من. / لعبور أو تسلق.	hand	gloss by hand; machine: يغلب
+make out	ar	يميّز	أن يرى أو يسمع بصعوبة. / أن تفهم (شخصاً ما أو شيئاً ما). / أن يدّعي أو يتظاهر.	hand	gloss by hand; machine: التمييز
+give in	ar	يستسلم	التوقف عن المقاومة؛ الموافقة على مضض. / لتسليمها.	hand	gloss by hand; machine: استسلم
+carry out	ar	تنفيذ	لإنجاز مهمة أو خطة. / لحملها إلى الخارج.	machine	
+point out	ar	يشير إلى	إخبار شخص ما بحقيقة ما. / للتوضيح بالإشارة.	hand	gloss by hand; machine: أشر إلى
+set out	ar	ينطلق	لبدء رحلة (غالباً ما تكون رحلة طويلة). / أن تبدأ بمحاولة فعل شيء ما. / لترتيب أو عرض.	hand	gloss by hand; machine: مغادرة
+grow up	ar	يكبر	أن يصبح بالغاً.	hand	gloss by hand; machine: تصرف بنضج
+turn up	ar	يظهر	أن يظهر أو يصل. / لزيادة قوة الصوت، قم بتسخينه أو إضاءته. / طي أو توجيه لأعلى.	machine	
+break out	ar	يندلع	أن يبدأ فجأة (حرب، حريق، قتال). / للهروب. / أن تبدأ فجأةً بفعل شيء ما.	hand	gloss by hand; machine: ينفجر
+break down	ar	يتعطل	للتوقف عن العمل. / الفشل أو الانهيار. / أن يفقد المرء السيطرة على مشاعره.	hand	gloss by hand; machine: توقف عن العمل
+break up	ar	ينفصل	لإنهاء علاقة أو لقاء. / التكسير إلى قطع؛ الفصل.	hand	gloss by hand; machine: انقسموا
+look forward to	ar	يتطلع إلى	أن تنتظر شيئاً ما بسرور.	hand	gloss by hand; machine: أتطلع إلى
+set off	ar	ينطلق	لبدء رحلة؛ للمغادرة. / للتسبب في (انفجار، إنذار). / لتحسين مظهر شيء ما.	hand	gloss by hand; machine: مغادرة
+put off	ar	يؤجل	للتأجيل. / أن تجعل شخصًا ما يكره شيئًا ما. / خلع (الملابس).	machine	
+hold on	ar	انتظر لحظة	للانتظار. / أن يمسك بإحكام. / الاستمرار رغم الصعوبات.	machine	
+carry on	ar	يكمل	للمتابعة. / التصرف بطريقة مثيرة أو غير لائقة.	machine	
+deal with	ar	التعامل مع	لمعالجة مشكلة أو مهمة. / للتعامل التجاري معه.	machine	
+account for	ar	يشرح	للتوضيح. / أن يشكل جزءًا من الكل.	machine	
+care for	ar	يعتني بـ	رعاية (شخص مريض، كبير في السن أو صغير). / أن يحب أو يريد (غالباً في النفي والاستفهام).	hand	gloss by hand; machine: اعتني بـ
+send for	ar	استدعاء	طلب الحضور من شخص ما، غالباً عن طريق إرسال رسالة.	machine	
+think over	ar	يفكر مليًا	للتفكير ملياً.	hand	gloss by hand; machine: تأمل
+consist of	ar	يتكون من	مصنوع من.	machine	
+long for	ar	يتوق إلى	أن ترغب بشيء بشدة.	hand	gloss by hand; machine: أتوق إلى
+take off	ar	خلع (الملابس)	لإزالة (الملابس). / مغادرة الأرض (الطائرة). / أن يرحل فجأة.	machine	
+come up with	ar	توصل إلى	التفكير في فكرة أو إجابة. / للمتابعة.	machine	
+run away	ar	يهرب	الهروب؛ المغادرة سراً.	hand	gloss by hand; machine: اهرب
+die away	ar	يتلاشى	أن تضعف تدريجياً وتختفي.	machine	
+of course	mn	мэдээж	Тийм, эсвэл ямар нэгэн зүйл тодорхой эсвэл хүлээгдэж буй зүйл гэж хэлэхэд хэрэглэгддэг.	machine	
+at last	mn	эцэст нь	Эцэст нь, удаан хугацаа эсвэл маш их хүчин чармайлтын дараа.	machine	
+at once	mn	тэр даруй	Тэр даруй; сааталгүйгээр. / Үүний зэрэгцээ; хамтдаа.	machine	
+all at once	mn	гэнэт	Гэнэт, анхааруулгагүйгээр. / Бүгд нэгэн зэрэг.	machine	
+at all	mn	огтхон ч	Ямар ч байдлаар; ямар ч хэмжээгээр (сөрөг болон асуултаар).	machine	
+not at all	mn	огтхон ч биш	Ямар ч байдлаар биш. / Талархал эсвэл уучлалт гуйхад эелдэгээр хариулах.	machine	
+as if	mn	яг л	Ямар нэгэн зүйлийг илтгэх байдлаар (энэ нь үнэн биш байж магадгүй).	machine	
+as though	mn	яг л	Яг л.	machine	
+in spite of	mn	хэдий ч	Хэдийгээр; зогсоогдохгүйгээр.	machine	
+as well as	mn	үүнээс гадна	Үүнээс гадна; мөн түүнчлэн.	machine	
+at least	mn	ядаж л	-аас багагүй. / Ямартай ч; сайн талыг нь зааж өгдөг байсан.	machine	
+instead of	mn	оронд нь	оронд нь; -ын оронд.	machine	
+no longer	mn	цаашид байхгүй болсон	Дахиж үгүй.	machine	
+each other	mn	бие биенээ	Хүн бүр нөгөөдөө адилхан зүйл хийдэг гэдгийг харуулахад ашигладаг.	machine	
+one another	mn	бие биенээ	Бие биенээ.	machine	
+according to	mn	дагуу	Хэлсэн эсвэл харуулсанчлан. / Дагаж байгаа эсвэл санал нийлж байгаа байдлаар.	machine	
+as soon as	mn	аль болох хурдан	Хэзээ эсвэл дараа нь шууд.	machine	
+after all	mn	эцэст нь	Хүлээгдэж байсан зүйлээс үл хамааран. / Шалтгаан өгөхөд хэрэглэгддэг: үүнийг санаж яваарай.	machine	
+at first	mn	эхэндээ	Эхэндээ (мөн дараа нь өөрчлөгдсөн).	machine	
+in fact	mn	үнэндээ	Үнэндээ; үнэхээр (ихэвчлэн дэлгэрэнгүй мэдээлэл эсвэл тодосгогчийг нэмдэг).	machine	
+by the way	mn	дашрамд хэлэхэд	Ямар нэгэн зүйл нэмэх эсвэл сэдвийг өөрчлөхөд ашигладаг.	machine	
+now and then	mn	заримдаа	Заримдаа; ойр ойрхон эсвэл тогтмол биш.	machine	
+from time to time	mn	хааяа нэг	Заримдаа; хааяа.	machine	
+never mind	mn	хамаагүй	Санаа зоволтгүй; энэ хамаагүй. / Түүнчлэн дурдахгүй өнгөрч болохгүй.	machine	
+in vain	mn	дэмий хоосон	Амжилтгүйгээр.	machine	
+by no means	mn	мэдээж үгүй	Огт үгүй; мэдээж үгүй.	machine	
+on account of	mn	учир нь	Учир нь; шалтгаанаар.	machine	
+on purpose	mn	санаатайгаар	Санаатайгаар; санамсаргүй байдлаар биш.	machine	
+all the same	mn	гэсэн хэдий ч	Гэсэн хэдий ч; тийм ч гэсэн. / Өөр биш; чухал биш (хэн нэгэнд).	machine	
+in the midst of	mn	дунд нь	(Газар эсвэл бүлэг)-ийн голд. / Ямар нэгэн зүйл болж байх зуур.	machine	
+on the contrary	mn	эсрэгээрээ	Эсрэгээрээ үнэн гэж хэлдэг байсан.	machine	
+on the other hand	mn	нөгөө талаас	Эсрэг баримт эсвэл санал бодлыг өгөхөд ашигладаг.	machine	
+at any rate	mn	ямар ч байсан	Юу ч болсон; ямар ч байсан. / Ядаж л.	machine	
+for the sake of	mn	төлөө	Ашиг тусын тулд эсвэл зорилгоор.	machine	
+ever since	mn	түүнээс хойш	(Тодорхой цаг үе эсвэл үйл явдлаас хойш) тасралтгүй.	machine	
+by and by	mn	удалгүй	Хэсэг хугацааны дараа; удахгүй.	machine	
+to and fro	mn	урагш хойш	Урагшаа ба урагшаа.	machine	
+all of a sudden	mn	гэнэт	Гэнэт, санамсаргүй байдлаар.	machine	
+in order to	mn	тулд	Зорилготойгоор.	machine	
+rather than	mn	харин	Оронд нь; мөн үгүй.	machine	
+above all	mn	хамгийн чухал нь	Хамгийн чухал нь.	machine	
+at length	mn	эцэст нь	Эцэст нь, удаан хугацааны дараа. / Удаан хугацааны турш; дэлгэрэнгүй.	machine	
+at present	mn	одоогоор	Одоо; энэ үед.	machine	
+in the meantime	mn	энэ хооронд	Үүний зэрэгцээ; ямар нэгэн зүйл тохиолдох хүртэл.	machine	
+owing to	mn	учир нь	Учир нь; үүний үр дүнд.	machine	
+thanks to	mn	ачаар	Учир нь (ихэвчлэн сайн зүйлээс).	hand	gloss by hand; machine: баярлалаа
+no doubt	mn	эргэлзээгүй	Мэдээж; маш их магадлалтай.	machine	
+in short	mn	товчхондоо	Цөөн үгээр хэлбэл; нэгтгэн дүгнэж хэлэхэд.	machine	
+as long as	mn	...л бол	Тийм нөхцөлтэйгээр. / Аль болох удаан хугацаанд.	hand	gloss by hand; machine: хэр удаан
+out of the question	mn	боломжгүй	Боломжгүй; зөвшөөрөгдөхгүй.	machine	
+by means of	mn	ашиглан	Ашиглах замаар.	machine	
+a great deal	mn	маш их	Маш их; маш их. / Их хэмжээний (-ийн).	machine	
+for instance	mn	жишээ нь	Жишээлбэл.	machine	
+that is to say	mn	өөрөөр хэлбэл	Өөрөөр хэлбэл.	machine	
+so to speak	mn	тэгж хэлэхэд	Хэллэгийг харуулахад ашигласан нь яг тодорхой утгатай биш юм.	machine	
+as it were	mn	тэгж хэлэхэд	Тиймээс хэлэхэд.	machine	
+if only	mn	хэрэв л	Хүчтэй хүслээ илэрхийлэхэд ашигладаг. / Зүгээр л (шалтгаантай байсан ч гэсэн).	machine	
+or else	mn	өөрөөр бол	Үгүй бол (ихэвчлэн аюул заналхийлэл). / Эсвэл.	machine	
+no matter	mn	хамаагүй	(Юу, хэрхэн...)-аас үл хамааран. / Энэ чухал биш.	machine	
+apart from	mn	үүнээс бусад	Үүнээс бусад тохиолдолд. / Мөн түүнчлэн. / -аас тусгаарлагдсан.	machine	
+at the same time	mn	нэгэн зэрэг	Хамтдаа; нэгэн зэрэг. / Гэсэн хэдий ч; үүнээс үл хамааран.	machine	
+beside oneself	mn	сэтгэл хөдлөлд автсан	Хүчтэй мэдрэмжээсээ болж өөрийгөө хянаж чадахгүй байна.	machine	
+make up one's mind	mn	шийдэх	Шийдвэр гаргах; шийдэх.	machine	
+change one's mind	mn	бодлоо өөрчлөх	Шийдвэр эсвэл санал бодлоо өөрчлөхийн тулд.	machine	
+make sure	mn	баталгаажуулах	Ямар нэгэн зүйл болсон эсэхийг баталгаажуулахын тулд. / Шалгах.	hand	gloss by hand; machine: баталгаажуул
+take place	mn	тохиолдох	(Ялангуяа зохион байгуулсан тохиолдолд) тохиолдох.	machine	
+fall asleep	mn	унтах	Унтаж эхлэхийн тулд.	machine	
+take care of	mn	асарч хамгаалах	Асран хамгаалах; аюулгүй, сайн байлгах. / Харьцах.	machine	
+catch sight of	mn	олж харах	Гэнэт харах, ихэвчлэн богино хугацаанд л.	hand	gloss by hand; machine: нэг харчих
+put an end to	mn	төгсгөл тавих	Ямар нэгэн зүйлийг зогсоохын тулд.	machine	
+hold one's tongue	mn	дуугүй байх	Юу ч хэлэхгүй.	hand	gloss by hand; machine: чимээгүй бай
+do one's best	mn	чадах бүхнээ хийх	Аль болох хичээхийн тулд.	machine	
+make one's way	mn	зүг чиглэх	Хаа нэгтээ, ихэвчлэн хүчин чармайлт гарган явах. / Амьдралд амжилтанд хүрэхийн тулд.	machine	
+burst into tears	mn	уйлж гарах	Гэнэт уйлж эхлэх.	hand	gloss by hand; machine: нулимс унагав
+get rid of	mn	салах	Арилгах эсвэл хаях; чөлөөлөгдөх.	machine	
+get used to	mn	дасах	Ямар нэгэн зүйлтэй танилцах.	machine	
+turn up one's nose	mn	ёжлох	Ямар нэг зүйлийг хангалттай сайн биш гэж үзэх эсвэл үл тоомсорлох.	machine	
+give way	mn	нурах	Эвдрэх эсвэл нурах. / Бууж өгөх; хэн нэгнийг түрүүлж явуулах.	hand	gloss by hand; machine: нуралт
+find out	mn	олж мэдэх	Ямар нэгэн баримт эсвэл мэдээллийн хэсгийг олж мэдэх.	machine	
+give up	mn	бууж өгөх	Ямар нэгэн зүйл хийхийг оролдох эсвэл зогсоох. / Хүлээн авах.	machine	
+look after	mn	асарч хамгаалах	Асран хамгаалахын тулд. / Явах гэж буй хүнийг харахын тулд.	machine	
+turn out	mn	болж таарах	Эцэст нь байгаагаа батлахын тулд. / (Гэрлийг) унтраах. / Хэн нэгнийг явуулахын тулд.	hand	gloss by hand; machine: болж хувирав
+put up with	mn	тэвчих	Гомдоллохгүйгээр таагүй зүйлийг хүлээн зөвшөөрөх.	machine	
+get over	mn	даван туулах	Сэргэхийн тулд. / Гарах эсвэл дээгүүр авирах.	machine	
+make out	mn	ялгаж салгах	Хэцүүхэн харах эсвэл сонсох. / (Хэн нэгэн эсвэл ямар нэгэн зүйлийг) ойлгох. / Нэхэмжлэх эсвэл дүр эсгэх.	machine	
+give in	mn	бууж өгөх	Эсэргүүцэхээ болих; дурамжхан санал нийлэх. / Хүлээн авах.	machine	
+carry out	mn	гүйцэтгэх	Төлөвлөгөө эсвэл даалгавар биелүүлэхийн тулд. / Гадаа авч явах.	machine	
+point out	mn	онцлон тэмдэглэх	Хэн нэгэнд баримтын талаар хэлэх. / Заах замаар харуулах.	machine	
+set out	mn	явах	Аялал эхлүүлэх (ихэвчлэн урт аялал). / Ямар нэгэн зүйл хийхийг оролдож эхлэхийн тулд. / Зохион байгуулах эсвэл харуулах.	machine	
+grow up	mn	өсөж том болох	Насанд хүрсэн хүн болохын тулд.	machine	
+turn up	mn	гарч ирэх	Гарч ирэх эсвэл ирэх. / Дуу чимээ, дулаан эсвэл гэрлийг илүү хүчтэй болгохын тулд. / Эвхэх эсвэл дээш чиглүүлэх.	machine	
+break out	mn	дэгдэх	Гэнэт эхлэх (дайн, гал түймэр, тулаан). / Зугтахын тулд. / Гэнэт ямар нэгэн зүйл хийж эхлэх.	hand	gloss by hand; machine: дэлбэрэлт
+break down	mn	эвдрэх	Ажиллахаа болихын тулд. / Бүтэлгүйтэх эсвэл нуран унах. / Өөрийн мэдрэмжийг хянах чадвараа алдах.	hand	gloss by hand; machine: ажиллахаа болих
+break up	mn	салах	Харилцаа холбоо эсвэл уулзалтыг дуусгах. / Хэсэг хэсэг болгон хуваах; салгах.	machine	
+look forward to	mn	тэсэн ядан хүлээх	Ямар нэгэн зүйлийг тааламжтайгаар хүлээх.	hand	gloss by hand; machine: тэсэн ядан хүлээж байна
+set off	mn	хөдлөх	Аялал эхлүүлэх; явах. / (Дэлбэрэлт, дохиолол) үүсгэх. / Ямар нэгэн зүйлийг илүү сайхан харагдуулахын тулд.	hand	gloss by hand; machine: явах
+put off	mn	хойшлуулах	Хойшлуулах. / Хэн нэгнийг ямар нэгэн зүйлд дургүй болгохын тулд. / (Хувцсаа) тайлах.	machine	
+hold on	mn	түр хүлээх	Хүлээх. / Чанга барихын тулд. / Хэцүү байсан ч үргэлжлүүлэх.	hand	gloss by hand; machine: түр хүлээгээрэй
+carry on	mn	үргэлжлүүлэх	Үргэлжлүүлэхийн тулд. / Сэтгэл хөдөлсөн эсвэл зохисгүй байдлаар авирлах.	machine	
+deal with	mn	харьцах	Асуудал эсвэл даалгаврыг шийдвэрлэхийн тулд. / Бизнес хийх.	machine	
+account for	mn	тайлбарлах	Тайлбарлахын тулд. / Нийт дүнгийн нэг хэсгийг бүрдүүлэх.	machine	
+care for	mn	асарч хамгаалах	(Өвчтэй, хөгшин эсвэл залуу хүнийг) асарч халамжлах. / Таалагдах эсвэл хүсэх (ихэвчлэн сөрөг болон асуултын хэлбэрээр).	machine	
+send for	mn	дуудах	Хэн нэгнийг ирэхийг хүсэх, ихэвчлэн зурвас илгээх замаар.	machine	
+think over	mn	эргэцүүлэн бодох	Анхааралтай авч үзэх хэрэгтэй.	machine	
+consist of	mn	-аас бүрдэх	Бүтээгдэх ёстой.	machine	
+long for	mn	хүсэн тэмүүлэх	Ямар нэгэн зүйлийг маш их хүсэх.	machine	
+take off	mn	(хувцсаа) тайлах	(Хувцсаа) тайлах. / Газраас (онгоцноос) хөдлөх. / Гэнэт явах.	machine	
+come up with	mn	бодож олох	Санаа эсвэл хариултын талаар бодох. / Нөхөж мэдэхийн тулд.	hand	gloss by hand; machine: бодож ол
+run away	mn	зугтах	Оргох; нууцаар явах.	machine	
+die away	mn	бүдгэрэх	Аажмаар суларч, алга болох.	machine	

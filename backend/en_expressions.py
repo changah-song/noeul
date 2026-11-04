@@ -59,6 +59,9 @@ class Expression:
     cefr: str
     block_words: frozenset[str] = field(default_factory=frozenset)
     block_pos: frozenset[str] = field(default_factory=frozenset)
+    # The Korean gloss's meaning in plain English: the source the other
+    # interface languages' glosses are translated from.
+    gloss_en: tuple[str, ...] = ()
 
     @property
     def level_rank(self) -> int:
@@ -113,6 +116,7 @@ def parse_expressions(lines: Iterable[str]) -> list[Expression]:
             kind=row["kind"].strip(),
             pattern=_parse_pattern(row["pattern"]),
             gloss_ko=_split_list(row["gloss_ko"], ","),
+            gloss_en=_split_list(row.get("gloss_en") or "", ","),
             senses_en=_split_list(row["definition_en"], SENSE_SEPARATOR),
             senses_ko=_split_list(row["definition_ko"], SENSE_SEPARATOR),
             cefr=row["cefr"].strip().upper(),
@@ -265,12 +269,98 @@ def level_payload(expression: Expression) -> dict:
     }
 
 
+# ─── Other interface languages ───────────────────────────────────────────────
+#
+# data/en_expressions_i18n.tsv holds each expression's gloss and senses in the
+# other interface languages, machine-translated from the reviewed Korean
+# (scripts/translate_en_expressions.py), some corrected by hand.
+
+TRANSLATIONS_PATH = os.path.join(os.path.dirname(__file__), "data", "en_expressions_i18n.tsv")
+# Every interface language but English (the senses) and Korean (en_expressions.tsv).
+TRANSLATED_LANGUAGES = ("ja", "zh", "zh-Hant", "es", "fr", "pt", "ru", "vi", "th", "id", "ar", "mn")
+TRANSLATION_COLUMNS = ["expression", "language", "gloss", "senses", "source", "note"]
+
+
+@dataclass(frozen=True)
+class TranslationRow:
+    expression: str
+    language: str
+    gloss: tuple[str, ...]   # the equivalents, shown under the phrase
+    senses: tuple[str, ...]  # aligned with Expression.senses_en
+    source: str              # "machine" (from the Korean) or "hand"
+    note: str = ""
+
+
+def read_translation_rows(path: str = TRANSLATIONS_PATH) -> list[TranslationRow]:
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as handle:
+        rows = csv.DictReader(
+            (line for line in handle if line.strip() and not line.startswith("#")),
+            delimiter="\t",
+            quoting=csv.QUOTE_NONE,
+        )
+        return [
+            TranslationRow(
+                expression=normalize_text(row["expression"]).lower(),
+                language=row["language"].strip(),
+                gloss=_split_list(row["gloss"], "|"),
+                senses=_split_list(row["senses"], SENSE_SEPARATOR),
+                source=(row.get("source") or "machine").strip(),
+                note=(row.get("note") or "").strip(),
+            )
+            for row in rows
+        ]
+
+
+def write_translation_rows(path: str, rows: Iterable[TranslationRow], order: list[str]) -> None:
+    rank = {text: index for index, text in enumerate(order)}
+    language_rank = {language: index for index, language in enumerate(TRANSLATED_LANGUAGES)}
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("# The expressions' gloss and senses in the other interface languages.\n")
+        handle.write("# source: machine = translated from the reviewed Korean (scripts/translate_en_expressions.py);\n")
+        handle.write("#   hand = corrected by hand (never overwritten), with the reason in note.\n")
+        handle.write("# gloss items are separated by ' | ', senses by ' / ' (aligned with definition_en).\n")
+        handle.write("\t".join(TRANSLATION_COLUMNS) + "\n")
+        for row in sorted(rows, key=lambda r: (language_rank.get(r.language, 99), rank.get(r.expression, 1e9))):
+            values = [row.expression, row.language, " | ".join(row.gloss), SENSE_SEPARATOR.join(row.senses),
+                      row.source, row.note]
+            assert all("\t" not in value and "\n" not in value for value in values), row
+            handle.write("\t".join(values) + "\n")
+
+
+@lru_cache(maxsize=1)
+def translations(path: str = TRANSLATIONS_PATH) -> dict[tuple[str, str], TranslationRow]:
+    """(expression, language) -> its row. Rows whose senses don't line up with
+    the English ones are left out."""
+    by_text = expressions_by_text()
+    out = {}
+    for row in read_translation_rows(path):
+        expression = by_text.get(row.expression)
+        if expression and len(row.senses) == len(expression.senses_en):
+            out[(row.expression, row.language)] = row
+    return out
+
+
+def localized(expression: Expression, interface_language: str) -> tuple[tuple[str, ...], tuple[str | None, ...]]:
+    """(gloss items, senses aligned with senses_en, None where missing) in the
+    interface language. English has no gloss and its senses are the English."""
+    if interface_language == "en":
+        return (), tuple(expression.senses_en)
+    if interface_language == "ko":
+        return expression.gloss_ko, expression.senses_ko
+    row = translations().get((expression.text, interface_language))
+    if not row:
+        return (), (None,) * len(expression.senses_en)
+    return row.gloss, row.senses
+
+
 def dictionary_entry(expression: Expression, interface_language: str) -> dict:
     """The expression as an en_learner_dict.lookup_entries entry, straight from
-    the whitelist (used when en_learner.db predates the expressions)."""
-    korean = interface_language == "ko"
-    translated = list(expression.senses_ko) if korean else [None] * len(expression.senses_en)
-    equivalents = list(expression.gloss_ko) if korean else []
+    the whitelist files (used when en_learner.db predates them)."""
+    gloss, senses = localized(expression, interface_language)
+    translated = [None] * len(expression.senses_en) if interface_language == "en" else list(senses)
+    equivalents = list(gloss)
     if interface_language == "en":
         definition = "\n".join(expression.senses_en)
     else:
