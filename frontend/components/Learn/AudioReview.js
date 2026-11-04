@@ -35,6 +35,7 @@ import {
     updateListenSession,
 } from '../../modules/native-epub-reader/src/NativeEpubReaderView';
 import { formatNumber } from '../../services/interfaceLanguage';
+import { withListenTimeout } from '../../services/listenDelay';
 import { ensureNotificationPermission } from '../../services/notificationPermission';
 import { fontFamilies, useTheme } from '../../theme';
 
@@ -59,10 +60,8 @@ const saveListenPrefs = async (patch) => {
 // without it rather than waiting.
 const TRANSLATION_TIMEOUT_MS = 6000;
 
-const withTimeout = (promise, ms) => Promise.race([
-    promise,
-    new Promise((resolve) => setTimeout(() => resolve(''), ms)),
-]);
+// Screen-off safe: a JS timer would never fire with the phone locked.
+const withTimeout = (promise, ms) => withListenTimeout(promise, ms, '');
 
 /**
  * AudioReview — the Learn tab's audio mode: plays the saved words one after
