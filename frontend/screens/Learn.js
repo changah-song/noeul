@@ -1913,8 +1913,10 @@ const Learn = ({ navigation, user }) => {
           {words.length > 0 ? (
             <TouchableOpacity
               accessibilityRole="button"
-              accessibilityLabel={t('learn.audioReview')}
-              onPress={() => setAudioWords(visibleWords.length > 0 ? visibleWords : words)}
+              accessibilityLabel={t('learn.audioLessons')}
+              // Audio lessons pick from every saved word not yet learned,
+              // most useful first (components/Learn/AudioReview.js).
+              onPress={() => setAudioWords(words)}
               style={styles.listenButton}
             >
               <Feather name="headphones" size={20} color={colors.text} />

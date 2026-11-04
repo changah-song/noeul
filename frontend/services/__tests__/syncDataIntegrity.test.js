@@ -63,6 +63,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SQLite from 'expo-sqlite';
 import {
   addRelatedKnownWord,
+  createAudioLessonsTable,
   createBookBookmarksTable,
   createGrammarTables,
   createBookIndexTable,
@@ -137,6 +138,7 @@ beforeEach(async () => {
   await createBookIndexTable();
   await createBookNotesTable();
   await createBookBookmarksTable();
+  await createAudioLessonsTable();
   await createGrammarTables();
   await createBookPreprocessTables();
 });

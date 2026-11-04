@@ -4502,6 +4502,7 @@ const SQLITE_LEARNING_SIGNAL_TABLES = [
   'ability_log',
   'grammar_patterns',
   'grammar_examples',
+  'audio_lessons',
 ];
 
 const SQLITE_USER_DATA_TABLES = [
@@ -4531,6 +4532,7 @@ const SQLITE_TABLES_WITH_LANGUAGE = new Set([
   'ability_log',
   'grammar_patterns',
   'grammar_examples',
+  'audio_lessons',
 ]);
 
 const sqliteTableHasData = (tableName, whereClause, params = [], logLabel = 'owner data') => (
@@ -4693,6 +4695,12 @@ export const reassignSqliteUserData = async (fromOwnerId, toOwnerId) => {
             [targetOwnerId, sourceOwnerId]
           );
         });
+
+        // Audio lesson episodes are local only; they just change hands.
+        tx.executeSql(
+          'UPDATE audio_lessons SET owner_id = ? WHERE owner_id = ?',
+          [targetOwnerId, sourceOwnerId]
+        );
 
         // The level history moves too (unique client_log_id), and is pushed
         // to the new owner's account.
@@ -5835,6 +5843,171 @@ export const getAllBooksWordCandidates = async ({
     .sort((a, b) => b.candidates.length - a.candidates.length);
 };
 
+// ─── Audio lessons ────────────────────────────────────────────────────────────
+// The Learn tab's audio lessons ("episodes", services/audioLessons.js): which
+// saved words each lesson played, its theme, and when it was made, finished
+// and last played. Local to the phone (not synced); per owner and profile,
+// like the saved words. `words` is a JSON list of { word, hanja, def,
+// language } so an episode replays even after its words change.
+
+export const createAudioLessonsTable = () => new Promise((resolve, reject) => {
+  db.transaction(tx => {
+    tx.executeSql(
+      `CREATE TABLE IF NOT EXISTS audio_lessons (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_id       TEXT NOT NULL DEFAULT 'guest',
+        profile_id     TEXT,
+        language       TEXT NOT NULL DEFAULT 'ko',
+        theme_kind     TEXT,
+        theme_key      TEXT,
+        words          TEXT NOT NULL DEFAULT '[]',
+        created_at     TEXT NOT NULL,
+        completed_at   TEXT,
+        last_played_at TEXT,
+        play_count     INTEGER NOT NULL DEFAULT 0
+      )`,
+      [],
+      () => {
+        tx.executeSql(
+          `CREATE INDEX IF NOT EXISTS idx_audio_lessons_owner
+           ON audio_lessons(owner_id, profile_id, language, created_at DESC)`
+        );
+        resolve();
+      },
+      (_, error) => {
+        console.error('[Database] Error creating audio_lessons table:', error);
+        reject(error);
+      }
+    );
+  });
+});
+
+const parseAudioLessonRow = (row) => {
+  let words = [];
+  try {
+    const parsed = JSON.parse(row?.words || '[]');
+    words = Array.isArray(parsed) ? parsed.filter((item) => item && typeof item.word === 'string') : [];
+  } catch {
+    words = [];
+  }
+  return {
+    id: row.id,
+    language: row.language,
+    theme: row.theme_kind && row.theme_key ? { kind: row.theme_kind, key: row.theme_key } : null,
+    words,
+    createdAt: row.created_at,
+    completedAt: row.completed_at ?? null,
+    lastPlayedAt: row.last_played_at ?? null,
+    playCount: Number(row.play_count) || 0,
+  };
+};
+
+/** The owner's audio lessons for a language, newest first. */
+export const getAudioLessons = async (options = {}) => {
+  const ownerId = resolveOwnerId(options);
+  const language = normalizeBookLanguage(options.language) || 'ko';
+  const profileId = resolveProfileId(options, language);
+  const rows = await runSelect(
+    `SELECT * FROM audio_lessons
+     WHERE owner_id = ? AND profile_id = ? AND language = ?
+     ORDER BY created_at DESC, id DESC
+     LIMIT ?`,
+    [ownerId, profileId, language, Math.max(1, Number(options.limit) || 200)]
+  );
+  return rows.map(parseAudioLessonRow);
+};
+
+const runAudioLessonWrite = (sql, params) => new Promise((resolve, reject) => {
+  db.transaction(tx => {
+    tx.executeSql(
+      sql,
+      params,
+      (_, result) => resolve(result),
+      (_, error) => {
+        console.error('[Database] audio_lessons write failed:', error);
+        reject(error);
+        return true;
+      }
+    );
+  });
+});
+
+/** Save a new lesson; resolves the saved lesson. */
+export const saveAudioLesson = async ({ theme = null, words = [], now = new Date(), ...options } = {}) => {
+  const ownerId = resolveOwnerId(options);
+  const language = normalizeBookLanguage(options.language) || 'ko';
+  const profileId = resolveProfileId(options, language);
+  const createdAt = new Date(now).toISOString();
+  const list = (Array.isArray(words) ? words : []).filter((item) => item && typeof item.word === 'string');
+  const result = await runAudioLessonWrite(
+    `INSERT INTO audio_lessons (owner_id, profile_id, language, theme_kind, theme_key, words, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [ownerId, profileId, language, theme?.kind ?? null, theme?.key ?? null, JSON.stringify(list), createdAt]
+  );
+  return parseAudioLessonRow({
+    id: result?.insertId,
+    language,
+    theme_kind: theme?.kind ?? null,
+    theme_key: theme?.key ?? null,
+    words: JSON.stringify(list),
+    created_at: createdAt,
+  });
+};
+
+/** A lesson was started (`completed: false`) or played to the end. */
+export const markAudioLessonPlayed = async (id, { completed = false, now = new Date() } = {}) => {
+  if (id == null) return;
+  const at = new Date(now).toISOString();
+  await runAudioLessonWrite(
+    completed
+      ? `UPDATE audio_lessons SET completed_at = COALESCE(completed_at, ?), last_played_at = ? WHERE id = ?`
+      : `UPDATE audio_lessons SET play_count = play_count + 1, last_played_at = ? WHERE id = ?`,
+    completed ? [at, at, id] : [at, id]
+  );
+};
+
+/**
+ * What lesson planning needs per saved word: its dictionary topic category
+ * (dictionary_cache.domain, Korean only today) and the book it was met in
+ * most (vocab_contexts.source_book_title). { [word]: { domain, book } }.
+ */
+export const getAudioLessonWordInfo = async ({ words = [], ...options } = {}) => {
+  const ownerId = resolveOwnerId(options);
+  const language = normalizeBookLanguage(options.language) || 'ko';
+  const profileId = resolveProfileId(options, language);
+  const list = Array.from(new Set((Array.isArray(words) ? words : [])
+    .filter((word) => typeof word === 'string' && word.trim())
+    .map((word) => word.trim())));
+  const info = {};
+  if (list.length === 0) return info;
+  const chunks = chunkValues(list);
+  const domainRows = (await Promise.all(chunks.map((chunk) => runSelect(
+    `SELECT stem, domain FROM dictionary_cache
+     WHERE language = ? AND domain IS NOT NULL AND TRIM(domain) != ''
+       AND stem IN (${chunk.map(() => '?').join(', ')})
+     ORDER BY id ASC`,
+    [language, ...chunk]
+  )))).flat();
+  domainRows.forEach((row) => {
+    const entry = info[row.stem] || (info[row.stem] = { domain: null, book: null });
+    if (!entry.domain) entry.domain = row.domain;
+  });
+  const bookRows = (await Promise.all(chunks.map((chunk) => runSelect(
+    `SELECT word, source_book_title AS book, COUNT(*) AS n FROM vocab_contexts
+     WHERE owner_id = ? AND profile_id = ? AND language = ? AND deleted_at IS NULL
+       AND source_book_title IS NOT NULL AND TRIM(source_book_title) != ''
+       AND word IN (${chunk.map(() => '?').join(', ')})
+     GROUP BY word, source_book_title
+     ORDER BY n DESC`,
+    [ownerId, profileId, language, ...chunk]
+  )))).flat();
+  bookRows.forEach((row) => {
+    const entry = info[row.word] || (info[row.word] = { domain: null, book: null });
+    if (!entry.book) entry.book = row.book;
+  });
+  return info;
+};
+
 // ─── Sentence translations ────────────────────────────────────────────────────
 // Translations of book sentences, fetched a chapter at a time
 // (services/chapterTranslations.js) for listen mode and the pinned translation
@@ -5950,6 +6123,7 @@ export const initAllTables = async () => {
   await createBookPreprocessTables();
   await migrateBookPreprocessLevelColumns();
   await createSentenceTranslationsTable();
+  await createAudioLessonsTable();
   await migrateLocalOwnerSqlite();
   await migrateProfileSqlite();
   await migrateBookPreprocessPieceProgress();
