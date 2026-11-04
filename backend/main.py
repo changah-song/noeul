@@ -2995,6 +2995,11 @@ def en_gloss_from_translation(word: str, pos: str | None, translated: str | None
     return text
 
 
+def is_en_phrase_result(result: dict) -> bool:
+    """A multi-word expression's result (its headword has a space)."""
+    return " " in (result.get("word") or result.get("stem") or "").strip()
+
+
 async def translate_en_missing_glosses(results: list[dict], interface_language: str) -> list[dict]:
     """Words Wiktionary has no equivalent for in the learner's language get a
     machine translation of the headword (with its part of speech as a hint) as
@@ -3008,6 +3013,10 @@ async def translate_en_missing_glosses(results: list[dict], interface_language: 
         for result in results
         if (result.get("definition") or result.get("pos") == EN_NAME_POS)
         and not result.get("gloss") and result.get("word")
+        # A phrase ("give up", "kick the bucket") is never translated word by
+        # word from its headword: its gloss comes from en_expressions(_i18n).tsv,
+        # and a language with none falls back to the definition.
+        and not is_en_phrase_result(result)
     ))
     if not pending:
         return results

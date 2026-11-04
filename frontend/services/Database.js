@@ -88,7 +88,10 @@ const VOCAB_EMPTY_HANJA_MIGRATION_KEY = 'vocab_empty_hanja_migration_v1';
 // own keeps it ("born" is 태어난). Old rows: purgeEnglishLexicalizedParticipleRows.
 // 14: English multi-word expressions ("gave up" -> give up, "of course"),
 // underlined and looked up as one word (backend/data/en_expressions.tsv).
-export const PREPROCESS_VERSION = 14;
+// 15: the phrases' glosses and senses in every interface language come from
+// backend/data/en_expressions_i18n.tsv; v14 rows outside Korean carried a
+// machine translation of the English headword.
+export const PREPROCESS_VERSION = 15;
 // English words with no dictionary entry are underlined only when rarer than
 // this (zipf 3.5 ≈ "antique", "orchard"; epigram 2.6).
 const EN_UNDERLINE_OOV_MAX_ZIPF = 3.5;

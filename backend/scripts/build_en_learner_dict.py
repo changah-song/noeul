@@ -484,18 +484,28 @@ def build(src: str, out: str, levels_db: str, top: int, extra_words: str | None 
           f"{equivalent_rows} equivalent rows, {len(alias_rows)} aliases -> {out} ({os.path.getsize(out) / 1e6:.1f} MB)")
 
 
-def apply_expressions(conn: sqlite3.Connection, path: str = en_expressions.EXPRESSIONS_PATH) -> int:
+def apply_expressions(
+    conn: sqlite3.Connection,
+    path: str = en_expressions.EXPRESSIONS_PATH,
+    translations_path: str = en_expressions.TRANSLATIONS_PATH,
+) -> int:
     """The whitelisted multi-word expressions (data/en_expressions.tsv) as
     entries of their own: "give up" is looked up like a word. Each gets one
-    entry with its English senses, its Korean equivalents (the gloss under the
-    phrase) and the Korean of each sense. Wiktionary's own rows for the
-    phrase, if any, are replaced. A sense's text must not already have a
-    different Korean translation (en_sense_translations is keyed by the
-    English text, shared with every other word)."""
+    entry with its English senses, and in every interface language its
+    equivalents (the gloss under the phrase) and the translation of each
+    sense: Korean from en_expressions.tsv, the others from
+    en_expressions_i18n.tsv. Wiktionary's own rows for the phrase, if any, are
+    replaced. A sense's text must not already translate differently for
+    another word (en_sense_translations is keyed by the English text, shared
+    with every other word)."""
     expressions = en_expressions.load_expressions(path)
     words = [expression.text for expression in expressions]
     for table in ("en_entries", "en_equivalents"):
         conn.executemany(f"DELETE FROM {table} WHERE word = ?", [(word,) for word in words])
+    expression_senses = {sense for expression in expressions for sense in expression.senses_en}
+    other_senses: set[str] = set()
+    for (raw,) in conn.execute("SELECT senses FROM en_entries"):
+        other_senses.update(sense for sense in json.loads(raw) if sense in expression_senses)
     for expression in expressions:
         conn.execute(
             "INSERT INTO en_entries (word, entry_no, pos, senses) VALUES (?, 1, ?, ?)",
@@ -506,20 +516,36 @@ def apply_expressions(conn: sqlite3.Connection, path: str = en_expressions.EXPRE
                 "INSERT INTO en_equivalents VALUES ('ko', ?, 1, ?)",
                 (expression.text, json.dumps(list(expression.gloss_ko), ensure_ascii=False)),
             )
-        for source, text in zip(expression.senses_en, expression.senses_ko):
-            existing = conn.execute(
-                "SELECT text FROM en_sense_translations WHERE interface_language = 'ko' AND source = ?",
-                (source,),
-            ).fetchone()
-            if existing and existing[0] != text:
-                raise ValueError(
-                    f"{expression.text!r}: the sense {source!r} already translates as {existing[0]!r}; "
-                    "reword it in data/en_expressions.tsv"
+        # Korean from en_expressions.tsv, the other interface languages from
+        # en_expressions_i18n.tsv (translated from the reviewed meaning).
+        localized = {"ko": (expression.gloss_ko, expression.senses_ko)}
+        for language in en_expressions.TRANSLATED_LANGUAGES:
+            row = en_expressions.translations(translations_path).get((expression.text, language))
+            if row:
+                localized[language] = (row.gloss, row.senses)
+        for language, (gloss, senses) in localized.items():
+            if gloss and language != "ko":
+                conn.execute(
+                    "INSERT INTO en_equivalents VALUES (?, ?, 1, ?)",
+                    (language, expression.text, json.dumps(list(gloss), ensure_ascii=False)),
                 )
-            conn.execute(
-                "INSERT OR REPLACE INTO en_sense_translations VALUES ('ko', ?, ?)",
-                (source, text),
-            )
+            for source, text in zip(expression.senses_en, senses):
+                existing = conn.execute(
+                    "SELECT text FROM en_sense_translations WHERE interface_language = ? AND source = ?",
+                    (language, source),
+                ).fetchone()
+                if existing and existing[0] != text and source in other_senses:
+                    # Another word's sense with the same English text: keep
+                    # theirs rather than change it under them. (A sense of
+                    # the expressions alone is just rewritten.)
+                    raise ValueError(
+                        f"{expression.text!r}: the sense {source!r} already translates as {existing[0]!r} "
+                        f"in {language}; reword it in data/en_expressions.tsv"
+                    )
+                conn.execute(
+                    "INSERT OR REPLACE INTO en_sense_translations VALUES (?, ?, ?)",
+                    (language, source, text),
+                )
     return len(expressions)
 
 
