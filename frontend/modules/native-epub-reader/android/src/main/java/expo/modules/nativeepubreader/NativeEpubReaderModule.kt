@@ -58,7 +58,10 @@ private data class LevelTerm(
   val gloss: String? = null,
   // Annotation-only words (the "all words" annotation setting): they carry pinyin
   // or a gloss but draw no underline and don't count as graded exposures.
-  val annotationOnly: Boolean = false
+  val annotationOnly: Boolean = false,
+  // How common the word is (Chinese: Zipf). Between two overlapping words of
+  // the same length the commoner wins: 不知道 is 不 + 知道, not 不知 + 道.
+  val rank: Float = 0f
 )
 
 private data class HighlightMatch(
@@ -4632,13 +4635,19 @@ class NativeEpubReaderView(
             val reinforced = (entry["category"] as? String) == "reinforced"
             val gloss = (entry["gloss"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
             val annotationOnly = entry["annotationOnly"] == true
-            text?.let { LevelTerm(it, weight.coerceIn(0f, 1f), pinyin, reinforced, gloss, annotationOnly) }
+            val rank = (entry["rank"] as? Number)?.toFloat()?.takeIf { it.isFinite() } ?: 0f
+            text?.let { LevelTerm(it, weight.coerceIn(0f, 1f), pinyin, reinforced, gloss, annotationOnly, rank) }
           }
           else -> null
         }
       }
       .distinctBy { it.text }
-      .sortedWith(compareByDescending<LevelTerm> { it.text.length }.thenBy { it.text })
+      // Longest first; among equal lengths the commoner word (rank) first.
+      .sortedWith(
+        compareByDescending<LevelTerm> { it.text.length }
+          .thenByDescending { it.rank }
+          .thenBy { it.text }
+      )
   }
 
   private fun hasTokenBoundary(

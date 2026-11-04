@@ -20,8 +20,16 @@ export const COMPOUND_GLOSS_JOINER = ' · ';
 // its own (포기하다), not "주다 · 위로".
 export const isPhraseSurface = (surface) => /\S\s+\S/.test(String(surface || '').trim());
 
+// A Chinese word (two or more Han characters). Its gloss is never assembled
+// from its characters' glosses: 如果 is "if", not 如 "as" · 果 "fruit".
+const HAN_CHAR = /[\u3400-\u9fff\uf900-\ufaff]/;
+export const isCjkCompoundSurface = (surface) => {
+  const text = String(surface || '').trim();
+  return Array.from(text).filter((char) => HAN_CHAR.test(char)).length >= 2;
+};
+
 const compoundComponents = (surface, stems) => {
-  if (isPhraseSurface(surface)) return null;
+  if (isPhraseSurface(surface) || HAN_CHAR.test(surface)) return null;
   if (stems.length < 2 || stems.includes(surface)) return null;
   const placed = stems
     .map((stem) => ({ stem, at: surface.indexOf(stem) }))
@@ -67,9 +75,14 @@ export const annotationsBySurface = (rows, interfaceLanguage = 'en') => {
     const glossRank = rank(cleanText(row?.interface_language) || 'en');
     const isEnglishWord = cleanText(row?.language) === 'en';
     // A row in another language still contributes its pinyin, never its gloss.
+    // A Chinese definition is a list of CC-CEDICT senses: only its first one
+    // fits under a word (the backend sends a short gloss; this covers rows
+    // without one).
+    const isChineseWord = cleanText(row?.language) === 'zh';
+    const fallback = isEnglishWord ? '' : cleanText(row?.definition);
     const gloss = glossRank == null
       ? ''
-      : (cleanText(row?.gloss) || (isEnglishWord ? '' : cleanText(row?.definition)));
+      : (cleanText(row?.gloss) || (isChineseWord ? cleanText(fallback.split(/;\s/)[0]) : fallback));
     if (gloss && glossRank < entry.glossRank) {
       entry.gloss = gloss;
       entry.glossRank = glossRank;
@@ -93,22 +106,37 @@ export const annotationsBySurface = (rows, interfaceLanguage = 'en') => {
 
 /**
  * withPhraseTapTerms — the level terms plus every phrase surface of the book
- * ("gave up", "of course") not already among them, as annotation-only terms:
- * drawn as nothing, but the reader knows the phrase is there, so a tap on
- * any of its words opens the phrase (with a chip for the word), and a word
- * inside it is not underlined or counted on its own.
+ * ("gave up", "of course") and, in a Chinese book, every word of two or more
+ * characters (如果, 知道) not already among them, as annotation-only terms:
+ * drawn as nothing, but the reader knows the word is there. A tap on any of
+ * its letters or characters opens the whole word, and a word or character
+ * inside it is not underlined, glossed or counted on its own. The reader
+ * matches words anywhere in the text, so without these an easy word that is
+ * not underlined let its characters be: 有 "to have" inside 只有 "only".
+ *
+ * `ranks` (surface -> how common the word is, Zipf) is attached to every term
+ * as `rank`. The reader tries longer words first and, between two of the same
+ * length that overlap, the more common one: 不知道 is 不 + 知道 "to know",
+ * not 不知 + 道 "road".
  */
-export const withPhraseTapTerms = (levelTerms = [], phraseSurfaces = []) => {
-  if (!phraseSurfaces || phraseSurfaces.length === 0) return levelTerms || [];
+export const withPhraseTapTerms = (levelTerms = [], phraseSurfaces = [], ranks = null) => {
+  const ranked = (terms) => {
+    if (!ranks || typeof ranks.get !== 'function' || ranks.size === 0) return terms;
+    return terms.map((term) => {
+      const rank = Number(ranks.get(term?.text));
+      return Number.isFinite(rank) && term?.rank !== rank ? { ...term, rank } : term;
+    });
+  };
+  if (!phraseSurfaces || phraseSurfaces.length === 0) return ranked(levelTerms || []);
   const present = new Set((levelTerms || []).map((term) => term?.text));
   const extra = [];
   phraseSurfaces.forEach((surface) => {
     const text = cleanText(surface);
-    if (!text || present.has(text) || !isPhraseSurface(text)) return;
+    if (!text || present.has(text) || !(isPhraseSurface(text) || isCjkCompoundSurface(text))) return;
     present.add(text);
     extra.push({ text, weight: 0, annotationOnly: true });
   });
-  return extra.length > 0 ? [...(levelTerms || []), ...extra] : levelTerms || [];
+  return ranked(extra.length > 0 ? [...(levelTerms || []), ...extra] : levelTerms || []);
 };
 
 /**
