@@ -144,3 +144,99 @@ def test_fallback_entry_from_the_whitelist():
     assert korean["gloss"] == "~에도 불구하고" and korean["definition"]
     english = en_expressions.dictionary_entry(expression, "en")
     assert english["gloss"] is None and english["definition"] == "\n".join(expression.senses_en)
+
+
+# ─── Other interface languages (data/en_expressions_i18n.tsv) ────────────────
+
+def test_every_expression_has_every_language():
+    rows = en_expressions.translations()
+    for expression in en_expressions.load_expressions():
+        assert expression.gloss_en, expression.text
+        for language in en_expressions.TRANSLATED_LANGUAGES:
+            row = rows.get((expression.text, language))
+            assert row, (expression.text, language)
+            assert row.gloss and all(row.gloss), (expression.text, language)
+            assert len(row.senses) == len(expression.senses_en), (expression.text, language)
+            assert row.source in {"machine", "hand"}
+            if row.source == "hand":
+                assert row.note, (expression.text, language)
+
+
+def test_localized_gloss_and_senses_with_fallbacks():
+    expression = en_expressions.expressions_by_text()["give up"]
+    assert en_expressions.localized(expression, "ko") == (expression.gloss_ko, expression.senses_ko)
+    gloss, senses = en_expressions.localized(expression, "ja")
+    assert gloss == ("あきらめる",) and all(senses)
+    # A language with no row: no gloss and no translated sense, so the card
+    # shows the English definition. Never a translation of "give up" itself.
+    assert en_expressions.localized(expression, "xx") == ((), (None, None))
+    entry = en_expressions.dictionary_entry(expression, "xx")
+    assert entry["gloss"] is None and entry["definition"] is None
+    assert entry["senses"] == list(expression.senses_en)
+
+
+@pytest.mark.skipif(not en_learner_dict.is_installed(), reason="en_learner.db is not built")
+def test_dictionary_has_phrase_entries_in_every_language():
+    for language in en_expressions.TRANSLATED_LANGUAGES:
+        [entry] = en_learner_dict.lookup_entries(["give up"], language)["give up"]
+        row = en_expressions.translations()[("give up", language)]
+        assert entry["equivalents"] == list(row.gloss), language
+        assert entry["translated_senses"] == list(row.senses), language
+    # Single words are unchanged: "run" still has its Wiktionary equivalents.
+    [run, *_] = en_learner_dict.lookup_entries(["run"], "ja")["run"]
+    assert run["equivalents"]
+
+
+@pytest.fixture
+def no_translation_cache(monkeypatch):
+    store = {}
+    monkeypatch.setattr(main, "_translate_cache_get_many", lambda keys: {k: store[k] for k in keys if k in store})
+    monkeypatch.setattr(main, "_translate_cache_put", lambda key, value: store.__setitem__(key, value))
+
+
+def test_a_phrase_headword_is_never_machine_translated(monkeypatch, no_translation_cache):
+    calls = []
+
+    async def fake_batch(texts, source="en", target="en", batch_size=100):
+        calls.append(list(texts))
+        return [f"[{target}] {text}" for text in texts]
+
+    monkeypatch.setattr(main, "_translate_batch", fake_batch)
+    results = [
+        {"word": "kick the bucket", "pos": "phrase", "definition": "To die.", "gloss": None},
+        {"word": "give up", "stem": "give up", "pos": "phrasal verb", "definition": "To stop trying.", "gloss": None},
+        {"word": "lexeme", "pos": "noun", "definition": "A unit of meaning.", "gloss": None},
+    ]
+    out = asyncio.run(main.translate_en_missing_glosses(results, "fr"))
+    # Only the single word went to the translator.
+    assert calls == [["lexeme (noun)"]]
+    assert out[0]["gloss"] is None and out[1]["gloss"] is None
+    assert out[0]["definition"] == "To die."
+    assert out[2]["gloss"] == "[fr] lexeme"
+
+
+@pytest.mark.skipif(not en_learner_dict.is_installed(), reason="en_learner.db is not built")
+def test_preprocess_gives_phrases_their_own_gloss_in_other_languages(monkeypatch):
+    sent = []
+
+    async def record(texts, source="en", target="en", batch_size=100):
+        sent.extend(texts)
+        return [None for _ in texts]
+
+    monkeypatch.setattr(main, "_translate_batch", record)
+    monkeypatch.setattr(main, "_translate_cache_get_many", lambda keys: {})
+    monkeypatch.setattr(main, "_translate_cache_put", lambda key, value: None)
+    _nlp()
+    try:
+        main.get_en_nlp()
+    except main.ApiError:
+        pytest.skip("en_core_web_sm is not installed")
+    out = asyncio.run(main._preprocess_en_core("He gave up.", interface_language="es", expressions=True))
+    by_stem = {result["stem"]: result for result in out["results"]}
+    row = en_expressions.translations()[("give up", "es")]
+    assert by_stem["give up"]["gloss"] == ", ".join(row.gloss)
+    assert by_stem["give up"]["definition"].split("\n")[0] == row.senses[0]
+    # Neither the phrase nor its senses went to the translator (single words may).
+    expression = en_expressions.expressions_by_text()["give up"]
+    assert not any(text.startswith("give up") for text in sent)
+    assert not set(expression.senses_en) & set(sent)

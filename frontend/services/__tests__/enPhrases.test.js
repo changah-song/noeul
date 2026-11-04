@@ -25,6 +25,18 @@ describe('English phrases: annotations', () => {
     expect(annotationsBySurface(rows, 'ko').get('gave up').gloss).toBe('포기하다');
   });
 
+  it('shows a phrase\'s own gloss in the interface language, and nothing when it has none', () => {
+    const rows = [
+      { surface: 'gave up', stem: 'give up', gloss: 'あきらめる', interface_language: 'ja', language: 'en' },
+      // No gloss in this language: the English definition stays on the card,
+      // never under the phrase.
+      { surface: 'at once', stem: 'at once', gloss: null, definition: 'Immediately.', interface_language: 'en', language: 'en' },
+    ];
+    const annotations = annotationsBySurface(rows, 'ja');
+    expect(annotations.get('gave up').gloss).toBe('あきらめる');
+    expect(annotations.get('at once').gloss).toBe('');
+  });
+
   it('adds every untold phrase as an annotation-only term, so a tap finds it', () => {
     const levelTerms = [{ text: 'gave up', weight: 0.8, stem: 'give up' }, { text: 'lantern', weight: 0.6 }];
     const out = withPhraseTapTerms(levelTerms, ['gave up', 'of course', 'Of course', 'lantern']);
