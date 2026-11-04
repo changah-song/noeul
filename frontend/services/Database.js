@@ -86,7 +86,9 @@ const VOCAB_EMPTY_HANJA_MIGRATION_KEY = 'vocab_empty_hanja_migration_v1';
 // 13: an English word's gloss follows its part of speech in the text ("bore" is
 // the verb bear, not the animal 곰), and a participle with an adjective of its
 // own keeps it ("born" is 태어난). Old rows: purgeEnglishLexicalizedParticipleRows.
-export const PREPROCESS_VERSION = 13;
+// 14: English multi-word expressions ("gave up" -> give up, "of course"),
+// underlined and looked up as one word (backend/data/en_expressions.tsv).
+export const PREPROCESS_VERSION = 14;
 // English words with no dictionary entry are underlined only when rarer than
 // this (zipf 3.5 ≈ "antique", "orchard"; epigram 2.6).
 const EN_UNDERLINE_OOV_MAX_ZIPF = 3.5;

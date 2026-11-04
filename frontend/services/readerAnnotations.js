@@ -15,8 +15,13 @@ export const COMPOUND_GLOSS_JOINER = ' · ';
 // A surface's stems that are its components (공동묘지 → 공동 + 묘지): each one
 // appears literally in the surface, they do not overlap, and together they
 // make up most of it. Alternatives for one and the same span (길 / 길다) are
-// not components, and a stem equal to the whole surface wins outright.
+// not components, and a stem equal to the whole surface wins outright. An
+// English phrase ("gave up") is never split into its words' glosses: it takes
+// its own (포기하다), not "주다 · 위로".
+export const isPhraseSurface = (surface) => /\S\s+\S/.test(String(surface || '').trim());
+
 const compoundComponents = (surface, stems) => {
+  if (isPhraseSurface(surface)) return null;
   if (stems.length < 2 || stems.includes(surface)) return null;
   const placed = stems
     .map((stem) => ({ stem, at: surface.indexOf(stem) }))
@@ -84,6 +89,26 @@ export const annotationsBySurface = (rows, interfaceLanguage = 'en') => {
     delete entry.byStem;
   });
   return bySurface;
+};
+
+/**
+ * withPhraseTapTerms — the level terms plus every phrase surface of the book
+ * ("gave up", "of course") not already among them, as annotation-only terms:
+ * drawn as nothing, but the reader knows the phrase is there, so a tap on
+ * any of its words opens the phrase (with a chip for the word), and a word
+ * inside it is not underlined or counted on its own.
+ */
+export const withPhraseTapTerms = (levelTerms = [], phraseSurfaces = []) => {
+  if (!phraseSurfaces || phraseSurfaces.length === 0) return levelTerms || [];
+  const present = new Set((levelTerms || []).map((term) => term?.text));
+  const extra = [];
+  phraseSurfaces.forEach((surface) => {
+    const text = cleanText(surface);
+    if (!text || present.has(text) || !isPhraseSurface(text)) return;
+    present.add(text);
+    extra.push({ text, weight: 0, annotationOnly: true });
+  });
+  return extra.length > 0 ? [...(levelTerms || []), ...extra] : levelTerms || [];
 };
 
 /**

@@ -15,8 +15,9 @@ wordfreq is a build-time dependency only:
     pip install wordfreq
     python scripts/build_en_learner_dict.py --src kaikki.org-dictionary-English.jsonl.gz
 
-The hand-written fixes (FORCED_ALIASES, CURATED_ENTRIES) are applied on every
-build; to apply them to the committed en_learner.db without the dump:
+The hand-written fixes (FORCED_ALIASES, CURATED_ENTRIES) and the multi-word
+expressions (data/en_expressions.tsv, see en_expressions.py) are applied on
+every build; to apply them to the committed en_learner.db without the dump:
 
     python scripts/build_en_learner_dict.py --patch
 
@@ -51,6 +52,8 @@ import sys
 from datetime import date
 
 BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, BACKEND_DIR)
+import en_expressions  # noqa: E402
 DEFAULT_OUT = os.path.join(BACKEND_DIR, "en_learner.db")
 DEFAULT_LEVELS_DB = os.path.join(BACKEND_DIR, "proficiency_levels.db")
 DEFAULT_EXTRA_WORDS = os.path.join(BACKEND_DIR, "data", "en_library_words.txt")
@@ -481,8 +484,48 @@ def build(src: str, out: str, levels_db: str, top: int, extra_words: str | None 
           f"{equivalent_rows} equivalent rows, {len(alias_rows)} aliases -> {out} ({os.path.getsize(out) / 1e6:.1f} MB)")
 
 
+def apply_expressions(conn: sqlite3.Connection, path: str = en_expressions.EXPRESSIONS_PATH) -> int:
+    """The whitelisted multi-word expressions (data/en_expressions.tsv) as
+    entries of their own: "give up" is looked up like a word. Each gets one
+    entry with its English senses, its Korean equivalents (the gloss under the
+    phrase) and the Korean of each sense. Wiktionary's own rows for the
+    phrase, if any, are replaced. A sense's text must not already have a
+    different Korean translation (en_sense_translations is keyed by the
+    English text, shared with every other word)."""
+    expressions = en_expressions.load_expressions(path)
+    words = [expression.text for expression in expressions]
+    for table in ("en_entries", "en_equivalents"):
+        conn.executemany(f"DELETE FROM {table} WHERE word = ?", [(word,) for word in words])
+    for expression in expressions:
+        conn.execute(
+            "INSERT INTO en_entries (word, entry_no, pos, senses) VALUES (?, 1, ?, ?)",
+            (expression.text, expression.pos, json.dumps(list(expression.senses_en), ensure_ascii=False)),
+        )
+        if expression.gloss_ko:
+            conn.execute(
+                "INSERT INTO en_equivalents VALUES ('ko', ?, 1, ?)",
+                (expression.text, json.dumps(list(expression.gloss_ko), ensure_ascii=False)),
+            )
+        for source, text in zip(expression.senses_en, expression.senses_ko):
+            existing = conn.execute(
+                "SELECT text FROM en_sense_translations WHERE interface_language = 'ko' AND source = ?",
+                (source,),
+            ).fetchone()
+            if existing and existing[0] != text:
+                raise ValueError(
+                    f"{expression.text!r}: the sense {source!r} already translates as {existing[0]!r}; "
+                    "reword it in data/en_expressions.tsv"
+                )
+            conn.execute(
+                "INSERT OR REPLACE INTO en_sense_translations VALUES ('ko', ?, ?)",
+                (source, text),
+            )
+    return len(expressions)
+
+
 def apply_overrides(conn: sqlite3.Connection) -> None:
-    """FORCED_ALIASES and CURATED_ENTRIES, written into a built dictionary."""
+    """FORCED_ALIASES, CURATED_ENTRIES and the expressions, written into a
+    built dictionary."""
     for word, target in FORCED_ALIASES.items():
         for table in ("en_entries", "en_equivalents", "en_words"):
             conn.execute(f"DELETE FROM {table} WHERE word = ?", (word,))
@@ -510,6 +553,7 @@ def apply_overrides(conn: sqlite3.Connection) -> None:
              for language, texts in entry["translations"].items()
              for source, text in zip(entry["senses"], texts)],
         )
+    apply_expressions(conn)
 
 
 def patch(out: str) -> None:
@@ -518,8 +562,9 @@ def patch(out: str) -> None:
     conn.commit()
     conn.execute("VACUUM")
     conn.close()
-    print(f"[build_en_learner_dict] applied {len(FORCED_ALIASES)} aliases and "
-          f"{len(CURATED_ENTRIES)} curated entries -> {out}")
+    print(f"[build_en_learner_dict] applied {len(FORCED_ALIASES)} aliases, "
+          f"{len(CURATED_ENTRIES)} curated entries and "
+          f"{len(en_expressions.load_expressions())} expressions -> {out}")
 
 
 def main() -> int:

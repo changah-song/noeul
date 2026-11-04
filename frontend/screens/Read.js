@@ -160,7 +160,12 @@ import LocationPrompt from '../components/Read/LocationPrompt';
 import { publishReaderListen, registerReaderListenCommands } from '../services/readerListenState';
 import { CommonActions, useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { highlightStrengthsFor, unseenShownTerms } from '../services/savedWordFade';
-import { ANNOTATION_SCOPES, annotationsBySurface, buildAnnotatedLevelTerms } from '../services/readerAnnotations';
+import {
+    ANNOTATION_SCOPES,
+    annotationsBySurface,
+    buildAnnotatedLevelTerms,
+    withPhraseTapTerms,
+} from '../services/readerAnnotations';
 import { createNativeReaderThemeTokens, fontFamilies, radii, spacing, textStyles, useTheme } from '../theme';
 
 // Listen mode preferences (speed, stop on underlined words, AI meaning).
@@ -694,6 +699,8 @@ const Read = ({
     const [levelUnderlineTerms, setLevelUnderlineTerms] = useState([]);
     // Known words in the level sample: reported as read past, never drawn.
     const [levelExposureTerms, setLevelExposureTerms] = useState([]);
+    // The book's phrases ("gave up"), underlined or not (see withPhraseTapTerms).
+    const [levelPhraseSurfaces, setLevelPhraseSurfaces] = useState([]);
     // Every word in the book with its pinyin / gloss, loaded only while word
     // annotations are on.
     const [annotationRows, setAnnotationRows] = useState([]);
@@ -1091,6 +1098,7 @@ const Read = ({
         if (!currentBook) {
             setLevelUnderlineTerms([]);
             setLevelExposureTerms([]);
+            setLevelPhraseSurfaces([]);
             setLevelTermsLoading(false);
             return;
         }
@@ -1104,16 +1112,18 @@ const Read = ({
             language: activeBookLanguage,
         });
 
-        loadTerms().then(({ terms, exposureTerms }) => {
+        loadTerms().then(({ terms, exposureTerms, phraseSurfaces = [] }) => {
             if (isActive) {
                 setLevelUnderlineTerms(terms);
                 setLevelExposureTerms(exposureTerms);
+                setLevelPhraseSurfaces(phraseSurfaces);
             }
         }).catch((error) => {
             console.error('[Read] Failed to load book level underline surfaces:', error);
             if (isActive) {
                 setLevelUnderlineTerms([]);
                 setLevelExposureTerms([]);
+                setLevelPhraseSurfaces([]);
             }
         }).finally(() => {
             if (isActive) setLevelTermsLoading(false);
@@ -1322,6 +1332,9 @@ const Read = ({
         holdListeningForPanelRef.current?.();
 
         const sentence = typeof event.sentence === 'string' ? event.sentence.trim() : '';
+        // A tap inside a marked phrase ("gave up"): text is the phrase, this is
+        // the word tapped in it, which the phrase's card offers as a chip.
+        const phraseWord = typeof event.phraseWord === 'string' ? event.phraseWord.trim() : '';
 
         // Looking a word up is its own (much stronger) evidence, so this word must
         // not also be credited as a skip when the current exposure unit closes.
@@ -1341,6 +1354,7 @@ const Read = ({
         setHighlightedWord(text);
         setHighlightedWordContext({
             sentence,
+            phraseWord: phraseWord && phraseWord !== text ? phraseWord : '',
         });
         setPinnedSentence(sentence || text);
 
@@ -3888,9 +3902,12 @@ const Read = ({
     const readerLevelTerms = useMemo(
         () => {
             if (!readerShowPinyin && !readerShowGloss) {
-                return levelMarksEnabled ? thresholdLevelTerms : EMPTY_LEVEL_TERMS;
+                return withPhraseTapTerms(
+                    levelMarksEnabled ? thresholdLevelTerms : EMPTY_LEVEL_TERMS,
+                    levelPhraseSurfaces
+                );
             }
-            return buildAnnotatedLevelTerms({
+            return withPhraseTapTerms(buildAnnotatedLevelTerms({
                 levelTerms: thresholdLevelTerms,
                 annotationRows,
                 marksEnabled: levelMarksEnabled,
@@ -3900,11 +3917,12 @@ const Read = ({
                 glossScope,
                 interfaceLanguage,
                 hiddenSurfaces: hideSavedAnnotations ? savedSurfacesRef.current : null,
-            });
+            }), levelPhraseSurfaces);
         },
         [
             annotationRows,
             hideSavedAnnotations,
+            levelPhraseSurfaces,
             readerHighlightTerms,
             pinyinScope,
             glossScope,
@@ -5294,6 +5312,7 @@ const Read = ({
                     <TopSection
                         highlightedWord={highlightedWord}
                         sourceSentence={highlightedWordContext?.sentence ?? ''}
+                        phraseWord={highlightedWordContext?.phraseWord ?? ''}
                         isNativeSelection={isNativeSelection}
                         onExtendSelection={supportsExtendSelection ? handleExtendSelection : undefined}
                         placement={shouldPlaceLookupAtTop ? 'top' : 'bottom'}

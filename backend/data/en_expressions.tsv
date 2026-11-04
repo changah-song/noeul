@@ -1,0 +1,117 @@
+# English multi-word expressions underlined and looked up as one word (phase 1).
+# kind: fixed (fixed expression), idiom (verb idiom), phrasal (opaque phrasal verb).
+# pattern: '~' before a word matches any of its forms (gave, giving); "one's" any possessive
+#   (my, her, their...); 'oneself' any -self word. Words must be contiguous.
+# block_next: no match when the next word is one of these (lowercase words, or spaCy POS tags).
+# Senses are separated by ' / ', the Korean aligned with the English.
+expression	kind	pattern	gloss_ko	definition_ko	definition_en	cefr	block_next	notes
+of course	fixed	of course	물론	물론. 당연히 그렇다는 뜻으로 쓴다.	Used to say yes, or that something is obvious or expected.	A1		'a matter of course' also matches (rare)
+at last	fixed	at last	마침내	오랫동안 기다리거나 애쓴 끝에 마침내.	Finally, after a long time or much effort.	B1		
+at once	fixed	at once	즉시	즉시, 곧바로. / 한꺼번에, 동시에.	Immediately; without delay. / At the same time; together.	B1		fiction: 'immediately' dominates
+all at once	fixed	all at once	갑자기	갑자기, 느닷없이. / 한꺼번에, 모두 동시에.	Suddenly, without warning. / All at the same time.	B2		
+at all	fixed	at all	전혀	(부정문·의문문에서) 전혀, 조금이라도.	In any way; to any degree (in negatives and questions).	A2	DET,NOUN,PROPN,PRON,NUM,of,the,that,this,these,those,his,her,my,their,our,your,its,other	blocked before a noun phrase: 'at all hours', 'looked at all the'
+not at all	fixed	not at all	전혀 아니다	전혀 ~하지 않다. / (감사·사과에 대한 대답으로) 천만에요.	Not in any way. / A polite reply to thanks or an apology.	A2	DET,NOUN,PROPN,PRON,NUM,of,the,that,this,these,those,his,her,my,their,our,your,its,other	
+as if	fixed	as if	마치 ~처럼	마치 ~인 것처럼.	In a way that suggests something (that may not be true).	B1		
+as though	fixed	as though	마치 ~처럼	마치 ~인 것처럼.	As if.	B2		
+in spite of	fixed	in spite of	~에도 불구하고	~에도 불구하고.	Despite; without being stopped by.	B1		
+as well as	fixed	as well as	~뿐만 아니라	~뿐만 아니라 ~도. ~와 마찬가지로.	In addition to; and also.	B1	he,she,i,we,they,could,can,possible,ever,usual,before,one,anyone,anybody	blocked in comparisons: 'as well as he could'
+at least	fixed	at least	적어도	적어도, 최소한. / 어쨌든, 그래도.	Not less than. / Anyway; used to point out a good side.	A2		
+instead of	fixed	instead of	~ 대신에	~ 대신에. ~하지 않고.	In place of; rather than.	A2		
+no longer	fixed	no longer	더 이상 ~않다	더 이상 ~하지 않다.	Not any more.	B1	than	blocked before 'than' (comparison)
+each other	fixed	each other	서로	서로. 두 사람이 상대에게 같은 행동을 함을 나타낸다.	Used to show that each person does the same thing to the other.	A2		
+one another	fixed	one another	서로	서로.	Each other.	B2		
+according to	fixed	according to	~에 따르면	~에 따르면. / ~에 따라, ~대로.	As said or shown by. / In a way that follows or agrees with.	B1		
+as soon as	fixed	as soon as	~하자마자	~하자마자, ~하는 대로 곧.	Immediately when or after.	A2		
+after all	fixed	after all	결국	(예상과 달리) 결국, 어쨌든. / 어쨌든 ~이니까 (이유를 덧붙일 때).	In spite of what was expected. / Used to give a reason: remember that.	B1	DET,NOUN,PROPN,PRON,NUM,ADJ,of,the,that,this,these,those,his,her,my,their,our,your,its	blocked before a noun phrase: 'after all these years'
+at first	fixed	at first	처음에는	처음에는, 처음에.	At the beginning (and later it changed).	A2	NOUN,ADJ	blocked before a noun: 'at first sight', 'at first light'
+in fact	fixed	in fact	사실	사실은, 실제로는.	Actually; really (often adding detail or a contrast).	B1		
+by the way	fixed	by the way	그런데	그런데, 그건 그렇고 (화제를 바꾸거나 덧붙일 때).	Used to add something or change the subject.	A2	DET,NOUN,PROPN,PRON,NUM,ADJ,of,the,that,this,these,those,his,her,my,their,our,your,its,in,which,he,she,i,we,they,you	blocked when 'the way' is literal: 'by the way he looked'
+now and then	fixed	now and then	가끔	가끔, 때때로.	Sometimes; not often or regularly.	B2		
+from time to time	fixed	from time to time	때때로	때때로, 가끔.	Sometimes; occasionally.	B2		
+never mind	fixed	never mind	신경 쓰지 마	신경 쓰지 마, 괜찮아. / ~은 말할 것도 없고.	Don't worry; it doesn't matter. / Not to mention.	B1		
+in vain	fixed	in vain	헛되이	헛되이, 보람 없이.	Without success.	C1		
+by no means	fixed	by no means	결코 ~아닌	결코 ~이 아니다.	Not at all; certainly not.	C1		
+on account of	fixed	on account of	~ 때문에	~ 때문에, ~을 이유로.	Because of; for the reason of.	C1		
+on purpose	fixed	on purpose	일부러	일부러, 고의로.	Intentionally; not by accident.	B1		
+all the same	fixed	all the same	그래도	그래도, 그럼에도 불구하고. / 마찬가지인, 상관없는.	Nevertheless; even so. / Not different; not important (to someone).	C1	NOUN,ADJ	blocked before a noun: 'all the same people'
+in the midst of	fixed	in the midst of	~의 한가운데	~의 한가운데에. / ~하는 도중에.	In the middle of (a place or a group). / While something is happening.	C1		
+on the contrary	fixed	on the contrary	오히려	그와 반대로, 오히려.	Used to say that the opposite is true.	B2		
+on the other hand	fixed	on the other hand	반면에	다른 한편으로는, 반면에.	Used to give a contrasting fact or opinion.	B1		
+at any rate	fixed	at any rate	어쨌든	어쨌든, 아무튼. / 적어도.	Whatever happens; anyway. / At least.	C1		
+for the sake of	fixed	for the sake of	~을 위해	~을 위해서, ~ 때문에.	For the benefit or purpose of.	B2		
+ever since	fixed	ever since	그 이후로 줄곧	~ 이후로 줄곧, 그 뒤로 계속.	Continuously since (a time or event).	B1		
+by and by	fixed	by and by	머지않아	머지않아, 이윽고.	After a while; soon.	C2		
+to and fro	fixed	to and fro	이리저리	이리저리, 왔다 갔다.	Backwards and forwards.	C2		
+all of a sudden	fixed	all of a sudden	갑자기	갑자기, 별안간.	Suddenly and unexpectedly.	B1		
+in order to	fixed	in order to	~하기 위해	~하기 위해서.	With the purpose of.	B1		
+rather than	fixed	rather than	~보다는	~보다는, ~하지 않고.	Instead of; and not.	B1		
+above all	fixed	above all	무엇보다도	무엇보다도, 특히.	Most importantly.	B2	DET,NOUN,PROPN,PRON,NUM,ADJ,of,the,that,this,these,those,his,her,my,their,our,your,its,else	blocked when literal: 'above all the noise'
+at length	fixed	at length	마침내	한참 뒤에 마침내. / 오랫동안, 자세히.	Finally, after a long time. / For a long time; in detail.	C1		
+at present	fixed	at present	현재	현재, 지금.	Now; at this time.	B1		
+in the meantime	fixed	in the meantime	그동안	그동안에, 그사이에.	Meanwhile; until something happens.	B2		
+owing to	fixed	owing to	~ 때문에	~ 때문에.	Because of; as a result of.	B2		
+thanks to	fixed	thanks to	~ 덕분에	~ 덕분에, ~ 때문에.	Because of (often something good).	B1		
+no doubt	fixed	no doubt	틀림없이	틀림없이, 아마도.	Certainly; very probably.	B2		
+in short	fixed	in short	요컨대	요컨대, 간단히 말해서.	In a few words; to sum up.	B2	NOUN,ADJ	blocked before a noun: 'in short supply'
+as long as	fixed	as long as	~하는 한	~하는 한, ~하기만 하면. / ~하는 동안, ~만큼 오래.	On condition that. / For as long a time as.	B1		
+out of the question	fixed	out of the question	불가능한	불가능한, 고려할 가치도 없는.	Impossible; not allowed.	C1		
+by means of	fixed	by means of	~을 이용해	~을 써서, ~에 의해.	By using.	C1		
+a great deal	fixed	a great deal	많이	많이, 대단히. / 다량(의), 많은 양.	Very much; a lot. / A large amount (of).	B2		
+for instance	fixed	for instance	예를 들어	예를 들어, 이를테면.	For example.	B1		
+that is to say	fixed	that is to say	즉	즉, 다시 말해서.	In other words.	B2		
+so to speak	fixed	so to speak	말하자면	말하자면, 이를테면.	Used to show a phrase is not meant exactly.	C1		
+as it were	fixed	as it were	말하자면	말하자면, 이를테면.	So to speak.	C2		
+if only	fixed	if only	~라면 좋을 텐데	~하기만 하면 좋을 텐데. / ~만이라도, 단지 ~하기 위해서라도.	Used to express a strong wish. / Even if just (for a reason).	B2		
+or else	fixed	or else	그렇지 않으면	그렇지 않으면. / 아니면, 또는.	Otherwise (often a threat). / Or.	B2		
+no matter	fixed	no matter	~이든 상관없이	(no matter what·how 등으로) ~이든 상관없이. / 상관없다, 중요하지 않다.	Regardless of (what, how...). / It is not important.	B1		
+apart from	fixed	apart from	~을 제외하고	~을 제외하고. / ~ 외에도. / ~와 떨어져서.	Except for. / As well as. / Separated from.	B2		
+at the same time	fixed	at the same time	동시에	동시에. / 그러면서도, 하지만.	Together; simultaneously. / However; despite that.	A2		
+beside oneself	fixed	beside oneself	제정신이 아닌	(분노·기쁨·걱정 등으로) 제정신이 아닌, 어쩔 줄 모르는.	Unable to control oneself because of a strong feeling.	C1		'oneself' matches any -self word
+make up one's mind	idiom	~make up one's mind	결심하다	결심하다, 마음먹다.	To decide.	B2		'one's' matches any possessive: made up her mind
+change one's mind	idiom	~change one's mind	마음을 바꾸다	생각을 바꾸다, 마음을 바꾸다.	To change a decision or opinion.	B1		
+make sure	idiom	~make sure	확실히 하다	반드시 ~하도록 하다. / 확인하다.	To make certain that something happens. / To check.	A2		
+take place	idiom	~take place	일어나다	(일이) 일어나다, 열리다.	To happen (especially as arranged).	B1		
+fall asleep	idiom	~fall asleep	잠들다	잠들다.	To start sleeping.	A2		
+take care of	idiom	~take care of	돌보다	~을 돌보다. / ~을 처리하다.	To look after; to keep safe and well. / To deal with.	A2		
+catch sight of	idiom	~catch sight of	언뜻 보다	~을 언뜻 보다, 발견하다.	To suddenly see, often only briefly.	C1		
+put an end to	idiom	~put an end to	끝내다	~을 끝내다, 그만두게 하다.	To make something stop.	B2		
+hold one's tongue	idiom	~hold one's tongue	입을 다물다	입을 다물다, 잠자코 있다.	To say nothing.	C1		
+do one's best	idiom	~do one's best	최선을 다하다	최선을 다하다.	To try as hard as possible.	A2		
+make one's way	idiom	~make one's way	나아가다	(어딘가로) 가다, 나아가다. / 성공해 나가다.	To go somewhere, often with effort. / To succeed in life.	B2		
+burst into tears	idiom	~burst into tears	울음을 터뜨리다	갑자기 울음을 터뜨리다.	To suddenly start crying.	B2		
+get rid of	idiom	~get rid of	없애다	~을 없애다, 처리하다, 벗어나다.	To remove or throw away; to become free of.	B1		
+get used to	idiom	~get used to	익숙해지다	~에 익숙해지다.	To become familiar with something.	B1		
+turn up one's nose	idiom	~turn up one's ~nose	콧방귀 뀌다	(~을) 하찮게 여기다, 콧방귀를 뀌다.	To refuse or look down on something as not good enough.	C1		kept apart from 'turn up' (나타나다): 'turned up their noses'
+give way	idiom	~give way	무너지다	무너지다, 꺾이다. / 굴복하다, 양보하다.	To break or collapse. / To yield; to let someone go first.	B2		
+find out	phrasal	~find out	알아내다	(사실을) 알아내다, 알게 되다.	To discover a fact or piece of information.	A2		
+give up	phrasal	~give up	포기하다	포기하다, 그만두다. / (남에게) 내주다, 넘겨주다.	To stop trying or doing something. / To hand over.	B1		
+look after	phrasal	~look after	돌보다	~을 돌보다. / (떠나는 사람을) 뒤에서 바라보다.	To take care of. / To watch someone who is going away.	A2		old fiction often has the literal 'watched him go'; both senses shown
+turn out	phrasal	~turn out	~로 드러나다	~인 것으로 드러나다, 결국 ~이 되다. / (불을) 끄다. / 내쫓다.	To prove to be in the end. / To switch off (a light). / To make someone leave.	B1		
+put up with	phrasal	~put up with	참다	~을 참다, 견디다.	To accept something unpleasant without complaining.	B2		
+get over	phrasal	~get over	극복하다	(병·충격·슬픔 등을) 극복하다, 회복하다. / 넘다, 건너다.	To recover from. / To cross or climb over.	B2	here,there	blocked in 'get over here'
+make out	phrasal	~make out	알아보다	(간신히) 알아보다, 알아듣다. / 이해하다. / 주장하다, ~인 척하다.	To see or hear with difficulty. / To understand (someone or something). / To claim or pretend.	B2		
+give in	phrasal	~give in	굴복하다	굴복하다, 항복하다, 마지못해 동의하다. / 제출하다.	To stop resisting; to agree unwillingly. / To hand in.	B2	DET,NOUN,PROPN,PRON,ADJ,NUM	blocked in the passive 'given in charge', 'rules given in the book'
+carry out	phrasal	~carry out	수행하다	수행하다, 실행하다. / 밖으로 나르다.	To do a task or plan. / To carry outside.	B1	of	blocked in 'carried out of the room'
+point out	phrasal	~point out	지적하다	지적하다, 알려 주다. / 가리키다.	To tell someone about a fact. / To show by pointing.	B1		
+set out	phrasal	~set out	출발하다	출발하다, 길을 나서다. / (일을) 시작하다, ~하려고 나서다. / 늘어놓다.	To start a journey (often a long one). / To start trying to do something. / To arrange or display.	B2		
+grow up	phrasal	~grow up	자라다	자라다, 성장하다, 어른이 되다.	To become an adult.	A2		
+turn up	phrasal	~turn up	나타나다	나타나다, 찾아오다. / (소리·불 등을) 높이다, 키우다. / 위로 젖히다.	To appear or arrive. / To increase (volume, heat). / To fold or point upwards.	B2		
+break out	phrasal	~break out	일어나다	(전쟁·화재·싸움 등이) 일어나다, 발발하다. / 탈출하다. / 갑자기 ~하기 시작하다.	To start suddenly (war, fire, fighting). / To escape. / To suddenly start doing something.	B2		
+break down	phrasal	~break down	고장 나다	고장 나다. / 무너지다, 실패하다. / 감정을 못 이기고 울다.	To stop working. / To fail or collapse. / To lose control of one's feelings.	B1		
+break up	phrasal	~break up	헤어지다	헤어지다, 끝나다. / 부서지다, 해산하다.	To end a relationship or meeting. / To break into pieces; to separate.	B1		
+look forward to	phrasal	~look forward to	고대하다	~을 고대하다, 기대하다.	To wait for something with pleasure.	B1		
+set off	phrasal	~set off	출발하다	출발하다, 길을 떠나다. / (폭발·경보 등을) 일으키다. / 돋보이게 하다.	To start a journey; to leave. / To cause (an explosion, an alarm). / To make something look better.	B1		
+put off	phrasal	~put off	미루다	미루다, 연기하다. / 싫어지게 하다, 정떨어지게 하다. / (옷 등을) 벗다.	To postpone. / To make someone dislike something. / To take off (clothes).	B2		
+hold on	phrasal	~hold on	기다리다	잠깐 기다리다. / 꽉 붙잡다. / 버티다.	To wait. / To hold tightly. / To continue despite difficulty.	B1		
+carry on	phrasal	~carry on	계속하다	계속하다. / 소란을 피우다, 함부로 행동하다.	To continue. / To behave in an excited or improper way.	B1		
+deal with	phrasal	~deal with	다루다	~을 다루다, 처리하다. / ~와 거래하다.	To handle a problem or task. / To do business with.	B1		
+account for	phrasal	~account for	설명하다	~을 설명하다, ~의 이유가 되다. / (비율을) 차지하다.	To explain. / To form a part of a total.	B2		
+care for	phrasal	~care for	돌보다	~을 돌보다. / (주로 부정문·의문문에서) ~을 좋아하다, 원하다.	To look after (someone ill, old or young). / To like or want (often in negatives and questions).	B2		
+send for	phrasal	~send for	부르러 보내다	~을 부르러 사람을 보내다, 오라고 하다.	To ask someone to come, often by sending a message.	C1		
+think over	phrasal	~think over	곰곰이 생각하다	~을 곰곰이 생각하다, 숙고하다.	To consider carefully.	B2		
+consist of	phrasal	~consist of	~로 이루어지다	~로 이루어지다, 구성되다.	To be made of.	B1		
+long for	phrasal	~long for	간절히 바라다	~을 간절히 바라다, 그리워하다.	To want something very much.	B2		'long' must be the verb ('waited so long for' does not match)
+take off	phrasal	~take off	벗다	(옷·모자 등을) 벗다. / 이륙하다. / 급히 떠나다.	To remove (clothes). / To leave the ground (a plane). / To leave suddenly.	A2		
+come up with	phrasal	~come up with	생각해 내다	(생각·답을) 떠올리다, 생각해 내다. / ~을 따라잡다.	To think of an idea or answer. / To catch up with.	B2		
+run away	phrasal	~run away	달아나다	달아나다, 도망치다.	To escape; to leave secretly.	A2		
+die away	phrasal	~die away	잦아들다	(소리·바람 등이) 점점 약해지다, 잦아들다.	To become gradually weaker and disappear.	C1		

@@ -25,6 +25,7 @@ import { playEnglishPronunciation } from '../../../services/pronunciationAudio';
 import { getRuntimeChineseScript } from '../../../services/interfaceLanguage';
 import { requestUserDataSync } from '../../../services/userDataSyncQueue';
 import { chapterTranslations } from '../../../services/chapterTranslations';
+import { LEVEL_MARK } from '../../../services/levelSample';
 import {
     getEntryFallbackLanguage,
     normalizeSurfaceWordForLanguage,
@@ -55,6 +56,9 @@ const POS_KEYS = {
     interjection: 'pos.interjection',
     numeral: 'pos.numeral',
     particle: 'pos.particle',
+    // Multi-word expressions (backend/data/en_expressions.tsv).
+    phrase: 'pos.phrase',
+    'phrasal verb': 'pos.phrasalVerb',
     preposition: 'pos.preposition',
     conjunction: 'pos.conjunction',
     article: 'pos.article',
@@ -259,6 +263,9 @@ const uniqueEntriesByWord = (entries, excludedWord = '') => {
 const DictionaryContent = ({
     highlightedWord,
     sourceSentence = '',
+    // A tap inside a phrase ("gave up"): the single word tapped ("gave"). The
+    // phrase's card comes first, with a chip to switch to the word's.
+    phraseWord = '',
     isDarkMode,
     onContentLoaded,
     onWordSave,
@@ -326,8 +333,15 @@ const DictionaryContent = ({
     }, [interfaceLanguage, isChineseBook, isEnglishBook]);
     const contextSentence = cleanValue(sourceSentence);
     const [drilldownStack, setDrilldownStack] = useState([]);
-    const lookupWord = drilldownStack.length > 0 ? drilldownStack[drilldownStack.length - 1] : highlightedWord;
-    const rootLookupWord = cleanValue(normalizeSurfaceWordForLanguage(highlightedWord, targetLanguage)) || cleanValue(highlightedWord);
+    const tappedPhraseWord = cleanValue(phraseWord);
+    const [showPhraseWord, setShowPhraseWord] = useState(false);
+    const rootWord = showPhraseWord && tappedPhraseWord ? tappedPhraseWord : highlightedWord;
+    const lookupWord = drilldownStack.length > 0 ? drilldownStack[drilldownStack.length - 1] : rootWord;
+    // The word chip's lookup is not evidence about the level: the reader
+    // tapped the phrase, and reading past the word alone was never logged.
+    const lookupFromPhraseChipRef = useRef(false);
+    lookupFromPhraseChipRef.current = Boolean(showPhraseWord && tappedPhraseWord && drilldownStack.length === 0);
+    const rootLookupWord = cleanValue(normalizeSurfaceWordForLanguage(rootWord, targetLanguage)) || cleanValue(rootWord);
     const parentLookupWord = drilldownStack.length > 1
         ? drilldownStack[drilldownStack.length - 2]
         : rootLookupWord;
@@ -390,7 +404,8 @@ const DictionaryContent = ({
 
     useEffect(() => {
         setDrilldownStack([]);
-    }, [highlightedWord, targetLanguage]);
+        setShowPhraseWord(false);
+    }, [highlightedWord, phraseWord, targetLanguage]);
 
     useEffect(() => {
         setCachedResults(null);
@@ -426,7 +441,9 @@ const DictionaryContent = ({
                     interfaceLanguage,
                     targetLanguage,
                     usableCachedEntry: isUsableCachedEntry,
-                    levelMark: levelMarkForRef.current ? levelMarkForRef.current(lookupWord) : null,
+                    levelMark: lookupFromPhraseChipRef.current
+                        ? LEVEL_MARK.none
+                        : (levelMarkForRef.current ? levelMarkForRef.current(lookupWord) : null),
                 });
                 if (isCancelled) {
                     return;
@@ -1086,6 +1103,48 @@ const DictionaryContent = ({
         );
     };
 
+    // A phrase's card ("gave up") and the tapped word's ("gave"): two chips to
+    // switch between them, the shown one filled.
+    const renderPhraseChips = () => {
+        if (!tappedPhraseWord || drilldownStack.length > 0) {
+            return null;
+        }
+        const chips = [
+            { key: 'phrase', label: cleanValue(highlightedWord), active: !showPhraseWord },
+            { key: 'word', label: tappedPhraseWord, active: showPhraseWord },
+        ];
+        return (
+            <View style={styles.phraseChipRow} testID="phrase-chips">
+                {chips.map((chip) => (
+                    <TouchableOpacity
+                        key={chip.key}
+                        testID={`phrase-chip-${chip.key}`}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: chip.active }}
+                        activeOpacity={0.78}
+                        onPress={() => {
+                            if (chip.active) return;
+                            setCurrentHanja(null);
+                            setShowPhraseWord(chip.key === 'word');
+                        }}
+                        style={[
+                            styles.phraseChip,
+                            { borderColor: palette.border },
+                            chip.active && { backgroundColor: palette.action, borderColor: palette.action },
+                        ]}
+                    >
+                        <Text
+                            numberOfLines={1}
+                            style={[styles.phraseChipText, { color: chip.active ? palette.actionText : palette.mutedText }]}
+                        >
+                            {chip.label}
+                        </Text>
+                    </TouchableOpacity>
+                ))}
+            </View>
+        );
+    };
+
     const renderDictionaryPanel = (children) => (
         <View style={[styles.panelContent, styles.dictionaryPanelContent, { backgroundColor: palette.surface }]}>
             <ScrollView
@@ -1109,6 +1168,7 @@ const DictionaryContent = ({
                 }}
             >
                 {renderDrilldownBackRow()}
+                {renderPhraseChips()}
                 {children}
             </ScrollView>
         </View>
@@ -1846,6 +1906,7 @@ const DictionaryContent = ({
                 }}
             >
                 {renderDrilldownBackRow()}
+                {renderPhraseChips()}
                 <View style={styles.headwordRow}>
                     <View style={styles.saveIconSpacer} />
                     <View style={styles.notFoundWordLine}>
@@ -2414,6 +2475,29 @@ const createStyles = (colors) => StyleSheet.create({
         paddingVertical: 5,
         marginBottom: spacing.xs,
         borderBottomWidth: StyleSheet.hairlineWidth,
+    },
+    phraseChipRow: {
+        alignSelf: 'center',
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexWrap: 'wrap',
+        gap: spacing.xs,
+        marginBottom: spacing.xs,
+    },
+    phraseChip: {
+        paddingHorizontal: 10,
+        paddingVertical: 3,
+        borderRadius: radii.pill,
+        borderWidth: StyleSheet.hairlineWidth,
+        maxWidth: 200,
+    },
+    phraseChipText: {
+        ...textStyles.caption,
+        fontFamily: fontFamilies.sansBold,
+        fontSize: 12,
+        lineHeight: 16,
+        letterSpacing: 0,
     },
     drilldownBackText: {
         ...textStyles.caption,

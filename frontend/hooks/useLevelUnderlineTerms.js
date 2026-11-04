@@ -13,6 +13,7 @@ import {
     signalsFromEvidenceRows,
 } from '../services/levelEngine';
 import { buildLevelExposureTerms, buildLevelUnderlineTerms, rowDifficulty } from '../services/levelUnderlineTerms';
+import { isPhraseSurface } from '../services/readerAnnotations';
 
 /**
  * loadLevelReaderTerms — load the graded-word underline snapshot for an indexed text (a book, or a
@@ -26,7 +27,7 @@ import { buildLevelExposureTerms, buildLevelUnderlineTerms, rowDifficulty } from
  */
 export const loadLevelReaderTerms = async ({ ownerId, bookUri, language }) => {
     if (!bookUri) {
-        return { terms: [], exposureTerms: [] };
+        return { terms: [], exposureTerms: [], phraseSurfaces: [] };
     }
     const [reader, rows, evidenceRows] = await Promise.all([
         getReaderLevel({ ownerId, language }),
@@ -67,7 +68,12 @@ export const loadLevelReaderTerms = async ({ ownerId, bookUri, language }) => {
 
     const knowledge = buildWordKnowledge({ language, reader, difficulties, events, saved });
     const terms = buildLevelUnderlineTerms(rows, language, reader.theta, { knowledge });
-    return { terms, exposureTerms: buildLevelExposureTerms(rows, terms) };
+    // Every phrase in the book ("gave up"), underlined or not: the reader is
+    // told about all of them so a tap on any of their words opens the phrase.
+    const phraseSurfaces = Array.from(new Set((rows || [])
+        .map((row) => (typeof row?.surface === 'string' ? row.surface.trim() : ''))
+        .filter(isPhraseSurface)));
+    return { terms, exposureTerms: buildLevelExposureTerms(rows, terms), phraseSurfaces };
 };
 
 /**

@@ -46,6 +46,9 @@ const preprocessChapter = async ({
       language: targetLanguage,
       interface_language: normalizedInterfaceLanguage,
       script,
+      // English: also the multi-word expressions ("gave up" -> give up), which
+      // this build can underline and open as one card.
+      ...(targetLanguage === 'en' ? { expressions: true } : {}),
     },
     {
       timeout: 45000,
