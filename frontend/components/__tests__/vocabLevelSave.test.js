@@ -48,3 +48,25 @@ it('saves the pick and the ability under the signed-in account', async () => {
   expect(AsyncStorage.setItem).toHaveBeenCalledWith('vocabLevelPick:account-123:profile-1:ko', expect.any(String));
   expect(AsyncStorage.getItem).toHaveBeenCalledWith('vocabLevelPick:account-123:profile-1:ko');
 });
+
+it('saves "none of these yet" below the first tier, held loosely', async () => {
+  Database.setProfileAbilityFromVocab.mockClear();
+  AsyncStorage.setItem.mockClear();
+  const { BEGINNER_THETA, BEGINNER_SEED_VARIANCE } = require('../../services/vocabSizeLevels');
+  let tree;
+  await act(async () => {
+    tree = renderer.create(<VocabLevelModal visible onClose={jest.fn()} />);
+  });
+  await flush();
+  const rows = tree.root.findAll((node) => node.props.accessibilityRole === 'radio' && typeof node.props.onPress === 'function');
+  // The first row is "none of these yet".
+  await act(async () => { rows[0].props.onPress(); });
+  const confirm = tree.root.findAll((node) => node.props.accessibilityRole === 'button' && typeof node.props.onPress === 'function' && node.props.disabled !== undefined)[0];
+  await act(async () => { await confirm.props.onPress(); });
+  await flush();
+
+  expect(Database.setProfileAbilityFromVocab).toHaveBeenCalledWith(expect.objectContaining({
+    theta: BEGINNER_THETA, variance: BEGINNER_SEED_VARIANCE,
+  }));
+  expect(AsyncStorage.setItem).toHaveBeenCalledWith('vocabLevelPick:account-123:profile-1:ko', 'none');
+});

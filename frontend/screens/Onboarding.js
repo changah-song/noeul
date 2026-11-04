@@ -24,7 +24,7 @@ import {
     KRDICT_INTERFACE_LANGUAGE_OPTIONS,
     TARGET_LANGUAGE_OPTIONS,
 } from '../constants/languages';
-import { getVocabTiers, hasVocabSizeGrid, thetaForTier } from '../services/vocabSizeLevels';
+import { BEGINNER_SEED_VARIANCE, BEGINNER_THETA, hasVocabSizeGrid } from '../services/vocabSizeLevels';
 import { nearestRankForTheta } from '../services/calibrationQuiz';
 import { setProfileAbilityFromVocab } from '../services/Database';
 import { useLocalOwner } from '../contexts/LocalOwnerContext';
@@ -95,9 +95,6 @@ const GOAL_DETAIL_KEYS = {
     20: 'goal.option20',
     30: 'goal.option30',
 };
-
-// "I'm just starting" holds its level loosely (sd ≈ 1.2; a picked level is 0.6).
-const BEGINNER_SEED_VARIANCE = 1.5;
 
 // ─── Content ──────────────────────────────────────────────────────────────────
 
@@ -277,13 +274,13 @@ const Onboarding = ({ onDone }) => {
         setShowInterfacePicker(false);
     };
 
-    // "I'm just starting": the lowest tier, held loosely (wide uncertainty) so
-    // the first pages of reading move it quickly. Without this the reader
-    // started in the middle of the scale.
+    // "I'm just starting": below the first tier (the bottom of the scale, where
+    // a word check with no word known lands), held loosely (wide uncertainty)
+    // so the first pages of reading move it quickly. Seeding the first tier
+    // instead said a beginner knew all of HSK 1 / A1. Without a seed the
+    // reader started in the middle of the scale.
     const seedBeginnerLevel = () => {
-        const [lowest] = getVocabTiers(targetLanguage);
-        if (!lowest) return;
-        const theta = thetaForTier(targetLanguage, lowest.threshold);
+        const theta = BEGINNER_THETA;
         const nearestRank = nearestRankForTheta(targetLanguage, theta);
         setProfileAbilityFromVocab({
             ownerId: activeOwnerId,

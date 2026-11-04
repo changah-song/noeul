@@ -3,6 +3,7 @@ import ZH_VOCAB_TIERS from '../assets/data/vocab-size/zh.generated.json';
 import EN_VOCAB_TIERS from '../assets/data/vocab-size/en.generated.json';
 import { normalizeBookLanguage } from '../constants/languages';
 import { coveredBand, thetaForBandCoverage, thetaForVocabulary, vocabularySize } from './levelScale';
+import { LEVEL_THETA_MIN } from './abilityModel';
 
 // ─── Vocabulary-size level grid (Profile cold-start) ───────────────────────────
 //
@@ -106,3 +107,54 @@ export const legacySeedTheta = (language, theta) => {
   });
   return thetaForTier(language, nearest.threshold);
 };
+
+// ─── Below the first tier ("just starting") ──────────────────────────────────
+//
+// A reader who knows none of the first row's words (the word check answered
+// "don't know" throughout, "I'm just starting", or "none of these" in the
+// picker) is below every tier. Labelling them with the first tier ("about
+// 100 words", "HSK 1") told a beginner they already knew a level's words.
+
+// "Just starting" and "none of these" seed the bottom of the scale, where a
+// word check with no word known lands too, held loosely so reading moves it.
+export const BEGINNER_THETA = LEVEL_THETA_MIN;
+// sd ≈ 1.2; a picked tier is held at 0.6.
+export const BEGINNER_SEED_VARIANCE = 1.5;
+
+const SCALE_FLOOR_EPSILON = 1e-3;
+
+// The first tier a reader below it hasn't reached: HSK 1 / A1; for Korean's
+// frequency tiers, the first one the scale can tell from its floor (the
+// smaller ones all pick the bottom of the scale, where the expected
+// vocabulary is already several hundred words).
+const firstTier = (language) => {
+  const tiers = getVocabTiers(language).filter((tier) => !tier.advanced);
+  if (tiers.length === 0) return null;
+  if (isLabelled(tiers)) return tiers[0];
+  return tiers.find((tier) => thetaForTier(language, tier.threshold) > LEVEL_THETA_MIN + SCALE_FLOOR_EPSILON)
+    ?? tiers[tiers.length - 1];
+};
+
+/**
+ * isBeginnerTheta — whether a level is below the language's first tier: for
+ * HSK / CEFR, not even the first band known to COVERAGE; for Korean, below the
+ * pick level of the first frequency tier above the floor of the scale.
+ */
+export const isBeginnerTheta = (language, theta) => {
+  const value = Number(theta);
+  if (!Number.isFinite(value)) return false;
+  const tiers = getVocabTiers(language);
+  const first = firstTier(language);
+  if (!first) return false;
+  if (isLabelled(tiers)) {
+    const band = coveredBand(language, value);
+    if (Number.isFinite(band)) return band === 0;
+  }
+  return value < thetaForTier(language, first.threshold) - 1e-6;
+};
+
+/**
+ * beginnerWords — the words a beginner is learning first: the first tier's
+ * size (HSK 1's or A1's words, or Korean's first resolvable frequency tier).
+ */
+export const beginnerWords = (language) => firstTier(language)?.threshold ?? null;
