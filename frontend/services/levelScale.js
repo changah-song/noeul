@@ -20,7 +20,9 @@ import { LEVEL_THETA_MAX, LEVEL_THETA_MIN, sigmoid } from './abilityModel';
 //   coverage(θ, band)   the share of a band's words the reader knows: the mean
 //                       P(known) over the word-check pool's words in that band
 //   "HSK N" / "B1"      the highest band the reader knows at least COVERAGE of
-//   vocabulary size     Σ over bands of (words in the band × its coverage)
+//   vocabulary size     Σ over bands of (words in the band × its counted
+//                       share), the counted share rising from 0 at COUNT_FLOOR
+//                       coverage to 1 at COVERAGE (see countedShare)
 //   picking a level     the θ at which that band's coverage is PICK_COVERAGE
 //                       (frequency tiers: at which the vocabulary is that many
 //                       words)
@@ -33,6 +35,28 @@ export const COVERAGE = 0.8;
 // The picker asks for the last row where you know ALL the words; a little
 // above COVERAGE, so the label shows the row picked.
 export const PICK_COVERAGE = 0.85;
+
+// Counting words. Coverage is a mean of P(known) over a curve flattened for
+// how much words within a band differ (levelEngine ITEM_VARIANCE), so its
+// tails never reach 0 or 1: summing coverage × band size credited a reader at
+// the bottom of the scale with ~730 Korean words, and an "HSK 4" reader with
+// ~40% of HSK 7-9's 9,085 words (~11,000 in all). A band now counts only once
+// the reader clearly knows more of it than not, and in full once it is the
+// level shown:
+//
+//   counted share = clamp((coverage − COUNT_FLOOR) / (COVERAGE − COUNT_FLOOR), 0, 1)
+//
+// So a reader labelled "HSK N" is credited with every word up to HSK N plus a
+// share of the bands they are partway into, and a reader who knows none of
+// the first band is credited with none. Coverage itself, the labels, and the
+// engine's P(known) are unchanged.
+export const COUNT_FLOOR = 0.6;
+
+/** The share of a band's words counted as known at a given coverage. */
+export const countedShare = (bandCoverageValue) => Math.max(
+    0,
+    Math.min(1, (Number(bandCoverageValue) - COUNT_FLOOR) / (COVERAGE - COUNT_FLOOR)),
+);
 
 const POOLS = { ko: KO_POOL, zh: ZH_POOL, en: EN_POOL };
 const TIERS = { ko: KO_TIERS.ko, zh: ZH_TIERS.zh, en: EN_TIERS.en };
@@ -77,8 +101,22 @@ export const coverage = (language, theta, band) => {
     return info ? bandCoverage(info, Number(theta)) : null;
 };
 
-/** Expected number of graded words a reader at `theta` knows. */
+/**
+ * Graded words a reader at `theta` knows: each band's word count times its
+ * counted share (countedShare). 0 at the bottom of the scale; non-decreasing
+ * in `theta`.
+ */
 export const vocabularySize = (language, theta) => {
+    const bands = bandsFor(language);
+    if (!bands) return null;
+    return bands.reduce((sum, b) => sum + b.count * countedShare(bandCoverage(b, Number(theta))), 0);
+};
+
+/**
+ * The words count of engine 2.4 (Σ band size × coverage, no floor), kept only
+ * to read a Korean level picked then as the word count it meant.
+ */
+export const legacyVocabularySize = (language, theta) => {
     const bands = bandsFor(language);
     if (!bands) return null;
     return bands.reduce((sum, b) => sum + b.count * bandCoverage(b, Number(theta)), 0);
@@ -118,7 +156,10 @@ export const thetaForBandCoverage = (language, band, target = PICK_COVERAGE) => 
     return info ? solve((theta) => bandCoverage(info, theta), target) : null;
 };
 
-/** The level at which the expected vocabulary is `words`. */
+/**
+ * The lowest level at which the vocabulary is `words` (vocabularySize is flat
+ * at 0 below the first band, so the bisection lands at the start of the rise).
+ */
 export const thetaForVocabulary = (language, words) => {
     if (!bandsFor(language)) return null;
     return solve((theta) => vocabularySize(language, theta), Number(words));

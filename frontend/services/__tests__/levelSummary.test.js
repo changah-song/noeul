@@ -6,20 +6,129 @@ import {
   levelChartSeries,
   levelPlaceForTheta,
   levelRange,
+  roundWords,
   startingTheta,
   wordGoal,
   wordsForTheta,
 } from '../levelSummary';
-import { COVERAGE, coverage, vocabularySize } from '../levelScale';
+import {
+  COUNT_FLOOR, COVERAGE, coverage, coveredBand, countedShare, legacyVocabularySize, vocabularySize,
+} from '../levelScale';
 import {
   BEGINNER_THETA,
   beginnerWords,
   getVocabTiers,
   isBeginnerTheta,
+  legacySeedTheta,
   thetaForTier,
+  tierIndexForTheta,
 } from '../vocabSizeLevels';
 import { createWordCheck } from '../wordCheck';
-import { LEVEL_THETA_MIN } from '../abilityModel';
+import { LEVEL_THETA_MAX, LEVEL_THETA_MIN } from '../abilityModel';
+import { ITEM_SLOPE } from '../levelEngine';
+
+const LANGUAGES = ['ko', 'zh', 'en'];
+const cumulative = (language, band) => getVocabTiers(language)
+  .filter((tier) => !tier.advanced)
+  .reduce((sum, tier, i) => (tier.label && i < band ? tier.threshold : sum), 0);
+
+describe('counting the words a reader knows', () => {
+  it('counts a band from COUNT_FLOOR coverage, in full from COVERAGE', () => {
+    expect(countedShare(COUNT_FLOOR)).toBe(0);
+    expect(countedShare(0.3)).toBe(0);
+    expect(countedShare(COVERAGE)).toBe(1);
+    expect(countedShare(0.95)).toBe(1);
+    expect(countedShare((COUNT_FLOOR + COVERAGE) / 2)).toBeCloseTo(0.5, 10);
+  });
+
+  it('credits a reader at the bottom of the scale with no words', () => {
+    LANGUAGES.forEach((language) => {
+      expect(vocabularySize(language, LEVEL_THETA_MIN)).toBe(0);
+      expect(wordsForTheta(language, LEVEL_THETA_MIN)).toBe(0);
+    });
+    // The old count credited ~730 Korean words there.
+    expect(legacyVocabularySize('ko', LEVEL_THETA_MIN)).toBeGreaterThan(500);
+  });
+
+  it('never falls as the level rises, up to every graded word', () => {
+    LANGUAGES.forEach((language) => {
+      let previous = -1;
+      for (let theta = LEVEL_THETA_MIN; theta <= LEVEL_THETA_MAX; theta += 0.05) {
+        const words = vocabularySize(language, theta);
+        expect(words).toBeGreaterThanOrEqual(previous - 1e-9);
+        previous = words;
+      }
+    });
+  });
+
+  it('seeds each Korean frequency tier at its own, higher level, showing that many words', () => {
+    const tiers = getVocabTiers('ko').filter((tier) => !tier.advanced);
+    let previous = LEVEL_THETA_MIN;
+    tiers.forEach((tier, index) => {
+      const theta = thetaForTier('ko', tier.threshold);
+      expect(theta).toBeGreaterThan(previous);
+      previous = theta;
+      expect(vocabularySize('ko', theta)).toBeCloseTo(tier.threshold, 3);
+      expect(describeLevel('ko', { estimate: theta, low: theta, high: theta }).estimate).toBe(roundWords(tier.threshold));
+      // ...and the picker reads the pick back as that row.
+      expect(tierIndexForTheta('ko', theta)).toBe(index);
+    });
+  });
+
+  it('credits an "HSK N" / CEFR reader with the words up to N and a share of the next', () => {
+    ['zh', 'en'].forEach((language) => {
+      const tiers = getVocabTiers(language);
+      for (let theta = -1; theta <= LEVEL_THETA_MAX; theta += 0.1) {
+        const band = coveredBand(language, theta);
+        if (band >= 1) {
+          const words = vocabularySize(language, theta);
+          // Every word of the bands up to the label...
+          expect(words).toBeGreaterThanOrEqual(cumulative(language, band) - 1e-6);
+          // ...and less than the two bands after it.
+          if (band + 2 <= tiers.length) expect(words).toBeLessThan(cumulative(language, band + 2));
+        }
+      }
+    });
+    // Picking HSK 4 no longer reads as ~12,000 of HSK 1-9's 17,676 words.
+    const hsk4 = thetaForTier('zh', getVocabTiers('zh')[3].threshold);
+    expect(vocabularySize('zh', hsk4)).toBeLessThan(8000);
+    expect(legacyVocabularySize('zh', hsk4)).toBeGreaterThan(11000);
+  });
+
+  it('reads the reader measured at HSK 4 (θ 1.72 ± 0.74) as HSK 4 with a sensible count', () => {
+    const range = levelRange(1.72, 0.74 ** 2);
+    const described = describeLevel('zh', range);
+    expect(described.estimate).toBe('HSK 4');
+    const words = wordsForTheta('zh', 1.72);
+    expect(words).toBeGreaterThan(cumulative('zh', 4));
+    expect(words).toBeLessThan(cumulative('zh', 6));
+  });
+
+  it('leaves coverage, labels and the engine\'s P(known) alone', () => {
+    // The engine's curve keeps its item-variance flattening.
+    expect(ITEM_SLOPE).toBeCloseTo(1 / Math.sqrt(1 + (Math.PI / 8) * 0.6), 10);
+    // A picked HSK / CEFR tier still seeds PICK_COVERAGE of its band.
+    ['zh', 'en'].forEach((language) => {
+      getVocabTiers(language).forEach((tier, i) => {
+        const theta = thetaForTier(language, tier.threshold);
+        if (theta < LEVEL_THETA_MAX) expect(coverage(language, theta, i + 1)).toBeCloseTo(0.85, 6);
+      });
+    });
+  });
+
+  it('reads a Korean pick made under engine 2.4 as the same word count today', () => {
+    const old = -1.99; // 2.4 seeded "3,000 words" here
+    expect(legacyVocabularySize('ko', old)).toBeCloseTo(3000, -1);
+    const today = legacySeedTheta('ko', old, 2.4);
+    expect(vocabularySize('ko', today)).toBeCloseTo(legacyVocabularySize('ko', old), 3);
+    // The bottom of the scale stays there; 2.4 HSK / CEFR picks and 2.5 picks are kept.
+    expect(legacySeedTheta('ko', LEVEL_THETA_MIN, 2.4)).toBe(LEVEL_THETA_MIN);
+    expect(legacySeedTheta('zh', 2.02, 2.4)).toBe(2.02);
+    expect(legacySeedTheta('ko', 1.19, 2.5)).toBe(1.19);
+    expect(startingTheta([{ signal: 'seed', theta_after: old, details: '{"engine":"2.4"}' }], 'ko')).toBeCloseTo(today, 10);
+    expect(startingTheta([{ signal: 'seed', theta_after: 1.19, details: '{"engine":"2.5"}' }], 'ko')).toBe(1.19);
+  });
+});
 
 describe('below the first tier ("just starting")', () => {
   const t = (key, params) => (params ? `${key}:${JSON.stringify(params)}` : key);
@@ -57,12 +166,16 @@ describe('below the first tier ("just starting")', () => {
         expect(levelPlaceForTheta(language, theta).beginner).toBe(false);
       });
     });
-    // Korean: from the first frequency tier the scale tells from its floor
-    // (100-700 all pick the bottom of the scale).
-    expect(beginnerWords('ko')).toBe(1000);
-    getVocabTiers('ko').filter((tier) => tier.threshold >= 1000).forEach((tier) => {
-      expect(isBeginnerTheta('ko', thetaForTier('ko', tier.threshold))).toBe(false);
+    // Korean: from the first frequency tier, 100 words; every tier picks a
+    // level of its own above the bottom of the scale.
+    expect(beginnerWords('ko')).toBe(100);
+    getVocabTiers('ko').forEach((tier) => {
+      const theta = thetaForTier('ko', tier.threshold);
+      expect(theta).toBeGreaterThan(LEVEL_THETA_MIN);
+      expect(isBeginnerTheta('ko', theta)).toBe(false);
     });
+    // Fewer than the first tier's words is still a beginner.
+    expect(isBeginnerTheta('ko', thetaForTier('ko', 100) - 0.05)).toBe(true);
     expect(beginnerWords('zh')).toBe(getVocabTiers('zh')[0].threshold);
     expect(beginnerWords('en')).toBe(getVocabTiers('en')[0].threshold);
   });

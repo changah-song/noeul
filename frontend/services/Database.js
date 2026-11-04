@@ -49,7 +49,7 @@ import {
 import { initialFsrsFromPKnown, rankNominations } from './flashcardNomination';
 import { fitReaderLevel, prepareRefitEvents } from './levelRefit';
 import { isObservedLevelMark } from './levelSample';
-import { isLegacyLevelRow } from './levelSummary';
+import { isLegacyLevelRow, levelRowEngine } from './levelSummary';
 import { legacySeedTheta } from './vocabSizeLevels';
 import { mergeVocabRows, vocabMergeKey } from './vocabMerge';
 
@@ -1232,12 +1232,15 @@ export const refitReaderLevel = async ({ ownerId, profileId, language = 'ko', no
   };
   const since = new Date(now - REFIT_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
   const rows = await readRefitEvents(scope, since);
-  // A level picked before engine 2.4 seeded the point where the reader knows
-  // half of the picked tier; in today's meaning the same pick is higher.
+  // A level picked under an older engine may mean a different level today:
+  // before 2.4 a pick seeded where the reader knows half of the picked tier,
+  // and a Korean pick under 2.4 used the old words count (legacySeedTheta).
   const seedRow = await readLatestSeed(scope);
-  const legacySeed = Boolean(seedRow) && isLegacyLevelRow(seedRow);
+  const legacySeed = Boolean(seedRow) && isLegacyLevelRow(seedRow, normalizedLanguage);
   const seed = seedRow
-    ? (legacySeed ? legacySeedTheta(normalizedLanguage, Number(seedRow.theta_after)) : Number(seedRow.theta_after))
+    ? (legacySeed
+      ? legacySeedTheta(normalizedLanguage, Number(seedRow.theta_after), levelRowEngine(seedRow))
+      : Number(seedRow.theta_after))
     : null;
   const at = new Date(now).toISOString();
   // Nothing read yet: move a reader still at an old pick to its new place.
