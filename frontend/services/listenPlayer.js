@@ -1,5 +1,6 @@
 import Tts from 'react-native-tts';
 import { checkVoices } from '../modules/tts-voice-check/src';
+import { listenDelay } from './listenDelay';
 
 // Listen mode's voice: a small queue over the phone's own text-to-speech
 // engine. The reader screen hands it sequences of utterances (the sentence,
@@ -163,7 +164,9 @@ export const isImplausiblyFast = (utterance, elapsedMs) => {
   return length >= 12 && elapsedMs < Math.min(400, length * 4);
 };
 
-export const createListenPlayer = ({ tts = Tts, now = Date.now } = {}) => {
+// `delay(ms)` times the silent gaps and engine timeouts. The default keeps
+// time with the screen off (services/listenDelay.js); a JS setTimeout does not.
+export const createListenPlayer = ({ tts = Tts, now = Date.now, delay = listenDelay } = {}) => {
   let session = 0;
   let currentId = null;
   let resolveCurrent = null;
@@ -214,7 +217,7 @@ export const createListenPlayer = ({ tts = Tts, now = Date.now } = {}) => {
 
   const withTimeout = (promise, ms) => Promise.race([
     Promise.resolve(promise).catch(() => null),
-    new Promise((resolve) => setTimeout(resolve, ms)),
+    delay(ms),
   ]);
 
   const prepare = async (locale, rate, voice, pitch) => {
@@ -312,7 +315,7 @@ export const createListenPlayer = ({ tts = Tts, now = Date.now } = {}) => {
         if (typeof item?.before === 'function') item.before();
         // A silent gap (no text), e.g. between one word and the next.
         if (!item?.text && Number(item?.pauseMs) > 0) {
-          await new Promise((resolve) => setTimeout(resolve, Number(item.pauseMs)));
+          await delay(Number(item.pauseMs));
           if (mySession !== session) return 'stopped';
           continue;
         }

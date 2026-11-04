@@ -100,6 +100,35 @@ describe('listenPlayer', () => {
     expect(tts.spoken).toHaveLength(1);
   });
 
+  it('times silent gaps with the injected screen-off-safe delay, not setTimeout', async () => {
+    const tts = fakeTts();
+    let release;
+    const delay = jest.fn(() => new Promise((resolve) => { release = resolve; }));
+    const timeoutSpy = jest.spyOn(global, 'setTimeout');
+    const player = createListenPlayer({ tts, delay });
+    const result = player.speakSequence([
+      { text: 'word', locale: 'en-US', rate: 1 },
+      { pauseMs: 450 },
+      { text: 'meaning', locale: 'en-US', rate: 1 },
+    ]);
+    await flush();
+    tts.finish('u1');
+    await flush();
+    await flush();
+    expect(delay).toHaveBeenCalledWith(450);
+    const gapTimers = timeoutSpy.mock.calls.filter(([, ms]) => ms === 450);
+    timeoutSpy.mockRestore();
+    expect(gapTimers).toHaveLength(0);
+    // The next utterance waits for the gap.
+    expect(tts.spoken.map((s) => s.text)).toEqual(['word']);
+    release();
+    await flush();
+    await flush();
+    expect(tts.spoken.map((s) => s.text)).toEqual(['word', 'meaning']);
+    tts.finish('u2');
+    await expect(result).resolves.toBe('done');
+  });
+
   it('does not hang when the finish event beats the speak() promise', async () => {
     const tts = fakeTts();
     // Fire the finish event synchronously inside speak, before its promise resolves.

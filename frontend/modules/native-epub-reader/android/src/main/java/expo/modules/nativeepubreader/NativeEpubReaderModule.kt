@@ -21,6 +21,7 @@ import android.widget.ScrollView
 import androidx.recyclerview.widget.RecyclerView
 import androidx.viewpager2.widget.ViewPager2
 import expo.modules.kotlin.AppContext
+import expo.modules.kotlin.Promise
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.functions.Queues
@@ -221,6 +222,17 @@ class NativeEpubReaderModule : Module() {
     Function("stopListenSession") {
       val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
       ListenSessionService.stop(context)
+    }
+
+    // A wait that keeps running with the screen off. React Native's
+    // setTimeout runs on frame callbacks, which stop while the activity is
+    // paused (screen off, app in the background): a JS timer between two
+    // utterances never fired, so audio review went silent after its first
+    // word once the phone locked. A main-looper post is not tied to frames;
+    // the listen service's wake lock keeps the CPU up for it while playing.
+    AsyncFunction("listenDelay") { ms: Double, promise: Promise ->
+      val delay = if (ms.isFinite()) ms.toLong().coerceIn(0L, 10 * 60 * 1000L) else 0L
+      Handler(Looper.getMainLooper()).postDelayed({ promise.resolve(null) }, delay)
     }
 
     AsyncFunction("extractPdfDocument") { options: Map<String, Any?> ->

@@ -4,6 +4,9 @@
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+  <!-- Held only while the voice plays, so the gaps between utterances keep
+       time with the screen off. -->
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
 
   <application>
     <service

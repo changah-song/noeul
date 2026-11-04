@@ -5,16 +5,21 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.util.Base64
+import android.util.Log
 import java.net.URL
 import java.util.concurrent.Executors
 import android.os.IBinder
@@ -23,6 +28,9 @@ import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.media.AudioAttributesCompat
+import androidx.media.AudioFocusRequestCompat
+import androidx.media.AudioManagerCompat
 
 // Foreground service behind listen mode. Two jobs:
 //
@@ -35,6 +43,12 @@ import androidx.core.content.ContextCompat
 //    buttons and the lock-screen controls (through the media session) are
 //    forwarded to JavaScript as "onListenControl" events; the reader screen
 //    owns the actual playback.
+//
+// 3. While the voice plays: hold a partial wake lock (the gaps between
+//    utterances are timed natively, see NativeEpubReaderModule.listenDelay,
+//    and must not stall in CPU sleep with the screen off), hold audio focus
+//    (a call or another app's audio pauses the voice, and a short
+//    interruption resumes it), and pause when headphones are unplugged.
 //
 // The voice itself is the phone's text-to-speech engine, driven from
 // JavaScript; this service never plays audio.
@@ -51,6 +65,42 @@ class ListenSessionService : Service() {
   private var coverBitmap: Bitmap? = null
   private val coverExecutor = Executors.newSingleThreadExecutor()
   private val mainHandler = Handler(Looper.getMainLooper())
+  private var wakeLock: PowerManager.WakeLock? = null
+  private var focusRequest: AudioFocusRequestCompat? = null
+  // Paused by a short focus loss (a call, a prompt that does not allow
+  // ducking): the voice resumes when focus comes back.
+  private var pausedForFocus = false
+  private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
+    Log.d(TAG, "audio focus change $change (playing=$playing)")
+    when (change) {
+      AudioManager.AUDIOFOCUS_LOSS -> {
+        pausedForFocus = false
+        abandonFocus()
+        if (playing) control(CONTROL_PAUSE)
+      }
+      AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+        if (playing) {
+          pausedForFocus = true
+          control(CONTROL_PAUSE)
+        }
+      }
+      AudioManager.AUDIOFOCUS_GAIN -> {
+        if (pausedForFocus) {
+          pausedForFocus = false
+          control(CONTROL_PLAY)
+        }
+      }
+      // AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK: the system lowers the voice.
+    }
+  }
+  private var noisyRegistered = false
+  private val noisyReceiver = object : BroadcastReceiver() {
+    override fun onReceive(context: Context?, intent: Intent?) {
+      if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY && playing) {
+        control(CONTROL_PAUSE)
+      }
+    }
+  }
 
   override fun onBind(intent: Intent?): IBinder? = null
 
@@ -79,6 +129,7 @@ class ListenSessionService : Service() {
         if (intent.hasExtra(EXTRA_PLAYING)) playing = intent.getBooleanExtra(EXTRA_PLAYING, playing)
         if (intent.hasExtra(EXTRA_COVER)) loadCover(intent.getStringExtra(EXTRA_COVER))
         publish()
+        applyPlaying()
       }
       ACTION_REFRESH_STRINGS -> {
         // The interface language changed: rename the channel and redraw the
@@ -109,6 +160,7 @@ class ListenSessionService : Service() {
 
   override fun onDestroy() {
     running = false
+    releasePlaybackHold()
     mediaSession?.isActive = false
     mediaSession?.release()
     mediaSession = null
@@ -167,7 +219,87 @@ class ListenSessionService : Service() {
     onControl?.invoke(action)
   }
 
+  // Hold the wake lock, audio focus and the unplug receiver while the voice
+  // plays; let them go on pause (except focus, kept through a short loss so
+  // the voice can resume when it comes back).
+  private fun applyPlaying() {
+    if (playing) {
+      pausedForFocus = false
+      acquireWakeLock()
+      requestFocus()
+      if (!noisyRegistered) {
+        ContextCompat.registerReceiver(
+          this,
+          noisyReceiver,
+          IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY),
+          ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        noisyRegistered = true
+      }
+    } else {
+      releaseWakeLock()
+      if (!pausedForFocus) abandonFocus()
+      unregisterNoisy()
+    }
+  }
+
+  private fun releasePlaybackHold() {
+    pausedForFocus = false
+    releaseWakeLock()
+    abandonFocus()
+    unregisterNoisy()
+  }
+
+  private fun acquireWakeLock() {
+    val lock = wakeLock ?: (getSystemService(Context.POWER_SERVICE) as PowerManager)
+      .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Noeul:ListenSession")
+      .apply { setReferenceCounted(false) }
+      .also { wakeLock = it }
+    // Renewed on every update while playing; the cap only guards against a
+    // session JavaScript never ended.
+    lock.acquire(WAKE_LOCK_MAX_MS)
+  }
+
+  private fun releaseWakeLock() {
+    wakeLock?.takeIf { it.isHeld }?.release()
+  }
+
+  private fun requestFocus() {
+    if (focusRequest != null) return
+    val request = AudioFocusRequestCompat.Builder(AudioManagerCompat.AUDIOFOCUS_GAIN)
+      .setAudioAttributes(
+        AudioAttributesCompat.Builder()
+          .setUsage(AudioAttributesCompat.USAGE_MEDIA)
+          .setContentType(AudioAttributesCompat.CONTENT_TYPE_SPEECH)
+          .build()
+      )
+      .setOnAudioFocusChangeListener(focusListener, mainHandler)
+      .setWillPauseWhenDucked(false)
+      .build()
+    val manager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    val result = AudioManagerCompat.requestAudioFocus(manager, request)
+    Log.d(TAG, "audio focus request result $result")
+    if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) focusRequest = request
+  }
+
+  private fun abandonFocus() {
+    val request = focusRequest ?: return
+    focusRequest = null
+    AudioManagerCompat.abandonAudioFocusRequest(getSystemService(Context.AUDIO_SERVICE) as AudioManager, request)
+  }
+
+  private fun unregisterNoisy() {
+    if (!noisyRegistered) return
+    noisyRegistered = false
+    try {
+      unregisterReceiver(noisyReceiver)
+    } catch (_: IllegalArgumentException) {
+      // Already unregistered.
+    }
+  }
+
   private fun endSession() {
+    releasePlaybackHold()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
       stopForeground(STOP_FOREGROUND_REMOVE)
     } else {
@@ -303,6 +435,8 @@ class ListenSessionService : Service() {
     private const val EXTRA_CONTROL = "control"
     private const val NOTIFICATION_CHANNEL_ID = "noeul_listen"
     private const val NOTIFICATION_ID = 7421
+    private const val WAKE_LOCK_MAX_MS = 30 * 60 * 1000L
+    private const val TAG = "NoeulListen"
 
     // Start the session or update its title / subtitle / playing state.
     fun update(context: Context, title: String?, subtitle: String?, playing: Boolean?, cover: String? = null) {
