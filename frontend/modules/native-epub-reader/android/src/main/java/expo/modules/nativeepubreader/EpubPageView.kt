@@ -156,6 +156,15 @@ class EpubPageView(context: Context) : View(context) {
   // How far a level underline has dissolved after the reader tapped the word
   // (0 = solid, 1 = dotted). Set by the owner.
   var tapProgress: ((TextRange) -> Float)? = null
+  // The word-help wave (see RevealWave), while one is playing. Set by the
+  // owner, which keeps the clock, so every page view plays the same wave.
+  var levelReveal: (() -> LevelReveal?)? = null
+  // This frame's wave, the window it runs down (view y), and the top of the
+  // block being drawn, to place each line in that window.
+  private var frameReveal: LevelReveal? = null
+  private var revealWindowTop = 0f
+  private var revealWindowHeight = 0f
+  private var drawingBlockTop = 0f
   // The sentence whose translation is pinned at the top (see ContextSentence).
   var contextSentence: ContextSentence? = null
     set(value) {
@@ -442,12 +451,46 @@ class EpubPageView(context: Context) : View(context) {
     canvas.drawColor(pageBackgroundColor)
     val contentWidth = width - (paddingH * 2)
     if (contentWidth <= 0) return
+    beginRevealFrame()
     drawSelectionBoxes(canvas)
     drawPageBlocks(canvas, contentWidth)
     drawSelectionHandleMarks(canvas)
     drawReaderEdgeState(canvas)
     if (readAnimationPending) postInvalidateOnAnimation()
   }
+
+  // Picks up the running word-help wave for this frame and keeps frames
+  // coming while it plays (none once it has ended). The wave runs down the
+  // visible window: the page in paged mode, the scrolled viewport otherwise.
+  private fun beginRevealFrame() {
+    val reveal = if (levelRanges.isNotEmpty()) levelReveal?.invoke() else null
+    frameReveal = reveal
+    if (reveal == null) return
+    readAnimationPending = true
+    val viewport = scrollViewport()
+    if (viewport != null) {
+      revealWindowTop = viewport.first.toFloat()
+      revealWindowHeight = viewport.second.toFloat()
+    } else {
+      revealWindowTop = 0f
+      revealWindowHeight = height.toFloat()
+    }
+  }
+
+  // Where a line (its y in the block being drawn) sits in the wave's window.
+  private fun revealLineFraction(lineY: Float): Float =
+    RevealWave.yFraction(drawingBlockTop + lineY, revealWindowTop, revealWindowHeight)
+
+  // How far in a word's pinyin and gloss are (1 = fully shown).
+  private fun annotationRevealAlpha(lineY: Float, centerX: Float, layoutWidth: Int): Float {
+    val reveal = frameReveal ?: return 1f
+    val across = if (layoutWidth > 0) centerX / layoutWidth else 0f
+    return RevealWave.annotationAlpha(reveal.elapsedMs, revealLineFraction(lineY), across, reveal.underlines)
+  }
+
+  // How far below its place an annotation still fading in is drawn.
+  private fun annotationRise(alpha: Float): Float =
+    (1f - alpha) * RevealWave.ANNOTATION_RISE_DP * resources.displayMetrics.density
 
   // ── Text selection: tight rounded boxes and iOS-style handles ─────────────
 
@@ -710,6 +753,7 @@ class EpubPageView(context: Context) : View(context) {
 
         canvas.save()
         canvas.translate((paddingH + block.marginLeft).toFloat(), yOffset)
+        drawingBlockTop = yOffset
         drawBlockContent(canvas, block, layout)
         canvas.restore()
         if (focusPass != null) {
@@ -729,6 +773,7 @@ class EpubPageView(context: Context) : View(context) {
       focusPass.forEach { (block, layout, top) ->
         canvas.save()
         canvas.translate((paddingH + block.marginLeft).toFloat(), top)
+        drawingBlockTop = top
         drawFocusModeOverlays(canvas, block, layout)
         canvas.restore()
         drawNoteIcons(canvas, block, layout, top)
@@ -967,8 +1012,10 @@ class EpubPageView(context: Context) : View(context) {
         val baseline = layout.getLineBaseline(line).toFloat()
 
         if (pinyin != null) {
+          val reveal = annotationRevealAlpha(baseline, (left + right) / 2f, layout.width)
+          pinyinPaint.alpha = (Color.alpha(annotationColor) * reveal).roundToInt()
           // Baseline just above the glyph tops, in the gap above the line.
-          val pinyinBaseline = baseline + ascent - dp(1f) - pinyinPaint.descent()
+          val pinyinBaseline = baseline + ascent - dp(1f) - pinyinPaint.descent() + annotationRise(reveal)
           if (perCharacterPinyin) {
             // Ruby style: each syllable over its own character, squeezed
             // horizontally when it's wider than the character, so neighbouring
@@ -992,6 +1039,7 @@ class EpubPageView(context: Context) : View(context) {
             canvas.drawText(pinyin, (left + right) / 2f, pinyinBaseline, pinyinPaint)
             pinyinPaint.textScaleX = 1f
           }
+          pinyinPaint.color = annotationColor
         }
         if (glossSenses.isNotEmpty()) {
           glosses.add(GlossItem(line, left, right, glossSenses))
@@ -1012,7 +1060,7 @@ class EpubPageView(context: Context) : View(context) {
     glosses.groupBy { it.line }.forEach { (line, items) ->
       val sorted = items.sortedBy { it.left }
       // Baseline just below the line's descenders, in the gap below the line.
-      val baseline = layout.getLineBaseline(line) + descent + dp(1f) - glossPaint.ascent()
+      val lineBaseline = layout.getLineBaseline(line) + descent + dp(1f) - glossPaint.ascent()
       sorted.forEachIndexed { index, item ->
         val slotLeft = if (index == 0) {
           max(0f, item.left - edgeSlack)
@@ -1029,9 +1077,12 @@ class EpubPageView(context: Context) : View(context) {
         val turn = glossTurn(item.senses.size, now)
         nextTickMs = min(nextTickMs, turn.untilChange)
         val text = item.senses[turn.index]
-        glossPaint.alpha = (Color.alpha(annotationColor) * turn.alpha).toInt()
-        val width = glossPaint.measureText(text)
         val center = (item.left + item.right) / 2f
+        val reveal = annotationRevealAlpha(layout.getLineBaseline(line).toFloat(), center, layout.width)
+        if (reveal <= 0f) return@forEachIndexed
+        glossPaint.alpha = (Color.alpha(annotationColor) * turn.alpha * reveal).toInt()
+        val width = glossPaint.measureText(text)
+        val baseline = lineBaseline + annotationRise(reveal)
 
         if (width <= slotWidth) {
           // Centered on the word, nudged to stay inside the slot.
@@ -2564,7 +2615,8 @@ class EpubPageView(context: Context) : View(context) {
         applyLevelUnderlineShade(paint, range.levelWeight, range.levelReinforced)
         drawLevelUnderline(
           canvas, layout, localStart, localEnd, blockTextLength, paint,
-          dissolve = tapDissolve(range)
+          dissolve = tapDissolve(range),
+          wave = true
         )
         return@forEach
       }
@@ -2790,8 +2842,12 @@ class EpubPageView(context: Context) : View(context) {
     paint: Paint,
     // 0 draws a solid line; above 0 the line is a row of pixels whose odd
     // cells drop out, ending as a dotted line at 1.
-    dissolve: Float = 0f
+    dissolve: Float = 0f,
+    // Level underlines: drawn only as far as the word-help wave's stroke has
+    // reached across the line, while one plays.
+    wave: Boolean = false
   ) {
+    val sweepReveal = frameReveal?.takeIf { wave && it.underlines }
     val safeStart = localStart.coerceIn(0, textLength)
     val safeEnd = localEnd.coerceIn(safeStart, textLength)
     if (safeStart >= safeEnd) return
@@ -2816,8 +2872,13 @@ class EpubPageView(context: Context) : View(context) {
         layout.getPrimaryHorizontal(lineEnd)
       }
       val left = min(startX, endX)
-      val right = max(startX, endX)
       val underlineY = layout.getLineBaseline(line).toFloat() + dp(3f)
+      val right = if (sweepReveal == null) {
+        max(startX, endX)
+      } else {
+        val sweep = RevealWave.underlineSweep(sweepReveal.elapsedMs, revealLineFraction(underlineY))
+        RevealWave.clippedRight(left, max(startX, endX), sweep * layout.width) ?: continue
+      }
       if (dissolve <= 0f) {
         underlinePath.reset()
         underlinePath.moveTo(left, underlineY)

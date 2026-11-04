@@ -181,6 +181,9 @@ const NativeEpubReaderView = forwardRef(({
     exposureTerms = [],
     showPinyin = false,
     showGloss = false,
+    // The phone asks for reduced motion: word help (underlines, pinyin,
+    // glosses) appears at once instead of sweeping in as a wave.
+    reduceMotion = false,
     // [{ text, at }] — underlined words the reader tapped (at = tap time, epoch
     // ms). Their underline dissolves into dots and stays that way.
     tappedTerms = null,
@@ -357,6 +360,7 @@ const NativeEpubReaderView = forwardRef(({
             exposureTerms={nativeExposureTerms}
             showPinyin={!!showPinyin}
             showGloss={!!showGloss}
+            reduceMotion={!!reduceMotion}
             showContextSentence={!!showContextSentence}
             tappedTerms={nativeTappedTerms}
             keepScreenOn={!!keepScreenOn}

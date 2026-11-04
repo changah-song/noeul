@@ -5111,6 +5111,7 @@ const Read = ({
                             exposureTerms={readerExposureTerms}
                             showPinyin={readerShowPinyin}
                             showGloss={readerShowGloss}
+                            reduceMotion={reduceMotion}
                             tappedTerms={tappedTerms}
                             keepScreenOn={listenPlaying}
                         focusTapsInSpanOnly={listenActive}
