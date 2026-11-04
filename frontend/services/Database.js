@@ -91,7 +91,11 @@ const VOCAB_EMPTY_HANJA_MIGRATION_KEY = 'vocab_empty_hanja_migration_v1';
 // 15: the phrases' glosses and senses in every interface language come from
 // backend/data/en_expressions_i18n.tsv; v14 rows outside Korean carried a
 // machine translation of the English headword.
-export const PREPROCESS_VERSION = 15;
+// 16: Chinese words are indexed as the reader should see them: multi-character
+// conjunctions and prepositions (如果 "if", not 如 "as" + 果 "fruit"), separable
+// verbs under their plain form (转过身 -> 转身 "to turn round", never 过身 "to
+// die"), and glosses from the common reading without old / dialect senses.
+export const PREPROCESS_VERSION = 16;
 // English words with no dictionary entry are underlined only when rarer than
 // this (zipf 3.5 ≈ "antique", "orchard"; epigram 2.6).
 const EN_UNDERLINE_OOV_MAX_ZIPF = 3.5;

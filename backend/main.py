@@ -24,7 +24,7 @@ from functools import lru_cache, partial
 import certifi
 from dotenv import load_dotenv
 
-from word_features import attach_word_features
+from word_features import attach_word_features, lookup_word_features
 from song_search import (
     GENIUS_SEARCH_URL,
     LRCLIB_SEARCH_URL,
@@ -59,7 +59,11 @@ from word_lookup import (
     translate_entry_glosses,
     KrdictFetchGuard,
 )
-from zh_senses import first_meaning_sense, is_reference_only_definition, rank_zh_entries
+from zh_senses import (
+    is_reference_only_definition,
+    rank_zh_entries,
+    short_gloss as zh_short_gloss,
+)
 import en_expressions
 import en_learner_dict
 from zh_tokens import (
@@ -68,6 +72,8 @@ from zh_tokens import (
     ZH_LOOKUP_MULTI_CHAR_ONLY_POS_PREFIXES,
     expand_unknown_compounds,
     is_zh_lookup_token,
+    merge_separable_tokens,
+    separable_windows,
     zh_split_candidates,
 )
 from translation import (
@@ -834,6 +840,42 @@ def init_cache_db():
     print("[main] Server-side cache database initialized.")
 
 
+# Bumped when the Chinese entry or gloss chosen for a word changes. The server
+# keeps each word's translated definition and gloss per interface language
+# (translate_and_cache_zh_preprocess), and those rows would keep the old
+# choice: 说 translated from shuì "to persuade", 后 from "empress".
+# 2: entries ranked by common reading, old/dialect senses skipped, short glosses.
+ZH_TRANSLATION_CACHE_VERSION = 2
+
+
+def purge_stale_zh_translations(conn: sqlite3.Connection | None = None) -> int:
+    """Drop the translated Chinese rows saved under an older
+    ZH_TRANSLATION_CACHE_VERSION (once per version). Returns the rows removed."""
+    own_conn = conn is None
+    conn = conn or get_db_connection()
+    try:
+        conn.execute("CREATE TABLE IF NOT EXISTS cache_meta (key TEXT PRIMARY KEY, value TEXT)")
+        row = conn.execute("SELECT value FROM cache_meta WHERE key = 'zh_translation_version'").fetchone()
+        current = str(ZH_TRANSLATION_CACHE_VERSION)
+        if row and str(row[0]) == current:
+            return 0
+        removed = conn.execute(
+            "DELETE FROM dictionary_cache WHERE language = 'zh' AND interface_language != 'en'"
+        ).rowcount
+        conn.execute(
+            "INSERT INTO cache_meta (key, value) VALUES ('zh_translation_version', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [current],
+        )
+        conn.commit()
+        if removed:
+            print(f"[main] dropped {removed} Chinese translation rows from an older gloss version")
+        return removed
+    finally:
+        if own_conn:
+            conn.close()
+
+
 def migrate_cache_db():
     """
     Upgrade older server cache DBs from UNIQUE(stem) to
@@ -1010,7 +1052,7 @@ EN_LOOKUP_SKIP_LEMMAS = {
 }
 # Which jieba POS flags become Chinese lookup tokens lives in zh_tokens.py
 # (ZH_LOOKUP_CONTENT_POS_PREFIXES: n/v/a/r/m/q/t/s/f/z/b/i/l/j, any length;
-# ZH_LOOKUP_MULTI_CHAR_ONLY_POS_PREFIXES: d, two+ characters only). Kept as
+# ZH_LOOKUP_MULTI_CHAR_ONLY_POS_PREFIXES: d/c/p/u/y/e/o, two+ characters only). Kept as
 # aliases here so the policy is visible next to the other lookup POS sets.
 ZH_LOOKUP_POS_PREFIXES = ZH_LOOKUP_CONTENT_POS_PREFIXES
 ZH_LOOKUP_MULTI_CHAR_POS_PREFIXES = ZH_LOOKUP_MULTI_CHAR_ONLY_POS_PREFIXES
@@ -2311,24 +2353,38 @@ def append_zh_lookup_token(
     words: list[str],
     surface_index: list[dict],
     pos_by_word: dict[str, str],
+    stem: str | None = None,
 ):
     normalized_word = word.strip() if isinstance(word, str) else ""
     if not normalized_word:
         return
+    # A separable verb (转过身) is looked up under its plain form (转身).
+    normalized_stem = stem.strip() if isinstance(stem, str) and stem.strip() else normalized_word
 
-    if normalized_word not in seen_words:
-        seen_words.add(normalized_word)
-        words.append(normalized_word)
+    if normalized_stem not in seen_words:
+        seen_words.add(normalized_stem)
+        words.append(normalized_stem)
         if pos:
-            pos_by_word[normalized_word] = pos
+            pos_by_word[normalized_stem] = pos
 
-    pair_key = (normalized_word, normalized_word)
+    pair_key = (normalized_word, normalized_stem)
     if pair_key not in seen_surface_pairs:
         seen_surface_pairs.add(pair_key)
         surface_index.append({
             "surface": normalized_word,
-            "stem": normalized_word,
+            "stem": normalized_stem,
         })
+
+
+def zh_zipf_lookup(terms: set[str]):
+    """word -> Zipf frequency (wordfreq, proficiency_levels.db), None if unknown."""
+    features = lookup_word_features("zh", list(terms)) if terms else {}
+
+    def zipf(term: str) -> float | None:
+        value = (features.get(term) or {}).get("zipf")
+        return float(value) if isinstance(value, (int, float)) else None
+
+    return zipf
 
 
 def extract_zh_lookup_tokens_with_jieba(text: str) -> tuple[list[str], list[dict], dict[str, str]]:
@@ -2342,45 +2398,58 @@ def extract_zh_lookup_tokens_with_jieba(text: str) -> tuple[list[str], list[dict
     if segmenter is None:
         return words, surface_index, pos_by_word
 
-    # Pass 1: keep the content tokens (single characters included — 人, 买,
-    # 酒 are real words; see zh_tokens.is_zh_lookup_token for the POS policy).
-    tokens: list[tuple[str, str]] = []
+    raw_tokens: list[tuple[str, str]] = []
     for pair in segmenter.cut(text):
         word = getattr(pair, "word", "").strip()
         flag = getattr(pair, "flag", "").strip()
-        if not is_zh_lookup_token(word, flag):
-            continue
-        tokens.append((word, flag))
+        if word:
+            raw_tokens.append((word, flag))
 
-    # Pass 2: jieba happily emits compounds that CC-CEDICT has never heard of
+    # Pass 1: separable verbs. 转过身, 回过头, 鞠了躬 (or jieba's 转 / 过身) are
+    # one word whose dictionary form is 转身, 回头, 鞠躬; see
+    # zh_tokens.merge_separable_tokens. One batched check of the candidates.
+    windows = separable_windows(raw_tokens)
+    known_separable = fetch_zh_dictionary_candidate_words(
+        {base for *_span, base in windows} | {surface for _s, _e, surface, _b in windows}
+    ) if windows else set()
+    merged_tokens = merge_separable_tokens(raw_tokens, known_separable)
+
+    # Pass 2: keep the content tokens (single characters included — 人, 买,
+    # 酒 are real words; see zh_tokens.is_zh_lookup_token for the POS policy).
+    tokens: list[tuple[str, str, str]] = []
+    for word, flag, stem in merged_tokens:
+        if stem != word or is_zh_lookup_token(word, flag):
+            tokens.append((word, flag, stem))
+
+    # Pass 3: jieba happily emits compounds that CC-CEDICT has never heard of
     # (鲁镇, 镇口, 看着, 做点事). They get pinyin but no gloss, and the reader
     # can't annotate the parts. Batch-check the multi-character tokens against
     # the dictionary once, then split the unknown ones into dictionary-known
-    # parts (greedy longest-match from the left, like the dictionary-only
-    # tokenizer below) and index those parts as their own surfaces. A
-    # compound its parts fully cover is then dropped (see
-    # zh_tokens.compound_index_plan); one with uncovered characters stays.
-    compounds = {word for word, _flag in tokens if len(word) > 1}
+    # parts on their most probable path (zh_tokens.best_known_split: by word
+    # frequency, so 转过身 is never 转 + 过身 "to die") and index those parts
+    # as their own surfaces. A compound its parts fully cover is then dropped
+    # (see zh_tokens.compound_index_plan); one with uncovered characters stays.
+    compounds = {word for word, _flag, stem in tokens if len(word) > 1 and stem == word}
     expansions: dict[str, list[str]] = {}
     if compounds:
         known_compounds = fetch_zh_dictionary_candidate_words(compounds)
         unknown_compounds = compounds - known_compounds
         if unknown_compounds:
-            known_parts = fetch_zh_dictionary_candidate_words(
-                zh_split_candidates(unknown_compounds, max_part_len=ZH_FALLBACK_MAX_WORD_LEN)
-            )
+            candidates = zh_split_candidates(unknown_compounds, max_part_len=ZH_FALLBACK_MAX_WORD_LEN)
+            known_parts = fetch_zh_dictionary_candidate_words(candidates)
             expansions = expand_unknown_compounds(
                 unknown_compounds,
                 known_parts,
                 max_part_len=ZH_FALLBACK_MAX_WORD_LEN,
+                zipf=zh_zipf_lookup(known_parts),
             )
 
     def part_flag(part: str) -> str | None:
         # jieba's own dictionary tag for the part, when it has one.
         return segmenter.dt.word_tag_tab.get(part) if hasattr(segmenter, "dt") else None
 
-    for word, flag in tokens:
-        parts = expansions.get(word)
+    for word, flag, stem in tokens:
+        parts = expansions.get(word) if stem == word else None
         index_whole = True
         if parts:
             index_whole, parts = compound_index_plan(word, flag, parts, part_flag)
@@ -2393,6 +2462,7 @@ def extract_zh_lookup_tokens_with_jieba(text: str) -> tuple[list[str], list[dict
                 words=words,
                 surface_index=surface_index,
                 pos_by_word=pos_by_word,
+                stem=stem,
             )
         # Parts go right after their compound so the index keeps text order.
         # They carry no POS: jieba tagged the compound, not the pieces.
@@ -2500,16 +2570,28 @@ def extract_zh_lookup_tokens(text: str) -> tuple[list[str], list[dict], dict[str
     return extract_zh_lookup_tokens_with_dictionary(text)
 
 
-def zh_definition_gloss(definition: str | None) -> str | None:
+def zh_definition_gloss(definition: str | None, *, proper_name: bool = False) -> str | None:
+    """The short gloss drawn under a Chinese word (zh_senses.short_gloss): the
+    first meaning sense that is not old / literary / dialect, without its notes,
+    always short. A missing gloss made the reader draw the whole definition
+    under the word (他 "(third-person singular) (since the early 20th ...")."""
     raw_definition = definition.strip() if isinstance(definition, str) else ""
     if not raw_definition:
         return None
+    return zh_short_gloss(raw_definition, proper_name=proper_name)
 
-    # First *meaning* sense: skip "variant of X" / "surname X" / "see X" pointers so
-    # the gloss under a word is a definition, not a cross-reference.
-    first_sense = first_meaning_sense(raw_definition) or raw_definition
-    short = first_sense.split(",")[0].strip()
-    return short if short and len(short) <= 40 else None
+
+def zh_preferred_reading(word: str | None) -> str | None:
+    """pypinyin's reading of `word` (its most common one; phrase-aware for
+    compounds), tone-marked without spaces: 说 -> "shuō", 还是 -> "háishì"."""
+    if _pypinyin is None or not isinstance(word, str) or not word.strip():
+        return None
+    try:
+        groups = _pypinyin(word.strip(), style=_PinyinStyle.TONE, errors="ignore", heteronym=False)
+    except Exception:
+        return None
+    reading = "".join((group[0] if group else "") for group in groups).strip()
+    return reading or None
 
 
 def zh_to_pinyin(text: str) -> str | None:
@@ -2580,7 +2662,7 @@ def zh_dictionary_row_to_result(
         "simplified": simplified or None,
         "traditional": traditional or None,
         "definition": definition,
-        "gloss": zh_definition_gloss(definition),
+        "gloss": zh_definition_gloss(definition, proper_name=bool(pinyin and pinyin[:1].isupper())),
         "hanja": None,
         "pos": pos,
         "domain": None,
@@ -2681,7 +2763,7 @@ def enrich_zh_entries(entry_lists: list[list[dict]]) -> None:
                     "definition": (row["definition"] or "").strip(),
                 })
     for key, key_rows in rows_by_key.items():
-        resolved[key] = rank_zh_entries(key_rows)[0]
+        resolved[key] = rank_zh_entries(key_rows, preferred_reading=zh_preferred_reading(key))[0]
 
     for entry in flat:
         definition = entry.get("definition") or ""
@@ -2700,7 +2782,10 @@ def enrich_zh_entries(entry_lists: list[list[dict]]) -> None:
                 else:
                     rebuilt.append(sense)
             entry["definition"] = "; ".join(rebuilt)
-            entry["gloss"] = zh_definition_gloss(entry["definition"])
+            entry["gloss"] = zh_definition_gloss(
+                entry["definition"],
+                proper_name=bool((entry.get("pinyin") or "")[:1].isupper()),
+            )
 
         word = entry.get("word") or ""
         pinyin = entry.get("pinyin") or ""
@@ -2801,15 +2886,18 @@ def lookup_zh_dictionary_entries(
         # before the real meaning, and with limit_per_stem=1 that pointer became the
         # whole stored definition. Real meanings first, proper-name readings next,
         # reference-only entries last; order is otherwise preserved.
-        stem_entries = rank_zh_entries([
-            zh_dictionary_row_to_result(
-                row,
-                script=script,
-                interface_language=interface_language,
-                pos=(pos_by_stem or {}).get(stem),
-            )
-            for row in stem_rows
-        ])
+        stem_entries = rank_zh_entries(
+            [
+                zh_dictionary_row_to_result(
+                    row,
+                    script=script,
+                    interface_language=interface_language,
+                    pos=(pos_by_stem or {}).get(stem),
+                )
+                for row in stem_rows
+            ],
+            preferred_reading=zh_preferred_reading(stem),
+        )
         if limit_per_stem is not None:
             stem_entries = stem_entries[:limit_per_stem]
         results.append(stem_entries)
@@ -5886,4 +5974,5 @@ async def explain_in_context_stream(payload: dict, auth: dict[str, Any] = Depend
 # prune_old_usage_rows, …) is already bound by the time these run.
 init_cache_db()
 migrate_cache_db()
+purge_stale_zh_translations()
 prune_old_usage_rows()

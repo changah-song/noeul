@@ -1,4 +1,9 @@
-import { annotationsBySurface, buildAnnotatedLevelTerms } from '../readerAnnotations';
+import {
+  annotationsBySurface,
+  buildAnnotatedLevelTerms,
+  isCjkCompoundSurface,
+  withPhraseTapTerms,
+} from '../readerAnnotations';
 
 const rows = [
   { surface: '学习', ipa: 'xué xí', gloss: 'to study', interface_language: 'en' },
@@ -150,6 +155,67 @@ describe('buildAnnotatedLevelTerms hidden saved words', () => {
     expect(terms.find((term) => term.text === '我们')).toBeUndefined();
     // Other words keep theirs.
     expect(terms.find((term) => term.text === '中文').gloss).toBe('Chinese');
+  });
+});
+
+describe('Chinese words', () => {
+  it('glosses 如果 as a word, never as its characters joined', () => {
+    // Even with character rows under the same surface (as an older index could
+    // hold), 如果 reads "if", not "as · fruit".
+    const zh = [
+      { surface: '如果', stem: '如果', gloss: 'if', interface_language: 'en', language: 'zh' },
+      { surface: '如果', stem: '如', gloss: 'as', interface_language: 'en', language: 'zh' },
+      { surface: '如果', stem: '果', gloss: 'fruit', interface_language: 'en', language: 'zh' },
+      { surface: '公园门', stem: '公园', gloss: 'park', interface_language: 'en', language: 'zh' },
+      { surface: '公园门', stem: '门', gloss: 'gate', interface_language: 'en', language: 'zh' },
+    ];
+    const index = annotationsBySurface(zh, 'en');
+    expect(index.get('如果').gloss).toBe('if');
+    expect(index.get('公园门').gloss).not.toContain(' · ');
+  });
+
+  it('glosses a separable verb by its plain form', () => {
+    const zh = [{ surface: '转过身', stem: '转身', gloss: 'to turn round', interface_language: 'en', language: 'zh' }];
+    expect(annotationsBySurface(zh, 'en').get('转过身').gloss).toBe('to turn round');
+  });
+
+  it('falls back to the first sense of a definition, not all of it', () => {
+    const zh = [{
+      surface: '他', stem: '他', gloss: null, interface_language: 'en', language: 'zh',
+      definition: 'he; him; his; (bound form) other',
+    }];
+    expect(annotationsBySurface(zh, 'en').get('他').gloss).toBe('he');
+  });
+
+  it('recognizes a Chinese word of two or more characters', () => {
+    expect(isCjkCompoundSurface('如果')).toBe(true);
+    expect(isCjkCompoundSurface('转过身')).toBe(true);
+    expect(isCjkCompoundSurface('阿Q')).toBe(false);
+    expect(isCjkCompoundSurface('人')).toBe(false);
+    expect(isCjkCompoundSurface('gave up')).toBe(false);
+  });
+
+  it('tells the reader about every Chinese word, so its characters are not glossed alone', () => {
+    // 有 is underlined; 只有 (easy, not underlined) must still cover 只有.
+    const levelTerms = [{ text: '有', weight: 0.7 }];
+    const out = withPhraseTapTerms(levelTerms, ['只有', '如果', '有']);
+    expect(out).toEqual([
+      { text: '有', weight: 0.7 },
+      { text: '只有', weight: 0, annotationOnly: true },
+      { text: '如果', weight: 0, annotationOnly: true },
+    ]);
+  });
+
+  it('ranks words by how common they are, so 不知道 is 不 + 知道', () => {
+    const ranks = new Map([['知道', 5.97], ['不知', 4.93]]);
+    const out = withPhraseTapTerms([{ text: '知道', weight: 0.2 }], ['不知'], ranks);
+    expect(out).toEqual([
+      { text: '知道', weight: 0.2, rank: 5.97 },
+      { text: '不知', weight: 0, annotationOnly: true, rank: 4.93 },
+    ]);
+    // No ranks, no change.
+    const plain = [{ text: '知道', weight: 0.2 }];
+    expect(withPhraseTapTerms(plain, [], new Map())).toBe(plain);
   });
 });
 

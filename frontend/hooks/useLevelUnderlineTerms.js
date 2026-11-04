@@ -13,7 +13,7 @@ import {
     signalsFromEvidenceRows,
 } from '../services/levelEngine';
 import { buildLevelExposureTerms, buildLevelUnderlineTerms, rowDifficulty } from '../services/levelUnderlineTerms';
-import { isPhraseSurface } from '../services/readerAnnotations';
+import { isCjkCompoundSurface, isPhraseSurface } from '../services/readerAnnotations';
 
 /**
  * loadLevelReaderTerms — load the graded-word underline snapshot for an indexed text (a book, or a
@@ -27,7 +27,7 @@ import { isPhraseSurface } from '../services/readerAnnotations';
  */
 export const loadLevelReaderTerms = async ({ ownerId, bookUri, language }) => {
     if (!bookUri) {
-        return { terms: [], exposureTerms: [], phraseSurfaces: [] };
+        return { terms: [], exposureTerms: [], phraseSurfaces: [], termRanks: new Map() };
     }
     const [reader, rows, evidenceRows] = await Promise.all([
         getReaderLevel({ ownerId, language }),
@@ -68,12 +68,27 @@ export const loadLevelReaderTerms = async ({ ownerId, bookUri, language }) => {
 
     const knowledge = buildWordKnowledge({ language, reader, difficulties, events, saved });
     const terms = buildLevelUnderlineTerms(rows, language, reader.theta, { knowledge });
-    // Every phrase in the book ("gave up"), underlined or not: the reader is
-    // told about all of them so a tap on any of their words opens the phrase.
+    // Every phrase in the book ("gave up") and every Chinese word of two or
+    // more characters, underlined or not: the reader is told about all of them
+    // so a tap on any of their words opens the phrase, and the characters of
+    // an easy word (如果, 只有) are not glossed one by one (withPhraseTapTerms).
+    const isChinese = String(language || '').startsWith('zh');
+    const spansWord = (surface) => isPhraseSurface(surface) || (isChinese && isCjkCompoundSurface(surface));
     const phraseSurfaces = Array.from(new Set((rows || [])
         .map((row) => (typeof row?.surface === 'string' ? row.surface.trim() : ''))
-        .filter(isPhraseSurface)));
-    return { terms, exposureTerms: buildLevelExposureTerms(rows, terms), phraseSurfaces };
+        .filter(spansWord)));
+    // Chinese: how common each word is, so the reader can settle two
+    // overlapping words of one length (不知道: 知道, not 不知).
+    const termRanks = new Map();
+    if (isChinese) {
+        (rows || []).forEach((row) => {
+            const surface = typeof row?.surface === 'string' ? row.surface.trim() : '';
+            const zipf = Number(row?.zipf);
+            if (!surface || row?.zipf == null || !Number.isFinite(zipf)) return;
+            if (!(termRanks.get(surface) >= zipf)) termRanks.set(surface, zipf);
+        });
+    }
+    return { terms, exposureTerms: buildLevelExposureTerms(rows, terms), phraseSurfaces, termRanks };
 };
 
 /**

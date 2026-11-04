@@ -240,6 +240,7 @@ const LEVEL_MARK_STYLES = ['off', 'underline'];
 // Reading this long is a session worth refitting the level after.
 const REFIT_SESSION_MS = 60 * 1000;
 const EMPTY_LEVEL_TERMS = [];
+const EMPTY_TERM_RANKS = new Map();
 
 const FONT_SIZE_MIN = 12;
 const FONT_SIZE_MAX = 30;
@@ -699,8 +700,10 @@ const Read = ({
     const [levelUnderlineTerms, setLevelUnderlineTerms] = useState([]);
     // Known words in the level sample: reported as read past, never drawn.
     const [levelExposureTerms, setLevelExposureTerms] = useState([]);
-    // The book's phrases ("gave up"), underlined or not (see withPhraseTapTerms).
+    // The book's phrases ("gave up") and Chinese words, underlined or not (see
+    // withPhraseTapTerms), and how common each Chinese word is.
     const [levelPhraseSurfaces, setLevelPhraseSurfaces] = useState([]);
+    const [levelTermRanks, setLevelTermRanks] = useState(EMPTY_TERM_RANKS);
     // Every word in the book with its pinyin / gloss, loaded only while word
     // annotations are on.
     const [annotationRows, setAnnotationRows] = useState([]);
@@ -1099,6 +1102,7 @@ const Read = ({
             setLevelUnderlineTerms([]);
             setLevelExposureTerms([]);
             setLevelPhraseSurfaces([]);
+            setLevelTermRanks(EMPTY_TERM_RANKS);
             setLevelTermsLoading(false);
             return;
         }
@@ -1112,11 +1116,12 @@ const Read = ({
             language: activeBookLanguage,
         });
 
-        loadTerms().then(({ terms, exposureTerms, phraseSurfaces = [] }) => {
+        loadTerms().then(({ terms, exposureTerms, phraseSurfaces = [], termRanks = EMPTY_TERM_RANKS }) => {
             if (isActive) {
                 setLevelUnderlineTerms(terms);
                 setLevelExposureTerms(exposureTerms);
                 setLevelPhraseSurfaces(phraseSurfaces);
+                setLevelTermRanks(termRanks);
             }
         }).catch((error) => {
             console.error('[Read] Failed to load book level underline surfaces:', error);
@@ -1124,6 +1129,7 @@ const Read = ({
                 setLevelUnderlineTerms([]);
                 setLevelExposureTerms([]);
                 setLevelPhraseSurfaces([]);
+                setLevelTermRanks(EMPTY_TERM_RANKS);
             }
         }).finally(() => {
             if (isActive) setLevelTermsLoading(false);
@@ -3904,7 +3910,8 @@ const Read = ({
             if (!readerShowPinyin && !readerShowGloss) {
                 return withPhraseTapTerms(
                     levelMarksEnabled ? thresholdLevelTerms : EMPTY_LEVEL_TERMS,
-                    levelPhraseSurfaces
+                    levelPhraseSurfaces,
+                    levelTermRanks
                 );
             }
             return withPhraseTapTerms(buildAnnotatedLevelTerms({
@@ -3917,12 +3924,13 @@ const Read = ({
                 glossScope,
                 interfaceLanguage,
                 hiddenSurfaces: hideSavedAnnotations ? savedSurfacesRef.current : null,
-            }), levelPhraseSurfaces);
+            }), levelPhraseSurfaces, levelTermRanks);
         },
         [
             annotationRows,
             hideSavedAnnotations,
             levelPhraseSurfaces,
+            levelTermRanks,
             readerHighlightTerms,
             pinyinScope,
             glossScope,
