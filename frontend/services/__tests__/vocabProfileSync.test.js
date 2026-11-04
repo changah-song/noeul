@@ -63,6 +63,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SQLite from 'expo-sqlite';
 import {
   addRelatedKnownWord,
+  createAudioLessonsTable,
   createBookBookmarksTable,
   createBookIndexTable,
   createBookNotesTable,
@@ -132,6 +133,7 @@ beforeEach(async () => {
   await createBookIndexTable();
   await createBookNotesTable();
   await createBookBookmarksTable();
+  await createAudioLessonsTable();
   await createBookPreprocessTables();
   jest.clearAllMocks();
   setRuntimeTargetLanguage('ko');

@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     ActivityIndicator,
     Modal,
+    ScrollView,
     StyleSheet,
     Text,
     TouchableOpacity,
@@ -11,7 +12,15 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
-import { getVocabContexts, lookupCacheByStem } from '../../services/Database';
+import {
+    getAudioLessons,
+    getAudioLessonWordInfo,
+    getVocabContexts,
+    getWordDifficulties,
+    lookupCacheByStem,
+    markAudioLessonPlayed,
+    saveAudioLesson,
+} from '../../services/Database';
 import { chapterTranslations } from '../../services/chapterTranslations';
 import { createListenPlayer, LISTEN_RATES, voiceLocaleFor, voiceSampleFor } from '../../services/listenPlayer';
 import {
@@ -19,9 +28,22 @@ import {
     buildAudioReviewSentencePart,
     buildAudioReviewWordPart,
     groupBySentence,
-    pickSentence,
     spokenMeaning,
 } from '../../services/audioReview';
+import {
+    AUDIO_LESSON_SIZES,
+    episodeTitle,
+    lessonIntroText,
+    lessonOutroText,
+    lessonSizeFor,
+    lessonWordRecord,
+    pickLessonSentence,
+    planLesson,
+    rankByUsage,
+    rotationUsedKeys,
+    themeForDomain,
+    withLessonSize,
+} from '../../services/audioLessons';
 import ListenVoiceSheet from '../Read/ListenVoiceSheet';
 import {
     claimListenSession,
@@ -34,7 +56,7 @@ import {
     stopListenSession,
     updateListenSession,
 } from '../../modules/native-epub-reader/src/NativeEpubReaderView';
-import { formatNumber } from '../../services/interfaceLanguage';
+import { formatDate, formatNumber } from '../../services/interfaceLanguage';
 import { withListenTimeout } from '../../services/listenDelay';
 import { ensureNotificationPermission } from '../../services/notificationPermission';
 import { fontFamilies, useTheme } from '../../theme';
@@ -45,6 +67,8 @@ const OWNER = 'audio-review';
 const LISTEN_PREFS_KEY = 'listenPrefs';
 // Audio review's own setting: how many times the word and meaning are read.
 const AUDIO_REVIEW_PREFS_KEY = 'audioReviewPrefs';
+// Words per lesson, per target language ({ sizeByLanguage: { ko: 5 } }).
+const AUDIO_LESSON_PREFS_KEY = 'audioLessonPrefs';
 
 // Merge `patch` into listen mode's saved prefs (shared with the reader).
 const saveListenPrefs = async (patch) => {
@@ -59,36 +83,58 @@ const saveListenPrefs = async (patch) => {
 // A sentence's translation may need the network; past this the word plays
 // without it rather than waiting.
 const TRANSLATION_TIMEOUT_MS = 6000;
+// The pause after the intro, before the first word.
+const INTRO_PAUSE_MS = 900;
 
 // Screen-off safe: a JS timer would never fire with the phone locked.
 const withTimeout = (promise, ms) => withListenTimeout(promise, ms, '');
 
 /**
- * AudioReview — the Learn tab's audio mode: plays the saved words one after
- * another, hands-free. For each: the word, its short meaning, a sentence it
- * was met in, and that sentence's translation (services/audioReview.js).
- * Words saved from the same sentence play together: each word and meaning,
- * then the shared sentence once.
+ * AudioReview — the Learn tab's audio lessons. The first screen picks how
+ * many words a lesson has, starts today's lesson (the next most useful saved
+ * words, grouped by theme where possible: services/audioLessons.js) and lists
+ * past lessons ("episodes") to replay. The player reads, hands-free: a short
+ * intro, then for each word the word, its short meaning, a short sentence it
+ * was met in and that sentence's translation (services/audioReview.js), then
+ * an outro. Words saved from the same sentence play together: each word and
+ * meaning, then the shared sentence once. Finishing a lesson does not mark its
+ * words as learned; the next lesson takes the next words.
  * Keeps playing with the screen off through the same foreground service and
  * lock-screen player as the reader's listen mode.
  */
-// Words whose sentences are looked up up front to group them (local only).
-const GROUPING_LIMIT = 300;
 // The most words read before one shared sentence.
 const GROUP_MAX = 6;
 
 const wordKey = (row) => `${row?.word ?? ''}\u0000${row?.hanja ?? ''}\u0000${row?.def ?? ''}`;
 
-const AudioReview = ({ visible, words: inputWords = [], targetLanguage, interfaceLanguage, ownerId, onClose }) => {
+const AudioReview = ({ visible, words: candidates = [], targetLanguage, interfaceLanguage, ownerId, onClose }) => {
     const { t } = useTranslation();
     const { colors } = useTheme();
     const insets = useSafeAreaInsets();
     const styles = useMemo(() => createStyles(colors), [colors]);
+    // 'home' (word count, today's lesson, episodes) or 'player'.
+    const [view, setView] = useState('home');
+    const [lesson, setLesson] = useState(null);
+    const lessonRef = useRef(null);
+    const [episodes, setEpisodes] = useState([]);
+    const [homeData, setHomeData] = useState(null);
+    const [homeLoading, setHomeLoading] = useState(false);
+    const [lessonSize, setLessonSize] = useState(lessonSizeFor(null, targetLanguage));
+    const lessonPrefsRef = useRef({});
+    const [starting, setStarting] = useState(false);
     const [index, setIndex] = useState(0);
-    // The play order: inputWords with words that share a sentence together.
-    const [words, setWords] = useState(inputWords);
+    // The play order: the lesson's words with words that share a sentence
+    // together. wordsRef is what playback reads (it is set before the render).
+    const [words, setWordsState] = useState([]);
+    const wordsRef = useRef([]);
+    const setWords = useCallback((list) => {
+        wordsRef.current = list;
+        setWordsState(list);
+    }, []);
     const sentenceCacheRef = useRef(new Map());
     const orderingRef = useRef(Promise.resolve());
+    const introDoneRef = useRef(false);
+    const autoPlayRef = useRef(false);
     const [playing, setPlaying] = useState(false);
     const [rate, setRate] = useState(1);
     const [details, setDetails] = useState({});
@@ -105,17 +151,20 @@ const AudioReview = ({ visible, words: inputWords = [], targetLanguage, interfac
     const interfaceLocale = voiceLocaleFor(interfaceLanguage);
     const word = words[index] ?? null;
     const current = details[index] ?? null;
+    const scope = useMemo(() => ({ ownerId, language: targetLanguage }), [ownerId, targetLanguage]);
 
-    // The sentence a saved word is read with (from the local database).
+    // The sentence a word is read with: a short one it was met in (from the
+    // local database), cut to the word's clause when long, or none.
     const sentenceFor = useCallback(async (row) => {
         const key = wordKey(row);
         if (sentenceCacheRef.current.has(key)) return sentenceCacheRef.current.get(key);
         let sentence = null;
         try {
+            const language = row.language ?? targetLanguage;
             const contexts = await getVocabContexts(
-                row.word, row.hanja, row.def, 12, row.language ?? targetLanguage, { ownerId }
+                row.word, row.hanja, row.def, 12, language, { ownerId }
             );
-            sentence = pickSentence(contexts, row.word);
+            sentence = pickLessonSentence(contexts, row.word, language);
         } catch {
             sentence = null;
         }
@@ -126,7 +175,7 @@ const AudioReview = ({ visible, words: inputWords = [], targetLanguage, interfac
     // The sentence and its translation for a word, fetched once.
     const loadDetails = useCallback(async (position) => {
         if (detailsRef.current[position]) return detailsRef.current[position];
-        const row = words[position];
+        const row = wordsRef.current[position];
         if (!row) return null;
         // The dictionary's short gloss reads better than a long saved sense.
         let gloss = null;
@@ -149,10 +198,11 @@ const AudioReview = ({ visible, words: inputWords = [], targetLanguage, interfac
             );
         }
         const loaded = { meaning, sentence, translation: String(translation || '').trim() };
+        if (wordsRef.current[position] !== row) return loaded;
         detailsRef.current = { ...detailsRef.current, [position]: loaded };
         setDetails(detailsRef.current);
         return loaded;
-    }, [interfaceLanguage, sentenceFor, targetLanguage, words]);
+    }, [interfaceLanguage, sentenceFor, targetLanguage]);
 
     const pause = useCallback(() => {
         runRef.current += 1;
@@ -161,11 +211,110 @@ const AudioReview = ({ visible, words: inputWords = [], targetLanguage, interfac
         playerRef.current?.stop();
     }, []);
 
-    // Play from `position`: the word (and any next words that share its
-    // sentence) with their meanings, the sentence once, then move on.
+    // ─── Home: lesson size, today's lesson, episodes ──────────────────────
+
+    // Episodes, and the candidates ranked by usage with their themes.
+    const loadHome = useCallback(async () => {
+        setHomeLoading(true);
+        const stems = candidates.map((row) => row.word).filter(Boolean);
+        const [saved, difficulties, wordInfo] = await Promise.all([
+            getAudioLessons(scope).catch(() => []),
+            getWordDifficulties(targetLanguage, stems).catch(() => ({})),
+            getAudioLessonWordInfo({ ...scope, words: stems }).catch(() => ({})),
+        ]);
+        const usage = {};
+        Object.entries(difficulties || {}).forEach(([stem, value]) => {
+            usage[stem] = { difficulty: value?.difficulty, isFallback: value?.isFallback, zipf: value?.details?.zipf };
+        });
+        setEpisodes(saved);
+        setHomeData({ ranked: rankByUsage(candidates, usage), wordInfo: wordInfo || {} });
+        setHomeLoading(false);
+    }, [candidates, scope, targetLanguage]);
+
+    // The lesson the start button plays: an unfinished one first, else the
+    // next words.
+    const unfinished = episodes[0] && !episodes[0].completedAt ? episodes[0] : null;
+    const plan = useMemo(() => {
+        if (!homeData) return null;
+        const { ranked, wordInfo } = homeData;
+        return planLesson({
+            ranked,
+            size: lessonSize,
+            usedKeys: rotationUsedKeys(episodes, ranked),
+            themeOf: (row) => themeForDomain(wordInfo[row.word]?.domain),
+            bookOf: (row) => wordInfo[row.word]?.book,
+        });
+    }, [episodes, homeData, lessonSize]);
+
+    const changeLessonSize = useCallback((size) => {
+        setLessonSize(size);
+        lessonPrefsRef.current = withLessonSize(lessonPrefsRef.current, targetLanguage, size);
+        AsyncStorage.setItem(AUDIO_LESSON_PREFS_KEY, JSON.stringify(lessonPrefsRef.current)).catch(() => {});
+    }, [targetLanguage]);
+
+    // Open an episode in the player and start it.
+    const openEpisode = useCallback((episode) => {
+        if (!episode || episode.words.length === 0) return;
+        pause();
+        lessonRef.current = episode;
+        introDoneRef.current = false;
+        autoPlayRef.current = true;
+        setLesson(episode);
+        setView('player');
+        markAudioLessonPlayed(episode.id).catch(() => {});
+    }, [pause]);
+
+    const startTodaysLesson = useCallback(async () => {
+        if (unfinished) {
+            openEpisode(unfinished);
+            return;
+        }
+        if (!plan || plan.words.length === 0 || starting) return;
+        setStarting(true);
+        try {
+            const episode = await saveAudioLesson({
+                ...scope,
+                theme: plan.theme,
+                words: plan.words.map(lessonWordRecord),
+            });
+            setEpisodes((list) => [episode, ...list]);
+            openEpisode(episode);
+        } catch {
+            // Not saved: play it anyway, it just won't be in the list.
+            openEpisode({ id: null, theme: plan.theme, words: plan.words.map(lessonWordRecord), createdAt: new Date().toISOString() });
+        } finally {
+            setStarting(false);
+        }
+    }, [openEpisode, plan, scope, starting, unfinished]);
+
+    const backToEpisodes = useCallback(() => {
+        pause();
+        setView('home');
+    }, [pause]);
+
+    // The lesson played to the end: it stays in the list (its words stay
+    // where they were in the saved list), and the next lesson moves on.
+    const finishLesson = useCallback(() => {
+        const finished = lessonRef.current;
+        pause();
+        setView('home');
+        if (finished?.id == null) return;
+        const at = new Date().toISOString();
+        setEpisodes((list) => list.map((item) => (
+            item.id === finished.id ? { ...item, completedAt: item.completedAt ?? at, lastPlayedAt: at } : item
+        )));
+        markAudioLessonPlayed(finished.id, { completed: true }).catch(() => {});
+    }, [pause]);
+
+    // ─── Player ───────────────────────────────────────────────────────────
+
+    // Play from `position`: the intro first on a lesson's first word, then the
+    // word (and any next words that share its sentence) with their meanings,
+    // the sentence once, then move on; the outro after the last word.
     const playFrom = useCallback(async (position) => {
         await orderingRef.current;
-        if (!words[position]) {
+        const list = wordsRef.current;
+        if (!list[position]) {
             pause();
             return;
         }
@@ -180,22 +329,6 @@ const AudioReview = ({ visible, words: inputWords = [], targetLanguage, interfac
         setVoiceError(false);
         setIndex(position);
         if (!playerRef.current) playerRef.current = createListenPlayer();
-        const loaded = await loadDetails(position);
-        if (run !== runRef.current) return;
-
-        const group = [position];
-        if (loaded?.sentence) {
-            while (group.length < GROUP_MAX) {
-                const next = position + group.length;
-                if (!words[next] || (await sentenceFor(words[next])) !== loaded.sentence) break;
-                group.push(next);
-            }
-            if (run !== runRef.current) return;
-        }
-        const after = position + group.length;
-        // Fetch the next word while this one plays.
-        loadDetails(after).catch(() => {});
-
         const voice = { targetLocale, interfaceLocale, rate, pitch: voicePrefs.pitch, voices: voicePrefs.voices };
         const finish = (outcome) => {
             if (outcome === 'error') {
@@ -204,13 +337,46 @@ const AudioReview = ({ visible, words: inputWords = [], targetLanguage, interfac
             }
             return outcome === 'done';
         };
+        const say = (text, pauseMs) => playerRef.current.speakSequence([
+            {
+                text,
+                locale: interfaceLocale,
+                rate,
+                pitch: voicePrefs.pitch,
+                voice: voicePrefs.voices?.[interfaceLocale] || null,
+            },
+            { pauseMs },
+        ]);
+
+        const loading = loadDetails(position);
+        if (position === 0 && !introDoneRef.current && lessonRef.current) {
+            const outcome = await say(lessonIntroText(lessonRef.current, t), INTRO_PAUSE_MS);
+            if (run !== runRef.current || !finish(outcome)) return;
+            introDoneRef.current = true;
+        }
+        const loaded = await loading;
+        if (run !== runRef.current) return;
+
+        const group = [position];
+        if (loaded?.sentence) {
+            while (group.length < GROUP_MAX) {
+                const next = position + group.length;
+                if (!list[next] || (await sentenceFor(list[next])) !== loaded.sentence) break;
+                group.push(next);
+            }
+            if (run !== runRef.current) return;
+        }
+        const after = position + group.length;
+        // Fetch the next word while this one plays.
+        loadDetails(after).catch(() => {});
+
         for (const at of group) {
             setIndex(at);
             const part = at === position ? loaded : await loadDetails(at);
             if (run !== runRef.current) return;
             const outcome = await playerRef.current.speakSequence(buildAudioReviewWordPart({
                 ...voice,
-                word: words[at].word,
+                word: list[at].word,
                 meaning: part?.meaning,
                 repeat,
             }));
@@ -222,12 +388,20 @@ const AudioReview = ({ visible, words: inputWords = [], targetLanguage, interfac
             translation: loaded?.translation,
         }));
         if (run !== runRef.current || !finish(outcome)) return;
-        if (after < words.length) {
+        if (after < list.length) {
             playFrom(after);
-        } else {
-            pause();
+            return;
         }
-    }, [interfaceLocale, loadDetails, pause, rate, repeat, sentenceFor, targetLocale, voicePrefs, words]);
+        if (lessonRef.current) {
+            const outro = await say(lessonOutroText(t), 0);
+            if (run !== runRef.current) return;
+            if (outro === 'done') {
+                finishLesson();
+                return;
+            }
+        }
+        pause();
+    }, [finishLesson, interfaceLocale, loadDetails, pause, rate, repeat, sentenceFor, t, targetLocale, voicePrefs]);
 
     const togglePlay = useCallback(() => {
         if (playingRef.current) pause();
@@ -235,13 +409,15 @@ const AudioReview = ({ visible, words: inputWords = [], targetLanguage, interfac
     }, [index, pause, playFrom]);
 
     const step = useCallback((direction) => {
-        const next = Math.min(Math.max(index + direction, 0), Math.max(words.length - 1, 0));
+        const next = Math.min(Math.max(index + direction, 0), Math.max(wordsRef.current.length - 1, 0));
+        // Skipping counts as past the intro.
+        introDoneRef.current = true;
         if (playingRef.current) {
             playFrom(next);
         } else {
             setIndex(next);
         }
-    }, [index, playFrom, words.length]);
+    }, [index, playFrom]);
 
     const cycleRate = useCallback(() => {
         setRate((value) => {
@@ -326,54 +502,82 @@ const AudioReview = ({ visible, words: inputWords = [], targetLanguage, interfac
                 if (AUDIO_REVIEW_REPEATS.includes(parsed?.repeat)) setRepeat(parsed.repeat);
             })
             .catch(() => {});
+        AsyncStorage.getItem(AUDIO_LESSON_PREFS_KEY)
+            .then((raw) => {
+                const parsed = raw ? JSON.parse(raw) : {};
+                if (cancelled) return;
+                lessonPrefsRef.current = parsed && typeof parsed === 'object' ? parsed : {};
+                setLessonSize(lessonSizeFor(lessonPrefsRef.current, targetLanguage));
+            })
+            .catch(() => {});
         return () => {
             cancelled = true;
         };
-    }, [visible]);
+    }, [targetLanguage, visible]);
 
-    // Fresh list each time it opens, with words that share a sentence moved
+    // Each open starts on the home view with fresh episodes and ranking.
+    useEffect(() => {
+        if (!visible) return;
+        setView('home');
+        setLesson(null);
+        lessonRef.current = null;
+        setHomeData(null);
+        loadHome();
+        // loadHome changes with the candidates, which also reopen the view.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [visible, candidates]);
+
+    // A lesson opened: its words, with words that share a sentence moved
     // together (play waits for this).
     useEffect(() => {
-        if (!visible) return undefined;
+        if (!lesson) return undefined;
         let cancelled = false;
+        const rows = lesson.words.map((record) => ({ ...record, language: record.language ?? targetLanguage }));
         detailsRef.current = {};
         sentenceCacheRef.current = new Map();
         setDetails({});
         setIndex(0);
         setVoiceError(false);
-        setWords(inputWords);
+        setWords(rows);
         orderingRef.current = (async () => {
-            const head = inputWords.slice(0, GROUPING_LIMIT);
-            const sentences = await Promise.all(head.map((row) => sentenceFor(row)));
+            const sentences = await Promise.all(rows.map((row) => sentenceFor(row)));
             if (cancelled) return;
-            const grouped = groupBySentence(head, (row, at) => sentences[at]);
-            if (grouped.every((row, at) => row === head[at])) return;
+            const grouped = groupBySentence(rows, (row, at) => sentences[at]);
+            if (grouped.every((row, at) => row === rows[at])) return;
             detailsRef.current = {};
             setDetails({});
-            setWords([...grouped, ...inputWords.slice(GROUPING_LIMIT)]);
+            setWords(grouped);
         })();
         return () => {
             cancelled = true;
         };
-        // sentenceFor changes with the owner/language, which also changes inputWords.
+        // sentenceFor changes with the owner/language, which also closes the lesson.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [visible, inputWords]);
+    }, [lesson]);
+
+    // Start a lesson as soon as it opens.
+    useEffect(() => {
+        if (view !== 'player' || !autoPlayRef.current || words.length === 0) return;
+        autoPlayRef.current = false;
+        playFrom(0);
+    }, [playFrom, view, words.length]);
 
     // Show the current word's sentence even before playing.
     useEffect(() => {
-        if (visible && word) loadDetails(index).catch(() => {});
-    }, [index, loadDetails, visible, word]);
+        if (visible && view === 'player' && word) loadDetails(index).catch(() => {});
+    }, [index, loadDetails, view, visible, word]);
 
     // The lock-screen / notification player.
+    const lessonTitle = lesson ? episodeTitle(lesson, t) : t('learn.audioLessons');
     useEffect(() => {
         if (!visible || !word || !ownsListenSession(OWNER)) return;
         updateListenSession({
             title: word.word,
-            subtitle: `${t('learn.audioReview')} · ${formatNumber(index + 1)} / ${formatNumber(words.length)}`,
+            subtitle: `${lessonTitle} · ${formatNumber(index + 1)} / ${formatNumber(words.length)}`,
             playing,
             cover: '',
         });
-    }, [index, playing, t, visible, word, words.length]);
+    }, [index, lessonTitle, playing, visible, word, words.length]);
 
     const controlsRef = useRef({});
     controlsRef.current = { togglePlay, step, pause, playFrom, index, close };
@@ -417,21 +621,185 @@ const AudioReview = ({ visible, words: inputWords = [], targetLanguage, interfac
     }, []);
 
     const wordCount = words.length;
+    const startLabel = unfinished ? t('learn.audioLessonContinue') : t('learn.audioLessonStart');
+    const startEpisode = unfinished ?? (plan && plan.words.length > 0 ? plan : null);
+    const canStart = Boolean(startEpisode) && !starting && !homeLoading;
+
+    const renderHome = () => (
+        <ScrollView style={styles.homeScroll} contentContainerStyle={styles.homeContent}>
+            <Text style={styles.sectionLabel}>{t('learn.audioLessonWords')}</Text>
+            <View style={styles.sizeRow} accessibilityRole="radiogroup">
+                {AUDIO_LESSON_SIZES.map((size) => {
+                    const active = size === lessonSize;
+                    return (
+                        <TouchableOpacity
+                            key={size}
+                            onPress={() => changeLessonSize(size)}
+                            style={[styles.sizeChip, active && styles.sizeChipActive]}
+                            accessibilityRole="radio"
+                            accessibilityState={{ selected: active }}
+                            accessibilityLabel={t('learn.audioLessonWordCount', { count: formatNumber(size) })}
+                        >
+                            <Text style={[styles.sizeText, active && styles.sizeTextActive]}>{formatNumber(size)}</Text>
+                        </TouchableOpacity>
+                    );
+                })}
+            </View>
+
+            <TouchableOpacity
+                onPress={startTodaysLesson}
+                disabled={!canStart}
+                style={[styles.startButton, !canStart && styles.startButtonDisabled]}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: !canStart }}
+            >
+                {starting || homeLoading ? (
+                    <ActivityIndicator color={colors.surface} />
+                ) : (
+                    <>
+                        <Feather name="headphones" size={18} color={canStart ? colors.surface : colors.textTertiary} />
+                        <Text style={[styles.startText, !canStart && styles.startTextDisabled]}>{startLabel}</Text>
+                    </>
+                )}
+            </TouchableOpacity>
+            {!homeLoading ? (
+                <Text style={styles.startHint}>
+                    {startEpisode
+                        ? `${episodeTitle(startEpisode, t)} · ${t('learn.audioLessonWordCount', { count: formatNumber(startEpisode.words.length) })}`
+                        : t('learn.audioEmpty')}
+                </Text>
+            ) : null}
+
+            <Text style={[styles.sectionLabel, styles.episodesLabel]}>{t('learn.audioLessonEpisodes')}</Text>
+            {episodes.length === 0 ? (
+                <Text style={styles.muted}>{t('learn.audioLessonNoEpisodes')}</Text>
+            ) : episodes.map((episode) => {
+                const title = episodeTitle(episode, t);
+                const meta = [
+                    t('learn.audioLessonWordCount', { count: formatNumber(episode.words.length) }),
+                    formatDate(episode.createdAt, { month: 'short', day: 'numeric' }),
+                    episode.completedAt ? null : t('learn.audioLessonInProgress'),
+                ].filter(Boolean).join(' · ');
+                return (
+                    <TouchableOpacity
+                        key={episode.id}
+                        onPress={() => openEpisode(episode)}
+                        style={styles.episodeRow}
+                        accessibilityRole="button"
+                        accessibilityLabel={t('learn.audioLessonPlayEpisode', { title })}
+                    >
+                        <View style={styles.episodeText}>
+                            <Text style={styles.episodeTitle} numberOfLines={1}>{title}</Text>
+                            <Text style={styles.episodeMeta} numberOfLines={1}>{meta}</Text>
+                            <Text style={styles.episodeWords} numberOfLines={1}>
+                                {episode.words.map((item) => item.word).join(' · ')}
+                            </Text>
+                        </View>
+                        <View style={styles.episodePlay}>
+                            <Feather name="play" size={16} color={colors.surface} />
+                        </View>
+                    </TouchableOpacity>
+                );
+            })}
+        </ScrollView>
+    );
+
+    const renderPlayer = () => (
+        <>
+            {word ? (
+                <View style={styles.body}>
+                    <Text style={styles.progress}>
+                        {`${lessonTitle} · ${formatNumber(index + 1)} / ${formatNumber(wordCount)}`}
+                    </Text>
+                    <Text style={styles.word} selectable>{word.word}</Text>
+                    {current?.meaning ? <Text style={styles.meaning}>{current.meaning}</Text> : null}
+                    <View style={styles.sentenceBlock}>
+                        {!current ? (
+                            <ActivityIndicator color={colors.textTertiary} />
+                        ) : current.sentence ? (
+                            <>
+                                <Text style={styles.sentence}>{current.sentence}</Text>
+                                {current.translation ? (
+                                    <Text style={styles.translation}>{current.translation}</Text>
+                                ) : null}
+                            </>
+                        ) : (
+                            <Text style={styles.muted}>{t('learn.audioNoSentence')}</Text>
+                        )}
+                    </View>
+                    {voiceError ? <Text style={styles.error}>{t('learn.audioNoVoice')}</Text> : null}
+                </View>
+            ) : (
+                <View style={styles.body}>
+                    <ActivityIndicator color={colors.textTertiary} />
+                </View>
+            )}
+
+            <View style={styles.controls}>
+                <TouchableOpacity
+                    onPress={cycleRate}
+                    style={styles.rateButton}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('learn.audioSpeed')}
+                >
+                    <Text style={styles.rateText}>{`${rate}×`}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                    onPress={() => step(-1)}
+                    disabled={index === 0}
+                    style={[styles.stepButton, index === 0 && styles.disabled]}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('learn.audioPrevious')}
+                >
+                    <Feather name="skip-back" size={26} color={colors.text} />
+                </TouchableOpacity>
+                <TouchableOpacity
+                    onPress={togglePlay}
+                    disabled={!word}
+                    style={styles.playButton}
+                    accessibilityRole="button"
+                    accessibilityLabel={playing ? t('learn.audioPause') : t('learn.audioPlay')}
+                >
+                    <Feather name={playing ? 'pause' : 'play'} size={32} color={colors.surface} />
+                </TouchableOpacity>
+                <TouchableOpacity
+                    onPress={() => step(1)}
+                    disabled={index >= wordCount - 1}
+                    style={[styles.stepButton, index >= wordCount - 1 && styles.disabled]}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('learn.audioNext')}
+                >
+                    <Feather name="skip-forward" size={26} color={colors.text} />
+                </TouchableOpacity>
+                <TouchableOpacity
+                    onPress={cycleRepeat}
+                    style={styles.rateButton}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('learn.audioRepeat', { count: repeat })}
+                >
+                    <Feather name="repeat" size={14} color={colors.textSecondary} />
+                    <Text style={styles.rateText}>{`${repeat}`}</Text>
+                </TouchableOpacity>
+            </View>
+        </>
+    );
+
+    const inPlayer = view === 'player';
 
     return (
-        <Modal visible={visible} animationType="slide" onRequestClose={close} statusBarTranslucent>
+        <Modal visible={visible} animationType="slide" onRequestClose={inPlayer ? backToEpisodes : close} statusBarTranslucent>
             <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
                 <View style={styles.header}>
                     <TouchableOpacity
-                        onPress={close}
+                        onPress={inPlayer ? backToEpisodes : close}
                         style={styles.headerButton}
                         hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                         accessibilityRole="button"
-                        accessibilityLabel={t('common.close')}
+                        accessibilityLabel={inPlayer ? t('learn.audioLessonBackToEpisodes') : t('common.close')}
                     >
-                        <Feather name="chevron-down" size={26} color={colors.text} />
+                        <Feather name={inPlayer ? 'chevron-left' : 'chevron-down'} size={26} color={colors.text} />
                     </TouchableOpacity>
-                    <Text style={styles.headerTitle}>{t('learn.audioReview')}</Text>
+                    <Text style={styles.headerTitle} numberOfLines={1}>{t('learn.audioLessons')}</Text>
                     <TouchableOpacity
                         onPress={openVoiceSheet}
                         style={styles.headerButton}
@@ -443,81 +811,7 @@ const AudioReview = ({ visible, words: inputWords = [], targetLanguage, interfac
                     </TouchableOpacity>
                 </View>
 
-                {word ? (
-                    <View style={styles.body}>
-                        <Text style={styles.progress}>
-                            {`${formatNumber(index + 1)} / ${formatNumber(wordCount)}`}
-                        </Text>
-                        <Text style={styles.word} selectable>{word.word}</Text>
-                        {current?.meaning ? <Text style={styles.meaning}>{current.meaning}</Text> : null}
-                        <View style={styles.sentenceBlock}>
-                            {!current ? (
-                                <ActivityIndicator color={colors.textTertiary} />
-                            ) : current.sentence ? (
-                                <>
-                                    <Text style={styles.sentence}>{current.sentence}</Text>
-                                    {current.translation ? (
-                                        <Text style={styles.translation}>{current.translation}</Text>
-                                    ) : null}
-                                </>
-                            ) : (
-                                <Text style={styles.muted}>{t('learn.audioNoSentence')}</Text>
-                            )}
-                        </View>
-                        {voiceError ? <Text style={styles.error}>{t('learn.audioNoVoice')}</Text> : null}
-                    </View>
-                ) : (
-                    <View style={styles.body}>
-                        <Text style={styles.muted}>{t('learn.audioEmpty')}</Text>
-                    </View>
-                )}
-
-                <View style={styles.controls}>
-                    <TouchableOpacity
-                        onPress={cycleRate}
-                        style={styles.rateButton}
-                        accessibilityRole="button"
-                        accessibilityLabel={t('learn.audioSpeed')}
-                    >
-                        <Text style={styles.rateText}>{`${rate}×`}</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        onPress={() => step(-1)}
-                        disabled={index === 0}
-                        style={[styles.stepButton, index === 0 && styles.disabled]}
-                        accessibilityRole="button"
-                        accessibilityLabel={t('learn.audioPrevious')}
-                    >
-                        <Feather name="skip-back" size={26} color={colors.text} />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        onPress={togglePlay}
-                        disabled={!word}
-                        style={styles.playButton}
-                        accessibilityRole="button"
-                        accessibilityLabel={playing ? t('learn.audioPause') : t('learn.audioPlay')}
-                    >
-                        <Feather name={playing ? 'pause' : 'play'} size={32} color={colors.surface} />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        onPress={() => step(1)}
-                        disabled={index >= wordCount - 1}
-                        style={[styles.stepButton, index >= wordCount - 1 && styles.disabled]}
-                        accessibilityRole="button"
-                        accessibilityLabel={t('learn.audioNext')}
-                    >
-                        <Feather name="skip-forward" size={26} color={colors.text} />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        onPress={cycleRepeat}
-                        style={styles.rateButton}
-                        accessibilityRole="button"
-                        accessibilityLabel={t('learn.audioRepeat', { count: repeat })}
-                    >
-                        <Feather name="repeat" size={14} color={colors.textSecondary} />
-                        <Text style={styles.rateText}>{`${repeat}`}</Text>
-                    </TouchableOpacity>
-                </View>
+                {inPlayer ? renderPlayer() : renderHome()}
             </SafeAreaView>
             <ListenVoiceSheet
                 visible={voiceSheetOpen}
@@ -545,6 +839,7 @@ const AudioReview = ({ visible, words: inputWords = [], targetLanguage, interfac
         </Modal>
     );
 };
+
 
 const createStyles = (colors) => StyleSheet.create({
     screen: {
@@ -666,6 +961,115 @@ const createStyles = (colors) => StyleSheet.create({
     },
     disabled: {
         opacity: 0.35,
+    },
+    homeScroll: {
+        flex: 1,
+    },
+    homeContent: {
+        paddingHorizontal: 24,
+        paddingTop: 20,
+        paddingBottom: 40,
+    },
+    sectionLabel: {
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 13,
+        color: colors.textSecondary,
+        marginBottom: 10,
+    },
+    episodesLabel: {
+        marginTop: 32,
+    },
+    sizeRow: {
+        flexDirection: 'row',
+        gap: 8,
+    },
+    sizeChip: {
+        minWidth: 52,
+        height: 36,
+        paddingHorizontal: 14,
+        borderRadius: 18,
+        borderWidth: 1,
+        borderColor: colors.border,
+        backgroundColor: colors.surface,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    sizeChipActive: {
+        borderColor: colors.text,
+        backgroundColor: colors.text,
+    },
+    sizeText: {
+        fontFamily: fontFamilies.sansMedium,
+        fontSize: 14,
+        color: colors.textSecondary,
+    },
+    sizeTextActive: {
+        fontFamily: fontFamilies.sansSemiBold,
+        color: colors.surface,
+    },
+    startButton: {
+        marginTop: 24,
+        height: 52,
+        borderRadius: 14,
+        flexDirection: 'row',
+        gap: 8,
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: 16,
+        backgroundColor: colors.text,
+    },
+    startButtonDisabled: {
+        backgroundColor: colors.surfaceMuted,
+    },
+    startText: {
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 16,
+        color: colors.surface,
+    },
+    startTextDisabled: {
+        color: colors.textTertiary,
+    },
+    startHint: {
+        marginTop: 8,
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 13,
+        color: colors.textTertiary,
+        textAlign: 'center',
+    },
+    episodeRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+        paddingVertical: 14,
+        borderBottomWidth: 1,
+        borderBottomColor: colors.divider,
+    },
+    episodeText: {
+        flex: 1,
+        gap: 3,
+    },
+    episodeTitle: {
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 15,
+        color: colors.text,
+    },
+    episodeMeta: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 12,
+        color: colors.textTertiary,
+    },
+    episodeWords: {
+        fontFamily: fontFamilies.krSerifRegular,
+        fontSize: 13,
+        color: colors.textSecondary,
+    },
+    episodePlay: {
+        width: 36,
+        height: 36,
+        borderRadius: 18,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: colors.text,
     },
 });
 
