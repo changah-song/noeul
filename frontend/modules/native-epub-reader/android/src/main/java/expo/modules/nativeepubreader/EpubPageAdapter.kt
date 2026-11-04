@@ -155,6 +155,8 @@ class EpubPageAdapter(
 
   // Forwarded to every page view; see EpubPageView.tapProgress.
   var tapProgress: ((TextRange) -> Float)? = null
+  // Forwarded to every page view; see EpubPageView.levelReveal.
+  var levelReveal: (() -> LevelReveal?)? = null
   // Forwarded to every page view; see EpubPageView.savedFade.
   var savedFade: ((TextRange) -> Pair<Float, Float>?)? = null
   // Forwarded to every page view; see EpubPageView.noteIconTapped.
@@ -209,6 +211,7 @@ class EpubPageAdapter(
   private fun bindView(view: EpubPageView, position: Int) {
     val page = pages[position]
     view.tapProgress = tapProgress
+    view.levelReveal = levelReveal
     view.savedFade = savedFade
     view.noteIconTapped = noteIconTapped
     view.contextSentence = contextSentence

@@ -380,6 +380,11 @@ class NativeEpubReaderModule : Module() {
         view.setShowGloss(enabled)
       }
 
+      // The phone asks for reduced motion: word help appears without the wave.
+      Prop("reduceMotion") { view: NativeEpubReaderView, enabled: Boolean ->
+        view.setReduceMotion(enabled)
+      }
+
       Prop("showContextSentence") { view: NativeEpubReaderView, enabled: Boolean ->
         view.setShowContextSentence(enabled)
       }
@@ -1174,6 +1179,13 @@ class NativeEpubReaderView(
   // Whether short translations are drawn under annotated words.
   private var showGloss: Boolean = false
 
+  // The wave that brings word help in (see RevealWave): when it was armed
+  // and when it started (uptime ms; 0 = armed, waiting for the first frame).
+  private var reduceMotion = false
+  private var levelRevealKind = RevealKind.NONE
+  private var levelRevealArmedAt = 0L
+  private var levelRevealStartedAt = 0L
+
   // Level-underlined words the reader has tapped -> tap time (epoch ms).
   private var tappedTerms: Map<String, Long> = emptyMap()
   // Saved word -> (strength it was drawn at, when it started fading to its
@@ -1377,6 +1389,7 @@ class NativeEpubReaderView(
     continuousScrollView.onPullStarted = { direction -> reportReadingDirection(direction) }
     continuousScrollView.onEdgePull = { direction -> handleContinuousEdgePull(direction) }
     continuousPageView.tapProgress = ::levelTapProgress
+    continuousPageView.levelReveal = ::levelRevealState
     continuousPageView.savedFade = ::savedFadeProgress
     continuousPageView.noteIconTapped = ::handleNoteIconTapped
     continuousScrollView.addView(
@@ -1901,6 +1914,66 @@ class NativeEpubReaderView(
 
   // How far a level underline has dissolved: 0 untapped, rising to 1 over
   // TAP_DISSOLVE_MS after the tap, then staying dotted.
+  fun setReduceMotion(enabled: Boolean) {
+    if (reduceMotion == enabled) return
+    reduceMotion = enabled
+    if (enabled && levelRevealKind != RevealKind.NONE) {
+      levelRevealKind = RevealKind.NONE
+      invalidateVisiblePageHighlights()
+    }
+  }
+
+  // Play the word-help wave on the page in front of the reader. It starts on
+  // that page's next frame, so a page still being laid out doesn't miss it.
+  private fun armLevelReveal(kind: RevealKind) {
+    if (kind == RevealKind.NONE || reduceMotion) return
+    // A full wave already under way isn't cut back to annotations only.
+    val running = levelRevealState()
+    levelRevealKind = if (running?.underlines == true) RevealKind.FULL else kind
+    levelRevealArmedAt = SystemClock.uptimeMillis()
+    levelRevealStartedAt = 0L
+  }
+
+  // The running wave, or null when there is none (or it has ended). Page views
+  // call this as they draw level marks.
+  private fun levelRevealState(): LevelReveal? {
+    val kind = levelRevealKind
+    if (kind == RevealKind.NONE || reduceMotion) return null
+    val now = SystemClock.uptimeMillis()
+    if (levelRevealStartedAt == 0L) {
+      if (now - levelRevealArmedAt > RevealWave.ARM_TIMEOUT_MS) {
+        levelRevealKind = RevealKind.NONE
+        return null
+      }
+      levelRevealStartedAt = now
+    }
+    val reveal = LevelReveal(now - levelRevealStartedAt, underlines = kind == RevealKind.FULL)
+    if (RevealWave.isDone(reveal)) {
+      levelRevealKind = RevealKind.NONE
+      return null
+    }
+    return reveal
+  }
+
+  // The level marks on the page in front of the reader (the whole chapter
+  // in the vertical modes), for deciding whether a change plays the wave.
+  private fun visibleLevelMarks(rangesByPage: Map<Int, List<TextRange>>): List<RevealWave.Mark> {
+    val page = if (isVerticalLayoutMode()) {
+      pages.getOrNull(continuousPageIndex)
+    } else {
+      pageAdapter?.pageAt(viewPager.currentItem)
+    } ?: return emptyList()
+    return rangesByPage[page.pageIndex].orEmpty().map { range ->
+      RevealWave.Mark(
+        key = "${range.spineIndex}|${range.blockId}|${range.sourceStartOffset}|${range.sourceEndOffset}",
+        weight = range.levelWeight,
+        reinforced = range.levelReinforced,
+        underlined = !range.annotationOnly,
+        annotated = (showPinyin && !range.pinyin.isNullOrBlank()) || (showGloss && !range.gloss.isNullOrBlank())
+      )
+    }
+  }
+
   private fun levelTapProgress(range: TextRange): Float {
     val term = range.term ?: return 0f
     val at = tappedTerms[term] ?: return 0f
@@ -2393,6 +2466,12 @@ class NativeEpubReaderView(
     levelRangesByPage = levelHighlights.rangesByPage
     levelTermsByPage = levelHighlights.termsByPage
     rebuildExposureRanges(nextPages)
+    // The book's first layout with its word help already in: play the wave
+    // as the page first shows. Later layouts (a chapter turn, a font change)
+    // show the marks at once.
+    if (previousPages.none { it.blocks.isNotEmpty() } && levelHighlights.rangesByPage.isNotEmpty()) {
+      armLevelReveal(RevealKind.FULL)
+    }
 
     // New content is binding: close the unit from the old layout, and forget the
     // continuous block-visibility ledger — it's keyed to blocks that no longer
@@ -2458,6 +2537,7 @@ class NativeEpubReaderView(
         ::handlePageEdgeAction
       )
       pageAdapter?.tapProgress = ::levelTapProgress
+      pageAdapter?.levelReveal = ::levelRevealState
       pageAdapter?.savedFade = ::savedFadeProgress
       pageAdapter?.noteIconTapped = ::handleNoteIconTapped
       viewPager.adapter = pageAdapter
@@ -4384,8 +4464,12 @@ class NativeEpubReaderView(
       glossForPriority = ::levelGlossForPriority,
       annotationOnlyForPriority = ::levelAnnotationOnlyForPriority
     )
+    val marksBefore = visibleLevelMarks(levelRangesByPage)
     levelRangesByPage = levelHighlights.rangesByPage
     levelTermsByPage = levelHighlights.termsByPage
+    // Word help arriving, or a level change re-shading the page, plays the
+    // wave; a word or two coming or going just appears.
+    armLevelReveal(RevealWave.kindFor(marksBefore, visibleLevelMarks(levelRangesByPage)))
     // Exposures leave out words inside the phrases just matched.
     rebuildExposureRanges(pages)
     pageAdapter?.updateLevelUnderlineRanges(levelRangesByPage)
