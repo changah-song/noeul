@@ -6,7 +6,7 @@ jest.mock('../../services/Database', () => ({
   setProfileAbilityFromVocab: jest.fn(),
 }));
 
-const { tierIndexFor } = require('../shared/VocabLevelModal');
+const { NONE_INDEX, tierIndexFor } = require('../shared/VocabLevelModal');
 const { getVocabTiers, thetaForTier } = require('../../services/vocabSizeLevels');
 
 const tiers = getVocabTiers('zh');
@@ -18,8 +18,9 @@ describe('tierIndexFor', () => {
     });
   });
 
-  it('floors at the first tier and is null without an ability', () => {
-    expect(tierIndexFor('zh', tiers, -4)).toBe(0);
+  it('is the "none of these yet" row below the first tier, and null without an ability', () => {
+    expect(tierIndexFor('zh', tiers, -4)).toBe(NONE_INDEX);
+    expect(tierIndexFor('ko', getVocabTiers('ko'), -4)).toBe(NONE_INDEX);
     expect(tierIndexFor('zh', tiers, undefined)).toBeNull();
     expect(tierIndexFor('zh', [], 1)).toBeNull();
   });

@@ -1,4 +1,4 @@
-import { getVocabTiers, legacySeedTheta, tierIndexForTheta } from './vocabSizeLevels';
+import { getVocabTiers, isBeginnerTheta, legacySeedTheta, tierIndexForTheta } from './vocabSizeLevels';
 import { coveredBand, thetaForBandCoverage, vocabularySize } from './levelScale';
 import { LEVEL_THETA_MAX, LEVEL_THETA_MIN, seedThetaFromRank } from './abilityModel';
 
@@ -62,17 +62,25 @@ export const tierLabelForTheta = (language, theta) => {
 /**
  * describeLevel — the words for a theta and for a range, for one language.
  * `{ kind: 'words', estimate, low, high }` (numbers, rounded) or
- * `{ kind: 'tiers', estimate, low, high }` (tier labels), or null.
+ * `{ kind: 'tiers', estimate, low, high }` (tier labels), or null. `beginner`
+ * flags each of the three that is below the first tier (isBeginnerTheta): show
+ * beginnerLevelLabel there, not the number or label.
  */
 export const describeLevel = (language, { estimate, low, high }) => {
   const tiers = getVocabTiers(language);
   if (tiers.length === 0) return null;
+  const beginner = {
+    estimate: isBeginnerTheta(language, estimate),
+    low: isBeginnerTheta(language, low),
+    high: isBeginnerTheta(language, high),
+  };
   if (hasLabels(tiers)) {
     return {
       kind: 'tiers',
       estimate: tierLabelForTheta(language, estimate),
       low: tierLabelForTheta(language, low),
       high: tierLabelForTheta(language, high),
+      beginner,
     };
   }
   return {
@@ -80,7 +88,20 @@ export const describeLevel = (language, { estimate, low, high }) => {
     estimate: roundWords(wordsForTheta(language, estimate)),
     low: roundWords(wordsForTheta(language, low)),
     high: roundWords(wordsForTheta(language, high)),
+    beginner,
   };
+};
+
+/**
+ * beginnerLevelLabel — the name of the level below the first tier: "Pre-A1"
+ * (CEFR's own name), "Below HSK 1", or for Korean "Pre-beginner" (below
+ * Beginner 1). `t` is the interface translator.
+ */
+export const beginnerLevelLabel = (language, t) => {
+  const [first] = getVocabTiers(language);
+  if (first?.label === 'A1') return 'Pre-A1';
+  if (first?.label) return t('level.belowTier', { level: first.label });
+  return t('level.preBeginner');
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -202,10 +223,12 @@ const KO_RANKS = [1, 2, 3, 4, 5, 6];
  * levelPlaceForTheta — where a level sits on the language's own scale:
  * Korean's six reading levels (`{ scale: 'ko', rank, nextRank }`), or the
  * HSK / CEFR tier (`{ scale: 'tier', label, nextLabel }`), each with the words
- * known at the next one (`nextWords`, null at the top).
+ * known at the next one (`nextWords`, null at the top). `beginner`: below the
+ * first tier (name it with beginnerLevelLabel).
  */
 export const levelPlaceForTheta = (language, theta) => {
   const value = Number(theta);
+  const beginner = isBeginnerTheta(language, value);
   if (language === 'ko') {
     // The highest reading level whose words the reader knows 80% of.
     const covered = coveredBand('ko', value);
@@ -214,6 +237,7 @@ export const levelPlaceForTheta = (language, theta) => {
     const nextTheta = nextRank ? (thetaForBandCoverage('ko', nextRank, 0.8) ?? seedThetaFromRank('ko', nextRank)) : null;
     return {
       scale: 'ko',
+      beginner,
       rank,
       nextRank,
       nextWords: nextRank ? wordsForTheta(language, nextTheta) : null,
@@ -224,6 +248,7 @@ export const levelPlaceForTheta = (language, theta) => {
   const next = tiers[index + 1] ?? null;
   return {
     scale: 'tier',
+    beginner,
     label: tiers[index]?.label ?? null,
     nextLabel: next?.label ?? null,
     nextWords: next ? next.threshold : null,

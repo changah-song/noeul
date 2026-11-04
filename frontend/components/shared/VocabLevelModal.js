@@ -13,7 +13,14 @@ import { useLocalOwner } from '../../contexts/LocalOwnerContext';
 import { useTranslation } from '../../hooks/useTranslation';
 import { formatNumber } from '../../services/interfaceLanguage';
 import { fontFamilies, useTheme } from '../../theme';
-import { getVocabTiers, thetaForTier, tierIndexForTheta } from '../../services/vocabSizeLevels';
+import {
+    BEGINNER_SEED_VARIANCE,
+    BEGINNER_THETA,
+    getVocabTiers,
+    isBeginnerTheta,
+    thetaForTier,
+    tierIndexForTheta,
+} from '../../services/vocabSizeLevels';
 import { nearestRankForTheta } from '../../services/calibrationQuiz';
 import { getProfileAbility, setProfileAbilityFromVocab } from '../../services/Database';
 import { hasWordCheck } from '../../services/wordCheck';
@@ -23,11 +30,18 @@ import { SheetFrame, WordCheckBody, useWordCheck } from './WordCheckModal';
 export const vocabLevelPickKey = (ownerId, profileId, language) => `vocabLevelPick:${ownerId || 'guest'}:${profileId || ''}:${language}`;
 const pickKey = vocabLevelPickKey;
 
+// The "none of these yet" row above the tiers: its index, and how the pick is
+// stored.
+export const NONE_INDEX = -1;
+const NONE_PICK = 'none';
+
 // Index of the hardest tier at or below this ability: the row the model now
-// thinks the reader knows all of. Null when there is no ability yet.
+// thinks the reader knows all of (NONE_INDEX below the first tier). Null when
+// there is no ability yet.
 export const tierIndexFor = (language, tiers, theta) => {
     if (theta === null || theta === undefined || theta === '') return null;
     if (!Number.isFinite(Number(theta)) || !tiers.length) return null;
+    if (isBeginnerTheta(language, Number(theta))) return NONE_INDEX;
     return tierIndexForTheta(language, Number(theta));
 };
 
@@ -105,7 +119,8 @@ const VocabLevelModal = ({ visible, onClose, initialMode = 'list' }) => {
             try {
                 const stored = await AsyncStorage.getItem(pickKey(activeOwnerId, activeProfileId, targetLanguage));
                 const index = tiers.findIndex((tier) => String(tier.threshold) === String(stored));
-                pick = index >= 0 ? index : null;
+                if (index >= 0) pick = index;
+                else pick = stored === NONE_PICK ? NONE_INDEX : null;
             } catch {
                 pick = null;
             }
@@ -137,20 +152,23 @@ const VocabLevelModal = ({ visible, onClose, initialMode = 'list' }) => {
         if (selectedIndex == null || isSaving) {
             return;
         }
-        const tier = tiers[selectedIndex];
-        if (!tier) {
+        const none = selectedIndex === NONE_INDEX;
+        const tier = none ? null : tiers[selectedIndex];
+        if (!none && !tier) {
             onClose?.();
             return;
         }
         setIsSaving(true);
-        const theta = thetaForTier(targetLanguage, tier.threshold);
+        // "None of these yet" seeds below the first tier, like onboarding's
+        // "I'm just starting".
+        const theta = none ? BEGINNER_THETA : thetaForTier(targetLanguage, tier.threshold);
         const nearestRank = nearestRankForTheta(targetLanguage, theta);
         try {
             // The pick first: the level change below refreshes whatever shows
             // it (Profile's level card reads both).
             await AsyncStorage.setItem(
                 pickKey(activeOwnerId, activeProfileId, targetLanguage),
-                String(tier.threshold)
+                none ? NONE_PICK : String(tier.threshold)
             ).catch(() => {});
             await setProfileAbilityFromVocab({
                 ownerId: activeOwnerId,
@@ -158,6 +176,7 @@ const VocabLevelModal = ({ visible, onClose, initialMode = 'list' }) => {
                 language: targetLanguage,
                 theta,
                 nearestRank,
+                ...(none ? { variance: BEGINNER_SEED_VARIANCE } : {}),
             });
             // Keep the displayed band + fallback seed aligned with the measurement.
             setTargetLanguageLevel(nearestRank);
@@ -225,14 +244,15 @@ const VocabLevelModal = ({ visible, onClose, initialMode = 'list' }) => {
                         accessibilityRole="radiogroup"
                         accessibilityLabel={t('vocabLevel.title')}
                     >
-                        {tiers.map((tier, index) => {
+                        {[{ none: true }, ...tiers].map((tier, row) => {
+                            const index = row - 1;
                             const known = selectedIndex != null && index <= selectedIndex;
                             const isPick = index === selectedIndex;
                             const isNow = index === nowIndex;
                             const wasPicked = index === lastPickIndex && lastPickIndex !== nowIndex;
                             return (
                                 <TouchableOpacity
-                                    key={tier.threshold}
+                                    key={tier.none ? NONE_PICK : tier.threshold}
                                     activeOpacity={0.75}
                                     onPress={() => setSelectedIndex(index)}
                                     onLayout={(event) => {
@@ -243,14 +263,14 @@ const VocabLevelModal = ({ visible, onClose, initialMode = 'list' }) => {
                                     accessibilityState={{ selected: isPick }}
                                     style={[
                                         styles.row,
-                                        index > 0 && styles.rowDivider,
+                                        row > 0 && styles.rowDivider,
                                         known && styles.rowKnown,
                                         isPick && styles.rowPick,
                                     ]}
                                 >
                                     <View style={styles.rowLabelCol}>
                                         <Text style={[styles.rowLabel, known && styles.rowLabelKnown]} numberOfLines={1}>
-                                            {tierLabel(tier)}
+                                            {tier.none ? t('vocabLevel.noneTier') : tierLabel(tier)}
                                         </Text>
                                         {isNow ? (
                                             <Text style={styles.tagNow}>{t('vocabLevel.estimateNow')}</Text>
@@ -259,8 +279,10 @@ const VocabLevelModal = ({ visible, onClose, initialMode = 'list' }) => {
                                             <Text style={styles.tagPick} numberOfLines={1}>{t('vocabLevel.yourPick')}</Text>
                                         ) : null}
                                     </View>
-                                    <Text style={[styles.word, isEnglish && styles.wordEn, known && styles.wordKnown]}>
-                                        {tier.words.join(isEnglish ? ' · ' : ' ')}
+                                    <Text style={[styles.word, isEnglish && styles.wordEn, tier.none && styles.wordNone, known && styles.wordKnown]}>
+                                        {tier.none
+                                            ? t('vocabLevel.noneTierDetail')
+                                            : tier.words.join(isEnglish ? ' · ' : ' ')}
                                     </Text>
                                 </TouchableOpacity>
                             );
@@ -377,6 +399,11 @@ const createStyles = (colors) => StyleSheet.create({
     },
     wordEn: {
         fontFamily: fontFamilies.displayRegular,
+    },
+    // The "none of these yet" row: a note in the interface language.
+    wordNone: {
+        fontFamily: fontFamilies.sansRegular,
+        color: colors.textMuted,
     },
     wordKnown: {
         color: colors.readerLevelUnderlineEasy,

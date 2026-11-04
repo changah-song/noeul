@@ -23,7 +23,7 @@ import { fontFamilies, useTheme } from '../../theme';
 import { applyWordCheckResults, getReaderLevel } from '../../services/Database';
 import { createWordCheck } from '../../services/wordCheck';
 import { nearestRankForTheta } from '../../services/calibrationQuiz';
-import { getVocabTiers, tierIndexForTheta } from '../../services/vocabSizeLevels';
+import { getVocabTiers, isBeginnerTheta, tierIndexForTheta } from '../../services/vocabSizeLevels';
 import { recordWordCheckTaken } from '../../services/wordCheckSchedule';
 
 // Fewer answers than this are not worth saving when the reader stops early.
@@ -410,6 +410,8 @@ export const WordCheckBody = ({ check, onDone }) => {
     // The headline result, split so the number can be set in bold.
     const resultHeadline = useMemo(() => {
         if (!result || !tiers.length) return null;
+        // Below the first tier (e.g. no word known): not "about 100 words".
+        if (isBeginnerTheta(targetLanguage, result.theta)) return { text: t('wordCheck.resultBeginner'), strong: null };
         const tier = tiers[tierIndexForTheta(targetLanguage, result.theta)];
         if (!tier) return null;
         if (tier.label) return { text: t('wordCheck.resultHsk', { level: tier.label }), strong: tier.label };

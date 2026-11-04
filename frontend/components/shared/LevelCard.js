@@ -11,6 +11,7 @@ import {
     onReaderLevelChanged,
 } from '../../services/Database';
 import {
+    beginnerLevelLabel,
     describeLevel,
     levelPlaceForTheta,
     levelRange,
@@ -19,6 +20,7 @@ import {
     wordsForTheta,
 } from '../../services/levelSummary';
 import { loadMilestones, markGoalCelebrated, recordGoal } from '../../services/levelMilestones';
+import { beginnerWords, isBeginnerTheta } from '../../services/vocabSizeLevels';
 
 // Below this many signals the estimate is still mostly the starting point
 // (no word goals are counted yet).
@@ -58,8 +60,10 @@ const LevelCard = ({ ownerId, profileId, language, userId, onAdjust }) => {
             const rowTheta = Number(row?.theta);
             let record = await loadMilestones(ownerId, profileId, language);
             // Word goals count once reading (not just the starting point) has
-            // moved the estimate.
-            if (Number.isFinite(rowTheta) && (Number(row?.event_count) || 0) >= EARLY_EVENTS) {
+            // moved the estimate, and not below the first tier: the expected
+            // vocabulary there is mostly the model's floor, not words learned.
+            if (Number.isFinite(rowTheta) && (Number(row?.event_count) || 0) >= EARLY_EVENTS
+                && !isBeginnerTheta(language, rowTheta)) {
                 const { reached } = wordGoal(wordsForTheta(language, rowTheta));
                 ({ record } = await recordGoal(ownerId, profileId, language, reached));
             }
@@ -84,21 +88,39 @@ const LevelCard = ({ ownerId, profileId, language, userId, onAdjust }) => {
         : null;
 
     const placeName = useCallback((place) => {
+        if (place.beginner) return beginnerLevelLabel(language, t);
         if (place.scale === 'ko') {
             return `${t(KO_BANDS[Math.ceil(place.rank / 2) - 1])} ${((place.rank - 1) % 2) + 1}`;
         }
         return place.label;
-    }, [t]);
-    const wordsText = useCallback((item) => (
-        item?.kind === 'words'
+    }, [language, t]);
+    const wordsText = useCallback((item) => {
+        if (item?.beginner?.estimate) return beginnerLevelLabel(language, t);
+        return item?.kind === 'words'
             ? t('level.words', { words: formatNumber(item.estimate) })
-            : item?.estimate ?? ''
-    ), [t]);
+            : item?.estimate ?? '';
+    }, [language, t]);
+    // The likely range: below the first tier reads as its name, and a range
+    // reaching up from there as "up to ..." (Korean's word counts).
+    const rangeText = (item) => {
+        if (!item) return null;
+        const { beginner } = item;
+        if (beginner?.low && beginner?.high) return null;
+        if (item.kind === 'words') {
+            if (beginner?.low) return t('level.wordsUpTo', { high: formatNumber(item.high) });
+            if (item.low === item.high) return null;
+            return t('level.wordsRange', { low: formatNumber(item.low), high: formatNumber(item.high) });
+        }
+        const low = beginner?.low ? beginnerLevelLabel(language, t) : item.low;
+        if (low === item.high) return null;
+        return t('level.tierRange', { low, high: item.high });
+    };
 
     if (!described) return null;
 
     const place = levelPlaceForTheta(language, theta);
     const words = wordsForTheta(language, theta) ?? 0;
+    const rangeLine = rangeText(described);
     const bestReached = (milestones?.reached ?? [])
         .reduce((best, item) => Math.max(best, Number(item.words) || 0), 0);
     const celebrate = bestReached > (milestones?.celebrated ?? 0) ? bestReached : null;
@@ -128,17 +150,13 @@ const LevelCard = ({ ownerId, profileId, language, userId, onAdjust }) => {
 
             <Text style={styles.levelName}>{placeName(place)}</Text>
             <Text style={styles.estimate}>
-                {t('level.words', {
-                    words: formatNumber(described.kind === 'words' ? described.estimate : Math.round(words)),
-                })}
+                {described.beginner?.estimate
+                    ? t('level.beginnerWords', { words: formatNumber(beginnerWords(language)) })
+                    : t('level.words', {
+                        words: formatNumber(described.kind === 'words' ? described.estimate : Math.round(words)),
+                    })}
             </Text>
-            {described.low !== described.high ? (
-                <Text style={styles.range}>
-                    {described.kind === 'words'
-                        ? t('level.wordsRange', { low: formatNumber(described.low), high: formatNumber(described.high) })
-                        : t('level.tierRange', { low: described.low, high: described.high })}
-                </Text>
-            ) : null}
+            {rangeLine ? <Text style={styles.range}>{rangeLine}</Text> : null}
             <Text style={styles.note}>
                 {events < EARLY_EVENTS ? t('level.early') : t('level.basedOn', { count: formatNumber(events) })}
             </Text>

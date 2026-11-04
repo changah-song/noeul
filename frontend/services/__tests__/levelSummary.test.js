@@ -1,4 +1,5 @@
 import {
+  beginnerLevelLabel,
   dailyLevelSeries,
   describeLevel,
   chartColumnFor,
@@ -10,7 +11,62 @@ import {
   wordsForTheta,
 } from '../levelSummary';
 import { COVERAGE, coverage, vocabularySize } from '../levelScale';
-import { getVocabTiers, thetaForTier } from '../vocabSizeLevels';
+import {
+  BEGINNER_THETA,
+  beginnerWords,
+  getVocabTiers,
+  isBeginnerTheta,
+  thetaForTier,
+} from '../vocabSizeLevels';
+import { createWordCheck } from '../wordCheck';
+import { LEVEL_THETA_MIN } from '../abilityModel';
+
+describe('below the first tier ("just starting")', () => {
+  const t = (key, params) => (params ? `${key}:${JSON.stringify(params)}` : key);
+
+  it('seeds "just starting" at the bottom of the scale, below every tier', () => {
+    expect(BEGINNER_THETA).toBe(LEVEL_THETA_MIN);
+    ['ko', 'zh', 'en'].forEach((language) => {
+      expect(isBeginnerTheta(language, BEGINNER_THETA)).toBe(true);
+      // Seeding the first tier (the old seed) claimed all of HSK 1 / A1.
+      const [first] = getVocabTiers(language);
+      if (first.label) expect(BEGINNER_THETA).toBeLessThan(thetaForTier(language, first.threshold));
+    });
+  });
+
+  it('names a reader who knew none of the words a beginner, not the first tier', () => {
+    ['ko', 'zh', 'en'].forEach((language) => {
+      const check = createWordCheck({ language, reader: { theta: 0, variance: 2 }, seed: 7 });
+      while (check.next()) check.answer(0);
+      const { theta } = check.result();
+      expect(isBeginnerTheta(language, theta)).toBe(true);
+      const described = describeLevel(language, { estimate: theta, low: theta, high: theta });
+      expect(described.beginner).toEqual({ estimate: true, low: true, high: true });
+      expect(levelPlaceForTheta(language, theta).beginner).toBe(true);
+    });
+    expect(beginnerLevelLabel('ko', t)).toBe('level.preBeginner');
+    expect(beginnerLevelLabel('zh', t)).toBe('level.belowTier:{"level":"HSK 1"}');
+    expect(beginnerLevelLabel('en', t)).toBe('Pre-A1');
+  });
+
+  it('keeps picked tiers above the beginner line', () => {
+    ['zh', 'en'].forEach((language) => {
+      getVocabTiers(language).forEach((tier) => {
+        const theta = thetaForTier(language, tier.threshold);
+        expect(isBeginnerTheta(language, theta)).toBe(false);
+        expect(levelPlaceForTheta(language, theta).beginner).toBe(false);
+      });
+    });
+    // Korean: from the first frequency tier the scale tells from its floor
+    // (100-700 all pick the bottom of the scale).
+    expect(beginnerWords('ko')).toBe(1000);
+    getVocabTiers('ko').filter((tier) => tier.threshold >= 1000).forEach((tier) => {
+      expect(isBeginnerTheta('ko', thetaForTier('ko', tier.threshold))).toBe(false);
+    });
+    expect(beginnerWords('zh')).toBe(getVocabTiers('zh')[0].threshold);
+    expect(beginnerWords('en')).toBe(getVocabTiers('en')[0].threshold);
+  });
+});
 
 describe('describing the reader level', () => {
   it('turns a level and its spread into an 80% range, inside the scale', () => {
