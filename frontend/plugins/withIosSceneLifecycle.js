@@ -83,12 +83,15 @@ const withSceneManifest = (config) =>
 const withAppDelegateWithoutWindow = (config) =>
   withAppDelegate(config, (cfg) => {
     const block = /#if os\(iOS\) \|\| os\(tvOS\)\n\s*window = UIWindow\(frame: UIScreen\.main\.bounds\)\n[\s\S]*?#endif\n/;
+    const patched = '    // SceneDelegate creates the window and starts React Native.\n';
+    // A prebuild without --clean runs this again on our own output.
+    if (cfg.modResults.contents.includes(patched)) return cfg;
     if (cfg.modResults.language !== 'swift' || !block.test(cfg.modResults.contents)) {
       throw new Error('withIosSceneLifecycle: AppDelegate.swift no longer matches the expected template');
     }
     cfg.modResults.contents = cfg.modResults.contents.replace(
       block,
-      '    // SceneDelegate creates the window and starts React Native.\n'
+      patched
     );
     return cfg;
   });

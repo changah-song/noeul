@@ -7,14 +7,15 @@ import { Platform } from 'react-native';
 // listen foreground service keeping the process alive. A JS timer between two
 // utterances then never fires and the voice goes quiet: audio review stopped
 // after its first word once the phone locked. On Android this waits on the
-// main looper instead (NativeEpubReaderModule.listenDelay); elsewhere, or
-// without the native module, it falls back to setTimeout.
+// main looper instead (NativeEpubReaderModule.listenDelay), and on iOS on
+// the main dispatch queue; without the native module it falls back to
+// setTimeout.
 
 let nativeModule;
 const loadNative = () => {
   if (nativeModule !== undefined) return nativeModule;
   nativeModule = null;
-  if (Platform.OS !== 'android') return nativeModule;
+  if (Platform.OS !== 'android' && Platform.OS !== 'ios') return nativeModule;
   try {
     // eslint-disable-next-line global-require
     const { requireOptionalNativeModule } = require('expo-modules-core');

@@ -54,6 +54,8 @@ struct ReaderMarkOptions {
   // The tapped word's sentence, washed faintly; fades out from `contextFadeAt`.
   var contextSentence: (spineIndex: Int, range: ReaderSourceRange)?
   var contextFadeAt: Double?
+  // Listening in paged mode: the sentence being read, washed light blue.
+  var listenSentence: (spineIndex: Int, ranges: [ReaderSourceRange])?
   // The word the voice is reading.
   var spokenRange: (spineIndex: Int, range: ReaderSourceRange)?
   // Focus mode: everything dims except the beam.
@@ -201,6 +203,13 @@ final class ReaderPageView: UIView {
         if fade > 0 {
           palette.bodyText.withAlphaComponent((palette.isDark ? 0x1C : 0x14) / 255 * fade).setFill()
           fillBoxes(for: wash.range.range, in: item)
+        }
+      }
+      if let listen = marks.listenSentence, listen.spineIndex == page.spineIndex {
+        (palette.isDark ? UIColor(red: 0x5B / 255, green: 0x9B / 255, blue: 0xE6 / 255, alpha: 0x2A / 255)
+                        : UIColor(red: 0x9C / 255, green: 0xCB / 255, blue: 0xFF / 255, alpha: 0x33 / 255)).setFill()
+        for part in listen.ranges where part.blockId == blockId {
+          fillBoxes(for: part.range, in: item)
         }
       }
       if let spoken = marks.spokenRange, spoken.spineIndex == page.spineIndex, spoken.range.blockId == blockId {
