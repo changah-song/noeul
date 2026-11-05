@@ -1,4 +1,5 @@
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { persistPickedCoverFile } from '../services/bookFiles';
 import {
     ActivityIndicator,
     Alert,
@@ -3624,7 +3625,9 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                 return;
             }
 
-            setEditDraft((prev) => ({ ...prev, cover: assets[0].uri }));
+            // Out of the picker's cache copy, which the system may clear.
+            const cover = await persistPickedCoverFile(assets[0].uri);
+            setEditDraft((prev) => ({ ...prev, cover }));
         } catch (error) {
             console.error('[Home] Failed to pick cover:', error);
         }

@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { initAllTables } from '../services/Database';
 import { cloudBookToLocalBook, fetchUserBooks, uploadUserBook } from '../services/bookCloudSync';
 import { rebaseBookFilePaths } from '../services/appContainerPaths';
+import { migratePickedBookFiles } from '../services/bookFiles';
 import { persistCoverDataUri, stripInlineCoverForStorage } from '../services/epubMetadata';
 import { GUEST_OWNER_ID, makeScopedStorageKey } from '../services/localDataScope';
 import {
@@ -457,6 +458,24 @@ const useAppSetup = ({ ownerId, ownerReady = true, user = null } = {}) => {
 
                 setBooks(nextBooks);
                 setCurrentBook(hasStoredCurrentBook ? storedCurrentBook : (nextBooks[0]?.uri ?? null));
+
+                // Copy imported books still in the picker's cache copy into
+                // Documents before the system clears it; covers move for good.
+                // In the background: a big book shouldn't hold up the shelf.
+                migratePickedBookFiles(nextBooks)
+                    .then((migrated) => {
+                        if (!isActive || ownerLoadGenerationRef.current !== loadGeneration) return;
+                        const covers = new Map();
+                        migrated.forEach((book, index) => {
+                            if (book !== nextBooks[index] && book?.uri) covers.set(book.uri, book);
+                        });
+                        if (!covers.size) return;
+                        setBooks((prevBooks) => prevBooks.map((book) => {
+                            const moved = covers.get(book?.uri);
+                            return moved ? { ...book, cover: moved.cover, originalCover: moved.originalCover } : book;
+                        }));
+                    })
+                    .catch((error) => console.warn('[useAppSetup] Keeping imported book files failed:', error?.message ?? error));
             } catch (error) {
                 if (isActive && ownerLoadGenerationRef.current === loadGeneration) {
                     bootstrapFailedRef.current = true;
