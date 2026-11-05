@@ -90,14 +90,36 @@ describe('listenPlayer', () => {
     expect(tts.spoken.map((s) => s.text)).toEqual(['first', 'second']);
   });
 
-  it('reports an engine error instead of racing on', async () => {
-    const tts = fakeTts();
-    const player = createListenPlayer({ tts });
-    const result = player.speakSequence([{ text: 'x', locale: 'mn-MN', rate: 1 }, { text: 'y', locale: 'mn-MN', rate: 1 }]);
-    await flush();
-    tts.error('u1');
-    await expect(result).resolves.toBe('error');
-    expect(tts.spoken).toHaveLength(1);
+  it('reports an engine error instead of racing on (Android)', async () => {
+    const { Platform } = require('react-native');
+    const originalOS = Platform.OS;
+    Platform.OS = 'android';
+    try {
+      const tts = fakeTts();
+      const player = createListenPlayer({ tts });
+      const result = player.speakSequence([{ text: 'x', locale: 'mn-MN', rate: 1 }, { text: 'y', locale: 'mn-MN', rate: 1 }]);
+      await flush();
+      tts.error('u1');
+      await expect(result).resolves.toBe('error');
+      expect(tts.spoken).toHaveLength(1);
+    } finally {
+      Platform.OS = originalOS;
+    }
+  });
+
+  it('does not subscribe to tts-error on iOS, which has no such event', () => {
+    const { Platform } = require('react-native');
+    const originalOS = Platform.OS;
+    Platform.OS = 'ios';
+    try {
+      const tts = fakeTts();
+      createListenPlayer({ tts });
+      const events = tts.addEventListener.mock.calls.map(([name]) => name);
+      expect(events).not.toContain('tts-error');
+      expect(events).toEqual(expect.arrayContaining(['tts-finish', 'tts-cancel', 'tts-progress']));
+    } finally {
+      Platform.OS = originalOS;
+    }
   });
 
   it('times silent gaps with the injected screen-off-safe delay, not setTimeout', async () => {

@@ -15,9 +15,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "13B07F861A680F5B00A75B9A"
-               BuildableName = "FluentFable.app"
-               BlueprintName = "FluentFable"
-               ReferencedContainer = "container:FluentFable.xcodeproj">
+               BuildableName = "Noeul.app"
+               BlueprintName = "Noeul"
+               ReferencedContainer = "container:Noeul.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -33,9 +33,9 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "00E356ED1AD99517003FC87E"
-               BuildableName = "FluentFableTests.xctest"
-               BlueprintName = "FluentFableTests"
-               ReferencedContainer = "container:FluentFable.xcodeproj">
+               BuildableName = "NoeulTests.xctest"
+               BlueprintName = "NoeulTests"
+               ReferencedContainer = "container:Noeul.xcodeproj">
             </BuildableReference>
          </TestableReference>
       </Testables>
@@ -55,9 +55,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "13B07F861A680F5B00A75B9A"
-            BuildableName = "FluentFable.app"
-            BlueprintName = "FluentFable"
-            ReferencedContainer = "container:FluentFable.xcodeproj">
+            BuildableName = "Noeul.app"
+            BlueprintName = "Noeul"
+            ReferencedContainer = "container:Noeul.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -72,9 +72,9 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "13B07F861A680F5B00A75B9A"
-            BuildableName = "FluentFable.app"
-            BlueprintName = "FluentFable"
-            ReferencedContainer = "container:FluentFable.xcodeproj">
+            BuildableName = "Noeul.app"
+            BlueprintName = "Noeul"
+            ReferencedContainer = "container:Noeul.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

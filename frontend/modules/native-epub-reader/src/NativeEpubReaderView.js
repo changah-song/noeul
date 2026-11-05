@@ -16,10 +16,13 @@ import {
 
 const EMPTY_USER_HIGHLIGHTS = [];
 const EMPTY_CHROME_INSETS = { top: 0, bottom: 0 };
-const NativeView = Platform.OS === 'android'
+// iOS has the reader view; its module doesn't define every function yet, so
+// calls below feature-check each one.
+const hasNativeReader = Platform.OS === 'android' || Platform.OS === 'ios';
+const NativeView = hasNativeReader
     ? requireNativeViewManager('NativeEpubReader')
     : null;
-const NativeModule = Platform.OS === 'android'
+const NativeModule = hasNativeReader
     ? requireNativeModule('NativeEpubReader')
     : null;
 
@@ -30,11 +33,11 @@ const androidOnly = () => Promise.reject(new Error(translateRuntime('read.native
 export const extractPdfDocument = (options) => {
     // Its failure message is localized natively (ReaderText.pdfImportFailed).
     pushReaderInterfaceStrings();
-    return NativeModule?.extractPdfDocument(options) ?? androidOnly();
+    return NativeModule?.extractPdfDocument?.(options) ?? androidOnly();
 };
 
 export const renderPdfCover = (options) => (
-    NativeModule?.renderPdfCover(options) ?? androidOnly()
+    NativeModule?.renderPdfCover?.(options) ?? androidOnly()
 );
 
 // Imperative focus-mode beam navigation. Stepping through the focusNavToken

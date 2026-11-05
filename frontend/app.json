@@ -19,7 +19,8 @@
     "ios": {
       "supportsTablet": true,
       "icon": "./assets/icon-ios.png",
-      "bundleIdentifier": "com.noeulapp.Noeul"
+      "bundleIdentifier": "com.noeulapp.Noeul",
+      "usesAppleSignIn": true
     },
     "android": {
       "allowBackup": true,
@@ -40,7 +41,13 @@
     },
     "plugins": [
       "expo-secure-store",
-      "@react-native-google-signin/google-signin",
+      [
+        "@react-native-google-signin/google-signin",
+        {
+          "iosUrlScheme": "com.googleusercontent.apps.738535121796-o3mq854ufrujemn8bqa26p72dmnl3uik"
+        }
+      ],
+      "expo-apple-authentication",
       [
         "expo-build-properties",
         {
@@ -49,7 +56,9 @@
             "targetSdkVersion": 36
           }
         }
-      ]
+      ],
+      "./plugins/withIosPodFixes",
+      "./plugins/withIosSceneLifecycle"
     ],
     "extra": {
       "eas": {
