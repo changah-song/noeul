@@ -9,8 +9,7 @@ import UIKit
 //   at either end to change chapter;
 // - focus: the continuous layout with a sentence "beam"; the rest is dimmed.
 // Listening works in all three (pagedFocus lights the sentence on the page).
-// Not ported yet: the reveal wave, the full-screen progress thumb, user
-// highlights and note icons.
+// Not ported yet: user highlights and note icons (JS doesn't use them).
 
 private final class ReaderPageCell: UICollectionViewCell {
   static let reuseIdentifier = "ReaderPageCell"
@@ -157,8 +156,19 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
       }
     }
   }
-  var reduceMotion = false
-  var fullscreen = false
+  var reduceMotion = false {
+    didSet {
+      if reduceMotion && marks.reveal != nil {
+        marks.reveal = nil
+        pushMarks()
+      }
+    }
+  }
+  var fullscreen = false {
+    didSet {
+      if !fullscreen { progressThumb.hide() }
+    }
+  }
   var pagedFocus = false {
     didSet {
       if pagedFocus != oldValue { pagedFocusChanged() }
@@ -202,6 +212,14 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
 
   private let collectionView: UICollectionView
   private let host = ReaderScrollHost(frame: .zero)
+  private let progressThumb = ChapterProgressThumb()
+  // Whether the pages had any word help yet: its first arrival sweeps in.
+  private var hadLevelMarks = false
+  // The annotation settings the pages on screen were laid out with.
+  private var laidOutAnnotations = (pinyin: false, gloss: false)
+  // A chrome inset change that came in mid-gesture (a pull shows the header);
+  // applied when the finger lifts so the pull isn't cut short.
+  private var pendingChromeTopDelta: CGFloat?
   private var mode = ReaderRenderMode.paged
   private var palette = ReaderPalette.make(theme: "light", tokens: [:])
   // Paged: every page of the window. Vertical: one page per window chapter.
@@ -288,6 +306,8 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     host.delegate = self
     host.isHidden = true
     addSubview(host)
+    progressThumb.isUserInteractionEnabled = false
+    addSubview(progressThumb)
 
     gate.onTouchDown = { [weak self] in
       guard let self else { return }
@@ -321,6 +341,7 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     super.layoutSubviews()
     collectionView.frame = bounds
     host.frame = bounds
+    progressThumb.frame = bounds
     if bounds.size != laidOutSize && bounds.width > 0 && bounds.height > 0 {
       collectionView.collectionViewLayout.invalidateLayout()
       repaginate(resetToFirstPage: false)
@@ -387,6 +408,7 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     backgroundColor = palette.background
     collectionView.backgroundColor = palette.background
     host.palette = palette
+    progressThumb.color = palette.bodyText
   }
 
   private func parsedChapters() -> [ReaderChapter] {
@@ -438,8 +460,12 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     case .paged:
       if bottomChanged { repaginate(resetToFirstPage: pages.isEmpty) }
     case .continuous:
-      // Keep the same line in place as the text moves down or up.
-      if top != oldTop || bottomChanged, pages.indices.contains(currentPage) {
+      // Keep the same line in place as the text moves down or up. Not while
+      // a finger is on the page: a rebind then would end a chapter pull.
+      guard top != oldTop || bottomChanged, pages.indices.contains(currentPage) else { break }
+      if host.isInteracting {
+        pendingChromeTopDelta = (pendingChromeTopDelta ?? 0) + (top - oldTop)
+      } else {
         bindVertical(currentPage, target: host.offset + (top - oldTop), resetScroll: false)
       }
     case .focus:
@@ -466,6 +492,11 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     let chapters = parsedChapters()
     let previous = pages[safe: currentPage]
     let previousAnchor = previous.map { ($0.spineIndex, $0.chapterPageIndex, $0.firstBlockId) }
+    // Marked words that change with this layout (glosses turned on, word
+    // help arriving) can play the reveal, compared with what was on screen.
+    let termsChanged = highlightsDirty
+    let marksBefore = RevealWave.marks(for: previous, showPinyin: laidOutAnnotations.pinyin, showGloss: laidOutAnnotations.gloss)
+    let annotations = (pinyin: showPinyin, gloss: showGloss)
     let terms = currentHighlightTerms()
     if resetToFirstPage && mode == .focus && transitionPrefix == "previous" {
       // Going back a chapter in focus mode lands on its last sentence.
@@ -483,10 +514,17 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
       DispatchQueue.main.async {
         guard let self, generation == self.layoutGeneration else { return }
         self.laidOutSize = size
+        let annotationsChanged = annotations != self.laidOutAnnotations
+        self.laidOutAnnotations = annotations
         if self.isVertical {
           self.installVertical(laidOut, resetToFirstPage: resetToFirstPage, previousSpine: previous?.spineIndex)
         } else {
           self.install(laidOut, resetToFirstPage: resetToFirstPage, previousAnchor: previousAnchor)
+        }
+        if (termsChanged || annotationsChanged) && self.hadLevelMarks {
+          let after = RevealWave.marks(for: self.pages[safe: self.currentPage], showPinyin: self.showPinyin, showGloss: self.showGloss)
+          self.startReveal(RevealWave.kind(before: marksBefore, after: after))
+          self.pushMarks()
         }
       }
     }
@@ -526,6 +564,7 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     collectionView.layoutIfNeeded()
     scrollToCurrentPage()
     emitPageChange()
+    revealIfFirstMarks()
     if pagedFocusActive { refreshPagedFocus() }
   }
 
@@ -560,9 +599,13 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
       let built = snapshot.map { buildHighlights(for: $0, terms: terms) }
       DispatchQueue.main.async {
         guard let self, generation == self.highlightGeneration else { return }
+        let shown = self.pages[safe: self.currentPage]
+        let before = RevealWave.marks(for: shown, showPinyin: self.showPinyin, showGloss: self.showGloss)
         for (page, highlights) in zip(snapshot, built) {
           page.highlights = highlights
         }
+        let after = RevealWave.marks(for: shown, showPinyin: self.showPinyin, showGloss: self.showGloss)
+        self.startReveal(RevealWave.kind(before: before, after: after))
         self.pushMarks()
         self.host.redrawTiles()
       }
@@ -582,6 +625,21 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
         marks.savedFades[term] = nil
       }
     }
+    pushMarks()
+  }
+
+  // Word help sweeps in: on its first arrival, and when most of the page's
+  // marks are new or changed (never with reduce motion).
+  private func startReveal(_ kind: ReaderRevealKind) {
+    if let page = pages[safe: currentPage], !page.highlights.level.isEmpty { hadLevelMarks = true }
+    guard kind != .none, !reduceMotion else { return }
+    marks.reveal = ReaderReveal(startMs: nowMs(), underlines: kind == .full)
+  }
+
+  // After a layout: the first pages with word help play the full wave.
+  private func revealIfFirstMarks() {
+    guard !hadLevelMarks, let page = pages[safe: currentPage], !page.highlights.level.isEmpty else { return }
+    startReveal(.full)
     pushMarks()
   }
 
@@ -817,6 +875,7 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     let target = position.flatMap { continuousRestoreTarget($0, page: page) }
     let landAtEnd = mode == .focus && pendingFocusLandAtEndSpine == page.spineIndex
     bindVertical(bound, target: target ?? 0, resetScroll: true, landFocusAtEnd: landAtEnd)
+    revealIfFirstMarks()
     if mode == .focus {
       dispatchFocusPageChange()
       openFocusExposure()
@@ -992,13 +1051,29 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     fadeContextSentence()
   }
 
-  func scrollHostDidSettle(_ host: ReaderScrollHost) {}
+  func scrollHostDidSettle(_ host: ReaderScrollHost) {
+    applyPendingChromeRebind()
+  }
+
+  func scrollHostGestureEnded(_ host: ReaderScrollHost) {
+    applyPendingChromeRebind()
+  }
+
+  private func applyPendingChromeRebind() {
+    guard let delta = pendingChromeTopDelta, mode == .continuous, !host.isInteracting else { return }
+    pendingChromeTopDelta = nil
+    if pages.indices.contains(currentPage) {
+      bindVertical(currentPage, target: host.offset + delta, resetScroll: false)
+    }
+  }
 
   func scrollHostPullStarted(_ host: ReaderScrollHost, direction: Int) {
     reportReadingDirection(direction)
   }
 
   func scrollHostEdgePull(_ host: ReaderScrollHost, direction: Int) {
+    // The new chapter binds with the current insets.
+    pendingChromeTopDelta = nil
     handleEdgePull(direction)
   }
 
@@ -1941,6 +2016,28 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     let x = scrollView.contentOffset.x
     if scrollView.isDragging { trackReadingTravel(x - lastPagerOffset) }
     lastPagerOffset = x
+    updateProgressThumb()
+  }
+
+  // Full screen only: a thin bar at the bottom showing the place in the
+  // chapter; it follows the finger within a chapter and holds at the end
+  // across a chapter boundary.
+  private func updateProgressThumb() {
+    guard fullscreen, mode == .paged, !pages.isEmpty else { return }
+    let width = collectionView.bounds.width
+    guard width > 0 else { return }
+    let position = collectionView.contentOffset.x / width
+    let index = min(max(Int(floor(position)), 0), pages.count - 1)
+    let page = pages[index]
+    let count = page.chapterPageCount
+    guard count > 1 else {
+      progressThumb.hide()
+      return
+    }
+    var chapterPosition = CGFloat(page.chapterPageIndex) + (position - CGFloat(index))
+    // Dragging past the chapter's last page holds at the end.
+    chapterPosition = min(max(chapterPosition, 0), CGFloat(count - 1))
+    progressThumb.show(fraction: chapterPosition / CGFloat(count - 1), pageCount: count)
   }
 
   func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint, targetContentOffset: UnsafeMutablePointer<CGPoint>) {
