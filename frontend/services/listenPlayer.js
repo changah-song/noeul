@@ -1,3 +1,4 @@
+import { Platform } from 'react-native';
 import Tts from 'react-native-tts';
 import { checkVoices } from '../modules/tts-voice-check/src';
 import { listenDelay } from './listenDelay';
@@ -208,10 +209,12 @@ export const createListenPlayer = ({ tts = Tts, now = Date.now, delay = listenDe
   // Keep the subscriptions: react-native-tts's removeEventListener calls
   // NativeEventEmitter.removeListener, which React Native 0.81 removed, so
   // unhooking must go through each subscription's remove() instead.
+  // iOS's engine has no 'tts-error' event (subscribing to it is an error
+  // there); a failed utterance arrives as 'tts-cancel'.
   const subscriptions = [
     tts.addEventListener('tts-finish', onFinish),
     tts.addEventListener('tts-cancel', onCancel),
-    tts.addEventListener('tts-error', onError),
+    ...(Platform.OS === 'ios' ? [] : [tts.addEventListener('tts-error', onError)]),
     tts.addEventListener('tts-progress', onProgress),
   ];
 
