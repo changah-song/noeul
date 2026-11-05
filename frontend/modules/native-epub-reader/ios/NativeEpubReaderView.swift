@@ -8,8 +8,9 @@ import UIKit
 // - continuous (scroll): one chapter at a time as one tall page, with a pull
 //   at either end to change chapter;
 // - focus: the continuous layout with a sentence "beam"; the rest is dimmed.
-// Not ported yet: listening in paged mode (pagedFocus), the reveal wave, the
-// full-screen progress thumb, user highlights and note icons.
+// Listening works in all three (pagedFocus lights the sentence on the page).
+// Not ported yet: the reveal wave, the full-screen progress thumb, user
+// highlights and note icons.
 
 private final class ReaderPageCell: UICollectionViewCell {
   static let reuseIdentifier = "ReaderPageCell"
@@ -37,6 +38,16 @@ enum ReaderRenderMode {
     default: return .paged
     }
   }
+}
+
+// A sentence of the chapter on screen, for listening in paged mode.
+private struct PagedSentence {
+  let blockId: String
+  // In the block's text.
+  let range: NSRange
+  // Global index of the page it starts on.
+  let page: Int
+  let layout: ReaderBlockLayout
 }
 
 // A sentence of the bound chapter, for the focus beam.
@@ -148,7 +159,11 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
   }
   var reduceMotion = false
   var fullscreen = false
-  var pagedFocus = false
+  var pagedFocus = false {
+    didSet {
+      if pagedFocus != oldValue { pagedFocusChanged() }
+    }
+  }
   var tappedTerms: [Any] = [] {
     didSet {
       var next: [String: Double] = [:]
@@ -232,6 +247,12 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
   private var focusNavTokenSeen = false
   private var pendingFocusLandAtEndSpine: Int?
   private let beamAnimator = FrameAnimator()
+
+  // Listening in paged mode.
+  private var pagedSentences: [PagedSentence] = []
+  private var pagedSpine: Int?
+  private var pagedIndex = 0
+  private var userTurnedPage = false
 
   // Long-press selection: the word it started on, the last end reached (for
   // haptics), and handle drags.
@@ -505,6 +526,7 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     collectionView.layoutIfNeeded()
     scrollToCurrentPage()
     emitPageChange()
+    if pagedFocusActive { refreshPagedFocus() }
   }
 
   private func scrollToCurrentPage() {
@@ -1086,6 +1108,7 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
 
   // One beam step; the result is focusNav's return value.
   func moveFocus(_ direction: Int) -> [String: Any] {
+    if pagedFocusActive { return movePagedFocus(direction) }
     guard mode == .focus, !focusSentences.isEmpty else { return ["moved": false] }
     let next = focusIndex + direction
     if next < 0 {
@@ -1225,6 +1248,172 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     }
   }
 
+  // MARK: - Listening in paged mode
+
+  private var pagedFocusActive: Bool { pagedFocus && mode == .paged }
+
+  private func sliceRange(_ item: ReaderPageItem) -> NSRange {
+    guard !item.lineRange.isEmpty else { return NSRange(location: 0, length: 0) }
+    let lines = item.layout.lines
+    let start = lines[item.lineRange.lowerBound].range.location
+    return NSRange(location: start, length: NSMaxRange(lines[item.lineRange.upperBound - 1].range) - start)
+  }
+
+  private func pagedFocusChanged() {
+    if pagedFocusActive {
+      refreshPagedFocus()
+    } else {
+      pagedSentences = []
+      pagedSpine = nil
+      marks.listenSentence = nil
+      marks.spokenRange = nil
+      pushMarks()
+    }
+  }
+
+  // Each sentence of the chapter on screen, on the page where it starts.
+  private func buildPagedSentences(spine: Int) -> [PagedSentence] {
+    var result: [PagedSentence] = []
+    var seen = Set<String>()
+    for (index, page) in pages.enumerated() where page.spineIndex == spine {
+      for item in page.items where item.layout.imageFrame == nil && !item.lineRange.isEmpty {
+        let slice = sliceRange(item)
+        for sentence in item.layout.sentences where sentence.length > 0 && NSLocationInRange(sentence.location, slice) {
+          guard seen.insert("\(item.layout.block.id):\(sentence.location)").inserted else { continue }
+          result.append(PagedSentence(blockId: item.layout.block.id, range: sentence, page: index, layout: item.layout))
+        }
+      }
+    }
+    return result
+  }
+
+  // After a layout, a chapter change or turning listening on: keep the
+  // sentence being read, else start from the page on screen.
+  private func refreshPagedFocus() {
+    guard pagedFocusActive, let page = pages[safe: currentPage] else { return }
+    let previous = pagedSentences[safe: pagedIndex]
+    let sameChapter = pagedSpine == page.spineIndex
+    pagedSpine = page.spineIndex
+    pagedSentences = buildPagedSentences(spine: page.spineIndex)
+    if sameChapter, let previous,
+       let kept = pagedSentences.firstIndex(where: { $0.blockId == previous.blockId && $0.range.location == previous.range.location }) {
+      pagedIndex = kept
+      lightPagedSentence()
+      return
+    }
+    pagedIndex = pagedSentenceIndexForCurrentPage()
+    lightPagedSentence()
+    if !sameChapter { onFocusSentenceChange(pagedFocusPayload(pagedIndex, withNext: true)) }
+  }
+
+  private func pagedSentenceIndexForCurrentPage() -> Int {
+    pagedSentences.firstIndex { $0.page == currentPage }
+      ?? pagedSentences.lastIndex { $0.page < currentPage }
+      ?? 0
+  }
+
+  private func jumpPagedFocusToCurrentPage() {
+    guard !pagedSentences.isEmpty else { return }
+    pagedIndex = pagedSentenceIndexForCurrentPage()
+    lightPagedSentence()
+    var payload = pagedFocusPayload(pagedIndex, withNext: true)
+    payload["jump"] = true
+    onFocusSentenceChange(payload)
+  }
+
+  private func pagedSpan(_ index: Int) -> ArraySlice<PagedSentence> {
+    let upper = min(index + focusSpanCount, pagedSentences.count)
+    return index < upper ? pagedSentences[index..<upper] : []
+  }
+
+  private func lightPagedSentence() {
+    guard let spine = pagedSpine else { return }
+    marks.listenSentence = (spine, pagedSpan(pagedIndex).map { ReaderSourceRange(blockId: $0.blockId, range: $0.range) })
+    pushMarks()
+  }
+
+  private func movePagedFocus(_ direction: Int) -> [String: Any] {
+    guard !pagedSentences.isEmpty else { return ["moved": false] }
+    let next = pagedIndex + direction
+    if next < 0 {
+      onChapterStart([:])
+      return ["moved": false, "atStart": true]
+    }
+    if next > max(0, pagedSentences.count - focusSpanCount) {
+      onChapterEnd([:])
+      return ["moved": false, "atEnd": true]
+    }
+    clearSelection(fromTap: false)
+    pagedIndex = next
+    lightPagedSentence()
+    let target = pagedSentences[next].page
+    if target != currentPage && !collectionView.isDragging && !collectionView.isDecelerating {
+      turnPage(to: target)
+    }
+    let payload = pagedFocusPayload(pagedIndex, withNext: true)
+    onFocusSentenceChange(payload)
+    var result = payload
+    result["moved"] = true
+    return result
+  }
+
+  // A programmatic page turn (listening): animated, sends the page event.
+  private func turnPage(to index: Int) {
+    let width = collectionView.bounds.width
+    guard width > 0, pages.indices.contains(index) else { return }
+    currentPage = index
+    collectionView.setContentOffset(CGPoint(x: CGFloat(index) * width, y: 0), animated: true)
+    emitPageChange()
+  }
+
+  // Same keys as the focus-mode payload; offsets are into whole blocks.
+  private func pagedFocusPayload(_ index: Int, withNext: Bool) -> [String: Any] {
+    var payload: [String: Any] = ["index": index, "count": focusSpanCount, "total": pagedSentences.count]
+    let span = pagedSpan(index)
+    guard !span.isEmpty, let spine = pagedSpine else { return payload }
+    var texts: [String] = []
+    var segments: [[String: Any]] = []
+    var levelWords: [[String: Any]] = []
+    var seenWords = Set<String>()
+    var at = 0
+    for sentence in span {
+      let text = sentence.layout.text.substring(with: sentence.range)
+      texts.append(text)
+      segments.append(["blockId": sentence.blockId, "start": sentence.range.location, "end": NSMaxRange(sentence.range), "at": at])
+      at += (text as NSString).length + 1
+      for page in pages where page.spineIndex == spine {
+        let words = page.highlights.level
+          .filter { $0.blockId == sentence.blockId && !$0.annotationOnly
+            && $0.range.location >= sentence.range.location && NSMaxRange($0.range) <= NSMaxRange(sentence.range) }
+        for word in words where seenWords.insert("\(word.blockId):\(word.range.location)").inserted {
+          var entry: [String: Any] = [
+            "text": collapseSpaces(sentence.layout.text.substring(with: word.range)),
+            "blockId": word.blockId,
+            "sourceStartOffset": word.range.location,
+            "sourceEndOffset": NSMaxRange(word.range),
+          ]
+          if let gloss = word.gloss { entry["gloss"] = gloss }
+          if let pinyin = word.pinyin { entry["pinyin"] = pinyin }
+          levelWords.append(entry)
+        }
+      }
+    }
+    levelWords.sort { (($0["sourceStartOffset"] as? Int) ?? 0) < (($1["sourceStartOffset"] as? Int) ?? 0) }
+    payload["text"] = texts.joined(separator: " ")
+    payload["levelWords"] = levelWords
+    payload["segments"] = segments
+    if withNext {
+      if index + 1 <= max(0, pagedSentences.count - focusSpanCount) {
+        var next = pagedFocusPayload(index + 1, withNext: false)
+        next["moved"] = true
+        payload["next"] = next
+      } else {
+        payload["next"] = ["moved": false, "atEnd": true]
+      }
+    }
+    return payload
+  }
+
   // MARK: - Selection
 
   // Where gestures are hit-tested: the current page in paged mode, the
@@ -1282,6 +1471,15 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     if let blockId = raw["blockId"] as? String, let start = intValue(raw["start"]), let end = intValue(raw["end"]), end > start,
        let page = pages[safe: currentPage] {
       marks.spokenRange = (page.spineIndex, ReaderSourceRange(blockId: blockId, range: NSRange(location: start, length: end - start)))
+      // Listening in pages: follow the voice onto the next page.
+      if pagedFocusActive, !collectionView.isDragging, !collectionView.isDecelerating,
+         let target = pages.indices.first(where: { index in
+           pages[index].spineIndex == page.spineIndex && pages[index].items.contains {
+             $0.layout.block.id == blockId && NSLocationInRange(start, sliceRange($0))
+           }
+         }), target != currentPage {
+        turnPage(to: target)
+      }
     } else {
       marks.spokenRange = nil
     }
@@ -1679,6 +1877,14 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     if width > 0 {
       currentPage = min(max(Int((collectionView.contentOffset.x / width).rounded()), 0), max(pages.count - 1, 0))
     }
+    if pagedFocusActive {
+      if pages[safe: currentPage]?.spineIndex != pagedSpine {
+        refreshPagedFocus()
+      } else if userTurnedPage {
+        jumpPagedFocusToCurrentPage()
+      }
+    }
+    userTurnedPage = false
     if let edge = pendingEdge {
       pendingEdge = nil
       reportReadingDirection(edge === onChapterEnd ? 1 : -1)
@@ -1743,6 +1949,7 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     guard width > 0 else { return }
     let target = min(max(Int((targetContentOffset.pointee.x / width).rounded()), 0), max(pages.count - 1, 0))
     if target != currentPage {
+      userTurnedPage = true
       reportReadingDirection(target > dragStartPage ? 1 : -1)
       currentPage = target
       emitPageChange()

@@ -20,7 +20,12 @@
       "supportsTablet": true,
       "icon": "./assets/icon-ios.png",
       "bundleIdentifier": "com.noeulapp.Noeul",
-      "usesAppleSignIn": true
+      "usesAppleSignIn": true,
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "audio"
+        ]
+      }
     },
     "android": {
       "allowBackup": true,

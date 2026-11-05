@@ -5,14 +5,15 @@ describe('listenDelay', () => {
     jest.useRealTimers();
   });
 
-  const loadOnAndroid = (nativeModule) => {
+  const loadOn = (os, nativeModule) => {
     jest.resetModules();
-    jest.doMock('react-native', () => ({ Platform: { OS: 'android' } }));
+    jest.doMock('react-native', () => ({ Platform: { OS: os } }));
     jest.doMock('expo-modules-core', () => ({
       requireOptionalNativeModule: jest.fn(() => nativeModule),
     }));
     return require('../listenDelay');
   };
+  const loadOnAndroid = (nativeModule) => loadOn('android', nativeModule);
 
   it('waits on the native main-looper delay on Android (screen-off safe)', async () => {
     const native = { listenDelay: jest.fn(async () => null) };
@@ -22,6 +23,13 @@ describe('listenDelay', () => {
     expect(native.listenDelay).toHaveBeenCalledWith(800);
     expect(timeoutSpy.mock.calls.filter(([, ms]) => ms === 800)).toHaveLength(0);
     timeoutSpy.mockRestore();
+  });
+
+  it('waits on the native delay on iOS too', async () => {
+    const native = { listenDelay: jest.fn(async () => null) };
+    const { listenDelay } = loadOn('ios', native);
+    await listenDelay(300);
+    expect(native.listenDelay).toHaveBeenCalledWith(300);
   });
 
   it('falls back to setTimeout without the native module', async () => {

@@ -9,6 +9,33 @@ public class NativeEpubReaderModule: Module {
 
     Events("onListenControl")
 
+    OnCreate { [weak self] in
+      ReaderListenSession.shared.onControl = { action in
+        self?.sendEvent("onListenControl", ["action": action])
+      }
+    }
+
+    OnDestroy {
+      ReaderListenSession.shared.onControl = nil
+    }
+
+    // Start or update the lock-screen player (title, subtitle, playing, cover).
+    // `cover: ""` clears the art; a missing key leaves it as it is.
+    Function("updateListenSession") { (options: [String: Any]) in
+      DispatchQueue.main.async {
+        ReaderListenSession.shared.update(
+          title: options["title"] as? String,
+          subtitle: options["subtitle"] as? String,
+          playing: options["playing"] as? Bool,
+          cover: options["cover"] as? String
+        )
+      }
+    }
+
+    Function("stopListenSession") {
+      DispatchQueue.main.async { ReaderListenSession.shared.stop() }
+    }
+
     AsyncFunction("seekToPosition") { (viewTag: Int, position: [String: Any]) in
       self.appContext?.findView(withTag: viewTag, ofType: NativeEpubReaderView.self)?.seek(to: position)
     }.runOnQueue(.main)
