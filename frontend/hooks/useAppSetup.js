@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { initAllTables } from '../services/Database';
 import { cloudBookToLocalBook, fetchUserBooks, uploadUserBook } from '../services/bookCloudSync';
+import { rebaseBookFilePaths } from '../services/appContainerPaths';
 import { persistCoverDataUri, stripInlineCoverForStorage } from '../services/epubMetadata';
 import { GUEST_OWNER_ID, makeScopedStorageKey } from '../services/localDataScope';
 import {
@@ -54,10 +55,13 @@ const normalizeStoredBooks = async (storedBooks) => Promise.all(
         const publicDomainMeta = isPublicDomainBookUri(book.uri)
             ? getPublicDomainBookByUri(book.uri)
             : null;
+        // iOS moves the app's container on update; covers saved under the
+        // old one would go blank.
+        const rebasedBook = rebaseBookFilePaths(book);
         const normalizedBook = (
-            publicDomainMeta?.wordCount && !book.wordCount
-                ? { ...book, wordCount: publicDomainMeta.wordCount }
-                : book
+            publicDomainMeta?.wordCount && !rebasedBook.wordCount
+                ? { ...rebasedBook, wordCount: publicDomainMeta.wordCount }
+                : rebasedBook
         );
 
         const cover = typeof normalizedBook.cover === 'string' ? normalizedBook.cover.trim() : '';
