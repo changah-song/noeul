@@ -14,6 +14,8 @@ protocol ReaderScrollHostDelegate: AnyObject {
   func scrollHostPullStarted(_ host: ReaderScrollHost, direction: Int)
   func scrollHostEdgePull(_ host: ReaderScrollHost, direction: Int)
   func scrollHostFocusSwipe(_ host: ReaderScrollHost, direction: Int)
+  // The finger lifted (with or without scrolling).
+  func scrollHostGestureEnded(_ host: ReaderScrollHost)
 }
 
 private let pullSpace: CGFloat = 96
@@ -119,6 +121,8 @@ final class ReaderScrollHost: UIView, UIScrollViewDelegate {
   var pullShift: CGFloat { pullFollow * (1 - exp(-pullDistance / pullFollow)) }
   var pullProgress: CGFloat { min(1, pullDistance / pullFullDistance) }
   var activePullDirection: Int { pullDirection }
+  // A finger on the page or a pull still springing back.
+  var isInteracting: Bool { scrollView.isTracking || pullDirection != 0 || pullAnimator.isRunning }
 
   override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
     if event?.type == .touches {
@@ -200,6 +204,10 @@ final class ReaderScrollHost: UIView, UIScrollViewDelegate {
       tiles[index] = nil
     }
     guard first <= last else { return }
+    for (index, tile) in tiles {
+      tile.viewportOffsetY = CGFloat(index) * height - y
+      tile.viewportHeight = height
+    }
     for index in first...last where tiles[index] == nil {
       let tile = spareTiles.popLast() ?? ReaderPageView(frame: .zero)
       tile.frame = CGRect(x: 0, y: CGFloat(index) * height, width: bounds.width, height: height)
@@ -208,6 +216,8 @@ final class ReaderScrollHost: UIView, UIScrollViewDelegate {
       tile.selection = selection
       tile.page = page
       tile.contentOrigin = CGPoint(x: ReaderPageView.insets.left, y: textTop - CGFloat(index) * height)
+      tile.viewportOffsetY = CGFloat(index) * height - y
+      tile.viewportHeight = height
       tile.setNeedsDisplay()
       contentView.addSubview(tile)
       tiles[index] = tile
@@ -317,6 +327,7 @@ final class ReaderScrollHost: UIView, UIScrollViewDelegate {
       }
       lastPanY = y
     case .ended, .cancelled, .failed:
+      defer { DispatchQueue.main.async { self.delegate?.scrollHostGestureEnded(self) } }
       guard pullDirection != 0 else { return }
       let direction = pullDirection
       if pan.state == .ended && pullProgress >= 1 {
@@ -330,7 +341,9 @@ final class ReaderScrollHost: UIView, UIScrollViewDelegate {
         self?.pullDistance = from * CGFloat(1 - progress)
         self?.applyPullShift()
       }, completion: { [weak self] in
-        self?.resetPull()
+        guard let self else { return }
+        self.resetPull()
+        self.delegate?.scrollHostGestureEnded(self)
       })
     default:
       break

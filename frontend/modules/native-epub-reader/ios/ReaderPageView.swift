@@ -25,6 +25,15 @@ struct ReaderTextPosition {
 
 enum ReaderSelectionHandle { case start, end }
 
+// One line of a long-press selection's boxes, keyed by its place on the page.
+fileprivate struct SelectionLineBox {
+  let item: Int
+  let line: Int
+  let rect: CGRect
+  var key: String { "\(item):\(line)" }
+  var order: (Int, Int) { (item, line) }
+}
+
 struct ReaderWordHit {
   let item: ReaderPageItem
   // In the block's text.
@@ -60,6 +69,8 @@ struct ReaderMarkOptions {
   var spokenRange: (spineIndex: Int, range: ReaderSourceRange)?
   // Focus mode: everything dims except the beam.
   var focusBeam: ReaderFocusBeam?
+  // Word help sweeping in (RevealWave).
+  var reveal: ReaderReveal?
 }
 
 func nowMs() -> Double { Date().timeIntervalSince1970 * 1000 }
@@ -102,7 +113,29 @@ final class ReaderPageView: UIView {
     }
   }
   var selection: ReaderSelection? {
-    didSet { setNeedsDisplay() }
+    willSet {
+      // The text selection's boxes as they are now, to slide from.
+      if selection?.kind == .text && newValue?.kind == .text && selection?.spineIndex == newValue?.spineIndex {
+        slideFrom = currentSelectionLineBoxes()
+      } else {
+        slideFrom = []
+      }
+    }
+    didSet {
+      if !slideFrom.isEmpty && window != nil {
+        slideProgress = 0
+        slideAnimator.run(duration: 0.16, curve: .selectionSlide, step: { [weak self] p in
+          self?.slideProgress = CGFloat(p)
+          self?.setNeedsDisplay()
+        }, completion: { [weak self] in
+          self?.slideFrom = []
+        })
+      } else {
+        slideAnimator.stop()
+        slideProgress = 1
+      }
+      setNeedsDisplay()
+    }
   }
   var marks = ReaderMarkOptions() {
     didSet { setNeedsDisplay() }
@@ -112,8 +145,16 @@ final class ReaderPageView: UIView {
   var contentOrigin = CGPoint(x: ReaderPageView.insets.left, y: ReaderPageView.insets.top) {
     didSet { setNeedsDisplay() }
   }
+  // Where this view sits in the visible window (scroll tiles move), so the
+  // reveal wave runs top to bottom of what's on screen.
+  var viewportOffsetY: CGFloat = 0
+  var viewportHeight: CGFloat?
 
   private var redrawScheduled = false
+  // Long-press boxes slide from where they were (160 ms).
+  private var slideFrom: [SelectionLineBox] = []
+  private var slideProgress: CGFloat = 1
+  private let slideAnimator = FrameAnimator()
 
   override init(frame: CGRect) {
     super.init(frame: frame)
@@ -223,11 +264,14 @@ final class ReaderPageView: UIView {
           fillBoxes(for: part.range, in: item)
         }
       }
+      let sweep = underlineSweep(now: now)
+      if sweep != nil { nextFrameMs = min(nextFrameMs, 16) }
       for range in page.highlights.level where range.blockId == blockId && !range.annotationOnly {
         let progress = tapProgress(range, now: now)
         if progress > 0 && progress < 1 { nextFrameMs = min(nextFrameMs, 16) }
         drawUnderline(range.range, in: item, color: levelUnderlineColor(weight: range.weight, reinforced: range.reinforced, palette: palette),
-                      thickness: 1.4 + 0.8 * min(max(range.weight, 0), 1), roundCap: true, dissolve: progress, context: context)
+                      thickness: 1.4 + 0.8 * min(max(range.weight, 0), 1), roundCap: true, dissolve: progress, context: context,
+                      sweep: sweep)
       }
       for range in page.highlights.saved where range.blockId == blockId {
         let shown = savedStrength(range, now: now, nextFrameMs: &nextFrameMs)
@@ -342,10 +386,17 @@ final class ReaderPageView: UIView {
   // An underline at baseline + 3: solid, or once tapped a row of pixels whose
   // odd cells drop out until it's dotted.
   private func drawUnderline(_ range: NSRange, in item: ReaderPageItem, color: UIColor, thickness: CGFloat,
-                             roundCap: Bool, dissolve: CGFloat, context: CGContext) {
-    for span in lineSpans(for: range, in: item) {
+                             roundCap: Bool, dissolve: CGFloat, context: CGContext,
+                             sweep: ((CGFloat) -> CGFloat)? = nil) {
+    for var span in lineSpans(for: range, in: item) {
       let line = item.layout.lines[span.index]
       let y = origin.y + item.lineTop(span.index) + line.ascent + 3
+      if let sweep {
+        // The line's stroke so far: draw up to it, nothing before it starts.
+        let reach = origin.x + sweep(origin.y + item.lineTop(span.index)) * contentWidth
+        guard reach > span.left else { continue }
+        span.right = min(span.right, reach)
+      }
       if dissolve <= 0 {
         context.saveGState()
         context.setStrokeColor(color.cgColor)
@@ -374,6 +425,33 @@ final class ReaderPageView: UIView {
       }
       context.restoreGState()
     }
+  }
+
+  // MARK: - Reveal
+
+  private func revealFraction(_ viewY: CGFloat) -> CGFloat {
+    let height = viewportHeight ?? bounds.height
+    guard height > 0 else { return 0 }
+    return min(max((viewY + viewportOffsetY) / height, 0), 1)
+  }
+
+  // While underlines sweep in: how far each line's stroke has reached (0...1
+  // of the width), by the line's top in view coordinates.
+  private func underlineSweep(now: Double) -> ((CGFloat) -> CGFloat)? {
+    guard let reveal = marks.reveal, reveal.underlines, !RevealWave.isDone(reveal, now: now) else { return nil }
+    let elapsed = now - reveal.startMs
+    return { [weak self] y in
+      RevealWave.underlineSweep(elapsedMs: elapsed, y: self?.revealFraction(y) ?? 0)
+    }
+  }
+
+  // An annotation's alpha and how far below its place it is drawn.
+  private func annotationReveal(lineTop: CGFloat, left: CGFloat, now: Double) -> (alpha: CGFloat, drop: CGFloat) {
+    guard let reveal = marks.reveal, !RevealWave.isDone(reveal, now: now) else { return (1, 0) }
+    let x = contentWidth > 0 ? (left - origin.x) / contentWidth : 0
+    let alpha = RevealWave.annotationAlpha(elapsedMs: now - reveal.startMs, y: revealFraction(lineTop), x: x,
+                                           underlines: reveal.underlines)
+    return (alpha, (1 - alpha) * RevealWave.annotationRise)
   }
 
   // The focus beam's clip: each lit line from the span's start to its end,
@@ -411,6 +489,8 @@ final class ReaderPageView: UIView {
     let left: CGFloat
     let right: CGFloat
     let senses: [String]
+    let alpha: CGFloat
+    let drop: CGFloat
   }
 
   // Pinyin above each level word and its gloss below, in the rows the layout
@@ -422,6 +502,8 @@ final class ReaderPageView: UIView {
     let ink = palette.isDark ? palette.mutedText : palette.subtleText
     let pinyinFont = UIFont.systemFont(ofSize: bodySize * 0.55)
     var glosses: [GlossItem] = []
+    var nextFrame = Double.infinity
+    if let reveal = marks.reveal, !RevealWave.isDone(reveal, now: now) { nextFrame = 16 }
 
     for range in ranges {
       let pinyin = marks.showPinyin ? range.pinyin : nil
@@ -431,9 +513,13 @@ final class ReaderPageView: UIView {
       let perCharacter = syllables.map { $0.count == range.range.length } ?? false
       for (spanIndex, span) in lineSpans(for: range.range, in: item).enumerated() {
         let line = item.layout.lines[span.index]
-        let baseline = origin.y + item.lineTop(span.index) + line.ascent
+        let lineTop = origin.y + item.lineTop(span.index)
+        let baseline = lineTop + line.ascent
+        let (alpha, drop) = annotationReveal(lineTop: lineTop, left: span.left, now: now)
+        guard alpha > 0.01 else { continue }
+        let ink = ink.withAlphaComponent(alpha)
         if let pinyin {
-          let pinyinBaseline = baseline - line.ascent - 1 - abs(pinyinFont.descender)
+          let pinyinBaseline = baseline - line.ascent - 1 - abs(pinyinFont.descender) + drop
           if perCharacter, let syllables {
             let overlap = NSIntersectionRange(range.range, line.range)
             for index in overlap.location..<NSMaxRange(overlap) {
@@ -448,15 +534,14 @@ final class ReaderPageView: UIView {
           }
         }
         if !senses.isEmpty {
-          glosses.append(GlossItem(line: span.index, left: span.left, right: span.right, senses: senses))
+          glosses.append(GlossItem(line: span.index, left: span.left, right: span.right, senses: senses, alpha: alpha, drop: drop))
         }
       }
     }
-    guard !glosses.isEmpty else { return .infinity }
+    guard !glosses.isEmpty else { return nextFrame }
 
     let gap: CGFloat = 3
     let edgeSlack: CGFloat = 24
-    var nextFrame = Double.infinity
     for (lineIndex, items) in Dictionary(grouping: glosses, by: \.line) {
       let line = item.layout.lines[lineIndex]
       // Glosses in Hangul or CJK need a little more size to stay legible.
@@ -492,8 +577,9 @@ final class ReaderPageView: UIView {
         } else {
           shown = [(gloss.senses[0], 1)]
         }
+        let top = top + gloss.drop
         for (text, alpha) in shown {
-          let string = NSAttributedString(string: text, attributes: [.font: glossFont, .foregroundColor: ink.withAlphaComponent(alpha)])
+          let string = NSAttributedString(string: text, attributes: [.font: glossFont, .foregroundColor: ink.withAlphaComponent(alpha * gloss.alpha)])
           let width = string.size().width
           if width <= slotWidth {
             let center = min(max((gloss.left + gloss.right) / 2, slotLeft + width / 2), slotRight - width / 2)
@@ -561,15 +647,50 @@ final class ReaderPageView: UIView {
 
   // Long-press selection boxes: one rounded box per line around the ink.
   func textSelectionBoxes() -> [CGRect] {
+    currentSelectionLineBoxes().map(\.rect)
+  }
+
+  fileprivate func currentSelectionLineBoxes() -> [SelectionLineBox] {
     guard let page, selection?.kind == .text else { return [] }
-    return selectionParts().flatMap { part -> [CGRect] in
+    return selectionParts().flatMap { part -> [SelectionLineBox] in
       let item = page.items[part.itemIndex]
       return lineSpans(for: part.range, in: item).map { span in
         let line = item.layout.lines[span.index]
         let top = origin.y + item.lineTop(span.index)
-        return CGRect(x: span.left - 2, y: top - 1, width: span.right - span.left + 4, height: line.ascent + line.descent + 3)
+        return SelectionLineBox(
+          item: part.itemIndex, line: span.index,
+          rect: CGRect(x: span.left - 2, y: top - 1, width: span.right - span.left + 4, height: line.ascent + line.descent + 3)
+        )
       }
     }
+  }
+
+  // The boxes as drawn: while sliding, each line moves from its old box; a
+  // line new to the selection grows out of the edge nearest the old one (its
+  // right edge if it comes before the old start, else its left), and a line
+  // leaving shrinks into that edge.
+  private func displayedSelectionBoxes() -> [CGRect] {
+    let target = currentSelectionLineBoxes()
+    guard slideProgress < 1, !slideFrom.isEmpty else { return target.map(\.rect) }
+    let p = slideProgress
+    let old = Dictionary(slideFrom.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
+    let new = Set(target.map(\.key))
+    let oldStart = slideFrom.map(\.order).min(by: <) ?? (0, 0)
+    let newStart = target.map(\.order).min(by: <) ?? (0, 0)
+    func collapsed(_ rect: CGRect, before start: (Int, Int), order: (Int, Int)) -> CGRect {
+      CGRect(x: order < start ? rect.maxX : rect.minX, y: rect.minY, width: 0, height: rect.height)
+    }
+    func lerp(_ a: CGRect, _ b: CGRect) -> CGRect {
+      CGRect(x: a.minX + (b.minX - a.minX) * p, y: a.minY + (b.minY - a.minY) * p,
+             width: a.width + (b.width - a.width) * p, height: a.height + (b.height - a.height) * p)
+    }
+    var rects = target.map { box in
+      lerp(old[box.key]?.rect ?? collapsed(box.rect, before: oldStart, order: box.order), box.rect)
+    }
+    for box in slideFrom where !new.contains(box.key) {
+      rects.append(lerp(box.rect, collapsed(box.rect, before: newStart, order: box.order)))
+    }
+    return rects.filter { $0.width > 0.5 }
   }
 
   // Every box of the current selection (word or text), for tap tests.
@@ -613,7 +734,7 @@ final class ReaderPageView: UIView {
   }
 
   private func drawTextSelection(context: CGContext) {
-    let boxes = textSelectionBoxes()
+    let boxes = displayedSelectionBoxes()
     guard !boxes.isEmpty else { return }
     palette.textSelectionHighlight.setFill()
     for box in boxes {

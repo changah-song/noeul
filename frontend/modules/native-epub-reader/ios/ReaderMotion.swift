@@ -9,6 +9,7 @@ struct CubicBezier {
   static let ease = CubicBezier(x1: 0.25, y1: 0.1, x2: 0.25, y2: 1)
   static let easeOutCubic = CubicBezier(x1: 0.33, y1: 1, x2: 0.68, y2: 1)
   static let panelLift = CubicBezier(x1: 0.22, y1: 0.61, x2: 0.36, y2: 1)
+  static let selectionSlide = CubicBezier(x1: 0.2, y1: 0, x2: 0, y2: 1)
 
   private func sample(_ t: Double, _ a: Double, _ b: Double) -> Double {
     let u = 1 - t
