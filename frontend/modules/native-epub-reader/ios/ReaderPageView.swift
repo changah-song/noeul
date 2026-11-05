@@ -44,14 +44,6 @@ struct ReaderWordHit {
   let phraseWord: String?
 }
 
-// The focus beam: the lit sentence span, cross-fading from the previous one.
-struct ReaderFocusBeam {
-  var current: [ReaderSourceRange] = []
-  var previous: [ReaderSourceRange] = []
-  // 0 -> 1 while the beam moves from `previous` to `current`.
-  var progress: CGFloat = 1
-}
-
 // How marks are drawn; set by the reader view on every page.
 struct ReaderMarkOptions {
   var showPinyin = false
@@ -67,8 +59,6 @@ struct ReaderMarkOptions {
   var listenSentence: (spineIndex: Int, ranges: [ReaderSourceRange])?
   // The word the voice is reading.
   var spokenRange: (spineIndex: Int, range: ReaderSourceRange)?
-  // Focus mode: everything dims except the beam.
-  var focusBeam: ReaderFocusBeam?
   // Word help sweeping in (RevealWave).
   var reveal: ReaderReveal?
 }
@@ -93,7 +83,6 @@ private let marqueePauseMs: Double = 1400
 private let marqueeFrameMs: Double = 40
 private let senseTurnMs: Double = 3200
 private let senseFadeMs: Double = 280
-private let focusDimAlpha: CGFloat = 0.22
 
 private func hasCjkOrKana(_ text: String) -> Bool {
   text.utf16.contains { isHangul($0) || isCjkIdeograph($0) || (0x3040...0x30FF).contains($0) }
@@ -108,7 +97,7 @@ final class ReaderPageView: UIView {
   }
   var palette = ReaderPalette.make(theme: "light", tokens: [:]) {
     didSet {
-      backgroundColor = palette.background
+      backgroundColor = paintsBackground ? palette.background : .clear
       setNeedsDisplay()
     }
   }
@@ -139,6 +128,15 @@ final class ReaderPageView: UIView {
   }
   var marks = ReaderMarkOptions() {
     didSet { setNeedsDisplay() }
+  }
+  // Scroll tiles are transparent: the scroll host paints the background and
+  // the spoken-word wash under them, and the focus dim over them.
+  var paintsBackground = true {
+    didSet {
+      isOpaque = paintsBackground
+      backgroundColor = paintsBackground ? palette.background : .clear
+      setNeedsDisplay()
+    }
   }
   // Top-left of the content box in this view. Scroll-mode tiles each show a
   // band of a tall chapter by moving it up.
@@ -177,35 +175,13 @@ final class ReaderPageView: UIView {
 
   override func draw(_ rect: CGRect) {
     guard let context = UIGraphicsGetCurrentContext() else { return }
-    palette.background.setFill()
-    context.fill(bounds)
+    if paintsBackground {
+      palette.background.setFill()
+      context.fill(bounds)
+    }
     guard let page else { return }
     // Next frame wanted by an animation (ms), if any.
-    var nextFrameMs = Double.infinity
-
-    if let beam = marks.focusBeam {
-      // One dim layer for everything, then the lit span redrawn at full
-      // strength inside its own clip (cross-fading while the beam moves).
-      context.saveGState()
-      context.setAlpha(focusDimAlpha)
-      context.beginTransparencyLayer(auxiliaryInfo: nil)
-      nextFrameMs = drawItems(of: page, in: rect, context: context)
-      context.endTransparencyLayer()
-      context.restoreGState()
-      for (ranges, alpha) in [(beam.previous, 1 - beam.progress), (beam.current, beam.progress)] where alpha > 0.01 && !ranges.isEmpty {
-        let clip = beamClip(ranges, in: page)
-        guard !clip.isEmpty else { continue }
-        context.saveGState()
-        context.clip(to: clip)
-        context.setAlpha(alpha)
-        context.beginTransparencyLayer(auxiliaryInfo: nil)
-        _ = drawItems(of: page, in: rect, context: context, boldPass: true)
-        context.endTransparencyLayer()
-        context.restoreGState()
-      }
-    } else {
-      nextFrameMs = drawItems(of: page, in: rect, context: context)
-    }
+    let nextFrameMs = drawItems(of: page, in: rect, context: context)
     drawTextSelection(context: context)
     scheduleRedraw(afterMs: nextFrameMs)
   }
@@ -222,7 +198,7 @@ final class ReaderPageView: UIView {
   // Each block in Android's order: context wash, spoken wash, word box, level
   // underlines, saved shade + underline, text, annotations. Returns ms until
   // the next animation frame is needed.
-  private func drawItems(of page: ReaderPage, in rect: CGRect, context: CGContext, boldPass: Bool = false) -> Double {
+  private func drawItems(of page: ReaderPage, in rect: CGRect, context: CGContext) -> Double {
     var nextFrameMs = Double.infinity
     let now = nowMs()
     let band = rect.insetBy(dx: 0, dy: -48)
@@ -282,10 +258,6 @@ final class ReaderPageView: UIView {
                       thickness: 2, roundCap: false, dissolve: 0, context: context)
       }
       drawLines(of: item, context: context, offsetX: 0)
-      if boldPass {
-        // A touch heavier for the lit sentence.
-        drawLines(of: item, context: context, offsetX: 0.3)
-      }
       if marks.showPinyin || marks.showGloss {
         let levels = page.highlights.level.filter { $0.blockId == blockId }
         nextFrameMs = min(nextFrameMs, drawAnnotations(levels, in: item, context: context, now: now))
@@ -454,9 +426,10 @@ final class ReaderPageView: UIView {
     return (alpha, (1 - alpha) * RevealWave.annotationRise)
   }
 
-  // The focus beam's clip: each lit line from the span's start to its end,
-  // line top to line bottom, plus the annotation rows when they're on.
-  private func beamClip(_ ranges: [ReaderSourceRange], in page: ReaderPage) -> [CGRect] {
+  // The focus beam's lit area: each lit line from the span's start to its
+  // end, line top to line bottom, plus the annotation rows when they're on.
+  func beamRects(_ ranges: [ReaderSourceRange]) -> [CGRect] {
+    guard let page else { return [] }
     var rects: [CGRect] = []
     for item in page.items where item.layout.imageFrame == nil {
       for part in ranges where part.blockId == item.layout.block.id {
@@ -620,6 +593,13 @@ final class ReaderPageView: UIView {
     if t < marqueePauseMs + slideMs { return (overflow * CGFloat((t - marqueePauseMs) / slideMs), marqueeFrameMs) }
     if t < 2 * marqueePauseMs + slideMs { return (overflow, 2 * marqueePauseMs + slideMs - t) }
     return (overflow * CGFloat(1 - (t - 2 * marqueePauseMs - slideMs) / slideMs), marqueeFrameMs)
+  }
+
+  // The spoken word's wash boxes (scroll host overlay).
+  func spokenRects(_ range: ReaderSourceRange) -> [CGRect] {
+    guard let page else { return [] }
+    return page.items.filter { $0.layout.block.id == range.blockId && $0.layout.imageFrame == nil }
+      .flatMap { boxes(for: range.range, in: $0) }
   }
 
   // MARK: - Text selection
