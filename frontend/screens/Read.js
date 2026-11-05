@@ -5151,6 +5151,7 @@ const Read = ({
                         sourceLanguage={activeBookLanguage}
                         targetLanguage={interfaceLanguage}
                         top={chromeHidden ? insets.top : headerHeight}
+                        readerFontSize={readerFontSize}
                     />
                 ) : null}
             </View>

@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { translationTextSize } from './readerTextSizing';
 import { Animated, Easing, ScrollView, StyleSheet, Text, TouchableOpacity, useWindowDimensions } from 'react-native';
 import { useTranslation } from '../../hooks/useTranslation';
 import usePresence from '../../hooks/usePresence';
@@ -20,11 +21,12 @@ const PADDING_V = 10;
  * a sentence normally shows at once; one the chapter didn't cover is fetched
  * on the spot. `top` is where the page starts under the header or status bar.
  */
-const SentenceTranslationPopup = ({ sentence, sourceLanguage, targetLanguage, top = 0 }) => {
+const SentenceTranslationPopup = ({ sentence, sourceLanguage, targetLanguage, top = 0, readerFontSize }) => {
     const { t } = useTranslation();
     const { colors } = useTheme();
     const { height: windowHeight } = useWindowDimensions();
-    const styles = useMemo(() => createStyles(colors), [colors]);
+    const textSize = translationTextSize(readerFontSize);
+    const styles = useMemo(() => createStyles(colors, textSize), [colors, textSize.fontSize]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const cleanedSentence = typeof sentence === 'string' ? sentence.trim() : '';
     const { mounted, progress } = usePresence(Boolean(cleanedSentence), { duration: 220 });
@@ -120,7 +122,7 @@ const SentenceTranslationPopup = ({ sentence, sourceLanguage, targetLanguage, to
     );
 };
 
-const createStyles = (colors) => StyleSheet.create({
+const createStyles = (colors, textSize) => StyleSheet.create({
     // A floating card, like the dictionary and AI panels.
     card: {
         position: 'absolute',
@@ -145,14 +147,14 @@ const createStyles = (colors) => StyleSheet.create({
     // translation reads as a quiet aid rather than part of the book.
     translationText: {
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 15,
-        lineHeight: 22,
+        fontSize: textSize.fontSize,
+        lineHeight: textSize.lineHeight,
         color: colors.text,
     },
     mutedText: {
         fontFamily: fontFamilies.sansRegular,
-        fontSize: 14,
-        lineHeight: 22,
+        fontSize: textSize.fontSize - 1,
+        lineHeight: textSize.lineHeight,
         color: colors.textMuted,
     },
     retryText: {

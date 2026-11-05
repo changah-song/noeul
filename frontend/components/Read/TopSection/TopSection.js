@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Easing, PanResponder, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
+import { DICTIONARY_BOTTOM_PADDING, dictionaryBottomPadding } from '../readerTextSizing';
 import * as Clipboard from 'expo-clipboard';
 import { useTranslation } from '../../../hooks/useTranslation';
 import { useAppContext } from '../../../contexts/AppContext';
@@ -22,7 +23,6 @@ const DICTIONARY_EXPANDED_MAX_HEIGHT = 548;
 const TRANSLATION_MAX_SCROLL_HEIGHT = 150;
 // Room under the last line of the definition, so it doesn't sit on the
 // panel's bottom edge (the max height grows by the same amount).
-const DICTIONARY_BOTTOM_PADDING = 26;
 const DICTIONARY_BOTTOM_PADDING_EXTRA = DICTIONARY_BOTTOM_PADDING - 12;
 const TOP_PLACEMENT_DICTIONARY_TOP_PADDING = 22;
 const TOP_PLACEMENT_DICTIONARY_BOTTOM_PADDING = 4;
@@ -268,7 +268,7 @@ const TopSection = ({
     const sheetSizeStyle = isTranslationMode ? null : { maxHeight: dictionaryMaxHeight + DICTIONARY_BOTTOM_PADDING_EXTRA + bottomPanelInset };
     const sheetBottomPadding = isTranslationMode
         ? 14
-        : (isTopPlacement ? TOP_PLACEMENT_DICTIONARY_BOTTOM_PADDING : DICTIONARY_BOTTOM_PADDING + bottomPanelInset);
+        : (isTopPlacement ? TOP_PLACEMENT_DICTIONARY_BOTTOM_PADDING : dictionaryBottomPadding(bottomPanelInset));
     const forceTranslationLoading = Boolean(translationVisualState.loading);
     const forceTranslationError = Boolean(translationVisualState.error);
     const forceTranslationCopied = Boolean(translationVisualState.copied);

@@ -27,6 +27,14 @@ private final class ReaderPageCell: UICollectionViewCell {
   }
 }
 
+// Pages are the pager's size; when that changes (the reader view resizes as
+// the header comes and goes), the page size must change in the same pass.
+private final class ReaderPagerLayout: UICollectionViewFlowLayout {
+  override func shouldInvalidateLayout(forBoundsChange newBounds: CGRect) -> Bool {
+    newBounds.size != collectionView?.bounds.size || super.shouldInvalidateLayout(forBoundsChange: newBounds)
+  }
+}
+
 enum ReaderRenderMode {
   case paged, continuous, focus
 
@@ -264,7 +272,8 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
   private var lastFocusMoveAt: CFTimeInterval = 0
   private var focusNavTokenSeen = false
   private var pendingFocusLandAtEndSpine: Int?
-  private let beamAnimator = FrameAnimator()
+  // The sentence span the beam lights.
+  private var litSpan: [ReaderSourceRange] = []
 
   // Listening in paged mode.
   private var pagedSentences: [PagedSentence] = []
@@ -288,7 +297,7 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
   private var touchStartedWhileFlinging = false
 
   required init(appContext: AppContext? = nil) {
-    let layout = UICollectionViewFlowLayout()
+    let layout = ReaderPagerLayout()
     layout.scrollDirection = .horizontal
     layout.minimumLineSpacing = 0
     layout.minimumInteritemSpacing = 0
@@ -437,10 +446,11 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     host.focusSwipeMode = next == .focus
     host.stopScrollAnimation()
     host.setLift(0, animated: false)
-    beamAnimator.stop()
+    host.clearBeam()
+    host.setSpokenRects([])
+    litSpan = []
     setSelection(nil)
     marks.spokenRange = nil
-    marks.focusBeam = nil
     pushMarks()
     focusSentences = []
     contentSignature = parsedChapters().map(\.signature).joined(separator: "|")
@@ -647,7 +657,10 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     for cell in collectionView.visibleCells {
       (cell as? ReaderPageCell)?.pageView.marks = marks
     }
-    host.marks = marks
+    // Scroll and focus modes wash the spoken word in a layer instead.
+    var hostMarks = marks
+    hostMarks.spokenRange = nil
+    host.marks = hostMarks
   }
 
   // MARK: - Context sentence
@@ -1126,22 +1139,17 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
   }
 
   // Light the span, cross-fading from the old one (300 ms, 140 ms when fast).
+  // Drawn by the scroll host's layers, so a step costs no text redraw.
   private func setBeam(animated: Bool, fast: Bool) {
     let current = spanRanges(focusIndex)
-    let old = marks.focusBeam?.current ?? []
-    beamAnimator.stop()
-    guard animated, old != current else {
-      marks.focusBeam = ReaderFocusBeam(current: current, previous: [], progress: 1)
-      pushMarks()
+    let old = litSpan
+    litSpan = current
+    let rects = host.probe.beamRects(current)
+    guard animated, old != current, !old.isEmpty else {
+      host.setBeam(current: rects, previous: [], duration: 0)
       return
     }
-    marks.focusBeam = ReaderFocusBeam(current: current, previous: old, progress: 0)
-    pushMarks()
-    beamAnimator.run(duration: fast ? 0.14 : 0.3, curve: .ease, step: { [weak self] progress in
-      guard let self, self.marks.focusBeam != nil else { return }
-      self.marks.focusBeam?.progress = CGFloat(progress)
-      self.host.marks = self.marks
-    })
+    host.setBeam(current: rects, previous: host.probe.beamRects(old), duration: fast ? 0.14 : 0.3)
   }
 
   // Scroll the span to its anchor (0.28 of the screen) and lift it above an
@@ -1557,6 +1565,11 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
       }
     } else {
       marks.spokenRange = nil
+    }
+    if isVertical {
+      // A layer under the text: a word every few hundred ms mustn't redraw it.
+      host.setSpokenRects(marks.spokenRange.map { host.probe.spokenRects($0.range) } ?? [])
+      return
     }
     pushMarks()
   }

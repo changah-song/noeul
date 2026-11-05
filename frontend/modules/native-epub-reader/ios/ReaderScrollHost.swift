@@ -22,6 +22,15 @@ private let pullSpace: CGFloat = 96
 private let pullFullDistance: CGFloat = 120
 private let pullFollow: CGFloat = 72
 private let focusSwipeDistance: CGFloat = 28
+private let focusDimAlpha: CGFloat = 0.22
+
+private extension CGPath {
+  static func rects(_ rects: [CGRect]) -> CGPath {
+    let path = CGMutablePath()
+    rects.forEach { path.addRect($0) }
+    return path
+  }
+}
 
 final class ReaderScrollHost: UIView, UIScrollViewDelegate {
   weak var delegate: ReaderScrollHostDelegate?
@@ -34,6 +43,15 @@ final class ReaderScrollHost: UIView, UIScrollViewDelegate {
   private var tiles: [Int: ReaderPageView] = [:]
   private var spareTiles: [ReaderPageView] = []
   private let ring = PullRingView()
+  // Focus mode: everything outside the lit sentence is covered with the
+  // background at 0.78 (the same as drawing the text at 0.22), with the lit
+  // sentence cut out; the two fill layers cross-fade a step. All GPU layers,
+  // so a step never redraws the text.
+  private let dimLayer = CAShapeLayer()
+  private let fadingOutFill = CAShapeLayer()
+  private let fadingInFill = CAShapeLayer()
+  // The word the voice is reading, washed under the (transparent) text.
+  private let spokenLayer = CAShapeLayer()
 
   private(set) var page: ReaderPage?
   private(set) var textTop: CGFloat = 30
@@ -45,6 +63,14 @@ final class ReaderScrollHost: UIView, UIScrollViewDelegate {
       scrollView.backgroundColor = palette.background
       scrollView.indicatorStyle = palette.isDark ? .white : .black
       forEachPageView { $0.palette = palette }
+      contentView.backgroundColor = palette.background
+      let dim = palette.background.withAlphaComponent(1 - focusDimAlpha).cgColor
+      dimLayer.fillColor = dim
+      fadingOutFill.fillColor = dim
+      fadingInFill.fillColor = dim
+      spokenLayer.fillColor = (palette.isDark
+        ? UIColor(red: 0x5B / 255, green: 0x9B / 255, blue: 0xE6 / 255, alpha: 0x66 / 255)
+        : UIColor(red: 0x9C / 255, green: 0xCB / 255, blue: 0xFF / 255, alpha: 0x73 / 255)).cgColor
       ring.setNeedsDisplay()
     }
   }
@@ -101,6 +127,16 @@ final class ReaderScrollHost: UIView, UIScrollViewDelegate {
     scrollView.panGestureRecognizer.addTarget(self, action: #selector(handleScrollPan(_:)))
     addSubview(scrollView)
     scrollView.addSubview(contentView)
+    spokenLayer.zPosition = -1
+    contentView.layer.addSublayer(spokenLayer)
+    dimLayer.fillRule = .evenOdd
+    for layer in [dimLayer, fadingOutFill, fadingInFill] {
+      layer.zPosition = 10
+      layer.isHidden = true
+      layer.actions = ["path": NSNull(), "opacity": NSNull(), "hidden": NSNull()]
+      contentView.layer.addSublayer(layer)
+    }
+    spokenLayer.actions = ["path": NSNull()]
     ring.host = self
     ring.isUserInteractionEnabled = false
     ring.isOpaque = false
@@ -174,11 +210,76 @@ final class ReaderScrollHost: UIView, UIScrollViewDelegate {
     scrollView.setContentOffset(CGPoint(x: 0, y: min(max(y, 0), maxScroll)), animated: false)
     suppressScrollEvents = false
     updateTiles()
-    ring.setNeedsDisplay()
+    if !focusSwipeMode { ring.setNeedsDisplay() }
   }
 
   func setIndicatorInsets(top: CGFloat, bottom: CGFloat) {
     scrollView.verticalScrollIndicatorInsets = UIEdgeInsets(top: top, left: 0, bottom: bottom, right: 0)
+  }
+
+  // MARK: - Focus beam and spoken word
+
+  // Light `current` (rects in content coordinates), cross-fading from
+  // `previous` over `duration` seconds (0 = at once).
+  func setBeam(current: [CGRect], previous: [CGRect], duration: CFTimeInterval) {
+    let bounds = CGRect(x: 0, y: 0, width: contentView.bounds.width, height: contentHeight)
+    let lit = CGMutablePath()
+    (current + (duration > 0 ? previous : [])).forEach { lit.addRect($0) }
+    let dim = CGMutablePath()
+    dim.addRect(bounds)
+    dim.addPath(lit)
+    [dimLayer, fadingOutFill, fadingInFill].forEach { $0.frame = bounds }
+    dimLayer.path = dim
+    dimLayer.isHidden = false
+
+    fadingOutFill.removeAllAnimations()
+    fadingInFill.removeAllAnimations()
+    guard duration > 0, !previous.isEmpty else {
+      fadingOutFill.isHidden = true
+      fadingInFill.isHidden = true
+      return
+    }
+    // The old sentence dims in, the new one brightens.
+    fadingOutFill.path = CGPath.rects(previous)
+    fadingInFill.path = CGPath.rects(current)
+    fadingOutFill.isHidden = false
+    fadingInFill.isHidden = false
+    let timing = CAMediaTimingFunction(controlPoints: 0.25, 0.1, 0.25, 1)
+    for (layer, from, to) in [(fadingOutFill, Float(0), Float(1)), (fadingInFill, Float(1), Float(0))] {
+      layer.opacity = to
+      let fade = CABasicAnimation(keyPath: "opacity")
+      fade.fromValue = from
+      fade.toValue = to
+      fade.duration = duration
+      fade.timingFunction = timing
+      layer.add(fade, forKey: "fade")
+    }
+    // Once faded, the old sentence is just part of the dim.
+    let token = UUID()
+    beamToken = token
+    DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+      guard let self, self.beamToken == token else { return }
+      let settled = CGMutablePath()
+      settled.addRect(bounds)
+      current.forEach { settled.addRect($0) }
+      self.dimLayer.path = settled
+      self.fadingOutFill.isHidden = true
+      self.fadingInFill.isHidden = true
+    }
+  }
+
+  private var beamToken = UUID()
+
+  func clearBeam() {
+    beamToken = UUID()
+    [dimLayer, fadingOutFill, fadingInFill].forEach { $0.isHidden = true }
+  }
+
+  func setSpokenRects(_ rects: [CGRect]) {
+    spokenLayer.frame = CGRect(x: 0, y: 0, width: contentView.bounds.width, height: contentHeight)
+    let path = CGMutablePath()
+    rects.forEach { path.addRoundedRect(in: $0, cornerWidth: 3, cornerHeight: 3) }
+    spokenLayer.path = path
   }
 
   // Every tile and the probe.
@@ -210,6 +311,7 @@ final class ReaderScrollHost: UIView, UIScrollViewDelegate {
     }
     for index in first...last where tiles[index] == nil {
       let tile = spareTiles.popLast() ?? ReaderPageView(frame: .zero)
+      tile.paintsBackground = false
       tile.frame = CGRect(x: 0, y: CGFloat(index) * height, width: bounds.width, height: height)
       tile.palette = palette
       tile.marks = marks
@@ -235,7 +337,7 @@ final class ReaderScrollHost: UIView, UIScrollViewDelegate {
       if abs(offset - edge) > 0.5 { setOffset(edge) }
     }
     updateTiles()
-    ring.setNeedsDisplay()
+    if !focusSwipeMode { ring.setNeedsDisplay() }
     let delta = offset - lastOffset
     lastOffset = offset
     guard !suppressScrollEvents else { return }
