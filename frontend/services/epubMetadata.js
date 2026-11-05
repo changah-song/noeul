@@ -2,6 +2,7 @@ import JSZip from 'jszip';
 import { DOMParser } from '@xmldom/xmldom';
 import * as FileSystem from 'expo-file-system/legacy';
 import { rebaseAppContainerUri } from './appContainerPaths';
+import { resolveBookSourceUri } from './bookFiles';
 import { normalizeBookLanguage } from '../constants/languages';
 import { addScriptCounts, dominantScriptLanguage, emptyScriptCounts } from './textScript';
 
@@ -217,7 +218,7 @@ const writeJsonFile = async (uri, value) => {
 
 const sourceFileSignature = async (uri) => {
     try {
-        const info = await FileSystem.getInfoAsync(uri);
+        const info = await FileSystem.getInfoAsync(await resolveBookSourceUri(uri));
         return {
             exists: !!info.exists,
             size: Number.isFinite(info.size) ? info.size : null,
@@ -972,7 +973,7 @@ const normalizeParsedChildren = (children, { trimEdges = false, preserveWhitespa
 };
 
 const loadEpubZip = async (uri) => {
-    const response = await fetch(rebaseAppContainerUri(uri));
+    const response = await fetch(await resolveBookSourceUri(uri));
     if (!response.ok) {
         throw new Error(`Failed to fetch EPUB: ${response.status}`);
     }

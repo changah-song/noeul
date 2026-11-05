@@ -3,7 +3,7 @@ import {
     extractPdfDocument as nativeExtractPdfDocument,
     renderPdfCover as nativeRenderPdfCover,
 } from '../modules/native-epub-reader/src/NativeEpubReaderView';
-import { rebaseAppContainerUri } from './appContainerPaths';
+import { resolveBookSourceUri } from './bookFiles';
 import { countReadableTextWords } from './epubMetadata';
 
 const PDF_NATIVE_DIR = 'pdf-native';
@@ -94,7 +94,7 @@ const writeJsonFile = async (uri, value) => {
 
 const sourceFileSignature = async (uri) => {
     try {
-        const info = await FileSystem.getInfoAsync(uri);
+        const info = await FileSystem.getInfoAsync(await resolveBookSourceUri(uri));
         return {
             exists: !!info.exists,
             size: Number.isFinite(info.size) ? info.size : null,
@@ -323,9 +323,9 @@ const readPdfExtraction = async (uri, fallbackName = '') => {
             await FileSystem.deleteAsync(rootUri, { idempotent: true });
             await ensureDirectory(rootUri);
             const nativeExtraction = await nativeExtractPdfDocument({
-                // The file itself may have moved with the iOS container; the
-                // book's uri stays the cache key.
-                sourceUri: rebaseAppContainerUri(uri),
+                // The file to read (a Documents copy, or moved with the iOS
+                // container); the book's uri stays the cache key.
+                sourceUri: await resolveBookSourceUri(uri),
                 fallbackName: fallbackName || '',
                 outputRootUri: rootUri,
             });
@@ -402,7 +402,7 @@ export const renderPdfCover = async (uri, fallbackName = '', pageNumber = 1) => 
     }
 
     const rendered = await nativeRenderPdfCover({
-        sourceUri: rebaseAppContainerUri(uri),
+        sourceUri: await resolveBookSourceUri(uri),
         fallbackName: fallbackName || '',
         outputRootUri: pdfCoverRootUriForBook(uri, fallbackName),
         pageNumber: selectedPageNumber,

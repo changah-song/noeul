@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { discardPersistedCopy, persistPickedBookFile } from '../services/bookFiles';
 import { Alert, Platform } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import * as DocumentPicker from 'expo-document-picker';
@@ -164,6 +165,8 @@ const useBooks = ({
     };
 
     const addBook = async () => {
+        // The Documents copy of the picked file, until a new book owns it.
+        let pendingCopy = null;
         try {
             const pickedAsset = await pickBookAsset();
 
@@ -171,7 +174,10 @@ const useBooks = ({
                 return;
             }
 
-            const { uri } = pickedAsset;
+            // Keep the book in Documents: the picker's copy sits in the
+            // cache directory, which the system may clear.
+            const uri = await persistPickedBookFile(pickedAsset.uri);
+            pendingCopy = { copy: uri, picked: pickedAsset.uri };
             const format = pickedAsset.format || 'epub';
             setIsImporting(true);
 
@@ -287,8 +293,11 @@ const useBooks = ({
                 setCurrentBook(existingBook.uri);
                 setIsImporting(false);
                 navigation.navigate('Read', { returnTo: 'Home' });
+                // Already on the shelf: the new copy isn't needed.
+                if (existingBook.uri !== uri) discardPersistedCopy(pendingCopy.copy, pendingCopy.picked);
                 return;
             }
+            pendingCopy = null;
 
             const preprocessed = await isBookPreprocessed(uri, { ownerId });
             const openedAt = new Date().toISOString();
@@ -359,6 +368,7 @@ const useBooks = ({
                     });
             }
         } catch (error) {
+            if (pendingCopy) discardPersistedCopy(pendingCopy.copy, pendingCopy.picked);
             console.error("[useBooks] Error in addBook:", error);
             Alert.alert(
                 t('books.importFailedTitle'),
