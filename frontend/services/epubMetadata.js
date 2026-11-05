@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 import { DOMParser } from '@xmldom/xmldom';
 import * as FileSystem from 'expo-file-system/legacy';
+import { rebaseAppContainerUri } from './appContainerPaths';
 import { normalizeBookLanguage } from '../constants/languages';
 import { addScriptCounts, dominantScriptLanguage, emptyScriptCounts } from './textScript';
 
@@ -971,7 +972,7 @@ const normalizeParsedChildren = (children, { trimEdges = false, preserveWhitespa
 };
 
 const loadEpubZip = async (uri) => {
-    const response = await fetch(uri);
+    const response = await fetch(rebaseAppContainerUri(uri));
     if (!response.ok) {
         throw new Error(`Failed to fetch EPUB: ${response.status}`);
     }
@@ -1091,6 +1092,8 @@ const readPersistentEpubPackage = async (uri, fallbackName = '', sourceSignature
         return null;
     }
 
+    // Saved under the container the app had then (it moves on iOS updates).
+    payload.extractedBook.rootUri = rebaseAppContainerUri(payload.extractedBook.rootUri);
     const extractionMetadata = await readJsonFile(`${payload.extractedBook.rootUri}${EXTRACTED_BOOK_META_FILE}`);
     if (!extractionMetadataMatches(extractionMetadata, payload.extractionMetadata || {})) {
         return null;

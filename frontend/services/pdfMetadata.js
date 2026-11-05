@@ -3,6 +3,7 @@ import {
     extractPdfDocument as nativeExtractPdfDocument,
     renderPdfCover as nativeRenderPdfCover,
 } from '../modules/native-epub-reader/src/NativeEpubReaderView';
+import { rebaseAppContainerUri } from './appContainerPaths';
 import { countReadableTextWords } from './epubMetadata';
 
 const PDF_NATIVE_DIR = 'pdf-native';
@@ -322,7 +323,9 @@ const readPdfExtraction = async (uri, fallbackName = '') => {
             await FileSystem.deleteAsync(rootUri, { idempotent: true });
             await ensureDirectory(rootUri);
             const nativeExtraction = await nativeExtractPdfDocument({
-                sourceUri: uri,
+                // The file itself may have moved with the iOS container; the
+                // book's uri stays the cache key.
+                sourceUri: rebaseAppContainerUri(uri),
                 fallbackName: fallbackName || '',
                 outputRootUri: rootUri,
             });
@@ -399,7 +402,7 @@ export const renderPdfCover = async (uri, fallbackName = '', pageNumber = 1) => 
     }
 
     const rendered = await nativeRenderPdfCover({
-        sourceUri: uri,
+        sourceUri: rebaseAppContainerUri(uri),
         fallbackName: fallbackName || '',
         outputRootUri: pdfCoverRootUriForBook(uri, fallbackName),
         pageNumber: selectedPageNumber,

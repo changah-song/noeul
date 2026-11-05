@@ -86,7 +86,8 @@ const useBooks = ({
             return null;
         }
 
-        if (format === 'pdf' && Platform.OS !== 'android') {
+        // PDFs need the native extractor (Android: pdfbox, iOS: PDFKit).
+        if (format === 'pdf' && Platform.OS !== 'android' && Platform.OS !== 'ios') {
             Alert.alert(
                 t('books.pdfUnavailableTitle'),
                 t('books.pdfUnavailableBody')

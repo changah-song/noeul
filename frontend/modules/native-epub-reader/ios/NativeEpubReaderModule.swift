@@ -36,6 +36,30 @@ public class NativeEpubReaderModule: Module {
       DispatchQueue.main.async { ReaderListenSession.shared.stop() }
     }
 
+    // PDF import (PDFKit), off the main thread. Failures reject with
+    // ERR_PDF_IMPORT and the localized message alone, as on Android: a thrown
+    // exception would reach JS prefixed with "Calling the ... function has
+    // failed", and the import dialog then shows its generic text.
+    AsyncFunction("extractPdfDocument") { (options: [String: Any], promise: Promise) in
+      DispatchQueue.global(qos: .userInitiated).async {
+        do {
+          promise.resolve(try ReaderPdf.extract(options))
+        } catch {
+          promise.reject("ERR_PDF_IMPORT", ReaderStrings.t("pdfImportFailed"))
+        }
+      }
+    }
+
+    AsyncFunction("renderPdfCover") { (options: [String: Any], promise: Promise) in
+      DispatchQueue.global(qos: .userInitiated).async {
+        do {
+          promise.resolve(try ReaderPdf.renderCover(options))
+        } catch {
+          promise.reject("ERR_PDF_IMPORT", ReaderStrings.t("pdfImportFailed"))
+        }
+      }
+    }
+
     AsyncFunction("seekToPosition") { (viewTag: Int, position: [String: Any]) in
       self.appContext?.findView(withTag: viewTag, ofType: NativeEpubReaderView.self)?.seek(to: position)
     }.runOnQueue(.main)
