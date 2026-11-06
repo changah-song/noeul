@@ -139,6 +139,7 @@ import { ONBOARDING_FLOW_SEEN_KEY } from './Onboarding';
 import { getSyncStatus, markSyncPending, subscribeSyncStatus } from '../services/syncStatus';
 import { blockIdForAnchor, tocAnchorFromHref } from '../services/tocAnchors';
 import {
+    anchorFraction,
     chapterMarks,
     positionForStoryProgress,
     storyBoundsForBook,
@@ -4000,9 +4001,18 @@ const Read = ({
         () => storyRangeForSpine(readerSpine, toc, curatedBook, storyBounds),
         [curatedBook, readerSpine, storyBounds, toc]
     );
+    // Contents entries that point inside a file are placed by where their
+    // element sits in that file, once it has been read in (the chapter window
+    // changing is when a file arrives).
     const scrubberChapters = useMemo(
-        () => chapterMarks(readerSpine, scrubberRange, toc),
-        [readerSpine, scrubberRange, toc]
+        () => chapterMarks(readerSpine, scrubberRange, toc, {
+            fractionFor: (spineIndex, anchor) => {
+                const chapterPackage = parsedChapterCacheRef.current.get(spineIndex);
+                return chapterPackage ? anchorFraction(chapterBlocksForReaderPackage(chapterPackage), anchor) : null;
+            },
+        }),
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [readerSpine, scrubberRange, toc, nativeChapterWindow]
     );
     const scrubberBookmarks = useMemo(() => (Array.isArray(readerSpine) ? bookBookmarks : [])
         .filter((bookmark) => Number.isInteger(bookmark?.spineIndex))
@@ -4031,18 +4041,25 @@ const Read = ({
         const tocItem = flattenedToc.reduce((found, item) => (
             Number.isInteger(item?.spineIndex) && item.spineIndex <= position.spineIndex ? item : found
         ), null);
+        // The chapter whose mark is at or before this point (marks follow the
+        // contents, even inside one long file); before the first mark, the
+        // contents entry for the file.
+        const mark = scrubberChapters.reduce((found, item) => (item.at <= fraction + 1e-6 ? item : found), null);
         const chapterPackage = parsedChapterCacheRef.current.get(position.spineIndex);
-        const text = chapterPackage
+        const fileText = chapterPackage
             ? chapterBlocksForReaderPackage(chapterPackage)
                 .filter((block) => !block?.excludeFromText && typeof block?.text === 'string')
                 .map((block) => block.text.trim())
                 .filter(Boolean)
                 .join(' ')
-                .slice(0, 420)
             : '';
-        const title = localizeGeneratedSectionLabel(titleForTocItem(tocItem), t);
+        // From the point dragged to, not the file's top: one long file can
+        // hold the whole book.
+        const from = Math.floor(fileText.length * Math.min(Math.max(position.chapterFraction || 0, 0), 1));
+        const text = fileText.slice(from > 0 ? fileText.lastIndexOf(' ', from) + 1 : 0).slice(0, 420);
+        const title = localizeGeneratedSectionLabel(mark?.title || titleForTocItem(tocItem), t);
         return { title, text, chapter: title };
-    }, [flattenedToc, readerSpine, scrubberRange, t]);
+    }, [flattenedToc, readerSpine, scrubberChapters, scrubberRange, t]);
     const scrubberTargetRef = useRef(null);
     const pendingScrubSeekRef = useRef(null);
     const handleSelectBookmarkRef = useRef(handleSelectBookmark);

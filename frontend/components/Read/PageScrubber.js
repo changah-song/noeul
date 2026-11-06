@@ -184,7 +184,7 @@ const PageScrubber = ({
                     <View pointerEvents="none" style={[styles.trackFill, { width: thumbX }]} />
                     {marks.map((mark) => (
                         <View
-                            key={mark.spineIndex}
+                            key={mark.key ?? mark.spineIndex}
                             pointerEvents="none"
                             style={[styles.mark, { left: mark.x - 4 }, mark.at <= shown && styles.markPassed]}
                         />

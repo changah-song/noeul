@@ -1,4 +1,5 @@
 import {
+  anchorFraction,
   chapterMarks,
   positionForStoryProgress,
   storyBoundsForBook,
@@ -70,9 +71,66 @@ describe('scrubber positions', () => {
     expect(positionForStoryProgress(spine, range, 1)).toEqual({ spineIndex: 2, chapterFraction: 1 });
   });
 
-  it('marks where each chapter starts', () => {
-    expect(chapterMarks(spine, range, [{ title: 'Two', spineIndex: 1 }]).map((mark) => [mark.at, mark.title]))
-      .toEqual([[0.2, 'Two'], [0.8, '']]);
+  it('marks where each contents entry starts', () => {
+    const toc = [{ title: 'One', spineIndex: 0 }, { title: 'Two', spineIndex: 1 }, { title: 'Three', spineIndex: 2 }];
+    expect(chapterMarks(spine, range, toc).map((mark) => [mark.at, mark.title]))
+      .toEqual([[0.2, 'Two'], [0.8, 'Three']]);
+  });
+
+  it('marks one per file for a book without contents', () => {
+    expect(chapterMarks(spine, range).map((mark) => mark.at)).toEqual([0.2, 0.8]);
+  });
+
+  it('marks chapters inside one long file where their elements sit', () => {
+    const one = [item('book', 9000)];
+    const toc = [
+      { title: 'I', spineIndex: 0, href: 'book.xhtml#ch1' },
+      { title: 'II', spineIndex: 0, href: 'book.xhtml#ch2' },
+      { title: 'III', spineIndex: 0, href: 'book.xhtml#ch3' },
+    ];
+    const blocks = [
+      { id: 'b1', text: 'a'.repeat(100), anchors: ['ch1'] },
+      { id: 'b2', text: 'b'.repeat(200), anchors: ['ch2'] },
+      { id: 'b3', text: 'c'.repeat(100), attrs: { id: 'ch3' } },
+    ];
+    expect(anchorFraction(blocks, 'ch3')).toBe(0.75);
+    const marks = chapterMarks(one, { start: 0, end: 0 }, toc, { fractionFor: (_spineIndex, anchor) => anchorFraction(blocks, anchor) });
+    expect(marks.map((mark) => [mark.at, mark.title])).toEqual([[0.25, 'II'], [0.75, 'III']]);
+    // Before the file is read in, nothing is known about where they are.
+    expect(chapterMarks(one, { start: 0, end: 0 }, toc)).toEqual([]);
+  });
+
+  it('marks a chapter split over several files once', () => {
+    const split = [item('ch1a', 1000), item('ch1b', 1000), item('ch2a', 1000), item('ch2b', 1000)];
+    const toc = [{ title: 'One', spineIndex: 0 }, { title: 'Two', spineIndex: 2 }];
+    expect(chapterMarks(split, { start: 0, end: 3 }, toc).map((mark) => [mark.at, mark.title])).toEqual([[0.5, 'Two']]);
+  });
+
+  it('leaves out contents entries before or after the story', () => {
+    const toc = [{ title: 'Preface', spineIndex: 0 }, { title: 'Two', spineIndex: 1 }, { title: 'Notes', spineIndex: 2 }];
+    expect(chapterMarks(spine, { start: 1, end: 1 }, toc)).toEqual([]);
+  });
+
+  it('uses the nested lessons when the top level is front matter (Brooks)', () => {
+    const one = [item('book', 9000)];
+    const toc = [
+      { title: 'BROOKS\'S READERS', spineIndex: 0, href: 'book.xhtml#title' },
+      { title: 'CONTENTS', spineIndex: 0, href: 'book.xhtml#contents', subitems: [
+        { title: 'A BUSY TIME', spineIndex: 0, href: 'book.xhtml#busy' },
+        { title: 'THE COW', spineIndex: 0, href: 'book.xhtml#cow' },
+        { title: 'THE RAIN', spineIndex: 0, href: 'book.xhtml#rain' },
+      ] },
+    ];
+    const at = { title: 0, contents: 0.05, busy: 0.2, cow: 0.5, rain: 0.8 };
+    // The story starts at the first lesson.
+    const range = { start: 0, end: 0, startFraction: 0.2, endFraction: 1 };
+    const marks = chapterMarks(one, range, toc, { fractionFor: (_spineIndex, anchor) => at[anchor] });
+    expect(marks.map((mark) => mark.title)).toEqual(['THE COW', 'THE RAIN']);
+  });
+
+  it('uses the chapters inside a single top-level entry', () => {
+    const toc = [{ title: 'Book One', spineIndex: 0, subitems: [{ title: 'Two', spineIndex: 1 }, { title: 'Three', spineIndex: 2 }] }];
+    expect(chapterMarks(spine, range, toc).map((mark) => mark.title)).toEqual(['Two', 'Three']);
   });
 });
 

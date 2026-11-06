@@ -17,7 +17,7 @@
 // Progress within the range is weighted by each file's size, so one long file
 // holding most of the book (Aesop's fables) counts for what it holds.
 
-import { blockIdForAnchor } from './tocAnchors';
+import { blockIdForAnchor, tocAnchorFromHref } from './tocAnchors';
 
 // Bounds per public_library.id.
 const LIBRARY_STORY = require('../assets/data/public-domain/library-story.generated.json');
@@ -204,6 +204,19 @@ const spanFor = (range, index) => {
  * the page within that chapter when known). Null without a position.
  */
 export const storyProgress = (spine, range, spineIndex, pageIndex = null, pagesInChapter = null) => {
+  const within = (
+    Number.isInteger(pageIndex) && Number.isInteger(pagesInChapter) && pagesInChapter > 0
+  )
+    ? clamp01((pageIndex + 1) / pagesInChapter)
+    : 0;
+  return storyProgressAt(spine, range, spineIndex, within);
+};
+
+/**
+ * storyProgressAt — 0..1 through the story for a point `chapterFraction`
+ * (0..1) of the way into spine item `spineIndex`. Null without a position.
+ */
+export const storyProgressAt = (spine, range, spineIndex, chapterFraction = 0) => {
   if (!Number.isInteger(spineIndex) || !Array.isArray(spine) || spine.length === 0) return null;
   const bounds = range || { start: 0, end: spine.length - 1 };
   const { start, end } = bounds;
@@ -217,11 +230,7 @@ export const storyProgress = (spine, range, spineIndex, pageIndex = null, pagesI
     if (index < spineIndex) before += weight;
     total += weight;
   }
-  const within = (
-    Number.isInteger(pageIndex) && Number.isInteger(pagesInChapter) && pagesInChapter > 0
-  )
-    ? clamp01((pageIndex + 1) / pagesInChapter)
-    : 0;
+  const within = clamp01(chapterFraction);
   const [from, to] = spanFor(bounds, spineIndex);
   const inside = Math.min(Math.max(within, from), to) - from;
   if (total <= 0) return within >= to ? 1 : 0;
@@ -272,16 +281,91 @@ export const storyStartBlockId = (blocks, range) => {
 };
 
 /**
- * chapterMarks — where each chapter after the first starts on the scrubber
- * (one per chapter file in the range), with its contents title.
+ * anchorFraction — how far into a chapter file (0..1, by text) the block an
+ * element id starts at sits, from that file's parsed blocks; null when the
+ * id isn't among them.
  */
-export const chapterMarks = (spine, range, toc = []) => {
+export const anchorFraction = (blocks, anchor) => {
+  const id = blockIdForAnchor(blocks, anchor);
+  if (!id) return null;
+  let before = 0;
+  let total = 0;
+  let reached = false;
+  blocks.forEach((block) => {
+    const length = typeof block?.text === 'string' ? block.text.length : 0;
+    if (block?.id === id) reached = true;
+    if (!reached) before += length;
+    total += length;
+  });
+  return total > 0 ? before / total : 0;
+};
+
+// The contents entries, flattened, with their depth (0 = top level).
+const tocEntries = (toc = []) => {
+  const out = [];
+  const visit = (items, depth) => (items || []).forEach((item) => {
+    if (Number.isInteger(item?.spineIndex)) {
+      out.push({
+        spineIndex: item.spineIndex,
+        anchor: tocAnchorFromHref(item.href),
+        title: String(item.title || item.label || '').trim(),
+        depth,
+      });
+    }
+    visit(item?.subitems, depth + 1);
+  });
+  visit(toc, 0);
+  return out;
+};
+
+// Marks nearer than this (as a share of the story) are one mark.
+const SAME_MARK = 0.001;
+
+/**
+ * chapterMarks — where each chapter after the first starts on the scrubber,
+ * with its contents title: one per contents entry in the story, so the marks
+ * match the contents whether a book keeps one chapter per file, splits a
+ * chapter over several files, or holds every chapter in one file (an entry
+ * pointing into a file is placed by `fractionFor(spineIndex, anchor)`, the
+ * share of that file before it, when the file has been read in; else at the
+ * file's start). A book without contents gets one mark per file.
+ */
+export const chapterMarks = (spine, range, toc = [], { fractionFor } = {}) => {
   if (!Array.isArray(spine) || spine.length === 0) return [];
   const { start, end } = range || { start: 0, end: spine.length - 1 };
-  const titles = tocTitlesBySpine(toc);
-  const marks = [];
-  for (let index = start + 1; index <= end; index += 1) {
-    marks.push({ spineIndex: index, at: storyProgress(spine, range, index), title: titles[index] || '' });
+  const entries = tocEntries(toc).filter((entry) => entry.spineIndex >= start && entry.spineIndex <= end);
+  if (entries.length === 0) {
+    const titles = tocTitlesBySpine(toc);
+    const marks = [];
+    for (let index = start + 1; index <= end; index += 1) {
+      marks.push({ key: `spine:${index}`, spineIndex: index, at: storyProgress(spine, range, index), title: titles[index] || '' });
+    }
+    return marks;
   }
-  return marks;
+  const placed = entries.map((entry) => {
+    const fraction = entry.anchor && typeof fractionFor === 'function'
+      ? fractionFor(entry.spineIndex, entry.anchor)
+      : null;
+    return {
+      key: `toc:${entry.spineIndex}:${entry.anchor || ''}`,
+      spineIndex: entry.spineIndex,
+      at: storyProgressAt(spine, range, entry.spineIndex, fraction ?? 0),
+      title: entry.title,
+      depth: entry.depth,
+    };
+  });
+  // The story's first chapter is where the line starts; front and back
+  // matter before or after the story get no mark.
+  const inStory = (mark) => Number.isFinite(mark.at) && mark.at > SAME_MARK && mark.at < 1 - SAME_MARK;
+  const tidy = (marks) => {
+    const sorted = marks.filter(inStory).sort((a, b) => a.at - b.at);
+    return sorted
+      .filter((mark, index) => index === 0 || mark.at - sorted[index - 1].at > SAME_MARK)
+      .map(({ depth, ...mark }) => mark);
+  };
+  // The chapters are the top level of the contents, unless the top level is
+  // only wrappers and front matter (a "Contents" entry holding the lessons):
+  // then every level.
+  const top = tidy(placed.filter((mark) => mark.depth === 0));
+  return top.length >= 2 ? top : tidy(placed);
 };
