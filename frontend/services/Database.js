@@ -1290,25 +1290,31 @@ export const refitReaderLevel = async ({ ownerId, profileId, language = 'ko', no
   if (prepared.reading.length === 0 && prepared.labelled.length === 0) return reseed();
   const fit = fitReaderLevel(prepared, { theta: seed ?? 0 });
 
-  const state = await updateReaderLevel(scope, (before) => ({
-    state: applyRefit(before, fit, { at }),
-    logs: [{
-      signal: 'refit',
-      thetaBefore: before.theta,
-      thetaAfter: fit.theta,
-      varianceBefore: before.variance,
-      varianceAfter: Math.max(fit.variance, 0),
-      lookupRate: fit.lookupRate,
-      guessRate: fit.guessRate,
-      details: {
-        knownTapRate: Math.round(fit.knownTapRate * 1e4) / 1e4,
-        readingWeight: Math.round(fit.readingWeight * 10) / 10,
-        labelledWeight: Math.round(fit.labelledWeight * 10) / 10,
-        events: events.length,
-      },
-      at,
-    }],
-  }));
+  const state = await updateReaderLevel(scope, (before) => {
+    const next = applyRefit(before, fit, { at });
+    return {
+      state: next,
+      logs: [{
+        signal: 'refit',
+        thetaBefore: before.theta,
+        thetaAfter: next.theta,
+        varianceBefore: before.variance,
+        varianceAfter: Math.max(fit.variance, 0),
+        lookupRate: fit.lookupRate,
+        guessRate: fit.guessRate,
+        details: {
+          // Where the fit itself landed; the level moves toward it a step at
+          // a time (levelEngine REFIT_MAX_STEP).
+          fittedTheta: Math.round(fit.theta * 1e4) / 1e4,
+          knownTapRate: Math.round(fit.knownTapRate * 1e4) / 1e4,
+          readingWeight: Math.round(fit.readingWeight * 10) / 10,
+          labelledWeight: Math.round(fit.labelledWeight * 10) / 10,
+          events: events.length,
+        },
+        at,
+      }],
+    };
+  });
   emitReaderLevelChanged(scope);
   return state;
 };

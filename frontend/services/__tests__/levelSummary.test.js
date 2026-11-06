@@ -3,11 +3,14 @@ import {
   dailyLevelSeries,
   describeLevel,
   chartColumnFor,
+  LEVEL_LABEL_MARGIN,
   levelChartSeries,
   levelPlaceForTheta,
+  levelPlaceKey,
   levelRange,
   roundWords,
   startingTheta,
+  stickyLevelPlace,
   wordGoal,
   wordsForTheta,
 } from '../levelSummary';
@@ -322,5 +325,31 @@ describe('the chart over longer spans', () => {
     const chart = levelChartSeries(rows, '30', { now });
     expect(chartColumnFor('2026-10-30T09:00:00Z', chart, now)).toBe(29);
     expect(chartColumnFor('2026-01-01T00:00:00Z', chart, now)).toBeNull();
+  });
+});
+
+describe('stickyLevelPlace', () => {
+  // The θ where a Chinese band's label changes (coverage reaches 80%).
+  const boundaryOf = (label) => {
+    let theta = 0;
+    while (levelPlaceForTheta('zh', theta).label !== label) theta += 0.005;
+    return theta;
+  };
+
+  it('keeps the shown band until the level is clearly past the boundary', () => {
+    const edge = boundaryOf('HSK 6');
+    const hsk5 = levelPlaceKey(levelPlaceForTheta('zh', edge - 0.2));
+    expect(levelPlaceForTheta('zh', edge + 0.02).label).toBe('HSK 6');
+    // Just over the line: still HSK 5, as shown before.
+    expect(stickyLevelPlace('zh', edge + 0.02, hsk5)).toMatchObject({ key: hsk5, place: { label: 'HSK 5' } });
+    // Clearly past it: HSK 6.
+    expect(stickyLevelPlace('zh', edge + LEVEL_LABEL_MARGIN + 0.02, hsk5).place.label).toBe('HSK 6');
+    // And once HSK 6 is shown, a small dip back keeps it.
+    const hsk6 = levelPlaceKey(levelPlaceForTheta('zh', edge + 0.2));
+    expect(stickyLevelPlace('zh', edge - 0.02, hsk6).place.label).toBe('HSK 6');
+  });
+
+  it('shows the plain place with nothing shown before', () => {
+    expect(stickyLevelPlace('zh', 1.0, null).place).toEqual(levelPlaceForTheta('zh', 1.0));
   });
 });

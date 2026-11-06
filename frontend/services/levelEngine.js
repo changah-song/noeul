@@ -483,14 +483,29 @@ export const applySignal = (state, signal = {}) => {
     };
 };
 
+// The most one refit moves an established level. A refit's estimate is
+// itself unsure by more than a band (sd ~0.5-0.8), so applying it outright
+// swung the label between neighbouring bands from day to day (HSK 5 one day,
+// HSK 6 the next) and re-graded the book under the reader. Real progress still
+// arrives, a step per refit; jitter mostly doesn't.
+export const REFIT_MAX_STEP = 0.15;
+
 /**
  * applyRefit — set the level from a batch refit (services/levelRefit.js):
  * every habit's belief moves to the fitted level and uncertainty, the habits
  * are re-weighed around the fitted lookup rate, and the learned P(look up |
- * known) is kept for the online updates that follow.
+ * known) is kept for the online updates that follow. An established level
+ * moves at most `maxStep` toward the fit (REFIT_MAX_STEP).
  */
-export const applyRefit = (state, fit, { at } = {}) => {
-    const theta = clamp(Number(fit.theta), LEVEL_THETA_MIN, LEVEL_THETA_MAX);
+export const applyRefit = (state, fit, { at, maxStep = REFIT_MAX_STEP } = {}) => {
+    const fitted = clamp(Number(fit.theta), LEVEL_THETA_MIN, LEVEL_THETA_MAX);
+    const previous = Number(state?.theta);
+    // A level we know next to nothing about yet (still near the
+    // PRIOR_VARIANCE a fresh reader starts with) takes the fit as it is.
+    const settled = Number.isFinite(previous) && Number(state?.variance) < 1;
+    const theta = settled && Number.isFinite(maxStep)
+        ? clamp(previous + clamp(fitted - previous, -maxStep, maxStep), LEVEL_THETA_MIN, LEVEL_THETA_MAX)
+        : fitted;
     const variance = Math.max(MIN_VARIANCE, Number(fit.variance));
     const spread = 0.06;
     const hypotheses = LOOKUP_RATES.map((rate, i) => ({

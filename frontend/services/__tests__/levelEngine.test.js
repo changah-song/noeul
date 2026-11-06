@@ -9,6 +9,8 @@ jest.mock('../flashcardNomination', () => ({ remainingExposureFactor: () => 0 })
 
 const {
     LOOKUP_GIVEN_KNOWN,
+    REFIT_MAX_STEP,
+    applyRefit,
     applySignal,
     buildWordKnowledge,
     difficultyFromZipf,
@@ -139,6 +141,21 @@ describe('reader level', () => {
     it('ignores a signal without a difficulty', () => {
         const start = fresh();
         expect(applySignal(start, { type: 'lookup' })).toEqual({ state: start, log: null });
+    });
+});
+
+describe('refit', () => {
+    const fit = (theta) => ({ theta, variance: 0.4, lookupRate: 0.3, knownTapRate: 0.02 });
+
+    it('moves an established level at most a step toward the fit', () => {
+        const settled = seedState(fresh(), { theta: 2.5, variance: 0.3 });
+        expect(applyRefit(settled, fit(3.2)).theta).toBeCloseTo(2.5 + REFIT_MAX_STEP);
+        expect(applyRefit(settled, fit(1.9)).theta).toBeCloseTo(2.5 - REFIT_MAX_STEP);
+        expect(applyRefit(settled, fit(2.55)).theta).toBeCloseTo(2.55);
+    });
+
+    it('takes the fit outright for a reader it knows nothing about yet', () => {
+        expect(applyRefit(fresh(), fit(3.2)).theta).toBeCloseTo(3.2);
     });
 });
 
