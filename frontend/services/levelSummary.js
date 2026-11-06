@@ -267,6 +267,37 @@ export const levelPlaceForTheta = (language, theta) => {
   };
 };
 
+// The level label only changes once the reader is clearly past a boundary.
+// Near the top a band is only ~0.5 θ wide while the level itself is unsure by
+// more than that, so a label cut at the best guess flipped between
+// neighbouring bands (HSK 5 one day, HSK 6 the next) on noise alone.
+export const LEVEL_LABEL_MARGIN = 0.12;
+
+/** A place's identity, to remember which one was last shown. */
+export const levelPlaceKey = (place) => {
+  if (!place) return null;
+  const which = place.scale === 'ko' ? `ko${place.rank}` : `tier:${place.label}`;
+  return place.beginner ? `beginner:${which}` : which;
+};
+
+/**
+ * stickyLevelPlace — the place to show for `theta` when `shownKey` (a
+ * levelPlaceKey) was shown last: the new place once θ is LEVEL_LABEL_MARGIN
+ * past the boundary, else the place shown before, as long as it is still
+ * within the margin. Returns { place, key }.
+ */
+export const stickyLevelPlace = (language, theta, shownKey, margin = LEVEL_LABEL_MARGIN) => {
+  const value = Number(theta);
+  const place = levelPlaceForTheta(language, value);
+  const key = levelPlaceKey(place);
+  if (!shownKey || key === shownKey || !Number.isFinite(value)) return { place, key };
+  for (const nearby of [value - margin, value + margin]) {
+    const kept = levelPlaceForTheta(language, nearby);
+    if (levelPlaceKey(kept) === shownKey) return { place: kept, key: shownKey };
+  }
+  return { place, key };
+};
+
 // Small goals between levels: every 100 words early on, then 250, 500, 1,000.
 export const goalStep = (words) => {
   if (words < 1000) return 100;

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Text, TouchableOpacity, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { fontFamilies, useTheme } from '../../theme';
@@ -13,9 +14,9 @@ import {
 import {
     beginnerLevelLabel,
     describeLevel,
-    levelPlaceForTheta,
     levelRange,
     startingTheta,
+    stickyLevelPlace,
     wordGoal,
     wordsForTheta,
 } from '../../services/levelSummary';
@@ -26,6 +27,9 @@ import { beginnerWords, isBeginnerTheta } from '../../services/vocabSizeLevels';
 // (no word goals are counted yet).
 const EARLY_EVENTS = 20;
 const KO_BANDS = ['bookLevel.koBeginner', 'bookLevel.koIntermediate', 'bookLevel.koAdvanced'];
+// The level label last shown, per profile and language: it only changes once
+// the level is clearly past a boundary (levelSummary.stickyLevelPlace).
+const shownPlaceStorageKey = (ownerId, profileId, language) => `level.shownPlace.v1:${ownerId ?? ''}:${profileId ?? ''}:${language ?? ''}`;
 
 /**
  * LevelCard — Profile's "Your level": the level on the language's own scale
@@ -43,6 +47,20 @@ const LevelCard = ({ ownerId, profileId, language, userId, onAdjust }) => {
     const [startTheta, setStartTheta] = useState(null);
     const [milestones, setMilestones] = useState(null);
     const [version, setVersion] = useState(0);
+    // undefined: not read yet; null: nothing shown before.
+    const [shownKey, setShownKey] = useState(undefined);
+
+    useEffect(() => {
+        let cancelled = false;
+        AsyncStorage.getItem(shownPlaceStorageKey(ownerId, profileId, language))
+            .catch(() => null)
+            .then((value) => {
+                if (!cancelled) setShownKey(value || null);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [language, ownerId, profileId]);
 
     useEffect(() => onReaderLevelChanged(() => setVersion((value) => value + 1)), []);
 
@@ -116,9 +134,16 @@ const LevelCard = ({ ownerId, profileId, language, userId, onAdjust }) => {
         return t('level.tierRange', { low, high: item.high });
     };
 
-    if (!described) return null;
+    const sticky = hasEstimate && shownKey !== undefined ? stickyLevelPlace(language, theta, shownKey) : null;
+    useEffect(() => {
+        if (!sticky?.key || sticky.key === shownKey) return;
+        setShownKey(sticky.key);
+        AsyncStorage.setItem(shownPlaceStorageKey(ownerId, profileId, language), sticky.key).catch(() => {});
+    }, [language, ownerId, profileId, shownKey, sticky?.key]);
 
-    const place = levelPlaceForTheta(language, theta);
+    if (!described || !sticky) return null;
+
+    const { place } = sticky;
     const words = wordsForTheta(language, theta) ?? 0;
     const rangeLine = rangeText(described);
     const bestReached = (milestones?.reached ?? [])

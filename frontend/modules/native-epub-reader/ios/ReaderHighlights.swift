@@ -289,17 +289,33 @@ func buildHighlights(for page: ReaderPage, terms: ReaderHighlightTerms?) -> Read
       }
     }
 
-    occupied = []
+    // A graded word that only partly overlaps tap-only words (annotation-only:
+    // a Chinese book's other words) takes their place; inside a longer word
+    // that wholly contains it, it stays part of that word (有 in 只有). As
+    // NativeEpubReaderModule.kt buildHighlightRanges.
+    var placedLevel: [(span: Range<Int>, info: ReaderLevelTerm)] = []
     for match in terms.levelMatcher.matches(in: units) {
-      guard hasTokenBoundary(units, start: match.start, end: match.end),
-            !occupied.contains(where: { $0.overlaps(match.start..<match.end) }) else { continue }
-      occupied.append(match.start..<match.end)
+      guard hasTokenBoundary(units, start: match.start, end: match.end) else { continue }
       let info = terms.level[match.priority]
+      let span = match.start..<match.end
+      let conflicts = placedLevel.indices.filter { placedLevel[$0].span.overlaps(span) }
+      if !conflicts.isEmpty {
+        let takesOver = !info.annotationOnly && conflicts.allSatisfy { index in
+          let other = placedLevel[index]
+          return other.info.annotationOnly
+            && !(other.span.lowerBound <= span.lowerBound && other.span.upperBound >= span.upperBound)
+        }
+        guard takesOver else { continue }
+        for index in conflicts.reversed() { placedLevel.remove(at: index) }
+      }
+      placedLevel.append((span: span, info: info))
+    }
+    for (span, info) in placedLevel.sorted(by: { $0.span.lowerBound < $1.span.lowerBound }) {
       let reported = collapseSpaces(info.text)
       if !info.annotationOnly && !levelTerms.contains(reported) { levelTerms.append(reported) }
       result.level.append(ReaderHighlightRange(
         blockId: blockId,
-        range: NSRange(location: sliceStart + match.start, length: match.end - match.start),
+        range: NSRange(location: sliceStart + span.lowerBound, length: span.count),
         term: info.text,
         weight: info.weight,
         pinyin: info.pinyin,

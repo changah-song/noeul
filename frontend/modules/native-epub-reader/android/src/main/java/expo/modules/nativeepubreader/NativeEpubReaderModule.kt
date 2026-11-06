@@ -4604,15 +4604,30 @@ class NativeEpubReaderView(
           return@blockLoop
         }
 
-        val occupiedLocalRanges = mutableListOf<Pair<Int, Int>>()
-
+        // The words placed in this block, in matcher order (longest first).
+        // A graded word that only partly overlaps tap-only words (annotation-
+        // only: a Chinese book's other words, drawn as nothing) takes their
+        // place: in text without spaces a neighbouring word straddles nearly
+        // every graded word, and each one it took left a hard word unmarked.
+        // Inside a longer word that wholly contains it, a word stays part of
+        // that word (有 in 只有).
+        val placed = mutableListOf<Pair<HighlightMatch, Boolean>>()
         matcher.find(text).forEach { match ->
-          if (
-            hasTokenBoundary(text, match.term, match.start, match.end) &&
-            !overlapsAny(occupiedLocalRanges, match.start, match.end)
-          ) {
-            occupiedLocalRanges.add(match.start to match.end)
-            val annotationOnly = annotationOnlyForPriority?.invoke(match.priority) ?: false
+          if (!hasTokenBoundary(text, match.term, match.start, match.end)) return@forEach
+          val annotationOnly = annotationOnlyForPriority?.invoke(match.priority) ?: false
+          val conflicts = placed.filter { (other, _) -> match.start < other.end && match.end > other.start }
+          if (conflicts.isNotEmpty()) {
+            val takesOver = !annotationOnly && conflicts.all { (other, otherAnnotationOnly) ->
+              otherAnnotationOnly && !(other.start <= match.start && other.end >= match.end)
+            }
+            if (!takesOver) return@forEach
+            placed.removeAll(conflicts)
+          }
+          placed.add(match to annotationOnly)
+        }
+
+        placed.sortedBy { (match, _) -> match.start }.forEach { (match, annotationOnly) ->
+          run {
             if (!annotationOnly) {
               pageTerms.add(match.term)
             }
@@ -4669,9 +4684,11 @@ class NativeEpubReaderView(
     }
 
     val matchCount = rangesByPage.values.sumOf { ranges -> ranges.size }
+    val drawnCount = rangesByPage.values.sumOf { ranges -> ranges.count { !it.annotationOnly } }
     Log.d(
       TAG,
-      "$label highlight ranges built: terms=${matcher.termCount} pages=${sourcePages.size} matches=$matchCount"
+      "$label highlight ranges built: terms=${matcher.termCount} pages=${sourcePages.size} " +
+        "matches=$matchCount underlined=$drawnCount"
     )
 
     return HighlightBuildResult(rangesByPage, contextsByPage, termsByPage)
