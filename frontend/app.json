@@ -17,14 +17,15 @@
       "**/*"
     ],
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
       "icon": "./assets/icon-ios.png",
       "bundleIdentifier": "com.noeulapp.Noeul",
       "usesAppleSignIn": true,
       "infoPlist": {
         "UIBackgroundModes": [
           "audio"
-        ]
+        ],
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
@@ -45,7 +46,18 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-secure-store",
+      [
+        "expo-secure-store",
+        {
+          "faceIDPermission": false
+        }
+      ],
+      [
+        "expo-av",
+        {
+          "microphonePermission": false
+        }
+      ],
       [
         "@react-native-google-signin/google-signin",
         {
