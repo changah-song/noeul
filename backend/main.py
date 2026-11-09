@@ -5854,6 +5854,109 @@ def parse_grammar_reply(raw: str, language: str, sentence: str, selection: str) 
     }
 
 
+# ─── The sense a Korean homograph has in its sentence ─────────────────────────
+#
+# 부처 is Buddha, 部處 (ministries) or 夫妻 (married couple); the lookup panel
+# shows the dictionary's first sense. For a word whose senses come from
+# different words (more than one hanja, or hanja and native), the model picks
+# the one the sentence means and the panel shows it as "in this sentence".
+# Words whose senses are all one word's (가다) aren't asked about.
+
+SENSE_PICK_MAX_TOKENS = 16
+SENSE_PICK_CACHE_PREFIX = "sense1"
+SENSE_PICK_MAX_SENSES = 12
+
+
+def ko_homograph_senses(senses: list[dict]) -> list[dict]:
+    """The senses, when they come from more than one word (told apart by hanja,
+    a native word counting as one); [] otherwise."""
+    origins = {
+        (sense.get("origin") or "").strip() if (sense.get("origin") or "N/A") != "N/A" else ""
+        for sense in senses
+    }
+    return senses[:SENSE_PICK_MAX_SENSES] if len(origins) > 1 else []
+
+
+def build_sense_pick_message(word: str, sentence: str, senses: list[dict]) -> str:
+    lines = []
+    for index, sense in enumerate(senses, start=1):
+        origin = sense.get("origin")
+        origin = f" [{origin}]" if origin and origin != "N/A" else ""
+        lines.append(f"{index}. {sense.get('transWord') or ''}{origin}")
+    return (
+        f"Korean word: {word}\n"
+        f"Sentence: {sentence}\n"
+        "Senses:\n" + "\n".join(lines) + "\n\n"
+        "Which sense does the word have in this sentence? Reply with the number only."
+    )
+
+
+def parse_sense_pick(raw: str, count: int) -> int | None:
+    """The 0-based sense index from the model's reply, or None."""
+    match = re.search(r"\d+", raw or "")
+    if not match:
+        return None
+    number = int(match.group())
+    return number - 1 if 1 <= number <= count else None
+
+
+@app.post("/ko_sense_in_context/")
+async def ko_sense_in_context(payload: dict, auth: dict[str, Any] = Depends(verify_supabase_token)):
+    """Body: {"word": "부처", "sentence": "...", "language": "en"}. Returns
+    {"sense": {word, origin, pos, transWord}, "index": n} when the sentence
+    means a sense other than the first, else {"sense": null}."""
+    word = payload.get("word")
+    sentence = payload.get("sentence")
+    if not isinstance(word, str) or not isinstance(sentence, str):
+        raise ApiError(400, "invalid_request", "word and sentence must be strings")
+    word = word.strip()
+    sentence = sentence.strip()
+    if not word or not sentence:
+        return {"sense": None}
+    enforce_text_limit(sentence, auth, field_name="sentence")
+    interface_language = krdict_interface_language_from_payload(payload)
+
+    senses = await asyncio.to_thread(lookup_ko_dictionary_search, word, interface_language)
+    candidates = ko_homograph_senses(senses)
+    if not candidates:
+        return {"sense": None}
+
+    fingerprint = "|".join(f"{s.get('origin')}:{s.get('transWord')}" for s in candidates)
+    cache_key = hashlib.sha256(
+        f"{SENSE_PICK_CACHE_PREFIX}|{interface_language}|{word}|{sentence}|{fingerprint}".encode("utf-8")
+    ).hexdigest()
+    cached = await asyncio.to_thread(_lookup_cache_get, cache_key)
+    if cached is not None:
+        index = int(cached.get("lemma") or 0)
+    else:
+        # Not counted against the reader's lookups: it rides along with a tap.
+        await enforce_ai_budget()
+        try:
+            message = await get_anthropic_async_client().messages.create(
+                **explain_model_params(max_tokens=SENSE_PICK_MAX_TOKENS),
+                system="You are a Korean dictionary assistant. You answer with a single number.",
+                messages=[{"role": "user", "content": build_sense_pick_message(word, sentence, candidates)}],
+            )
+        except Exception as error:
+            print(f"[ko_sense_in_context] Anthropic API error: {error.__class__.__name__}: {error}")
+            return {"sense": None}
+        await record_ai_spend(EXPLAIN_MODEL, getattr(message, "usage", None))
+        raw = "".join(
+            block.text for block in (message.content or []) if getattr(block, "type", None) == "text"
+        )
+        picked = parse_sense_pick(raw, len(candidates))
+        index = picked if picked is not None else 0
+        await asyncio.to_thread(_lookup_cache_put, cache_key, {
+            "lemma": str(index),
+            "gloss": None,
+            "explanation": None,
+        })
+
+    if index <= 0 or index >= len(candidates):
+        return {"sense": None}
+    return {"sense": candidates[index], "index": index}
+
+
 @app.post("/explain_grammar/")
 async def explain_grammar(payload: dict, auth: dict[str, Any] = Depends(verify_supabase_token)):
     """The grammar pattern of a selected sentence (the AI panel's Grammar tab)."""
