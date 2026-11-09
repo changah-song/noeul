@@ -29,6 +29,7 @@ import {
 import LocalDataDecisionModal from './components/Auth/LocalDataDecisionModal';
 import BookOpeningOverlay from './components/shared/BookOpeningOverlay';
 import { noteRouteShown } from './services/readerListenState';
+import { listenForOpenedBookFiles } from './services/openedBookFiles';
 import { PillTabBar, tabScreenOptions } from './components/shared/TabBar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -612,6 +613,11 @@ function ThemedAppShell({
         // The reader's voice pauses on a screen with no player for it.
         noteRouteShown(routeName);
     }, [navigationRef]);
+    // A book opened in Noeul from another app: Home imports it, so bring
+    // Home on screen (until the navigator exists, Home is where it starts).
+    useEffect(() => listenForOpenedBookFiles(() => {
+        if (navigationRef.isReady()) navigationRef.navigate('Home');
+    }), [navigationRef]);
     const sceneContainerStyle = useMemo(() => ({
         backgroundColor: appBackground,
     }), [appBackground]);

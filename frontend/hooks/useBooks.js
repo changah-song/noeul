@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { discardPersistedCopy, persistPickedBookFile } from '../services/bookFiles';
+import { discardOpenedCopy, stageOpenedBookFile } from '../services/openedBookFiles';
 import { Alert, Platform } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import * as DocumentPicker from 'expo-document-picker';
@@ -164,20 +165,50 @@ const useBooks = ({
         resolvePdfCoverChoice({ type: 'page', pageNumber });
     };
 
+    // Drop the Documents copy made for an import that no book took.
+    const discardUnusedCopy = (pendingCopy) => {
+        if (!pendingCopy) return;
+        if (pendingCopy.opened) discardOpenedCopy(pendingCopy.copy);
+        else discardPersistedCopy(pendingCopy.copy, pendingCopy.picked);
+    };
+
     const addBook = async () => {
-        // The Documents copy of the picked file, until a new book owns it.
+        let pickedAsset = null;
+        try {
+            pickedAsset = await pickBookAsset();
+        } catch (error) {
+            console.error("[useBooks] Error picking a book:", error);
+            Alert.alert(t('books.importFailedTitle'), getUserFacingErrorMessage(error, t, 'books.importFailedBody', language));
+        }
+        if (pickedAsset) await importBookAsset(pickedAsset);
+    };
+
+    // A book opened in Noeul from another app (services/openedBookFiles).
+    const importOpenedBook = async (url) => {
+        let staged = null;
+        try {
+            staged = await stageOpenedBookFile(url);
+        } catch (error) {
+            console.error("[useBooks] Error copying an opened book:", error);
+            Alert.alert(t('books.importFailedTitle'), getUserFacingErrorMessage(error, t, 'books.importFailedBody', language));
+            return;
+        }
+        if (staged.unsupported) {
+            Alert.alert(t('books.unsupportedFileTitle'), t('books.chooseFileBody'));
+            return;
+        }
+        await importBookAsset(staged, { opened: true });
+    };
+
+    const importBookAsset = async (pickedAsset, { opened = false } = {}) => {
+        // The Documents copy of the file, until a new book owns it.
         let pendingCopy = null;
         try {
-            const pickedAsset = await pickBookAsset();
-
-            if (!pickedAsset) {
-                return;
-            }
-
             // Keep the book in Documents: the picker's copy sits in the
-            // cache directory, which the system may clear.
-            const uri = await persistPickedBookFile(pickedAsset.uri);
-            pendingCopy = { copy: uri, picked: pickedAsset.uri };
+            // cache directory, which the system may clear. (An opened file
+            // was copied there already.)
+            const uri = opened ? pickedAsset.uri : await persistPickedBookFile(pickedAsset.uri);
+            pendingCopy = { copy: uri, picked: pickedAsset.uri, opened };
             const format = pickedAsset.format || 'epub';
             setIsImporting(true);
 
@@ -200,6 +231,7 @@ const useBooks = ({
                     t('books.languageUnsupportedBody', { language: localizedLanguageName(detectedLanguage) })
                 );
                 setIsImporting(false);
+                discardUnusedCopy(pendingCopy);
                 return;
             }
 
@@ -294,7 +326,7 @@ const useBooks = ({
                 setIsImporting(false);
                 navigation.navigate('Read', { returnTo: 'Home' });
                 // Already on the shelf: the new copy isn't needed.
-                if (existingBook.uri !== uri) discardPersistedCopy(pendingCopy.copy, pendingCopy.picked);
+                if (existingBook.uri !== uri) discardUnusedCopy(pendingCopy);
                 return;
             }
             pendingCopy = null;
@@ -368,8 +400,8 @@ const useBooks = ({
                     });
             }
         } catch (error) {
-            if (pendingCopy) discardPersistedCopy(pendingCopy.copy, pendingCopy.picked);
-            console.error("[useBooks] Error in addBook:", error);
+            discardUnusedCopy(pendingCopy);
+            console.error("[useBooks] Error importing a book:", error);
             Alert.alert(
                 t('books.importFailedTitle'),
                 getUserFacingErrorMessage(error, t, 'books.importFailedBody', language)
@@ -413,6 +445,7 @@ const useBooks = ({
         choosePdfCoverNone,
         choosePdfCoverCustom,
         addBook,
+        importOpenedBook,
         confirmAddBook,
         handlePress,
     };
