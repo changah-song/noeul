@@ -734,6 +734,34 @@ const DictionaryContent = ({
         };
     }, [activeLookupItem, isEnglishBook, liveEntryMeta, lookupWord]);
     const activeLookupHanja = activeLookupDetails.hanja;
+
+    // Korean homographs: the sense the sentence means when it isn't the first
+    // one shown (부처 夫妻 "married couple", not Buddha). Asked once per word and
+    // sentence; the server only asks the model when the senses come from
+    // different words (/ko_sense_in_context/).
+    const [contextSenses, setContextSenses] = useState({});
+    const requestedContextSensesRef = useRef(new Set());
+    const contextSenseKeyFor = useCallback((word) => (
+        isKoreanBook && cleanValue(word) && contextSentence
+            ? `${interfaceLanguage}|${cleanValue(word)}|${contextSentence}`
+            : null
+    ), [contextSentence, interfaceLanguage, isKoreanBook]);
+    useEffect(() => {
+        const word = cleanValue(activeLookupDetails.word);
+        const key = contextSenseKeyFor(word);
+        if (!key || requestedContextSensesRef.current.has(key)) return;
+        requestedContextSensesRef.current.add(key);
+        api.post('/ko_sense_in_context/', {
+            word,
+            sentence: contextSentence,
+            language: interfaceLanguage,
+        }, { timeout: 10000 })
+            .then((response) => {
+                const sense = response.data?.sense;
+                if (sense?.transWord) setContextSenses((prev) => ({ ...prev, [key]: sense }));
+            })
+            .catch(() => {});
+    }, [activeLookupDetails.word, contextSenseKeyFor, contextSentence, interfaceLanguage]);
     const canExpandCurrentLookup = (
         (isKoreanBook && hasHanja(activeLookupHanja))
         // English: expanding shows the full senses, only when they add to the
@@ -1750,9 +1778,32 @@ const DictionaryContent = ({
                                 </Text>
                             )}
                         </View>
+                        {renderContextSense(word, definition)}
                         {isPanelExpanded && showLess ? renderExtraDefinitions(extraEntries) : null}
                     </>
                     ))}
+            </View>
+        );
+    };
+
+    // The sense this sentence means, under the first one, when they differ.
+    const renderContextSense = (word, definition) => {
+        const key = contextSenseKeyFor(word);
+        const sense = key ? contextSenses[key] : null;
+        const meaning = cleanValue(sense?.transWord);
+        if (!meaning || meaning === cleanValue(definition)) return null;
+        const origin = cleanValue(sense.origin);
+        return (
+            <View style={[styles.contextSense, { backgroundColor: colors.surfaceMuted }]} accessibilityRole="text">
+                <Text style={[styles.contextSenseLabel, { color: palette.mutedText }]}>
+                    {t('lookup.inThisSentence')}
+                </Text>
+                <Text selectable style={[styles.contextSenseText, { color: palette.text }]}>
+                    {meaning}
+                    {origin && origin !== 'N/A' ? (
+                        <Text style={{ color: palette.mutedText }}>{`  ${origin}`}</Text>
+                    ) : null}
+                </Text>
             </View>
         );
     };
@@ -2288,6 +2339,25 @@ const createStyles = (colors) => StyleSheet.create({
         // No flexShrink: when the definition can't share the badge's line it wraps
         // as a whole to the next row, then wraps internally within the full width.
         maxWidth: '100%',
+    },
+    contextSense: {
+        alignSelf: 'stretch',
+        marginTop: 10,
+        marginHorizontal: 8,
+        paddingVertical: 8,
+        paddingHorizontal: 12,
+        borderRadius: 10,
+        gap: 2,
+    },
+    contextSenseLabel: {
+        fontFamily: fontFamilies.sansMedium,
+        fontSize: 12,
+        letterSpacing: 0.2,
+    },
+    contextSenseText: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 15,
+        lineHeight: 21,
     },
     definitionRow: {
         // A wrapping, centered row: the POS badge and definition sit side by side

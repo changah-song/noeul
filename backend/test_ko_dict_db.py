@@ -123,3 +123,27 @@ def test_primary_sense_is_translated(conn, stem, language, expected):
     ).fetchone()
     assert row is not None, f"{stem} has no {language} gloss"
     assert expected in row[0]
+
+
+# Wiktionary's Korean senses KRDICT lacks (scripts/import_ko_wiktionary.py).
+def test_wiktionary_adds_homographs_krdict_lacks(conn):
+    rows = conn.execute(
+        "SELECT hanja, definition FROM ko_dictionary_extra WHERE stem = '부처'"
+    ).fetchall()
+    assert ("夫妻", "(formal) married couple, husband and wife") in rows
+    # 部處 is KRDICT's own already: not repeated.
+    assert all(hanja != "部處" for hanja, _ in rows)
+
+
+def test_wiktionary_adds_words_krdict_lacks(conn):
+    row = conn.execute(
+        "SELECT definition FROM ko_dictionary_extra WHERE stem = '인력거' AND sense_no = 1"
+    ).fetchone()
+    assert row is not None and "rickshaw" in row[0].lower()
+    assert conn.execute("SELECT COUNT(*) FROM ko_dictionary WHERE stem = '인력거'").fetchone()[0] == 0
+
+
+def test_wiktionary_senses_are_sourced(conn):
+    sources = {row[0] for row in conn.execute("SELECT DISTINCT source FROM ko_dictionary_extra")}
+    assert sources == {"wiktionary"}
+    assert conn.execute("SELECT COUNT(DISTINCT stem) FROM ko_dictionary_extra").fetchone()[0] > 10000
