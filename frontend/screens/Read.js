@@ -155,6 +155,7 @@ import {
     subscribeGoalReached,
 } from '../services/readingGoal';
 import GoalCompleteModal from '../components/Goal/GoalCompleteModal';
+import { announceBookFinished } from '../services/bookFinished';
 import { endBookOpening, isBookOpening, subscribeBookOpening } from '../services/bookOpening';
 import PreparingNotice from '../components/Read/PreparingNotice';
 import LocationPrompt from '../components/Read/LocationPrompt';
@@ -640,6 +641,8 @@ const Read = ({
     const lastPageEventRef = useRef(null);
     const stepsSincePromptRef = useRef(0);
     const processNativePageChangeRef = useRef(null);
+    // The book whose finish was just announced, until its finishedAt lands.
+    const finishAnnouncedForRef = useRef(null);
     const [clearSelectionToken, setClearSelectionToken] = useState(0);
     // Temporary handoff QA toggles for the long-press translation banner.
     const [translationBannerLoadingPreview] = useState(false);
@@ -3459,6 +3462,23 @@ const Read = ({
             return;
         }
 
+        // Read on to the last page (not jumped there, not reopened there):
+        // the book is finished. Home shows the finishing screen when it is
+        // next on screen.
+        if (
+            nextBookPatch.progress >= 1
+            && Number(previousSpot?.progress) < 1
+            && currentBook
+            && !activeBook?.finishedAt
+            && finishAnnouncedForRef.current !== currentBook
+            && !deliberate
+            && !relayout
+        ) {
+            finishAnnouncedForRef.current = currentBook;
+            nextBookPatch.finishedAt = new Date().toISOString();
+            announceBookFinished(currentBook);
+        }
+
         if (activeBook?.cloudId) {
             scheduleCloudProgressSync({
                 ...activeBook,
@@ -3482,6 +3502,7 @@ const Read = ({
                     && previousPosition.href === nextPosition.href
                     && previousPosition.firstBlockId === nextPosition.firstBlockId
                     && book.progress === nextBookPatch.progress
+                    && !nextBookPatch.finishedAt
                 );
                 if (isUnchanged) {
                     return book;
@@ -3673,11 +3694,20 @@ const Read = ({
                 href: previousPosition?.href || loadedSpineItem?.path || loadedSpineItem?.href || '',
                 firstBlockId: previousPosition?.firstBlockId || null,
             };
+            // Turned past the last page: the first time, Home shows the
+            // finishing screen. (Progress already reads 1 on the last page,
+            // so finishedAt, not progress, says whether it was celebrated.)
+            const firstFinish = !activeBook?.finishedAt && finishAnnouncedForRef.current !== currentBook;
             const nextBookPatch = {
                 nativePosition: finalPosition,
                 location: finalPosition.href || null,
                 progress: 1,
+                ...(firstFinish ? { finishedAt: new Date().toISOString() } : null),
             };
+            if (firstFinish) {
+                finishAnnouncedForRef.current = currentBook;
+                announceBookFinished(currentBook);
+            }
 
             updateNativeRestorePosition(null);
             setBooks((prevBooks) => prevBooks.map((book) => (

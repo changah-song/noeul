@@ -8,7 +8,7 @@ const PIECES = 18;
 const HIGHLIGHT_ICONS = { first: 'star', best: 'trending-up', weeks: 'calendar', days: 'sun', week: 'check' };
 
 // A few muted pieces drifting down once, behind the card: a quiet confetti.
-const Confetti = ({ width, height, colors }) => {
+export const Confetti = ({ width, height, colors }) => {
     const pieces = useMemo(() => Array.from({ length: PIECES }, (_, index) => ({
         left: ((index * 53) % 97) / 100,
         delay: (index % 6) * 90,

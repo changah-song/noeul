@@ -34,6 +34,9 @@ import { useNavigationButtonsInset } from '../hooks/useNavigationButtonsInset';
 import AppTopBar from '../components/shared/AppTopBar';
 import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { useOpenedBookFiles } from '../services/openedBookFiles';
+import BookFinishedModal from '../components/Home/BookFinishedModal';
+import FinishedRibbon from '../components/Home/FinishedRibbon';
+import { isBookFinished, subscribeBookFinished, takeFinishedBook } from '../services/bookFinished';
 import { searchSongs } from '../services/api/songSearch';
 import {
     colors,
@@ -54,7 +57,7 @@ import {
     useTheme,
 } from '../theme';
 import useBooks from '../hooks/useBooks';
-import { deleteBookIndexEntries, estimateBookReadingEase, getLatestBookNote, getProfileAbility } from '../services/Database';
+import { deleteBookIndexEntries, estimateBookReadingEase, getBookFinishCounts, getLatestBookNote, getProfileAbility } from '../services/Database';
 import {
     bookEaseFromDistribution,
     formatEasePercent,
@@ -1609,7 +1612,9 @@ const FeaturedBookCarousel = ({ books, screenWidth, onResumeBook, onPressBook, o
                 </Text>
                 <View style={styles.heroProgressGroup}>
                     <View style={styles.heroProgressLabels}>
-                        <Text style={styles.heroPercent}>{`${progressPercent}%`}</Text>
+                        <Text style={styles.heroPercent}>
+                            {progressPercent >= 100 ? t('finished.badge') : `${progressPercent}%`}
+                        </Text>
                         {wordCount ? (
                             <Text style={styles.heroWords}>{formatWordCount(wordCount, t)}</Text>
                         ) : null}
@@ -1841,6 +1846,38 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     // Books opened in Noeul from another app, imported once Home is showing.
     const isFocused = useIsFocused();
     useOpenedBookFiles(importOpenedBook, isFocused && !isImporting);
+
+    // The finishing screen for a book just read to the end (services/bookFinished).
+    const [finishedBookUri, setFinishedBookUri] = useState(null);
+    const [finishedStats, setFinishedStats] = useState(null);
+    const [finishedAnnouncements, setFinishedAnnouncements] = useState(0);
+    useEffect(() => subscribeBookFinished(() => setFinishedAnnouncements((count) => count + 1)), []);
+    useEffect(() => {
+        if (!isFocused || finishedBookUri) return;
+        const uri = takeFinishedBook();
+        if (uri) setFinishedBookUri(uri);
+    }, [finishedAnnouncements, finishedBookUri, isFocused]);
+    const finishedBook = useMemo(() => (
+        finishedBookUri ? books.find((book) => book.uri === finishedBookUri) ?? null : null
+    ), [books, finishedBookUri]);
+    useEffect(() => {
+        setFinishedStats(null);
+        if (!finishedBook) return undefined;
+        let active = true;
+        getBookFinishCounts({
+            ownerId: activeOwnerId,
+            profileId: activeProfileId,
+            language: finishedBook.language ?? targetLanguage,
+            bookUri: finishedBook.uri,
+        })
+            .catch(() => ({ lookedUp: 0, saved: 0, days: 0 }))
+            .then((counts) => {
+                if (active) setFinishedStats({ wordCount: Number(finishedBook.wordCount) || null, ...counts });
+            });
+        return () => { active = false; };
+        // Once per finished book; later changes to the book don't reload it.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [finishedBook?.uri]);
 
     const languageFilteredBooks = useMemo(() => (
         books.filter((book) => normalizeBookLanguage(book?.language ?? 'ko') === targetLanguage)
@@ -4160,6 +4197,13 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                     titleStyle={styles.bookCoverText}
                                 />
                             </Book3D>
+                            {isBookFinished(book) ? (
+                                <FinishedRibbon
+                                    color={HOME_COLORS.accent}
+                                    iconColor={HOME_COLORS.onAccent}
+                                    style={styles.bookGridFinishedRibbon}
+                                />
+                            ) : null}
                             {!isBookDownloaded(book) || isDownloadingBook ? (
                                 <View style={styles.bookGridDownloadBadge}>
                                     {isDownloadingBook ? (
@@ -4193,19 +4237,29 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                             pressed && styles.pressed,
                         ]}
                     >
-                        <Book3D
-                            width={52}
-                            height={76}
-                            radius={2}
-                        >
-                            <BookCover
-                                book={book}
+                        <View>
+                            <Book3D
                                 width={52}
                                 height={76}
-                                style={styles.bookRowCover}
-                                titleStyle={styles.bookRowCoverText}
-                            />
-                        </Book3D>
+                                radius={2}
+                            >
+                                <BookCover
+                                    book={book}
+                                    width={52}
+                                    height={76}
+                                    style={styles.bookRowCover}
+                                    titleStyle={styles.bookRowCoverText}
+                                />
+                            </Book3D>
+                            {isBookFinished(book) ? (
+                                <FinishedRibbon
+                                    color={HOME_COLORS.accent}
+                                    iconColor={HOME_COLORS.onAccent}
+                                    size="small"
+                                    style={styles.bookRowFinishedRibbon}
+                                />
+                            ) : null}
+                        </View>
                         <View style={styles.bookRowCopy}>
                             <View style={styles.bookRowTitleLine}>
                                 <Text
@@ -4627,6 +4681,23 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             )}
             </Pressable>
             </ScrollView>
+
+            <BookFinishedModal
+                book={finishedBook}
+                title={finishedBook ? getBookTitle(finishedBook, t) : ''}
+                author={finishedBook ? getBookAuthor(finishedBook, t) : ''}
+                stats={finishedStats}
+                renderCover={(coverWidth, coverHeight) => (
+                    <BookCover
+                        book={finishedBook}
+                        width={coverWidth}
+                        height={coverHeight}
+                        style={styles.bookCover}
+                        titleStyle={styles.bookCoverText}
+                    />
+                )}
+                onClose={() => setFinishedBookUri(null)}
+            />
 
             <Modal visible={!!pdfCoverPrompt} animationType="fade" transparent onRequestClose={choosePdfCoverDefault}>
                 <View style={styles.modalBackdrop}>
@@ -5894,6 +5965,12 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         paddingHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
         paddingTop: Spacing.xl2,
         paddingBottom: Spacing.xl8,
+    },
+    bookGridFinishedRibbon: {
+        right: 8,
+    },
+    bookRowFinishedRibbon: {
+        right: 5,
     },
     bookGridDownloadBadge: {
         position: 'absolute',

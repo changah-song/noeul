@@ -8614,6 +8614,32 @@ export const getBookLookupWords = async ({ ownerId, profileId, language = 'ko', 
   return rows.map((row) => row.word).filter(Boolean);
 };
 
+/**
+ * getBookFinishCounts — what a finished book left behind, for its finishing
+ * screen: distinct words looked up and saved while reading it, and the days
+ * (local dates) the reader did anything in it.
+ */
+export const getBookFinishCounts = async ({ ownerId, profileId, language = 'ko', bookUri } = {}) => {
+  if (!bookUri) return { lookedUp: 0, saved: 0, days: 0 };
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const rows = await runSelect(
+    `SELECT
+       COUNT(DISTINCT CASE WHEN event_type = 'lookup' THEN word END) AS looked_up,
+       COUNT(DISTINCT CASE WHEN event_type = 'save' THEN word END) AS saved,
+       COUNT(DISTINCT DATE(created_at, 'localtime')) AS days
+     FROM interaction_events
+     WHERE owner_id = ? AND profile_id = ? AND language = ? AND source_book_uri = ?
+       AND deleted_at IS NULL`,
+    [resolveOwnerId(ownerId), resolveProfileId(profileId, normalizedLanguage), normalizedLanguage, bookUri]
+  );
+  const row = rows[0] || {};
+  return {
+    lookedUp: Number(row.looked_up) || 0,
+    saved: Number(row.saved) || 0,
+    days: Number(row.days) || 0,
+  };
+};
+
 export const getBookPreprocessMeta = (
   ownerId,
   bookUri,
