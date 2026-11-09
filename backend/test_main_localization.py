@@ -228,7 +228,7 @@ def test_explain_selection_mode_allows_longer_text_and_separate_cache(monkeypatc
         {"word": phrase, "sentence": sentence, "language": "en", "mode": "selection"}, USER
     ))
     assert req.mode == "selection"
-    assert req.cache_key.endswith(":sel")
+    assert req.cache_key.endswith(":sel2")
 
     # The same text as a tapped word is still refused.
     with pytest.raises(main.ApiError):

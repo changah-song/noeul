@@ -4197,11 +4197,41 @@ def lookup_ko_dictionary_entries(stems: list[str]) -> tuple[list[dict], int]:
                 stem = result["stem"]
                 if stem and stem not in rows_by_stem:
                     rows_by_stem[stem] = result
+        # Headwords KRDICT lacks: the first Wiktionary sense
+        # (ko_dictionary_extra, scripts/import_ko_wiktionary.py).
+        missing = [stem for stem in normalized if stem not in rows_by_stem]
+        for chunk in chunked_values(missing):
+            for row in ko_dictionary_extra_rows(conn, chunk, primary_only=True):
+                result = ko_dictionary_row_to_result(row)
+                stem = result["stem"]
+                if stem and stem not in rows_by_stem:
+                    rows_by_stem[stem] = result
     finally:
         conn.close()
 
     hits = [rows_by_stem[stem] for stem in normalized if stem in rows_by_stem]
     return hits, len(rows_by_stem)
+
+
+def ko_dictionary_extra_rows(conn: sqlite3.Connection, stems: list[str], primary_only: bool = False) -> list:
+    """Wiktionary senses for these headwords (English glosses), in order;
+    [] when the snapshot predates the table."""
+    if not stems:
+        return []
+    placeholders = ",".join(["?"] * len(stems))
+    primary = "AND sense_no = 1" if primary_only else ""
+    try:
+        return conn.execute(
+            f"""
+            SELECT stem, pos, hanja, definition, NULL AS domain
+            FROM ko_dictionary_extra
+            WHERE stem IN ({placeholders}) {primary}
+            ORDER BY stem, sense_no
+            """,
+            stems,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
 
 
 def lookup_ko_dictionary_translations(stems: list[str], interface_language: str) -> dict[str, str]:
@@ -4288,6 +4318,10 @@ def lookup_ko_dictionary_search(query: str, interface_language: str = DEFAULT_IN
                 """,
                 [normalized, interface_language],
             ).fetchall()
+        # Then Wiktionary's senses KRDICT lacks (a homograph like 부처 夫妻,
+        # or a word it doesn't have). Their glosses are English only.
+        if interface_language == DEFAULT_INTERFACE_LANGUAGE:
+            rows = [*rows, *ko_dictionary_extra_rows(conn, [normalized])]
     finally:
         conn.close()
 
