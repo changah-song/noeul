@@ -16,6 +16,13 @@ OUT="$IOS/build/release"
 ARCHIVE="$OUT/Noeul.xcarchive"
 export LANG=en_US.UTF-8
 
+# The JS bundle reads the server URLs from .env.production (gitignored). Without it
+# the app builds fine but can't reach the backend.
+if ! grep -q "^EXPO_PUBLIC_API_BASE_URL=https://" "$FRONTEND/.env.production" 2>/dev/null; then
+  echo "frontend/.env.production is missing or has no EXPO_PUBLIC_API_BASE_URL. Copy the production env values from eas.json (docs/ios-release.md)." >&2
+  exit 1
+fi
+
 if ! security find-identity -v -p codesigning | grep -q "iPhone Distribution: Harim Song (GW2R499N63)"; then
   echo "Signing certificate missing or not valid. Install Noeul-Distribution.p12 and Apple's WWDR G3 certificate (docs/ios-release.md)." >&2
   exit 1

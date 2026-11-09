@@ -11,6 +11,9 @@ Paul is an Admin there and can do everything in App Store Connect except make si
 
 1. **Xcode** from the Mac App Store, then the iOS platform: Xcode → Settings → Components → iOS → Get.
 2. **Code:** clone the repo, then `npm install` in `frontend/`. `scripts/ios-release.sh` runs `pod install` itself.
+   Create `frontend/.env.production` (gitignored): one `KEY=value` line for each entry under
+   `build.production.env` in `frontend/eas.json` (`EXPO_PUBLIC_API_BASE_URL`, `EXPO_PUBLIC_SUPABASE_URL`, ...).
+   Without it the app builds but can't reach the server; the release script refuses to run.
 3. **Signing files** (the "Noeul signing (App Store)" zip on Drive; never commit them):
    - Double-click `Noeul-Distribution.p12`, choose the **login** keychain, enter the password from `p12-password.txt`.
    - Double-click `Noeul_App_Store.mobileprovision`. Use the profile that includes Sign in with Apple
