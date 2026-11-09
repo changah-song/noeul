@@ -8,7 +8,7 @@ import {
     TouchableOpacity,
     View,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
@@ -788,6 +788,8 @@ const AudioReview = ({ visible, words: candidates = [], targetLanguage, interfac
 
     return (
         <Modal visible={visible} animationType="slide" onRequestClose={inPlayer ? backToEpisodes : close} statusBarTranslucent>
+            {/* A Modal is its own native root; the provider gives SafeAreaView real insets on iOS. */}
+            <SafeAreaProvider>
             <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
                 <View style={styles.header}>
                     <TouchableOpacity
@@ -836,6 +838,7 @@ const AudioReview = ({ visible, words: candidates = [], targetLanguage, interfac
                 onSelectTranslationVoice={(voiceId) => selectVoice(voiceId, 'translation')}
                 onPreviewTranslationVoice={(voiceId) => previewVoice(voiceId, 'translation')}
             />
+            </SafeAreaProvider>
         </Modal>
     );
 };

@@ -3,6 +3,7 @@ import { ActivityIndicator, Modal, StyleSheet, Text, TouchableOpacity, View } fr
 import { Feather } from '@expo/vector-icons';
 import { useTranslation } from '../../hooks/useTranslation';
 import { useNavigationButtonsInset } from '../../hooks/useNavigationButtonsInset';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
     getGrammarPatternExamples,
     getGrammarPatterns,
@@ -246,6 +247,8 @@ const GrammarPatternPage = ({ pattern, ownerId, language, styles, colors, onBack
 const GrammarReview = ({ items, ownerId, language, styles, colors, onClose }) => {
     const { t } = useTranslation();
     const navigationButtonsInset = useNavigationButtonsInset();
+    // 52 was tuned for Android; a Dynamic Island status bar is taller than that.
+    const topPadding = Math.max(52, useSafeAreaInsets().top + 12);
     const [index, setIndex] = useState(0);
     const [picked, setPicked] = useState(null);
     const visible = Array.isArray(items) && items.length > 0;
@@ -286,7 +289,7 @@ const GrammarReview = ({ items, ownerId, language, styles, colors, onClose }) =>
         <Modal visible animationType="slide" onRequestClose={onClose}>
             {/* The modal draws under the navigation bar; with buttons there,
                 Next sits above them. */}
-            <View style={[styles.reviewScreen, { paddingBottom: REVIEW_BOTTOM_PADDING + navigationButtonsInset }]}>
+            <View style={[styles.reviewScreen, { paddingTop: topPadding, paddingBottom: REVIEW_BOTTOM_PADDING + navigationButtonsInset }]}>
                 <View style={styles.reviewTop}>
                     <TouchableOpacity onPress={onClose} accessibilityRole="button" accessibilityLabel={t('common.close')} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                         <Feather name="x" size={22} color={colors.text} />
