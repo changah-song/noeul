@@ -12,7 +12,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather, MaterialIcons } from '@expo/vector-icons';
@@ -2076,6 +2076,9 @@ const Learn = ({ navigation, user }) => {
       )}
 
       <Modal animationType="slide" visible={!!practiceDeck} onRequestClose={closePractice}>
+        {/* A Modal is its own native root: without a provider inside it,
+            iOS reports zero insets and the header sits under the status bar. */}
+        <SafeAreaProvider>
         <Flashcard
           vocab={practiceDeck?.words?.[practiceIndex]}
           title={practiceDeck?.title ?? t('learn.practice')}
@@ -2094,6 +2097,7 @@ const Learn = ({ navigation, user }) => {
           ownerId={activeOwnerId}
           syncGeneration={syncGeneration}
         />
+        </SafeAreaProvider>
       </Modal>
       <AudioReview
         visible={Boolean(audioWords)}

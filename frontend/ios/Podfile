@@ -68,6 +68,11 @@ target 'Noeul' do
         end
         build_config.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'c++17' if target.name == 'fmt'
       end
+      next unless target.name == 'EXConstants'
+      target.shell_script_build_phases.each do |phase|
+        next unless phase.name.to_s.include?('Generate app.config')
+        phase.shell_script = 'bash -l "$PODS_ROOT/../../scripts/expoConstantsAppConfig.sh"'
+      end
     end
   end
 end
