@@ -36,6 +36,11 @@ export const extractPdfDocument = (options) => {
     return NativeModule?.extractPdfDocument?.(options) ?? androidOnly();
 };
 
+// The display name of a content:// file (Android); null elsewhere.
+export const contentDisplayName = async (uri) => (
+    typeof NativeModule?.contentDisplayName === 'function' ? NativeModule.contentDisplayName(uri) : null
+);
+
 export const renderPdfCover = (options) => (
     NativeModule?.renderPdfCover?.(options) ?? androidOnly()
 );

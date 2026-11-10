@@ -32,7 +32,8 @@ import { useLocalOwner } from '../contexts/LocalOwnerContext';
 import { useTranslation } from '../hooks/useTranslation';
 import { useNavigationButtonsInset } from '../hooks/useNavigationButtonsInset';
 import AppTopBar from '../components/shared/AppTopBar';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
+import { useOpenedBookFiles } from '../services/openedBookFiles';
 import { searchSongs } from '../services/api/songSearch';
 import {
     colors,
@@ -1823,6 +1824,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         choosePdfCoverNone,
         choosePdfCoverCustom,
         confirmAddBook,
+        importOpenedBook,
         handlePress,
     } = useBooks({
         books,
@@ -1835,6 +1837,10 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         targetLanguage,
         setTargetLanguage,
     });
+
+    // Books opened in Noeul from another app, imported once Home is showing.
+    const isFocused = useIsFocused();
+    useOpenedBookFiles(importOpenedBook, isFocused && !isImporting);
 
     const languageFilteredBooks = useMemo(() => (
         books.filter((book) => normalizeBookLanguage(book?.language ?? 'ko') === targetLanguage)

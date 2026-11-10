@@ -123,6 +123,8 @@ final class ReaderScrollHost: UIView, UIScrollViewDelegate {
     scrollView.alwaysBounceVertical = false
     scrollView.contentInsetAdjustmentBehavior = .never
     scrollView.showsHorizontalScrollIndicator = false
+    // ChapterProgressThumb is the scrollbar.
+    scrollView.showsVerticalScrollIndicator = false
     scrollView.delegate = self
     scrollView.panGestureRecognizer.addTarget(self, action: #selector(handleScrollPan(_:)))
     addSubview(scrollView)

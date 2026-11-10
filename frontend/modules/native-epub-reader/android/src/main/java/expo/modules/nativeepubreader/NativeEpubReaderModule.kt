@@ -238,6 +238,21 @@ class NativeEpubReaderModule : Module() {
       Handler(Looper.getMainLooper()).postDelayed({ promise.resolve(null) }, delay)
     }
 
+    // The name a content:// file was shared under (OpenableColumns), for a
+    // book opened from another app; null when the provider doesn't say.
+    AsyncFunction("contentDisplayName") { uri: String ->
+      val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
+      try {
+        context.contentResolver.query(
+          android.net.Uri.parse(uri),
+          arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
+          null, null, null,
+        )?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+      } catch (error: Exception) {
+        null
+      }
+    }
+
     AsyncFunction("extractPdfDocument") { options: Map<String, Any?> ->
       val context = appContext.reactContext ?: throw Exceptions.ReactContextLost()
       try {
@@ -940,6 +955,9 @@ private class ContinuousReaderScrollView(context: Context) : ScrollView(context)
     isFillViewport = true
     // The chapter pull (below) is the edge feedback, so no stretch or glow.
     overScrollMode = OVER_SCROLL_NEVER
+    // drawChapterScrollbar is the scrollbar; the platform one (shown by default,
+    // and always visible on some OEM skins) would be a second.
+    isVerticalScrollBarEnabled = false
   }
 
   override fun dispatchTouchEvent(event: MotionEvent): Boolean {
