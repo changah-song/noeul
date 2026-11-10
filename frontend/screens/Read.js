@@ -2660,7 +2660,8 @@ const Read = ({
         const normalizedLanguage = normalizeBookLanguage(language);
         const cacheScope = { language: normalizedLanguage, interfaceLanguage };
         const cacheEntries = tagPreprocessCacheEntries(results, cacheScope);
-        await insertCacheEntries(cacheEntries, cacheScope);
+        // A word's first translation stays: later pieces don't reword it.
+        await insertCacheEntries(cacheEntries, cacheScope, { keepSenses: true });
 
         const stems = [...new Set(cacheEntries.map((entry) => entry.stem).filter(Boolean))];
         if (stems.length === 0) {

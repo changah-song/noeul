@@ -99,7 +99,7 @@ const preprocessSong = async ({
             return entry;
         });
 
-    await insertCacheEntries(cacheEntries, cacheScope);
+    await insertCacheEntries(cacheEntries, cacheScope, { keepSenses: true });
 
     const stems = [...new Set(cacheEntries.map((entry) => entry.stem).filter(Boolean))];
     if (stems.length === 0) {
