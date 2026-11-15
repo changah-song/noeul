@@ -49,7 +49,6 @@ import {
 } from '../services/Database';
 import { deriveCandidateReason } from '../services/wordCandidates';
 import { LEARNED_LEVEL } from '../services/savedWordFade';
-import { incrementWordsStudied } from '../services/dailyProgress';
 import {
   recordCloudVocabReview,
   supabase,
@@ -1737,7 +1736,6 @@ const Learn = ({ navigation, user }) => {
         wordData: currentWord,
       }
     );
-    await incrementWordsStudied(activeOwnerId, 1);
     const updatedWords = await fetchWords();
     const updatedWord = updatedWords.find((candidate) => sameWord(candidate, currentWord));
     if (updatedWord) {

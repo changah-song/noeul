@@ -61,8 +61,10 @@ export const colorPairs = {
   // Three stops of the reader's level-underline gradient (easy → mid → hard).
   // A word's shade is interpolated between them from its P(known); see
   // services/abilityModel.js `levelUnderlineWeight`.
-  readerLevelUnderlineEasy: pair('#2f8f46', '#74c476'),
-  readerLevelUnderlineMid: pair('#c4661f', '#f59e0b'),
+  // They colour the words themselves, so the light ones are dark enough to
+  // read as text on the paper (4.5:1 or better).
+  readerLevelUnderlineEasy: pair('#2a7a3d', '#74c476'),
+  readerLevelUnderlineMid: pair('#a8520f', '#f59e0b'),
   readerLevelUnderlineHard: pair('#b32d2d', '#e5686a'),
   // Book brown, so the tapped word stands out on the grey sentence wash.
   readerTappedWordSurfaceBg: pair('#e3cfb4', '#5c4630'),
@@ -113,7 +115,8 @@ export const createNativeReaderThemeTokens = (themeColors) => ({
   rule: themeColors.readerEdgeRule,
   edgeButton: themeColors.readerEdgeButtonBg,
   edgeButtonText: themeColors.readerEdgeButtonText,
-  activeHighlight: themeColors.readerTappedWordSurfaceBg,
+  // Solid ink: the tapped word is drawn in the page colour on it.
+  activeHighlight: themeColors.readerTappedWordBg,
   textSelectionHighlight: themeColors.readerTextSelectionHighlight,
   savedHighlight: themeColors.readerSavedWordSurfaceBg,
   savedHighlightText: themeColors.readerSavedWordSurfaceText,

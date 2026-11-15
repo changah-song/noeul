@@ -31,9 +31,10 @@ import {
   isCloudSyncPaused,
   isCurrentSyncGeneration,
 } from './localOwnerCoordinator';
-import { pushInteractionEvents } from './interactionEventsCloudSync';
+import { pullAccountLookups, pushInteractionEvents } from './interactionEventsCloudSync';
 import { pullProfileAbility, pushProfileAbilities } from './profileAbilityCloudSync';
 import { pushAbilityLog } from './abilityLogCloudSync';
+import { syncReadingDays } from './readingDaysCloudSync';
 import { makeScopedStorageKey } from './localDataScope';
 import {
   getDefaultProfileIdForLanguage,
@@ -868,6 +869,14 @@ export const syncUserDataFromCloud = async ({ user, ownerId, generation }) => {
     console.warn('[userDataSync] Interaction events push failed:', error?.message ?? error);
   }
 
+  // The words the account has looked up, for Profile's "new words met" (after
+  // the push, so this phone's own lookups are in the account first).
+  try {
+    await pullAccountLookups({ user, ownerId, generation });
+  } catch (error) {
+    console.warn('[userDataSync] Account lookups pull failed:', error?.message ?? error);
+  }
+
   // The level: taken from the account first if it has seen more reading (a
   // new device), then this phone's pushed. Non-fatal for the same reason.
   try {
@@ -888,6 +897,14 @@ export const syncUserDataFromCloud = async ({ user, ownerId, generation }) => {
     await pushAbilityLog({ user, ownerId, generation });
   } catch (error) {
     console.warn('[userDataSync] Ability log push failed:', error?.message ?? error);
+  }
+
+  // The reading goal's day log (streaks): the account's days merged in, this
+  // phone's new ones sent. Non-fatal for the same reason.
+  try {
+    await syncReadingDays({ user, ownerId, generation });
+  } catch (error) {
+    console.warn('[userDataSync] Reading days sync failed:', error?.message ?? error);
   }
 
   // A whole pass ran (the early returns above mean it was skipped).

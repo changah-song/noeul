@@ -7,6 +7,7 @@ import {
     BackHandler,
     Image,
     KeyboardAvoidingView,
+    LayoutAnimation,
     Modal,
     Platform,
     Pressable,
@@ -22,6 +23,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
+import * as Haptics from 'expo-haptics';
 import { Feather, Ionicons, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 import { createTabBarBaseStyle } from '../components/shared/TabBar';
 import Book3D from '../components/Home/Book3D';
@@ -36,6 +38,8 @@ import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { useOpenedBookFiles } from '../services/openedBookFiles';
 import BookFinishedModal from '../components/Home/BookFinishedModal';
 import FinishedRibbon from '../components/Home/FinishedRibbon';
+import FolderSheet from '../components/Home/FolderSheet';
+import FolderStack from '../components/Home/FolderStack';
 import { isBookFinished, subscribeBookFinished, takeFinishedBook } from '../services/bookFinished';
 import { searchSongs } from '../services/api/songSearch';
 import {
@@ -91,6 +95,20 @@ import { getPublicDomainBooks } from '../services/publicDomainBooks';
 import { beginBookOpening, endBookOpening } from '../services/bookOpening';
 import ListenMiniPlayer from '../components/Home/ListenMiniPlayer';
 import { pickStarterBook, starterThetaFromAbility } from '../services/starterBook';
+import { groupShelfBooks } from '../services/shelfSections';
+import {
+    arrangeShelf,
+    createFolder,
+    deleteFolder,
+    findFolderOfBook,
+    getFolderBookKey,
+    getFoldersStorageKey,
+    loadFolders,
+    moveBookToFolder,
+    removeBookFromFolders,
+    renameFolder,
+    saveFolders,
+} from '../services/bookFolders';
 import {
     downloadFeaturedBooks,
     downloadPublicBook,
@@ -1790,6 +1808,24 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         });
         return () => subscription.remove();
     }, [selectedSongId]);
+    // Folders on "Your books" (services/bookFolders.js). openFolderId is the
+    // folder being looked into; folderSheet is what the folder sheet is asked
+    // to do (file a book, name a new folder, rename one), or null when closed.
+    const [bookFolders, setBookFolders] = useState([]);
+    const [openFolderId, setOpenFolderId] = useState(null);
+    const [folderSheet, setFolderSheet] = useState(null);
+    // Android hardware back steps out of an open folder first.
+    useEffect(() => {
+        if (!openFolderId || selectedBookPreview || selectedSongId) {
+            return undefined;
+        }
+        const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+            LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+            setOpenFolderId(null);
+            return true;
+        });
+        return () => subscription.remove();
+    }, [openFolderId, selectedBookPreview, selectedSongId]);
     const [showAddSongModal, setShowAddSongModal] = useState(false);
     const [songDraft, setSongDraft] = useState(EMPTY_SONG_DRAFT);
     // Song suggestions while the reader types a title, artist or line of
@@ -1821,6 +1857,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
     const { width } = useWindowDimensions();
     const {
         isImporting,
+        importProgress,
         openingBookUri,
         pdfCoverPrompt,
         pdfCoverPageInput,
@@ -2274,6 +2311,128 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
 
         return recentBooks;
     }, [activeBookFilter, favoriteBooks, recentBooks]);
+    // "My books" is shown in two sections: the reader's own books, then the
+    // public-domain books taken from the library. Each keeps the
+    // most-recently-opened order. Favorites stay one flat list.
+    const myBookSections = useMemo(() => {
+        if (activeBookFilter === 'favorites') {
+            return null;
+        }
+        const titles = {
+            uploaded: t('home.shelfYourBooks'),
+            library: t('home.publicDomainTag'),
+        };
+        return groupShelfBooks(recentBooks).map((section) => ({
+            ...section,
+            title: titles[section.key],
+        }));
+    }, [activeBookFilter, recentBooks, t]);
+
+    // Folders are kept per account, profile and language, like the shelf.
+    const folderScopeKey = getFoldersStorageKey({
+        ownerId: activeOwnerId,
+        profileId: activeProfileId,
+        language: targetLanguage,
+    });
+    // The latest folders and the scope they belong to, readable at once (state
+    // lags a render), so two quick changes never lose one, and a change is
+    // never saved under a scope whose folders have not loaded yet.
+    const bookFoldersRef = useRef([]);
+    const loadedFolderScopeRef = useRef(null);
+    useEffect(() => {
+        let active = true;
+        loadedFolderScopeRef.current = null;
+        bookFoldersRef.current = [];
+        setBookFolders([]);
+        setOpenFolderId(null);
+        setFolderSheet(null);
+        loadFolders({ ownerId: activeOwnerId, profileId: activeProfileId, language: targetLanguage })
+            .then((stored) => {
+                if (!active) return;
+                loadedFolderScopeRef.current = folderScopeKey;
+                bookFoldersRef.current = stored;
+                setBookFolders(stored);
+            });
+        return () => {
+            active = false;
+        };
+    }, [activeOwnerId, activeProfileId, folderScopeKey, targetLanguage]);
+    // Shows a folder change straight away (with a short slide as tiles move),
+    // then saves it.
+    const applyBookFolders = useCallback((change) => {
+        if (loadedFolderScopeRef.current !== folderScopeKey) {
+            return;
+        }
+        const next = change(bookFoldersRef.current);
+        if (next === bookFoldersRef.current) {
+            return;
+        }
+        bookFoldersRef.current = next;
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        setBookFolders(next);
+        saveFolders({ ownerId: activeOwnerId, profileId: activeProfileId, language: targetLanguage }, next);
+    }, [activeOwnerId, activeProfileId, folderScopeKey, targetLanguage]);
+    const yourBooksShelf = useMemo(() => (
+        arrangeShelf(myBookSections?.find((section) => section.key === 'uploaded')?.books ?? [], bookFolders)
+    ), [bookFolders, myBookSections]);
+    const openFolderEntry = openFolderId
+        ? yourBooksShelf.folders.find(({ folder }) => folder.id === openFolderId) ?? null
+        : null;
+    const handleOpenFolder = useCallback((folderId) => {
+        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+        setOpenFolderId(folderId);
+    }, []);
+    // Holding one of the reader's own books offers to file it in a folder.
+    const handleBookLongPress = useCallback((book) => {
+        const bookKey = getFolderBookKey(book);
+        if (!bookKey) {
+            return;
+        }
+        Haptics.selectionAsync().catch(() => {});
+        setFolderSheet({
+            mode: 'move',
+            book,
+            bookTitle: getBookTitle(book, t),
+            currentFolderId: findFolderOfBook(bookFoldersRef.current, bookKey)?.id ?? null,
+        });
+    }, [t]);
+    const handleFolderSheetPick = useCallback((folderId) => {
+        const bookKey = getFolderBookKey(folderSheet?.book);
+        setFolderSheet(null);
+        applyBookFolders((folders) => moveBookToFolder(folders, bookKey, folderId));
+    }, [applyBookFolders, folderSheet]);
+    const handleFolderSheetRemove = useCallback(() => {
+        const bookKey = getFolderBookKey(folderSheet?.book);
+        setFolderSheet(null);
+        applyBookFolders((folders) => removeBookFromFolders(folders, bookKey));
+    }, [applyBookFolders, folderSheet]);
+    const handleFolderSheetName = useCallback((name) => {
+        const request = folderSheet;
+        setFolderSheet(null);
+        if (request?.mode === 'rename') {
+            applyBookFolders((folders) => renameFolder(folders, request.folder.id, name));
+            return;
+        }
+        const bookKey = request?.mode === 'move' ? getFolderBookKey(request.book) : null;
+        applyBookFolders((folders) => createFolder(folders, name, bookKey).folders);
+    }, [applyBookFolders, folderSheet]);
+    const handleDeleteFolder = useCallback((folder) => {
+        Alert.alert(
+            t('home.folderDelete'),
+            t('home.folderDeleteBody', { name: folder.name }),
+            [
+                { text: t('common.cancel'), style: 'cancel' },
+                {
+                    text: t('common.delete'),
+                    style: 'destructive',
+                    onPress: () => {
+                        setOpenFolderId(null);
+                        applyBookFolders((folders) => deleteFolder(folders, folder.id));
+                    },
+                },
+            ]
+        );
+    }, [applyBookFolders, t]);
     const showingPublicDomainBooks = activeLibraryTab === 'Books' && activeBookFilter === 'public-domain';
     const showingEmptyMyBooks = activeLibraryTab === 'Books'
         && !showingPublicDomainBooks
@@ -4165,7 +4324,7 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         );
     };
 
-    const renderBookGrid = (items, style = null) => (
+    const renderBookGrid = (items, style = null, { onLongPress = null } = {}) => (
         <View style={[styles.bookGrid, style]}>
             {items.map((book, index) => {
                 const bookKey = getBookKey(book, `${index}`);
@@ -4177,6 +4336,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                         accessibilityRole="button"
                         accessibilityLabel={`${getBookTitle(book, t)}, ${getBookAuthor(book, t)}`}
                         onPress={() => handleBookPreviewPress(book, index)}
+                        onLongPress={onLongPress ? () => onLongPress(book) : undefined}
+                        delayLongPress={280}
                         style={({ pressed }) => [
                             styles.bookTile,
                             { width: bookTileWidth },
@@ -4220,8 +4381,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
         </View>
     );
 
-    const renderBookRows = (items, sourceLabel) => (
-        <View style={styles.bookRows}>
+    const renderBookRows = (items, sourceLabel, { onLongPress = null, style = null } = {}) => (
+        <View style={[styles.bookRows, style]}>
             {items.map((book, index) => {
                 const bookKey = getBookKey(book, `${index}`);
                 const isDownloadingBook = downloadingBookId === bookKey;
@@ -4231,6 +4392,8 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                         key={book.uri || book.id || book.publicLibraryId || `${book.title}-${index}`}
                         accessibilityRole="button"
                         onPress={() => handleBookPreviewPress(book, index)}
+                        onLongPress={onLongPress ? () => onLongPress(book) : undefined}
+                        delayLongPress={280}
                         style={({ pressed }) => [
                             styles.bookRow,
                             index === items.length - 1 && styles.bookRowLast,
@@ -4296,6 +4459,162 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             })}
         </View>
     );
+
+    const renderFolderCover = (book, coverWidth, coverHeight) => (
+        <BookCover
+            book={book}
+            width={coverWidth}
+            height={coverHeight}
+            style={styles.bookCover}
+            titleStyle={styles.folderCoverText}
+        />
+    );
+
+    // Folders as tiles: the pile of covers, then the name and count under it.
+    const renderFolderGrid = (folders) => (
+        <View style={[styles.bookGrid, styles.folderGrid]}>
+            {folders.map(({ folder, books: folderBooks }) => (
+                <Pressable
+                    key={folder.id}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${folder.name}, ${formatBookCount(t, 'home.bookCount', folderBooks.length)}`}
+                    onPress={() => handleOpenFolder(folder.id)}
+                    style={({ pressed }) => [
+                        styles.bookTile,
+                        { width: bookTileWidth },
+                        pressed && styles.folderPressed,
+                    ]}
+                >
+                    <FolderStack
+                        books={folderBooks}
+                        width={bookTileWidth}
+                        height={bookCoverHeight}
+                        renderCover={renderFolderCover}
+                        edgeColor={HOME_COLORS.bg}
+                        emptyColor={HOME_COLORS.faint}
+                    />
+                    <Text style={styles.folderTileName} numberOfLines={1}>{folder.name}</Text>
+                    <Text style={styles.folderTileCount}>{formatNumber(folderBooks.length)}</Text>
+                </Pressable>
+            ))}
+        </View>
+    );
+
+    // Folders as rows, matching the book rows under them.
+    const renderFolderRows = (folders, isLastGroup) => (
+        <View style={[styles.bookRows, styles.folderRows]}>
+            {folders.map(({ folder, books: folderBooks }, index) => (
+                <Pressable
+                    key={folder.id}
+                    accessibilityRole="button"
+                    onPress={() => handleOpenFolder(folder.id)}
+                    style={({ pressed }) => [
+                        styles.bookRow,
+                        isLastGroup && index === folders.length - 1 && styles.bookRowLast,
+                        pressed && styles.pressed,
+                    ]}
+                >
+                    <FolderStack
+                        books={folderBooks}
+                        width={52}
+                        height={76}
+                        renderCover={renderFolderCover}
+                        edgeColor={HOME_COLORS.bg}
+                        emptyColor={HOME_COLORS.faint}
+                    />
+                    <View style={styles.bookRowCopy}>
+                        <Text style={[styles.bookRowTitle, getSerifFontForText(folder.name)]} numberOfLines={1}>
+                            {folder.name}
+                        </Text>
+                        <Text style={styles.bookRowMeta} numberOfLines={1}>
+                            {formatBookCount(t, 'home.bookCount', folderBooks.length)}
+                        </Text>
+                    </View>
+                    <Feather name="chevron-right" size={16} color={HOME_COLORS.faint} />
+                </Pressable>
+            ))}
+        </View>
+    );
+
+    // "Your books": folders first, then the books in no folder. With a folder
+    // open, the section shows that folder's books in place, with a way back.
+    const renderYourBooksSection = (section) => {
+        const isGrid = effectiveCollectionViewMode === 'grid';
+        const longPress = { onLongPress: handleBookLongPress };
+        const { folders, looseBooks } = yourBooksShelf;
+        const renderBooks = (items) => (isGrid
+            ? renderBookGrid(items, styles.bookGridInSection, longPress)
+            : renderBookRows(items, t('home.onDevice'), longPress));
+
+        if (openFolderEntry) {
+            const { folder, books: folderBooks } = openFolderEntry;
+            return (
+                <View key={section.key} style={styles.easeSection}>
+                    <View style={styles.shelfSectionHeader}>
+                        <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={section.title}
+                            hitSlop={10}
+                            onPress={() => handleOpenFolder(null)}
+                            style={({ pressed }) => [styles.folderBackButton, pressed && styles.pressed]}
+                        >
+                            <Feather name="chevron-left" size={18} color={HOME_COLORS.accent} />
+                            <Text style={styles.folderBackLabel} numberOfLines={1}>{section.title}</Text>
+                        </Pressable>
+                        <Text style={[styles.easeSectionTitle, styles.folderOpenName]} numberOfLines={1} accessibilityRole="header">
+                            {folder.name}
+                        </Text>
+                        <Text style={styles.easeSectionCount}>{formatNumber(folderBooks.length)}</Text>
+                        <View style={styles.shelfSectionSpacer} />
+                        <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={t('home.folderRename')}
+                            hitSlop={8}
+                            onPress={() => setFolderSheet({ mode: 'rename', folder })}
+                            style={({ pressed }) => [styles.shelfSectionButton, pressed && styles.pressed]}
+                        >
+                            <Feather name="edit-2" size={15} color={HOME_COLORS.sub} />
+                        </Pressable>
+                        <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={t('home.folderDelete')}
+                            hitSlop={8}
+                            onPress={() => handleDeleteFolder(folder)}
+                            style={({ pressed }) => [styles.shelfSectionButton, pressed && styles.pressed]}
+                        >
+                            <Feather name="trash-2" size={15} color={HOME_COLORS.sub} />
+                        </Pressable>
+                    </View>
+                    {folderBooks.length > 0
+                        ? renderBooks(folderBooks)
+                        : <Text style={styles.folderEmptyHint}>{t('home.folderEmpty')}</Text>}
+                </View>
+            );
+        }
+
+        return (
+            <View key={section.key} style={styles.easeSection}>
+                <View style={styles.shelfSectionHeader}>
+                    <Text style={styles.easeSectionTitle} accessibilityRole="header">{section.title}</Text>
+                    <Text style={styles.easeSectionCount}>{formatNumber(section.books.length)}</Text>
+                    <View style={styles.shelfSectionSpacer} />
+                    <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={t('home.folderNew')}
+                        hitSlop={8}
+                        onPress={() => setFolderSheet({ mode: 'new' })}
+                        style={({ pressed }) => [styles.shelfSectionButton, pressed && styles.pressed]}
+                    >
+                        <Feather name="folder-plus" size={17} color={HOME_COLORS.accent} />
+                    </Pressable>
+                </View>
+                {folders.length > 0
+                    ? (isGrid ? renderFolderGrid(folders) : renderFolderRows(folders, looseBooks.length === 0))
+                    : null}
+                {looseBooks.length > 0 ? renderBooks(looseBooks) : null}
+            </View>
+        );
+    };
 
     if (selectedSong) {
         return (
@@ -4379,6 +4698,19 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                     >
                         {ocrMessage}
                     </Text>
+                ) : null}
+
+                {/* A book being added, and the step it is on. */}
+                {isImporting ? (
+                    <View style={styles.importStatusRow} accessibilityLiveRegion="polite">
+                        <ActivityIndicator size="small" color={HOME_COLORS.secondary} />
+                        <Text style={styles.importStatusText} numberOfLines={1}>
+                            {importProgress?.step === 'file' ? t('books.importingFile')
+                                : importProgress?.step === 'text' ? t('books.importingText', { percent: formatNumber(importProgress.percent ?? 0) })
+                                    : importProgress?.step === 'cover' ? t('books.importingCover')
+                                        : t('books.importing')}
+                        </Text>
+                    </View>
                 ) : null}
 
                 {/* The reader's voice, while it's on: under the title bar. */}
@@ -4560,6 +4892,18 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
                                         setActiveBookFilter('public-domain');
                                     },
                                 })
+                            ) : myBookSections ? (
+                                myBookSections.map((section) => (section.key === 'uploaded' ? renderYourBooksSection(section) : (
+                                    <View key={section.key} style={styles.easeSection}>
+                                        <View style={styles.easeSectionHeader}>
+                                            <Text style={styles.easeSectionTitle} accessibilityRole="header">{section.title}</Text>
+                                            <Text style={styles.easeSectionCount}>{formatNumber(section.books.length)}</Text>
+                                        </View>
+                                        {effectiveCollectionViewMode === 'grid'
+                                            ? renderBookGrid(section.books, styles.bookGridInSection)
+                                            : renderBookRows(section.books, t('home.onDevice'))}
+                                    </View>
+                                )))
                             ) : (
                                 effectiveCollectionViewMode === 'grid'
                                     ? renderBookGrid(filteredLibraryBooks)
@@ -4681,6 +5025,28 @@ const Home = ({ books, setBooks, currentBook, setCurrentBook, setPreprocessOnOpe
             )}
             </Pressable>
             </ScrollView>
+
+            <FolderSheet
+                request={folderSheet}
+                folders={yourBooksShelf.folders}
+                palette={{
+                    overlay: colors.overlay,
+                    surface: colors.surfaceElevated,
+                    pressed: HOME_COLORS.surface2,
+                    text: HOME_COLORS.text,
+                    sub: HOME_COLORS.sub,
+                    tertiary: HOME_COLORS.tertiary,
+                    faint: HOME_COLORS.faint,
+                    accent: HOME_COLORS.accent,
+                    onAccent: HOME_COLORS.onAccent,
+                    border: HOME_COLORS.border,
+                    divider: HOME_COLORS.divider,
+                }}
+                onClose={() => setFolderSheet(null)}
+                onPickFolder={handleFolderSheetPick}
+                onRemoveFromFolder={handleFolderSheetRemove}
+                onSubmitName={handleFolderSheetName}
+            />
 
             <BookFinishedModal
                 book={finishedBook}
@@ -4994,6 +5360,19 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
         textAlign: 'center',
         paddingHorizontal: Spacing.screenHorizontalDense,
         paddingVertical: Spacing.sm,
+    },
+    importStatusRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: Spacing.sm,
+        paddingHorizontal: Spacing.screenHorizontalDense,
+        paddingVertical: Spacing.sm,
+    },
+    importStatusText: {
+        ...textStyles.caption,
+        color: HOME_COLORS.secondary,
+        flexShrink: 1,
     },
     heroSection: {
         paddingTop: Spacing.xl2,
@@ -5949,6 +6328,80 @@ const createStyles = (HOME_COLORS, colors) => StyleSheet.create({
     },
     easeSectionCount: {
         fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 13,
+        lineHeight: 18,
+        color: HOME_COLORS.tertiary,
+    },
+    // "Your books" header: the title and count, then folder actions at the end.
+    shelfSectionHeader: {
+        minHeight: 30,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: Spacing.sm,
+        marginHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
+        paddingBottom: Spacing.xs,
+        borderBottomWidth: 1,
+        borderBottomColor: HOME_COLORS.divider,
+    },
+    shelfSectionSpacer: {
+        flex: 1,
+    },
+    shelfSectionButton: {
+        width: 30,
+        height: 30,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    folderBackButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        flexShrink: 1,
+        gap: 2,
+        marginLeft: -4,
+    },
+    folderBackLabel: {
+        flexShrink: 1,
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 13,
+        lineHeight: 18,
+        color: HOME_COLORS.accent,
+    },
+    folderOpenName: {
+        flexShrink: 1,
+    },
+    folderGrid: {
+        paddingTop: Spacing.lg,
+        paddingBottom: 0,
+    },
+    folderRows: {
+        paddingBottom: 0,
+    },
+    folderPressed: {
+        opacity: 0.86,
+        transform: [{ scale: 0.96 }],
+    },
+    folderCoverText: {
+        fontSize: 15,
+        lineHeight: 20,
+    },
+    folderTileName: {
+        marginTop: Spacing.sm,
+        fontFamily: fontFamilies.sansSemiBold,
+        fontSize: 12,
+        lineHeight: 16,
+        color: HOME_COLORS.text,
+    },
+    folderTileCount: {
+        fontFamily: fontFamilies.sansRegular,
+        fontSize: 11,
+        lineHeight: 15,
+        color: HOME_COLORS.tertiary,
+    },
+    folderEmptyHint: {
+        paddingHorizontal: HOME_CONTENT_HORIZONTAL_PADDING,
+        paddingTop: Spacing.xl2,
+        paddingBottom: Spacing.xl8,
+        fontFamily: fontFamilies.sansRegular,
         fontSize: 13,
         lineHeight: 18,
         color: HOME_COLORS.tertiary,

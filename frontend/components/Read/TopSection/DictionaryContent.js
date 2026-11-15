@@ -280,8 +280,21 @@ const DictionaryContent = ({
     sourceBook,
     savedWords = [],
     levelMarkFor = null,
+    // Counts up each time the reader taps the open word again on the page:
+    // that saves the entry showing (or takes the save back).
+    saveToggleToken = 0,
 }) => {
     const { interfaceLanguage } = useAppContext();
+    // The save/unsave of the entry on show, set as it renders (see
+    // renderSaveIcon) and run by a second tap on the word.
+    const primarySaveToggleRef = useRef(null);
+    primarySaveToggleRef.current = null;
+    const lastSaveToggleTokenRef = useRef(saveToggleToken);
+    useEffect(() => {
+        if (saveToggleToken === lastSaveToggleTokenRef.current) return;
+        lastSaveToggleTokenRef.current = saveToggleToken;
+        primarySaveToggleRef.current?.();
+    }, [saveToggleToken]);
     // Read at lookup time, so a new function each render doesn't re-run it.
     const levelMarkForRef = useRef(levelMarkFor);
     levelMarkForRef.current = levelMarkFor;
@@ -1259,28 +1272,40 @@ const DictionaryContent = ({
         );
     };
 
-    // The Save toggle: a large icon pinned to the panel's top-right corner
-    // (top of the heading row rather than centred on the headword).
+    // Saving is a second tap on the word in the page, so the panel carries no
+    // save button. Once a word is saved a small bookmark sits at the end of the
+    // heading row (tap it to take the save back); until then the slot is
+    // empty, and only a screen reader finds a "Save" action there.
     const renderSaveIcon = ({ word, hanja = '', definition = '', requireDefinition = true }) => {
         const canSave = !requireDefinition || hasSavableDefinition(definition);
         const saved = canSave && isWordSaved(word);
+        const toggle = () => (saved ? toggleUnSave(word, hanja, definition) : toggleSave(word, hanja, definition));
+        if (canSave && !primarySaveToggleRef.current) {
+            primarySaveToggleRef.current = toggle;
+        }
+        if (!saved) {
+            return (
+                <View
+                    style={styles.saveIconButton}
+                    accessible={canSave}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('lookup.save')}
+                    accessibilityActions={canSave ? [{ name: 'activate' }] : undefined}
+                    onAccessibilityAction={canSave ? toggle : undefined}
+                />
+            );
+        }
         return (
             <TouchableOpacity
-                style={[styles.saveIconButton, !canSave && styles.saveIconButtonDisabled]}
-                onPress={canSave
-                    ? () => (saved ? toggleUnSave(word, hanja, definition) : toggleSave(word, hanja, definition))
-                    : undefined}
-                activeOpacity={canSave ? 0.7 : 1}
+                style={styles.saveIconButton}
+                onPress={toggle}
+                activeOpacity={0.7}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 accessibilityRole="button"
-                accessibilityLabel={saved ? t('lookup.saved') : t('lookup.save')}
-                accessibilityState={{ disabled: !canSave, selected: saved }}
+                accessibilityLabel={t('lookup.saved')}
+                accessibilityState={{ selected: true }}
             >
-                <MaterialIcons
-                    name={saved ? 'bookmark' : 'bookmark-border'}
-                    size={31}
-                    color={saved ? palette.text : palette.mutedText}
-                />
+                <MaterialIcons name="bookmark" size={20} color={palette.text} />
             </TouchableOpacity>
         );
     };
@@ -2279,18 +2304,14 @@ const createStyles = (colors) => StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'center',
     },
+    // The saved mark's slot (same width as saveIconSpacer, so the headword
+    // stays centred whether or not the mark is showing).
     saveIconButton: {
-        width: 44,
-        height: 44,
-        alignSelf: 'flex-start',
+        width: 34,
+        height: 34,
         alignItems: 'center',
         justifyContent: 'center',
         flexShrink: 0,
-        marginTop: -8,
-        marginRight: -10,
-    },
-    saveIconButtonDisabled: {
-        opacity: 0.4,
     },
     // Balances the save icon so the headword stays centred.
     saveIconSpacer: {

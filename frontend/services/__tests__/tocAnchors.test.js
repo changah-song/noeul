@@ -39,3 +39,60 @@ describe('contents entries inside a chapter file', () => {
     expect(blockIdForAnchor(__buildNativeChapterBlocks(tree), 'chapter-2')).toBe('h');
   });
 });
+
+describe('which contents entry the reader is in', () => {
+  const { activeTocIndex } = require('../tocAnchors');
+  const blocks = [
+    { id: 'b0' },
+    { id: 'b1', anchors: ['one'] },
+    { id: 'b2' },
+    { id: 'b3', anchors: ['two'] },
+    { id: 'b4' },
+    { id: 'b5', attrs: { id: 'three' } },
+    { id: 'b6' },
+  ];
+  // One file holding three chapters, then a file of its own.
+  const toc = [
+    { title: 'One', href: 'book.xhtml#one', spineIndex: 1 },
+    { title: 'Two', href: 'book.xhtml#two', spineIndex: 1 },
+    { title: 'Three', href: 'book.xhtml#three', spineIndex: 1 },
+    { title: 'Four', href: 'four.xhtml', spineIndex: 3 },
+  ];
+
+  it('follows the reader through chapters that share a file', () => {
+    expect(activeTocIndex(toc, { spineIndex: 1, blocks, firstBlockId: 'b0' })).toBe(0);
+    expect(activeTocIndex(toc, { spineIndex: 1, blocks, firstBlockId: 'b2' })).toBe(0);
+    expect(activeTocIndex(toc, { spineIndex: 1, blocks, firstBlockId: 'b3' })).toBe(1);
+    expect(activeTocIndex(toc, { spineIndex: 1, blocks, firstBlockId: 'b6' })).toBe(2);
+  });
+
+  it('marks the first entry of the file when the spot in it is unknown', () => {
+    expect(activeTocIndex(toc, { spineIndex: 1 })).toBe(0);
+    expect(activeTocIndex(toc, { spineIndex: 1, blocks, firstBlockId: 'gone' })).toBe(0);
+  });
+
+  it('stays in the last chapter of a file through files with no entry', () => {
+    expect(activeTocIndex(toc, { spineIndex: 2 })).toBe(2);
+    expect(activeTocIndex(toc, { spineIndex: 3 })).toBe(3);
+    expect(activeTocIndex(toc, { spineIndex: 0 })).toBe(-1);
+  });
+
+  it('marks a section once the reader reaches it, the chapter before that', () => {
+    const nested = [
+      { title: 'Chapter', href: 'book.xhtml', spineIndex: 1 },
+      { title: 'Section', href: 'book.xhtml#two', spineIndex: 1 },
+    ];
+    expect(activeTocIndex(nested, { spineIndex: 1, blocks, firstBlockId: 'b1' })).toBe(0);
+    expect(activeTocIndex(nested, { spineIndex: 1, blocks, firstBlockId: 'b4' })).toBe(1);
+  });
+
+  it('ignores entries listed out of reading order', () => {
+    const outOfOrder = [
+      { title: 'One', href: 'one.xhtml', spineIndex: 2 },
+      { title: 'Two', href: 'two.xhtml', spineIndex: 4 },
+      { title: 'Cover', href: 'cover.xhtml', spineIndex: 0 },
+    ];
+    expect(activeTocIndex(outOfOrder, { spineIndex: 4 })).toBe(1);
+    expect(activeTocIndex(outOfOrder, { spineIndex: 3 })).toBe(0);
+  });
+});

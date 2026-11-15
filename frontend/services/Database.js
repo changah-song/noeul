@@ -1011,7 +1011,7 @@ export const updateReaderLevel = ({ ownerId, profileId, language = 'ko' } = {}, 
             state.variance,
             result.selfReportRank ?? null,
             state.eventCount,
-            serializeHypotheses(state.hypotheses, state.knownTapRate),
+            serializeHypotheses(state.hypotheses, state.knownTapRate, state.anchor),
             state.guessYes,
             state.guessTotal,
             state.lastEventAt,
@@ -1303,8 +1303,8 @@ export const refitReaderLevel = async ({ ownerId, profileId, language = 'ko', no
         lookupRate: fit.lookupRate,
         guessRate: fit.guessRate,
         details: {
-          // Where the fit itself landed; the level moves toward it a step at
-          // a time (levelEngine REFIT_MAX_STEP).
+          // Where the fit itself landed; the level moves toward it a step a
+          // day (levelEngine dailyMoveLimit).
           fittedTheta: Math.round(fit.theta * 1e4) / 1e4,
           knownTapRate: Math.round(fit.knownTapRate * 1e4) / 1e4,
           readingWeight: Math.round(fit.readingWeight * 10) / 10,
@@ -4590,6 +4590,14 @@ export const clearSqliteUserData = async (ownerId = GUEST_OWNER_ID) => {
         SQLITE_OWNER_SCOPED_TABLES.forEach((tableName) => {
           tx.executeSql(`DELETE FROM ${tableName} WHERE owner_id = ?`, [scopedOwnerId]);
         });
+        // A copy of what the account holds, not in the lists above (it never
+        // moves between owners). A missing table must not undo the rest.
+        tx.executeSql(
+          'DELETE FROM account_lookup_words WHERE owner_id = ?',
+          [scopedOwnerId],
+          () => {},
+          () => false
+        );
       },
       (error) => {
         console.error(`[Database] Error clearing SQLite user data for "${scopedOwnerId}":`, error);
@@ -6102,6 +6110,7 @@ export const initAllTables = async () => {
   await migrateVocabContextTable();
   await createInteractionEventsTable();
   await migrateInteractionEventsTable();
+  await createAccountLookupWordsTable();
   await createProfileAbilityTable();
   await migrateProfileAbilityTable();
   await createAbilityLogTable();
@@ -7813,6 +7822,121 @@ export const restoreLearnedWord = ({ ownerId, profileId, language = 'ko', id } =
       () => resolve()
     );
   });
+};
+
+// ─── Lookups made on other installs ───────────────────────────────────────────
+//
+// The words (dictionary forms) this account has looked up, as the account
+// knows them (interactionEventsCloudSync.pullAccountLookups), so "new words
+// met" survives a reinstall and adds up across phones. Kept apart from
+// interaction_events on purpose: the level is refit from that log, and lookups
+// brought in without the words read past around them would drag it down.
+
+export const createAccountLookupWordsTable = () => new Promise((resolve, reject) => {
+  db.transaction(tx => {
+    tx.executeSql(
+      `CREATE TABLE IF NOT EXISTS account_lookup_words (
+        owner_id   TEXT NOT NULL,
+        profile_id TEXT NOT NULL,
+        language   TEXT NOT NULL,
+        word       TEXT NOT NULL,
+        PRIMARY KEY (owner_id, profile_id, language, word)
+      )`,
+      [],
+      () => resolve(),
+      (_, error) => {
+        console.error('[Database] Error creating account_lookup_words table:', error);
+        reject(error);
+      }
+    );
+  });
+});
+
+/** Whether any of the account's lookups have been brought to this phone. */
+export const hasAccountLookupWords = async (ownerId) => {
+  const rows = await runSelect(
+    'SELECT 1 AS found FROM account_lookup_words WHERE owner_id = ? LIMIT 1',
+    [resolveOwnerId(ownerId)]
+  );
+  return rows.length > 0;
+};
+
+/**
+ * saveAccountLookupWords — remember looked-up words from the account.
+ * `rows` are account lookup events ({ profile_id, language, stem, word });
+ * a word already known is left alone.
+ */
+export const saveAccountLookupWords = (ownerId, rows = []) => {
+  const scopedOwnerId = resolveOwnerId(ownerId);
+  const entries = [];
+  (rows || []).forEach((row) => {
+    const word = String(row?.stem ?? '').trim() || String(row?.word ?? '').trim();
+    if (!word) return;
+    const language = normalizeBookLanguage(row?.language) || 'ko';
+    entries.push([scopedOwnerId, resolveProfileId(row?.profile_id, language), language, word]);
+  });
+  if (entries.length === 0) return Promise.resolve(0);
+  return new Promise((resolve, reject) => {
+    db.transaction(
+      tx => {
+        entries.forEach((params) => {
+          tx.executeSql(
+            'INSERT OR IGNORE INTO account_lookup_words (owner_id, profile_id, language, word) VALUES (?, ?, ?, ?)',
+            params
+          );
+        });
+      },
+      (error) => {
+        console.error('[Database] Error saving account lookup words:', error);
+        reject(error);
+      },
+      () => resolve(entries.length)
+    );
+  });
+};
+
+/**
+ * getWordStats — Profile's word counts, all read from what the reader actually
+ * did (nothing estimated):
+ *   met:      different words looked up while reading, here or on another
+ *             install of the same account (account_lookup_words), plus any
+ *             saved word with no lookup on record (saved before the event log)
+ *   learning: saved words still highlighted and in review
+ *   learned:  saved words that faded out (the Learned list)
+ * Lookups are counted by dictionary form, so 누워 and 눕다 are one word.
+ * learning and learned count saved entries, the same rows the Learn lists show.
+ */
+export const getWordStats = async ({ ownerId, profileId, language = 'ko' } = {}) => {
+  const normalizedLanguage = normalizeBookLanguage(language) || 'ko';
+  const scopeParams = [resolveOwnerId(ownerId), resolveProfileId(profileId, normalizedLanguage), normalizedLanguage];
+  const [metRows, savedRows] = await Promise.all([
+    runSelect(
+      `SELECT COUNT(*) AS n FROM (
+         SELECT COALESCE(NULLIF(TRIM(stem), ''), TRIM(word)) AS w FROM interaction_events
+         WHERE owner_id = ? AND profile_id = ? AND language = ? AND event_type = 'lookup' AND deleted_at IS NULL
+         UNION
+         SELECT word AS w FROM account_lookup_words
+         WHERE owner_id = ? AND profile_id = ? AND language = ?
+         UNION
+         SELECT TRIM(word) AS w FROM vocab
+         WHERE owner_id = ? AND profile_id = ? AND language = ? AND deleted_at IS NULL
+       ) WHERE w IS NOT NULL AND w != ''`,
+      [...scopeParams, ...scopeParams, ...scopeParams]
+    ),
+    runSelect(
+      `SELECT
+         SUM(CASE WHEN COALESCE(level, '') = '${LEARNED_LEVEL}' THEN 1 ELSE 0 END) AS learned,
+         SUM(CASE WHEN COALESCE(level, '') = '${LEARNED_LEVEL}' THEN 0 ELSE 1 END) AS learning
+       FROM vocab
+       WHERE owner_id = ? AND profile_id = ? AND language = ? AND deleted_at IS NULL`,
+      scopeParams
+    ),
+  ]);
+  return {
+    met: Number(metRows[0]?.n) || 0,
+    learning: Number(savedRows[0]?.learning) || 0,
+    learned: Number(savedRows[0]?.learned) || 0,
+  };
 };
 
 export const getSavedWords = (options = {}) => {

@@ -56,6 +56,7 @@ import { requestUserDataSync } from '../../services/userDataSyncQueue';
 import { deriveCandidateReason, pickExampleSentence } from '../../services/wordCandidates';
 import { saveWordCandidate } from '../../services/saveWordCandidate';
 import { selectExposureCredits } from '../../services/readerExposure';
+import { createReadingPaceTracker } from '../../services/readingPace';
 import { lookupLayerPlacement } from '../../services/readerSelection';
 import {
     DEFAULT_SONG_READER_SETTINGS,
@@ -189,6 +190,8 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     // Surfaces looked up since the last exposure unit closed; a lookup is its
     // own (negative) evidence so those words must not also be credited.
     const recentLookupsRef = useRef(new Set());
+    const readingPaceRef = useRef(null);
+    if (!readingPaceRef.current) readingPaceRef.current = createReadingPaceTracker();
     const savedSurfacesRef = useRef(new Set());
     const levelWeightsRef = useRef(new Map());
     const levelStemsRef = useRef(new Map());
@@ -511,7 +514,9 @@ const SongReader = ({ song, onClose, onSongUpdate, onSongDelete, onSavedTermsCha
     const handleNativeExposure = useCallback(({ terms, chars, dwellMs } = {}) => {
         const lookedUp = recentLookupsRef.current;
         recentLookupsRef.current = new Set();
-        if (!songUri) {
+        // Lyrics scrolled through, not read, don't count (services/readingPace.js).
+        const wasRead = readingPaceRef.current.observe({ language: songLanguage, chars, dwellMs });
+        if (!songUri || !wasRead) {
             return;
         }
         const skipped = selectExposureCredits({

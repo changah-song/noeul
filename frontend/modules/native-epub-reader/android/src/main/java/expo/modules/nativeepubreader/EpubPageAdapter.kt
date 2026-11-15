@@ -181,6 +181,14 @@ class EpubPageAdapter(
   // Forwarded to every page view; see EpubPageView.spokenRange.
   var spokenRange: FocusRange? = null
 
+  // Forwarded to every page view; see EpubPageView.resumeMark.
+  var resumeMark: ResumeMark? = null
+
+  fun updateResumeMark(recyclerView: RecyclerView?, mark: ResumeMark?) {
+    resumeMark = mark
+    forEachBoundView(recyclerView) { it.resumeMark = mark }
+  }
+
   fun updateListenSentences(recyclerView: RecyclerView?, sentences: List<ContextSentence>) {
     listenSentences = sentences
     forEachBoundView(recyclerView) { it.listenSentences = sentences }
@@ -218,6 +226,7 @@ class EpubPageAdapter(
     view.contextSentenceFade = contextSentenceFade
     view.listenSentences = listenSentences
     view.spokenRange = spokenRange
+    view.resumeMark = resumeMark
     view.bind(
       page = page,
       paddingH = paddingH,

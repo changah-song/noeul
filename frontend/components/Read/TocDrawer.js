@@ -1,9 +1,12 @@
-import React, { useMemo } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Modal, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { Feather } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from '../../hooks/useTranslation';
 import { localizeGeneratedSectionLabel } from '../../i18n/userFacing';
 import { formatNumber } from '../../services/interfaceLanguage';
+import { activeTocIndex } from '../../services/tocAnchors';
+import { tocAncestors, tocGroups } from '../../services/tocLinkedSections';
 import { colors as defaultColors, elevation, fontFamilies, layout, useTheme } from '../../theme';
 
 const stripHref = (href) => {
@@ -27,6 +30,12 @@ const flattenToc = (items, depth = 0) => {
         ];
     });
 };
+
+const MAX_DEPTH = 2;
+const DROPDOWN_WIDTH = 300;
+// A list longer than this folds: an entry's sections stay shut until it is
+// opened (a Bible: 66 books, then the chapters of the one being read).
+const FOLD_AT = 40;
 
 const clampProgress = (value) => {
     const progress = Number(value);
@@ -67,6 +76,8 @@ const TocDrawer = ({
     toc,
     currentSectionHref,
     currentSpineIndex,
+    currentBlockId = null,
+    chapterBlocks = null,
     totalSpineItems,
     bookProgress = 0,
     isDarkMode,
@@ -76,6 +87,7 @@ const TocDrawer = ({
     const { t } = useTranslation();
     const { colors } = useTheme();
     const insets = useSafeAreaInsets();
+    const { width: windowWidth } = useWindowDimensions();
     const flatItems = useMemo(() => flattenToc(toc), [toc]);
     const minDepth = useMemo(() => {
         if (!flatItems.length) {
@@ -83,23 +95,35 @@ const TocDrawer = ({
         }
         return Math.min(...flatItems.map((item) => item?.depth ?? 0));
     }, [flatItems]);
-    const activeIndex = useMemo(() => {
-        if (!Number.isInteger(currentSpineIndex)) {
-            return -1;
-        }
-
-        return flatItems.reduce((activeItemIndex, item, index) => {
-            if (
-                !item?.disabled
-                && Number.isInteger(item?.spineIndex)
-                && item.spineIndex <= currentSpineIndex
-            ) {
-                return index;
-            }
-
-            return activeItemIndex;
-        }, -1);
-    }, [currentSpineIndex, flatItems]);
+    const activeIndex = useMemo(() => activeTocIndex(flatItems, {
+        spineIndex: currentSpineIndex,
+        blocks: chapterBlocks,
+        firstBlockId: currentBlockId,
+    }), [currentSpineIndex, currentBlockId, chapterBlocks, flatItems]);
+    const { parentOf, hasChildren } = useMemo(() => tocGroups(flatItems), [flatItems]);
+    const folds = flatItems.length > FOLD_AT && hasChildren.some(Boolean);
+    const [openGroups, setOpenGroups] = useState(() => new Set());
+    const listRef = useRef(null);
+    const scrolledToActiveRef = useRef(false);
+    const activeIndexRef = useRef(activeIndex);
+    activeIndexRef.current = activeIndex;
+    // Each time the list opens: the branch being read is open, the rest shut.
+    useEffect(() => {
+        if (!visible) return;
+        scrolledToActiveRef.current = false;
+        const active = activeIndexRef.current;
+        const next = new Set(tocAncestors(parentOf, active));
+        if (active >= 0 && hasChildren[active]) next.add(active);
+        setOpenGroups(next);
+    }, [visible, parentOf, hasChildren]);
+    const toggleGroup = useCallback((index) => {
+        setOpenGroups((current) => {
+            const next = new Set(current);
+            if (next.has(index)) next.delete(index);
+            else next.add(index);
+            return next;
+        });
+    }, []);
     const activeHref = stripHref(currentSectionHref);
     const bookProgressPercent = Math.round(clampProgress(bookProgress) * 100);
     const bookProgressFillWidth = `${bookProgressPercent}%`;
@@ -150,6 +174,10 @@ const TocDrawer = ({
                         styles.dropdown,
                         {
                             top: insets.top + layout.readerHeaderHeight + 2,
+                            // In points, from the window: a percentage of the
+                            // modal's own width came out as zero on a second
+                            // opening, leaving the list invisible.
+                            width: Math.min(DROPDOWN_WIDTH, Math.max(0, windowWidth - 24)),
                             backgroundColor: palette.sheet,
                             borderColor: palette.border,
                         },
@@ -181,19 +209,29 @@ const TocDrawer = ({
                     </View>
 
                     <ScrollView
+                        ref={listRef}
                         contentContainerStyle={styles.listContent}
                         showsVerticalScrollIndicator={false}
                     >
                         {flatItems.map((item, index) => {
+                            if (folds && tocAncestors(parentOf, index).some((parent) => !openGroups.has(parent))) {
+                                return null;
+                            }
+                            const isGroup = folds && hasChildren[index];
+                            const isOpen = isGroup && openGroups.has(index);
                             const isActive = activeIndex >= 0
                                 ? activeIndex === index
                                 : Boolean(activeHref && stripHref(item?.href) === activeHref);
-                            const normalizedDepth = Math.min(1, Math.max(0, (item?.depth ?? 0) - minDepth));
+                            // Sections inside a chapter step in under it (three
+                            // levels at most, so deep books still fit the list).
+                            const normalizedDepth = Math.min(MAX_DEPTH, Math.max(0, (item?.depth ?? 0) - minDepth));
+                            const isSubsection = normalizedDepth > 0;
                             const isDisabled = item?.disabled || !Number.isInteger(item?.spineIndex);
                             const title = localizeGeneratedSectionLabel(item?.title || item?.label, t) || t('read.untitledSection');
+                            // An entry that folds shows its arrow where the count would be.
                             const positionLabel = isActive
                                 ? t('read.youAreHere')
-                                : fractionLabelForItem(item, totalSpineItems, t);
+                                : (isGroup ? '' : fractionLabelForItem(item, totalSpineItems, t));
                             const chapterNumber = chapterNumberForItem(item);
                             const isRead = (
                                 !isActive
@@ -215,24 +253,44 @@ const TocDrawer = ({
                             return (
                                 <Pressable
                                     key={`${item?.id || item?.href || item?.label || 'toc'}-${index}`}
-                                    disabled={isDisabled}
+                                    disabled={isDisabled && !isGroup}
                                     accessibilityRole="button"
-                                    accessibilityState={{ selected: isActive, disabled: isDisabled }}
+                                    accessibilityState={{
+                                        selected: isActive,
+                                        disabled: isDisabled && !isGroup,
+                                        ...(isGroup ? { expanded: isOpen } : null),
+                                    }}
+                                    // The row being read: the list opens scrolled to it.
+                                    onLayout={isActive ? (event) => {
+                                        if (scrolledToActiveRef.current) return;
+                                        scrolledToActiveRef.current = true;
+                                        listRef.current?.scrollTo({
+                                            y: Math.max(0, event.nativeEvent.layout.y - 88),
+                                            animated: false,
+                                        });
+                                    } : undefined}
                                     onPress={() => {
+                                        // A shut entry opens to show what is in
+                                        // it; once open, a tap goes to it.
+                                        if (isGroup && (!isOpen || isDisabled)) {
+                                            toggleGroup(index);
+                                            return;
+                                        }
                                         if (isDisabled) return;
                                         onSelect?.(item);
                                     }}
                                     style={({ pressed }) => ([
                                         styles.row,
+                                        isSubsection && styles.sectionRow,
                                         {
-                                            paddingLeft: 16 + (normalizedDepth * 12),
+                                            paddingLeft: 16 + (normalizedDepth * 18),
                                             backgroundColor: isActive
                                                 ? palette.activeBg
                                                 : (pressed && !isDisabled ? palette.pressedBg : colors.transparent),
                                         },
                                     ])}
                                 >
-                                    {chapterNumber ? (
+                                    {chapterNumber && !isSubsection ? (
                                         <Text style={[styles.chapterNumber, { color: numberColor }]}>
                                             {chapterNumber}
                                         </Text>
@@ -240,6 +298,7 @@ const TocDrawer = ({
                                     <Text
                                         style={[
                                             styles.chapterTitle,
+                                            isSubsection && styles.sectionTitle,
                                             isActive && styles.chapterTitleActive,
                                             { color: titleColor },
                                         ]}
@@ -251,6 +310,22 @@ const TocDrawer = ({
                                         <Text style={[styles.positionText, { color: pageColor }]}>
                                             {positionLabel}
                                         </Text>
+                                    ) : null}
+                                    {isGroup ? (
+                                        <Pressable
+                                            onPress={() => toggleGroup(index)}
+                                            hitSlop={12}
+                                            accessibilityRole="button"
+                                            accessibilityLabel={title}
+                                            accessibilityState={{ expanded: isOpen }}
+                                            style={styles.groupArrow}
+                                        >
+                                            <Feather
+                                                name={isOpen ? 'chevron-down' : 'chevron-right'}
+                                                size={16}
+                                                color={pageColor}
+                                            />
+                                        </Pressable>
                                     ) : null}
                                 </Pressable>
                             );
@@ -273,8 +348,7 @@ const styles = StyleSheet.create({
     },
     dropdown: {
         position: 'absolute',
-        right: 12,
-        width: 272,
+        left: 12,
         maxHeight: 520,
         borderRadius: 16,
         borderWidth: StyleSheet.hairlineWidth,
@@ -357,6 +431,23 @@ const styles = StyleSheet.create({
         fontSize: 15,
         lineHeight: 21,
         includeFontPadding: false,
+    },
+    // A section inside a chapter: a shorter row in smaller type.
+    sectionRow: {
+        minHeight: 36,
+        paddingVertical: 5,
+    },
+    sectionTitle: {
+        fontSize: 14,
+        lineHeight: 19,
+    },
+    groupArrow: {
+        flexShrink: 0,
+        width: 20,
+        height: 28,
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginRight: -4,
     },
     chapterTitleActive: {
         fontFamily: fontFamilies.krSerifMedium,

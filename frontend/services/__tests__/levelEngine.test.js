@@ -9,7 +9,8 @@ jest.mock('../flashcardNomination', () => ({ remainingExposureFactor: () => 0 })
 
 const {
     LOOKUP_GIVEN_KNOWN,
-    REFIT_MAX_STEP,
+    DAILY_MOVE_SETTLED,
+    dailyMoveLimit,
     applyRefit,
     applySignal,
     buildWordKnowledge,
@@ -147,11 +148,29 @@ describe('reader level', () => {
 describe('refit', () => {
     const fit = (theta) => ({ theta, variance: 0.4, lookupRate: 0.3, knownTapRate: 0.02 });
 
-    it('moves an established level at most a step toward the fit', () => {
-        const settled = seedState(fresh(), { theta: 2.5, variance: 0.3 });
-        expect(applyRefit(settled, fit(3.2)).theta).toBeCloseTo(2.5 + REFIT_MAX_STEP);
-        expect(applyRefit(settled, fit(1.9)).theta).toBeCloseTo(2.5 - REFIT_MAX_STEP);
-        expect(applyRefit(settled, fit(2.55)).theta).toBeCloseTo(2.55);
+const established = (theta = 2.5) => ({ ...seedState(fresh(), { theta, variance: 0.3, at: '2026-11-01T08:00:00Z' }), eventCount: 5000, anchor: null });
+
+    it('moves an established level at most the day\'s allowance toward the fit', () => {
+        const at = '2026-11-02T08:00:00Z';
+        expect(applyRefit(established(), fit(3.2), { at }).theta).toBeCloseTo(2.5 + DAILY_MOVE_SETTLED);
+        expect(applyRefit(established(), fit(1.9), { at }).theta).toBeCloseTo(2.5 - DAILY_MOVE_SETTLED);
+        expect(applyRefit(established(), fit(2.52), { at }).theta).toBeCloseTo(2.52);
+    });
+
+    it('does not move further with more refits the same day, and does the next day', () => {
+        let state = established();
+        for (let hour = 8; hour < 20; hour += 1) {
+            state = applyRefit(state, fit(3.2), { at: `2026-11-02T${String(hour).padStart(2, '0')}:00:00Z` });
+        }
+        expect(state.theta).toBeCloseTo(2.5 + DAILY_MOVE_SETTLED);
+        state = applyRefit(state, fit(3.2), { at: '2026-11-03T08:00:00Z' });
+        expect(state.theta).toBeCloseTo(2.5 + 2 * DAILY_MOVE_SETTLED);
+    });
+
+    it('lets a new reader move freely and an established one slowly', () => {
+        expect(dailyMoveLimit(0)).toBe(1);
+        expect(dailyMoveLimit(300)).toBeCloseTo(0.5);
+        expect(dailyMoveLimit(5000)).toBe(DAILY_MOVE_SETTLED);
     });
 
     it('takes the fit outright for a reader it knows nothing about yet', () => {
@@ -289,5 +308,49 @@ describe('word knowledge', () => {
         const saved = buildWordKnowledge({ language: 'ko', reader, difficulties, saved: new Set(['감자']), now });
         const plain = buildWordKnowledge({ language: 'ko', reader, difficulties, now });
         expect(saved('감자').p).toBeLessThan(plain('감자').p);
+    });
+});
+
+describe('a stable level', () => {
+    const established = () => ({ ...seedState(fresh(), { theta: 1, variance: 0.4, at: '2026-11-01T08:00:00Z' }), eventCount: 5000, anchor: null });
+
+    it('holds a day of one-sided reading to the day\'s allowance', () => {
+        let state = established();
+        for (let i = 0; i < 400; i += 1) {
+            state = applySignal(state, { type: 'pass', difficulty: 2.5, at: '2026-11-02T10:00:00Z' }).state;
+        }
+        expect(state.theta).toBeCloseTo(1 + DAILY_MOVE_SETTLED, 5);
+        for (let i = 0; i < 400; i += 1) {
+            state = applySignal(state, { type: 'lookup', difficulty: -1, at: '2026-11-02T15:00:00Z' }).state;
+        }
+        expect(state.theta).toBeCloseTo(1 - DAILY_MOVE_SETTLED, 5);
+    });
+
+    it('keeps the day\'s starting point through a save and load', () => {
+        let state = established();
+        state = applySignal(state, { type: 'pass', difficulty: 2.5, at: '2026-11-02T10:00:00Z' }).state;
+        const { serializeHypotheses } = require('../levelEngine');
+        const loaded = readerState({
+            theta: state.theta,
+            theta_var: state.variance,
+            event_count: state.eventCount,
+            lookup_model: serializeHypotheses(state.hypotheses, state.knownTapRate, state.anchor),
+        });
+        expect(loaded.anchor).toEqual({ theta: 1, day: '2026-11-02', limit: DAILY_MOVE_SETTLED });
+    });
+
+    it('lets a word check move the level outright, and reading carry on from there', () => {
+        let state = widenState(established(), 2);
+        for (let i = 0; i < 20; i += 1) {
+            state = applySignal(state, { type: 'check', difficulty: 3, outcome: 1, at: '2026-11-02T10:00:00Z' }).state;
+        }
+        const checked = state.theta;
+        expect(checked).toBeGreaterThan(2);
+        for (let i = 0; i < 200; i += 1) {
+            state = applySignal(state, { type: 'lookup', difficulty: 0, at: '2026-11-02T11:00:00Z' }).state;
+        }
+        // (To 0.01: at the top of the scale the habits are clamped one by one.)
+        expect(state.theta).toBeGreaterThanOrEqual(checked - DAILY_MOVE_SETTLED - 0.01);
+        expect(state.theta).toBeLessThan(checked);
     });
 });

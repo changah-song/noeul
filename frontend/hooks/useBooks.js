@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { discardPersistedCopy, persistPickedBookFile } from '../services/bookFiles';
 import { discardOpenedCopy, stageOpenedBookFile } from '../services/openedBookFiles';
 import { Alert, Platform } from 'react-native';
@@ -8,6 +8,7 @@ import { isBookPreprocessed } from '../services/Database';
 import { extractBookCoverColors } from '../services/bookCoverColors';
 import { uploadUserBook } from '../services/bookCloudSync';
 import { readEpubMetadata } from '../services/epubMetadata';
+import { subscribeBookLoadProgress } from '../services/bookLoadProgress';
 import { isCurrentSyncGeneration } from '../services/localOwnerCoordinator';
 import { readPdfMetadata, renderPdfCover } from '../services/pdfMetadata';
 import { SUPPORTED_BOOK_LANGUAGES, normalizeBookLanguage } from '../constants/languages';
@@ -34,6 +35,26 @@ const useBooks = ({
     setTargetLanguage = () => {},
 }) => {
     const [isImporting, setIsImporting] = useState(false);
+    // The step an import is on ({ step, percent }), for Home to show.
+    const [importProgress, setImportProgress] = useState(null);
+    const isImportingRef = useRef(false);
+    isImportingRef.current = isImporting;
+
+    useEffect(() => subscribeBookLoadProgress(({ step, fraction }) => {
+        if (!isImportingRef.current || !['file', 'text', 'cover'].includes(step)) {
+            return;
+        }
+        const percent = fraction === null ? null : Math.round(fraction * 100);
+        setImportProgress((current) => (
+            current?.step === step && current?.percent === percent ? current : { step, percent }
+        ));
+    }), []);
+
+    useEffect(() => {
+        if (!isImporting) {
+            setImportProgress(null);
+        }
+    }, [isImporting]);
     const [openingBookUri, setOpeningBookUri] = useState(null);
     const [pdfCoverPrompt, setPdfCoverPrompt] = useState(null);
     const [pdfCoverPageInput, setPdfCoverPageInput] = useState('1');
@@ -204,13 +225,14 @@ const useBooks = ({
         // The Documents copy of the file, until a new book owns it.
         let pendingCopy = null;
         try {
+            // Shown from the start: copying a large file takes a while too.
+            setIsImporting(true);
             // Keep the book in Documents: the picker's copy sits in the
             // cache directory, which the system may clear. (An opened file
             // was copied there already.)
             const uri = opened ? pickedAsset.uri : await persistPickedBookFile(pickedAsset.uri);
             pendingCopy = { copy: uri, picked: pickedAsset.uri, opened };
             const format = pickedAsset.format || 'epub';
-            setIsImporting(true);
 
             const fallbackName = pickedAsset?.name || uri.split('/').pop() || '';
             const metadata = format === 'pdf'
@@ -437,6 +459,7 @@ const useBooks = ({
 
     return {
         isImporting,
+        importProgress,
         openingBookUri,
         pdfCoverPrompt,
         pdfCoverPageInput,

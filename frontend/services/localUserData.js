@@ -11,6 +11,7 @@ import {
   makeOwnerDataDirectory,
   makeScopedStorageKey,
 } from './localDataScope';
+import { mergeReadingDays } from './readingGoal';
 
 const USER_STORAGE_KEYS = [
   'books',
@@ -19,8 +20,12 @@ const USER_STORAGE_KEYS = [
   'manual-songs',
   'manual-songs-en',
   'writing-entries-v1',
+  // No longer written (services/dailyProgress.js is gone; the reading goal's
+  // day log replaced it). Still listed so what older versions stored is moved
+  // and cleared with the rest.
   'daily-progress',
   'reading-days',
+  'reading-days-backup',
 ];
 
 const ARRAY_STORAGE_KEYS = new Set([
@@ -32,7 +37,13 @@ const ARRAY_STORAGE_KEYS = new Set([
 
 const OBJECT_STORAGE_KEYS = new Set([
   'daily-progress',
+]);
+
+// The reading goal's day log (and its backup): a day both owners have keeps
+// the longer reading time and the goal if either reached it.
+const READING_DAY_STORAGE_KEYS = new Set([
   'reading-days',
+  'reading-days-backup',
 ]);
 
 const TARGET_PREFERRED_STORAGE_KEYS = new Set([
@@ -162,6 +173,13 @@ const getMergedStorageValue = (key, sourceRaw, targetRaw) => {
     return mergeObjectStorage(key, sourceRaw, targetRaw);
   }
 
+  if (READING_DAY_STORAGE_KEYS.has(key)) {
+    return JSON.stringify(mergeReadingDays(
+      parseJsonStore(key, sourceRaw, {}),
+      parseJsonStore(key, targetRaw, {})
+    ));
+  }
+
   if (TARGET_PREFERRED_STORAGE_KEYS.has(key)) {
     return null;
   }
@@ -201,7 +219,6 @@ export const readOwnerStorageState = async (ownerId = GUEST_OWNER_ID) => {
     songsRaw: await AsyncStorage.getItem(makeScopedStorageKey(scopedOwnerId, 'manual-songs')),
     englishSongsRaw: await AsyncStorage.getItem(makeScopedStorageKey(scopedOwnerId, 'manual-songs-en')),
     writingRaw: await AsyncStorage.getItem(makeScopedStorageKey(scopedOwnerId, 'writing-entries-v1')),
-    dailyProgressRaw: await AsyncStorage.getItem(makeScopedStorageKey(scopedOwnerId, 'daily-progress')),
   };
 };
 
@@ -268,18 +285,24 @@ export const reassignLocalUserData = async (fromOwnerId = GUEST_OWNER_ID, toOwne
     await AsyncStorage.multiRemove(sourceKeysToRemove);
   }
 
-  await reassignLevelPicks(sourceOwnerId, targetOwnerId);
+  for (const name of PER_PROFILE_KEY_NAMES) {
+    await reassignPerProfileKeys(name, sourceOwnerId, targetOwnerId);
+  }
 };
 
-// The level picked per language (VocabLevelModal's `vocabLevelPick:<owner>:...`
-// keys) moves too, unless the target already picked one there.
-const reassignLevelPicks = async (sourceOwnerId, targetOwnerId) => {
+// Small per-language records kept as `<name>:<owner>:<profile>:<language>`:
+// the level picked (VocabLevelModal), the word goals reached
+// (levelMilestones.js) and when the word check was last taken
+// (wordCheckSchedule.js). They move too, unless the target already has one.
+const PER_PROFILE_KEY_NAMES = ['vocabLevelPick', 'levelMilestones', 'wordCheckAt'];
+
+const reassignPerProfileKeys = async (name, sourceOwnerId, targetOwnerId) => {
   try {
-    const prefix = `vocabLevelPick:${sourceOwnerId}:`;
+    const prefix = `${name}:${sourceOwnerId}:`;
     const keys = (await AsyncStorage.getAllKeys()).filter((key) => key.startsWith(prefix));
     if (keys.length === 0) return;
     const pairs = await AsyncStorage.multiGet(keys);
-    const targetKeys = keys.map((key) => `vocabLevelPick:${targetOwnerId}:${key.slice(prefix.length)}`);
+    const targetKeys = keys.map((key) => `${name}:${targetOwnerId}:${key.slice(prefix.length)}`);
     const existing = new Map(await AsyncStorage.multiGet(targetKeys));
     const writes = pairs
       .map(([, value], index) => [targetKeys[index], value])
@@ -287,6 +310,6 @@ const reassignLevelPicks = async (sourceOwnerId, targetOwnerId) => {
     if (writes.length > 0) await AsyncStorage.multiSet(writes);
     await AsyncStorage.multiRemove(keys);
   } catch (error) {
-    console.warn('[localUserData] Could not move level picks:', error?.message ?? error);
+    console.warn(`[localUserData] Could not move ${name}:`, error?.message ?? error);
   }
 };

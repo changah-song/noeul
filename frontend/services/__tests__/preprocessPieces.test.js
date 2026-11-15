@@ -51,6 +51,39 @@ describe('splitChapterForPreprocess', () => {
         expect(blockPieces.get('img')).toEqual([0, 0]);
     });
 
+    it('cuts one paragraph longer than a piece at sentence ends', () => {
+        const sentence = `${words(99)} end.`;
+        const sentences = Math.ceil((PREPROCESS_PIECE_WORDS * 2.5) / 100);
+        const text = Array.from({ length: sentences }, () => sentence).join(' ');
+        const { pieces, blockPieces } = splitChapterForPreprocess([block('b1', text)]);
+        expect(pieces).toHaveLength(3);
+        pieces.forEach((piece) => {
+            expect(piece.split(/\s+/).length).toBeLessThanOrEqual(PREPROCESS_PIECE_WORDS);
+            expect(piece.endsWith('end.')).toBe(true);
+        });
+        expect(pieces.join(' ')).toBe(text);
+        expect(blockPieces.get('b1')).toEqual([0, 2]);
+    });
+
+    it('cuts a long paragraph with no sentence ends between words', () => {
+        const { pieces } = splitChapterForPreprocess([block('b1', words(PREPROCESS_PIECE_WORDS * 2 + 10))]);
+        expect(pieces).toHaveLength(3);
+        expect(pieces[0].split(' ')).toHaveLength(PREPROCESS_PIECE_WORDS);
+    });
+
+    it('sizes Chinese pieces by characters, not by runs between punctuation', () => {
+        // 40 characters a paragraph: about 27 words each.
+        const paragraph = `${'天地玄黄宇宙洪荒日月盈昃辰宿列张寒来暑往'.repeat(2)}。`;
+        const paragraphs = 400;
+        const { pieces } = splitChapterForPreprocess(
+            Array.from({ length: paragraphs }, (_, index) => block(`b${index}`, paragraph))
+        );
+        expect(pieces.length).toBeGreaterThanOrEqual(4);
+        pieces.forEach((piece) => {
+            expect(piece.replace(/[^\u4E00-\u9FFF]/g, '').length).toBeLessThanOrEqual(PREPROCESS_PIECE_WORDS * 1.5 + 1);
+        });
+    });
+
     it('gives an empty chapter no pieces', () => {
         expect(splitChapterForPreprocess([]).pieces).toEqual([]);
         expect(splitChapterForPreprocess(null).pieces).toEqual([]);

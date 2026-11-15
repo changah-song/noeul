@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
-import { Animated, AppState, BackHandler, Easing, PanResponder, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, findNodeHandle, ToastAndroid } from 'react-native';
+import { Animated, AppState, BackHandler, Easing, Linking, PanResponder, View, StyleSheet, Text, TouchableOpacity, ActivityIndicator, findNodeHandle, ToastAndroid } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Feather, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
@@ -15,7 +15,7 @@ import {
     ReaderCheckpointButton,
     ReaderHeaderBar,
     ReaderMenuButton,
-    ReaderProgressButton,
+    ReaderTitleButton,
 } from '../components/Read/ReaderHeaderBar';
 import { navigationButtonsInset } from '../hooks/useNavigationButtonsInset';
 import usePresence from '../hooks/usePresence';
@@ -111,8 +111,8 @@ import {
 } from '../services/preprocessPieces';
 import { withNormalizedSurfaceIndex } from '../services/dictionaryLookup';
 import { updateUserBookProgress } from '../services/bookCloudSync';
-import { addReadingMillis } from '../services/dailyProgress';
 import { countReadableTextWords, readEpubPackageXml } from '../services/epubMetadata';
+import { subscribeBookLoadProgress } from '../services/bookLoadProgress';
 import { readPdfPackageXml } from '../services/pdfMetadata';
 import {
     isPublicDomainBookUri,
@@ -134,10 +134,12 @@ import useLookupDetail, { LOOKUP_ACTIONS } from '../hooks/useLookupDetail';
 import { scheduleLevelRefit } from '../services/levelRefitScheduler';
 import { bookIndexLanguages, tagPreprocessCacheEntries } from '../services/preprocessCacheEntries';
 import { selectExposureCredits } from '../services/readerExposure';
+import { createReadingPaceTracker } from '../services/readingPace';
 import useSavedWordFades from '../hooks/useSavedWordFades';
 import { ONBOARDING_FLOW_SEEN_KEY } from './Onboarding';
 import { getSyncStatus, markSyncPending, subscribeSyncStatus } from '../services/syncStatus';
-import { blockIdForAnchor, tocAnchorFromHref } from '../services/tocAnchors';
+import { activeTocIndex, blockIdForAnchor, tocAnchorFromHref } from '../services/tocAnchors';
+import { blankNoteMarkers, linkAtOffset, resolveLinkTarget } from '../services/readerLinks';
 import {
     anchorFraction,
     chapterMarks,
@@ -411,6 +413,14 @@ const finalizeBookLevelAccumulator = (accumulator) => {
     };
 };
 
+
+// The reader's exact spot (a block and a character offset into it), as the
+// fields a saved position carries. Empty when the native side sent none.
+const readingAnchorFields = (anchorBlockId, anchorOffset) => (
+    typeof anchorBlockId === 'string' && anchorBlockId.length > 0
+        ? { anchorBlockId, anchorOffset: Number.isInteger(anchorOffset) ? anchorOffset : 0 }
+        : {}
+);
 
 const clampProgress = (value) => {
     const progress = Number(value);
@@ -716,6 +726,19 @@ const Read = ({
     const [toc, setToc] = useState([]);
     const [showToc, setShowToc] = useState(false);
     const [bookLoadState, setBookLoadState] = useState('idle');
+    // The step the open book's load is on, named under the opening spinner.
+    const [bookLoadStep, setBookLoadStep] = useState(null);
+    useEffect(() => {
+        setBookLoadStep(null);
+        if (!currentBook) {
+            return undefined;
+        }
+        return subscribeBookLoadProgress(({ uri, step }) => {
+            if (uri === currentBook && ['file', 'contents', 'chapter'].includes(step)) {
+                setBookLoadStep(step);
+            }
+        });
+    }, [currentBook]);
     const [bookLoadError, setBookLoadError] = useState('');
     const [readerRetryKey, setReaderRetryKey] = useState(0);
     const [nativeReaderPackage, setNativeReaderPackage] = useState(null);
@@ -868,6 +891,9 @@ const Read = ({
     // its own (stronger, negative) evidence, so the same word must not also be
     // credited as a skip. Cleared each time native closes an exposure unit.
     const recentLookupsRef = useRef(new Set());
+    // Whether the text going past is being read or skimmed (services/readingPace.js).
+    const readingPaceRef = useRef(null);
+    if (!readingPaceRef.current) readingPaceRef.current = createReadingPaceTracker();
     // Gradient weights of the current underline snapshot, keyed by surface. Used
     // to rank exposure candidates by how uncertain the model is about them.
     const levelUnderlineWeightsRef = useRef(new Map());
@@ -1156,9 +1182,6 @@ const Read = ({
     useEffect(() => {
         const elapsed = Date.now() - readingSessionStartedAtRef.current;
         const sessionOwnerId = readingSessionOwnerIdRef.current || activeOwnerId;
-        if (elapsed >= 5000) {
-            addReadingMillis(sessionOwnerId, elapsed);
-        }
         if (elapsed >= REFIT_SESSION_MS && readingSessionLanguageRef.current) {
             scheduleLevelRefit({ ownerId: sessionOwnerId, language: readingSessionLanguageRef.current, afterSession: true });
         }
@@ -1220,9 +1243,6 @@ const Read = ({
             clearTimeout(timer);
             const elapsed = Date.now() - readingSessionStartedAtRef.current;
             const sessionOwnerId = readingSessionOwnerIdRef.current || activeOwnerId;
-            if (elapsed >= 5000) {
-                addReadingMillis(sessionOwnerId, elapsed);
-            }
             if (elapsed >= REFIT_SESSION_MS && readingSessionLanguageRef.current) {
                 scheduleLevelRefit({ ownerId: sessionOwnerId, language: readingSessionLanguageRef.current, afterSession: true });
             }
@@ -1328,9 +1348,24 @@ const Read = ({
     // Listen mode's "wait while a panel is up" (see holdListeningForPanel).
     const holdListeningForPanelRef = useRef(null);
 
+    // Follows the book link under a word tap (see followBookLink).
+    const followLinkRef = useRef(null);
+    const [saveToggleToken, setSaveToggleToken] = useState(0);
     const handleNativeWordSelected = useCallback((event = {}) => {
         const text = typeof event.text === 'string' ? event.text.trim() : '';
         if (!text) {
+            return;
+        }
+
+        // A second tap on the word whose panel is open saves it (or takes the
+        // save back): the panel's own entry does the saving.
+        if (event.again) {
+            setSaveToggleToken((value) => value + 1);
+            return;
+        }
+
+        // A tap on a link in the book follows it; a linked word is not looked up.
+        if (followLinkRef.current?.(event)) {
             return;
         }
 
@@ -1896,23 +1931,25 @@ const Read = ({
     const activeSpineIndex = Number.isInteger(currentSpineIndex)
         ? currentSpineIndex
         : spineIndexForReaderPackage(nativeReaderPackage);
+    // The block at the top of the page, when it belongs to the chapter file on
+    // screen: it tells apart contents entries that share that file.
+    const activeFirstBlockId = (
+        nativeRestorePosition?.spineIndex === activeSpineIndex
+        && spineIndexForReaderPackage(nativeReaderPackage) === activeSpineIndex
+    )
+        ? (nativeRestorePosition?.firstBlockId || null)
+        : null;
     const activeChapterTitle = useMemo(() => {
         const fallbackTitle = Number.isInteger(activeSpineIndex)
             ? t('read.chapterNumber', { number: formatNumber(activeSpineIndex + 1) })
             : t('read.defaultTitle');
 
         if (Number.isInteger(activeSpineIndex) && flattenedToc.length > 0) {
-            const tocItem = flattenedToc.reduce((activeItem, item) => {
-                if (
-                    item?.disabled
-                    || !Number.isInteger(item?.spineIndex)
-                    || item.spineIndex > activeSpineIndex
-                ) {
-                    return activeItem;
-                }
-
-                return item;
-            }, null);
+            const tocItem = flattenedToc[activeTocIndex(flattenedToc, {
+                spineIndex: activeSpineIndex,
+                blocks: nativeChapterBlocks,
+                firstBlockId: activeFirstBlockId,
+            })];
             const tocTitle = titleForTocItem(tocItem);
             if (tocTitle) {
                 return localizeGeneratedSectionLabel(tocTitle, t);
@@ -1920,7 +1957,7 @@ const Read = ({
         }
 
         return localizeGeneratedSectionLabel(titleForSpineItem(nativeReaderPackage?.loadedSpineItem), t) || fallbackTitle;
-    }, [activeSpineIndex, flattenedToc, nativeReaderPackage?.loadedSpineItem, t]);
+    }, [activeSpineIndex, activeFirstBlockId, nativeChapterBlocks, flattenedToc, nativeReaderPackage?.loadedSpineItem, t]);
     const headerBookTitle = (
         stripStoredPlaceholder(activeBook?.title)
         || stripStoredPlaceholder(nativeReaderPackage?.metadata?.title)
@@ -2272,6 +2309,67 @@ const Read = ({
             }
         }
     }, [activeSpineIndex, flushPendingFocusPageChange, updateNativeRestorePosition]);
+
+    // A word tap that landed on a link in the book's text (a footnote number,
+    // a contents entry, a web address): go where it points. True when the tap
+    // was a link, so the word under it is not looked up. `tapOffset` is the
+    // character under the finger; the word's start stands in on a reader
+    // build that doesn't send it.
+    followLinkRef.current = (event = {}) => {
+        const readerPackage = nativeReaderPackageRef.current;
+        const loadedSpineIndex = currentSpineIndexRef.current;
+        const spineIndex = Number.isInteger(event.spineIndex) ? event.spineIndex : loadedSpineIndex;
+        if (typeof event.blockId !== 'string') {
+            return false;
+        }
+        // The chapter on screen, or a neighbour scrolled into view.
+        const blocks = chapterBlocksForReaderPackage(
+            spineIndex === loadedSpineIndex ? readerPackage : parsedChapterCacheRef.current.get(spineIndex)
+        );
+        const block = blocks.find((candidate) => candidate?.id === event.blockId);
+        const offset = Number.isFinite(event.tapOffset) ? event.tapOffset : event.sourceStartOffset;
+        const link = block ? linkAtOffset(block, offset) : null;
+        if (!link) {
+            return false;
+        }
+
+        // The tap drew a word selection on the page; nothing opens for it.
+        setClearSelectionToken((value) => value + 1);
+        const target = resolveLinkTarget(link.href, { spine: readerPackage?.spine, spineIndex });
+        if (!target) {
+            return true;
+        }
+        tapSelect();
+        if (target.kind === 'external') {
+            Linking.openURL(target.url).catch((error) => {
+                console.warn('[Read] Failed to open link:', error?.message ?? error);
+            });
+            return true;
+        }
+
+        const jump = (firstBlockId) => handleSelectBookmark({
+            spineIndex: target.spineIndex,
+            pageIndex: firstBlockId ? null : 0,
+            pagesInChapter: null,
+            href: target.path,
+            firstBlockId,
+        });
+        if (target.spineIndex === spineIndex) {
+            // Within the chapter: only when the place it names can be found.
+            const firstBlockId = blockIdForAnchor(blocks, target.anchor);
+            if (firstBlockId) jump(firstBlockId);
+            return true;
+        }
+        if (!target.anchor) {
+            jump(null);
+            return true;
+        }
+        loadParsedChapterPackage(target.spineIndex, 'link')
+            .then((chapterPackage) => blockIdForAnchor(chapterBlocksForReaderPackage(chapterPackage), target.anchor))
+            .catch(() => null)
+            .then(jump);
+        return true;
+    };
 
     // A jump from the notes log is like any other: the reader is asked
     // whether it's their new spot (see processNativePageChange).
@@ -3219,7 +3317,8 @@ const Read = ({
      * the intent filters and the plausibility gate.
      *
      * Three subtractions before anything counts as "skipped because known":
-     *   1. units left too fast for their length — never really read (dwell gate)
+     *   1. text the reader went through faster than anyone reads, judged over
+     *      the last half minute (services/readingPace.js), not per unit
      *   2. words looked up recently — a lookup already logged its own (much
      *      stronger, negative) evidence; crediting a positive too would partly
      *      cancel it
@@ -3237,7 +3336,14 @@ const Read = ({
         const lookedUp = recentLookupsRef.current;
         recentLookupsRef.current = new Set();
 
+        // Every unit feeds the pace, whether or not it ends up counting.
+        const wasRead = readingPaceRef.current.observe({ language: activeBookLanguage, chars, dwellMs });
         if (!currentBook) {
+            return;
+        }
+        // Flicked or scrolled through, not read: not tapping a word then says
+        // nothing about knowing it.
+        if (!wasRead) {
             return;
         }
         // While listen mode reads aloud, the page moves at the voice's pace and
@@ -3293,7 +3399,9 @@ const Read = ({
         onSavedWordsPassed({ surfaces: fresh, surfaceToWord: highlightSurfaceWordsRef.current });
     }, [currentBook, onSavedWordsPassed]);
 
-    const processNativePageChange = useCallback(({ page, total, spineIndex, href, firstBlockId, savedHighlights } = {}) => {
+    const processNativePageChange = useCallback(({
+        page, total, spineIndex, href, firstBlockId, anchorBlockId, anchorOffset, savedHighlights,
+    } = {}) => {
         if (bookCompletionInProgressRef.current) {
             return;
         }
@@ -3394,6 +3502,9 @@ const Read = ({
                     ? firstBlockId
                     : null
             ),
+            // The exact character at the top of the screen. Page numbers
+            // change with the font size; this finds the same text again.
+            ...readingAnchorFields(anchorBlockId, anchorOffset),
         };
         const nextBookPatch = {
             nativePosition: nextPosition,
@@ -3403,7 +3514,7 @@ const Read = ({
 
         // A sudden jump holds the spot the reader left (and asks); until it
         // is confirmed or they're back there, where they are isn't saved.
-        lastPageEventRef.current = { page, total, spineIndex, href, firstBlockId };
+        lastPageEventRef.current = { page, total, spineIndex, href, firstBlockId, anchorBlockId, anchorOffset };
         const previousSpot = lastViewedSpotRef.current;
         lastViewedSpotRef.current = {
             position: nextPosition,
@@ -3501,6 +3612,8 @@ const Read = ({
                     && previousPosition.pagesInChapter === nextPosition.pagesInChapter
                     && previousPosition.href === nextPosition.href
                     && previousPosition.firstBlockId === nextPosition.firstBlockId
+                    && previousPosition.anchorBlockId === nextPosition.anchorBlockId
+                    && previousPosition.anchorOffset === nextPosition.anchorOffset
                     && book.progress === nextBookPatch.progress
                     && !nextBookPatch.finishedAt
                 );
@@ -3552,6 +3665,8 @@ const Read = ({
         pageIndex,
         pagesInChapter,
         firstBlockId,
+        anchorBlockId,
+        anchorOffset,
     } = {}) => {
         if (bookCompletionInProgressRef.current) {
             return;
@@ -3577,6 +3692,7 @@ const Read = ({
                     pagesInChapter: Number.isInteger(pagesInChapter) ? pagesInChapter : null,
                     href: path || href || '',
                     firstBlockId: firstBlockId || null,
+                    ...readingAnchorFields(anchorBlockId, anchorOffset),
                 },
             });
             return;
@@ -3589,6 +3705,7 @@ const Read = ({
             pagesInChapter: Number.isInteger(pagesInChapter) ? pagesInChapter : null,
             href: path || href || committedPackage.loadedSpineItem?.path || committedPackage.loadedSpineItem?.href || '',
             firstBlockId: firstBlockId || null,
+            ...readingAnchorFields(anchorBlockId, anchorOffset),
         };
         const committedPageIndex = Number.isInteger(pageIndex) ? pageIndex : 0;
         const committedPageCount = Number.isInteger(pagesInChapter) ? pagesInChapter : null;
@@ -4068,9 +4185,9 @@ const Read = ({
     const describeScrubberPoint = useCallback((fraction) => {
         const position = positionForStoryProgress(readerSpine, scrubberRange, fraction);
         if (!position) return null;
-        const tocItem = flattenedToc.reduce((found, item) => (
-            Number.isInteger(item?.spineIndex) && item.spineIndex <= position.spineIndex ? item : found
-        ), null);
+        // Contents aren't always in reading order: the entry for this file, not
+        // the last one listed before it.
+        const tocItem = flattenedToc[activeTocIndex(flattenedToc, { spineIndex: position.spineIndex })];
         // The chapter whose mark is at or before this point (marks follow the
         // contents, even inside one long file); before the first mark, the
         // contents entry for the file.
@@ -4373,8 +4490,15 @@ const Read = ({
         // remember it, so play after a pause starts from that word. Offsets
         // from the engine are into `rest`; the view's segments index the
         // uncleaned text.
-        const rest = remainingFrom(text, prepared.from);
         const leading = rawText.length - rawText.trimStart().length;
+        // Note markers (the "1" or "*" of a footnote link) are not read: they
+        // become spaces, so the engine's offsets still match the page.
+        const voiced = blankNoteMarkers(
+            rawText,
+            event.segments,
+            chapterBlocksForReaderPackage(nativeReaderPackageRef.current)
+        ).slice(leading, leading + text.length);
+        const rest = remainingFrom(voiced, prepared.from);
         listenReachedRef.current = { key, offset: rest.base };
         setSpokenRange(null);
         const followWord = ({ start, end }) => {
@@ -4384,11 +4508,14 @@ const Read = ({
             setSpokenRange(spokenRangeAt(event.segments, leading + offset, leading + rest.base + end));
         };
 
-        let outcome = await player.speakSequence([{
-            text: rest.text,
-            ...listenVoiceFor(prefs, ctx.targetLocale),
-            onProgress: followWord,
-        }]);
+        // Nothing left to say (a line that is only a note marker): move on.
+        let outcome = rest.text.trim()
+            ? await player.speakSequence([{
+                text: rest.text,
+                ...listenVoiceFor(prefs, ctx.targetLocale),
+                onProgress: followWord,
+            }])
+            : 'done';
         if (!mine()) return;
         setSpokenRange(null);
         if (outcome === 'error') {
@@ -5049,16 +5176,19 @@ const Read = ({
                             onPress={goBackFromReader}
                             accessibilityLabel={t('home.backToLibrary')}
                         />
-                        {/* Where you are in the book (tap: the contents, its only
-                            door). Saved and suggested words are in the menu; full
-                            screen comes on as you read on. */}
-                        <ReaderProgressButton
+                        {/* The book and the chapter being read (tap: the contents,
+                            its only door; the percent read is at the top of
+                            that list and on the line along the bottom). Saved
+                            and suggested words are in the menu. */}
+                        <ReaderTitleButton
                             styles={chrome}
-                            fillWidth={`${headerProgressPercent}%`}
-                            label={t('common.percent', { value: headerProgressPercent })}
+                            themeColors={themeColors}
+                            bookTitle={headerBookTitle}
+                            chapterTitle={activeChapterTitle}
+                            open={showToc}
                             disabled={toc.length === 0}
                             onPress={() => setShowToc(true)}
-                            accessibilityLabel={`${t('read.contents')}, ${t('common.percent', { value: headerProgressPercent })}`}
+                            accessibilityLabel={`${t('read.contents')}, ${activeChapterTitle}, ${t('common.percent', { value: headerProgressPercent })}`}
                         />
                         <ReaderCheckpointButton
                             styles={chrome}
@@ -5129,7 +5259,10 @@ const Read = ({
                             <ActivityIndicator size="small" color={themeColors.accentStrong} />
                             <Text style={styles.readerLoadingTitle}>{t('read.openingReader')}</Text>
                             <Text style={styles.readerLoadingBody}>
-                                {t('read.openingReaderBody')}
+                                {bookLoadStep === 'file' ? t('read.openingStepFile')
+                                    : bookLoadStep === 'contents' ? t('read.openingStepContents')
+                                        : bookLoadStep === 'chapter' ? t('read.openingStepChapter')
+                                            : t('read.openingReaderBody')}
                             </Text>
                         </View>
                     ) : (
@@ -5197,7 +5330,9 @@ const Read = ({
                         sentence={translationPopupSentence}
                         sourceLanguage={activeBookLanguage}
                         targetLanguage={interfaceLanguage}
-                        top={chromeHidden ? insets.top : headerHeight}
+                        focusWord={highlightedWordContext?.phraseWord || highlightedWord}
+                        top={chromeHidden ? 0 : headerHeight}
+                        topInset={chromeHidden ? insets.top : 0}
                         readerFontSize={readerFontSize}
                     />
                 ) : null}
@@ -5253,6 +5388,8 @@ const Read = ({
                 visible={showToc}
                 toc={toc}
                 currentSpineIndex={activeSpineIndex}
+                currentBlockId={activeFirstBlockId}
+                chapterBlocks={nativeChapterBlocks}
                 totalSpineItems={nativeChapterTotal}
                 bookProgress={bookProgress}
                 isDarkMode={isDarkMode}
@@ -5383,6 +5520,7 @@ const Read = ({
                         sourceBook={activeBook}
                         savedWords={savedWordsList}
                         levelMarkFor={currentBook ? levelMarkFor : null}
+                        saveToggleToken={saveToggleToken}
                         translationVisualState={translationBannerVisualState}
                     />
                     {textSelection ? renderSelectionExplain() : null}

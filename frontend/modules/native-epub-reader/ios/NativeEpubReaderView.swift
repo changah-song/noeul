@@ -117,10 +117,17 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
   // MARK: Props, as last set from JS
 
   var bookManifest: [String: Any] = [:] {
-    didSet { committedSpineIndex = intValue(bookManifest["currentSpineIndex"]) ?? committedSpineIndex }
+    didSet {
+      parsedChaptersCache = nil
+      committedSpineIndex = intValue(bookManifest["currentSpineIndex"]) ?? committedSpineIndex
+    }
   }
-  var chapterBlocks: [[String: Any]] = []
-  var chapterWindow: [[String: Any]] = []
+  var chapterBlocks: [[String: Any]] = [] {
+    didSet { parsedChaptersCache = nil }
+  }
+  var chapterWindow: [[String: Any]] = [] {
+    didSet { parsedChaptersCache = nil }
+  }
   var restorePosition: [String: Any] = [:]
   var fontSize: Double = 18
   var lineHeight: Double = 1.5
@@ -248,6 +255,14 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
   private var appliedRestoreSignature = ""
   private var layoutGeneration = 0
   private var laidOutSize = CGSize.zero
+  // The window's chapters as last parsed from the props. Parsing them again on
+  // every props update (each page turn sends one) stalled long chapters.
+  private var parsedChaptersCache: [ReaderChapter]?
+  // Laid-out chapters kept across window changes (used on the layout queue).
+  private let chapterLayoutCache = ReaderChapterLayoutCache()
+  // New pages that arrived while a page turn was under way: put in once the
+  // pager rests, so the turn isn't cut off.
+  private var pendingInstall: (generation: Int, run: () -> Void)?
 
   // Paged swipes.
   private var dragStartPage = 0
@@ -280,6 +295,12 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
   private var pagedSpine: Int?
   private var pagedIndex = 0
   private var userTurnedPage = false
+  // Paged mode: the character the reader was at when a relayout (font size,
+  // line height, rotation) last moved it into the middle of a page. Held
+  // while that page shows, so a second relayout starts from the same
+  // character instead of the top of the new page, and positions saved
+  // meanwhile still name it.
+  private var stickyAnchor: (anchor: ReadingAnchor, page: ReaderPage)?
 
   // Long-press selection: the word it started on, the last end reached (for
   // haptics), and handle drags.
@@ -421,6 +442,13 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
   }
 
   private func parsedChapters() -> [ReaderChapter] {
+    if let cached = parsedChaptersCache { return cached }
+    let parsed = parseChapters()
+    parsedChaptersCache = parsed
+    return parsed
+  }
+
+  private func parseChapters() -> [ReaderChapter] {
     let window = chapterWindow.compactMap(ReaderChapter.parse).sorted { $0.spineIndex < $1.spineIndex }
     if !window.isEmpty { return window }
     // Single-chapter path (no window).
@@ -501,7 +529,9 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     )
     let chapters = parsedChapters()
     let previous = pages[safe: currentPage]
-    let previousAnchor = previous.map { ($0.spineIndex, $0.chapterPageIndex, $0.firstBlockId) }
+    let tokensSignature = themeTokens.keys.sorted().map { "\($0)=\(themeTokens[$0] ?? "")" }.joined(separator: ",")
+    let layoutKey = "\(vertical)|\(config.contentWidth)|\(config.contentHeight)|\(config.fontSize)|\(config.lineHeight)"
+      + "|\(theme)|\(tokensSignature)|\(showPinyin)|\(showGloss)"
     // Marked words that change with this layout (glosses turned on, word
     // help arriving) can play the reveal, compared with what was on screen.
     let termsChanged = highlightsDirty
@@ -515,29 +545,51 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     layoutGeneration += 1
     highlightGeneration += 1
     let generation = layoutGeneration
+    let layoutCache = chapterLayoutCache
 
     layoutQueue.async { [weak self] in
-      let laidOut = chapters.flatMap { paginateChapter($0, config: config) }
-      for page in laidOut {
-        page.highlights = buildHighlights(for: page, terms: terms)
-      }
+      let laidOut = chapters.flatMap { layoutCache.pages(for: $0, layoutKey: layoutKey, config: config) }
+      // A page kept from the last layout may be on screen: its marked words
+      // are swapped in on the main thread, below.
+      let highlights = laidOut.map { buildHighlights(for: $0, terms: terms) }
       DispatchQueue.main.async {
         guard let self, generation == self.layoutGeneration else { return }
-        self.laidOutSize = size
-        let annotationsChanged = annotations != self.laidOutAnnotations
-        self.laidOutAnnotations = annotations
-        if self.isVertical {
-          self.installVertical(laidOut, resetToFirstPage: resetToFirstPage, previousSpine: previous?.spineIndex)
-        } else {
-          self.install(laidOut, resetToFirstPage: resetToFirstPage, previousAnchor: previousAnchor)
+        let install = { [weak self] in
+          guard let self else { return }
+          for (page, built) in zip(laidOut, highlights) {
+            page.highlights = built
+          }
+          self.laidOutSize = size
+          let annotationsChanged = annotations != self.laidOutAnnotations
+          self.laidOutAnnotations = annotations
+          if self.isVertical {
+            self.installVertical(laidOut, resetToFirstPage: resetToFirstPage, previousSpine: previous?.spineIndex)
+          } else {
+            self.install(laidOut, resetToFirstPage: resetToFirstPage)
+          }
+          if (termsChanged || annotationsChanged) && self.hadLevelMarks {
+            let after = RevealWave.marks(for: self.pages[safe: self.currentPage], showPinyin: self.showPinyin, showGloss: self.showGloss)
+            self.startReveal(RevealWave.kind(before: marksBefore, after: after))
+            self.pushMarks()
+          }
         }
-        if (termsChanged || annotationsChanged) && self.hadLevelMarks {
-          let after = RevealWave.marks(for: self.pages[safe: self.currentPage], showPinyin: self.showPinyin, showGloss: self.showGloss)
-          self.startReveal(RevealWave.kind(before: marksBefore, after: after))
-          self.pushMarks()
+        // Swapping the pages under a page turn stops it part-way: wait for
+        // the pager to rest (pagerDidSettle).
+        if !self.isVertical, !self.pages.isEmpty,
+           self.collectionView.isDragging || self.collectionView.isDecelerating {
+          self.pendingInstall = (generation, install)
+        } else {
+          self.pendingInstall = nil
+          install()
         }
       }
     }
+  }
+
+  private func runPendingInstall() {
+    guard let pending = pendingInstall else { return }
+    pendingInstall = nil
+    if pending.generation == layoutGeneration { pending.run() }
   }
 
   private func dropSelectionIfGone() {
@@ -549,12 +601,41 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     }
   }
 
-  private func install(_ newPages: [ReaderPage], resetToFirstPage: Bool, previousAnchor: (Int, Int, String)?) {
+  private func install(_ newPages: [ReaderPage], resetToFirstPage: Bool) {
     closeExposure()
+    // The page showing now. The reader may have turned on while these pages
+    // were being laid out, so the position JS last sent can be a page behind.
+    let showing = pages[safe: currentPage]
+    let previousAnchor = showing.map { ($0.spineIndex, $0.chapterPageIndex, $0.firstBlockId) }
+    // Where the reader is right now, to the character: a relayout that keeps
+    // the chapter (font size, line height, size) lands back on it.
+    let anchor = resetToFirstPage ? nil : showing.flatMap { pagedAnchor($0) }
     pages = newPages
     dropSelectionIfGone()
 
-    var target = restoredPageIndex()
+    // A page of the open chapter that is in the new pages as it was laid out
+    // (the window moved on a chapter, or a neighbour came in): stay on it.
+    var target: Int?
+    if let showing, showing.spineIndex == manifestSpineIndex {
+      target = pages.firstIndex { $0 === showing }
+    }
+    let sameLayout = target != nil
+    var anchored = false
+    if target == nil {
+      let restored = restoredPageIndex()
+      // The anchor beats restorePosition when that only echoes the page that
+      // was showing (its page number is from the old layout). A position that
+      // names somewhere else is a jump still on its way, and wins.
+      let position = ReaderPosition.parse(restorePosition)
+      let echoesShowing = showing.map { position?.spineIndex == $0.spineIndex && position?.pageIndex == $0.chapterPageIndex } ?? false
+      if let anchor, restored == nil || echoesShowing,
+         let index = pageIndex(spine: anchor.spineIndex, blockId: anchor.blockId, offset: anchor.offset) {
+        target = index
+        anchored = true
+      } else {
+        target = restored
+      }
+    }
     if target == nil {
       if resetToFirstPage, let spine = manifestSpineIndex {
         target = pages.firstIndex { $0.spineIndex == spine }
@@ -569,6 +650,7 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     }
     appliedRestoreSignature = ReaderPosition.parse(restorePosition)?.signature ?? ""
     currentPage = min(max(target ?? 0, 0), max(pages.count - 1, 0))
+    if !sameLayout { holdAnchor(anchored ? anchor : nil) }
 
     collectionView.reloadData()
     collectionView.layoutIfNeeded()
@@ -668,8 +750,14 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
   private func setContextSentence(spine: Int, layout: ReaderBlockLayout, around range: NSRange) {
     guard showContextSentence else { return }
     let bounds = sentenceBounds(layout, start: range.location, end: NSMaxRange(range))
+    // A sentence taking over from another keeps the page as it is; from
+    // nothing (or from one fading out) the focus comes in afresh.
+    if marks.contextSentence == nil || marks.contextFadeAt != nil {
+      marks.contextShownAt = reduceMotion ? nil : nowMs()
+    }
     marks.contextSentence = (spine, ReaderSourceRange(blockId: layout.block.id, range: bounds))
     marks.contextFadeAt = nil
+    marks.contextDimsPage = mode != .focus
     pushMarks()
   }
 
@@ -774,6 +862,90 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     }
   }
 
+  // MARK: - Reading anchor
+  //
+  // Positions name the first block on screen, which is only as fine as the
+  // book's paragraphs: a long one runs over several pages, and some books are
+  // one block per chapter. The anchor adds the character offset, so a layout
+  // with different pages (another font size) can find the same text again.
+
+  // A page's anchor: the held one while it is the page showing it, otherwise
+  // the page's first character.
+  private func pagedAnchor(_ page: ReaderPage) -> ReadingAnchor? {
+    if let held = stickyAnchor, held.page === page { return held.anchor }
+    guard let first = page.items.first else { return nil }
+    return ReadingAnchor(spineIndex: page.spineIndex, blockId: first.layout.block.id, offset: first.sourceStartOffset)
+  }
+
+  // The page holding a character: the last one whose slice of the block
+  // starts at or before it.
+  private func pageIndex(spine: Int, blockId: String, offset: Int) -> Int? {
+    let chapterPages = pages.indices.filter { pages[$0].spineIndex == spine }
+    return chapterPages.last { index in
+      pages[index].items.contains { $0.layout.block.id == blockId && $0.sourceStartOffset <= offset }
+    } ?? chapterPages.first { pages[$0].contains(blockId: blockId) }
+  }
+
+  private func lineIndex(_ layout: ReaderBlockLayout, offset: Int) -> Int {
+    layout.lines.lastIndex { $0.range.location <= offset } ?? 0
+  }
+
+  // After a relayout landed on the anchor's page: keep hold of the anchor
+  // while that page shows, and mark its line when it is no longer the first
+  // one, so the eye finds where it was.
+  private func holdAnchor(_ anchor: ReadingAnchor?) {
+    stickyAnchor = nil
+    marks.resumeMark = nil
+    guard let anchor, let page = pages[safe: currentPage], let first = page.items.first else { return }
+    let firstId = first.layout.block.id
+    if firstId != anchor.blockId || first.sourceStartOffset != anchor.offset {
+      stickyAnchor = (ReadingAnchor(spineIndex: anchor.spineIndex, blockId: anchor.blockId, offset: anchor.offset), page)
+    }
+    let atPageTop = firstId == anchor.blockId
+      && (first.layout.lines.isEmpty || lineIndex(first.layout, offset: anchor.offset) <= first.lineRange.lowerBound)
+    if !atPageTop {
+      marks.resumeMark = (page.spineIndex, anchor.blockId, anchor.offset, nowMs())
+    }
+  }
+
+  // Scroll mode: the first visible line, and how far into it the top of the
+  // reading area sits.
+  private func continuousAnchor(_ page: ReaderPage) -> ReadingAnchor? {
+    guard host.page === page else { return nil }
+    let readingTop = host.offset + (mode == .continuous ? chromeTop : 0)
+    let textTop = host.textTop
+    guard let item = page.items.first(where: { textTop + $0.y + $0.height > readingTop }) else { return nil }
+    let blockId = item.layout.block.id
+    let lines = item.layout.lines
+    guard !lines.isEmpty else {
+      let fraction = item.height > 0 ? (readingTop - textTop - item.y) / item.height : 0
+      return ReadingAnchor(spineIndex: page.spineIndex, blockId: blockId, offset: 0, lineFraction: min(max(fraction, -4), 1))
+    }
+    let index = item.lineRange.last { textTop + item.lineTop($0) <= readingTop } ?? item.lineRange.lowerBound
+    let fraction = (readingTop - textTop - item.lineTop(index)) / lineStep(item, index)
+    return ReadingAnchor(
+      spineIndex: page.spineIndex, blockId: blockId, offset: lines[index].range.location,
+      lineFraction: min(max(fraction, -4), 1)
+    )
+  }
+
+  // One line's share of the column: down to the next line's top.
+  private func lineStep(_ item: ReaderPageItem, _ index: Int) -> CGFloat {
+    let lines = item.layout.lines
+    if index + 1 < item.lineRange.upperBound { return max(1, lines[index + 1].top - lines[index].top) }
+    return max(1, lines[index].naturalHeight)
+  }
+
+  // The scroll offset that puts an anchor's line back where continuousAnchor
+  // found it. With lineFraction 0 the line sits just below the header's room.
+  private func anchorScrollTarget(blockId: String, offset: Int, lineFraction: CGFloat, page: ReaderPage) -> CGFloat? {
+    guard let item = page.items.first(where: { $0.layout.block.id == blockId }) else { return nil }
+    let base = verticalTextTop() - (mode == .continuous ? chromeTop : 0)
+    guard !item.layout.lines.isEmpty else { return (base + item.y + lineFraction * item.height).rounded() }
+    let index = min(max(lineIndex(item.layout, offset: offset), item.lineRange.lowerBound), item.lineRange.upperBound - 1)
+    return (base + item.lineTop(index) + lineFraction * lineStep(item, index)).rounded()
+  }
+
   // MARK: - Position (paged)
 
   // The page restorePosition points at, if it is in the current chapter.
@@ -784,6 +956,12 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     guard !chapterPages.isEmpty else { return nil }
     if let fraction = position.chapterFraction {
       return chapterPages[Int((fraction * Double(chapterPages.count - 1)).rounded())]
+    }
+    // The exact character, when the position carries one: the saved page
+    // number belongs to whatever layout it was saved in.
+    if let blockId = position.anchorBlockId,
+       let index = pageIndex(spine: position.spineIndex, blockId: blockId, offset: position.anchorOffset ?? 0) {
+      return index
     }
     if let pageIndex = position.pageIndex, let index = chapterPages[safe: pageIndex] {
       if position.firstBlockId == nil || pages[index].contains(blockId: position.firstBlockId!) {
@@ -870,6 +1048,11 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
   private func installVertical(_ newPages: [ReaderPage], resetToFirstPage: Bool, previousSpine: Int?) {
     closeExposure()
     resetContinuousExposure()
+    // Scroll mode, same chapter relaid out (font size, line height): back to
+    // the line that was at the top, not just its paragraph.
+    let anchor = (resetToFirstPage || mode != .continuous) ? nil : pages[safe: currentPage].flatMap { continuousAnchor($0) }
+    stickyAnchor = nil
+    marks.resumeMark = nil
     pages = newPages
     dropSelectionIfGone()
     let position = ReaderPosition.parse(restorePosition)
@@ -885,7 +1068,11 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     appliedRestoreSignature = position?.signature ?? ""
     guard let bound = index ?? (pages.isEmpty ? nil : 0) else { return }
     let page = pages[bound]
-    let target = position.flatMap { continuousRestoreTarget($0, page: page) }
+    var target = position.flatMap { continuousRestoreTarget($0, page: page) }
+    if let anchor, anchor.spineIndex == page.spineIndex,
+       let line = anchorScrollTarget(blockId: anchor.blockId, offset: anchor.offset, lineFraction: anchor.lineFraction, page: page) {
+      target = line
+    }
     let landAtEnd = mode == .focus && pendingFocusLandAtEndSpine == page.spineIndex
     bindVertical(bound, target: target ?? 0, resetScroll: true, landFocusAtEnd: landAtEnd)
     revealIfFirstMarks()
@@ -922,6 +1109,10 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
       focusIndex = focusSentenceIndex(blockId: preserved.blockId, offset: preserved.range.location) ?? clampFocusIndex(focusIndex)
     } else if landFocusAtEnd {
       focusIndex = focusMaxIndex
+    } else if let position = ReaderPosition.parse(restorePosition), let blockId = position.anchorBlockId,
+              let exact = focusSentenceIndex(blockId: blockId, offset: position.anchorOffset ?? 0) {
+      // The sentence holding the exact character, when the position has one.
+      focusIndex = exact
     } else if let blockId = ReaderPosition.parse(restorePosition)?.firstBlockId,
               let first = focusSentences.firstIndex(where: { $0.blockId == blockId }) {
       focusIndex = first
@@ -940,6 +1131,11 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     let maxScroll = max(0, verticalContentHeight(page) - bounds.height)
     if let count = position.pagesInChapter, count > 1, let pageIndex = position.pageIndex, pageIndex >= count - 1 {
       return maxScroll
+    }
+    // The exact line, when the position carries one.
+    if let blockId = position.anchorBlockId,
+       let target = anchorScrollTarget(blockId: blockId, offset: position.anchorOffset ?? 0, lineFraction: 0, page: page) {
+      return target
     }
     if let blockId = position.firstBlockId, let target = blockScrollTarget(blockId, page: page) { return target }
     if let fraction = position.chapterFraction { return (CGFloat(fraction) * maxScroll).rounded() }
@@ -1014,6 +1210,8 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
       "globalTotal": pages.count,
       "href": pageHref(page),
       "firstBlockId": firstVisibleBlockId(page),
+      "anchorBlockId": continuousAnchor(page)?.blockId ?? "",
+      "anchorOffset": continuousAnchor(page)?.offset ?? 0,
       "savedHighlights": includeSaved ? page.highlights.savedContexts : [[String: Any]](),
       "spineIndex": page.spineIndex,
     ])
@@ -1040,6 +1238,8 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
       "pageIndex": virtualPageIndex,
       "pagesInChapter": virtualPageCount,
       "firstBlockId": firstVisibleBlockId(page),
+      "anchorBlockId": continuousAnchor(page)?.blockId ?? "",
+      "anchorOffset": continuousAnchor(page)?.offset ?? 0,
       "direction": direction > 0 ? "next" : "previous",
     ])
   }
@@ -1276,6 +1476,8 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
       "globalTotal": pages.count,
       "href": pageHref(page),
       "firstBlockId": focusSentences[safe: focusIndex]?.blockId ?? page.firstBlockId,
+      "anchorBlockId": focusSentences[safe: focusIndex]?.blockId ?? "",
+      "anchorOffset": focusSentences[safe: focusIndex]?.range.location ?? 0,
       "savedHighlights": page.highlights.savedContexts,
       "spineIndex": page.spineIndex,
     ])
@@ -1596,6 +1798,7 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
       "localEndOffset": NSMaxRange(hit.range) - sliceStart,
       "sentence": sentence(in: layout.text, sentences: layout.sentences, containing: hit.range.location),
       "spineIndex": page.spineIndex,
+      "tapOffset": hit.tapOffset,
     ]
     if let word = hit.phraseWord, !word.isEmpty { payload["phraseWord"] = word }
     onWordSelected(payload)
@@ -1609,7 +1812,14 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
       return
     }
     if selection != nil {
-      if surface.view.selectionContains(point) { return }
+      if surface.view.selectionContains(point) {
+        // A second tap on the word whose panel is open: saves it.
+        if selection?.kind == .word, let hit = surface.view.wordHit(at: point) {
+          let text = collapseSpaces(hit.item.layout.text.substring(with: hit.range))
+          if !text.isEmpty { onWordSelected(["text": text, "again": true]) }
+        }
+        return
+      }
       // Tapping another word looks it up straight away.
       if let hit = surface.view.wordHit(at: point) {
         selectWord(hit, page: page, surface: surface)
@@ -1671,7 +1881,12 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
 
   // The sentence around [start, end) of a block, in source offsets.
   private func sentenceBounds(_ layout: ReaderBlockLayout, start: Int, end: Int) -> NSRange {
-    if let match = layout.sentences.first(where: { start >= $0.location && start <= NSMaxRange($0) }), match.length > 0 {
+    // A sentence that starts right where the previous one ends (no space, as
+    // in Chinese) owns that offset; the previous one only takes it as its end
+    // when no sentence starts there.
+    let match = layout.sentences.first(where: { $0.length > 0 && start >= $0.location && start < NSMaxRange($0) })
+      ?? layout.sentences.first(where: { $0.length > 0 && start == NSMaxRange($0) })
+    if let match {
       return match
     }
     let text = layout.text
@@ -1952,6 +2167,8 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
       "globalTotal": pages.count,
       "href": pageHref(page),
       "firstBlockId": page.firstBlockId,
+      "anchorBlockId": pagedAnchor(page)?.blockId ?? "",
+      "anchorOffset": pagedAnchor(page)?.offset ?? 0,
       "savedHighlights": page.highlights.savedContexts,
       "spineIndex": page.spineIndex,
     ])
@@ -1978,6 +2195,11 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
       reportReadingDirection(edge === onChapterEnd ? 1 : -1)
       edge([:])
     }
+    commitChapterIfChanged()
+    runPendingInstall()
+  }
+
+  private func commitChapterIfChanged() {
     guard let page = pages[safe: currentPage], page.spineIndex != committedSpineIndex else { return }
     let direction = committedSpineIndex.map { page.spineIndex > $0 ? "next" : "previous" } ?? "none"
     committedSpineIndex = page.spineIndex
@@ -1988,6 +2210,8 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
       "pageIndex": page.chapterPageIndex,
       "pagesInChapter": page.chapterPageCount,
       "firstBlockId": page.firstBlockId,
+      "anchorBlockId": pagedAnchor(page)?.blockId ?? "",
+      "anchorOffset": pagedAnchor(page)?.offset ?? 0,
       "direction": direction,
     ])
   }
@@ -2060,6 +2284,8 @@ final class NativeEpubReaderView: ExpoView, UICollectionViewDataSource, UICollec
     let target = min(max(Int((targetContentOffset.pointee.x / width).rounded()), 0), max(pages.count - 1, 0))
     if target != currentPage {
       userTurnedPage = true
+      // Any page turn leaves the held spot behind.
+      stickyAnchor = nil
       reportReadingDirection(target > dragStartPage ? 1 : -1)
       currentPage = target
       emitPageChange()

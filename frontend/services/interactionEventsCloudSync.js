@@ -3,18 +3,26 @@ import {
   isCloudSyncPaused,
   isCurrentSyncGeneration,
 } from './localOwnerCoordinator';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   getUnsyncedInteractionEvents,
+  hasAccountLookupWords,
   markInteractionEventsSynced,
+  saveAccountLookupWords,
 } from './Database';
+import { makeScopedStorageKey } from './localDataScope';
 import { supabase } from './supabase';
 
 // Phase 1 of the personalized vocabulary model: mirror the on-device
-// append-only interaction event log to Supabase. This channel is PUSH-ONLY —
-// events are immutable, so we never pull them back down; we only send local rows
-// the device hasn't synced yet. Dedupe is by (user_id, client_event_id) via an
-// upsert that ignores duplicates, which makes re-sends after a flaky connection
-// harmless.
+// append-only interaction event log to Supabase. The log itself is PUSH-ONLY —
+// events are immutable, so we never pull them back into the local log; we only
+// send local rows the device hasn't synced yet. Dedupe is by (user_id,
+// client_event_id) via an upsert that ignores duplicates, which makes re-sends
+// after a flaky connection harmless.
+//
+// One thing does come back (pullAccountLookups): which words the account has
+// looked up, for Profile's "new words met". Those go to their own small table,
+// not the event log (see Database.js account_lookup_words for why).
 
 const FILE_TAG = '[interactionEventsCloudSync]';
 const USER_INTERACTION_EVENTS_TABLE = 'user_interaction_events';
@@ -106,4 +114,72 @@ export const pushInteractionEvents = async ({ user, ownerId, generation } = {}) 
   }
 
   return totalPushed;
+};
+
+const LOOKUP_CURSOR_KEY = 'sync/account-lookups-cursor';
+const PULL_PAGE_SIZE = 1000;
+
+const lookupCursorKey = (ownerId) => makeScopedStorageKey(ownerId, LOOKUP_CURSOR_KEY);
+
+/**
+ * pullAccountLookups — bring the words this account has looked up (on any
+ * install) to this phone, so "new words met" counts them. Only lookups the
+ * account received since the last pull are asked for; a phone holding none
+ * yet (new, or cleared) asks for all of them.
+ *
+ * @returns {Promise<number>} lookup events read this call.
+ */
+export const pullAccountLookups = async ({ user, ownerId, generation } = {}) => {
+  if (!user?.id || ownerId !== user.id || !canContinue(generation)) {
+    return 0;
+  }
+
+  const key = lookupCursorKey(ownerId);
+  let cursor = (await hasAccountLookupWords(ownerId))
+    ? await AsyncStorage.getItem(key).catch(() => null)
+    : null;
+  let total = 0;
+
+  // A page at a time, each saved before the next is asked for, so a pull cut
+  // short carries on from where it stopped. `gte` because a batch pushed
+  // together shares one inserted_at: the rows at the cursor are read again
+  // (saving a word twice does nothing) rather than risk skipping some.
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    let query = supabase
+      .from(USER_INTERACTION_EVENTS_TABLE)
+      .select('profile_id, language, word, stem, inserted_at, client_event_id')
+      .eq('user_id', user.id)
+      .eq('event_type', 'lookup');
+    if (cursor) query = query.gte('inserted_at', cursor);
+    const { data, error } = await query
+      .order('inserted_at', { ascending: true })
+      .order('client_event_id', { ascending: true })
+      .range(0, PULL_PAGE_SIZE - 1);
+    if (error) {
+      console.warn(`${FILE_TAG} lookup pull failed:`, error?.message ?? error);
+      throw error;
+    }
+    const rows = data ?? [];
+    if (rows.length === 0 || !canContinue(generation)) {
+      break;
+    }
+
+    await saveAccountLookupWords(ownerId, rows);
+    total += rows.length;
+
+    const newest = rows[rows.length - 1].inserted_at;
+    // A full page all stamped with the cursor's own time can't be stepped
+    // past with `gte`; stop rather than ask for it forever.
+    const stuck = rows.length === PULL_PAGE_SIZE && newest === cursor;
+    if (newest) {
+      cursor = newest;
+      await AsyncStorage.setItem(key, newest).catch(() => {});
+    }
+    if (rows.length < PULL_PAGE_SIZE || stuck || !newest) {
+      break;
+    }
+  }
+
+  return total;
 };

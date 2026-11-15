@@ -5,6 +5,7 @@ import { fontFamilies, useTheme } from '../../theme';
 import { useTranslation } from '../../hooks/useTranslation';
 import { formatDate } from '../../services/interfaceLanguage';
 import { GOAL_OPTIONS, monthDays, setGoalMinutes } from '../../services/readingGoal';
+import { CalendarSunsetGlyph } from './SunsetMark';
 
 // Monday first; 2024-01-01 was a Monday.
 const WEEKDAY_DATES = Array.from({ length: 7 }, (_, index) => new Date(2024, 0, 1 + index));
@@ -18,9 +19,10 @@ const formatSafe = (date, options) => {
 };
 
 /**
- * CalendarDrop — the month under Home's top bar, dots only: solid for a
- * goal day, faint for a day with some reading, a ghost for none, a ring for
- * today, nothing ahead. Below: goal days this month, and the daily goal
+ * CalendarDrop — the month under Home's top bar: a goal day is a solid dot
+ * that grows with the time read past the goal, then one to three stars (see
+ * CalendarSunsetGlyph); faint for a day with some reading, a ghost for none,
+ * a ring for today, nothing ahead. Below: goal days this month, and the daily goal
  * (tap to change).
  */
 const CalendarDrop = ({ open, days = {}, goalMinutes, onClose }) => {
@@ -52,7 +54,7 @@ const CalendarDrop = ({ open, days = {}, goalMinutes, onClose }) => {
 
   const now = new Date();
   const month = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
-  const cells = monthDays(days, month.getFullYear(), month.getMonth());
+  const cells = monthDays(days, month.getFullYear(), month.getMonth(), undefined, goalMinutes * 60000);
   const goalDays = cells.filter((cell) => cell?.state === 'met').length;
   const goalText = goalMinutes >= 30
     ? t('goal.perDayPlus', { count: goalMinutes })
@@ -116,9 +118,12 @@ const CalendarDrop = ({ open, days = {}, goalMinutes, onClose }) => {
                 accessibilityLabel={[
                   formatSafe(new Date(month.getFullYear(), month.getMonth(), cell.day), { month: 'long', day: 'numeric' }),
                   stateLabel[cell.state],
+                  cell.state === 'met' ? t('goal.minutesCount', { count: Math.floor(cell.ms / 60000) }) : null,
                 ].filter(Boolean).join(', ')}
               >
-                <View style={styles[cell.state]} />
+                {cell.state === 'met'
+                  ? <CalendarSunsetGlyph stage={cell.stage} color={colors.text} />
+                  : <View style={styles[cell.state]} />}
               </View>
             ) : (
               // eslint-disable-next-line react/no-array-index-key

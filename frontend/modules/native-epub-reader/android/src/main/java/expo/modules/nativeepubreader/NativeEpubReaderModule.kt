@@ -477,6 +477,8 @@ class NativeEpubReaderModule : Module() {
 }
 
 private const val TAG = "NativeEpubReader"
+// Laid-out chapters kept: the window's three and the one just left.
+private const val CHAPTER_LAYOUT_CACHE_SIZE = 4
 
 data class ReaderThemePalette(
   val backgroundColor: Int,
@@ -511,7 +513,7 @@ fun readerThemePaletteForMode(isDark: Boolean): ReaderThemePalette {
       ruleColor = Color.rgb(0x35, 0x3c, 0x47),
       edgeButtonColor = Color.rgb(0xf0, 0xed, 0xed),
       edgeButtonTextColor = Color.rgb(0x1b, 0x1c, 0x1c),
-      activeHighlightColor = Color.rgb(0x5c, 0x46, 0x30),
+      activeHighlightColor = Color.rgb(0xf0, 0xed, 0xed),
       textSelectionHighlightColor = Color.argb(0x2e, 0xf0, 0xed, 0xed),
       savedHighlightColor = Color.rgb(0xf0, 0xed, 0xed),
       savedHighlightTextColor = Color.rgb(0x1b, 0x1c, 0x1c),
@@ -530,7 +532,7 @@ fun readerThemePaletteForMode(isDark: Boolean): ReaderThemePalette {
       ruleColor = Color.rgb(0xc5, 0xc6, 0xcb),
       edgeButtonColor = Color.rgb(0x20, 0x26, 0x31),
       edgeButtonTextColor = Color.WHITE,
-      activeHighlightColor = Color.rgb(0xe3, 0xcf, 0xb4),
+      activeHighlightColor = Color.rgb(0x20, 0x26, 0x31),
       textSelectionHighlightColor = Color.argb(0x2e, 0x20, 0x26, 0x31),
       savedHighlightColor = Color.rgb(0x20, 0x26, 0x31),
       savedHighlightTextColor = Color.WHITE,
@@ -1167,6 +1169,16 @@ class NativeEpubReaderView(
   }
   private var paginationTask: Future<*>? = null
   private var paginationGeneration = 0
+  // Chapters already laid out, by layout settings and chapter. The window
+  // moves one chapter at a time, so at a chapter boundary only the chapter
+  // coming in is laid out, not all three again. Used on the pagination thread.
+  private val chapterLayoutCache = object : LinkedHashMap<String, List<ReaderPage>>(8, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<ReaderPage>>?): Boolean =
+      size > CHAPTER_LAYOUT_CACHE_SIZE
+  }
+  // New pages that arrived while a page turn was under way: put in once the
+  // pager rests, so the turn isn't cut off.
+  private var pendingPagedInstall: Pair<Int, () -> Unit>? = null
   private var pageAdapter: EpubPageAdapter? = null
   private var pages: List<ReaderPage> = emptyList()
   private var bookManifest: Map<String, Any?> = emptyMap()
@@ -1260,6 +1272,13 @@ class NativeEpubReaderView(
   private var levelUnderlineMidColor = themePalette.levelUnderlineMidColor
   private var levelUnderlineHardColor = themePalette.levelUnderlineHardColor
   private var userDraggedPager = false
+  // Paged mode: the character the reader was at when a relayout (font size,
+  // line height, rotation) last moved it into the middle of a page. Held for
+  // as long as that page is showing, so a second relayout starts from the
+  // same character instead of the top of the new page, and positions saved
+  // meanwhile still name it.
+  private var stickyAnchor: ReadingAnchor? = null
+  private var stickyAnchorBlocks: List<PageBlock>? = null
   // The page a drag started on (for the reading direction of a flick).
   private var dragStartItem = -1
   private var previousPageIndex = 0
@@ -1356,6 +1375,7 @@ class NativeEpubReaderView(
           flushPendingEdgeNavigation()
           flushChapterCommitIfNeeded()
           finishChapterTransitionIfNeeded()
+          runPendingPagedInstall()
         }
       }
 
@@ -1384,6 +1404,9 @@ class NativeEpubReaderView(
           pagedFocusToPage(position - pagePositionOffset)
         }
 
+        // Any page turn leaves the held spot behind.
+        stickyAnchor = null
+        stickyAnchorBlocks = null
         val total = pages.size
         val logicalPage = pages.getOrNull(position)?.chapterPageIndex
           ?: logicalPageForDisplayPosition(position)
@@ -2029,22 +2052,42 @@ class NativeEpubReaderView(
 
   private fun applyContextSentence(sentence: ContextSentence?) {
     if (contextSentence == sentence) return
+    val wasShowing = contextSentence != null
     val runningFade = contextSentenceFadeAnimator
     contextSentenceFadeAnimator = null
     runningFade?.cancel()
-    setContextSentenceFade(1f)
+    contextSentenceFadeIn?.cancel()
+    contextSentenceFadeIn = null
     contextSentence = sentence
     pageAdapter?.updateContextSentence(recyclerView(), sentence)
     continuousPageView.contextSentence = sentence
+    // The rest of the page steps back over a moment rather than at once; a
+    // sentence that takes over from another (or from one fading out) carries
+    // on from where the fade stood.
+    val from = if (wasShowing) contextSentenceFadeValue else 0f
+    if (sentence == null || from >= 1f) {
+      setContextSentenceFade(1f)
+      return
+    }
+    setContextSentenceFade(from)
+    contextSentenceFadeIn = ValueAnimator.ofFloat(from, 1f).apply {
+      duration = (180L * (1f - from)).toLong().coerceAtLeast(1L)
+      addUpdateListener { setContextSentenceFade(it.animatedValue as Float) }
+      start()
+    }
   }
 
-  // Fades the wash out, then drops the sentence. A new sentence (another word
-  // tapped) cancels the fade and shows at full strength.
+  // Fades the focus out, then drops the sentence. A new sentence (another word
+  // tapped) cancels the fade and comes back to full strength.
   private var contextSentenceFadeAnimator: ValueAnimator? = null
+  private var contextSentenceFadeIn: ValueAnimator? = null
+  private var contextSentenceFadeValue = 1f
 
   private fun fadeOutContextSentence() {
     if (contextSentence == null || contextSentenceFadeAnimator != null) return
-    val animator = ValueAnimator.ofFloat(1f, 0f).apply {
+    contextSentenceFadeIn?.cancel()
+    contextSentenceFadeIn = null
+    val animator = ValueAnimator.ofFloat(contextSentenceFadeValue, 0f).apply {
       duration = 260L
       addUpdateListener { setContextSentenceFade(it.animatedValue as Float) }
     }
@@ -2060,6 +2103,7 @@ class NativeEpubReaderView(
   }
 
   private fun setContextSentenceFade(fade: Float) {
+    contextSentenceFadeValue = fade
     pageAdapter?.updateContextSentenceFade(recyclerView(), fade)
     continuousPageView.contextSentenceFade = fade
   }
@@ -2157,10 +2201,15 @@ class NativeEpubReaderView(
           // is left by the JS layout).
           paddingBottom = if (renderModeSnapshot == "paged") dp(16f) + pagedChromeBottomSnapshot else pagePaddingV
         )
+        val layoutKey = listOf(
+          renderModeSnapshot, layoutWidthSnapshot, layoutHeightSnapshot, pagedChromeBottomSnapshot,
+          fontSizeSnapshot, lineHeightSnapshot, isDarkSnapshot, themePaletteSnapshot.bodyTextColor,
+          rubySpaceSnapshot, textLocaleSnapshot
+        ).joinToString("|")
         if (renderModeSnapshot == "continuous" || renderModeSnapshot == "focus") {
-          buildContinuousChapterWindow(paginator, windowSnapshot)
+          buildContinuousChapterWindow(paginator, windowSnapshot, layoutKey)
         } else {
-          paginateChapterWindow(paginator, windowSnapshot)
+          paginateChapterWindow(paginator, windowSnapshot, layoutKey)
         }
       } catch (_: CancellationException) {
         return@submit
@@ -2177,23 +2226,60 @@ class NativeEpubReaderView(
           return@post
         }
 
-        applyPaginatedPages(
-          paginationResult = paginationResult,
-          previousPages = previousPages,
-          previousPage = previousPage,
-          previousLogicalPage = previousLogicalPage,
-          resetToFirstPage = resetToFirstPage,
-          transitionDirection = transitionDirection,
-          backgroundColor = backgroundColor,
-          themePaletteSnapshot = themePaletteSnapshot
-        )
+        val install = {
+          applyPaginatedPages(
+            paginationResult = paginationResult,
+            previousPages = previousPages,
+            previousPage = previousPage,
+            previousLogicalPage = previousLogicalPage,
+            resetToFirstPage = resetToFirstPage,
+            transitionDirection = transitionDirection,
+            backgroundColor = backgroundColor,
+            themePaletteSnapshot = themePaletteSnapshot
+          )
+        }
+        // Swapping the pages under a page turn stops it part-way. Wait for
+        // the pager to rest (see onPageScrollStateChanged).
+        if (
+          renderModeSnapshot == "paged" &&
+          pageAdapter != null &&
+          viewPager.scrollState != ViewPager2.SCROLL_STATE_IDLE
+        ) {
+          pendingPagedInstall = generation to install
+        } else {
+          pendingPagedInstall = null
+          install()
+        }
       }
     }
   }
 
+  private fun runPendingPagedInstall() {
+    val (generation, install) = pendingPagedInstall ?: return
+    pendingPagedInstall = null
+    if (generation == paginationGeneration && viewPager.scrollState == ViewPager2.SCROLL_STATE_IDLE) {
+      install()
+    }
+  }
+
+  // A chapter's laid-out pages: from the cache when this chapter was laid out
+  // with the same settings before.
+  private fun cachedChapterLayout(
+    layoutKey: String,
+    chapter: ChapterWindowItem,
+    build: () -> List<ReaderPage>
+  ): List<ReaderPage> {
+    val key = "$layoutKey|${chapter.spineIndex}|${chapter.signature}"
+    chapterLayoutCache[key]?.let { return it }
+    val built = build()
+    chapterLayoutCache[key] = built
+    return built
+  }
+
   private fun paginateChapterWindow(
     paginator: EpubPaginator,
-    chapters: List<ChapterWindowItem>
+    chapters: List<ChapterWindowItem>,
+    layoutKey: String
   ): PaginationResult {
     val nextPages = mutableListOf<ReaderPage>()
     val ranges = mutableListOf<ChapterPageRange>()
@@ -2202,7 +2288,7 @@ class NativeEpubReaderView(
 
     chapters.forEach { chapter ->
       val chapterPages = attachEdgeStateToChapterPages(
-        pages = paginator.paginate(chapter.blocks),
+        pages = cachedChapterLayout(layoutKey, chapter) { paginator.paginate(chapter.blocks) },
         edgeState = edgeStateForChapter(chapter, totalSpineItems)
       )
       val pageCount = chapterPages.size
@@ -2241,7 +2327,8 @@ class NativeEpubReaderView(
 
   private fun buildContinuousChapterWindow(
     paginator: EpubPaginator,
-    chapters: List<ChapterWindowItem>
+    chapters: List<ChapterWindowItem>,
+    layoutKey: String
   ): PaginationResult {
     val nextPages = mutableListOf<ReaderPage>()
     val ranges = mutableListOf<ChapterPageRange>()
@@ -2249,8 +2336,10 @@ class NativeEpubReaderView(
       ?: (chapters.maxOfOrNull { chapter -> chapter.spineIndex }?.plus(1) ?: 0)
 
     chapters.forEach { chapter ->
-      val continuousPage = paginator
-        .buildContinuousPage(chapter.blocks)
+      val continuousPage = cachedChapterLayout(layoutKey, chapter) {
+        listOf(paginator.buildContinuousPage(chapter.blocks))
+      }
+        .first()
         .copy(edgeState = edgeStateForChapter(chapter, totalSpineItems))
       val startIndex = nextPages.size
 
@@ -2449,6 +2538,26 @@ class NativeEpubReaderView(
     return previousLogicalPage.coerceIn(0, candidatePages.lastIndex)
   }
 
+  // The index into `pages` of a pager position (they differ only while a
+  // chapter transition is animating over the old and new pages together).
+  private fun logicalDisplayIndex(position: Int): Int =
+    if (isChapterTransitionAnimating) position - pagePositionOffset else position
+
+  // Where the page showing sits in the new pages, when it is a page of the
+  // open chapter and the new pages hold that same laid-out page (the window
+  // moved on a chapter, or a neighbour came in). The reader stays on it.
+  private fun displayIndexOfSameLayout(candidatePages: List<ReaderPage>, showing: ReaderPage?): Int? {
+    val spineIndex = showing?.spineIndex ?: return null
+    if (showing.blocks.isEmpty() || spineIndex != bookManifest.intValue("currentSpineIndex")) {
+      return null
+    }
+    return candidatePages.indexOfFirst { page ->
+      page.spineIndex == spineIndex &&
+        page.chapterPageIndex == showing.chapterPageIndex &&
+        page.blocks === showing.blocks
+    }.takeIf { it >= 0 }
+  }
+
   private fun applyPaginatedPages(
     paginationResult: PaginationResult,
     previousPages: List<ReaderPage>,
@@ -2460,12 +2569,46 @@ class NativeEpubReaderView(
     themePaletteSnapshot: ReaderThemePalette
   ) {
     val nextPages = paginationResult.pages
-    val restorePage = pageIndexForRestorePosition(nextPages)
-    val targetPage = restorePage
+    // Paged: the page showing now. The reader may have turned on while these
+    // pages were being laid out, so where they were when it started (and the
+    // position JS last sent) can be a page or two behind.
+    val showingPage = if (isVerticalLayoutMode() || pageAdapter == null) {
+      null
+    } else {
+      pages.getOrNull(logicalDisplayIndex(viewPager.currentItem))
+    }
+    val sameLayoutPage = displayIndexOfSameLayout(nextPages, showingPage)
+    val restorePage = sameLayoutPage ?: pageIndexForRestorePosition(nextPages)
+    // Where the reader is right now, to the character (the old pages are
+    // still the ones showing): a relayout that keeps the chapter (font size,
+    // line height, theme, size) lands back on it. It beats restorePosition
+    // when that only echoes the page already showing, whose page number is
+    // from the old layout. A position that names somewhere else is a jump
+    // still on its way, and wins.
+    val anchor = if (resetToFirstPage) null else currentReadingAnchor()
+    val restoreNamesShownPage = showingPage != null &&
+      restorePosition.intValue("spineIndex") == showingPage.spineIndex &&
+      restorePosition.intValue("pageIndex") == showingPage.chapterPageIndex
+    val anchorPage = if (
+      anchor != null &&
+      sameLayoutPage == null &&
+      !isVerticalLayoutMode() &&
+      (restorePage == null || restoreNamesShownPage)
+    ) {
+      pageIndexForAnchor(nextPages, anchor.spineIndex, anchor.blockId, anchor.offset)
+    } else {
+      null
+    }
+    val targetPage = anchorPage
+      ?: restorePage
       ?: if (resetToFirstPage) {
         firstDisplayIndexForCurrentChapter(nextPages) ?: 0
       } else {
-        pageIndexForPreviousPage(nextPages, previousPage, previousLogicalPage)
+        pageIndexForPreviousPage(
+          nextPages,
+          showingPage ?: previousPage,
+          showingPage?.chapterPageIndex ?: previousLogicalPage
+        )
       }
     previousPageIndex = nextPages.getOrNull(targetPage)?.chapterPageIndex ?: targetPage
     userDraggedPager = false
@@ -2520,7 +2663,8 @@ class NativeEpubReaderView(
         continuousPageIndex,
         backgroundColor,
         resetScroll = resetToFirstPage,
-        landFocusAtEnd = isFocusMode() && resetToFirstPage && transitionDirection == "previous"
+        landFocusAtEnd = isFocusMode() && resetToFirstPage && transitionDirection == "previous",
+        anchor = anchor
       )
       if (isFocusMode()) {
         dispatchFocusPageChange()
@@ -2627,6 +2771,9 @@ class NativeEpubReaderView(
         levelUnderlineHardColor
       )
       adapter.updateRenderConfig(readerLineHeightMultiplier, backgroundColor)
+      if (sameLayoutPage == null) {
+        holdAnchorOnPage(anchor.takeIf { anchorPage != null }, pages.getOrNull(targetPage))
+      }
       adapter.updatePages(pages)
     }
 
@@ -2741,7 +2888,11 @@ class NativeEpubReaderView(
     // the following chapter. The focus beam then lands on the last sentence
     // instead of the first, so the reader resumes where they left off.
     landFocusAtEnd: Boolean = false,
-    onScrollComplete: (() -> Unit)? = null
+    onScrollComplete: (() -> Unit)? = null,
+    // Where the reader was before a relayout that keeps the chapter: the
+    // scroll goes back to that line instead of staying at the same pixel,
+    // which is other text once the font size has changed.
+    anchor: ReadingAnchor? = null
   ) {
     val page = pages.getOrNull(position) ?: ReaderPage(0, emptyList())
     continuousPageIndex = position
@@ -2842,6 +2993,9 @@ class NativeEpubReaderView(
     val resolvedScrollTarget = when {
       scrollTarget != null -> scrollTarget.coerceIn(0, maxScroll)
       resetScroll -> continuousRestoreScrollTarget(page, maxScroll) ?: 0
+      anchor != null && anchor.spineIndex == page.spineIndex ->
+        continuousAnchorScrollTarget(page, anchor.blockId, anchor.offset, anchor.lineFraction)
+          ?.coerceIn(0, maxScroll)
       else -> null
     }
     scrollContinuousTo(
@@ -2910,6 +3064,13 @@ class NativeEpubReaderView(
     ) {
       // Saved at the very end of the chapter (e.g. a backwards chapter pull).
       return maxScroll
+    }
+
+    // The exact line, when the position carries one.
+    source.stringValue("anchorBlockId")?.takeIf { it.isNotBlank() }?.let { blockId ->
+      continuousAnchorScrollTarget(page, blockId, source.intValue("anchorOffset") ?: 0, 0f)?.let { lineTop ->
+        return lineTop.coerceIn(0, maxScroll)
+      }
     }
 
     source.stringValue("firstBlockId")?.takeIf { it.isNotBlank() }?.let { blockId ->
@@ -2988,6 +3149,10 @@ class NativeEpubReaderView(
   }
 
   private fun initialFocusIndexFromRestorePosition(): Int {
+    // The sentence holding the exact character, when the position carries one.
+    restorePosition.stringValue("anchorBlockId")?.takeIf { it.isNotBlank() }?.let { anchorBlockId ->
+      focusSentenceIndexAt(anchorBlockId, restorePosition.intValue("anchorOffset") ?: 0)?.let { return it }
+    }
     val blockId = restorePosition.stringValue("firstBlockId")?.takeIf { it.isNotBlank() }
       ?: return 0
     return focusSentences.indexOfFirst { it.blockId == blockId }.takeIf { it >= 0 } ?: 0
@@ -3710,6 +3875,10 @@ class NativeEpubReaderView(
       "firstBlockId" to (sentence?.blockId ?: page?.blocks?.firstOrNull()?.blockId ?: ""),
       "savedHighlights" to (page?.pageIndex?.let { savedHighlightContextsByPage[it] }.orEmpty())
     )
+    if (sentence != null) {
+      event["anchorBlockId"] = sentence.blockId
+      event["anchorOffset"] = sentence.startOffset
+    }
 
     (page?.spineIndex ?: bookManifest.intValue("currentSpineIndex"))?.let { spineIndex ->
       event["spineIndex"] = spineIndex
@@ -3930,7 +4099,7 @@ class NativeEpubReaderView(
         "pagesInChapter" to continuousVirtualPageCount(),
         "firstBlockId" to firstVisibleBlockId(page, continuousScrollView.scrollY),
         "direction" to if (direction > 0) "next" else "previous"
-      )
+      ) + anchorEventFields(continuousAnchorAt(page, continuousScrollView.scrollY))
     )
   }
 
@@ -3986,6 +4155,7 @@ class NativeEpubReaderView(
       "firstBlockId" to firstVisibleBlockId(page, continuousScrollView.scrollY),
       "savedHighlights" to savedHighlights
     )
+    event.putAll(anchorEventFields(continuousAnchorAt(page, continuousScrollView.scrollY)))
 
     (page.spineIndex ?: bookManifest.intValue("currentSpineIndex"))?.let { spineIndex ->
       event["spineIndex"] = spineIndex
@@ -4015,6 +4185,150 @@ class NativeEpubReaderView(
     }
 
     return page.blocks.firstOrNull()?.blockId ?: ""
+  }
+
+  // ─── Reading anchor ─────────────────────────────────────────────────────────
+  //
+  // Positions name the first block on screen, which is only as fine as the
+  // book's paragraphs: a long one runs over several pages, and some books are
+  // one block per chapter. The anchor adds the character offset, so a layout
+  // with different pages (another font size) can find the same text again.
+
+  // The first visible line at a scroll offset, and how far into it the top of
+  // the reading area sits.
+  private fun continuousAnchorAt(page: ReaderPage, scrollY: Int): ReadingAnchor? {
+    val readingTop = scrollY + continuousChromeTop()
+    var yOffset = continuousTextTop()
+    for (block in page.blocks) {
+      yOffset += block.marginTop
+      val layout = block.textLayout
+      val blockHeight = if (block.type == "image") block.imageHeight else layout?.height ?: 0
+      if (yOffset + blockHeight > readingTop) {
+        val into = readingTop - yOffset
+        if (block.type == "image" || layout == null || layout.lineCount <= 0) {
+          val fraction = if (blockHeight > 0) into.toFloat() / blockHeight else 0f
+          return ReadingAnchor(page.spineIndex, block.blockId, block.sourceStartOffset, fraction.coerceIn(-4f, 1f))
+        }
+        val line = if (into <= 0) 0 else layout.getLineForVertical(into)
+        val lineTop = layout.getLineTop(line)
+        val lineHeight = (layout.getLineBottom(line) - lineTop).coerceAtLeast(1)
+        return ReadingAnchor(
+          page.spineIndex,
+          block.blockId,
+          block.sourceStartOffset + layout.getLineStart(line),
+          ((into - lineTop).toFloat() / lineHeight).coerceIn(-4f, 1f)
+        )
+      }
+      yOffset += blockHeight
+      yOffset += block.marginBottom
+    }
+    return null
+  }
+
+  // The scroll offset that puts an anchor's line back where continuousAnchorAt
+  // found it. With lineFraction 0 the line sits just below the header's room.
+  private fun continuousAnchorScrollTarget(
+    page: ReaderPage,
+    blockId: String,
+    offset: Int,
+    lineFraction: Float
+  ): Int? {
+    var yOffset = continuousTextTop()
+    for (block in page.blocks) {
+      yOffset += block.marginTop
+      val layout = block.textLayout
+      val blockHeight = if (block.type == "image") block.imageHeight else layout?.height ?: 0
+      if (block.blockId == blockId) {
+        val into = if (block.type == "image" || layout == null || layout.lineCount <= 0) {
+          lineFraction * blockHeight
+        } else {
+          val textLength = layout.text.length
+          val line = layout.getLineForOffset((offset - block.sourceStartOffset).coerceIn(0, textLength))
+          val lineTop = layout.getLineTop(line)
+          lineTop + lineFraction * (layout.getLineBottom(line) - lineTop)
+        }
+        return yOffset + into.roundToInt() - continuousChromeTop()
+      }
+      yOffset += blockHeight
+      yOffset += block.marginBottom
+    }
+    return null
+  }
+
+  // The page holding an anchor's character: the last one whose slice of the
+  // block starts at or before it.
+  private fun pageIndexForAnchor(
+    candidatePages: List<ReaderPage>,
+    spineIndex: Int?,
+    blockId: String,
+    offset: Int
+  ): Int? {
+    var match: Int? = null
+    var firstWithBlock: Int? = null
+    candidatePages.forEachIndexed { index, page ->
+      if (page.spineIndex != spineIndex) return@forEachIndexed
+      page.blocks.forEach { block ->
+        if (block.blockId == blockId) {
+          if (firstWithBlock == null) firstWithBlock = index
+          if (block.sourceStartOffset <= offset) match = index
+        }
+      }
+    }
+    return match ?: firstWithBlock
+  }
+
+  // Where the reader is now, to the character.
+  private fun currentReadingAnchor(): ReadingAnchor? {
+    if (isFocusMode()) {
+      // The beam keeps its own sentence across a relayout.
+      return null
+    }
+    if (isVerticalLayoutMode()) {
+      val page = pages.getOrNull(continuousPageIndex) ?: return null
+      return continuousAnchorAt(page, continuousScrollView.scrollY)
+    }
+    if (pageAdapter == null) return null
+    val page = pages.getOrNull(logicalDisplayIndex(viewPager.currentItem)) ?: return null
+    return pagedAnchorFor(page)
+  }
+
+  // A page's anchor: the held one while it is the page showing it, otherwise
+  // the page's first character.
+  private fun pagedAnchorFor(page: ReaderPage): ReadingAnchor? {
+    stickyAnchor?.let { held -> if (stickyAnchorBlocks === page.blocks) return held }
+    val first = page.blocks.firstOrNull() ?: return null
+    return ReadingAnchor(page.spineIndex, first.blockId, first.sourceStartOffset)
+  }
+
+  // After a relayout landed on the anchor's page: keep hold of the anchor
+  // while that page shows, and mark its line when it is no longer the first
+  // one, so the eye finds where it was.
+  private fun holdAnchorOnPage(anchor: ReadingAnchor?, page: ReaderPage?) {
+    stickyAnchor = null
+    stickyAnchorBlocks = null
+    var mark: ResumeMark? = null
+    val first = page?.blocks?.firstOrNull()
+    if (anchor != null && page != null && first != null) {
+      val atPageTop = first.blockId == anchor.blockId && (
+        first.type == "image" ||
+          (first.textLayout?.let { layout ->
+            layout.getLineForOffset((anchor.offset - first.sourceStartOffset).coerceIn(0, layout.text.length))
+          } ?: 0) == 0
+        )
+      if (first.blockId != anchor.blockId || first.sourceStartOffset != anchor.offset) {
+        stickyAnchor = anchor.copy(lineFraction = 0f)
+        stickyAnchorBlocks = page.blocks
+      }
+      if (!atPageTop) {
+        mark = ResumeMark(anchor.blockId, anchor.offset, SystemClock.uptimeMillis())
+      }
+    }
+    pageAdapter?.updateResumeMark(viewPager.getChildAt(0) as? RecyclerView, mark)
+  }
+
+  private fun anchorEventFields(anchor: ReadingAnchor?): Map<String, Any> {
+    if (anchor == null || anchor.blockId.isBlank()) return emptyMap()
+    return mapOf("anchorBlockId" to anchor.blockId, "anchorOffset" to anchor.offset)
   }
 
   // ─── Exposure emission ──────────────────────────────────────────────────────
@@ -4265,6 +4579,10 @@ class NativeEpubReaderView(
   }
 
   private fun handlePageWordSelected(hit: WordHit) {
+    if (hit.again) {
+      onWordSelected(mapOf("text" to hit.text, "again" to true))
+      return
+    }
     if (showContextSentence && hit.sentenceSourceStart >= 0 && hit.sentenceSourceEnd > hit.sentenceSourceStart) {
       applyContextSentence(
         ContextSentence(
@@ -4297,6 +4615,9 @@ class NativeEpubReaderView(
     // A phrase tap ("gave up"): the single word tapped inside it.
     if (hit.phraseWord.isNotEmpty()) {
       event["phraseWord"] = hit.phraseWord
+    }
+    if (hit.tapSourceOffset >= 0) {
+      event["tapOffset"] = hit.tapSourceOffset
     }
 
     onWordSelected(event)
@@ -4966,7 +5287,7 @@ class NativeEpubReaderView(
         "pagesInChapter" to page.chapterPageCount,
         "firstBlockId" to (page.blocks.firstOrNull()?.blockId ?: ""),
         "direction" to direction
-      )
+      ) + anchorEventFields(pagedAnchorFor(page))
     )
   }
 
@@ -5057,6 +5378,17 @@ class NativeEpubReaderView(
       return matchingChapterPages[pageIndex].first
     }
 
+    // The exact character, when the position carries one: the saved page
+    // number belongs to whatever layout it was saved in.
+    restorePosition.stringValue("anchorBlockId")?.takeIf { it.isNotBlank() }?.let { anchorBlockId ->
+      pageIndexForAnchor(
+        candidatePages,
+        restoreSpineIndex,
+        anchorBlockId,
+        restorePosition.intValue("anchorOffset") ?: 0
+      )?.let { return it }
+    }
+
     if (requestedPageIndex != null && requestedPageIndex in matchingChapterPages.indices) {
       val (displayIndex, requestedPage) = matchingChapterPages[requestedPageIndex]
       if (
@@ -5095,7 +5427,10 @@ class NativeEpubReaderView(
     position["spineIndex"] ?: return ""
     // seekToken participates so that jumping back to a spot the reader has
     // since returned to still reads as a new position rather than an echo.
-    return listOf("spineIndex", "pageIndex", "pagesInChapter", "href", "firstBlockId", "seekToken")
+    return listOf(
+      "spineIndex", "pageIndex", "pagesInChapter", "href", "firstBlockId", "seekToken",
+      "anchorBlockId", "anchorOffset"
+    )
       .joinToString("|") { key -> "$key=${position[key] ?: ""}" }
   }
 
@@ -5118,6 +5453,7 @@ class NativeEpubReaderView(
       "firstBlockId" to (page?.blocks?.firstOrNull()?.blockId ?: ""),
       "savedHighlights" to (page?.pageIndex?.let { savedHighlightContextsByPage[it] }.orEmpty())
     )
+    page?.let { event.putAll(anchorEventFields(pagedAnchorFor(it))) }
 
     (page?.spineIndex ?: bookManifest.intValue("currentSpineIndex"))?.let { spineIndex ->
       event["spineIndex"] = spineIndex

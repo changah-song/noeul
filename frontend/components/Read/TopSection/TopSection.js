@@ -47,6 +47,9 @@ const TopSection = ({
     // (surface) => 1 underlined, 2 in the level sample, 0 neither: recorded on
     // the lookup so the level counts it only when reading past it is logged.
     levelMarkFor,
+    // Counts up each time the reader taps the open word again: saves it (or
+    // takes the save back).
+    saveToggleToken = 0,
     translationVisualState = {},
     // The reader has no tab bar: a bottom panel pads its own way past the
     // system gesture bar.
@@ -300,8 +303,11 @@ const TopSection = ({
         }
     };
 
-    // The grab bar (drag to close, or to open the roots section). There is no
-    // close button: a swipe down, a tap on the page or back closes the panel.
+    // The strip along the panel's page-facing edge: drag it to close the
+    // panel. The grey pill is drawn only when there is more to pull out (the
+    // roots / characters section); it then opens that on a tap or a drag the
+    // other way. There is no close button: a swipe, a tap on the page or back
+    // closes the panel.
     const renderGrabber = (position) => {
         const wrapStyle = position === 'bottom' ? styles.grabberWrapBottom : styles.grabberWrap;
         const grabberLabel = isChineseDictionarySheet
@@ -322,9 +328,7 @@ const TopSection = ({
                         <View style={styles.grabber} />
                     </TouchableOpacity>
                 ) : (
-                    <View style={[wrapStyle, styles.grabberTouch]}>
-                        <View style={styles.grabber} />
-                    </View>
+                    <View style={[wrapStyle, styles.grabberTouch]} />
                 )}
             </View>
         );
@@ -413,6 +417,7 @@ const TopSection = ({
                         sourceBook={sourceBook}
                         savedWords={savedWords}
                         levelMarkFor={levelMarkFor}
+                        saveToggleToken={saveToggleToken}
                     />
                 ) : (
                     <TranslationContent
